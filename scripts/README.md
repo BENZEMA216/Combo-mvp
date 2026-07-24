@@ -8,8 +8,10 @@
 
 Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 `combo`。Preview 与 Production 从同一个已经构建并验证的 release artifact 渲染；Production 不重新构建镜像。
 
+仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 必须是 `enabled` 或 `paused`。`enabled` 会把成功的 main release artifact 自动部署到 Preview；`paused` 仍保留 main 构建和 Preview policy 记录，但跳过部署 job，不改变线上 Preview。策略变更只影响之后触发的工作流，不取消已经开始的部署。
+
 `verify-rendered-release.mjs` 在任何集群写入前复验 Kubernetes 服务端 dry-run 的原始对象：资源集合、namespace、镜像、命令、Secret 引用和 ClusterIP 边界必须精确符合环境契约。
 
-`deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写，删除白名单内的旧数据卷，随后按 `fresh PostgreSQL/Redis/MinIO → bucket init 与单对象冒烟 → migration 0000–0006 → API/Worker/Runtime/Web → loopback 与 Nginx 事务切流 → legacy cleanup` 顺序完成发布。Secret、TLS、namespace 和无关资源始终不在删除范围；脚本只检查 Secret 名称和键名。
+`deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换会删除白名单内的旧数据卷，并按 `fresh PostgreSQL/Redis/MinIO → bucket init 与单对象冒烟 → migration 0000–0006 → API/Worker/Runtime/Web → loopback 与 Nginx 事务切流 → legacy cleanup` 顺序完成发布；后续发布复用已验证的 release foundation 与 PVC，只替换 SHA 隔离的应用、迁移和初始化对象。Secret、TLS、namespace 和无关资源始终不在删除范围；脚本只检查 Secret 名称和键名。
 
 `switch-release-traffic.sh` 为 Preview 与 Production 分别维护 Web 和 MinIO 的 loopback forwarder，并在一次事务里切换 Nginx。任一监听、健康检查、Nginx 校验或公网验证失败时，会恢复切换前的 unit 与 Nginx 状态。
