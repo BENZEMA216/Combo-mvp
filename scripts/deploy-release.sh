@@ -507,7 +507,7 @@ load_post_cut_checkpoint() {
       )
     ' "$pending_checkpoint" >/dev/null ||
     fail 'another or invalid post-cut checkpoint requires recovery first'
-  created=$(jq -er '.foundationCreated' "$pending_checkpoint")
+  created=$(jq -r '.foundationCreated' "$pending_checkpoint")
   [[ "$created" == true || "$created" == false ]] ||
     fail 'post-cut checkpoint foundation mode is invalid'
   [[ "$created" == true ]] && FOUNDATION_CREATED_THIS_RELEASE=1 ||

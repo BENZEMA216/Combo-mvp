@@ -131,7 +131,7 @@ jobs:
           jq -e \
             --arg revision "$REVISION" \
             --argjson previewRunId "$PREVIEW_RUN_ID" '
-              keys == [
+              keys == ([
                 "artifactFileSetDigest",
                 "deployedAt",
                 "environment",
@@ -146,7 +146,7 @@ jobs:
                 "sourceCiRunId",
                 "sourceSha",
                 "status"
-              ]
+              ] | sort)
               and .schemaVersion == 1
               and .status == "passed"
               and .environment == "preview"

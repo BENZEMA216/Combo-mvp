@@ -246,6 +246,16 @@ test('a first release proceeds without a post-cut checkpoint', () => {
   );
 });
 
+test('a reused foundation accepts a false checkpoint boolean', () => {
+  const load = functionBody('load_post_cut_checkpoint');
+  assert.match(load, /created=\$\(jq -r '\.foundationCreated' "\$pending_checkpoint"\)/);
+  assert.doesNotMatch(
+    load,
+    /created=\$\(jq -er '\.foundationCreated'/,
+    'jq -e treats the valid boolean false as a failing exit status',
+  );
+});
+
 test('a completed evidence checkpoint returns before every cluster mutation', () => {
   const evidenceCheck = indexOf(
     /\n[ \t]*(?:verify_completed_release|completed_release_exists|reuse_completed_release)(?:\s|$)/,

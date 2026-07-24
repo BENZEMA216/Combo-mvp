@@ -1830,6 +1830,11 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(preview, /combo-preview-promotion-\$\{\{/);
   assert.match(production, /combo-preview-promotion-\$\{\{/);
   assert.match(production, /artifactFileSetDigest/);
+  assert.match(
+    production,
+    /keys == \(\[[\s\S]*?"remoteCleanupEvidenceDigest"[\s\S]*?"status"\s*\] \| sort\)/,
+    'Production must compare the exact Preview evidence key set independent of list order',
+  );
   assert.match(workflow, /echo ' {2}ServerAliveInterval 30'/);
   assert.match(workflow, /echo ' {2}ServerAliveCountMax 20'/);
   assert.match(workflow, /echo ' {2}TCPKeepAlive yes'/);
