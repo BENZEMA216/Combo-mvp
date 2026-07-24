@@ -308,14 +308,43 @@ test('captured migration ownership matches the rendered managed-by labels', () =
       },
     },
   };
-  assert.equal(validateCapturedJobOwnership([migration]).status, 0);
+  const initialization = {
+    metadata: {
+      name: `release-${sourceSha.slice(0, 12)}-minio-init`,
+      labels: {
+        app: 'minio-init',
+        'combo.build/environment-foundation': 'preview-v1',
+      },
+    },
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            'combo.build/source-sha': sourceSha,
+            'combo.build/release-id': `release-${sourceSha}`,
+          },
+          labels: {
+            app: 'minio-init',
+            'combo.build/environment-foundation': 'preview-v1',
+          },
+        },
+      },
+    },
+  };
+  const jobs = [migration, initialization];
+  assert.equal(validateCapturedJobOwnership(jobs).status, 0);
 
-  const wrongContract = structuredClone(migration);
-  delete wrongContract.metadata.labels['combo.build/managed-by'];
-  delete wrongContract.spec.template.metadata.labels['combo.build/managed-by'];
-  wrongContract.metadata.labels['combo.build/release-track'] = 'release-v1';
-  wrongContract.spec.template.metadata.labels['combo.build/release-track'] = 'release-v1';
-  assert.notEqual(validateCapturedJobOwnership([wrongContract]).status, 0);
+  const ownershipMutations = [
+    (items) => delete items[0].metadata.labels['combo.build/managed-by'],
+    (items) => delete items[0].spec.template.metadata.labels['combo.build/managed-by'],
+    (items) => delete items[1].metadata.labels['combo.build/environment-foundation'],
+    (items) => delete items[1].spec.template.metadata.labels['combo.build/environment-foundation'],
+  ];
+  for (const mutate of ownershipMutations) {
+    const invalidJobs = structuredClone(jobs);
+    mutate(invalidJobs);
+    assert.notEqual(validateCapturedJobOwnership(invalidJobs).status, 0);
+  }
 });
 
 test('a completed evidence checkpoint returns before every cluster mutation', () => {
