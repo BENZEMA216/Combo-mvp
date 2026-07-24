@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -30,6 +32,31 @@ function environmentArm(name) {
   const match = environmentCase.match(new RegExp(`${name}\\)([\\s\\S]*?);;`));
   assert.ok(match, `deploy-release.sh must define the ${name} environment`);
   return match[1];
+}
+
+function validateCapturedJobOwnership(jobs) {
+  const work = mkdtempSync(join(tmpdir(), 'combo-release-job-ownership-'));
+  try {
+    const emptyInventory = join(work, 'empty.json');
+    const jobInventory = join(work, 'jobs.json');
+    writeFileSync(emptyInventory, JSON.stringify({ items: [] }));
+    writeFileSync(jobInventory, JSON.stringify({ items: jobs }));
+    const harness = `
+set -euo pipefail
+FOUNDATION_TRACK=preview-v1
+inventory_deployments=${JSON.stringify(emptyInventory)}
+inventory_statefulsets=${JSON.stringify(emptyInventory)}
+inventory_jobs=${JSON.stringify(jobInventory)}
+inventory_services=${JSON.stringify(emptyInventory)}
+inventory_configmaps=${JSON.stringify(emptyInventory)}
+fail() { return 1; }
+${functionBody('validate_captured_release_ownership')}
+validate_captured_release_ownership
+`;
+    return spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
 }
 
 test('fresh deploy exposes only the disposable-data interface for Preview and Production', () => {
@@ -254,6 +281,70 @@ test('a reused foundation accepts a false checkpoint boolean', () => {
     /created=\$\(jq -er '\.foundationCreated'/,
     'jq -e treats the valid boolean false as a failing exit status',
   );
+});
+
+test('captured migration ownership matches the rendered managed-by labels', () => {
+  const sourceSha = 'c455595eb8e655f3d85852a2194d8440db8a90b3';
+  const migration = {
+    metadata: {
+      name: `release-${sourceSha.slice(0, 12)}-migrate`,
+      labels: {
+        app: 'migrate',
+        'combo.build/managed-by': 'release-v1',
+      },
+    },
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            'combo.build/source-sha': sourceSha,
+            'combo.build/release-id': `release-${sourceSha}`,
+          },
+          labels: {
+            app: 'migrate',
+            'combo.build/managed-by': 'release-v1',
+          },
+        },
+      },
+    },
+  };
+  const initialization = {
+    metadata: {
+      name: `release-${sourceSha.slice(0, 12)}-minio-init`,
+      labels: {
+        app: 'minio-init',
+        'combo.build/environment-foundation': 'preview-v1',
+      },
+    },
+    spec: {
+      template: {
+        metadata: {
+          annotations: {
+            'combo.build/source-sha': sourceSha,
+            'combo.build/release-id': `release-${sourceSha}`,
+          },
+          labels: {
+            app: 'minio-init',
+            'combo.build/environment-foundation': 'preview-v1',
+          },
+        },
+      },
+    },
+  };
+  const jobs = [migration, initialization];
+  assert.equal(validateCapturedJobOwnership(jobs).status, 0);
+
+  const ownershipMutations = [
+    (items) => delete items[0].metadata.labels['combo.build/managed-by'],
+    (items) => delete items[0].spec.template.metadata.labels['combo.build/managed-by'],
+    (items) => delete items[1].metadata.labels['combo.build/environment-foundation'],
+    (items) => delete items[1].spec.template.metadata.labels['combo.build/environment-foundation'],
+  ];
+  for (const mutate of ownershipMutations) {
+    const invalidJobs = structuredClone(jobs);
+    mutate(invalidJobs);
+    assert.notEqual(validateCapturedJobOwnership(invalidJobs).status, 0);
+  }
 });
 
 test('a completed evidence checkpoint returns before every cluster mutation', () => {
