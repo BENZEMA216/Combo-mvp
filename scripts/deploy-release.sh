@@ -712,8 +712,10 @@ validate_captured_release_ownership() {
       and $sha[0:12] == $parts.short
       and .spec.template.metadata.annotations["combo.build/release-id"] == ("release-" + $sha)
       and (if $parts.component == "migrate"
-        then .spec.template.metadata.labels["combo.build/release-track"] == "release-v1"
-        else .spec.template.metadata.labels["combo.build/environment-foundation"] == $track
+        then .metadata.labels["combo.build/managed-by"] == "release-v1"
+          and .spec.template.metadata.labels["combo.build/managed-by"] == "release-v1"
+        else .metadata.labels["combo.build/environment-foundation"] == $track
+          and .spec.template.metadata.labels["combo.build/environment-foundation"] == $track
         end))
     and all(.items[] | select(.metadata.name == "release-minio-init");
       .metadata.labels["combo.build/environment-foundation"] == $track)
