@@ -317,15 +317,17 @@ spec:
                   sys.exit(3)
               control.close()
 
-              production_web = "web.combo.svc.cluster.local"
+              # The Web Service is SHA-scoped. The shared release PostgreSQL
+              # Service is the stable, resolvable cross-namespace deny target.
+              production_service = "release-postgres.combo.svc.cluster.local"
               control_plane = "kubernetes.default.svc.cluster.local"
-              for required_name in (production_web, control_plane):
+              for required_name in (production_service, control_plane):
                   try:
                       socket.getaddrinfo(required_name, None)
                   except socket.gaierror:
                       sys.exit(2)
               denied = [
-                  (production_web, 80),
+                  (production_service, 5432),
                   (control_plane, 443),
                   ("169.254.169.254", 80),
               ]

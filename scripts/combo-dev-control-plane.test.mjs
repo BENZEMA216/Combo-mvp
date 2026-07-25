@@ -2147,8 +2147,11 @@ test('network canary uses a pinned deterministic TCP probe and proves its positi
     /hostPath:/,
   );
   const start = smoke.indexOf('              import os');
-  const end = smoke.indexOf('              production_web', start);
+  const end = smoke.indexOf('              # The Web Service is SHA-scoped.', start);
   assert.ok(start > 0 && end > start);
+  assert.match(smoke, /production_service = "release-postgres\.combo\.svc\.cluster\.local"/);
+  assert.match(smoke, /\(production_service, 5432\)/);
+  assert.doesNotMatch(smoke, /web\.combo\.svc\.cluster\.local/);
   const positiveControl = smoke
     .slice(start, end)
     .split('\n')
