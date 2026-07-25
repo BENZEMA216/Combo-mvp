@@ -8,17 +8,17 @@
 
 Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 `combo`。Preview 与 Production 从同一个已经构建并验证的 release artifact 渲染；Production 不重新构建镜像。
 
-Test 的重置命令必须同时接收完整源码 SHA 和 GitHub workflow run ID。它在证明 PostgreSQL、Redis Queue、MinIO 三个固定目录均已清空后重建四个基础工作负载，把实际 Pod UID 和时间写入 `0600` 回执。部署命令只接受同一 SHA、同一 run ID、完成时间不超过十五分钟的回执，并通过同目录原子改名只消费一次。
+Test 的重置命令必须同时接收完整源码 SHA、GitHub workflow run ID 和 run attempt。它在证明 PostgreSQL、Redis Queue、MinIO 三个固定目录均已清空后重建四个基础工作负载，把三元身份、实际 Pod UID 和时间写入 attempt-scoped 的 `0600` 回执。部署命令只接受同一 SHA、同一 run ID、同一 run attempt、完成时间不超过十五分钟的回执，并通过同目录原子改名只消费一次。
 
-Test 的迁移任务固定校验 `0006_one_running_turn_per_session.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0006` 各应用一次，且两遍均到达 `0006`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、回执和资源集合，再上传 `combo-test-evidence-<SHA>`。
+Test 的迁移任务固定校验 `0006_one_running_turn_per_session.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0006` 各应用一次，且两遍均到达 `0006`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再上传 `combo-test-evidence-<SHA>`。
 
 `combo-dev-control-plane.test.mjs` 的容器镜像探针只有在 `COMBO_RUN_CONTAINER_CONTRACTS=1` 时才会调用 Docker。GitHub Actions 的受控 Test 步骤显式启用该变量；tecent2 上的普通源码检查不会探测或启动 Docker。
 
 `goal-b-frozen-audit.test.mjs` 将固定冻结提交相对共同基线的 256 个路径，与 `docs/goal-b-frozen-preview-audit.md` 逐项比对，并强制旧迁移与旧 Cloud Review 拓扑保持明确废弃。
 
-`goal-b-test-acceptance.mjs` 使用 tecent2 已安装的 Chrome，通过只绑定 `127.0.0.1` 的 Test Web 转发执行真实浏览器验收。它使用 Test 专属 dev-login 在内存浏览器上下文中完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力发布、Studio 多轮和元素选择、活动轮刷新恢复、中断产物隔离、当前 UI 隔离副本试用以及返回原任务；命令行只接受完整源码 SHA、loopback Web origin 和一个尚不存在的输出文件。浏览器 HTTP(S) 和 WebSocket 都只能访问该精确 loopback origin。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存 Cookie、配对码、分享令牌或响应正文。
+`goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。Production 使用两组受保护 Logto 身份完成 OIDC、Cookie 轮换和 owner 隔离。
 
-该仓库脚本目前是补充验收器，不是 `/opt/combo-dev/acceptance/run` 的源码替代品。`combo-dev-deploy.sh` 仍调用由主机所有者维护的 root-owned 基础验收器；后者还接收 `--s3-origin`，并输出供 `combo-dev-smoke.sh` 和最终 Test evidence 消费的既有检查对象。当前 workflow bundle 不安装本脚本，也不把它的 20 项数组结果合并进 `/var/lib/combo-dev/evidence/<SHA>.json`。因此在完成受信任安装或 wrapper、两种 schema 的显式合并以及 workflow 端复验之前，本脚本的 JSON 只能作为补充诊断结果，不能宣称已经进入官方 `combo-test-evidence-<SHA>`。
+Test workflow 从不可变 release artifact 安装该 runner 和 `playwright-core.tgz`，把结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>`；Preview 和 Production 复用同一 artifact 中的文件。普通运行的命令行只接受环境、完整源码 SHA、对应固定 origin 和一个尚不存在的输出文件。Production 另提供仅供 workflow 在任何变更前调用的 `--validate-production-credentials` 模式，以同一个 parser 校验标准输入中的四行凭据。浏览器网络被限制到对应应用 origin，Production 只额外允许固定 Logto origin。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存 Cookie、配对码、分享令牌、凭据或响应正文。
 
 在 Test Web 已通过本机 loopback 转发后，从仓库根目录运行：
 
@@ -34,6 +34,22 @@ pnpm --filter @cb/scripts acceptance:goal-b -- \
 
 `verify-rendered-release.mjs` 在任何集群写入前复验 Kubernetes 服务端 dry-run 的原始对象：资源集合、namespace、镜像、命令、Secret 引用和 ClusterIP 边界必须精确符合环境契约。
 
-`deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换先建立空的 PostgreSQL、Redis 和 MinIO，再完成 bucket 初始化与单对象冒烟，然后执行 `0000` 至 `0006` 迁移并启动 API、Worker、Runtime 和 Web，最后通过 loopback 与 Nginx 事务切流并清理旧对象。后续发布复用已验证的 release foundation 与 PVC，只替换 SHA 隔离的应用、迁移和初始化对象。Secret、TLS、namespace 和无关资源始终不在删除范围；脚本只检查 Secret 名称和键名。
+`deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换先建立空的 PostgreSQL、Redis 和 MinIO，再完成 bucket 初始化与单对象冒烟，然后执行 `0000` 至 `0006` 迁移并启动 API、Worker、Runtime 和 Web。Preview 在公网检查后完成单次提交。Production 必须先使用 `--defer-cleanup` 激活候选并保留上一份 release，再由受保护的真实 OIDC 六区验收产生 attestation，最后使用 `--finalize` 只读复验候选、清理旧对象并封存回滚点。进入 `finalizing` 前的验收失败、工作流失败或取消使用 `--rollback`；它能区分尚未切流的 `armed` 候选与已经切流但未写完 `post-cut` 状态的候选，只在实时路由证明候选已接管后恢复主机流量，再删除精确的候选对象。进入 `finalizing` 后只能以同一份 attestation 幂等续跑 `--finalize`，不会错误回滚已经开始清理的 release。Secret、TLS、namespace 和无关资源始终不在删除范围；脚本只检查 Secret 名称和键名。
 
-`switch-release-traffic.sh` 为 Preview 与 Production 分别维护 Web 和 MinIO 的 loopback forwarder，并在一次事务里切换 Nginx。任一监听、健康检查、Nginx 校验或公网验证失败时，会恢复切换前的 unit 与 Nginx 状态。
+Production 激活把主机切流证据直接原子写入发布证据根目录下的 `<releaseId>.traffic.pending.json`。`armed` 检查点仍存在但实时路由已经指向候选时，续跑会把这视为切流与本地状态提交之间的中断。如果持久流量证据已经存在，续跑会复验并复用它；只有 `armed` 状态允许再次执行幂等切流来补齐缺失证据。随后脚本才把检查点推进到 `post-cut`。Production 延迟清理退出前会把流量证据纳入带摘要集合的激活目录，再删除临时流量证据。`post-cut` 状态缺少证据、实时路由含糊或发布身份不一致时都会停止。
+
+Production 最终化先把待删除对象的 kind、名称、UID 和已捕获存储写入激活目录中的 `cleanup-plan.json`。脚本校验这份持久清理计划后，把它的摘要写入 `finalizing` 检查点，之后才开始删除旧对象。续跑只会重新校验并物化同一份计划；已经删除的目标按缺失状态继续收敛，不能通过新的实时盘点扩大删除集合。清理完成后的证据和流量封存证据也保存在激活目录中，后续最终化会复用这些不可逆步骤的结果。
+
+Production 流量回滚把恢复后的主机状态分成三个持久提交。它先把 root 所有的流量检查点标记为 `rolled-back`，再把流量 `current.json` 写成前一份 release，最后写入与检查点摘要绑定的回滚证据；首次接管前没有前一份 release 时会删除 `current.json`。如果进程在这三个提交之间中断，`deploy-release.sh --rollback` 会先证明前一份 release 的实时路由、版本和 S3 仍然可用，再接受 `activated` 或 `rolled-back` 检查点。`activated` 恢复还必须存在摘要集合完整的激活目录，而且其中的流量证据必须绑定该检查点摘要。已有 `current.json` 只能精确表示候选或前一份 release，其他内容会在任何持久写入前被拒绝。恢复随后按检查点、当前流量状态和回滚证据的顺序收敛，候选资源只会在回滚证据可复验后删除。
+
+Production 在删除旧对象前先把同一个清理计划摘要写入发布侧和 root 所有的主机侧 `finalizing` 检查点，并在流量锁内复验正式 Nginx、转发单元、监听器和候选身份。主机检查点进入 `finalizing` 后不再允许回滚。清理证据已经持久化且主机检查点已经是 `sealed` 时，续跑会要求预清理流量证据、封存摘要与同一份清理证据完全一致，然后复用持久清理证据和流量封存证据，继续写完发布证据与当前发布状态。发布证据目录已经提交但 `current.json` 或待处理检查点尚未收敛时，同一 release 的最终化续跑也会补完这些提交。
+
+Production 六区验收需要 `PRODUCTION_ACCEPTANCE_EMAIL`、`PRODUCTION_ACCEPTANCE_PASSWORD` 与独立的 `PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL`、`PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD` 四个受保护 Environment Secret。工作流在任何 Production 变更前验证两组身份存在且互不相同，只经标准输入把值交给浏览器 runner；主身份创建资源，次身份通过真实 OIDC 登录并验证 owner 隔离，凭据不会写入参数、文件、日志或发布证据。
+
+`collect-live-runtime-evidence.sh` 从目标 namespace 的实际 Deployment、Pod、迁移 Job 和迁移 Pod 采集 Ready 状态、容器 `imageID`、退出码及精确 `0000` 至 `0006` 账本。Preview 晋级证据会保存该结果；Production 变更前还会即时重采 Preview 并重新验证，避免使用已经过时的运行态证明。
+
+`release-nginx-route.mjs` 按固定 server_name、proxy_pass 数量和端口集合解析 Nginx，不执行全文件模糊替换。Production canary 配置与 `buildwithcombo.com` 的 `happy.conf` 分别做摘要 CAS；正式域名只允许四个 Web upstream 在 `30080` 和 `18082` 之间整体切换，证书指令保持原字节。
+
+`switch-release-traffic.sh` 为 Preview 与 Production 分别维护 Web 和 MinIO 的 loopback forwarder，并在专用锁内切换 Nginx。Production 只有在 `buildwithcombo.com` 的 TLS、版本、SPA 路由、API、S3、HTML 缓存、hashed asset 缓存和缺失 asset 404 全部通过后才返回成功。切流前的两份 Nginx 配置、无凭据 Web 环境文件和两个 systemd unit 会以 root 所有的 `0600` 文件保存在 `/var/lib/combo-release/traffic-checkpoints`；检查点不包含 Secret 或 TLS 文件内容。主机事务先把检查点从 `armed` 提交为 `activated`，再原子更新流量 `current.json`，最后原子提交调用方指定的流量证据文件。
+
+`rollback-release-traffic.sh` 只接受精确 release manifest，并同时校验活动配置摘要、持久检查点和旧 Service 是否仍存在。首次正式域名接管前的 `happy.conf` 本来指向不可用的旧端口，因此首次回滚恢复该配置摘要后，通过 `agora.43-160-242-46.sslip.io` 验证旧 release；后续正式路由已经健康时则通过 `buildwithcombo.com` 验证旧 SHA。`seal-release-traffic.sh --phase prepare` 在清理前把检查点标为 `finalizing` 并绑定清理计划，`--phase seal` 在清理证据通过后把它标为 `sealed`；两个状态都不能再执行流量回滚。

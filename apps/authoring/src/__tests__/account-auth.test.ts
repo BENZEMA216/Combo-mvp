@@ -45,7 +45,8 @@ function requestDouble(
   input: {
     cookies?: Record<string, string>;
     query?: Record<string, string>;
-    nodeEnv?: 'test' | 'production';
+    nodeEnv?: 'development' | 'test' | 'production';
+    comboEnvironment?: string;
   } = {},
 ): FastifyRequest {
   return {
@@ -54,7 +55,11 @@ function requestDouble(
     query: input.query ?? {},
     server: {
       infra: {
-        env: { NODE_ENV: input.nodeEnv ?? 'production' },
+        env: {
+          NODE_ENV: input.nodeEnv ?? 'production',
+          COMBO_ENVIRONMENT:
+            input.comboEnvironment ?? (input.nodeEnv === 'test' ? 'test' : 'production'),
+        },
         db: {},
       },
     },
@@ -147,6 +152,41 @@ describe('account refresh-token handlers', () => {
       }),
     );
     expect(reply.redirect).toHaveBeenCalledWith('/tasks', 302);
+  });
+
+  it('keeps Preview cookies Secure when its API process uses development mode', async () => {
+    oidcMocks.exchangeCodeForToken.mockResolvedValue({
+      kind: 'ok',
+      accessToken: 'access-preview',
+      refreshToken: 'refresh-preview',
+    });
+    const req = requestDouble({
+      nodeEnv: 'development',
+      comboEnvironment: 'preview',
+      cookies: {
+        [AUTH_TX_COOKIE]: JSON.stringify({
+          state: 'state-1',
+          nonce: 'nonce-1',
+          codeVerifier: 'verifier-1',
+          returnTo: '/tasks',
+        }),
+      },
+      query: { code: 'code-1', state: 'state-1' },
+    });
+    const reply = replyDouble();
+
+    await (callbackHandler() as unknown as TestHandler)(req, reply);
+
+    expect(reply.setCookie).toHaveBeenCalledWith(
+      SESSION_COOKIE,
+      'access-preview',
+      expect.objectContaining({ secure: true }),
+    );
+    expect(reply.setCookie).toHaveBeenCalledWith(
+      REFRESH_COOKIE,
+      'refresh-preview',
+      expect.objectContaining({ secure: true }),
+    );
   });
 
   it('revalidates a forged auth transaction returnTo before callback redirect', async () => {

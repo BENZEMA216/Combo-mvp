@@ -20,8 +20,8 @@ readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.js
 readonly SESSION_FILE='/etc/combo-dev/session.key'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
-readonly RESET_PROOF='/var/lib/combo-dev/reset-proof.json'
-readonly CONSUMED_RESET_PROOF='/var/lib/combo-dev/reset-proof.consumed.json'
+RESET_PROOF=''
+CONSUMED_RESET_PROOF=''
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly BOOTSTRAP_FOUNDATION='/opt/combo-dev/bootstrap-overlay/foundation'
 readonly APPS=(api worker runtime web)
@@ -462,18 +462,27 @@ PY
 }
 
 write_reset_proof() {
-  local revision=$1 workflow_run_id=$2 reset_started=$3 storage_cleared_at=$4 foundation=$5
+  local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
+  local reset_started=$4 storage_cleared_at=$5 foundation=$6
   local candidate="$WORK/reset-proof.json"
   python3 - \
-    "$revision" "$workflow_run_id" "$reset_started" "$storage_cleared_at" \
+    "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$reset_started" "$storage_cleared_at" \
     "$foundation" "$candidate" <<'PY'
 import datetime as dt
 import json
 import re
 import sys
 
-revision, workflow_run_id, started_at, cleared_at, foundation_path, output_path = sys.argv[1:]
-if not re.fullmatch(r'[0-9a-f]{40}', revision) or not re.fullmatch(r'[1-9][0-9]*', workflow_run_id):
+(
+    revision, workflow_run_id, workflow_run_attempt,
+    started_at, cleared_at, foundation_path, output_path,
+) = sys.argv[1:]
+if (
+    not re.fullmatch(r'[0-9a-f]{40}', revision)
+    or not re.fullmatch(r'[1-9][0-9]*', workflow_run_id)
+    or not re.fullmatch(r'[1-9][0-9]*', workflow_run_attempt)
+):
     raise SystemExit(2)
 foundation = json.load(open(foundation_path, encoding='utf-8'))
 payload = {
@@ -481,6 +490,7 @@ payload = {
     'namespace': 'combo-preview',
     'sourceSha': revision,
     'workflowRunId': workflow_run_id,
+    'workflowRunAttempt': workflow_run_attempt,
     'startedAt': started_at,
     'storageClearedAt': cleared_at,
     'completedAt': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -502,7 +512,7 @@ PY
 }
 
 main() {
-  local revision='' workflow_run_id='' confirmed=0 arg
+  local revision='' workflow_run_id='' workflow_run_attempt='' confirmed=0 arg
   while (($#)); do
     arg=$1
     shift
@@ -510,12 +520,17 @@ main() {
       "--confirm=$CONFIRMATION") confirmed=1 ;;
       --revision) revision=${1:?}; shift ;;
       --workflow-run-id) workflow_run_id=${1:?}; shift ;;
+      --workflow-run-attempt) workflow_run_attempt=${1:?}; shift ;;
       *) blocked '未知 reset 参数。' ;;
     esac
   done
   (( confirmed == 1 )) || blocked '必须提供完全匹配的破坏性确认串。'
   [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || blocked 'reset revision 不是完整提交 SHA。'
   [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked 'reset workflow run ID 不合法。'
+  [[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]] ||
+    blocked 'reset workflow run attempt 不合法。'
+  RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
+  CONSUMED_RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.consumed.json"
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   WORK=$(mktemp -d)
@@ -541,7 +556,8 @@ main() {
   after=$(production_fingerprint)
   [[ "$before" == "$after" ]] || fail '重置期间生产指纹发生变化。'
   write_reset_proof \
-    "$revision" "$workflow_run_id" "$reset_started" "$storage_cleared_at" "$foundation_proof" ||
+    "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$reset_started" "$storage_cleared_at" "$foundation_proof" ||
     blocked '无法保存本次空数据重建证据。'
   SUCCESS=1
   status 'PASS namespace=combo-preview pvc=retained data=cleared session=rotated writers=fenced'

@@ -22,7 +22,7 @@ k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data
 
 `/etc/combo-dev/registry.json` 必须归 root 所有且权限为 `0600`，只包含 `ghcr.io` 的开发只读拉取身份。`/etc/combo-dev/production-observer.kubeconfig` 必须使用单一嵌入式客户端证书，并与本机审核凭据使用完全相同的 API 服务端和证书颁发机构。该身份只能在生产命名空间对 Deployment、StatefulSet、Service、PVC 和 Pod 执行 `get`、`list` 与 `watch`。bootstrap、部署和重置会解析全部命名空间的有效规则与关联绑定，拒绝通配符、Secret 读取、任何持久变更权限、生产命名空间之外的资源权限和额外集群资源权限。Kubernetes 为已认证身份提供的不落盘自省请求与只读发现端点是唯一例外。
 
-部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` 环境必须配置与当前验收分支精确匹配的分支限制和必需审核人，开发 SSH 材料只能保存在该环境中。combo-dev 工作流只接受手工触发，并要求输入仍可从仓库任一当前分支到达的完整提交 SHA；工作流会校验触发者权限、远端可达性，并为该 SHA 重新执行受信 CI 和构建。它与生产 CD 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
+部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` 环境必须只允许 `main` 并配置必需审核人，开发 SSH 材料只能保存在该环境中。combo-dev 工作流只接受从 `main` 手工触发，并要求输入当前 `main` 的完整提交 SHA，以及为该提交生成不可变发布产物的成功 main CI run ID。工作流会校验触发者权限、CI 的仓库、工作流、事件、分支、结论、源码 SHA 和 run attempt，再校验唯一未过期 release artifact 的 ID、名称、大小、GitHub digest 和关联 run。Test 跨 run 下载并复验这份产物的完整文件集、release manifest、Web asset manifest、迁移头和三个镜像摘要，不会重新执行 CI 或构建镜像。远端 bundle、reset proof、migration proof 和环境证据均绑定 Test workflow 的完整 SHA、run ID 与 run attempt；只有同一三元组才能被原子消费。上传的 Test evidence 会保留主机生成的原始环境验收 JSON，并用 exact-schema 的 `source-release.json` 记录上述不可变来源。Test 与 Production 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
 
 首次准备和控制文件升级时，主机所有者必须先把相关脚本、主机文件和 combo-dev 覆盖层复制到 root-owned 且非 root 不可写的审核快照中，再从该快照执行：
 
@@ -48,7 +48,7 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 `combo-dev-web-forward.service` 只把 Web Service 转发到主机 `127.0.0.1:18080`。`combo-dev-s3-forward.service` 只把 MinIO Service 转发到主机 `127.0.0.1:19000`。两个单元没有 `[Install]` 段，也没有自动重启策略。部署和 smoke 会读取两个 systemd 主进程身份，并解析端口 `18080` 与 `19000` 的全部 IPv4 和 IPv6 监听项。每个端口只能存在一个归对应主进程所有的 `127.0.0.1` 监听项。
 
-开发者使用 `scripts/combo-dev-connect.sh` 时，远端 `/opt/combo-dev/bin/combo-dev-forwarder-lease` 会为该 SSH 会话持有共享操作锁和独立租约。多个开发者可以同时持有租约，一个会话退出只释放自己的租约，最后一个会话退出才停止全局转发器。部署、重置和 bootstrap 持有同一把排他锁，因此会拒绝新的开发连接；只要仍有开发租约，它们也不会开始。受限 sudo 规则只能允许无参数执行这个 root-owned 租约协调器。
+开发者使用 `scripts/combo-dev-connect.sh` 时，远端 `/opt/combo-dev/bin/combo-dev-forwarder-lease` 会为该 SSH 会话持有共享操作锁和独立租约。多个开发者可以同时持有租约，一个会话退出只释放自己的租约，最后一个会话退出才停止全局转发器。部署、重置和 bootstrap 持有同一把排他锁，因此会拒绝新的开发连接；只要仍有开发租约，它们也不会开始。受保护 Test workflow 的 artifact 浏览器验收也通过同一 root-owned 协调器持有一次短租约：启动前和释放后必须证明两个单元均为 `inactive`，runner 执行期间必须证明两者均为 `active`；成功、失败或取消都会关闭租约输入并等待转发器停止，不能把它们留成常驻服务。受限 sudo 规则只能允许无参数执行这个 root-owned 租约协调器。
 
 ## 外部真实验收器
 
@@ -56,17 +56,18 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 验收器只能向标准输出写一份不超过 64 KiB 的 JSON。顶层只能有 `revision`、`createdAt` 和 `checks`。每个检查只能包含 `status` 与不含敏感信息的 `id`，状态必须为 `PASS`。它不得输出响应体、请求地址、会话材料、签名 URL、配对材料、日志正文或任何凭据。`combo-dev-smoke.sh` 会严格校验固定检查键；缺少验收器、缺少检查或证据过期都会返回 `BLOCKED`。
 
-仓库中的 `scripts/goal-b-test-acceptance.mjs` 是 Goal B 的补充验收器，覆盖 Studio 多轮、元素选择、刷新恢复、revision、current UI、consume Session 和两个返回路径。它从与部署 SHA 完全一致的普通源码目录单独运行，使用同一条 `127.0.0.1` Web 回环转发，并生成独立的脱敏 `0600` JSON；它不能替代上述基础验收器，也不会被部署 bundle 自动安装。
+主机固定验收器的 `productAcceptance` 只保留为主机基础健康诊断，不能单独准许 Test 通过。受保护的 Test workflow 会在部署完成后，从已校验文件集的 main CI release artifact 中提取 `acceptance/live-browser-acceptance.mjs` 和 `acceptance/playwright-core.tgz`，在 tecent2 使用已安装的 Chrome 对唯一入口 `http://127.0.0.1:18080` 运行完整六区验收。该验收覆盖 Creation、Authoring、Studio、Runtime、认证和发布身份，输出新的、权限为 `0600`、不含凭据的 JSON。workflow 会把结果复制回 runner，并使用同一 artifact 内的 `scripts/promotion-evidence.mjs` 校验固定检查顺序、完整 release identity、source CI run/attempt、artifact ID/digest 和 Test workflow run/attempt；只有该校验通过，结果和 Test promotion identity 才会进入 `combo-test-evidence-<SHA>`。远端 runner、依赖包、结果文件和上传临时文件无论成功或失败都会清理。
 
 ## 重置
 
-破坏性重置只接受受保护 Test workflow 传入的固定确认串、完整源码 SHA 和正整数 workflow run ID：
+破坏性重置只接受受保护 Test workflow 传入的固定确认串、完整源码 SHA、正整数 workflow run ID 和 run attempt：
 
 ```sh
 sudo /opt/combo-dev/bin/combo-dev-reset \
   --confirm=DESTROY-COMBO-PREVIEW-DATA \
   --revision 0123456789abcdef0123456789abcdef01234567 \
-  --workflow-run-id 123456789
+  --workflow-run-id 123456789 \
+  --workflow-run-attempt 2
 ```
 
-重置会先在服务端校验基础清单，再写入持久阻断标记，关闭全部写入者和两个转发器，并删除固定任务与基础控制器。它不会删除或改绑三个静态 PV/PVC，而是在再次验证独立挂载和规范路径后清空三个固定数据目录，证明目录为空，恢复精确所有权，轮换开发会话凭据，再重建基础服务。PostgreSQL 使用固定镜像内真实的 UID/GID `70:70` 创建 `pgdata` 子目录；旧根目录迁移会先确认子目录为空，写入显式迁移状态，逐项移动并验证普通条目，最后才移动 `PG_VERSION`。任何中断都会保留状态并阻止后续启动。成功重置会把 SHA、run ID、清空时间和重建基础 Pod 的非敏感 UID/时间写入 owner-only 单次回执；紧随其后的部署必须在十五分钟内以相同 SHA 与 run ID 原子消费它。重置结束时应用和四个基础服务全部保持关闭，持久阻断标记只能由后续完整部署清除。
+重置会先在服务端校验基础清单，再写入持久阻断标记，关闭全部写入者和两个转发器，并删除固定任务与基础控制器。它不会删除或改绑三个静态 PV/PVC，而是在再次验证独立挂载和规范路径后清空三个固定数据目录，证明目录为空，恢复精确所有权，轮换开发会话凭据，再重建基础服务。PostgreSQL 使用固定镜像内真实的 UID/GID `70:70` 创建 `pgdata` 子目录；旧根目录迁移会先确认子目录为空，写入显式迁移状态，逐项移动并验证普通条目，最后才移动 `PG_VERSION`。任何中断都会保留状态并阻止后续启动。成功重置会把 SHA、run ID、run attempt、清空时间和重建基础 Pod 的非敏感 UID/时间写入 owner-only 单次回执；紧随其后的部署必须在十五分钟内以相同三元组原子消费 attempt-scoped 回执。重置结束时应用和四个基础服务全部保持关闭，持久阻断标记只能由后续完整部署清除。

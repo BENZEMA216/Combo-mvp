@@ -65,17 +65,11 @@ kubectl apply -f infra/k8s/api.yaml -f infra/k8s/worker.yaml -f infra/k8s/runtim
 
 ## 日常更新
 
-Production 不再随 `main` 的 CI 自动更新。负责人必须在 CD 流水线中填写已经由 `main` 成功 CI 构建的完整提交 SHA，流水线会确认该提交可从 `main` 到达且三镜像存在，再把本目录同步到服务器 `/opt/combo/infra/k8s`。服务器随后执行 `scripts/deploy-k8s.sh`，钉住镜像 SHA、重建迁移 Job、渲染并应用清单，等待迁移和四个业务面就绪，最后对 30080 入口执行冒烟验证。这个手动入口同时保留旧 SHA 的应用回滚能力；服务器上也可以执行 `env SHA=<完整提交SHA> bash /opt/combo/scripts/deploy-k8s.sh` 重放同一部署脚本。
-
-`main` 的默认发布目标将由 Preview 工作流接管。Production 在 Preview 同源晋级门禁完成前保持最后一次人工选择的稳定版本；后续 Production 流水线还会增加同 SHA 的 Preview 成功证据校验。
-
-注意两个操作纪律：迁移 Job 的模板不可修改而镜像标签每次都变，所以脚本每次都会先删旧 Job；apply 必须经 kustomize 渲染（脚本已保证），直接 apply 单个原始文件会带上未钉版的 latest 标签。
+Production 不随 `main` 自动更新。受保护的 CD 流水线只接受已经通过 Preview 的完整 main SHA，并消费同一个 release artifact 和 digest-pinned 镜像。服务器使用 `scripts/deploy-release.sh` 分阶段激活候选、保留旧 release、等待六区验收，再完成清理和证据提交；Production 不重新构建镜像，也不接受服务器直接应用本目录文件。
 
 ## 当前生产状态与流量拓扑
 
-2026-07-17 已完成从 docker compose 到本套清单的割接（过程与验证记录见 issue #86）。系统 nginx 的两个公网 vhost 现在指向 k8s：`agora.43-160-242-46.sslip.io` 反代到节点 30080（web 的 NodePort），`s3.43-160-242-46.sslip.io` 反代到节点 30900（minio 的 NodePort，浏览器预签直传入口）。
-
-回滚兜底：compose 栈的容器已停止但配置与数据卷都保留（数据冻结在割接时刻，仅作灾难兜底）。回滚方法是恢复 `/etc/nginx/conf.d/zz-agora-demo.conf.bak.cutover` 并 reload nginx，再到 `/opt/combo/infra` 执行 compose up。
+系统 Nginx 只反向代理到 release systemd 单元维护的 IPv4 loopback 端口。Production Web 使用 `18082`，Production MinIO 使用 `19002`；Kubernetes Service 保持 ClusterIP，公网不暴露 NodePort。`buildwithcombo.com` 的切换由版本化脚本按配置摘要和精确 server block 完成，不能通过旧 compose、手工 sed 或恢复旧 NodePort 配置回滚。
 
 观测栈部署在 `observability` 命名空间，用 Helm 单独安装与升级，配置和安装说明在 `observability/` 子目录；业务三进程的 OTLP 上报地址已写进各自清单的环境变量。Grafana 在节点的 30300 端口。
 

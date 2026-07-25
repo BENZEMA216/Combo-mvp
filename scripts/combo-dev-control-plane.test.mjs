@@ -346,10 +346,16 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
     workflow,
     /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}/,
   );
-  assert.match(workflow, /--revision "\$revision"[\s\\\n]*--workflow-run-id "\$workflow_run_id"/);
+  assert.match(
+    workflow,
+    /--revision "\$revision"[\s\\\n]*--workflow-run-id "\$workflow_run_id"[\s\\\n]*--workflow-run-attempt "\$workflow_run_attempt"/,
+  );
   assert.match(workflow, /\.workflowRunId == \$runId/);
+  assert.match(workflow, /\.workflowRunAttempt == \$runAttempt/);
   assert.match(workflow, /\.reset\.workflowRunId == \$runId/);
+  assert.match(workflow, /\.reset\.workflowRunAttempt == \$runAttempt/);
   assert.match(workflow, /\.migration\.workflowRunId == \$runId/);
+  assert.match(workflow, /\.migration\.workflowRunAttempt == \$runAttempt/);
   assert.match(workflow, /migration\.head == "0006_one_running_turn_per_session\.sql"/);
   assert.match(workflow, /migration\.job\.ttlSecondsAfterFinished == 7200/);
   assert.match(workflow, /legacyObjectsAbsent == true/);
@@ -357,16 +363,25 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   assert.match(deploy, /readonly NAMESPACE='combo-preview'/);
   assert.match(
     deploy,
-    /write_test_evidence[\s\\\n]*"\$revision" "\$workflow_run_id" "\$manifest" "\$digest_file" "\$evidence"[\s\\\n]*"\$RESET_PROOF_IN_USE" "\$migration_proof"/,
+    /write_test_evidence[\s\\\n]*"\$revision" "\$workflow_run_id" "\$workflow_run_attempt"[\s\\\n]*"\$manifest" "\$digest_file" "\$evidence"[\s\\\n]*"\$RESET_PROOF_IN_USE" "\$migration_proof"/,
   );
   assert.match(deploy, /local evidence_dir='\/var\/lib\/combo-dev\/evidence'/);
-  assert.match(deploy, /local output="\$evidence_dir\/\$revision\.json"/);
+  assert.match(
+    deploy,
+    /local output="\$evidence_dir\/\$\{revision\}\.\$\{workflow_run_id\}\.\$\{workflow_run_attempt\}\.json"/,
+  );
   assert.match(deploy, /mv -T -- "\$RESET_PROOF" "\$CONSUMED_RESET_PROOF"/);
   assert.match(deploy, /RESET_PROOF_MAX_AGE_SECONDS=900/);
+  assert.match(
+    deploy,
+    /RESET_PROOF="\/var\/lib\/combo-dev\/reset-proof\.\$\{revision\}\.\$\{workflow_run_id\}\.\$\{workflow_run_attempt\}\.json"/,
+  );
   assert.match(reset, /install -o root -g root -m 0600 "\$candidate" "\$RESET_PROOF"/);
   assert.match(reset, /assert_static_volume_data_empty/);
   assert.match(reset, /capture_rebuilt_foundation/);
   assert.match(reset, /'workflowRunId': workflow_run_id/);
+  assert.match(reset, /'workflowRunAttempt': workflow_run_attempt/);
+  assert.match(deploy, /'workflowRunAttempt': workflow_run_attempt/);
   assert.match(deploy, /capture_migration_proof/);
   assert.match(deploy, /lines != expected_lines/);
   assert.match(deploy, /'logSha256': f"sha256:/);
@@ -378,6 +393,294 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
       deploy.indexOf('prune_stale_configs() {'),
     ),
     /combo-review|Kubernetes Secrets|PRODUCTION_NAMESPACE|PRODUCTION_KUBECONFIG/,
+  );
+});
+
+test('Test runs and validates the exact release artifact six-area browser acceptance', () => {
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const checkout = workflow.indexOf('Check out the exact release source');
+  const setupNode = workflow.indexOf('Use Node 24 for release artifact validation');
+  const download = workflow.indexOf('Download the immutable release artifact');
+  const deploy = workflow.indexOf('Upload the fixed bundle and invoke the root-owned dispatcher');
+  const live = workflow.indexOf('Run the exact artifact six-area Test browser acceptance');
+  const evidence = workflow.indexOf('Collect and verify sanitized Test evidence');
+  const upload = workflow.indexOf('Upload sanitized Test evidence');
+  const cleanup = workflow.indexOf('Remove transient runner and upload files');
+  assert.ok(
+    checkout > 0 &&
+      setupNode > checkout &&
+      download > setupNode &&
+      deploy > download &&
+      live > deploy &&
+      evidence > live &&
+      upload > evidence &&
+      cleanup > upload,
+  );
+  assert.match(
+    workflow,
+    /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020[\s\S]*node-version: 24/,
+  );
+  assert.match(workflow.slice(workflow.indexOf('\n  deploy:'), checkout), /timeout-minutes: 300/);
+
+  const liveStep = workflow.slice(live, evidence);
+  assert.match(liveStep, /runner="\$RELEASE_ROOT\/acceptance\/live-browser-acceptance\.mjs"/);
+  assert.match(liveStep, /playwright="\$RELEASE_ROOT\/acceptance\/playwright-core\.tgz"/);
+  assert.match(liveStep, /validator="\$RELEASE_ROOT\/scripts\/promotion-evidence\.mjs"/);
+  assert.match(
+    liveStep,
+    /tar -C "\$RELEASE_ROOT" -czf "\$archive"[\s\\\n]*acceptance\/live-browser-acceptance\.mjs[\s\\\n]*acceptance\/playwright-core\.tgz/,
+  );
+  assert.match(liveStep, /--environment test/);
+  assert.match(liveStep, /--web-origin http:\/\/127\.0\.0\.1:18080/);
+  assert.match(liveStep, /--output "\$output"/);
+  assert.match(liveStep, /nvm_script="\$HOME\/\.nvm\/nvm\.sh"/);
+  assert.match(liveStep, /\[\[ -f "\$nvm_script" && ! -L "\$nvm_script" \]\]/);
+  assert.match(liveStep, /nvm use --silent 24 >\/dev\/null/);
+  assert.match(liveStep, /node_major[\s\S]*\[\[ "\$node_major" == 24 \]\]/);
+  assert.match(liveStep, /\[\[ "\$\(stat -c '%a' "\$output"\)" == 600 \]\]/);
+  assert.match(
+    liveStep,
+    /validate-live-browser[\s\\\n]*--environment test[\s\\\n]*--evidence "\$evidence"[\s\\\n]*--identity "\$identity"/,
+  );
+  assert.match(liveStep, /deploymentWorkflow: "\.github\/workflows\/combo-dev\.yml"/);
+  assert.match(liveStep, /deploymentRunId: \$deploymentRunId/);
+  assert.match(liveStep, /deploymentRunAttempt: \$deploymentRunAttempt/);
+  assert.match(liveStep, /sourceCiRunId: \$sourceCiRunId/);
+  assert.match(liveStep, /sourceCiRunAttempt: \$sourceCiRunAttempt/);
+  assert.match(liveStep, /releaseArtifactId: \$releaseArtifactId/);
+  assert.match(liveStep, /releaseArtifactDigest: \$releaseArtifactDigest/);
+  assert.match(
+    liveStep,
+    /ssh -T combo-dev-target[\s\\\n]*'sudo -- \/opt\/combo-dev\/bin\/combo-dev-forwarder-lease'/,
+  );
+  assert.match(liveStep, /trap release_forwarder_lease EXIT/);
+  assert.match(liveStep, /forwarders_are inactive/);
+  assert.match(liveStep, /grep -Fq 'PASS lease=active'[\s\S]*forwarders_are active/);
+  assert.match(liveStep, /exec 7>&-/);
+  assert.match(
+    liveStep,
+    /for _ in \$\(seq 1 45\); do[\s\S]*forwarders_are inactive[\s\S]*stopped=1/,
+  );
+  assert.ok(liveStep.indexOf('lease_ready == 1') < liveStep.indexOf('node "$runner"'));
+  assert.doesNotMatch(
+    liveStep,
+    /sudo (?:-- )?systemctl (?:start|stop) combo-dev-(?:web|s3)-forward/,
+  );
+  assert.doesNotMatch(liveStep, /docker|COMBO_PRODUCTION_ACCEPTANCE|CLOUD_REVIEW_ACCESS_TOKEN/);
+
+  const evidenceStep = workflow.slice(evidence, upload);
+  assert.doesNotMatch(evidenceStep, /all\(\.productAcceptance|\.productAcceptance\[\]/);
+  assert.match(evidenceStep, /jq 'del\(\.productAcceptance\)' "\$raw"/);
+  assert.match(evidenceStep, /has\("productAcceptance"\) \| not/);
+  assert.match(evidenceStep, /test-live-browser-acceptance\.json/);
+  assert.match(evidenceStep, /test-promotion-identity\.json/);
+  assert.match(evidenceStep, /liveBrowserAcceptanceDigest/);
+  assert.match(evidenceStep, /testIdentityDigest/);
+  assert.match(evidenceStep, /validate-live-browser/);
+  assert.match(evidenceStep, /validate-identity/);
+  assert.match(evidenceStep, /\.workflowRunAttempt == \$runAttempt/);
+  assert.match(
+    evidenceStep,
+    /\/var\/lib\/combo-dev\/evidence\/\$\{REVISION\}\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}\.json/,
+  );
+  assert.match(
+    evidenceStep,
+    /"combo-test-evidence-\$\{REVISION\}\.json"[\s\\\n]*source-release\.json[\s\\\n]*test-live-browser-acceptance\.json[\s\\\n]*test-promotion-identity\.json/,
+  );
+  assert.match(evidenceStep, /cmp -s "\$expected_files" "\$actual_files"/);
+
+  const cleanupStep = workflow.slice(cleanup);
+  assert.match(cleanupStep, /if: always\(\)/);
+  assert.match(
+    cleanupStep,
+    /\/opt\/combo-dev\/incoming\/\$\{REVISION\}\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}\.tar\.gz/,
+  );
+  assert.match(
+    cleanupStep,
+    /\/opt\/combo-dev\/incoming\/\$\{REVISION\}\.acceptance\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}\.tar\.gz/,
+  );
+  assert.match(
+    cleanupStep,
+    /data\/combo-acceptance\/test\/\$\{REVISION\}\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}\.json/,
+  );
+  assert.match(cleanupStep, /combo-dev-live-browser-\$\{REVISION\}\.tar\.gz/);
+  assert.match(cleanupStep, /combo-test-live-browser-\$\{REVISION\}\.json/);
+  assert.match(cleanupStep, /combo-test-identity-\$\{REVISION\}\.json/);
+  assert.match(cleanupStep, /"\$RUNNER_TEMP\/combo-release\.zip"/);
+  assert.match(cleanupStep, /"\$RUNNER_TEMP\/combo-release"/);
+  assert.match(
+    cleanupStep,
+    /rm -rf --[\s\\\n]*"\$RUNNER_TEMP\/combo-release"[\s\\\n]*"\$RUNNER_TEMP\/combo-test-evidence-\$\{REVISION\}"/,
+  );
+  assert.match(cleanupStep, /if ! rm -f --/);
+  assert.match(cleanupStep, /if ! rm -rf --/);
+  assert.match(cleanupStep, /exit "\$cleanup_rc"/);
+});
+
+test('Preview stays paused without Test and admits enabled promotion only through exact Test evidence', () => {
+  const preview = text('.github/workflows/preview.yml');
+  const testWorkflow = text('.github/workflows/combo-dev.yml');
+  const policyStart = preview.indexOf('  policy:');
+  const deployStart = preview.indexOf('\n  deploy:', policyStart);
+  const policy = preview.slice(policyStart, deployStart);
+  const modeCheck = policy.indexOf('case "$MODE" in');
+  const enabledGate = policy.indexOf('if [[ "$MODE" == enabled ]]');
+  const testDiscovery = policy.indexOf(
+    'actions/workflows/combo-dev.yml/runs?event=workflow_dispatch&status=success&branch=main',
+  );
+  const outputWrite = policy.indexOf("printf 'mode=%s");
+  assert.ok(
+    policyStart >= 0 &&
+      deployStart > policyStart &&
+      modeCheck > 0 &&
+      enabledGate > modeCheck &&
+      testDiscovery > enabledGate &&
+      outputWrite > testDiscovery,
+  );
+  assert.match(
+    policy,
+    /paused\)\n\s+echo 'Preview automatic promotion is explicitly paused by repository policy\.'\n\s+;;/,
+  );
+  assert.match(preview, /if: needs\.policy\.outputs\.mode == 'enabled'/);
+
+  const enabledPolicy = policy.slice(enabledGate, outputWrite);
+  assert.match(enabledPolicy, /\.name == "Test deployment"/);
+  assert.match(enabledPolicy, /\.path == "\.github\/workflows\/combo-dev\.yml"/);
+  assert.match(enabledPolicy, /\.event == "workflow_dispatch"/);
+  assert.match(enabledPolicy, /\.head_branch == "main"/);
+  assert.match(enabledPolicy, /\.head_sha == \$revision/);
+  assert.match(enabledPolicy, /\.status == "completed"/);
+  assert.match(enabledPolicy, /\.conclusion == "success"/);
+  assert.match(enabledPolicy, /\.run_attempt \| type == "number"/);
+  assert.match(
+    enabledPolicy,
+    /actions\/runs\/\$\{test_run_id\}\/artifacts\?per_page=100&name=\$\{test_evidence_artifact_name\}/,
+  );
+  assert.match(enabledPolicy, /\.total_count == 1/);
+  assert.match(enabledPolicy, /\$matches\[0\]\.expired == false/);
+  assert.match(enabledPolicy, /\$matches\[0\]\.digest \| test\("\^sha256:/);
+  assert.match(enabledPolicy, /\$matches\[0\]\.workflow_run\.id == \$runId/);
+  assert.match(enabledPolicy, /\$matches\[0\]\.workflow_run\.head_sha == \$revision/);
+  assert.match(
+    enabledPolicy,
+    /actions\/runs\/\$\{test_run_id\}\/attempts\/\$\{test_run_attempt\}\/jobs/,
+  );
+  assert.match(enabledPolicy, /\.name == "deploy the trusted release to Test"/);
+  assert.match(enabledPolicy, /\$deployJobs\[0\]\.started_at <= \$artifactCreatedAt/);
+  assert.match(enabledPolicy, /\$artifactCreatedAt <= \$deployJobs\[0\]\.completed_at/);
+
+  const testAdmissionStart = preview.indexOf(
+    '      - name: Download and validate the exact successful Test admission',
+  );
+  const sshSetup = preview.indexOf(
+    '      - name: Configure the existing deployment SSH identity',
+    testAdmissionStart,
+  );
+  assert.ok(testAdmissionStart > deployStart && sshSetup > testAdmissionStart);
+  const testAdmission = preview.slice(testAdmissionStart, sshSetup);
+  assert.match(testAdmission, /actions\/artifacts\/\$\{TEST_EVIDENCE_ARTIFACT_ID\}\/zip/);
+  assert.match(
+    testAdmission,
+    /\[\[ "\$\(sha256sum "\$archive" \| awk '\{print "sha256:" \$1\}'\)"[\s\\\n]*== "\$TEST_EVIDENCE_ARTIFACT_DIGEST" \]\]/,
+  );
+  assert.match(
+    testAdmission,
+    /expected_paths=\([\s\S]*"combo-test-evidence-\$\{REVISION\}\.json"[\s\S]*source-release\.json[\s\S]*test-live-browser-acceptance\.json[\s\S]*test-promotion-identity\.json[\s\S]*\)/,
+  );
+  assert.match(
+    testAdmission,
+    /\[\[ "\$\{#archive_paths\[@\]\}" == "\$\{#expected_paths\[@\]\}" \]\]/,
+  );
+  assert.match(testAdmission, /find "\$TEST_EVIDENCE_ROOT" -type l/);
+  assert.match(testAdmission, /validate-identity --identity "\$identity"/);
+  assert.match(
+    testAdmission,
+    /validate-live-browser[\s\\\n]*--environment test[\s\\\n]*--evidence "\$browser"[\s\\\n]*--identity "\$identity"/,
+  );
+  for (const trustCheck of [
+    /\.sourceCiRunId == \$sourceRunId/,
+    /\.sourceCiRunAttempt == \$sourceRunAttempt/,
+    /\.deploymentRunId == \$testRunId/,
+    /\.deploymentRunAttempt == \$testRunAttempt/,
+    /\.releaseArtifactId == \$sourceArtifactId/,
+    /\.releaseArtifactName == \$sourceArtifactName/,
+    /\.releaseArtifactDigest == \$sourceArtifactDigest/,
+    /\.testIdentityDigest == \$identityDigest/,
+    /\.liveBrowserAcceptanceDigest == \$browserDigest/,
+  ]) {
+    assert.match(testAdmission, trustCheck);
+  }
+  assert.match(testAdmission, /\(has\("productAcceptance"\) \| not\)/);
+  assert.match(testAdmission, /\.workflowRunId == \$testRunId/);
+
+  const preflight = preview.indexOf(
+    '      - name: Preflight the tecent2 release host without mutation',
+    sshSetup,
+  );
+  const cas = preview.indexOf(
+    '      - name: Revalidate all frozen admissions immediately before the first Preview mutation',
+    preflight,
+  );
+  const firstMutation = preview.indexOf(
+    '      - name: Check the existing Preview registry credential',
+    cas,
+  );
+  assert.ok(preflight > sshSetup && cas > preflight && firstMutation > cas);
+  assert.equal(preview.indexOf('\n      - name:', cas + 1) + 1, firstMutation);
+  const beforeCas = preview.slice(deployStart, cas);
+  assert.doesNotMatch(beforeCas, /kubectl[\s\S]{0,120}\brun "\$name"/);
+  assert.doesNotMatch(beforeCas, /create secret docker-registry/);
+  assert.doesNotMatch(beforeCas, /kubectl[\s\S]{0,120}\bapply -f/);
+  assert.doesNotMatch(beforeCas, /scp -q/);
+  const casStep = preview.slice(cas, firstMutation);
+  assert.match(casStep, /git\/ref\/heads\/main/);
+  assert.match(casStep, /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/);
+  assert.match(casStep, /actions\/runs\/\$\{SOURCE_RUN_ID\}/);
+  assert.match(casStep, /\.run_attempt == \$runAttempt/);
+  assert.match(casStep, /actions\/artifacts\/\$\{SOURCE_ARTIFACT_ID\}/);
+  assert.match(casStep, /actions\/runs\/\$\{TEST_RUN_ID\}/);
+  assert.match(casStep, /actions\/artifacts\/\$\{TEST_EVIDENCE_ARTIFACT_ID\}/);
+  assert.match(casStep, /\.digest == \$digest/);
+
+  const promotionStart = preview.indexOf('      - name: Create Preview promotion evidence');
+  const promotionEnd = preview.indexOf(
+    '      - name: Upload the Production admission evidence',
+    promotionStart,
+  );
+  const promotion = preview.slice(promotionStart, promotionEnd);
+  assert.match(promotion, /schemaVersion: 4/);
+  for (const field of [
+    'testRunId',
+    'testRunAttempt',
+    'testEvidenceArtifactId',
+    'testEvidenceArtifactName',
+    'testEvidenceArtifactDigest',
+    'testIdentityDigest',
+    'testBrowserAcceptanceDigest',
+    'testSourceReleaseDigest',
+    'testDeploymentEvidenceDigest',
+  ]) {
+    assert.ok(promotion.includes(`${field}: $${field}`), field);
+  }
+
+  const cleanupStart = preview.indexOf('      - name: Remove transient SSH and bundle files');
+  const cleanup = preview.slice(cleanupStart);
+  assert.match(cleanup, /if: always\(\)/);
+  assert.match(cleanup, /cleanup_probes\(\)/);
+  assert.match(cleanup, /preconditions: \{uid: \$uid\}/);
+  assert.match(cleanup, /combo-preview-pull-\$\{run_id\}-\$\{run_attempt\}/);
+  assert.match(cleanup, /combo-preview-pull-\$\{run_id\}-\$\{run_attempt\}-retry/);
+  assert.match(cleanup, /"\$RUNNER_TEMP\/combo-release"/);
+  assert.match(cleanup, /"\$RUNNER_TEMP\/test-evidence"/);
+  assert.match(cleanup, /"\$RUNNER_TEMP\/preview-remote-evidence"/);
+  assert.match(cleanup, /if ! rm -f --/);
+  assert.match(cleanup, /if ! rm -rf --/);
+  assert.match(cleanup, /exit "\$cleanup_rc"/);
+  assert.doesNotMatch(cleanup, /\|\| true/);
+
+  assert.doesNotMatch(
+    `${testWorkflow}\n${preview}`,
+    /(?:^|\n)\s*docker\s+(?:build|compose|info|inspect|pull|push|run)\b/m,
   );
 });
 
@@ -1973,14 +2276,84 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     workflow,
     /revision:[\s\S]*required: true[\s\S]*INPUT_REVISION: \$\{\{ inputs\.revision \}\}/,
   );
+  assert.match(
+    workflow,
+    /source_ci_run_id:[\s\S]*required: true[\s\S]*INPUT_SOURCE_CI_RUN_ID: \$\{\{ inputs\.source_ci_run_id \}\}/,
+  );
   assert.match(production, /REVISION: \$\{\{ inputs\.revision \}\}/);
   assert.match(workflow, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(production, /\^\[0-9a-f\]\{40\}\$/);
-  assert.match(workflow, /branches\?per_page=100/);
-  assert.match(workflow, /compare\/\$\{REVISION\}\.\.\.\$\{branch_sha\}/);
   assert.match(production, /compare\/\$\{REVISION\}\.\.\.main/);
-  assert.match(workflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
-  assert.match(workflow, /publish_release: true/);
+  assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
+  assert.doesNotMatch(workflow, /publish_release:\s*true/);
+  assert.doesNotMatch(workflow, /packages:\s*write/);
+  assert.match(workflow, /\[\[ "\$WORKFLOW_REF" == refs\/heads\/main \]\]/);
+  assert.match(workflow, /\[\[ "\$remote_main" == "\$REVISION" \]\]/);
+  assert.match(workflow, /repos\/\$\{GITHUB_REPOSITORY\}\/actions\/runs\/\$\{SOURCE_CI_RUN_ID\}/);
+  assert.match(workflow, /\.path == "\.github\/workflows\/ci\.yml"/);
+  assert.match(workflow, /\.event == "push"/);
+  assert.match(workflow, /\.head_branch == "main"/);
+  assert.match(workflow, /\.head_sha == \$revision/);
+  assert.match(workflow, /\.status == "completed"/);
+  assert.match(workflow, /\.conclusion == "success"/);
+  assert.match(workflow, /\.repository\.full_name == \$repository/);
+  assert.match(workflow, /\.head_repository\.full_name == \$repository/);
+  assert.match(
+    workflow,
+    /artifacts\?per_page=100&name=\$\{artifact_name\}/,
+    'Test must resolve only the named release artifact from the selected main CI run',
+  );
+  assert.match(workflow, /\.total_count == 1/);
+  assert.match(workflow, /\$matches\[0\]\.expired == false/);
+  assert.match(workflow, /\$matches\[0\]\.digest \| test\("\^sha256:/);
+  assert.match(workflow, /\$matches\[0\]\.workflow_run\.id == \$runId/);
+  assert.match(workflow, /\$matches\[0\]\.workflow_run\.head_sha == \$revision/);
+  assert.match(
+    workflow,
+    /actions\/runs\/\$\{SOURCE_CI_RUN_ID\}\/attempts\/\$\{source_ci_run_attempt\}\/jobs/,
+  );
+  assert.match(workflow, /\.name == "assemble immutable release artifact"/);
+  assert.match(workflow, /\$releaseJobs\[0\]\.started_at <= \$artifactCreatedAt/);
+  assert.match(workflow, /\$artifactCreatedAt <= \$releaseJobs\[0\]\.completed_at/);
+  assert.match(
+    workflow,
+    /actions\/artifacts\/\$\{RELEASE_ARTIFACT_ID\}\/zip/,
+    'Test must download the exact artifact ID selected from the main CI run',
+  );
+  assert.match(
+    workflow,
+    /\[\[ "\$actual_artifact_digest" == "\$RELEASE_ARTIFACT_DIGEST" \]\]/,
+    'Test must fail when the downloaded archive differs from its GitHub artifact digest',
+  );
+  assert.match(workflow, /needs: authorize/);
+  assert.match(workflow, /environment: combo-dev/);
+  assert.match(workflow, /sha256sum -c metadata\/artifact-files\.sha256/);
+  assert.match(workflow, /cmp -s "\$expected" "\$actual"/);
+  assert.match(workflow, /release-manifest\.mjs" verify/);
+  assert.match(workflow, /web-asset-manifest\.mjs" verify/);
+  assert.match(workflow, /file_set_digest/);
+  assert.match(workflow, /release_artifact_digest/);
+  assert.match(workflow, /source-release\.json/);
+  assert.match(workflow, /sourceCiRunAttempt/);
+  assert.match(workflow, /releaseArtifactId/);
+  assert.match(workflow, /releaseArtifactName/);
+  assert.match(workflow, /releaseArtifactDigest/);
+  assert.match(workflow, /artifactFileSetDigest/);
+  assert.match(workflow, /webAssetManifestDigest/);
+  assert.match(workflow, /Test deployment requires Preview automatic promotion to remain paused/);
+  assert.match(
+    workflow,
+    /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
+    'Test must read the live Preview promotion mode immediately before its mutation',
+  );
+  assert.doesNotMatch(
+    workflow,
+    /PREVIEW_MODE: \$\{\{ vars\.COMBO_PREVIEW_AUTO_PROMOTION_MODE \}\}/,
+    'Test must not trust an earlier workflow expression snapshot for the promotion mode',
+  );
+  assert.match(workflow, /main advanced while Test waited for its deployment gate/);
+  assert.match(workflow, /\.run_attempt == \$runAttempt/);
+  assert.match(workflow, /\.digest == \$digest/);
   assert.doesNotMatch(ci, /github\.event_name == 'workflow_call'/);
   assert.match(
     ci,
@@ -2006,7 +2379,12 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(webContract, /"\$IMAGE_REF" >\/dev\/null/);
   assert.doesNotMatch(webContract, /docker pull "\$IMAGE_TAG"/);
   assert.match(workflow, /combo-release-mutation\.lock/);
-  assert.match(workflow, /flock -w 300 9/);
+  assert.match(workflow, /flock -n 9/);
+  assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);
+  assert.match(
+    workflow,
+    /mv -fT -- "\$temporary" "\$remote"[\s\S]*COMBO_PREVIEW_AUTO_PROMOTION_MODE[\s\S]*git\/ref\/heads\/main[\s\S]*actions\/artifacts\/\$\{RELEASE_ARTIFACT_ID\}[\s\S]*flock -n 9/,
+  );
   assert.match(
     workflow,
     /"\$RELEASE_ROOT\/metadata\/release\.json"[\s\\\n]*"\$RELEASE_ROOT\/metadata\/release-manifest-digest\.txt"[\s\\\n]*"\$root\/metadata\/"/,
@@ -2022,30 +2400,43 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /combo-dev-reset[\s\\\n]*--confirm=DESTROY-COMBO-PREVIEW-DATA[\s\S]*combo-dev-deploy/,
   );
   assert.match(preview, /combo-preview-promotion-\$\{\{/);
-  assert.match(production, /combo-preview-promotion-\$\{\{/);
+  assert.match(production, /combo-preview-promotion-\$\{REVISION\}/);
   assert.match(production, /artifactFileSetDigest/);
-  assert.match(
-    production,
-    /keys == \(\[[\s\S]*?"remoteCleanupEvidenceDigest"[\s\S]*?"status"\s*\] \| sort\)/,
-    'Production must compare the exact Preview evidence key set independent of list order',
+  const productionPreviewEvidence = production.slice(
+    production.indexOf('      - name: Validate Preview evidence and its source main CI run'),
+    production.indexOf(
+      '      - name:',
+      production.indexOf('      - name: Validate Preview evidence and its source main CI run') + 1,
+    ),
   );
+  assert.match(productionPreviewEvidence, /keys == \(\[[\s\S]*?\] \| sort\)/);
+  for (const requiredKey of [
+    '"remoteCleanupEvidenceDigest"',
+    '"status"',
+    '"testEvidenceArtifactId"',
+    '"testIdentityDigest"',
+    '"testBrowserAcceptanceDigest"',
+  ]) {
+    assert.ok(
+      productionPreviewEvidence.includes(requiredKey),
+      `Production Preview evidence schema must include ${requiredKey}`,
+    );
+  }
+  assert.match(productionPreviewEvidence, /and \.schemaVersion == 4/);
   assert.match(workflow, /echo ' {2}ServerAliveInterval 30'/);
   assert.match(workflow, /echo ' {2}ServerAliveCountMax 20'/);
   assert.match(workflow, /echo ' {2}TCPKeepAlive yes'/);
   assert.match(preview, /\[\[ "\$SOURCE_BRANCH" == main \]\]/);
   assert.match(production, /\.path == "\.github\/workflows\/preview\.yml"/);
-  const credentialRefresh = preview.slice(
-    preview.indexOf('      - name: Refresh an expired Preview image pull credential'),
-    preview.indexOf('      - name: Validate the refreshed Preview registry credential'),
+  const credentialCheck = preview.slice(
+    preview.indexOf('      - name: Check the existing Preview registry credential'),
+    preview.indexOf('      - name: Upload and deploy the exact Preview bundle'),
   );
-  assert.match(credentialRefresh, /\(\( \$\{#GHCR_TOKEN\} > 0 && \$\{#GHCR_TOKEN\} <= 4096 \)\)/);
-  assert.match(
-    credentialRefresh,
-    /\[\[ "\$GHCR_TOKEN" != \*\$'\\n'\* && "\$GHCR_TOKEN" != \*\$'\\r'\* \]\]/,
-  );
-  assert.match(credentialRefresh, /\[\[ "\$GHCR_USER" =~ \^\[A-Za-z0-9_-\]\+\$ \]\]/);
-  assert.doesNotMatch(credentialRefresh, /GHCR_TOKEN" =~/);
-  assert.doesNotMatch(workflow, /issue\s*#?112|promotion/i);
+  assert.match(credentialCheck, /imagePullSecrets: \[\{name: "combo-preview-ghcr-pull"\}\]/);
+  assert.match(credentialCheck, /Configure a long-lived read:packages credential/);
+  assert.doesNotMatch(credentialCheck, /GHCR_(?:TOKEN|USER)|docker-registry|create secret/);
+  assert.doesNotMatch(preview, /steps\.pull_credential\.outputs\.refresh|GITHUB_OUTPUT.*refresh/);
+  assert.doesNotMatch(workflow, /issue\s*#?112/i);
 });
 
 test('every retained cluster-scoped object is compared against one canonical bootstrap contract', () => {

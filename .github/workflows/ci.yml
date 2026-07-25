@@ -472,6 +472,7 @@ jobs:
             "$bundle/rendered/preview" \
             "$bundle/rendered/production" \
             "$bundle/scripts" \
+            "$bundle/acceptance" \
             "$bundle/infra/host/release"
 
           api_image=$(<"$RUNNER_TEMP/image-digests/api.image")
@@ -546,14 +547,24 @@ jobs:
           done
 
           install -m 0755 \
+            scripts/collect-live-runtime-evidence.sh \
+            scripts/collect-release-inventory.sh \
             scripts/deploy-release.sh \
+            scripts/rollback-release-traffic.sh \
+            scripts/seal-release-traffic.sh \
             scripts/switch-release-traffic.sh \
             "$bundle/scripts/"
           install -m 0644 \
             scripts/release-manifest.mjs \
+            scripts/promotion-evidence.mjs \
+            scripts/release-nginx-route.mjs \
             scripts/web-asset-manifest.mjs \
             scripts/verify-rendered-release.mjs \
             "$bundle/scripts/"
+          install -m 0644 scripts/goal-b-test-acceptance.mjs \
+            "$bundle/acceptance/live-browser-acceptance.mjs"
+          tar -C "$(dirname "$(realpath scripts/node_modules/playwright-core)")" \
+            -czf "$bundle/acceptance/playwright-core.tgz" playwright-core
           install -m 0644 infra/host/release/*.service "$bundle/infra/host/release/"
 
           if find "$bundle" -type l -print -quit | grep -q .; then

@@ -6,7 +6,7 @@
 //   POST /auth/logout   → 清 cb_session + cb_refresh（+ 可选 Logto end_session URL），200 幂等。
 //   GET  /me            → requireAuth：读 MeView。
 //
-// 会话模型（cb_session）：HttpOnly + Secure(prod) + SameSite=Lax Cookie，承载 Logto access_token（JWT）。
+// 会话模型（cb_session）：HttpOnly + TLS 环境 Secure + SameSite=Lax Cookie，承载 Logto access_token（JWT）。
 //   requireAuth / requireSseAuth 从 cb_session 取出该 JWT 走同一套 verifyLogtoJwt → provision →
 //   AuthContext，故 callback 种的会话能被后续受保护端点直接识别（无需独立会话存储）。
 //
@@ -62,14 +62,17 @@ const REFRESH_MAX_AGE = 30 * 24 * 60 * 60;
 /** 登录失败重定向落点（/login?failureId=<opaque>）。 */
 const LOGIN_PATH = '/login';
 
-function isProd(req: FastifyRequest): boolean {
-  return req.server.infra.env.NODE_ENV === 'production';
+function isSecureRelease(req: FastifyRequest): boolean {
+  return (
+    req.server.infra.env.NODE_ENV === 'production' ||
+    ['preview', 'production'].includes(req.server.infra.env.COMBO_ENVIRONMENT)
+  );
 }
 
 function cookieOpts(req: FastifyRequest, maxAge?: number) {
   return {
     httpOnly: true,
-    secure: isProd(req),
+    secure: isSecureRelease(req),
     sameSite: 'lax' as const,
     path: '/',
     ...(maxAge !== undefined ? { maxAge } : {}),

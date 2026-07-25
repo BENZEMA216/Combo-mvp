@@ -35,8 +35,8 @@ readonly DIGEST_RE='^sha256:[0-9a-f]{64}$'
 readonly JOB_PREFLIGHT_IMAGE='busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028'
 readonly STORAGE_LOW_MARKER='/run/combo-dev-storage-low'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
-readonly RESET_PROOF='/var/lib/combo-dev/reset-proof.json'
-readonly CONSUMED_RESET_PROOF='/var/lib/combo-dev/reset-proof.consumed.json'
+RESET_PROOF=''
+CONSUMED_RESET_PROOF=''
 readonly RESET_PROOF_MAX_AGE_SECONDS=900
 readonly MIGRATION_HEAD='0006_one_running_turn_per_session.sql'
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
@@ -297,7 +297,7 @@ rbac_preflight() {
 }
 
 consume_reset_proof() {
-  local revision=$1 workflow_run_id=$2
+  local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
   [[ -z "$RESET_PROOF_IN_USE" ]] || blocked 'reset proof 已在本次部署中消费。'
   file_mode_is_private "$RESET_PROOF" || blocked '缺少 owner-only 的单次 reset proof。'
   [[ ! -e "$CONSUMED_RESET_PROOF" && ! -L "$CONSUMED_RESET_PROOF" ]] ||
@@ -308,13 +308,14 @@ consume_reset_proof() {
   file_mode_is_private "$RESET_PROOF_IN_USE" || blocked '已消费 reset proof 权限异常。'
 
   python3 - \
-    "$RESET_PROOF_IN_USE" "$revision" "$workflow_run_id" "$RESET_PROOF_MAX_AGE_SECONDS" <<'PY'
+    "$RESET_PROOF_IN_USE" "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$RESET_PROOF_MAX_AGE_SECONDS" <<'PY'
 import datetime as dt
 import json
 import re
 import sys
 
-path, revision, workflow_run_id, max_age_raw = sys.argv[1:]
+path, revision, workflow_run_id, workflow_run_attempt, max_age_raw = sys.argv[1:]
 sha = re.compile(r'[0-9a-f]{40}')
 run_id = re.compile(r'[1-9][0-9]*')
 uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
@@ -337,8 +338,9 @@ except (OSError, ValueError, json.JSONDecodeError):
     raise SystemExit(2)
 
 expected_keys = {
-    'schemaVersion', 'namespace', 'sourceSha', 'workflowRunId', 'startedAt',
-    'storageClearedAt', 'completedAt', 'storage', 'foundation',
+    'schemaVersion', 'namespace', 'sourceSha', 'workflowRunId',
+    'workflowRunAttempt', 'startedAt', 'storageClearedAt', 'completedAt',
+    'storage', 'foundation',
     'storageSmokePassed', 'writersFenced', 'productionFingerprintUnchanged',
 }
 if (
@@ -348,8 +350,10 @@ if (
     or proof['namespace'] != 'combo-preview'
     or proof['sourceSha'] != revision
     or proof['workflowRunId'] != workflow_run_id
+    or proof['workflowRunAttempt'] != workflow_run_attempt
     or not sha.fullmatch(proof['sourceSha'])
     or not run_id.fullmatch(proof['workflowRunId'])
+    or not run_id.fullmatch(proof['workflowRunAttempt'])
 ):
     raise SystemExit(2)
 
@@ -1389,7 +1393,8 @@ run_job() {
 }
 
 capture_migration_proof() {
-  local revision=$1 workflow_run_id=$2 expected_image=$3 output=$4
+  local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
+  local expected_image=$4 output=$5
   local job="$WORK/migration.job.json"
   local pods="$WORK/migration.pods.json"
   local logs="$WORK/migration.log"
@@ -1413,7 +1418,8 @@ capture_migration_proof() {
     blocked '迁移日志为空或超过 64 KiB。'
 
   python3 - \
-    "$revision" "$workflow_run_id" "$expected_image" "$MIGRATION_HEAD" \
+    "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$expected_image" "$MIGRATION_HEAD" \
     "$job" "$pods" "$logs" "$output" <<'PY'
 import datetime as dt
 import hashlib
@@ -1422,9 +1428,15 @@ import re
 import sys
 
 (
-    revision, workflow_run_id, expected_image, expected_head,
+    revision, workflow_run_id, workflow_run_attempt, expected_image, expected_head,
     job_path, pods_path, log_path, output_path,
 ) = sys.argv[1:]
+if (
+    not re.fullmatch(r'[0-9a-f]{40}', revision)
+    or not re.fullmatch(r'[1-9][0-9]*', workflow_run_id)
+    or not re.fullmatch(r'[1-9][0-9]*', workflow_run_attempt)
+):
+    raise SystemExit(2)
 expected_migrations = [
     '0000_baseline_schema.sql',
     '0001_expired_upload_reconciliation.sql',
@@ -1578,6 +1590,7 @@ proof = {
     'namespace': 'combo-preview',
     'sourceSha': revision,
     'workflowRunId': workflow_run_id,
+    'workflowRunAttempt': workflow_run_attempt,
     'capturedAt': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'head': expected_head,
     'runs': 2,
@@ -1647,10 +1660,11 @@ verify_writers_restored() {
 }
 
 write_test_evidence() {
-  local revision=$1 workflow_run_id=$2 manifest=$3 digest_file=$4 acceptance=$5
-  local reset_proof=$6 migration_proof=$7
+  local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
+  local manifest=$4 digest_file=$5 acceptance=$6
+  local reset_proof=$7 migration_proof=$8
   local evidence_dir='/var/lib/combo-dev/evidence'
-  local output="$evidence_dir/$revision.json"
+  local output="$evidence_dir/${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
   local candidate="$WORK/test-evidence.json"
   local inventory="$WORK/evidence.inventory.json"
   local runtime_config="$WORK/evidence.runtime-config.json"
@@ -1680,7 +1694,8 @@ write_test_evidence() {
     blocked 'Test evidence 无法验证 Runtime Web 缺失哈希资源。'
 
   python3 - \
-    "$revision" "$workflow_run_id" "$manifest" "$digest_file" "$acceptance" \
+    "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$manifest" "$digest_file" "$acceptance" \
     "$reset_proof" "$migration_proof" "$inventory" \
     "$runtime_config" "$version" "$try_config" "$missing_web" "$missing_try" \
     "$candidate" <<'PY'
@@ -1690,7 +1705,8 @@ import re
 import sys
 
 (
-    revision, workflow_run_id, manifest_path, digest_path, acceptance_path,
+    revision, workflow_run_id, workflow_run_attempt,
+    manifest_path, digest_path, acceptance_path,
     reset_path, migration_path, inventory_path,
     runtime_config_path, version_path, try_config_path, missing_web, missing_try,
     output_path,
@@ -1721,7 +1737,9 @@ configs = {
 manifest_digest = open(digest_path, encoding='utf-8').read().strip()
 
 if (
-    manifest.get('sourceSha') != revision
+    not re.fullmatch(r'[1-9][0-9]*', workflow_run_id)
+    or not re.fullmatch(r'[1-9][0-9]*', workflow_run_attempt)
+    or manifest.get('sourceSha') != revision
     or manifest.get('releaseId') != f'release-{revision}'
     or manifest.get('migrationHead') != '0006_one_running_turn_per_session.sql'
 ):
@@ -1751,6 +1769,7 @@ if (
     or reset.get('namespace') != 'combo-preview'
     or reset.get('sourceSha') != revision
     or reset.get('workflowRunId') != workflow_run_id
+    or reset.get('workflowRunAttempt') != workflow_run_attempt
     or reset.get('storage') != {
         'postgres': {'clearedBeforeRebuild': True},
         'redisQueue': {'clearedBeforeRebuild': True},
@@ -1779,6 +1798,7 @@ if (
     or migration.get('namespace') != 'combo-preview'
     or migration.get('sourceSha') != revision
     or migration.get('workflowRunId') != workflow_run_id
+    or migration.get('workflowRunAttempt') != workflow_run_attempt
     or migration.get('head') != manifest['migrationHead']
     or migration.get('runs') != 2
     or migration.get('appliedMigrations') != expected_migrations
@@ -2012,6 +2032,7 @@ result = {
     'schemaVersion': 1,
     'createdAt': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
     'workflowRunId': workflow_run_id,
+    'workflowRunAttempt': workflow_run_attempt,
     'sourceSha': revision,
     'releaseId': manifest['releaseId'],
     'releaseManifestDigest': manifest_digest,
@@ -2193,20 +2214,27 @@ render_only() {
 
 main() {
   if [[ ${1:-} == '--render-only' ]]; then shift; render_only "$@"; return; fi
-  local bundle='' revision='' workflow_run_id='' arg
+  local bundle='' revision='' workflow_run_id='' workflow_run_attempt='' arg
   while (($#)); do
     arg=$1; shift
     case "$arg" in
       --bundle) bundle=${1:?}; shift ;;
       --revision) revision=${1:?}; shift ;;
       --workflow-run-id) workflow_run_id=${1:?}; shift ;;
+      --workflow-run-attempt) workflow_run_attempt=${1:?}; shift ;;
       *) fail '未知部署参数。' ;;
     esac
   done
   [[ -f "$bundle" && ! -L "$bundle" ]] || blocked '部署包不存在或不是普通文件。'
   [[ "$revision" =~ $SHA_RE ]] || blocked '部署 revision 不是完整提交 SHA。'
   [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked '部署 workflow run ID 不合法。'
-  [[ $(readlink -f "$bundle" 2>/dev/null || true) == "$INSTALL_ROOT/incoming/$revision.tar.gz" ]] || blocked '部署包不在固定 incoming 路径。'
+  [[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]] ||
+    blocked '部署 workflow run attempt 不合法。'
+  [[ $(readlink -f "$bundle" 2>/dev/null || true) == \
+    "$INSTALL_ROOT/incoming/${revision}.${workflow_run_id}.${workflow_run_attempt}.tar.gz" ]] ||
+    blocked '部署包不在固定 attempt-scoped incoming 路径。'
+  RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
+  CONSUMED_RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.consumed.json"
   INCOMING_BUNDLE=$bundle
 
   exec 9>"$LOCK_FILE"
@@ -2214,8 +2242,9 @@ main() {
   WORK=$(mktemp -d)
   host_preflight
   rbac_preflight
-  consume_reset_proof "$revision" "$workflow_run_id"
-  rm -f -- "/var/lib/combo-dev/evidence/$revision.json"
+  consume_reset_proof "$revision" "$workflow_run_id" "$workflow_run_attempt"
+  rm -f -- \
+    "/var/lib/combo-dev/evidence/${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
   claim_forwarders_for_deploy
 
   local trusted_bundle="$WORK/bundle.tar.gz"
@@ -2284,7 +2313,8 @@ main() {
   delete_job_strict minio-init || fail 'MinIO 初始化任务无法在取证前清理。'
   run_job migrate "$WORK/prepared/render/migrate.yaml" 660
   capture_migration_proof \
-    "$revision" "$workflow_run_id" "$api_image" "$migration_proof" ||
+    "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$api_image" "$migration_proof" ||
     blocked '迁移 Job、Pod、镜像或日志证据不完整。'
   wait_apps "$WORK/prepared/render"
   prune_stale_configs
@@ -2310,7 +2340,8 @@ main() {
     rc=$?; (( rc == 1 )) && fail '有限验收失败。'; blocked '有限验收证据不完整或超时。';
   }
   write_test_evidence \
-    "$revision" "$workflow_run_id" "$manifest" "$digest_file" "$evidence" \
+    "$revision" "$workflow_run_id" "$workflow_run_attempt" \
+    "$manifest" "$digest_file" "$evidence" \
     "$RESET_PROOF_IN_USE" "$migration_proof"
 
   timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || fail 'Web 临时转发器无法停止。'
@@ -2327,7 +2358,7 @@ main() {
   prune_releases
   rm -f -- "$FAILURE_FENCE_MARKER" || fail '成功部署后无法解除持久写入阻断标记。'
   SUCCESS=1
-  status "PASS revision=$revision"
+  status "PASS revision=$revision workflowRunId=$workflow_run_id workflowRunAttempt=$workflow_run_attempt"
 }
 
 if [[ ${1:-} != '--render-only' && ${COMBO_DEV_DEADLINE_GUARD:-0} != 1 ]]; then
