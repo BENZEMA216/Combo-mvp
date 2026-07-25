@@ -1398,6 +1398,7 @@ capture_migration_proof() {
   local job="$WORK/migration.job.json"
   local pods="$WORK/migration.pods.json"
   local logs="$WORK/migration.log"
+  local candidate="${output}.next"
   local pod_name log_bytes
 
   "${K[@]}" -n "$NAMESPACE" get job/migrate -o json >"$job" 2>/dev/null ||
@@ -1417,10 +1418,10 @@ capture_migration_proof() {
   [[ "$log_bytes" =~ ^[0-9]+$ && "$log_bytes" -gt 0 && "$log_bytes" -le 65536 ]] ||
     blocked '迁移日志为空或超过 64 KiB。'
 
-  python3 - \
+  if python3 - \
     "$revision" "$workflow_run_id" "$workflow_run_attempt" \
     "$expected_image" "$MIGRATION_HEAD" \
-    "$job" "$pods" "$logs" "$output" <<'PY'
+    "$job" "$pods" "$logs" "$candidate" <<'PY'
 import datetime as dt
 import hashlib
 import json
@@ -1550,7 +1551,6 @@ image_id = container_status.get('imageID')
 expected_digest = expected_image.split('@', 1)[1]
 if (
     pod_container.get('image') != expected_image
-    or container_status.get('image') != expected_image
     or not isinstance(image_id, str)
     or not image_id.endswith(expected_digest)
     or terminated.get('exitCode') != 0
@@ -1623,7 +1623,13 @@ with open(output_path, 'w', encoding='utf-8') as handle:
     json.dump(proof, handle, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
     handle.write('\n')
 PY
-  chmod 0600 "$output"
+  then
+    [[ -f "$candidate" && ! -L "$candidate" ]] || return 1
+    chmod 0600 "$candidate" || return 1
+    mv -T -- "$candidate" "$output" || return 1
+  else
+    return 1
+  fi
 }
 
 wait_apps() {
@@ -1960,7 +1966,6 @@ for plane, expected_image in expected_images.items():
         len(containers) != 1
         or len(statuses) != 1
         or containers[0].get('image') != expected_image
-        or statuses[0].get('image') != expected_image
         or statuses[0].get('ready') is not True
         or not digest_matches(statuses[0].get('imageID'), expected_image)
         or deployment_status.get('readyReplicas') != 1
