@@ -634,7 +634,10 @@ test('Preview stays paused without Test and admits enabled promotion only throug
   assert.doesNotMatch(beforeCas, /scp -q/);
   const casStep = preview.slice(cas, firstMutation);
   assert.match(casStep, /git\/ref\/heads\/main/);
-  assert.match(casStep, /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/);
+  assert.match(casStep, /POLICY_MODE: \$\{\{ needs\.policy\.outputs\.mode \}\}/);
+  assert.match(casStep, /ADMISSION_MODE: \$\{\{ vars\.COMBO_PREVIEW_AUTO_PROMOTION_MODE \}\}/);
+  assert.match(casStep, /\[\[ "\$POLICY_MODE" == enabled \]\]/);
+  assert.match(casStep, /\[\[ "\$ADMISSION_MODE" == enabled \]\]/);
   assert.match(casStep, /actions\/runs\/\$\{SOURCE_RUN_ID\}/);
   assert.match(casStep, /\.run_attempt == \$runAttempt/);
   assert.match(casStep, /actions\/artifacts\/\$\{SOURCE_ARTIFACT_ID\}/);
@@ -2343,13 +2346,26 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /Test deployment requires Preview automatic promotion to remain paused/);
   assert.match(
     workflow,
-    /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
-    'Test must read the live Preview promotion mode immediately before its mutation',
+    /PREVIEW_MODE: \$\{\{ vars\.COMBO_PREVIEW_AUTO_PROMOTION_MODE \}\}/,
+    'Test must admit only a job whose protected repository-variable snapshot is paused',
   );
+  assert.match(
+    workflow,
+    /verify_preview_policy_is_paused\(\)/,
+    'Test must bind the paused snapshot to the exact candidate Preview policy result',
+  );
+  assert.match(workflow, /actions\/workflows\/preview\.yml\/runs\?event=workflow_run/);
+  assert.match(workflow, /actions\/runs\/\$\{preview_run_id\}\/attempts\/1\/jobs/);
+  assert.match(workflow, /\$deployJobs\[0\]\.conclusion == "skipped"/);
   assert.doesNotMatch(
     workflow,
-    /PREVIEW_MODE: \$\{\{ vars\.COMBO_PREVIEW_AUTO_PROMOTION_MODE \}\}/,
-    'Test must not trust an earlier workflow expression snapshot for the promotion mode',
+    /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
+    'The workflow token cannot read the repository Variables REST endpoint',
+  );
+  assert.doesNotMatch(
+    preview,
+    /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
+    'Preview must use the policy output and protected job-admission vars context',
   );
   assert.match(workflow, /main advanced while Test waited for its deployment gate/);
   assert.match(workflow, /\.run_attempt == \$runAttempt/);
@@ -2383,7 +2399,7 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);
   assert.match(
     workflow,
-    /mv -fT -- "\$temporary" "\$remote"[\s\S]*COMBO_PREVIEW_AUTO_PROMOTION_MODE[\s\S]*git\/ref\/heads\/main[\s\S]*actions\/artifacts\/\$\{RELEASE_ARTIFACT_ID\}[\s\S]*flock -n 9/,
+    /mv -fT -- "\$temporary" "\$remote"[\s\S]*verify_preview_policy_is_paused[\s\S]*git\/ref\/heads\/main[\s\S]*actions\/artifacts\/\$\{RELEASE_ARTIFACT_ID\}[\s\S]*flock -n 9/,
   );
   assert.match(
     workflow,

@@ -623,6 +623,8 @@ jobs:
       - name: Revalidate all frozen admissions immediately before the first Preview mutation
         env:
           GH_TOKEN: ${{ github.token }}
+          POLICY_MODE: ${{ needs.policy.outputs.mode }}
+          ADMISSION_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
           REVISION: ${{ needs.policy.outputs.revision }}
           SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
           SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
@@ -636,11 +638,10 @@ jobs:
           TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
         run: |
           set -euo pipefail
+          [[ "$POLICY_MODE" == enabled ]]
+          [[ "$ADMISSION_MODE" == enabled ]]
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" \
             == "$REVISION" ]]
-          [[ "$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
-            --jq '.value')" == enabled ]]
 
           source_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
           jq -e \
@@ -882,6 +883,8 @@ jobs:
       - name: Upload and deploy the exact Preview bundle
         env:
           GH_TOKEN: ${{ github.token }}
+          POLICY_MODE: ${{ needs.policy.outputs.mode }}
+          ADMISSION_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.policy.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
@@ -890,11 +893,10 @@ jobs:
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          [[ "$POLICY_MODE" == enabled ]]
+          [[ "$ADMISSION_MODE" == enabled ]]
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
             --jq '.object.sha')" == "$REVISION" ]]
-          [[ "$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
-            --jq '.value')" == enabled ]]
           archive="$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" .
           chmod 0600 "$archive"
@@ -904,11 +906,10 @@ jobs:
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
           scp -q "$archive" "release-target:$temporary"
           ssh release-target mv -fT -- "$temporary" "$remote"
+          [[ "$POLICY_MODE" == enabled ]]
+          [[ "$ADMISSION_MODE" == enabled ]]
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
             --jq '.object.sha')" == "$REVISION" ]]
-          [[ "$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
-            --jq '.value')" == enabled ]]
           ssh release-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
           set -euo pipefail
           incoming=$1

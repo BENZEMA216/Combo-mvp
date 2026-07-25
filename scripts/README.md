@@ -32,6 +32,12 @@ pnpm --filter @cb/scripts acceptance:goal-b -- \
 
 仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 必须是 `enabled` 或 `paused`。`enabled` 会把成功的 main release artifact 自动部署到 Preview；`paused` 仍保留 main 构建和 Preview policy 记录，但跳过部署 job，不改变线上 Preview。策略变更只影响之后触发的工作流，不取消已经开始的部署。
 
+晋级工作流通过受保护的 `vars` 准入快照和 Preview policy 输出读取该模式，不使用
+内置 `GITHUB_TOKEN` 无权访问的 Repository Variables REST endpoint。Test 在实际
+mutation 前和上传 bundle 后都会复验当前候选只有一个 attempt 1 的 paused policy
+结果（policy 成功、Preview deploy skipped）；共享 `cd-tecent2` concurrency group
+保证新的 Preview rerun 必须等正在执行的 Test deploy 退出后才能变更环境。
+
 `verify-rendered-release.mjs` 在任何集群写入前复验 Kubernetes 服务端 dry-run 的原始对象：资源集合、namespace、镜像、命令、Secret 引用和 ClusterIP 边界必须精确符合环境契约。
 
 `deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换先建立空的 PostgreSQL、Redis 和 MinIO，再完成 bucket 初始化与单对象冒烟，然后执行 `0000` 至 `0006` 迁移并启动 API、Worker、Runtime 和 Web。Preview 在公网检查后完成单次提交。Production 必须先使用 `--defer-cleanup` 激活候选并保留上一份 release，再由受保护的真实 OIDC 六区验收产生 attestation，最后使用 `--finalize` 只读复验候选、清理旧对象并封存回滚点。进入 `finalizing` 前的验收失败、工作流失败或取消使用 `--rollback`；它能区分尚未切流的 `armed` 候选与已经切流但未写完 `post-cut` 状态的候选，只在实时路由证明候选已接管后恢复主机流量，再删除精确的候选对象。进入 `finalizing` 后只能以同一份 attestation 幂等续跑 `--finalize`，不会错误回滚已经开始清理的 release。Secret、TLS、namespace 和无关资源始终不在删除范围；脚本只检查 Secret 名称和键名。
