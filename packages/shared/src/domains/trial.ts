@@ -112,8 +112,8 @@ export const SessionDetailSchema = z.object({
   /** PostgreSQL 中仍在运行的 Turn；页面刷新后据此恢复运行态，再由 SSE 补齐事件。 */
   activeTurn: ActiveTurnViewSchema.nullable(),
   /**
-   * 当前 Studio 会话内与 Agent 生效 UI 对应的 artifact；新 Studio 的隔离副本
-   * 会映射为本会话 clone id。consume 会话为 null；字段缺失时前端安全降级。
+   * Studio 返回会话内与 Agent 生效 UI 对应的 artifact；consume 返回创建会话时
+   * 冻结的 UI 副本 id。没有唯一可确认副本时为 null；字段缺失时前端安全降级。
    */
   currentUiArtifactId: IdSchema.nullable().optional(),
 });

@@ -17,6 +17,7 @@ import {
   parseAcceptanceArgs,
   parseProductionCredentials,
   serializeAcceptanceEvidence,
+  settleOwnedAcceptanceTurn,
   validateProductionAuthorizeUrl,
   writeAcceptanceEvidence,
 } from './goal-b-test-acceptance.mjs';
@@ -449,6 +450,64 @@ test('consume current UI must point at the isolated snapshot, not null or the St
   );
 });
 
+test('acceptance Turn cleanup trusts terminal state across interrupt response races', async () => {
+  const targetTurnId = '41982e62-6d6e-7f4d-8fe8-b55f62720b5b';
+  let detailReads = 0;
+  let interrupts = 0;
+  const settled = await settleOwnedAcceptanceTurn({
+    check: 'studio_interrupted_artifact_excluded',
+    knownTurnId: targetTurnId,
+    readDetail: async () => {
+      detailReads += 1;
+      if (detailReads === 1) return { activeTurn: { id: targetTurnId } };
+      return { activeTurn: null };
+    },
+    interrupt: async () => {
+      interrupts += 1;
+      return false;
+    },
+    timeoutMs: 50,
+    intervalMs: 0,
+  });
+  assert.equal(settled.activeTurn, null);
+  assert.equal(interrupts, 1);
+});
+
+test('acceptance Turn cleanup recovers an unknown POST outcome without killing another Turn', async () => {
+  const ownedTurnId = '51982e62-6d6e-7f4d-8fe8-b55f62720b5b';
+  let activeTurn = { id: ownedTurnId };
+  let interrupts = 0;
+  await settleOwnedAcceptanceTurn({
+    check: 'studio_interrupted_artifact_excluded',
+    readDetail: async () => ({ activeTurn }),
+    interrupt: async () => {
+      interrupts += 1;
+      activeTurn = null;
+      throw new Error('response lost');
+    },
+    timeoutMs: 50,
+    intervalMs: 0,
+  });
+  assert.equal(interrupts, 1);
+  assert.equal(activeTurn, null);
+
+  const otherTurnId = '61982e62-6d6e-7f4d-8fe8-b55f62720b5b';
+  interrupts = 0;
+  const unchanged = await settleOwnedAcceptanceTurn({
+    check: 'studio_interrupted_artifact_excluded',
+    knownTurnId: ownedTurnId,
+    readDetail: async () => ({ activeTurn: { id: otherTurnId } }),
+    interrupt: async () => {
+      interrupts += 1;
+      return true;
+    },
+    timeoutMs: 50,
+    intervalMs: 0,
+  });
+  assert.equal(unchanged.activeTurn.id, otherTurnId);
+  assert.equal(interrupts, 0);
+});
+
 test('secure writer creates a new 0600 evidence file and refuses overwrite', () => {
   const output = join(
     mkdtempSync(join(tmpdir(), 'goal-b-browser-output-')),
@@ -521,6 +580,10 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /socket\.close\(\{ code: 1008/);
   assert.match(source, /failedTask\.id.*\/retry/s);
   assert.match(source, /artifactForTurn\(activeCandidate, interruptedTurnId\)/);
+  assert.match(source, /严格分两个独立阶段执行，禁止合并工具调用/);
+  assert.match(source, /必须等待第一次工具成功回执后才能进入第二阶段/);
+  assert.match(source, /artifactForTurn\(detail, interruptedTurnId\)[\s\S]*TURN_TIMEOUT_MS/);
+  assert.match(source, /finally \{[\s\S]*settleOwnedAcceptanceTurn/);
   assert.match(source, /pairingCode = replay\.data\?\.pairingCode/);
   assert.match(source, /unauthenticated\.status\(\) === 401/);
   assert.match(source, /rejected\.status\(\) === 403/);
