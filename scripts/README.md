@@ -12,6 +12,8 @@ Test 的重置命令必须同时接收完整源码 SHA、GitHub workflow run ID 
 
 Test 的迁移任务固定校验 `0006_one_running_turn_per_session.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0006` 各应用一次，且两遍均到达 `0006`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再上传 `combo-test-evidence-<SHA>`。
 
+`combo-dev-logs.sh` 在真实验收完成后读取八个唯一就绪日志源，要求 API、Runtime 和 Worker 都留下当前窗口活动，并扫描合成标记及固定凭据模式。依赖恢复导致容器重启时，它只接受至多一次可审计重启，并同时检查该 Pod 的 current 与 previous 日志；日志流尚未追平时会短时重试。失败时只能输出固定 reason code，不能回显日志正文、请求内容或合成标记。
+
 `combo-dev-control-plane.test.mjs` 的容器镜像探针只有在 `COMBO_RUN_CONTAINER_CONTRACTS=1` 时才会调用 Docker。GitHub Actions 的受控 Test 步骤显式启用该变量；tecent2 上的普通源码检查不会探测或启动 Docker。
 
 `goal-b-frozen-audit.test.mjs` 将固定冻结提交相对共同基线的 256 个路径，与 `docs/goal-b-frozen-preview-audit.md` 逐项比对，并强制旧迁移与旧 Cloud Review 拓扑保持明确废弃。
