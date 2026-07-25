@@ -5,7 +5,7 @@
 ## 文件
 
 - `api.ts` 是 HTTP 服务进程入口：加载环境配置，启动链路追踪，调 `bootstrap/app.ts` 的 buildApp 构建 Fastify 应用并监听端口，收到 SIGINT/SIGTERM 时优雅关闭应用和追踪导出器后退出。
-- `worker.ts` 是后台执行进程入口：用 BullMQ 的 Worker 消费 task-pipeline 队列（并发 2），每个任务交给 `modules/task/pipeline.ts` 的 runPipeline 执行；同时每 60 秒跑一轮租约对账，把 `modules/task/repo.ts` 的 findStalledExtractTasks 找出的「执行中但租约过期或迟迟无人认领」的任务重新入队，重复投递由流水线内的租约认领吸收。
+- `worker.ts` 是后台执行进程入口：用 BullMQ 的 Worker 以单并发消费 task-pipeline 队列，每个任务交给 `modules/task/pipeline.ts` 的 runPipeline 执行；BullMQ 错误事件只记录固定文案，不记录可能含连接材料的错误对象，实际恢复结果由业务状态和探针判断；同时每 60 秒跑一轮租约对账，把 `modules/task/repo.ts` 的 findStalledExtractTasks 找出的「执行中但租约过期或迟迟无人认领」的任务重新入队，重复投递由流水线内的租约认领吸收。
 
 ## 上下游
 

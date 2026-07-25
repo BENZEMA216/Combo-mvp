@@ -8,7 +8,7 @@
 - `db.ts` 管 PostgreSQL 连接池单例（pg），定义单测可注入的最小查询接口 Queryable，提供 SELECT 1 探针、优雅关闭，以及各业务仓储共用的行映射助手 toIso（timestamptz 转 ISO 字符串）。
 - `db-tx.ts` 是最小事务抽象：withTransaction 从池里领一条连接执行 BEGIN/COMMIT/ROLLBACK，保证回调内多表写入原子提交；asTxPool 把 pg.Pool 适配成可 mock 的事务池。
 - `redis.ts` 管两个 Redis 单例：redis_queue 给 BullMQ 专用，redis_hot 给进度流和锁；含 PING 探针和关闭。
-- `queue.ts` 用 BullMQ 实现队列端口：只有 task-pipeline 一条队列，jobId 就是 taskId 所以等待期间重复入队自动去重，不开框架级自动重试（重试是业务语义）。
+- `queue.ts` 用 BullMQ 实现队列端口：只有 task-pipeline 一条队列，jobId 就是 taskId 所以等待期间重复入队自动去重，不开框架级自动重试（重试是业务语义）；Queue 和 Worker 都安装不接收错误对象的安全监听器，避免 BullMQ 的依赖或内部错误把连接材料写入默认错误输出，恢复结果仍由业务状态和探针判断。
 - `object-store.ts` 用 AWS S3 SDK 实现对象存储端口（MinIO 兼容）：读写删列举加预签名 URL；预签名用单独的「浏览器可达」端点客户端；readStreamToString/Bytes 统一处理响应体的多种流形态。
 - `lock.ts` 基于 redis_hot 实现分布式锁端口：SET NX 抢锁，Lua 脚本保证只有持锁者能续期和释放。
 - `logto.ts` 是 Logto 验签核心：从 OIDC 发现文档取 JWKS 验 JWT，区分 access_token 与 id_token 两种受众，把失败分成「token 无效」和「上游不可达」两类，另提供就绪探针。

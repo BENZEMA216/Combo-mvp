@@ -56,6 +56,8 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 验收器只能向标准输出写一份不超过 64 KiB 的 JSON。顶层只能有 `revision`、`createdAt` 和 `checks`。每个检查只能包含 `status` 与不含敏感信息的 `id`，状态必须为 `PASS`。它不得输出响应体、请求地址、会话材料、签名 URL、配对材料、日志正文或任何凭据。`combo-dev-smoke.sh` 会严格校验固定检查键；缺少验收器、缺少检查或证据过期都会返回 `BLOCKED`。
 
+固定验收器完成持久化重启后，日志审计会读取八个唯一就绪来源，并验证 API、Runtime 和 Worker 的当前窗口活动。单个容器发生一次依赖恢复重启时，审计同时覆盖该 Pod 的 current 与 previous 日志；重启历史超过一次、previous 不可读或活动证据在有界重试后仍不完整都会返回 `BLOCKED`。审计只向 smoke 传递固定 reason code，不传递原始日志或合成标记。
+
 主机固定验收器的 `productAcceptance` 只保留为主机基础健康诊断，不能单独准许 Test 通过。受保护的 Test workflow 会在部署完成后，从已校验文件集的 main CI release artifact 中提取 `acceptance/live-browser-acceptance.mjs` 和 `acceptance/playwright-core.tgz`，在 tecent2 使用已安装的 Chrome 对唯一入口 `http://127.0.0.1:18080` 运行完整六区验收。该验收覆盖 Creation、Authoring、Studio、Runtime、认证和发布身份，输出新的、权限为 `0600`、不含凭据的 JSON。workflow 会把结果复制回 runner，并使用同一 artifact 内的 `scripts/promotion-evidence.mjs` 校验固定检查顺序、完整 release identity、source CI run/attempt、artifact ID/digest 和 Test workflow run/attempt；只有该校验通过，结果和 Test promotion identity 才会进入 `combo-test-evidence-<SHA>`。远端 runner、依赖包、结果文件和上传临时文件无论成功或失败都会清理。
 
 ## 重置

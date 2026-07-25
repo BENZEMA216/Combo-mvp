@@ -11,6 +11,7 @@ import { startNodeObservability, currentTraceLogFields } from '../platform/obser
 import { getPool } from '../platform/infra/db.js';
 import { getHotRedis } from '../platform/infra/redis.js';
 import {
+  attachBullErrorHandler,
   bullConnectionFor,
   createBullQueuePort,
   QUEUE_PREFIX,
@@ -61,25 +62,28 @@ async function main(): Promise<void> {
   };
 
   // —— 消费 task-pipeline ——
-  const worker = new Worker(
-    TASK_PIPELINE_QUEUE,
-    async (job) => {
-      const { taskId, traceId } = job.data as { taskId: string; traceId?: string };
-      const trace = traceId ?? job.id ?? taskId;
-      const outcome = await runPipeline(deps, taskId, trace);
-      log.info({ taskId, outcome, ...currentTraceLogFields(trace) }, 'pipeline finished');
-      return outcome; // 仅供 BullMQ 记录；tasks 表才是状态真源。
-    },
-    {
-      prefix: QUEUE_PREFIX, // 必须与生产端 Queue 一致，否则入队了收不到。
-      connection: bullConnectionFor(env),
-      // 内存护栏：导入 pipeline 会把整份语料多副本驻留内存，并发>1 会成倍放大峰值内存
-      // （海量历史下直接 OOM）。降为 1 顺序处理，配合容器 mem_limit 稳住内存上界。
-      concurrency: 1,
-      // 默认 30s 的锁在大分片同步解析阻塞事件循环或 Redis 抖动时容易被误判过期
-      // （锁丢失后任务会被重派，靠 DB 租约吸收成 not_claimed 噪音）。放宽到 120s。
-      lockDuration: 120_000,
-    },
+  const worker = attachBullErrorHandler(
+    new Worker(
+      TASK_PIPELINE_QUEUE,
+      async (job) => {
+        const { taskId, traceId } = job.data as { taskId: string; traceId?: string };
+        const trace = traceId ?? job.id ?? taskId;
+        const outcome = await runPipeline(deps, taskId, trace);
+        log.info({ taskId, outcome, ...currentTraceLogFields(trace) }, 'pipeline finished');
+        return outcome; // 仅供 BullMQ 记录；tasks 表才是状态真源。
+      },
+      {
+        prefix: QUEUE_PREFIX, // 必须与生产端 Queue 一致，否则入队了收不到。
+        connection: bullConnectionFor(env),
+        // 内存护栏：导入 pipeline 会把整份语料多副本驻留内存，并发>1 会成倍放大峰值内存
+        // （海量历史下直接 OOM）。降为 1 顺序处理，配合容器 mem_limit 稳住内存上界。
+        concurrency: 1,
+        // 默认 30s 的锁在大分片同步解析阻塞事件循环或 Redis 抖动时容易被误判过期
+        // （锁丢失后任务会被重派，靠 DB 租约吸收成 not_claimed 噪音）。放宽到 120s。
+        lockDuration: 120_000,
+      },
+    ),
+    () => log.error('bullmq worker error (details suppressed; readiness remains authoritative)'),
   );
   worker.on('failed', (job, err) => {
     // runPipeline 已把业务失败落 tasks.failed；这里记框架级失败（连接/反序列化/未捕获异常）。

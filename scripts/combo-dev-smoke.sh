@@ -361,7 +361,9 @@ EOF
 }
 
 check_logs_fail_closed() {
-  local since=$1 marker_file="$WORK/synthetic-marker" api_cfg="$WORK/api.curl" runtime_cfg="$WORK/runtime.curl" rc
+  local since=$1 marker_file="$WORK/synthetic-marker" api_cfg="$WORK/api.curl" runtime_cfg="$WORK/runtime.curl"
+  local diagnostic="$WORK/log-audit.status" diagnostic_line safe_reason='helper-diagnostic-unavailable'
+  local api_code runtime_code rc size
   openssl rand -hex 24 >"$marker_file" 2>/dev/null || blocked '无法生成一次性合成标记。'
   chmod 600 "$marker_file"
   local marker
@@ -379,13 +381,28 @@ output = "/dev/null"
 max-time = 15
 EOF
   chmod 600 "$api_cfg" "$runtime_cfg"
-  curl --config "$api_cfg" >/dev/null 2>&1 || true
-  curl --config "$runtime_cfg" >/dev/null 2>&1 || true
+  api_code=$(curl --config "$api_cfg" --write-out '%{http_code}' 2>/dev/null) ||
+    blocked 'API 合成日志活动探针未送达。'
+  [[ "$api_code" == 404 ]] || blocked 'API 合成日志活动探针未返回预期终态。'
+  runtime_code=$(curl --config "$runtime_cfg" --write-out '%{http_code}' 2>/dev/null) ||
+    blocked 'Runtime 合成日志活动探针未送达。'
+  [[ "$runtime_code" == 404 ]] || blocked 'Runtime 合成日志活动探针未返回预期终态。'
+  : >"$diagnostic"
+  chmod 600 "$diagnostic"
   set +e
-  /opt/combo-dev/bin/combo-dev-logs --since-time "$since" --marker-file "$marker_file" >/dev/null 2>&1
+  /opt/combo-dev/bin/combo-dev-logs \
+    --since-time "$since" --marker-file "$marker_file" >/dev/null 2>"$diagnostic"
   rc=$?
   set -e
   (( rc == 0 )) && return
+  size=$(stat -c '%s' "$diagnostic" 2>/dev/null || true)
+  if [[ -f "$diagnostic" && ! -L "$diagnostic" && "$size" =~ ^[0-9]+$ && "$size" -le 256 ]]; then
+    diagnostic_line=$(<"$diagnostic")
+    if [[ "$diagnostic_line" =~ ^\[combo-dev-logs\]\ (BLOCKED|FAIL):\ reason=([a-z0-9-]{1,80})$ ]]; then
+      safe_reason=${BASH_REMATCH[2]}
+    fi
+  fi
+  printf '[combo-dev-smoke] DETAIL: log-audit=%s\n' "$safe_reason" >&2
   (( rc == 2 )) && blocked '日志覆盖或当前窗口活动证据不可用。'
   fail '日志泄漏检查失败。'
 }

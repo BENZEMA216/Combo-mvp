@@ -108,6 +108,216 @@ function fixture() {
   return root;
 }
 
+function runLogsAuditFixture(mode) {
+  const root = mkdtempSync(join(tmpdir(), 'combo-dev-logs-fixture-'));
+  const bin = join(root, 'bin');
+  const audit = join(root, 'combo-dev-logs');
+  const marker = join(root, 'marker');
+  const state = join(root, 'state');
+  const getState = join(root, 'get-state');
+  const invocations = join(root, 'invocations');
+  const markerValue = 'SYNTHETIC_MARKER_1234567890';
+  mkdirSync(bin);
+  writeFileSync(marker, `${markerValue}\n`, { mode: 0o600 });
+  writeFileSync(state, '0\n', { mode: 0o600 });
+  writeFileSync(getState, '0\n', { mode: 0o600 });
+  writeFileSync(invocations, '', { mode: 0o600 });
+  let source = text('scripts/combo-dev-logs.sh');
+  for (const [expected, replacement] of [
+    [
+      "export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'",
+      `export PATH='${bin}:/usr/bin:/bin'`,
+    ],
+    ['readonly ACTIVITY_ATTEMPTS=15', 'readonly ACTIVITY_ATTEMPTS=3'],
+    ['readonly ACTIVITY_RETRY_SECONDS=2', 'readonly ACTIVITY_RETRY_SECONDS=0'],
+    ['readonly LOG_CAPTURE_BYTES=8388609', 'readonly LOG_CAPTURE_BYTES=64'],
+  ]) {
+    assert.ok(source.includes(expected), `fixture replacement missing: ${expected}`);
+    source = source.replace(expected, replacement);
+  }
+  writeFileSync(audit, source, { mode: 0o700 });
+  writeFileSync(
+    join(bin, 'kubectl'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_INVOCATIONS"
+app=''
+pod=''
+for arg in "$@"; do
+  [[ "$arg" == app=* ]] && app=\${arg#app=}
+  [[ "$arg" == *-pod ]] && pod=$arg
+done
+if [[ " $* " == *" get pods "* ]]; then
+  case "$app" in
+    api|worker|runtime|web) container=$app ;;
+    postgres|minio) container=$app ;;
+    redis-queue|redis-hot) container=redis ;;
+    *) exit 2 ;;
+  esac
+  restart=0
+  [[ "$FAKE_MODE" =~ ^(previous|previous-leak)$ && "$app" == worker ]] && restart=1
+  [[ "$FAKE_MODE" == restart-multiple && "$app" == worker ]] && restart=2
+  if [[ "$FAKE_MODE" == restart-race && "$app" == worker ]]; then
+    count=$(<"$FAKE_GET_STATE")
+    count=$((count + 1))
+    printf '%s\\n' "$count" >"$FAKE_GET_STATE"
+    (( count >= 2 )) && restart=1
+  fi
+  printf '{"items":[{"metadata":{"name":"%s-pod","uid":"%s-uid"},"status":{"phase":"Running","containerStatuses":[{"name":"%s","ready":true,"restartCount":%s}]}}]}\\n' "$app" "$app" "$container" "$restart"
+  exit 0
+fi
+if [[ " $* " == *" logs "* ]]; then
+  previous=0
+  [[ " $* " == *" --previous "* ]] && previous=1
+  case "$pod" in
+    api-pod)
+      if [[ "$FAKE_MODE" == truncated ]]; then
+        printf '%0100d\\n' 0
+      elif [[ "$FAKE_MODE" == leak-then-source-fail ]]; then
+        count=$(<"$FAKE_STATE")
+        count=$((count + 1))
+        printf '%s\\n' "$count" >"$FAKE_STATE"
+        if (( count == 1 )); then
+          printf '%s\\n' "$FAKE_MARKER"
+        else
+          printf '%s\\n' '{"msg":"route not found"}'
+        fi
+      else
+        printf '%s\\n' '{"msg":"route not found"}'
+      fi
+      ;;
+    runtime-pod)
+      if [[ "$FAKE_MODE" == leak-then-source-fail && $(<"$FAKE_STATE") == 1 ]]; then
+        exit 1
+      fi
+      printf '%s\\n' '{"msg":"route not found"}'
+      ;;
+    worker-pod)
+      if [[ "$FAKE_MODE" =~ ^(previous|previous-leak|restart-race)$ && "$previous" == 1 ]]; then
+        if [[ "$FAKE_MODE" == previous-leak ]]; then
+          printf '%s\\n' "$FAKE_MARKER"
+        else
+          printf '%s\\n' '{"msg":"pipeline finished"}'
+        fi
+      elif [[ "$FAKE_MODE" == delayed ]]; then
+        count=$(<"$FAKE_STATE")
+        count=$((count + 1))
+        printf '%s\\n' "$count" >"$FAKE_STATE"
+        if (( count >= 2 )); then
+          printf '%s\\n' '{"msg":"pipeline finished"}'
+        else
+          printf '%s\\n' '{"msg":"worker ready"}'
+        fi
+      elif [[ "$FAKE_MODE" =~ ^(missing|previous|previous-leak|restart-race)$ ]]; then
+        printf '%s\\n' '{"msg":"worker ready"}'
+      else
+        printf '%s\\n' '{"msg":"pipeline finished"}'
+      fi
+      ;;
+    minio-pod)
+      if [[ "$FAKE_MODE" == leak ]]; then
+        printf '%s\\n' "$FAKE_MARKER"
+      elif [[ "$FAKE_MODE" == credential ]]; then
+        printf '%s\\n' 'Authorization: Bearer TEST_SECRET_TOKEN'
+      else
+        printf '%s\\n' '{"msg":"storage ready"}'
+      fi
+      ;;
+    *) printf '%s\\n' '{"msg":"source ready"}' ;;
+  esac
+  exit 0
+fi
+exit 2
+`,
+    { mode: 0o700 },
+  );
+  writeFileSync(
+    join(bin, 'cat'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$FAKE_MODE" == cat-fail && "$*" == *"/minio.current.log"* ]]; then
+  exit 1
+fi
+exec /usr/bin/cat "$@"
+`,
+    { mode: 0o700 },
+  );
+  writeFileSync(
+    join(bin, 'grep'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$FAKE_MODE" == grep-fail && "$*" == *"/all.log"* ]]; then
+  exit 2
+fi
+exec /usr/bin/grep "$@"
+`,
+    { mode: 0o700 },
+  );
+  try {
+    const result = spawnSync(
+      'bash',
+      [audit, '--since-time', '2026-07-25T14:00:00Z', '--marker-file', marker],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          FAKE_MODE: mode,
+          FAKE_MARKER: markerValue,
+          FAKE_STATE: state,
+          FAKE_GET_STATE: getState,
+          FAKE_INVOCATIONS: invocations,
+        },
+      },
+    );
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      invocations: readFileSync(invocations, 'utf8'),
+      markerValue,
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function runSmokeLogProbeFixture(mode) {
+  const root = mkdtempSync(join(tmpdir(), 'combo-dev-smoke-probe-'));
+  const smoke = text('scripts/combo-dev-smoke.sh');
+  const start = smoke.indexOf('check_logs_fail_closed() {');
+  const end = smoke.indexOf('\n}\n\nmain() {', start);
+  assert.ok(start > 0 && end > start);
+  const check = smoke.slice(start, end + 2);
+  const harness = [
+    'set -Eeuo pipefail',
+    'WORK=$1',
+    `WEB_ORIGIN='http://127.0.0.1:18080'`,
+    `status() { printf '[fixture] %s\\n' "$1"; }`,
+    `fail() { printf '[fixture] FAIL: %s\\n' "$1" >&2; exit 1; }`,
+    `blocked() { printf '[fixture] BLOCKED: %s\\n' "$1" >&2; exit 2; }`,
+    `openssl() { printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; }`,
+    `curl() {`,
+    `  case "$FAKE_CURL_MODE" in`,
+    `    transport) return 7 ;;`,
+    `    wrong-status) printf '200'; return 0 ;;`,
+    `    *) printf '404'; return 0 ;;`,
+    `  esac`,
+    `}`,
+    check,
+    `check_logs_fail_closed '2026-07-25T14:00:00Z'`,
+  ].join('\n');
+  try {
+    return spawnSync('bash', ['-c', harness, 'combo-dev-smoke-probe', root], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: { ...process.env, FAKE_CURL_MODE: mode },
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 function expectRenderFailure(root, marker) {
   const output = join(root, 'out.yaml');
   const releaseArgs = writeReleaseFixture(root);
@@ -2247,6 +2457,142 @@ credential_certificate_valid_for ${JSON.stringify(path)} combo-dev-dispatcher $(
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+});
+
+test('log audit retries delayed activity without weakening its fixed evidence set', () => {
+  const result = runLogsAuditFixture('delayed');
+  assert.equal(result.status, 0, JSON.stringify(result));
+  assert.match(result.stdout, /PASS sources=8 activity=3 redaction=PASS/);
+  assert.equal((result.invocations.match(/logs worker-pod/g) ?? []).length, 2);
+});
+
+test('log audit includes one bounded previous container after dependency recovery', () => {
+  const result = runLogsAuditFixture('previous');
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.invocations, /logs worker-pod -c worker --previous/);
+  assert.match(result.stdout, /PASS sources=8 activity=3 redaction=PASS/);
+});
+
+test('log audit retries when container state changes during capture', () => {
+  const result = runLogsAuditFixture('restart-race');
+  assert.equal(result.status, 0, JSON.stringify(result));
+  assert.match(result.invocations, /logs worker-pod -c worker --previous/);
+  assert.match(result.stdout, /PASS sources=8 activity=3 redaction=PASS/);
+});
+
+test('log audit remains blocked with a safe reason when activity never appears', () => {
+  const result = runLogsAuditFixture('missing');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^\[combo-dev-logs\] BLOCKED: reason=worker-activity-missing\n$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /worker ready/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(result.markerValue));
+});
+
+test('log audit rejects restart history that cannot be covered by current and previous logs', () => {
+  const result = runLogsAuditFixture('restart-multiple');
+  assert.equal(result.status, 2);
+  assert.match(
+    result.stderr,
+    /^\[combo-dev-logs\] BLOCKED: reason=source-worker-restart-history-out-of-range\n$/,
+  );
+  assert.doesNotMatch(result.invocations, /logs worker-pod/);
+});
+
+test('log audit blocks when its bounded combined corpus cannot be written', () => {
+  const result = runLogsAuditFixture('cat-fail');
+  assert.equal(result.status, 2);
+  assert.match(
+    result.stderr,
+    /^\[combo-dev-logs\] BLOCKED: reason=source-minio-combined-log-unwritable\n$/,
+  );
+});
+
+test('log audit blocks when its credential corpus cannot be searched', () => {
+  const result = runLogsAuditFixture('grep-fail');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^\[combo-dev-logs\] BLOCKED: reason=log-corpus-unreadable\n$/);
+});
+
+test('log audit has a wall-clock deadline and blocks bounded corpus truncation', () => {
+  const logs = text('scripts/combo-dev-logs.sh');
+  assert.match(logs, /readonly AUDIT_MAX_SECONDS=90/);
+  assert.match(logs, /AUDIT_DEADLINE_EPOCH=\$\(\(now \+ AUDIT_MAX_SECONDS\)\)/);
+  assert.match(logs, /readonly LOG_CAPTURE_BYTES=8388609/);
+  assert.match(logs, /head -c "\$LOG_CAPTURE_BYTES"/);
+  assert.match(logs, /size < LOG_CAPTURE_BYTES/);
+  assert.doesNotMatch(logs, /--tail=/);
+  assert.doesNotMatch(logs, /--limit-bytes/);
+  assert.match(logs, /retryable_reason\(\)/);
+  assert.doesNotMatch(
+    logs.slice(logs.indexOf('retryable_reason() {'), logs.indexOf('collect_snapshot() {')),
+    /restart-history-out-of-range|log-corpus-unreadable|log-truncated/,
+  );
+});
+
+test('log audit blocks when client-side capture reaches its hard byte boundary', () => {
+  const result = runLogsAuditFixture('truncated');
+  assert.equal(result.status, 2);
+  assert.match(
+    result.stderr,
+    /^\[combo-dev-logs\] BLOCKED: reason=source-api-current-log-truncated\n$/,
+  );
+});
+
+test('log audit fails immediately without echoing a detected marker', () => {
+  const result = runLogsAuditFixture('leak');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^\[combo-dev-logs\] FAIL: reason=synthetic-marker-detected\n$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(result.markerValue));
+});
+
+test('log audit scans previous container logs without echoing a detected marker', () => {
+  const result = runLogsAuditFixture('previous-leak');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^\[combo-dev-logs\] FAIL: reason=synthetic-marker-detected\n$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(result.markerValue));
+});
+
+test('log audit rejects credential patterns without echoing their payload', () => {
+  const result = runLogsAuditFixture('credential');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^\[combo-dev-logs\] FAIL: reason=credential-pattern-detected\n$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /TEST_SECRET_TOKEN/);
+});
+
+test('log audit cannot discard an early leak when a later source is unavailable', () => {
+  const result = runLogsAuditFixture('leak-then-source-fail');
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /^\[combo-dev-logs\] FAIL: reason=synthetic-marker-detected\n$/);
+  assert.doesNotMatch(result.invocations, /logs runtime-pod/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, new RegExp(result.markerValue));
+});
+
+test('smoke exposes only allowlisted log-audit reason codes', () => {
+  const smoke = text('scripts/combo-dev-smoke.sh');
+  const start = smoke.indexOf('check_logs_fail_closed() {');
+  const end = smoke.indexOf('\n}\n\nmain() {', start);
+  assert.ok(start > 0 && end > start);
+  const check = smoke.slice(start, end);
+  assert.match(check, /log-audit\.status/);
+  assert.match(check, /chmod 600 "\$diagnostic"/);
+  assert.match(check, /diagnostic_line" =~ \^\\\[combo-dev-logs\\\]/);
+  assert.match(check, /reason=\(\[a-z0-9-\]\{1,80\}\)/);
+  assert.match(check, /DETAIL: log-audit=%s/);
+  assert.doesNotMatch(check, /combo-dev-logs[\s\S]*>\/dev\/null 2>&1/);
+});
+
+test('smoke blocks before log audit when a synthetic activity probe is not delivered', () => {
+  const result = runSmokeLogProbeFixture('transport');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^\[fixture\] BLOCKED: API 合成日志活动探针未送达。\n$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /aaaaaaaaaaaaaaaa/);
+});
+
+test('smoke requires the synthetic activity probe to reach the exact 404 route', () => {
+  const result = runSmokeLogProbeFixture('wrong-status');
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /^\[fixture\] BLOCKED: API 合成日志活动探针未返回预期终态。\n$/);
+  assert.doesNotMatch(`${result.stdout}${result.stderr}`, /aaaaaaaaaaaaaaaa/);
 });
 
 test('listener validation rejects every additional IPv4 or IPv6 address and wrong owning process', () => {

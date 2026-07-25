@@ -1,5 +1,7 @@
+import { EventEmitter } from 'node:events';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Env } from '../platform/config/env.js';
+import { attachBullErrorHandler } from '../platform/infra/queue.js';
 import { closeRedis, getHotRedis, getQueueRedis } from '../platform/infra/redis.js';
 
 const env = {
@@ -23,5 +25,22 @@ describe('Redis dependency recovery', () => {
       expect(retryStrategy?.(10)).toBe(2_000);
       expect(retryStrategy?.(1_000)).toBe(2_000);
     }
+  });
+
+  it('handles BullMQ error events without exposing their payload to the observer', () => {
+    const emitter = new EventEmitter();
+    const notifications: unknown[][] = [];
+    attachBullErrorHandler(emitter, (...args: unknown[]) => notifications.push(args));
+
+    const sensitiveError = new Error('redis://user:password@queue.internal:6379/0');
+    expect(() => emitter.emit('error', sensitiveError)).not.toThrow();
+    expect(notifications).toEqual([[]]);
+  });
+
+  it('installs a safe no-op BullMQ error listener when no observer is provided', () => {
+    const emitter = attachBullErrorHandler(new EventEmitter());
+
+    expect(emitter.listenerCount('error')).toBe(1);
+    expect(() => emitter.emit('error', new Error('queue restart'))).not.toThrow();
   });
 });
