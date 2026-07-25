@@ -649,7 +649,7 @@ sanitize_preview_namespace() {
 }
 
 mark_failure_fence() {
-  install -d -o root -g root -m 0700 /var/lib/combo-dev
+  install -d -o root -g root -m 0711 /var/lib/combo-dev
   install -d -o root -g root -m 0755 /var/lib/combo-dev/evidence
   printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
   chmod 0600 "$FAILURE_FENCE_MARKER"
@@ -873,7 +873,7 @@ control_tree_digest() {
 install_control_files() {
   [[ -f "$WORK/cluster-platform.canonical.json" ]] || blocked '缺少规范化集群平台契约。'
   install -d -o root -g root -m 0755 /opt/combo-dev /opt/combo-dev/bin /opt/combo-dev/releases /opt/combo-dev/acceptance
-  install -d -o root -g root -m 0700 /var/lib/combo-dev
+  install -d -o root -g root -m 0711 /var/lib/combo-dev
   install -o root -g root -m 0600 "$WORK/cluster-platform.canonical.json" "$CLUSTER_PLATFORM_CONTRACT"
   install -d -o root -g root -m 1733 /opt/combo-dev/incoming
   rm -rf /opt/combo-dev/bootstrap-overlay.next /opt/combo-dev/bootstrap-foundation.next /opt/combo-dev/bootstrap-platform.next
