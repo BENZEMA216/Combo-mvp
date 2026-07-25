@@ -35,6 +35,10 @@ readonly DIGEST_RE='^sha256:[0-9a-f]{64}$'
 readonly JOB_PREFLIGHT_IMAGE='busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028'
 readonly STORAGE_LOW_MARKER='/run/combo-dev-storage-low'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly RESET_PROOF='/var/lib/combo-dev/reset-proof.json'
+readonly CONSUMED_RESET_PROOF='/var/lib/combo-dev/reset-proof.consumed.json'
+readonly RESET_PROOF_MAX_AGE_SECONDS=900
+readonly MIGRATION_HEAD='0006_one_running_turn_per_session.sql'
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
 readonly APP_NAMES=(api worker runtime web)
@@ -79,6 +83,7 @@ PK=(kubectl --request-timeout=30s --kubeconfig "$PRODUCTION_KUBECONFIG")
 WORK=''
 RELEASE_DIR=''
 INCOMING_BUNDLE=''
+RESET_PROOF_IN_USE=''
 RELEASE_CREATED=0
 MUTATING=0
 SUCCESS=0
@@ -92,6 +97,7 @@ cleanup() {
   local rc=$?
   set +e
   [[ -z "$INCOMING_BUNDLE" ]] || rm -f -- "$INCOMING_BUNDLE"
+  [[ -z "$RESET_PROOF_IN_USE" ]] || rm -f -- "$RESET_PROOF_IN_USE"
   if (( MUTATING == 1 && SUCCESS == 0 )); then
     mark_failure_fence >/dev/null 2>&1 || true
     timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || true
@@ -192,7 +198,7 @@ claim_forwarders_for_deploy() {
 
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked '调度器必须由受限 sudo 规则以 root 启动。'
-  for cmd in kubectl python3 jq sha256sum flock findmnt df systemctl ss timeout readlink install diff mv stat dirname openssl base64 head; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq curl sha256sum flock findmnt df systemctl ss timeout readlink install diff mv stat dirname openssl base64 head date; do require_command "$cmd"; done
   root_owned_not_writable /etc/combo-dev || blocked '开发配置目录可被非 root 修改。'
   root_owned_not_writable "$INSTALL_ROOT" || blocked '安装根目录可被非 root 修改。'
   root_owned_not_writable "$INSTALL_ROOT/bin" || blocked '调度器目录可被非 root 修改。'
@@ -262,11 +268,22 @@ rbac_preflight() {
   can_i_exact yes list namespaces
   can_i_exact yes list roles.rbac.authorization.k8s.io "$NAMESPACE"
   can_i_exact yes list rolebindings.rbac.authorization.k8s.io "$NAMESPACE"
+  can_i_exact yes list daemonsets.apps "$NAMESPACE"
+  can_i_exact yes list cronjobs.batch "$NAMESPACE"
+  can_i_exact yes list ingresses.networking.k8s.io "$NAMESPACE"
+  can_i_exact yes list horizontalpodautoscalers.autoscaling "$NAMESPACE"
+  can_i_exact yes list serviceaccounts "$NAMESPACE"
+  can_i_exact yes list resourcequotas "$NAMESPACE"
+  can_i_exact yes list limitranges "$NAMESPACE"
   can_i_exact yes list clusterroles.rbac.authorization.k8s.io
   can_i_exact yes list clusterrolebindings.rbac.authorization.k8s.io
   can_i_exact no list persistentvolumes
   can_i_exact no create pods "$NAMESPACE"
   can_i_exact no get secrets "$NAMESPACE"
+  can_i_exact no list secrets "$NAMESPACE"
+  can_i_exact no delete secrets/combo-dev-env "$NAMESPACE"
+  can_i_exact yes patch secrets/combo-dev-session "$NAMESPACE"
+  can_i_exact no patch secrets/combo-dev-env "$NAMESPACE"
   can_i_exact no patch deployments.apps "$PRODUCTION_NAMESPACE"
   can_i_exact no create jobs.batch "$PRODUCTION_NAMESPACE"
 
@@ -277,6 +294,113 @@ rbac_preflight() {
     --work-dir "$WORK/observer-audit" >/dev/null 2>&1 || blocked '生产观察身份不符合精确只读边界。'
 
   validate_cluster_platform_live
+}
+
+consume_reset_proof() {
+  local revision=$1 workflow_run_id=$2
+  [[ -z "$RESET_PROOF_IN_USE" ]] || blocked 'reset proof 已在本次部署中消费。'
+  file_mode_is_private "$RESET_PROOF" || blocked '缺少 owner-only 的单次 reset proof。'
+  [[ ! -e "$CONSUMED_RESET_PROOF" && ! -L "$CONSUMED_RESET_PROOF" ]] ||
+    blocked '存在未清理的已消费 reset proof。'
+  mv -T -- "$RESET_PROOF" "$CONSUMED_RESET_PROOF" ||
+    blocked 'reset proof 无法原子消费。'
+  RESET_PROOF_IN_USE=$CONSUMED_RESET_PROOF
+  file_mode_is_private "$RESET_PROOF_IN_USE" || blocked '已消费 reset proof 权限异常。'
+
+  python3 - \
+    "$RESET_PROOF_IN_USE" "$revision" "$workflow_run_id" "$RESET_PROOF_MAX_AGE_SECONDS" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+
+path, revision, workflow_run_id, max_age_raw = sys.argv[1:]
+sha = re.compile(r'[0-9a-f]{40}')
+run_id = re.compile(r'[1-9][0-9]*')
+uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+def timestamp(value):
+    if not isinstance(value, str):
+        raise SystemExit(2)
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        raise SystemExit(2)
+    if parsed.tzinfo is None:
+        raise SystemExit(2)
+    return parsed.astimezone(dt.timezone.utc)
+
+try:
+    proof = json.load(open(path, encoding='utf-8'))
+    max_age = int(max_age_raw)
+except (OSError, ValueError, json.JSONDecodeError):
+    raise SystemExit(2)
+
+expected_keys = {
+    'schemaVersion', 'namespace', 'sourceSha', 'workflowRunId', 'startedAt',
+    'storageClearedAt', 'completedAt', 'storage', 'foundation',
+    'storageSmokePassed', 'writersFenced', 'productionFingerprintUnchanged',
+}
+if (
+    not isinstance(proof, dict)
+    or set(proof) != expected_keys
+    or proof['schemaVersion'] != 1
+    or proof['namespace'] != 'combo-preview'
+    or proof['sourceSha'] != revision
+    or proof['workflowRunId'] != workflow_run_id
+    or not sha.fullmatch(proof['sourceSha'])
+    or not run_id.fullmatch(proof['workflowRunId'])
+):
+    raise SystemExit(2)
+
+started = timestamp(proof['startedAt'])
+cleared = timestamp(proof['storageClearedAt'])
+completed = timestamp(proof['completedAt'])
+now = dt.datetime.now(dt.timezone.utc)
+if not (started <= cleared <= completed <= now + dt.timedelta(seconds=60)):
+    raise SystemExit(2)
+age = (now - completed).total_seconds()
+if age < -60 or age > max_age:
+    raise SystemExit(2)
+
+expected_storage = {
+    'postgres': {'clearedBeforeRebuild': True},
+    'redisQueue': {'clearedBeforeRebuild': True},
+    'minio': {'clearedBeforeRebuild': True},
+}
+if proof['storage'] != expected_storage:
+    raise SystemExit(2)
+for key in ('storageSmokePassed', 'writersFenced', 'productionFingerprintUnchanged'):
+    if proof[key] is not True:
+        raise SystemExit(2)
+
+foundation = proof['foundation']
+if not isinstance(foundation, list) or len(foundation) != 4:
+    raise SystemExit(2)
+expected_planes = {'minio', 'postgres', 'redis-hot', 'redis-queue'}
+if {item.get('plane') for item in foundation if isinstance(item, dict)} != expected_planes:
+    raise SystemExit(2)
+uids = set()
+for item in foundation:
+    if (
+        not isinstance(item, dict)
+        or set(item) != {'plane', 'podUid', 'createdAt', 'startedAt', 'ready'}
+    ):
+        raise SystemExit(2)
+    if (
+        item['ready'] is not True
+        or not isinstance(item['podUid'], str)
+        or not uuid.fullmatch(item['podUid'])
+    ):
+        raise SystemExit(2)
+    if item['podUid'] in uids:
+        raise SystemExit(2)
+    uids.add(item['podUid'])
+    created_at = timestamp(item['createdAt'])
+    started_at = timestamp(item['startedAt'])
+    if not (started <= created_at <= started_at <= completed):
+        raise SystemExit(2)
+PY
 }
 
 validate_cluster_platform_live() {
@@ -1264,6 +1388,231 @@ run_job() {
   timeout "$seconds" "${K[@]}" --request-timeout=0 -n "$NAMESPACE" wait --for=condition=complete "job/$name" --timeout="$((seconds - 10))s" >/dev/null 2>&1 || fail '一次性任务失败或超时。'
 }
 
+capture_migration_proof() {
+  local revision=$1 workflow_run_id=$2 expected_image=$3 output=$4
+  local job="$WORK/migration.job.json"
+  local pods="$WORK/migration.pods.json"
+  local logs="$WORK/migration.log"
+  local pod_name log_bytes
+
+  "${K[@]}" -n "$NAMESPACE" get job/migrate -o json >"$job" 2>/dev/null ||
+    blocked '迁移完成后无法立即读取 Job。'
+  "${K[@]}" -n "$NAMESPACE" get pods -l job-name=migrate -o json >"$pods" 2>/dev/null ||
+    blocked '迁移完成后无法立即读取 Pod。'
+  pod_name=$(jq -er '
+    [.items[] | select(.metadata.deletionTimestamp == null) | .metadata.name]
+    | if length == 1 then .[0] else error("migration-pod-count") end
+  ' "$pods" 2>/dev/null) || blocked '迁移 Pod 数量不是精确的一个。'
+  [[ "$pod_name" =~ ^migrate-[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]] ||
+    blocked '迁移 Pod 名称不符合固定 Job 生成规则。'
+  "${K[@]}" -n "$NAMESPACE" logs "pod/$pod_name" -c migrate >"$logs" 2>/dev/null ||
+    blocked '迁移完成后无法立即读取日志。'
+  chmod 0600 "$job" "$pods" "$logs"
+  log_bytes=$(stat -c '%s' "$logs" 2>/dev/null) || blocked '迁移日志大小不可读。'
+  [[ "$log_bytes" =~ ^[0-9]+$ && "$log_bytes" -gt 0 && "$log_bytes" -le 65536 ]] ||
+    blocked '迁移日志为空或超过 64 KiB。'
+
+  python3 - \
+    "$revision" "$workflow_run_id" "$expected_image" "$MIGRATION_HEAD" \
+    "$job" "$pods" "$logs" "$output" <<'PY'
+import datetime as dt
+import hashlib
+import json
+import re
+import sys
+
+(
+    revision, workflow_run_id, expected_image, expected_head,
+    job_path, pods_path, log_path, output_path,
+) = sys.argv[1:]
+expected_migrations = [
+    '0000_baseline_schema.sql',
+    '0001_expired_upload_reconciliation.sql',
+    '0002_drop_stream_events.sql',
+    '0003_turns.sql',
+    '0004_studio_sessions.sql',
+    '0005_capability_current_ui.sql',
+    '0006_one_running_turn_per_session.sql',
+]
+uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
+
+def timestamp(value):
+    if not isinstance(value, str):
+        raise SystemExit(2)
+    try:
+        return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).astimezone(
+            dt.timezone.utc,
+        )
+    except ValueError:
+        raise SystemExit(2)
+
+def one_container(value, name):
+    matches = [item for item in value if item.get('name') == name]
+    if len(matches) != 1:
+        raise SystemExit(2)
+    return matches[0]
+
+with open(job_path, encoding='utf-8') as handle:
+    job = json.load(handle)
+with open(pods_path, encoding='utf-8') as handle:
+    pod_items = json.load(handle).get('items', [])
+with open(log_path, 'rb') as handle:
+    raw_logs = handle.read()
+
+metadata = job.get('metadata', {})
+spec = job.get('spec', {})
+status = job.get('status', {})
+if (
+    metadata.get('name') != 'migrate'
+    or metadata.get('namespace') != 'combo-preview'
+    or metadata.get('deletionTimestamp') is not None
+    or not isinstance(metadata.get('uid'), str)
+    or not uuid.fullmatch(metadata['uid'])
+    or metadata.get('labels', {}).get('app') != 'migrate'
+    or spec.get('backoffLimit') != 0
+    or spec.get('activeDeadlineSeconds') != 600
+    or spec.get('ttlSecondsAfterFinished') != 7200
+    or status.get('succeeded') != 1
+    or status.get('active', 0) != 0
+    or status.get('failed', 0) != 0
+):
+    raise SystemExit(2)
+conditions = status.get('conditions', [])
+if not any(
+    item.get('type') == 'Complete' and item.get('status') == 'True'
+    for item in conditions
+) or any(
+    item.get('type') == 'Failed' and item.get('status') == 'True'
+    for item in conditions
+):
+    raise SystemExit(2)
+
+job_container = one_container(
+    spec.get('template', {}).get('spec', {}).get('containers', []),
+    'migrate',
+)
+if (
+    job_container.get('image') != expected_image
+    or job_container.get('command') != [
+        'node', '--experimental-strip-types', 'db/scripts/migrate.ts',
+    ]
+):
+    raise SystemExit(2)
+literal_env = {
+    item.get('name'): item.get('value')
+    for item in job_container.get('env', [])
+    if set(item) == {'name', 'value'}
+}
+if literal_env.get('EXPECTED_MIGRATION_HEAD') != expected_head:
+    raise SystemExit(2)
+if literal_env.get('MIGRATION_RUNS') != '2':
+    raise SystemExit(2)
+
+pods = [
+    item for item in pod_items
+    if item.get('metadata', {}).get('deletionTimestamp') is None
+]
+if len(pods) != 1:
+    raise SystemExit(2)
+pod = pods[0]
+pod_meta = pod.get('metadata', {})
+pod_status = pod.get('status', {})
+owners = pod_meta.get('ownerReferences', [])
+if (
+    pod_meta.get('namespace') != 'combo-preview'
+    or not isinstance(pod_meta.get('uid'), str)
+    or not uuid.fullmatch(pod_meta['uid'])
+    or pod_meta.get('labels', {}).get('job-name') != 'migrate'
+    or len(owners) != 1
+    or owners[0].get('kind') != 'Job'
+    or owners[0].get('name') != 'migrate'
+    or owners[0].get('uid') != metadata['uid']
+    or owners[0].get('controller') is not True
+    or pod_status.get('phase') != 'Succeeded'
+):
+    raise SystemExit(2)
+pod_container = one_container(pod.get('spec', {}).get('containers', []), 'migrate')
+container_status = one_container(pod_status.get('containerStatuses', []), 'migrate')
+terminated = container_status.get('state', {}).get('terminated', {})
+image_id = container_status.get('imageID')
+expected_digest = expected_image.split('@', 1)[1]
+if (
+    pod_container.get('image') != expected_image
+    or container_status.get('image') != expected_image
+    or not isinstance(image_id, str)
+    or not image_id.endswith(expected_digest)
+    or terminated.get('exitCode') != 0
+    or terminated.get('reason') != 'Completed'
+):
+    raise SystemExit(2)
+
+created_at = timestamp(metadata.get('creationTimestamp'))
+started_at = timestamp(status.get('startTime'))
+completed_at = timestamp(status.get('completionTime'))
+pod_started_at = timestamp(terminated.get('startedAt'))
+pod_finished_at = timestamp(terminated.get('finishedAt'))
+if not (
+    created_at <= started_at <= pod_started_at <= pod_finished_at <= completed_at
+):
+    raise SystemExit(2)
+
+try:
+    text = raw_logs.decode('utf-8')
+except UnicodeDecodeError:
+    raise SystemExit(2)
+lines = [line for line in text.splitlines() if line]
+expected_lines = (
+    [f'applying {name} ...' for name in expected_migrations]
+    + [
+        f'migration pass 1/2 up to date at {expected_head}.',
+        f'migration pass 2/2 up to date at {expected_head}.',
+    ]
+)
+if lines != expected_lines:
+    raise SystemExit(2)
+if re.search(r'(?:0017_|0018_|ledger mismatch|migration head mismatch|error|failed)', text, re.I):
+    raise SystemExit(2)
+
+proof = {
+    'schemaVersion': 1,
+    'namespace': 'combo-preview',
+    'sourceSha': revision,
+    'workflowRunId': workflow_run_id,
+    'capturedAt': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'head': expected_head,
+    'runs': 2,
+    'appliedMigrations': expected_migrations,
+    'passes': [
+        {'run': 1, 'head': expected_head},
+        {'run': 2, 'head': expected_head},
+    ],
+    'job': {
+        'name': 'migrate',
+        'uid': metadata['uid'],
+        'createdAt': metadata['creationTimestamp'],
+        'startedAt': status['startTime'],
+        'completedAt': status['completionTime'],
+        'succeeded': status['succeeded'],
+        'ttlSecondsAfterFinished': spec['ttlSecondsAfterFinished'],
+    },
+    'pod': {
+        'name': pod_meta['name'],
+        'uid': pod_meta['uid'],
+        'startedAt': terminated['startedAt'],
+        'finishedAt': terminated['finishedAt'],
+        'image': expected_image,
+        'imageID': image_id,
+        'exitCode': terminated['exitCode'],
+    },
+    'logSha256': f"sha256:{hashlib.sha256(raw_logs).hexdigest()}",
+}
+with open(output_path, 'w', encoding='utf-8') as handle:
+    json.dump(proof, handle, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    handle.write('\n')
+PY
+  chmod 0600 "$output"
+}
+
 wait_apps() {
   local render=$1 name
   assert_storage_headroom
@@ -1297,6 +1646,397 @@ verify_writers_restored() {
   done
 }
 
+write_test_evidence() {
+  local revision=$1 workflow_run_id=$2 manifest=$3 digest_file=$4 acceptance=$5
+  local reset_proof=$6 migration_proof=$7
+  local evidence_dir='/var/lib/combo-dev/evidence'
+  local output="$evidence_dir/$revision.json"
+  local candidate="$WORK/test-evidence.json"
+  local inventory="$WORK/evidence.inventory.json"
+  local runtime_config="$WORK/evidence.runtime-config.json"
+  local version="$WORK/evidence.version.json"
+  local try_config="$WORK/evidence.try-runtime-config.json"
+  local missing_web missing_try
+
+  "${K[@]}" -n "$NAMESPACE" get \
+    deployments.apps,statefulsets.apps,daemonsets.apps,jobs.batch,cronjobs.batch,services,pods,configmaps,serviceaccounts,networkpolicies.networking.k8s.io,ingresses.networking.k8s.io,horizontalpodautoscalers.autoscaling,roles.rbac.authorization.k8s.io,rolebindings.rbac.authorization.k8s.io,resourcequotas,limitranges,persistentvolumeclaims \
+    -o json >"$inventory" 2>/dev/null ||
+    blocked 'Test evidence 无法读取不含 Secret 的完整资源清单。'
+
+  curl --silent --show-error --fail --max-time 15 --max-filesize 1048576 \
+    'http://127.0.0.1:18080/runtime-config.json' >"$runtime_config" 2>/dev/null ||
+    blocked 'Test evidence 无法读取 runtime-config.json。'
+  curl --silent --show-error --fail --max-time 15 --max-filesize 1048576 \
+    'http://127.0.0.1:18080/version.json' >"$version" 2>/dev/null ||
+    blocked 'Test evidence 无法读取 version.json。'
+  curl --silent --show-error --fail --max-time 15 --max-filesize 1048576 \
+    'http://127.0.0.1:18080/try/runtime-config.json' >"$try_config" 2>/dev/null ||
+    blocked 'Test evidence 无法读取 try/runtime-config.json。'
+  missing_web=$(curl --silent --max-time 15 --output /dev/null --write-out '%{http_code}' \
+    'http://127.0.0.1:18080/assets/goal-b-missing-deadbeef.js' 2>/dev/null) ||
+    blocked 'Test evidence 无法验证 Web 缺失哈希资源。'
+  missing_try=$(curl --silent --max-time 15 --output /dev/null --write-out '%{http_code}' \
+    'http://127.0.0.1:18080/try/assets/goal-b-missing-deadbeef.js' 2>/dev/null) ||
+    blocked 'Test evidence 无法验证 Runtime Web 缺失哈希资源。'
+
+  python3 - \
+    "$revision" "$workflow_run_id" "$manifest" "$digest_file" "$acceptance" \
+    "$reset_proof" "$migration_proof" "$inventory" \
+    "$runtime_config" "$version" "$try_config" "$missing_web" "$missing_try" \
+    "$candidate" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+
+(
+    revision, workflow_run_id, manifest_path, digest_path, acceptance_path,
+    reset_path, migration_path, inventory_path,
+    runtime_config_path, version_path, try_config_path, missing_web, missing_try,
+    output_path,
+) = sys.argv[1:]
+
+def load(path):
+    with open(path, encoding='utf-8') as handle:
+        return json.load(handle)
+
+def digest_matches(image_id, image):
+    return (
+        isinstance(image_id, str)
+        and isinstance(image, str)
+        and '@sha256:' in image
+        and image_id.endswith(image.split('@', 1)[1])
+    )
+
+manifest = load(manifest_path)
+acceptance = load(acceptance_path)
+reset = load(reset_path)
+migration = load(migration_path)
+items = load(inventory_path).get('items', [])
+configs = {
+    'runtimeConfig': load(runtime_config_path),
+    'version': load(version_path),
+    'tryRuntimeConfig': load(try_config_path),
+}
+manifest_digest = open(digest_path, encoding='utf-8').read().strip()
+
+if (
+    manifest.get('sourceSha') != revision
+    or manifest.get('releaseId') != f'release-{revision}'
+    or manifest.get('migrationHead') != '0006_one_running_turn_per_session.sql'
+):
+    raise SystemExit(2)
+if not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest_digest):
+    raise SystemExit(2)
+metadata_fields = (
+    'environment', 'sourceSha', 'releaseId', 'builtAt',
+    'releaseManifestDigest', 'webAssetManifest',
+)
+expected_metadata = {
+    'environment': 'test',
+    'sourceSha': revision,
+    'releaseId': manifest['releaseId'],
+    'builtAt': manifest['builtAt'],
+    'releaseManifestDigest': manifest_digest,
+    'webAssetManifest': manifest['webAssetManifest'],
+}
+for value in configs.values():
+    if {key: value.get(key) for key in metadata_fields} != expected_metadata:
+        raise SystemExit(2)
+if missing_web != '404' or missing_try != '404':
+    raise SystemExit(2)
+
+if (
+    reset.get('schemaVersion') != 1
+    or reset.get('namespace') != 'combo-preview'
+    or reset.get('sourceSha') != revision
+    or reset.get('workflowRunId') != workflow_run_id
+    or reset.get('storage') != {
+        'postgres': {'clearedBeforeRebuild': True},
+        'redisQueue': {'clearedBeforeRebuild': True},
+        'minio': {'clearedBeforeRebuild': True},
+    }
+    or {entry.get('plane') for entry in reset.get('foundation', [])}
+       != {'minio', 'postgres', 'redis-hot', 'redis-queue'}
+):
+    raise SystemExit(2)
+
+expected_migrations = [
+    '0000_baseline_schema.sql',
+    '0001_expired_upload_reconciliation.sql',
+    '0002_drop_stream_events.sql',
+    '0003_turns.sql',
+    '0004_studio_sessions.sql',
+    '0005_capability_current_ui.sql',
+    '0006_one_running_turn_per_session.sql',
+]
+expected_passes = [
+    {'run': 1, 'head': '0006_one_running_turn_per_session.sql'},
+    {'run': 2, 'head': '0006_one_running_turn_per_session.sql'},
+]
+if (
+    migration.get('schemaVersion') != 1
+    or migration.get('namespace') != 'combo-preview'
+    or migration.get('sourceSha') != revision
+    or migration.get('workflowRunId') != workflow_run_id
+    or migration.get('head') != manifest['migrationHead']
+    or migration.get('runs') != 2
+    or migration.get('appliedMigrations') != expected_migrations
+    or migration.get('passes') != expected_passes
+    or migration.get('job', {}).get('succeeded') != 1
+    or migration.get('job', {}).get('ttlSecondsAfterFinished') != 7200
+    or migration.get('pod', {}).get('exitCode') != 0
+    or migration.get('pod', {}).get('image') != manifest['images']['api']
+    or not digest_matches(
+        migration.get('pod', {}).get('imageID'),
+        manifest['images']['api'],
+    )
+    or not re.fullmatch(r'sha256:[0-9a-f]{64}', migration.get('logSha256', ''))
+):
+    raise SystemExit(2)
+
+expected_names = {
+    'Deployment': {'api', 'redis-hot', 'runtime', 'web', 'worker'},
+    'StatefulSet': {'minio', 'postgres', 'redis-queue'},
+    'DaemonSet': set(),
+    'Job': {'migrate'},
+    'CronJob': set(),
+    'Service': {'api', 'minio', 'postgres', 'redis-hot', 'redis-queue', 'runtime', 'web'},
+    'ServiceAccount': {'default'},
+    'NetworkPolicy': {
+        'allow-dns', 'app-ingress-from-web', 'approved-public-https',
+        'authoring-internal-egress', 'default-deny', 'migrate-egress',
+        'minio-ingress', 'minio-init-egress', 'network-canary-dns-only',
+        'postgres-ingress', 'redis-hot-ingress', 'redis-queue-ingress',
+        'runtime-internal-egress', 'web-to-apps',
+    },
+    'Ingress': set(),
+    'HorizontalPodAutoscaler': set(),
+    'Role': {'combo-dev-dispatcher', 'combo-dev-fencer'},
+    'RoleBinding': {'combo-dev-dispatcher', 'combo-dev-fencer'},
+    'ResourceQuota': {'combo-dev-ceiling'},
+    'LimitRange': {'combo-dev-defaults'},
+    'PersistentVolumeClaim': {
+        'data-minio-0', 'data-postgres-0', 'data-redis-queue-0',
+    },
+}
+allowed_kinds = set(expected_names) | {'ConfigMap', 'Pod'}
+by_kind = {kind: [] for kind in allowed_kinds}
+for item in items:
+    kind = item.get('kind')
+    metadata = item.get('metadata', {})
+    if (
+        kind not in allowed_kinds
+        or metadata.get('namespace') != 'combo-preview'
+        or metadata.get('deletionTimestamp') is not None
+        or not isinstance(metadata.get('name'), str)
+    ):
+        raise SystemExit(2)
+    by_kind[kind].append(item)
+for kind, expected in expected_names.items():
+    actual = [item['metadata']['name'] for item in by_kind[kind]]
+    if len(actual) != len(set(actual)) or set(actual) != expected:
+        raise SystemExit(2)
+
+config_names = {item['metadata']['name'] for item in by_kind['ConfigMap']}
+static_configs = {
+    'combo-dev-minio-config', 'combo-dev-postgres-entrypoint',
+    'kube-root-ca.crt', 'minio-init-script', 'redis-hot-config',
+    'redis-queue-config', f'combo-release-meta-{revision[:12]}',
+}
+nginx_configs = {
+    name for name in config_names
+    if re.fullmatch(r'combo-dev-nginx-[a-z0-9]+', name)
+}
+if len(config_names) != 8 or config_names - nginx_configs != static_configs or len(nginx_configs) != 1:
+    raise SystemExit(2)
+
+for service in by_kind['Service']:
+    spec = service.get('spec', {})
+    if (
+        spec.get('type', 'ClusterIP') != 'ClusterIP'
+        or spec.get('externalName') is not None
+        or spec.get('externalIPs') not in (None, [])
+        or spec.get('loadBalancerIP') is not None
+        or spec.get('loadBalancerClass') is not None
+        or any(port.get('nodePort') is not None for port in spec.get('ports', []))
+    ):
+        raise SystemExit(2)
+
+pvc_contract = {
+    'data-postgres-0': ('combo-dev-postgres', '8Gi'),
+    'data-redis-queue-0': ('combo-dev-redis-queue', '2Gi'),
+    'data-minio-0': ('combo-dev-minio', '6Gi'),
+}
+for pvc in by_kind['PersistentVolumeClaim']:
+    name = pvc['metadata']['name']
+    volume, size = pvc_contract[name]
+    spec = pvc.get('spec', {})
+    if (
+        pvc.get('status', {}).get('phase') != 'Bound'
+        or spec.get('volumeName') != volume
+        or spec.get('storageClassName') != 'combo-dev-bounded'
+        or spec.get('resources', {}).get('requests', {}).get('storage') != size
+    ):
+        raise SystemExit(2)
+
+expected_pod_planes = {
+    'api', 'minio', 'postgres', 'redis-hot', 'redis-queue',
+    'runtime', 'web', 'worker', 'migrate',
+}
+pods_by_plane = {}
+pod_inventory = []
+for pod in by_kind['Pod']:
+    metadata = pod['metadata']
+    plane = metadata.get('labels', {}).get('app')
+    if plane not in expected_pod_planes or plane in pods_by_plane:
+        raise SystemExit(2)
+    phase = pod.get('status', {}).get('phase')
+    statuses = pod.get('status', {}).get('containerStatuses', [])
+    if plane == 'migrate':
+        healthy = (
+            phase == 'Succeeded'
+            and metadata.get('uid') == migration['pod']['uid']
+            and metadata.get('name') == migration['pod']['name']
+        )
+    else:
+        healthy = phase == 'Running' and bool(statuses) and all(
+            status.get('ready') is True for status in statuses
+        )
+    if not healthy:
+        raise SystemExit(2)
+    pods_by_plane[plane] = pod
+    pod_inventory.append({
+        'name': metadata['name'],
+        'plane': plane,
+        'podUid': metadata.get('uid'),
+        'phase': phase,
+        'healthy': True,
+    })
+if set(pods_by_plane) != expected_pod_planes:
+    raise SystemExit(2)
+
+expected_images = {
+    'api': manifest['images']['api'],
+    'worker': manifest['images']['api'],
+    'runtime': manifest['images']['runtime'],
+    'web': manifest['images']['web'],
+}
+live = []
+deployments = {item['metadata']['name']: item for item in by_kind['Deployment']}
+for plane, expected_image in expected_images.items():
+    deployment = deployments[plane]
+    pod = pods_by_plane[plane]
+    containers = [
+        item for item in pod.get('spec', {}).get('containers', [])
+        if item.get('name') == plane
+    ]
+    statuses = [
+        item for item in pod.get('status', {}).get('containerStatuses', [])
+        if item.get('name') == plane
+    ]
+    deployment_status = deployment.get('status', {})
+    if (
+        len(containers) != 1
+        or len(statuses) != 1
+        or containers[0].get('image') != expected_image
+        or statuses[0].get('image') != expected_image
+        or statuses[0].get('ready') is not True
+        or not digest_matches(statuses[0].get('imageID'), expected_image)
+        or deployment_status.get('readyReplicas') != 1
+        or deployment_status.get('updatedReplicas') != 1
+        or deployment_status.get('unavailableReplicas', 0) != 0
+    ):
+        raise SystemExit(2)
+    live.append({
+        'plane': plane,
+        'image': expected_image,
+        'imageID': statuses[0]['imageID'],
+        'podUid': pod['metadata']['uid'],
+        'ready': True,
+    })
+
+checks = acceptance.get('checks')
+if (
+    not isinstance(checks, dict)
+    or not checks
+    or any(
+        not isinstance(value, dict)
+        or set(value) != {'status', 'id'}
+        or value.get('status') != 'PASS'
+        or not isinstance(value.get('id'), str)
+        for value in checks.values()
+    )
+):
+    raise SystemExit(2)
+
+inventory_keys = {
+    'Deployment': 'deployments',
+    'StatefulSet': 'statefulSets',
+    'DaemonSet': 'daemonSets',
+    'Job': 'jobs',
+    'CronJob': 'cronJobs',
+    'Service': 'services',
+    'ConfigMap': 'configMaps',
+    'ServiceAccount': 'serviceAccounts',
+    'NetworkPolicy': 'networkPolicies',
+    'Ingress': 'ingresses',
+    'HorizontalPodAutoscaler': 'horizontalPodAutoscalers',
+    'Role': 'roles',
+    'RoleBinding': 'roleBindings',
+    'ResourceQuota': 'resourceQuotas',
+    'LimitRange': 'limitRanges',
+    'PersistentVolumeClaim': 'persistentVolumeClaims',
+}
+resource_inventory = {
+    key: sorted(item['metadata']['name'] for item in by_kind[kind])
+    for kind, key in inventory_keys.items()
+}
+resource_inventory['pods'] = sorted(pod_inventory, key=lambda item: item['plane'])
+resource_inventory['excludedKinds'] = ['Secret']
+
+legacy_pattern = re.compile(
+    r'(?:consumer|sweeper|outbox|cloud-review|rt[-_](?:chat|studio))',
+    re.I,
+)
+legacy_findings = sorted({
+    f"{kind}/{item['metadata']['name']}"
+    for kind, values in by_kind.items()
+    for item in values
+    if legacy_pattern.search(item['metadata']['name'])
+})
+if legacy_findings:
+    raise SystemExit(2)
+
+result = {
+    'schemaVersion': 1,
+    'createdAt': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'workflowRunId': workflow_run_id,
+    'sourceSha': revision,
+    'releaseId': manifest['releaseId'],
+    'releaseManifestDigest': manifest_digest,
+    'reset': reset,
+    'migration': migration,
+    'webAssetManifest': manifest['webAssetManifest'],
+    'images': manifest['images'],
+    'livePlanes': sorted(live, key=lambda item: item['plane']),
+    'releaseMetadata': configs,
+    'missingHashedAssets': {'web': 404, 'runtimeWeb': 404},
+    'resourceInventory': resource_inventory,
+    'legacyFindings': legacy_findings,
+    'legacyObjectsAbsent': len(legacy_findings) == 0,
+    'productAcceptance': checks,
+}
+with open(output_path, 'w', encoding='utf-8') as handle:
+    json.dump(result, handle, ensure_ascii=False, sort_keys=True, indent=2)
+    handle.write('\n')
+PY
+
+  install -d -o root -g root -m 0755 "$evidence_dir"
+  rm -f -- "$output"
+  install -o root -g root -m 0644 "$candidate" "$output" ||
+    blocked 'Test evidence 无法写入受保护目录。'
+}
 prune_stale_configs() {
   local deployments live_refs live_web live_release listed stale_json stale_names name failed=0
   deployments=$("${K[@]}" -n "$NAMESPACE" get deployment "${APP_NAMES[@]}" -o json 2>/dev/null) ||
@@ -1453,17 +2193,19 @@ render_only() {
 
 main() {
   if [[ ${1:-} == '--render-only' ]]; then shift; render_only "$@"; return; fi
-  local bundle='' revision='' arg
+  local bundle='' revision='' workflow_run_id='' arg
   while (($#)); do
     arg=$1; shift
     case "$arg" in
       --bundle) bundle=${1:?}; shift ;;
       --revision) revision=${1:?}; shift ;;
+      --workflow-run-id) workflow_run_id=${1:?}; shift ;;
       *) fail '未知部署参数。' ;;
     esac
   done
   [[ -f "$bundle" && ! -L "$bundle" ]] || blocked '部署包不存在或不是普通文件。'
   [[ "$revision" =~ $SHA_RE ]] || blocked '部署 revision 不是完整提交 SHA。'
+  [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked '部署 workflow run ID 不合法。'
   [[ $(readlink -f "$bundle" 2>/dev/null || true) == "$INSTALL_ROOT/incoming/$revision.tar.gz" ]] || blocked '部署包不在固定 incoming 路径。'
   INCOMING_BUNDLE=$bundle
 
@@ -1472,6 +2214,8 @@ main() {
   WORK=$(mktemp -d)
   host_preflight
   rbac_preflight
+  consume_reset_proof "$revision" "$workflow_run_id"
+  rm -f -- "/var/lib/combo-dev/evidence/$revision.json"
   claim_forwarders_for_deploy
 
   local trusted_bundle="$WORK/bundle.tar.gz"
@@ -1526,6 +2270,7 @@ main() {
   server_preflight "$WORK/prepared/render"
 
   local before after start evidence evidence_bytes runner_mode
+  local migration_proof="$WORK/migration-proof.json"
   before=$(production_fingerprint)
   start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
@@ -1536,7 +2281,11 @@ main() {
   run_pre_app_storage
   run_pre_app_isolation
   run_job minio-init "$WORK/prepared/render/init.yaml" 360
+  delete_job_strict minio-init || fail 'MinIO 初始化任务无法在取证前清理。'
   run_job migrate "$WORK/prepared/render/migrate.yaml" 660
+  capture_migration_proof \
+    "$revision" "$workflow_run_id" "$api_image" "$migration_proof" ||
+    blocked '迁移 Job、Pod、镜像或日志证据不完整。'
   wait_apps "$WORK/prepared/render"
   prune_stale_configs
 
@@ -1560,6 +2309,9 @@ main() {
   timeout 1200 "$INSTALL_ROOT/bin/combo-dev-smoke" --revision "$revision" --since-time "$start" --evidence "$evidence" >/dev/null || {
     rc=$?; (( rc == 1 )) && fail '有限验收失败。'; blocked '有限验收证据不完整或超时。';
   }
+  write_test_evidence \
+    "$revision" "$workflow_run_id" "$manifest" "$digest_file" "$evidence" \
+    "$RESET_PROOF_IN_USE" "$migration_proof"
 
   timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || fail 'Web 临时转发器无法停止。'
   timeout 30 systemctl stop combo-dev-s3-forward.service >/dev/null 2>&1 || fail 'S3 临时转发器无法停止。'

@@ -289,20 +289,25 @@ jobs:
           cleanup_upload
           scp -q "$ARCHIVE" "combo-dev-target:$temporary"
           ssh combo-dev-target mv -fT -- "$temporary" "$remote"
-          ssh combo-dev-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
+          ssh combo-dev-target bash -s -- "$remote" "$REVISION" "$RUN_ID" <<'REMOTE'
           set -euo pipefail
           bundle=$1
           revision=$2
+          workflow_run_id=$3
           [[ "$bundle" == "/opt/combo-dev/incoming/${revision}.tar.gz" ]]
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]]
           install -d -m 0750 "$HOME/data"
           exec 9>"$HOME/data/combo-release-mutation.lock"
           flock -w 300 9
           sudo /opt/combo-dev/bin/combo-dev-reset \
-            --confirm=DESTROY-COMBO-PREVIEW-DATA
+            --confirm=DESTROY-COMBO-PREVIEW-DATA \
+            --revision "$revision" \
+            --workflow-run-id "$workflow_run_id"
           sudo /opt/combo-dev/bin/combo-dev-deploy \
             --bundle "$bundle" \
-            --revision "$revision"
+            --revision "$revision" \
+            --workflow-run-id "$workflow_run_id"
           REMOTE
 
       - name: Prove development ports remain private
@@ -316,6 +321,97 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Collect and verify sanitized Test evidence
+        id: evidence
+        env:
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          evidence="$RUNNER_TEMP/combo-test-evidence-${REVISION}.json"
+          raw="$RUNNER_TEMP/combo-test-evidence-${REVISION}.raw.json"
+          scp -q "combo-dev-target:/var/lib/combo-dev/evidence/${REVISION}.json" "$raw"
+          chmod 600 "$raw"
+          evidence_bytes=$(stat -c '%s' "$raw")
+          [[ "$evidence_bytes" =~ ^[0-9]+$ && "$evidence_bytes" -gt 0 && "$evidence_bytes" -le 1048576 ]]
+          jq -e --arg revision "$REVISION" --arg runId "$RUN_ID" '
+            .schemaVersion == 1
+            and .workflowRunId == $runId
+            and .sourceSha == $revision
+            and .releaseId == ("release-" + $revision)
+            and .reset.schemaVersion == 1
+            and .reset.namespace == "combo-preview"
+            and .reset.sourceSha == $revision
+            and .reset.workflowRunId == $runId
+            and .reset.storage == {
+              postgres: {clearedBeforeRebuild: true},
+              redisQueue: {clearedBeforeRebuild: true},
+              minio: {clearedBeforeRebuild: true}
+            }
+            and ([.reset.foundation[].plane] | sort) == ["minio", "postgres", "redis-hot", "redis-queue"]
+            and all(.reset.foundation[]; .ready == true and (.podUid | test("^[0-9a-f-]{36}$")))
+            and .migration.head == "0006_one_running_turn_per_session.sql"
+            and .migration.runs == 2
+            and .migration.sourceSha == $revision
+            and .migration.workflowRunId == $runId
+            and .migration.appliedMigrations == [
+              "0000_baseline_schema.sql",
+              "0001_expired_upload_reconciliation.sql",
+              "0002_drop_stream_events.sql",
+              "0003_turns.sql",
+              "0004_studio_sessions.sql",
+              "0005_capability_current_ui.sql",
+              "0006_one_running_turn_per_session.sql"
+            ]
+            and .migration.passes == [
+              {run: 1, head: "0006_one_running_turn_per_session.sql"},
+              {run: 2, head: "0006_one_running_turn_per_session.sql"}
+            ]
+            and .migration.job.succeeded == 1
+            and .migration.job.ttlSecondsAfterFinished == 7200
+            and .migration.pod.exitCode == 0
+            and (.migration.logSha256 | test("^sha256:[0-9a-f]{64}$"))
+            and .missingHashedAssets == {web: 404, runtimeWeb: 404}
+            and .resourceInventory.deployments == ["api", "redis-hot", "runtime", "web", "worker"]
+            and .resourceInventory.statefulSets == ["minio", "postgres", "redis-queue"]
+            and .resourceInventory.daemonSets == []
+            and .resourceInventory.jobs == ["migrate"]
+            and .resourceInventory.cronJobs == []
+            and .resourceInventory.services == ["api", "minio", "postgres", "redis-hot", "redis-queue", "runtime", "web"]
+            and .resourceInventory.ingresses == []
+            and .resourceInventory.horizontalPodAutoscalers == []
+            and .resourceInventory.excludedKinds == ["Secret"]
+            and ([.resourceInventory.pods[].plane] | sort) == [
+              "api", "migrate", "minio", "postgres", "redis-hot",
+              "redis-queue", "runtime", "web", "worker"
+            ]
+            and all(.resourceInventory.pods[]; .healthy == true)
+            and .legacyFindings == []
+            and .legacyObjectsAbsent == true
+            and ([.livePlanes[].plane] | sort) == ["api", "runtime", "web", "worker"]
+            and all(
+              .livePlanes[];
+              . as $plane
+              | ($plane.image | split("@")[1]) as $digest
+              | $plane.ready == true
+                and ($plane.image | contains("@sha256:"))
+                and ($plane.imageID | endswith($digest))
+            )
+            and all(.productAcceptance[]; .status == "PASS")
+          ' "$raw" >/dev/null
+          mv -fT -- "$raw" "$evidence"
+          chmod 600 "$evidence"
+          printf 'path=%s\n' "$evidence" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sanitized Test evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-test-evidence-${{ needs.authorize.outputs.revision }}
+          path: ${{ steps.evidence.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Remove transient runner and upload files
         if: always()

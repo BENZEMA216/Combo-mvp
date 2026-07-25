@@ -7,11 +7,13 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import type { MeView } from '@cb/shared';
+import type { MeView, ReleaseMetadata } from '@cb/shared';
 import { installFetchMock, type FetchMock } from '../test/mockFetch.js';
 import {
   fetchMe,
+  authEntryUrl,
   loginUrl,
+  previewBootstrapUrl,
   goToLogin,
   reconcileMeProbe,
   AuthProvider,
@@ -19,7 +21,9 @@ import {
   useAuth,
   AUTH_LOGIN_PATH,
   AUTH_REFRESH_PATH,
+  PREVIEW_BOOTSTRAP_PATH,
 } from './auth.js';
+import { ReleaseMetadataProvider } from './releaseIdentity.js';
 
 let fm: FetchMock | undefined;
 afterEach(() => {
@@ -174,8 +178,9 @@ describe('loginUrl — 带 returnTo（Fix3，开放重定向防护在后端）',
   });
 
   it('有 returnTo（同站相对路径）→ ?returnTo=<encoded>', () => {
-    expect(loginUrl('/create/import?draftId=d1&x=1')).toBe(
-      `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent('/create/import?draftId=d1&x=1')}`,
+    const taskReturn = '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history';
+    expect(loginUrl(taskReturn)).toBe(
+      `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(taskReturn)}`,
     );
   });
 
@@ -189,7 +194,16 @@ describe('loginUrl — 带 returnTo（Fix3，开放重定向防护在后端）',
   });
 
   it('returnTo 非 / 开头(相对片段)→ 丢弃,回裸登录路径', () => {
-    expect(loginUrl('create/import')).toBe(AUTH_LOGIN_PATH);
+    expect(loginUrl('tasks/01982e62')).toBe(AUTH_LOGIN_PATH);
+  });
+
+  it.each([
+    '/%5cevil.example/phish',
+    '/%2f%2fevil.example/phish',
+    '/%252f%252fevil.example/phish',
+    '/tasks/%0aLocation:https://evil.example',
+  ])('多重编码、反斜杠或控制字符 %s 不进入登录 URL', (returnTo) => {
+    expect(loginUrl(returnTo)).toBe(AUTH_LOGIN_PATH);
   });
 
   it('首页/保护页一次跳转直达 OIDC 后端入口，并完整保留 path + query', () => {
@@ -202,6 +216,22 @@ describe('loginUrl — 带 returnTo（Fix3，开放重定向防护在后端）',
     expect(navigate).toHaveBeenCalledWith(
       `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent('/tasks/task-42?tab=logs&from=home')}`,
     );
+  });
+});
+
+describe('Preview auth entry', () => {
+  it('uses the protected bootstrap and preserves a safe task return', () => {
+    const taskReturn = '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history';
+    expect(previewBootstrapUrl(taskReturn)).toBe(
+      `${PREVIEW_BOOTSTRAP_PATH}?returnTo=${encodeURIComponent(taskReturn)}`,
+    );
+    expect(authEntryUrl('preview', taskReturn)).toBe(previewBootstrapUrl(taskReturn));
+    expect(authEntryUrl('production', taskReturn)).toBe(loginUrl(taskReturn));
+  });
+
+  it('drops hostile Preview bootstrap returns', () => {
+    expect(previewBootstrapUrl('//evil.example/phish')).toBe(PREVIEW_BOOTSTRAP_PATH);
+    expect(previewBootstrapUrl('/%252f%252fevil.example/phish')).toBe(PREVIEW_BOOTSTRAP_PATH);
   });
 });
 
@@ -234,10 +264,20 @@ function ProtectedProbe(): ReactElement {
   );
 }
 
-function renderGuard() {
+const PREVIEW_METADATA: ReleaseMetadata = {
+  schemaVersion: 1,
+  environment: 'preview',
+  sourceSha: 'a'.repeat(40),
+  releaseId: `release-${'a'.repeat(40)}`,
+  builtAt: '2026-07-25T00:00:00.000Z',
+  releaseManifestDigest: `sha256:${'b'.repeat(64)}`,
+  webAssetManifest: `sha256:${'c'.repeat(64)}`,
+};
+
+function renderGuard(metadata?: ReleaseMetadata) {
   // 每次新建 QueryClient（retry:false，禁缓存跨用例串味）。
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
-  render(
+  const guard = (
     <QueryClientProvider client={qc}>
       <AuthProvider>
         <MemoryRouter>
@@ -248,7 +288,14 @@ function renderGuard() {
           </Routes>
         </MemoryRouter>
       </AuthProvider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
+  );
+  render(
+    metadata ? (
+      <ReleaseMetadataProvider metadata={metadata}>{guard}</ReleaseMetadataProvider>
+    ) : (
+      guard
+    ),
   );
   return { queryClient: qc };
 }
@@ -286,6 +333,22 @@ describe('RequireAuth — error 态给「重试」（非「去登录」），不
     const gate = screen.getByRole('alert');
     expect(gate.querySelectorAll('.cb-brand-wordmark')).toHaveLength(1);
     expect(gate.querySelector('.cb-brand-mark')).toBeNull();
+  });
+
+  it('Preview 的 refresh 凭据失效后只提供受访问闸保护的会话恢复入口', async () => {
+    fm = installFetchMock([
+      { status: 401, json: { error: { userMessage: '会话已过期' } } },
+      { status: 401, json: { error: { userMessage: 'refresh token 已失效' } } },
+    ]);
+    renderGuard(PREVIEW_METADATA);
+
+    expect(await screen.findByText('预览会话已失效，请恢复后继续。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '恢复预览会话' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '去登录' })).toBeNull();
+    expect(fm.calls.map((call) => [call.method, call.url])).toEqual([
+      ['GET', '/api/v1/me'],
+      ['POST', AUTH_REFRESH_PATH],
+    ]);
   });
 
   it('200 + 真实 Envelope<MeView> → 放行 <Outlet/>（authed 用户真能进受保护应用）', async () => {

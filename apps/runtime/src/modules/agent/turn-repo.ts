@@ -184,6 +184,21 @@ export async function getRunningTurnId(db: Queryable, sessionId: string): Promis
   return result.rows[0]?.id ?? null;
 }
 
+/** 详情页刷新恢复使用；运行态以 PostgreSQL 为真源，Redis 只负责事件补发。 */
+export async function getActiveTurn(
+  db: Queryable,
+  sessionId: string,
+): Promise<{ id: string; createdAt: string } | null> {
+  const result = await db.query<{ id: string; created_at: string | Date }>(
+    `SELECT id, created_at FROM turns
+      WHERE session_id = $1 AND status = 'running'
+      LIMIT 1`,
+    [sessionId],
+  );
+  const row = result.rows[0];
+  return row ? { id: row.id, createdAt: toIso(row.created_at) } : null;
+}
+
 /** Session 行锁持有者用它恢复最近一次已提交终态的 Redis 事件。 */
 export async function getLatestTerminalTurn(
   db: Queryable,

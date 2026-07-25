@@ -1,7 +1,7 @@
 # 本地全栈编排（O-02/O-03）。本期【只写不跑】：无 Docker，留作后续 compose up。
 #
 # 固定启动顺序（技术方案 §6.2，硬性）：
-#   postgres → logto_db_seed → logto_alteration → logto → migrate(业务迁移) → 业务容器(api/worker/consumer/sweeper/web)
+#   postgres → logto_db_seed → logto_alteration → logto → migrate(业务迁移) → 业务容器(api/worker/runtime/web)
 #   Logto OSS 不自跑迁移：必须先 CLI `db seed` 建表，再把 `db alteration deploy` 作为单实例一次性 job 跑；跑完才起 logto 运行态。
 #   业务迁移与 Logto 迁移各自独立 schema/库（combo / logto），互不干扰；任一迁移失败即止、不起后续。
 #
@@ -16,7 +16,7 @@
 #
 # 生产密钥不允许默认 fallback（Codex#13）：
 #   本编排即生产栈（业务容器 NODE_ENV=production）。真密钥用 `${VAR:?...}` 必填形式——未设则 `docker compose` 直接报错中止，
-#   绝不静默注入 minioadmin / combo:combo 这类默认凭据上生产（与 apps/api env.ts 的生产守卫双保险）。
+#   绝不静默注入 minioadmin / combo:combo 这类默认凭据上生产（与 Authoring 环境 schema 的生产守卫双保险）。
 #   非密钥的运行参数（端口/region/由服务名推导的 endpoint）保留默认。dev 直跑请用 .env 显式提供这些值。
 services:
   # ───────────────────────── 数据与中间件（先起，业务/Logto 都依赖）─────────────────────────
@@ -379,7 +379,7 @@ services:
     mem_reservation: 1g
     restart: unless-stopped
 
-  # consumer 受保序约束不可多实例（启动拿 advisory lock/lease 防误 scale，70 §3.1）；不要 deploy.replicas > 1。
+  # Runtime 使用独立镜像和 Redis 热数据面，不复用 Authoring Worker 入口。
   runtime:
     build:
       context: ..

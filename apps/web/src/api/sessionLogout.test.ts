@@ -72,6 +72,31 @@ describe('completeLogout', () => {
     expect(navigate).toHaveBeenCalledWith('/login');
   });
 
+  it('Preview 登出忽略外部 OIDC 地址，清闸后回访问页并保留安全任务上下文', () => {
+    const navigate = vi.fn<(url: string) => void>();
+    const returnTo = '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history';
+
+    completeLogout(
+      {
+        loggedOut: true,
+        logoutUrl: 'https://auth.example/oidc/session/end?client_id=combo',
+      },
+      navigate,
+      'preview',
+      returnTo,
+    );
+
+    expect(navigate).toHaveBeenCalledWith(
+      `/__review/enter?returnTo=${encodeURIComponent(returnTo)}`,
+    );
+  });
+
+  it('Preview 登出丢弃多重编码外链 returnTo', () => {
+    expect(logoutDestination({ loggedOut: true }, 'preview', '/%252f%252fevil.example/phish')).toBe(
+      '/__review/enter',
+    );
+  });
+
   it.each(['javascript:alert(1)', 'data:text/html,logout', 'ftp://auth.example/logout'])(
     '拒绝非 HTTP(S) 登出地址 %s，并回站内登录页',
     (logoutUrl) => {

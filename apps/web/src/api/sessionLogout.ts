@@ -1,7 +1,15 @@
-import { API_PREFIX, LogoutResultSchema, envelopeSchema, type LogoutResult } from '@cb/shared';
+import {
+  API_PREFIX,
+  LogoutResultSchema,
+  envelopeSchema,
+  type LogoutResult,
+  type ReleaseMetadata,
+} from '@cb/shared';
+import { sanitizeReturnTo } from '../safeReturnTo.js';
 
 /** 后端幂等登出入口：清本地会话 Cookie，并可返回 Logto end-session URL。 */
 export const AUTH_LOGOUT_PATH = `${API_PREFIX}/auth/logout`;
+export const PREVIEW_ACCESS_PATH = '/__review/enter';
 
 const LogoutEnvelopeSchema = envelopeSchema(LogoutResultSchema);
 
@@ -23,7 +31,17 @@ export async function logoutSession(): Promise<LogoutResult | null> {
 }
 
 /** 只跟随浏览器可安全导航的 HTTP(S) 登出地址；其他 scheme 一律回站内登录页。 */
-export function logoutDestination(result: LogoutResult): string {
+export function logoutDestination(
+  result: LogoutResult,
+  environment: ReleaseMetadata['environment'] = 'production',
+  returnTo?: string,
+): string {
+  if (environment === 'preview') {
+    const safeReturnTo = sanitizeReturnTo(returnTo);
+    return safeReturnTo
+      ? `${PREVIEW_ACCESS_PATH}?returnTo=${encodeURIComponent(safeReturnTo)}`
+      : PREVIEW_ACCESS_PATH;
+  }
   if (!result.logoutUrl) return '/login';
   try {
     const destination = new URL(result.logoutUrl);
@@ -42,6 +60,8 @@ export function logoutDestination(result: LogoutResult): string {
 export function completeLogout(
   result: LogoutResult,
   navigate: (url: string) => void = (url) => window.location.assign(url),
+  environment: ReleaseMetadata['environment'] = 'production',
+  returnTo?: string,
 ): void {
-  navigate(logoutDestination(result));
+  navigate(logoutDestination(result, environment, returnTo));
 }

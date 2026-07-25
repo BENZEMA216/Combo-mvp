@@ -5,8 +5,9 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { MeViewSchema, envelopeSchema, type MeView } from '@cb/shared';
 import { createContext, useContext, useState, type ReactNode } from 'react';
 import { ComboMark, ComboWordmark } from '../components/ComboBrand.js';
-import { loginUrl } from '../navigation/login.js';
+import { authenticationUrl } from '../navigation/login.js';
 import { refreshSession } from '../api/sessionRefresh.js';
+import { useReleaseMetadata } from './releaseIdentity.js';
 
 const MeEnvelopeSchema = envelopeSchema(MeViewSchema);
 const DEV_LOGIN_PATH = '/api/v1/auth/dev-login';
@@ -118,10 +119,17 @@ function GatePanel({ role, children }: { role: 'status' | 'alert'; children: Rea
   );
 }
 
-export function AuthGate({ children }: { children: ReactNode }) {
+export function AuthGate({
+  children,
+  navigateToAuth = (target) => window.location.assign(target),
+}: {
+  children: ReactNode;
+  navigateToAuth?: (target: string) => void;
+}) {
   const [devLoginError, setDevLoginError] = useState<string | null>(null);
   const [devLoginPending, setDevLoginPending] = useState(false);
   const queryClient = useQueryClient();
+  const releaseMetadata = useReleaseMetadata();
   const q = useQuery<RuntimeMeProbe>({
     queryKey: RUNTIME_ME_QUERY_KEY,
     queryFn: async ({ signal }) => {
@@ -178,17 +186,20 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }
 
   if (q.data.status === 'anon') {
-    const showDevLogin = canUseLocalDevLogin();
+    const preview = releaseMetadata.environment === 'preview';
+    const showDevLogin = releaseMetadata.environment === 'development' && canUseLocalDevLogin();
     return (
       <GatePanel role="alert">
-        <p className="rt-auth-gate__msg">请先登录后进入试用模式。</p>
+        <p className="rt-auth-gate__msg">
+          {preview ? '预览会话已失效，请恢复后继续。' : '请先登录后进入试用模式。'}
+        </p>
         <div className="rt-auth-gate__actions">
           <button
             type="button"
             className="rt-btn rt-btn--accent"
-            onClick={() => window.location.assign(loginUrl())}
+            onClick={() => navigateToAuth(authenticationUrl(releaseMetadata.environment))}
           >
-            去登录
+            {preview ? '恢复预览会话' : '去登录'}
           </button>
           {showDevLogin ? (
             <button

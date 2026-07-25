@@ -20,7 +20,7 @@ import {
   type SessionRow,
 } from '../session/repo.js';
 import { createArtifactTool, type ArtifactAgentTool } from '../artifact/tool.js';
-import { bindCapabilityUiArtifact } from '../artifact/repo.js';
+import { bindCapabilityUiArtifact, readLatestHtmlArtifactInSession } from '../artifact/repo.js';
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
 import { createTurnEmitter, type TurnEmitter, type TurnLogger } from './turn-emitter.js';
 import {
@@ -45,6 +45,8 @@ export interface TurnAgentInput {
   mode: SessionMode;
   history: MessageRecord[];
   tools: RuntimeAgentTool[];
+  promptText: string;
+  hasExistingStudioArtifact: boolean;
 }
 export interface TurnAgent {
   subscribeTextDelta(fn: (delta: string) => void): () => void;
@@ -503,11 +505,18 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
 
     emitter.emit({ type: EventType.RUN_STARTED, ...base });
     let history: MessageRecord[];
+    let hasExistingStudioArtifact = false;
     try {
-      const all = await getMessages(deps.db, sessionId);
+      const [all, latestStudioArtifact] = await Promise.all([
+        getMessages(deps.db, sessionId),
+        args.mode === 'studio'
+          ? readLatestHtmlArtifactInSession(deps.db, sessionId)
+          : Promise.resolve(null),
+      ]);
       history = all.filter((m) =>
         m.turnId ? m.turnStatus === 'completed' : m.status === 'completed',
       );
+      hasExistingStudioArtifact = latestStudioArtifact !== null;
     } catch (err) {
       log.error({ err }, 'load history failed');
       await finishFailed('TURN_HISTORY_LOAD_FAILED', '服务开小差了，请重试。');
@@ -549,7 +558,14 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     }
     let agent: TurnAgent;
     try {
-      agent = deps.agentFactory({ definition: args.definition, mode: args.mode, history, tools });
+      agent = deps.agentFactory({
+        definition: args.definition,
+        mode: args.mode,
+        history,
+        tools,
+        promptText: args.text,
+        hasExistingStudioArtifact,
+      });
     } catch (err) {
       const message =
         err instanceof TurnAgentUnavailableError ? err.message : '对话服务暂时不可用，请重试。';
@@ -700,18 +716,19 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       completedNextIdx = await withTransaction(deps.db, async (transaction) => {
         await lockTurnSession(transaction, sessionId);
         if (!(await lockRunningTurn(transaction, runId, sessionId))) return null;
-        // Studio promotion, Turn CAS and transcript messages commit atomically.
-        // Redis is not touched until this whole PostgreSQL transaction commits.
+        const won = await finishTurnCas(transaction, { id: runId, status: 'completed' });
+        if (!won) return null;
+        // 先在事务内把 Turn CAS 为 completed，再提升同一 Turn 的最终 Artifact；
+        // 任一后续步骤失败都会回滚两者，Redis 仍要等整笔 PostgreSQL 事务提交。
         if (args.mode === 'studio' && lastStudioArtifactId) {
           const bound = await bindCapabilityUiArtifact(transaction, {
             capabilityId: args.capabilityId,
             artifactId: lastStudioArtifactId,
             studioSessionId: sessionId,
+            turnId: runId,
           });
           if (!bound) throw new Error('Studio revision could not be promoted');
         }
-        const won = await finishTurnCas(transaction, { id: runId, status: 'completed' });
-        if (!won) return null;
         let idx = nextIdx;
         for (const row of rows) {
           await appendTurnMessage(transaction, {

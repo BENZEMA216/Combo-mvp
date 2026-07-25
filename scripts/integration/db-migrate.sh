@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 集成：业务迁移端到端（O-05 / O-07）。对一个可达的 PostgreSQL 跑全部迁移，断言迁移文件全部记账、
-# 九张基线表齐全、关键命名约束存在。CI 用临时 PG 容器即可（不需 Docker compose 全栈）。
+# 当前终态表集合精确、关键命名约束存在。CI 用临时 PG 容器即可（不需 Docker compose 全栈）。
 # 入参：DATABASE_URL（必填，指向可达 PG）。
 set -euo pipefail
 
@@ -28,15 +28,23 @@ applied="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 [ "$applied" = "$expected" ] || fail "记账数 ${applied} != 迁移文件数 ${expected}"
 log "记账 ${applied}/${expected} ✓"
 
-# 3) 断言迁移终态表齐全（0000 建九张基线表,0002 删 stream_events,0003 建 turns）
+# 3) 断言迁移终态表精确；除 runner 账本外不允许旧模型或额外业务表。
 for tbl in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls; do
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-log "迁移终态表齐全 ✓"
+expected_tables='artifacts,audit_llm_calls,capabilities,messages,sessions,tasks,turns,uploads,users'
+actual_tables="$(psql "$DATABASE_URL" -tAc "
+  SELECT string_agg(tablename, ',' ORDER BY tablename)
+  FROM pg_tables
+  WHERE schemaname = 'public' AND tablename <> 'schema_migrations'
+")"
+[ "$actual_tables" = "$expected_tables" ] ||
+  fail "迁移终态表集合漂移：${actual_tables}"
+log "迁移终态表集合精确 ✓"
 
 # 4) 断言关键命名约束存在（基线固定约束名抽样：状态 CHECK、消息序唯一键）
-for con in ck_tasks_step ck_tasks_status ck_uploads_status ck_sessions_status ck_messages_role ck_turns_status uq_messages_session_seq; do
+for con in ck_tasks_step ck_tasks_status ck_uploads_status ck_sessions_status ck_messages_role ck_turns_status uq_messages_session_seq uq_turns_id_session fk_artifacts_turn_session fk_messages_turn_session; do
   exists="$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM pg_constraint WHERE conname='${con}'")"
   [ "$exists" = "1" ] || fail "缺命名约束 ${con}（实际 ${exists}）"
 done

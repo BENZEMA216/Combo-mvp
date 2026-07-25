@@ -3,12 +3,16 @@
 //   - 第一轮生成中且还没有任何产物时显示诚实的页面骨架；
 //   - 有产物后画布渲染产物（多产物顶部 chips 切换），左侧对话负责反复微调；
 //   - 恢复：GET /runtime/sessions/:id（详情真源）；实时：/stream SSE（useSessionStream）。
-import { useEffect, useRef, useState } from 'react';
-import { useParams, useSearchParams } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import type { ArtifactView, SessionDetail } from '@cb/shared';
-import { useArtifactContent, useSession } from '../api/runtime.js';
+import { useArtifactContent, useCreateSession, useSession } from '../api/runtime.js';
 import { useSessionStream } from '../api/useSessionStream.js';
-import { ArtifactRenderer, type ComboRunRequest } from '../components/ArtifactRenderer.js';
+import {
+  ArtifactRenderer,
+  type ComboElementSelection,
+  type ComboRunRequest,
+} from '../components/ArtifactRenderer.js';
 import { FloatingChat } from '../components/FloatingChat.js';
 import { GeneratingPageSkeleton } from '../components/GeneratingPageSkeleton.js';
 import { QueryErrorNotice } from '../components/QueryErrorNotice.js';
@@ -20,10 +24,21 @@ import {
   downloadArtifact,
 } from '../components/artifactDownload.js';
 import {
+  appendRuntimeReturnTo,
   readRuntimeReturnTo,
   rememberRuntimeReturnTo,
+  runtimeBackLabel,
   safeRuntimeReturnTo,
 } from '../navigation/runtimeReturn.js';
+import {
+  buildContextualStudioPrompt,
+  formatStudioAnnotationMessage,
+} from '../lib/studioAnnotation.js';
+import {
+  buildStudioDesignOperationPrompt,
+  STUDIO_DESIGN_OPERATIONS,
+  type StudioDesignOperation,
+} from '../lib/studioDesignOperations.js';
 import { resolveSessionExperience } from '../sessionExperience.js';
 import { useDocumentTitle } from '../shell/useDocumentTitle.js';
 
@@ -84,15 +99,23 @@ export function resolveStudioSaveStatus(input: {
 export function ChatPage() {
   const { sessionId } = useParams();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const sessionQ = useSession(sessionId);
   const detail = sessionQ.data;
-  const stream = useSessionStream(sessionId, detail?.artifacts);
+  const stream = useSessionStream(sessionId, detail);
+  const createTrial = useCreateSession();
   const [mobileSessionsOpen, setMobileSessionsOpen] = useState(false);
   const runStartedAtRef = useRef<number | null>(null);
   const [lastSidebarCapability, setLastSidebarCapability] = useState<{
     id: string;
     name: string;
   } | null>(null);
+  const [inspectionEnabled, setInspectionEnabled] = useState(false);
+  const [selectedElement, setSelectedElement] = useState<ComboElementSelection | null>(null);
+  const [inspectableElements, setInspectableElements] = useState<ComboElementSelection[]>([]);
+  const [operationPending, setOperationPending] = useState(false);
+  const operationInFlightRef = useRef(false);
+  const [trialStartError, setTrialStartError] = useState<string | null>(null);
 
   // 普通试用记住创作流程 returnTo；Studio 恒定回「我的 Agent」。
   const queryReturnTo = safeRuntimeReturnTo(searchParams.get('returnTo'));
@@ -115,6 +138,7 @@ export function ChatPage() {
   const activeArtifact = stream.activeArtifactId
     ? (stream.artifacts[stream.activeArtifactId] ?? null)
     : (stream.artifactList.at(-1) ?? null);
+  const activeTurn = detail?.activeTurn ?? null;
   const studioSaveStatus = resolveStudioSaveStatus({
     running: stream.running,
     hasArtifact: activeArtifact !== null,
@@ -137,7 +161,10 @@ export function ChatPage() {
   const showIntake = canvasState === 'intake';
   const showGenerating = canvasState === 'running';
   const showStudioDefault = studioMode && activeArtifact === null && !showGenerating;
-  if (stream.running && runStartedAtRef.current === null) runStartedAtRef.current = Date.now();
+  if (stream.running && runStartedAtRef.current === null) {
+    const restoredStart = activeTurn?.createdAt ? Date.parse(activeTurn.createdAt) : Number.NaN;
+    runStartedAtRef.current = Number.isFinite(restoredStart) ? restoredStart : Date.now();
+  }
   if (!stream.running && runStartedAtRef.current !== null) runStartedAtRef.current = null;
   const runStartedAt = runStartedAtRef.current ?? undefined;
 
@@ -152,7 +179,17 @@ export function ChatPage() {
 
   useEffect(() => {
     setMobileSessionsOpen(false);
+    setInspectionEnabled(false);
+    setSelectedElement(null);
+    setInspectableElements([]);
+    setTrialStartError(null);
   }, [sessionId]);
+
+  useEffect(() => {
+    setInspectionEnabled(false);
+    setSelectedElement(null);
+    setInspectableElements([]);
+  }, [activeArtifact?.id, activeArtifact?.updatedAt]);
 
   useEffect(() => {
     if (!mobileSessionsOpen) return undefined;
@@ -162,6 +199,58 @@ export function ChatPage() {
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [mobileSessionsOpen]);
+
+  const sendConversationMessage = useCallback(
+    async (text: string) => {
+      const prompt =
+        studioMode && selectedElement ? buildContextualStudioPrompt(selectedElement, text) : text;
+      const accepted = await stream.send(prompt);
+      if (studioMode && selectedElement) {
+        setSelectedElement(null);
+        setInspectionEnabled(false);
+      }
+      return accepted;
+    },
+    [selectedElement, stream.send, studioMode],
+  );
+
+  const runDesignOperation = useCallback(
+    async (operation: StudioDesignOperation): Promise<void> => {
+      if (!studioMode || stream.running || operationInFlightRef.current) return;
+      operationInFlightRef.current = true;
+      setOperationPending(true);
+      const operationPrompt = buildStudioDesignOperationPrompt(
+        operation,
+        selectedElement ? 'element' : 'page',
+      );
+      const prompt = selectedElement
+        ? buildContextualStudioPrompt(selectedElement, operationPrompt)
+        : operationPrompt;
+      try {
+        await stream.send(prompt);
+        setSelectedElement(null);
+        setInspectionEnabled(false);
+      } catch {
+        // useSessionStream presents the server error and keeps the current selection for retry.
+      } finally {
+        operationInFlightRef.current = false;
+        setOperationPending(false);
+      }
+    },
+    [selectedElement, stream, studioMode],
+  );
+
+  const startCurrentUiTrial = useCallback(async (): Promise<void> => {
+    if (!studioMode || !capability || !sessionId || createTrial.isPending) return;
+    setTrialStartError(null);
+    try {
+      const trial = await createTrial.mutateAsync(capability.id);
+      const studioReturnTo = `/try/session/${sessionId}`;
+      navigate(appendRuntimeReturnTo(`/session/${trial.id}`, studioReturnTo));
+    } catch {
+      setTrialStartError('试用会话没有创建成功，请重试。');
+    }
+  }, [capability, createTrial, navigate, sessionId, studioMode]);
 
   return (
     <div className={`rt-app rt-trial-app${studioMode ? ' rt-trial-app--studio' : ''}`}>
@@ -224,16 +313,30 @@ export function ChatPage() {
                   </button>
                 )}
                 {studioMode ? (
-                  <a className="rt-toolbar-pill" href="/capabilities">
-                    返回我的 Agent
-                  </a>
+                  <>
+                    {detail.currentUiArtifactId && (
+                      <button
+                        type="button"
+                        className="rt-toolbar-pill rt-toolbar-pill--accent"
+                        disabled={stream.running || createTrial.isPending}
+                        onClick={() => void startCurrentUiTrial()}
+                      >
+                        {createTrial.isPending ? '正在创建试用…' : '试用当前 UI'}
+                      </button>
+                    )}
+                    <a className="rt-toolbar-pill" href="/capabilities">
+                      返回我的 Agent
+                    </a>
+                  </>
                 ) : returnTo ? (
                   <button
                     type="button"
                     className="rt-toolbar-pill"
                     onClick={() => window.location.assign(returnTo)}
                   >
-                    返回发布流程
+                    {runtimeBackLabel(returnTo) === '← 返回 UI 设计'
+                      ? '返回 UI 设计'
+                      : '返回发布流程'}
                   </button>
                 ) : (
                   <a className="rt-toolbar-pill" href="/capabilities">
@@ -253,23 +356,47 @@ export function ChatPage() {
                   isRunning={stream.running}
                   hasArtifact={activeArtifact !== null}
                   error={stream.errorMessage}
-                  onSend={(text) => {
-                    void stream.send(text).catch(() => undefined);
-                  }}
+                  onSend={sendConversationMessage}
                   onInterrupt={stream.interrupt}
                   experience={experience}
+                  formatMessageText={studioMode ? formatStudioAnnotationMessage : undefined}
                 />
               )}
               <div className="rt-genui__canvas" data-state={canvasState}>
+                {studioMode && activeArtifact && (
+                  <StudioDesignToolbar
+                    artifact={activeArtifact}
+                    running={stream.running}
+                    operationPending={operationPending}
+                    inspectionEnabled={inspectionEnabled}
+                    inspectableCount={inspectableElements.length}
+                    selectedElement={selectedElement}
+                    onToggleInspection={() => setInspectionEnabled((enabled) => !enabled)}
+                    onClearSelection={() => {
+                      setSelectedElement(null);
+                      setInspectionEnabled(false);
+                    }}
+                    onOperation={(operation) => void runDesignOperation(operation)}
+                  />
+                )}
+                {trialStartError && (
+                  <div className="rt-inline-error" role="alert">
+                    {trialStartError}
+                  </div>
+                )}
                 {/* consume 首轮失败时对话尚未挂载，错误必须留在画布；Studio 的错误在左侧对话里。 */}
                 {stream.errorMessage && !showConversation && (
                   <div className="rt-inline-error" role="alert">
                     {stream.errorMessage}
                   </div>
                 )}
-                {stream.artifactList.length > 1 && (
-                  <div className="rt-canvas-chips">
-                    {stream.artifactList.map((a) => (
+                {(stream.artifactList.length > 1 ||
+                  (studioMode && stream.artifactList.length > 0)) && (
+                  <div
+                    className={`rt-canvas-chips${studioMode ? ' rt-canvas-chips--revisions' : ''}`}
+                    aria-label={studioMode ? 'UI 版本历史' : '产物列表'}
+                  >
+                    {stream.artifactList.map((a, index) => (
                       <button
                         key={a.id}
                         type="button"
@@ -277,7 +404,12 @@ export function ChatPage() {
                         onClick={() => stream.selectArtifact(a.id)}
                       >
                         <span className="rt-artifact-chip__glyph">▤</span>
-                        <span className="rt-artifact-chip__title">{a.title ?? '未命名产物'}</span>
+                        <span className="rt-artifact-chip__title">
+                          {studioMode ? `版本 ${index + 1}` : (a.title ?? '未命名产物')}
+                        </span>
+                        {studioMode && detail.currentUiArtifactId === a.id && (
+                          <span className="rt-artifact-chip__state">当前 UI</span>
+                        )}
                       </button>
                     ))}
                   </div>
@@ -305,6 +437,17 @@ export function ChatPage() {
                         : undefined
                     }
                     studioMode={studioMode}
+                    inspectionEnabled={studioMode && inspectionEnabled}
+                    selectedElementKey={studioMode ? (selectedElement?.key ?? null) : null}
+                    onElementSelect={
+                      studioMode
+                        ? (element) => {
+                            setSelectedElement(element);
+                            setInspectionEnabled(false);
+                          }
+                        : undefined
+                    }
+                    onElementManifest={studioMode ? setInspectableElements : undefined}
                   />
                 ) : !studioMode && hasStarted && !showGenerating ? (
                   <div className="rt-empty">这轮还没有生成产物，可以在对话里继续要求。</div>
@@ -380,6 +523,73 @@ export function ChatPage() {
   );
 }
 
+function StudioDesignToolbar({
+  artifact,
+  running,
+  operationPending,
+  inspectionEnabled,
+  inspectableCount,
+  selectedElement,
+  onToggleInspection,
+  onClearSelection,
+  onOperation,
+}: {
+  artifact: ArtifactView;
+  running: boolean;
+  operationPending: boolean;
+  inspectionEnabled: boolean;
+  inspectableCount: number;
+  selectedElement: ComboElementSelection | null;
+  onToggleInspection: () => void;
+  onClearSelection: () => void;
+  onOperation: (operation: StudioDesignOperation) => void;
+}) {
+  const inspectionAvailable = artifact.kind === 'html';
+  return (
+    <section className="rt-studio-tools" aria-label="Studio 页面工具">
+      <div className="rt-studio-tools__inspection">
+        <button
+          type="button"
+          className={`rt-toolbar-pill${inspectionEnabled ? ' is-active' : ''}`}
+          aria-pressed={inspectionEnabled}
+          disabled={!inspectionAvailable || running}
+          title={
+            inspectionAvailable ? '在页面预览中选择要局部修改的元素' : '只有 HTML 页面可以选择元素'
+          }
+          onClick={onToggleInspection}
+        >
+          {inspectionEnabled ? '取消选择元素' : '选择页面元素'}
+        </button>
+        {inspectionAvailable && inspectableCount > 0 && (
+          <span className="rt-studio-tools__count">{inspectableCount} 个可选元素</span>
+        )}
+        {selectedElement && (
+          <span className="rt-studio-tools__selection">
+            已选「{selectedElement.label}」
+            <button type="button" aria-label="清除页面元素选择" onClick={onClearSelection}>
+              ×
+            </button>
+          </span>
+        )}
+      </div>
+      <div className="rt-studio-tools__operations" aria-label="设计操作">
+        {STUDIO_DESIGN_OPERATIONS.map((operation) => (
+          <button
+            key={operation.id}
+            type="button"
+            className="rt-toolbar-pill"
+            disabled={running || operationPending}
+            title={operation.description}
+            onClick={() => onOperation(operation)}
+          >
+            {operation.label}
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function StudioDefaultPreview({
   capability,
 }: {
@@ -414,6 +624,10 @@ function ArtifactStage({
   terminalRun,
   runDisabledMessage,
   studioMode,
+  inspectionEnabled,
+  selectedElementKey,
+  onElementSelect,
+  onElementManifest,
 }: {
   artifact: ArtifactView;
   onRunRequest?: (request: ComboRunRequest) => Promise<{ turnId: string }>;
@@ -422,6 +636,10 @@ function ArtifactStage({
   terminalRun: { runId: string; state: 'completed' | 'failed'; message: string } | null;
   runDisabledMessage?: string;
   studioMode: boolean;
+  inspectionEnabled?: boolean;
+  selectedElementKey?: string | null;
+  onElementSelect?: (element: ComboElementSelection) => void;
+  onElementManifest?: (elements: ComboElementSelection[]) => void;
 }) {
   const content = useArtifactContent(artifact);
   const title = artifact.title ?? '未命名产物';
@@ -438,7 +656,11 @@ function ArtifactStage({
   const downloadTitle = artifactDownloadTitle(artifact.kind, studioMode);
   useEffect(() => setRunNotice(null), [artifact.id, runDisabledMessage]);
   return (
-    <div className={`rt-artifact-stage${htmlStage ? ' rt-artifact-stage--html' : ''}`}>
+    <div
+      className={`rt-artifact-stage${htmlStage ? ' rt-artifact-stage--html' : ''}${
+        studioMode ? ' rt-artifact-stage--studio' : ''
+      }`}
+    >
       <div className="rt-artifact-stage__actions">
         {runNotice && (
           <span className="rt-artifact-run-notice" role="status">
@@ -476,6 +698,10 @@ function ArtifactStage({
           terminalRun={terminalRun}
           runDisabledMessage={runDisabledMessage}
           onRunBlocked={setRunNotice}
+          inspectionEnabled={inspectionEnabled}
+          selectedElementKey={selectedElementKey}
+          onElementSelect={onElementSelect}
+          onElementManifest={onElementManifest}
         />
       )}
     </div>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   listMigrations,
   migrationHead,
+  parseMigrationRuns,
   planMigrations,
   validateMigrationFiles,
 } from '../scripts/migrate.js';
@@ -22,6 +23,15 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual(migrations);
     expect(plan.pending).toEqual([]);
+  });
+
+  it('defaults MIGRATION_RUNS to one and accepts only the explicit Test values', () => {
+    expect(parseMigrationRuns(undefined)).toBe(1);
+    expect(parseMigrationRuns('1')).toBe(1);
+    expect(parseMigrationRuns('2')).toBe(2);
+    for (const invalid of ['', '0', '02', '3', 'true']) {
+      expect(() => parseMigrationRuns(invalid)).toThrow(/must be exactly 1 or 2/);
+    }
   });
 
   it('rejects an unknown applied migration from the legacy chain', () => {

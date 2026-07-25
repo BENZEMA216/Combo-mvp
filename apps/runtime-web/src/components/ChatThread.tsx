@@ -122,9 +122,16 @@ export interface ChatThreadProps {
   streamingText: string | null;
   /** Honest activity label used only while no streaming text is available yet. */
   runningLabel?: string;
+  /** Studio hides internal locator/operation routing while preserving it in model context. */
+  formatMessageText?: (text: string) => string;
 }
 
-export function ChatThread({ messages, streamingText, runningLabel }: ChatThreadProps) {
+export function ChatThread({
+  messages,
+  streamingText,
+  runningLabel,
+  formatMessageText,
+}: ChatThreadProps) {
   const endRef = useRef<HTMLDivElement>(null);
   const stickToLatestRef = useRef(true);
   const turns = useMemo(() => groupMessagesByTurn(messages), [messages]);
@@ -148,12 +155,15 @@ export function ChatThread({ messages, streamingText, runningLabel }: ChatThread
       }}
     >
       {turns.map((turn) => (
-        <TurnBlock key={turn.key} turn={turn} />
+        <TurnBlock key={turn.key} turn={turn} formatMessageText={formatMessageText} />
       ))}
       {streamingText !== null && (
         <div className="rt-msg rt-msg--assistant rt-msg--streaming">
           <div className="rt-msg__role">Combo</div>
-          <AssistantBody text={streamingText} streaming />
+          <AssistantBody
+            text={formatMessageText ? formatMessageText(streamingText) : streamingText}
+            streaming
+          />
         </div>
       )}
       {runningLabel && streamingText === null && (
@@ -167,7 +177,13 @@ export function ChatThread({ messages, streamingText, runningLabel }: ChatThread
   );
 }
 
-function TurnBlock({ turn }: { turn: MessageTurn }) {
+function TurnBlock({
+  turn,
+  formatMessageText,
+}: {
+  turn: MessageTurn;
+  formatMessageText?: (text: string) => string;
+}) {
   const users = turn.messages.filter((message) => message.role === 'user');
   const assistants = turn.messages.filter((message) => message.role === 'assistant');
   const finalAssistant = assistants.at(-1);
@@ -179,7 +195,10 @@ function TurnBlock({ turn }: { turn: MessageTurn }) {
     const parts = splitContentBlocks(message.content);
     activities.push(...parts.activities);
     if (message.role === 'assistant' && parts.text) {
-      activities.push({ label: '中间说明', detail: parts.text });
+      activities.push({
+        label: '中间说明',
+        detail: formatMessageText ? formatMessageText(parts.text) : parts.text,
+      });
     }
   }
   if (finalParts) activities.push(...finalParts.activities);
@@ -191,7 +210,9 @@ function TurnBlock({ turn }: { turn: MessageTurn }) {
         const parts = splitContentBlocks(message.content);
         return (
           <div key={message.id} className="rt-msg rt-msg--user">
-            <div className="rt-msg__bubble">{parts.text}</div>
+            <div className="rt-msg__bubble">
+              {formatMessageText ? formatMessageText(parts.text) : parts.text}
+            </div>
           </div>
         );
       })}
@@ -201,7 +222,10 @@ function TurnBlock({ turn }: { turn: MessageTurn }) {
           {finalAssistant.status === 'failed' && !finalParts.text ? (
             <div className="rt-msg__body rt-error rt-error--inline">这轮处理没有完成。</div>
           ) : (
-            <AssistantBody text={finalParts.text} failed={finalAssistant.status === 'failed'} />
+            <AssistantBody
+              text={formatMessageText ? formatMessageText(finalParts.text) : finalParts.text}
+              failed={finalAssistant.status === 'failed'}
+            />
           )}
           {compactedActivities.length > 0 && (
             <ActivityDisclosure activities={compactedActivities} />

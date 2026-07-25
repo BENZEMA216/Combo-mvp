@@ -22,7 +22,7 @@ command -v docker >/dev/null 2>&1 || die "需要 docker（本期无 Docker，留
 
 # 0) 生产无默认密钥守卫（Codex#13 + r5）：本编排即生产栈（业务容器 NODE_ENV=production）。
 #    compose 的 ${VAR:?} 已拦「未设/空」，但示例密钥（combo/agora/minioadmin…）会满足 :? = 绕过
-#    「无默认密钥」。故起栈前在此显式拒绝空值与已知弱默认值，与 apps/api env.ts 生产守卫双保险。
+#    「无默认密钥」。故起栈前在此显式拒绝空值与已知弱默认值，与 Authoring 环境 schema 的生产守卫双保险。
 #    从 .env（compose 自动加载）取值校验；未提供 .env 时这些变量也为空，照样被拦。
 ENV_FILE="${ROOT_DIR}/.env"
 if [[ -f "${ENV_FILE}" ]]; then

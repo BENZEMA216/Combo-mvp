@@ -1,6 +1,6 @@
-// B-05 · ObjectStore 实现（S3/MinIO，实现 shared ObjectStorePort）。四桶（脊柱 70 §8.2）。
+// ObjectStore 实现（S3/MinIO，实现 shared ObjectStorePort）。
 //   - presignPut/presignGet：前端直传，PG 只存 key（原文不落正式盘，技术方案 1.2）。
-//   - list/delete/head：sweeper orphan 清理（B-16）。
+//   - list/delete/head：Task pipeline 的原文生命周期管理与对象探测。
 // 骨架阶段：惰性建 S3Client（forcePathStyle = MinIO 必需），不在 import 期连。
 import {
   S3Client,

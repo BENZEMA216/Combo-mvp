@@ -6,9 +6,11 @@ import {
   clearRefreshTokenExchangeCache,
   exchangeCodeForToken,
   refreshAccessToken,
+  sanitizeReturnTo,
 } from '../platform/infra/logto-oidc.js';
 
 const env = {
+  NODE_ENV: 'production',
   LOGTO_ISSUER: 'https://tenant.logto.app/oidc',
   LOGTO_APP_ID: 'app-id',
   LOGTO_APP_SECRET: 'app-secret',
@@ -17,9 +19,31 @@ const env = {
 } as Env;
 
 const discovery = {
+  issuer: env.LOGTO_ISSUER,
   authorization_endpoint: 'https://tenant.logto.app/oidc/auth',
   token_endpoint: 'https://tenant.logto.app/oidc/token',
 };
+
+describe('OIDC returnTo normalization', () => {
+  it('keeps a same-origin Task path and drops the fragment', () => {
+    expect(sanitizeReturnTo('/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history#token')).toBe(
+      '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history',
+    );
+  });
+
+  it.each([
+    'https://evil.example/phish',
+    '//evil.example/phish',
+    '/\\evil.example/phish',
+    '/%5cevil.example/phish',
+    '/%2f%2fevil.example/phish',
+    '/%252f%252fevil.example/phish',
+    '/tasks/%0aLocation:https://evil.example',
+    '/broken/%',
+  ])('falls back for hostile or malformed returnTo %s', (returnTo) => {
+    expect(sanitizeReturnTo(returnTo)).toBe('/tasks');
+  });
+});
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -67,24 +91,171 @@ describe('Logto OIDC refresh-token flow', () => {
     expect(url.searchParams.get('resource')).toBe(env.LOGTO_AUDIENCE);
   });
 
-  it.each(['http', 'https'] as const)(
-    'builds an %s logout URL with the client and canonical in-app return',
-    async (protocol) => {
-      fetchMock.mockResolvedValueOnce(
-        jsonResponse({
-          ...discovery,
-          end_session_endpoint: `${protocol}://tenant.logto.app/oidc/session/end?existing=kept`,
-        }),
+  it('allows a 4.6s cold OIDC discovery response', async () => {
+    vi.useFakeTimers();
+    try {
+      fetchMock.mockImplementationOnce(
+        (_url: string | URL, init?: RequestInit) =>
+          new Promise<Response>((resolve, reject) => {
+            const responseTimer = setTimeout(() => resolve(jsonResponse(discovery)), 4_600);
+            init?.signal?.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(responseTimer);
+                reject(new DOMException('aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+          }),
       );
 
-      const raw = await buildLogoutUrl(env);
+      const pending = buildAuthorizeUrl({
+        env,
+        state: 'state-cold',
+        nonce: 'nonce-cold',
+        codeChallenge: 'challenge-cold',
+        prompt: 'login',
+      });
+      await vi.advanceTimersByTimeAsync(4_600);
 
-      expect(raw).not.toBeNull();
-      const url = new URL(raw!);
-      expect(url.protocol).toBe(`${protocol}:`);
-      expect(url.searchParams.get('existing')).toBe('kept');
-      expect(url.searchParams.get('client_id')).toBe(env.LOGTO_APP_ID);
-      expect(url.searchParams.get('post_logout_redirect_uri')).toBe('https://combo.example/login');
+      await expect(pending).resolves.toContain(discovery.authorization_endpoint);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('builds a trusted HTTPS logout URL with the client and canonical in-app return', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...discovery,
+        end_session_endpoint: 'https://tenant.logto.app/oidc/session/end?existing=kept',
+      }),
+    );
+
+    const raw = await buildLogoutUrl(env);
+
+    expect(raw).not.toBeNull();
+    const url = new URL(raw!);
+    expect(url.protocol).toBe('https:');
+    expect(url.searchParams.get('existing')).toBe('kept');
+    expect(url.searchParams.get('client_id')).toBe(env.LOGTO_APP_ID);
+    expect(url.searchParams.get('post_logout_redirect_uri')).toBe('https://combo.example/login');
+  });
+
+  it('allows same-origin HTTP discovery endpoints outside production', async () => {
+    const testEnv = {
+      ...env,
+      NODE_ENV: 'test',
+      LOGTO_ISSUER: 'http://logto.internal:3001/oidc',
+    } as Env;
+    const testDiscovery = {
+      issuer: testEnv.LOGTO_ISSUER,
+      authorization_endpoint: 'http://logto.internal:3001/oidc/auth',
+      token_endpoint: 'http://logto.internal:3001/oidc/token',
+      end_session_endpoint: 'http://logto.internal:3001/oidc/session/end',
+    };
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(testDiscovery))
+      .mockResolvedValueOnce(jsonResponse(testDiscovery));
+
+    const authorizeUrl = await buildAuthorizeUrl({
+      env: testEnv,
+      state: 'state-test',
+      nonce: 'nonce-test',
+      codeChallenge: 'challenge-test',
+    });
+    const logoutUrl = await buildLogoutUrl(testEnv);
+
+    expect(authorizeUrl).toMatch(/^http:\/\/logto\.internal:3001\/oidc\/auth\?/);
+    expect(logoutUrl).toMatch(/^http:\/\/logto\.internal:3001\/oidc\/session\/end\?/);
+  });
+
+  it('rejects a discovery issuer that differs from the configured issuer', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        ...discovery,
+        issuer: 'https://tenant.logto.app/a-different-issuer',
+      }),
+    );
+
+    await expect(
+      buildAuthorizeUrl({
+        env,
+        state: 'state-mismatch',
+        nonce: 'nonce-mismatch',
+        codeChallenge: 'challenge-mismatch',
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    'not a valid URL',
+    'javascript:alert(document.domain)',
+    'https://attacker.example/oidc/auth',
+    'https://user:password@tenant.logto.app/oidc/auth',
+    'http://tenant.logto.app/oidc/auth',
+  ])('fails closed for an untrusted authorization endpoint %s', async (authorizationEndpoint) => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ ...discovery, authorization_endpoint: authorizationEndpoint }),
+    );
+
+    await expect(
+      buildAuthorizeUrl({
+        env,
+        state: 'state-hostile',
+        nonce: 'nonce-hostile',
+        codeChallenge: 'challenge-hostile',
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not contact an HTTP issuer when process hardening is production', async () => {
+    const insecureProductionEnv = {
+      ...env,
+      LOGTO_ISSUER: 'http://tenant.logto.app/oidc',
+    } as Env;
+
+    await expect(
+      buildAuthorizeUrl({
+        env: insecureProductionEnv,
+        state: 'state-http',
+        nonce: 'nonce-http',
+        codeChallenge: 'challenge-http',
+      }),
+    ).resolves.toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'not a valid URL',
+    'javascript:alert(document.domain)',
+    'https://attacker.example/oidc/token',
+    'https://user:password@tenant.logto.app/oidc/token',
+    'http://tenant.logto.app/oidc/token',
+  ])(
+    'never posts an authorization code, refresh token, or client secret to %s',
+    async (tokenEndpoint) => {
+      fetchMock.mockImplementation(() =>
+        Promise.resolve(jsonResponse({ ...discovery, token_endpoint: tokenEndpoint })),
+      );
+
+      await expect(
+        exchangeCodeForToken(env, 'sensitive-code', 'sensitive-verifier'),
+      ).resolves.toEqual({ kind: 'upstream_unavailable' });
+      await expect(refreshAccessToken(env, 'sensitive-refresh-token')).resolves.toEqual({
+        kind: 'upstream_unavailable',
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      for (const [url, init] of fetchMock.mock.calls as [string, RequestInit][]) {
+        expect(url).toBe('https://tenant.logto.app/oidc/.well-known/openid-configuration');
+        expect(init.method).toBeUndefined();
+        expect(init.redirect).toBe('error');
+        expect(init.body).toBeUndefined();
+      }
     },
   );
 
@@ -92,6 +263,9 @@ describe('Logto OIDC refresh-token flow', () => {
     'javascript:alert(document.domain)',
     'data:text/html,logged-out',
     'ftp://tenant.logto.app/oidc/session/end',
+    'https://attacker.example/oidc/session/end',
+    'https://user:password@tenant.logto.app/oidc/session/end',
+    'http://tenant.logto.app/oidc/session/end',
     'not a valid URL',
   ])('rejects unsafe or invalid logout endpoint %s', async (endSessionEndpoint) => {
     fetchMock.mockResolvedValueOnce(
@@ -119,6 +293,7 @@ describe('Logto OIDC refresh-token flow', () => {
 
     const [, init] = fetchMock.mock.calls[1] as [string, RequestInit];
     const body = new URLSearchParams(String(init.body));
+    expect(init.redirect).toBe('error');
     expect(body.get('grant_type')).toBe('authorization_code');
     expect(body.get('resource')).toBe(env.LOGTO_AUDIENCE);
   });
@@ -140,6 +315,7 @@ describe('Logto OIDC refresh-token flow', () => {
     const body = new URLSearchParams(String(init.body));
     expect(tokenUrl).toBe(discovery.token_endpoint);
     expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('error');
     expect(body.get('grant_type')).toBe('refresh_token');
     expect(body.get('refresh_token')).toBe('refresh-1');
     expect(body.get('client_id')).toBe(env.LOGTO_APP_ID);

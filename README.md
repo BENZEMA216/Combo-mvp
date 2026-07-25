@@ -20,7 +20,7 @@ Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shar
 >
 > 本项目的 PRD 与技术方案，唯一权威真源是飞书知识库「[产研方案集合](https://enbmphajlu.feishu.cn/wiki/AyvDw5SkZiinkDkjxe6cLcZInNe)」，按链路分组：
 >
-> - [生产链路（上传 → 发布）](https://enbmphajlu.feishu.cn/wiki/Sn3xwHpw8inq99kTRNQcmPMjnAe)：能力上传 PRD（2 步精简版）、服务端方案、服务端代码梳理
+> - [生产链路（上传与发布）](https://enbmphajlu.feishu.cn/wiki/Sn3xwHpw8inq99kTRNQcmPMjnAe)：能力上传 PRD（2 步精简版）、服务端方案、服务端代码梳理
 > - [试用与消费链路](https://enbmphajlu.feishu.cn/wiki/NL8WwPYwmih55UknIdtcCqB5nGg)：试用链路 PRD、试用/消费服务端方案
 > - [横切方案](https://enbmphajlu.feishu.cn/wiki/Di6awjArji4oXKkAxetc4Y1enLc)：能力包契约、登录与账号体系、后端仓库结构规范
 > - [运维与环境](https://enbmphajlu.feishu.cn/wiki/QHEQwaEd9iki3vkSITlcXfcMn6f)、[归档](https://enbmphajlu.feishu.cn/wiki/Jd00wpfavi2ToPkGUD7cTTg3n1c)（归档内为已被取代的旧方案，勿作依据）
@@ -36,7 +36,7 @@ Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shar
 pnpm install
 ```
 
-工作区 7 个 package：`packages/shared`、`apps/api`、`apps/web`、`db`、`infra`、`scripts`（`infra` 无 TS）。
+工作区包含 `packages/shared`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
 
 ---
 
@@ -46,10 +46,10 @@ pnpm install
 
 ```bash
 pnpm install          # 装依赖
-pnpm -r run build     # 按项目引用依赖序构建 shared → api / web
+pnpm -r run build     # 按项目引用依赖序构建 shared 与各应用
 pnpm -r run typecheck # 全包 tsc -b
 pnpm lint             # eslint .（含分层 import 规则）
-pnpm -r run test      # shared 24 + db 14 + api 61 = 99（web 骨架无测试）
+pnpm -r run test      # 运行全部工作区测试
 pnpm format:check     # prettier 全量校验
 ```
 
@@ -58,57 +58,54 @@ pnpm format:check     # prettier 全量校验
 ```bash
 pnpm -F @cb/shared build        # 构建脊柱（apps 依赖其 dist + .d.ts，先构建它）
 pnpm -F @cb/shared openapi:gen  # 生成 OpenAPI 3.1（写 dist/openapi.json）
-pnpm -F @cb/api build           # 构建 api（依赖 shared dist）
+pnpm -F @cb/authoring build     # 构建创作 API 与 Worker
+pnpm -F @cb/runtime build       # 构建 Runtime API
 pnpm -F @cb/web dev             # Vite 开发服务器（前端）
+pnpm -F @cb/runtime-web dev     # Vite 试用与 Studio 前端
 pnpm -F @cb/web build           # tsc -b && vite build
 ```
 
-### 本地直跑 api（无 DB 也能起到健康检查可达）
+### 本地直跑 Authoring API（无 DB 也能起到健康检查可达）
 
-`@cb/shared` 与 `@cb/api` 构建后：
+`@cb/shared` 与 `@cb/authoring` 构建后：
 
 ```bash
-node apps/api/dist/processes/api.js
+node apps/authoring/dist/processes/api.js
 # 默认监听 :3000（可用 PORT/HOST 覆盖）
 ```
 
 无 DB / Redis / MinIO / Logto 时进程**不崩溃**，按设计降级：
 
-- `GET /health` → `200 {"status":"ok"}`（liveness，不查依赖）
-- `GET /ready` → `503`，结构化列出六依赖（db/redis_queue/redis_hot/minio/logto 标 `down`、llm 标 `degraded`），`ready:false`（依赖宕时快速失败、不裸挂）
-- 受保护端点（如 `GET /api/v1/me`）→ `401` ErrorEnvelope（`UNAUTHENTICATED` / `escalate`，绝不裸露 code）
-- 未实现端点 → `501` 占位信封；未知路由 → `404` 信封
+- `GET /health` 返回 `200 {"status":"ok"}`（liveness，不查依赖）。
+- `GET /ready` 返回 `503`，结构化列出六依赖（db/redis_queue/redis_hot/minio/logto 标 `down`、llm 标 `degraded`），并给出 `ready:false`。
+- 受保护端点（如 `GET /api/v1/me`）返回 `401` ErrorEnvelope（`UNAUTHENTICATED` / `escalate`，绝不裸露 code）。
+- 未知路由返回 `404` 信封。
 - 每个响应带 `x-trace-id` 头 + 结构化 pino 日志
 
 > 起全栈后 `/ready` 会随依赖就绪转 `ok`；编排 / LB 据 `/ready` 判定是否接流量。
 
 ---
 
-## 四进程说明（一镜像四入口）
+## Authoring 两进程说明
 
-api / worker / consumer / sweeper 共用同一份代码、同一镜像，按 `PROCESS` 环境变量在 `infra/entrypoint.sh` 分叉：
+API 与 Worker 共用 Authoring 镜像，按 `PROCESS` 环境变量在 `infra/entrypoint.sh` 分叉：
 
-| 进程       | 入口                                  | 职责                                                        | 伸缩约束                                          |
-| ---------- | ------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------- |
-| `api`      | `apps/api/dist/processes/api.js`      | Fastify HTTP，对外服务 + SSE                                | 可多实例                                          |
-| `worker`   | `apps/api/dist/processes/worker.js`   | BullMQ 消费（import / extract / structure / publish_batch） | 可多实例                                          |
-| `consumer` | `apps/api/dist/processes/consumer.js` | outbox 保序消费（事件投递 / 通知）                          | **不可多实例**（启动拿 advisory lock 防误 scale） |
-| `sweeper`  | `apps/api/dist/processes/sweeper.js`  | 后台对账 / orphan 清理 / outbox 滞留补投                    | **固定单实例**（启动拿 redis_hot 锁单活）         |
-
-本期四进程仅 `boot`（打印职责 banner），不消费队列 / 不写库；Phase 3 接 BullMQ Worker 时遵脊柱 §11.A 受保护写入 CTE（`WHERE id=:jobId AND fence_token=:fence AND status='running'`）。
+| 进程     | 入口                                      | 职责                                    |
+| -------- | ----------------------------------------- | --------------------------------------- |
+| `api`    | `apps/authoring/dist/processes/api.js`    | Fastify HTTP、认证、任务接口与 SSE      |
+| `worker` | `apps/authoring/dist/processes/worker.js` | BullMQ Task pipeline 与失联任务租约恢复 |
 
 本地直跑单个进程：
 
 ```bash
-PROCESS=worker node apps/api/dist/processes/worker.js
-# 或直接 node apps/api/dist/processes/{worker,consumer,sweeper}.js
+PROCESS=worker node apps/authoring/dist/processes/worker.js
 ```
 
 ---
 
 ## 数据库迁移
 
-DDL 真源在 `db/migrations/`（10 个 SQL，字典序即执行序）：基表先建，跨域 FK 后置闭合（脊柱 §11.G）。
+DDL 真源在 `db/migrations/`（`0000` 至 `0006`，共 7 个 SQL，字典序即执行序）。
 Runner 自带记账表 `schema_migrations`，**幂等可重入**：已应用文件跳过、逐文件单事务、失败即止。
 
 ```bash
@@ -120,20 +117,18 @@ pnpm -F @cb/db migrate:status  # 列清单（无连接也能列）
 默认 `DATABASE_URL=postgres://combo:combo@localhost:5432/combo`，可用环境变量覆盖。
 
 - 唯一 `CREATE EXTENSION` 是 `pgcrypto`（stock PG 自带），故任意 PG 实例可跑。
-- `vector(1536)`（pgvector）、`gin_trgm_ops`（pg_trgm）为 P1，已注释 / 改 btree，**stock PG 可跑**；P1 启用时新增 `ALTER ADD` 迁移（迁移只加不减，勿改既有文件）。
-- 冻结表（`usage_events` / `daily_*` / `experience_*` / `runtime` / `artifacts`）本期只建 schema、不写、不挂端点。
+- 当前迁移链包含 Task pipeline、Capability、Session、Turn、Message 与 Artifact 的运行时真源。
+- Runner 会拒绝编号缺口、未知账本项、旧迁移链和非空 schema 配空账本；Test 从空库完整执行后再运行第二遍幂等检查。
 
 ---
 
 ## Compose 起全栈（需 Docker）
 
-> **本期开发机无 Docker，以下命令未实跑、推迟到后续；compose / Dockerfile 已写好并通过静态一致性核对。**
+> 以下 Compose 命令只用于独立开发环境，不作为 Test、Preview 或 Production 的验收证据。tecent2 源码检查不运行这些命令。
 
-编排在 `infra/docker-compose.yml`，18 服务 + 6 命名卷。固定启动顺序（硬性，由 `depends_on` + `condition` 落地）：
+编排在 `infra/docker-compose.yml`，17 个服务和 6 个命名卷。固定启动顺序由 `depends_on` 与健康条件约束：
 
-```
-postgres → logto_db_seed → logto_alteration → logto → migrate(业务迁移) → 业务容器(api/worker/consumer/sweeper/web)
-```
+PostgreSQL 就绪后依次运行 Logto 建库与变更任务，再启动 Logto。业务迁移完成后才会启动 API、Worker、Runtime 和 Web。
 
 要点：
 
@@ -160,9 +155,9 @@ pnpm -F @cb/infra compose:down  # 拆栈
 | **全栈 compose**（生产栈） | `.env.compose.example` | `http://logto:3001/oidc`     | **密钥必填、禁弱默认**；`start.sh` 起栈前守卫拒绝空值与 combo/minioadmin/postgres 等 |
 
 - **为何拆两套**：单一 `.env` 的 Logto URL 若用 `localhost`，在 compose 网络里会让 API 容器内 `/ready` 和 JWKS 打到自己（容器内 `localhost` ≠ `logto` 容器）。故 compose 用服务名 `logto:3001`，本机直跑用 `localhost:3001`，两套各自 `LOGTO_ENDPOINT == {LOGTO_ISSUER 去 /oidc}`、自洽不分裂。
-- **为何示例密钥留空**：示例里若带可用密钥（combo/minioadmin），会满足 compose 的 `${VAR:?}` = 绕过「生产无默认密钥」。故 `.env.compose.example` 所有密钥项留空，且 `scripts/start.sh` 加弱默认守卫（空或已知弱默认值即拒绝起栈），与 `apps/api/src/config/env.ts` 生产守卫双保险。
+- **为何示例密钥留空**：示例里若带可用密钥（combo/minioadmin），会满足 compose 的 `${VAR:?}` = 绕过「生产无默认密钥」。故 `.env.compose.example` 所有密钥项留空，且 `scripts/start.sh` 加弱默认守卫（空或已知弱默认值即拒绝起栈），与 `apps/authoring/src/platform/config/env.ts` 生产守卫双保险。
 
-环境变量真源是上述两个 `.env.*.example`，分两类消费者：`[app]`（Node 进程 `apps/api/src/config/env.ts` 校验）与 `[compose]`（compose 变量替换）。
+环境变量真源是上述两个 `.env.*.example`，分两类消费者：`[app]`（Node 进程的环境 schema 校验）与 `[compose]`（compose 变量替换）。
 
 ---
 
@@ -174,7 +169,7 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 
 - `gate` —— install / lint（含分层依赖规则）/ typecheck / build / test / OpenAPI 生成自查 / compose 配置自查（结构校验，不 up）。无外部依赖，必过才允许合并。
 - `integration` —— 起 PG / Redis 双实例 / MinIO 临时 service 容器，跑 db 迁移集成 + redis 双实例分工断言（O-05 / O-07）。
-- `image` —— 构建 api / web 两个镜像，校验 Dockerfile 与 build context（仓库根）自洽。
+- `image` —— 分别构建 API、Runtime 与 Web 镜像，并校验 Dockerfile 与仓库根 build context 自洽。
 
 所有步骤直接以仓库根（= monorepo 根）为工作目录；`cache-dependency-path: pnpm-lock.yaml`、`docker build -f infra/Dockerfile.* .`（context `.` = 仓库根）等路径均相对仓库根。
 
@@ -185,12 +180,13 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 ```
 .                      # 仓库根 = 本 monorepo（@cb/root）
 ├── packages/shared/   # @cb/shared 脊柱：DTO / zod / ErrorEnvelope / SSE 协议 / 常量 / 端口 / OpenAPI 真源
-├── apps/api/          # @cb/api  Fastify 多进程骨架（api/worker/consumer/sweeper），业务 501 占位
-├── apps/web/          # @cb/web  React/Vite 前端骨架（API client / SSE / 统一状态组件 / 导航外壳）
+├── apps/authoring/    # @cb/authoring  创作 API 与任务 Worker
+├── apps/runtime/      # @cb/runtime  会话、Turn、Artifact 与 Runtime SSE
+├── apps/web/          # @cb/web  创作端 React/Vite 应用
+├── apps/runtime-web/  # @cb/runtime-web  试用与 Studio React/Vite 应用
 ├── db/                # @cb/db   PostgreSQL 迁移 + 幂等 runner
-├── infra/             # @cb/infra docker-compose + 一镜像四入口 Dockerfile + nginx + Redis 双配置 + 建库/建桶脚本
+├── infra/             # @cb/infra 编排、发布拓扑、Nginx 与基础设施配置
 ├── scripts/           # @cb/scripts start / migrate / smoke / openapi-dump / 集成脚本
-├── tools/             # combo-import：本机导入助手（Go 源，构建期交叉编译进 api 镜像）
 └── .github/workflows/ # CI（ci.yml）。本 monorepo 即仓库根，GitHub Actions 直接识别并运行
 ```
 
@@ -198,19 +194,8 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 
 ---
 
-## 当前验证状态
+## 验证
 
-集成重建自检（无 PG / 无 Docker 环境，2026-06-15）逐门复跑结果：
+源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0006`、再次幂等执行和异常账本拒绝。
 
-| 门                      | 状态     | 说明                                                                                                                                                       |
-| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pnpm install`          | 通过     | 7 workspace，lockfile up to date                                                                                                                           |
-| `pnpm -r run build`     | 通过     | shared / api / web 全 Done（vite 124 模块）                                                                                                                |
-| `pnpm -r run typecheck` | 通过     | 全包 tsc 干净（exit 0）                                                                                                                                    |
-| `pnpm lint`             | 通过     | `eslint . --max-warnings 0` 0 error 0 warning                                                                                                              |
-| `pnpm format:check`     | 通过     | 全量符合 Prettier（修了 9 个文件的换行格式）                                                                                                               |
-| `pnpm -r run test`      | 通过     | 99 测全绿（shared 24 / db 14 / api 61；含 outbox 全 topic × payload 一致性自核验；web 骨架无测试）                                                         |
-| api 启动冒烟            | 通过     | 无依赖下 `/health` 200、`/ready` 503 结构化降级不崩、`/me` 401 无 code、未知路由 404 无 code                                                               |
-| SSE 协议冒烟            | 通过     | 真 `text/event-stream` 握手 + `state_snapshot` 首帧 + 业务帧（over-the-wire 验证）；Cookie-only 拒 Bearer/query token 返 401                               |
-| `migrate`（真跑）       | **推迟** | 需可达 PG（本机无 PG/Docker）；runner 自查与 SQL 静态核对通过（36 表、复合 FK、`gen_uuid_v7` `::int`）                                                     |
-| compose 起全栈          | **推迟** | 需 Docker（本机无）；YAML 解析有效 / migrate 依赖 logto healthy / healthcheck issuer 断言 / 0 生产默认密钥 + start.sh 弱密钥守卫 `bash -n` 通过 已静态核对 |
+Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护工作流核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失；源码目录中的普通测试不启动 Docker 或 Docker Compose。

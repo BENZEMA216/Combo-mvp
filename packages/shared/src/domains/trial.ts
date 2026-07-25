@@ -82,9 +82,18 @@ export const ArtifactViewSchema = z.object({
   title: z.string().optional(),
   /** 从 Agent 当前 UI 克隆到新会话的快照来源；普通 revision 不带。 */
   sourceArtifactId: IdSchema.optional(),
+  /** 产生这份产物的 Turn；能力 UI 种子副本没有来源 Turn。 */
+  sourceTurnId: IdSchema.optional(),
+  createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
 });
 export type ArtifactView = z.infer<typeof ArtifactViewSchema>;
+
+export const ActiveTurnViewSchema = z.object({
+  id: IdSchema,
+  createdAt: IsoDateTimeSchema,
+});
+export type ActiveTurnView = z.infer<typeof ActiveTurnViewSchema>;
 
 /** 会话详情：一次请求把聊天流和画布恢复出来所需的全部。 */
 export const SessionDetailSchema = z.object({
@@ -100,9 +109,11 @@ export const SessionDetailSchema = z.object({
   }),
   messages: z.array(MessageViewSchema),
   artifacts: z.array(ArtifactViewSchema),
+  /** PostgreSQL 中仍在运行的 Turn；页面刷新后据此恢复运行态，再由 SSE 补齐事件。 */
+  activeTurn: ActiveTurnViewSchema.nullable(),
   /**
-   * 当前 Studio 会话内与 Agent 生效 UI 对应的 artifact；新 Studio 的克隆快照
-   * 会映射为本会话 clone id。consume 会话为 null；旧服务端缺字段时前端安全降级。
+   * 当前 Studio 会话内与 Agent 生效 UI 对应的 artifact；新 Studio 的隔离副本
+   * 会映射为本会话 clone id。consume 会话为 null；字段缺失时前端安全降级。
    */
   currentUiArtifactId: IdSchema.nullable().optional(),
 });

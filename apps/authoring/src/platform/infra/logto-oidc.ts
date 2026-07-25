@@ -18,40 +18,109 @@ interface OidcEndpoints {
   tokenEndpoint: string;
 }
 
-function normalizeIssuer(issuer: string): string {
-  return issuer.replace(/\/$/, '');
+interface OidcDiscoveryDocument {
+  issuer?: unknown;
+  authorization_endpoint?: unknown;
+  token_endpoint?: unknown;
+  end_session_endpoint?: unknown;
 }
 
-function discoveryUrl(env: Env): string {
-  return `${normalizeIssuer(env.LOGTO_ISSUER)}/.well-known/openid-configuration`;
+interface TrustedOidcDiscovery {
+  document: OidcDiscoveryDocument;
+  issuer: URL;
 }
 
 /**
- * 拉 discovery 取 authorize/token 端点（带超时，依赖宕机快速失败、不裸挂）。
- *   - null：上游不可达 / 超时 / 非 2xx / 缺关键字段（调用方据此走 escalate / 失败重定向）。
+ * Logto discovery 在容器网络内可能需要数秒；2s 会把仍在正常响应的上游误判为不可达。
+ * 8s 仍有明确上限，同时覆盖当前 full-compose 实测约 4.6s 的冷请求。
  */
-async function fetchOidcEndpoints(env: Env, timeoutMs = 2_000): Promise<OidcEndpoints | null> {
+const OIDC_DISCOVERY_TIMEOUT_MS = 8_000;
+
+function normalizeIssuer(issuer: string): string {
+  return issuer.replace(/\/+$/, '');
+}
+
+function parseOidcUrl(raw: unknown, production: boolean): URL | null {
+  if (typeof raw !== 'string' || raw.length === 0) return null;
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (production && url.protocol !== 'https:') return null;
+    if (url.username || url.password || url.hash) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function canonicalIssuer(url: URL): string | null {
+  if (url.search) return null;
+  return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+}
+
+function parseTrustedEndpoint(raw: unknown, issuer: URL, production: boolean): string | null {
+  const endpoint = parseOidcUrl(raw, production);
+  if (!endpoint || endpoint.origin !== issuer.origin) return null;
+  return endpoint.toString();
+}
+
+/**
+ * 拉取并校验 discovery 信任根：
+ *   - 文档 issuer 必须与配置的 LOGTO_ISSUER 精确对应（仅忽略尾随斜杠）；
+ *   - URL 只允许无凭据的 HTTP(S)，生产模式必须 HTTPS。
+ */
+async function fetchTrustedOidcDiscovery(
+  env: Env,
+  timeoutMs: number,
+): Promise<TrustedOidcDiscovery | null> {
+  const production = env.NODE_ENV === 'production';
+  const configuredIssuer = parseOidcUrl(env.LOGTO_ISSUER, production);
+  const expectedIssuer = configuredIssuer ? canonicalIssuer(configuredIssuer) : null;
+  if (!configuredIssuer || !expectedIssuer) return null;
+
+  const discoveryUrl = `${expectedIssuer}/.well-known/openid-configuration`;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(discoveryUrl(env), { signal: ctrl.signal });
+    const res = await fetch(discoveryUrl, { signal: ctrl.signal, redirect: 'error' });
     if (!res.ok) return null;
-    const doc = (await res.json()) as {
-      authorization_endpoint?: unknown;
-      token_endpoint?: unknown;
-    };
-    if (typeof doc.authorization_endpoint !== 'string' || typeof doc.token_endpoint !== 'string') {
-      return null;
-    }
-    return {
-      authorizationEndpoint: doc.authorization_endpoint,
-      tokenEndpoint: doc.token_endpoint,
-    };
+    const document = (await res.json()) as OidcDiscoveryDocument;
+    if (!document || typeof document !== 'object' || Array.isArray(document)) return null;
+
+    const advertisedIssuer = parseOidcUrl(document.issuer, production);
+    if (!advertisedIssuer || canonicalIssuer(advertisedIssuer) !== expectedIssuer) return null;
+    return { document, issuer: configuredIssuer };
   } catch {
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * 拉 discovery 取 authorize/token 端点（带超时，依赖宕机快速失败、不裸挂）。
+ *   - null：上游不可达 / 超时 / 非 2xx / issuer 或端点不可信 / 缺关键字段。
+ */
+async function fetchOidcEndpoints(
+  env: Env,
+  timeoutMs = OIDC_DISCOVERY_TIMEOUT_MS,
+): Promise<OidcEndpoints | null> {
+  const discovery = await fetchTrustedOidcDiscovery(env, timeoutMs);
+  if (!discovery) return null;
+
+  const production = env.NODE_ENV === 'production';
+  const authorizationEndpoint = parseTrustedEndpoint(
+    discovery.document.authorization_endpoint,
+    discovery.issuer,
+    production,
+  );
+  const tokenEndpoint = parseTrustedEndpoint(
+    discovery.document.token_endpoint,
+    discovery.issuer,
+    production,
+  );
+  if (!authorizationEndpoint || !tokenEndpoint) return null;
+  return { authorizationEndpoint, tokenEndpoint };
 }
 
 /** base64url 编码（无填充，PKCE / 随机串用）。 */
@@ -74,20 +143,71 @@ export interface AuthTx {
   state: string;
   nonce: string;
   codeVerifier: string;
-  /** 回跳站内路径（白名单校验后存；缺省 /creator）。 */
+  /** 回跳站内路径（白名单校验后存；缺省 /tasks）。 */
   returnTo: string;
 }
 
-/** returnTo 白名单：仅站内相对路径（以 / 开头、非 //、非含协议），防 open redirect（10-auth §3.1）。 */
+const RETURN_TO_ORIGIN = 'https://combo.invalid';
+const MAX_RETURN_TO_DECODE_PASSES = 5;
+
+function hasControlCharacter(value: string): boolean {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0);
+    return codePoint !== undefined && (codePoint <= 0x1f || codePoint === 0x7f);
+  });
+}
+
+function unsafeReturnToCandidate(value: string): boolean {
+  if (
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.includes('\\') ||
+    hasControlCharacter(value)
+  ) {
+    return true;
+  }
+  try {
+    const target = new URL(value, RETURN_TO_ORIGIN);
+    return target.origin !== RETURN_TO_ORIGIN || target.pathname.startsWith('//');
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * returnTo 白名单：只返回规范化的同源 path + query。递归检查解码副本，避免下游再次
+ * 解码时把协议相对地址、反斜杠或控制字符还原出来；fragment 不进入登录事务 Cookie。
+ */
 export function sanitizeReturnTo(raw: string | undefined): string {
-  const fallback = '/tasks'; // 重构后创作端首页（旧 /creator 路由已删，落过去是 404）
+  const fallback = '/tasks'; // 当前创作端首页；不把认证回跳依赖在兼容别名上。
   if (typeof raw !== 'string' || raw.length === 0 || raw.length > 512) return fallback;
-  // 必须站内相对路径：以单个 / 开头，且不是 //（协议相对，跳外站）或含 scheme。
-  if (!raw.startsWith('/')) return fallback;
-  if (raw.startsWith('//')) return fallback;
-  if (raw.includes('\\')) return fallback; // 反斜杠规避
-  if (/^\/[a-z][a-z0-9+.-]*:/i.test(raw)) return fallback; // /javascript: 之类
-  return raw;
+  if (unsafeReturnToCandidate(raw)) return fallback;
+
+  let decoded = raw;
+  let stabilized = false;
+  for (let pass = 0; pass < MAX_RETURN_TO_DECODE_PASSES; pass += 1) {
+    if (unsafeReturnToCandidate(decoded)) return fallback;
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return fallback;
+    }
+    if (next === decoded) {
+      stabilized = true;
+      break;
+    }
+    decoded = next;
+  }
+  if (!stabilized || unsafeReturnToCandidate(decoded)) return fallback;
+
+  try {
+    const target = new URL(raw, RETURN_TO_ORIGIN);
+    const normalized = `${target.pathname}${target.search}`;
+    return normalized.length <= 512 && !unsafeReturnToCandidate(normalized) ? normalized : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 /** 构建授权 URL 的入参。 */
@@ -125,21 +245,25 @@ export async function buildAuthorizeUrl(input: BuildAuthorizeUrlInput): Promise<
   const { env, state, nonce, codeChallenge } = input;
   const endpoints = await fetchOidcEndpoints(env);
   if (!endpoints) return null;
-  const url = new URL(endpoints.authorizationEndpoint);
-  const params = url.searchParams;
-  params.set('client_id', env.LOGTO_APP_ID);
-  params.set('redirect_uri', env.LOGTO_REDIRECT_URI);
-  params.set('response_type', 'code');
-  // openid profile email = 基础身份；roles = 角色 claim；offline_access = 可续期会话。
-  params.set('scope', 'openid profile email roles offline_access');
-  // API resource indicator（配了才带）：使铸出的 access_token aud 含本服务，供 §4.1 校 aud。
-  if (env.LOGTO_AUDIENCE) params.set('resource', env.LOGTO_AUDIENCE);
-  params.set('state', state);
-  params.set('nonce', nonce);
-  params.set('code_challenge', codeChallenge);
-  params.set('code_challenge_method', 'S256');
-  params.set('prompt', promptWithConsent(input.prompt));
-  return url.toString();
+  try {
+    const url = new URL(endpoints.authorizationEndpoint);
+    const params = url.searchParams;
+    params.set('client_id', env.LOGTO_APP_ID);
+    params.set('redirect_uri', env.LOGTO_REDIRECT_URI);
+    params.set('response_type', 'code');
+    // openid profile email = 基础身份；roles = 角色 claim；offline_access = 可续期会话。
+    params.set('scope', 'openid profile email roles offline_access');
+    // API resource indicator（配了才带）：使铸出的 access_token aud 含本服务，供 §4.1 校 aud。
+    if (env.LOGTO_AUDIENCE) params.set('resource', env.LOGTO_AUDIENCE);
+    params.set('state', state);
+    params.set('nonce', nonce);
+    params.set('code_challenge', codeChallenge);
+    params.set('code_challenge_method', 'S256');
+    params.set('prompt', promptWithConsent(input.prompt));
+    return url.toString();
+  } catch {
+    return null;
+  }
 }
 
 /** code 换 token 的分类结果（绝不裸抛 OIDC/网络原始异常，脊柱 §11.B）。 */
@@ -177,6 +301,9 @@ export async function exchangeCodeForToken(
   try {
     const res = await fetch(endpoints.tokenEndpoint, {
       method: 'POST',
+      // Never replay authorization material to a redirect target, even if a trusted-origin token
+      // endpoint is misconfigured to emit a 307/308 response.
+      redirect: 'error',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
       signal: ctrl.signal,
@@ -262,6 +389,7 @@ async function performRefreshAccessToken(
   try {
     const res = await fetch(endpoints.tokenEndpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: body.toString(),
       signal: ctrl.signal,
@@ -336,24 +464,23 @@ export function refreshAccessToken(
  * 拼 client_id + post_logout_redirect_uri（回站内 /login）。拉不到则返 null（仅清本地会话，不强求跳 Logto）。
  */
 export async function buildLogoutUrl(env: Env, timeoutMs = 1_500): Promise<string | null> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const res = await fetch(discoveryUrl(env), { signal: ctrl.signal });
-    if (!res.ok) return null;
-    const doc = (await res.json()) as { end_session_endpoint?: unknown };
-    if (typeof doc.end_session_endpoint !== 'string') return null;
-    const url = new URL(doc.end_session_endpoint);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  const discovery = await fetchTrustedOidcDiscovery(env, timeoutMs);
+  if (!discovery) return null;
+  const endpoint = parseTrustedEndpoint(
+    discovery.document.end_session_endpoint,
+    discovery.issuer,
+    env.NODE_ENV === 'production',
+  );
+  if (!endpoint) return null;
 
+  try {
+    const url = new URL(endpoint);
     const postLogoutRedirect = new URL('/login', env.LOGTO_REDIRECT_URI);
     url.searchParams.set('client_id', env.LOGTO_APP_ID);
     url.searchParams.set('post_logout_redirect_uri', postLogoutRedirect.toString());
     return url.toString();
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 

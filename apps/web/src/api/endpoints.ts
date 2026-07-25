@@ -9,6 +9,7 @@ import {
   type PublishResult,
   type TaskView,
 } from '@cb/shared';
+import { sanitizeTaskReturnTo } from '../safeReturnTo.js';
 import { apiGet, apiGetEnvelope, apiPost } from './client.js';
 
 /** 游标分页的一页（meta.page 缺失时按「单页到底」兜底，不崩列表）。 */
@@ -113,6 +114,8 @@ export function createStudioSession(capabilityId: string): Promise<StudioSession
  * 试用端（runtime-web）入口：生产部署在同域 /try/ 子路径（vite base '/try/'，dev 端口 5174 同 base）。
  * /try/c/:id 会为该能力开一局试用会话。
  */
-export function trialUrl(capabilityId: string): string {
-  return `/try/c/${encodeURIComponent(capabilityId)}`;
+export function trialUrl(capabilityId: string, returnTo?: string): string {
+  const path = `/try/c/${encodeURIComponent(capabilityId)}`;
+  const safeReturnTo = sanitizeTaskReturnTo(returnTo);
+  return safeReturnTo ? `${path}?returnTo=${encodeURIComponent(safeReturnTo)}` : path;
 }

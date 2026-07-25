@@ -104,6 +104,22 @@ describe('ChatThread', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 10));
     expect(vi.mocked(Element.prototype.scrollIntoView).mock.calls).toHaveLength(callsBefore);
   });
+
+  it('formats Studio locator context only for the creator-facing user bubble', () => {
+    const messages = [
+      message('m1', 1, 'user', [{ type: 'text', text: 'internal locator\n把按钮放大' }]),
+    ];
+    render(
+      <ChatThread
+        messages={messages}
+        streamingText={null}
+        formatMessageText={(text) => text.replace('internal locator\n', '标注「主按钮」\n')}
+      />,
+    );
+
+    expect(screen.getByText(/标注「主按钮」/)).toBeInTheDocument();
+    expect(screen.queryByText(/internal locator/)).not.toBeInTheDocument();
+  });
 });
 
 describe('conversation block parsing', () => {

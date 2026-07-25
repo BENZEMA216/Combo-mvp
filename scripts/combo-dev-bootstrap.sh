@@ -640,7 +640,7 @@ sanitize_preview_namespace() {
   done
   for resource in \
     deployments.apps statefulsets.apps daemonsets.apps horizontalpodautoscalers.autoscaling jobs.batch cronjobs.batch pods services \
-    ingresses.networking.k8s.io networkpolicies.networking.k8s.io configmaps secrets serviceaccounts \
+    ingresses.networking.k8s.io networkpolicies.networking.k8s.io configmaps serviceaccounts \
     roles.rbac.authorization.k8s.io rolebindings.rbac.authorization.k8s.io resourcequotas limitranges \
     leases.coordination.k8s.io; do
     "${AK[@]}" -n "$NAMESPACE" delete "$resource" --all --ignore-not-found --wait=true --timeout=180s >/dev/null 2>&1 || failed=1
@@ -650,6 +650,7 @@ sanitize_preview_namespace() {
 
 mark_failure_fence() {
   install -d -o root -g root -m 0700 /var/lib/combo-dev
+  install -d -o root -g root -m 0755 /var/lib/combo-dev/evidence
   printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
   chmod 0600 "$FAILURE_FENCE_MARKER"
 }
@@ -720,6 +721,13 @@ dispatcher_credential_valid() {
   can_i_dispatcher yes list namespaces || return 1
   can_i_dispatcher yes list roles.rbac.authorization.k8s.io "$NAMESPACE" || return 1
   can_i_dispatcher yes list rolebindings.rbac.authorization.k8s.io "$NAMESPACE" || return 1
+  can_i_dispatcher yes list daemonsets.apps "$NAMESPACE" || return 1
+  can_i_dispatcher yes list cronjobs.batch "$NAMESPACE" || return 1
+  can_i_dispatcher yes list ingresses.networking.k8s.io "$NAMESPACE" || return 1
+  can_i_dispatcher yes list horizontalpodautoscalers.autoscaling "$NAMESPACE" || return 1
+  can_i_dispatcher yes list serviceaccounts "$NAMESPACE" || return 1
+  can_i_dispatcher yes list resourcequotas "$NAMESPACE" || return 1
+  can_i_dispatcher yes list limitranges "$NAMESPACE" || return 1
   can_i_dispatcher yes list clusterroles.rbac.authorization.k8s.io || return 1
   can_i_dispatcher yes list clusterrolebindings.rbac.authorization.k8s.io || return 1
   can_i_dispatcher yes get persistentvolumes/combo-dev-postgres || return 1
@@ -728,6 +736,10 @@ dispatcher_credential_valid() {
   can_i_dispatcher no list persistentvolumes || return 1
   can_i_dispatcher no patch deployments.apps "$PRODUCTION_NAMESPACE" || return 1
   can_i_dispatcher no get secrets "$NAMESPACE" || return 1
+  can_i_dispatcher no list secrets "$NAMESPACE" || return 1
+  can_i_dispatcher no delete secrets/combo-dev-env "$NAMESPACE" || return 1
+  can_i_dispatcher yes patch secrets/combo-dev-session "$NAMESPACE" || return 1
+  can_i_dispatcher no patch secrets/combo-dev-env "$NAMESPACE" || return 1
   can_i_dispatcher no create pods "$NAMESPACE" || return 1
 }
 

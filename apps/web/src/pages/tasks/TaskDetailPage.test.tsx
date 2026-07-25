@@ -122,6 +122,7 @@ describe('TaskDetailPage — SSE 实时进度', () => {
     act(() => conn.emit('item-appended', { item: cap2 }, { id: '3-2' }));
     expect(await screen.findByText('周报整理')).toBeInTheDocument();
     expect(await screen.findByText('代码评审')).toBeInTheDocument();
+    // 非规范测试 id 不跨 bundle 传播；生产 UUID 会由专门的 returnTo 契约覆盖。
     expect(screen.getAllByRole('link', { name: '试用 →' })[0]).toHaveAttribute('href', '/try/c/c1');
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);
     expect(screen.getAllByRole('checkbox').every((el) => (el as HTMLInputElement).checked)).toBe(
@@ -179,8 +180,8 @@ describe('TaskDetailPage — 挑选与一键发布', () => {
     await userEvent.click(screen.getByRole('button', { name: '一键发布到市集 · 2 项' }));
     expect(await screen.findAllByText('已发布')).toHaveLength(2);
     // 状态槽展示的是完整试用链接（裸 shareToken 无路由可消费）。
-    expect(screen.getByText((text) => text.includes('/try/c/c1'))).toBeInTheDocument();
-    expect(screen.getByText((text) => text.includes('/try/c/c2'))).toBeInTheDocument();
+    expect(screen.getByText(`${window.location.origin}/try/c/c1`)).toBeInTheDocument();
+    expect(screen.getByText(`${window.location.origin}/try/c/c2`)).toBeInTheDocument();
     expect(screen.getByText(/已发布 2 \/ 2 个能力/)).toBeInTheDocument();
 
     const posts = fm.calls.filter((c) => c.method === 'POST').map((c) => c.url);

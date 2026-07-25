@@ -3,11 +3,12 @@
 //   - EventSource 断线自动重连并自带 Last-Event-ID 续传（浏览器原生行为）；
 //   - 终态（RUN_FINISHED / RUN_ERROR）后回拉一次会话详情对齐真源；
 //   - 页面关闭只断订阅，不打断后端生成；打断必须显式点按钮。
-import { useEffect, useReducer } from 'react';
+import { useEffect, useReducer, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ArtifactView, MessageView, SessionDetail } from '@cb/shared';
 import { ApiError, isUnauthenticated } from './client.js';
-import { loginUrl } from '../navigation/login.js';
+import { authenticationUrl } from '../navigation/login.js';
+import { useReleaseMetadata } from '../shell/releaseIdentity.js';
 import { interruptSession, sendSessionMessage } from './runtime.js';
 import { reportClientEvent } from './telemetry.js';
 import { refreshSession } from './sessionRefresh.js';
@@ -31,6 +32,7 @@ export interface SessionStream extends StreamUiState {
 interface SessionEventSubscription {
   onMessage: (data: string) => void;
   onFatal: () => void;
+  onAuthRejected?: () => void;
 }
 
 /** 原生 EventSource 无法读取 HTTP 状态；CLOSED 时只做一次续期并重建，避免无限循环。 */
@@ -48,13 +50,13 @@ export function subscribeSessionEvents(
     const current = new EventSource(url, { withCredentials: true });
     source = current;
     current.onopen = () => {
-      if (current === source) refreshAttempted = false;
+      if (!stopped && current === source) refreshAttempted = false;
     };
     current.onmessage = (raw) => {
-      if (current === source) callbacks.onMessage(raw.data as string);
+      if (!stopped && current === source) callbacks.onMessage(raw.data as string);
     };
     current.onerror = () => {
-      if (current !== source || current.readyState !== EventSource.CLOSED) return;
+      if (stopped || current !== source || current.readyState !== EventSource.CLOSED) return;
       current.close();
       if (refreshAttempted) {
         callbacks.onFatal();
@@ -64,6 +66,7 @@ export function subscribeSessionEvents(
       void refreshSession().then((result) => {
         if (stopped) return;
         if (result === 'refreshed') connect();
+        else if (result === 'rejected' && callbacks.onAuthRejected) callbacks.onAuthRejected();
         else callbacks.onFatal();
       });
     };
@@ -78,22 +81,31 @@ export function subscribeSessionEvents(
 
 export function useSessionStream(
   sessionId: string | undefined,
-  detailArtifacts: ArtifactView[] | undefined,
+  detail: SessionDetail | undefined,
 ): SessionStream {
   const qc = useQueryClient();
+  const releaseMetadata = useReleaseMetadata();
   const [state, dispatch] = useReducer(streamUiReducer, initialStreamUiState);
+  const activeSessionIdRef = useRef(sessionId);
+  const sendInFlightRef = useRef<{ sessionId: string; token: symbol } | null>(null);
 
-  // 详情到达/回拉后，把落库产物种进画布（同 id 覆盖，真源优先）。
-  useEffect(() => {
-    if (detailArtifacts) dispatch({ kind: 'seed-artifacts', artifacts: detailArtifacts });
-  }, [detailArtifacts]);
+  // Route parameters can change before effects clean up the previous subscription. Keep the
+  // generation pointer current during render so an old POST/SSE callback cannot mutate the new
+  // session's reducer. A new session also gets its own submission lock immediately.
+  activeSessionIdRef.current = sessionId;
+  if (sendInFlightRef.current && sendInFlightRef.current.sessionId !== sessionId) {
+    sendInFlightRef.current = null;
+  }
 
   useEffect(() => {
-    if (!sessionId) return;
     dispatch({ kind: 'reset' });
+    if (!sessionId) return;
+    const subscribedSessionId = sessionId;
+    const sessionIsCurrent = (): boolean => activeSessionIdRef.current === subscribedSessionId;
     const url = `/api/v1/runtime/sessions/${sessionId}/stream`;
     return subscribeSessionEvents(url, {
       onMessage: (data) => {
+        if (!sessionIsCurrent()) return;
         const event = parseStreamEvent(data);
         if (!event) return;
         dispatch({ kind: 'stream-event', event });
@@ -103,29 +115,93 @@ export function useSessionStream(
         }
       },
       onFatal: () => {
+        if (!sessionIsCurrent()) return;
         reportClientEvent('sse_error', { message: 'session stream closed', url });
         dispatch({ kind: 'error', message: '事件流连接不上，请刷新页面重试。' });
       },
+      onAuthRejected: () => {
+        if (!sessionIsCurrent()) return;
+        reportClientEvent('sse_error', { message: 'session stream session expired', url });
+        dispatch({ kind: 'error', message: '登录态失效了，正在恢复会话。' });
+        window.location.assign(authenticationUrl(releaseMetadata.environment));
+      },
     });
-  }, [sessionId, qc]);
+  }, [sessionId, qc, releaseMetadata.environment]);
+
+  // 声明在 reset/subscription effect 之后，保证首屏详情不会先协调后又被 reset 清空。
+  // reducer 用 message turn ids 判定世代：同 active turn 只合并，确认终态才整表收敛。
+  useEffect(() => {
+    if (!detail || detail.session.id !== sessionId) return;
+    const messageTurnIds = [
+      ...new Set(detail.messages.flatMap((message) => (message.turnId ? [message.turnId] : []))),
+    ];
+    const failedTurnIds = [
+      ...new Set(
+        detail.messages.flatMap((message) =>
+          message.turnId && message.status === 'failed' ? [message.turnId] : [],
+        ),
+      ),
+    ];
+    dispatch({
+      kind: 'detail-snapshot',
+      artifacts: detail.artifacts,
+      activeTurnId: detail.activeTurn?.id ?? null,
+      currentUiArtifactId: detail.currentUiArtifactId ?? null,
+      messageTurnIds,
+      failedTurnIds,
+    });
+  }, [detail, sessionId]);
+
+  // A successful POST remains globally locked until SSE/detail proves that generation terminal.
+  // This ref, unlike render state, is synchronous and is shared by every caller of this hook.
+  useEffect(() => {
+    const inFlight = sendInFlightRef.current;
+    if (inFlight?.sessionId === sessionId && !state.running && !state.awaitingRunId) {
+      sendInFlightRef.current = null;
+    }
+  }, [sessionId, state.awaitingRunId, state.running]);
 
   const send = async (text: string): Promise<MessageView> => {
     const trimmed = text.trim();
     if (!sessionId) throw new Error('会话还没有准备好，请稍后重试。');
     if (!trimmed) throw new Error('请输入任务内容。');
-    if (state.running) throw new Error('Agent 正在处理当前任务，请稍候。');
-    dispatch({ kind: 'turn-accepted' });
+    if (state.running || sendInFlightRef.current) {
+      throw new Error('Agent 正在处理当前任务，请稍候。');
+    }
+    const requestSessionId = sessionId;
+    const requestToken = Symbol('runtime-send');
+    sendInFlightRef.current = { sessionId: requestSessionId, token: requestToken };
+    dispatch({ kind: 'turn-submitting' });
     try {
-      const message = await sendSessionMessage(sessionId, trimmed);
-      // 202 带回已落库的 user 消息：直接写进详情缓存，聊天流立即可见。
-      qc.setQueryData<SessionDetail>(['session', sessionId], (cur) =>
-        cur ? { ...cur, messages: appendMessage(cur.messages, message) } : cur,
+      const message = await sendSessionMessage(requestSessionId, trimmed);
+      const turnId = message.turnId;
+      if (!turnId) {
+        throw new Error('服务端已接受消息，但没有返回轮次标识。请刷新页面确认结果。');
+      }
+      // 202 的 turnId 先落 reducer，关闭“STATE_DELTA 已到、cache 仍旧”的竞态窗口。
+      if (activeSessionIdRef.current === requestSessionId) {
+        dispatch({ kind: 'turn-accepted', runId: turnId });
+      }
+      // 缓存更新只负责让聊天立即可见，并标记本轮 active；其 artifacts 不是权威快照。
+      // reducer 看到同 active turn 时会保留/合并 SSE 候选，绝不会整表替换。
+      qc.setQueryData<SessionDetail>(['session', requestSessionId], (cur) =>
+        cur
+          ? {
+              ...cur,
+              messages: appendMessage(cur.messages, message),
+              activeTurn: { id: turnId, createdAt: message.createdAt },
+            }
+          : cur,
       );
       return message;
     } catch (err: unknown) {
+      if (sendInFlightRef.current?.token === requestToken) {
+        sendInFlightRef.current = null;
+      }
+      const requestIsCurrent = activeSessionIdRef.current === requestSessionId;
       // 登录态失效：跳创作端登录（回来落在当前会话页）。
-      if (isUnauthenticated(err)) {
-        window.location.assign(loginUrl());
+      if (requestIsCurrent && isUnauthenticated(err)) {
+        window.location.assign(authenticationUrl(releaseMetadata.environment));
       }
       // 服务端错误信封中的 userMessage 已是人话；同时 reject 给 Miniapp bridge，
       // 让它不依赖一次可能来不及渲染的 optimistic running 状态。
@@ -134,7 +210,7 @@ export function useSessionStream(
         : err instanceof ApiError
           ? err.userMessage
           : '发送失败，请重试。';
-      dispatch({ kind: 'error', message });
+      if (requestIsCurrent) dispatch({ kind: 'error', message });
       throw new Error(message, { cause: err });
     }
   };
@@ -146,11 +222,20 @@ export function useSessionStream(
 
   return {
     ...state,
-    artifactList: Object.values(state.artifacts),
+    artifactList: sortArtifacts(Object.values(state.artifacts)),
     selectArtifact: (id) => dispatch({ kind: 'select-artifact', id }),
     send,
     interrupt,
   };
+}
+
+/** Revision order is server-created time first, with deterministic id fallback. */
+export function sortArtifacts(artifacts: ArtifactView[]): ArtifactView[] {
+  return [...artifacts].sort((left, right) => {
+    const leftCreated = left.createdAt || left.updatedAt;
+    const rightCreated = right.createdAt || right.updatedAt;
+    return leftCreated.localeCompare(rightCreated) || left.id.localeCompare(right.id);
+  });
 }
 
 function appendMessage(messages: MessageView[], message: MessageView): MessageView[] {

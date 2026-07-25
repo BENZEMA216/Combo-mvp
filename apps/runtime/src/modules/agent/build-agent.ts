@@ -17,6 +17,8 @@ import {
   type RuntimeModel,
 } from '../../platform/infra/llm.js';
 import type { MessageRecord } from '../session/repo.js';
+import { withDesignStudioInstructions } from './design-studio-prompt.js';
+import { DESIGN_STUDIO_BOOTSTRAP_MARKER } from './design-visual-profile.js';
 import { TurnAgentUnavailableError, type TurnAgent, type TurnAgentFactory } from './run-turn.js';
 
 /** 产物协议：约束模型「成品进产物、正文只放说明」。 */
@@ -81,8 +83,9 @@ export function composeSystemPrompt(
   definition: CapabilityDefinition,
   now: Date = new Date(),
   mode: SessionMode = 'consume',
+  studioContext: { taskText?: string; hasExistingPage?: boolean } = {},
 ): string {
-  return [
+  const basePrompt = [
     definition.instructions.trim(),
     '',
     '———',
@@ -97,6 +100,18 @@ export function composeSystemPrompt(
     ...(mode === 'studio' ? [STUDIO_PROTOCOL, ''] : []),
     ARTIFACT_PROTOCOL,
   ].join('\n');
+  if (mode !== 'studio') return basePrompt;
+
+  const taskText = studioContext.hasExistingPage
+    ? studioContext.taskText
+    : `${DESIGN_STUDIO_BOOTSTRAP_MARKER}\n${studioContext.taskText ?? ''}`;
+  return withDesignStudioInstructions(basePrompt, {
+    capabilityName: definition.name,
+    description: definition.summary,
+    inputLabels: definition.inputs.map((input) => input.label),
+    outputType: definition.kind,
+    taskText,
+  });
 }
 
 function zeroUsage(): Usage {
@@ -164,7 +179,7 @@ export function historyToAgentMessages(rows: MessageRecord[], model: RuntimeMode
 
 /** 生产 TurnAgentFactory：pi Agent 包装成 run-turn 消费的最小面。 */
 export function createPiTurnAgentFactory(env: Env): TurnAgentFactory {
-  return ({ definition, history, tools, mode }) => {
+  return ({ definition, history, tools, mode, promptText, hasExistingStudioArtifact }) => {
     if (!hasLlmCredential(env)) {
       throw new TurnAgentUnavailableError(
         '试用服务未配置模型密钥（ANTHROPIC_API_KEY 或 OPENROUTER_API_KEY），暂时无法对话。',
@@ -173,7 +188,10 @@ export function createPiTurnAgentFactory(env: Env): TurnAgentFactory {
     const model = resolveModel(env);
     const agent = new Agent({
       initialState: {
-        systemPrompt: composeSystemPrompt(definition, new Date(), mode),
+        systemPrompt: composeSystemPrompt(definition, new Date(), mode, {
+          taskText: promptText,
+          hasExistingPage: hasExistingStudioArtifact,
+        }),
         model,
         tools,
         messages: historyToAgentMessages(history, model),

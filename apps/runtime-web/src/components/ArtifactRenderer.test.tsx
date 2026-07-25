@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { ArtifactRenderer } from './ArtifactRenderer.js';
+import {
+  ArtifactRenderer,
+  parseComboElementManifestMessage,
+  parseComboElementSelectMessage,
+} from './ArtifactRenderer.js';
 
 const HTML = '<!doctype html><html><body><button>运行</button></body></html>';
 
@@ -238,5 +242,170 @@ describe('ArtifactRenderer Combo Runtime bridge', () => {
       expect.objectContaining({ type: 'combo:run-state', version: 1, state: 'blocked' }),
       '*',
     );
+  });
+});
+
+describe('ArtifactRenderer Studio inspection bridge', () => {
+  const stableElement = {
+    key: 'result-main',
+    label: '主要结果',
+    role: 'region',
+    text: '本周完成三项工作',
+    tagName: 'section',
+    path: 'body > main:nth-of-type(1) > section:nth-of-type(2)',
+    stableKey: true,
+  };
+
+  it('accepts only a bounded selection from the rendered frame source', () => {
+    const onElementSelect = vi.fn();
+    const frame = renderHtml({ inspectionEnabled: true, onElementSelect });
+
+    postRun(window, { type: 'combo:element-select', version: 1, element: stableElement });
+    postRun(frame.contentWindow, {
+      type: 'combo:element-select',
+      version: 1,
+      element: stableElement,
+    });
+
+    expect(onElementSelect).toHaveBeenCalledOnce();
+    expect(onElementSelect).toHaveBeenCalledWith(stableElement);
+    expect(frame.srcdoc).toContain('__comboStudioInspectionV1');
+    expect(frame.srcdoc).not.toContain('querySelector(event.data');
+  });
+
+  it('ignores valid frame selections until the host explicitly enables inspection', () => {
+    const onElementSelect = vi.fn();
+    const { rerender } = render(
+      <ArtifactRenderer
+        kind="html"
+        title="任务助手"
+        content={HTML}
+        inspectionEnabled={false}
+        onElementSelect={onElementSelect}
+      />,
+    );
+    let frame = screen.getByTitle('任务助手') as HTMLIFrameElement;
+
+    postRun(frame.contentWindow, {
+      type: 'combo:element-select',
+      version: 1,
+      element: stableElement,
+    });
+    expect(onElementSelect).not.toHaveBeenCalled();
+
+    rerender(
+      <ArtifactRenderer
+        kind="html"
+        title="任务助手"
+        content={HTML}
+        inspectionEnabled
+        onElementSelect={onElementSelect}
+      />,
+    );
+    frame = screen.getByTitle('任务助手') as HTMLIFrameElement;
+    postRun(frame.contentWindow, {
+      type: 'combo:element-select',
+      version: 1,
+      element: stableElement,
+    });
+    expect(onElementSelect).toHaveBeenCalledOnce();
+  });
+
+  it('syncs inspection state without sending a selector or script to the frame', () => {
+    const onElementSelect = vi.fn();
+    const { rerender } = render(
+      <ArtifactRenderer
+        kind="html"
+        title="任务助手"
+        content={HTML}
+        inspectionEnabled
+        selectedElementKey="result-main"
+        onElementSelect={onElementSelect}
+      />,
+    );
+    const frame = screen.getByTitle('任务助手') as HTMLIFrameElement;
+    const postMessage = vi.spyOn(frame.contentWindow as Window, 'postMessage');
+
+    postRun(frame.contentWindow, { type: 'combo:inspection-ready', version: 1 });
+    expect(postMessage).toHaveBeenCalledWith(
+      {
+        type: 'combo:inspection-state',
+        version: 1,
+        enabled: true,
+        selectedElementKey: 'result-main',
+      },
+      '*',
+    );
+
+    rerender(
+      <ArtifactRenderer
+        kind="html"
+        title="任务助手"
+        content={HTML}
+        inspectionEnabled={false}
+        selectedElementKey={null}
+        onElementSelect={onElementSelect}
+      />,
+    );
+    expect(postMessage).toHaveBeenLastCalledWith(
+      {
+        type: 'combo:inspection-state',
+        version: 1,
+        enabled: false,
+        selectedElementKey: null,
+      },
+      '*',
+    );
+  });
+
+  it('rejects arbitrary selectors, unsafe keys, oversized fields, and duplicate manifests', () => {
+    expect(
+      parseComboElementSelectMessage({
+        type: 'combo:element-select',
+        version: 1,
+        element: { ...stableElement, path: 'body > section[data-secret]:nth-of-type(1)' },
+      }),
+    ).toBeNull();
+    expect(
+      parseComboElementSelectMessage({
+        type: 'combo:element-select',
+        version: 1,
+        element: { ...stableElement, key: 'result-main"] script' },
+      }),
+    ).toBeNull();
+    expect(
+      parseComboElementSelectMessage({
+        type: 'combo:element-select',
+        version: 1,
+        element: { ...stableElement, label: 'x'.repeat(161) },
+      }),
+    ).toBeNull();
+    expect(
+      parseComboElementManifestMessage({
+        type: 'combo:element-manifest',
+        version: 1,
+        elements: [stableElement, stableElement],
+      }),
+    ).toBeNull();
+  });
+
+  it('accepts a generated key only together with a safe structural path', () => {
+    expect(
+      parseComboElementSelectMessage({
+        type: 'combo:element-select',
+        version: 1,
+        element: {
+          ...stableElement,
+          key: 'auto-3',
+          stableKey: false,
+          tagName: 'button',
+          path: 'body > main:nth-of-type(1) > button:nth-of-type(2)',
+        },
+      }),
+    ).toMatchObject({
+      key: 'auto-3',
+      stableKey: false,
+      path: 'body > main:nth-of-type(1) > button:nth-of-type(2)',
+    });
   });
 });

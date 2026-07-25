@@ -38,6 +38,10 @@ spec:
                   name: combo-dev-env
             - name: DATABASE_URL
               value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - name: EXPECTED_MIGRATION_HEAD
+              value: 0006_one_running_turn_per_session.sql
+            - name: MIGRATION_RUNS
+              value: '2'
           image: ghcr.io/dangdang-tech/combo-api:latest
           name: migrate
           resources:
@@ -72,4 +76,5 @@ spec:
         - emptyDir:
             sizeLimit: 128Mi
           name: tmp
-  ttlSecondsAfterFinished: 300
+  # 总部署 deadline 为 6900 秒；迁移对象必须覆盖后续真实浏览器验收与证据采集窗口。
+  ttlSecondsAfterFinished: 7200

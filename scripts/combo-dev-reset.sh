@@ -20,6 +20,8 @@ readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.js
 readonly SESSION_FILE='/etc/combo-dev/session.key'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly RESET_PROOF='/var/lib/combo-dev/reset-proof.json'
+readonly CONSUMED_RESET_PROOF='/var/lib/combo-dev/reset-proof.consumed.json'
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly BOOTSTRAP_FOUNDATION='/opt/combo-dev/bootstrap-overlay/foundation'
 readonly APPS=(api worker runtime web)
@@ -212,7 +214,7 @@ production_fingerprint() {
 preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'reset 必须由受限 sudo 规则以 root 启动。'
   local cmd
-  for cmd in kubectl jq python3 openssl base64 sha256sum flock findmnt systemctl timeout stat dirname readlink df awk install find chown chmod rm; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少主机工具：$cmd"; done
+  for cmd in kubectl jq python3 openssl base64 sha256sum flock findmnt systemctl timeout stat dirname readlink df awk install find chown chmod rm date; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少主机工具：$cmd"; done
   root_owned_not_writable /opt/combo-dev/bin || blocked '调度器目录可被非 root 修改。'
   if ! root_owned_not_writable /opt/combo-dev/bin/combo-dev-production-safety || [[ ! -x /opt/combo-dev/bin/combo-dev-production-safety ]]; then
     blocked '共享生产安全检查器不可用。'
@@ -242,6 +244,9 @@ preflight() {
   can_i_exact no delete persistentvolumeclaims/data-postgres-0 "$NAMESPACE"
   can_i_exact no patch deployments.apps "$PRODUCTION_NAMESPACE"
   can_i_exact no get secrets "$NAMESPACE"
+  can_i_exact no list secrets "$NAMESPACE"
+  can_i_exact no delete secrets/combo-dev-env "$NAMESPACE"
+  can_i_exact no patch secrets/combo-dev-env "$NAMESPACE"
   dispatcher_certificate_valid_for "$DISPATCHER_FENCE_BEFORE_SECONDS" || blocked '调度证书已进入预到期失败收敛窗口，必须重新 bootstrap。'
   python3 /opt/combo-dev/bin/combo-dev-production-safety verify-observer \
     --audit-kubeconfig "$KUBECONFIG_PATH" \
@@ -372,13 +377,152 @@ recreate_foundation() {
   timeout 240 "${K[@]}" --request-timeout=0 -n "$NAMESPACE" rollout status deployment/redis-hot --timeout=230s >/dev/null 2>&1 || blocked '重建后的热 Redis 未就绪。'
 }
 
+assert_static_volume_data_empty() {
+  local path found
+  for path in "$POSTGRES_STORAGE_PATH" "$REDIS_QUEUE_STORAGE_PATH" "$MINIO_STORAGE_PATH"; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    found=$(find "$path" -xdev -mindepth 1 -print -quit 2>/dev/null) || return 1
+    [[ -z "$found" ]] || return 1
+  done
+}
+
+capture_rebuilt_foundation() {
+  local reset_started=$1 output=$2 pods="$WORK/reset-foundation.pods.json"
+  "${K[@]}" -n "$NAMESPACE" get pods -l combo.dev/environment=combo-dev -o json >"$pods" 2>/dev/null ||
+    return 1
+  python3 - "$pods" "$reset_started" "$output" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+
+pods_path, reset_started_raw, output_path = sys.argv[1:]
+expected = {'postgres', 'redis-queue', 'redis-hot', 'minio'}
+
+def timestamp(value):
+    if not isinstance(value, str):
+        raise SystemExit(2)
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+    except ValueError:
+        raise SystemExit(2)
+    if parsed.tzinfo is None:
+        raise SystemExit(2)
+    return parsed.astimezone(dt.timezone.utc)
+
+reset_started = timestamp(reset_started_raw)
+with open(pods_path, encoding='utf-8') as handle:
+    payload = json.load(handle)
+
+foundation = []
+seen = set()
+for pod in payload.get('items', []):
+    metadata = pod.get('metadata', {})
+    labels = metadata.get('labels', {})
+    plane = labels.get('app')
+    if plane not in expected or metadata.get('deletionTimestamp') is not None:
+        continue
+    if plane in seen:
+        raise SystemExit(2)
+    seen.add(plane)
+    if metadata.get('namespace') != 'combo-preview':
+        raise SystemExit(2)
+    uid = metadata.get('uid')
+    created_at = metadata.get('creationTimestamp')
+    started_at = pod.get('status', {}).get('startTime')
+    statuses = pod.get('status', {}).get('containerStatuses', [])
+    if (
+        not isinstance(uid, str)
+        or not re.fullmatch(
+            r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+            uid,
+        )
+        or timestamp(created_at) < reset_started
+        or timestamp(started_at) < reset_started
+        or pod.get('status', {}).get('phase') != 'Running'
+        or not statuses
+        or not all(status.get('ready') is True for status in statuses)
+    ):
+        raise SystemExit(2)
+    foundation.append({
+        'plane': plane,
+        'podUid': uid,
+        'createdAt': created_at,
+        'startedAt': started_at,
+        'ready': True,
+    })
+
+if seen != expected:
+    raise SystemExit(2)
+with open(output_path, 'w', encoding='utf-8') as handle:
+    json.dump(sorted(foundation, key=lambda item: item['plane']), handle, separators=(',', ':'))
+    handle.write('\n')
+PY
+  chmod 0600 "$output"
+}
+
+write_reset_proof() {
+  local revision=$1 workflow_run_id=$2 reset_started=$3 storage_cleared_at=$4 foundation=$5
+  local candidate="$WORK/reset-proof.json"
+  python3 - \
+    "$revision" "$workflow_run_id" "$reset_started" "$storage_cleared_at" \
+    "$foundation" "$candidate" <<'PY'
+import datetime as dt
+import json
+import re
+import sys
+
+revision, workflow_run_id, started_at, cleared_at, foundation_path, output_path = sys.argv[1:]
+if not re.fullmatch(r'[0-9a-f]{40}', revision) or not re.fullmatch(r'[1-9][0-9]*', workflow_run_id):
+    raise SystemExit(2)
+foundation = json.load(open(foundation_path, encoding='utf-8'))
+payload = {
+    'schemaVersion': 1,
+    'namespace': 'combo-preview',
+    'sourceSha': revision,
+    'workflowRunId': workflow_run_id,
+    'startedAt': started_at,
+    'storageClearedAt': cleared_at,
+    'completedAt': dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+    'storage': {
+        'postgres': {'clearedBeforeRebuild': True},
+        'redisQueue': {'clearedBeforeRebuild': True},
+        'minio': {'clearedBeforeRebuild': True},
+    },
+    'foundation': foundation,
+    'storageSmokePassed': True,
+    'writersFenced': True,
+    'productionFingerprintUnchanged': True,
+}
+with open(output_path, 'w', encoding='utf-8') as handle:
+    json.dump(payload, handle, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    handle.write('\n')
+PY
+  install -o root -g root -m 0600 "$candidate" "$RESET_PROOF"
+}
+
 main() {
-  [[ $# == 1 && $1 == "--confirm=$CONFIRMATION" ]] || blocked '必须提供完全匹配的破坏性确认串。'
+  local revision='' workflow_run_id='' confirmed=0 arg
+  while (($#)); do
+    arg=$1
+    shift
+    case "$arg" in
+      "--confirm=$CONFIRMATION") confirmed=1 ;;
+      --revision) revision=${1:?}; shift ;;
+      --workflow-run-id) workflow_run_id=${1:?}; shift ;;
+      *) blocked '未知 reset 参数。' ;;
+    esac
+  done
+  (( confirmed == 1 )) || blocked '必须提供完全匹配的破坏性确认串。'
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || blocked 'reset revision 不是完整提交 SHA。'
+  [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked 'reset workflow run ID 不合法。'
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   WORK=$(mktemp -d)
+  rm -f -- "$RESET_PROOF" "$CONSUMED_RESET_PROOF"
   preflight
-  local before after
+  local before after reset_started storage_cleared_at foundation_proof="$WORK/reset-foundation.json"
+  reset_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   before=$(production_fingerprint)
   MUTATING=1
   mark_failure_fence || blocked '无法写入持久失败收敛标记。'
@@ -386,12 +530,19 @@ main() {
   stop_and_delete_inventory || blocked '固定工作负载未能全部停止并删除。'
   rotate_session_credential
   wipe_static_volume_data
+  assert_static_volume_data_empty || blocked '三个 Test 数据目录未能证明在重建前为空。'
+  storage_cleared_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   recreate_foundation
   timeout 180 /opt/combo-dev/bin/combo-dev-smoke --storage-only >/dev/null 2>&1 || blocked '重置后的固定 PVC 未通过静态路径与冷启动校验。'
+  capture_rebuilt_foundation "$reset_started" "$foundation_proof" ||
+    blocked '重建后的四个基础工作负载身份不可验证。'
   rm -f -- "$STORAGE_LOW_MARKER"
   fence_all_writers || blocked '重置后全部写入者未保持关闭。'
   after=$(production_fingerprint)
   [[ "$before" == "$after" ]] || fail '重置期间生产指纹发生变化。'
+  write_reset_proof \
+    "$revision" "$workflow_run_id" "$reset_started" "$storage_cleared_at" "$foundation_proof" ||
+    blocked '无法保存本次空数据重建证据。'
   SUCCESS=1
   status 'PASS namespace=combo-preview pvc=retained data=cleared session=rotated writers=fenced'
 }

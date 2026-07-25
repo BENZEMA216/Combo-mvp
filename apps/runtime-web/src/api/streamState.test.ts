@@ -18,7 +18,13 @@ function replay(events: StreamEvent[], from: StreamUiState = initialStreamUiStat
 }
 
 function artifact(id: string, title = id): ArtifactView {
-  return { id, kind: 'markdown', title, updatedAt: '2026-07-04T00:00:00.000Z' };
+  return {
+    id,
+    kind: 'markdown',
+    title,
+    createdAt: '2026-07-04T00:00:00.000Z',
+    updatedAt: '2026-07-04T00:00:00.000Z',
+  };
 }
 
 describe('文本事件聚合（打字机）', () => {
@@ -150,6 +156,28 @@ describe('产物 STATE_DELTA 归并', () => {
     expect(state.artifacts['a1']!.title).toBe('终稿');
   });
 
+  it('RUN_ERROR immediately removes artifacts produced by the failed turn', () => {
+    const failedCandidate = {
+      ...artifact('a2', '失败候选'),
+      sourceTurnId: 'turn-failed',
+    };
+    const state = replay([
+      { type: EventType.RUN_STARTED, runId: 'turn-failed' },
+      {
+        type: EventType.STATE_DELTA,
+        delta: [
+          { op: 'add', path: '/artifacts/a1', value: artifact('a1', '已完成版本') },
+          { op: 'add', path: '/artifacts/a2', value: failedCandidate },
+          { op: 'add', path: '/activeArtifactId', value: 'a2' },
+        ],
+      },
+      { type: EventType.RUN_ERROR, runId: 'turn-failed', message: '已中断' },
+    ]);
+
+    expect(Object.keys(state.artifacts)).toEqual(['a1']);
+    expect(state.activeArtifactId).toBe('a1');
+  });
+
   it('非法 delta（非数组 / 未知 path / 非对象成员）安全忽略', () => {
     const state = replay([
       { type: EventType.STATE_DELTA, delta: 'oops' },
@@ -159,27 +187,182 @@ describe('产物 STATE_DELTA 归并', () => {
     expect(state).toEqual(initialStreamUiState);
   });
 
-  it('seed-artifacts：详情真源覆盖同 id，保留流上新到的产物，补默认活跃', () => {
-    const fromStream = artifact('a2', '流上刚生成');
+  it('uses a settled initial detail as the exact artifact source and current UI', () => {
+    const state = streamUiReducer(initialStreamUiState, {
+      kind: 'detail-snapshot',
+      artifacts: [artifact('a1', '已落库')],
+      activeTurnId: null,
+      currentUiArtifactId: 'a1',
+      messageTurnIds: [],
+      failedTurnIds: [],
+    });
+
+    expect(Object.keys(state.artifacts)).toEqual(['a1']);
+    expect(state.activeArtifactId).toBe('a1');
+    expect(state.running).toBe(false);
+  });
+
+  it('restores an active turn from session detail after a page reload', () => {
+    const restored = streamUiReducer(initialStreamUiState, {
+      kind: 'detail-snapshot',
+      artifacts: [artifact('a1')],
+      activeTurnId: 'turn-live',
+      currentUiArtifactId: 'a1',
+      messageTurnIds: ['turn-live'],
+      failedTurnIds: [],
+    });
+
+    expect(restored).toMatchObject({
+      running: true,
+      activeRunId: 'turn-live',
+      activeArtifactId: 'a1',
+    });
+  });
+
+  it('keeps STATE_DELTA that arrives before the POST 202/cache update', () => {
+    const candidate = {
+      ...artifact('a2', 'SSE 候选'),
+      sourceTurnId: 'turn-current',
+    };
+    let state = streamUiReducer(initialStreamUiState, { kind: 'turn-submitting' });
+    state = replay(
+      [
+        {
+          type: EventType.STATE_DELTA,
+          runId: 'turn-current',
+          delta: [
+            { op: 'add', path: '/artifacts/a2', value: candidate },
+            { op: 'add', path: '/activeArtifactId', value: 'a2' },
+          ],
+        },
+      ],
+      state,
+    );
+    state = streamUiReducer(state, { kind: 'turn-accepted', runId: 'turn-current' });
+    // The following snapshot is the message-only cache update: same active turn, old artifacts.
+    state = streamUiReducer(state, {
+      kind: 'detail-snapshot',
+      artifacts: [artifact('a1', '上一版')],
+      activeTurnId: 'turn-current',
+      currentUiArtifactId: 'a1',
+      messageTurnIds: ['turn-current'],
+      failedTurnIds: [],
+    });
+
+    expect(state.artifacts).toMatchObject({ a1: { title: '上一版' }, a2: candidate });
+    expect(state.activeArtifactId).toBe('a2');
+    expect(state.activeRunId).toBe('turn-current');
+  });
+
+  it('ignores an older GET that resolves after the current STATE_DELTA', () => {
+    const candidate = {
+      ...artifact('a2', '新轮候选'),
+      sourceTurnId: 'turn-current',
+    };
+    let state = streamUiReducer(initialStreamUiState, { kind: 'turn-submitting' });
+    state = streamUiReducer(state, { kind: 'turn-accepted', runId: 'turn-current' });
+    state = replay(
+      [
+        {
+          type: EventType.STATE_DELTA,
+          runId: 'turn-current',
+          delta: [
+            { op: 'add', path: '/artifacts/a2', value: candidate },
+            { op: 'add', path: '/activeArtifactId', value: 'a2' },
+          ],
+        },
+      ],
+      state,
+    );
+    const afterOldGet = streamUiReducer(state, {
+      kind: 'detail-snapshot',
+      artifacts: [artifact('a1', '旧 GET')],
+      activeTurnId: null,
+      currentUiArtifactId: 'a1',
+      messageTurnIds: [],
+      failedTurnIds: [],
+    });
+
+    expect(afterOldGet).toEqual(state);
+  });
+
+  it('clears running when a newer detail knows the turn but activeTurn is null', () => {
+    const finalArtifact = {
+      ...artifact('a2', '已完成版本'),
+      sourceTurnId: 'turn-current',
+    };
+    let state = streamUiReducer(initialStreamUiState, { kind: 'turn-submitting' });
+    state = streamUiReducer(state, { kind: 'turn-accepted', runId: 'turn-current' });
+    state = streamUiReducer(state, {
+      kind: 'detail-snapshot',
+      artifacts: [finalArtifact],
+      activeTurnId: null,
+      currentUiArtifactId: 'a2',
+      messageTurnIds: ['turn-current'],
+      failedTurnIds: [],
+    });
+
+    expect(state).toMatchObject({
+      running: false,
+      awaitingRunId: false,
+      activeRunId: null,
+      activeArtifactId: 'a2',
+      terminalRun: { runId: 'turn-current', state: 'completed' },
+    });
+  });
+
+  it('does not resurrect a failed terminal artifact from a stale detail', () => {
+    const failedCandidate = {
+      ...artifact('a2', '失败候选'),
+      sourceTurnId: 'turn-failed',
+    };
     let state = replay([
+      { type: EventType.RUN_STARTED, runId: 'turn-failed' },
       {
         type: EventType.STATE_DELTA,
-        delta: [{ op: 'add', path: '/artifacts/a2', value: fromStream }],
+        runId: 'turn-failed',
+        delta: [{ op: 'add', path: '/artifacts/a2', value: failedCandidate }],
       },
+      { type: EventType.RUN_ERROR, runId: 'turn-failed', message: '生成失败' },
     ]);
     state = streamUiReducer(state, {
-      kind: 'seed-artifacts',
-      artifacts: [artifact('a1', '已落库')],
+      kind: 'detail-snapshot',
+      artifacts: [failedCandidate],
+      activeTurnId: 'turn-failed',
+      currentUiArtifactId: null,
+      messageTurnIds: ['turn-failed'],
+      failedTurnIds: ['turn-failed'],
     });
-    expect(Object.keys(state.artifacts).sort()).toEqual(['a1', 'a2']);
-    expect(state.activeArtifactId).toBe('a1'); // 之前无活跃 → 取详情最后一个
 
-    // 已有活跃选择时 seed 不抢
-    const kept = streamUiReducer(
-      { ...state, activeArtifactId: 'a2' },
-      { kind: 'seed-artifacts', artifacts: [artifact('a1')] },
+    expect(state.running).toBe(false);
+    expect(state.activeRunId).toBeNull();
+    expect(state.artifacts).toEqual({});
+
+    const staleSettled = streamUiReducer(state, {
+      kind: 'detail-snapshot',
+      artifacts: [failedCandidate],
+      activeTurnId: null,
+      currentUiArtifactId: null,
+      messageTurnIds: ['turn-failed'],
+      failedTurnIds: ['turn-failed'],
+    });
+    expect(staleSettled.artifacts).toEqual({});
+  });
+
+  it('does not let a 202 response resurrect a turn whose terminal event arrived first', () => {
+    let state = streamUiReducer(initialStreamUiState, { kind: 'turn-submitting' });
+    state = replay(
+      [
+        { type: EventType.RUN_STARTED, runId: 'turn-fast' },
+        { type: EventType.RUN_FINISHED, runId: 'turn-fast' },
+      ],
+      state,
     );
-    expect(kept.activeArtifactId).toBe('a2');
+    state = streamUiReducer(state, { kind: 'turn-accepted', runId: 'turn-fast' });
+
+    expect(state.running).toBe(false);
+    expect(state.awaitingRunId).toBe(false);
+    expect(state.activeRunId).toBeNull();
   });
 });
 

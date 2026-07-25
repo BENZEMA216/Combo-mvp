@@ -96,6 +96,15 @@ interface CliOptions {
   statusOnly: boolean;
   printHead: boolean;
   expectedHead?: string;
+  migrationRuns: 1 | 2;
+}
+
+/** Test 可以在同一进程中跑两遍完整账本扫描；其他值一律拒绝，避免拼写错误静默降级。 */
+export function parseMigrationRuns(value: string | undefined): 1 | 2 {
+  if (value === undefined) return 1;
+  if (value === '1') return 1;
+  if (value === '2') return 2;
+  throw new Error('MIGRATION_RUNS must be exactly 1 or 2');
 }
 
 function parseOptions(argv: readonly string[]): CliOptions {
@@ -129,6 +138,7 @@ function parseOptions(argv: readonly string[]): CliOptions {
     statusOnly,
     printHead,
     expectedHead: cliExpectedHead ?? envExpectedHead,
+    migrationRuns: parseMigrationRuns(process.env.MIGRATION_RUNS),
   };
 }
 
@@ -215,49 +225,63 @@ async function main(): Promise<void> {
       `);
     }
 
-    const applied = (
-      await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
-    ).rows.map((row) => row.filename);
-    if (applied.length === 0 && (await userSchemaHasTables(true))) {
-      throw new Error(
-        'migration ledger mismatch: non-empty schema cannot use an empty migration ledger',
-      );
-    }
-    const plan = planMigrations(files, applied, options.expectedHead);
-    const appliedSet = new Set(plan.applied);
-
     if (options.statusOnly) {
+      const applied = (
+        await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
+      ).rows.map((row) => row.filename);
+      if (applied.length === 0 && (await userSchemaHasTables(true))) {
+        throw new Error(
+          'migration ledger mismatch: non-empty schema cannot use an empty migration ledger',
+        );
+      }
+      const plan = planMigrations(files, applied, options.expectedHead);
+      const appliedSet = new Set(plan.applied);
       for (const file of files) {
         console.log(`${appliedSet.has(file) ? '[x]' : '[ ]'} ${file}`);
       }
       return;
     }
 
-    for (const file of plan.pending) {
-      const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
-
-      console.log(`applying ${file} ...`);
-      await client.query('BEGIN');
-      try {
-        await client.query(sql);
-        await client.query('INSERT INTO schema_migrations(filename) VALUES ($1)', [file]);
-        await client.query('COMMIT');
-      } catch (error) {
-        await client.query('ROLLBACK');
-        throw new Error(`migration ${file} failed: ${(error as Error).message}`);
+    for (let run = 1; run <= options.migrationRuns; run += 1) {
+      const applied = (
+        await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
+      ).rows.map((row) => row.filename);
+      if (applied.length === 0 && (await userSchemaHasTables(true))) {
+        throw new Error(
+          'migration ledger mismatch: non-empty schema cannot use an empty migration ledger',
+        );
       }
-    }
+      // 每一遍都重新验证 release head 和完整 ledger，而不是把第二遍降级为无条件成功。
+      const plan = planMigrations(files, applied, options.expectedHead);
 
-    const finalApplied = (
-      await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
-    ).rows.map((row) => row.filename);
-    const finalPlan = planMigrations(files, finalApplied, options.expectedHead);
-    if (finalPlan.pending.length > 0) {
-      throw new Error(
-        `migration ledger mismatch: runner stopped before expected head ${finalPlan.head}`,
+      for (const file of plan.pending) {
+        const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
+
+        console.log(`applying ${file} ...`);
+        await client.query('BEGIN');
+        try {
+          await client.query(sql);
+          await client.query('INSERT INTO schema_migrations(filename) VALUES ($1)', [file]);
+          await client.query('COMMIT');
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw new Error(`migration ${file} failed: ${(error as Error).message}`);
+        }
+      }
+
+      const finalApplied = (
+        await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
+      ).rows.map((row) => row.filename);
+      const finalPlan = planMigrations(files, finalApplied, options.expectedHead);
+      if (finalPlan.pending.length > 0) {
+        throw new Error(
+          `migration ledger mismatch: runner stopped before expected head ${finalPlan.head}`,
+        );
+      }
+      console.log(
+        `migration pass ${run}/${options.migrationRuns} up to date at ${finalPlan.head}.`,
       );
     }
-    console.log(`migrations up to date at ${finalPlan.head}.`);
   } finally {
     await client.end();
   }

@@ -360,6 +360,7 @@ describe('run-turn 成功路径', () => {
       capabilityId: session.capabilityId,
       artifactId: current.details!.artifactId,
       studioSessionId: studio.id,
+      turnId: seedTurnId,
     });
 
     await runToIdle(runner, db, studio, '把按钮改成绿色');
@@ -420,6 +421,7 @@ describe('run-turn 成功路径', () => {
       capabilityId: session.capabilityId,
       artifactId: oldRevision.details!.artifactId,
       studioSessionId: studio.id,
+      turnId: seedTurnId,
     });
     const failingAgent = makeFakeAgentFactory({
       invokeTool: { title: '失败 revision', content: studioHtml('不应生效') },
