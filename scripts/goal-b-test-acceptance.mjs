@@ -631,6 +631,44 @@ async function poll(check, read, accept, timeoutMs, intervalMs = POLL_INTERVAL_M
   fail(check, 'timeout');
 }
 
+export async function settleOwnedAcceptanceTurn({
+  check,
+  knownTurnId,
+  readDetail,
+  interrupt,
+  timeoutMs = 30_000,
+  intervalMs = POLL_INTERVAL_MS,
+}) {
+  const initial = await readDetail();
+  const activeTurnId = initial?.activeTurn?.id;
+  const targetTurnId = UUID_PATTERN.test(knownTurnId ?? '') ? knownTurnId : activeTurnId;
+  if (!UUID_PATTERN.test(targetTurnId ?? '')) {
+    ensure(activeTurnId === null || activeTurnId === undefined, check);
+    return initial;
+  }
+  if (activeTurnId !== targetTurnId) return initial;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    // The response can be lost after the server accepted the interrupt. The database state,
+    // rather than the response body, is therefore the cleanup authority.
+    await interrupt().catch(() => undefined);
+    try {
+      return await poll(
+        check,
+        readDetail,
+        (detail) => detail?.activeTurn?.id !== targetTurnId,
+        timeoutMs,
+        intervalMs,
+      );
+    } catch (error) {
+      const latest = await readDetail();
+      if (latest?.activeTurn?.id !== targetTurnId) return latest;
+      if (attempt === 1) throw error;
+    }
+  }
+  fail(check, 'timeout');
+}
+
 function compareRedisStreamIds(left, right) {
   const parse = (value) => {
     if (!/^[0-9]+-[0-9]+$/u.test(value ?? '')) return undefined;
@@ -1676,91 +1714,111 @@ async function runAcceptance(options) {
     await checked('studio_interrupted_artifact_excluded', async () => {
       const beforeIds = secondDetail.artifacts.map((artifact) => artifact.id);
       const currentUiBefore = secondDetail.currentUiArtifactId;
-      const started = await api.json(
-        activeCheck,
-        `/api/v1/runtime/sessions/${studioSession.id}/messages`,
-        {
-          method: 'POST',
-          data: {
-            text: '重新设计整个页面并生成大量细节；先分析所有区域，再逐区修改并最后保存。',
+      let interruptedTurnId;
+      try {
+        const started = await api.json(
+          activeCheck,
+          `/api/v1/runtime/sessions/${studioSession.id}/messages`,
+          {
+            method: 'POST',
+            data: {
+              text: '严格分两个独立阶段执行，禁止合并工具调用。第一阶段不要先分析或重设计，只在当前页面基础上做一个极小、可见且不改变业务与交互的标题调整，立即省略 artifactId 调用 upsert_artifact 保存完整合法 HTML；必须等待第一次工具成功回执后才能进入第二阶段。第二阶段收到回执后，再开始逐区补充整个页面的大量细节，完成后另行省略 artifactId 调用 upsert_artifact；第二阶段结束前不要给最终答复。',
+            },
+            expected: [202],
           },
-          expected: [202],
-        },
-      );
-      const interruptedTurnId = started.data?.message?.turnId;
-      ensure(UUID_PATTERN.test(interruptedTurnId ?? ''), activeCheck);
-      const interruptedRunStarted = await readRuntimeStreamFrame(page, {
-        sessionId: studioSession.id,
-        runId: interruptedTurnId,
-        afterId: undefined,
-        terminal: false,
-      });
-      ensure(
-        interruptedRunStarted.status === 200 &&
-          interruptedRunStarted.eventType === 'RUN_STARTED' &&
-          interruptedRunStarted.runId === interruptedTurnId &&
-          compareRedisStreamIds(interruptedRunStarted.id, '0-0') === 1,
-        activeCheck,
-      );
-      const activeCandidate = await poll(
-        activeCheck,
-        async () =>
-          (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
-        (detail) =>
-          detail?.activeTurn?.id === interruptedTurnId &&
-          Boolean(artifactForTurn(detail, interruptedTurnId)),
-        90_000,
-        100,
-      );
-      const interruptedArtifactId = artifactForTurn(activeCandidate, interruptedTurnId)?.id;
-      ensure(UUID_PATTERN.test(interruptedArtifactId ?? ''), activeCheck);
-      ensure(activeCandidate.currentUiArtifactId === currentUiBefore, activeCheck);
-      const interrupted = await api.json(
-        activeCheck,
-        `/api/v1/runtime/sessions/${studioSession.id}/interrupt`,
-        { method: 'POST' },
-      );
-      ensure(interrupted.data?.interrupted === true, activeCheck);
-      const interruptedTerminal = await readRuntimeStreamFrame(page, {
-        sessionId: studioSession.id,
-        runId: interruptedTurnId,
-        afterId: interruptedRunStarted.id,
-        terminal: true,
-      });
-      ensure(
-        interruptedTerminal.status === 200 &&
-          interruptedTerminal.eventType === 'RUN_ERROR' &&
-          interruptedTerminal.runId === interruptedTurnId &&
-          compareRedisStreamIds(interruptedTerminal.id, interruptedRunStarted.id) === 1,
-        activeCheck,
-      );
-      const after = await poll(
-        activeCheck,
-        async () =>
-          (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
-        (detail) => detail?.activeTurn === null,
-        30_000,
-      );
-      ensure(!artifactForTurn(after, interruptedTurnId), activeCheck);
-      ensure(
-        after.messages.some(
-          (message) =>
-            message.turnId === interruptedTurnId &&
-            message.role === 'assistant' &&
-            message.status === 'failed',
-        ),
-        activeCheck,
-      );
-      ensure(
-        !after.artifacts.some((artifact) => artifact.id === interruptedArtifactId),
-        activeCheck,
-      );
-      ensure(
-        JSON.stringify(after.artifacts.map((artifact) => artifact.id)) ===
-          JSON.stringify(beforeIds),
-        activeCheck,
-      );
-      ensure(after.currentUiArtifactId === currentUiBefore, activeCheck);
+        );
+        interruptedTurnId = started.data?.message?.turnId;
+        ensure(UUID_PATTERN.test(interruptedTurnId ?? ''), activeCheck);
+        const interruptedRunStarted = await readRuntimeStreamFrame(page, {
+          sessionId: studioSession.id,
+          runId: interruptedTurnId,
+          afterId: undefined,
+          terminal: false,
+        });
+        ensure(
+          interruptedRunStarted.status === 200 &&
+            interruptedRunStarted.eventType === 'RUN_STARTED' &&
+            interruptedRunStarted.runId === interruptedTurnId &&
+            compareRedisStreamIds(interruptedRunStarted.id, '0-0') === 1,
+          activeCheck,
+        );
+        const activeCandidate = await poll(
+          activeCheck,
+          async () => {
+            const detail = (
+              await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)
+            ).data;
+            ensure(detail?.activeTurn?.id === interruptedTurnId, activeCheck);
+            return detail;
+          },
+          (detail) => Boolean(artifactForTurn(detail, interruptedTurnId)),
+          TURN_TIMEOUT_MS,
+        );
+        const interruptedArtifactId = artifactForTurn(activeCandidate, interruptedTurnId)?.id;
+        ensure(UUID_PATTERN.test(interruptedArtifactId ?? ''), activeCheck);
+        ensure(activeCandidate.currentUiArtifactId === currentUiBefore, activeCheck);
+        const interrupted = await api.json(
+          activeCheck,
+          `/api/v1/runtime/sessions/${studioSession.id}/interrupt`,
+          { method: 'POST' },
+        );
+        ensure(interrupted.data?.interrupted === true, activeCheck);
+        const interruptedTerminal = await readRuntimeStreamFrame(page, {
+          sessionId: studioSession.id,
+          runId: interruptedTurnId,
+          afterId: interruptedRunStarted.id,
+          terminal: true,
+        });
+        ensure(
+          interruptedTerminal.status === 200 &&
+            interruptedTerminal.eventType === 'RUN_ERROR' &&
+            interruptedTerminal.runId === interruptedTurnId &&
+            compareRedisStreamIds(interruptedTerminal.id, interruptedRunStarted.id) === 1,
+          activeCheck,
+        );
+        const after = await poll(
+          activeCheck,
+          async () =>
+            (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
+          (detail) => detail?.activeTurn === null,
+          30_000,
+        );
+        ensure(!artifactForTurn(after, interruptedTurnId), activeCheck);
+        ensure(
+          after.messages.some(
+            (message) =>
+              message.turnId === interruptedTurnId &&
+              message.role === 'assistant' &&
+              message.status === 'failed',
+          ),
+          activeCheck,
+        );
+        ensure(
+          !after.artifacts.some((artifact) => artifact.id === interruptedArtifactId),
+          activeCheck,
+        );
+        ensure(
+          JSON.stringify(after.artifacts.map((artifact) => artifact.id)) ===
+            JSON.stringify(beforeIds),
+          activeCheck,
+        );
+        ensure(after.currentUiArtifactId === currentUiBefore, activeCheck);
+      } finally {
+        await settleOwnedAcceptanceTurn({
+          check: activeCheck,
+          knownTurnId: interruptedTurnId,
+          readDetail: async () =>
+            (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
+          interrupt: async () =>
+            (
+              await api.json(
+                activeCheck,
+                `/api/v1/runtime/sessions/${studioSession.id}/interrupt`,
+                { method: 'POST' },
+              )
+            ).data?.interrupted,
+        });
+      }
     });
 
     let consumeSessionId;

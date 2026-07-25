@@ -28,7 +28,7 @@ Turn 创建受数据库部分唯一索引保护。两个 Runtime 副本同时为
 
 Runtime 关闭时会中止 Pi，并让 Turn、PostgreSQL 查询、Kubernetes 后端和基础设施连接共用一个绝对截止时间。关闭流程同时跟踪尚未发布活动句柄的开轮事务；未进入提交阶段的事务会被取消，已经提交的 Turn 会加入同一轮远程清理和终态收口。关闭事务设置 PostgreSQL 锁等待与语句超时。只有远程清理已经确认且截止时间尚未耗尽的 Turn 才会认领终态；其他 Turn 保留 `running` 唯一约束。对象存储写入在中止后才返回时不会提交 Artifact。
 
-Studio Session 会给 Pi 注入界面设计协议、视觉连续性规则和首版视觉合同。`upsert_artifact` 只接受符合 Miniapp 运行契约的 HTML revision；只有完整 Turn 成功后，本轮最后一个 revision 才会在同一终态事务中成为 Capability 当前 UI。详情恢复时只展示种子副本、每个成功 Turn 的最终 revision 和 active Turn 的最新候选，失败或中断 Turn 的 Artifact 不进入历史。新普通 Session 会复制创建时的 UI 隔离副本，已有 Session 不随之后的 Studio 修改漂移。
+Studio Session 会给 Pi 注入界面设计协议、视觉连续性规则和首版视觉合同。`upsert_artifact` 只接受符合 Miniapp 运行契约的 HTML revision；只有完整 Turn 成功后，本轮最后一个 revision 才会在同一终态事务中成为 Capability 当前 UI。详情恢复时只展示种子副本、每个成功 Turn 的最终 revision 和 active Turn 的最新候选，失败或中断 Turn 的 Artifact 不进入历史。新普通 Session 会复制创建时的 UI 隔离副本，并在详情中把该唯一副本标为当前 UI；已有 Session 不随之后的 Studio 修改漂移，副本歧义时会阻断详情响应。
 
 Session 详情的 owner 重验、Message、Artifact、当前 UI 和 active Turn 全部来自同一 `REPEATABLE READ READ ONLY` PostgreSQL 快照，避免刷新撞上终态提交时拼接出不可能同时存在的状态。Capability 定义的 MinIO 读取在快照事务结束后执行，不占用数据库连接。并发进入同一 Studio 时，UI seed 会在对象上传后锁住并核验目标 Session，并在锁内复查已有 HTML，因此只会提交一条不关联 Turn 的种子副本；竞争落败的不可变对象不进入数据库可见历史。
 

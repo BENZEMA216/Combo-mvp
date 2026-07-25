@@ -674,6 +674,115 @@ describe('session 端点 owner 守卫', () => {
       (consumerReply.body as { data: { currentUiArtifactId: string | null } }).data
         .currentUiArtifactId,
     ).toBeNull();
+
+    const createdConsumerReply = await call(
+      createSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+    expect(createdConsumerReply.statusCode).toBe(201);
+    const createdConsumerId = (createdConsumerReply.body as { data: { id: string } }).data.id;
+    const createdConsumerDetailReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    const createdConsumerDetail = (
+      createdConsumerDetailReply.body as {
+        data: {
+          session: { mode: string };
+          artifacts: Array<{
+            id: string;
+            kind: string;
+            sourceArtifactId?: string;
+            sourceTurnId?: string;
+          }>;
+          currentUiArtifactId: string | null;
+        };
+      }
+    ).data;
+    const frozenSnapshot = createdConsumerDetail.artifacts.find(
+      (artifact) => artifact.sourceArtifactId === revision.details!.artifactId,
+    );
+    expect(createdConsumerDetail.session.mode).toBe('consume');
+    expect(frozenSnapshot).toMatchObject({
+      kind: 'html',
+      sourceArtifactId: revision.details!.artifactId,
+    });
+    expect(frozenSnapshot?.sourceTurnId).toBeUndefined();
+    expect(createdConsumerDetail.currentUiArtifactId).toBe(frozenSnapshot?.id);
+
+    const completedConsumeTurnId = '00000000-0000-4000-8000-000000000003';
+    const completedConsumeArtifactId = '00000000-0000-4000-8000-000000000004';
+    const newerTimestamp = new Date(Date.now() + 1_000).toISOString();
+    db.turns.set(completedConsumeTurnId, {
+      id: completedConsumeTurnId,
+      session_id: createdConsumerId,
+      status: 'completed',
+      last_error: null,
+      created_at: newerTimestamp,
+      finished_at: newerTimestamp,
+    });
+    db.artifacts.set(completedConsumeArtifactId, {
+      id: completedConsumeArtifactId,
+      session_id: createdConsumerId,
+      turn_id: completedConsumeTurnId,
+      kind: 'html',
+      title: '普通运行结果',
+      storage_key: `artifacts/${createdConsumerId}/${completedConsumeArtifactId}`,
+      meta: {},
+      created_at: newerTimestamp,
+      updated_at: newerTimestamp,
+    });
+    const afterConsumeTurnReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    expect(
+      (afterConsumeTurnReply.body as { data: { currentUiArtifactId: string | null } }).data
+        .currentUiArtifactId,
+    ).toBe(frozenSnapshot?.id);
+
+    const newerStudioArtifactId = '00000000-0000-4000-8000-000000000001';
+    db.artifacts.set(newerStudioArtifactId, {
+      id: newerStudioArtifactId,
+      session_id: studio.id,
+      turn_id: turnId,
+      kind: 'html',
+      title: '更新后的 Agent UI',
+      storage_key: `artifacts/${studio.id}/${newerStudioArtifactId}`,
+      meta: {},
+      created_at: newerTimestamp,
+      updated_at: newerTimestamp,
+    });
+    cap.ui_artifact_id = newerStudioArtifactId;
+    const stableSnapshotReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    expect(
+      (stableSnapshotReply.body as { data: { currentUiArtifactId: string | null } }).data
+        .currentUiArtifactId,
+    ).toBe(frozenSnapshot?.id);
+
+    const duplicateSnapshotId = '00000000-0000-4000-8000-000000000002';
+    db.artifacts.set(duplicateSnapshotId, {
+      id: duplicateSnapshotId,
+      session_id: createdConsumerId,
+      turn_id: null,
+      kind: 'html',
+      title: '冲突的冻结快照',
+      storage_key: `artifacts/${createdConsumerId}/${duplicateSnapshotId}`,
+      meta: { sourceArtifactId: newerStudioArtifactId },
+      created_at: newerTimestamp,
+      updated_at: newerTimestamp,
+    });
+    const ambiguousSnapshotReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    expect(ambiguousSnapshotReply.statusCode).toBe(500);
+    expect(ambiguousSnapshotReply.body).toMatchObject({
+      error: { action: 'retry', retriable: true },
+    });
   });
 
   it('POST /runtime/sessions/:id/messages：非本人 404，且不落 user 消息', async () => {

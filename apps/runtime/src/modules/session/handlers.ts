@@ -290,14 +290,31 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
         );
         return sendError(req, reply, ErrorCode.INTERNAL);
       }
+      const consumeUiSnapshots = artifacts.filter(
+        (artifact) =>
+          artifact.kind === 'html' &&
+          z.string().uuid().safeParse(artifact.sourceArtifactId).success &&
+          artifact.sourceTurnId === undefined,
+      );
+      if (session.mode === 'consume' && consumeUiSnapshots.length > 1) {
+        req.log.error(
+          { traceId: req.id, snapshotCount: consumeUiSnapshots.length },
+          'consume UI snapshot invariant violated',
+        );
+        return sendError(req, reply, ErrorCode.INTERNAL);
+      }
       const sessionCurrentUiArtifactId =
-        currentUiArtifact === null
-          ? null
-          : (artifacts.find(
-              (artifact) =>
-                artifact.id === currentUiArtifact.id ||
-                artifact.sourceArtifactId === currentUiArtifact.id,
-            )?.id ?? null);
+        session.mode === 'consume'
+          ? consumeUiSnapshots.length === 1
+            ? consumeUiSnapshots[0]!.id
+            : null
+          : currentUiArtifact === null
+            ? null
+            : (artifacts.find(
+                (artifact) =>
+                  artifact.id === currentUiArtifact.id ||
+                  artifact.sourceArtifactId === currentUiArtifact.id,
+              )?.id ?? null);
       // 开场表单字段与提示语在 MinIO 定义里；定义读不出不阻塞详情（退化为空数组，自由输入仍可用）。
       let inputs: CapabilityInputField[] = [];
       let starterPrompts: string[] = [];
