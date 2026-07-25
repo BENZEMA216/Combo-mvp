@@ -211,7 +211,7 @@ fencer_access_valid() {
 }
 
 mark_failure_fence() {
-  install -d -o root -g root -m 0700 /var/lib/combo-dev
+  install -d -o root -g root -m 0711 /var/lib/combo-dev
   printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
   chmod 0600 "$FAILURE_FENCE_MARKER"
 }

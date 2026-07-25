@@ -13,7 +13,7 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
 StateDirectory=combo-dev
-StateDirectoryMode=0700
+StateDirectoryMode=0711
 # ProtectHome makes /home read-only in this unit's mount namespace. Re-expose only the bounded
 # combo-dev filesystem as writable so findmnt can verify the host's real rw/nodev/nosuid contract.
 ReadWritePaths=/run /var/lib/combo-dev /home/xingzheng/data/combo-dev

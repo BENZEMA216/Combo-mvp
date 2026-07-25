@@ -723,6 +723,9 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   const workflow = text('.github/workflows/combo-dev.yml');
   const deploy = text('scripts/combo-dev-deploy.sh');
   const reset = text('scripts/combo-dev-reset.sh');
+  const bootstrap = text('scripts/combo-dev-bootstrap.sh');
+  const storageGuard = text('scripts/combo-dev-storage-guard.sh');
+  const storageGuardUnit = text('infra/host/combo-dev/combo-dev-storage-guard.service');
   const evidence = workflow.indexOf('Collect and verify sanitized Test evidence');
   const cleanup = workflow.indexOf('Remove transient runner and upload files');
   assert.ok(evidence > 0 && cleanup > evidence);
@@ -754,6 +757,16 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
     deploy,
     /local output="\$evidence_dir\/\$\{revision\}\.\$\{workflow_run_id\}\.\$\{workflow_run_attempt\}\.json"/,
   );
+  for (const control of [bootstrap, deploy, reset, storageGuard]) {
+    assert.doesNotMatch(control, /install -d -o root -g root -m 0700 \/var\/lib\/combo-dev/);
+    assert.match(control, /install -d -o root -g root -m 0711 \/var\/lib\/combo-dev/);
+  }
+  assert.match(bootstrap, /install -d -o root -g root -m 0755 \/var\/lib\/combo-dev\/evidence/);
+  assert.match(storageGuardUnit, /^StateDirectory=combo-dev$/m);
+  assert.match(storageGuardUnit, /^StateDirectoryMode=0711$/m);
+  assert.doesNotMatch(storageGuardUnit, /^StateDirectoryMode=0700$/m);
+  assert.match(deploy, /install -d -o root -g root -m 0755 "\$evidence_dir"/);
+  assert.match(deploy, /install -o root -g root -m 0644 "\$candidate" "\$output"/);
   assert.match(deploy, /mv -T -- "\$RESET_PROOF" "\$CONSUMED_RESET_PROOF"/);
   assert.match(deploy, /RESET_PROOF_MAX_AGE_SECONDS=900/);
   assert.match(
