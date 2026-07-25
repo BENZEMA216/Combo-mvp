@@ -1,0 +1,624 @@
+name: Preview promotion
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+jobs:
+  policy:
+    name: validate main release and repository promotion mode
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      mode: ${{ steps.policy.outputs.mode }}
+      revision: ${{ steps.policy.outputs.revision }}
+      source_run_id: ${{ steps.policy.outputs.source_run_id }}
+    steps:
+      - name: Validate the trusted main CI run
+        id: policy
+        env:
+          MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
+          REVISION: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_PATH: ${{ github.event.workflow_run.path }}
+          SOURCE_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_EVENT" == push ]]
+          [[ "$SOURCE_BRANCH" == main ]]
+          [[ "$SOURCE_PATH" == .github/workflows/ci.yml ]]
+          [[ "$SOURCE_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
+          case "$MODE" in
+            enabled)
+              echo 'Preview automatic promotion is enabled.'
+              ;;
+            paused)
+              echo 'Preview automatic promotion is explicitly paused by repository policy.'
+              ;;
+            *)
+              echo 'COMBO_PREVIEW_AUTO_PROMOTION_MODE must be exactly enabled or paused.' >&2
+              exit 1
+              ;;
+          esac
+          {
+            printf 'mode=%s\n' "$MODE"
+            printf 'revision=%s\n' "$REVISION"
+            printf 'source_run_id=%s\n' "$SOURCE_RUN_ID"
+          } >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: deploy the main release artifact to Preview
+    if: needs.policy.outputs.mode == 'enabled'
+    needs: policy
+    concurrency:
+      group: cd-tecent2
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: cloud-review
+    steps:
+      - name: Download the release from the successful main CI run
+        uses: actions/download-artifact@v4
+        with:
+          name: combo-release-${{ needs.policy.outputs.revision }}
+          path: ${{ runner.temp }}/combo-release
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.policy.outputs.source_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Verify release identity and all bundled files
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+        run: |
+          set -euo pipefail
+          (
+            cd "$RELEASE_ROOT"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          node "$RELEASE_ROOT/scripts/release-manifest.mjs" verify \
+            --manifest "$RELEASE_ROOT/metadata/release.json" \
+            --source-sha "$REVISION" \
+            --digest "$manifest_digest" >/dev/null
+          node "$RELEASE_ROOT/scripts/web-asset-manifest.mjs" verify \
+            --manifest "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            --digest "$(jq -er '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")" >/dev/null
+          for phase in foundation init migrate apps; do
+            [[ -s "$RELEASE_ROOT/rendered/preview/$phase.yaml" ]]
+          done
+
+      - name: Configure the existing deployment SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_SSH_KNOWN_HOSTS" ]]
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$DEPLOY_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1
+          {
+            echo 'Host release-target'
+            echo "  HostName $DEPLOY_HOST"
+            echo "  User $DEPLOY_USER"
+            echo '  IdentityFile ~/.ssh/deploy_key'
+            echo '  UserKnownHostsFile ~/.ssh/known_hosts'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+            echo '  BatchMode yes'
+            echo '  ServerAliveInterval 30'
+            echo '  ServerAliveCountMax 20'
+            echo '  TCPKeepAlive yes'
+            echo '  LogLevel ERROR'
+          } > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
+
+      - name: Preflight the tecent2 release host without mutation
+        run: |
+          set -euo pipefail
+          ssh release-target bash -s <<'REMOTE'
+          set -euo pipefail
+          [[ "$(id -un)" == xingzheng && "$HOME" == /home/xingzheng ]]
+          for command in node jq sha256sum flock cmp awk install mktemp realpath grep mv \
+            rm dirname sleep seq tr sort sudo curl stat date systemctl ss kubectl tar; do
+            command -v "$command" >/dev/null
+          done
+          [[ "$(uname -m)" == x86_64 ]]
+          node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
+          [[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 24 ]]
+          [[ -x /usr/local/bin/kubectl && -f "$HOME/.kube/config" ]]
+          LC_ALL=C sudo -n -l | grep -Eq 'NOPASSWD:[[:space:]]*ALL'
+          sudo -n systemctl is-active --quiet k3s
+          sudo -n nginx -t >/dev/null
+          sudo -n ss -H -lnt >/dev/null
+          sudo -n realpath -e "$HOME/data/k3s/storage" >/dev/null
+          kubectl --kubeconfig "$HOME/.kube/config" get namespace combo-review >/dev/null
+          kubectl --kubeconfig "$HOME/.kube/config" auth can-i '*' '*' \
+            --all-namespaces | grep -Fxq yes
+          REMOTE
+
+      - name: Check the existing Preview registry credential
+        id: pull_credential
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
+          name="combo-preview-pull-${RUN_ID}-${RUN_ATTEMPT}"
+          [[ "$name" =~ ^[a-z0-9-]{1,63}$ ]]
+          if ssh release-target bash -s -- "$name" "$image" <<'REMOTE'
+          set -euo pipefail
+          name=$1
+          image=$2
+          kubeconfig="$HOME/.kube/config"
+          [[ "$name" =~ ^combo-preview-pull-[0-9]+-[0-9]+$ ]]
+          [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
+          ! kubectl --kubeconfig "$kubeconfig" -n combo-review \
+            get "pod/$name" >/dev/null 2>&1
+          created=0
+          uid=
+          cleanup() {
+            local rc=$? cleanup_failed=0 live live_uid removed=0
+            trap - EXIT
+            set +e
+            if ((created == 1)); then
+              if live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                get "pod/$name" -o json 2>/dev/null); then
+                live_uid=$(jq -er '.metadata.uid' <<<"$live")
+                if [[ "$live_uid" != "$uid" ]] ||
+                  ! jq -e '.metadata.labels["combo.build/smoke"] == "ghcr-pull"' \
+                    <<<"$live" >/dev/null; then
+                  cleanup_failed=1
+                else
+                  jq -n --arg uid "$uid" '{
+                    apiVersion: "v1",
+                    kind: "DeleteOptions",
+                    propagationPolicy: "Foreground",
+                    preconditions: {uid: $uid}
+                  }' |
+                    kubectl --kubeconfig "$kubeconfig" \
+                      delete --raw="/api/v1/namespaces/combo-review/pods/$name" \
+                      -f - >/dev/null 2>&1 || cleanup_failed=1
+                  for _ in $(seq 1 60); do
+                    if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                      get "pod/$name" -o json 2>/dev/null); then
+                      removed=1
+                      break
+                    fi
+                    live_uid=$(jq -er '.metadata.uid' <<<"$live")
+                    [[ "$live_uid" == "$uid" ]] || {
+                      cleanup_failed=1
+                      break
+                    }
+                    sleep 1
+                  done
+                  ((removed == 1)) || cleanup_failed=1
+                fi
+              fi
+            fi
+            ((cleanup_failed == 0)) || exit 12
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          auth_failure_text() {
+            case "$1" in
+              *"failed to fetch oauth token"*401* | \
+                *"failed to fetch oauth token"*403* | \
+                *"failed to authorize"*Unauthorized* | \
+                *"failed to authorize"*Forbidden* | \
+              *Unauthorized* | *unauthorized* | *denied* | \
+                *"authentication required"* | *"no basic auth credentials"* | \
+                *invalid_token* | *insufficient_scope*) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+          auth_failure_event() {
+            local messages
+            messages=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+              get events -o json |
+              jq -r --arg uid "$uid" '
+                .items[]
+                | select(.involvedObject.uid == $uid and .reason == "Failed")
+                | .message
+              ')
+            auth_failure_text "$messages"
+          }
+          created=1
+          uid=$(kubectl --kubeconfig "$kubeconfig" -n combo-review run "$name" \
+            --image="$image" \
+            --image-pull-policy=Always \
+            --restart=Never \
+            --overrides='{"metadata":{"labels":{"combo.build/smoke":"ghcr-pull"}},"spec":{"imagePullSecrets":[{"name":"combo-preview-ghcr-pull"}]}}' \
+            -o json --command -- /bin/sh -c 'exit 0' | jq -er '.metadata.uid')
+          [[ -n "$uid" ]]
+          for _ in $(seq 1 45); do
+            phase=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+              get "pod/$name" -o jsonpath='{.status.phase}')
+            [[ "$phase" != Succeeded ]] || exit 0
+            [[ "$phase" != Failed ]] || exit 11
+            reason=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+              get "pod/$name" \
+              -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' \
+              2>/dev/null || true)
+            if [[ "$reason" == ImagePullBackOff || "$reason" == ErrImagePull ]]; then
+              message=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                get "pod/$name" \
+                -o jsonpath='{.status.containerStatuses[0].state.waiting.message}' \
+                2>/dev/null || true)
+              if auth_failure_text "$message" || auth_failure_event; then
+                exit 10
+              fi
+            fi
+            sleep 2
+          done
+          auth_failure_event && exit 10
+          exit 11
+          REMOTE
+          then
+            echo 'refresh=false' >> "$GITHUB_OUTPUT"
+          else
+            rc=$?
+            [[ "$rc" == 10 ]] || exit "$rc"
+            echo 'refresh=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Refresh an expired Preview image pull credential
+        if: steps.pull_credential.outputs.refresh == 'true'
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          (( ${#GHCR_TOKEN} > 0 && ${#GHCR_TOKEN} <= 4096 ))
+          [[ "$GHCR_TOKEN" != *$'\n'* && "$GHCR_TOKEN" != *$'\r'* ]]
+          [[ "$GHCR_USER" =~ ^[A-Za-z0-9_-]+$ ]]
+          {
+            printf '%s\n' "$GHCR_TOKEN"
+            cat <<'REMOTE'
+          set -euo pipefail
+          user=$1
+          token=$GHCR_TOKEN
+          unset GHCR_TOKEN
+          [[ -n "$token" ]]
+          trap 'unset token' EXIT
+          kubectl --kubeconfig "$HOME/.kube/config" -n combo-review \
+            create secret docker-registry combo-preview-ghcr-pull \
+            --docker-server=ghcr.io \
+            --docker-username="$user" \
+            --docker-password="$token" \
+            --dry-run=client -o yaml |
+            kubectl --kubeconfig "$HOME/.kube/config" apply -f - >/dev/null
+          REMOTE
+          } | ssh release-target \
+            "IFS= read -r token; export GHCR_TOKEN=\"\$token\"; exec bash -s -- '$GHCR_USER'"
+
+      - name: Validate the refreshed Preview registry credential
+        if: steps.pull_credential.outputs.refresh == 'true'
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
+          name="combo-preview-pull-${RUN_ID}-${RUN_ATTEMPT}-retry"
+          [[ "$name" =~ ^[a-z0-9-]{1,63}$ ]]
+          ssh release-target bash -s -- "$name" "$image" <<'REMOTE'
+          set -euo pipefail
+          name=$1
+          image=$2
+          kubeconfig="$HOME/.kube/config"
+          [[ "$name" =~ ^combo-preview-pull-[0-9]+-[0-9]+-retry$ ]]
+          [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
+          ! kubectl --kubeconfig "$kubeconfig" -n combo-review \
+            get "pod/$name" >/dev/null 2>&1
+          created=0
+          uid=
+          cleanup() {
+            local rc=$? cleanup_failed=0 live live_uid removed=0
+            trap - EXIT
+            set +e
+            if ((created == 1)); then
+              if live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                get "pod/$name" -o json 2>/dev/null); then
+                live_uid=$(jq -er '.metadata.uid' <<<"$live")
+                if [[ "$live_uid" != "$uid" ]] ||
+                  ! jq -e '.metadata.labels["combo.build/smoke"] == "ghcr-pull"' \
+                    <<<"$live" >/dev/null; then
+                  cleanup_failed=1
+                else
+                  jq -n --arg uid "$uid" '{
+                    apiVersion: "v1",
+                    kind: "DeleteOptions",
+                    propagationPolicy: "Foreground",
+                    preconditions: {uid: $uid}
+                  }' |
+                    kubectl --kubeconfig "$kubeconfig" \
+                      delete --raw="/api/v1/namespaces/combo-review/pods/$name" \
+                      -f - >/dev/null 2>&1 || cleanup_failed=1
+                  for _ in $(seq 1 60); do
+                    if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                      get "pod/$name" -o json 2>/dev/null); then
+                      removed=1
+                      break
+                    fi
+                    live_uid=$(jq -er '.metadata.uid' <<<"$live")
+                    [[ "$live_uid" == "$uid" ]] || {
+                      cleanup_failed=1
+                      break
+                    }
+                    sleep 1
+                  done
+                  ((removed == 1)) || cleanup_failed=1
+                fi
+              fi
+            fi
+            ((cleanup_failed == 0)) || exit 12
+            exit "$rc"
+          }
+          trap cleanup EXIT
+          created=1
+          uid=$(kubectl --kubeconfig "$kubeconfig" -n combo-review run "$name" \
+            --image="$image" \
+            --image-pull-policy=Always \
+            --restart=Never \
+            --overrides='{"metadata":{"labels":{"combo.build/smoke":"ghcr-pull"}},"spec":{"imagePullSecrets":[{"name":"combo-preview-ghcr-pull"}]}}' \
+            -o json --command -- /bin/sh -c 'exit 0' | jq -er '.metadata.uid')
+          [[ -n "$uid" ]]
+          kubectl --kubeconfig "$kubeconfig" -n combo-review wait \
+            --for=jsonpath='{.status.phase}'=Succeeded "pod/$name" \
+            --timeout=180s >/dev/null
+          [[ "$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+            get "pod/$name" \
+            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')" == 0 ]]
+          REMOTE
+
+      - name: Upload and deploy the exact Preview bundle
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          archive="$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz"
+          tar -C "$RELEASE_ROOT" -czf "$archive" .
+          chmod 0600 "$archive"
+
+          remote="data/combo-release-incoming/${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          ssh release-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          revision=$2
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.preview."*.tar.gz ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          archive="$HOME/$incoming"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-release-preview.XXXXXX")
+          cleanup() {
+            rm -f -- "$archive"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          (
+            cd "$work"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$work/metadata/release-manifest-digest.txt")
+          chmod 0700 "$work/scripts/deploy-release.sh" "$work/scripts/switch-release-traffic.sh"
+          bash "$work/scripts/deploy-release.sh" \
+            --environment preview \
+            --fresh-reset \
+            --manifest "$work/metadata/release.json" \
+            --manifest-digest "$manifest_digest" \
+            --migrations "$work/metadata/migration-files.txt" \
+            --foundation-yaml "$work/rendered/preview/foundation.yaml" \
+            --init-yaml "$work/rendered/preview/init.yaml" \
+            --migrate-yaml "$work/rendered/preview/migrate.yaml" \
+            --apps-yaml "$work/rendered/preview/apps.yaml" \
+            --web-assets "$work/metadata/web-asset-manifest.json"
+          REMOTE
+
+      - name: Fetch and validate the tecent2 Preview evidence
+        id: remote_evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          evidence_dir="$RUNNER_TEMP/preview-remote-evidence"
+          install -d -m 0700 "$evidence_dir"
+          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          set -euo pipefail
+          revision=$1
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          directory="$HOME/data/combo-releases/goal-a/preview/release-$revision"
+          files=(
+            release.json release.sha256 migration-files.txt web-asset-manifest.json
+            foundation.yaml init.yaml migrate.yaml apps.yaml
+            traffic-evidence.json cleanup-evidence.json deploy-evidence.json SHA256SUMS
+          )
+          for file in "${files[@]}"; do
+            [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
+          done
+          (cd "$directory" && sha256sum --quiet -c SHA256SUMS)
+          tar -C "$directory" -czf - "${files[@]}"
+          REMOTE
+            tar -xzf - -C "$evidence_dir"
+          (
+            cd "$evidence_dir"
+            sha256sum --quiet -c SHA256SUMS
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$(<"$evidence_dir/release.sha256")" == "$manifest_digest" ]]
+          cmp -s "$RELEASE_ROOT/metadata/release.json" "$evidence_dir/release.json"
+          cmp -s "$RELEASE_ROOT/metadata/migration-files.txt" \
+            "$evidence_dir/migration-files.txt"
+          cmp -s "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            "$evidence_dir/web-asset-manifest.json"
+          for phase in foundation init migrate apps; do
+            cmp -s "$RELEASE_ROOT/rendered/preview/$phase.yaml" \
+              "$evidence_dir/$phase.yaml"
+          done
+          api_image=$(jq -er '.images.api' "$RELEASE_ROOT/metadata/release.json")
+          runtime_image=$(jq -er '.images.runtime' "$RELEASE_ROOT/metadata/release.json")
+          web_image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg apiImage "$api_image" \
+            --arg runtimeImage "$runtime_image" \
+            --arg webImage "$web_image" \
+            --slurpfile traffic "$evidence_dir/traffic-evidence.json" \
+            --slurpfile cleanup "$evidence_dir/cleanup-evidence.json" '
+              .schemaVersion == 1
+              and .status == "passed"
+              and .environment == "preview"
+              and .namespace == "combo-review"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .checks.foundationReady == true
+              and .checks.releaseStorage == true
+              and .checks.minioInitialization == true
+              and .checks.exactMigrations == true
+              and .checks.applicationImages == true
+              and .checks.publicTraffic == true
+              and .checks.legacyCleanup == true
+              and .traffic == $traffic[0]
+              and .cleanup == $cleanup[0]
+              and .cleanup.verifiedAbsent == true
+              and .storage.environment == "preview"
+              and .storage.namespace == "combo-review"
+              and .storage.sourceSha == $revision
+              and .storage.verified == true
+              and (.storage.claims | length) == 3
+              and .traffic.environment == "preview"
+              and .traffic.sourceSha == $revision
+              and .traffic.manifestDigest == $manifestDigest
+              and .traffic.checks.publicWebRelease == true
+              and .traffic.checks.publicMinioReady == true
+              and .migration.image == $apiImage
+              and ([.deployments[].image] | sort)
+                == ([$apiImage, $apiImage, $runtimeImage, $webImage] | sort)
+            ' "$evidence_dir/deploy-evidence.json" >/dev/null
+          jq -e --arg revision "$REVISION" '
+            .schemaVersion == 1
+            and .environment == "preview"
+            and .namespace == "combo-review"
+            and .sourceSha == $revision
+            and .verifiedAbsent == true
+          ' "$evidence_dir/cleanup-evidence.json" >/dev/null
+          deploy_digest=$(sha256sum "$evidence_dir/deploy-evidence.json" | awk '{print "sha256:" $1}')
+          cleanup_digest=$(sha256sum "$evidence_dir/cleanup-evidence.json" | awk '{print "sha256:" $1}')
+          printf 'deploy_digest=%s\n' "$deploy_digest" >> "$GITHUB_OUTPUT"
+          printf 'cleanup_digest=%s\n' "$cleanup_digest" >> "$GITHUB_OUTPUT"
+          install -m 0644 "$evidence_dir/deploy-evidence.json" \
+            "$RUNNER_TEMP/preview-remote-deploy-evidence.json"
+          install -m 0644 "$evidence_dir/cleanup-evidence.json" \
+            "$RUNNER_TEMP/preview-remote-cleanup-evidence.json"
+
+      - name: Create Preview promotion evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          PREVIEW_RUN_ID: ${{ github.run_id }}
+          REMOTE_DEPLOY_DIGEST: ${{ steps.remote_evidence.outputs.deploy_digest }}
+          REMOTE_CLEANUP_DIGEST: ${{ steps.remote_evidence.outputs.cleanup_digest }}
+        run: |
+          set -euo pipefail
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
+          deployed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          jq -n \
+            --slurpfile release "$RELEASE_ROOT/metadata/release.json" \
+            --arg sourceSha "$REVISION" \
+            --argjson sourceCiRunId "$SOURCE_RUN_ID" \
+            --argjson previewRunId "$PREVIEW_RUN_ID" \
+            --arg releaseManifestDigest "$manifest_digest" \
+            --arg artifactFileSetDigest "$file_set_digest" \
+            --arg remoteDeployEvidenceDigest "$REMOTE_DEPLOY_DIGEST" \
+            --arg remoteCleanupEvidenceDigest "$REMOTE_CLEANUP_DIGEST" \
+            --arg deployedAt "$deployed_at" '
+              {
+                schemaVersion: 1,
+                status: "passed",
+                environment: "preview",
+                namespace: "combo-review",
+                sourceSha: $sourceSha,
+                sourceCiRunId: $sourceCiRunId,
+                previewRunId: $previewRunId,
+                releaseArtifact: ("combo-release-" + $sourceSha),
+                releaseManifestDigest: $releaseManifestDigest,
+                artifactFileSetDigest: $artifactFileSetDigest,
+                remoteDeployEvidenceDigest: $remoteDeployEvidenceDigest,
+                remoteCleanupEvidenceDigest: $remoteCleanupEvidenceDigest,
+                images: $release[0].images,
+                deployedAt: $deployedAt
+              }
+            ' > "$RUNNER_TEMP/preview-promotion.json"
+
+      - name: Upload the Production admission evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-preview-promotion-${{ needs.policy.outputs.revision }}
+          path: |
+            ${{ runner.temp }}/preview-promotion.json
+            ${{ runner.temp }}/preview-remote-deploy-evidence.json
+            ${{ runner.temp }}/preview-remote-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove transient SSH and bundle files
+        if: always()
+        env:
+          REVISION: ${{ needs.policy.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set +e
+          if [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ && -f "$HOME/.ssh/config" ]]; then
+            ssh release-target rm -f -- \
+              "data/combo-release-incoming/${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
+              ".${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.upload" \
+              >/dev/null 2>&1 || true
+          fi
+          rm -f -- \
+            "$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz" \
+            "$HOME/.ssh/deploy_key" \
+            "$HOME/.ssh/known_hosts" \
+            "$HOME/.ssh/config"

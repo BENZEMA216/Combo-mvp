@@ -36,14 +36,45 @@ const imageArgs = [
   '--web-image',
   `ghcr.io/dangdang-tech/combo-web@sha256:${digest('c')}`,
 ];
+const RELEASE_SHA = 'd'.repeat(40);
+const RELEASE_MANIFEST = {
+  schemaVersion: 1,
+  sourceSha: RELEASE_SHA,
+  releaseId: `release-${RELEASE_SHA}`,
+  images: {
+    api: imageArgs[1],
+    runtime: imageArgs[3],
+    web: imageArgs[5],
+  },
+  migrationHead: '0006_one_running_turn_per_session.sql',
+  builtAt: '2026-07-24T08:00:00.000Z',
+  webAssetManifest: `sha256:${digest('e')}`,
+};
 
 function text(path) {
   return readFileSync(join(repo, path), 'utf8');
 }
 
+function writeReleaseFixture(root, releaseManifest = RELEASE_MANIFEST) {
+  const manifest = join(root, 'release.json');
+  const digestFile = join(root, 'release-manifest-digest.txt');
+  const serialized = `${JSON.stringify(releaseManifest, null, 2)}\n`;
+  writeFileSync(manifest, serialized);
+  writeFileSync(digestFile, `sha256:${sha(serialized)}\n`);
+  return [
+    '--revision',
+    RELEASE_SHA,
+    '--release-manifest',
+    manifest,
+    '--release-manifest-digest-file',
+    digestFile,
+  ];
+}
+
 function render(root = repo) {
   const work = mkdtempSync(join(tmpdir(), 'combo-dev-render-'));
   const output = join(work, 'rendered.yaml');
+  const releaseArgs = writeReleaseFixture(work);
   try {
     execFileSync(
       'bash',
@@ -53,6 +84,7 @@ function render(root = repo) {
         '--output',
         output,
         ...imageArgs,
+        ...releaseArgs,
       ],
       { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
@@ -75,9 +107,17 @@ function fixture() {
 
 function expectRenderFailure(root, marker) {
   const output = join(root, 'out.yaml');
+  const releaseArgs = writeReleaseFixture(root);
   const result = spawnSync(
     'bash',
-    [join(root, 'scripts/combo-dev-deploy.sh'), '--render-only', '--output', output, ...imageArgs],
+    [
+      join(root, 'scripts/combo-dev-deploy.sh'),
+      '--render-only',
+      '--output',
+      output,
+      ...imageArgs,
+      ...releaseArgs,
+    ],
     { cwd: root, encoding: 'utf8' },
   );
   assert.notEqual(result.status, 0);
@@ -99,6 +139,10 @@ function sha(value) {
   return createHash('sha256').update(value).digest('hex');
 }
 
+function regexEscape(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -116,7 +160,7 @@ function documentFor(kind, name) {
 }
 
 test('stage-only render mounts only the three prebound static claims', () => {
-  assert.equal(renderedDocuments.length, 39);
+  assert.equal(renderedDocuments.length, 40);
   assert.equal(rendered.includes('hostPath:'), false);
   assert.equal(
     renderedDocuments.some((document) =>
@@ -163,6 +207,98 @@ test('stage-only render mounts only the three prebound static claims', () => {
   }
 });
 
+test('Test apps share one exact immutable release identity without Secret expansion', () => {
+  const metadataName = `combo-release-meta-${RELEASE_SHA.slice(0, 12)}`;
+  const metadata = documentFor('ConfigMap', metadataName);
+  const expected = {
+    COMBO_ENVIRONMENT: 'test',
+    COMBO_SOURCE_SHA: RELEASE_SHA,
+    COMBO_RELEASE_ID: `release-${RELEASE_SHA}`,
+    COMBO_BUILT_AT: RELEASE_MANIFEST.builtAt,
+    COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${sha(
+      `${JSON.stringify(RELEASE_MANIFEST, null, 2)}\n`,
+    )}`,
+    COMBO_WEB_ASSET_MANIFEST: RELEASE_MANIFEST.webAssetManifest,
+  };
+  for (const [key, value] of Object.entries(expected)) {
+    assert.match(metadata, new RegExp(`^ {2}${key}: ["']?${regexEscape(value)}["']?$`, 'm'));
+  }
+  assert.equal((metadata.match(/^ {2}COMBO_[A-Z_]+:/gm) ?? []).length, 6);
+  assert.equal((metadata.match(/^immutable: true$/gm) ?? []).length, 1);
+  assert.doesNotMatch(metadata, /0{40}|sha256:0{64}/);
+
+  for (const name of ['api', 'runtime', 'web', 'worker']) {
+    const workload = documentFor('Deployment', name);
+    assert.match(
+      workload,
+      new RegExp(`^ {8}envFrom:\n {8}- configMapRef:\n {12}name: ${metadataName}$`, 'm'),
+    );
+    assert.equal((workload.match(/envFrom:/g) ?? []).length, 1);
+    assert.doesNotMatch(workload, /^\s*-\s*secretRef:/m);
+  }
+
+  const web = documentFor('Deployment', 'web');
+  const nginx = text('infra/k8s/overlays/combo-dev/apps/nginx-dev.conf');
+  const runtimeConfig = text('infra/web-runtime-config.sh');
+  assert.match(web, /readOnlyRootFilesystem: true/);
+  assert.match(web, /mountPath: \/var\/run[\s\S]*name: nginx-run/);
+  assert.doesNotMatch(
+    runtimeConfig,
+    />"?\/usr\/share\/nginx\/html\/(?:try\/)?(?:runtime-config|version)\.json/,
+  );
+  for (const [endpoint, file] of [
+    ['/runtime-config.json', 'runtime-config.json'],
+    ['/version.json', 'version.json'],
+    ['/try/runtime-config.json', 'try-runtime-config.json'],
+  ]) {
+    assert.match(
+      nginx,
+      new RegExp(
+        `location = ${endpoint.replaceAll('/', '\\/')} \\{[\\s\\S]*?alias \\/var\\/run\\/combo-web\\/${file};`,
+      ),
+    );
+  }
+  assert.match(nginx, /alias \/usr\/share\/nginx\/html\/try\//);
+  assert.doesNotMatch(nginx, /alias \/usr\/share\/nginx\/try\//);
+
+  const root = fixture();
+  try {
+    const deploy = join(root, 'scripts/combo-dev-deploy.sh');
+    const source = readFileSync(deploy, 'utf8');
+    assert.equal((source.match(/^immutable: true$/gm) ?? []).length, 1);
+    writeFileSync(deploy, source.replace(/^immutable: true$/m, 'immutable: false'));
+    expectRenderFailure(root, /guard:release-metadata-immutable/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('root-side release validation rejects a boolean schema version', () => {
+  const root = fixture();
+  try {
+    const output = join(root, 'out.yaml');
+    const invalid = clone(RELEASE_MANIFEST);
+    invalid.schemaVersion = true;
+    const releaseArgs = writeReleaseFixture(root, invalid);
+    const result = spawnSync(
+      'bash',
+      [
+        join(root, 'scripts/combo-dev-deploy.sh'),
+        '--render-only',
+        '--output',
+        output,
+        ...imageArgs,
+        ...releaseArgs,
+      ],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}${result.stderr}`, /render-only 发布清单校验失败/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('Restricted combo-preview workloads reject every hostPath injection', () => {
   const namespace = text('infra/k8s/overlays/combo-dev/platform/namespace.yaml');
   const deploy = text('scripts/combo-dev-deploy.sh');
@@ -182,23 +318,14 @@ test('Restricted combo-preview workloads reject every hostPath injection', () =>
 
   const root = fixture();
   try {
-    const kustomization = join(root, 'infra/k8s/overlays/combo-dev/apps/kustomization.yaml');
-    const source = readFileSync(kustomization, 'utf8');
+    const resources = join(root, 'infra/k8s/overlays/combo-dev/apps/resources.yaml');
+    const source = readFileSync(resources, 'utf8');
     writeFileSync(
-      kustomization,
-      `${source}patches:
-  - target:
-      kind: Deployment
-      name: web
-    patch: |-
-      - op: add
-        path: /spec/template/spec/volumes/-
-        value:
-          name: forbidden-host
-          hostPath:
-            path: /tmp
-            type: Directory
-`,
+      resources,
+      source.replace(
+        '      volumes:\n        - configMap:\n            name: combo-dev-nginx',
+        '      volumes:\n        - hostPath:\n            path: /tmp\n            type: Directory\n          name: forbidden-host\n        - configMap:\n            name: combo-dev-nginx',
+      ),
     );
     expectRenderFailure(root, /guard:(?:forbidden|workload-hostpath)/);
   } finally {
@@ -1277,7 +1404,7 @@ test('first bootstrap tolerates absent forwarder units and serializes the persis
   );
 });
 
-test('the always-on host guard uses an independent minimal fencer for missing, malformed, expired, or unauthorized dispatcher credentials', () => {
+test('the always-on host guard uses an independent minimal fencer for missing, malformed, expiring, or unauthorized dispatcher credentials', () => {
   const bootstrap = text('scripts/combo-dev-bootstrap.sh');
   const deploy = text('scripts/combo-dev-deploy.sh');
   const reset = text('scripts/combo-dev-reset.sh');
@@ -1299,15 +1426,56 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
     /^ReadWritePaths=\/run \/var\/lib\/combo-dev \/home\/xingzheng\/data\/combo-dev$/m,
   );
   assert.doesNotMatch(unit, /ReadWritePaths=.* \/home\/xingzheng\/data(?:\s|$)/m);
-  assert.match(rbac, /name: combo-dev-fencer/);
-  assert.match(rbac, /resourceNames: \['api', 'worker', 'runtime', 'web', 'redis-hot'\]/);
-  assert.doesNotMatch(
-    rbac.slice(
-      rbac.indexOf('name: combo-dev-fencer'),
-      rbac.indexOf('name: combo-dev-control-auditor'),
-    ),
-    /verbs: \[[^\]]*(?:create|update)[^\]]*\]/,
+  const fencerRoleStart = rbac.indexOf('kind: Role\nmetadata:\n  name: combo-dev-fencer');
+  const fencerRoleEnd = rbac.indexOf('\n---', fencerRoleStart);
+  assert.ok(fencerRoleStart >= 0);
+  assert.ok(fencerRoleEnd > fencerRoleStart);
+  const fencerRole = rbac.slice(fencerRoleStart, fencerRoleEnd);
+  assert.match(
+    fencerRole,
+    /resources: \['deployments'\]\n {4}resourceNames: \['api', 'worker', 'runtime', 'web', 'redis-hot'\]\n {4}verbs: \['get'\]/,
   );
+  assert.match(
+    fencerRole,
+    /resources: \['deployments\/scale'\]\n {4}resourceNames: \['api', 'worker', 'runtime', 'web', 'redis-hot'\]\n {4}verbs: \['patch'\]/,
+  );
+  assert.match(
+    fencerRole,
+    /resources: \['statefulsets'\]\n {4}resourceNames: \['postgres', 'redis-queue', 'minio'\]\n {4}verbs: \['get'\]/,
+  );
+  assert.match(
+    fencerRole,
+    /resources: \['statefulsets\/scale'\]\n {4}resourceNames: \['postgres', 'redis-queue', 'minio'\]\n {4}verbs: \['patch'\]/,
+  );
+  assert.equal(fencerRole.match(/\/scale/g)?.length, 2);
+  assert.equal(fencerRole.match(/'patch'/g)?.length, 2);
+  assert.doesNotMatch(fencerRole, /verbs: \[[^\]]*(?:create|update)[^\]]*\]/);
+  assert.doesNotMatch(
+    fencerRole,
+    /resources: \['(?:deployments|statefulsets)'\]\n {4}resourceNames: [^\n]+\n {4}verbs: \[[^\]\n]*patch[^\]\n]*\]/,
+  );
+  for (const script of [bootstrap, guard]) {
+    const canI = script.slice(
+      script.indexOf(script === bootstrap ? 'can_i_with_credential() {' : 'can_i() {'),
+      script.indexOf(
+        script === bootstrap ? 'trusted_source_tree() {' : 'dispatcher_access_valid() {',
+      ),
+    );
+    assert.match(canI, /--subresource="\$subresource"/);
+    const fencerChecks = script.slice(
+      script.indexOf(
+        script === bootstrap ? 'fencer_credential_valid() {' : 'fencer_access_valid() {',
+      ),
+      script.indexOf(
+        script === bootstrap ? 'issue_client_credential() {' : 'mark_failure_fence() {',
+      ),
+    );
+    assert.match(fencerChecks, /yes patch "deployments\.apps\/\$name" "\$NAMESPACE" scale/);
+    assert.match(fencerChecks, /yes patch "statefulsets\.apps\/\$name" "\$NAMESPACE" scale/);
+    assert.match(fencerChecks, /no patch deployments\.apps\/api "\$NAMESPACE"/);
+    assert.match(fencerChecks, /no update deployments\.apps\/api "\$NAMESPACE" scale/);
+    assert.match(fencerChecks, /no patch deployments\.apps\/api "\$PRODUCTION_NAMESPACE" scale/);
+  }
   assert.match(lease, /FAILURE_FENCE_MARKER/);
 
   const fenceBody = guard.slice(guard.indexOf('fence_now() {'), guard.lastIndexOf('main() {'));
@@ -1330,7 +1498,7 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
     const caCert = join(work, 'ca.crt');
     const key = join(work, 'client.key');
     const request = join(work, 'client.csr');
-    const expired = join(work, 'expired.crt');
+    const expiring = join(work, 'expiring.crt');
     for (const args of [
       [
         'req',
@@ -1371,26 +1539,26 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
         '-set_serial',
         '2',
         '-days',
-        '-1',
+        '1',
         '-out',
-        expired,
+        expiring,
       ],
     ]) {
       execFileSync('openssl', args, { stdio: 'ignore' });
     }
     const kubeconfig = (certificate) =>
       `apiVersion: v1\nkind: Config\nclusters:\n- name: k3s\n  cluster:\n    server: https://127.0.0.1:6443\n    certificate-authority-data: ${readFileSync(caCert).toString('base64')}\nusers:\n- name: combo-dev-dispatcher\n  user:\n    client-certificate-data: ${readFileSync(certificate).toString('base64')}\n    client-key-data: ${readFileSync(key).toString('base64')}\ncontexts:\n- name: combo-dev\n  context:\n    cluster: k3s\n    user: combo-dev-dispatcher\ncurrent-context: combo-dev\n`;
-    const expiredConfig = join(work, 'expired.kubeconfig');
+    const expiringConfig = join(work, 'expiring.kubeconfig');
     const malformedConfig = join(work, 'malformed.kubeconfig');
-    writeFileSync(expiredConfig, kubeconfig(expired), { mode: 0o600 });
+    writeFileSync(expiringConfig, kubeconfig(expiring), { mode: 0o600 });
     writeFileSync(malformedConfig, 'not: [valid\n', { mode: 0o600 });
     const guardPath = join(repo, 'scripts/combo-dev-storage-guard.sh');
     const credentialHarness = (path) => `
 source ${JSON.stringify(guardPath)}
 private_file() { [[ -f "$1" ]]; }
-credential_certificate_valid_for ${JSON.stringify(path)} combo-dev-dispatcher 1
+credential_certificate_valid_for ${JSON.stringify(path)} combo-dev-dispatcher $((2 * 24 * 60 * 60))
 `;
-    for (const path of [join(work, 'missing.kubeconfig'), malformedConfig, expiredConfig]) {
+    for (const path of [join(work, 'missing.kubeconfig'), malformedConfig, expiringConfig]) {
       assert.notEqual(
         spawnSync('bash', ['-c', credentialHarness(path)], { stdio: 'ignore' }).status,
         0,
@@ -1544,21 +1712,69 @@ test('combo-dev nginx consumes the exact client-events route without proxying or
   }
 });
 
-test('combo-dev and Production deliveries are manual-only and share the exact host concurrency group', () => {
+test('Test prunes only stale Web and release metadata after proving every live reference', () => {
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const start = deploy.indexOf('prune_stale_configs() {');
+  const end = deploy.indexOf('\ncheck_loopback_listeners_once() {', start);
+  assert.ok(start > 0 && end > start);
+  const prune = deploy.slice(start, end);
+  assert.match(prune, /get deployment "\$\{APP_NAMES\[@\]\}" -o json/);
+  assert.match(
+    prune,
+    /\(\[\.\[\]\.metadata\.name\] \| sort\) != \["api", "runtime", "web", "worker"\]/,
+  );
+  assert.match(prune, /\(\$release_refs \| unique \| length\) != 1/);
+  assert.match(prune, /\^combo-release-meta-\[0-9a-f\]\{12\}\$/);
+  assert.match(prune, /\^combo-dev-nginx-\[a-z0-9\]\+\$/);
+  assert.match(
+    prune,
+    /get configmaps -l combo\.dev\/environment=combo-dev -o json[\s\S]*stale_json=/,
+  );
+  assert.match(prune, /delete "configmap\/\$name" --wait=false/);
+  assert.doesNotMatch(prune, /delete "\$item"/);
+  assert.ok(prune.indexOf('live_refs=$(') < prune.indexOf('listed=$('));
+  assert.ok(prune.indexOf('stale_json=$(') < prune.indexOf('delete "configmap/$name"'));
+
+  const flow = deploy.slice(deploy.indexOf('  MUTATING=1'));
+  assert.ok(flow.indexOf('wait_apps ') < flow.indexOf('prune_stale_configs'));
+  assert.ok(
+    flow.indexOf('prune_stale_configs') <
+      flow.indexOf('systemctl start combo-dev-web-forward.service'),
+  );
+  assert.match(deploy.slice(0, deploy.indexOf('host_preflight() {')), /fence_all_writers_cleanup/);
+});
+
+test('Test, Preview, and Production serialize only deploy jobs and preserve promotion trust', () => {
   const workflow = text('.github/workflows/combo-dev.yml');
+  const ci = text('.github/workflows/ci.yml');
+  const testDeploy = text('scripts/combo-dev-deploy.sh');
+  const preview = text('.github/workflows/preview.yml');
   const production = text('.github/workflows/cd.yml');
-  const group = (value) => value.match(/^concurrency:\n {2}group: ([^\n]+)$/m)?.[1];
-  assert.equal(group(workflow), 'cd-tecent2');
-  assert.equal(group(workflow), group(production));
+  const deployGroup = (value) =>
+    value.match(
+      /^ {4}concurrency:\n {6}group: ([^\n]+)\n {6}queue: ([^\n]+)\n {6}cancel-in-progress: ([^\n]+)$/m,
+    );
+  for (const delivery of [workflow, preview, production]) {
+    const group = deployGroup(delivery);
+    assert.ok(group);
+    assert.equal(group[1], 'cd-tecent2');
+    assert.equal(group[2], 'max');
+    assert.equal(group[3], 'false');
+    assert.doesNotMatch(delivery, /^concurrency:/m);
+  }
+
   assert.match(workflow, /^ {2}workflow_dispatch:/m);
-  const triggers = workflow.slice(workflow.indexOf('on:\n'), workflow.indexOf('\nconcurrency:'));
+  const triggers = workflow.slice(workflow.indexOf('on:\n'), workflow.indexOf('\npermissions:'));
   const productionTriggers = production.slice(
     production.indexOf('on:\n'),
-    production.indexOf('\n# 同一时间'),
+    production.indexOf('\npermissions:'),
   );
   assert.doesNotMatch(triggers, /workflow_run/);
   assert.match(productionTriggers, /^ {2}workflow_dispatch:/m);
   assert.doesNotMatch(productionTriggers, /workflow_run|push:|pull_request:/);
+  assert.match(preview, /^ {2}workflow_run:/m);
+  assert.match(preview, /branches: \[main\]/);
+  assert.match(preview, /COMBO_PREVIEW_AUTO_PROMOTION_MODE/);
   assert.match(
     workflow,
     /revision:[\s\S]*required: true[\s\S]*INPUT_REVISION: \$\{\{ inputs\.revision \}\}/,
@@ -1566,21 +1782,75 @@ test('combo-dev and Production deliveries are manual-only and share the exact ho
   assert.match(production, /REVISION: \$\{\{ inputs\.revision \}\}/);
   assert.match(workflow, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(production, /\^\[0-9a-f\]\{40\}\$/);
-  assert.match(workflow, /git\/ref\/heads\/main/);
+  assert.match(workflow, /branches\?per_page=100/);
+  assert.match(workflow, /compare\/\$\{REVISION\}\.\.\.\$\{branch_sha\}/);
   assert.match(production, /compare\/\$\{REVISION\}\.\.\.main/);
-  assert.match(workflow, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$\{REVISION\}/);
-  assert.match(production, /actions\/workflows\/ci\.yml\/runs\?head_sha=\$\{REVISION\}/);
+  assert.match(workflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
+  assert.match(workflow, /publish_release: true/);
+  assert.doesNotMatch(ci, /github\.event_name == 'workflow_call'/);
+  assert.match(
+    ci,
+    /^ {2}release:\n[\s\S]*?^ {4}if: >-\n\s+\(github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'\) \|\|\n\s+inputs\.publish_release == true/m,
+  );
+  assert.match(
+    ci,
+    /push: >-\n\s+\$\{\{ \(github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'\) \|\|\n\s+inputs\.publish_release == true \}\}/,
+  );
+  const webContract = ci.slice(
+    ci.indexOf('      - name: Verify the hardened Web runtime metadata path'),
+    ci.indexOf('      - name: Record the immutable image reference'),
+  );
+  assert.match(webContract, /IMAGE_DIGEST: \$\{\{ steps\.build\.outputs\.digest \}\}/);
+  assert.match(webContract, /case "\$PUBLISH_RELEASE" in/);
+  assert.match(webContract, /\[\[ "\$IMAGE_DIGEST" =~ \^sha256:\[0-9a-f\]\{64\}\$ \]\]/);
+  assert.match(webContract, /IMAGE_REF="\$IMAGE_REPOSITORY@\$IMAGE_DIGEST"/);
+  assert.match(webContract, /docker pull "\$IMAGE_REF"/);
+  assert.match(
+    webContract,
+    /false\)[\s\S]*IMAGE_REF="\$IMAGE_TAG"[\s\S]*docker image inspect "\$IMAGE_REF"/,
+  );
+  assert.match(webContract, /"\$IMAGE_REF" >\/dev\/null/);
+  assert.doesNotMatch(webContract, /docker pull "\$IMAGE_TAG"/);
+  assert.match(workflow, /combo-release-mutation\.lock/);
+  assert.match(workflow, /flock -w 300 9/);
+  assert.match(
+    workflow,
+    /"\$RELEASE_ROOT\/metadata\/release\.json"[\s\\\n]*"\$RELEASE_ROOT\/metadata\/release-manifest-digest\.txt"[\s\\\n]*"\$root\/metadata\/"/,
+  );
+  assert.match(testDeploy, /'metadata\/release\.json', 'metadata\/release-manifest-digest\.txt'/);
+  assert.match(
+    testDeploy,
+    /validate_release_manifest[\s\\\n]*"\$manifest" "\$digest_file" "\$revision" "\$api_image" "\$runtime_image" "\$web_image"/,
+  );
+  assert.match(testDeploy, /combo-release-meta-\$\{revision:0:12\}/);
+  assert.match(
+    workflow,
+    /combo-dev-reset[\s\\\n]*--confirm=DESTROY-COMBO-PREVIEW-DATA[\s\S]*combo-dev-deploy/,
+  );
+  assert.match(preview, /combo-preview-promotion-\$\{\{/);
+  assert.match(production, /combo-preview-promotion-\$\{\{/);
+  assert.match(production, /artifactFileSetDigest/);
+  assert.match(
+    production,
+    /keys == \(\[[\s\S]*?"remoteCleanupEvidenceDigest"[\s\S]*?"status"\s*\] \| sort\)/,
+    'Production must compare the exact Preview evidence key set independent of list order',
+  );
   assert.match(workflow, /echo ' {2}ServerAliveInterval 30'/);
   assert.match(workflow, /echo ' {2}ServerAliveCountMax 20'/);
   assert.match(workflow, /echo ' {2}TCPKeepAlive yes'/);
-  assert.match(
-    workflow,
-    /\.head_branch == "main" and \.event == "push" and \.conclusion == "success"/,
+  assert.match(preview, /\[\[ "\$SOURCE_BRANCH" == main \]\]/);
+  assert.match(production, /\.path == "\.github\/workflows\/preview\.yml"/);
+  const credentialRefresh = preview.slice(
+    preview.indexOf('      - name: Refresh an expired Preview image pull credential'),
+    preview.indexOf('      - name: Validate the refreshed Preview registry credential'),
   );
+  assert.match(credentialRefresh, /\(\( \$\{#GHCR_TOKEN\} > 0 && \$\{#GHCR_TOKEN\} <= 4096 \)\)/);
   assert.match(
-    production,
-    /\.head_branch == "main" and \.event == "push" and \.conclusion == "success"/,
+    credentialRefresh,
+    /\[\[ "\$GHCR_TOKEN" != \*\$'\\n'\* && "\$GHCR_TOKEN" != \*\$'\\r'\* \]\]/,
   );
+  assert.match(credentialRefresh, /\[\[ "\$GHCR_USER" =~ \^\[A-Za-z0-9_-\]\+\$ \]\]/);
+  assert.doesNotMatch(credentialRefresh, /GHCR_TOKEN" =~/);
   assert.doesNotMatch(workflow, /issue\s*#?112|promotion/i);
 });
 
@@ -1857,7 +2127,10 @@ test('existing deployment invariants remain fail-closed', () => {
   const reset = text('scripts/combo-dev-reset.sh');
   const bootstrap = text('scripts/combo-dev-bootstrap.sh');
   const guard = text('scripts/combo-dev-storage-guard.sh');
+  const smoke = text('scripts/combo-dev-smoke.sh');
   const rbac = text('infra/k8s/overlays/combo-dev/platform/rbac.yaml');
+  const testMinioInit = text('infra/k8s/overlays/combo-dev/init/resources.yaml');
+  const releaseMinioInit = text('infra/k8s/job-minio-init.yaml');
   assert.match(
     rbac,
     /resources: \['jobs'\]\n {4}verbs: \['create', 'get', 'list', 'watch', 'patch', 'delete'\]/,
@@ -1866,6 +2139,10 @@ test('existing deployment invariants remain fail-closed', () => {
   assert.match(
     deploy,
     /apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher -f "\$job_probe"/,
+  );
+  assert.match(
+    deploy,
+    /\[\[ "\$stage" == foundation \]\][\s\S]*apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher --force-conflicts -f "\$render\/\$stage\.yaml"/,
   );
   assert.match(workflow, /scp -q "\$ARCHIVE" "combo-dev-target:\$temporary"/);
   assert.match(workflow, /ssh combo-dev-target mv -fT -- "\$temporary" "\$remote"/);
@@ -1877,6 +2154,19 @@ test('existing deployment invariants remain fail-closed', () => {
   assert.match(reset, /wipe_static_volume_data/);
   assert.doesNotMatch(reset, /delete "persistentvolumeclaim\/\$name"/);
   assert.match(
+    reset,
+    /apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher --force-conflicts -k "\$FOUNDATION"/,
+  );
+  assert.match(
+    reset,
+    /apply --server-side --field-manager=combo-dev-session --force-conflicts -f "\$manifest"/,
+  );
+  assert.doesNotMatch(reset, /patch secret\/combo-dev-session/);
+  for (const manifest of [testMinioInit, releaseMinioInit]) {
+    assert.match(manifest, /name: minio-init/);
+    assert.match(manifest, /limits:[\s\S]*?memory: 256Mi/);
+  }
+  assert.match(
     rbac,
     /resourceNames: \['combo-dev-postgres', 'combo-dev-redis-queue', 'combo-dev-minio'\]/,
   );
@@ -1885,6 +2175,23 @@ test('existing deployment invariants remain fail-closed', () => {
       script,
       /apply --server-side --field-manager=combo-dev-replicas --force-conflicts -f -/,
     );
+  }
+  assert.match(
+    smoke,
+    /ownership=\$\("\$\{K\[@\]\}" -n "\$NAMESPACE" get "deployment\/\$name" --show-managed-fields=true -o json/,
+  );
+  assert.match(
+    smoke,
+    /curl_json\(\) \{[\s\S]*for \(\(attempt = 1; attempt <= 60; attempt\+\+\)\)[\s\S]*mv -fT "\$candidate" "\$output"[\s\S]*恢复窗口内不可读：\$path/,
+  );
+  assert.ok(
+    smoke.includes(
+      `tr -d '\\015' <"$headers" | grep -Fxci 'access-control-allow-origin: http://127.0.0.1:18080'`,
+    ),
+  );
+  assert.doesNotMatch(smoke, /access-control-allow-origin:[^\n]*\\r/);
+  for (const script of [bootstrap, deploy, reset]) {
+    assert.match(script, /exec 9>"\$LOCK_FILE"\n\s+flock -w 300 9/);
   }
   assert.match(bootstrap, /scale "\$controller" --replicas=0/);
   assert.match(guard, /scale "\$kind\/\$name" --replicas=0/);

@@ -249,7 +249,7 @@ preflight() {
     --production-namespace "$PRODUCTION_NAMESPACE" \
     --work-dir "$WORK/observer-audit" >/dev/null 2>&1 || blocked '生产观察身份不符合精确只读边界。'
   validate_static_storage_live
-  "${K[@]}" apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher -k "$FOUNDATION" >/dev/null 2>&1 || blocked '基础清单未通过清空数据前服务端校验。'
+  "${K[@]}" apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher --force-conflicts -k "$FOUNDATION" >/dev/null 2>&1 || blocked '基础清单未通过清空数据前服务端校验。'
 }
 
 validate_static_storage_live() {
@@ -322,18 +322,24 @@ stop_and_delete_inventory() {
 }
 
 rotate_session_credential() {
-  local next="$WORK/session.next" patch="$WORK/session.patch.json"
+  local next="$WORK/session.next" manifest="$WORK/session.secret.json"
   openssl rand -hex 32 >"$next" 2>/dev/null || blocked '无法生成新的开发会话凭据。'
   chmod 600 "$next"
-  python3 - "$next" "$patch" <<'PY'
+  python3 - "$next" "$manifest" <<'PY'
 import base64, json, sys
 value=open(sys.argv[1],'rb').read()
 with open(sys.argv[2],'w',encoding='utf-8') as f:
-    json.dump({'data':{'DEV_SESSION_SECRET':base64.b64encode(value).decode('ascii')}},f,separators=(',',':'))
+    json.dump({
+        'apiVersion':'v1',
+        'kind':'Secret',
+        'metadata':{'name':'combo-dev-session','namespace':'combo-preview'},
+        'type':'Opaque',
+        'data':{'DEV_SESSION_SECRET':base64.b64encode(value).decode('ascii')},
+    },f,separators=(',',':'))
 PY
-  chmod 600 "$patch"
+  chmod 600 "$manifest"
   install -m 0600 "$next" "$SESSION_FILE"
-  "${K[@]}" -n "$NAMESPACE" patch secret/combo-dev-session --type=merge --patch-file "$patch" >/dev/null 2>&1 || blocked '开发会话 Secret 无法原地轮换。'
+  "${K[@]}" apply --server-side --field-manager=combo-dev-session --force-conflicts -f "$manifest" >/dev/null 2>&1 || blocked '开发会话 Secret 无法原地轮换。'
 }
 
 wipe_static_volume_data() {
@@ -369,7 +375,7 @@ recreate_foundation() {
 main() {
   [[ $# == 1 && $1 == "--confirm=$CONFIRMATION" ]] || blocked '必须提供完全匹配的破坏性确认串。'
   exec 9>"$LOCK_FILE"
-  flock -n 9 || blocked '另一个 combo-dev 操作持有主机锁。'
+  flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   WORK=$(mktemp -d)
   preflight
   local before after

@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: DEV_LOGIN_ENABLED
+              value: 'true'
+            - name: DEV_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: combo-preview-bootstrap
+                  key: DEV_SESSION_SECRET
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+spec:
+  template:
+    spec:
+      containers:
+        - name: runtime
+          env:
+            - name: NODE_ENV
+              value: development
+            - name: DEV_LOGIN_ENABLED
+              value: 'true'
+            - name: DEV_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: combo-preview-bootstrap
+                  key: DEV_SESSION_SECRET

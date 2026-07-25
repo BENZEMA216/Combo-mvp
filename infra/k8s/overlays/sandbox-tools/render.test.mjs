@@ -89,18 +89,23 @@ test('the sandbox overlay remains opt-in and keeps RuntimeClass installation sep
     resolve(repositoryRoot, '.github/workflows/cd.yml'),
     'utf8',
   );
+  const continuousIntegration = readFileSync(
+    resolve(repositoryRoot, '.github/workflows/ci.yml'),
+    'utf8',
+  );
 
   assert.doesNotMatch(rootKustomization, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
   assert.doesNotMatch(productionDeploy, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
-  assert.match(continuousDeployment, /rsync -az --delete/);
-  assert.doesNotMatch(continuousDeployment, /--delete-excluded/);
-  assert.match(continuousDeployment, /--exclude='\.env'/);
-  assert.match(continuousDeployment, /--exclude='\/Dockerfile\.sandboxd'/);
-  assert.match(continuousDeployment, /--exclude='\/k8s\/overlays\/sandbox-tools\/'/);
-  assert.match(continuousDeployment, /--exclude='\/k8s\/overlays\/sandbox-tools-fifth-slot\/'/);
-  assert.match(
-    continuousDeployment,
-    /rm -rf --[\s\S]*\/opt\/combo\/infra\/Dockerfile\.sandboxd[\s\S]*\/opt\/combo\/infra\/k8s\/overlays\/sandbox-tools[\s\S]*\/opt\/combo\/infra\/k8s\/overlays\/sandbox-tools-fifth-slot/,
+  assert.doesNotMatch(continuousDeployment, /\brsync\b|sandbox-tools|Dockerfile\.sandboxd/);
+  assert.match(continuousDeployment, /combo-release-\$\{\{/);
+  assert.match(continuousDeployment, /scripts\/deploy-release\.sh/);
+  assert.match(continuousIntegration, /"\$bundle\/rendered\/production"/);
+  assert.match(continuousIntegration, /"\$bundle\/infra\/host\/release"/);
+  assert.doesNotMatch(
+    continuousIntegration.slice(
+      continuousIntegration.indexOf('Create and verify the release bundle'),
+    ),
+    /\$bundle\/.*(?:sandbox-tools|Dockerfile\.sandboxd)/,
   );
   assert.doesNotMatch(overlayKustomization, /maintenance|runtimeclass-gvisor/i);
   assert.equal(

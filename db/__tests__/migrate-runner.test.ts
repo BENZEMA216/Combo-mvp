@@ -24,10 +24,16 @@ describe('migration runner contract', () => {
     expect(plan.pending).toEqual([]);
   });
 
-  it('rejects an unknown applied migration', () => {
+  it('rejects an unknown applied migration from the legacy chain', () => {
     expect(() =>
       planMigrations(migrations, [migrations[0]!, '0018_studio_revisions_and_tests.sql']),
     ).toThrow(/unknown applied migration.*0018_studio_revisions_and_tests\.sql/);
+  });
+
+  it('rejects duplicate ledger entries', () => {
+    expect(() => planMigrations(migrations, [migrations[0]!, migrations[0]!])).toThrow(
+      /duplicate filenames/,
+    );
   });
 
   it('rejects a ledger that skips an earlier migration', () => {

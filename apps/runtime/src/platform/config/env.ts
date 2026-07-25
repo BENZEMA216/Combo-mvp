@@ -1,6 +1,11 @@
 // 运行期 env 加载 + 校验（对齐 authoring 口径）：
 //   生产缺关键连接串/密钥即启动失败；dev/test 回落默认 + warn。
 //   LLM key 不进生产必填集——缺失只让对话轮次降级报错，不阻塞启动。
+import {
+  DEVELOPMENT_RELEASE_METADATA_ENV,
+  RELEASE_METADATA_ENV_KEYS,
+  releaseMetadataFromEnv,
+} from '@cb/shared';
 import { z } from 'zod';
 
 /** 「留空即默认」：compose `X=${X:-}` 注入会把未设变量变成空串 ''，统一规整成 undefined 走 schema 语义。 */
@@ -15,6 +20,19 @@ const EnvSchema = z
     PORT: z.coerce.number().int().default(3100),
     HOST: z.string().default('0.0.0.0'),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
+
+    // 发布身份由无密钥 combo-release ConfigMap 注入。development 默认值只服务本地直跑；
+    // Test、Preview 与 Production 的部署渲染必须提供真实的不可变发布元数据。
+    COMBO_ENVIRONMENT: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_ENVIRONMENT),
+    COMBO_SOURCE_SHA: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_SOURCE_SHA),
+    COMBO_RELEASE_ID: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_RELEASE_ID),
+    COMBO_BUILT_AT: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_BUILT_AT),
+    COMBO_RELEASE_MANIFEST_DIGEST: z
+      .string()
+      .default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_RELEASE_MANIFEST_DIGEST),
+    COMBO_WEB_ASSET_MANIFEST: z
+      .string()
+      .default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_WEB_ASSET_MANIFEST),
 
     // Observability（OpenTelemetry）。默认不启用导出；配置 OTLP endpoint 后才向 Collector 发 traces。
     OTEL_SERVICE_NAME: z.string().default('cb-runtime'),
@@ -142,6 +160,23 @@ const EnvSchema = z
   });
 export type Env = z.infer<typeof EnvSchema>;
 
+function assertReleaseMetadata(env: Env): void {
+  try {
+    const metadata = releaseMetadataFromEnv(env);
+    // NODE_ENV describes process hardening, not the promotion stage: Test and Preview
+    // may use either mode, while Development and Production remain strict boundaries.
+    if (
+      (metadata.environment === 'development' && env.NODE_ENV === 'production') ||
+      (metadata.environment === 'production' && env.NODE_ENV !== 'production')
+    ) {
+      throw new Error('runtime and release environments disagree');
+    }
+  } catch {
+    // 元数据是公开发布身份，但错误仍只报告固定字段组，避免把环境值拼进启动日志。
+    throw new Error('[env] COMBO_* 发布元数据校验失败。');
+  }
+}
+
 /** 生产必填（缺失即启动 throw，绝不带默认凭据上生产）。LLM key 不在列。 */
 const PRODUCTION_REQUIRED = [
   'DATABASE_URL',
@@ -152,6 +187,7 @@ const PRODUCTION_REQUIRED = [
   'LOGTO_ISSUER',
   'LOGTO_JWKS_URI',
   'LOGTO_AUDIENCE',
+  ...RELEASE_METADATA_ENV_KEYS,
 ] as const;
 
 let cached: Env | undefined;
@@ -190,10 +226,12 @@ export function loadEnv(): Env {
       parsed.error.flatten().fieldErrors,
     );
     cached = EnvSchema.parse({});
+    assertReleaseMetadata(cached);
     return cached;
   }
 
   cached = parsed.data;
+  assertReleaseMetadata(cached);
 
   // 生产无条件强制关闭 dev 登录验证分支（即便误配 true）。
   if (isProduction && cached.DEV_LOGIN_ENABLED) {

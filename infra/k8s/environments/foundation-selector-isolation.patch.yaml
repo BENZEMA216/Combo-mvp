@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  selector:
+    app: release-postgres
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  labels:
+    app: release-postgres
+spec:
+  selector:
+    matchLabels:
+      app: release-postgres
+  template:
+    metadata:
+      labels:
+        app: release-postgres
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-queue
+spec:
+  selector:
+    app: release-redis-queue
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-queue
+  labels:
+    app: release-redis-queue
+spec:
+  selector:
+    matchLabels:
+      app: release-redis-queue
+  template:
+    metadata:
+      labels:
+        app: release-redis-queue
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-hot
+spec:
+  selector:
+    app: release-redis-hot
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-hot
+  labels:
+    app: release-redis-hot
+spec:
+  selector:
+    matchLabels:
+      app: release-redis-hot
+  template:
+    metadata:
+      labels:
+        app: release-redis-hot
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+spec:
+  selector:
+    app: release-minio
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  labels:
+    app: release-minio
+spec:
+  selector:
+    matchLabels:
+      app: release-minio
+  template:
+    metadata:
+      labels:
+        app: release-minio

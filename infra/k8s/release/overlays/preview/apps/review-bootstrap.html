@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Combo Cloud Review · 开始体验</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 18% 18%, rgb(182 83 56 / 12%), transparent 32rem), #f5f2eb;
+        color: #171613;
+      }
+      main {
+        width: min(440px, calc(100vw - 40px));
+        padding: 38px;
+        border: 1px solid #d8d1c5;
+        border-radius: 20px;
+        background: rgb(251 250 247 / 94%);
+        box-shadow: 0 28px 90px rgb(55 45 30 / 12%);
+      }
+      small {
+        color: #9d4c37;
+        font-size: 11px;
+        font-weight: 750;
+        letter-spacing: 0.2em;
+      }
+      h1 {
+        margin: 14px 0 8px;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: clamp(30px, 7vw, 42px);
+        font-weight: 500;
+      }
+      p {
+        color: #69645b;
+        line-height: 1.65;
+      }
+      button {
+        width: 100%;
+        margin-top: 16px;
+        padding: 13px 18px;
+        border: 0;
+        border-radius: 10px;
+        background: #b65338;
+        color: white;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+      button:focus-visible {
+        outline: 3px solid #b65338;
+        outline-offset: 3px;
+      }
+      [hidden] {
+        display: none;
+      }
+      #status {
+        min-height: 1.5em;
+        font-size: 14px;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background:
+            radial-gradient(circle at 18% 18%, rgb(182 83 56 / 16%), transparent 32rem), #11110f;
+          color: #f0ede6;
+        }
+        main {
+          background: rgb(24 23 20 / 94%);
+          border-color: #37342e;
+        }
+        p {
+          color: #aaa398;
+        }
+        small {
+          color: #e58d74;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <small>COMBO · CLOUD REVIEW</small>
+      <h1>正在进入 Combo</h1>
+      <p>当前发布正在云端运行；预览账号和数据与生产环境隔离，刷新后仍可继续。</p>
+      <button id="retry" type="button" hidden>重新尝试</button>
+      <p id="status" role="status" aria-live="polite">正在创建预览身份…</p>
+    </main>
+    <script>
+      const retry = document.querySelector('#retry');
+      const status = document.querySelector('#status');
+      const requested = new URLSearchParams(location.search).get('returnTo');
+      let returnTo = '/';
+      try {
+        const target = new URL(requested || '/', location.origin);
+        if (target.origin === location.origin) {
+          returnTo = `${target.pathname}${target.search}${target.hash}`;
+        }
+      } catch {
+        returnTo = '/';
+      }
+
+      async function start() {
+        retry.hidden = true;
+        retry.disabled = true;
+        status.textContent = '正在创建预览身份…';
+        try {
+          const response = await fetch('/api/v1/auth/dev-login', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'content-type': 'application/json' },
+            body: '{}',
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          status.textContent = '准备完成，正在进入 Combo…';
+          location.replace(returnTo);
+        } catch (error) {
+          status.textContent = `暂时无法创建预览身份（${error.message}）。`;
+          retry.hidden = false;
+          retry.disabled = false;
+          retry.focus();
+        }
+      }
+
+      retry.addEventListener('click', () => void start());
+      void start();
+    </script>
+  </body>
+</html>

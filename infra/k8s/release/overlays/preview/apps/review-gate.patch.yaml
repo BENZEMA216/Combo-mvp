@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          command:
+            - /bin/sh
+            - -euc
+          args:
+            - |
+              case "$REVIEW_ACCESS_TOKEN" in
+                (*[!0-9a-f]*|'') exit 1 ;;
+              esac
+              [ "${#REVIEW_ACCESS_TOKEN}" -eq 64 ] || exit 1
+              exec /docker-entrypoint.sh nginx -g 'daemon off;'
+          env:
+            - name: REVIEW_ACCESS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: combo-preview-bootstrap
+                  key: REVIEW_ACCESS_TOKEN
+          readinessProbe:
+            httpGet:
+              path: /__review/healthz
+              port: 80
+          volumeMounts:
+            - name: review-nginx
+              mountPath: /etc/nginx/templates/default.conf.template
+              subPath: default.conf.template
+              readOnly: true
+            - name: review-bootstrap-page
+              mountPath: /usr/share/nginx/html/__review/bootstrap.html
+              subPath: bootstrap.html
+              readOnly: true
+            - name: review-access-page
+              mountPath: /usr/share/nginx/html/__review/enter.html
+              subPath: enter.html
+              readOnly: true
+      volumes:
+        - name: review-nginx
+          configMap:
+            name: review-gate
+        - name: review-bootstrap-page
+          configMap:
+            name: review-gate
+        - name: review-access-page
+          configMap:
+            name: review-gate

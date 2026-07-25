@@ -1,30 +1,43 @@
-name: Combo development
+name: Test deployment
 
 on:
   workflow_dispatch:
     inputs:
       revision:
-        description: 当前 main 的完整提交 SHA；该提交必须已有成功的 main CI。
+        description: 任一当前仓库分支可达、由受信任成员选择的完整提交 SHA。
         required: true
         type: string
 
-concurrency:
-  group: cd-tecent2
-  cancel-in-progress: false
-
 permissions:
   contents: read
-  packages: read
   actions: read
 
 jobs:
-  deploy:
-    name: Resolve, validate and deploy current main
+  authorize:
+    name: authorize actor and reachable revision
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-    environment: combo-dev
+    permissions:
+      contents: read
+    outputs:
+      revision: ${{ steps.revision.outputs.revision }}
     steps:
-      - name: Select immutable current-main revision
+      - name: Authorize a trusted repository actor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.permission')
+          role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.role_name // ""')
+          case "$permission:$role" in
+            admin:*|write:*|*:maintain) ;;
+            *)
+              echo 'Test deployment requires repository write, maintain, or admin permission.' >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Select an immutable revision
         id: revision
         env:
           INPUT_REVISION: ${{ inputs.revision }}
@@ -37,45 +50,108 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ steps.revision.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the revision is reachable from a repository branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ steps.revision.outputs.revision }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/commits/${REVISION}" --jq '.sha' \
+            | grep -Fx "$REVISION" >/dev/null
+          [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
+          git diff --quiet
+          git diff --cached --quiet
+          remote_main=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
+          [[ "$remote_main" =~ ^[0-9a-f]{40}$ ]]
+          reachable=false
+          while IFS= read -r branch_sha; do
+            [[ "$branch_sha" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            status=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...${branch_sha}" \
+              --jq '.status')
+            if [[ "$status" == ahead || "$status" == identical ]]; then
+              reachable=true
+              break
+            fi
+          done < <(
+            gh api --paginate "repos/${GITHUB_REPOSITORY}/branches?per_page=100" \
+              --jq '.[].commit.sha'
+          )
+          [[ "$reachable" == true ]] || {
+            echo 'Test revision is not reachable from any current repository branch.' >&2
+            exit 1
+          }
+
+  release:
+    name: run secretless gates and build the Test release
+    needs: authorize
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.authorize.outputs.revision }}
+      publish_release: true
+
+  deploy:
+    name: deploy the trusted release to Test
+    needs: [authorize, release]
+    concurrency:
+      group: cd-tecent2
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: combo-dev
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Check out the exact release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.authorize.outputs.revision }}
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify current main and successful CI
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ steps.revision.outputs.revision }}
-        run: |
-          set -euo pipefail
-          remote_main=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          [[ "$remote_main" == "$REVISION" ]] || { echo 'BLOCKED: revision is no longer the current main tip.' >&2; exit 1; }
-          [[ "$(git rev-parse HEAD)" == "$REVISION" ]] || exit 1
-          git diff --quiet && git diff --cached --quiet || exit 1
-          success=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${REVISION}&status=completed&per_page=100" \
-            --jq '[.workflow_runs[] | select(.head_sha == "'"$REVISION"'" and .head_branch == "main" and .event == "push" and .conclusion == "success")] | length > 0')
-          [[ "$success" == true ]] || { echo 'BLOCKED: current main has no successful main CI run.' >&2; exit 1; }
+      - name: Download the immutable release artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: combo-release-${{ needs.authorize.outputs.revision }}
+          path: ${{ runner.temp }}/combo-release
 
-      - name: Resolve SHA-tagged application images to immutable digests
+      - name: Verify the artifact and expose its immutable images
         id: images
         env:
-          GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ steps.revision.outputs.revision }}
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
         run: |
           set -euo pipefail
-          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "${GITHUB_ACTOR}" --password-stdin >/dev/null 2>&1
-          trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
-          resolve() {
-            local repository=$1 digest
-            digest=$(docker buildx imagetools inspect "${repository}:${REVISION}" --format '{{.Manifest.Digest}}' 2>/dev/null)
-            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
-            printf '%s@%s' "$repository" "$digest"
-          }
-          api=$(resolve ghcr.io/dangdang-tech/combo-api) || { echo 'Missing immutable API image.' >&2; exit 1; }
-          runtime=$(resolve ghcr.io/dangdang-tech/combo-runtime) || { echo 'Missing immutable runtime image.' >&2; exit 1; }
-          web=$(resolve ghcr.io/dangdang-tech/combo-web) || { echo 'Missing immutable Web image.' >&2; exit 1; }
+          (
+            cd "$RELEASE_ROOT"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          node scripts/release-manifest.mjs verify \
+            --manifest "$RELEASE_ROOT/metadata/release.json" \
+            --source-sha "$REVISION" \
+            --digest "$manifest_digest" >/dev/null
+          api=$(jq -er '.images.api' "$RELEASE_ROOT/metadata/release.json")
+          runtime=$(jq -er '.images.runtime' "$RELEASE_ROOT/metadata/release.json")
+          web=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          [[ "$api" =~ ^ghcr\.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$ ]]
+          [[ "$runtime" =~ ^ghcr\.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$ ]]
+          [[ "$web" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
           printf 'api=%s\nruntime=%s\nweb=%s\n' "$api" "$runtime" "$web" >> "$GITHUB_OUTPUT"
 
       - name: Render and enforce the deployment contract
         env:
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
           API_IMAGE: ${{ steps.images.outputs.api }}
           RUNTIME_IMAGE: ${{ steps.images.outputs.runtime }}
           WEB_IMAGE: ${{ steps.images.outputs.web }}
@@ -87,13 +163,17 @@ jobs:
             --output "$rendered" \
             --api-image "$API_IMAGE" \
             --runtime-image "$RUNTIME_IMAGE" \
-            --web-image "$WEB_IMAGE"
+            --web-image "$WEB_IMAGE" \
+            --revision "$REVISION" \
+            --release-manifest "$RELEASE_ROOT/metadata/release.json" \
+            --release-manifest-digest-file "$RELEASE_ROOT/metadata/release-manifest-digest.txt"
           [[ -s "$rendered" ]]
 
       - name: Build the allowlisted deployment bundle
         id: bundle
         env:
-          REVISION: ${{ steps.revision.outputs.revision }}
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
           API_IMAGE: ${{ steps.images.outputs.api }}
           RUNTIME_IMAGE: ${{ steps.images.outputs.runtime }}
           WEB_IMAGE: ${{ steps.images.outputs.web }}
@@ -128,6 +208,10 @@ jobs:
           printf '%s\n' "$REVISION" > "$root/metadata/revision"
           printf 'API_IMAGE=%s\nRUNTIME_IMAGE=%s\nWEB_IMAGE=%s\n' \
             "$API_IMAGE" "$RUNTIME_IMAGE" "$WEB_IMAGE" > "$root/metadata/image-digests.txt"
+          install -m 0600 \
+            "$RELEASE_ROOT/metadata/release.json" \
+            "$RELEASE_ROOT/metadata/release-manifest-digest.txt" \
+            "$root/metadata/"
           if find "$root" -type l -print -quit | grep -q .; then echo 'Bundle contains a symlink.' >&2; exit 1; fi
           if find "$root" -type f \( -name '.env' -o -name '.env.*' -o -name '*secret*' \) -print -quit | grep -q .; then
             echo 'Bundle contains a prohibited configuration file.' >&2; exit 1
@@ -189,7 +273,7 @@ jobs:
       - name: Upload the fixed bundle and invoke the root-owned dispatcher
         env:
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
-          REVISION: ${{ steps.revision.outputs.revision }}
+          REVISION: ${{ needs.authorize.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
@@ -205,7 +289,21 @@ jobs:
           cleanup_upload
           scp -q "$ARCHIVE" "combo-dev-target:$temporary"
           ssh combo-dev-target mv -fT -- "$temporary" "$remote"
-          ssh combo-dev-target sudo /opt/combo-dev/bin/combo-dev-deploy --bundle "$remote" --revision "$REVISION"
+          ssh combo-dev-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
+          set -euo pipefail
+          bundle=$1
+          revision=$2
+          [[ "$bundle" == "/opt/combo-dev/incoming/${revision}.tar.gz" ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          install -d -m 0750 "$HOME/data"
+          exec 9>"$HOME/data/combo-release-mutation.lock"
+          flock -w 300 9
+          sudo /opt/combo-dev/bin/combo-dev-reset \
+            --confirm=DESTROY-COMBO-PREVIEW-DATA
+          sudo /opt/combo-dev/bin/combo-dev-deploy \
+            --bundle "$bundle" \
+            --revision "$revision"
+          REMOTE
 
       - name: Prove development ports remain private
         env:
@@ -223,7 +321,7 @@ jobs:
         if: always()
         env:
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
-          REVISION: ${{ steps.revision.outputs.revision }}
+          REVISION: ${{ needs.authorize.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
@@ -236,6 +334,5 @@ jobs:
               >/dev/null 2>&1 || cleanup_rc=1
           fi
           rm -f -- "$ARCHIVE" "$HOME/.ssh/combo_dev" "$HOME/.ssh/combo_dev_known_hosts" "$HOME/.ssh/config"
-          docker logout ghcr.io >/dev/null 2>&1 || true
           if (( cleanup_rc != 0 )); then echo 'Remote transient cleanup could not be confirmed.' >&2; fi
           exit "$cleanup_rc"

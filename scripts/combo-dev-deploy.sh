@@ -493,6 +493,7 @@ import os, pathlib, sys, tarfile
 archive, destination = sys.argv[1:]
 allowed_files = {
     'metadata/revision', 'metadata/image-digests.txt',
+    'metadata/release.json', 'metadata/release-manifest-digest.txt',
     'scripts/combo-dev-bootstrap.sh', 'scripts/combo-dev-deploy.sh',
     'scripts/combo-dev-smoke.sh', 'scripts/combo-dev-connect.sh',
     'scripts/combo-dev-logs.sh', 'scripts/combo-dev-reset.sh',
@@ -646,6 +647,79 @@ validate_image_ref() {
   [[ "$digest" =~ $DIGEST_RE ]] || blocked '镜像没有使用精确 OCI 摘要。'
 }
 
+validate_release_manifest() {
+  local manifest=$1 digest_file=$2 revision=$3 api=$4 runtime=$5 web=$6
+  python3 - "$manifest" "$digest_file" "$revision" "$api" "$runtime" "$web" <<'PY'
+import datetime
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+
+manifest_path, digest_path, revision, api, runtime, web = sys.argv[1:]
+
+def regular_file(path, maximum):
+    value = os.lstat(path)
+    if not stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode) or value.st_size > maximum:
+        raise SystemExit(2)
+
+regular_file(manifest_path, 64 * 1024)
+regular_file(digest_path, 128)
+source = open(manifest_path, 'rb').read()
+try:
+    value = json.loads(source)
+except (UnicodeDecodeError, json.JSONDecodeError):
+    raise SystemExit(2)
+
+root_keys = [
+    'schemaVersion', 'sourceSha', 'releaseId', 'images',
+    'migrationHead', 'builtAt', 'webAssetManifest',
+]
+if not isinstance(value, dict) or list(value) != root_keys:
+    raise SystemExit(2)
+if (
+    type(value.get('schemaVersion')) is not int
+    or value.get('schemaVersion') != 1
+    or value.get('sourceSha') != revision
+):
+    raise SystemExit(2)
+if not re.fullmatch(r'[0-9a-f]{40}', revision) or value.get('releaseId') != f'release-{revision}':
+    raise SystemExit(2)
+images = value.get('images')
+if not isinstance(images, dict) or list(images) != ['api', 'runtime', 'web']:
+    raise SystemExit(2)
+if images != {'api': api, 'runtime': runtime, 'web': web}:
+    raise SystemExit(2)
+if not re.fullmatch(r'[0-9]{4}_[a-z0-9_]+\.sql', value.get('migrationHead', '')):
+    raise SystemExit(2)
+built_at = value.get('builtAt')
+if not isinstance(built_at, str) or not re.fullmatch(
+    r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z',
+    built_at,
+):
+    raise SystemExit(2)
+try:
+    parsed = datetime.datetime.strptime(built_at, '%Y-%m-%dT%H:%M:%S.%fZ')
+except ValueError:
+    raise SystemExit(2)
+if parsed.strftime('%Y-%m-%dT%H:%M:%S.') + f'{parsed.microsecond // 1000:03d}Z' != built_at:
+    raise SystemExit(2)
+web_assets = value.get('webAssetManifest')
+if not isinstance(web_assets, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', web_assets):
+    raise SystemExit(2)
+
+canonical = (json.dumps(value, indent=2, ensure_ascii=False) + '\n').encode()
+if source != canonical:
+    raise SystemExit(2)
+recorded = open(digest_path, encoding='ascii').read()
+actual = f"sha256:{hashlib.sha256(canonical).hexdigest()}\n"
+if recorded != actual:
+    raise SystemExit(2)
+PY
+}
+
 inject_images() {
   local overlay=$1 api=$2 runtime=$3 web=$4
   local api_digest=${api#*@} runtime_digest=${runtime#*@} web_digest=${web#*@}
@@ -669,6 +743,97 @@ images:
 EOF
 }
 
+inject_release_metadata() {
+  local overlay=$1 revision=$2 built_at=$3 manifest_digest=$4 web_asset_manifest=$5
+  local name="combo-release-meta-${revision:0:12}"
+  cat >"$overlay/apps/release-metadata.yaml" <<EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  labels:
+    combo.dev/environment: combo-dev
+  name: $name
+  namespace: $NAMESPACE
+immutable: true
+data:
+  COMBO_ENVIRONMENT: 'test'
+  COMBO_SOURCE_SHA: '$revision'
+  COMBO_RELEASE_ID: 'release-$revision'
+  COMBO_BUILT_AT: '$built_at'
+  COMBO_RELEASE_MANIFEST_DIGEST: '$manifest_digest'
+  COMBO_WEB_ASSET_MANIFEST: '$web_asset_manifest'
+EOF
+  cat >"$overlay/apps/release-metadata.patch.yaml" <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: $NAMESPACE
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          envFrom:
+            - configMapRef:
+                name: $name
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+  namespace: $NAMESPACE
+spec:
+  template:
+    spec:
+      containers:
+        - name: runtime
+          envFrom:
+            - configMapRef:
+                name: $name
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: $NAMESPACE
+spec:
+  template:
+    spec:
+      containers:
+        - name: web
+          envFrom:
+            - configMapRef:
+                name: $name
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: $NAMESPACE
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          envFrom:
+            - configMapRef:
+                name: $name
+EOF
+  python3 - "$overlay/apps/kustomization.yaml" <<'PY'
+import sys
+path = sys.argv[1]
+source = open(path, encoding='utf-8').read()
+needle = 'resources:\n  - resources.yaml\n'
+if source.count(needle) != 1 or '\npatches:' in source:
+    raise SystemExit(2)
+source = source.replace(needle, needle + '  - release-metadata.yaml\n')
+source += 'patches:\n  - path: release-metadata.patch.yaml\n'
+with open(path, 'w', encoding='utf-8') as stream:
+    stream.write(source)
+PY
+}
+
 render_guard() {
   local render_dir=$1
   python3 - "$render_dir" <<'PY'
@@ -687,9 +852,9 @@ forbidden=[
  r'privileged:\s*true',r'allowPrivilegeEscalation:\s*true',r'namespace:\s*combo$',
  r'\.combo\.svc',r'observability\.svc',r'\b(?:30080|30900)\b',
  r'OTEL_EXPORTER_OTLP_ENDPOINT',r'name:\s*ghcr-pull',r'name:\s*combo-env$',
- r'REPLACE|PLACEHOLDER|CHANGEME|TODO',r'^\s*envFrom:',r'^\s*serviceAccountName:',
+ r'REPLACE|PLACEHOLDER|CHANGEME|TODO',r'^\s*serviceAccountName:',
  r'^\s*priorityClassName:',r'^\s*secret:',r'^\s+add:',r'procMount:',
- r'type:\s*(?:Unconfined|Localhost)',
+ r'type:\s*(?:Unconfined|Localhost)',r'^\s*-\s*secretRef:',
 ]
 for pattern in forbidden:
     if re.search(pattern,text,re.M|re.I): raise SystemExit('guard:forbidden')
@@ -733,6 +898,7 @@ stage_expected={
 }
 seen=set()
 inventory={}
+release_metadata_name=None
 for stage in stages:
     actual={}
     for doc in stage_docs[stage]:
@@ -742,8 +908,11 @@ for stage in stages:
         if re.findall(r'^  namespace:\s*(\S+)',doc,re.M)!=['combo-preview']: raise SystemExit('guard:namespace')
     if stage=='apps':
         configs=actual.pop('ConfigMap',set())
-        if len(configs)!=1 or not re.fullmatch(r'combo-dev-nginx-[a-z0-9]+',next(iter(configs),'a')):
+        nginx_configs={name for name in configs if re.fullmatch(r'combo-dev-nginx-[a-z0-9]+',name)}
+        release_configs={name for name in configs if re.fullmatch(r'combo-release-meta-[0-9a-f]{12}',name)}
+        if len(configs)!=2 or len(nginx_configs)!=1 or len(release_configs)!=1:
             raise SystemExit('guard:apps-configmap')
+        release_metadata_name=next(iter(release_configs))
     if actual!=stage_expected[stage]: raise SystemExit('guard:stage-inventory:'+stage)
 
 steady={'api','worker','runtime','web','postgres','redis-queue','redis-hot','minio'}
@@ -795,6 +964,39 @@ for name,repository in expected_repositories.items():
     if refs[name].split('@',1)[0]!=repository: raise SystemExit('guard:image-repository')
 if not (refs['api']==refs['worker']==refs['migrate'] and refs['redis-hot']==refs['redis-queue']):
     raise SystemExit('guard:image-consistency')
+
+if release_metadata_name is None:
+    raise SystemExit('guard:release-metadata-name')
+release_doc=doc_for('ConfigMap',release_metadata_name)
+if re.findall(r'^immutable:\s*(\S+)$',release_doc,re.M)!=['true']:
+    raise SystemExit('guard:release-metadata-immutable')
+release_data={}
+data_block=re.search(r'^data:\n((?:^  .+\n)+)',release_doc,re.M)
+if data_block is None:
+    raise SystemExit('guard:release-metadata-fields')
+release_pairs=re.findall(r'^  (COMBO_[A-Z_]+):\s*(.+)$',data_block.group(1),re.M)
+if len(release_pairs)!=6 or len(data_block.group(1).splitlines())!=6:
+    raise SystemExit('guard:release-metadata-fields')
+for key,raw in release_pairs:
+    value=raw.strip()
+    if len(value)>=2 and value[0]==value[-1] and value[0] in "'\"":
+        value=value[1:-1]
+    release_data[key]=value
+release_keys={
+ 'COMBO_ENVIRONMENT','COMBO_SOURCE_SHA','COMBO_RELEASE_ID','COMBO_BUILT_AT',
+ 'COMBO_RELEASE_MANIFEST_DIGEST','COMBO_WEB_ASSET_MANIFEST'}
+if set(release_data)!=release_keys or release_data['COMBO_ENVIRONMENT']!='test':
+    raise SystemExit('guard:release-metadata-fields')
+source_sha=release_data['COMBO_SOURCE_SHA']
+if not re.fullmatch(r'[0-9a-f]{40}',source_sha) or source_sha=='0'*40:
+    raise SystemExit('guard:release-metadata-source')
+if release_metadata_name!=f'combo-release-meta-{source_sha[:12]}' or release_data['COMBO_RELEASE_ID']!=f'release-{source_sha}':
+    raise SystemExit('guard:release-metadata-identity')
+if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z',release_data['COMBO_BUILT_AT']):
+    raise SystemExit('guard:release-metadata-time')
+for key in ('COMBO_RELEASE_MANIFEST_DIGEST','COMBO_WEB_ASSET_MANIFEST'):
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}',release_data[key]) or release_data[key]=='sha256:'+'0'*64:
+        raise SystemExit('guard:release-metadata-digest')
 
 expected_commands={
  'api':None,'runtime':None,'web':None,'worker':None,
@@ -859,6 +1061,15 @@ expected_secret_keys={
  'worker':{'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB','S3_ACCESS_KEY','S3_SECRET_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL'},
  'web':set()}
 for name,doc in workloads.items():
+    env_from=re.findall(
+        r'^        envFrom:\n((?:^        - .*\n|^          .*\n|^            .*\n)+)',
+        doc,re.M)
+    if name in app_names:
+        expected=f'        - configMapRef:\n            name: {release_metadata_name}\n'
+        if env_from!=[expected] or doc.count('envFrom:')!=1 or doc.count('configMapRef:')!=1:
+            raise SystemExit('guard:release-metadata-reference')
+    elif env_from or 'envFrom:' in doc or 'configMapRef:' in doc:
+        raise SystemExit('guard:unexpected-env-from')
     refs_found=re.findall(r'secretKeyRef:\n\s+key:\s*(\S+)\n\s+name:\s*(\S+)',doc)
     if len(refs_found)!=doc.count('secretKeyRef:'): raise SystemExit('guard:secret-reference-shape')
     if {key for key,_ in refs_found}!=expected_secret_keys[name] or any(secret not in allowed_secret_names for _,secret in refs_found):
@@ -899,6 +1110,14 @@ for config_name,workload_name in (('redis-hot-config','redis-hot'),('redis-queue
     if f'combo.dev/config-sha256: {digest}' not in workload_doc: raise SystemExit('guard:redis-config-checksum')
 if 'http://127.0.0.1:18080' not in text or 'http://127.0.0.1:19000' not in text: raise SystemExit('guard:origins')
 if 'access_log off;' not in text or 'OTEL_SDK_DISABLED' not in text: raise SystemExit('guard:logging')
+for endpoint,file in (
+ ('/runtime-config.json','runtime-config.json'),
+ ('/version.json','version.json'),
+ ('/try/runtime-config.json','try-runtime-config.json')):
+    if f'location = {endpoint} {{' not in text or f'alias /var/run/combo-web/{file};' not in text:
+        raise SystemExit('guard:web-runtime-metadata')
+if 'alias /usr/share/nginx/html/try/;' not in text or 'alias /usr/share/nginx/try/;' in text:
+    raise SystemExit('guard:web-try-root')
 telemetry=re.findall(r'location = /api/v1/client-events \{([\s\S]*?)^\s*\}',text,re.M)
 if len(telemetry)!=1: raise SystemExit('guard:telemetry-boundary')
 if 'return 204;' not in telemetry[0] or 'access_log off;' not in telemetry[0] or 'proxy_pass' in telemetry[0]:
@@ -908,9 +1127,12 @@ PY
 
 prepare_render() {
   local overlay_source=$1 destination=$2 api=$3 runtime=$4 web=$5
+  local revision=$6 built_at=$7 manifest_digest=$8 web_asset_manifest=$9
   mkdir -p "$destination/overlay" "$destination/render"
   cp -a "$overlay_source/." "$destination/overlay/"
   inject_images "$destination/overlay" "$api" "$runtime" "$web"
+  inject_release_metadata \
+    "$destination/overlay" "$revision" "$built_at" "$manifest_digest" "$web_asset_manifest"
   local stage
   for stage in platform foundation init migrate apps; do
     kubectl kustomize "$destination/overlay/$stage" >"$destination/render/$stage.yaml" 2>/dev/null || fail "${stage} 清单渲染失败。"
@@ -945,7 +1167,11 @@ server_preflight() {
   local render=$1 stage rc job_probe="$WORK/job-rbac-preflight.yaml"
   assert_validated_render "$render"
   for stage in platform foundation apps; do
-    "${K[@]}" apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher -f "$render/$stage.yaml" >/dev/null 2>&1 || blocked "${stage} 服务端 dry-run 失败。"
+    if [[ "$stage" == foundation ]]; then
+      "${K[@]}" apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher --force-conflicts -f "$render/$stage.yaml" >/dev/null 2>&1 || blocked "${stage} 服务端 dry-run 失败。"
+    else
+      "${K[@]}" apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher -f "$render/$stage.yaml" >/dev/null 2>&1 || blocked "${stage} 服务端 dry-run 失败。"
+    fi
     set +e
     "${K[@]}" diff -f "$render/$stage.yaml" >/dev/null 2>&1
     rc=$?
@@ -1071,18 +1297,81 @@ verify_writers_restored() {
   done
 }
 
-prune_stale_web_configs() {
-  local live listed item name failed=0
-  live=$("${K[@]}" -n "$NAMESPACE" get deployment/web -o jsonpath='{.spec.template.spec.volumes[?(@.name=="nginx-template")].configMap.name}' 2>/dev/null) || blocked 'Web 配置引用不可读。'
-  [[ "$live" =~ ^combo-dev-nginx-[a-z0-9]+$ ]] || blocked 'Web 配置引用不是带摘要的 ConfigMap。'
-  listed=$("${K[@]}" -n "$NAMESPACE" get configmaps -l combo.dev/environment=combo-dev -o name 2>/dev/null) || blocked 'Web 配置清单不可读。'
-  while IFS= read -r item; do
-    name=${item##*/}
-    if [[ "$name" == combo-dev-nginx-* && "$name" != "$live" ]]; then
-      "${K[@]}" -n "$NAMESPACE" delete "$item" --wait=false >/dev/null 2>&1 || failed=1
+prune_stale_configs() {
+  local deployments live_refs live_web live_release listed stale_json stale_names name failed=0
+  deployments=$("${K[@]}" -n "$NAMESPACE" get deployment "${APP_NAMES[@]}" -o json 2>/dev/null) ||
+    blocked '应用配置引用清单不可读。'
+  live_refs=$(
+    printf '%s' "$deployments" |
+      jq -cer '
+        def release_ref:
+          .metadata.name as $app
+          | [.spec.template.spec.containers[] | select(.name == $app)] as $containers
+          | if ($containers | length) != 1 then error("container") else $containers[0] end
+          | .envFrom as $sources
+          | if ($sources | type) != "array" or ($sources | length) != 1
+              then error("envFrom")
+            else $sources[0]
+            end
+          | if (keys != ["configMapRef"]) or ((.configMapRef | keys) != ["name"])
+              then error("configMapRef")
+            else .configMapRef.name
+            end;
+        .items
+        | if length != 4 or ([.[].metadata.name] | sort) != ["api", "runtime", "web", "worker"]
+            then error("inventory")
+          else .
+          end
+        | . as $apps
+        | [$apps[] | release_ref] as $release_refs
+        | [
+            $apps[]
+            | select(.metadata.name == "web")
+            | .spec.template.spec.volumes[]?
+            | select(.name == "nginx-template")
+            | .configMap.name
+          ] as $web_refs
+        | if
+            ($release_refs | length) != 4
+            or ($release_refs | unique | length) != 1
+            or ($release_refs[0] | test("^combo-release-meta-[0-9a-f]{12}$")) != true
+            or ($web_refs | length) != 1
+            or ($web_refs[0] | test("^combo-dev-nginx-[a-z0-9]+$")) != true
+          then error("references")
+          else {release: $release_refs[0], web: $web_refs[0]}
+          end
+      '
+  ) || blocked '应用没有共享唯一且带摘要的 Test 配置引用。'
+  live_release=$(jq -er '.release' <<<"$live_refs") || blocked '应用发布身份引用不可读。'
+  live_web=$(jq -er '.web' <<<"$live_refs") || blocked 'Web 配置引用不可读。'
+
+  listed=$("${K[@]}" -n "$NAMESPACE" get configmaps -l combo.dev/environment=combo-dev -o json 2>/dev/null) ||
+    blocked 'Test 配置清单不可读。'
+  stale_json=$(
+    printf '%s' "$listed" |
+      jq -cer --arg release "$live_release" --arg web "$live_web" '
+        [
+          .items[].metadata.name
+          | select(
+              (test("^combo-dev-nginx-[a-z0-9]+$") and . != $web)
+              or (test("^combo-release-meta-[0-9a-f]{12}$") and . != $release)
+            )
+        ] | sort
+      '
+  ) || blocked '旧 Test 配置清单无法安全归类。'
+  stale_names=$(jq -r '.[]' <<<"$stale_json") || blocked '旧 Test 配置名不可读。'
+  [[ -z "$stale_names" ]] && return
+  while IFS= read -r name; do
+    if [[ "$name" =~ ^combo-dev-nginx-[a-z0-9]+$ && "$name" != "$live_web" ]]; then
+      :
+    elif [[ "$name" =~ ^combo-release-meta-[0-9a-f]{12}$ && "$name" != "$live_release" ]]; then
+      :
+    else
+      blocked '旧 Test 配置名不在严格删除白名单内。'
     fi
-  done <<<"$listed"
-  (( failed == 0 )) || fail '旧 Web 配置无法清理。'
+    "${K[@]}" -n "$NAMESPACE" delete "configmap/$name" --wait=false >/dev/null 2>&1 || failed=1
+  done <<<"$stale_names"
+  (( failed == 0 )) || fail '旧 Web 或发布身份配置无法清理。'
 }
 
 check_loopback_listeners_once() {
@@ -1122,7 +1411,7 @@ prune_releases() {
 }
 
 render_only() {
-  local output='' api='' runtime='' web='' arg
+  local output='' api='' runtime='' web='' revision='' manifest='' digest_file='' arg
   while (($#)); do
     arg=$1; shift
     case "$arg" in
@@ -1130,18 +1419,33 @@ render_only() {
       --api-image) api=${1:?}; shift ;;
       --runtime-image) runtime=${1:?}; shift ;;
       --web-image) web=${1:?}; shift ;;
+      --revision) revision=${1:?}; shift ;;
+      --release-manifest) manifest=${1:?}; shift ;;
+      --release-manifest-digest-file) digest_file=${1:?}; shift ;;
       *) fail '未知 render-only 参数。' ;;
     esac
   done
   [[ -n "$output" ]] || fail 'render-only 必须指定输出文件。'
+  [[ "$revision" =~ $SHA_RE ]] || fail 'render-only 必须指定完整 revision。'
+  [[ -f "$manifest" && ! -L "$manifest" ]] || fail 'render-only 缺少发布清单。'
+  [[ -f "$digest_file" && ! -L "$digest_file" ]] || fail 'render-only 缺少发布清单摘要。'
   validate_image_ref "$api" ghcr.io/dangdang-tech/combo-api
   validate_image_ref "$runtime" ghcr.io/dangdang-tech/combo-runtime
   validate_image_ref "$web" ghcr.io/dangdang-tech/combo-web
+  validate_release_manifest "$manifest" "$digest_file" "$revision" "$api" "$runtime" "$web" ||
+    fail 'render-only 发布清单校验失败。'
+  local built_at manifest_digest web_asset_manifest
+  built_at=$(jq -er '.builtAt' "$manifest") || fail 'render-only builtAt 不可读。'
+  manifest_digest=$(<"$digest_file")
+  web_asset_manifest=$(jq -er '.webAssetManifest' "$manifest") ||
+    fail 'render-only Web 资源摘要不可读。'
   local script_root source
   script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
   source="$script_root/infra/k8s/overlays/combo-dev"
   WORK=$(mktemp -d)
-  prepare_render "$source" "$WORK/prepared" "$api" "$runtime" "$web"
+  prepare_render \
+    "$source" "$WORK/prepared" "$api" "$runtime" "$web" \
+    "$revision" "$built_at" "$manifest_digest" "$web_asset_manifest"
   install -m 0600 "$WORK/prepared/render/all.yaml" "$output"
   SUCCESS=1
   status 'render-only PASS'
@@ -1164,7 +1468,7 @@ main() {
   INCOMING_BUNDLE=$bundle
 
   exec 9>"$LOCK_FILE"
-  flock -n 9 || blocked '另一个 combo-dev 操作持有主机锁。'
+  flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   WORK=$(mktemp -d)
   host_preflight
   rbac_preflight
@@ -1204,7 +1508,21 @@ main() {
   validate_image_ref "$runtime_image" ghcr.io/dangdang-tech/combo-runtime
   validate_image_ref "$web_image" ghcr.io/dangdang-tech/combo-web
 
-  prepare_render "$RELEASE_DIR/infra/k8s/overlays/combo-dev" "$WORK/prepared" "$api_image" "$runtime_image" "$web_image"
+  local manifest="$RELEASE_DIR/metadata/release.json"
+  local digest_file="$RELEASE_DIR/metadata/release-manifest-digest.txt"
+  validate_release_manifest \
+    "$manifest" "$digest_file" "$revision" "$api_image" "$runtime_image" "$web_image" ||
+    blocked '发布清单、revision 与镜像摘要不一致。'
+  local built_at manifest_digest web_asset_manifest
+  built_at=$(jq -er '.builtAt' "$manifest") || blocked '发布 builtAt 不可读。'
+  manifest_digest=$(<"$digest_file")
+  web_asset_manifest=$(jq -er '.webAssetManifest' "$manifest") ||
+    blocked '发布 Web 资源摘要不可读。'
+
+  prepare_render \
+    "$RELEASE_DIR/infra/k8s/overlays/combo-dev" "$WORK/prepared" \
+    "$api_image" "$runtime_image" "$web_image" \
+    "$revision" "$built_at" "$manifest_digest" "$web_asset_manifest"
   server_preflight "$WORK/prepared/render"
 
   local before after start evidence evidence_bytes runner_mode
@@ -1220,7 +1538,7 @@ main() {
   run_job minio-init "$WORK/prepared/render/init.yaml" 360
   run_job migrate "$WORK/prepared/render/migrate.yaml" 660
   wait_apps "$WORK/prepared/render"
-  prune_stale_web_configs
+  prune_stale_configs
 
   timeout 30 systemctl start combo-dev-web-forward.service >/dev/null 2>&1 || fail 'Web 回环转发器启动失败。'
   timeout 30 systemctl start combo-dev-s3-forward.service >/dev/null 2>&1 || fail 'S3 回环转发器启动失败。'

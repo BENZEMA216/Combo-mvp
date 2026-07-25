@@ -5,13 +5,16 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   readReleaseManifest,
+  releaseIdForSource,
   releaseManifestDigest,
   serializeReleaseManifest,
   validateReleaseManifest,
 } from './release-manifest.mjs';
 import {
   createWebAssetManifest,
+  readWebAssetManifest,
   serializeWebAssetManifest,
+  validateWebAssetManifest,
   webAssetManifestDigest,
 } from './web-asset-manifest.mjs';
 
@@ -22,7 +25,7 @@ function manifest(overrides = {}) {
   return {
     schemaVersion: 1,
     sourceSha: SHA,
-    releaseId: `rel-${SHA}-12345-1`,
+    releaseId: releaseIdForSource(SHA),
     images: {
       api: `ghcr.io/dangdang-tech/combo-api@${digest('1')}`,
       runtime: `ghcr.io/dangdang-tech/combo-runtime@${digest('2')}`,
@@ -44,7 +47,7 @@ test('release manifest canonicalizes every required immutable field', () => {
   assert.equal(serialized, serializeReleaseManifest(JSON.parse(serialized)));
 });
 
-test('release manifest rejects movable tags, foreign repositories, and mismatched identity', () => {
+test('release manifest rejects tags, foreign repositories, and mismatched identity', () => {
   assert.throws(
     () =>
       validateReleaseManifest(
@@ -70,12 +73,19 @@ test('release manifest rejects movable tags, foreign repositories, and mismatche
     /combo-web@sha256/,
   );
   assert.throws(
-    () => validateReleaseManifest(manifest({ releaseId: 'rel-another-release' })),
-    /must contain sourceSha/,
+    () => validateReleaseManifest(manifest({ releaseId: 'release-another' })),
+    /deterministic/,
   );
   assert.throws(
     () => validateReleaseManifest({ ...manifest(), unexpected: 'value' }),
     /keys must be exactly/,
+  );
+});
+
+test('release manifest rejects impossible dates', () => {
+  assert.throws(
+    () => validateReleaseManifest(manifest({ builtAt: '2026-02-31T08:00:00.000Z' })),
+    /real canonical timestamp/,
   );
 });
 
@@ -102,17 +112,73 @@ test('web asset manifest is deterministic and changes with asset contents', () =
   mkdirSync(join(runtime, 'assets'), { recursive: true });
   writeFileSync(join(web, 'index.html'), '<script src="/assets/app-123.js"></script>');
   writeFileSync(join(web, 'assets/app-123.js'), 'console.log("web");');
-  writeFileSync(join(runtime, 'assets/runtime-456.js'), 'console.log("runtime");');
+  writeFileSync(join(runtime, 'index.html'), '<script src="/try/assets/app-456.js"></script>');
+  writeFileSync(join(runtime, 'assets/app-456.js'), 'console.log("runtime");');
 
   const first = createWebAssetManifest({ webRoot: web, runtimeRoot: runtime, output });
   writeFileSync(output, serializeWebAssetManifest(first));
   const repeated = createWebAssetManifest({ webRoot: web, runtimeRoot: runtime, output });
   assert.deepEqual(repeated, first);
   assert.equal(readFileSync(output, 'utf8'), serializeWebAssetManifest(first));
+  assert.deepEqual(readWebAssetManifest(output), first);
 
   const firstDigest = webAssetManifestDigest(first);
-  writeFileSync(join(runtime, 'assets/runtime-456.js'), 'console.log("changed");');
+  writeFileSync(join(runtime, 'assets/app-456.js'), 'console.log("changed");');
   const changed = createWebAssetManifest({ webRoot: web, runtimeRoot: runtime, output });
   assert.notEqual(webAssetManifestDigest(changed), firstDigest);
-  assert.equal(changed.assets.some((asset) => asset.application === 'runtime-web'), true);
+  assert.equal(
+    changed.assets.some((asset) => asset.application === 'runtime-web'),
+    true,
+  );
+});
+
+test('web asset manifest rejects missing applications, duplicates, and unsafe paths', () => {
+  const webIndex = {
+    application: 'web',
+    path: 'index.html',
+    digest: digest('1'),
+  };
+  const runtimeIndex = {
+    application: 'runtime-web',
+    path: 'index.html',
+    digest: digest('2'),
+  };
+  assert.throws(
+    () => validateWebAssetManifest({ schemaVersion: 1, assets: [webIndex] }),
+    /runtime-web\/index.html is missing/,
+  );
+  assert.throws(
+    () =>
+      validateWebAssetManifest({
+        schemaVersion: 1,
+        assets: [runtimeIndex, webIndex, webIndex],
+      }),
+    /duplicate asset|canonical sorted order/,
+  );
+  assert.throws(
+    () =>
+      validateWebAssetManifest({
+        schemaVersion: 1,
+        assets: [runtimeIndex, { ...webIndex, path: '../index.html' }],
+      }),
+    /normalized relative path/,
+  );
+});
+
+test('release and Web asset digest vectors are stable', () => {
+  assert.equal(
+    releaseManifestDigest(manifest()),
+    'sha256:cbf6d69442156e09e9a45c3dbfdb87e3603cfe20a859b2fc5932c21455f3cbdd',
+  );
+  const assets = validateWebAssetManifest({
+    schemaVersion: 1,
+    assets: [
+      { application: 'runtime-web', path: 'index.html', digest: digest('1') },
+      { application: 'web', path: 'index.html', digest: digest('2') },
+    ],
+  });
+  assert.equal(
+    webAssetManifestDigest(assets),
+    'sha256:e333683cf52803331fa3acd7b625954a695d62559fe7fd6d6232bb3e7b70917d',
+  );
 });

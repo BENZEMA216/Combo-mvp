@@ -1,7 +1,4 @@
 // 极简 SQL 迁移 runner（B-03）。按文件名字典序执行 migrations/*.sql，记账到 schema_migrations。
-// 迁移策略（Daniel 2026-07-04 决策）：0000_baseline_schema.sql 是合并后的基线（原 0000-0018 已删）；
-//   之后的变更新增迁移文件（已执行过的文件不可改），历史再度堆积时可再次合并基线——
-//   合并时旧库执行 `DELETE FROM schema_migrations; INSERT ... VALUES ('<新基线文件名>')` 重置记账。
 // 需 DATABASE_URL（无 Docker，连任意 PG 实例即可）。
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -11,10 +8,11 @@ import { Client } from 'pg';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = resolve(__dirname, '..', 'migrations');
 const MIGRATION_FILE_PATTERN = /^([0-9]{4})_[a-z0-9_]+\.sql$/;
+const MIGRATION_LOCK_KEY = 1_122_026_072_4;
 
 export function listMigrations(): string[] {
   const files = readdirSync(MIGRATIONS_DIR)
-    .filter((f) => f.endsWith('.sql'))
+    .filter((file) => file.endsWith('.sql'))
     .sort();
   return validateMigrationFiles(files);
 }
@@ -48,10 +46,8 @@ export interface MigrationPlan {
 }
 
 /**
- * schema_migrations 必须恰好是当前源码迁移序列的一个前缀：
- * - 空集合代表 fresh database；
- * - 完整集合代表幂等重跑；
- * - 未知文件、重复记账或跳过较早文件都拒绝继续写库。
+ * schema_migrations must be an exact prefix of the migration files in this image.
+ * Unknown, duplicate, skipped, and legacy-chain entries stop before any migration runs.
  */
 export function planMigrations(
   sourceInput: readonly string[],
@@ -152,7 +148,7 @@ async function main(): Promise<void> {
     console.log(
       `migration head: ${sourcePlan.head}\n` +
         'migrations (no DB connection):\n' +
-        files.map((f) => '  - ' + f).join('\n'),
+        files.map((file) => `  - ${file}`).join('\n'),
     );
     return;
   }
@@ -160,37 +156,95 @@ async function main(): Promise<void> {
   const client = new Client({ connectionString: databaseUrl });
   await client.connect();
   try {
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        filename   text PRIMARY KEY,
-        applied_at timestamptz NOT NULL DEFAULT now()
+    let ledgerExists = (
+      await client.query<{ exists: boolean }>(
+        `SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists`,
+      )
+    ).rows[0]?.exists;
+    const userSchemaHasTables = async (excludeLedger: boolean): Promise<boolean> =>
+      Boolean(
+        (
+          await client.query<{ exists: boolean }>(
+            `
+              SELECT EXISTS (
+                SELECT 1
+                FROM pg_class AS relation
+                JOIN pg_namespace AS schema ON schema.oid = relation.relnamespace
+                WHERE relation.relkind IN ('r', 'p')
+                  AND schema.nspname NOT IN ('pg_catalog', 'information_schema')
+                  AND schema.nspname NOT LIKE 'pg_toast%'
+                  AND ($1::boolean = false OR relation.relname <> 'schema_migrations')
+              ) AS exists
+            `,
+            [excludeLedger],
+          )
+        ).rows[0]?.exists,
       );
-    `);
+
+    if (options.statusOnly && !ledgerExists) {
+      if (await userSchemaHasTables(false)) {
+        throw new Error(
+          'migration ledger mismatch: database has user tables but no schema_migrations ledger',
+        );
+      }
+      for (const file of files) console.log(`[ ] ${file}`);
+      return;
+    }
+
+    if (!options.statusOnly) {
+      await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
+      ledgerExists = (
+        await client.query<{ exists: boolean }>(
+          `SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists`,
+        )
+      ).rows[0]?.exists;
+    }
+
+    if (!ledgerExists && (await userSchemaHasTables(false))) {
+      throw new Error(
+        'migration ledger mismatch: database has user tables but no schema_migrations ledger',
+      );
+    }
+
+    if (!ledgerExists) {
+      await client.query(`
+        CREATE TABLE schema_migrations (
+          filename   text PRIMARY KEY,
+          applied_at timestamptz NOT NULL DEFAULT now()
+        );
+      `);
+    }
+
     const applied = (
       await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
     ).rows.map((row) => row.filename);
+    if (applied.length === 0 && (await userSchemaHasTables(true))) {
+      throw new Error(
+        'migration ledger mismatch: non-empty schema cannot use an empty migration ledger',
+      );
+    }
     const plan = planMigrations(files, applied, options.expectedHead);
     const appliedSet = new Set(plan.applied);
 
     if (options.statusOnly) {
-      for (const f of files) {
-        console.log(`${appliedSet.has(f) ? '[x]' : '[ ]'} ${f}`);
+      for (const file of files) {
+        console.log(`${appliedSet.has(file) ? '[x]' : '[ ]'} ${file}`);
       }
       return;
     }
 
-    for (const f of plan.pending) {
-      const sql = readFileSync(join(MIGRATIONS_DIR, f), 'utf-8');
+    for (const file of plan.pending) {
+      const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
 
-      console.log(`applying ${f} ...`);
+      console.log(`applying ${file} ...`);
       await client.query('BEGIN');
       try {
         await client.query(sql);
-        await client.query('INSERT INTO schema_migrations(filename) VALUES ($1)', [f]);
+        await client.query('INSERT INTO schema_migrations(filename) VALUES ($1)', [file]);
         await client.query('COMMIT');
-      } catch (err) {
+      } catch (error) {
         await client.query('ROLLBACK');
-        throw new Error(`migration ${f} failed: ${(err as Error).message}`);
+        throw new Error(`migration ${file} failed: ${(error as Error).message}`);
       }
     }
 
@@ -203,7 +257,6 @@ async function main(): Promise<void> {
         `migration ledger mismatch: runner stopped before expected head ${finalPlan.head}`,
       );
     }
-
     console.log(`migrations up to date at ${finalPlan.head}.`);
   } finally {
     await client.end();
@@ -211,8 +264,8 @@ async function main(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  main().catch((err) => {
-    console.error(err);
+  main().catch((error) => {
+    console.error(error);
     process.exit(1);
   });
 }

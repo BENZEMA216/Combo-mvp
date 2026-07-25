@@ -1,0 +1,15 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    metadata:
+      annotations:
+        combo.build/release-contract: v1
+    spec:
+      containers:
+        - name: web
+          envFrom:
+            - configMapRef:
+                name: combo-release

@@ -9,7 +9,7 @@ COPY scripts/web-asset-manifest.mjs ./scripts/web-asset-manifest.mjs
 RUN pnpm install --frozen-lockfile=false
 # 同镜像同时构建创作者中心（web）与试用端（runtime-web，base=/try/）静态产物。
 RUN pnpm -F @cb/shared build && pnpm -F @cb/web build && pnpm -F @cb/runtime-web build && \
-    node scripts/web-asset-manifest.mjs \
+    node scripts/web-asset-manifest.mjs create \
       --web-root apps/web/dist \
       --runtime-root apps/runtime-web/dist \
       --output apps/web/dist/web-asset-manifest.json
@@ -17,10 +17,19 @@ RUN pnpm -F @cb/shared build && pnpm -F @cb/web build && pnpm -F @cb/runtime-web
 FROM nginx:alpine AS runtime
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
 # 试用端静态挂在 /try/（nginx.conf 里 location ^~ /try/ alias 到此）。
-COPY --from=build /app/apps/runtime-web/dist /usr/share/nginx/try
+COPY --from=build /app/apps/runtime-web/dist /usr/share/nginx/html/try
 # nginx 官方镜像入口会对 /etc/nginx/templates/*.template 做 envsubst 后写入 /etc/nginx/conf.d/。
 # 三个变量的默认值即 docker compose 场景（内嵌 DNS + 服务短名）；k8s 在 web.yaml 里覆盖
 # （CoreDNS 地址 + Service 全限定名，nginx resolver 不应用 search 域）。
-ENV NGINX_RESOLVER=127.0.0.11 API_UPSTREAM_HOST=api RUNTIME_UPSTREAM_HOST=runtime
+ENV NGINX_RESOLVER=127.0.0.11 \
+    API_UPSTREAM_HOST=api \
+    RUNTIME_UPSTREAM_HOST=runtime \
+    COMBO_ENVIRONMENT=development \
+    COMBO_SOURCE_SHA=0000000000000000000000000000000000000000 \
+    COMBO_RELEASE_ID=release-0000000000000000000000000000000000000000 \
+    COMBO_BUILT_AT=1970-01-01T00:00:00.000Z \
+    COMBO_RELEASE_MANIFEST_DIGEST=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+    COMBO_WEB_ASSET_MANIFEST=sha256:0000000000000000000000000000000000000000000000000000000000000000
 COPY infra/nginx.conf /etc/nginx/templates/default.conf.template
+COPY infra/web-runtime-config.sh /docker-entrypoint.d/30-combo-runtime-config.sh
 EXPOSE 80

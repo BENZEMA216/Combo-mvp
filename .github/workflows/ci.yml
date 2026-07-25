@@ -1,28 +1,49 @@
-# CI（O-07）。creator-builder monorepo 已提升为仓库根，故 .github/workflows/ 落在仓库根、被 GitHub Actions 正常识别，
-# 所有步骤直接以仓库根（= monorepo 根）为工作目录，无需再 working-directory 限定。
-#
-# 四个 job：
-#   gate —— install / lint / typecheck / build / test / compose 配置自查。
-#   integration —— 起 PG/Redis 双实例，跑数据库迁移、Runtime 终态栅栏与 Redis 分工断言。
-#   sandbox-integration —— 在 Docker internal network 内跑真实 Pi 工具与 sandboxd 竖切。
-#   image —— 构建三个现有生产镜像；不发布可选 sandboxd。
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
+    inputs:
+      revision:
+        description: Complete reachable commit SHA to test and release.
+        required: true
+        type: string
+      publish_release:
+        description: Publish immutable images and the release artifact after every gate passes.
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ (github.event_name == 'pull_request' && github.ref) || inputs.revision || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SOURCE_SHA: ${{ inputs.revision || github.sha }}
 
 jobs:
   gate:
     name: lint / typecheck / build / test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out the exact source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - name: Verify the checked-out identity
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+          git diff --quiet
+          git diff --cached --quiet
 
       - uses: pnpm/action-setup@v4
         with:
@@ -39,7 +60,6 @@ jobs:
           go-version-file: apps/sandboxd/go.mod
           cache-dependency-path: apps/sandboxd/go.sum
 
-      # 只安装客户端供 opt-in overlay 做本地 kustomize 静态断言，不连接或修改集群。
       - uses: azure/setup-kubectl@v4
         with:
           version: v1.31.0
@@ -47,11 +67,10 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build shared first (apps depend on its dist + .d.ts)
+      - name: Build shared first
         run: pnpm -F @cb/shared build
 
-      # eslint 含分层依赖规则：authoring worker 不得导入 HTTP app，Runtime 模型工具不得导入宿主文件或进程 API。
-      - name: Lint (incl. layering rules)
+      - name: Lint
         run: pnpm lint
 
       - name: Format check
@@ -63,7 +82,7 @@ jobs:
       - name: Typecheck tests
         run: pnpm typecheck:test
 
-      - name: Build (all packages + apps)
+      - name: Build all packages and applications
         run: pnpm build
 
       - name: Verify production artifacts
@@ -72,9 +91,7 @@ jobs:
       - name: Test
         run: pnpm test
 
-      - name: Compose config self-check (structural, no up)
-        # 结构自检只做 YAML/引用校验、不起容器。compose 里必填变量用 ${VAR:?}（生产禁默认，安全刻意）
-        # 故此处注入一次性占位值让插值通过——绝不改 compose 的「生产禁默认」约束。
+      - name: Compose structural checks
         env:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
@@ -91,17 +108,27 @@ jobs:
           DEV_SESSION_SECRET: ci
           IMAGE_TAG: ci
         run: |
-          docker compose -f infra/docker-compose.yml config -q && echo "base compose config valid"
-          docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml config -q && echo "prod overlay config valid"
+          set -euo pipefail
+          docker compose -f infra/docker-compose.yml config -q
+          docker compose -f infra/docker-compose.yml -f infra/docker-compose.prod.yml config -q
 
       - name: ShellCheck scripts
         run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck scripts/*.sh scripts/integration/*.sh infra/entrypoint.sh infra/postgres/init-logto-db.sh infra/minio/init-buckets.sh infra/k8s/overlays/sandbox-tools/maintenance/*.sh
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck \
+            scripts/*.sh \
+            scripts/integration/*.sh \
+            infra/entrypoint.sh \
+            infra/postgres/init-logto-db.sh \
+            infra/minio/init-buckets.sh \
+            infra/k8s/overlays/sandbox-tools/maintenance/*.sh
 
   integration:
-    name: integration (db migrate + redis dual)
+    name: integration (database migration + dual Redis)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: gate
     services:
       postgres:
@@ -112,19 +139,31 @@ jobs:
           POSTGRES_DB: agora
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U agora" --health-interval 5s --health-timeout 3s --health-retries 10
+          --health-cmd "pg_isready -U agora"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
       redis_queue:
         image: redis:7
         ports: ['6379:6379']
         options: >-
-          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
       redis_hot:
         image: redis:7
         ports: ['6380:6379']
         options: >-
-          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -139,28 +178,31 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Install psql + redis-cli clients
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client redis-tools
-
-      # Service 容器以默认配置起（无法挂自定义 conf），故用 CONFIG SET 注入双实例对立策略后再断言。
-      - name: Apply redis dual-instance policies (service containers)
+      - name: Install database and Redis clients
         run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client redis-tools
+
+      - name: Apply dual Redis policies
+        run: |
+          set -euo pipefail
           redis-cli -h localhost -p 6379 config set maxmemory-policy noeviction
           redis-cli -h localhost -p 6379 config set appendonly yes
           redis-cli -h localhost -p 6380 config set maxmemory-policy allkeys-lru
 
-      - name: Integration · db migrate
+      - name: Database migration integration
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
         run: bash scripts/integration/db-migrate.sh
 
-      - name: Integration · runtime terminal fence
+      - name: Runtime terminal fence integration
         env:
           RUNTIME_TERMINAL_FENCE_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           RUNTIME_TERMINAL_FENCE_REDIS_URL: redis://localhost:6380
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/terminal-fence.integration.test.ts
 
-      - name: Integration · redis dual
+      - name: Dual Redis integration
         env:
           REDIS_QUEUE_HOST: localhost
           REDIS_QUEUE_PORT: '6379'
@@ -169,11 +211,15 @@ jobs:
         run: bash scripts/integration/redis-dual.sh
 
   sandbox-integration:
-    name: sandbox protocol/process/path (Docker)
+    name: sandbox protocol / process / path
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: gate
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
 
       - uses: pnpm/action-setup@v4
         with:
@@ -192,55 +238,350 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # 只启动 Docker internal network 内的临时 sandboxd 与协议驱动；不连接或修改集群。
       - name: Sandbox authenticated vertical slice
         env:
           SANDBOX_E2E_REQUIRE_LOOPBACK: '1'
         run: bash scripts/integration/sandbox-tools-local.sh
 
-  # 三镜像构建（api/runtime/web）。PR 上只构建作守门；push main 时额外推送 GHCR：
-  #   tag 打两枚——完整 commit SHA（CD 按 SHA 部署与回滚）+ latest（人查看最新用，部署不依赖它）。
-  #   buildx 的 GitHub Actions 层缓存按镜像名分 scope，避免三镜像互相冲刷缓存。
   image:
-    name: docker image build+push (api + runtime + web)
+    name: image / ${{ matrix.key }}
     runs-on: ubuntu-latest
-    needs: gate
+    timeout-minutes: 60
+    needs: [integration, sandbox-integration]
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - image: combo-api
+          - key: api
+            repository: ghcr.io/dangdang-tech/combo-api
             dockerfile: infra/Dockerfile.api
-          - image: combo-runtime
+          - key: runtime
+            repository: ghcr.io/dangdang-tech/combo-runtime
             dockerfile: infra/Dockerfile.runtime
-          - image: combo-web
+          - key: web
+            repository: ghcr.io/dangdang-tech/combo-web
             dockerfile: infra/Dockerfile.web
-    env:
-      SHOULD_PUSH: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Login GHCR (main push 才需要)
-        if: env.SHOULD_PUSH == 'true'
+      - name: Log in to GHCR for a trusted release
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          inputs.publish_release == true
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
-      # 仓库根即 monorepo 根：build context 与 -f 路径均相对仓库根。
-      - name: Build (and push on main)
+      - name: Build once and publish only trusted releases
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: ${{ env.SHOULD_PUSH == 'true' }}
-          tags: |
-            ghcr.io/dangdang-tech/${{ matrix.image }}:${{ github.sha }}
-            ghcr.io/dangdang-tech/${{ matrix.image }}:latest
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+          platforms: linux/amd64
+          push: >-
+            ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+                inputs.publish_release == true }}
+          load: >-
+            ${{ matrix.key == 'web' &&
+                !((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+                  inputs.publish_release == true) }}
+          tags: ${{ matrix.repository }}:${{ env.SOURCE_SHA }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.key }}
+          cache-to: type=gha,scope=${{ matrix.key }},mode=max
+
+      - name: Verify the hardened Web runtime metadata path
+        if: matrix.key == 'web'
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          IMAGE_TAG: ${{ matrix.repository }}:${{ env.SOURCE_SHA }}
+          PUBLISH_RELEASE: >-
+            ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+                inputs.publish_release == true }}
+        run: |
+          set -euo pipefail
+          case "$PUBLISH_RELEASE" in
+            true)
+              [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+              IMAGE_REF="$IMAGE_REPOSITORY@$IMAGE_DIGEST"
+              docker pull "$IMAGE_REF" >/dev/null
+              ;;
+            false)
+              IMAGE_REF="$IMAGE_TAG"
+              docker image inspect "$IMAGE_REF" >/dev/null
+              ;;
+            *)
+              echo 'Invalid publish mode for Web runtime verification.' >&2
+              exit 1
+              ;;
+          esac
+          container="combo-web-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker run -d --name "$container" \
+            --read-only \
+            --user 101:101 \
+            --cap-drop ALL \
+            --tmpfs /etc/nginx/conf.d:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0755 \
+            --tmpfs /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=0755 \
+            --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
+            --mount "type=bind,src=$PWD/infra/k8s/overlays/combo-dev/apps/nginx-dev.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
+            --env NGINX_RESOLVER=127.0.0.11 \
+            --env API_UPSTREAM_HOST=api.invalid \
+            --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
+            "$IMAGE_REF" >/dev/null
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec "$container" wget -qO- http://127.0.0.1:8080/version.json \
+                >"$RUNNER_TEMP/web-version.json" 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          [[ "$ready" == 1 ]]
+          docker exec "$container" wget -qO- http://127.0.0.1:8080/runtime-config.json \
+            >"$RUNNER_TEMP/web-runtime-config.json"
+          docker exec "$container" wget -qO- http://127.0.0.1:8080/try/runtime-config.json \
+            >"$RUNNER_TEMP/web-try-runtime-config.json"
+          docker exec "$container" wget -qO /dev/null http://127.0.0.1:8080/
+          docker exec "$container" wget -qO /dev/null http://127.0.0.1:8080/try/
+          cmp "$RUNNER_TEMP/web-version.json" "$RUNNER_TEMP/web-runtime-config.json"
+          cmp "$RUNNER_TEMP/web-version.json" "$RUNNER_TEMP/web-try-runtime-config.json"
+          jq -e '
+            .schemaVersion == 1
+            and .environment == "development"
+            and (.sourceSha | test("^[0-9a-f]{40}$"))
+            and (.releaseManifestDigest | test("^sha256:[0-9a-f]{64}$"))
+            and (.webAssetManifest | test("^sha256:[0-9a-f]{64}$"))
+            and .webAssetManifest != ("sha256:" + ("0" * 64))
+          ' "$RUNNER_TEMP/web-version.json" >/dev/null
+
+      - name: Record the immutable image reference
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          inputs.publish_release == true
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_REPOSITORY: ${{ matrix.repository }}
+          IMAGE_KEY: ${{ matrix.key }}
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf '%s@%s\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" > "$RUNNER_TEMP/$IMAGE_KEY.image"
+
+      - name: Pass the digest to the release assembler
+        if: >-
+          (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+          inputs.publish_release == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-image-digest-${{ env.SOURCE_SHA }}-${{ matrix.key }}
+          path: ${{ runner.temp }}/${{ matrix.key }}.image
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: assemble immutable release artifact
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      inputs.publish_release == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: image
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+
+      - name: Install the release tooling dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the three image digests from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: combo-image-digest-${{ env.SOURCE_SHA }}-*
+          path: ${{ runner.temp }}/image-digests
+          merge-multiple: true
+
+      - name: Log in only to extract the built Web manifest
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Create and verify the release bundle
+        id: bundle
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
+
+          bundle=$(mktemp -d "$RUNNER_TEMP/combo-release-${SOURCE_SHA}.XXXXXX")
+          mkdir -p \
+            "$bundle/metadata" \
+            "$bundle/rendered/test" \
+            "$bundle/rendered/preview" \
+            "$bundle/rendered/production" \
+            "$bundle/scripts" \
+            "$bundle/infra/host/release"
+
+          api_image=$(<"$RUNNER_TEMP/image-digests/api.image")
+          runtime_image=$(<"$RUNNER_TEMP/image-digests/runtime.image")
+          web_image=$(<"$RUNNER_TEMP/image-digests/web.image")
+          [[ "$api_image" =~ ^ghcr\.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$ ]]
+          [[ "$runtime_image" =~ ^ghcr\.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$ ]]
+          [[ "$web_image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
+
+          find db/migrations -maxdepth 1 -type f -name '*.sql' -exec basename {} \; \
+            | LC_ALL=C sort > "$bundle/metadata/migration-files.txt"
+          expected_migrations=$(mktemp)
+          printf '%s\n' \
+            0000_baseline_schema.sql \
+            0001_expired_upload_reconciliation.sql \
+            0002_drop_stream_events.sql \
+            0003_turns.sql \
+            0004_studio_sessions.sql \
+            0005_capability_current_ui.sql \
+            0006_one_running_turn_per_session.sql > "$expected_migrations"
+          cmp -s "$expected_migrations" "$bundle/metadata/migration-files.txt"
+          migration_head=$(tail -n 1 "$bundle/metadata/migration-files.txt")
+
+          docker pull "$web_image" >/dev/null
+          container=$(docker create "$web_image")
+          cleanup_container() {
+            docker rm -f "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup_container EXIT
+          docker cp \
+            "$container:/usr/share/nginx/html/web-asset-manifest.json" \
+            "$bundle/metadata/web-asset-manifest.json"
+          cleanup_container
+          trap - EXIT
+          web_asset_digest=$(node scripts/web-asset-manifest.mjs verify \
+            --manifest "$bundle/metadata/web-asset-manifest.json")
+
+          built_at=$(git show -s --format=%cI "$SOURCE_SHA" \
+            | node -e "let value=''; process.stdin.on('data', chunk => value += chunk); process.stdin.on('end', () => process.stdout.write(new Date(value.trim()).toISOString()));")
+          manifest_digest=$(node scripts/release-manifest.mjs create \
+            --output "$bundle/metadata/release.json" \
+            --source-sha "$SOURCE_SHA" \
+            --api-image "$api_image" \
+            --runtime-image "$runtime_image" \
+            --web-image "$web_image" \
+            --migration-head "$migration_head" \
+            --built-at "$built_at" \
+            --web-asset-manifest "$web_asset_digest")
+          printf '%s\n' "$manifest_digest" > "$bundle/metadata/release-manifest-digest.txt"
+          node scripts/release-manifest.mjs verify \
+            --manifest "$bundle/metadata/release.json" \
+            --source-sha "$SOURCE_SHA" \
+            --digest "$manifest_digest" >/dev/null
+
+          for phase in migrate apps; do
+            node scripts/render-release.mjs \
+              --manifest "$bundle/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --environment test \
+              --phase "$phase" \
+              --output "$bundle/rendered/test/$phase.yaml"
+          done
+          for environment in preview production; do
+            for phase in foundation init migrate apps; do
+              node scripts/render-release.mjs \
+                --manifest "$bundle/metadata/release.json" \
+                --manifest-digest "$manifest_digest" \
+                --environment "$environment" \
+                --phase "$phase" \
+                --output "$bundle/rendered/$environment/$phase.yaml"
+            done
+          done
+
+          install -m 0755 \
+            scripts/deploy-release.sh \
+            scripts/switch-release-traffic.sh \
+            "$bundle/scripts/"
+          install -m 0644 \
+            scripts/release-manifest.mjs \
+            scripts/web-asset-manifest.mjs \
+            scripts/verify-rendered-release.mjs \
+            "$bundle/scripts/"
+          install -m 0644 infra/host/release/*.service "$bundle/infra/host/release/"
+
+          if find "$bundle" -type l -print -quit | grep -q .; then
+            echo 'Release bundle contains a symbolic link.' >&2
+            exit 1
+          fi
+          if grep -RIEq -- \
+            '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}' \
+            "$bundle"; then
+            echo 'Release bundle failed credential-pattern scanning.' >&2
+            exit 1
+          fi
+          (
+            cd "$bundle"
+            find . -type f ! -path './metadata/artifact-files.sha256' -print0 \
+              | LC_ALL=C sort -z \
+              | xargs -0 sha256sum > metadata/artifact-files.sha256
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+
+          printf 'path=%s\n' "$bundle" >> "$GITHUB_OUTPUT"
+          printf 'name=combo-release-%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the only promotable release artifact
+        id: release-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: ${{ steps.bundle.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Publish the release identity
+        env:
+          ARTIFACT_DIGEST: ${{ steps.release-artifact.outputs.artifact-digest }}
+          ARTIFACT_NAME: ${{ steps.bundle.outputs.name }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          printf 'Release artifact: %s\n' "$ARTIFACT_NAME"
+          printf 'GitHub artifact digest: sha256:%s\n' "$ARTIFACT_DIGEST"

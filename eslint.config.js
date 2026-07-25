@@ -11,6 +11,7 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       '**/coverage/**',
+      '.claude/worktrees/**',
     ],
   },
   js.configs.recommended,
@@ -138,6 +139,12 @@ export default tseslint.config(
   // 配置文件 / 脚本宽松
   {
     files: ['**/*.config.{js,ts}', 'scripts/**/*.{js,ts,mjs}'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
     },

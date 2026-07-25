@@ -11,10 +11,11 @@
     "acceptance:smoke": "./acceptance-smoke.sh",
     "sandbox:e2e": "./integration/sandbox-tools-local.sh",
     "typecheck": "tsc -b",
-    "test": "node --test publish-logto-branding.test.mjs release-contract.test.mjs"
+    "test": "node --test publish-logto-branding.test.mjs release-contract.test.mjs render-release.test.mjs release-deploy-contract.test.mjs release-traffic-contract.test.mjs"
   },
   "dependencies": {
-    "@cb/shared": "workspace:*"
+    "@cb/shared": "workspace:*",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",

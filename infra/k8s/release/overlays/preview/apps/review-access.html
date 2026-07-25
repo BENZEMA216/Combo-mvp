@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Combo Cloud Review · 访问验证</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 18% 18%, rgb(182 83 56 / 12%), transparent 32rem), #f5f2eb;
+        color: #171613;
+      }
+      main {
+        width: min(440px, calc(100vw - 40px));
+        padding: 38px;
+        border: 1px solid #d8d1c5;
+        border-radius: 20px;
+        background: rgb(251 250 247 / 94%);
+        box-shadow: 0 28px 90px rgb(55 45 30 / 12%);
+      }
+      small {
+        color: #9d4c37;
+        font-size: 11px;
+        font-weight: 750;
+        letter-spacing: 0.2em;
+      }
+      h1 {
+        margin: 14px 0 8px;
+        font-family: Georgia, 'Times New Roman', serif;
+        font-size: clamp(30px, 7vw, 42px);
+        font-weight: 500;
+      }
+      p {
+        color: #69645b;
+        line-height: 1.7;
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        margin-top: 24px;
+      }
+      label {
+        font-size: 13px;
+        font-weight: 650;
+      }
+      input,
+      button {
+        min-height: 48px;
+        border-radius: 11px;
+        font: inherit;
+      }
+      input {
+        width: 100%;
+        border: 1px solid #cfc6b8;
+        padding: 0 14px;
+        background: #fffefb;
+        color: inherit;
+      }
+      input:focus {
+        border-color: #b65338;
+        outline: 3px solid rgb(182 83 56 / 22%);
+      }
+      button {
+        border: 0;
+        padding: 0 18px;
+        background: #b65338;
+        color: white;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:disabled {
+        cursor: wait;
+        opacity: 0.65;
+      }
+      button:focus-visible {
+        outline: 3px solid #b65338;
+        outline-offset: 3px;
+      }
+      #status {
+        min-height: 1.5em;
+        margin-bottom: 0;
+        font-size: 14px;
+      }
+      @media (prefers-color-scheme: dark) {
+        body {
+          background:
+            radial-gradient(circle at 18% 18%, rgb(182 83 56 / 16%), transparent 32rem), #11110f;
+          color: #f0ede6;
+        }
+        main {
+          background: rgb(24 23 20 / 94%);
+          border-color: #37342e;
+        }
+        p {
+          color: #aaa398;
+        }
+        input {
+          background: #11110f;
+          border-color: #49453e;
+        }
+        small {
+          color: #e58d74;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <small>COMBO · CLOUD REVIEW</small>
+      <h1>进入云端 Review</h1>
+      <p>
+        这里运行当前发布的 Combo Web、API 与 Runtime。账号和数据与生产环境隔离，操作只保留在 Cloud
+        Review 中。
+      </p>
+      <form id="access-form">
+        <label for="access-code">访问码</label>
+        <input
+          id="access-code"
+          name="access-code"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="输入 Review 访问码"
+          aria-describedby="status"
+          required
+        />
+        <button id="enter" type="submit">验证并进入</button>
+      </form>
+      <p id="status" role="status" aria-live="polite"></p>
+    </main>
+    <script>
+      const form = document.querySelector('#access-form');
+      const input = document.querySelector('#access-code');
+      const button = document.querySelector('#enter');
+      const status = document.querySelector('#status');
+      const params = new URLSearchParams(location.search);
+      const requested = params.get('returnTo');
+      let returnTo = '/';
+      try {
+        const target = new URL(requested || '/', location.origin);
+        if (target.origin === location.origin) {
+          returnTo = `${target.pathname}${target.search}${target.hash}`;
+        }
+      } catch {
+        returnTo = '/';
+      }
+
+      async function enterReview(token) {
+        button.disabled = true;
+        input.disabled = true;
+        input.setAttribute('aria-invalid', 'false');
+        status.textContent = '正在验证云端 Review…';
+        try {
+          const response = await fetch('/__review/access', {
+            method: 'POST',
+            credentials: 'include',
+            headers: { 'X-Review-Token': token },
+          });
+          if (!response.ok) {
+            throw new Error(response.status === 403 ? '访问码不正确' : `HTTP ${response.status}`);
+          }
+          input.value = '';
+          status.textContent = '验证通过，正在准备预览身份…';
+          location.replace(`/__review/bootstrap?returnTo=${encodeURIComponent(returnTo)}`);
+        } catch (error) {
+          status.textContent = `暂时无法进入（${error.message}）。`;
+          input.setAttribute('aria-invalid', 'true');
+          button.disabled = false;
+          input.disabled = false;
+          input.focus();
+        }
+      }
+
+      form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        void enterReview(input.value.trim());
+      });
+
+      const tokenFromInvite = location.hash.slice(1);
+      if (tokenFromInvite) {
+        history.replaceState(null, '', `/__review/enter?returnTo=${encodeURIComponent(returnTo)}`);
+        void enterReview(tokenFromInvite);
+      }
+    </script>
+  </body>
+</html>

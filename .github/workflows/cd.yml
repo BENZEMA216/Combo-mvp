@@ -1,135 +1,529 @@
-# CD：部署到 tecent2 的单机 k3s（2026-07-17 起从 docker compose 切换，割接记录见 issue #86）。
-# 当前只保留手动入口：Production 必须显式选择已经由 main CI 构建的完整提交 SHA。
-# main 后续默认部署 Preview；在同源晋级链路完成前，Production 固定在最后一次人工选择的版本。
-#
-# 前置约定：
-#   镜像由 CI 在 main push 时构建并推送 GHCR（tag = 完整 commit SHA），本 workflow 只拉不建。
-#   服务器上有固定部署目录 /opt/combo：infra/ 放 k8s 清单与各服务配置（由本 workflow 每次同步覆盖），
-#   其中 .env 是唯一不同步的文件（密钥只存在服务器上，不进 git 也不进 Actions）。
-#   集群侧长期凭据（combo-env / ghcr-pull 两个 Secret）在集群里，不经过本 workflow。
-#   compose 编排文件保留在仓库与服务器上仅作回滚兜底（数据卷冻结在割接时刻），不再被本 workflow 使用。
-#
-# 所需 Secrets：
-#   DEPLOY_SSH_KEY —— 专用部署私钥（对应公钥在服务器 authorized_keys）
-#   DEPLOY_HOST / DEPLOY_USER —— 服务器地址与登录用户（仓库 public，不在 yml 里明文写）
-name: CD
+name: Production promotion
 
 on:
   workflow_dispatch:
     inputs:
       revision:
-        description: 要部署到 Production 的完整 main 提交 SHA；该提交必须已有成功的 main CI。
+        description: Preview 已通过的完整 main 提交 SHA。
         required: true
         type: string
 
-# 同一时间只允许一个部署在跑；后触发的排队而不是取消前一个（部署中途被杀会留半成品栈）。
-concurrency:
-  group: cd-tecent2
-  cancel-in-progress: false
+permissions:
+  actions: read
+  contents: read
 
 jobs:
-  deploy:
-    name: deploy selected main revision to Production
+  resolve:
+    name: resolve successful Preview evidence
     runs-on: ubuntu-latest
-    permissions:
-      actions: read
-      contents: read
-      packages: read
+    outputs:
+      revision: ${{ steps.resolve.outputs.revision }}
+      preview_run_id: ${{ steps.resolve.outputs.preview_run_id }}
     steps:
-      - name: 校验不可变 main revision 与成功 CI
-        id: rev
+      - name: Authorize actor and locate the newest successful Preview evidence
+        id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
           REVISION: ${{ inputs.revision }}
+          ACTOR: ${{ github.actor }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo 'Production revision 必须是完整提交 SHA。' >&2; exit 1; }
-          git_object=$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${REVISION}" --jq '.sha')
-          [[ "$git_object" == "$REVISION" ]] || exit 1
-          on_main=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...main" --jq '.status')
-          [[ "$on_main" == ahead || "$on_main" == identical ]] || {
-            echo 'Production revision 必须可从 main 到达。' >&2
+          [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
+            echo 'Production promotion workflow must run from main.' >&2
             exit 1
           }
-          success=$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${REVISION}&status=completed&per_page=100" \
-            --jq '[.workflow_runs[] | select(.head_sha == "'"$REVISION"'" and .head_branch == "main" and .event == "push" and .conclusion == "success")] | length > 0')
-          [[ "$success" == true ]] || { echo 'Production revision 没有成功的 main CI。' >&2; exit 1; }
-          printf 'sha=%s\n' "$REVISION" >> "$GITHUB_OUTPUT"
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'Production revision must be a complete lowercase commit SHA.' >&2
+            exit 1
+          }
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.permission')
+          role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.role_name // ""')
+          case "$permission:$role" in
+            admin:*|write:*|*:maintain) ;;
+            *)
+              echo 'Production promotion requires repository write, maintain, or admin permission.' >&2
+              exit 1
+              ;;
+          esac
 
-      - uses: actions/checkout@v4
+          git_object=$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${REVISION}" --jq '.sha')
+          [[ "$git_object" == "$REVISION" ]]
+          on_main=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...main" --jq '.status')
+          [[ "$on_main" == ahead || "$on_main" == identical ]] || {
+            echo 'Production revision must be reachable from main.' >&2
+            exit 1
+          }
+
+          artifact_name="combo-preview-promotion-${REVISION}"
+          candidates=$(mktemp)
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${artifact_name}&per_page=100" \
+            > "$candidates"
+          mapfile -t run_ids < <(
+            jq -r '
+              [.artifacts[]
+                | select(.expired == false)
+                | select(.name == "'"$artifact_name"'")
+                | select(.workflow_run.id != null)]
+              | sort_by(.created_at)
+              | reverse
+              | .[].workflow_run.id
+            ' "$candidates"
+          )
+          selected=''
+          for run_id in "${run_ids[@]}"; do
+            [[ "$run_id" =~ ^[0-9]+$ ]] || continue
+            run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${run_id}")
+            if jq -e \
+              --arg repository "$GITHUB_REPOSITORY" '
+                .path == ".github/workflows/preview.yml"
+                and .event == "workflow_run"
+                and .status == "completed"
+                and .conclusion == "success"
+                and .repository.full_name == $repository
+              ' <<<"$run" >/dev/null; then
+              selected=$run_id
+              break
+            fi
+          done
+          [[ -n "$selected" ]] || {
+            echo 'No successful, unexpired Preview promotion evidence exists for this revision.' >&2
+            exit 1
+          }
+          printf 'revision=%s\n' "$REVISION" >> "$GITHUB_OUTPUT"
+          printf 'preview_run_id=%s\n' "$selected" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: promote the exact Preview artifact to Production
+    needs: resolve
+    # 只有真正进入 SSH 部署的 job 占用共享锁；证据解析和 Environment 审批不会阻塞 Test/Preview。
+    concurrency:
+      group: cd-tecent2
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    steps:
+      - name: Download successful Preview admission evidence
+        uses: actions/download-artifact@v4
         with:
-          ref: ${{ steps.rev.outputs.sha }}
-          persist-credentials: false
+          name: combo-preview-promotion-${{ needs.resolve.outputs.revision }}
+          path: ${{ runner.temp }}/preview-evidence
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.resolve.outputs.preview_run_id }}
+          github-token: ${{ github.token }}
 
-      - name: 确认 checkout 与输入一致
+      - name: Validate Preview evidence and its source main CI run
+        id: evidence
         env:
-          REVISION: ${{ steps.rev.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          PREVIEW_RUN_ID: ${{ needs.resolve.outputs.preview_run_id }}
+          EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
+          REMOTE_DEPLOY_EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-remote-deploy-evidence.json
+          REMOTE_CLEANUP_EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-remote-cleanup-evidence.json
         run: |
           set -euo pipefail
-          [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
-          git diff --quiet
-          git diff --cached --quiet
+          [[ -f "$EVIDENCE" && ! -L "$EVIDENCE" ]]
+          [[ -f "$REMOTE_DEPLOY_EVIDENCE" && ! -L "$REMOTE_DEPLOY_EVIDENCE" ]]
+          [[ -f "$REMOTE_CLEANUP_EVIDENCE" && ! -L "$REMOTE_CLEANUP_EVIDENCE" ]]
+          jq -e \
+            --arg revision "$REVISION" \
+            --argjson previewRunId "$PREVIEW_RUN_ID" '
+              keys == ([
+                "artifactFileSetDigest",
+                "deployedAt",
+                "environment",
+                "images",
+                "namespace",
+                "previewRunId",
+                "remoteCleanupEvidenceDigest",
+                "remoteDeployEvidenceDigest",
+                "releaseArtifact",
+                "releaseManifestDigest",
+                "schemaVersion",
+                "sourceCiRunId",
+                "sourceSha",
+                "status"
+              ] | sort)
+              and .schemaVersion == 1
+              and .status == "passed"
+              and .environment == "preview"
+              and .namespace == "combo-review"
+              and .sourceSha == $revision
+              and .previewRunId == $previewRunId
+              and .releaseArtifact == ("combo-release-" + $revision)
+              and (.sourceCiRunId | type == "number" and . > 0 and floor == .)
+              and (.releaseManifestDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.artifactFileSetDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.remoteDeployEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.remoteCleanupEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.images | keys == ["api", "runtime", "web"])
+              and (.images.api | test("^ghcr.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$"))
+              and (.images.runtime | test("^ghcr.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$"))
+              and (.images.web | test("^ghcr.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$"))
+            ' "$EVIDENCE" >/dev/null
+          [[ "$(sha256sum "$REMOTE_DEPLOY_EVIDENCE" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.remoteDeployEvidenceDigest' "$EVIDENCE")" ]]
+          [[ "$(sha256sum "$REMOTE_CLEANUP_EVIDENCE" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.remoteCleanupEvidenceDigest' "$EVIDENCE")" ]]
+          jq -e --arg revision "$REVISION" '
+            .status == "passed"
+            and .environment == "preview"
+            and .namespace == "combo-review"
+            and .sourceSha == $revision
+            and .checks.releaseStorage == true
+            and .storage.verified == true
+            and (.storage.claims | length) == 3
+            and .cleanup.verifiedAbsent == true
+            and .traffic.checks.publicWebRelease == true
+          ' "$REMOTE_DEPLOY_EVIDENCE" >/dev/null
+          jq -e --arg revision "$REVISION" '
+            .environment == "preview"
+            and .namespace == "combo-review"
+            and .sourceSha == $revision
+            and .verifiedAbsent == true
+          ' "$REMOTE_CLEANUP_EVIDENCE" >/dev/null
 
-      # 镜像不存在就提前失败（比如 ref 指了还没跑完 CI 的提交），绝不带着缺镜像去动线上栈。
-      - name: 校验三镜像已在 GHCR
+          source_ci_run_id=$(jq -er '.sourceCiRunId' "$EVIDENCE")
+          source_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_ci_run_id}")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson runId "$source_ci_run_id" '
+              .id == $runId
+              and .path == ".github/workflows/ci.yml"
+              and .event == "push"
+              and .head_branch == "main"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+            ' <<<"$source_run" >/dev/null
+          printf 'source_ci_run_id=%s\n' "$source_ci_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Download the exact artifact that passed Preview
+        uses: actions/download-artifact@v4
+        with:
+          name: combo-release-${{ needs.resolve.outputs.revision }}
+          path: ${{ runner.temp }}/combo-release
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.evidence.outputs.source_ci_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Prove artifact and digest equality with Preview
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
+          REVISION: ${{ needs.resolve.outputs.revision }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for img in combo-api combo-runtime combo-web; do
-            docker manifest inspect "ghcr.io/dangdang-tech/${img}:${{ steps.rev.outputs.sha }}" > /dev/null \
-              || { echo "缺镜像 ${img}:${{ steps.rev.outputs.sha }}——等 CI 的 image job 跑完再部署"; exit 1; }
+          set -euo pipefail
+          (
+            cd "$RELEASE_ROOT"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$manifest_digest" == "$(jq -er '.releaseManifestDigest' "$EVIDENCE")" ]]
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
+          [[ "$file_set_digest" == "$(jq -er '.artifactFileSetDigest' "$EVIDENCE")" ]]
+          node "$RELEASE_ROOT/scripts/release-manifest.mjs" verify \
+            --manifest "$RELEASE_ROOT/metadata/release.json" \
+            --source-sha "$REVISION" \
+            --digest "$manifest_digest" >/dev/null
+          jq -e \
+            --slurpfile evidence "$EVIDENCE" '
+              .images == $evidence[0].images
+            ' "$RELEASE_ROOT/metadata/release.json" >/dev/null
+          node "$RELEASE_ROOT/scripts/web-asset-manifest.mjs" verify \
+            --manifest "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            --digest "$(jq -er '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")" >/dev/null
+          for phase in foundation init migrate apps; do
+            [[ -s "$RELEASE_ROOT/rendered/production/$phase.yaml" ]]
           done
 
-      - name: 配置 SSH
+      - name: Configure the existing deployment SSH identity
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_SSH_KNOWN_HOSTS" ]]
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$DEPLOY_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1
           {
-            echo "Host deploy-target"
+            echo 'Host release-target'
             echo "  HostName $DEPLOY_HOST"
             echo "  User $DEPLOY_USER"
-            echo "  IdentityFile ~/.ssh/deploy_key"
-            echo "  StrictHostKeyChecking yes"
-          } >> ~/.ssh/config
+            echo '  IdentityFile ~/.ssh/deploy_key'
+            echo '  UserKnownHostsFile ~/.ssh/known_hosts'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+            echo '  BatchMode yes'
+            echo '  ServerAliveInterval 30'
+            echo '  ServerAliveCountMax 20'
+            echo '  TCPKeepAlive yes'
+            echo '  LogLevel ERROR'
+          } > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
 
-      # 部署清单以仓库为准同步；.env 受排除规则保护。Sandbox Tools 的镜像定义与
-      # 两个可选 overlay 不传输；同步后只删除服务器上这三个固定路径的旧残留。
-      - name: 同步部署清单到服务器
+      - name: Preflight the tecent2 release host without mutation
         run: |
-          rsync -az --delete \
-            --exclude='.env' \
-            --exclude='/Dockerfile.sandboxd' \
-            --exclude='/k8s/overlays/sandbox-tools/' \
-            --exclude='/k8s/overlays/sandbox-tools-fifth-slot/' \
-            infra/ deploy-target:/opt/combo/infra/
-          ssh deploy-target 'rm -rf -- \
-            /opt/combo/infra/Dockerfile.sandboxd \
-            /opt/combo/infra/k8s/overlays/sandbox-tools \
-            /opt/combo/infra/k8s/overlays/sandbox-tools-fifth-slot'
-          rsync -az scripts/smoke.sh scripts/deploy-k8s.sh deploy-target:/opt/combo/scripts/
+          set -euo pipefail
+          ssh release-target bash -s <<'REMOTE'
+          set -euo pipefail
+          [[ "$(id -un)" == xingzheng && "$HOME" == /home/xingzheng ]]
+          for command in node jq sha256sum flock cmp awk install mktemp realpath grep mv \
+            rm dirname sleep seq tr sort sudo curl stat date systemctl ss kubectl tar; do
+            command -v "$command" >/dev/null
+          done
+          [[ "$(uname -m)" == x86_64 ]]
+          node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
+          [[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 24 ]]
+          [[ -x /usr/local/bin/kubectl && -f "$HOME/.kube/config" ]]
+          LC_ALL=C sudo -n -l | grep -Eq 'NOPASSWD:[[:space:]]*ALL'
+          sudo -n systemctl is-active --quiet k3s
+          sudo -n nginx -t >/dev/null
+          sudo -n ss -H -lnt >/dev/null
+          sudo -n realpath -e "$HOME/data/k3s/storage" >/dev/null
+          kubectl --kubeconfig "$HOME/.kube/config" get namespace combo >/dev/null
+          kubectl --kubeconfig "$HOME/.kube/config" auth can-i '*' '*' \
+            --all-namespaces | grep -Fxq yes
+          REMOTE
 
-      # 镜像由集群内 ghcr-pull Secret 拉取，服务器上不再需要 docker login。
-      - name: k8s 滚动部署（migrate Job 先行，rollout 等四个业务面就绪）
+      - name: Upload and deploy the exact Production bundle
         env:
-          SHA: ${{ steps.rev.outputs.sha }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          ssh deploy-target env SHA="$SHA" bash /opt/combo/scripts/deploy-k8s.sh
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          archive="$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz"
+          tar -C "$RELEASE_ROOT" -czf "$archive" .
+          chmod 0600 "$archive"
 
-      # 割接后 web 走 NodePort 30080（系统 nginx 反代到这里）；nginx 会把 /health /ready /api/* 反代给 api，
-      # 冒烟的 API 探测与 WEB 探测统一走这个入口，等价于用户真实路径。
-      - name: 冒烟验证
+          remote="data/combo-release-incoming/${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          ssh release-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          revision=$2
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.production."*.tar.gz ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          archive="$HOME/$incoming"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-release-production.XXXXXX")
+          cleanup() {
+            rm -f -- "$archive"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          (
+            cd "$work"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$work/metadata/release-manifest-digest.txt")
+          chmod 0700 "$work/scripts/deploy-release.sh" "$work/scripts/switch-release-traffic.sh"
+          bash "$work/scripts/deploy-release.sh" \
+            --environment production \
+            --fresh-reset \
+            --manifest "$work/metadata/release.json" \
+            --manifest-digest "$manifest_digest" \
+            --migrations "$work/metadata/migration-files.txt" \
+            --foundation-yaml "$work/rendered/production/foundation.yaml" \
+            --init-yaml "$work/rendered/production/init.yaml" \
+            --migrate-yaml "$work/rendered/production/migrate.yaml" \
+            --apps-yaml "$work/rendered/production/apps.yaml" \
+            --web-assets "$work/metadata/web-asset-manifest.json"
+          REMOTE
+
+      - name: Fetch and validate the tecent2 Production evidence
+        id: remote_evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
         run: |
-          ssh deploy-target '
-            set -euo pipefail
-            LOGTO_ISSUER=$(grep "^LOGTO_ISSUER=" /opt/combo/infra/.env | cut -d= -f2-)
-            API_BASE=http://localhost:30080 WEB_BASE=http://localhost:30080 LOGTO_ISSUER="$LOGTO_ISSUER" \
-              bash /opt/combo/scripts/smoke.sh
-          '
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          evidence_dir="$RUNNER_TEMP/production-remote-evidence"
+          install -d -m 0700 "$evidence_dir"
+          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          set -euo pipefail
+          revision=$1
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          directory="$HOME/data/combo-releases/goal-a/production/release-$revision"
+          files=(
+            release.json release.sha256 migration-files.txt web-asset-manifest.json
+            foundation.yaml init.yaml migrate.yaml apps.yaml
+            traffic-evidence.json cleanup-evidence.json deploy-evidence.json SHA256SUMS
+          )
+          for file in "${files[@]}"; do
+            [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
+          done
+          (cd "$directory" && sha256sum --quiet -c SHA256SUMS)
+          tar -C "$directory" -czf - "${files[@]}"
+          REMOTE
+            tar -xzf - -C "$evidence_dir"
+          (
+            cd "$evidence_dir"
+            sha256sum --quiet -c SHA256SUMS
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$(<"$evidence_dir/release.sha256")" == "$manifest_digest" ]]
+          cmp -s "$RELEASE_ROOT/metadata/release.json" "$evidence_dir/release.json"
+          cmp -s "$RELEASE_ROOT/metadata/migration-files.txt" \
+            "$evidence_dir/migration-files.txt"
+          cmp -s "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            "$evidence_dir/web-asset-manifest.json"
+          for phase in foundation init migrate apps; do
+            cmp -s "$RELEASE_ROOT/rendered/production/$phase.yaml" \
+              "$evidence_dir/$phase.yaml"
+          done
+          api_image=$(jq -er '.images.api' "$RELEASE_ROOT/metadata/release.json")
+          runtime_image=$(jq -er '.images.runtime' "$RELEASE_ROOT/metadata/release.json")
+          web_image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg apiImage "$api_image" \
+            --arg runtimeImage "$runtime_image" \
+            --arg webImage "$web_image" \
+            --slurpfile traffic "$evidence_dir/traffic-evidence.json" \
+            --slurpfile cleanup "$evidence_dir/cleanup-evidence.json" '
+              .schemaVersion == 1
+              and .status == "passed"
+              and .environment == "production"
+              and .namespace == "combo"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .checks.foundationReady == true
+              and .checks.releaseStorage == true
+              and .checks.minioInitialization == true
+              and .checks.exactMigrations == true
+              and .checks.applicationImages == true
+              and .checks.publicTraffic == true
+              and .checks.legacyCleanup == true
+              and .traffic == $traffic[0]
+              and .cleanup == $cleanup[0]
+              and .cleanup.verifiedAbsent == true
+              and .storage.environment == "production"
+              and .storage.namespace == "combo"
+              and .storage.sourceSha == $revision
+              and .storage.verified == true
+              and (.storage.claims | length) == 3
+              and .traffic.environment == "production"
+              and .traffic.sourceSha == $revision
+              and .traffic.manifestDigest == $manifestDigest
+              and .traffic.checks.publicWebRelease == true
+              and .traffic.checks.publicMinioReady == true
+              and .migration.image == $apiImage
+              and ([.deployments[].image] | sort)
+                == ([$apiImage, $apiImage, $runtimeImage, $webImage] | sort)
+            ' "$evidence_dir/deploy-evidence.json" >/dev/null
+          jq -e --arg revision "$REVISION" '
+            .schemaVersion == 1
+            and .environment == "production"
+            and .namespace == "combo"
+            and .sourceSha == $revision
+            and .verifiedAbsent == true
+          ' "$evidence_dir/cleanup-evidence.json" >/dev/null
+          deploy_digest=$(sha256sum "$evidence_dir/deploy-evidence.json" | awk '{print "sha256:" $1}')
+          cleanup_digest=$(sha256sum "$evidence_dir/cleanup-evidence.json" | awk '{print "sha256:" $1}')
+          printf 'deploy_digest=%s\n' "$deploy_digest" >> "$GITHUB_OUTPUT"
+          printf 'cleanup_digest=%s\n' "$cleanup_digest" >> "$GITHUB_OUTPUT"
+          install -m 0644 "$evidence_dir/deploy-evidence.json" \
+            "$RUNNER_TEMP/production-remote-deploy-evidence.json"
+          install -m 0644 "$evidence_dir/cleanup-evidence.json" \
+            "$RUNNER_TEMP/production-remote-cleanup-evidence.json"
 
-      - name: 部署结果
-        run: echo "已人工选择并部署 main@${{ steps.rev.outputs.sha }} 到 Production，tecent2 冒烟通过。"
+      - name: Record Production deployment evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          SOURCE_CI_RUN_ID: ${{ steps.evidence.outputs.source_ci_run_id }}
+          PREVIEW_RUN_ID: ${{ needs.resolve.outputs.preview_run_id }}
+          PRODUCTION_RUN_ID: ${{ github.run_id }}
+          PREVIEW_EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
+          REMOTE_DEPLOY_DIGEST: ${{ steps.remote_evidence.outputs.deploy_digest }}
+          REMOTE_CLEANUP_DIGEST: ${{ steps.remote_evidence.outputs.cleanup_digest }}
+        run: |
+          set -euo pipefail
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
+          [[ "$file_set_digest" == "$(jq -er '.artifactFileSetDigest' "$PREVIEW_EVIDENCE")" ]]
+          deployed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          jq -n \
+            --slurpfile release "$RELEASE_ROOT/metadata/release.json" \
+            --arg sourceSha "$REVISION" \
+            --argjson sourceCiRunId "$SOURCE_CI_RUN_ID" \
+            --argjson previewRunId "$PREVIEW_RUN_ID" \
+            --argjson productionRunId "$PRODUCTION_RUN_ID" \
+            --arg releaseManifestDigest "$manifest_digest" \
+            --arg artifactFileSetDigest "$file_set_digest" \
+            --arg remoteDeployEvidenceDigest "$REMOTE_DEPLOY_DIGEST" \
+            --arg remoteCleanupEvidenceDigest "$REMOTE_CLEANUP_DIGEST" \
+            --arg deployedAt "$deployed_at" '
+              {
+                schemaVersion: 1,
+                status: "passed",
+                environment: "production",
+                namespace: "combo",
+                sourceSha: $sourceSha,
+                sourceCiRunId: $sourceCiRunId,
+                previewRunId: $previewRunId,
+                productionRunId: $productionRunId,
+                releaseManifestDigest: $releaseManifestDigest,
+                artifactFileSetDigest: $artifactFileSetDigest,
+                remoteDeployEvidenceDigest: $remoteDeployEvidenceDigest,
+                remoteCleanupEvidenceDigest: $remoteCleanupEvidenceDigest,
+                images: $release[0].images,
+                deployedAt: $deployedAt
+              }
+            ' > "$RUNNER_TEMP/production-deployment.json"
+
+      - name: Upload Production deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-production-deployment-${{ needs.resolve.outputs.revision }}
+          path: |
+            ${{ runner.temp }}/production-deployment.json
+            ${{ runner.temp }}/production-remote-deploy-evidence.json
+            ${{ runner.temp }}/production-remote-cleanup-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove transient SSH and bundle files
+        if: always()
+        env:
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set +e
+          if [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ && -f "$HOME/.ssh/config" ]]; then
+            ssh release-target rm -f -- \
+              "data/combo-release-incoming/${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
+              ".${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.upload" \
+              >/dev/null 2>&1 || true
+          fi
+          rm -f -- \
+            "$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz" \
+            "$HOME/.ssh/deploy_key" \
+            "$HOME/.ssh/known_hosts" \
+            "$HOME/.ssh/config"

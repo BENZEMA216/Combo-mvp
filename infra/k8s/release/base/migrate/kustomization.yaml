@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../job-migrate.yaml
+patches:
+  - path: release.patch.yaml
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      combo.build/managed-by: release-v1
+images:
+  - name: ghcr.io/dangdang-tech/combo-api
+    newName: ghcr.io/dangdang-tech/combo-api
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

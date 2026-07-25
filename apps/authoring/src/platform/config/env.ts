@@ -7,6 +7,11 @@
 //
 // redis_hot 默认口径以 compose 独立服务为权威（redis_hot 是独立实例、db 索引 /0，
 //   不是与 redis_queue 共实例靠 /1 隔离）；本地直跑映射到宿主 6380（见 .env.local.example / compose）。
+import {
+  DEVELOPMENT_RELEASE_METADATA_ENV,
+  RELEASE_METADATA_ENV_KEYS,
+  releaseMetadataFromEnv,
+} from '@cb/shared';
 import { z } from 'zod';
 
 /**
@@ -27,6 +32,19 @@ const EnvSchema = z.object({
   // 关停兜底：收到 SIGTERM/SIGINT 后，即使 in-flight 请求 / 活动 job 未 drain，到点也强制退出。
   // 默认 8s（略低于容器默认 10s 停机宽限，确保先自行干净退出而非等 docker SIGKILL）。
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().default(8000),
+
+  // 发布身份由无密钥 combo-release ConfigMap 注入。development 默认值只服务本地直跑；
+  // Test、Preview 与 Production 的部署渲染必须提供真实的不可变发布元数据。
+  COMBO_ENVIRONMENT: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_ENVIRONMENT),
+  COMBO_SOURCE_SHA: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_SOURCE_SHA),
+  COMBO_RELEASE_ID: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_RELEASE_ID),
+  COMBO_BUILT_AT: z.string().default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_BUILT_AT),
+  COMBO_RELEASE_MANIFEST_DIGEST: z
+    .string()
+    .default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_RELEASE_MANIFEST_DIGEST),
+  COMBO_WEB_ASSET_MANIFEST: z
+    .string()
+    .default(DEVELOPMENT_RELEASE_METADATA_ENV.COMBO_WEB_ASSET_MANIFEST),
 
   // Observability（OpenTelemetry）。默认不启用导出；配置 OTLP endpoint 后才向 Collector 发 traces。
   OTEL_SERVICE_NAME: z.string().default('cb-authoring'),
@@ -100,6 +118,23 @@ const EnvSchema = z.object({
 
 export type Env = z.infer<typeof EnvSchema>;
 
+function assertReleaseMetadata(env: Env): void {
+  try {
+    const metadata = releaseMetadataFromEnv(env);
+    // NODE_ENV describes process hardening, not the promotion stage: Test and Preview
+    // intentionally mix dev-login API/Runtime processes with a production-mode Worker.
+    if (
+      (metadata.environment === 'development' && env.NODE_ENV === 'production') ||
+      (metadata.environment === 'production' && env.NODE_ENV !== 'production')
+    ) {
+      throw new Error('runtime and release environments disagree');
+    }
+  } catch {
+    // 元数据是公开发布身份，但错误仍只报告固定字段组，避免把环境值拼进启动日志。
+    throw new Error('[env] COMBO_* 发布元数据校验失败。');
+  }
+}
+
 /**
  * 生产模式必须显式配置的密钥/连接串（不允许默认 fallback），【按进程】区分（Codex#13）。
  * 缺失（未设或为空字符串）即在生产启动时 throw，避免带默认凭据上生产。
@@ -108,7 +143,7 @@ export type Env = z.infer<typeof EnvSchema>;
  * 不强求 worker 持有它不消费的 Logto OIDC 凭据。
  * 注：LLM key（ANTHROPIC_API_KEY）任何进程都不在必填列——上游 degraded 不计 /ready，缺失只降级、不阻塞启动。
  */
-const COMMON_REQUIRED = ['DATABASE_URL'] as const;
+const COMMON_REQUIRED = ['DATABASE_URL', ...RELEASE_METADATA_ENV_KEYS] as const;
 const LOGTO_REQUIRED = [
   'LOGTO_ENDPOINT',
   'LOGTO_ISSUER',
@@ -171,10 +206,12 @@ export function loadEnv(): Env {
       parsed.error.flatten().fieldErrors,
     );
     cached = EnvSchema.parse({});
+    assertReleaseMetadata(cached);
     return cached;
   }
 
   cached = parsed.data;
+  assertReleaseMetadata(cached);
 
   // —— dev 登录双守卫之「生产无条件强制关闭」（安全第一，Codex 反向破坏可测）——
   //   生产模式即便误配 DEV_LOGIN_ENABLED=true，也强制改回 false 并 warn——绝不让种子登录上生产。

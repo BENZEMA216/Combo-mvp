@@ -16,6 +16,7 @@ import {
 import { loadEnv, type Env } from '../platform/config/env.js';
 import { buildInfra, createRedisInterruptBus } from '../platform/infra/index.js';
 import { registerHealthRoutes } from '../platform/http/health.js';
+import { registerVersionRoute } from '../platform/http/version.js';
 import {
   currentTraceId,
   currentTraceLogFields,
@@ -143,6 +144,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
   // 健康检查（不在 /api/v1 前缀）。
   await registerHealthRoutes(app);
+
+  // 公开发布身份（无密钥、no-store），供部署验收核对 Runtime 与同一 release manifest。
+  await registerVersionRoute(app, env);
 
   // 业务路由（capability / session / artifact）。
   await registerBusinessRoutes(app);

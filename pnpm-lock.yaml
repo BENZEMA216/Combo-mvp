@@ -373,6 +373,9 @@ importers:
       '@cb/shared':
         specifier: workspace:*
         version: link:../packages/shared
+      yaml:
+        specifier: 2.9.0
+        version: 2.9.0
     devDependencies:
       '@types/node':
         specifier: ^22.10.5

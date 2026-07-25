@@ -166,15 +166,17 @@ credential_certificate_valid_for() {
 }
 
 can_i() {
-  local credential_name=$1 expected=$2 verb=$3 resource=$4 namespace=$5 rc
+  local credential_name=$1 expected=$2 verb=$3 resource=$4 namespace=$5 subresource=${6:-} rc
   local credential=()
+  local args=(auth can-i -q "$verb" "$resource" -n "$namespace")
   case "$credential_name" in
     DK) credential=("${DK[@]}") ;;
     FK) credential=("${FK[@]}") ;;
     *) return 2 ;;
   esac
+  [[ -z "$subresource" ]] || args+=(--subresource="$subresource")
   set +e
-  "${credential[@]}" auth can-i -q "$verb" "$resource" -n "$namespace" >/dev/null 2>&1
+  "${credential[@]}" "${args[@]}" >/dev/null 2>&1
   rc=$?
   set -e
   if [[ "$expected" == yes ]]; then [[ $rc == 0 ]]; else [[ $rc == 1 ]]; fi
@@ -188,15 +190,24 @@ dispatcher_access_valid() {
 }
 
 fencer_access_valid() {
-  can_i FK yes patch deployments.apps/api "$NAMESPACE" || return 1
-  can_i FK yes patch statefulsets.apps/postgres "$NAMESPACE" || return 1
+  local name
+  for name in "${APPS[@]}" redis-hot; do
+    can_i FK yes get "deployments.apps/$name" "$NAMESPACE" || return 1
+    can_i FK yes patch "deployments.apps/$name" "$NAMESPACE" scale || return 1
+  done
+  for name in "${FOUNDATION_STATEFUL[@]}"; do
+    can_i FK yes get "statefulsets.apps/$name" "$NAMESPACE" || return 1
+    can_i FK yes patch "statefulsets.apps/$name" "$NAMESPACE" scale || return 1
+  done
   can_i FK yes delete jobs.batch/migrate "$NAMESPACE" || return 1
   can_i FK yes list pods "$NAMESPACE" || return 1
   can_i FK yes delete pods "$NAMESPACE" || return 1
   can_i FK no list deployments.apps "$NAMESPACE" || return 1
+  can_i FK no patch deployments.apps/api "$NAMESPACE" || return 1
+  can_i FK no update deployments.apps/api "$NAMESPACE" scale || return 1
   can_i FK no create deployments.apps "$NAMESPACE" || return 1
   can_i FK no get secrets "$NAMESPACE" || return 1
-  can_i FK no patch deployments.apps "$PRODUCTION_NAMESPACE" || return 1
+  can_i FK no patch deployments.apps/api "$PRODUCTION_NAMESPACE" scale || return 1
 }
 
 mark_failure_fence() {

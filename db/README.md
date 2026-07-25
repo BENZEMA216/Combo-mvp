@@ -12,7 +12,9 @@
 - `0005_capability_current_ui.sql` 让 Capability 保存当前 Studio HTML Artifact 指针，新建普通 Session 可以复制当时的界面快照。
 - `0006_one_running_turn_per_session.sql` 先检查历史上是否存在同一 Session 的重复 running Turn。发现重复时迁移显式失败且不修改旧数据；没有重复时创建部分唯一索引 `uq_turns_session_running`，保证每个 Session 同时最多一个 running Turn。
 
-迁移 Runner 按文件名字典序执行，每个文件使用独立数据库事务，并把成功文件写入 `schema_migrations`。因此 `0006` 的历史检查和索引创建处于同一个迁移事务中。
+迁移 Runner 要求文件从 `0000` 连续编号，并要求 `schema_migrations` 恰好是当前文件序列的前缀。未知文件、重复记录、跳号、旧迁移链、非空 schema 配空 ledger 或发布清单声明的迁移头不一致都会在执行新 SQL 前失败。执行器使用 PostgreSQL advisory lock 串行化迁移；每个文件仍使用独立数据库事务。因此 `0006` 的历史检查和索引创建处于同一个迁移事务中。
+
+旧 Preview 的 `0000_extensions_and_helpers.sql`–`0018_studio_revisions_and_tests.sql` 属于另一条迁移链，不得清空账本、伪造当前基线或直接运行本目录。需要升级时必须先保留并验证备份，再通过新数据库或经过单独审查的桥接方案迁移。
 
 ## 主要表
 
@@ -37,6 +39,7 @@
 ```sh
 pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
+node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
 ```
 
