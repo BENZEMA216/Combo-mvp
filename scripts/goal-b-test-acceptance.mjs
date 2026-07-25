@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /* global HTMLButtonElement, document, setTimeout, window */
 
+import { Buffer } from 'node:buffer';
 import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync,
@@ -21,11 +22,13 @@ import { chromium } from 'playwright-core';
 export const GOAL_B_ACCEPTANCE_CHECKS = Object.freeze([
   'release_identity',
   'hashed_asset_404',
-  'dev_login',
+  'authentication_login',
+  'preview_identity_badge_and_copy',
   'creation_idempotency',
   'authoring_prepare',
   'authoring_resume_after_reload',
   'authoring_upload_terminal',
+  'creation_capability_selection',
   'creation_publish_and_retry_fence',
   'studio_entry',
   'studio_failed_send_retains_draft',
@@ -33,11 +36,15 @@ export const GOAL_B_ACCEPTANCE_CHECKS = Object.freeze([
   'studio_active_turn_reload',
   'studio_first_revision',
   'studio_element_selection',
+  'runtime_sse_replay_and_terminal',
   'studio_second_revision',
   'studio_interrupted_artifact_excluded',
   'runtime_current_ui_consume',
   'studio_trial_return',
   'task_trial_return',
+  'preview_gate_bootstrap_and_return_to',
+  'owner_isolation',
+  'authentication_refresh',
   'logout_clears_session',
 ]);
 
@@ -50,6 +57,13 @@ const SENSITIVE_KEY_PATTERN = /(?:authorization|cookie|credential|pairing|passwo
 const SENSITIVE_VALUE_PATTERN =
   /(?:bearer\s+[a-z0-9._~-]+|cb_(?:session|refresh)=|set-cookie|pairingCode)/i;
 const CHROME_EXECUTABLE = '/usr/bin/google-chrome';
+const PRODUCTION_ORIGIN = 'https://buildwithcombo.com';
+const PRODUCTION_OIDC_ORIGIN = 'https://andkzt.logto.app';
+const PRODUCTION_OIDC_ISSUER = `${PRODUCTION_OIDC_ORIGIN}/oidc`;
+const PRODUCTION_OIDC_RESOURCE = 'https://api.agora.local/';
+const PRODUCTION_CREDENTIAL_LIMIT_BYTES = 2048;
+const PRODUCTION_PLACEHOLDER_PATTERN =
+  /(?:^|[^a-z])(?:change[-_ ]?me|placeholder|replace[-_ ]?me|todo|unset)(?:$|[^a-z])/iu;
 const TASK_TIMEOUT_MS = 15 * 60_000;
 const TURN_TIMEOUT_MS = 12 * 60_000;
 const POLL_INTERVAL_MS = 1_000;
@@ -129,7 +143,7 @@ function ensure(condition, check, reason = 'assertion') {
   if (!condition) fail(check, reason);
 }
 
-function validateWebOrigin(raw) {
+function validateWebOrigin(raw, environment) {
   let parsed;
   try {
     parsed = new URL(raw);
@@ -137,9 +151,6 @@ function validateWebOrigin(raw) {
     throw new Error('--web-origin must be an absolute URL');
   }
   if (
-    parsed.protocol !== 'http:' ||
-    parsed.hostname !== '127.0.0.1' ||
-    !parsed.port ||
     parsed.username ||
     parsed.password ||
     parsed.pathname !== '/' ||
@@ -150,9 +161,19 @@ function validateWebOrigin(raw) {
       '--web-origin must be exactly http://127.0.0.1:<port> with no path, query, or credentials',
     );
   }
-  const port = Number(parsed.port);
-  if (port !== 18_080) {
-    throw new Error('--web-origin must use the Test loopback forward port 18080');
+  if (environment === 'test') {
+    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.port !== '18080') {
+      throw new Error('--web-origin must use the exact Test loopback origin');
+    }
+  } else if (
+    environment === 'preview' &&
+    (parsed.protocol !== 'https:' ||
+      parsed.hostname !== 'review.43-160-242-46.sslip.io' ||
+      parsed.port)
+  ) {
+    throw new Error('--web-origin must use the exact Preview public origin');
+  } else if (environment === 'production' && parsed.origin !== PRODUCTION_ORIGIN) {
+    throw new Error('--web-origin must use the exact Production public origin');
   }
   return parsed.origin;
 }
@@ -166,11 +187,13 @@ function validateOutput(raw) {
 }
 
 export function parseAcceptanceArgs(argv) {
-  if (!Array.isArray(argv) || argv.length !== 6) {
-    throw new Error('required arguments: --revision <sha> --web-origin <origin> --output <file>');
+  if (!Array.isArray(argv) || ![6, 8].includes(argv.length)) {
+    throw new Error(
+      'required arguments: [--environment test|preview|production] --revision <sha> --web-origin <origin> --output <file>',
+    );
   }
   const values = new Map();
-  const allowed = new Set(['--revision', '--web-origin', '--output']);
+  const allowed = new Set(['--environment', '--revision', '--web-origin', '--output']);
   for (let index = 0; index < argv.length; index += 2) {
     const key = argv[index];
     const value = argv[index + 1];
@@ -184,9 +207,14 @@ export function parseAcceptanceArgs(argv) {
   if (!revision || !SHA_PATTERN.test(revision)) {
     throw new Error('--revision must be a complete lowercase 40-character commit SHA');
   }
+  const environment = values.get('--environment') ?? 'test';
+  if (!['test', 'preview', 'production'].includes(environment)) {
+    throw new Error('--environment must be test, preview, or production');
+  }
   return {
+    environment,
     revision,
-    webOrigin: validateWebOrigin(values.get('--web-origin')),
+    webOrigin: validateWebOrigin(values.get('--web-origin'), environment),
     output: validateOutput(values.get('--output')),
   };
 }
@@ -196,10 +224,8 @@ export function isAllowedAcceptanceWebSocket(raw, webOrigin) {
     const socket = new URL(raw);
     const origin = new URL(webOrigin);
     return (
-      socket.protocol === 'ws:' &&
-      origin.protocol === 'http:' &&
-      socket.hostname === '127.0.0.1' &&
-      origin.hostname === '127.0.0.1' &&
+      socket.protocol === (origin.protocol === 'https:' ? 'wss:' : 'ws:') &&
+      socket.hostname === origin.hostname &&
       socket.port === origin.port &&
       !socket.username &&
       !socket.password
@@ -209,15 +235,145 @@ export function isAllowedAcceptanceWebSocket(raw, webOrigin) {
   }
 }
 
-export function isAllowedAcceptanceRequest(raw, webOrigin) {
+export function isAllowedAcceptanceRequest(raw, webOrigin, oidcOrigin) {
   try {
     const target = new URL(raw);
-    if (target.protocol === 'http:') return target.origin === webOrigin;
+    if (['http:', 'https:'].includes(target.protocol)) {
+      return (
+        target.origin === webOrigin || (oidcOrigin !== undefined && target.origin === oidcOrigin)
+      );
+    }
     // These schemes do not perform an outbound network request. Blob/data documents remain
     // sandboxed by the browser context; every HTTP(S) subrequest is evaluated again by this gate.
     return ['about:', 'blob:', 'data:'].includes(target.protocol);
   } catch {
     return false;
+  }
+}
+
+export function parseProductionCredentials(raw) {
+  if (
+    typeof raw !== 'string' ||
+    Buffer.byteLength(raw, 'utf8') > PRODUCTION_CREDENTIAL_LIMIT_BYTES
+  ) {
+    throw new Error('Production acceptance credentials are malformed');
+  }
+  const lines = raw.endsWith('\n') ? raw.slice(0, -1).split('\n') : [];
+  const hasControlCharacter = (value) =>
+    [...value].some((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    });
+  if (lines.length !== 4 || lines.some(hasControlCharacter)) {
+    throw new Error('Production acceptance credentials are malformed');
+  }
+  const [primaryEmail, primaryPassword, secondaryEmail, secondaryPassword] = lines;
+  for (const [email, password] of [
+    [primaryEmail, primaryPassword],
+    [secondaryEmail, secondaryPassword],
+  ]) {
+    if (
+      email.length < 3 ||
+      email.length > 254 ||
+      !/^[^\s@]+@[^\s@]+$/u.test(email) ||
+      email.startsWith('PRODUCTION_ACCEPTANCE_') ||
+      PRODUCTION_PLACEHOLDER_PATTERN.test(email) ||
+      password.length < 8 ||
+      password.length > 256 ||
+      password.trim() !== password ||
+      PRODUCTION_PLACEHOLDER_PATTERN.test(password)
+    ) {
+      throw new Error('Production acceptance credentials are malformed');
+    }
+  }
+  if (primaryEmail.toLowerCase() === secondaryEmail.toLowerCase()) {
+    throw new Error('Production acceptance identities must be distinct');
+  }
+  return {
+    primary: { email: primaryEmail, password: primaryPassword },
+    secondary: { email: secondaryEmail, password: secondaryPassword },
+  };
+}
+
+export function validateProductionAuthorizeUrl(raw, webOrigin = PRODUCTION_ORIGIN) {
+  let authorize;
+  try {
+    authorize = new URL(raw);
+  } catch {
+    throw new Error('Production authorization URL is malformed');
+  }
+  if (
+    authorize.origin !== PRODUCTION_OIDC_ORIGIN ||
+    authorize.pathname !== '/oidc/auth' ||
+    authorize.username ||
+    authorize.password ||
+    authorize.hash
+  ) {
+    throw new Error('Production authorization URL is outside the fixed OIDC issuer');
+  }
+  const allowed = new Set([
+    'client_id',
+    'code_challenge',
+    'code_challenge_method',
+    'nonce',
+    'prompt',
+    'redirect_uri',
+    'resource',
+    'response_type',
+    'scope',
+    'state',
+  ]);
+  for (const key of authorize.searchParams.keys()) {
+    if (!allowed.has(key) || authorize.searchParams.getAll(key).length !== 1) {
+      throw new Error('Production authorization URL contains an unexpected parameter');
+    }
+  }
+  const token = (name) => authorize.searchParams.get(name) ?? '';
+  const scopes = new Set(token('scope').split(/\s+/u).filter(Boolean));
+  const resource = token('resource');
+  let resourceUrl;
+  try {
+    resourceUrl = new URL(resource);
+  } catch {
+    throw new Error('Production authorization resource is malformed');
+  }
+  if (
+    token('response_type') !== 'code' ||
+    token('prompt') !== 'login consent' ||
+    token('code_challenge_method') !== 'S256' ||
+    !/^[A-Za-z0-9_-]{43}$/u.test(token('code_challenge')) ||
+    !/^[A-Za-z0-9_-]{32,128}$/u.test(token('state')) ||
+    !/^[A-Za-z0-9_-]{32,128}$/u.test(token('nonce')) ||
+    !/^[A-Za-z0-9_-]{1,128}$/u.test(token('client_id')) ||
+    token('redirect_uri') !== `${webOrigin}/api/v1/auth/callback` ||
+    JSON.stringify([...scopes].sort()) !==
+      JSON.stringify(['email', 'offline_access', 'openid', 'profile', 'roles']) ||
+    resourceUrl.href !== PRODUCTION_OIDC_RESOURCE
+  ) {
+    throw new Error('Production authorization URL violates the OIDC PKCE contract');
+  }
+  return authorize.href;
+}
+
+async function readProductionCredentials() {
+  delete process.env.PRODUCTION_ACCEPTANCE_EMAIL;
+  delete process.env.PRODUCTION_ACCEPTANCE_PASSWORD;
+  delete process.env.PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL;
+  delete process.env.PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD;
+  const chunks = [];
+  let bytes = 0;
+  for await (const chunk of process.stdin) {
+    bytes += chunk.length;
+    if (bytes > PRODUCTION_CREDENTIAL_LIMIT_BYTES) {
+      throw new Error('Production acceptance credential input is too large');
+    }
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks).toString('utf8');
+  try {
+    return parseProductionCredentials(raw);
+  } finally {
+    chunks.forEach((chunk) => chunk.fill(0));
   }
 }
 
@@ -243,6 +399,10 @@ function optionalUuid(value) {
 }
 
 export function isExpectedTestReleaseMetadata(value, revision) {
+  return isExpectedReleaseMetadata(value, revision, 'test');
+}
+
+export function isExpectedReleaseMetadata(value, revision, environment) {
   if (
     !value ||
     typeof value !== 'object' ||
@@ -256,7 +416,8 @@ export function isExpectedTestReleaseMetadata(value, revision) {
   return (
     JSON.stringify(keys) === JSON.stringify(RELEASE_METADATA_KEYS) &&
     value.schemaVersion === 1 &&
-    value.environment === 'test' &&
+    ['test', 'preview', 'production'].includes(environment) &&
+    value.environment === environment &&
     value.sourceSha === revision &&
     value.releaseId === `release-${revision}` &&
     builtAt !== undefined &&
@@ -269,8 +430,8 @@ export function isExpectedTestReleaseMetadata(value, revision) {
   );
 }
 
-function safeRelease(value, revision) {
-  if (!isExpectedTestReleaseMetadata(value, revision)) return undefined;
+function safeRelease(value, revision, environment) {
+  if (!isExpectedReleaseMetadata(value, revision, environment)) return undefined;
   const release = {
     environment: value.environment,
     sourceSha: value.sourceSha,
@@ -336,7 +497,7 @@ export function buildAcceptanceEvidence(state) {
             : { statusCode: state.failure.statusCode }),
         }
       : undefined;
-  const release = safeRelease(state.release, state.revision);
+  const release = safeRelease(state.release, state.revision, state.environment ?? 'test');
   const hasAllResources = [
     resources.taskId,
     resources.capabilityId,
@@ -345,7 +506,8 @@ export function buildAcceptanceEvidence(state) {
   ].every((value) => typeof value === 'string');
   const evidence = {
     schemaVersion: 1,
-    suite: 'goal-b-test-browser',
+    suite: `goal-b-${state.environment ?? 'test'}-browser`,
+    environment: state.environment ?? 'test',
     revision: state.revision,
     webOrigin: state.webOrigin,
     startedAt: state.startedAt,
@@ -469,6 +631,110 @@ async function poll(check, read, accept, timeoutMs, intervalMs = POLL_INTERVAL_M
   fail(check, 'timeout');
 }
 
+function compareRedisStreamIds(left, right) {
+  const parse = (value) => {
+    if (!/^[0-9]+-[0-9]+$/u.test(value ?? '')) return undefined;
+    const [milliseconds, sequence] = value.split('-').map((part) => BigInt(part));
+    return { milliseconds, sequence };
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return undefined;
+  if (a.milliseconds !== b.milliseconds) return a.milliseconds > b.milliseconds ? 1 : -1;
+  if (a.sequence !== b.sequence) return a.sequence > b.sequence ? 1 : -1;
+  return 0;
+}
+
+async function readRuntimeStreamFrame(page, { sessionId, runId, afterId, terminal }) {
+  return page.evaluate(
+    async ({ path, expectedRunId, resumeAfter, requireTerminal, timeoutMs }) => {
+      const controller = new globalThis.AbortController();
+      const timeout = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await globalThis.fetch(path, {
+          method: 'GET',
+          credentials: 'include',
+          cache: 'no-store',
+          headers: {
+            Accept: 'text/event-stream',
+            ...(resumeAfter ? { 'Last-Event-ID': resumeAfter } : {}),
+          },
+          signal: controller.signal,
+        });
+        const contentType = response.headers.get('content-type') ?? '';
+        if (response.status !== 200 || !contentType.startsWith('text/event-stream')) {
+          return { status: response.status, contentType, id: '', eventType: '', runId: '' };
+        }
+        if (!response.body) {
+          return { status: response.status, contentType, id: '', eventType: '', runId: '' };
+        }
+        const reader = response.body.getReader();
+        const decoder = new globalThis.TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          for (;;) {
+            const boundary = /\r?\n\r?\n/u.exec(buffer);
+            if (!boundary || boundary.index === undefined) break;
+            const frame = buffer.slice(0, boundary.index);
+            buffer = buffer.slice(boundary.index + boundary[0].length);
+            let id = '';
+            let eventName = '';
+            const data = [];
+            for (const line of frame.split(/\r?\n/u)) {
+              if (line.startsWith('id:')) id = line.slice(3).trim();
+              else if (line.startsWith('event:')) eventName = line.slice(6).trim();
+              else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+            }
+            if (!id || data.length === 0) continue;
+            let event;
+            try {
+              event = JSON.parse(data.join('\n'));
+            } catch {
+              continue;
+            }
+            const eventType =
+              typeof event?.type === 'string'
+                ? event.type
+                : typeof eventName === 'string'
+                  ? eventName
+                  : '';
+            const eventRunId = typeof event?.runId === 'string' ? event.runId : '';
+            const isTerminal = eventType === 'RUN_FINISHED' || eventType === 'RUN_ERROR';
+            if (
+              eventRunId === expectedRunId &&
+              (requireTerminal ? isTerminal : eventType === 'RUN_STARTED')
+            ) {
+              await reader.cancel();
+              return {
+                status: response.status,
+                contentType,
+                id,
+                eventType,
+                runId: eventRunId,
+              };
+            }
+          }
+        }
+        return { status: response.status, contentType, id: '', eventType: '', runId: '' };
+      } catch {
+        return { status: 0, contentType: '', id: '', eventType: '', runId: '' };
+      } finally {
+        globalThis.clearTimeout(timeout);
+      }
+    },
+    {
+      path: `/api/v1/runtime/sessions/${sessionId}/stream`,
+      expectedRunId: runId,
+      resumeAfter: afterId,
+      requireTerminal: terminal,
+      timeoutMs: TURN_TIMEOUT_MS,
+    },
+  );
+}
+
 function artifactForTurn(detail, turnId) {
   return detail.artifacts.find((artifact) => artifact.sourceTurnId === turnId);
 }
@@ -491,8 +757,144 @@ function textFromMessage(message) {
     .join('\n');
 }
 
+async function authenticateProduction({ api, context, page, credentials, check }) {
+  const disabledDevLogin = await api.raw('/api/v1/auth/dev-login', {
+    method: 'POST',
+    data: {},
+  });
+  ensure(disabledDevLogin.status() === 404, check, 'http_status');
+
+  const discovery = await context.request.get(
+    `${PRODUCTION_OIDC_ISSUER}/.well-known/openid-configuration`,
+    { failOnStatusCode: false, maxRedirects: 0, timeout: 30_000 },
+  );
+  ensure(discovery.status() === 200, check, 'http_status');
+  let metadata;
+  try {
+    metadata = await discovery.json();
+  } catch {
+    fail(check, 'invalid_response');
+  }
+  ensure(
+    metadata?.issuer === PRODUCTION_OIDC_ISSUER &&
+      metadata?.authorization_endpoint === `${PRODUCTION_OIDC_ISSUER}/auth` &&
+      metadata?.token_endpoint === `${PRODUCTION_OIDC_ISSUER}/token`,
+    check,
+  );
+
+  const loginStart = await api.raw('/api/v1/auth/login?returnTo=%2Ftasks&prompt=login%20consent');
+  ensure(loginStart.status() === 302, check, 'http_status');
+  const authorizeUrl = validateProductionAuthorizeUrl(
+    loginStart.headers().location,
+    PRODUCTION_ORIGIN,
+  );
+  ensure(new URL(authorizeUrl).searchParams.get('prompt') === 'login consent', check);
+  const transactionCookie = (await context.cookies(PRODUCTION_ORIGIN)).find(
+    (cookie) => cookie.name === 'cb_auth_tx',
+  );
+  ensure(
+    transactionCookie?.httpOnly === true &&
+      transactionCookie.secure === true &&
+      transactionCookie.sameSite === 'Lax',
+    check,
+  );
+
+  await page.goto(authorizeUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  await page.waitForURL(
+    (url) => url.origin === PRODUCTION_OIDC_ORIGIN && url.pathname === '/sign-in',
+    { timeout: 30_000 },
+  );
+  const form = page.locator('form');
+  const identifier = form.locator('input[name="identifier"][type="email"][autocomplete="email"]');
+  const password = form.locator(
+    'input[name="password"][type="password"][autocomplete="current-password"]',
+  );
+  const submit = form.locator('button[type="submit"]:visible');
+  ensure(
+    (await form.count()) === 1 &&
+      (await identifier.count()) === 1 &&
+      (await password.count()) === 1 &&
+      (await submit.count()) === 1 &&
+      (await submit.isVisible()) &&
+      (await submit.isEnabled()),
+    check,
+  );
+  await identifier.fill(credentials.email);
+  await password.fill(credentials.password);
+
+  const callbackResponse = page.waitForResponse(
+    (response) => {
+      try {
+        const target = new URL(response.url());
+        return (
+          target.origin === PRODUCTION_ORIGIN &&
+          target.pathname === '/api/v1/auth/callback' &&
+          target.searchParams.has('code') &&
+          target.searchParams.has('state')
+        );
+      } catch {
+        return false;
+      }
+    },
+    { timeout: 60_000 },
+  );
+  const consentPage = page
+    .waitForURL((url) => url.origin === PRODUCTION_OIDC_ORIGIN && url.pathname === '/consent', {
+      timeout: 60_000,
+    })
+    .then(() => true)
+    .catch(() => false);
+  await submit.click();
+  const firstPhase = await Promise.race([
+    callbackResponse.then((response) => ({ kind: 'callback', response })),
+    consentPage.then((reached) => (reached ? { kind: 'consent' } : { kind: 'timeout' })),
+  ]);
+  let callback;
+  if (firstPhase.kind === 'consent') {
+    const consentSubmit = page.getByRole('button', { name: /^Authorize$/u });
+    ensure(
+      (await consentSubmit.count()) === 1 &&
+        (await consentSubmit.isVisible()) &&
+        (await consentSubmit.isEnabled()),
+      check,
+    );
+    await consentSubmit.click();
+    callback = await callbackResponse;
+  } else if (firstPhase.kind === 'callback') {
+    callback = firstPhase.response;
+  } else {
+    fail(check, 'timeout');
+  }
+  ensure([302, 303].includes(callback.status()), check, 'http_status');
+  await page.waitForURL((url) => url.origin === PRODUCTION_ORIGIN && url.pathname === '/tasks', {
+    timeout: 30_000,
+  });
+
+  const me = await api.json(check, '/api/v1/me');
+  ensure(
+    UUID_PATTERN.test(me.data?.id ?? '') &&
+      me.data?.email?.toLowerCase() === credentials.email.toLowerCase() &&
+      Array.isArray(me.data?.roles) &&
+      me.data.roles.includes('creator'),
+    check,
+  );
+  const cookies = await context.cookies(PRODUCTION_ORIGIN);
+  const cookieValues = {};
+  for (const name of ['cb_session', 'cb_refresh']) {
+    const cookie = cookies.find((candidate) => candidate.name === name);
+    ensure(cookie?.httpOnly === true && cookie.secure === true && cookie.sameSite === 'Lax', check);
+    cookieValues[name] = cookie.value;
+  }
+  ensure(!cookies.some((cookie) => cookie.name === 'cb_auth_tx'), check);
+  return {
+    identity: { id: me.data.id, email: me.data.email },
+    cookieValues,
+  };
+}
+
 async function runAcceptance(options) {
   const state = {
+    environment: options.environment,
     revision: options.revision,
     webOrigin: options.webOrigin,
     startedAt: new Date().toISOString(),
@@ -505,6 +907,10 @@ async function runAcceptance(options) {
   };
   let activeCheck = 'acceptance_runtime';
   let browser;
+  let productionCredentials;
+  let authenticatedIdentity;
+  let authenticationCookieValues;
+  let devLoginProfile;
   const checked = async (id, operation) => {
     activeCheck = id;
     const started = Date.now();
@@ -514,15 +920,58 @@ async function runAcceptance(options) {
   };
 
   try {
+    if (options.environment === 'production') {
+      productionCredentials = await readProductionCredentials();
+    }
     ensure(existsSync(CHROME_EXECUTABLE), activeCheck, 'browser');
     browser = await chromium.launch({ executablePath: CHROME_EXECUTABLE, headless: true });
     const context = await browser.newContext({
       baseURL: options.webOrigin,
       acceptDownloads: false,
       serviceWorkers: 'block',
+      ...(options.environment === 'production' ? { locale: 'en-US' } : {}),
     });
+    if (options.environment === 'preview') {
+      await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+        origin: options.webOrigin,
+      });
+      let reviewAccess = process.env.COMBO_REVIEW_ACCESS_TOKEN;
+      delete process.env.COMBO_REVIEW_ACCESS_TOKEN;
+      ensure(/^[0-9a-f]{64}$/.test(reviewAccess ?? ''), activeCheck, 'unsafe_input');
+      const unauthenticated = await context.request.get(`${options.webOrigin}/version.json`, {
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(unauthenticated.status() === 401, activeCheck, 'http_status');
+      const rejected = await context.request.post(`${options.webOrigin}/__review/access`, {
+        headers: { 'X-Review-Token': '0'.repeat(64) },
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(rejected.status() === 403, activeCheck, 'http_status');
+      const gate = await context.request.post(`${options.webOrigin}/__review/access`, {
+        headers: { 'X-Review-Token': reviewAccess },
+      });
+      reviewAccess = undefined;
+      ensure(gate.status() === 204, activeCheck, 'http_status');
+      const gateCookie = (await context.cookies(options.webOrigin)).find(
+        (cookie) => cookie.name === 'combo_review_access',
+      );
+      ensure(
+        gateCookie?.httpOnly === true &&
+          gateCookie.secure === true &&
+          gateCookie.sameSite === 'Strict',
+        activeCheck,
+      );
+    }
     await context.route('**/*', async (route) => {
-      if (isAllowedAcceptanceRequest(route.request().url(), options.webOrigin)) {
+      if (
+        isAllowedAcceptanceRequest(
+          route.request().url(),
+          options.webOrigin,
+          options.environment === 'production' ? PRODUCTION_OIDC_ORIGIN : undefined,
+        )
+      ) {
         await route.continue();
       } else {
         await route.abort('blockedbyclient');
@@ -545,7 +994,10 @@ async function runAcceptance(options) {
       });
       const version = await api.json('release_identity', '/version.json', { envelope: false });
       for (const metadata of [root.data, runtime.data, version.data]) {
-        ensure(isExpectedTestReleaseMetadata(metadata, options.revision), 'release_identity');
+        ensure(
+          isExpectedReleaseMetadata(metadata, options.revision, options.environment),
+          'release_identity',
+        );
       }
       ensure(JSON.stringify(root.data) === JSON.stringify(runtime.data), 'release_identity');
       ensure(JSON.stringify(root.data) === JSON.stringify(version.data), 'release_identity');
@@ -562,10 +1014,24 @@ async function runAcceptance(options) {
       }
     });
 
-    await checked('dev_login', async () => {
+    await checked('authentication_login', async () => {
+      if (options.environment === 'production') {
+        const authenticated = await authenticateProduction({
+          api,
+          context,
+          page,
+          credentials: productionCredentials.primary,
+          check: activeCheck,
+        });
+        authenticatedIdentity = authenticated.identity;
+        authenticationCookieValues = authenticated.cookieValues;
+        productionCredentials.primary = undefined;
+        return;
+      }
       const email = `goal-b-${options.revision.slice(0, 12)}@example.invalid`;
       const account = `goal-b-${options.revision.slice(0, 12)}`;
-      const login = await api.json('dev_login', '/api/v1/auth/dev-login', {
+      devLoginProfile = { email, account };
+      const login = await api.json(activeCheck, '/api/v1/auth/dev-login', {
         method: 'POST',
         data: {
           email,
@@ -573,20 +1039,85 @@ async function runAcceptance(options) {
           roles: ['creator'],
         },
       });
-      const me = await api.json('dev_login', '/api/v1/me');
+      const me = await api.json(activeCheck, '/api/v1/me');
       for (const identity of [login.data, me.data]) {
         ensure(
           UUID_PATTERN.test(identity?.id ?? '') &&
             identity?.email === email &&
             identity?.account === account &&
             JSON.stringify(identity?.roles) === '["creator"]',
-          'dev_login',
+          activeCheck,
         );
       }
+      authenticatedIdentity = { id: me.data.id, email: me.data.email };
       const sessionCookie = (await context.cookies(options.webOrigin)).find(
         (cookie) => cookie.name === 'cb_session',
       );
-      ensure(sessionCookie?.httpOnly === true, 'dev_login');
+      ensure(
+        sessionCookie?.httpOnly === true &&
+          sessionCookie.secure === (options.environment === 'preview') &&
+          sessionCookie.sameSite === 'Lax',
+        activeCheck,
+      );
+    });
+
+    await checked('preview_identity_badge_and_copy', async () => {
+      const verifyBadge = async (path, contextHeading, expectedPage) => {
+        await page.goto(path, { waitUntil: 'domcontentloaded' });
+        const badge = page.locator('aside[aria-label="Preview 发布身份"]');
+        if (options.environment !== 'preview') {
+          ensure((await badge.count()) === 0, activeCheck);
+          return;
+        }
+        await badge.waitFor({ state: 'visible', timeout: 30_000 });
+        const trigger = badge.locator('button[aria-controls]');
+        ensure(
+          (await trigger.count()) === 1 &&
+            (await trigger.getAttribute('aria-expanded')) === 'false' &&
+            (await trigger.textContent())?.includes(options.revision.slice(0, 8)),
+          activeCheck,
+        );
+        await trigger.click();
+        const panel = page.getByRole('region', { name: 'Preview 发布详情' });
+        await panel.waitFor({ state: 'visible', timeout: 10_000 });
+        const panelText = (await panel.textContent()) ?? '';
+        ensure(
+          panelText.includes('preview') &&
+            panelText.includes(options.revision) &&
+            panelText.includes(state.release.releaseId) &&
+            panelText.includes(state.release.webAssetManifest),
+          activeCheck,
+        );
+        await panel.getByRole('button', { name: '复制验收上下文' }).click();
+        await panel.getByRole('status').filter({ hasText: '验收上下文已复制' }).waitFor({
+          state: 'visible',
+          timeout: 10_000,
+        });
+        const copied = await page.evaluate(() => globalThis.navigator.clipboard.readText());
+        ensure(
+          copied.startsWith(contextHeading) &&
+            copied.includes('environment=preview') &&
+            copied.includes(`sourceSha=${options.revision}`) &&
+            copied.includes(`releaseId=${state.release.releaseId}`) &&
+            copied.includes(`releaseManifestDigest=${state.release.releaseManifestDigest}`) &&
+            copied.includes(`webAssetManifest=${state.release.webAssetManifest}`) &&
+            copied.includes(`page=${options.webOrigin}${expectedPage}`) &&
+            !copied.includes('acceptance=hidden') &&
+            !copied.includes('#secret'),
+          activeCheck,
+        );
+      };
+      await verifyBadge(
+        '/tasks?acceptance=hidden#secret',
+        'Combo Preview acceptance context',
+        '/tasks',
+      );
+      await verifyBadge(
+        '/try/?acceptance=hidden#secret',
+        'Combo Runtime Preview acceptance context',
+        '/try/',
+      );
+      await page.goto('/tasks', { waitUntil: 'domcontentloaded' });
     });
 
     const idempotencyKey = `goal-b-${options.revision}-${Date.now()}`;
@@ -717,17 +1248,64 @@ async function runAcceptance(options) {
         `/api/v1/capabilities?taskId=${encodeURIComponent(task.id)}&limit=100`,
       );
       ensure(Array.isArray(capabilities.data) && capabilities.data.length > 0, activeCheck);
-      capability = capabilities.data[0];
-      ensure(UUID_PATTERN.test(capability?.id ?? ''), activeCheck);
+      capability = capabilities.data.find((candidate) => candidate?.published === false);
+      ensure(
+        UUID_PATTERN.test(capability?.id ?? '') &&
+          typeof capability?.name === 'string' &&
+          capability.name.length > 0,
+        activeCheck,
+      );
       state.resources.capabilityId = capability.id;
     });
 
-    await checked('creation_publish_and_retry_fence', async () => {
-      const published = await api.json(
-        activeCheck,
-        `/api/v1/capabilities/${capability.id}/publish`,
-        { method: 'POST' },
+    await checked('creation_capability_selection', async () => {
+      await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
+      await page.getByRole('heading', { name: '你的能力，挑选后一键发布' }).waitFor({
+        state: 'visible',
+        timeout: 30_000,
+      });
+      const list = page.getByRole('list', { name: '能力卡列表' });
+      const checkbox = list.getByRole('checkbox', {
+        name: `选择能力「${capability.name}」`,
+        exact: true,
+      });
+      await checkbox.waitFor({ state: 'visible', timeout: 30_000 });
+      ensure(await checkbox.isChecked(), activeCheck);
+      await page.getByRole('button', { name: '取消全选' }).click();
+      ensure(!(await checkbox.isChecked()), activeCheck);
+      await checkbox.click();
+      ensure(await checkbox.isChecked(), activeCheck);
+      const selected = page.locator('.cb-capabilities__selected');
+      ensure(((await selected.textContent()) ?? '').includes('已选 1 /'), activeCheck);
+      const publishButton = page.getByRole('button', { name: '一键发布到市集 · 1 项' });
+      const publishResponse = page.waitForResponse(
+        (response) =>
+          response.url() ===
+            `${options.webOrigin}/api/v1/capabilities/${encodeURIComponent(capability.id)}/publish` &&
+          response.request().method() === 'POST',
+        { timeout: 30_000 },
       );
+      await publishButton.click();
+      const response = await publishResponse;
+      ensure(response.status() === 200, activeCheck, 'http_status');
+      let body;
+      try {
+        body = await response.json();
+      } catch {
+        fail(activeCheck, 'invalid_response');
+      }
+      ensure(
+        responseData(body, activeCheck)?.id === capability.id &&
+          responseData(body, activeCheck)?.published === true,
+        activeCheck,
+      );
+      const row = page.locator('li.cb-cap-card').filter({ hasText: capability.name }).first();
+      await row.locator('[data-state="published"]').waitFor({ state: 'visible', timeout: 30_000 });
+      ensure((await row.getAttribute('data-status')) === 'published', activeCheck);
+    });
+
+    await checked('creation_publish_and_retry_fence', async () => {
+      const published = await api.json(activeCheck, `/api/v1/capabilities/${capability.id}`);
       ensure(
         published.data?.id === capability.id && published.data?.published === true,
         activeCheck,
@@ -999,7 +1577,7 @@ async function runAcceptance(options) {
     let secondTurnId;
     let secondArtifact;
     let secondDetail;
-    await checked('studio_second_revision', async () => {
+    await checked('runtime_sse_replay_and_terminal', async () => {
       await composer.fill('只把这个元素改成更清晰的标题，并保持其它区域和交互不变。');
       const responsePromise = page.waitForResponse(
         (response) => response.url() === messageUrl && response.request().method() === 'POST',
@@ -1016,6 +1594,50 @@ async function runAcceptance(options) {
       }
       secondTurnId = responseData(body, activeCheck)?.message?.turnId;
       ensure(UUID_PATTERN.test(secondTurnId ?? ''), activeCheck);
+      const started = await readRuntimeStreamFrame(page, {
+        sessionId: studioSession.id,
+        runId: secondTurnId,
+        afterId: undefined,
+        terminal: false,
+      });
+      ensure(
+        started.status === 200 &&
+          started.contentType.startsWith('text/event-stream') &&
+          started.eventType === 'RUN_STARTED' &&
+          started.runId === secondTurnId &&
+          compareRedisStreamIds(started.id, '0-0') === 1,
+        activeCheck,
+      );
+      const terminal = await readRuntimeStreamFrame(page, {
+        sessionId: studioSession.id,
+        runId: secondTurnId,
+        afterId: started.id,
+        terminal: true,
+      });
+      ensure(
+        terminal.status === 200 &&
+          terminal.contentType.startsWith('text/event-stream') &&
+          terminal.eventType === 'RUN_FINISHED' &&
+          terminal.runId === secondTurnId &&
+          compareRedisStreamIds(terminal.id, started.id) === 1,
+        activeCheck,
+      );
+      const replayedTerminal = await readRuntimeStreamFrame(page, {
+        sessionId: studioSession.id,
+        runId: secondTurnId,
+        afterId: started.id,
+        terminal: true,
+      });
+      ensure(
+        replayedTerminal.status === 200 &&
+          replayedTerminal.eventType === terminal.eventType &&
+          replayedTerminal.runId === secondTurnId &&
+          replayedTerminal.id === terminal.id,
+        activeCheck,
+      );
+    });
+
+    await checked('studio_second_revision', async () => {
       secondDetail = await poll(
         activeCheck,
         async () =>
@@ -1067,6 +1689,19 @@ async function runAcceptance(options) {
       );
       const interruptedTurnId = started.data?.message?.turnId;
       ensure(UUID_PATTERN.test(interruptedTurnId ?? ''), activeCheck);
+      const interruptedRunStarted = await readRuntimeStreamFrame(page, {
+        sessionId: studioSession.id,
+        runId: interruptedTurnId,
+        afterId: undefined,
+        terminal: false,
+      });
+      ensure(
+        interruptedRunStarted.status === 200 &&
+          interruptedRunStarted.eventType === 'RUN_STARTED' &&
+          interruptedRunStarted.runId === interruptedTurnId &&
+          compareRedisStreamIds(interruptedRunStarted.id, '0-0') === 1,
+        activeCheck,
+      );
       const activeCandidate = await poll(
         activeCheck,
         async () =>
@@ -1086,6 +1721,19 @@ async function runAcceptance(options) {
         { method: 'POST' },
       );
       ensure(interrupted.data?.interrupted === true, activeCheck);
+      const interruptedTerminal = await readRuntimeStreamFrame(page, {
+        sessionId: studioSession.id,
+        runId: interruptedTurnId,
+        afterId: interruptedRunStarted.id,
+        terminal: true,
+      });
+      ensure(
+        interruptedTerminal.status === 200 &&
+          interruptedTerminal.eventType === 'RUN_ERROR' &&
+          interruptedTerminal.runId === interruptedTurnId &&
+          compareRedisStreamIds(interruptedTerminal.id, interruptedRunStarted.id) === 1,
+        activeCheck,
+      );
       const after = await poll(
         activeCheck,
         async () =>
@@ -1094,6 +1742,15 @@ async function runAcceptance(options) {
         30_000,
       );
       ensure(!artifactForTurn(after, interruptedTurnId), activeCheck);
+      ensure(
+        after.messages.some(
+          (message) =>
+            message.turnId === interruptedTurnId &&
+            message.role === 'assistant' &&
+            message.status === 'failed',
+        ),
+        activeCheck,
+      );
       ensure(
         !after.artifacts.some((artifact) => artifact.id === interruptedArtifactId),
         activeCheck,
@@ -1162,9 +1819,208 @@ async function runAcceptance(options) {
       });
     });
 
+    await checked('preview_gate_bootstrap_and_return_to', async () => {
+      if (options.environment !== 'preview') {
+        const names = (await context.cookies(options.webOrigin)).map((cookie) => cookie.name);
+        ensure(!names.includes('combo_review_access'), activeCheck);
+        return;
+      }
+      await context.clearCookies({ name: 'cb_session' });
+      const gateCookie = (await context.cookies(options.webOrigin)).find(
+        (cookie) => cookie.name === 'combo_review_access',
+      );
+      ensure(
+        gateCookie?.httpOnly === true &&
+          gateCookie.secure === true &&
+          gateCookie.sameSite === 'Strict',
+        activeCheck,
+      );
+      const recoveryPath = `/tasks/${task.id}?acceptance=recovered`;
+      await page.goto(recoveryPath, { waitUntil: 'domcontentloaded' });
+      const recovery = page.getByRole('button', { name: '恢复预览会话' });
+      await recovery.waitFor({ state: 'visible', timeout: 30_000 });
+      await recovery.click();
+      await page.waitForURL(
+        (url) =>
+          url.origin === options.webOrigin &&
+          url.pathname === `/tasks/${task.id}` &&
+          url.search === '?acceptance=recovered',
+        { timeout: 30_000 },
+      );
+      const restored = await api.json(activeCheck, '/api/v1/me');
+      ensure(restored.data?.id === authenticatedIdentity.id, activeCheck);
+
+      for (const hostile of ['//evil.example/phish', '/%252f%252fevil.example/phish']) {
+        const fallback = page.waitForRequest(
+          (request) =>
+            request.isNavigationRequest() &&
+            request.frame() === page.mainFrame() &&
+            request.url() === `${options.webOrigin}/`,
+          { timeout: 30_000 },
+        );
+        await page.goto(`/__review/bootstrap?returnTo=${encodeURIComponent(hostile)}`, {
+          waitUntil: 'domcontentloaded',
+        });
+        await fallback;
+        await page.waitForURL(
+          (url) =>
+            url.origin === options.webOrigin && (url.pathname === '/' || url.pathname === '/tasks'),
+          { timeout: 30_000 },
+        );
+      }
+      await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
+    });
+
+    await checked('owner_isolation', async () => {
+      if (options.environment === 'production') {
+        ensure(productionCredentials?.secondary !== undefined, activeCheck, 'unsafe_input');
+        const isolated = await browser.newContext({
+          baseURL: options.webOrigin,
+          acceptDownloads: false,
+          serviceWorkers: 'block',
+          locale: 'en-US',
+        });
+        try {
+          await isolated.route('**/*', async (route) => {
+            if (
+              isAllowedAcceptanceRequest(
+                route.request().url(),
+                options.webOrigin,
+                PRODUCTION_OIDC_ORIGIN,
+              )
+            ) {
+              await route.continue();
+            } else {
+              await route.abort('blockedbyclient');
+            }
+          });
+          await isolated.routeWebSocket('**/*', async (socket) => {
+            if (isAllowedAcceptanceWebSocket(socket.url(), options.webOrigin)) {
+              socket.connectToServer();
+            } else {
+              await socket.close({ code: 1008, reason: 'production acceptance origin boundary' });
+            }
+          });
+          const isolatedPage = await isolated.newPage();
+          const isolatedApi = new BrowserApi(isolated, options.webOrigin);
+          const secondary = await authenticateProduction({
+            api: isolatedApi,
+            context: isolated,
+            page: isolatedPage,
+            credentials: productionCredentials.secondary,
+            check: activeCheck,
+          });
+          secondary.cookieValues = undefined;
+          productionCredentials.secondary = undefined;
+          ensure(secondary.identity.id !== authenticatedIdentity.id, activeCheck);
+          for (const path of [
+            `/api/v1/tasks/${task.id}`,
+            `/api/v1/capabilities/${capability.id}`,
+            `/api/v1/runtime/sessions/${studioSession.id}`,
+          ]) {
+            const response = await isolatedApi.raw(path);
+            ensure([403, 404].includes(response.status()), activeCheck, 'http_status');
+          }
+        } finally {
+          await isolated.close();
+        }
+        return;
+      }
+      ensure(devLoginProfile !== undefined, activeCheck);
+      const isolatedLogin = await api.json(activeCheck, '/api/v1/auth/dev-login', {
+        method: 'POST',
+        data: {
+          email: `goal-b-isolated-${options.revision.slice(0, 12)}@example.invalid`,
+          account: `goal-b-isolated-${options.revision.slice(0, 12)}`,
+          roles: ['creator'],
+        },
+      });
+      ensure(
+        UUID_PATTERN.test(isolatedLogin.data?.id ?? '') &&
+          isolatedLogin.data.id !== authenticatedIdentity.id,
+        activeCheck,
+      );
+      for (const path of [
+        `/api/v1/tasks/${task.id}`,
+        `/api/v1/capabilities/${capability.id}`,
+        `/api/v1/runtime/sessions/${studioSession.id}`,
+      ]) {
+        const response = await api.raw(path);
+        ensure([403, 404].includes(response.status()), activeCheck, 'http_status');
+      }
+      const restored = await api.json(activeCheck, '/api/v1/auth/dev-login', {
+        method: 'POST',
+        data: { ...devLoginProfile, roles: ['creator'] },
+      });
+      ensure(restored.data?.id === authenticatedIdentity.id, activeCheck);
+    });
+
+    await checked('authentication_refresh', async () => {
+      ensure(UUID_PATTERN.test(authenticatedIdentity?.id ?? ''), activeCheck);
+      if (options.environment === 'production') {
+        ensure(
+          typeof authenticationCookieValues?.cb_session === 'string' &&
+            authenticationCookieValues.cb_session.length > 0 &&
+            typeof authenticationCookieValues?.cb_refresh === 'string' &&
+            authenticationCookieValues.cb_refresh.length > 0,
+          activeCheck,
+        );
+        const refreshed = await api.raw('/api/v1/auth/refresh', { method: 'POST' });
+        ensure(refreshed.status() === 204, activeCheck, 'http_status');
+        const me = await api.json(activeCheck, '/api/v1/me');
+        ensure(
+          me.data?.id === authenticatedIdentity.id &&
+            me.data?.email === authenticatedIdentity.email &&
+            Array.isArray(me.data?.roles) &&
+            me.data.roles.includes('creator'),
+          activeCheck,
+        );
+        const cookies = await context.cookies(options.webOrigin);
+        for (const name of ['cb_session', 'cb_refresh']) {
+          const cookie = cookies.find((candidate) => candidate.name === name);
+          ensure(
+            cookie?.httpOnly === true && cookie.secure === true && cookie.sameSite === 'Lax',
+            activeCheck,
+          );
+        }
+        const refreshedSession = cookies.find((cookie) => cookie.name === 'cb_session')?.value;
+        const refreshedRefresh = cookies.find((cookie) => cookie.name === 'cb_refresh')?.value;
+        ensure(
+          typeof refreshedSession === 'string' &&
+            refreshedSession.length > 0 &&
+            refreshedSession !== authenticationCookieValues.cb_session &&
+            typeof refreshedRefresh === 'string' &&
+            refreshedRefresh.length > 0,
+          activeCheck,
+        );
+        authenticationCookieValues = undefined;
+      } else {
+        const unavailable = await api.raw('/api/v1/auth/refresh', { method: 'POST' });
+        ensure(unavailable.status() === 401, activeCheck, 'http_status');
+        const me = await api.json(activeCheck, '/api/v1/me');
+        ensure(me.data?.id === authenticatedIdentity.id, activeCheck);
+      }
+    });
+
     await checked('logout_clears_session', async () => {
       const logout = await api.json(activeCheck, '/api/v1/auth/logout', { method: 'POST' });
       ensure(logout.data?.loggedOut === true, activeCheck);
+      if (options.environment === 'production') {
+        let logoutUrl;
+        try {
+          logoutUrl = new URL(logout.data?.logoutUrl);
+        } catch {
+          fail(activeCheck, 'invalid_response');
+        }
+        ensure(
+          logoutUrl.origin === PRODUCTION_OIDC_ORIGIN &&
+            logoutUrl.pathname === '/oidc/session/end' &&
+            logoutUrl.searchParams.get('post_logout_redirect_uri') === `${PRODUCTION_ORIGIN}/login`,
+          activeCheck,
+        );
+        await page.goto(logoutUrl.href, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+        await page.waitForURL((url) => url.origin === PRODUCTION_ORIGIN, { timeout: 30_000 });
+      }
       const me = await api.raw('/api/v1/me');
       ensure(me.status() === 401, activeCheck, 'http_status');
       const remainingCookieNames = (await context.cookies(options.webOrigin)).map(
@@ -1173,14 +2029,27 @@ async function runAcceptance(options) {
       ensure(
         !remainingCookieNames.includes('cb_session') &&
           !remainingCookieNames.includes('cb_refresh') &&
-          !remainingCookieNames.includes('cb_auth_tx'),
+          !remainingCookieNames.includes('cb_auth_tx') &&
+          (options.environment !== 'preview' ||
+            !remainingCookieNames.includes('combo_review_access')),
         activeCheck,
       );
-      await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
-      await page.getByRole('button', { name: '去登录' }).waitFor({
-        state: 'visible',
-        timeout: 30_000,
-      });
+      if (options.environment === 'preview') {
+        const gated = await api.raw('/version.json');
+        ensure(gated.status() === 401, activeCheck, 'http_status');
+        await page.goto(`/__review/enter?returnTo=${encodeURIComponent(`/tasks/${task.id}`)}`, {
+          waitUntil: 'domcontentloaded',
+        });
+        await page.waitForURL((url) => url.pathname === '/__review/enter', {
+          timeout: 30_000,
+        });
+      } else {
+        await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
+        await page.getByRole('button', { name: '去登录' }).waitFor({
+          state: 'visible',
+          timeout: 30_000,
+        });
+      }
     });
 
     ensure(
@@ -1197,6 +2066,14 @@ async function runAcceptance(options) {
             error?.name === 'TimeoutError' ? 'timeout' : 'browser',
           );
   } finally {
+    productionCredentials = undefined;
+    authenticatedIdentity = undefined;
+    authenticationCookieValues = undefined;
+    devLoginProfile = undefined;
+    delete process.env.PRODUCTION_ACCEPTANCE_EMAIL;
+    delete process.env.PRODUCTION_ACCEPTANCE_PASSWORD;
+    delete process.env.PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL;
+    delete process.env.PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD;
     if (browser) await browser.close().catch(() => undefined);
     state.completedAt = new Date().toISOString();
   }
@@ -1204,6 +2081,15 @@ async function runAcceptance(options) {
 }
 
 async function main() {
+  if (process.argv.length === 3 && process.argv[2] === '--validate-production-credentials') {
+    try {
+      await readProductionCredentials();
+    } catch {
+      process.stderr.write('Production acceptance credentials failed validation.\n');
+      process.exitCode = 2;
+    }
+    return;
+  }
   let options;
   try {
     options = parseAcceptanceArgs(process.argv.slice(2));
@@ -1229,7 +2115,7 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  process.stdout.write(`PASS goal_b_test_browser ${options.revision}\n`);
+  process.stdout.write(`PASS goal_b_${options.environment}_browser ${options.revision}\n`);
 }
 
 if ((process.argv[1] ? resolve(process.argv[1]) : '') === fileURLToPath(import.meta.url)) {

@@ -20,13 +20,24 @@ jobs:
       mode: ${{ steps.policy.outputs.mode }}
       revision: ${{ steps.policy.outputs.revision }}
       source_run_id: ${{ steps.policy.outputs.source_run_id }}
+      source_run_attempt: ${{ steps.policy.outputs.source_run_attempt }}
+      source_artifact_id: ${{ steps.policy.outputs.source_artifact_id }}
+      source_artifact_name: ${{ steps.policy.outputs.source_artifact_name }}
+      source_artifact_digest: ${{ steps.policy.outputs.source_artifact_digest }}
+      test_run_id: ${{ steps.policy.outputs.test_run_id }}
+      test_run_attempt: ${{ steps.policy.outputs.test_run_attempt }}
+      test_evidence_artifact_id: ${{ steps.policy.outputs.test_evidence_artifact_id }}
+      test_evidence_artifact_name: ${{ steps.policy.outputs.test_evidence_artifact_name }}
+      test_evidence_artifact_digest: ${{ steps.policy.outputs.test_evidence_artifact_digest }}
     steps:
       - name: Validate the trusted main CI run
         id: policy
         env:
+          GH_TOKEN: ${{ github.token }}
           MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
           REVISION: ${{ github.event.workflow_run.head_sha }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           SOURCE_EVENT: ${{ github.event.workflow_run.event }}
           SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
           SOURCE_PATH: ${{ github.event.workflow_run.path }}
@@ -34,11 +45,76 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_EVENT" == push ]]
           [[ "$SOURCE_BRANCH" == main ]]
           [[ "$SOURCE_PATH" == .github/workflows/ci.yml ]]
           [[ "$SOURCE_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
+          source_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson runId "$SOURCE_RUN_ID" \
+            --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .path == ".github/workflows/ci.yml"
+              and .event == "push"
+              and .head_branch == "main"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+            ' <<<"$source_run" >/dev/null
+
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          artifact_name="combo-release-${REVISION}"
+          artifacts="$work/source-artifacts.json"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100&name=${artifact_name}" \
+            >"$artifacts"
+          jq -e \
+            --arg name "$artifact_name" \
+            --argjson runId "$SOURCE_RUN_ID" '
+              [.artifacts[] | select(.name == $name)] as $matches
+              | ($matches | length) == 1
+                and $matches[0].expired == false
+                and $matches[0].workflow_run.id == $runId
+                and ($matches[0].id | type == "number" and . > 0 and floor == .)
+                and ($matches[0].digest | test("^sha256:[0-9a-f]{64}$"))
+            ' "$artifacts" >/dev/null
+          source_artifact_id=$(jq -er \
+            --arg name "$artifact_name" \
+            '.artifacts[] | select(.name == $name) | .id' \
+            "$artifacts")
+          source_artifact_digest=$(jq -er \
+            --arg name "$artifact_name" \
+            '.artifacts[] | select(.name == $name) | .digest' \
+            "$artifacts")
+          source_artifact_created_at=$(jq -er \
+            --arg name "$artifact_name" \
+            '.artifacts[] | select(.name == $name) | .created_at' \
+            "$artifacts")
+          source_attempt_jobs="$work/source-attempt-jobs.json"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/attempts/${SOURCE_RUN_ATTEMPT}/jobs?per_page=100" \
+            >"$source_attempt_jobs"
+          jq -e \
+            --arg artifactCreatedAt "$source_artifact_created_at" '
+              [.jobs[]
+                | select(.name == "assemble immutable release artifact")] as $releaseJobs
+              | ($releaseJobs | length) == 1
+                and $releaseJobs[0].status == "completed"
+                and $releaseJobs[0].conclusion == "success"
+                and ($releaseJobs[0].started_at | type == "string" and test("Z$"))
+                and ($releaseJobs[0].completed_at | type == "string" and test("Z$"))
+                and ($artifactCreatedAt | test("Z$"))
+                and $releaseJobs[0].started_at <= $artifactCreatedAt
+                and $artifactCreatedAt <= $releaseJobs[0].completed_at
+            ' "$source_attempt_jobs" >/dev/null
+
           case "$MODE" in
             enabled)
               echo 'Preview automatic promotion is enabled.'
@@ -51,10 +127,130 @@ jobs:
               exit 1
               ;;
           esac
+
+          test_run_id=
+          test_run_attempt=
+          test_evidence_artifact_id=
+          test_evidence_artifact_name=
+          test_evidence_artifact_digest=
+          if [[ "$MODE" == enabled ]]; then
+            test_runs="$work/test-runs.json"
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/combo-dev.yml/runs?event=workflow_dispatch&status=success&branch=main&per_page=100" \
+            >"$test_runs"
+          test_run_id=$(jq -er \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" '
+              [
+                .[].workflow_runs[]
+                | select(
+                    .name == "Test deployment"
+                    and .path == ".github/workflows/combo-dev.yml"
+                    and .event == "workflow_dispatch"
+                    and .head_branch == "main"
+                    and .head_sha == $revision
+                    and .status == "completed"
+                    and .conclusion == "success"
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  )
+              ]
+              | if length == 0 then
+                  error("No successful Test workflow exists for the exact main SHA")
+                else
+                  max_by(.id).id
+                end
+            ' "$test_runs")
+          [[ "$test_run_id" =~ ^[1-9][0-9]*$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}" \
+            >"$work/test-run.json"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" \
+            --argjson runId "$test_run_id" '
+              .id == $runId
+              and .name == "Test deployment"
+              and .path == ".github/workflows/combo-dev.yml"
+              and .event == "workflow_dispatch"
+              and .head_branch == "main"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+              and (.run_attempt | type == "number" and . > 0 and floor == .)
+            ' "$work/test-run.json" >/dev/null
+          test_run_attempt=$(jq -er '.run_attempt' "$work/test-run.json")
+          [[ "$test_run_attempt" =~ ^[1-9][0-9]*$ ]]
+
+          test_evidence_artifact_name="combo-test-evidence-${REVISION}"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/artifacts?per_page=100&name=${test_evidence_artifact_name}" \
+            >"$work/test-artifacts.json"
+          test_repository_id=$(jq -er '.repository.id' "$work/test-run.json")
+          jq -e \
+            --arg name "$test_evidence_artifact_name" \
+            --arg revision "$REVISION" \
+            --argjson repositoryId "$test_repository_id" \
+            --argjson runId "$test_run_id" '
+              [.artifacts[] | select(.name == $name)] as $matches
+              | .total_count == 1
+                and ($matches | length) == 1
+                and ($matches[0].id | type == "number" and . > 0 and floor == .)
+                and (
+                  $matches[0].size_in_bytes
+                  | type == "number" and . > 0 and . <= 16777216 and floor == .
+                )
+                and $matches[0].expired == false
+                and ($matches[0].digest | test("^sha256:[0-9a-f]{64}$"))
+                and $matches[0].workflow_run.id == $runId
+                and $matches[0].workflow_run.repository_id == $repositoryId
+                and $matches[0].workflow_run.head_repository_id == $repositoryId
+                and $matches[0].workflow_run.head_branch == "main"
+                and $matches[0].workflow_run.head_sha == $revision
+            ' "$work/test-artifacts.json" >/dev/null
+          test_evidence_artifact_id=$(jq -er \
+            --arg name "$test_evidence_artifact_name" \
+            '.artifacts[] | select(.name == $name) | .id' \
+            "$work/test-artifacts.json")
+          test_evidence_artifact_digest=$(jq -er \
+            --arg name "$test_evidence_artifact_name" \
+            '.artifacts[] | select(.name == $name) | .digest' \
+            "$work/test-artifacts.json")
+          test_evidence_artifact_created_at=$(jq -er \
+            --arg name "$test_evidence_artifact_name" \
+            '.artifacts[] | select(.name == $name) | .created_at' \
+            "$work/test-artifacts.json")
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/attempts/${test_run_attempt}/jobs?per_page=100" \
+            >"$work/test-attempt-jobs.json"
+          jq -e \
+            --arg artifactCreatedAt "$test_evidence_artifact_created_at" '
+              [.jobs[]
+                | select(.name == "deploy the trusted release to Test")] as $deployJobs
+              | ($deployJobs | length) == 1
+                and $deployJobs[0].status == "completed"
+                and $deployJobs[0].conclusion == "success"
+                and ($deployJobs[0].started_at | type == "string" and test("Z$"))
+                and ($deployJobs[0].completed_at | type == "string" and test("Z$"))
+                and ($artifactCreatedAt | test("Z$"))
+                and $deployJobs[0].started_at <= $artifactCreatedAt
+                and $artifactCreatedAt <= $deployJobs[0].completed_at
+            ' "$work/test-attempt-jobs.json" >/dev/null
+          fi
           {
             printf 'mode=%s\n' "$MODE"
             printf 'revision=%s\n' "$REVISION"
             printf 'source_run_id=%s\n' "$SOURCE_RUN_ID"
+            printf 'source_run_attempt=%s\n' "$SOURCE_RUN_ATTEMPT"
+            printf 'source_artifact_id=%s\n' "$source_artifact_id"
+            printf 'source_artifact_name=%s\n' "$artifact_name"
+            printf 'source_artifact_digest=%s\n' "$source_artifact_digest"
+            printf 'test_run_id=%s\n' "$test_run_id"
+            printf 'test_run_attempt=%s\n' "$test_run_attempt"
+            printf 'test_evidence_artifact_id=%s\n' "$test_evidence_artifact_id"
+            printf 'test_evidence_artifact_name=%s\n' "$test_evidence_artifact_name"
+            printf 'test_evidence_artifact_digest=%s\n' "$test_evidence_artifact_digest"
           } >> "$GITHUB_OUTPUT"
 
   deploy:
@@ -69,14 +265,47 @@ jobs:
     timeout-minutes: 120
     environment: cloud-review
     steps:
-      - name: Download the release from the successful main CI run
-        uses: actions/download-artifact@v4
+      - name: Validate protected Preview acceptance inputs before mutation
+        env:
+          REVIEW_ACCESS_TOKEN: ${{ secrets.CLOUD_REVIEW_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$REVIEW_ACCESS_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
+            echo 'The protected cloud-review Environment lacks a valid CLOUD_REVIEW_ACCESS_TOKEN.' >&2
+            exit 1
+          }
+
+      - name: Use Node.js 24 for immutable release validators
+        uses: actions/setup-node@v4
         with:
-          name: combo-release-${{ needs.policy.outputs.revision }}
-          path: ${{ runner.temp }}/combo-release
-          repository: ${{ github.repository }}
-          run-id: ${{ needs.policy.outputs.source_run_id }}
-          github-token: ${{ github.token }}
+          node-version: 24
+
+      - name: Download the exact release artifact and verify its GitHub digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          archive="$RUNNER_TEMP/combo-release.zip"
+          trap 'rm -f "$archive"' EXIT
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            >"$archive"
+          [[ -s "$archive" ]]
+          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" \
+            == "$SOURCE_ARTIFACT_DIGEST" ]]
+          mapfile -t archive_paths < <(unzip -Z1 "$archive")
+          (( ${#archive_paths[@]} > 0 && ${#archive_paths[@]} <= 512 ))
+          for path in "${archive_paths[@]}"; do
+            [[ -n "$path" && "$path" != /* && "$path" != *\\* ]]
+            [[ "/$path/" != */../* ]]
+          done
+          install -d -m 0700 "$RELEASE_ROOT"
+          unzip -q "$archive" -d "$RELEASE_ROOT"
 
       - name: Verify release identity and all bundled files
         env:
@@ -100,6 +329,234 @@ jobs:
           for phase in foundation init migrate apps; do
             [[ -s "$RELEASE_ROOT/rendered/preview/$phase.yaml" ]]
           done
+
+      - name: Download and validate the exact successful Test admission
+        id: test_admission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          TEST_EVIDENCE_ROOT: ${{ runner.temp }}/test-evidence
+          REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+          TEST_RUN_ID: ${{ needs.policy.outputs.test_run_id }}
+          TEST_RUN_ATTEMPT: ${{ needs.policy.outputs.test_run_attempt }}
+          TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
+          TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
+          TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
+        run: |
+          set -euo pipefail
+          umask 077
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          for value in \
+            "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_ARTIFACT_ID" \
+            "$TEST_RUN_ID" "$TEST_RUN_ATTEMPT" "$TEST_EVIDENCE_ARTIFACT_ID"; do
+            [[ "$value" =~ ^[1-9][0-9]*$ ]]
+          done
+          [[ "$SOURCE_ARTIFACT_NAME" == "combo-release-${REVISION}" ]]
+          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$TEST_EVIDENCE_ARTIFACT_NAME" == "combo-test-evidence-${REVISION}" ]]
+          [[ "$TEST_EVIDENCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          archive="$RUNNER_TEMP/test-evidence.zip"
+          trap 'rm -f "$archive"' EXIT
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TEST_EVIDENCE_ARTIFACT_ID}/zip" \
+            >"$archive"
+          [[ -s "$archive" ]]
+          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" \
+            == "$TEST_EVIDENCE_ARTIFACT_DIGEST" ]]
+          mapfile -t archive_paths < <(unzip -Z1 "$archive" | LC_ALL=C sort)
+          expected_paths=(
+            "combo-test-evidence-${REVISION}.json"
+            source-release.json
+            test-live-browser-acceptance.json
+            test-promotion-identity.json
+          )
+          [[ "${#archive_paths[@]}" == "${#expected_paths[@]}" ]]
+          for index in "${!expected_paths[@]}"; do
+            [[ "${archive_paths[$index]}" == "${expected_paths[$index]}" ]]
+          done
+          install -d -m 0700 "$TEST_EVIDENCE_ROOT"
+          unzip -q "$archive" -d "$TEST_EVIDENCE_ROOT"
+          if find "$TEST_EVIDENCE_ROOT" -type l -print -quit | grep -q .; then
+            echo 'Test evidence artifact contains a symbolic link.' >&2
+            exit 1
+          fi
+          for path in "${expected_paths[@]}"; do
+            file="$TEST_EVIDENCE_ROOT/$path"
+            [[ -f "$file" && ! -L "$file" ]]
+            bytes=$(stat -c '%s' "$file")
+            [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -gt 0 && "$bytes" -le 1048576 ]]
+            chmod 0600 "$file"
+          done
+
+          identity="$TEST_EVIDENCE_ROOT/test-promotion-identity.json"
+          browser="$TEST_EVIDENCE_ROOT/test-live-browser-acceptance.json"
+          source_release="$TEST_EVIDENCE_ROOT/source-release.json"
+          deployment="$TEST_EVIDENCE_ROOT/combo-test-evidence-${REVISION}.json"
+          validator="$RELEASE_ROOT/scripts/promotion-evidence.mjs"
+          identity_digest=$(node "$validator" validate-identity --identity "$identity")
+          browser_digest=$(node "$validator" validate-live-browser \
+            --environment test \
+            --evidence "$browser" \
+            --identity "$identity")
+          [[ "$identity_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$browser_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          release_id=$(jq -er '.releaseId' "$RELEASE_ROOT/metadata/release.json")
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" |
+            awk '{print "sha256:" $1}')
+          web_asset_digest=$(jq -er \
+            '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")
+          api_image=$(jq -er '.images.api' "$RELEASE_ROOT/metadata/release.json")
+          runtime_image=$(jq -er '.images.runtime' "$RELEASE_ROOT/metadata/release.json")
+          web_image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          jq -e \
+            --arg revision "$REVISION" \
+            --argjson sourceRunId "$SOURCE_RUN_ID" \
+            --argjson sourceRunAttempt "$SOURCE_RUN_ATTEMPT" \
+            --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
+            --arg sourceArtifactName "$SOURCE_ARTIFACT_NAME" \
+            --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
+            --argjson testRunId "$TEST_RUN_ID" \
+            --argjson testRunAttempt "$TEST_RUN_ATTEMPT" \
+            --arg releaseId "$release_id" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg fileSetDigest "$file_set_digest" \
+            --arg webAssetDigest "$web_asset_digest" \
+            --arg apiImage "$api_image" \
+            --arg runtimeImage "$runtime_image" \
+            --arg webImage "$web_image" '
+              .schemaVersion == 1
+              and .environment == "test"
+              and .namespace == "combo-preview"
+              and .sourceSha == $revision
+              and .sourceCiRunId == $sourceRunId
+              and .sourceCiRunAttempt == $sourceRunAttempt
+              and .deploymentWorkflow == ".github/workflows/combo-dev.yml"
+              and .deploymentRunId == $testRunId
+              and .deploymentRunAttempt == $testRunAttempt
+              and .releaseArtifactId == $sourceArtifactId
+              and .releaseArtifactName == $sourceArtifactName
+              and .releaseArtifactDigest == $sourceArtifactDigest
+              and .releaseId == $releaseId
+              and .releaseManifestDigest == $manifestDigest
+              and .artifactFileSetDigest == $fileSetDigest
+              and .webAssetManifestDigest == $webAssetDigest
+              and .images == {
+                api: $apiImage,
+                runtime: $runtimeImage,
+                web: $webImage
+              }
+            ' "$identity" >/dev/null
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" \
+            --argjson sourceRunId "$SOURCE_RUN_ID" \
+            --argjson sourceRunAttempt "$SOURCE_RUN_ATTEMPT" \
+            --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
+            --arg sourceArtifactName "$SOURCE_ARTIFACT_NAME" \
+            --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
+            --argjson testRunId "$TEST_RUN_ID" \
+            --argjson testRunAttempt "$TEST_RUN_ATTEMPT" \
+            --arg releaseId "$release_id" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg fileSetDigest "$file_set_digest" \
+            --arg webAssetDigest "$web_asset_digest" \
+            --arg identityDigest "$identity_digest" \
+            --arg browserDigest "$browser_digest" \
+            --arg apiImage "$api_image" \
+            --arg runtimeImage "$runtime_image" \
+            --arg webImage "$web_image" '
+              keys == ([
+                "artifactFileSetDigest",
+                "images",
+                "liveBrowserAcceptanceDigest",
+                "migrationHead",
+                "releaseArtifactDigest",
+                "releaseArtifactId",
+                "releaseArtifactName",
+                "releaseId",
+                "releaseManifestDigest",
+                "schemaVersion",
+                "sourceBranch",
+                "sourceCiRunAttempt",
+                "sourceCiRunId",
+                "sourceConclusion",
+                "sourceEvent",
+                "sourceRepository",
+                "sourceSha",
+                "sourceWorkflow",
+                "testIdentityDigest",
+                "testRunAttempt",
+                "testRunId",
+                "webAssetManifestDigest"
+              ] | sort)
+              and .schemaVersion == 1
+              and .sourceRepository == $repository
+              and .sourceWorkflow == ".github/workflows/ci.yml"
+              and .sourceEvent == "push"
+              and .sourceBranch == "main"
+              and .sourceConclusion == "success"
+              and .sourceSha == $revision
+              and .sourceCiRunId == $sourceRunId
+              and .sourceCiRunAttempt == $sourceRunAttempt
+              and .testRunId == $testRunId
+              and .testRunAttempt == $testRunAttempt
+              and .releaseArtifactId == $sourceArtifactId
+              and .releaseArtifactName == $sourceArtifactName
+              and .releaseArtifactDigest == $sourceArtifactDigest
+              and .releaseId == $releaseId
+              and .releaseManifestDigest == $manifestDigest
+              and .artifactFileSetDigest == $fileSetDigest
+              and .webAssetManifestDigest == $webAssetDigest
+              and .testIdentityDigest == $identityDigest
+              and .liveBrowserAcceptanceDigest == $browserDigest
+              and .migrationHead == "0006_one_running_turn_per_session.sql"
+              and .images == {
+                api: $apiImage,
+                runtime: $runtimeImage,
+                web: $webImage
+              }
+            ' "$source_release" >/dev/null
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg testRunId "$TEST_RUN_ID" \
+            --arg releaseId "$release_id" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg webAssetDigest "$web_asset_digest" \
+            --arg apiImage "$api_image" \
+            --arg runtimeImage "$runtime_image" \
+            --arg webImage "$web_image" '
+              (has("productAcceptance") | not)
+              and .schemaVersion == 1
+              and .workflowRunId == $testRunId
+              and .sourceSha == $revision
+              and .releaseId == $releaseId
+              and .releaseManifestDigest == $manifestDigest
+              and .webAssetManifest == $webAssetDigest
+              and .images == {
+                api: $apiImage,
+                runtime: $runtimeImage,
+                web: $webImage
+              }
+            ' "$deployment" >/dev/null
+
+          source_release_digest=$(sha256sum "$source_release" | awk '{print "sha256:" $1}')
+          deployment_digest=$(sha256sum "$deployment" | awk '{print "sha256:" $1}')
+          [[ "$source_release_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$deployment_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            printf 'identity_digest=%s\n' "$identity_digest"
+            printf 'browser_digest=%s\n' "$browser_digest"
+            printf 'source_release_digest=%s\n' "$source_release_digest"
+            printf 'deployment_digest=%s\n' "$deployment_digest"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Configure the existing deployment SSH identity
         env:
@@ -145,6 +602,11 @@ jobs:
             command -v "$command" >/dev/null
           done
           [[ "$(uname -m)" == x86_64 ]]
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
           node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
           [[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 24 ]]
           [[ -x /usr/local/bin/kubectl && -f "$HOME/.kube/config" ]]
@@ -158,8 +620,100 @@ jobs:
             --all-namespaces | grep -Fxq yes
           REMOTE
 
+      - name: Revalidate all frozen admissions immediately before the first Preview mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+          TEST_RUN_ID: ${{ needs.policy.outputs.test_run_id }}
+          TEST_RUN_ATTEMPT: ${{ needs.policy.outputs.test_run_attempt }}
+          TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
+          TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
+          TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" \
+            == "$REVISION" ]]
+          [[ "$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
+            --jq '.value')" == enabled ]]
+
+          source_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" \
+            --argjson runId "$SOURCE_RUN_ID" \
+            --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .path == ".github/workflows/ci.yml"
+              and .event == "push"
+              and .head_branch == "main"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' <<<"$source_run" >/dev/null
+          source_artifact=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}")
+          jq -e \
+            --arg name "$SOURCE_ARTIFACT_NAME" \
+            --arg revision "$REVISION" \
+            --arg digest "$SOURCE_ARTIFACT_DIGEST" \
+            --argjson artifactId "$SOURCE_ARTIFACT_ID" \
+            --argjson runId "$SOURCE_RUN_ID" '
+              .id == $artifactId
+              and .name == $name
+              and .name == ("combo-release-" + $revision)
+              and .digest == $digest
+              and .expired == false
+              and .workflow_run.id == $runId
+              and .workflow_run.head_branch == "main"
+              and .workflow_run.head_sha == $revision
+            ' <<<"$source_artifact" >/dev/null
+
+          test_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TEST_RUN_ID}")
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" \
+            --argjson runId "$TEST_RUN_ID" \
+            --argjson runAttempt "$TEST_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .name == "Test deployment"
+              and .path == ".github/workflows/combo-dev.yml"
+              and .event == "workflow_dispatch"
+              and .head_branch == "main"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' <<<"$test_run" >/dev/null
+          test_evidence_artifact=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TEST_EVIDENCE_ARTIFACT_ID}")
+          jq -e \
+            --arg name "$TEST_EVIDENCE_ARTIFACT_NAME" \
+            --arg revision "$REVISION" \
+            --arg digest "$TEST_EVIDENCE_ARTIFACT_DIGEST" \
+            --argjson artifactId "$TEST_EVIDENCE_ARTIFACT_ID" \
+            --argjson runId "$TEST_RUN_ID" '
+              .id == $artifactId
+              and .name == $name
+              and .name == ("combo-test-evidence-" + $revision)
+              and .digest == $digest
+              and .expired == false
+              and .workflow_run.id == $runId
+              and .workflow_run.head_branch == "main"
+              and .workflow_run.head_sha == $revision
+            ' <<<"$test_evidence_artifact" >/dev/null
+
       - name: Check the existing Preview registry credential
-        id: pull_credential
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           RUN_ID: ${{ github.run_id }}
@@ -170,31 +724,50 @@ jobs:
           [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
           name="combo-preview-pull-${RUN_ID}-${RUN_ATTEMPT}"
           [[ "$name" =~ ^[a-z0-9-]{1,63}$ ]]
-          if ssh release-target bash -s -- "$name" "$image" <<'REMOTE'
+          if ssh release-target bash -s -- \
+            "$name" "$image" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
           set -euo pipefail
           name=$1
           image=$2
+          run_id=$3
+          run_attempt=$4
           kubeconfig="$HOME/.kube/config"
           [[ "$name" =~ ^combo-preview-pull-[0-9]+-[0-9]+$ ]]
           [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          [[ "$name" == "combo-preview-pull-${run_id}-${run_attempt}" ]]
           ! kubectl --kubeconfig "$kubeconfig" -n combo-review \
             get "pod/$name" >/dev/null 2>&1
           created=0
           uid=
           cleanup() {
-            local rc=$? cleanup_failed=0 live live_uid removed=0
+            local rc=$? cleanup_failed=0 delete_uid live live_uid removed=0
             trap - EXIT
             set +e
             if ((created == 1)); then
-              if live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
-                get "pod/$name" -o json 2>/dev/null); then
+              if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                get "pod/$name" --ignore-not-found -o json 2>/dev/null); then
+                cleanup_failed=1
+              elif [[ -z "$live" ]]; then
+                removed=1
+              else
                 live_uid=$(jq -er '.metadata.uid' <<<"$live")
-                if [[ "$live_uid" != "$uid" ]] ||
-                  ! jq -e '.metadata.labels["combo.build/smoke"] == "ghcr-pull"' \
+                if [[ -n "$uid" && "$live_uid" != "$uid" ]] ||
+                  ! jq -e \
+                    --arg runId "$run_id" \
+                    --arg runAttempt "$run_attempt" \
+                    --arg image "$image" '
+                      .metadata.labels["combo.build/smoke"] == "ghcr-pull"
+                      and .metadata.labels["combo.build/workflow-run"] == $runId
+                      and .metadata.labels["combo.build/workflow-attempt"] == $runAttempt
+                      and (.spec.containers | length) == 1
+                      and .spec.containers[0].image == $image
+                    ' \
                     <<<"$live" >/dev/null; then
                   cleanup_failed=1
                 else
-                  jq -n --arg uid "$uid" '{
+                  delete_uid=$live_uid
+                  jq -n --arg uid "$delete_uid" '{
                     apiVersion: "v1",
                     kind: "DeleteOptions",
                     propagationPolicy: "Foreground",
@@ -205,12 +778,16 @@ jobs:
                       -f - >/dev/null 2>&1 || cleanup_failed=1
                   for _ in $(seq 1 60); do
                     if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
-                      get "pod/$name" -o json 2>/dev/null); then
+                      get "pod/$name" --ignore-not-found -o json 2>/dev/null); then
+                      cleanup_failed=1
+                      break
+                    fi
+                    if [[ -z "$live" ]]; then
                       removed=1
                       break
                     fi
                     live_uid=$(jq -er '.metadata.uid' <<<"$live")
-                    [[ "$live_uid" == "$uid" ]] || {
+                    [[ "$live_uid" == "$delete_uid" ]] || {
                       cleanup_failed=1
                       break
                     }
@@ -247,12 +824,26 @@ jobs:
               ')
             auth_failure_text "$messages"
           }
+          overrides=$(jq -nc \
+            --arg runId "$run_id" \
+            --arg runAttempt "$run_attempt" '{
+              metadata: {
+                labels: {
+                  "combo.build/smoke": "ghcr-pull",
+                  "combo.build/workflow-run": $runId,
+                  "combo.build/workflow-attempt": $runAttempt
+                }
+              },
+              spec: {
+                imagePullSecrets: [{name: "combo-preview-ghcr-pull"}]
+              }
+            }')
           created=1
           uid=$(kubectl --kubeconfig "$kubeconfig" -n combo-review run "$name" \
             --image="$image" \
             --image-pull-policy=Always \
             --restart=Never \
-            --overrides='{"metadata":{"labels":{"combo.build/smoke":"ghcr-pull"}},"spec":{"imagePullSecrets":[{"name":"combo-preview-ghcr-pull"}]}}' \
+            --overrides="$overrides" \
             -o json --command -- /bin/sh -c 'exit 0' | jq -er '.metadata.uid')
           [[ -n "$uid" ]]
           for _ in $(seq 1 45); do
@@ -279,127 +870,18 @@ jobs:
           exit 11
           REMOTE
           then
-            echo 'refresh=false' >> "$GITHUB_OUTPUT"
+            :
           else
             rc=$?
             [[ "$rc" == 10 ]] || exit "$rc"
-            echo 'refresh=true' >> "$GITHUB_OUTPUT"
+            echo 'The persistent combo-preview-ghcr-pull credential is invalid.' >&2
+            echo 'Configure a long-lived read:packages credential; workflow tokens are not persisted.' >&2
+            exit 1
           fi
-
-      - name: Refresh an expired Preview image pull credential
-        if: steps.pull_credential.outputs.refresh == 'true'
-        env:
-          GHCR_TOKEN: ${{ github.token }}
-          GHCR_USER: ${{ github.actor }}
-        run: |
-          set -euo pipefail
-          (( ${#GHCR_TOKEN} > 0 && ${#GHCR_TOKEN} <= 4096 ))
-          [[ "$GHCR_TOKEN" != *$'\n'* && "$GHCR_TOKEN" != *$'\r'* ]]
-          [[ "$GHCR_USER" =~ ^[A-Za-z0-9_-]+$ ]]
-          {
-            printf '%s\n' "$GHCR_TOKEN"
-            cat <<'REMOTE'
-          set -euo pipefail
-          user=$1
-          token=$GHCR_TOKEN
-          unset GHCR_TOKEN
-          [[ -n "$token" ]]
-          trap 'unset token' EXIT
-          kubectl --kubeconfig "$HOME/.kube/config" -n combo-review \
-            create secret docker-registry combo-preview-ghcr-pull \
-            --docker-server=ghcr.io \
-            --docker-username="$user" \
-            --docker-password="$token" \
-            --dry-run=client -o yaml |
-            kubectl --kubeconfig "$HOME/.kube/config" apply -f - >/dev/null
-          REMOTE
-          } | ssh release-target \
-            "IFS= read -r token; export GHCR_TOKEN=\"\$token\"; exec bash -s -- '$GHCR_USER'"
-
-      - name: Validate the refreshed Preview registry credential
-        if: steps.pull_credential.outputs.refresh == 'true'
-        env:
-          RELEASE_ROOT: ${{ runner.temp }}/combo-release
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-        run: |
-          set -euo pipefail
-          image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
-          [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
-          name="combo-preview-pull-${RUN_ID}-${RUN_ATTEMPT}-retry"
-          [[ "$name" =~ ^[a-z0-9-]{1,63}$ ]]
-          ssh release-target bash -s -- "$name" "$image" <<'REMOTE'
-          set -euo pipefail
-          name=$1
-          image=$2
-          kubeconfig="$HOME/.kube/config"
-          [[ "$name" =~ ^combo-preview-pull-[0-9]+-[0-9]+-retry$ ]]
-          [[ "$image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
-          ! kubectl --kubeconfig "$kubeconfig" -n combo-review \
-            get "pod/$name" >/dev/null 2>&1
-          created=0
-          uid=
-          cleanup() {
-            local rc=$? cleanup_failed=0 live live_uid removed=0
-            trap - EXIT
-            set +e
-            if ((created == 1)); then
-              if live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
-                get "pod/$name" -o json 2>/dev/null); then
-                live_uid=$(jq -er '.metadata.uid' <<<"$live")
-                if [[ "$live_uid" != "$uid" ]] ||
-                  ! jq -e '.metadata.labels["combo.build/smoke"] == "ghcr-pull"' \
-                    <<<"$live" >/dev/null; then
-                  cleanup_failed=1
-                else
-                  jq -n --arg uid "$uid" '{
-                    apiVersion: "v1",
-                    kind: "DeleteOptions",
-                    propagationPolicy: "Foreground",
-                    preconditions: {uid: $uid}
-                  }' |
-                    kubectl --kubeconfig "$kubeconfig" \
-                      delete --raw="/api/v1/namespaces/combo-review/pods/$name" \
-                      -f - >/dev/null 2>&1 || cleanup_failed=1
-                  for _ in $(seq 1 60); do
-                    if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
-                      get "pod/$name" -o json 2>/dev/null); then
-                      removed=1
-                      break
-                    fi
-                    live_uid=$(jq -er '.metadata.uid' <<<"$live")
-                    [[ "$live_uid" == "$uid" ]] || {
-                      cleanup_failed=1
-                      break
-                    }
-                    sleep 1
-                  done
-                  ((removed == 1)) || cleanup_failed=1
-                fi
-              fi
-            fi
-            ((cleanup_failed == 0)) || exit 12
-            exit "$rc"
-          }
-          trap cleanup EXIT
-          created=1
-          uid=$(kubectl --kubeconfig "$kubeconfig" -n combo-review run "$name" \
-            --image="$image" \
-            --image-pull-policy=Always \
-            --restart=Never \
-            --overrides='{"metadata":{"labels":{"combo.build/smoke":"ghcr-pull"}},"spec":{"imagePullSecrets":[{"name":"combo-preview-ghcr-pull"}]}}' \
-            -o json --command -- /bin/sh -c 'exit 0' | jq -er '.metadata.uid')
-          [[ -n "$uid" ]]
-          kubectl --kubeconfig "$kubeconfig" -n combo-review wait \
-            --for=jsonpath='{.status.phase}'=Succeeded "pod/$name" \
-            --timeout=180s >/dev/null
-          [[ "$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
-            get "pod/$name" \
-            -o jsonpath='{.status.containerStatuses[0].state.terminated.exitCode}')" == 0 ]]
-          REMOTE
 
       - name: Upload and deploy the exact Preview bundle
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.policy.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
@@ -408,6 +890,11 @@ jobs:
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')" == "$REVISION" ]]
+          [[ "$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
+            --jq '.value')" == enabled ]]
           archive="$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" .
           chmod 0600 "$archive"
@@ -417,6 +904,11 @@ jobs:
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
           scp -q "$archive" "release-target:$temporary"
           ssh release-target mv -fT -- "$temporary" "$remote"
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')" == "$REVISION" ]]
+          [[ "$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
+            --jq '.value')" == enabled ]]
           ssh release-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
           set -euo pipefail
           incoming=$1
@@ -437,7 +929,18 @@ jobs:
             sha256sum -c metadata/artifact-files.sha256 >/dev/null
           )
           manifest_digest=$(<"$work/metadata/release-manifest-digest.txt")
-          chmod 0700 "$work/scripts/deploy-release.sh" "$work/scripts/switch-release-traffic.sh"
+          chmod 0700 \
+            "$work/scripts/collect-release-inventory.sh" \
+            "$work/scripts/deploy-release.sh" \
+            "$work/scripts/rollback-release-traffic.sh" \
+            "$work/scripts/seal-release-traffic.sh" \
+            "$work/scripts/switch-release-traffic.sh"
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
           bash "$work/scripts/deploy-release.sh" \
             --environment preview \
             --fresh-reset \
@@ -469,7 +972,8 @@ jobs:
           files=(
             release.json release.sha256 migration-files.txt web-asset-manifest.json
             foundation.yaml init.yaml migrate.yaml apps.yaml
-            traffic-evidence.json cleanup-evidence.json deploy-evidence.json SHA256SUMS
+            traffic-evidence.json cleanup-plan.json cleanup-evidence.json
+            deploy-evidence.json SHA256SUMS
           )
           for file in "${files[@]}"; do
             [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
@@ -531,15 +1035,36 @@ jobs:
               and .traffic.manifestDigest == $manifestDigest
               and .traffic.checks.publicWebRelease == true
               and .traffic.checks.publicMinioReady == true
+              and .traffic.formalOrigin == null
+              and .traffic.formalAliasOrigin == null
+              and .traffic.formalNginx == null
+              and .traffic.routeCas.canary.contract == "preview"
+              and .traffic.routeCas.canary.afterMode == "release"
+              and .traffic.routeCas.formal == null
+              and .traffic.rollback.checkpointId == ("release-" + $revision)
+              and (.traffic.rollback.checkpointDigest | test("^sha256:[0-9a-f]{64}$"))
+              and .traffic.rollback.persisted == true
               and .migration.image == $apiImage
               and ([.deployments[].image] | sort)
                 == ([$apiImage, $apiImage, $runtimeImage, $webImage] | sort)
             ' "$evidence_dir/deploy-evidence.json" >/dev/null
-          jq -e --arg revision "$REVISION" '
-            .schemaVersion == 1
+          cleanup_plan_digest=$(sha256sum "$evidence_dir/cleanup-plan.json" |
+            awk '{print "sha256:" $1}')
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg cleanupPlanDigest "$cleanup_plan_digest" \
+            --slurpfile plan "$evidence_dir/cleanup-plan.json" '
+            .schemaVersion == 2
+            and .purpose == "superseded-release-cleanup"
             and .environment == "preview"
             and .namespace == "combo-review"
             and .sourceSha == $revision
+            and .releaseId == ("release-" + $revision)
+            and .manifestDigest == $manifestDigest
+            and .cleanupPlanDigest == $cleanupPlanDigest
+            and .targets == $plan[0].targets
+            and .capturedStorage == $plan[0].capturedStorage
             and .verifiedAbsent == true
           ' "$evidence_dir/cleanup-evidence.json" >/dev/null
           deploy_digest=$(sha256sum "$evidence_dir/deploy-evidence.json" | awk '{print "sha256:" $1}')
@@ -551,42 +1076,333 @@ jobs:
           install -m 0644 "$evidence_dir/cleanup-evidence.json" \
             "$RUNNER_TEMP/preview-remote-cleanup-evidence.json"
 
+      - name: Record the exact Preview deployment identity
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+          PREVIEW_RUN_ID: ${{ github.run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          release="$RELEASE_ROOT/metadata/release.json"
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" |
+            awk '{print "sha256:" $1}')
+          jq -n \
+            --slurpfile release "$release" \
+            --arg sourceSha "$REVISION" \
+            --argjson sourceCiRunId "$SOURCE_RUN_ID" \
+            --argjson sourceCiRunAttempt "$SOURCE_RUN_ATTEMPT" \
+            --argjson deploymentRunId "$PREVIEW_RUN_ID" \
+            --argjson deploymentRunAttempt "$PREVIEW_RUN_ATTEMPT" \
+            --argjson releaseArtifactId "$SOURCE_ARTIFACT_ID" \
+            --arg releaseArtifactName "$SOURCE_ARTIFACT_NAME" \
+            --arg releaseArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
+            --arg releaseManifestDigest "$manifest_digest" \
+            --arg artifactFileSetDigest "$file_set_digest" '{
+              schemaVersion: 1,
+              environment: "preview",
+              namespace: "combo-review",
+              sourceSha: $sourceSha,
+              sourceCiRunId: $sourceCiRunId,
+              sourceCiRunAttempt: $sourceCiRunAttempt,
+              deploymentWorkflow: ".github/workflows/preview.yml",
+              deploymentRunId: $deploymentRunId,
+              deploymentRunAttempt: $deploymentRunAttempt,
+              releaseArtifactId: $releaseArtifactId,
+              releaseArtifactName: $releaseArtifactName,
+              releaseArtifactDigest: $releaseArtifactDigest,
+              releaseId: $release[0].releaseId,
+              releaseManifestDigest: $releaseManifestDigest,
+              artifactFileSetDigest: $artifactFileSetDigest,
+              webAssetManifestDigest: $release[0].webAssetManifest,
+              images: $release[0].images
+            }' >"$RUNNER_TEMP/preview-identity.json"
+
+      - name: Run the exact-bundle six-area Preview browser acceptance
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          REVIEW_ACCESS_TOKEN: ${{ secrets.CLOUD_REVIEW_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$REVIEW_ACCESS_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
+            echo 'The protected cloud-review Environment lacks a valid REVIEW_ACCESS_TOKEN.' >&2
+            exit 1
+          }
+          archive="$RUNNER_TEMP/combo-preview-acceptance-${REVISION}.tar.gz"
+          tar -C "$RELEASE_ROOT" -czf "$archive" acceptance
+          chmod 0600 "$archive"
+          remote="data/combo-release-incoming/${REVISION}.preview-acceptance.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.preview-acceptance.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          {
+            printf '%s\n' "$REVIEW_ACCESS_TOKEN"
+            cat <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          revision=$2
+          run_id=$3
+          run_attempt=$4
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.preview-acceptance.${run_id}.${run_attempt}.tar.gz" ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          archive="$HOME/$incoming"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-preview-acceptance.XXXXXX")
+          output_dir="$HOME/data/combo-acceptance/preview"
+          output="$output_dir/${revision}.${run_id}.${run_attempt}.json"
+          cleanup() {
+            unset COMBO_REVIEW_ACCESS_TOKEN
+            rm -f -- "$archive"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          [[ -f "$work/acceptance/live-browser-acceptance.mjs" ]]
+          [[ -f "$work/acceptance/playwright-core.tgz" ]]
+          install -d -m 0700 "$work/acceptance/node_modules" "$output_dir"
+          tar -xzf "$work/acceptance/playwright-core.tgz" \
+            --no-same-owner -C "$work/acceptance/node_modules"
+          [[ -f "$work/acceptance/node_modules/playwright-core/package.json" ]]
+          [[ ! -e "$output" ]]
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          node "$work/acceptance/live-browser-acceptance.mjs" \
+            --environment preview \
+            --revision "$revision" \
+            --web-origin https://review.43-160-242-46.sslip.io \
+            --output "$output"
+          chmod 0600 "$output"
+          REMOTE
+          } | ssh release-target \
+            "IFS= read -r review_access; export COMBO_REVIEW_ACCESS_TOKEN=\"\$review_access\"; unset review_access; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
+
+      - name: Fetch and validate the six-area Preview browser evidence
+        id: browser_admission
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          IDENTITY: ${{ runner.temp }}/preview-identity.json
+        run: |
+          set -euo pipefail
+          remote="data/combo-acceptance/preview/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.json"
+          evidence="$RUNNER_TEMP/preview-browser-acceptance.json"
+          scp -q "release-target:$remote" "$evidence"
+          chmod 0600 "$evidence"
+          ssh release-target rm -f -- "$remote"
+          evidence_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-browser \
+            --environment preview \
+            --evidence "$evidence" \
+            --identity "$IDENTITY")
+          [[ "$evidence_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'evidence_digest=%s\n' "$evidence_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Prove the current Preview checkpoint and complete resource inventory
+        id: live_admission
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          IDENTITY: ${{ runner.temp }}/preview-identity.json
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          checkpoint="$RUNNER_TEMP/preview-current-checkpoint.json"
+          inventory="$RUNNER_TEMP/preview-resource-inventory.json"
+          live_runtime="$RUNNER_TEMP/preview-live-runtime.json"
+          ssh release-target bash -s -- "$REVISION" <<'REMOTE' >"$checkpoint"
+          set -euo pipefail
+          revision=$1
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          file="$HOME/data/combo-releases/goal-a/preview/current.json"
+          [[ -f "$file" && ! -L "$file" ]]
+          cat "$file"
+          REMOTE
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$(jq -er '.releaseManifestDigest' "$IDENTITY")" '
+              keys == ([
+                "environment", "evidencePath", "manifestDigest", "namespace",
+                "releaseId", "schemaVersion", "sourceSha", "status"
+              ] | sort)
+              and .schemaVersion == 1
+              and .status == "passed"
+              and .environment == "preview"
+              and .namespace == "combo-review"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .evidencePath == (
+                "/home/xingzheng/data/combo-releases/goal-a/preview/release-" + $revision
+              )
+            ' "$checkpoint" >/dev/null
+
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          inventory_collector="data/combo-release-incoming/${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.inventory.sh"
+          runtime_collector="data/combo-release-incoming/${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.sh"
+          inventory_remote="data/combo-acceptance/preview/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.inventory.json"
+          runtime_remote="data/combo-acceptance/preview/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.json"
+          scp -q "$RELEASE_ROOT/scripts/collect-release-inventory.sh" \
+            "release-target:.${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.inventory.upload"
+          scp -q "$RELEASE_ROOT/scripts/collect-live-runtime-evidence.sh" \
+            "release-target:.${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.upload"
+          ssh release-target mv -fT -- \
+            ".${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.inventory.upload" \
+            "$inventory_collector"
+          ssh release-target mv -fT -- \
+            ".${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.upload" \
+            "$runtime_collector"
+          ssh release-target bash -s -- \
+            "$REVISION" "$inventory_collector" "$runtime_collector" \
+            "$inventory_remote" "$runtime_remote" <<'REMOTE'
+          set -euo pipefail
+          revision=$1
+          inventory_collector="$HOME/$2"
+          runtime_collector="$HOME/$3"
+          inventory_output="$HOME/$4"
+          runtime_output="$HOME/$5"
+          for file in "$inventory_collector" "$runtime_collector"; do
+            [[ -f "$file" && ! -L "$file" ]]
+          done
+          install -d -m 0700 "$(dirname "$inventory_output")"
+          [[ ! -e "$inventory_output" && ! -e "$runtime_output" ]]
+          bash "$inventory_collector" \
+            --environment preview --source-sha "$revision" --output "$inventory_output"
+          bash "$runtime_collector" \
+            --environment preview --source-sha "$revision" --output "$runtime_output"
+          REMOTE
+          ssh release-target cat "$inventory_remote" >"$inventory"
+          ssh release-target cat "$runtime_remote" >"$live_runtime"
+          chmod 0600 "$inventory" "$live_runtime"
+          ssh release-target rm -f -- \
+            "$inventory_collector" "$runtime_collector" "$inventory_remote" "$runtime_remote"
+          inventory_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-inventory --inventory "$inventory" --identity "$IDENTITY")
+          live_runtime_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-runtime --evidence "$live_runtime" --identity "$IDENTITY")
+          checkpoint_digest=$(sha256sum "$checkpoint" | awk '{print "sha256:" $1}')
+          [[ "$inventory_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$live_runtime_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$checkpoint_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            printf 'inventory_digest=%s\n' "$inventory_digest"
+            printf 'live_runtime_digest=%s\n' "$live_runtime_digest"
+            printf 'checkpoint_digest=%s\n' "$checkpoint_digest"
+          } >>"$GITHUB_OUTPUT"
+
       - name: Create Preview promotion evidence
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.policy.outputs.revision }}
           SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+          TEST_RUN_ID: ${{ needs.policy.outputs.test_run_id }}
+          TEST_RUN_ATTEMPT: ${{ needs.policy.outputs.test_run_attempt }}
+          TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
+          TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
+          TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
+          TEST_IDENTITY_DIGEST: ${{ steps.test_admission.outputs.identity_digest }}
+          TEST_BROWSER_ACCEPTANCE_DIGEST: ${{ steps.test_admission.outputs.browser_digest }}
+          TEST_SOURCE_RELEASE_DIGEST: ${{ steps.test_admission.outputs.source_release_digest }}
+          TEST_DEPLOYMENT_EVIDENCE_DIGEST: ${{ steps.test_admission.outputs.deployment_digest }}
           PREVIEW_RUN_ID: ${{ github.run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
           REMOTE_DEPLOY_DIGEST: ${{ steps.remote_evidence.outputs.deploy_digest }}
           REMOTE_CLEANUP_DIGEST: ${{ steps.remote_evidence.outputs.cleanup_digest }}
+          CHECKPOINT_DIGEST: ${{ steps.live_admission.outputs.checkpoint_digest }}
+          INVENTORY_DIGEST: ${{ steps.live_admission.outputs.inventory_digest }}
+          LIVE_RUNTIME_DIGEST: ${{ steps.live_admission.outputs.live_runtime_digest }}
+          BROWSER_ACCEPTANCE_DIGEST: ${{ steps.browser_admission.outputs.evidence_digest }}
         run: |
           set -euo pipefail
           manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
           file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
+          identity_digest=$(sha256sum "$RUNNER_TEMP/preview-identity.json" |
+            awk '{print "sha256:" $1}')
           deployed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           jq -n \
             --slurpfile release "$RELEASE_ROOT/metadata/release.json" \
             --arg sourceSha "$REVISION" \
             --argjson sourceCiRunId "$SOURCE_RUN_ID" \
+            --argjson sourceCiRunAttempt "$SOURCE_RUN_ATTEMPT" \
+            --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
+            --arg sourceArtifactName "$SOURCE_ARTIFACT_NAME" \
+            --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
+            --argjson testRunId "$TEST_RUN_ID" \
+            --argjson testRunAttempt "$TEST_RUN_ATTEMPT" \
+            --argjson testEvidenceArtifactId "$TEST_EVIDENCE_ARTIFACT_ID" \
+            --arg testEvidenceArtifactName "$TEST_EVIDENCE_ARTIFACT_NAME" \
+            --arg testEvidenceArtifactDigest "$TEST_EVIDENCE_ARTIFACT_DIGEST" \
+            --arg testIdentityDigest "$TEST_IDENTITY_DIGEST" \
+            --arg testBrowserAcceptanceDigest "$TEST_BROWSER_ACCEPTANCE_DIGEST" \
+            --arg testSourceReleaseDigest "$TEST_SOURCE_RELEASE_DIGEST" \
+            --arg testDeploymentEvidenceDigest "$TEST_DEPLOYMENT_EVIDENCE_DIGEST" \
             --argjson previewRunId "$PREVIEW_RUN_ID" \
+            --argjson previewRunAttempt "$PREVIEW_RUN_ATTEMPT" \
             --arg releaseManifestDigest "$manifest_digest" \
             --arg artifactFileSetDigest "$file_set_digest" \
+            --arg identityDigest "$identity_digest" \
             --arg remoteDeployEvidenceDigest "$REMOTE_DEPLOY_DIGEST" \
             --arg remoteCleanupEvidenceDigest "$REMOTE_CLEANUP_DIGEST" \
+            --arg checkpointDigest "$CHECKPOINT_DIGEST" \
+            --arg resourceInventoryDigest "$INVENTORY_DIGEST" \
+            --arg liveRuntimeDigest "$LIVE_RUNTIME_DIGEST" \
+            --arg browserAcceptanceDigest "$BROWSER_ACCEPTANCE_DIGEST" \
             --arg deployedAt "$deployed_at" '
               {
-                schemaVersion: 1,
+                schemaVersion: 4,
                 status: "passed",
                 environment: "preview",
                 namespace: "combo-review",
                 sourceSha: $sourceSha,
                 sourceCiRunId: $sourceCiRunId,
+                sourceCiRunAttempt: $sourceCiRunAttempt,
+                sourceArtifactId: $sourceArtifactId,
+                sourceArtifactName: $sourceArtifactName,
+                sourceArtifactDigest: $sourceArtifactDigest,
+                testRunId: $testRunId,
+                testRunAttempt: $testRunAttempt,
+                testEvidenceArtifactId: $testEvidenceArtifactId,
+                testEvidenceArtifactName: $testEvidenceArtifactName,
+                testEvidenceArtifactDigest: $testEvidenceArtifactDigest,
+                testIdentityDigest: $testIdentityDigest,
+                testBrowserAcceptanceDigest: $testBrowserAcceptanceDigest,
+                testSourceReleaseDigest: $testSourceReleaseDigest,
+                testDeploymentEvidenceDigest: $testDeploymentEvidenceDigest,
                 previewRunId: $previewRunId,
+                previewRunAttempt: $previewRunAttempt,
                 releaseArtifact: ("combo-release-" + $sourceSha),
                 releaseManifestDigest: $releaseManifestDigest,
                 artifactFileSetDigest: $artifactFileSetDigest,
+                identityDigest: $identityDigest,
                 remoteDeployEvidenceDigest: $remoteDeployEvidenceDigest,
                 remoteCleanupEvidenceDigest: $remoteCleanupEvidenceDigest,
+                checkpointDigest: $checkpointDigest,
+                resourceInventoryDigest: $resourceInventoryDigest,
+                liveRuntimeDigest: $liveRuntimeDigest,
+                browserAcceptanceDigest: $browserAcceptanceDigest,
                 images: $release[0].images,
                 deployedAt: $deployedAt
               }
@@ -600,6 +1416,11 @@ jobs:
             ${{ runner.temp }}/preview-promotion.json
             ${{ runner.temp }}/preview-remote-deploy-evidence.json
             ${{ runner.temp }}/preview-remote-cleanup-evidence.json
+            ${{ runner.temp }}/preview-identity.json
+            ${{ runner.temp }}/preview-current-checkpoint.json
+            ${{ runner.temp }}/preview-resource-inventory.json
+            ${{ runner.temp }}/preview-live-runtime.json
+            ${{ runner.temp }}/preview-browser-acceptance.json
           if-no-files-found: error
           retention-days: 30
 
@@ -609,16 +1430,140 @@ jobs:
           REVISION: ${{ needs.policy.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
         run: |
           set +e
-          if [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ && -f "$HOME/.ssh/config" ]]; then
-            ssh release-target rm -f -- \
-              "data/combo-release-incoming/${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
-              ".${REVISION}.preview.${RUN_ID}.${RUN_ATTEMPT}.upload" \
-              >/dev/null 2>&1 || true
+          cleanup_rc=0
+          if [[ -f "$HOME/.ssh/config" ]]; then
+            if [[ ! "$REVISION" =~ ^[0-9a-f]{40}$ ||
+              ! "$RUN_ID" =~ ^[1-9][0-9]*$ ||
+              ! "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+              cleanup_rc=1
+            else
+              web_image=
+              if [[ -f "$RELEASE_ROOT/metadata/release.json" ]]; then
+                web_image=$(jq -r '.images.web // ""' \
+                  "$RELEASE_ROOT/metadata/release.json" 2>/dev/null)
+              fi
+              if ! ssh release-target bash -s -- \
+                "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" "$web_image" <<'REMOTE'
+            set -euo pipefail
+            revision=$1
+            run_id=$2
+            run_attempt=$3
+            web_image=$4
+            kubeconfig="$HOME/.kube/config"
+            [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+            rm -f -- \
+              "data/combo-release-incoming/${revision}.preview.${run_id}.${run_attempt}.tar.gz" \
+              "data/combo-release-incoming/${revision}.preview-acceptance.${run_id}.${run_attempt}.tar.gz" \
+              "data/combo-acceptance/preview/${revision}.${run_id}.${run_attempt}.json" \
+              "data/combo-acceptance/preview/${revision}.${run_id}.${run_attempt}.inventory.json" \
+              "data/combo-acceptance/preview/${revision}.${run_id}.${run_attempt}.live-runtime.json" \
+              ".${revision}.preview.${run_id}.${run_attempt}.upload" \
+              ".${revision}.preview-acceptance.${run_id}.${run_attempt}.upload" \
+              ".${revision}.preview.${run_id}.${run_attempt}.inventory.upload" \
+              ".${revision}.preview.${run_id}.${run_attempt}.live-runtime.upload" \
+              "data/combo-release-incoming/${revision}.preview.${run_id}.${run_attempt}.inventory.sh" \
+              "data/combo-release-incoming/${revision}.preview.${run_id}.${run_attempt}.live-runtime.sh"
+            cleanup_probes() {
+              local cleanup_failed=0 current_uid live live_uid name removed
+              for name in \
+                "combo-preview-pull-${run_id}-${run_attempt}" \
+                "combo-preview-pull-${run_id}-${run_attempt}-retry"; do
+                if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                  get "pod/$name" --ignore-not-found -o json 2>/dev/null); then
+                  cleanup_failed=1
+                  continue
+                fi
+                if [[ -z "$live" ]]; then
+                  continue
+                fi
+                if [[ ! "$web_image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]] ||
+                  ! jq -e \
+                    --arg runId "$run_id" \
+                    --arg runAttempt "$run_attempt" \
+                    --arg image "$web_image" '
+                      .metadata.labels["combo.build/smoke"] == "ghcr-pull"
+                      and .metadata.labels["combo.build/workflow-run"] == $runId
+                      and .metadata.labels["combo.build/workflow-attempt"] == $runAttempt
+                      and (.spec.containers | length) == 1
+                      and .spec.containers[0].image == $image
+                    ' <<<"$live" >/dev/null; then
+                  cleanup_failed=1
+                  continue
+                fi
+                if ! live_uid=$(jq -er '.metadata.uid' <<<"$live"); then
+                  cleanup_failed=1
+                  continue
+                fi
+                if ! jq -n --arg uid "$live_uid" '{
+                  apiVersion: "v1",
+                  kind: "DeleteOptions",
+                  propagationPolicy: "Foreground",
+                  preconditions: {uid: $uid}
+                }' |
+                  kubectl --kubeconfig "$kubeconfig" \
+                    delete --raw="/api/v1/namespaces/combo-review/pods/$name" \
+                    -f - >/dev/null; then
+                  cleanup_failed=1
+                  continue
+                fi
+                removed=0
+                for _ in $(seq 1 60); do
+                  if ! live=$(kubectl --kubeconfig "$kubeconfig" -n combo-review \
+                    get "pod/$name" --ignore-not-found -o json 2>/dev/null); then
+                    cleanup_failed=1
+                    break
+                  fi
+                  if [[ -z "$live" ]]; then
+                    removed=1
+                    break
+                  fi
+                  if ! current_uid=$(jq -er '.metadata.uid' <<<"$live") ||
+                    [[ "$current_uid" != "$live_uid" ]]; then
+                    cleanup_failed=1
+                    break
+                  fi
+                  sleep 1
+                done
+                ((removed == 1)) || cleanup_failed=1
+              done
+              ((cleanup_failed == 0))
+            }
+            cleanup_probes
+          REMOTE
+              then
+                cleanup_rc=1
+              fi
+            fi
           fi
-          rm -f -- \
+          if ! rm -f -- \
+            "$RUNNER_TEMP/combo-release.zip" \
+            "$RUNNER_TEMP/test-evidence.zip" \
             "$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz" \
+            "$RUNNER_TEMP/combo-preview-acceptance-${REVISION}.tar.gz" \
+            "$RUNNER_TEMP/preview-promotion.json" \
+            "$RUNNER_TEMP/preview-remote-deploy-evidence.json" \
+            "$RUNNER_TEMP/preview-remote-cleanup-evidence.json" \
+            "$RUNNER_TEMP/preview-identity.json" \
+            "$RUNNER_TEMP/preview-current-checkpoint.json" \
+            "$RUNNER_TEMP/preview-resource-inventory.json" \
+            "$RUNNER_TEMP/preview-live-runtime.json" \
+            "$RUNNER_TEMP/preview-browser-acceptance.json" \
             "$HOME/.ssh/deploy_key" \
             "$HOME/.ssh/known_hosts" \
-            "$HOME/.ssh/config"
+            "$HOME/.ssh/config"; then
+            cleanup_rc=1
+          fi
+          if ! rm -rf -- \
+            "$RUNNER_TEMP/combo-release" \
+            "$RUNNER_TEMP/test-evidence" \
+            "$RUNNER_TEMP/preview-remote-evidence"; then
+            cleanup_rc=1
+          fi
+          if ((cleanup_rc != 0)); then
+            echo 'Preview transient cleanup could not be confirmed.' >&2
+          fi
+          exit "$cleanup_rc"
