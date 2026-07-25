@@ -85,6 +85,34 @@ describe('AccountMenu', () => {
     expect(requestLogout).toHaveBeenCalledTimes(2);
   });
 
+  it('Preview 退出后回到访问闸，不跟随外部 OIDC 登出地址', async () => {
+    window.history.replaceState({}, '', '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history');
+    const requestLogout = vi.fn(async () => ({
+      loggedOut: true as const,
+      logoutUrl: 'https://auth.example/oidc/session/end?client_id=combo',
+    }));
+    const navigateAfterLogout = vi.fn<(url: string) => void>();
+    render(
+      <AccountMenu
+        account={ACCOUNT}
+        environment="preview"
+        requestLogout={requestLogout}
+        navigateAfterLogout={navigateAfterLogout}
+      />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: '打开账户菜单：G · 创作者' }));
+    await userEvent.click(screen.getByRole('button', { name: '退出登录' }));
+
+    await waitFor(() =>
+      expect(navigateAfterLogout).toHaveBeenCalledWith(
+        `/__review/enter?returnTo=${encodeURIComponent(
+          '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history',
+        )}`,
+      ),
+    );
+  });
+
   it('Escape 关闭菜单并把焦点交还触发器', async () => {
     render(<AccountMenu account={ACCOUNT} />);
     const trigger = screen.getByRole('button', { name: '打开账户菜单：G · 创作者' });

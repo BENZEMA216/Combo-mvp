@@ -55,6 +55,7 @@ async function createDirectArtifactTool(input: {
   await createTurn(input.db, { id: turnId, sessionId: input.sessionId });
   const controller = new AbortController();
   return {
+    turnId,
     tool: createArtifactTool({
       db: input.db,
       objectStore: input.store,
@@ -261,6 +262,7 @@ describe('POST /runtime/studio/sessions', () => {
       capabilityId: cap.id,
       artifactId: firstRevision.details!.artifactId,
       studioSessionId: first.id,
+      turnId: direct.turnId,
     });
     await archiveSessionRow(db, first.id, ME);
 
@@ -348,8 +350,8 @@ describe('POST /runtime/studio/sessions', () => {
     expect(adopted).toMatchObject({
       session_id: studioId,
       meta: expect.objectContaining({
-        adoption: 'legacy-owner-consume-html',
-        legacySourceArtifactId: valid.details!.artifactId,
+        adoption: 'existing-owner-consume-html',
+        sourceArtifactId: valid.details!.artifactId,
       }),
     });
     expect(await store.getObjectText(ARTIFACT_BUCKET as never, adopted!.storage_key)).toBe(
@@ -418,6 +420,7 @@ describe('POST /runtime/sessions capability UI 快照', () => {
       capabilityId: withUi.id,
       artifactId: currentRevision.details!.artifactId,
       studioSessionId: studio.id,
+      turnId: currentTool.turnId,
     });
 
     const seeded = await call(
@@ -496,6 +499,109 @@ describe('session 端点 owner 守卫', () => {
     ).toMatchObject({ turnId });
   });
 
+  it('GET /runtime/sessions/:id：从 PostgreSQL 返回 active Turn，终态后清空', async () => {
+    const db = new FakeDb();
+    const sessionId = await seedOwnedSession(db, ME);
+    const turnId = '22222222-2222-4222-8222-222222222222';
+    const turn = await createTurn(db, { id: turnId, sessionId });
+
+    const running = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, userId: ME, params: { id: sessionId } }),
+    );
+    expect(
+      (running.body as { data: { activeTurn: { id: string; createdAt: string } | null } }).data
+        .activeTurn,
+    ).toEqual({ id: turnId, createdAt: turn.createdAt });
+
+    await finishTurnCas(db, { id: turnId, status: 'interrupted' });
+    const terminal = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, userId: ME, params: { id: sessionId } }),
+    );
+    expect(
+      (terminal.body as { data: { activeTurn: { id: string } | null } }).data.activeTurn,
+    ).toBeNull();
+  });
+
+  it('Studio 详情只保留种子、completed 最终 revision 和 active 最新候选', async () => {
+    const db = new FakeDb();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    const studio = await getOrCreateStudioSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: ME,
+    });
+    const baseTime = Date.parse('2026-07-25T00:00:00.000Z');
+    const addTurn = (
+      id: string,
+      status: 'running' | 'completed' | 'failed' | 'interrupted',
+      offset: number,
+    ) => {
+      db.turns.set(id, {
+        id,
+        session_id: studio.id,
+        status,
+        last_error: null,
+        created_at: new Date(baseTime + offset).toISOString(),
+        finished_at: status === 'running' ? null : new Date(baseTime + offset + 1).toISOString(),
+      });
+    };
+    addTurn('turn-completed', 'completed', 100);
+    addTurn('turn-failed', 'failed', 200);
+    addTurn('turn-running', 'running', 300);
+    const addArtifact = (id: string, turnId: string | null, offset: number) => {
+      const timestamp = new Date(baseTime + offset).toISOString();
+      db.artifacts.set(id, {
+        id,
+        session_id: studio.id,
+        turn_id: turnId,
+        kind: 'html',
+        title: id,
+        storage_key: `artifacts/${studio.id}/${id}`,
+        meta: {},
+        created_at: timestamp,
+        updated_at: timestamp,
+      });
+    };
+    addArtifact('seed', null, 10);
+    addArtifact('completed-early', 'turn-completed', 110);
+    addArtifact('completed-final', 'turn-completed', 120);
+    addArtifact('failed-final', 'turn-failed', 210);
+    addArtifact('running-early', 'turn-running', 310);
+    addArtifact('running-latest', 'turn-running', 320);
+    cap.ui_artifact_id = 'completed-final';
+
+    const reply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, userId: ME, params: { id: studio.id } }),
+    );
+    const detail = (
+      reply.body as {
+        data: {
+          artifacts: Array<{
+            id: string;
+            sourceTurnId?: string;
+            createdAt: string;
+          }>;
+          activeTurn: { id: string } | null;
+          currentUiArtifactId: string | null;
+        };
+      }
+    ).data;
+
+    expect(detail.artifacts.map((artifact) => artifact.id)).toEqual([
+      'seed',
+      'completed-final',
+      'running-latest',
+    ]);
+    expect(detail.artifacts[1]).toMatchObject({
+      sourceTurnId: 'turn-completed',
+      createdAt: new Date(baseTime + 120).toISOString(),
+    });
+    expect(detail.activeTurn).toMatchObject({ id: 'turn-running' });
+    expect(detail.currentUiArtifactId).toBe('completed-final');
+  });
+
   it('GET /runtime/sessions/:id：透出 Agent 当前 UI 指针，区分落库 revision 与已保存 UI', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
@@ -543,6 +649,7 @@ describe('session 端点 owner 守卫', () => {
       capabilityId: cap.id,
       artifactId: revision.details!.artifactId,
       studioSessionId: studio.id,
+      turnId,
     });
 
     const reply = await call(

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  loadReleaseMetadata,
+  ReleaseMetadataLoadError,
   ReleaseMetadataSchema,
   releaseMetadataFromEnv,
+  type ReleaseMetadataFetch,
   type ReleaseMetadata,
   type ReleaseMetadataEnvironment,
 } from '../index.js';
@@ -58,5 +61,67 @@ describe('release metadata contract', () => {
         COMBO_RELEASE_ID: `release-${'0'.repeat(40)}`,
       }),
     ).toThrow(/placeholder sourceSha/);
+  });
+
+  it('loads runtime metadata without cache or cross-origin credentials', async () => {
+    const calls: Parameters<ReleaseMetadataFetch>[] = [];
+    const fetchMetadata: ReleaseMetadataFetch = async (...args) => {
+      calls.push(args);
+      return { ok: true, json: async () => metadata };
+    };
+
+    await expect(loadReleaseMetadata('/runtime-config.json', fetchMetadata)).resolves.toEqual(
+      metadata,
+    );
+    expect(calls).toEqual([
+      [
+        '/runtime-config.json',
+        {
+          cache: 'no-store',
+          credentials: 'same-origin',
+          headers: { Accept: 'application/json' },
+        },
+      ],
+    ]);
+  });
+
+  it.each([
+    {
+      name: 'HTTP failure',
+      fetchMetadata: async () => ({ ok: false, json: async () => metadata }),
+      failure: 'http',
+    },
+    {
+      name: 'invalid JSON',
+      fetchMetadata: async () => ({
+        ok: true,
+        json: async () => {
+          throw new SyntaxError('invalid JSON');
+        },
+      }),
+      failure: 'invalid',
+    },
+    {
+      name: 'invalid metadata',
+      fetchMetadata: async () => ({
+        ok: true,
+        json: async () => ({ ...metadata, sourceSha: 'short' }),
+      }),
+      failure: 'invalid',
+    },
+    {
+      name: 'network failure',
+      fetchMetadata: async () => {
+        throw new Error('network unavailable');
+      },
+      failure: 'unavailable',
+    },
+  ] as const)('fails closed for $name', async ({ fetchMetadata, failure }) => {
+    const loading = loadReleaseMetadata('/runtime-config.json', fetchMetadata);
+    await expect(loading).rejects.toBeInstanceOf(ReleaseMetadataLoadError);
+    await expect(loading).rejects.toMatchObject({
+      name: 'ReleaseMetadataLoadError',
+      failure,
+    });
   });
 });

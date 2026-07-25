@@ -71,6 +71,7 @@ export interface TurnRowF {
 export interface ArtifactRowF {
   id: string;
   session_id: string;
+  turn_id?: string | null;
   kind: string;
   title: string | null;
   storage_key: string;
@@ -228,7 +229,12 @@ export class FakeDb implements Queryable, TxPool {
     const s = sql.replace(/\s+/g, ' ').trim();
     this.queries.push(s);
 
-    if (s === 'BEGIN' || s === 'COMMIT' || s === 'ROLLBACK') {
+    if (
+      s === 'BEGIN' ||
+      s === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' ||
+      s === 'COMMIT' ||
+      s === 'ROLLBACK'
+    ) {
       this.txLog.push(s);
       return { rows: [], rowCount: null };
     }
@@ -238,7 +244,12 @@ export class FakeDb implements Queryable, TxPool {
 
     // ---------- capabilities ----------
     if (s.startsWith('UPDATE capabilities c SET ui_artifact_id = $2')) {
-      const [capabilityId, artifactId, studioSessionId] = params as [string, string, string];
+      const [capabilityId, artifactId, studioSessionId, turnId] = params as [
+        string,
+        string,
+        string,
+        string | undefined,
+      ];
       const capability = this.capabilities.get(capabilityId);
       const artifact = this.artifacts.get(artifactId);
       const session = this.sessions.get(studioSessionId);
@@ -248,8 +259,14 @@ export class FakeDb implements Queryable, TxPool {
         !artifact ||
         artifact.session_id !== studioSessionId ||
         artifact.kind !== 'html' ||
+        (s.includes('a.turn_id = $4') &&
+          (artifact.turn_id !== turnId ||
+            this.turns.get(turnId ?? '')?.session_id !== artifact.session_id ||
+            this.turns.get(turnId ?? '')?.status !== 'completed')) ||
+        (s.includes('a.turn_id IS NULL') && artifact.turn_id != null) ||
         !session ||
         session.capability_id !== capabilityId ||
+        session.owner_user_id !== capability.owner_user_id ||
         session.mode !== 'studio'
       ) {
         return { rows: [], rowCount: 0 };
@@ -267,8 +284,12 @@ export class FakeDb implements Queryable, TxPool {
         !capability ||
         !artifact ||
         artifact.kind !== 'html' ||
+        (artifact.turn_id != null &&
+          (this.turns.get(artifact.turn_id)?.session_id !== artifact.session_id ||
+            this.turns.get(artifact.turn_id)?.status !== 'completed')) ||
         !session ||
         session.capability_id !== capability.id ||
+        session.owner_user_id !== capability.owner_user_id ||
         session.mode !== 'studio'
       ) {
         return { rows: [], rowCount: 0 };
@@ -342,6 +363,31 @@ export class FakeDb implements Queryable, TxPool {
         .slice(0, 100)
         .map((x) => ({ ...x }));
       return { rows: rows as R[], rowCount: rows.length };
+    }
+    if (
+      s.startsWith('SELECT id FROM sessions WHERE id = $1 AND capability_id = $2') &&
+      s.includes('owner_user_id = $3') &&
+      s.includes('mode = $4') &&
+      s.includes("status = 'active'") &&
+      s.endsWith('FOR UPDATE')
+    ) {
+      const [id, capabilityId, ownerUserId, mode] = params as [
+        string,
+        string,
+        string,
+        SessionRowF['mode'],
+      ];
+      const session = this.sessions.get(id);
+      if (
+        !session ||
+        session.capability_id !== capabilityId ||
+        session.owner_user_id !== ownerUserId ||
+        session.mode !== mode ||
+        session.status !== 'active'
+      ) {
+        return { rows: [], rowCount: 0 };
+      }
+      return { rows: [{ id: session.id }] as R[], rowCount: 1 };
     }
     if (s === 'SELECT id FROM sessions WHERE id = $1 FOR UPDATE') {
       const session = this.sessions.get(params[0] as string);
@@ -417,6 +463,17 @@ export class FakeDb implements Queryable, TxPool {
       };
       this.turns.set(id, row);
       return { rows: [{ ...row }] as R[], rowCount: 1 };
+    }
+    if (
+      s.startsWith('SELECT id, created_at FROM turns') &&
+      s.includes("session_id = $1 AND status = 'running'")
+    ) {
+      const row = [...this.turns.values()].find(
+        (candidate) => candidate.session_id === params[0] && candidate.status === 'running',
+      );
+      return row
+        ? { rows: [{ id: row.id, created_at: row.created_at }] as R[], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
     }
     if (
       s.startsWith('SELECT id FROM turns') &&
@@ -597,7 +654,10 @@ export class FakeDb implements Queryable, TxPool {
             artifact.created_at < target.created_at &&
             sourceSession?.capability_id === capabilityId &&
             sourceSession.owner_user_id === ownerUserId &&
-            sourceSession.mode === 'consume'
+            sourceSession.mode === 'consume' &&
+            (artifact.turn_id == null ||
+              (this.turns.get(artifact.turn_id)?.session_id === artifact.session_id &&
+                this.turns.get(artifact.turn_id)?.status === 'completed'))
           );
         })
         .sort(
@@ -609,13 +669,14 @@ export class FakeDb implements Queryable, TxPool {
       return { rows: rows as R[], rowCount: rows.length };
     }
     if (s.startsWith('INSERT INTO artifacts')) {
-      const [id, sessionId, kind, title, storageKey, metaJson] = params as [
+      const [id, sessionId, kind, title, storageKey, metaJson, turnId] = params as [
         string,
         string,
         string,
         string,
         string,
         string,
+        string | null,
       ];
       const existing = this.artifacts.get(id);
       const now = nowIso();
@@ -629,6 +690,7 @@ export class FakeDb implements Queryable, TxPool {
             title,
             storage_key: storageKey,
             meta: JSON.parse(metaJson),
+            turn_id: turnId,
             updated_at: now,
           }
         : {
@@ -638,6 +700,7 @@ export class FakeDb implements Queryable, TxPool {
             title,
             storage_key: storageKey,
             meta: JSON.parse(metaJson) as Record<string, unknown>,
+            turn_id: turnId,
             created_at: now,
             updated_at: now,
           };
@@ -647,10 +710,12 @@ export class FakeDb implements Queryable, TxPool {
           {
             id: row.id,
             session_id: row.session_id,
+            turn_id: row.turn_id ?? null,
             kind: row.kind,
             title: row.title,
             storage_key: row.storage_key,
             meta: row.meta,
+            created_at: row.created_at,
             updated_at: row.updated_at,
           },
         ] as R[],
@@ -663,28 +728,72 @@ export class FakeDb implements Queryable, TxPool {
       return { rows: [{ id: a.id }] as R[], rowCount: 1 };
     }
     if (
-      s.includes("FROM artifacts WHERE session_id = $1 AND kind = 'html'") &&
-      s.includes('ORDER BY updated_at DESC')
+      s.includes('FROM artifacts a LEFT JOIN turns t ON t.id = a.turn_id') &&
+      s.includes("a.kind = 'html'") &&
+      s.includes('ORDER BY a.updated_at DESC')
     ) {
       const row = [...this.artifacts.values()]
-        .filter((artifact) => artifact.session_id === params[0] && artifact.kind === 'html')
+        .filter(
+          (artifact) =>
+            artifact.session_id === params[0] &&
+            artifact.kind === 'html' &&
+            (artifact.turn_id == null ||
+              (this.turns.get(artifact.turn_id)?.session_id === artifact.session_id &&
+                ['running', 'completed'].includes(this.turns.get(artifact.turn_id)?.status ?? ''))),
+        )
         .sort(
           (a, b) =>
             b.updated_at.localeCompare(a.updated_at) || b.created_at.localeCompare(a.created_at),
         )[0];
       return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
-    if (s.includes('FROM artifacts WHERE session_id = $1 ORDER BY created_at ASC')) {
+    if (s.includes('row_number() OVER') && s.includes('AS visible')) {
+      const candidates = [...this.artifacts.values()].filter((artifact) => {
+        if (artifact.session_id !== params[0]) return false;
+        if (artifact.turn_id == null) return true;
+        const turn = this.turns.get(artifact.turn_id);
+        return (
+          turn?.session_id === artifact.session_id &&
+          (turn.status === 'completed' || turn.status === 'running')
+        );
+      });
+      const latestByTurn = new Map<string, ArtifactRowF>();
+      const visible = candidates.filter((artifact) => {
+        if (artifact.turn_id == null) return true;
+        const existing = latestByTurn.get(artifact.turn_id);
+        if (
+          !existing ||
+          artifact.updated_at > existing.updated_at ||
+          (artifact.updated_at === existing.updated_at &&
+            (artifact.created_at > existing.created_at ||
+              (artifact.created_at === existing.created_at && artifact.id > existing.id)))
+        ) {
+          latestByTurn.set(artifact.turn_id, artifact);
+        }
+        return false;
+      });
+      visible.push(...latestByTurn.values());
+      const rows = visible
+        .sort((a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+        .map((artifact) => ({ ...artifact }));
+      return { rows: rows as R[], rowCount: rows.length };
+    }
+    if (
+      s.includes('FROM artifacts WHERE session_id = $1') &&
+      s.includes('ORDER BY created_at ASC')
+    ) {
       const rows = [...this.artifacts.values()]
         .filter((a) => a.session_id === params[0])
         .sort((a, b) => (a.created_at < b.created_at ? -1 : 1))
         .map((a) => ({
           id: a.id,
           session_id: a.session_id,
+          turn_id: a.turn_id ?? null,
           kind: a.kind,
           title: a.title,
           storage_key: a.storage_key,
           meta: a.meta,
+          created_at: a.created_at,
           updated_at: a.updated_at,
         }));
       return { rows: rows as R[], rowCount: rows.length };

@@ -7,13 +7,13 @@ export interface QueuePort {
   remove(queue: string, taskId: string): Promise<void>;
 }
 
-/** redis_hot streams：SSE 源 + outbox 桥接不冲突。 */
+/** redis_hot streams：Task 与 Runtime SSE 的可重放事件源。 */
 export interface EventStreamPort {
   /** 返回 entry id（= SSE id，Last-Event-ID 用）。 */
   xadd(streamKey: string, frame: { event: string; data: unknown }): Promise<string>;
 }
 
-/** redis_hot 锁：sweeper 单活、consumer lease 备选。 */
+/** redis_hot 带租约的分布式锁。 */
 export interface LockPort {
   acquire(key: string, ttlMs: number): Promise<{ token: string } | null>;
   renew(key: string, token: string, ttlMs: number): Promise<boolean>;

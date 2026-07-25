@@ -94,3 +94,77 @@ export function releaseMetadataFromEnv(environment: ReleaseMetadataEnvironment):
     webAssetManifest: environment.COMBO_WEB_ASSET_MANIFEST,
   });
 }
+
+export interface ReleaseMetadataFetchInit {
+  cache: 'no-store';
+  credentials: 'same-origin';
+  headers: Readonly<Record<string, string>>;
+}
+
+export interface ReleaseMetadataFetchResponse {
+  ok: boolean;
+  json: () => Promise<unknown>;
+}
+
+export type ReleaseMetadataFetch = (
+  url: string,
+  init: ReleaseMetadataFetchInit,
+) => Promise<ReleaseMetadataFetchResponse>;
+
+export type ReleaseMetadataLoadFailure = 'unavailable' | 'http' | 'invalid';
+
+/**
+ * 对外只暴露稳定的失败分类，不把响应正文、解析细节或部署内部信息带进界面。
+ */
+export class ReleaseMetadataLoadError extends Error {
+  readonly failure: ReleaseMetadataLoadFailure;
+
+  constructor(failure: ReleaseMetadataLoadFailure) {
+    super('Release metadata is unavailable or invalid');
+    this.name = 'ReleaseMetadataLoadError';
+    this.failure = failure;
+  }
+}
+
+function runtimeFetch(): ReleaseMetadataFetch {
+  const candidate = (globalThis as { fetch?: ReleaseMetadataFetch }).fetch;
+  if (!candidate) throw new ReleaseMetadataLoadError('unavailable');
+  return candidate;
+}
+
+/**
+ * 从 Web 容器在运行时生成的 JSON 读取发布身份。
+ *
+ * 该函数刻意不接受构建期环境变量作为退路；调用端只能在明确的本地开发模式下选择
+ * DEVELOPMENT_RELEASE_METADATA_ENV。Test、Preview 和 Production 必须拿到完整且通过 schema
+ * 校验的运行时身份。
+ */
+export async function loadReleaseMetadata(
+  url = '/runtime-config.json',
+  fetchMetadata: ReleaseMetadataFetch = runtimeFetch(),
+): Promise<ReleaseMetadata> {
+  let response: ReleaseMetadataFetchResponse;
+  try {
+    response = await fetchMetadata(url, {
+      cache: 'no-store',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json' },
+    });
+  } catch (cause) {
+    if (cause instanceof ReleaseMetadataLoadError) throw cause;
+    throw new ReleaseMetadataLoadError('unavailable');
+  }
+
+  if (!response.ok) throw new ReleaseMetadataLoadError('http');
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new ReleaseMetadataLoadError('invalid');
+  }
+
+  const parsed = ReleaseMetadataSchema.safeParse(payload);
+  if (!parsed.success) throw new ReleaseMetadataLoadError('invalid');
+  return parsed.data;
+}

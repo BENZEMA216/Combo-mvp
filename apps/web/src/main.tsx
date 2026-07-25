@@ -4,6 +4,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ApiError } from './api/index.js';
 import { installGlobalClientErrorHandlers } from './api/telemetry.js';
 import { App } from './App.js';
+import {
+  ReleaseMetadataFailure,
+  ReleaseMetadataLoading,
+  ReleaseMetadataProvider,
+  resolveWebReleaseMetadata,
+} from './shell/releaseIdentity.js';
 import { ThemeProvider } from './theme/ThemeProvider.js';
 import './styles.css';
 import './design-claude.css';
@@ -25,12 +31,39 @@ const queryClient = new QueryClient({
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('#root not found');
 
-createRoot(rootEl).render(
+const root = createRoot(rootEl);
+
+root.render(
   <StrictMode>
     <ThemeProvider>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
+      <ReleaseMetadataLoading />
     </ThemeProvider>
   </StrictMode>,
 );
+
+async function start(): Promise<void> {
+  try {
+    const metadata = await resolveWebReleaseMetadata({ development: import.meta.env.DEV });
+    root.render(
+      <StrictMode>
+        <ThemeProvider>
+          <ReleaseMetadataProvider metadata={metadata}>
+            <QueryClientProvider client={queryClient}>
+              <App />
+            </QueryClientProvider>
+          </ReleaseMetadataProvider>
+        </ThemeProvider>
+      </StrictMode>,
+    );
+  } catch {
+    root.render(
+      <StrictMode>
+        <ThemeProvider>
+          <ReleaseMetadataFailure />
+        </ThemeProvider>
+      </StrictMode>,
+    );
+  }
+}
+
+void start();

@@ -13,9 +13,17 @@
 import { createContext, useContext, type ReactElement, type ReactNode } from 'react';
 import { Outlet } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { API_PREFIX, MeViewSchema, envelopeSchema, type MeView } from '@cb/shared';
+import {
+  API_PREFIX,
+  MeViewSchema,
+  envelopeSchema,
+  type MeView,
+  type ReleaseMetadata,
+} from '@cb/shared';
 import { refreshSession } from '../api/sessionRefresh.js';
+import { sanitizeReturnTo } from '../safeReturnTo.js';
 import { ComboWordmark } from './brand.js';
+import { useReleaseMetadata } from './releaseIdentity.js';
 
 export {
   AUTH_REFRESH_PATH,
@@ -28,17 +36,33 @@ const MeEnvelopeSchema = envelopeSchema(MeViewSchema);
 
 /** 后端登录入口（302 跳 Logto）。非 SPA 路由：用 window.location.assign 整页跳转。 */
 export const AUTH_LOGIN_PATH = '/api/v1/auth/login';
+export const PREVIEW_BOOTSTRAP_PATH = '/__review/bootstrap';
 
 /**
  * 拼后端登录 URL：给了 returnTo（站内相对路径）则带 ?returnTo=<encoded>，否则裸路径。
- * 后端对 returnTo 做开放重定向防护 / 站内白名单（缺省回 /creator），前端只负责诚实携带当前访问上下文，
- * 让登录后回到原页（深链 /create/...?draftId=... 不丢、公开/个人页不被默认踢回 /creator）。
+ * 后端对 returnTo 做开放重定向防护 / 站内白名单（缺省回 /tasks），前端只负责诚实携带当前访问上下文，
+ * 让登录后回到原页（例如任务详情的 path + query 不丢）。
  */
 export function loginUrl(returnTo?: string): string {
-  // 仅接受同站相对路径（单个 / 开头）：挡掉绝对 http(s):// 与协议相对 //（前端侧第一道开放重定向防护，
-  // 后端仍做白名单兜底）。非法 returnTo 直接丢弃，回裸登录路径而非把不可信跳转目标带给后端。
-  if (!returnTo || !returnTo.startsWith('/') || returnTo.startsWith('//')) return AUTH_LOGIN_PATH;
-  return `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(returnTo)}`;
+  const safeReturnTo = sanitizeReturnTo(returnTo);
+  return safeReturnTo
+    ? `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(safeReturnTo)}`
+    : AUTH_LOGIN_PATH;
+}
+
+/** Preview 使用受访问闸保护的 dev-login bootstrap，不把身份恢复请求送往正式 OIDC。 */
+export function previewBootstrapUrl(returnTo?: string): string {
+  const safeReturnTo = sanitizeReturnTo(returnTo);
+  return safeReturnTo
+    ? `${PREVIEW_BOOTSTRAP_PATH}?returnTo=${encodeURIComponent(safeReturnTo)}`
+    : PREVIEW_BOOTSTRAP_PATH;
+}
+
+export function authEntryUrl(
+  environment: ReleaseMetadata['environment'],
+  returnTo?: string,
+): string {
+  return environment === 'preview' ? previewBootstrapUrl(returnTo) : loginUrl(returnTo);
 }
 
 /** 跳转后端登录端点（整页重定向；非 react-router 导航）。可带 returnTo 站内回跳路径。 */
@@ -47,6 +71,14 @@ export function goToLogin(
   navigate: (url: string) => void = (url) => window.location.assign(url),
 ): void {
   navigate(loginUrl(returnTo));
+}
+
+export function goToAuthEntry(
+  environment: ReleaseMetadata['environment'],
+  returnTo?: string,
+  navigate: (url: string) => void = (url) => window.location.assign(url),
+): void {
+  navigate(authEntryUrl(environment, returnTo));
 }
 
 /** 登录后回跳的「当前位置」：path + query（站内相对，后端再做开放重定向防护）。 */
@@ -210,9 +242,13 @@ function AuthLoading(): ReactElement {
 
 /** 匿名闸门：裸页（无创作者外壳/侧栏/账号），人话 + 「去登录」（带 returnTo 回当前页）。 */
 function AuthLoginGate(): ReactElement {
+  const releaseMetadata = useReleaseMetadata();
+  const preview = releaseMetadata.environment === 'preview';
   return (
     <GatePanel role="alert" variant="login" labelledBy="creator-login-title">
-      <p className="cb-auth-gate__msg cb-auth-gate__msg--login">请先登录后进入创作者中心。</p>
+      <p className="cb-auth-gate__msg cb-auth-gate__msg--login">
+        {preview ? '预览会话已失效，请恢复后继续。' : '请先登录后进入创作者中心。'}
+      </p>
       <h1 id="creator-login-title" className="cb-auth-gate__title">
         继续创建你的能力
       </h1>
@@ -230,11 +266,13 @@ function AuthLoginGate(): ReactElement {
         <button
           type="button"
           className="cb-auth-gate__action"
-          onClick={() => goToLogin(currentReturnTo())}
+          onClick={() => goToAuthEntry(releaseMetadata.environment, currentReturnTo())}
         >
-          去登录
+          {preview ? '恢复预览会话' : '去登录'}
         </button>
-        <p className="cb-auth-gate__return-note">登录完成后，将回到你刚才访问的页面。</p>
+        <p className="cb-auth-gate__return-note">
+          {preview ? '预览身份恢复后' : '登录完成后'}，将回到你刚才访问的页面。
+        </p>
       </div>
     </GatePanel>
   );

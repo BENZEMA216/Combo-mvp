@@ -24,14 +24,17 @@ class MemoryStorage {
 
 describe('runtime return navigation', () => {
   it('accepts only same-origin relative return paths', () => {
-    expect(safeRuntimeReturnTo('/create/capabilities?snapshotId=s1&draftId=d1#picked')).toBe(
-      '/create/capabilities?snapshotId=s1&draftId=d1#picked',
-    );
+    expect(
+      safeRuntimeReturnTo('/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial#picked'),
+    ).toBe('/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial#picked');
     expect(safeRuntimeReturnTo('/capabilities')).toBe('/capabilities');
-    expect(safeRuntimeReturnTo('https://example.com/create/capabilities')).toBeNull();
-    expect(safeRuntimeReturnTo('//example.com/create/capabilities')).toBeNull();
-    expect(safeRuntimeReturnTo('create/capabilities')).toBeNull();
-    expect(safeRuntimeReturnTo('/create/capabilities\u0000')).toBeNull();
+    expect(safeRuntimeReturnTo('https://example.com/tasks/018f47ea-bc32-7a3d-8f6e')).toBeNull();
+    expect(safeRuntimeReturnTo('//example.com/tasks/018f47ea-bc32-7a3d-8f6e')).toBeNull();
+    expect(safeRuntimeReturnTo('tasks/018f47ea-bc32-7a3d-8f6e')).toBeNull();
+    expect(safeRuntimeReturnTo('/tasks/018f47ea-bc32-7a3d-8f6e\u0000')).toBeNull();
+    expect(safeRuntimeReturnTo('/%252f%252fexample.com')).toBeNull();
+    expect(safeRuntimeReturnTo('/%255c%255cexample.com')).toBeNull();
+    expect(safeRuntimeReturnTo('/javascript%253aalert(1)')).toBeNull();
   });
 
   it('accepts only task-detail return paths at the creation trial boundary', () => {
@@ -67,6 +70,7 @@ describe('runtime return navigation', () => {
       '/tasks/%00',
       '/tasks/%2500',
       '/tasks/javascript%3aalert(1)',
+      '/tasks/%25252e%25252e',
     ]) {
       expect(safeTaskRuntimeReturnTo(value), value).toBeNull();
     }
@@ -77,21 +81,21 @@ describe('runtime return navigation', () => {
 
   it('stores and restores returnTo by runtime session id', () => {
     const storage = new MemoryStorage();
+    const taskPath = '/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial';
 
-    rememberRuntimeReturnTo('trial-1', '/create/capabilities?snapshotId=s1&draftId=d1', storage);
+    rememberRuntimeReturnTo('trial-1', taskPath, storage);
     rememberRuntimeReturnTo('trial-2', '//example.com/phish', storage);
 
-    expect(readRuntimeReturnTo('trial-1', storage)).toBe(
-      '/create/capabilities?snapshotId=s1&draftId=d1',
-    );
+    expect(readRuntimeReturnTo('trial-1', storage)).toBe(taskPath);
     expect(readRuntimeReturnTo('trial-2', storage)).toBeNull();
     expect(readRuntimeReturnTo('missing', storage)).toBeNull();
   });
 
   it('keeps returnTo when navigating between runtime sessions', () => {
-    expect(
-      appendRuntimeReturnTo('/session/consume-1', '/create/capabilities?snapshotId=s1&draftId=d1'),
-    ).toBe('/session/consume-1?returnTo=%2Fcreate%2Fcapabilities%3FsnapshotId%3Ds1%26draftId%3Dd1');
+    const taskPath = '/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial';
+    expect(appendRuntimeReturnTo('/session/consume-1', taskPath)).toBe(
+      '/session/consume-1?returnTo=%2Ftasks%2F018f47ea-bc32-7a3d-8f6e-2f90c7b01d43%3Ffrom%3Dtrial',
+    );
     expect(appendRuntimeReturnTo('/session/consume-1?panel=timeline', '/capabilities')).toBe(
       '/session/consume-1?panel=timeline&returnTo=%2Fcapabilities',
     );
@@ -101,11 +105,17 @@ describe('runtime return navigation', () => {
   });
 
   it('uses publish page wording and fallback creator target', () => {
-    const returnTo = '/create/capabilities?snapshotId=s1&draftId=d1';
+    const returnTo = '/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial';
 
     expect(runtimeBackLabel(returnTo)).toBe('← 返回发布页');
     expect(runtimeBackTarget(returnTo)).toBe(returnTo);
     expect(runtimeBackLabel(null)).toBe('← 返回我的能力');
     expect(runtimeBackTarget(null)).toBe(CREATOR_CAPABILITIES_PATH);
+  });
+
+  it('names a consume-session return to its originating Studio session', () => {
+    const studio = '/try/session/11111111-1111-4111-8111-111111111111';
+    expect(runtimeBackLabel(studio)).toBe('← 返回 UI 设计');
+    expect(runtimeBackTarget(studio)).toBe(studio);
   });
 });

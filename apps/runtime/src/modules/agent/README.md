@@ -6,7 +6,9 @@
 
 - `turn-repo.ts` 封装 Turn 创建、运行态查询、最近持久终态读取、Session 与 Turn 行锁、条件收尾和超时清扫。它只把 `uq_turns_session_running` 的 PostgreSQL 唯一冲突映射为 `SessionBusyError`。
 - `run-turn.ts` 在 Session 行锁事务中创建 Turn 和用户消息，并异步执行模型。它统一让 PostgreSQL 终态先提交、Redis 终态后追加，并在开下一轮前按数据库事实修复最近终态事件。它跟踪活动 Turn 和尚未提交的开轮事务，在人工打断、空闲超时、清扫和关闭时同时停止 Pi 与远程命令。Studio 成功终态会在同一数据库事务中提升本轮最后一个合规 UI revision。
-- `build-agent.ts` 把 CapabilityDefinition、Session 模式、已完成历史、平台约束和工具交给 Pi Agent。Studio 使用单独的 Miniapp 设计协议，模型凭据始终由 Runtime 提供。
+- `build-agent.ts` 把 CapabilityDefinition、Session 模式、本轮用户要求、已完成历史、平台约束和工具交给 Pi Agent。Studio 使用单独的 Miniapp 设计协议和视觉规则，模型凭据始终由 Runtime 提供。
+- `design-studio-prompt.ts` 定义适配当前不可变 Artifact revision 的 Studio 设计规则、视觉连续性、运行桥和确定性页面质量检查。
+- `design-visual-profile.ts` 根据冻结的 Capability 元数据为首版页面选择有界视觉合同，并判断后续请求是否明确要求整体换视觉方向。
 - `sandbox-tools.ts` 定义 `read`、`write`、`edit` 和 `bash`。四个工具都按串行模式执行，把所属 Turn 的中止信号与 Pi 单次调用信号绑定后再调用 SandboxBackend，并把底层错误收口为稳定文案。命令后代清理无法确认时，工具还会立即中止所属 Turn。
 - `turn-emitter.ts` 把普通 AG-UI 事件先写 Redis Stream，再发布实时通知，并保持同一执行路径内的顺序。
 - `event-log.ts` 定义事件日志端口、保留数量、有效期和 Redis Stream 编号工具。
@@ -14,7 +16,7 @@
 
 ## 一轮生成
 
-提交消息时，数据库部分唯一索引保证一个 Session 只有一个 `running` Turn。异步执行只读取已完成历史。工具顺序固定为可信的 `upsert_artifact` 在前；显式开启沙箱后才追加四个远程工具。
+提交消息时，数据库部分唯一索引保证一个 Session 只有一个 `running` Turn。异步执行只读取已完成历史。Studio 构造 Agent 时还会读取当前可见 HTML，用它区分首版视觉合同和后续视觉连续性。工具顺序固定为可信的 `upsert_artifact` 在前；显式开启沙箱后才追加四个远程工具。
 
 普通文本、产物状态和 `RUN_STARTED` 都通过受保护的 TurnEmitter 写入。每次追加先锁住 Session，再确认同一个 Turn 仍为 `running`。完成、中断、失败和清扫路径都先提交 PostgreSQL 的 Turn 状态与 Message，提交后才追加 Redis 终态。跨副本终态提交后，旧 Pi 即使没有收到 Redis 打断通知，也不能通过数据库守卫继续追加事件。Studio 的 Capability UI 指针更新仍与成功终态处于同一个数据库事务中。
 

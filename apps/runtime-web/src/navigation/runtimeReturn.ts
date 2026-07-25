@@ -1,8 +1,14 @@
 export const CREATOR_CAPABILITIES_PATH = '/capabilities';
 
 const RETURN_TO_STORAGE_PREFIX = 'combo.runtime.returnTo:';
+const RETURN_TO_ORIGIN = 'https://combo.invalid';
+const MAX_DECODE_PASSES = 5;
 const UUID_PATH_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const TASK_DETAIL_RETURN_PATH = new RegExp(`^/tasks/${UUID_PATH_SEGMENT}(?:[?#].*)?$`, 'i');
+const STUDIO_SESSION_RETURN_PATH = new RegExp(
+  `^/try/session/${UUID_PATH_SEGMENT}(?:[?#].*)?$`,
+  'i',
+);
 
 export interface RuntimeReturnStorage {
   getItem(key: string): string | null;
@@ -30,12 +36,52 @@ function containsControlCharacter(value: string): boolean {
   return false;
 }
 
+function isUnsafeReturnCandidate(value: string): boolean {
+  if (
+    !value.startsWith('/') ||
+    value.startsWith('//') ||
+    value.includes('\\') ||
+    /^\/[a-z][a-z0-9+.-]*:/i.test(value) ||
+    containsControlCharacter(value)
+  ) {
+    return true;
+  }
+  try {
+    const target = new URL(value, RETURN_TO_ORIGIN);
+    return target.origin !== RETURN_TO_ORIGIN || target.pathname.startsWith('//');
+  } catch {
+    return true;
+  }
+}
+
 export function safeRuntimeReturnTo(value: string | null | undefined): string | null {
-  if (!value || !value.startsWith('/') || value.startsWith('//')) return null;
-  if (value.includes('\\')) return null; // 反斜杠规避：浏览器把 /\evil.com 按协议相对跳外站
-  if (/^\/[a-z][a-z0-9+.-]*:/i.test(value)) return null; // scheme 走私（/javascript: 等）
-  if (containsControlCharacter(value)) return null;
-  return value;
+  if (!value || isUnsafeReturnCandidate(value)) return null;
+
+  let decoded = value;
+  let stabilized = false;
+  for (let pass = 0; pass < MAX_DECODE_PASSES; pass += 1) {
+    if (isUnsafeReturnCandidate(decoded)) return null;
+    let next: string;
+    try {
+      next = decodeURIComponent(decoded);
+    } catch {
+      return null;
+    }
+    if (next === decoded) {
+      stabilized = true;
+      break;
+    }
+    decoded = next;
+  }
+  if (!stabilized || isUnsafeReturnCandidate(decoded)) return null;
+
+  try {
+    const target = new URL(value, RETURN_TO_ORIGIN);
+    const normalized = `${target.pathname}${target.search}${target.hash}`;
+    return isUnsafeReturnCandidate(normalized) ? null : normalized;
+  } catch {
+    return null;
+  }
 }
 
 export function safeTaskRuntimeReturnTo(value: string | null | undefined): string | null {
@@ -79,7 +125,9 @@ export function appendRuntimeReturnTo(path: string, returnTo: string | null | un
 }
 
 export function runtimeBackLabel(returnTo: string | null | undefined): string {
-  return safeRuntimeReturnTo(returnTo) ? '← 返回发布页' : '← 返回我的能力';
+  const safe = safeRuntimeReturnTo(returnTo);
+  if (!safe) return '← 返回我的能力';
+  return STUDIO_SESSION_RETURN_PATH.test(safe) ? '← 返回 UI 设计' : '← 返回发布页';
 }
 
 export function runtimeBackTarget(returnTo: string | null | undefined): string {

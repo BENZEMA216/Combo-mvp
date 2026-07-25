@@ -300,7 +300,7 @@ describe('B-17 去敏引擎 · 边界（跨行 / 拼接 / 重复）', () => {
   });
 });
 
-describe('B-17 去敏引擎 · 批量 + 报告聚合（导入 Job 接口）', () => {
+describe('去敏引擎 · Task pipeline 批量与报告聚合', () => {
   it('redactBatch：N 段输入 → N 段去敏文本 + 一份聚合报告', () => {
     const inputs = ['手机 13800138000', '邮箱 a@b.com', '普通文本无隐私'];
     const { texts, report } = redactBatch(inputs);

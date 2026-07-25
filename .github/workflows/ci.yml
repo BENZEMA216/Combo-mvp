@@ -89,6 +89,8 @@ jobs:
         run: bash scripts/check-production-artifacts.sh
 
       - name: Test
+        env:
+          COMBO_RUN_CONTAINER_CONTRACTS: '1'
         run: pnpm test
 
       - name: Compose structural checks
@@ -201,6 +203,11 @@ jobs:
           RUNTIME_TERMINAL_FENCE_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           RUNTIME_TERMINAL_FENCE_REDIS_URL: redis://localhost:6380
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/terminal-fence.integration.test.ts
+
+      - name: Runtime session snapshot integration
+        env:
+          RUNTIME_TERMINAL_FENCE_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+        run: pnpm --dir apps/runtime exec vitest run src/__tests__/session-consistency.integration.test.ts
 
       - name: Dual Redis integration
         env:

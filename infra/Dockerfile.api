@@ -1,24 +1,8 @@
-# 一镜像四入口（O-01）：api/worker/consumer/sweeper 共用同一镜像，按 PROCESS=api|worker|consumer|sweeper 在 entrypoint 分叉。
-# 同镜像也用于一次性「业务迁移」容器（compose 覆盖 entrypoint 跑 db/scripts/migrate.ts）。
-# 本期【只写不构建】（无 Docker）；结构按多阶段：build 阶段装全依赖 + tsc -b，runtime 阶段只带产物 + 生产依赖。
+# API 与 Worker 共用同一镜像，按 PROCESS=api|worker 在 entrypoint 分叉。
+# 同镜像也用于一次性迁移容器；迁移任务覆盖 entrypoint 后运行 db/scripts/migrate.ts。
 #
 # web 取舍：web 用独立镜像（Dockerfile.web，nginx 托管静态产物 + 反代）。理由——前端是 nginx 静态服务、
-# 与 Node 业务进程运行时不同，分镜像更小更清晰；故本镜像只负责 api/worker/consumer/sweeper + migrate。
-
-# Go 交叉编译阶段（B-21）：把本机导入助手编译成 4 个平台二进制（纯 Go、CGO_ENABLED=0 → 静态、可交叉编译）。
-#   引导脚本据 uname 选 combo-import-{os}-{arch}，来 GET /import/connect/bin/:asset 下载、校验 sha256 后 exec。
-#   同时为每个二进制生成 .sha256（十六进制小写），供 bin 路由 .sha256 返回与脚本校验对齐。
-#   源在 tools/combo-import（COPY 路径相对 build context = 仓库根，即 infra 的父级）。
-#   该 module 仅依赖 Go 标准库 → 无外部依赖、无需 go.sum、无需联网 go mod download。
-FROM golang:1.22.12-alpine AS importbins
-WORKDIR /src
-# 整包拷入（main.go + pack.go + upload.go + go.mod），go build ./ 编译当前目录全部 .go 为一个二进制。
-COPY tools/combo-import ./
-RUN CGO_ENABLED=0 GOOS=linux  GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/combo-import-linux-amd64  ./ && \
-    CGO_ENABLED=0 GOOS=linux  GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o /out/combo-import-linux-arm64  ./ && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o /out/combo-import-darwin-amd64 ./ && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags='-s -w' -o /out/combo-import-darwin-arm64 ./ && \
-    cd /out && for f in combo-import-*; do sha256sum "$f" | awk '{print $1}' > "$f.sha256"; done
+# 与 Node 业务进程运行时不同，分镜像更小更清晰；故本镜像只负责 API、Worker 和 migration。
 
 FROM node:24-slim AS build
 WORKDIR /app
@@ -37,8 +21,6 @@ WORKDIR /app
 ENV NODE_ENV=production
 # PROCESS 决定本容器跑哪个进程入口（api 为默认）；migrate 容器在 compose 覆盖 entrypoint。
 ENV PROCESS=api
-# B-21 引导二进制目录：GET /import/connect/bin/:asset 从此读白名单文件流式下发（与 connect-script handler 默认一致）。
-ENV IMPORT_BIN_DIR=/app/import-bins
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 # 工作区清单 + 各包 package.json（--prod install 需要）
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
@@ -50,8 +32,6 @@ RUN pnpm install --prod --frozen-lockfile=false
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/apps/authoring/dist ./apps/authoring/dist
 COPY --from=build /app/db ./db
-# B-21 引导二进制 + 各自的 .sha256（importbins 阶段产出，bin 路由据 IMPORT_BIN_DIR 白名单只读流式下发）。
-COPY --from=importbins /out/ /app/import-bins/
 # entrypoint 分叉脚本
 COPY infra/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

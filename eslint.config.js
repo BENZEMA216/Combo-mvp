@@ -73,8 +73,6 @@ export default tseslint.config(
                 '../*/job.js',
                 '../*/service',
                 '../*/service.js',
-                '../*/consumer',
-                '../*/consumer.js',
                 '../*/projection',
                 '../*/projection.js',
               ],
@@ -86,9 +84,9 @@ export default tseslint.config(
       ],
     },
   },
-  // ③ worker/consumer/sweeper 后台进程不得 import Fastify app / 路由聚合（进程间只经 PG/Redis 间接通信，不拉起 Fastify app）。
+  // ③ Worker 后台进程不得 import Fastify app / 路由聚合（进程间只经 PG/Redis 间接通信，不拉起 Fastify app）。
   {
-    files: ['apps/authoring/src/processes/{worker,consumer,sweeper}.ts'],
+    files: ['apps/authoring/src/processes/worker.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -102,7 +100,7 @@ export default tseslint.config(
                 '**/bootstrap/routes.js',
               ],
               message:
-                '后台进程（worker/consumer/sweeper）不得 import HTTP app / 路由聚合（bootstrap）；进程间只经 PG/Redis 间接通信。',
+                'Worker 后台进程不得 import HTTP app / 路由聚合（bootstrap）；进程间只经 PG/Redis 间接通信。',
             },
           ],
         },

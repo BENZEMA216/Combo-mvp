@@ -17,6 +17,7 @@ import { CapabilitiesPage } from './pages/capabilities/CapabilitiesPage.js';
 import { PublicCapabilityPage } from './pages/public/PublicCapabilityPage.js';
 import { PublicCreatorPage } from './pages/public/PublicCreatorPage.js';
 import { LandingPage } from './pages/landing/LandingPage.js';
+import { ReleaseIdentityBadge } from './shell/releaseIdentity.js';
 
 /** 受保护组根：AuthProvider 只包受保护子树，公开页匿名访问根本不发 /me。 */
 function ProtectedRoot(): ReactElement {
@@ -30,6 +31,7 @@ function ProtectedRoot(): ReactElement {
 export function App(): ReactElement {
   return (
     <BrowserRouter>
+      <ReleaseIdentityBadge />
       <Routes>
         <Route element={<ProtectedRoot />}>
           <Route element={<RequireAuth />}>

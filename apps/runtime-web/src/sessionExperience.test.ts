@@ -22,6 +22,7 @@ function detailWithMode(mode?: string): SessionDetail {
     },
     messages: [],
     artifacts: [],
+    activeTurn: null,
   } as SessionDetail;
 }
 

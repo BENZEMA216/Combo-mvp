@@ -51,9 +51,9 @@ const exampleCapabilities: ExampleCapability[] = [
   {
     name: '本地真实配置测试闭环',
     typeLabel: '工程 / QA',
-    audience: '需要验证 Docker、登录、导入、发布和 runtime 的开发者',
+    audience: '需要验证登录、上传、发布和 runtime 的开发者',
     outcome: '给出可复跑的测试证据、阻塞项和修复建议',
-    context: '来自真实 .env、真实导入内容、真实 snapshot 的连续验收任务',
+    context: '来自真实运行时元数据、上传内容和 Task 进度的连续验收任务',
   },
 ];
 

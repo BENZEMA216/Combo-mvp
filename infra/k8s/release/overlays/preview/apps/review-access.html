@@ -145,16 +145,52 @@
       const button = document.querySelector('#enter');
       const status = document.querySelector('#status');
       const params = new URLSearchParams(location.search);
-      const requested = params.get('returnTo');
-      let returnTo = '/';
-      try {
-        const target = new URL(requested || '/', location.origin);
-        if (target.origin === location.origin) {
-          returnTo = `${target.pathname}${target.search}${target.hash}`;
+      function safeReturnTo(raw) {
+        if (
+          typeof raw !== 'string' ||
+          raw.length === 0 ||
+          raw.length > 512 ||
+          !raw.startsWith('/') ||
+          raw.startsWith('//') ||
+          raw.includes('\\') ||
+          /[\u0000-\u001f\u007f]/.test(raw)
+        ) {
+          return '/';
         }
-      } catch {
-        returnTo = '/';
+        let decoded = raw;
+        let stabilized = false;
+        for (let pass = 0; pass < 5; pass += 1) {
+          if (
+            !decoded.startsWith('/') ||
+            decoded.startsWith('//') ||
+            decoded.includes('\\') ||
+            /[\u0000-\u001f\u007f]/.test(decoded)
+          ) {
+            return '/';
+          }
+          try {
+            const next = decodeURIComponent(decoded);
+            if (next === decoded) {
+              stabilized = true;
+              break;
+            }
+            decoded = next;
+          } catch {
+            return '/';
+          }
+        }
+        if (!stabilized) return '/';
+        try {
+          const target = new URL(raw, location.origin);
+          if (target.origin === location.origin && !target.pathname.startsWith('//')) {
+            return `${target.pathname}${target.search}`;
+          }
+        } catch {
+          return '/';
+        }
+        return '/';
       }
+      const returnTo = safeReturnTo(params.get('returnTo'));
 
       async function enterReview(token) {
         button.disabled = true;

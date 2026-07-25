@@ -7,6 +7,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -27,7 +28,9 @@ const MINIO_IMAGE =
   'minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0';
 const MINIO_MC_IMAGE =
   'minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc';
-const dockerAvailable = spawnSync('docker', ['info'], { stdio: 'ignore' }).status === 0;
+const containerContractsEnabled = process.env.COMBO_RUN_CONTAINER_CONTRACTS === '1';
+const dockerAvailable =
+  containerContractsEnabled && spawnSync('docker', ['info'], { stdio: 'ignore' }).status === 0;
 const imageArgs = [
   '--api-image',
   `ghcr.io/dangdang-tech/combo-api@sha256:${digest('a')}`,
@@ -260,6 +263,15 @@ test('Test apps share one exact immutable release identity without Secret expans
   }
   assert.match(nginx, /alias \/usr\/share\/nginx\/html\/try\//);
   assert.doesNotMatch(nginx, /alias \/usr\/share\/nginx\/try\//);
+  for (const prefix of ['/assets/', '/try/assets/']) {
+    const escaped = prefix.replaceAll('/', '\\/');
+    assert.match(
+      nginx,
+      new RegExp(
+        `location \\^~ ${escaped} \\{[\\s\\S]*?try_files \\$uri =404;[\\s\\S]*?Cache-Control "public, max-age=31536000, immutable"`,
+      ),
+    );
+  }
 
   const root = fixture();
   try {
@@ -270,6 +282,180 @@ test('Test apps share one exact immutable release identity without Secret expans
     expectRenderFailure(root, /guard:release-metadata-immutable/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Test migration pins the 0006 ledger and proves a second idempotent pass', () => {
+  const migrate = documentFor('Job', 'migrate');
+  assert.match(
+    migrate,
+    /^ {8}- name: EXPECTED_MIGRATION_HEAD\n {10}value: 0006_one_running_turn_per_session\.sql$/m,
+  );
+  assert.match(migrate, /^ {8}- name: MIGRATION_RUNS\n {10}value: "2"$/m);
+  assert.match(migrate, /^ {2}ttlSecondsAfterFinished: 7200$/m);
+});
+
+test('Test migration evidence uses the exact ordered 0000-0006 source ledger', () => {
+  const expected = [
+    '0000_baseline_schema.sql',
+    '0001_expired_upload_reconciliation.sql',
+    '0002_drop_stream_events.sql',
+    '0003_turns.sql',
+    '0004_studio_sessions.sql',
+    '0005_capability_current_ui.sql',
+    '0006_one_running_turn_per_session.sql',
+  ];
+  const sourceLedger = readdirSync(join(repo, 'db/migrations'))
+    .filter((name) => name.endsWith('.sql'))
+    .sort();
+  assert.deepEqual(sourceLedger, expected);
+
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const deployLists = [...deploy.matchAll(/expected_migrations = \[\n(?<body>[\s\S]*?)\n\]/g)].map(
+    (match) => [...match.groups.body.matchAll(/'([^']+\.sql)'/g)].map((item) => item[1]),
+  );
+  assert.equal(deployLists.length, 2);
+  for (const list of deployLists) assert.deepEqual(list, expected);
+
+  const workflowList = workflow.match(
+    /\.migration\.appliedMigrations == \[\n(?<body>[\s\S]*?)\n {12}\]/,
+  );
+  assert.ok(workflowList?.groups?.body);
+  assert.deepEqual(
+    [...workflowList.groups.body.matchAll(/"([^"]+\.sql)"/g)].map((item) => item[1]),
+    expected,
+  );
+
+  assert.match(deploy, /if lines != expected_lines:\n {4}raise SystemExit\(2\)/);
+  assert.match(deploy, /0017_\|0018_/);
+  assert.doesNotMatch(`${deploy}\n${workflow}`, /0004_upload_bundle_protocol\.sql/);
+  for (const list of [...deployLists, expected]) {
+    assert.doesNotMatch(list.join('\n'), /(?:^|\n)001[78]_/);
+  }
+});
+
+test('Test workflow publishes sanitized live release evidence before SSH cleanup', () => {
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const reset = text('scripts/combo-dev-reset.sh');
+  const evidence = workflow.indexOf('Collect and verify sanitized Test evidence');
+  const cleanup = workflow.indexOf('Remove transient runner and upload files');
+  assert.ok(evidence > 0 && cleanup > evidence);
+  assert.match(
+    workflow,
+    /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}/,
+  );
+  assert.match(workflow, /--revision "\$revision"[\s\\\n]*--workflow-run-id "\$workflow_run_id"/);
+  assert.match(workflow, /\.workflowRunId == \$runId/);
+  assert.match(workflow, /\.reset\.workflowRunId == \$runId/);
+  assert.match(workflow, /\.migration\.workflowRunId == \$runId/);
+  assert.match(workflow, /migration\.head == "0006_one_running_turn_per_session\.sql"/);
+  assert.match(workflow, /migration\.job\.ttlSecondsAfterFinished == 7200/);
+  assert.match(workflow, /legacyObjectsAbsent == true/);
+  assert.doesNotMatch(workflow, /\. \+ \{workflowRunId:/);
+  assert.match(deploy, /readonly NAMESPACE='combo-preview'/);
+  assert.match(
+    deploy,
+    /write_test_evidence[\s\\\n]*"\$revision" "\$workflow_run_id" "\$manifest" "\$digest_file" "\$evidence"[\s\\\n]*"\$RESET_PROOF_IN_USE" "\$migration_proof"/,
+  );
+  assert.match(deploy, /local evidence_dir='\/var\/lib\/combo-dev\/evidence'/);
+  assert.match(deploy, /local output="\$evidence_dir\/\$revision\.json"/);
+  assert.match(deploy, /mv -T -- "\$RESET_PROOF" "\$CONSUMED_RESET_PROOF"/);
+  assert.match(deploy, /RESET_PROOF_MAX_AGE_SECONDS=900/);
+  assert.match(reset, /install -o root -g root -m 0600 "\$candidate" "\$RESET_PROOF"/);
+  assert.match(reset, /assert_static_volume_data_empty/);
+  assert.match(reset, /capture_rebuilt_foundation/);
+  assert.match(reset, /'workflowRunId': workflow_run_id/);
+  assert.match(deploy, /capture_migration_proof/);
+  assert.match(deploy, /lines != expected_lines/);
+  assert.match(deploy, /'logSha256': f"sha256:/);
+  assert.doesNotMatch(deploy, /freshResetRequiredByWorkflow/);
+  assert.doesNotMatch(deploy, /'jobSucceeded': True/);
+  assert.doesNotMatch(
+    deploy.slice(
+      deploy.indexOf('write_test_evidence() {'),
+      deploy.indexOf('prune_stale_configs() {'),
+    ),
+    /combo-review|Kubernetes Secrets|PRODUCTION_NAMESPACE|PRODUCTION_KUBECONFIG/,
+  );
+});
+
+test('Test evidence inventories every relevant namespaced kind without reading Secrets', () => {
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const rbac = text('infra/k8s/overlays/combo-dev/platform/rbac.yaml');
+  const evidenceWriter = deploy.slice(
+    deploy.indexOf('write_test_evidence() {'),
+    deploy.indexOf('prune_stale_configs() {'),
+  );
+  for (const resource of [
+    'deployments.apps',
+    'statefulsets.apps',
+    'daemonsets.apps',
+    'jobs.batch',
+    'cronjobs.batch',
+    'services',
+    'pods',
+    'configmaps',
+    'serviceaccounts',
+    'networkpolicies.networking.k8s.io',
+    'ingresses.networking.k8s.io',
+    'horizontalpodautoscalers.autoscaling',
+    'roles.rbac.authorization.k8s.io',
+    'rolebindings.rbac.authorization.k8s.io',
+    'resourcequotas',
+    'limitranges',
+    'persistentvolumeclaims',
+  ]) {
+    assert.ok(evidenceWriter.includes(resource), resource);
+  }
+  assert.doesNotMatch(evidenceWriter, /\bget\s+[^\n]*\bsecrets?\b/i);
+  assert.match(evidenceWriter, /resource_inventory\['excludedKinds'\] = \['Secret'\]/);
+  assert.match(evidenceWriter, /'DaemonSet': set\(\)/);
+  assert.match(evidenceWriter, /'CronJob': set\(\)/);
+  assert.match(evidenceWriter, /'Ingress': set\(\)/);
+  assert.match(evidenceWriter, /'HorizontalPodAutoscaler': set\(\)/);
+
+  const secretRules = [
+    ...rbac.matchAll(
+      /- apiGroups: \[''\]\n {4}resources: \['secrets'\]\n {4}resourceNames: \[([^\]]+)\]\n {4}verbs: \[([^\]]+)\]/g,
+    ),
+  ];
+  assert.equal(secretRules.length, 1);
+  assert.equal(secretRules[0][1], "'combo-dev-session'");
+  assert.equal(secretRules[0][2], "'patch', 'update'");
+  for (const rule of [
+    "resources: ['serviceaccounts', 'resourcequotas', 'limitranges']\n    verbs: ['get', 'list', 'watch']",
+    "resources: ['daemonsets']\n    verbs: ['get', 'list', 'watch']",
+    "resources: ['cronjobs']\n    verbs: ['get', 'list', 'watch']",
+    "resources: ['ingresses']\n    verbs: ['get', 'list', 'watch']",
+    "resources: ['horizontalpodautoscalers']\n    verbs: ['get', 'list', 'watch']",
+  ]) {
+    assert.ok(rbac.includes(rule), rule);
+  }
+});
+
+test('control scripts never directly get, list, or delete a Secret', () => {
+  for (const path of [
+    'scripts/combo-dev-bootstrap.sh',
+    'scripts/combo-dev-deploy.sh',
+    'scripts/combo-dev-reset.sh',
+    'scripts/combo-dev-smoke.sh',
+    'scripts/combo-dev-logs.sh',
+    'scripts/combo-dev-storage-guard.sh',
+    'scripts/combo-dev-forwarder-lease.sh',
+  ]) {
+    const normalized = text(path).replaceAll(/\\\n\s*/g, ' ');
+    const commands = [
+      ...normalized.matchAll(/(?:"\$\{(?:AK|K|DK|FK|PK)\[@\]\}"|\bkubectl\b)([^\n;|]{0,500})/g),
+    ].map((match) => match[0]);
+    for (const command of commands) {
+      assert.doesNotMatch(
+        command,
+        /\b(?:get|delete)\b[^\n;|]*\bsecrets?(?:\/|\b)/i,
+        `${path}: ${command}`,
+      );
+    }
   }
 });
 
@@ -509,6 +695,14 @@ test('static local PV bindings are complete, canonical, and cannot fall back out
   const bootstrapMutations = bootstrap.slice(
     bootstrap.indexOf('bootstrap_mutations() {'),
     bootstrap.lastIndexOf('main() {'),
+  );
+  const namespaceSanitizer = bootstrap.slice(
+    bootstrap.indexOf('sanitize_preview_namespace() {'),
+    bootstrap.indexOf('mark_failure_fence() {'),
+  );
+  assert.doesNotMatch(
+    namespaceSanitizer,
+    /\b(?:get|delete)\b[^\n]*\bsecrets?\b|\bsecrets?\b[^\n]*\bdelete\b/i,
   );
   assert.ok(
     bootstrapMutations.indexOf('MUTATING=1') <

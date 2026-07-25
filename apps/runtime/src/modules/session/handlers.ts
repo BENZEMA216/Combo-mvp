@@ -19,20 +19,14 @@ import {
   type StudioSessionView,
 } from '@cb/shared';
 import { sendError } from '../../platform/http/_helpers.js';
-import { loadCapability, readCapabilitySummary } from '../capability/loader.js';
+import { loadCapability } from '../capability/loader.js';
 import { sendLoadFailure } from '../capability/handlers.js';
 import { SessionInactiveError } from '../agent/run-turn.js';
-import {
-  adoptLegacyCapabilityUiArtifact,
-  listArtifacts,
-  readCapabilityUiArtifact,
-  seedCapabilityUiArtifact,
-} from '../artifact/repo.js';
+import { adoptExistingConsumeUiArtifact, seedCapabilityUiArtifact } from '../artifact/repo.js';
 import {
   archiveSession,
   createSession,
   getOrCreateStudioSession,
-  getMessages,
   getSession,
   listSessions,
   SessionBusyError,
@@ -40,6 +34,7 @@ import {
   type SessionRow,
   updateSessionTitle,
 } from './repo.js';
+import { readSessionDetailDbSnapshot } from './detail.js';
 
 /** owner-scoped 取会话，失败即回信封；成功返回行。 */
 async function requireOwnedSession(
@@ -100,9 +95,11 @@ export function createStudioSessionHandler(): RouteHandlerMethod {
       const seeded = await seedCapabilityUiArtifact(db, objectStore, {
         capabilityId: loaded.capability.id,
         targetSessionId: session.id,
+        targetOwnerUserId: userId,
+        targetMode: 'studio',
       });
       if (!seeded) {
-        await adoptLegacyCapabilityUiArtifact(db, objectStore, {
+        await adoptExistingConsumeUiArtifact(db, objectStore, {
           capabilityId: loaded.capability.id,
           ownerUserId: userId,
           targetStudioSessionId: session.id,
@@ -154,6 +151,8 @@ export function createSessionHandler(): RouteHandlerMethod {
       await seedCapabilityUiArtifact(db, objectStore, {
         capabilityId: loaded.capability.id,
         targetSessionId: session.id,
+        targetOwnerUserId: userId,
+        targetMode: 'consume',
       });
     } catch (err) {
       if (session) {
@@ -271,19 +270,18 @@ export function archiveSessionHandler(): RouteHandlerMethod {
 
 export function getSessionDetailHandler(): RouteHandlerMethod {
   return async function (req: FastifyRequest, reply: FastifyReply) {
-    const session = await requireOwnedSession(req, reply);
-    if (!session) return reply;
+    const userId = req.auth?.userId;
+    if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
+    const { id } = req.params as { id: string };
     const { db, objectStore } = req.server.infra;
 
     try {
-      const [capability, messages, artifacts, currentUiArtifact] = await Promise.all([
-        readCapabilitySummary(db, session.capabilityId),
-        getMessages(db, session.id),
-        listArtifacts(db, session.id),
-        session.mode === 'studio'
-          ? readCapabilityUiArtifact(db, session.capabilityId)
-          : Promise.resolve(null),
-      ]);
+      const snapshot = await readSessionDetailDbSnapshot(db, {
+        sessionId: id,
+        ownerUserId: userId,
+      });
+      if (!snapshot) return sendError(req, reply, ErrorCode.NOT_FOUND);
+      const { session, capability, messages, artifacts, currentUiArtifact, activeTurn } = snapshot;
       // 能力行被删属于数据异常（会话仍指着它），按 500 收口而不是装作没会话。
       if (!capability) {
         req.log.error(
@@ -330,6 +328,7 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
           createdAt: m.createdAt,
         })),
         artifacts,
+        activeTurn,
         currentUiArtifactId: sessionCurrentUiArtifactId,
       };
       const body: Envelope<SessionDetail> = { data: detail, meta: { traceId: req.id } };

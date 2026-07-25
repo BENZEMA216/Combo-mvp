@@ -41,7 +41,7 @@ export interface ObjectStorePort {
     body: Uint8Array,
     opts?: { contentType?: string },
   ): Promise<{ key: string }>;
-  /** sweeper orphan 清理（B-16 §6.4）：列举 + 删除（删前比对 PG 引用）。 */
+  /** Task pipeline 的对象生命周期管理：按前缀列举并按键删除。 */
   list(
     bucket: Bucket,
     prefix: string,

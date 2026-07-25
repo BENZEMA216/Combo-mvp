@@ -235,6 +235,22 @@ test('Preview release carries a SHA-scoped access gate without Secret material',
     /location \^~ \/try\/[\s\S]*?alias \/usr\/share\/nginx\/html\/try\/;/,
   );
   assert.match(gate.data['bootstrap.html'], /\/api\/v1\/auth\/dev-login/);
+  for (const page of [gate.data['enter.html'], gate.data['bootstrap.html']]) {
+    assert.match(page, /decodeURIComponent\(decoded\)/);
+    assert.match(page, /decoded\.startsWith\('\/\/'\)/);
+    assert.match(page, /decoded\.includes\('\\\\'\)/);
+    assert.doesNotMatch(page, /target\.hash/);
+  }
+  assert.doesNotMatch(gate.data['default.conf.template'], /rt_uid/);
+  assert.doesNotMatch(gate.data['default.conf.template'], /\/api\/v1\/import\/connect/);
+  assert.match(
+    gate.data['default.conf.template'],
+    /map \$upstream_status \$combo_review_logout_cookie \{[\s\S]*?default "";[\s\S]*?~\^2\[0-9\]\[0-9\]\$ "combo_review_access=;[\s\S]*?Max-Age=0/,
+  );
+  assert.match(
+    gate.data['default.conf.template'],
+    /location = \/api\/v1\/auth\/logout[\s\S]*?add_header Set-Cookie \$combo_review_logout_cookie always;/,
+  );
 
   const web = resources.find(
     (resource) =>

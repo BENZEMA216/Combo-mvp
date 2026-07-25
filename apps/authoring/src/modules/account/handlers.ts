@@ -105,7 +105,8 @@ function readAuthTx(req: FastifyRequest): AuthTx | null {
         state: parsed.state,
         nonce: parsed.nonce,
         codeVerifier: parsed.codeVerifier,
-        returnTo: parsed.returnTo,
+        // Cookie 也按不可信输入处理，避免手工伪造或旧版本事务绕过当前回跳规则。
+        returnTo: sanitizeReturnTo(parsed.returnTo),
       };
     }
     return null;

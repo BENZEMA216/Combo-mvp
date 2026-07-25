@@ -96,6 +96,8 @@ export interface TransactionOptions {
   signal?: AbortSignal;
   /** 同时设置事务内的 lock_timeout 与 statement_timeout。 */
   timeoutMs?: number;
+  /** 为跨表详情读取建立同一 REPEATABLE READ、READ ONLY 快照。 */
+  readOnlySnapshot?: boolean;
 }
 
 function operationAborted(): Error {
@@ -163,7 +165,9 @@ export async function withTransaction<T>(
     },
   };
   try {
-    await transaction.query('BEGIN');
+    await transaction.query(
+      options.readOnlySnapshot ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN',
+    );
     if (options.timeoutMs !== undefined) {
       const value = `${options.timeoutMs}ms`;
       await transaction.query(

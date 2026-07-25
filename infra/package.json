@@ -2,7 +2,7 @@
   "name": "@cb/infra",
   "version": "0.0.0",
   "private": true,
-  "description": "基础设施编排（O-01/O-02/O-03/O-04）：docker-compose（含 logto seed/alteration 一次性容器、业务迁移、健康检查）+ 一镜像四入口 Dockerfile + web nginx + Redis 双实例配置 + 建库/建桶脚本。本期只写不跑（无 Docker）。",
+  "description": "基础设施编排：docker-compose、Logto 初始化、业务迁移、Authoring API/Worker 镜像、Runtime 镜像、Web Nginx、Redis 双实例与存储初始化。",
   "type": "module",
   "scripts": {
     "compose:config": "docker compose -f docker-compose.yml config",

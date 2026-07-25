@@ -1,11 +1,8 @@
 // B-17 · 去敏规则引擎（纯函数模块，无 PG / 无网络 / 无 IO）。
 //
-// 归属：packages/shared/src/domains（导入域，与 import.ts 同库）。理由——本引擎产出的
-// RedactionReportView / RedactionCategory 是 domains/import 已定义的对外契约类型（§5.4），
-// 引擎是这些类型的唯一生产者，故与其同域；依赖方向 domains→core 保持单向（不放 core 以免
-// core↔domains 互引）。导入 Job（apps/api，B-19 的 `redact` 子任务，见 §4.2）直接
-// `import { redact } from '@cb/shared'` 调用。落在 shared 让契约类型与其生产逻辑同库、
-// 单测可纯跑、不绑任何运行时基础设施（契约要求"纯函数模块、不依赖 PG/网络"）。
+// 归属：packages/shared/src/domains。本引擎同时定义去敏报告契约及其唯一生产逻辑；
+// Authoring Task pipeline 通过 `redactBatch` 对解析后的会话段去敏。放在 shared 后可由
+// 纯函数单测覆盖，不依赖 PostgreSQL、网络或运行时基础设施。
 //
 // 硬约束（20-step1-import.md §5.4 / 导入-30 / 提取-31）：
 //   1. 真去标识——手机号/邮箱/API key/证件号/银行卡/IP/密钥型必须被替换或掩码，
@@ -14,8 +11,8 @@
 //   3. 幂等——对已去敏文本再跑结果稳定（掩码占位符本身不含 PII、不会被二次命中）。
 //   4. 误伤控制——尽量保留正常文本语义（带 Luhn 校验、关键词锚定、词边界约束）。
 //
-// 规则集可迭代：每条规则带 category；ruleset 带 version 字符串，便于回溯哪版规则跑的快照
-// （落 raw_snapshots.redaction_ruleset_ver）。
+// 规则集可迭代：每条规则带 category；ruleset 带 version 字符串，便于从 Task 上传元数据
+// 回溯本次处理使用的规则版本。
 
 import { z } from 'zod';
 
@@ -376,7 +373,7 @@ function buildReport(
   };
 }
 
-/** 合并多段文本的报告（导入 Job 跨段聚合用，见 redactBatch）。 */
+/** 合并多段文本的报告（Task pipeline 跨段聚合用，见 redactBatch）。 */
 export function mergeReports(
   reports: readonly RedactionReportView[],
   rulesetVersion: string,
@@ -391,14 +388,13 @@ export function mergeReports(
 export interface RedactBatchResult {
   /** 与输入同序的去敏后文本。 */
   texts: string[];
-  /** 跨段聚合的单份报告（落 raw_snapshots.redaction_report）。 */
+  /** 跨段聚合的单份报告，由 Task pipeline 写入上传元数据。 */
   report: RedactionReportView;
 }
 
 /**
- * 批量去敏 + 聚合报告。导入 Job `redact` 子任务（B-19）按段调用此函数：
- * 输入 N 段原文 → 输出 N 段去敏文本 + 一份快照级聚合报告。
- * 纯函数，无 IO；Job 负责把 texts 写 session_segments.content、report 写 raw_snapshots。
+ * 批量去敏并聚合报告。Task pipeline 输入 N 段原文，得到 N 段去敏文本和一份聚合报告；
+ * 本函数保持纯函数与无 IO，调用方负责保存提取结果和上传元数据。
  */
 export function redactBatch(
   inputs: readonly string[],

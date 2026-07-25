@@ -25,7 +25,7 @@
 
 ## 典型流程：prepare 后逐片上传
 
-1. 助手把本次扫描固化为本地快照，计算 bundleId，再调用 `/connect/prepare` 建立或确认服务端清单。
+1. 助手把本次扫描固化为本地上传清单，计算 bundleId，再调用 `/connect/prepare` 建立或确认服务端清单。
 2. prepare 返回已经落地的序号；同一快照直接续传缺片，新快照仅能替换仍未完成的上传。
 3. 助手发 JSON 体（配对码、bundleId、分片序号、总片数、文本内容）到 `/connect/upload`。
 4. landPart 先验码、验期、验状态，并在写对象前严格核对 bundleId 与总片数。

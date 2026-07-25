@@ -149,6 +149,30 @@ describe('account refresh-token handlers', () => {
     expect(reply.redirect).toHaveBeenCalledWith('/tasks', 302);
   });
 
+  it('revalidates a forged auth transaction returnTo before callback redirect', async () => {
+    oidcMocks.exchangeCodeForToken.mockResolvedValue({
+      kind: 'ok',
+      accessToken: 'access-1',
+      refreshToken: 'refresh-1',
+    });
+    const req = requestDouble({
+      cookies: {
+        [AUTH_TX_COOKIE]: JSON.stringify({
+          state: 'state-1',
+          nonce: 'nonce-1',
+          codeVerifier: 'verifier-1',
+          returnTo: '/%252f%252fevil.example/phish',
+        }),
+      },
+      query: { code: 'code-1', state: 'state-1' },
+    });
+    const reply = replyDouble();
+
+    await (callbackHandler() as unknown as TestHandler)(req, reply);
+
+    expect(reply.redirect).toHaveBeenCalledWith('/tasks', 302);
+  });
+
   it('returns 401 without a clearing Set-Cookie when the refresh cookie is missing', async () => {
     const req = requestDouble();
     const reply = replyDouble();

@@ -1,6 +1,7 @@
 // 按 kind 渲染产物内容。html 走【沙箱 iframe】（allow-scripts、无 same-origin，隔离父页）。
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { renderMarkdown } from '../lib/markdown.js';
+import { injectStudioInspectionBridge } from '../lib/studioInspectionBridge.js';
 
 export interface ComboRunRequest {
   prompt: string;
@@ -8,6 +9,18 @@ export interface ComboRunRequest {
 
 export interface ComboRunAccepted {
   turnId: string;
+}
+
+export interface ComboElementSelection {
+  key: string;
+  label: string;
+  role: string | null;
+  text: string;
+  tagName: string;
+  /** Fixed, bounded `body > tag:nth-of-type(n)` path; never executed as a selector by the host. */
+  path: string;
+  /** True only when the artifact authored this element's data-combo-key. */
+  stableKey: boolean;
 }
 
 export interface ComboTerminalRun {
@@ -40,9 +53,20 @@ interface ArtifactRendererProps {
   /** Studio uses this to explain why its preview cannot execute the business Agent. */
   runDisabledMessage?: string;
   onRunBlocked?: (message: string) => void;
+  /** Studio-only inspection controls. Consume sessions never inject this bridge. */
+  inspectionEnabled?: boolean;
+  selectedElementKey?: string | null;
+  onElementSelect?: (element: ComboElementSelection) => void;
+  onElementManifest?: (elements: ComboElementSelection[]) => void;
 }
 
 export const MAX_COMBO_RUN_PROMPT_LENGTH = 12_000;
+export const MAX_COMBO_INSPECTION_MESSAGE_LENGTH = 65_536;
+const MAX_COMBO_ELEMENT_MANIFEST_LENGTH = 80;
+const SAFE_ELEMENT_KEY = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,119}$/;
+const SAFE_GENERATED_KEY = /^auto-[a-z0-9]{1,12}$/;
+const SAFE_TAG_NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const SAFE_STRUCTURAL_PATH = /^body(?: > [a-z][a-z0-9-]{0,31}:nth-of-type\([1-9]\d{0,5}\)){1,7}$/;
 
 /** kind 误标防御：LLM 产物可能把完整 HTML 文档标成 markdown/structured（实测出现过），
  *  按 markdown 渲染会输出转义汤。内容以 HTML 文档开头时无视 kind、走沙箱 iframe。 */
@@ -61,6 +85,10 @@ export function ArtifactRenderer({
   terminalRun = null,
   runDisabledMessage,
   onRunBlocked,
+  inspectionEnabled = false,
+  selectedElementKey = null,
+  onElementSelect,
+  onElementManifest,
 }: ArtifactRendererProps) {
   if (kind === 'html' || looksLikeHtmlDocument(content)) {
     return (
@@ -73,6 +101,10 @@ export function ArtifactRenderer({
         terminalRun={terminalRun}
         runDisabledMessage={runDisabledMessage}
         onRunBlocked={onRunBlocked}
+        inspectionEnabled={inspectionEnabled}
+        selectedElementKey={selectedElementKey}
+        onElementSelect={onElementSelect}
+        onElementManifest={onElementManifest}
       />
     );
   }
@@ -111,6 +143,105 @@ export function parseComboRunRequest(value: unknown): ComboRunRequest | null {
   return { prompt };
 }
 
+function isBoundedInspectionPayload(value: unknown): boolean {
+  try {
+    return JSON.stringify(value).length <= MAX_COMBO_INSPECTION_MESSAGE_LENGTH;
+  } catch {
+    return false;
+  }
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** Parse into a fresh object so extra/untrusted frame fields never cross the host boundary. */
+export function parseComboElementSelection(value: unknown): ComboElementSelection | null {
+  if (!isBoundedInspectionPayload(value) || typeof value !== 'object' || value === null)
+    return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.key !== 'string' ||
+    typeof candidate.label !== 'string' ||
+    !(candidate.role === null || typeof candidate.role === 'string') ||
+    typeof candidate.text !== 'string' ||
+    typeof candidate.tagName !== 'string' ||
+    typeof candidate.path !== 'string' ||
+    typeof candidate.stableKey !== 'boolean'
+  ) {
+    return null;
+  }
+  const key = candidate.key.trim();
+  const label = candidate.label.trim();
+  const role = typeof candidate.role === 'string' ? candidate.role.trim() : null;
+  const text = candidate.text.trim();
+  const tagName = candidate.tagName.trim().toLowerCase();
+  const path = candidate.path.trim();
+  const finalPathPart = path.split(' > ').at(-1);
+  if (
+    !key ||
+    !label ||
+    label.length > 160 ||
+    text.length > 240 ||
+    (role !== null && (role.length > 60 || hasControlCharacter(role))) ||
+    hasControlCharacter(label) ||
+    hasControlCharacter(text) ||
+    !SAFE_TAG_NAME.test(tagName) ||
+    !SAFE_STRUCTURAL_PATH.test(path) ||
+    !finalPathPart?.startsWith(`${tagName}:nth-of-type(`)
+  ) {
+    return null;
+  }
+  if (candidate.stableKey ? !SAFE_ELEMENT_KEY.test(key) : !SAFE_GENERATED_KEY.test(key)) {
+    return null;
+  }
+  return { key, label, role, text, tagName, path, stableKey: candidate.stableKey };
+}
+
+export function parseComboElementSelectMessage(value: unknown): ComboElementSelection | null {
+  if (!isBoundedInspectionPayload(value) || typeof value !== 'object' || value === null)
+    return null;
+  const candidate = value as { type?: unknown; version?: unknown; element?: unknown };
+  if (candidate.type !== 'combo:element-select' || candidate.version !== 1) return null;
+  return parseComboElementSelection(candidate.element);
+}
+
+export function parseComboElementManifestMessage(value: unknown): ComboElementSelection[] | null {
+  if (!isBoundedInspectionPayload(value) || typeof value !== 'object' || value === null)
+    return null;
+  const candidate = value as { type?: unknown; version?: unknown; elements?: unknown };
+  if (
+    candidate.type !== 'combo:element-manifest' ||
+    candidate.version !== 1 ||
+    !Array.isArray(candidate.elements) ||
+    candidate.elements.length > MAX_COMBO_ELEMENT_MANIFEST_LENGTH
+  ) {
+    return null;
+  }
+  const elements: ComboElementSelection[] = [];
+  const keys = new Set<string>();
+  for (const raw of candidate.elements) {
+    const parsed = parseComboElementSelection(raw);
+    if (!parsed || keys.has(parsed.key)) return null;
+    keys.add(parsed.key);
+    elements.push(parsed);
+  }
+  return elements;
+}
+
+function isComboInspectionReadyMessage(
+  value: unknown,
+): value is { type: 'combo:inspection-ready'; version: 1 } {
+  if (!isBoundedInspectionPayload(value) || typeof value !== 'object' || value === null)
+    return false;
+  const candidate = value as { type?: unknown; version?: unknown };
+  return candidate.type === 'combo:inspection-ready' && candidate.version === 1;
+}
+
 function HtmlView({
   title,
   content,
@@ -120,6 +251,10 @@ function HtmlView({
   terminalRun = null,
   runDisabledMessage,
   onRunBlocked,
+  inspectionEnabled = false,
+  selectedElementKey = null,
+  onElementSelect,
+  onElementManifest,
 }: Omit<ArtifactRendererProps, 'kind'>) {
   const frameRef = useRef<HTMLIFrameElement>(null);
   // Set synchronously on an accepted postMessage. This closes the small gap before React
@@ -128,6 +263,11 @@ function HtmlView({
   const lastStateRef = useRef<ComboRunStateMessage | null>(null);
   const [pendingRequest, setPendingRequest] = useState<ComboRunRequest | null>(null);
   const [requestRunId, setRequestRunId] = useState<string | null>(null);
+  const inspectionBridgeEnabled = Boolean(onElementSelect || onElementManifest);
+  const srcDoc = useMemo(
+    () => (inspectionBridgeEnabled ? injectStudioInspectionBridge(content) : content),
+    [content, inspectionBridgeEnabled],
+  );
 
   const postRunState = useCallback((state: ComboRunState, message: string): void => {
     const payload: ComboRunStateMessage = {
@@ -140,11 +280,40 @@ function HtmlView({
     frameRef.current?.contentWindow?.postMessage(payload, '*');
   }, []);
 
+  const syncInspectionState = useCallback((): void => {
+    if (!inspectionBridgeEnabled) return;
+    frameRef.current?.contentWindow?.postMessage(
+      {
+        type: 'combo:inspection-state',
+        version: 1,
+        enabled: inspectionEnabled,
+        selectedElementKey,
+      },
+      '*',
+    );
+  }, [inspectionBridgeEnabled, inspectionEnabled, selectedElementKey]);
+
   useEffect(() => {
     const handleMessage = (event: MessageEvent<unknown>): void => {
       // The iframe has no same-origin privilege, so its WindowProxy is the only accepted source.
       const frameWindow = frameRef.current?.contentWindow;
       if (!frameWindow || event.source !== frameWindow) return;
+      if (isComboInspectionReadyMessage(event.data)) {
+        syncInspectionState();
+        return;
+      }
+      const selected = parseComboElementSelectMessage(event.data);
+      if (selected) {
+        // The frame is untrusted content and can post this schema without a user click. Only an
+        // explicit host-side inspection mode may turn it into editing context.
+        if (inspectionEnabled) onElementSelect?.(selected);
+        return;
+      }
+      const manifest = parseComboElementManifestMessage(event.data);
+      if (manifest) {
+        onElementManifest?.(manifest);
+        return;
+      }
       const request = parseComboRunRequest(event.data);
       if (!request) return;
 
@@ -172,7 +341,22 @@ function HtmlView({
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onRunBlocked, onRunRequest, pendingRequest, postRunState, runActive, runDisabledMessage]);
+  }, [
+    onElementManifest,
+    onElementSelect,
+    inspectionEnabled,
+    onRunBlocked,
+    onRunRequest,
+    pendingRequest,
+    postRunState,
+    runActive,
+    runDisabledMessage,
+    syncInspectionState,
+  ]);
+
+  useEffect(() => {
+    syncInspectionState();
+  }, [syncInspectionState]);
 
   useEffect(() => {
     if (!requestRunId) return;
@@ -221,10 +405,11 @@ function HtmlView({
         className="rt-artifact__frame"
         title={title}
         sandbox="allow-scripts allow-popups allow-forms"
-        srcDoc={content}
+        srcDoc={srcDoc}
         onLoad={() => {
           const state = lastStateRef.current;
           if (state) frameRef.current?.contentWindow?.postMessage(state, '*');
+          syncInspectionState();
         }}
       />
       {pendingRequest && (

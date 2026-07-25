@@ -9,6 +9,7 @@ import {
   type PublishResult,
   type TaskView,
 } from '@cb/shared';
+import { sanitizeTaskReturnTo } from '../safeReturnTo.js';
 import { apiGet, apiGetEnvelope, apiPost } from './client.js';
 
 /** 游标分页的一页（meta.page 缺失时按「单页到底」兜底，不崩列表）。 */
@@ -115,5 +116,6 @@ export function createStudioSession(capabilityId: string): Promise<StudioSession
  */
 export function trialUrl(capabilityId: string, returnTo?: string): string {
   const path = `/try/c/${encodeURIComponent(capabilityId)}`;
-  return returnTo ? `${path}?returnTo=${encodeURIComponent(returnTo)}` : path;
+  const safeReturnTo = sanitizeTaskReturnTo(returnTo);
+  return safeReturnTo ? `${path}?returnTo=${encodeURIComponent(safeReturnTo)}` : path;
 }

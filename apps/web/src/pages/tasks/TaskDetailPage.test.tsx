@@ -122,10 +122,8 @@ describe('TaskDetailPage — SSE 实时进度', () => {
     act(() => conn.emit('item-appended', { item: cap2 }, { id: '3-2' }));
     expect(await screen.findByText('周报整理')).toBeInTheDocument();
     expect(await screen.findByText('代码评审')).toBeInTheDocument();
-    expect(screen.getAllByRole('link', { name: '试用 →' })[0]).toHaveAttribute(
-      'href',
-      '/try/c/c1?returnTo=%2Ftasks%2Ft-1',
-    );
+    // 非规范测试 id 不跨 bundle 传播；生产 UUID 会由专门的 returnTo 契约覆盖。
+    expect(screen.getAllByRole('link', { name: '试用 →' })[0]).toHaveAttribute('href', '/try/c/c1');
     expect(screen.getAllByRole('checkbox')).toHaveLength(2);
     expect(screen.getAllByRole('checkbox').every((el) => (el as HTMLInputElement).checked)).toBe(
       true,

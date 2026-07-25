@@ -22,7 +22,7 @@ k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data
 
 `/etc/combo-dev/registry.json` 必须归 root 所有且权限为 `0600`，只包含 `ghcr.io` 的开发只读拉取身份。`/etc/combo-dev/production-observer.kubeconfig` 必须使用单一嵌入式客户端证书，并与本机审核凭据使用完全相同的 API 服务端和证书颁发机构。该身份只能在生产命名空间对 Deployment、StatefulSet、Service、PVC 和 Pod 执行 `get`、`list` 与 `watch`。bootstrap、部署和重置会解析全部命名空间的有效规则与关联绑定，拒绝通配符、Secret 读取、任何持久变更权限、生产命名空间之外的资源权限和额外集群资源权限。Kubernetes 为已认证身份提供的不落盘自省请求与只读发现端点是唯一例外。
 
-部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` 环境必须配置主线分支限制和必需审核人，开发 SSH 材料只能保存在该环境中。combo-dev 工作流目前只接受手工触发，并要求输入当前 `main` 的完整提交 SHA。工作流会再次确认该 SHA 仍是主线头部且已有成功的主线 CI。它与生产 CD 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
+部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` 环境必须配置与当前验收分支精确匹配的分支限制和必需审核人，开发 SSH 材料只能保存在该环境中。combo-dev 工作流只接受手工触发，并要求输入仍可从仓库任一当前分支到达的完整提交 SHA；工作流会校验触发者权限、远端可达性，并为该 SHA 重新执行受信 CI 和构建。它与生产 CD 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
 
 首次准备和控制文件升级时，主机所有者必须先把相关脚本、主机文件和 combo-dev 覆盖层复制到 root-owned 且非 root 不可写的审核快照中，再从该快照执行：
 
@@ -52,16 +52,21 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 ## 外部真实验收器
 
-主机所有者必须在 `/opt/combo-dev/acceptance/run` 安装独立审核的真实浏览器验收器。候选仓库不会携带浏览器自动化代码。验收器必须在 60 分钟内完成 SPA、同源开发登录、身份读取、登出失效、生产开发登录不可用、任务幂等重放、合成配对上传、健康路径 SSE、Worker 完成、能力发布、单轮 Runtime、终态 SSE、持久助手输出、可读产物、私有签名 PUT、GET 与删除、精确 CORS、逐个重启与持久化回读、SSH 回环访问、异机不可达和临时产物清理。
+主机所有者必须在 `/opt/combo-dev/acceptance/run` 安装独立审核的基础真实验收器。部署只执行这份 root 所有且普通用户不可写的固定入口，不会从候选 bundle 安装或替换它。验收器必须在 60 分钟内完成 SPA、同源开发登录、身份读取、登出失效、生产开发登录不可用、任务幂等重放、合成配对上传、健康路径 SSE、Worker 完成、能力发布、单轮 Runtime、终态 SSE、持久助手输出、可读产物、私有签名 PUT、GET 与删除、精确 CORS、逐个重启与持久化回读、SSH 回环访问、异机不可达和临时产物清理。
 
 验收器只能向标准输出写一份不超过 64 KiB 的 JSON。顶层只能有 `revision`、`createdAt` 和 `checks`。每个检查只能包含 `status` 与不含敏感信息的 `id`，状态必须为 `PASS`。它不得输出响应体、请求地址、会话材料、签名 URL、配对材料、日志正文或任何凭据。`combo-dev-smoke.sh` 会严格校验固定检查键；缺少验收器、缺少检查或证据过期都会返回 `BLOCKED`。
 
+仓库中的 `scripts/goal-b-test-acceptance.mjs` 是 Goal B 的补充验收器，覆盖 Studio 多轮、元素选择、刷新恢复、revision、current UI、consume Session 和两个返回路径。它从与部署 SHA 完全一致的普通源码目录单独运行，使用同一条 `127.0.0.1` Web 回环转发，并生成独立的脱敏 `0600` JSON；它不能替代上述基础验收器，也不会被部署 bundle 自动安装。
+
 ## 重置
 
-破坏性重置只接受固定命令：
+破坏性重置只接受受保护 Test workflow 传入的固定确认串、完整源码 SHA 和正整数 workflow run ID：
 
 ```sh
-sudo /opt/combo-dev/bin/combo-dev-reset --confirm=DESTROY-COMBO-PREVIEW-DATA
+sudo /opt/combo-dev/bin/combo-dev-reset \
+  --confirm=DESTROY-COMBO-PREVIEW-DATA \
+  --revision 0123456789abcdef0123456789abcdef01234567 \
+  --workflow-run-id 123456789
 ```
 
-重置会先在服务端校验基础清单，再写入持久阻断标记，关闭全部写入者和两个转发器，并删除固定任务与基础控制器。它不会删除或改绑三个静态 PV/PVC，而是在再次验证独立挂载和规范路径后清空三个固定数据目录，恢复精确所有权，轮换开发会话凭据，再重建基础服务。PostgreSQL 使用固定镜像内真实的 UID/GID `70:70` 创建 `pgdata` 子目录；旧根目录迁移会先确认子目录为空，写入显式迁移状态，逐项移动并验证普通条目，最后才移动 `PG_VERSION`。任何中断都会保留状态并阻止后续启动。重置只有在固定绑定、目录身份和冷启动全部通过后才会成功，结束时应用和四个基础服务全部保持关闭，持久阻断标记只能由后续完整部署清除。
+重置会先在服务端校验基础清单，再写入持久阻断标记，关闭全部写入者和两个转发器，并删除固定任务与基础控制器。它不会删除或改绑三个静态 PV/PVC，而是在再次验证独立挂载和规范路径后清空三个固定数据目录，证明目录为空，恢复精确所有权，轮换开发会话凭据，再重建基础服务。PostgreSQL 使用固定镜像内真实的 UID/GID `70:70` 创建 `pgdata` 子目录；旧根目录迁移会先确认子目录为空，写入显式迁移状态，逐项移动并验证普通条目，最后才移动 `PG_VERSION`。任何中断都会保留状态并阻止后续启动。成功重置会把 SHA、run ID、清空时间和重建基础 Pod 的非敏感 UID/时间写入 owner-only 单次回执；紧随其后的部署必须在十五分钟内以相同 SHA 与 run ID 原子消费它。重置结束时应用和四个基础服务全部保持关闭，持久阻断标记只能由后续完整部署清除。
