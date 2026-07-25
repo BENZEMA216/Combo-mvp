@@ -181,6 +181,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Build shared first
+        run: pnpm -F @cb/shared build
+
       - name: Install database and Redis clients
         run: |
           set -euo pipefail
