@@ -5,9 +5,14 @@ RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfig.json ./
 COPY packages ./packages
 COPY apps ./apps
+COPY scripts/web-asset-manifest.mjs ./scripts/web-asset-manifest.mjs
 RUN pnpm install --frozen-lockfile=false
 # 同镜像同时构建创作者中心（web）与试用端（runtime-web，base=/try/）静态产物。
-RUN pnpm -F @cb/shared build && pnpm -F @cb/web build && pnpm -F @cb/runtime-web build
+RUN pnpm -F @cb/shared build && pnpm -F @cb/web build && pnpm -F @cb/runtime-web build && \
+    node scripts/web-asset-manifest.mjs \
+      --web-root apps/web/dist \
+      --runtime-root apps/runtime-web/dist \
+      --output apps/web/dist/web-asset-manifest.json
 
 FROM nginx:alpine AS runtime
 COPY --from=build /app/apps/web/dist /usr/share/nginx/html
