@@ -424,6 +424,7 @@ jobs:
       - name: Upload the fixed bundle and invoke the root-owned dispatcher
         env:
           GH_TOKEN: ${{ github.token }}
+          PREVIEW_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
           REVISION: ${{ needs.authorize.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
@@ -435,13 +436,57 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || exit 1
-          preview_mode=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
-            --jq '.value')
-          [[ "$preview_mode" == paused ]] || {
+          [[ "$PREVIEW_MODE" == paused ]] || {
             echo 'Test deployment requires Preview automatic promotion to remain paused.' >&2
             exit 1
           }
+          verify_preview_policy_is_paused() {
+            local preview_runs preview_run_id preview_jobs
+            preview_runs=$(gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/preview.yml/runs?event=workflow_run&branch=main&per_page=100")
+            preview_run_id=$(jq -er \
+              --arg revision "$REVISION" '
+                [
+                  .[].workflow_runs[]
+                  | select(
+                      .name == "Preview promotion"
+                      and .path == ".github/workflows/preview.yml"
+                      and .event == "workflow_run"
+                      and .head_branch == "main"
+                      and .head_sha == $revision
+                    )
+                ] as $runs
+                | if (
+                    ($runs | length) == 1
+                    and $runs[0].run_attempt == 1
+                    and $runs[0].status == "completed"
+                    and $runs[0].conclusion == "success"
+                  )
+                  then $runs[0].id
+                  else error("the exact candidate does not have one completed paused Preview policy run")
+                  end
+              ' <<<"$preview_runs")
+            [[ "$preview_run_id" =~ ^[1-9][0-9]*$ ]]
+            preview_jobs=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${preview_run_id}/attempts/1/jobs?per_page=100")
+            jq -e '
+              [
+                .jobs[]
+                | select(.name == "validate main release and repository promotion mode")
+              ] as $policyJobs
+              | [
+                  .jobs[]
+                  | select(.name == "deploy the main release artifact to Preview")
+                ] as $deployJobs
+              | ($policyJobs | length) == 1
+                and $policyJobs[0].status == "completed"
+                and $policyJobs[0].conclusion == "success"
+                and ($deployJobs | length) == 1
+                and $deployJobs[0].status == "completed"
+                and $deployJobs[0].conclusion == "skipped"
+            ' <<<"$preview_jobs" >/dev/null
+          }
+          verify_preview_policy_is_paused
           remote_main=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
           [[ "$remote_main" == "$REVISION" ]] || {
             echo 'main advanced while Test waited for its deployment gate.' >&2
@@ -487,9 +532,8 @@ jobs:
           cleanup_upload
           scp -q "$ARCHIVE" "combo-dev-target:$temporary"
           ssh combo-dev-target mv -fT -- "$temporary" "$remote"
-          [[ "$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/variables/COMBO_PREVIEW_AUTO_PROMOTION_MODE" \
-            --jq '.value')" == paused ]]
+          [[ "$PREVIEW_MODE" == paused ]]
+          verify_preview_policy_is_paused
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
             --jq '.object.sha')" == "$REVISION" ]]
           source_run=$(gh api \

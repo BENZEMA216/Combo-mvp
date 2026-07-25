@@ -16,7 +16,9 @@ digest 都必须是非零 SHA-256，所有运行和 artifact ID 都必须是正�
 Preview 在任何远端变更前重新检查以下事实：
 
 - 候选仍然是远端 `main` 的精确 HEAD。
-- `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 仍然严格等于 `enabled`。
+- policy job 输出与 deploy job 的受保护 repository-variable 准入快照都严格等于
+  `enabled`。内置 `GITHUB_TOKEN` 不调用其无权访问的 Repository Variables REST
+  endpoint。
 - source CI 的 ID、run attempt、workflow、事件、分支、SHA 和结论仍然匹配。
 - source artifact 的 ID、所属运行和 GitHub digest 仍然匹配。
 - 同一 SHA 的 Test workflow run、run attempt 和 `combo-test-evidence-<SHA>` artifact
@@ -24,7 +26,11 @@ Preview 在任何远端变更前重新检查以下事实：
 
 Test 的远端 bundle、reset proof、migration proof 和部署证据路径全部使用
 `source SHA + workflow run ID + run attempt` 三元组；任何字段或路径 attempt 漂移都会
-在进入 Preview 前失败。脱敏部署证据的顶层以及 reset、storage、foundation、
+在进入 Preview 前失败。Test 首次 mutation 前及 bundle 上传后还会复验同一 SHA
+只有一个 attempt 1 的 Preview policy run，且 policy 成功、deploy job 为
+`skipped`；三个环境的 deploy job 共用 `cd-tecent2` concurrency group，因此新的
+Preview rerun 不能与正在执行的 Test mutation 并发。脱敏部署证据的顶层以及
+reset、storage、foundation、
 migration、Job、Pod、release metadata、resource inventory 和 live plane 的每个
 嵌套对象都采用 exact schema，并扫描敏感键、Bearer/Cookie/私钥、裸
 `gh[pousr]_`/`github_pat_` token 和 `AKIA`/`ASIA` AWS access key ID。Test artifact
