@@ -340,9 +340,15 @@ test('Test migration proof accepts containerd config digests but fences the live
   const deploy = text('scripts/combo-dev-deploy.sh');
   const captureStart = deploy.indexOf('capture_migration_proof() {');
   const captureEnd = deploy.indexOf('\nwait_apps() {', captureStart);
-  const verifier = deploy.slice(captureStart, captureEnd).match(/<<'PY'\n(?<source>[\s\S]*?)\nPY\n/)
-    ?.groups?.source;
+  const captureSource = deploy.slice(captureStart, captureEnd);
+  const verifier = captureSource.match(/<<'PY'\n(?<source>[\s\S]*?)\nPY\n/)?.groups?.source;
   assert.ok(verifier);
+  assert.match(captureSource, /local candidate="\$\{output\}\.next"/);
+  assert.match(captureSource, /if python3 - \\/);
+  assert.match(captureSource, /\[\[ -f "\$candidate" && ! -L "\$candidate" \]\] \|\| return 1/);
+  assert.match(captureSource, /chmod 0600 "\$candidate" \|\| return 1/);
+  assert.match(captureSource, /mv -T -- "\$candidate" "\$output" \|\| return 1/);
+  assert.match(captureSource, /else\n {4}return 1\n {2}fi/);
 
   const revision = 'a'.repeat(40);
   const expectedDigest = digest('b');
