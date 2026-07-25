@@ -335,6 +335,180 @@ test('Test migration evidence uses the exact ordered 0000-0006 source ledger', (
   }
 });
 
+test('Test migration proof accepts containerd config digests but fences the live imageID', () => {
+  const work = mkdtempSync(join(tmpdir(), 'combo-dev-migration-proof-'));
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const captureStart = deploy.indexOf('capture_migration_proof() {');
+  const captureEnd = deploy.indexOf('\nwait_apps() {', captureStart);
+  const captureSource = deploy.slice(captureStart, captureEnd);
+  const verifier = captureSource.match(/<<'PY'\n(?<source>[\s\S]*?)\nPY\n/)?.groups?.source;
+  assert.ok(verifier);
+  assert.match(captureSource, /local candidate="\$\{output\}\.next"/);
+  assert.match(captureSource, /if python3 - \\/);
+  assert.match(captureSource, /\[\[ -f "\$candidate" && ! -L "\$candidate" \]\] \|\| return 1/);
+  assert.match(captureSource, /chmod 0600 "\$candidate" \|\| return 1/);
+  assert.match(captureSource, /mv -T -- "\$candidate" "\$output" \|\| return 1/);
+  assert.match(captureSource, /else\n {4}return 1\n {2}fi/);
+
+  const revision = 'a'.repeat(40);
+  const expectedDigest = digest('b');
+  const expectedImage = `ghcr.io/dangdang-tech/combo-api@sha256:${expectedDigest}`;
+  const reportedImage = `sha256:${digest('c')}`;
+  const expectedHead = '0006_one_running_turn_per_session.sql';
+  const jobUid = '11111111-1111-4111-8111-111111111111';
+  const podUid = '22222222-2222-4222-8222-222222222222';
+  const job = join(work, 'job.json');
+  const pods = join(work, 'pods.json');
+  const logs = join(work, 'migration.log');
+  const output = join(work, 'proof.json');
+  const expectedMigrations = [
+    '0000_baseline_schema.sql',
+    '0001_expired_upload_reconciliation.sql',
+    '0002_drop_stream_events.sql',
+    '0003_turns.sql',
+    '0004_studio_sessions.sql',
+    '0005_capability_current_ui.sql',
+    '0006_one_running_turn_per_session.sql',
+  ];
+  const jobObject = {
+    metadata: {
+      name: 'migrate',
+      namespace: 'combo-preview',
+      uid: jobUid,
+      labels: { app: 'migrate' },
+      creationTimestamp: '2026-07-25T14:00:00Z',
+    },
+    spec: {
+      backoffLimit: 0,
+      activeDeadlineSeconds: 600,
+      ttlSecondsAfterFinished: 7200,
+      template: {
+        spec: {
+          containers: [
+            {
+              name: 'migrate',
+              image: expectedImage,
+              command: ['node', '--experimental-strip-types', 'db/scripts/migrate.ts'],
+              env: [
+                { name: 'EXPECTED_MIGRATION_HEAD', value: expectedHead },
+                { name: 'MIGRATION_RUNS', value: '2' },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    status: {
+      startTime: '2026-07-25T14:00:01Z',
+      completionTime: '2026-07-25T14:00:04Z',
+      succeeded: 1,
+      conditions: [{ type: 'Complete', status: 'True' }],
+    },
+  };
+  const podObject = {
+    metadata: {
+      name: 'migrate-proof1',
+      namespace: 'combo-preview',
+      uid: podUid,
+      labels: { 'job-name': 'migrate' },
+      ownerReferences: [
+        {
+          kind: 'Job',
+          name: 'migrate',
+          uid: jobUid,
+          controller: true,
+        },
+      ],
+    },
+    spec: {
+      containers: [{ name: 'migrate', image: expectedImage }],
+    },
+    status: {
+      phase: 'Succeeded',
+      containerStatuses: [
+        {
+          name: 'migrate',
+          image: reportedImage,
+          imageID: expectedImage,
+          state: {
+            terminated: {
+              exitCode: 0,
+              reason: 'Completed',
+              startedAt: '2026-07-25T14:00:02Z',
+              finishedAt: '2026-07-25T14:00:03Z',
+            },
+          },
+        },
+      ],
+    },
+  };
+  const logLines = [
+    ...expectedMigrations.map((name) => `applying ${name} ...`),
+    `migration pass 1/2 up to date at ${expectedHead}.`,
+    `migration pass 2/2 up to date at ${expectedHead}.`,
+  ];
+
+  try {
+    writeFileSync(job, JSON.stringify(jobObject));
+    writeFileSync(pods, JSON.stringify({ items: [podObject] }));
+    writeFileSync(logs, `${logLines.join('\n')}\n`);
+    const args = ['-', revision, '123', '1', expectedImage, expectedHead, job, pods, logs, output];
+    const accepted = spawnSync('python3', args, {
+      input: verifier,
+      encoding: 'utf8',
+    });
+    assert.equal(accepted.status, 0, accepted.stderr);
+    const proof = JSON.parse(readFileSync(output, 'utf8'));
+    assert.equal(proof.pod.image, expectedImage);
+    assert.equal(proof.pod.imageID, expectedImage);
+
+    podObject.status.containerStatuses[0].imageID = `ghcr.io/dangdang-tech/combo-api@sha256:${digest('d')}`;
+    writeFileSync(pods, JSON.stringify({ items: [podObject] }));
+    rmSync(output, { force: true });
+    const rejected = spawnSync('python3', args, {
+      input: verifier,
+      encoding: 'utf8',
+    });
+    assert.equal(rejected.status, 2);
+    assert.equal(existsSync(output), false);
+
+    podObject.status.containerStatuses[0].imageID = expectedImage;
+    podObject.spec.containers[0].image = `ghcr.io/dangdang-tech/combo-api@sha256:${digest('e')}`;
+    writeFileSync(pods, JSON.stringify({ items: [podObject] }));
+    const wrongSpec = spawnSync('python3', args, {
+      input: verifier,
+      encoding: 'utf8',
+    });
+    assert.equal(wrongSpec.status, 2);
+    assert.equal(existsSync(output), false);
+
+    podObject.spec.containers[0].image = expectedImage;
+    podObject.metadata.ownerReferences[0].uid = '33333333-3333-4333-8333-333333333333';
+    writeFileSync(pods, JSON.stringify({ items: [podObject] }));
+    const wrongOwner = spawnSync('python3', args, {
+      input: verifier,
+      encoding: 'utf8',
+    });
+    assert.equal(wrongOwner.status, 2);
+    assert.equal(existsSync(output), false);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('Test live image evidence binds PodSpec and imageID without trusting runtime aliases', () => {
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const liveStart = deploy.indexOf('expected_images = {');
+  const liveEnd = deploy.indexOf('\nchecks = acceptance.get', liveStart);
+  const liveVerifier = deploy.slice(liveStart, liveEnd);
+  assert.match(liveVerifier, /containers\[0\]\.get\('image'\) != expected_image/);
+  assert.match(
+    liveVerifier,
+    /not digest_matches\(statuses\[0\]\.get\('imageID'\), expected_image\)/,
+  );
+  assert.doesNotMatch(liveVerifier, /statuses\[0\]\.get\('image'\)/);
+});
+
 test('Test workflow publishes sanitized live release evidence before SSH cleanup', () => {
   const workflow = text('.github/workflows/combo-dev.yml');
   const deploy = text('scripts/combo-dev-deploy.sh');
