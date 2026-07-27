@@ -1,7 +1,14 @@
-import { API_PREFIX, LogoutResponseSchema, type LogoutResult } from '@cb/shared';
+import {
+  API_PREFIX,
+  LogoutResponseSchema,
+  type LogoutResult,
+  type ReleaseMetadata,
+} from '@cb/shared';
+import { sanitizeReturnTo } from '../safeReturnTo.js';
 
 /** 后端幂等登出入口：撤销可识别会话并清除同一枚 HttpOnly Cookie。 */
 export const AUTH_LOGOUT_PATH = `${API_PREFIX}/auth/logout`;
+export const PREVIEW_ACCESS_PATH = '/__review/enter';
 
 /**
  * 清理当前浏览器会话。失败返回 null，调用方保留菜单并提供可重试的人话错误。
@@ -22,10 +29,25 @@ export async function logoutSession(): Promise<LogoutResult | null> {
   }
 }
 
-/** 登出成功后整页回站内登录页，清掉当前前端内存中的身份与业务缓存。 */
-export function completeLogout(
+/** Preview 登出同时返回外层访问闸；其他环境回到仓库内邮箱登录页。 */
+export function logoutDestination(
   _result: LogoutResult,
+  environment: ReleaseMetadata['environment'] = 'production',
+  returnTo?: string,
+): string {
+  if (environment !== 'preview') return '/login';
+  const safeReturnTo = sanitizeReturnTo(returnTo);
+  return safeReturnTo
+    ? `${PREVIEW_ACCESS_PATH}?returnTo=${encodeURIComponent(safeReturnTo)}`
+    : PREVIEW_ACCESS_PATH;
+}
+
+/** 登出成功后整页离开受保护应用，清掉当前前端内存中的身份与业务缓存。 */
+export function completeLogout(
+  result: LogoutResult,
   navigate: (url: string) => void = (url) => window.location.assign(url),
+  environment: ReleaseMetadata['environment'] = 'production',
+  returnTo?: string,
 ): void {
-  navigate('/login');
+  navigate(logoutDestination(result, environment, returnTo));
 }

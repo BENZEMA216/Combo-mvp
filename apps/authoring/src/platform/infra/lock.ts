@@ -1,5 +1,4 @@
-// B-04 · redis_hot 分布式锁（实现 shared LockPort，70 §8.1）。
-//   sweeper 单活（§6.1）、consumer 启动级防重备选（§3.1）。
+// redis_hot 分布式租约锁（实现 shared LockPort）。
 //   acquire：SET key token NX PX ttl（不存在才置 + TTL）；renew：仅持锁者续 TTL（Lua CAS）；release：仅持锁者删（Lua CAS）。
 //   崩溃后 TTL 到期自动释放 → 另一实例接管（lease 语义，永不死锁）。
 import { randomUUID } from 'node:crypto';
@@ -39,9 +38,3 @@ export function createRedisLock(redis: Redis): LockPort {
     },
   };
 }
-
-/** 单活循环 key 约定（70 §6.1 / §3.1）。 */
-export const LOCK_KEYS = {
-  sweeper: 'sweeper:lock',
-  consumer: (name: string): string => `consumer:lock:${name}`,
-} as const;

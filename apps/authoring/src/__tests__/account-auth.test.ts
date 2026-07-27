@@ -44,6 +44,7 @@ function requestDouble(input: {
   cookies?: Record<string, string>;
   auth?: FastifyRequest['auth'];
   nodeEnv?: 'test' | 'production';
+  sessionCookieSecure?: boolean;
 }): FastifyRequest {
   return {
     id: 'trace-account-test',
@@ -53,7 +54,11 @@ function requestDouble(input: {
     auth: input.auth,
     server: {
       infra: {
-        env: { NODE_ENV: input.nodeEnv ?? 'test', OTP_HMAC_SECRET: 'x'.repeat(32) },
+        env: {
+          NODE_ENV: input.nodeEnv ?? 'test',
+          SESSION_COOKIE_SECURE: input.sessionCookieSecure ?? false,
+          OTP_HMAC_SECRET: 'x'.repeat(32),
+        },
         db: { query: vi.fn(), connect: vi.fn() },
         resend: {},
         authRateLimiter: {},
@@ -124,10 +129,11 @@ describe('first-party account handlers', () => {
     expect(reply.header).toHaveBeenCalledWith('cache-control', 'no-store');
   });
 
-  it('preserves a leading-zero code and sets the only session cookie after verification', async () => {
+  it('preserves a leading-zero code and sets the explicit HTTPS session cookie', async () => {
     const req = requestDouble({
       body: { email: 'Alice@example.com', code: '004271', returnTo: '/tasks' },
-      nodeEnv: 'production',
+      nodeEnv: 'test',
+      sessionCookieSecure: true,
     });
     const reply = replyDouble();
 
@@ -152,6 +158,28 @@ describe('first-party account handlers', () => {
       data: { user: USER, returnTo: '/tasks' },
       meta: { traceId: 'trace-account-test' },
     });
+  });
+
+  it('uses the local HTTP cookie when a production Test process explicitly disables Secure', async () => {
+    const req = requestDouble({
+      body: { email: 'Alice@example.com', code: '004271', returnTo: '/tasks' },
+      nodeEnv: 'production',
+      sessionCookieSecure: false,
+    });
+    const reply = replyDouble();
+
+    await run(emailVerificationHandler, req, reply);
+
+    expect(reply.setCookie).toHaveBeenCalledWith(
+      AUTH_SESSION_COOKIE_NAME,
+      SESSION,
+      expect.objectContaining({ secure: false, path: '/' }),
+    );
+    expect(reply.setCookie).not.toHaveBeenCalledWith(
+      AUTH_SESSION_COOKIE_PRODUCTION_NAME,
+      expect.anything(),
+      expect.anything(),
+    );
   });
 
   it.each([
@@ -205,11 +233,11 @@ describe('first-party account handlers', () => {
     expect(failedPayload.error).not.toHaveProperty('code');
   });
 
-  it('logs out idempotently, revokes a formatted cookie, then clears with matching attributes', async () => {
+  it('logs out idempotently, revokes a formatted cookie, then clears matching attributes', async () => {
     const req = requestDouble({
       body: {},
       cookies: { [AUTH_SESSION_COOKIE_PRODUCTION_NAME]: SESSION },
-      nodeEnv: 'production',
+      sessionCookieSecure: true,
     });
     const reply = replyDouble();
 

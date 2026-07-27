@@ -38,7 +38,14 @@ legacy_auth_hits=$(
     --glob '!scripts/integration/db-migrate.sh' \
     --glob '!scripts/check-production-artifacts.sh' \
     | grep -Ev \
-      '^scripts/start\.sh:[0-9]+:(# .*历史 Logto 容器[，,]?|OBSOLETE_SERVICES=\(logto logto_db_seed logto_alteration\)|log .*废弃 Logto 容器.*)$' \
+      -e '^scripts/start\.sh:[0-9]+:(# Logto 容器；不触碰卷、数据服务或其他 Compose 项目。|OBSOLETE_SERVICES=\(logto logto_db_seed logto_alteration\)|log .*废弃 Logto 容器.*)$' \
+      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*\\['cb_refresh', 'cb_auth_tx', secureCookie \\? 'cb_session' : '__Host-cb_session'\\]\\.includes\\($" \
+      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*\\['/api/v1/auth/(login|callback)', 'GET'\\],$" \
+      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*\\['/api/v1/auth/(refresh|dev-login)', 'POST'\\],$" \
+      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*!cookies\\.some\\(\\(cookie\\) => \\['cb_refresh', 'cb_auth_tx'\\]\\.includes\\(cookie\\.name\\)\\),$" \
+      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*!remainingCookieNames\\.includes\\('(cb_refresh|cb_auth_tx)'\\) &&$" \
+      -e "^scripts/combo-dev-bootstrap\\.sh:[0-9]+:[[:space:]]*'DEV_SESSION_SECRET','LOGTO_ENDPOINT','LOGTO_ISSUER','LOGTO_JWKS_URI',$" \
+      -e "^scripts/combo-dev-bootstrap\\.sh:[0-9]+:[[:space:]]*'LOGTO_APP_ID','LOGTO_APP_SECRET','LOGTO_AUDIENCE','LOGTO_REDIRECT_URI',$" \
     || true
 )
 if [[ -n "$legacy_auth_hits" ]]; then

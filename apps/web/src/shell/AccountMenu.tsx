@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
-import type { LogoutResult } from '@cb/shared';
+import type { LogoutResult, ReleaseMetadata } from '@cb/shared';
 import { completeLogout, logoutSession } from '../api/sessionLogout.js';
 import { avatarInitial, type ShellAccount } from './account.js';
 import { IconChevronDown, IconLogout } from './icons.js';
@@ -12,6 +12,8 @@ export interface AccountMenuProps {
   requestLogout?: () => Promise<LogoutResult | null>;
   /** 测试注入点；生产默认整页跳转。 */
   navigateAfterLogout?: (url: string) => void;
+  /** 运行时发布环境；Preview 登出后返回外层访问闸。 */
+  environment?: ReleaseMetadata['environment'];
 }
 
 /** 侧边栏账号入口：展开态整行、收起态头像都能打开同一个可访问菜单。 */
@@ -19,6 +21,7 @@ export function AccountMenu({
   account,
   requestLogout = logoutSession,
   navigateAfterLogout,
+  environment = 'development',
 }: AccountMenuProps): ReactElement {
   const [open, setOpen] = useState(false);
   const [logoutState, setLogoutState] = useState<LogoutState>('idle');
@@ -68,7 +71,12 @@ export function AccountMenu({
       setLogoutState('error');
       return;
     }
-    completeLogout(result, navigateAfterLogout);
+    completeLogout(
+      result,
+      navigateAfterLogout,
+      environment,
+      window.location.pathname + window.location.search,
+    );
   };
 
   return (

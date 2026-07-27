@@ -38,4 +38,41 @@ describe('composeSystemPrompt', () => {
     const prompt = composeSystemPrompt(DEFINITION);
     expect(prompt).toMatch(/今天的日期是 \d{4}-\d{2}-\d{2}/);
   });
+
+  it('Studio 模式只负责修改 Miniapp，并以成功轮的不可变 revision 更新当前 UI', () => {
+    const prompt = composeSystemPrompt(DEFINITION, new Date('2026-07-23T08:00:00Z'), 'studio', {
+      taskText: '请生成首版 Miniapp',
+      hasExistingPage: false,
+    });
+    expect(prompt).toContain('# Miniapp 设计模式');
+    expect(prompt).toContain('不要把本轮当成一次业务任务执行');
+    expect(prompt).toContain('新的不可变 revision');
+    expect(prompt).toContain('不要传旧 artifactId');
+    expect(prompt).toContain('本轮最后一个合法 revision');
+    expect(prompt).toContain('完整自包含 HTML');
+    expect(prompt).toContain('<!doctype html>');
+    expect(prompt).toContain("type: 'combo:run'");
+    expect(prompt).toContain('data-combo-key="run-primary"');
+    expect(prompt).toContain("type: 'combo:run-state'");
+    expect(prompt).toContain('只有收到 state=completed 才能宣告完成');
+    expect(prompt).toContain('禁止使用 setTimeout、setInterval、Math.random');
+    expect(prompt).toContain('没有成功调用 upsert_artifact 就不能声称页面已生成');
+    expect(prompt).toContain('Combo Design Agent');
+    expect(prompt).toContain('# 本轮 Artifact 视觉合同');
+  });
+
+  it('已有 Studio 页面时按本轮文本保持视觉连续性，不重新选择首版 Profile', () => {
+    const prompt = composeSystemPrompt(DEFINITION, new Date('2026-07-23T08:00:00Z'), 'studio', {
+      taskText: '只调整主按钮文案',
+      hasExistingPage: true,
+    });
+
+    expect(prompt).toContain('# 视觉连续性（普通 Revision）');
+    expect(prompt).not.toContain('# 本轮 Artifact 视觉合同');
+  });
+
+  it('普通运行会话不注入 Miniapp 设计约束', () => {
+    const prompt = composeSystemPrompt(DEFINITION, new Date('2026-07-23T08:00:00Z'), 'consume');
+    expect(prompt).not.toContain('# Miniapp 设计模式');
+  });
 });

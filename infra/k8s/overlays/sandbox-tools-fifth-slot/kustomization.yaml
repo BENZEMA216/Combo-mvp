@@ -1,0 +1,17 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../sandbox-tools
+  - workspace-slot-4.yaml
+patches:
+  - path: runtime-capacity-patch.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: runtime
+  - path: quota-capacity-patch.yaml
+    target:
+      version: v1
+      kind: ResourceQuota
+      name: sandbox-capacity

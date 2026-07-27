@@ -10,12 +10,17 @@ export interface QueryResultLike<R = Record<string, unknown>> {
   rowCount: number | null;
 }
 export interface Queryable {
-  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<QueryResultLike<R>>;
+  query<R = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+    signal?: AbortSignal,
+  ): Promise<QueryResultLike<R>>;
 }
 
 /** 单连接（pg.PoolClient 子集）：可 query + release。 */
 export interface TxConn extends Queryable {
-  release(): void;
+  /** destroy=true 时销毁可能仍有未决查询的连接，不把它放回池中。 */
+  release(destroy?: boolean): void;
 }
 
 /** 能领出单连接做事务的池。 */
@@ -45,41 +50,149 @@ export function getPool(env: Env): Pool {
 }
 
 /** 把 pg.Pool 适配成 RuntimeDb（生产用）；测试直接注入 FakeDb。 */
+function pgQuery<R>(
+  target: Pool | PoolClient,
+  sql: string,
+  params?: unknown[],
+  signal?: AbortSignal,
+): Promise<QueryResultLike<R>> {
+  if (signal?.aborted) return Promise.reject(operationAborted());
+  const pending = target.query(sql, params) as unknown as Promise<QueryResultLike<R>>;
+  if (!signal) return pending;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = (): void => finish(() => reject(operationAborted()));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void pending.then(
+      (result) => finish(() => resolve(result)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
 export function toRuntimeDb(p: Pool): RuntimeDb {
   return {
-    query: (sql: string, params?: unknown[]) => p.query(sql, params) as never,
+    query: <R>(sql: string, params?: unknown[], signal?: AbortSignal) =>
+      pgQuery<R>(p, sql, params, signal),
     async connect(): Promise<TxConn> {
       const client: PoolClient = await p.connect();
       return {
-        query: (sql: string, params?: unknown[]) => client.query(sql, params) as never,
-        release: () => client.release(),
+        query: <R>(sql: string, params?: unknown[], signal?: AbortSignal) =>
+          pgQuery<R>(client, sql, params, signal),
+        release: (destroy = false) => client.release(destroy),
       };
     },
   };
 }
 
+export interface TransactionOptions {
+  /** 取消连接等待和事务内的每条 PostgreSQL 查询。 */
+  signal?: AbortSignal;
+  /** 同时设置事务内的 lock_timeout 与 statement_timeout。 */
+  timeoutMs?: number;
+  /** 为跨表详情读取建立同一 REPEATABLE READ、READ ONLY 快照。 */
+  readOnlySnapshot?: boolean;
+}
+
+function operationAborted(): Error {
+  return new DOMException('database operation aborted', 'AbortError');
+}
+
+async function connectWithSignal(db: TxPool, signal?: AbortSignal): Promise<TxConn> {
+  if (!signal) return db.connect();
+  if (signal.aborted) throw operationAborted();
+  const pending = db.connect();
+  return new Promise<TxConn>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = (): void => finish(() => reject(operationAborted()));
+    signal.addEventListener('abort', onAbort, { once: true });
+    void pending.then(
+      (connection) => {
+        if (settled) {
+          connection.release(true);
+          return;
+        }
+        finish(() => resolve(connection));
+      },
+      (error: unknown) => finish(() => reject(error)),
+    );
+  });
+}
+
 /**
- * 在单连接事务内执行 fn：BEGIN → fn(tx) → COMMIT；fn 抛错 → ROLLBACK 后上抛。
- * fn 内所有 query 必须用传入的 tx（同一连接 = 同一事务），不可另取连接。
+ * 在单连接事务内执行 fn。可选信号会传给连接等待和全部查询；超时配置由 PostgreSQL
+ * 自己执行，因此关闭流程不会只在应用层放弃一个仍持锁的事务。
  */
 export async function withTransaction<T>(
   db: TxPool,
   fn: (tx: Queryable) => Promise<T>,
+  options: TransactionOptions = {},
 ): Promise<T> {
-  const conn = await db.connect();
+  if (
+    options.timeoutMs !== undefined &&
+    (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)
+  ) {
+    throw new Error('transaction timeout must be a positive integer');
+  }
+  const conn = await connectWithSignal(db, options.signal);
+  let released = false;
+  const release = (destroy = false): void => {
+    if (released) return;
+    released = true;
+    conn.release(destroy);
+  };
+  const transaction: Queryable = {
+    async query<R>(sql: string, params?: unknown[]): Promise<QueryResultLike<R>> {
+      if (options.signal?.aborted) throw operationAborted();
+      const result = await conn.query<R>(sql, params, options.signal);
+      // node-postgres does not cancel every transport phase. This post-query fence
+      // prevents a query that returns after the deadline from advancing to a write
+      // or COMMIT; server-side statement_timeout bounds queries already submitted.
+      if (options.signal?.aborted) throw operationAborted();
+      return result;
+    },
+  };
   try {
-    await conn.query('BEGIN');
+    await transaction.query(
+      options.readOnlySnapshot ? 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY' : 'BEGIN',
+    );
+    if (options.timeoutMs !== undefined) {
+      const value = `${options.timeoutMs}ms`;
+      await transaction.query(
+        `SELECT set_config('lock_timeout', $1, true),
+                set_config('statement_timeout', $1, true)`,
+        [value],
+      );
+    }
     try {
-      const result = await fn(conn);
-      await conn.query('COMMIT');
+      const result = await fn(transaction);
+      await transaction.query('COMMIT');
       return result;
     } catch (err) {
-      // ROLLBACK 自身失败不掩盖原始错误（连接可能已坏）。
-      await conn.query('ROLLBACK').catch(() => undefined);
+      if (options.signal?.aborted) {
+        // The aborted query may still be unwinding in libpq. Destroy the connection
+        // instead of issuing an unbounded ROLLBACK or returning it to the pool.
+        release(true);
+      } else {
+        const rollbackSignal = AbortSignal.timeout(Math.min(options.timeoutMs ?? 2_000, 2_000));
+        await conn.query('ROLLBACK', undefined, rollbackSignal).catch(() => release(true));
+      }
       throw err;
     }
   } finally {
-    conn.release();
+    release(options.signal?.aborted === true);
   }
 }
 

@@ -1,0 +1,17 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+  namespace: combo
+spec:
+  template:
+    spec:
+      containers:
+        - name: runtime
+          env:
+            - name: SANDBOX_CONFIGURATION_REVISION
+              value: '4'
+            - name: SANDBOX_CAPACITY
+              value: '5'
+            - name: SANDBOX_FIFTH_SLOT_VALIDATED
+              value: 'true'

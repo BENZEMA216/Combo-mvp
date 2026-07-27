@@ -1,67 +1,44 @@
-# apps/runtime（试用端 · 能力项播放器）
+# apps/runtime（能力运行与界面设计后端）
 
-创作者对某个 Capability 开会话试用的独立后端：形态类 Claude Artifacts（左聊天流右产物画布）。
-对话生成在接收请求的实例内异步运行，生命周期不绑定 HTTP 连接。每次提交都会创建独立自治轮次并返回 202，同一会话可以并发运行多轮。打断请求通过 Redis 广播尽力送达任意实例。
+Runtime 是 Capability 试用与 Studio 编辑的独立后端。它管理普通与 Studio Session、Turn、Message、Artifact、当前 UI 指针和 Redis SSE，并在接收请求的实例内异步运行 Pi Agent。同一个 Session 同时最多只有一个 `running` Turn，并发提交返回稳定的 `SESSION_BUSY` 409 错误信封。
 
-## 与 authoring 的边界（铁律）
+## 服务边界
 
-- 只依赖 `@cb/shared`，**禁止 import `apps/authoring/**` 的任何代码\*\*。
-- 两个服务只在两处相遇：同一个 PG（读 `capabilities` 表并写试用层三表
-  `sessions/messages/artifacts`）和 MinIO（按 `capabilities.storage_key`
-  读 CapabilityDefinition JSON，桶 `combo-artifacts`）。
-- 身份：读取 authoring 签发的同一枚不透明 Cookie。生产只接受主机限定的 `__Host-cb_session`，本地 HTTP 开发测试只接受 `cb_session`。runtime 只计算摘要并只读同库的 `auth_sessions` 与 `users`，不签发会话、不创建用户，也不接受 Bearer 或查询串令牌。
+Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring 源码。它只读 `users`、`auth_sessions` 和 Capability 定义，读写 `sessions`、`turns`、`messages`、`artifacts`，并且只能更新 `capabilities.ui_artifact_id`。浏览器认证只接受 authoring 签发的不透明会话 Cookie：`SESSION_COOKIE_SECURE=true` 时读取 `__Host-cb_session`，为 false 时读取 `cb_session`。Runtime 只计算 Cookie 摘要并查询 PostgreSQL，不签发会话、不创建用户，也不接受 Bearer 或查询参数令牌。
 
-## 结构
+所有浏览器写请求必须来自 `PUBLIC_APP_ORIGINS` 的严格白名单。凭据型 CORS 也只反射其中的精确 origin。Preview 与 Production 必须使用 Secure Cookie；以 production 模式运行的 Test 可以显式使用非 Secure Cookie。模型、模型凭据、Pi 会话和流式事件都留在 Runtime 内。
 
-- `platform/`：config/env · infra（db / PostgreSQL 会话读取 / redis / object-store / llm provider / Redis 事件日志与跨实例事件总线）· middleware/auth（登录态校验）· http（错误信封 / 健康检查 / 低敏 client-events）· observability。
-- `modules/capability/`：loader 只放行本人能力或已发布能力，随后从 MinIO 读取定义并完成 schema 校验；无法识别版本时返回「能力格式过新」。该模块同时提供试用入口列表。
-- `modules/session/`：sessions/messages 两表 SQL（按 turnId 与 idx 写入；content 写入前
-  过 pi 原生消息块 schema，坏块拒写）· 会话端点 handler。
-- `modules/agent/`：build-agent（instructions 组系统提示词 + messages 历史以 pi 原生格式喂回）·
-  run-turn（自治轮次编排、pi 事件翻 AG-UI 与事件双写）· stream（SSE，Last-Event-ID 补发 + 实时）·
-  event-log / turn-emitter。
-- `modules/artifact/`：upsert_artifact pi 工具（内容写 MinIO `artifacts/{sessionId}/{artifactId}`，
-  无版本原地覆盖）· 内容回读端点。
-- `processes/api.ts`：Fastify HTTP + SSE 单进程入口（默认端口 3100，避开 authoring 的 3000）。
+## 源码结构
 
-## 对话线协议：AG-UI
+- `src/platform/` 保存配置、数据库、Redis、对象存储、不透明会话读取、模型选择、沙箱后端、HTTP 公共设施和观测接线。
+- `src/modules/capability/` 负责 Capability 列表、归属判断、发布可见性和定义加载。
+- `src/modules/session/` 负责普通与 Studio Session、Message、详情快照和 HTTP 处理。
+- `src/modules/agent/` 负责 Turn 生命周期、Pi Agent、Redis 事件流、Studio 模式和模型工具。
+- `src/modules/artifact/` 负责 Artifact 索引、对象正文、Studio HTML 契约、UI revision 和 `upsert_artifact`。
+- `src/bootstrap/` 组装 Fastify、基础设施、TurnRunner 和路由。
+- `src/processes/api.ts` 是唯一 HTTP 进程入口，默认监听 3100。
 
-pi 是执行层，事件依次翻成标准 AG-UI 的 `RUN_STARTED`、`TEXT_MESSAGE_START/CONTENT/END` 和 `RUN_FINISHED`。失败或打断使用终态 `RUN_ERROR`；产物使用共享状态 `STATE_DELTA`（`add /artifacts/<id>` 和 `/activeArtifactId`）。
-Redis Stream 保存进行中轮次的有序事件日志，断线连接凭 Last-Event-ID 补发后切到 Redis 发布订阅直播。事件流最多保留 20000 条，并在六小时闲置后过期；历史轮次以 `messages` 表为真源。
-正常结束把整轮 assistant/toolResult 消息落 `messages`（completed），失败/打断落一条 failed 消息。
+## Turn、Artifact 与恢复
 
-## LLM provider
+Turn 创建受数据库部分唯一索引保护。终态状态、错误和消息先在 PostgreSQL 事务中提交，随后才按 `runId` 幂等写入 Redis 终态。普通事件在写入前确认对应 Turn 仍为 `running`；刷新连接可按 `Last-Event-ID` 补发后继续直播。
 
-`pi` 执行层支持双 provider，按 key 自动判定（或显式 `RUNTIME_LLM_PROVIDER`）：
+`upsert_artifact` 先写不可变对象，再只在绑定 Turn 仍运行时提交带来源 Turn 的索引。Studio Turn 只有完整成功后，最后一个合格 HTML revision 才能在同一终态事务中晋升为 Capability 当前 UI。详情只展示种子副本、每个成功 Turn 的最终 revision 和 active Turn 的最新候选；失败或中断 Turn 的 Artifact 不进入历史。普通 Session 会复制创建时的 UI 隔离副本，不随之后的 Studio 修改漂移。
 
-- `anthropic`：直连，读 `ANTHROPIC_API_KEY`，默认模型 `claude-sonnet-4-5`（可 `RUNTIME_LLM_MODEL` 覆盖）。
-- `openrouter`：OpenAI 兼容（与本仓 authoring 同口径），读 `OPENROUTER_API_KEY`，默认 `anthropic/claude-sonnet-4.6`。
+详情的 owner 复验、Message、Artifact、当前 UI 和 active Turn 来自同一条 `REPEATABLE READ READ ONLY` PostgreSQL 快照。Capability 定义在快照结束后再从对象存储读取。
 
-缺 key 不阻塞启动，仅对话轮次降级报错、`/ready` 标 degraded。
+## 可选沙箱工具
 
-## 端点
+`SANDBOX_TOOLS_ENABLED` 默认关闭。开启后，模型的 `read`、`write`、`edit` 和 `bash` 只调用独立 sandboxd Pod，不访问 Runtime 宿主文件系统，也没有宿主回退。镜像必须由 SHA-256 摘要固定，RuntimeClass 固定为 `gvisor`，能力令牌按 Session、Pod UID、Turn、操作和正文摘要短期签发。
 
-全部在 `/api/v1` 前缀下、全部要求登录态（SSE 仅同源 Cookie）：
+普通容量是四个固定 PVC 槽位。第五槽只在独立维护清单和显式验证开关都生效时允许分配。节点终止无法确认时，PVC 保持隔离，不能被其他副本复用。
 
-- `GET  /runtime/capabilities` 试用入口列表（我的全部 + 已发布的）
-- `POST /runtime/sessions` 开会话 · `GET /runtime/sessions` 我的 active 会话列表（可带 `?capabilityId=` 只列某个能力下的会话）
-- `GET  /runtime/sessions/:id` 详情（消息按 seq + 产物 + 能力摘要，含定义里的开场表单字段与提示语）
-- `PATCH /runtime/sessions/:id` 会话改名 · `DELETE /runtime/sessions/:id` 软归档
-- `POST /runtime/sessions/:id/messages` 发消息（异步生成并始终返回 202；并发提交各自创建轮次）
-- `POST /runtime/sessions/:id/interrupt` 打断当前轮
-- `GET  /runtime/sessions/:id/stream` 流式生成事件（SSE，心跳 15s，Last-Event-ID 续传）
-- `GET  /runtime/artifacts/:id/content` 产物内容回读（带正确 Content-Type）
-- `GET /health` · `GET /ready`（db/minio/redis_queue 为必需依赖，llm 缺凭据时为 degraded）
+## 验证
 
-## 本地起跑
-
-```bash
-# 1) 建库并执行全部迁移后，用 authoring 完成上传与提取来产出能力项，或手工写入 capabilities 行和 MinIO 定义。
-
-# 2) 起 api（默认 3100；REDIS_URL 必须指向不可驱逐的 Redis；数据库需已执行 0004 认证迁移）
-DATABASE_URL=... REDIS_URL=redis://localhost:6379 S3_ENDPOINT=http://localhost:9000 \
-  OPENROUTER_API_KEY=... RUNTIME_LLM_PROVIDER=openrouter \
-  PORT=3100 NODE_ENV=development pnpm -F @cb/runtime dev
+```sh
+pnpm -F @cb/shared build
+pnpm -F @cb/runtime typecheck
+pnpm -F @cb/runtime typecheck:test
+pnpm -F @cb/runtime test
 ```
 
-`REDIS_URL` 是必填连接串，必须指向采用 noeviction 策略的 redis_queue 实例，不能指向会驱逐键的 redis_hot。每个运行实例保留自己的执行句柄，Redis 广播跨实例打断信号并承载事件流。打断是尽力而为的瞬时控制；超过三十分钟仍为 running 的孤儿轮次由周期清扫器补失败消息和终态事件。
+需要 PostgreSQL 或 Redis 的集成测试只有在显式提供专用测试连接时运行，不能指向生产资源。

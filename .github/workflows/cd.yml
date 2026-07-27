@@ -1,137 +1,1556 @@
-# CD：部署到 tecent2 的单机 k3s（2026-07-17 起从 docker compose 切换，割接记录见 issue #86）。两个入口：
-#   自动 —— main 上的 CI 成功完成后触发（workflow_run；此时三镜像已推送完成，无竞态）。
-#   手动 —— workflow_dispatch，只允许选择通过同一提交完整 CI 且包含第一方认证迁移的兼容 ref。
-#
-# 前置约定：
-#   镜像由 CI 在 main push 时构建并推送 GHCR（tag = 完整 commit SHA），本 workflow 只拉不建。
-#   服务器上有固定部署目录 /opt/combo：infra/ 放 k8s 清单与各服务配置（由本 workflow 每次同步覆盖），
-#   其中 .env 是唯一不同步的文件（密钥只存在服务器上，不进 git 也不进 Actions）。
-#   集群侧长期凭据（combo-env / ghcr-pull 两个 Secret）在集群里，不经过本 workflow。
-#   compose 编排文件保留在仓库与服务器上仅作灾难取证，不允许回滚到第一方认证切换前镜像。
-#
-# 所需 Secrets：
-#   DEPLOY_SSH_KEY —— 专用部署私钥（对应公钥在服务器 authorized_keys）
-#   DEPLOY_HOST / DEPLOY_USER —— 服务器地址与登录用户（仓库 public，不在 yml 里明文写）
-name: CD
+name: Production promotion
 
 on:
-  # main 的 CI 全绿后自动部署（CI 里镜像 job 成功 = 三镜像已在 GHCR）。
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
-      ref:
-        description: 要部署的兼容 git ref。解析后的提交必须已通过同 SHA 完整 CI 并发布镜像。
+      revision:
+        description: Preview 已通过的完整 main 提交 SHA。
         required: true
-        default: main
+        type: string
+      preview_run_id:
+        description: 生成 Preview 部署证据的精确 workflow run ID。
+        required: true
+        type: string
+      preview_run_attempt:
+        description: 生成 Preview 部署证据的精确 workflow run attempt。
+        required: true
+        type: string
+      preview_evidence_artifact_id:
+        description: 该 Preview attempt 生成的精确 promotion evidence artifact ID。
+        required: true
+        type: string
 
-# 同一时间只允许一个部署在跑；后触发的排队而不是取消前一个（部署中途被杀会留半成品栈）。
-concurrency:
-  group: cd-tecent2
-  cancel-in-progress: false
+permissions:
+  actions: read
+  contents: read
 
 jobs:
-  deploy:
-    name: deploy to tecent2
-    # 自动路径只在 CI 成功时放行（workflow_run 对 failure 也会触发事件，这里挡掉）；手动路径无条件。
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+  resolve:
+    name: resolve successful Preview evidence
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: read
-      actions: read
+    outputs:
+      revision: ${{ steps.resolve.outputs.revision }}
+      preview_run_id: ${{ steps.resolve.outputs.preview_run_id }}
+      preview_run_attempt: ${{ steps.resolve.outputs.preview_run_attempt }}
+      preview_evidence_artifact_id: ${{ steps.resolve.outputs.preview_evidence_artifact_id }}
+      preview_evidence_artifact_digest: ${{ steps.resolve.outputs.preview_evidence_artifact_digest }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          # 自动路径部署触发它的那次 CI 对应的提交；手动路径按输入 ref。
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
-
-      - name: 解析部署 SHA
-        id: rev
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: 拒绝第一方认证切换前的不兼容 ref
-        run: |
-          test -f db/migrations/0004_first_party_email_auth.sql
-          test -f db/migrations/0005_application_database_roles.sql
-          grep -Fq "url: '/auth/email/challenges'" apps/authoring/src/modules/account/routes.ts
-          grep -Fq "url: '/auth/email/verifications'" apps/authoring/src/modules/account/routes.ts
-          grep -Fq "url: '/auth/logout'" apps/authoring/src/modules/account/routes.ts
-          grep -Fq "url: '/me'" apps/authoring/src/modules/account/routes.ts
-          # 在源码中拼接遗留栈模式，既执行兼容门禁，也避免静态遗留词本身污染仓库验收。
-          legacy_auth_pattern='LOG'"TO_|/auth/(log"'in|callback|refresh)|dev'"-login|cb_"'refresh|cb_auth_'"tx|session"'Refresh'
-          if rg -n "$legacy_auth_pattern" apps packages infra scripts; then
-            echo 'ref 不满足第一方认证兼容下限，拒绝部署'
-            exit 1
-          fi
-
-      - name: 手动部署必须匹配同 SHA 的完整成功 CI
-        if: github.event_name == 'workflow_dispatch'
+      - name: Authorize actor and lock exact Preview deployment and acceptance attempts
+        id: resolve
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DEPLOY_SHA: ${{ steps.rev.outputs.sha }}
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ inputs.revision }}
+          PREVIEW_RUN_ID: ${{ inputs.preview_run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ inputs.preview_run_attempt }}
+          PREVIEW_EVIDENCE_ARTIFACT_ID: ${{ inputs.preview_evidence_artifact_id }}
+          ACTOR: ${{ github.actor }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
-          count="$(gh api --method GET \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs" \
-            -f head_sha="$DEPLOY_SHA" -f status=completed \
-            --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"
-          test "$count" -gt 0 || {
-            echo '该 SHA 没有完整成功的 CI 运行，拒绝手动部署'
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
+            echo 'Production promotion workflow must run from main.' >&2
+            exit 1
+          }
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'Production revision must be a complete lowercase commit SHA.' >&2
+            exit 1
+          }
+          for value in \
+            "$PREVIEW_RUN_ID" \
+            "$PREVIEW_RUN_ATTEMPT" \
+            "$PREVIEW_EVIDENCE_ARTIFACT_ID"; do
+            [[ "$value" =~ ^[1-9][0-9]*$ ]] || {
+              echo 'Every Preview and acceptance run, attempt, and artifact ID is required.' >&2
+              exit 1
+            }
+          done
+          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.permission')
+          role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.role_name // ""')
+          case "$permission:$role" in
+            admin:*|write:*|*:maintain) ;;
+            *)
+              echo 'Production promotion requires repository write, maintain, or admin permission.' >&2
+              exit 1
+              ;;
+          esac
+
+          git_object=$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${REVISION}" --jq '.sha')
+          [[ "$git_object" == "$REVISION" ]]
+          on_main=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...main" --jq '.status')
+          [[ "$on_main" == ahead || "$on_main" == identical ]] || {
+            echo 'Production revision must be reachable from main.' >&2
             exit 1
           }
 
-      # 镜像不存在就提前失败（比如 ref 指了还没跑完 CI 的提交），绝不带着缺镜像去动线上栈。
-      - name: 校验三镜像已在 GHCR
+          preview_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREVIEW_RUN_ID}")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson runId "$PREVIEW_RUN_ID" \
+            --argjson runAttempt "$PREVIEW_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .path == ".github/workflows/preview.yml"
+              and .event == "workflow_run"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+            ' <<<"$preview_run" >/dev/null
+          preview_artifact=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREVIEW_EVIDENCE_ARTIFACT_ID}")
+          jq -e \
+            --arg name "combo-preview-promotion-${REVISION}" \
+            --argjson runId "$PREVIEW_RUN_ID" \
+            --argjson artifactId "$PREVIEW_EVIDENCE_ARTIFACT_ID" '
+              .id == $artifactId
+              and .name == $name
+              and .expired == false
+              and .workflow_run.id == $runId
+              and (.digest | test("^sha256:[0-9a-f]{64}$"))
+            ' <<<"$preview_artifact" >/dev/null
+          preview_artifact_digest=$(jq -er '.digest' <<<"$preview_artifact")
+          preview_artifact_created_at=$(jq -er '.created_at' <<<"$preview_artifact")
+          preview_attempt_jobs=$(mktemp)
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${PREVIEW_RUN_ID}/attempts/${PREVIEW_RUN_ATTEMPT}/jobs?per_page=100" \
+            >"$preview_attempt_jobs"
+          jq -e \
+            --arg artifactCreatedAt "$preview_artifact_created_at" '
+              [.jobs[]
+                | select(.name == "deploy the main release artifact to Preview")] as $uploadJobs
+              | ($uploadJobs | length) == 1
+                and $uploadJobs[0].status == "completed"
+                and $uploadJobs[0].conclusion == "success"
+                and ($uploadJobs[0].started_at | type == "string" and test("Z$"))
+                and ($uploadJobs[0].completed_at | type == "string" and test("Z$"))
+                and ($artifactCreatedAt | test("Z$"))
+                and $uploadJobs[0].started_at <= $artifactCreatedAt
+                and $artifactCreatedAt <= $uploadJobs[0].completed_at
+            ' "$preview_attempt_jobs" >/dev/null
+
+          {
+            printf 'revision=%s\n' "$REVISION"
+            printf 'preview_run_id=%s\n' "$PREVIEW_RUN_ID"
+            printf 'preview_run_attempt=%s\n' "$PREVIEW_RUN_ATTEMPT"
+            printf 'preview_evidence_artifact_id=%s\n' "$PREVIEW_EVIDENCE_ARTIFACT_ID"
+            printf 'preview_evidence_artifact_digest=%s\n' "$preview_artifact_digest"
+          } >>"$GITHUB_OUTPUT"
+
+  deploy:
+    name: promote the exact Preview artifact to Production
+    needs: resolve
+    # 只有真正进入 SSH 部署的 job 占用共享锁；证据解析和 Environment 审批不会阻塞 Test/Preview。
+    concurrency:
+      group: cd-tecent2
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    steps:
+      - name: Use Node.js 24 for immutable release validators
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download the exact Preview admission artifact and verify its GitHub digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.resolve.outputs.preview_evidence_artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.resolve.outputs.preview_evidence_artifact_digest }}
+          EVIDENCE_ROOT: ${{ runner.temp }}/preview-evidence
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          for img in combo-api combo-runtime combo-web; do
-            docker manifest inspect "ghcr.io/dangdang-tech/${img}:${{ steps.rev.outputs.sha }}" > /dev/null \
-              || { echo "缺镜像 ${img}:${{ steps.rev.outputs.sha }}——等 CI 的 image job 跑完再部署"; exit 1; }
+          set -euo pipefail
+          [[ "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          archive="$RUNNER_TEMP/preview-evidence.zip"
+          trap 'rm -f "$archive"' EXIT
+          gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" >"$archive"
+          [[ -s "$archive" ]]
+          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" == "$ARTIFACT_DIGEST" ]]
+          mapfile -t archive_paths < <(unzip -Z1 "$archive")
+          (( ${#archive_paths[@]} == 8 ))
+          for path in "${archive_paths[@]}"; do
+            [[ -n "$path" && "$path" != /* && "$path" != *\\* ]]
+            [[ "/$path/" != */../* ]]
+          done
+          install -d -m 0700 "$EVIDENCE_ROOT"
+          unzip -q "$archive" -d "$EVIDENCE_ROOT"
+
+      - name: Validate Preview evidence and its source main CI run
+        id: evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          PREVIEW_RUN_ID: ${{ needs.resolve.outputs.preview_run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ needs.resolve.outputs.preview_run_attempt }}
+          EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
+          REMOTE_DEPLOY_EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-remote-deploy-evidence.json
+          REMOTE_CLEANUP_EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-remote-cleanup-evidence.json
+          IDENTITY: ${{ runner.temp }}/preview-evidence/preview-identity.json
+          CHECKPOINT: ${{ runner.temp }}/preview-evidence/preview-current-checkpoint.json
+          INVENTORY: ${{ runner.temp }}/preview-evidence/preview-resource-inventory.json
+          LIVE_RUNTIME: ${{ runner.temp }}/preview-evidence/preview-live-runtime.json
+          BROWSER_ACCEPTANCE: ${{ runner.temp }}/preview-evidence/preview-browser-acceptance.json
+        run: |
+          set -euo pipefail
+          [[ -f "$EVIDENCE" && ! -L "$EVIDENCE" ]]
+          [[ -f "$REMOTE_DEPLOY_EVIDENCE" && ! -L "$REMOTE_DEPLOY_EVIDENCE" ]]
+          for file in \
+            "$REMOTE_CLEANUP_EVIDENCE" "$IDENTITY" "$CHECKPOINT" "$INVENTORY" \
+            "$LIVE_RUNTIME" "$BROWSER_ACCEPTANCE"; do
+            [[ -f "$file" && ! -L "$file" ]]
+          done
+          jq -e \
+            --arg revision "$REVISION" \
+            --argjson previewRunId "$PREVIEW_RUN_ID" \
+            --argjson previewRunAttempt "$PREVIEW_RUN_ATTEMPT" '
+              keys == ([
+                "artifactFileSetDigest",
+                "browserAcceptanceDigest",
+                "checkpointDigest",
+                "deployedAt",
+                "environment",
+                "identityDigest",
+                "images",
+                "liveRuntimeDigest",
+                "namespace",
+                "previewRunId",
+                "previewRunAttempt",
+                "remoteCleanupEvidenceDigest",
+                "remoteDeployEvidenceDigest",
+                "releaseArtifact",
+                "releaseManifestDigest",
+                "resourceInventoryDigest",
+                "schemaVersion",
+                "sourceArtifactDigest",
+                "sourceArtifactId",
+                "sourceArtifactName",
+                "sourceCiRunAttempt",
+                "sourceCiRunId",
+                "sourceSha",
+                "status",
+                "testBrowserAcceptanceDigest",
+                "testDeploymentEvidenceDigest",
+                "testEvidenceArtifactDigest",
+                "testEvidenceArtifactId",
+                "testEvidenceArtifactName",
+                "testIdentityDigest",
+                "testRunAttempt",
+                "testRunId",
+                "testSourceReleaseDigest"
+              ] | sort)
+              and .schemaVersion == 4
+              and .status == "passed"
+              and .environment == "preview"
+              and .namespace == "combo-review"
+              and .sourceSha == $revision
+              and .previewRunId == $previewRunId
+              and .previewRunAttempt == $previewRunAttempt
+              and .releaseArtifact == ("combo-release-" + $revision)
+              and .sourceArtifactName == .releaseArtifact
+              and (.sourceCiRunId | type == "number" and . > 0 and floor == .)
+              and (.sourceCiRunAttempt | type == "number" and . > 0 and floor == .)
+              and (.sourceArtifactId | type == "number" and . > 0 and floor == .)
+              and (.testRunId | type == "number" and . > 0 and floor == .)
+              and (.testRunAttempt | type == "number" and . > 0 and floor == .)
+              and (.testEvidenceArtifactId | type == "number" and . > 0 and floor == .)
+              and .testEvidenceArtifactName == ("combo-test-evidence-" + $revision)
+              and (.sourceArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.testEvidenceArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.testIdentityDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.testBrowserAcceptanceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.testSourceReleaseDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.testDeploymentEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.releaseManifestDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.artifactFileSetDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.remoteDeployEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.remoteCleanupEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.identityDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.checkpointDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.resourceInventoryDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.liveRuntimeDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.browserAcceptanceDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (.images | keys == ["api", "runtime", "web"])
+              and (.images.api | test("^ghcr.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$"))
+              and (.images.runtime | test("^ghcr.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$"))
+              and (.images.web | test("^ghcr.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$"))
+            ' "$EVIDENCE" >/dev/null
+          [[ "$(sha256sum "$REMOTE_DEPLOY_EVIDENCE" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.remoteDeployEvidenceDigest' "$EVIDENCE")" ]]
+          [[ "$(sha256sum "$REMOTE_CLEANUP_EVIDENCE" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.remoteCleanupEvidenceDigest' "$EVIDENCE")" ]]
+          [[ "$(sha256sum "$IDENTITY" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.identityDigest' "$EVIDENCE")" ]]
+          [[ "$(sha256sum "$CHECKPOINT" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.checkpointDigest' "$EVIDENCE")" ]]
+          jq -e --arg revision "$REVISION" '
+            .status == "passed"
+            and .environment == "preview"
+            and .namespace == "combo-review"
+            and .sourceSha == $revision
+            and .checks.releaseStorage == true
+            and .storage.verified == true
+            and (.storage.claims | length) == 3
+            and .cleanup.verifiedAbsent == true
+            and .traffic.checks.publicWebRelease == true
+          ' "$REMOTE_DEPLOY_EVIDENCE" >/dev/null
+          jq -e --arg revision "$REVISION" '
+            .environment == "preview"
+            and .namespace == "combo-review"
+            and .sourceSha == $revision
+            and .verifiedAbsent == true
+          ' "$REMOTE_CLEANUP_EVIDENCE" >/dev/null
+
+          source_ci_run_id=$(jq -er '.sourceCiRunId' "$EVIDENCE")
+          source_ci_run_attempt=$(jq -er '.sourceCiRunAttempt' "$EVIDENCE")
+          source_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${source_ci_run_id}")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --argjson runId "$source_ci_run_id" \
+            --argjson runAttempt "$source_ci_run_attempt" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .path == ".github/workflows/ci.yml"
+              and .event == "push"
+              and .head_branch == "main"
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+              and .repository.full_name == $repository
+            ' <<<"$source_run" >/dev/null
+          printf 'source_ci_run_id=%s\n' "$source_ci_run_id" >> "$GITHUB_OUTPUT"
+          printf 'source_ci_run_attempt=%s\n' "$source_ci_run_attempt" >> "$GITHUB_OUTPUT"
+          printf 'source_artifact_id=%s\n' "$(jq -er '.sourceArtifactId' "$EVIDENCE")" \
+            >>"$GITHUB_OUTPUT"
+          printf 'source_artifact_digest=%s\n' \
+            "$(jq -er '.sourceArtifactDigest' "$EVIDENCE")" >>"$GITHUB_OUTPUT"
+
+      - name: Download the exact release artifact that passed Preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_ARTIFACT_ID: ${{ steps.evidence.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_DIGEST: ${{ steps.evidence.outputs.source_artifact_digest }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          artifact=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}")
+          jq -e \
+            --arg name "combo-release-${{ needs.resolve.outputs.revision }}" \
+            --arg digest "$SOURCE_ARTIFACT_DIGEST" \
+            --argjson runId "${{ steps.evidence.outputs.source_ci_run_id }}" '
+              .name == $name
+              and .digest == $digest
+              and .expired == false
+              and .workflow_run.id == $runId
+            ' <<<"$artifact" >/dev/null
+          archive="$RUNNER_TEMP/combo-release.zip"
+          trap 'rm -f "$archive"' EXIT
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            >"$archive"
+          [[ -s "$archive" ]]
+          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" \
+            == "$SOURCE_ARTIFACT_DIGEST" ]]
+          mapfile -t archive_paths < <(unzip -Z1 "$archive")
+          (( ${#archive_paths[@]} > 0 && ${#archive_paths[@]} <= 512 ))
+          for path in "${archive_paths[@]}"; do
+            [[ -n "$path" && "$path" != /* && "$path" != *\\* ]]
+            [[ "/$path/" != */../* ]]
+          done
+          install -d -m 0700 "$RELEASE_ROOT"
+          unzip -q "$archive" -d "$RELEASE_ROOT"
+
+      - name: Prove artifact and digest equality with Preview
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
+          IDENTITY: ${{ runner.temp }}/preview-evidence/preview-identity.json
+          INVENTORY: ${{ runner.temp }}/preview-evidence/preview-resource-inventory.json
+          LIVE_RUNTIME: ${{ runner.temp }}/preview-evidence/preview-live-runtime.json
+          BROWSER_ACCEPTANCE: ${{ runner.temp }}/preview-evidence/preview-browser-acceptance.json
+          REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          (
+            cd "$RELEASE_ROOT"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$manifest_digest" == "$(jq -er '.releaseManifestDigest' "$EVIDENCE")" ]]
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
+          [[ "$file_set_digest" == "$(jq -er '.artifactFileSetDigest' "$EVIDENCE")" ]]
+          inventory_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-inventory --inventory "$INVENTORY" --identity "$IDENTITY")
+          [[ "$inventory_digest" == "$(jq -er '.resourceInventoryDigest' "$EVIDENCE")" ]]
+          live_runtime_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-runtime --evidence "$LIVE_RUNTIME" --identity "$IDENTITY")
+          [[ "$live_runtime_digest" == "$(jq -er '.liveRuntimeDigest' "$EVIDENCE")" ]]
+          browser_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-preview-browser --evidence "$BROWSER_ACCEPTANCE" --identity "$IDENTITY")
+          [[ "$browser_digest" == "$(jq -er '.browserAcceptanceDigest' "$EVIDENCE")" ]]
+          node "$RELEASE_ROOT/scripts/release-manifest.mjs" verify \
+            --manifest "$RELEASE_ROOT/metadata/release.json" \
+            --source-sha "$REVISION" \
+            --digest "$manifest_digest" >/dev/null
+          jq -e \
+            --slurpfile evidence "$EVIDENCE" '
+              .images == $evidence[0].images
+            ' "$RELEASE_ROOT/metadata/release.json" >/dev/null
+          node "$RELEASE_ROOT/scripts/web-asset-manifest.mjs" verify \
+            --manifest "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            --digest "$(jq -er '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")" >/dev/null
+          for phase in foundation init migrate apps; do
+            [[ -s "$RELEASE_ROOT/rendered/production/$phase.yaml" ]]
           done
 
-      - name: 配置 SSH
+      - name: Record the exact Production deployment identity
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          PREVIEW_IDENTITY: ${{ runner.temp }}/preview-evidence/preview-identity.json
+          PRODUCTION_RUN_ID: ${{ github.run_id }}
+          PRODUCTION_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          jq \
+            --argjson deploymentRunId "$PRODUCTION_RUN_ID" \
+            --argjson deploymentRunAttempt "$PRODUCTION_RUN_ATTEMPT" '
+              .environment = "production"
+              | .namespace = "combo"
+              | .deploymentWorkflow = ".github/workflows/cd.yml"
+              | .deploymentRunId = $deploymentRunId
+              | .deploymentRunAttempt = $deploymentRunAttempt
+            ' "$PREVIEW_IDENTITY" >"$RUNNER_TEMP/production-identity.json"
+          node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" validate-identity \
+            --identity "$RUNNER_TEMP/production-identity.json" >/dev/null
+
+      - name: Validate the protected Production Resend reader before mutation
+        env:
+          ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          helper="$RUNNER_TEMP/combo-release/acceptance/resend-sent-email.mjs"
+          [[ -f "$helper" && ! -L "$helper" ]]
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          node "$helper" --validate-key
+
+      - name: Configure the existing deployment SSH identity
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_SSH_KNOWN_HOSTS" ]]
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key"
+          chmod 0600 "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$DEPLOY_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1
           {
-            echo "Host deploy-target"
+            echo 'Host release-target'
             echo "  HostName $DEPLOY_HOST"
             echo "  User $DEPLOY_USER"
-            echo "  IdentityFile ~/.ssh/deploy_key"
-            echo "  StrictHostKeyChecking yes"
-          } >> ~/.ssh/config
+            echo '  IdentityFile ~/.ssh/deploy_key'
+            echo '  UserKnownHostsFile ~/.ssh/known_hosts'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+            echo '  BatchMode yes'
+            echo '  ServerAliveInterval 30'
+            echo '  ServerAliveCountMax 20'
+            echo '  TCPKeepAlive yes'
+            echo '  LogLevel ERROR'
+          } > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config" "$HOME/.ssh/known_hosts"
 
-      # 部署清单以仓库为准整目录镜像同步（k8s 清单、observability values、留作回滚的 compose 配置都在其中），
-      # 唯独 .env 不碰：密钥只活在服务器上。
-      - name: 同步部署清单到服务器
+      - name: Preflight the tecent2 release host without mutation
         run: |
-          rsync -az --delete --exclude='.env' infra/ deploy-target:/opt/combo/infra/
-          rsync -az scripts/smoke.sh scripts/deploy-k8s.sh deploy-target:/opt/combo/scripts/
+          set -euo pipefail
+          ssh release-target bash -s <<'REMOTE'
+          set -euo pipefail
+          [[ "$(id -un)" == xingzheng && "$HOME" == /home/xingzheng ]]
+          for command in node jq sha256sum flock cmp awk install mktemp realpath grep mv \
+            rm dirname sleep seq tr sort sudo curl stat date systemctl ss kubectl tar; do
+            command -v "$command" >/dev/null
+          done
+          [[ "$(uname -m)" == x86_64 ]]
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
+          [[ "$node_major" =~ ^[0-9]+$ && "$node_major" -ge 24 ]]
+          [[ -x /usr/local/bin/kubectl && -f "$HOME/.kube/config" ]]
+          LC_ALL=C sudo -n -l | grep -Eq 'NOPASSWD:[[:space:]]*ALL'
+          sudo -n systemctl is-active --quiet k3s
+          sudo -n nginx -t >/dev/null
+          sudo -n ss -H -lnt >/dev/null
+          sudo -n realpath -e "$HOME/data/k3s/storage" >/dev/null
+          kubectl --kubeconfig "$HOME/.kube/config" get namespace combo >/dev/null
+          kubectl --kubeconfig "$HOME/.kube/config" auth can-i '*' '*' \
+            --all-namespaces | grep -Fxq yes
+          REMOTE
 
-      # 镜像由集群内 ghcr-pull Secret 拉取，服务器上不再需要 docker login。
-      - name: k8s 停机式部署（预检、停旧业务、迁移、再启动新业务）
+      - name: Recollect and validate current Preview live runtime before mutation
+        id: preview_live_recheck
         env:
-          SHA: ${{ steps.rev.outputs.sha }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          IDENTITY: ${{ runner.temp }}/preview-evidence/preview-identity.json
+          EVIDENCE: ${{ runner.temp }}/preview-live-runtime-current.json
         run: |
-          ssh deploy-target env SHA="$SHA" bash /opt/combo/scripts/deploy-k8s.sh
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          collector="data/combo-release-incoming/${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.sh"
+          output="data/combo-acceptance/preview/${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.json"
+          temporary=".${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.upload"
+          scp -q "$RELEASE_ROOT/scripts/collect-live-runtime-evidence.sh" \
+            "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$collector"
+          ssh release-target bash -s -- "$REVISION" "$collector" "$output" <<'REMOTE' >"$EVIDENCE"
+          set -euo pipefail
+          revision=$1
+          collector="$HOME/$2"
+          output="$HOME/$3"
+          [[ -f "$collector" && ! -L "$collector" && ! -e "$output" ]]
+          bash "$collector" \
+            --environment preview \
+            --source-sha "$revision" \
+            --output "$output"
+          [[ -f "$output" && ! -L "$output" ]]
+          cat "$output"
+          REMOTE
+          chmod 0600 "$EVIDENCE"
+          digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-runtime --evidence "$EVIDENCE" --identity "$IDENTITY")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "$digest" >>"$GITHUB_OUTPUT"
+          ssh release-target rm -f -- "$collector" "$output"
 
-      # 割接后 web 走 NodePort 30080（系统 nginx 反代到这里）；冒烟不调用邮件供应商，
-      # 只验证健康、第一方会话匿名边界和 authoring/runtime 同源反代。
-      - name: 冒烟验证
+      - name: Compare-and-swap the current Preview checkpoint before Production
+        env:
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          EXPECTED_CHECKPOINT: ${{ runner.temp }}/preview-evidence/preview-current-checkpoint.json
+          EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
         run: |
-          ssh deploy-target '
-            set -euo pipefail
-            API_BASE=http://localhost:30080 WEB_BASE=http://localhost:30080 \
-              bash /opt/combo/scripts/smoke.sh
-          '
+          set -euo pipefail
+          live="$RUNNER_TEMP/preview-current-checkpoint-live.json"
+          ssh release-target bash -s -- "$REVISION" <<'REMOTE' >"$live"
+          set -euo pipefail
+          revision=$1
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          checkpoint="$HOME/data/combo-releases/goal-a/preview/current.json"
+          [[ -f "$checkpoint" && ! -L "$checkpoint" ]]
+          cat "$checkpoint"
+          REMOTE
+          cmp -s "$EXPECTED_CHECKPOINT" "$live" || {
+            echo 'Preview checkpoint changed after the selected acceptance attempt.' >&2
+            exit 1
+          }
+          [[ "$(sha256sum "$live" | awk '{print "sha256:" $1}')" \
+            == "$(jq -er '.checkpointDigest' "$EVIDENCE")" ]]
 
-      - name: 部署结果
-        run: echo "已部署 ${{ steps.rev.outputs.sha }}（触发方式 = ${{ github.event_name }}${{ inputs.ref && format('，ref = {0}', inputs.ref) || '' }}）到 tecent2 并通过冒烟。"
+      - name: Revalidate main and the selected Preview attempt before Production mutation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          PREVIEW_RUN_ID: ${{ needs.resolve.outputs.preview_run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ needs.resolve.outputs.preview_run_attempt }}
+          PREVIEW_EVIDENCE_ARTIFACT_ID: ${{ needs.resolve.outputs.preview_evidence_artifact_id }}
+          PREVIEW_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.resolve.outputs.preview_evidence_artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" \
+            == "$REVISION" ]]
+          preview_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${PREVIEW_RUN_ID}")
+          jq -e \
+            --arg revision "$REVISION" \
+            --argjson runId "$PREVIEW_RUN_ID" \
+            --argjson runAttempt "$PREVIEW_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+            ' <<<"$preview_run" >/dev/null
+          preview_artifact=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREVIEW_EVIDENCE_ARTIFACT_ID}")
+          jq -e \
+            --arg digest "$PREVIEW_EVIDENCE_ARTIFACT_DIGEST" \
+            --argjson runId "$PREVIEW_RUN_ID" '
+              .digest == $digest
+              and .expired == false
+              and .workflow_run.id == $runId
+            ' <<<"$preview_artifact" >/dev/null
+
+      - name: Upload and activate the exact Production bundle with rollback retained
+        id: activation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PREVIEW_RUN_ID: ${{ needs.resolve.outputs.preview_run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ needs.resolve.outputs.preview_run_attempt }}
+          PREVIEW_EVIDENCE_ARTIFACT_ID: ${{ needs.resolve.outputs.preview_evidence_artifact_id }}
+          PREVIEW_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.resolve.outputs.preview_evidence_artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          archive="$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz"
+          tar -C "$RELEASE_ROOT" -czf "$archive" .
+          chmod 0600 "$archive"
+          printf 'attempted=true\n' >>"$GITHUB_OUTPUT"
+
+          remote="data/combo-release-incoming/${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')" == "$REVISION" ]]
+          preview_run=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${PREVIEW_RUN_ID}")
+          jq -e \
+            --arg revision "$REVISION" \
+            --argjson runId "$PREVIEW_RUN_ID" \
+            --argjson runAttempt "$PREVIEW_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .head_sha == $revision
+              and .status == "completed"
+              and .conclusion == "success"
+            ' <<<"$preview_run" >/dev/null
+          preview_artifact=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREVIEW_EVIDENCE_ARTIFACT_ID}")
+          jq -e \
+            --arg digest "$PREVIEW_EVIDENCE_ARTIFACT_DIGEST" \
+            --argjson runId "$PREVIEW_RUN_ID" '
+              .digest == $digest
+              and .expired == false
+              and .workflow_run.id == $runId
+            ' <<<"$preview_artifact" >/dev/null
+          ssh release-target bash -s -- "$remote" "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          revision=$2
+          run_id=$3
+          run_attempt=$4
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.production.${run_id}.${run_attempt}.tar.gz" ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          archive="$HOME/$incoming"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-release-production.XXXXXX")
+          cleanup() {
+            rm -f -- "$archive"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          (
+            cd "$work"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          manifest_digest=$(<"$work/metadata/release-manifest-digest.txt")
+          chmod 0700 \
+            "$work/scripts/collect-live-runtime-evidence.sh" \
+            "$work/scripts/collect-release-inventory.sh" \
+            "$work/scripts/deploy-release.sh" \
+            "$work/scripts/rollback-release-traffic.sh" \
+            "$work/scripts/seal-release-traffic.sh" \
+            "$work/scripts/switch-release-traffic.sh"
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          bash "$work/scripts/deploy-release.sh" \
+            --environment production \
+            --fresh-reset \
+            --defer-cleanup \
+            --manifest "$work/metadata/release.json" \
+            --manifest-digest "$manifest_digest" \
+            --migrations "$work/metadata/migration-files.txt" \
+            --foundation-yaml "$work/rendered/production/foundation.yaml" \
+            --init-yaml "$work/rendered/production/init.yaml" \
+            --migrate-yaml "$work/rendered/production/migrate.yaml" \
+            --apps-yaml "$work/rendered/production/apps.yaml" \
+            --web-assets "$work/metadata/web-asset-manifest.json"
+          REMOTE
+
+      - name: Fetch and validate the pending Production activation evidence
+        id: activation_evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/production-activation-evidence"
+          install -d -m 0700 "$evidence_dir"
+          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          set -euo pipefail
+          revision=$1
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          directory="$HOME/data/combo-releases/goal-a/production/release-${revision}.activation"
+          files=(
+            release.json release.sha256 migration-files.txt web-asset-manifest.json
+            foundation.yaml init.yaml migrate.yaml apps.yaml traffic-evidence.json
+            release-storage-evidence.json activation-evidence.json SHA256SUMS
+          )
+          for file in "${files[@]}"; do
+            [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
+          done
+          (cd "$directory" && sha256sum --quiet -c SHA256SUMS)
+          tar -C "$directory" -czf - "${files[@]}"
+          REMOTE
+            tar -xzf - -C "$evidence_dir"
+          (
+            cd "$evidence_dir"
+            sha256sum --quiet -c SHA256SUMS
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$(<"$evidence_dir/release.sha256")" == "$manifest_digest" ]]
+          cmp -s "$RELEASE_ROOT/metadata/release.json" "$evidence_dir/release.json"
+          cmp -s "$RELEASE_ROOT/metadata/migration-files.txt" \
+            "$evidence_dir/migration-files.txt"
+          cmp -s "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            "$evidence_dir/web-asset-manifest.json"
+          for phase in foundation init migrate apps; do
+            cmp -s "$RELEASE_ROOT/rendered/production/$phase.yaml" \
+              "$evidence_dir/$phase.yaml"
+          done
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" '
+              .schemaVersion == 1
+              and .status == "awaiting-acceptance"
+              and .environment == "production"
+              and .namespace == "combo"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .rollbackCheckpointId == ("release-" + $revision)
+              and (.rollbackCheckpointDigest | test("^sha256:[0-9a-f]{64}$"))
+              and .checks.candidateReady == true
+              and .checks.trafficActivated == true
+              and .checks.formalDomainVerified == true
+              and .checks.supersededReleaseRetained == true
+            ' "$evidence_dir/activation-evidence.json" >/dev/null
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" '
+              .schemaVersion == 1
+              and .environment == "production"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .formalOrigin == "https://buildwithcombo.com"
+              and .formalAliasOrigin == "https://www.buildwithcombo.com"
+              and .routeCas.formal.contract == "production-formal"
+              and .routeCas.formal.afterMode == "release"
+              and .rollback.persisted == true
+              and .checks.formalHome == true
+              and .checks.formalVersion == true
+              and .checks.formalApi == true
+              and .checks.formalTls == true
+            ' "$evidence_dir/traffic-evidence.json" >/dev/null
+          activation_digest=$(sha256sum "$evidence_dir/activation-evidence.json" |
+            awk '{print "sha256:" $1}')
+          printf 'digest=%s\n' "$activation_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Run the exact-bundle Production email OTP and six-area browser acceptance
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
+        run: |
+          set -euo pipefail
+          set +x
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ACCEPTANCE_RESEND_API_KEY" =~ ^re_[A-Za-z0-9_-]{16,252}$ ]] || {
+            echo 'The production Environment lacks a valid full-access acceptance Resend key.' >&2
+            exit 1
+          }
+          archive="$RUNNER_TEMP/combo-production-acceptance-${REVISION}.tar.gz"
+          tar -C "$RELEASE_ROOT" -czf "$archive" acceptance
+          chmod 0600 "$archive"
+          remote="data/combo-release-incoming/${REVISION}.production-acceptance.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.production-acceptance.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          {
+            printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
+            cat <<'REMOTE'
+          set -euo pipefail
+          set +x
+          incoming=$1
+          revision=$2
+          run_id=$3
+          run_attempt=$4
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.production-acceptance.${run_id}.${run_attempt}.tar.gz" ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          archive="$HOME/$incoming"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-production-acceptance.XXXXXX")
+          output_dir="$HOME/data/combo-acceptance/production"
+          output="$output_dir/${revision}.${run_id}.${run_attempt}.browser.json"
+          cleanup() {
+            unset ACCEPTANCE_RESEND_API_KEY
+            rm -f -- "$archive"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          [[ -f "$work/acceptance/live-browser-acceptance.mjs" ]]
+          [[ -f "$work/acceptance/playwright-core.tgz" ]]
+          install -d -m 0700 "$work/acceptance/node_modules" "$output_dir"
+          tar -xzf "$work/acceptance/playwright-core.tgz" \
+            --no-same-owner -C "$work/acceptance/node_modules"
+          [[ -f "$work/acceptance/node_modules/playwright-core/package.json" ]]
+          [[ ! -e "$output" ]]
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          node "$work/acceptance/live-browser-acceptance.mjs" \
+            --environment production \
+            --revision "$revision" \
+            --run-id "$run_id" \
+            --run-attempt "$run_attempt" \
+            --web-origin https://buildwithcombo.com \
+            --output "$output"
+          chmod 0600 "$output"
+          REMOTE
+          } | ssh release-target \
+            "IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
+
+      - name: Fetch and validate Production browser evidence
+        id: production_browser
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          IDENTITY: ${{ runner.temp }}/production-identity.json
+          EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
+        run: |
+          set -euo pipefail
+          remote="data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.browser.json"
+          ssh release-target bash -s -- "$remote" <<'REMOTE' >"$EVIDENCE"
+          set -euo pipefail
+          evidence="$HOME/$1"
+          [[ -f "$evidence" && ! -L "$evidence" ]]
+          [[ "$(stat -c '%a' "$evidence")" == 600 ]]
+          bytes=$(stat -c '%s' "$evidence")
+          [[ "$bytes" =~ ^[1-9][0-9]*$ && "$bytes" -le 1048576 ]]
+          cat "$evidence"
+          REMOTE
+          chmod 0600 "$EVIDENCE"
+          browser_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-browser \
+            --environment production \
+            --evidence "$EVIDENCE" \
+            --identity "$IDENTITY")
+          [[ "$browser_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "$browser_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Generate and validate the workflow-owned Production acceptance attestation
+        id: acceptance_attestation
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
+          IDENTITY: ${{ runner.temp }}/production-identity.json
+          ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          accepted_at=$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')
+          node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" attest-live-browser \
+            --evidence "$EVIDENCE" \
+            --identity "$IDENTITY" \
+            --output "$ATTESTATION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --actor "$ACTOR" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-run-attempt "$RUN_ATTEMPT" \
+            --accepted-at "$accepted_at"
+          node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" validate-live-attestation \
+            --evidence "$EVIDENCE" \
+            --identity "$IDENTITY" \
+            --attestation "$ATTESTATION" \
+            --repository "$GITHUB_REPOSITORY" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-run-attempt "$RUN_ATTEMPT"
+          attestation_digest=$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')
+          [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "$attestation_digest" >>"$GITHUB_OUTPUT"
+
+      - name: Revalidate candidate and finalize the accepted Production release
+        id: finalize
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
+          ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" \
+            == "$REVISION" ]]
+          [[ "$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')" \
+            == "$ATTESTATION_DIGEST" ]]
+          archive="$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          remote="data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          remote_attestation="data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.json"
+          temporary=".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          temporary_attestation=".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload"
+          scp -q "$archive" "release-target:$temporary"
+          scp -q "$ATTESTATION" "release-target:$temporary_attestation"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          ssh release-target mv -fT -- "$temporary_attestation" "$remote_attestation"
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')" == "$REVISION" ]]
+          [[ "$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')" \
+            == "$ATTESTATION_DIGEST" ]]
+          ssh release-target bash -s -- \
+            "$remote" "$remote_attestation" "$ATTESTATION_DIGEST" \
+            "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          attestation_relative=$2
+          attestation_digest=$3
+          revision=$4
+          run_id=$5
+          run_attempt=$6
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.production-finalize.${run_id}.${run_attempt}.tar.gz" ]]
+          [[ "$attestation_relative" == "data/combo-release-incoming/${revision}.production-finalize.${run_id}.${run_attempt}.attestation.json" ]]
+          [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          archive="$HOME/$incoming"
+          attestation="$HOME/$attestation_relative"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          [[ -f "$attestation" && ! -L "$attestation" ]]
+          [[ "$(sha256sum "$attestation" | awk '{print "sha256:" $1}')" == "$attestation_digest" ]]
+          work=$(mktemp -d "$HOME/data/combo-release-production-finalize.XXXXXX")
+          cleanup() {
+            rm -f -- "$archive" "$attestation"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          (cd "$work" && sha256sum -c metadata/artifact-files.sha256 >/dev/null)
+          manifest_digest=$(<"$work/metadata/release-manifest-digest.txt")
+          chmod 0700 \
+            "$work/scripts/collect-live-runtime-evidence.sh" \
+            "$work/scripts/collect-release-inventory.sh" \
+            "$work/scripts/deploy-release.sh" \
+            "$work/scripts/rollback-release-traffic.sh" \
+            "$work/scripts/seal-release-traffic.sh" \
+            "$work/scripts/switch-release-traffic.sh"
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          finalized=0
+          for retry in 1 2 3; do
+            if bash "$work/scripts/deploy-release.sh" \
+              --environment production \
+              --fresh-reset \
+              --finalize \
+              --manifest "$work/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --migrations "$work/metadata/migration-files.txt" \
+              --foundation-yaml "$work/rendered/production/foundation.yaml" \
+              --init-yaml "$work/rendered/production/init.yaml" \
+              --migrate-yaml "$work/rendered/production/migrate.yaml" \
+              --apps-yaml "$work/rendered/production/apps.yaml" \
+              --web-assets "$work/metadata/web-asset-manifest.json" \
+              --acceptance-attestation "$attestation" \
+              --acceptance-attestation-digest "$attestation_digest"; then
+              finalized=1
+              break
+            fi
+            sleep $((retry * 5))
+          done
+          ((finalized == 1))
+          inventory_directory="$HOME/data/combo-acceptance/production"
+          inventory="$inventory_directory/${revision}.${run_id}.${run_attempt}.inventory.json"
+          live_runtime="$inventory_directory/${revision}.${run_id}.${run_attempt}.live-runtime.json"
+          install -d -m 0700 "$inventory_directory"
+          [[ ! -e "$inventory" && ! -e "$live_runtime" ]]
+          bash "$work/scripts/collect-release-inventory.sh" \
+            --environment production \
+            --source-sha "$revision" \
+            --output "$inventory"
+          bash "$work/scripts/collect-live-runtime-evidence.sh" \
+            --environment production \
+            --source-sha "$revision" \
+            --output "$live_runtime"
+          REMOTE
+
+      - name: Recover any Production activation that was not finalized
+        if: ${{ (failure() || cancelled()) && steps.activation.outputs.attempted == 'true' && steps.finalize.outcome != 'success' }}
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
+          ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          archive="$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          remote="data/combo-release-incoming/${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          remote_attestation="data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.json"
+          temporary_attestation=".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload"
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          has_attestation=0
+          if [[ -f "$ATTESTATION" && ! -L "$ATTESTATION" ]]; then
+            [[ "$ATTESTATION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')" \
+              == "$ATTESTATION_DIGEST" ]]
+            scp -q "$ATTESTATION" "release-target:$temporary_attestation"
+            ssh release-target mv -fT -- "$temporary_attestation" "$remote_attestation"
+            has_attestation=1
+          fi
+          ssh release-target bash -s -- \
+            "$remote" "$remote_attestation" "$has_attestation" "$ATTESTATION_DIGEST" \
+            "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          attestation_relative=$2
+          has_attestation=$3
+          attestation_digest=$4
+          revision=$5
+          run_id=$6
+          run_attempt=$7
+          [[ "$incoming" == "data/combo-release-incoming/${revision}.production-rollback.${run_id}.${run_attempt}.tar.gz" ]]
+          [[ "$attestation_relative" == "data/combo-release-incoming/${revision}.production-recovery.${run_id}.${run_attempt}.attestation.json" ]]
+          [[ "$has_attestation" == 0 || "$has_attestation" == 1 ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          archive="$HOME/$incoming"
+          attestation="$HOME/$attestation_relative"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-release-production-rollback.XXXXXX")
+          cleanup() {
+            rm -f -- "$archive"
+            ((has_attestation == 0)) || rm -f -- "$attestation"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          (cd "$work" && sha256sum -c metadata/artifact-files.sha256 >/dev/null)
+          manifest_digest=$(<"$work/metadata/release-manifest-digest.txt")
+          pending="$HOME/data/combo-releases/goal-a/production/pending.json"
+          completed="$HOME/data/combo-releases/goal-a/production/release-${revision}"
+          if [[ -d "$completed" && ! -L "$completed" && ! -e "$pending" ]]; then
+            echo 'Production finalization is already committed; rollback is not required.'
+            exit 0
+          fi
+          if [[ ! -e "$pending" ]]; then
+            echo 'Production activation did not arm or cut traffic; rollback is not required.'
+            exit 0
+          fi
+          [[ -f "$pending" && ! -L "$pending" ]]
+          phase=$(jq -er \
+            --arg revision "$revision" \
+            --arg manifestDigest "$manifest_digest" '
+              select(
+                .schemaVersion == 2
+                and .environment == "production"
+                and .namespace == "combo"
+                and .sourceSha == $revision
+                and .releaseId == ("release-" + $revision)
+                and .manifestDigest == $manifestDigest
+                and (.phase == "armed" or .phase == "post-cut" or .phase == "finalizing")
+              )
+              | .phase
+            ' "$pending")
+          chmod 0700 \
+            "$work/scripts/deploy-release.sh" \
+            "$work/scripts/rollback-release-traffic.sh" \
+            "$work/scripts/seal-release-traffic.sh" \
+            "$work/scripts/switch-release-traffic.sh"
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          phase_args=(--rollback)
+          if [[ "$phase" == finalizing ]]; then
+            ((has_attestation == 1))
+            [[ -f "$attestation" && ! -L "$attestation" ]]
+            [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            [[ "$(sha256sum "$attestation" | awk '{print "sha256:" $1}')" \
+              == "$attestation_digest" ]]
+            phase_args=(
+              --finalize
+              --acceptance-attestation "$attestation"
+              --acceptance-attestation-digest "$attestation_digest"
+            )
+          fi
+          bash "$work/scripts/deploy-release.sh" \
+            --environment production \
+            --fresh-reset \
+            "${phase_args[@]}" \
+            --manifest "$work/metadata/release.json" \
+            --manifest-digest "$manifest_digest" \
+            --migrations "$work/metadata/migration-files.txt" \
+            --foundation-yaml "$work/rendered/production/foundation.yaml" \
+            --init-yaml "$work/rendered/production/init.yaml" \
+            --migrate-yaml "$work/rendered/production/migrate.yaml" \
+            --apps-yaml "$work/rendered/production/apps.yaml" \
+            --web-assets "$work/metadata/web-asset-manifest.json"
+          REMOTE
+
+      - name: Fetch and validate the tecent2 Production evidence
+        id: remote_evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
+          ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          evidence_dir="$RUNNER_TEMP/production-remote-evidence"
+          install -d -m 0700 "$evidence_dir"
+          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          set -euo pipefail
+          revision=$1
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          directory="$HOME/data/combo-releases/goal-a/production/release-$revision"
+          files=(
+            release.json release.sha256 migration-files.txt web-asset-manifest.json
+            foundation.yaml init.yaml migrate.yaml apps.yaml
+            traffic-evidence.json cleanup-plan.json cleanup-evidence.json
+            deploy-evidence.json
+            acceptance-attestation.json activation-evidence.json
+            traffic-finalizing-evidence.json traffic-seal-evidence.json SHA256SUMS
+          )
+          for file in "${files[@]}"; do
+            [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
+          done
+          (cd "$directory" && sha256sum --quiet -c SHA256SUMS)
+          tar -C "$directory" -czf - "${files[@]}"
+          REMOTE
+            tar -xzf - -C "$evidence_dir"
+          (
+            cd "$evidence_dir"
+            sha256sum --quiet -c SHA256SUMS
+          )
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$(<"$evidence_dir/release.sha256")" == "$manifest_digest" ]]
+          cmp -s "$RELEASE_ROOT/metadata/release.json" "$evidence_dir/release.json"
+          cmp -s "$RELEASE_ROOT/metadata/migration-files.txt" \
+            "$evidence_dir/migration-files.txt"
+          cmp -s "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
+            "$evidence_dir/web-asset-manifest.json"
+          cmp -s "$RUNNER_TEMP/production-activation-evidence/activation-evidence.json" \
+            "$evidence_dir/activation-evidence.json"
+          cmp -s "$ATTESTATION" "$evidence_dir/acceptance-attestation.json"
+          [[ "$(sha256sum "$evidence_dir/acceptance-attestation.json" |
+            awk '{print "sha256:" $1}')" == "$ATTESTATION_DIGEST" ]]
+          for phase in foundation init migrate apps; do
+            cmp -s "$RELEASE_ROOT/rendered/production/$phase.yaml" \
+              "$evidence_dir/$phase.yaml"
+          done
+          api_image=$(jq -er '.images.api' "$RELEASE_ROOT/metadata/release.json")
+          runtime_image=$(jq -er '.images.runtime' "$RELEASE_ROOT/metadata/release.json")
+          web_image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg apiImage "$api_image" \
+            --arg runtimeImage "$runtime_image" \
+            --arg webImage "$web_image" \
+            --arg acceptanceAttestationDigest "$ATTESTATION_DIGEST" \
+            --slurpfile traffic "$evidence_dir/traffic-evidence.json" \
+            --slurpfile cleanup "$evidence_dir/cleanup-evidence.json" '
+              .schemaVersion == 1
+              and .status == "passed"
+              and .environment == "production"
+              and .namespace == "combo"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .checks.foundationReady == true
+              and .checks.releaseStorage == true
+              and .checks.minioInitialization == true
+              and .checks.exactMigrations == true
+              and .checks.applicationImages == true
+              and .checks.publicTraffic == true
+              and .checks.legacyCleanup == true
+              and .checks.protectedAcceptance == true
+              and .acceptanceAttestationDigest == $acceptanceAttestationDigest
+              and .traffic == $traffic[0]
+              and .cleanup == $cleanup[0]
+              and .cleanup.verifiedAbsent == true
+              and .storage.environment == "production"
+              and .storage.namespace == "combo"
+              and .storage.sourceSha == $revision
+              and .storage.verified == true
+              and (.storage.claims | length) == 3
+              and .traffic.environment == "production"
+              and .traffic.sourceSha == $revision
+              and .traffic.manifestDigest == $manifestDigest
+              and .traffic.checks.publicWebRelease == true
+              and .traffic.checks.publicMinioReady == true
+              and .traffic.formalOrigin == "https://buildwithcombo.com"
+              and .traffic.formalAliasOrigin == "https://www.buildwithcombo.com"
+              and .traffic.formalNginx.path == "/etc/nginx/conf.d/happy.conf"
+              and (.traffic.formalNginx.sha256 | test("^sha256:[0-9a-f]{64}$"))
+              and .traffic.routeCas.canary.contract == "production-canary"
+              and .traffic.routeCas.canary.afterMode == "release"
+              and .traffic.routeCas.formal.contract == "production-formal"
+              and .traffic.routeCas.formal.afterMode == "release"
+              and .traffic.rollback.checkpointId == ("release-" + $revision)
+              and (.traffic.rollback.checkpointDigest | test("^sha256:[0-9a-f]{64}$"))
+              and .traffic.rollback.persisted == true
+              and .traffic.checks.formalHome == true
+              and .traffic.checks.formalVersion == true
+              and .traffic.checks.formalSpaRoutes == true
+              and .traffic.checks.formalApi == true
+              and .traffic.checks.formalTls == true
+              and .traffic.checks.formalHtmlCache == true
+              and .traffic.checks.formalAssetCache == true
+              and .traffic.checks.formalMissingAsset404 == true
+              and .traffic.checks.formalForcedRefresh == true
+              and .migration.image == $apiImage
+              and ([.deployments[].image] | sort)
+                == ([$apiImage, $apiImage, $runtimeImage, $webImage] | sort)
+            ' "$evidence_dir/deploy-evidence.json" >/dev/null
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg cleanupPlanDigest \
+              "$(sha256sum "$evidence_dir/cleanup-plan.json" |
+                awk '{print "sha256:" $1}')" \
+            --arg finalizingCheckpointDigest \
+              "$(jq -er '.checkpointDigest' \
+                "$evidence_dir/traffic-finalizing-evidence.json")" \
+            --arg cleanupDigest \
+              "$(sha256sum "$evidence_dir/cleanup-evidence.json" |
+                awk '{print "sha256:" $1}')" '
+              .schemaVersion == 1
+              and .status == "sealed"
+              and .environment == "production"
+              and .sourceSha == $revision
+              and .releaseId == ("release-" + $revision)
+              and .manifestDigest == $manifestDigest
+              and .cleanupPlanDigest == $cleanupPlanDigest
+              and .cleanupEvidenceDigest == $cleanupDigest
+              and .finalizingCheckpointDigest == $finalizingCheckpointDigest
+              and .rollbackAvailable == false
+            ' "$evidence_dir/traffic-seal-evidence.json" >/dev/null
+          cleanup_plan_digest=$(sha256sum "$evidence_dir/cleanup-plan.json" |
+            awk '{print "sha256:" $1}')
+          jq -e \
+            --arg revision "$REVISION" \
+            --arg manifestDigest "$manifest_digest" \
+            --arg cleanupPlanDigest "$cleanup_plan_digest" \
+            --slurpfile plan "$evidence_dir/cleanup-plan.json" '
+            .schemaVersion == 2
+            and .purpose == "superseded-release-cleanup"
+            and .environment == "production"
+            and .namespace == "combo"
+            and .sourceSha == $revision
+            and .releaseId == ("release-" + $revision)
+            and .manifestDigest == $manifestDigest
+            and .cleanupPlanDigest == $cleanupPlanDigest
+            and .targets == $plan[0].targets
+            and .capturedStorage == $plan[0].capturedStorage
+            and .verifiedAbsent == true
+          ' "$evidence_dir/cleanup-evidence.json" >/dev/null
+          deploy_digest=$(sha256sum "$evidence_dir/deploy-evidence.json" | awk '{print "sha256:" $1}')
+          cleanup_digest=$(sha256sum "$evidence_dir/cleanup-evidence.json" | awk '{print "sha256:" $1}')
+          printf 'deploy_digest=%s\n' "$deploy_digest" >> "$GITHUB_OUTPUT"
+          printf 'cleanup_digest=%s\n' "$cleanup_digest" >> "$GITHUB_OUTPUT"
+          install -m 0644 "$evidence_dir/deploy-evidence.json" \
+            "$RUNNER_TEMP/production-remote-deploy-evidence.json"
+          install -m 0644 "$evidence_dir/cleanup-evidence.json" \
+            "$RUNNER_TEMP/production-remote-cleanup-evidence.json"
+
+      - name: Fetch and validate the exact Production resource inventory
+        id: production_inventory
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          IDENTITY: ${{ runner.temp }}/production-identity.json
+          INVENTORY: ${{ runner.temp }}/production-resource-inventory.json
+          LIVE_RUNTIME: ${{ runner.temp }}/production-live-runtime.json
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          remote="data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.inventory.json"
+          live_remote="data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.json"
+          ssh release-target bash -s -- "$remote" <<'REMOTE' >"$INVENTORY"
+          set -euo pipefail
+          inventory="$HOME/$1"
+          [[ -f "$inventory" && ! -L "$inventory" ]]
+          [[ "$(stat -c '%a' "$inventory")" == 600 ]]
+          cat "$inventory"
+          REMOTE
+          ssh release-target bash -s -- "$live_remote" <<'REMOTE' >"$LIVE_RUNTIME"
+          set -euo pipefail
+          evidence="$HOME/$1"
+          [[ -f "$evidence" && ! -L "$evidence" ]]
+          [[ "$(stat -c '%a' "$evidence")" == 600 ]]
+          cat "$evidence"
+          REMOTE
+          [[ -s "$INVENTORY" && ! -L "$INVENTORY" ]]
+          [[ -s "$LIVE_RUNTIME" && ! -L "$LIVE_RUNTIME" ]]
+          chmod 0600 "$INVENTORY" "$LIVE_RUNTIME"
+          inventory_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-inventory --inventory "$INVENTORY" --identity "$IDENTITY")
+          [[ "$inventory_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          live_runtime_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-runtime --evidence "$LIVE_RUNTIME" --identity "$IDENTITY")
+          [[ "$live_runtime_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'digest=%s\n' "$inventory_digest" >>"$GITHUB_OUTPUT"
+          printf 'live_runtime_digest=%s\n' "$live_runtime_digest" >>"$GITHUB_OUTPUT"
+          ssh release-target rm -f -- "$remote" "$live_remote"
+
+      - name: Record Production deployment evidence
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          SOURCE_CI_RUN_ID: ${{ steps.evidence.outputs.source_ci_run_id }}
+          SOURCE_CI_RUN_ATTEMPT: ${{ steps.evidence.outputs.source_ci_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ steps.evidence.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_DIGEST: ${{ steps.evidence.outputs.source_artifact_digest }}
+          PREVIEW_RUN_ID: ${{ needs.resolve.outputs.preview_run_id }}
+          PREVIEW_RUN_ATTEMPT: ${{ needs.resolve.outputs.preview_run_attempt }}
+          PREVIEW_EVIDENCE_ARTIFACT_ID: ${{ needs.resolve.outputs.preview_evidence_artifact_id }}
+          PREVIEW_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.resolve.outputs.preview_evidence_artifact_digest }}
+          PRODUCTION_RUN_ID: ${{ github.run_id }}
+          PRODUCTION_RUN_ATTEMPT: ${{ github.run_attempt }}
+          PREVIEW_EVIDENCE: ${{ runner.temp }}/preview-evidence/preview-promotion.json
+          PREVIEW_IDENTITY: ${{ runner.temp }}/preview-evidence/preview-identity.json
+          REMOTE_DEPLOY_DIGEST: ${{ steps.remote_evidence.outputs.deploy_digest }}
+          REMOTE_CLEANUP_DIGEST: ${{ steps.remote_evidence.outputs.cleanup_digest }}
+          RESOURCE_INVENTORY_DIGEST: ${{ steps.production_inventory.outputs.digest }}
+          PRODUCTION_LIVE_RUNTIME_DIGEST: ${{ steps.production_inventory.outputs.live_runtime_digest }}
+          PREVIEW_LIVE_RUNTIME_RECHECK_DIGEST: ${{ steps.preview_live_recheck.outputs.digest }}
+          ACTIVATION_EVIDENCE_DIGEST: ${{ steps.activation_evidence.outputs.digest }}
+          PRODUCTION_BROWSER_ACCEPTANCE_DIGEST: ${{ steps.production_browser.outputs.digest }}
+          ACCEPTANCE_ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
+          [[ "$file_set_digest" == "$(jq -er '.artifactFileSetDigest' "$PREVIEW_EVIDENCE")" ]]
+          deployed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          jq -n \
+            --slurpfile release "$RELEASE_ROOT/metadata/release.json" \
+            --arg sourceSha "$REVISION" \
+            --argjson sourceCiRunId "$SOURCE_CI_RUN_ID" \
+            --argjson sourceCiRunAttempt "$SOURCE_CI_RUN_ATTEMPT" \
+            --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
+            --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
+            --argjson previewRunId "$PREVIEW_RUN_ID" \
+            --argjson previewRunAttempt "$PREVIEW_RUN_ATTEMPT" \
+            --argjson previewEvidenceArtifactId "$PREVIEW_EVIDENCE_ARTIFACT_ID" \
+            --arg previewEvidenceArtifactDigest "$PREVIEW_EVIDENCE_ARTIFACT_DIGEST" \
+            --argjson testRunId "$(jq -er '.testRunId' "$PREVIEW_EVIDENCE")" \
+            --argjson testRunAttempt "$(jq -er '.testRunAttempt' "$PREVIEW_EVIDENCE")" \
+            --argjson testEvidenceArtifactId \
+              "$(jq -er '.testEvidenceArtifactId' "$PREVIEW_EVIDENCE")" \
+            --arg testEvidenceArtifactName \
+              "$(jq -er '.testEvidenceArtifactName' "$PREVIEW_EVIDENCE")" \
+            --arg testEvidenceArtifactDigest \
+              "$(jq -er '.testEvidenceArtifactDigest' "$PREVIEW_EVIDENCE")" \
+            --arg testIdentityDigest "$(jq -er '.testIdentityDigest' "$PREVIEW_EVIDENCE")" \
+            --arg testBrowserAcceptanceDigest \
+              "$(jq -er '.testBrowserAcceptanceDigest' "$PREVIEW_EVIDENCE")" \
+            --arg testSourceReleaseDigest \
+              "$(jq -er '.testSourceReleaseDigest' "$PREVIEW_EVIDENCE")" \
+            --arg testDeploymentEvidenceDigest \
+              "$(jq -er '.testDeploymentEvidenceDigest' "$PREVIEW_EVIDENCE")" \
+            --argjson productionRunId "$PRODUCTION_RUN_ID" \
+            --argjson productionRunAttempt "$PRODUCTION_RUN_ATTEMPT" \
+            --arg releaseManifestDigest "$manifest_digest" \
+            --arg artifactFileSetDigest "$file_set_digest" \
+            --arg remoteDeployEvidenceDigest "$REMOTE_DEPLOY_DIGEST" \
+            --arg remoteCleanupEvidenceDigest "$REMOTE_CLEANUP_DIGEST" \
+            --arg resourceInventoryDigest "$RESOURCE_INVENTORY_DIGEST" \
+            --arg productionLiveRuntimeDigest "$PRODUCTION_LIVE_RUNTIME_DIGEST" \
+            --arg previewLiveRuntimeRecheckDigest "$PREVIEW_LIVE_RUNTIME_RECHECK_DIGEST" \
+            --arg previewLiveRuntimeDigest \
+              "$(jq -er '.liveRuntimeDigest' "$PREVIEW_EVIDENCE")" \
+            --arg previewBrowserAcceptanceDigest \
+              "$(jq -er '.browserAcceptanceDigest' "$PREVIEW_EVIDENCE")" \
+            --arg activationEvidenceDigest "$ACTIVATION_EVIDENCE_DIGEST" \
+            --arg productionBrowserAcceptanceDigest \
+              "$PRODUCTION_BROWSER_ACCEPTANCE_DIGEST" \
+            --arg acceptanceAttestationDigest "$ACCEPTANCE_ATTESTATION_DIGEST" \
+            --arg deployedAt "$deployed_at" '
+              {
+                schemaVersion: 4,
+                status: "passed",
+                environment: "production",
+                namespace: "combo",
+                sourceSha: $sourceSha,
+                sourceCiRunId: $sourceCiRunId,
+                sourceCiRunAttempt: $sourceCiRunAttempt,
+                sourceArtifactId: $sourceArtifactId,
+                sourceArtifactDigest: $sourceArtifactDigest,
+                previewRunId: $previewRunId,
+                previewRunAttempt: $previewRunAttempt,
+                previewEvidenceArtifactId: $previewEvidenceArtifactId,
+                previewEvidenceArtifactDigest: $previewEvidenceArtifactDigest,
+                testRunId: $testRunId,
+                testRunAttempt: $testRunAttempt,
+                testEvidenceArtifactId: $testEvidenceArtifactId,
+                testEvidenceArtifactName: $testEvidenceArtifactName,
+                testEvidenceArtifactDigest: $testEvidenceArtifactDigest,
+                testIdentityDigest: $testIdentityDigest,
+                testBrowserAcceptanceDigest: $testBrowserAcceptanceDigest,
+                testSourceReleaseDigest: $testSourceReleaseDigest,
+                testDeploymentEvidenceDigest: $testDeploymentEvidenceDigest,
+                productionRunId: $productionRunId,
+                productionRunAttempt: $productionRunAttempt,
+                releaseManifestDigest: $releaseManifestDigest,
+                artifactFileSetDigest: $artifactFileSetDigest,
+                remoteDeployEvidenceDigest: $remoteDeployEvidenceDigest,
+                remoteCleanupEvidenceDigest: $remoteCleanupEvidenceDigest,
+                resourceInventoryDigest: $resourceInventoryDigest,
+                previewLiveRuntimeDigest: $previewLiveRuntimeDigest,
+                previewLiveRuntimeRecheckDigest: $previewLiveRuntimeRecheckDigest,
+                productionLiveRuntimeDigest: $productionLiveRuntimeDigest,
+                previewBrowserAcceptanceDigest: $previewBrowserAcceptanceDigest,
+                activationEvidenceDigest: $activationEvidenceDigest,
+                productionBrowserAcceptanceDigest: $productionBrowserAcceptanceDigest,
+                acceptanceAttestationDigest: $acceptanceAttestationDigest,
+                images: $release[0].images,
+                deployedAt: $deployedAt
+              }
+            ' > "$RUNNER_TEMP/production-deployment.json"
+
+      - name: Upload Production deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-production-deployment-${{ needs.resolve.outputs.revision }}
+          path: |
+            ${{ runner.temp }}/production-deployment.json
+            ${{ runner.temp }}/production-remote-deploy-evidence.json
+            ${{ runner.temp }}/production-remote-cleanup-evidence.json
+            ${{ runner.temp }}/production-identity.json
+            ${{ runner.temp }}/production-resource-inventory.json
+            ${{ runner.temp }}/production-live-runtime.json
+            ${{ runner.temp }}/preview-live-runtime-current.json
+            ${{ runner.temp }}/production-activation-evidence/activation-evidence.json
+            ${{ runner.temp }}/production-browser-acceptance.json
+            ${{ runner.temp }}/production-acceptance-attestation.json
+            ${{ runner.temp }}/production-remote-evidence/traffic-seal-evidence.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove transient SSH and bundle files
+        if: always()
+        env:
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set +e
+          cleanup_rc=0
+          if [[ -f "$HOME/.ssh/config" ]]; then
+            if [[ ! "$REVISION" =~ ^[0-9a-f]{40}$ ||
+              ! "$RUN_ID" =~ ^[1-9][0-9]*$ ||
+              ! "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+              cleanup_rc=1
+            elif ! ssh release-target rm -f -- \
+              "data/combo-release-incoming/${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
+              ".${REVISION}.production.${RUN_ID}.${RUN_ATTEMPT}.upload" \
+              "data/combo-release-incoming/${REVISION}.production-acceptance.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
+              ".${REVISION}.production-acceptance.${RUN_ID}.${RUN_ATTEMPT}.upload" \
+              "data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
+              "data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.json" \
+              ".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.upload" \
+              ".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload" \
+              "data/combo-release-incoming/${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
+              "data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.json" \
+              ".${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.upload" \
+              ".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload" \
+              "data/combo-release-incoming/${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.sh" \
+              ".${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.upload" \
+              "data/combo-acceptance/preview/${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.json" \
+              "data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.browser.json" \
+              "data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.inventory.json" \
+              "data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.json"; then
+              cleanup_rc=1
+            fi
+          fi
+          if ! rm -f -- \
+            "$RUNNER_TEMP/preview-evidence.zip" \
+            "$RUNNER_TEMP/combo-release.zip" \
+            "$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz" \
+            "$RUNNER_TEMP/combo-production-acceptance-${REVISION}.tar.gz" \
+            "$RUNNER_TEMP/preview-current-checkpoint-live.json" \
+            "$RUNNER_TEMP/production-identity.json" \
+            "$RUNNER_TEMP/production-deployment.json" \
+            "$RUNNER_TEMP/production-remote-deploy-evidence.json" \
+            "$RUNNER_TEMP/production-remote-cleanup-evidence.json" \
+            "$RUNNER_TEMP/production-resource-inventory.json" \
+            "$RUNNER_TEMP/production-browser-acceptance.json" \
+            "$RUNNER_TEMP/production-live-runtime.json" \
+            "$RUNNER_TEMP/preview-live-runtime-current.json" \
+            "$RUNNER_TEMP/production-acceptance-attestation.json" \
+            "$HOME/.ssh/deploy_key" \
+            "$HOME/.ssh/known_hosts" \
+            "$HOME/.ssh/config"; then
+            cleanup_rc=1
+          fi
+          if ! rm -rf -- \
+            "$RUNNER_TEMP/preview-evidence" \
+            "$RUNNER_TEMP/combo-release" \
+            "$RUNNER_TEMP/production-activation-evidence" \
+            "$RUNNER_TEMP/production-remote-evidence"; then
+            cleanup_rc=1
+          fi
+          if ((cleanup_rc != 0)); then
+            echo 'Production transient cleanup could not be confirmed.' >&2
+          fi
+          exit "$cleanup_rc"

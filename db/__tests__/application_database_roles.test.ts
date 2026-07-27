@@ -5,11 +5,11 @@ import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const sql = readFileSync(
-  resolve(directory, '..', 'migrations', '0005_application_database_roles.sql'),
+  resolve(directory, '..', 'migrations', '0008_application_database_roles.sql'),
   'utf8',
 );
 
-describe('0005 application database role isolation', () => {
+describe('0008 application database role isolation', () => {
   it('creates three non-privileged roles with login disabled during DDL', () => {
     for (const role of ['combo_api', 'combo_worker', 'combo_runtime']) {
       expect(sql).toContain(`CREATE ROLE ${role} NOLOGIN NOSUPERUSER`);
@@ -33,6 +33,10 @@ describe('0005 application database role isolation', () => {
     expect(workerGrant).not.toMatch(/auth_/);
 
     expect(sql).toContain('GRANT SELECT ON users, auth_sessions, capabilities TO combo_runtime;');
+    expect(sql).toContain('GRANT UPDATE (ui_artifact_id) ON capabilities TO combo_runtime;');
+    expect(sql).not.toMatch(
+      /GRANT UPDATE \((?!ui_artifact_id\))[^)]*\) ON capabilities TO combo_runtime;/i,
+    );
     expect(sql).not.toMatch(/GRANT[^;]*INSERT[^;]*auth_sessions[^;]*TO combo_runtime/is);
   });
 

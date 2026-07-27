@@ -2,7 +2,21 @@
 
 这套清单把生产 Docker Compose 栈中的 PostgreSQL、两个 Redis 实例、MinIO、桶初始化任务、数据库迁移任务和三个业务镜像部署到单节点 k3s。所有资源位于 `combo` 命名空间，持久卷使用默认可用的 `local-path` 存储类。
 
-清单保留了 Compose 中的数据持久化、Redis 队列不驱逐、Redis 热数据可驱逐、MinIO 建桶和独立数据库迁移等语义。Kubernetes 没有采用 Compose 的 `depends_on`；基础设施的就绪探针负责报告状态，两个一次性任务和业务工作负载由部署命令按顺序创建。第一方认证表与业务表位于同一个 PostgreSQL 数据库，不部署独立身份服务。
+清单保留数据持久化、Redis 队列不驱逐、Redis 热数据可驱逐、MinIO 建桶和独立数据库迁移等语义。Kubernetes 没有采用 Compose 的 `depends_on`；基础设施的就绪探针负责报告状态，两个一次性任务和业务工作负载由部署命令按顺序创建。认证由 API 的第一方邮箱 OTP、PostgreSQL 摘要和不透明会话完成。
+
+## 可选 Sandbox Tools
+
+`overlays/sandbox-tools/` 保存模型文件与命令工具的可选清单。根 `kustomization.yaml` 和 `scripts/deploy-k8s.sh` 不引用该目录。持续部署仍递归同步普通 `infra/` 内容，但同步命令显式排除 sandboxd Dockerfile、四槽清单和第五槽清单，并删除服务器上的旧残留，因此生产发布不会携带沙箱权限、存储或 Pod 清单。
+
+普通可选入口包含四个固定 Local PV/PVC、四 Pod 配额、受限的 Pod 与现有 PVC 管理权限和默认拒绝网络。每个 PV 指向 `/var/lib/combo-sandbox-slots/slot-N`，该路径必须由维护脚本挂载到数据盘上的独立 1 GiB ext4 loopback 文件。维护脚本删除初始 `lost+found` 并设置槽位属主；Pod 按需创建，新 Pod 启动前先恢复挂载根权限并清空槽位，同一 Session 在 Pod 存活期间复用内容。
+
+普通 Pod 的处理器请求为 100m，上限为 500m；内存请求和上限都是 384 MiB；`/tmp` 上限是 256 MiB；进程预算是 256；`activeDeadlineSeconds` 与 Runtime 清扫都把绝对生命周期限制在三十分钟内。Bash 还使用 Landlock 写入白名单，不能写入 Kubernetes 终止消息文件。普通清单只允许四个槽位。
+
+Runtime 在创建动态 Pod 前先用 PVC 资源版本原子写入 Session 和分配编号，删除前再把 PVC 标为隔离。只有节点状态确认主容器和初始化容器都已终止，Runtime 才会移除 Pod finalizer；确认原 UID 消失后才清除 PVC 分配标记并允许下一个 Session 复用。节点分区、Pod 被强制移除或终止状态缺失都会让 PVC 保持隔离，不能只凭 Pod UID 消失判定清理成功。
+
+`overlays/sandbox-tools-fifth-slot/` 是独立的第五槽维护入口。只有完成真实集群调度、隔离、容量和清理验证后，管理员才可以选择它并设置验证开关。它还会递增沙箱配置修订号，避免旧 Runtime 副本回收第五槽。普通入口和自动生产路径都不会引用第五槽。
+
+`overlays/sandbox-tools/maintenance/runtimeclass-gvisor.yaml` 只是未引用的维护样例。仓库不会安装 runsc、重启 k3s 或自动应用任何沙箱资源。`pnpm -F @cb/infra test` 只做本地静态渲染和断言，不能替代 gVisor、Local PV 或 NetworkPolicy 的现场验证。
 
 ## 部署前准备
 
@@ -16,7 +30,7 @@ kubectl -n combo create secret docker-registry ghcr-pull --docker-server=ghcr.io
 
 `ghcr-pull` 用的 token 需要长期有效：CD 流水线用的是 GitHub Actions 的临时 token、部署完即登出，集群里拉镜像必须另建一个 read:packages 权限的个人访问令牌（PAT）。
 
-`combo-env` 必须包含迁移所有者使用的 `POSTGRES_USER`、`POSTGRES_PASSWORD` 与 `POSTGRES_DB`，以及三份独立应用角色密码和已经 URL 编码的 `API_DATABASE_URL`、`WORKER_DATABASE_URL`、`RUNTIME_DATABASE_URL`。迁移 Job 会把所有者配置映射到独立的 PostgreSQL 连接字段，因此所有者密码可以包含 `/`、`#` 与 `?` 等 URI 保留字符。它还要包含清单引用的 S3、LLM 配置，以及 `PUBLIC_APP_ORIGIN`、`RESEND_API_KEY`、`RESEND_FROM_EMAIL` 和 `OTP_HMAC_SECRET`。只有迁移 Job 接收所有者与三份角色密码；业务 Pod 只接收各自的数据库连接串。只有 authoring API 接收邮件和验证码密钥，authoring 与 runtime 都接收同一个公开站点来源。部署前还必须把 `kustomization.yaml` 中三个业务镜像的 `latest` 改成被部署提交的完整 SHA。可以在 `infra/k8s` 目录执行以下命令：
+`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。`RESEND_FROM_EMAIL` 固定为 `Combo <auth@buildwithcombo.com>`，不从 Secret 覆盖。部署前还必须把三个业务镜像的 `latest` 改成不可变摘要。
 
 ```sh
 kustomize edit set image ghcr.io/dangdang-tech/combo-api=ghcr.io/dangdang-tech/combo-api:<SHA> ghcr.io/dangdang-tech/combo-runtime=ghcr.io/dangdang-tech/combo-runtime:<SHA> ghcr.io/dangdang-tech/combo-web=ghcr.io/dangdang-tech/combo-web:<SHA>
@@ -51,14 +65,16 @@ kubectl apply -f infra/k8s/api.yaml -f infra/k8s/worker.yaml -f infra/k8s/runtim
 
 ## 日常更新
 
-日常更新由 CD 流水线全自动完成。main 的完整 CI 通过并发布同一 SHA 的三个镜像后，CD 把本目录同步到服务器 `/opt/combo/infra/k8s`，再执行 `scripts/deploy-k8s.sh`。脚本先检查 `0004` 是否已应用；尚未应用时必须确认 `users` 为空，失败不会修改任何 Deployment。预检通过后，脚本记录四个旧 Deployment 的副本、revision 和镜像，在第一次缩容前武装失败恢复，再把旧 api、worker、runtime 和 web 副本缩到零。脚本单独创建并等待固定 SHA 的迁移 Job，成功后逐个应用和等待固定 SHA 的四个业务面，最后由 CD 对 30080 入口运行冒烟。
-
-迁移 Job 等待失败或超时时，脚本会先前台删除 Job 并确认所属 Pod 全部退出，之后才检查迁移记账。手动部署只接受包含 `0004`、`0005` 和四个第一方认证端点，且同一 SHA 已通过完整 CI 的镜像。第一方认证切换删除了旧身份列，因此不能回滚到切换前镜像；数据库问题必须以前滚修复处理。迁移在提交 `0004` 前失败时脚本会恢复原副本；如果 `0004` 在部署前已经存在，业务 apply 或 rollout 失败会撤销已修改 Deployment、验证旧镜像并恢复原副本。迁移本轮已经提交或状态未知时，旧镜像保持停止。
+Production 不随 `main` 自动更新。受保护的 CD 流水线只接受已经通过 Preview 的完整 main SHA，并消费同一个 release artifact 和 digest-pinned 镜像。服务器使用 `scripts/deploy-release.sh` 分阶段激活候选、保留旧 release、等待六区验收，再完成清理和证据提交；Production 不重新构建镜像，也不接受服务器直接应用本目录文件。
 
 ## 当前生产状态与流量拓扑
 
-2026-07-17 已完成从 docker compose 到本套清单的割接（过程与验证记录见 issue #86）。系统 nginx 的两个公网 vhost 现在指向 k8s：`agora.43-160-242-46.sslip.io` 反代到节点 30080（web 的 NodePort），`s3.43-160-242-46.sslip.io` 反代到节点 30900（minio 的 NodePort，浏览器预签直传入口）。
-
-历史 compose 栈的容器已停止但配置与数据卷仍保留，数据冻结在割接时刻，只用于灾难取证。第一方认证 schema 不兼容旧 Logto 镜像，不能把恢复旧 compose 当作当前数据库的回滚方案。
+系统 Nginx 只反向代理到 release systemd 单元维护的 IPv4 loopback 端口。Production Web 使用 `18082`，Production MinIO 使用 `19002`；Kubernetes Service 保持 ClusterIP，公网不暴露 NodePort。`buildwithcombo.com` 的切换由版本化脚本按配置摘要和精确 server block 完成，不能通过旧 compose、手工 sed 或恢复旧 NodePort 配置回滚。
 
 观测栈部署在 `observability` 命名空间，用 Helm 单独安装与升级，配置和安装说明在 `observability/` 子目录；业务三进程的 OTLP 上报地址已写进各自清单的环境变量。Grafana 在节点的 30300 端口。
+
+## combo-dev 覆盖层
+
+开发组合环境的固定覆盖层位于 `overlays/combo-dev/`。它只复用 `combo-preview` 命名空间，并用 Kubernetes 内置的静态卷模式把三个 PVC 预绑定到独立有界挂载中的三个本地 PV，不包含自定义存储 provisioner。共享 k3s 只依赖生产所需父数据盘，开发工作负载只挂载 PVC，不使用 `hostPath`。主机 bootstrap 会先完成全部只读检查，再写入持久阻断、关闭转发器并验证所有写入者停止，随后才清理通过精确绑定验证的旧 Cloud Review 三卷数据、创建固定目录或应用平台对象。额外、部分或路径漂移的旧存储不会被自动删除。Namespace、集群 RBAC、StorageClass 和三个 PV 必须与 bootstrap 保存的规范契约完整一致。应用清单只能由手工触发的受保护工作流处理；工作流要求当前 `main` 的完整 SHA 与成功 CI，并与生产 CD 共用 `cd-tecent2` 并发组。它注入镜像摘要后，从五个固定阶段的已验证字节按覆盖层 README 的顺序部署，不能直接应用仓库模板。
+
+Sandbox Tools 的 PR 合并前现场验收清单位于 `overlays/sandbox-tools/review/`。它把动态沙箱放入独立的 `combo-review-sandbox` 命名空间，并为 `combo-review` Runtime 提供默认关闭的单独补丁。这个目录固定测试节点、四个测试专用静态本地卷和当前测试镜像摘要，不属于生产部署入口。使用前必须按目录 README 完成主机 loopback 准备、测试 Runtime 镜像部署和分阶段启用。

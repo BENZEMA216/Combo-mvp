@@ -343,7 +343,9 @@ export type VerifyEmailResult =
 
 /**
  * 验证单事务：锁定目标和活动 challenge，原子增加失败次数或消费正确码；随后查建身份、
- * 更新登录时间、签发固定会话并写审计。事务提交前调用方不能设置 Cookie。
+ * 更新登录时间、签发固定会话并写审计。只有锁定的活动 challenge 才能产生失败审计；
+ * 不存在、已过期、已失效或已消费的目标只返回统一失败，避免 Redis 故障时写放大。
+ * 事务提交前调用方不能设置 Cookie。
  */
 export async function verifyEmailChallenge(
   pool: TxPool,
@@ -391,7 +393,6 @@ export async function verifyEmailChallenge(
     );
     const challenge = selected.rows[0];
     if (!challenge) {
-      await auditLoginFailure(tx, input.targetDigest, input.traceId, 'invalid_or_expired');
       return { kind: 'invalid' };
     }
 
@@ -427,7 +428,6 @@ export async function verifyEmailChallenge(
       [challenge.id],
     );
     if (!consumed.rows[0]) {
-      await auditLoginFailure(tx, input.targetDigest, input.traceId, 'invalid_or_expired');
       return { kind: 'invalid' };
     }
 

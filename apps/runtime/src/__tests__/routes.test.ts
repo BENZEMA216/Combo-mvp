@@ -1,9 +1,11 @@
 // 路由注册自检 + session 端点 owner 守卫（非本人与不存在同样 404，不暴露存在性）。
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 import {
   archiveSessionHandler,
+  createSessionHandler,
+  createStudioSessionHandler,
   getSessionDetailHandler,
   interruptHandler,
   listSessionsHandler,
@@ -12,11 +14,23 @@ import {
 } from '../modules/session/handlers.js';
 import { CAPABILITY_BUCKET } from '../modules/capability/loader.js';
 import { artifactContentHandler } from '../modules/artifact/handlers.js';
-import { appendTurnMessage, createSession } from '../modules/session/repo.js';
+import { createArtifactTool } from '../modules/artifact/tool.js';
+import {
+  ARTIFACT_BUCKET,
+  artifactStorageKey,
+  bindCapabilityUiArtifact,
+} from '../modules/artifact/repo.js';
+import {
+  archiveSession as archiveSessionRow,
+  appendTurnMessage,
+  createSession,
+  getOrCreateStudioSession,
+} from '../modules/session/repo.js';
 import { createTurn, finishTurnCas } from '../modules/agent/turn-repo.js';
 import { createTurnRunner } from '../modules/agent/run-turn.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
+import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
 import {
   FakeDb,
   FakeObjectStore,
@@ -27,10 +41,38 @@ import {
 
 const ME = 'user-me';
 const OTHER = 'user-other';
+let directArtifactTurnSequence = 0;
+
+async function createDirectArtifactTool(input: {
+  db: FakeDb;
+  store: FakeObjectStore;
+  sessionId: string;
+  capabilityId?: string;
+  mode?: 'consume' | 'studio';
+}) {
+  directArtifactTurnSequence += 1;
+  const turnId = `route-artifact-turn-${directArtifactTurnSequence}`;
+  await createTurn(input.db, { id: turnId, sessionId: input.sessionId });
+  const controller = new AbortController();
+  return {
+    turnId,
+    tool: createArtifactTool({
+      db: input.db,
+      objectStore: input.store,
+      sessionId: input.sessionId,
+      turnId,
+      turnSignal: controller.signal,
+      ...(input.capabilityId ? { capabilityId: input.capabilityId } : {}),
+      ...(input.mode ? { mode: input.mode } : {}),
+      onArtifact: () => undefined,
+    }),
+    finish: () => finishTurnCas(input.db, { id: turnId, status: 'completed' }),
+  };
+}
 
 describe('route registry self-check', () => {
-  it('registers exactly 10 endpoints (capability 1 + session 8 + artifact 1)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(10);
+  it('registers exactly 11 endpoints (capability 1 + session 9 + artifact 1)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(11);
   });
 
   it('no duplicate (method,url) pairs', () => {
@@ -86,6 +128,7 @@ function makeReq(input: {
   params?: Record<string, string>;
   query?: Record<string, string>;
   body?: unknown;
+  sandbox?: SandboxBackend;
 }): FastifyRequest {
   const turns = createTurnRunner({
     db: input.db,
@@ -105,7 +148,11 @@ function makeReq(input: {
     body: input.body,
     log: { ...silentLog, info: () => undefined, warn: () => undefined },
     server: {
-      infra: { db: input.db, objectStore: input.objectStore ?? new FakeObjectStore() },
+      infra: {
+        db: input.db,
+        objectStore: input.objectStore ?? new FakeObjectStore(),
+        ...(input.sandbox ? { sandbox: input.sandbox } : {}),
+      },
       turns,
     },
   } as unknown as FastifyRequest;
@@ -125,6 +172,286 @@ async function seedOwnedSession(db: FakeDb, owner: string): Promise<string> {
   const session = await createSession(db, { capabilityId: cap.id, ownerUserId: owner });
   return session.id;
 }
+
+function seedRunnableDefinition(store: FakeObjectStore, cap: ReturnType<FakeDb['seedCapability']>) {
+  store.seedText(
+    CAPABILITY_BUCKET,
+    cap.storage_key,
+    JSON.stringify({
+      version: 1,
+      name: cap.name,
+      summary: cap.summary,
+      kind: cap.kind,
+      instructions: '执行任务',
+      inputs: [],
+      starterPrompts: [],
+    }),
+  );
+}
+
+describe('POST /runtime/studio/sessions', () => {
+  it('同一创作者与 Agent 重试时复用同一 active Studio 会话', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: ME });
+    seedRunnableDefinition(store, cap);
+
+    const first = await call(
+      createStudioSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+    const second = await call(
+      createStudioSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+
+    expect(first.statusCode).toBe(200);
+    expect(second.statusCode).toBe(200);
+    const firstSession = (
+      first.body as { data: { session: { id: string; capabilityId: string; mode: string } } }
+    ).data.session;
+    const secondSession = (
+      second.body as { data: { session: { id: string; capabilityId: string; mode: string } } }
+    ).data.session;
+    expect(firstSession).toMatchObject({ capabilityId: cap.id, mode: 'studio' });
+    expect(secondSession.id).toBe(firstSession.id);
+    expect([...db.sessions.values()].filter((row) => row.mode === 'studio')).toHaveLength(1);
+  });
+
+  it('已发布 Agent 也只有创作者本人能进入 Studio', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: OTHER, published: true });
+    seedRunnableDefinition(store, cap);
+
+    const reply = await call(
+      createStudioSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+
+    expect(reply.statusCode).toBe(404);
+    expect(db.sessions.size).toBe(0);
+  });
+
+  it('旧 Studio 归档后重新进入，会从 capability 当前 UI 恢复到新 Studio', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: ME });
+    seedRunnableDefinition(store, cap);
+    const first = await getOrCreateStudioSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: ME,
+    });
+    const direct = await createDirectArtifactTool({
+      db,
+      store,
+      sessionId: first.id,
+      capabilityId: cap.id,
+      mode: 'studio',
+    });
+    const html = `<!doctype html><html><head><style>button{color:red}</style></head><body>
+      <button data-combo-key="run-primary">运行</button><script>
+      const prompt = '真实任务'; parent.postMessage({type:'combo:run',version:1,prompt}, '*');
+      </script></body></html>`;
+    const firstRevision = await direct.tool.execute('tc-studio', {
+      kind: 'html',
+      title: 'Agent UI',
+      content: html,
+    });
+    await direct.finish();
+    await bindCapabilityUiArtifact(db, {
+      capabilityId: cap.id,
+      artifactId: firstRevision.details!.artifactId,
+      studioSessionId: first.id,
+      turnId: direct.turnId,
+    });
+    await archiveSessionRow(db, first.id, ME);
+
+    const reply = await call(
+      createStudioSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+    expect(reply.statusCode).toBe(200);
+    const restored = (reply.body as { data: { session: { id: string; mode: string } } }).data
+      .session;
+    expect(restored).toMatchObject({ mode: 'studio' });
+    expect(restored.id).not.toBe(first.id);
+    const restoredArtifact = [...db.artifacts.values()].find(
+      (artifact) => artifact.session_id === restored.id,
+    );
+    expect(restoredArtifact).toBeTruthy();
+    expect(
+      await store.getObjectText(
+        ARTIFACT_BUCKET as never,
+        artifactStorageKey(restored.id, restoredArtifact!.id),
+      ),
+    ).toBe(html);
+
+    const detailReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: restored.id } }),
+    );
+    const detail = (
+      detailReply.body as {
+        data: {
+          currentUiArtifactId: string | null;
+          artifacts: Array<{ id: string; sourceArtifactId?: string }>;
+        };
+      }
+    ).data;
+    expect(detail.currentUiArtifactId).toBe(restoredArtifact!.id);
+    expect(detail.artifacts[0]).toMatchObject({
+      id: restoredArtifact!.id,
+      sourceArtifactId: firstRevision.details!.artifactId,
+    });
+  });
+
+  it('首次进入只迁移同 Agent、同 owner 且通过运行契约的旧 consume HTML', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: ME });
+    seedRunnableDefinition(store, cap);
+    const legacy = await createSession(db, { capabilityId: cap.id, ownerUserId: ME });
+    const validHtml = `<!doctype html><html><head><style>body{margin:0}</style></head><body>
+      <input id="goal"><button data-combo-key="run-primary">运行</button><script>
+      const prompt = document.querySelector('#goal').value;
+      window.parent.postMessage({type:'combo:run',version:1,prompt}, '*');
+      </script></body></html>`;
+    const legacyTool = await createDirectArtifactTool({
+      db,
+      store,
+      sessionId: legacy.id,
+      mode: 'consume',
+    });
+    const valid = await legacyTool.tool.execute('legacy-valid', {
+      kind: 'html',
+      title: '旧版 Agent UI',
+      content: validHtml,
+    });
+    const invalid = await legacyTool.tool.execute('legacy-invalid', {
+      kind: 'html',
+      title: '普通 HTML 报告',
+      content: '<!doctype html><html><body>普通报告</body></html>',
+    });
+    await legacyTool.finish();
+    db.artifacts.get(valid.details!.artifactId)!.created_at = '2026-07-20T00:00:00.000Z';
+    db.artifacts.get(valid.details!.artifactId)!.updated_at = '2026-07-20T00:00:00.000Z';
+    db.artifacts.get(invalid.details!.artifactId)!.created_at = '2026-07-21T00:00:00.000Z';
+    db.artifacts.get(invalid.details!.artifactId)!.updated_at = '2026-07-21T00:00:00.000Z';
+
+    const reply = await call(
+      createStudioSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+    expect(reply.statusCode).toBe(200);
+    const studioId = (reply.body as { data: { session: { id: string } } }).data.session.id;
+    const adoptedId = db.capabilities.get(cap.id)?.ui_artifact_id;
+    expect(adoptedId).toBeTruthy();
+    const adopted = db.artifacts.get(adoptedId!);
+    expect(adopted).toMatchObject({
+      session_id: studioId,
+      meta: expect.objectContaining({
+        adoption: 'existing-owner-consume-html',
+        sourceArtifactId: valid.details!.artifactId,
+      }),
+    });
+    expect(await store.getObjectText(ARTIFACT_BUCKET as never, adopted!.storage_key)).toBe(
+      validHtml,
+    );
+  });
+
+  it('Studio seed 瞬时失败时保留复用会话为 active，供下次幂等重试', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ id: CAP_A, owner_user_id: ME });
+    seedRunnableDefinition(store, cap);
+    const studio = await getOrCreateStudioSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: ME,
+    });
+    const query = db.query.bind(db);
+    let failed = false;
+    db.query = (async (sql: string, params?: unknown[]) => {
+      if (!failed && sql.includes('FROM artifacts') && sql.includes("kind = 'html'")) {
+        failed = true;
+        throw new Error('transient db read failure');
+      }
+      return query(sql, params);
+    }) as typeof db.query;
+
+    const reply = await call(
+      createStudioSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+    expect(reply.statusCode).toBe(500);
+    expect(db.sessions.get(studio.id)?.status).toBe('active');
+  });
+});
+
+describe('POST /runtime/sessions capability UI 快照', () => {
+  it('有当前 UI 时新 consume 自动复制；无当前 UI 时仍正常创建空会话', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const withUi = db.seedCapability({ id: CAP_A, owner_user_id: ME, published: true });
+    const withoutUi = db.seedCapability({ id: CAP_B, owner_user_id: ME });
+    seedRunnableDefinition(store, withUi);
+    seedRunnableDefinition(store, withoutUi);
+    const studio = await getOrCreateStudioSession(db, {
+      capabilityId: withUi.id,
+      ownerUserId: ME,
+    });
+    const html = `<!doctype html><html><head><style>body{margin:0}</style></head><body>
+      <button data-combo-key="run-primary">运行</button><script>
+      const prompt = '真实任务'; window.parent.postMessage({type:'combo:run',version:1,prompt}, '*');
+      </script></body></html>`;
+    const currentTool = await createDirectArtifactTool({
+      db,
+      store,
+      sessionId: studio.id,
+      capabilityId: withUi.id,
+      mode: 'studio',
+    });
+    const currentRevision = await currentTool.tool.execute('tc-studio', {
+      kind: 'html',
+      title: 'Agent UI',
+      content: html,
+    });
+    await currentTool.finish();
+    await bindCapabilityUiArtifact(db, {
+      capabilityId: withUi.id,
+      artifactId: currentRevision.details!.artifactId,
+      studioSessionId: studio.id,
+      turnId: currentTool.turnId,
+    });
+
+    const seeded = await call(
+      createSessionHandler(),
+      makeReq({ db, objectStore: store, userId: OTHER, body: { capabilityId: withUi.id } }),
+    );
+    expect(seeded.statusCode).toBe(201);
+    const seededSessionId = (seeded.body as { data: { id: string } }).data.id;
+    const snapshot = [...db.artifacts.values()].find(
+      (artifact) => artifact.session_id === seededSessionId,
+    );
+    expect(snapshot).toBeTruthy();
+    expect(
+      await store.getObjectText(
+        ARTIFACT_BUCKET as never,
+        artifactStorageKey(seededSessionId, snapshot!.id),
+      ),
+    ).toBe(html);
+
+    const compatible = await call(
+      createSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: withoutUi.id } }),
+    );
+    expect(compatible.statusCode).toBe(201);
+    const compatibleId = (compatible.body as { data: { id: string } }).data.id;
+    expect(
+      [...db.artifacts.values()].filter((artifact) => artifact.session_id === compatibleId),
+    ).toHaveLength(0);
+  });
+});
 
 describe('session 端点 owner 守卫', () => {
   it('GET /runtime/sessions/:id：本人 200，非本人 404', async () => {
@@ -173,6 +500,292 @@ describe('session 端点 owner 守卫', () => {
     ).toMatchObject({ turnId });
   });
 
+  it('GET /runtime/sessions/:id：从 PostgreSQL 返回 active Turn，终态后清空', async () => {
+    const db = new FakeDb();
+    const sessionId = await seedOwnedSession(db, ME);
+    const turnId = '22222222-2222-4222-8222-222222222222';
+    const turn = await createTurn(db, { id: turnId, sessionId });
+
+    const running = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, userId: ME, params: { id: sessionId } }),
+    );
+    expect(
+      (running.body as { data: { activeTurn: { id: string; createdAt: string } | null } }).data
+        .activeTurn,
+    ).toEqual({ id: turnId, createdAt: turn.createdAt });
+
+    await finishTurnCas(db, { id: turnId, status: 'interrupted' });
+    const terminal = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, userId: ME, params: { id: sessionId } }),
+    );
+    expect(
+      (terminal.body as { data: { activeTurn: { id: string } | null } }).data.activeTurn,
+    ).toBeNull();
+  });
+
+  it('Studio 详情只保留种子、completed 最终 revision 和 active 最新候选', async () => {
+    const db = new FakeDb();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    const studio = await getOrCreateStudioSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: ME,
+    });
+    const baseTime = Date.parse('2026-07-25T00:00:00.000Z');
+    const addTurn = (
+      id: string,
+      status: 'running' | 'completed' | 'failed' | 'interrupted',
+      offset: number,
+    ) => {
+      db.turns.set(id, {
+        id,
+        session_id: studio.id,
+        status,
+        last_error: null,
+        created_at: new Date(baseTime + offset).toISOString(),
+        finished_at: status === 'running' ? null : new Date(baseTime + offset + 1).toISOString(),
+      });
+    };
+    addTurn('turn-completed', 'completed', 100);
+    addTurn('turn-failed', 'failed', 200);
+    addTurn('turn-running', 'running', 300);
+    const addArtifact = (id: string, turnId: string | null, offset: number) => {
+      const timestamp = new Date(baseTime + offset).toISOString();
+      db.artifacts.set(id, {
+        id,
+        session_id: studio.id,
+        turn_id: turnId,
+        kind: 'html',
+        title: id,
+        storage_key: `artifacts/${studio.id}/${id}`,
+        meta: {},
+        created_at: timestamp,
+        updated_at: timestamp,
+      });
+    };
+    addArtifact('seed', null, 10);
+    addArtifact('completed-early', 'turn-completed', 110);
+    addArtifact('completed-final', 'turn-completed', 120);
+    addArtifact('failed-final', 'turn-failed', 210);
+    addArtifact('running-early', 'turn-running', 310);
+    addArtifact('running-latest', 'turn-running', 320);
+    cap.ui_artifact_id = 'completed-final';
+
+    const reply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, userId: ME, params: { id: studio.id } }),
+    );
+    const detail = (
+      reply.body as {
+        data: {
+          artifacts: Array<{
+            id: string;
+            sourceTurnId?: string;
+            createdAt: string;
+          }>;
+          activeTurn: { id: string } | null;
+          currentUiArtifactId: string | null;
+        };
+      }
+    ).data;
+
+    expect(detail.artifacts.map((artifact) => artifact.id)).toEqual([
+      'seed',
+      'completed-final',
+      'running-latest',
+    ]);
+    expect(detail.artifacts[1]).toMatchObject({
+      sourceTurnId: 'turn-completed',
+      createdAt: new Date(baseTime + 120).toISOString(),
+    });
+    expect(detail.activeTurn).toMatchObject({ id: 'turn-running' });
+    expect(detail.currentUiArtifactId).toBe('completed-final');
+  });
+
+  it('GET /runtime/sessions/:id：透出 Agent 当前 UI 指针，区分落库 revision 与已保存 UI', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    seedRunnableDefinition(store, cap);
+    const studio = await getOrCreateStudioSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: ME,
+    });
+    const turnId = 'detail-ui-pointer-turn';
+    const turnController = new AbortController();
+    const now = new Date().toISOString();
+    db.turns.set(turnId, {
+      id: turnId,
+      session_id: studio.id,
+      status: 'running',
+      last_error: null,
+      created_at: now,
+      finished_at: null,
+    });
+    const revision = await createArtifactTool({
+      db,
+      objectStore: store,
+      sessionId: studio.id,
+      turnId,
+      turnSignal: turnController.signal,
+      capabilityId: cap.id,
+      mode: 'studio',
+      onArtifact: () => undefined,
+    }).execute('detail-ui-pointer', {
+      kind: 'html',
+      title: 'Agent 当前 UI',
+      content: `<!doctype html><html><head><style>button{color:red}</style></head><body>
+        <input id="goal"><button data-combo-key="run-primary">运行</button>
+        <script>
+          document.querySelector('[data-combo-key="run-primary"]').addEventListener('click', () => {
+            const prompt = document.querySelector('#goal').value.trim();
+            parent.postMessage({type:'combo:run',version:1,prompt}, '*');
+          });
+        </script>
+      </body></html>`,
+    });
+    db.turns.get(turnId)!.status = 'completed';
+    await bindCapabilityUiArtifact(db, {
+      capabilityId: cap.id,
+      artifactId: revision.details!.artifactId,
+      studioSessionId: studio.id,
+      turnId,
+    });
+
+    const reply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: studio.id } }),
+    );
+
+    expect(reply.statusCode).toBe(200);
+    expect(
+      (reply.body as { data: { currentUiArtifactId: string | null } }).data.currentUiArtifactId,
+    ).toBe(revision.details!.artifactId);
+
+    const consumer = await createSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: OTHER,
+    });
+    const consumerReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: OTHER, params: { id: consumer.id } }),
+    );
+    expect(
+      (consumerReply.body as { data: { currentUiArtifactId: string | null } }).data
+        .currentUiArtifactId,
+    ).toBeNull();
+
+    const createdConsumerReply = await call(
+      createSessionHandler(),
+      makeReq({ db, objectStore: store, userId: ME, body: { capabilityId: cap.id } }),
+    );
+    expect(createdConsumerReply.statusCode).toBe(201);
+    const createdConsumerId = (createdConsumerReply.body as { data: { id: string } }).data.id;
+    const createdConsumerDetailReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    const createdConsumerDetail = (
+      createdConsumerDetailReply.body as {
+        data: {
+          session: { mode: string };
+          artifacts: Array<{
+            id: string;
+            kind: string;
+            sourceArtifactId?: string;
+            sourceTurnId?: string;
+          }>;
+          currentUiArtifactId: string | null;
+        };
+      }
+    ).data;
+    const frozenSnapshot = createdConsumerDetail.artifacts.find(
+      (artifact) => artifact.sourceArtifactId === revision.details!.artifactId,
+    );
+    expect(createdConsumerDetail.session.mode).toBe('consume');
+    expect(frozenSnapshot).toMatchObject({
+      kind: 'html',
+      sourceArtifactId: revision.details!.artifactId,
+    });
+    expect(frozenSnapshot?.sourceTurnId).toBeUndefined();
+    expect(createdConsumerDetail.currentUiArtifactId).toBe(frozenSnapshot?.id);
+
+    const completedConsumeTurnId = '00000000-0000-4000-8000-000000000003';
+    const completedConsumeArtifactId = '00000000-0000-4000-8000-000000000004';
+    const newerTimestamp = new Date(Date.now() + 1_000).toISOString();
+    db.turns.set(completedConsumeTurnId, {
+      id: completedConsumeTurnId,
+      session_id: createdConsumerId,
+      status: 'completed',
+      last_error: null,
+      created_at: newerTimestamp,
+      finished_at: newerTimestamp,
+    });
+    db.artifacts.set(completedConsumeArtifactId, {
+      id: completedConsumeArtifactId,
+      session_id: createdConsumerId,
+      turn_id: completedConsumeTurnId,
+      kind: 'html',
+      title: '普通运行结果',
+      storage_key: `artifacts/${createdConsumerId}/${completedConsumeArtifactId}`,
+      meta: {},
+      created_at: newerTimestamp,
+      updated_at: newerTimestamp,
+    });
+    const afterConsumeTurnReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    expect(
+      (afterConsumeTurnReply.body as { data: { currentUiArtifactId: string | null } }).data
+        .currentUiArtifactId,
+    ).toBe(frozenSnapshot?.id);
+
+    const newerStudioArtifactId = '00000000-0000-4000-8000-000000000001';
+    db.artifacts.set(newerStudioArtifactId, {
+      id: newerStudioArtifactId,
+      session_id: studio.id,
+      turn_id: turnId,
+      kind: 'html',
+      title: '更新后的 Agent UI',
+      storage_key: `artifacts/${studio.id}/${newerStudioArtifactId}`,
+      meta: {},
+      created_at: newerTimestamp,
+      updated_at: newerTimestamp,
+    });
+    cap.ui_artifact_id = newerStudioArtifactId;
+    const stableSnapshotReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    expect(
+      (stableSnapshotReply.body as { data: { currentUiArtifactId: string | null } }).data
+        .currentUiArtifactId,
+    ).toBe(frozenSnapshot?.id);
+
+    const duplicateSnapshotId = '00000000-0000-4000-8000-000000000002';
+    db.artifacts.set(duplicateSnapshotId, {
+      id: duplicateSnapshotId,
+      session_id: createdConsumerId,
+      turn_id: null,
+      kind: 'html',
+      title: '冲突的冻结快照',
+      storage_key: `artifacts/${createdConsumerId}/${duplicateSnapshotId}`,
+      meta: { sourceArtifactId: newerStudioArtifactId },
+      created_at: newerTimestamp,
+      updated_at: newerTimestamp,
+    });
+    const ambiguousSnapshotReply = await call(
+      getSessionDetailHandler(),
+      makeReq({ db, objectStore: store, userId: ME, params: { id: createdConsumerId } }),
+    );
+    expect(ambiguousSnapshotReply.statusCode).toBe(500);
+    expect(ambiguousSnapshotReply.body).toMatchObject({
+      error: { action: 'retry', retriable: true },
+    });
+  });
+
   it('POST /runtime/sessions/:id/messages：非本人 404，且不落 user 消息', async () => {
     const db = new FakeDb();
     const sessionId = await seedOwnedSession(db, ME);
@@ -218,6 +831,45 @@ describe('session 端点 owner 守卫', () => {
     expect(
       (reply.body as { data: { message: { turnId?: string } } }).data.message.turnId,
     ).toBeTruthy();
+  });
+
+  it('POST /runtime/sessions/:id/messages：已有 running Turn 时返回现有 SESSION_BUSY 409', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const sessionId = await seedOwnedSession(db, ME);
+    const session = db.sessions.get(sessionId)!;
+    const capability = db.capabilities.get(session.capability_id)!;
+    store.seedText(
+      CAPABILITY_BUCKET,
+      capability.storage_key,
+      JSON.stringify({
+        version: 1,
+        name: '测试能力',
+        summary: '测试',
+        kind: 'writing',
+        instructions: '测试',
+        inputs: [],
+        starterPrompts: [],
+        meta: {},
+      }),
+    );
+    await createTurn(db, { id: 'turn-running', sessionId });
+
+    const reply = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        userId: ME,
+        params: { id: sessionId },
+        body: { text: '第二条' },
+      }),
+    );
+    expect(reply.statusCode).toBe(409);
+    expect((reply.body as { error: { userMessage: string } }).error.userMessage).toContain(
+      '等待完成后再发送',
+    );
+    expect(db.turns.size).toBe(1);
   });
 
   it('POST /runtime/sessions/:id/interrupt：非本人 404', async () => {
@@ -282,6 +934,40 @@ describe('session 端点 owner 守卫', () => {
     expect(db.sessions.get(sessionId)?.status).toBe('closed');
   });
 
+  it('DELETE /runtime/sessions/:id：归档成功不等待卡住的沙箱回收', async () => {
+    const db = new FakeDb();
+    const sessionId = await seedOwnedSession(db, ME);
+    const releaseSession = vi.fn(() => new Promise<void>(() => undefined));
+    const sandbox = { enabled: true, releaseSession } as unknown as SandboxBackend;
+
+    const result = await Promise.race([
+      call(
+        archiveSessionHandler(),
+        makeReq({ db, userId: ME, params: { id: sessionId }, sandbox }),
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 50)),
+    ]);
+
+    expect(result?.statusCode).toBe(200);
+    expect(releaseSession).toHaveBeenCalledWith(sessionId);
+    expect(db.sessions.get(sessionId)?.status).toBe('closed');
+  });
+
+  it('DELETE /runtime/sessions/:id：功能关闭时不触发任何沙箱回收调用', async () => {
+    const db = new FakeDb();
+    const sessionId = await seedOwnedSession(db, ME);
+    const releaseSession = vi.fn(async () => undefined);
+    const sandbox = { enabled: false, releaseSession } as unknown as SandboxBackend;
+
+    const result = await call(
+      archiveSessionHandler(),
+      makeReq({ db, userId: ME, params: { id: sessionId }, sandbox }),
+    );
+
+    expect(result.statusCode).toBe(200);
+    expect(releaseSession).not.toHaveBeenCalled();
+  });
+
   it('DELETE /runtime/sessions/:id：运行中返回 SESSION_BUSY 对应的 409 且保持 active', async () => {
     const db = new FakeDb();
     const sessionId = await seedOwnedSession(db, ME);
@@ -343,6 +1029,7 @@ describe('GET /runtime/sessions 按能力过滤', () => {
     await createSession(db, { capabilityId: CAP_A, ownerUserId: ME });
     await createSession(db, { capabilityId: CAP_A, ownerUserId: ME });
     await createSession(db, { capabilityId: CAP_B, ownerUserId: ME });
+    const studio = await getOrCreateStudioSession(db, { capabilityId: CAP_A, ownerUserId: ME });
 
     const all = await call(listSessionsHandler(), makeReq({ db, userId: ME }));
     expect(all.statusCode).toBe(200);
@@ -356,6 +1043,15 @@ describe('GET /runtime/sessions 按能力过滤', () => {
     const items = (onlyA.body as { data: { capabilityId: string }[] }).data;
     expect(items).toHaveLength(2);
     expect(items.every((s) => s.capabilityId === CAP_A)).toBe(true);
+
+    const studioOnly = await call(
+      listSessionsHandler(),
+      makeReq({ db, userId: ME, query: { capabilityId: CAP_A, mode: 'studio' } }),
+    );
+    expect(studioOnly.statusCode).toBe(200);
+    expect((studioOnly.body as { data: { id: string; mode: string }[] }).data).toEqual([
+      expect.objectContaining({ id: studio.id, mode: 'studio' }),
+    ]);
   });
 
   it('默认只回 active 会话', async () => {
@@ -377,6 +1073,15 @@ describe('GET /runtime/sessions 按能力过滤', () => {
     const reply = await call(
       listSessionsHandler(),
       makeReq({ db, userId: ME, query: { capabilityId: 'not-a-uuid' } }),
+    );
+    expect(reply.statusCode).toBe(400);
+  });
+
+  it('未知 mode → 400', async () => {
+    const db = new FakeDb();
+    const reply = await call(
+      listSessionsHandler(),
+      makeReq({ db, userId: ME, query: { mode: 'mystery' } }),
     );
     expect(reply.statusCode).toBe(400);
   });

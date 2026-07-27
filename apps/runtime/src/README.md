@@ -1,29 +1,20 @@
-# runtime 服务源码总览
+# Runtime 服务源码总览
 
-runtime 是能力试用端的后端服务：用户挑一个创作端做好的能力，在这里开会话、发消息、看模型流式生成回复和产物。整个服务只有一个 HTTP 进程，对话生成在进程内异步执行。
+这个目录保存 Capability 试用和 Studio 编辑后端。服务负责 PostgreSQL 不透明会话读取、Capability 加载、普通与 Studio Session、Turn、Pi Agent、Redis SSE、Artifact 和可选沙箱工具。
 
-## 文件
+## 文件与目录
 
-- `index.ts` 是包的默认入口，它只做一件事：加载 `processes/api.js`，把服务当 api 进程启动。
-- `tsconfig.json` 为编辑器覆盖源码与测试文件的类型项目，实际生产构建仍使用包根目录的配置。
+- `index.ts` 加载 `processes/api.js`，作为包的默认启动入口。
+- `bootstrap/` 组装环境变量、基础设施、TurnRunner、Fastify 插件、健康检查和业务路由。
+- `processes/` 保存进程入口，目前只有 API 进程。
+- `modules/` 保存 capability、session、artifact 和 agent 四个业务模块。
+- `platform/` 保存配置、数据库、Redis、对象存储、不透明会话读取、模型选择、沙箱后端、HTTP 公共设施和观测接线。
+- `__tests__/` 保存单元测试、忠实假件和显式启用的 PostgreSQL、Redis 集成测试。
 
-## 四层布局
+## 消息提交路径
 
-- `bootstrap/` 负责组装：把基础设施容器、轮次编排器、全局插件、错误信封、健康检查和业务路由拼成一个完整的 Fastify 应用。
-- `processes/` 是进程入口层：目前只有一个 api 进程，负责起观测、建应用、监听端口、处理退出信号。
-- `modules/` 是业务模块层：按领域分成 capability（能力）、session（会话）、artifact（产物）、agent（对话轮次）四个模块，路由、处理器、数据访问都收在各自模块内。
-- `platform/` 是平台层：环境变量、数据库连接池、对象存储、不透明会话读取、鉴权中间件、路由工具、观测接线，供上面三层公用。
+浏览器写请求先通过严格 `PUBLIC_APP_ORIGINS` 白名单守卫，再按 `SESSION_COOKIE_SECURE` 读取对应的不透明会话 Cookie。鉴权中间件校验格式、计算摘要并联查 `auth_sessions` 与 `users`，随后把用户身份挂到请求上。
 
-`__tests__/` 保存源码测试及测试假件，并由目录内 README 说明每个文件覆盖的职责。
+Session 处理器重新校验 owner 并加载 CapabilityDefinition。TurnRunner 在事务中锁定 active Session，插入一个 `running` Turn 和轮内用户消息；数据库唯一索引保证同一 Session 只有一个运行轮次。
 
-## 一条最典型请求的完整路径
-
-以「用户在会话里发一条消息」（POST /api/v1/runtime/sessions/:id/messages）为例：
-
-1. 请求进入 `bootstrap/app.ts` 建好的 Fastify 应用，先被分配 traceId 并写进响应头。
-2. 路由在 `modules/session/routes.ts` 里声明。浏览器来源守卫先要求 `Origin` 精确等于公开站点，再由 `platform/middleware/auth.ts` 按环境选择会话 Cookie。生产只读取 `__Host-cb_session`，本地 HTTP 开发测试只读取 `cb_session`；中间件校验值格式、计算摘要、联查 `auth_sessions` 与 `users`，最后把用户身份挂到请求上。
-3. `modules/session/handlers.ts` 的 sendMessageHandler 校验请求体，用 `modules/session/repo.ts` 按 owner 查会话行。
-4. handler 调 `modules/capability/loader.ts` 重新加载该会话对应的能力定义（查 capabilities 表、从对象存储读定义 JSON、过 schema 校验）。
-5. handler 调 `modules/agent/run-turn.ts` 的 startTurn：创建独立轮次并写入轮内用户消息，然后立即回 202，生成在本进程内异步继续；同一会话的多个轮次可以并发自治运行。
-6. 异步轮次里，`modules/agent/build-agent.ts` 用能力定义和历史消息构造模型代理，模型输出的每个事件由 `modules/agent/turn-emitter.ts` 先追加到 Redis Stream，再发布跨实例直播通知。
-7. 前端另开着 GET /runtime/sessions/:id/stream 长连接（`modules/agent/stream.ts`），实时收到这些事件并从 Redis Stream 补发漏帧；轮次结束时整轮回复落 messages 表。
+异步执行会读取已完成历史，挂载可信的 `upsert_artifact`，并在功能开启时追加四个远程沙箱工具。模型文本和产物状态写入 Redis 事件日志并直播给 SSE；终态和完成消息先提交 PostgreSQL，再写入可修复且按 Turn 幂等的 Redis 终态事件。Studio 只有在 Turn 成功时才晋升当前 UI。

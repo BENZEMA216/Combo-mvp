@@ -4,10 +4,11 @@
 // 导航，避免创作者后台账号（如 Wayne）/ 侧栏在对外页面渗漏（BUG-005/006）。
 import type { ReactElement } from 'react';
 import { Link, Outlet, useLocation } from 'react-router-dom';
-import { ComboWordmark } from './brand.js';
+import { ComboMark, ComboWordmark } from './brand.js';
 
 export function PublicLayout(): ReactElement {
   const { pathname } = useLocation();
+  const showAgentEntry = pathname !== '/login';
   const shellClass =
     pathname === '/' ? 'cb-public-shell cb-public-shell--landing' : 'cb-public-shell';
 
@@ -15,20 +16,15 @@ export function PublicLayout(): ReactElement {
     <div className={shellClass}>
       <header className="cb-public-shell__top">
         <Link to="/" className="cb-public-shell__brand" aria-label="Combo 首页">
+          <ComboMark className="cb-public-shell__brand-mark" />
           <ComboWordmark className="cb-public-shell__brand-word" />
         </Link>
-        <nav className="cb-public-shell__nav" aria-label="公开导航">
-          <a href="/#how-it-works">如何工作</a>
-          <a href="/#product">能力是什么</a>
-        </nav>
-        <div className="cb-public-shell__actions">
-          <Link className="cb-public-shell__login" to="/login">
-            登录
+        {showAgentEntry && (
+          <Link to="/capabilities" className="cb-public-shell__agent-entry">
+            查看我的 Agent
+            <span aria-hidden="true">→</span>
           </Link>
-          <Link className="cb-public-shell__start" to="/tasks">
-            开始创建
-          </Link>
-        </div>
+        )}
       </header>
       <main className="cb-public-shell__content">
         <Outlet />

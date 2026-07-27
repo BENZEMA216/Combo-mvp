@@ -10,10 +10,12 @@ import { useAccount } from './account.js';
 import { ComboMark, ComboWordmark } from './brand.js';
 import { IconChevrons } from './icons.js';
 import { AccountMenu } from './AccountMenu.js';
+import { useReleaseMetadata } from './releaseIdentity.js';
 
 export function Shell(): ReactElement {
   const { collapsed, toggle: toggleCollapse } = useCollapse();
   const account = useAccount();
+  const releaseMetadata = useReleaseMetadata();
 
   return (
     <div className="cb-shell" data-collapsed={collapsed ? 'true' : 'false'}>
@@ -48,7 +50,7 @@ export function Shell(): ReactElement {
         </nav>
 
         {/* 侧栏底部：当前账号常驻区；点击整行（收起态为头像）打开账号菜单。 */}
-        <AccountMenu account={account} />
+        <AccountMenu account={account} environment={releaseMetadata.environment} />
       </aside>
 
       {/* 主区：仅内容 Outlet（无顶栏，账号常驻区在侧栏底部）。 */}

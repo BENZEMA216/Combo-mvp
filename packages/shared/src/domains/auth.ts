@@ -18,9 +18,12 @@ export const AUTH_SESSION_COOKIE_HTTP_ONLY = true;
 export const AUTH_SESSION_COOKIE_SAME_SITE = 'lax' as const;
 export const AUTH_SESSION_COOKIE_VALUE_PATTERN = /^s1\.[A-Za-z0-9_-]{43}$/;
 
-/** HTTPS 生产使用主机限定前缀；本地 HTTP 测试显式退回不带前缀的同语义 Cookie。 */
-export function authSessionCookieName(nodeEnv: string): string {
-  return nodeEnv === 'production' ? AUTH_SESSION_COOKIE_PRODUCTION_NAME : AUTH_SESSION_COOKIE_NAME;
+/**
+ * HTTPS 入口使用主机限定前缀；显式的本地 HTTP 验收入口使用不带前缀的同语义 Cookie。
+ * 这里刻意不读取 NODE_ENV：Test 可以运行 production 构建，却通过 loopback HTTP 验收。
+ */
+export function authSessionCookieName(secure: boolean): string {
+  return secure ? AUTH_SESSION_COOKIE_PRODUCTION_NAME : AUTH_SESSION_COOKIE_NAME;
 }
 
 export const CREATOR_ACCOUNT_PATTERN = /^creator-[a-z2-7]{8}$/;

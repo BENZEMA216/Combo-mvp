@@ -2,7 +2,15 @@
 import { ApiError, isUnauthenticated } from '../api/client.js';
 import { loginUrl } from '../navigation/login.js';
 
-export function QueryErrorNotice({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+export function QueryErrorNotice({
+  error,
+  onRetry,
+  navigateToAuth = (target) => window.location.assign(target),
+}: {
+  error: unknown;
+  onRetry: () => void;
+  navigateToAuth?: (target: string) => void;
+}) {
   if (isUnauthenticated(error)) {
     return (
       <div className="rt-empty rt-empty--error">
@@ -10,7 +18,7 @@ export function QueryErrorNotice({ error, onRetry }: { error: unknown; onRetry: 
         <button
           type="button"
           className="rt-btn rt-btn--accent"
-          onClick={() => window.location.assign(loginUrl())}
+          onClick={() => navigateToAuth(loginUrl())}
         >
           去登录
         </button>

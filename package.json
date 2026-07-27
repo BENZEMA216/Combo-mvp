@@ -18,14 +18,15 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "pnpm -r run test",
+    "test": "pnpm -r --workspace-concurrency=1 run test && node --test scripts/combo-dev-control-plane.test.mjs",
+    "test:combo-dev": "node --test scripts/combo-dev-control-plane.test.mjs",
     "e2e:resend-auth": "bash scripts/integration/resend-auth-e2e.sh",
     "dev": "pnpm -r --parallel run dev",
     "clean": "pnpm -r exec rm -rf dist tsconfig.tsbuildinfo"
   },
   "devDependencies": {
     "@eslint/js": "^9.18.0",
-    "@playwright/test": "^1.61.1",
+    "@playwright/test": "1.62.0",
     "@types/node": "^22.10.5",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^9.1.0",

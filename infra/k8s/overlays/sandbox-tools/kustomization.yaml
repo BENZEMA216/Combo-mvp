@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  # 本地快照只包含 Runtime Service/Deployment；根生产清单不会反向引用本 overlay。
+  - runtime-base.yaml
+  - namespace.yaml
+  - workspace-slots.yaml
+  - rbac.yaml
+  - resource-limits.yaml
+  - network-policy.yaml
+patches:
+  - path: runtime-patch.yaml
+    target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: runtime
+images:
+  - name: ghcr.io/dangdang-tech/combo-runtime
+    newTag: latest

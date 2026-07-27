@@ -150,8 +150,8 @@ export function createResendEmailSender(
           body: JSON.stringify({
             from: env.RESEND_FROM_EMAIL,
             to: [message.to],
-            subject: 'Agora 登录验证码',
-            text: `您的 Agora 登录验证码是 ${message.code}。验证码将在 5 分钟后失效。`,
+            subject: 'Combo 登录验证码',
+            text: `您的 Combo 登录验证码是 ${message.code}。验证码将在 5 分钟后失效。`,
           }),
         });
 

@@ -7,7 +7,14 @@ const MANAGED_KEYS = [
   'S3_ENDPOINT',
   'S3_ACCESS_KEY',
   'S3_SECRET_KEY',
-  'PUBLIC_APP_ORIGIN',
+  'PUBLIC_APP_ORIGINS',
+  'SESSION_COOKIE_SECURE',
+  'COMBO_ENVIRONMENT',
+  'COMBO_SOURCE_SHA',
+  'COMBO_RELEASE_ID',
+  'COMBO_BUILT_AT',
+  'COMBO_RELEASE_MANIFEST_DIGEST',
+  'COMBO_WEB_ASSET_MANIFEST',
 ] as const;
 
 const originalValues = new Map<string, string | undefined>();
@@ -33,7 +40,14 @@ function setProductionInfrastructure(): void {
   process.env.S3_ENDPOINT = 'https://objects.invalid';
   process.env.S3_ACCESS_KEY = 'test-placeholder';
   process.env.S3_SECRET_KEY = 'test-placeholder';
-  process.env.PUBLIC_APP_ORIGIN = 'https://combo.example';
+  process.env.PUBLIC_APP_ORIGINS = 'https://combo.example,https://review.combo.example';
+  process.env.SESSION_COOKIE_SECURE = 'true';
+  process.env.COMBO_ENVIRONMENT = 'production';
+  process.env.COMBO_SOURCE_SHA = 'a'.repeat(40);
+  process.env.COMBO_RELEASE_ID = `release-${'a'.repeat(40)}`;
+  process.env.COMBO_BUILT_AT = '2026-07-28T00:00:00.000Z';
+  process.env.COMBO_RELEASE_MANIFEST_DIGEST = `sha256:${'b'.repeat(64)}`;
+  process.env.COMBO_WEB_ASSET_MANIFEST = `sha256:${'c'.repeat(64)}`;
 }
 
 describe('runtime authentication configuration', () => {
@@ -50,13 +64,36 @@ describe('runtime authentication configuration', () => {
     );
   });
 
-  it('rejects a non-HTTPS public app origin in production', async () => {
+  it('requires secure Cookies and HTTPS origins for Preview and Production', async () => {
     setProductionInfrastructure();
-    process.env.PUBLIC_APP_ORIGIN = 'http://combo.example';
+    process.env.PUBLIC_APP_ORIGINS = 'http://combo.example';
+    process.env.SESSION_COOKIE_SECURE = 'false';
     vi.resetModules();
 
     const { loadEnv } = await import('../platform/config/env.js');
-    expect(() => loadEnv()).toThrowError('PUBLIC_APP_ORIGIN');
+    expect(() => loadEnv()).toThrowError('SESSION_COOKIE_SECURE');
+  });
+
+  it('allows a production-mode Test process to use an explicit non-secure Cookie', async () => {
+    setProductionInfrastructure();
+    process.env.COMBO_ENVIRONMENT = 'test';
+    process.env.PUBLIC_APP_ORIGINS = 'http://combo-test.internal';
+    process.env.SESSION_COOKIE_SECURE = 'false';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    const env = loadEnv();
+    expect(env.SESSION_COOKIE_SECURE).toBe(false);
+    expect(env.PUBLIC_APP_ORIGINS).toBe('http://combo-test.internal');
+  });
+
+  it('rejects malformed or ambiguously normalized origin lists', async () => {
+    setProductionInfrastructure();
+    process.env.PUBLIC_APP_ORIGINS = 'https://combo.example, https://review.combo.example';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    expect(() => loadEnv()).toThrowError('PUBLIC_APP_ORIGINS');
   });
 
   it('keeps PostgreSQL, runtime infrastructure and public origin as production startup requirements', async () => {
@@ -67,7 +104,8 @@ describe('runtime authentication configuration', () => {
       'S3_ENDPOINT',
       'S3_ACCESS_KEY',
       'S3_SECRET_KEY',
-      'PUBLIC_APP_ORIGIN',
+      'PUBLIC_APP_ORIGINS',
+      'SESSION_COOKIE_SECURE',
     ] as const) {
       delete process.env[key];
     }
@@ -84,7 +122,8 @@ describe('runtime authentication configuration', () => {
     expect(message).toContain('DATABASE_URL');
     expect(message).toContain('REDIS_URL');
     expect(message).toContain('S3_ENDPOINT');
-    expect(message).toContain('PUBLIC_APP_ORIGIN');
+    expect(message).toContain('PUBLIC_APP_ORIGINS');
+    expect(message).toContain('SESSION_COOKIE_SECURE');
     expect(message).not.toMatch(/identity|issuer|jwks|audience|session.*secret/i);
   });
 });

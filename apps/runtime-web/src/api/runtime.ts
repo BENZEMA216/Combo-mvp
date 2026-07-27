@@ -1,6 +1,12 @@
 // 试用端 API：端点函数 + React Query hooks。类型全来自 @cb/shared 试用域契约。
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import type { ArtifactView, MessageView, SessionDetail, SessionView } from '@cb/shared';
+import type {
+  ArtifactView,
+  MessageView,
+  SessionDetail,
+  SessionMode,
+  SessionView,
+} from '@cb/shared';
 import { apiDelete, apiGet, apiGetText, apiPatch, apiPost } from './client.js';
 
 /** GET /runtime/capabilities 列表项（runtime 侧 TrialCapabilityItem，shared 未收录，这里对齐声明）。 */
@@ -22,16 +28,22 @@ export function useCapabilities() {
   });
 }
 
+export function sessionsPath(capabilityId?: string, mode?: SessionMode): string {
+  const params = new URLSearchParams();
+  if (capabilityId) params.set('capabilityId', capabilityId);
+  if (mode) params.set('mode', mode);
+  const query = params.toString();
+  return `/runtime/sessions${query ? `?${query}` : ''}`;
+}
+
 /** 我的会话列表；给 capabilityId 时只取该能力下的会话（对话页侧栏按能力隔离）。 */
-export function useSessions(capabilityId?: string, options?: { enabled?: boolean }) {
+export function useSessions(
+  capabilityId?: string,
+  options?: { enabled?: boolean; mode?: SessionMode },
+) {
   return useQuery({
-    queryKey: ['sessions', capabilityId ?? null],
-    queryFn: () =>
-      apiGet<SessionView[]>(
-        capabilityId
-          ? `/runtime/sessions?capabilityId=${encodeURIComponent(capabilityId)}`
-          : '/runtime/sessions',
-      ),
+    queryKey: ['sessions', capabilityId ?? null, options?.mode ?? null],
+    queryFn: () => apiGet<SessionView[]>(sessionsPath(capabilityId, options?.mode)),
     enabled: options?.enabled ?? true,
   });
 }

@@ -2,21 +2,25 @@
   "name": "@cb/scripts",
   "version": "0.0.0",
   "private": true,
-  "description": "运维、健康冒烟、部署与第一方邮箱认证端到端脚本。",
+  "description": "运维/开发脚本（O-05）：bootstrap、健康冒烟等。",
   "type": "module",
   "scripts": {
     "start": "./start.sh",
     "migrate": "./migrate.sh",
     "smoke": "./smoke.sh",
     "acceptance:smoke": "./acceptance-smoke.sh",
+    "acceptance:goal-b": "node ./goal-b-test-acceptance.mjs",
+    "sandbox:e2e": "./integration/sandbox-tools-local.sh",
     "typecheck": "tsc -b",
-    "test": "node --test deployment-order.test.mjs"
+    "test": "node --test resend-sent-email.test.mjs release-contract.test.mjs render-release.test.mjs release-deploy-contract.test.mjs release-nginx-route.test.mjs release-traffic-contract.test.mjs promotion-evidence.test.mjs goal-b-frozen-audit.test.mjs goal-b-test-acceptance.test.mjs deployment-order.test.mjs"
   },
   "dependencies": {
-    "@cb/shared": "workspace:*"
+    "@cb/shared": "workspace:*",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "playwright-core": "1.62.0",
     "typescript": "^5.7.3"
   }
 }

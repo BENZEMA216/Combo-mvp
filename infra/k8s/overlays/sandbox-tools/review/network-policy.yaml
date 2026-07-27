@@ -1,0 +1,41 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-default-deny
+  namespace: combo-review-sandbox
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sandbox-ingress-from-runtime
+  namespace: combo-review-sandbox
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sandboxd
+      app.kubernetes.io/component: model-sandbox
+      app.kubernetes.io/managed-by: combo-runtime
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: combo-review
+          podSelector:
+            matchLabels:
+              app: runtime
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -1,0 +1,127 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime
+  namespace: combo
+  labels:
+    app: runtime
+spec:
+  selector:
+    app: runtime
+  ports:
+    - name: http
+      port: 3100
+      targetPort: 3100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+  namespace: combo
+  labels:
+    app: runtime
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: runtime
+  template:
+    metadata:
+      labels:
+        app: runtime
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      containers:
+        - name: runtime
+          image: ghcr.io/dangdang-tech/combo-runtime:latest
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: '3100'
+            - name: PUBLIC_APP_ORIGINS
+              value: combo-public-app-origin
+            - name: SESSION_COOKIE_SECURE
+              value: combo-session-cookie-secure
+            # runtime 的代码契约要求 REDIS_URL，不能使用 authoring 的 REDIS_QUEUE_URL 替代。
+            - name: REDIS_URL
+              value: redis://redis-queue:6379
+            - name: S3_ENDPOINT
+              value: http://minio:9000
+            - name: S3_REGION
+              value: us-east-1
+            # 观测：OTLP 指向 observability 命名空间的采集器（HTTP 4318），缺失时应用自动降级不阻塞。
+            - name: OTEL_SERVICE_NAME
+              value: cb-runtime-api
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.observability.svc.cluster.local:4318
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: deployment.environment=k8s
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_runtime
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_RUNTIME_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: S3_ACCESS_KEY }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: S3_SECRET_KEY }
+            # runtime 只使用 DATABASE_URL 查询 authoring 写入的不透明会话，不持有邮件或验证码密钥。
+            # LLM 相关键允许缺失（代码契约：缺 key 只降级不阻塞启动），必须 optional，
+            # 否则 Secret 缺键时 Pod 直接 CreateContainerConfigError 起不来。
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: ANTHROPIC_API_KEY, optional: true }
+            - name: OPENROUTER_API_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: OPENROUTER_API_KEY, optional: true }
+            - name: RUNTIME_LLM_PROVIDER
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: RUNTIME_LLM_PROVIDER, optional: true }
+            - name: RUNTIME_LLM_MODEL
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: RUNTIME_LLM_MODEL, optional: true }
+          ports:
+            - name: http
+              containerPort: 3100
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3100
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          # readiness 必须访问会检查全部依赖的 /ready，不能照抄 compose 的 /health。
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              memory: 256Mi
+            limits:
+              memory: 1Gi

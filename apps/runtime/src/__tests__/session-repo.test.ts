@@ -3,6 +3,7 @@ import {
   appendTurnMessage,
   archiveSession,
   createSession,
+  getOrCreateStudioSession,
   getMessages,
   getSession,
   listSessions,
@@ -74,6 +75,45 @@ describe('按轮消息仓库', () => {
 });
 
 describe('会话管理仓库', () => {
+  it('普通运行与 Studio 分流；同一 owner + capability 原子复用 active Studio 会话', async () => {
+    const { db, session: consume } = await setup();
+    expect(consume.mode).toBe('consume');
+
+    const studioA = await getOrCreateStudioSession(db, {
+      capabilityId: consume.capabilityId,
+      ownerUserId: 'me',
+    });
+    const studioB = await getOrCreateStudioSession(db, {
+      capabilityId: consume.capabilityId,
+      ownerUserId: 'me',
+    });
+    expect(studioA.mode).toBe('studio');
+    expect(studioB.id).toBe(studioA.id);
+    expect(db.sessions.size).toBe(2);
+
+    expect((await listSessions(db, 'me', consume.capabilityId)).map((row) => row.id)).toEqual([
+      consume.id,
+    ]);
+    expect(
+      (await listSessions(db, 'me', consume.capabilityId, 'studio')).map((row) => row.id),
+    ).toEqual([studioA.id]);
+  });
+
+  it('Studio 会话归档后可以为同一 Agent 建立新的 active 会话', async () => {
+    const { db, session } = await setup();
+    const first = await getOrCreateStudioSession(db, {
+      capabilityId: session.capabilityId,
+      ownerUserId: 'me',
+    });
+    await archiveSession(db, first.id, 'me');
+    const next = await getOrCreateStudioSession(db, {
+      capabilityId: session.capabilityId,
+      ownerUserId: 'me',
+    });
+    expect(next.id).not.toBe(first.id);
+    expect(next.mode).toBe('studio');
+  });
+
   it('改名和归档都按 owner 隔离', async () => {
     const { db, session } = await setup();
 

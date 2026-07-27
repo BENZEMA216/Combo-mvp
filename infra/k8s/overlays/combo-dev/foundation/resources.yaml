@@ -1,0 +1,473 @@
+apiVersion: v1
+data:
+  redis.conf: |
+    # redis_hot（70 §8.1 / 技术方案 §6.1）：事件 Streams / 控制流 / 锁 / 限流；热缓存可驱逐、无须持久化。
+    # 不开 AOF、关 RDB 快照（无数据卷）；满了按 LRU 驱逐。与 redis_queue 的 noeviction+AOF 策略对立，必须物理分实例。
+    maxmemory 256mb
+    maxmemory-policy allkeys-lru
+    appendonly no
+    save ""
+kind: ConfigMap
+metadata:
+  name: redis-hot-config
+  namespace: combo-preview
+---
+apiVersion: v1
+data:
+  redis.conf: |
+    # redis_queue（70 §8.1 / 技术方案 §6.1）：仅 BullMQ 队列；绝不被驱逐、AOF 持久化（队列丢失 = 丢任务触发）。
+    appendonly yes
+    appendfsync everysec
+    maxmemory 384mb
+    maxmemory-policy noeviction
+kind: ConfigMap
+metadata:
+  name: redis-queue-config
+  namespace: combo-preview
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: minio
+  name: minio
+  namespace: combo-preview
+spec:
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+  selector:
+    app: minio
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: postgres
+  name: postgres
+  namespace: combo-preview
+spec:
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+  selector:
+    app: postgres
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: redis-hot
+  name: redis-hot
+  namespace: combo-preview
+spec:
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+  selector:
+    app: redis-hot
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: redis-queue
+  name: redis-queue
+  namespace: combo-preview
+spec:
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+  selector:
+    app: redis-queue
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: redis-hot
+  name: redis-hot
+  namespace: combo-preview
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-hot
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        combo.dev/config-sha256: 222b1417725e7459356cdc6654fc46de643b46d84d479b702430e8000aad0954
+      labels:
+        app: redis-hot
+        combo.dev/environment: combo-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - command:
+            - redis-server
+            - /usr/local/etc/redis/redis.conf
+          image: redis@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+          name: redis
+          ports:
+            - containerPort: 6379
+              name: redis
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            failureThreshold: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: 200m
+              ephemeral-storage: 512Mi
+              memory: 384Mi
+            requests:
+              cpu: 50m
+              ephemeral-storage: 128Mi
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /data
+              name: data
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /usr/local/etc/redis/redis.conf
+              name: config
+              readOnly: true
+              subPath: redis.conf
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - emptyDir:
+            sizeLimit: 512Mi
+          name: data
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: tmp
+        - configMap:
+            name: redis-hot-config
+          name: config
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: minio
+  name: minio
+  namespace: combo-preview
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: minio
+  serviceName: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+        combo.dev/environment: combo-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              [ "$(cat /combo-dev-volume-marker)" = "combo-dev-static-volume=minio:v1" ] || exit 2
+              exec /usr/bin/docker-entrypoint.sh server /data
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  key: MINIO_ROOT_USER
+                  name: combo-dev-env
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: MINIO_ROOT_PASSWORD
+                  name: combo-dev-env
+            - name: MINIO_API_CORS_ALLOW_ORIGIN
+              value: http://127.0.0.1:18080
+          image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
+          name: minio
+          ports:
+            - containerPort: 9000
+              name: api
+          readinessProbe:
+            failureThreshold: 10
+            httpGet:
+              path: /minio/health/ready
+              port: 9000
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: 400m
+              ephemeral-storage: 1Gi
+              memory: 768Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 256Mi
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /data
+              name: data
+              subPath: data
+            - mountPath: /combo-dev-volume-marker
+              name: data
+              readOnly: true
+              subPath: .combo-dev-volume
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - emptyDir:
+            sizeLimit: 128Mi
+          name: tmp
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-minio-0
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: postgres
+  name: postgres
+  namespace: combo-preview
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  serviceName: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+        combo.dev/environment: combo-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - command:
+            - bash
+            - /opt/combo-dev/postgres-entrypoint.sh
+          env:
+            - name: COMBO_DEV_POSTGRES_DATA_ROOT
+              value: /var/lib/postgresql/data
+            - name: COMBO_DEV_POSTGRES_ENTRYPOINT
+              value: docker-entrypoint.sh
+            - name: COMBO_DEV_STORAGE_MARKER
+              value: /combo-dev-volume-marker
+            - name: COMBO_DEV_STORAGE_MARKER_STATE
+              value: combo-dev-static-volume=postgres:v1
+            - name: COMBO_DEV_POSTGRES_MOVER
+              value: mv
+            - name: COMBO_DEV_POSTGRES_TEST_MODE
+              value: '0'
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_USER
+                  name: combo-dev-env
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_PASSWORD
+                  name: combo-dev-env
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_DB
+                  name: combo-dev-env
+          image: postgres@sha256:7c688148e5e156d0e86df7ba8ae5a05a2386aaec1e2ad8e6d11bdf10504b1fb7
+          name: postgres
+          ports:
+            - containerPort: 5432
+              name: postgres
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            failureThreshold: 10
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: 500m
+              ephemeral-storage: 1Gi
+              memory: 1Gi
+            requests:
+              cpu: 150m
+              ephemeral-storage: 256Mi
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /var/run/postgresql
+              name: postgres-run
+            - mountPath: /var/lib/postgresql/data
+              name: data
+              subPath: data
+            - mountPath: /combo-dev-volume-marker
+              name: data
+              readOnly: true
+              subPath: .combo-dev-volume
+            - mountPath: /opt/combo-dev/postgres-entrypoint.sh
+              name: postgres-entrypoint
+              readOnly: true
+              subPath: postgres-entrypoint.sh
+      securityContext:
+        runAsGroup: 70
+        runAsNonRoot: true
+        runAsUser: 70
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - emptyDir:
+            sizeLimit: 128Mi
+          name: tmp
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: postgres-run
+        - configMap:
+            defaultMode: 365
+            name: combo-dev-postgres-entrypoint
+          name: postgres-entrypoint
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-postgres-0
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  labels:
+    app: redis-queue
+  name: redis-queue
+  namespace: combo-preview
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-queue
+  serviceName: redis-queue
+  template:
+    metadata:
+      annotations:
+        combo.dev/config-sha256: 10691c5c2164656141ca1fe3ab80bb16bde7f6cb604787d7f032a28f43b972b1
+      labels:
+        app: redis-queue
+        combo.dev/environment: combo-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              [ "$(cat /combo-dev-volume-marker)" = "combo-dev-static-volume=redis-queue:v1" ] || exit 2
+              exec redis-server /usr/local/etc/redis/redis.conf
+          image: redis@sha256:bb186d083732f669da90be8b0f975a37812b15e913465bb14d845db72a4e3e08
+          name: redis
+          ports:
+            - containerPort: 6379
+              name: redis
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            failureThreshold: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: 250m
+              ephemeral-storage: 512Mi
+              memory: 512Mi
+            requests:
+              cpu: 75m
+              ephemeral-storage: 128Mi
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /usr/local/etc/redis/redis.conf
+              name: config
+              readOnly: true
+              subPath: redis.conf
+            - mountPath: /data
+              name: data
+              subPath: data
+            - mountPath: /combo-dev-volume-marker
+              name: data
+              readOnly: true
+              subPath: .combo-dev-volume
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: tmp
+        - configMap:
+            name: redis-queue-config
+          name: config
+        - name: data
+          persistentVolumeClaim:
+            claimName: data-redis-queue-0

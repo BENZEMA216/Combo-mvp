@@ -18,6 +18,7 @@ import {
   runtimeBackTarget,
   safeRuntimeReturnTo,
 } from '../navigation/runtimeReturn.js';
+import type { RuntimeSessionExperience } from '../sessionExperience.js';
 
 const ROLE_LABEL: Record<Role, string> = {
   creator: '创作者',
@@ -56,6 +57,7 @@ export function SessionSidebar({
   runningSessionId,
   instanceId = 'desktop',
   onNavigate,
+  experience = 'consume',
 }: {
   activeSessionId?: string;
   /** 当前能力：会话列表与「新会话」都限定在它下面；缺省（加载中）时列表为空态。 */
@@ -67,15 +69,20 @@ export function SessionSidebar({
   /** 同页多实例（桌面侧栏 + 移动抽屉）使用不同 id 前缀。 */
   instanceId?: string;
   onNavigate?: () => void;
+  experience?: RuntimeSessionExperience;
 }) {
-  const safeReturnTo = safeRuntimeReturnTo(returnTo);
+  const studioMode = experience === 'studio';
+  const safeReturnTo = studioMode ? '/capabilities' : safeRuntimeReturnTo(returnTo);
   const navigate = useNavigate();
   const me = useRuntimeMe();
   const accountName = me?.account ?? '当前账号';
   const role = me?.roles[0];
   const accountTitle = role ? (ROLE_LABEL[role] ?? DEFAULT_ROLE_LABEL) : DEFAULT_ROLE_LABEL;
   const hasCapability = Boolean(capabilityId);
-  const sessions = useSessions(capabilityId, { enabled: hasCapability });
+  const sessions = useSessions(capabilityId, {
+    enabled: hasCapability,
+    mode: studioMode ? 'studio' : 'consume',
+  });
   const createSession = useCreateSession();
   const updateSession = useUpdateSessionTitle();
   const archiveSession = useArchiveSession();
@@ -125,22 +132,24 @@ export function SessionSidebar({
         >
           <ComboWordmark className="rt-sidebar__brand-word" />
         </a>
-        {/* 返回发布页只对带 returnTo 进来的创作者渲染；消费者没有「发布流程」可回（#27）。 */}
+        {/* Studio 恒定回 Agent 列表；普通试用仍保留创作流程 returnTo。 */}
         {safeReturnTo && (
           <button
             type="button"
             className="rt-sidebar__back"
-            aria-label={runtimeBackLabel(safeReturnTo)}
-            title={runtimeBackLabel(safeReturnTo)}
+            aria-label={studioMode ? '← 返回我的 Agent' : runtimeBackLabel(safeReturnTo)}
+            title={studioMode ? '← 返回我的 Agent' : runtimeBackLabel(safeReturnTo)}
             onClick={() => window.location.assign(runtimeBackTarget(safeReturnTo))}
           >
             <span aria-hidden="true">←</span>
           </button>
         )}
       </div>
-      <div className="rt-sidebar__label">{capabilityName ?? '会话'}</div>
+      <div className="rt-sidebar__label">
+        {studioMode ? `${capabilityName ?? 'Agent'} · UI 设计` : (capabilityName ?? '会话')}
+      </div>
       <div className="rt-sidebar__list">
-        {capabilityId && (
+        {capabilityId && !studioMode && (
           <button
             type="button"
             className="rt-sidebar__item rt-sidebar__item--action"
@@ -166,13 +175,16 @@ export function SessionSidebar({
             onRename={renameSession}
             onArchive={archiveExistingSession}
             archiveDisabled={s.id === runningSessionId}
+            allowArchive={!studioMode}
             inputIdPrefix={instanceId}
             returnTo={safeReturnTo}
             onNavigate={onNavigate}
           />
         ))}
         {hasCapability && sessions.data && ordered.length === 0 && (
-          <div className="rt-sidebar__empty">这个能力下还没有会话</div>
+          <div className="rt-sidebar__empty">
+            {studioMode ? '还没有设计记录' : '这个能力下还没有会话'}
+          </div>
         )}
       </div>
       <div className="rt-sidebar__foot">
@@ -198,6 +210,7 @@ export function SessionListItem({
   onRename,
   onArchive,
   archiveDisabled = false,
+  allowArchive = true,
   inputIdPrefix = 'sidebar',
   returnTo,
   onNavigate,
@@ -207,6 +220,8 @@ export function SessionListItem({
   onRename: (sessionId: string, title: string) => Promise<void>;
   onArchive: (sessionId: string) => Promise<void>;
   archiveDisabled?: boolean;
+  /** Studio has one durable design context per Agent, so it must not expose generic archive. */
+  allowArchive?: boolean;
   inputIdPrefix?: string;
   returnTo?: string | null;
   onNavigate?: () => void;
@@ -320,15 +335,17 @@ export function SessionListItem({
             >
               ✎
             </button>
-            <button
-              type="button"
-              aria-label={archiveDisabled ? `“${title}”正在生成，暂时不能归档` : `归档“${title}”`}
-              title={archiveDisabled ? '正在生成，结束或打断后才能归档' : '归档'}
-              disabled={pendingAction !== null || archiveDisabled}
-              onClick={() => void confirmArchive()}
-            >
-              {pendingAction === 'archive' ? '…' : '⌑'}
-            </button>
+            {allowArchive && (
+              <button
+                type="button"
+                aria-label={archiveDisabled ? `“${title}”正在生成，暂时不能归档` : `归档“${title}”`}
+                title={archiveDisabled ? '正在生成，结束或打断后才能归档' : '归档'}
+                disabled={pendingAction !== null || archiveDisabled}
+                onClick={() => void confirmArchive()}
+              >
+                {pendingAction === 'archive' ? '…' : '⌑'}
+              </button>
+            )}
           </span>
         </>
       )}

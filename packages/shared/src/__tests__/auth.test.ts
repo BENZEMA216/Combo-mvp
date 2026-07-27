@@ -128,9 +128,8 @@ describe('第一方会话与响应契约', () => {
   it('固定生产 __Host- 与本地 HTTP Cookie 策略、根路径、期限和格式', () => {
     expect(AUTH_SESSION_COOKIE_NAME).toBe('cb_session');
     expect(AUTH_SESSION_COOKIE_PRODUCTION_NAME).toBe('__Host-cb_session');
-    expect(authSessionCookieName('production')).toBe('__Host-cb_session');
-    expect(authSessionCookieName('development')).toBe('cb_session');
-    expect(authSessionCookieName('test')).toBe('cb_session');
+    expect(authSessionCookieName(true)).toBe('__Host-cb_session');
+    expect(authSessionCookieName(false)).toBe('cb_session');
     expect(AUTH_SESSION_COOKIE_PATH).toBe('/');
     expect(AUTH_SESSION_TTL_SECONDS).toBe(604_800);
     expect(AUTH_SESSION_COOKIE_MAX_AGE_SECONDS).toBe(604_800);

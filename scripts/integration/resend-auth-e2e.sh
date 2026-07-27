@@ -58,6 +58,7 @@ read -r WEB_PORT RESEND_MOCK_PORT POSTGRES_PORT REDIS_QUEUE_PORT REDIS_HOT_PORT 
   await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
 ')"
 PUBLIC_APP_ORIGIN="http://127.0.0.1:${WEB_PORT}"
+PUBLIC_APP_ORIGINS="$PUBLIC_APP_ORIGIN"
 RESEND_MOCK_BASE_URL="http://127.0.0.1:${RESEND_MOCK_PORT}"
 S3_PUBLIC_ENDPOINT="http://127.0.0.1:${MINIO_API_PORT}"
 POSTGRES_USER='combo'
@@ -78,7 +79,7 @@ ALTERNATE_BEARER="$(node --input-type=module -e 'import { randomBytes } from "no
 ALTERNATE_QUERY_TOKEN="$(node --input-type=module -e 'import { randomBytes } from "node:crypto"; process.stdout.write("query-" + randomBytes(24).toString("base64url"));')"
 PROXY_FAILURE_QUERY="$(node --input-type=module -e 'import { randomBytes } from "node:crypto"; process.stdout.write("proxy-" + randomBytes(24).toString("base64url"));')"
 
-export WEB_PORT PUBLIC_APP_ORIGIN RESEND_MOCK_PORT POSTGRES_PORT REDIS_QUEUE_PORT REDIS_HOT_PORT
+export WEB_PORT PUBLIC_APP_ORIGIN PUBLIC_APP_ORIGINS RESEND_MOCK_PORT POSTGRES_PORT REDIS_QUEUE_PORT REDIS_HOT_PORT
 export MINIO_API_PORT MINIO_CONSOLE_PORT API_PORT S3_PUBLIC_ENDPOINT
 export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB POSTGRES_API_PASSWORD
 export POSTGRES_WORKER_PASSWORD POSTGRES_RUNTIME_PASSWORD S3_ACCESS_KEY S3_SECRET_KEY

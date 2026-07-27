@@ -18,6 +18,7 @@ import {
 import { loadEnv, type Env } from '../platform/config/env.js';
 import { buildInfra } from '../platform/infra/index.js';
 import { registerHealthRoutes } from '../platform/http/health.js';
+import { registerVersionRoute } from '../platform/http/version.js';
 import { registerBusinessRoutes } from './routes.js';
 import { corsOriginPolicy } from '../platform/http/browser-origin.js';
 import {
@@ -68,7 +69,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // —— 全局插件 ——
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
-    // 只反射唯一 PUBLIC_APP_ORIGIN。认证 POST 另有强制 Origin 与 Fetch Metadata 守卫。
+    // 只反射 PUBLIC_APP_ORIGINS 白名单。认证 POST 另有强制 Origin 与 Fetch Metadata 守卫。
     origin: corsOriginPolicy(env),
     credentials: true,
   });
@@ -151,6 +152,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
   // 健康检查（不在 /api/v1 前缀）。
   await registerHealthRoutes(app);
+
+  // 公开发布身份（无密钥、no-store），供部署验收核对 API 与同一 release manifest。
+  await registerVersionRoute(app, env);
 
   // 业务路由（account / task / capability）。
   await registerBusinessRoutes(app);

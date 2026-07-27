@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Env } from '../platform/config/env.js';
+import { PRODUCTION_RESEND_FROM_EMAIL, type Env } from '../platform/config/env.js';
 import { createResendEmailSender } from '../platform/infra/resend.js';
 
 const env = {
   RESEND_API_KEY: 'test-key-not-a-production-secret',
-  RESEND_FROM_EMAIL: 'Agora <login@example.test>',
+  RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
   RESEND_API_BASE_URL: 'http://127.0.0.1:45678',
 } as Env;
 
@@ -34,9 +34,9 @@ describe('Resend HTTP adapter', () => {
       'idempotency-key': message.challengeId,
     });
     expect(JSON.parse(String(init.body))).toEqual({
-      from: env.RESEND_FROM_EMAIL,
+      from: 'Combo <auth@buildwithcombo.com>',
       to: ['Alice@example.com'],
-      subject: 'Agora 登录验证码',
+      subject: 'Combo 登录验证码',
       text: expect.stringContaining('042731'),
     });
   });

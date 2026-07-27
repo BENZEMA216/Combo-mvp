@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: combo-preview
+resources:
+  - resources.yaml
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      combo.dev/environment: combo-dev

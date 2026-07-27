@@ -1,7 +1,7 @@
--- 0000 · 基线 schema（2026-07-04 重设计，三层九表）。
---   设计真源：飞书文档「Combo 数据库表设计」（三层八表 + 保留的 LLM 审计表）。
+-- 0000 · 基线 schema（2026-07-04 重设计）。
+--   设计真源：飞书文档「Combo 数据库表设计」。
 --   三层各管一种生命周期：流水线层管「一次上传任务」（tasks/uploads），能力层管「一个能力项」
---   （capabilities），试用层管「一次对话」（sessions/messages/stream_events/artifacts）。
+--   （capabilities），试用层管「一次对话」（sessions/messages/artifacts）。
 --   大内容一律不进库：上传原始件、能力项可运行定义、对话产物都存 MinIO，库里只留索引和状态。
 --   本基线为全新重建（旧 29 表结构与开发数据不迁移，见 git 历史）；今后变更新增迁移文件。
 
@@ -109,9 +109,9 @@ CREATE TABLE capabilities (
 CREATE INDEX idx_capabilities_task  ON capabilities (task_id);
 CREATE INDEX idx_capabilities_owner ON capabilities (owner_user_id, created_at DESC);
 
--- ===================== 试用层：sessions / messages / stream_events / artifacts =====================
--- 定稿与过程分开：messages 是对话定稿（Agent 原生格式，渲染与重建 agent 状态共用一份），
--- stream_events 是流式生成的过程记录（断线续传/排障回放），artifacts 是交互产物（内容在 MinIO）。
+-- ===================== 试用层：sessions / messages / artifacts =====================
+-- messages 是对话定稿（Agent 原生格式，渲染与重建 agent 状态共用一份），
+-- 流式事件只保存在 Redis；artifacts 是交互产物（内容在 MinIO）。
 
 CREATE TABLE sessions (
   id            uuid        PRIMARY KEY DEFAULT gen_uuid_v7(),
@@ -138,15 +138,6 @@ CREATE TABLE messages (
   created_at timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT uq_messages_session_seq UNIQUE (session_id, seq)
 );
-
-CREATE TABLE stream_events (
-  id         bigserial   PRIMARY KEY,                 -- 自增序号：断线重连带上最后收到的事件号，从中断处续传
-  session_id uuid        NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  message_id uuid        REFERENCES messages(id),     -- 关联正在生成的那条助手消息，可空
-  event      jsonb       NOT NULL,                    -- 单个流式事件的完整内容（文本增量/工具进展等）
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_stream_events_session ON stream_events (session_id, id);
 
 CREATE TABLE artifacts (
   id         uuid        PRIMARY KEY DEFAULT gen_uuid_v7(),

@@ -11,6 +11,7 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/*.tsbuildinfo',
       '**/coverage/**',
+      '.claude/worktrees/**',
     ],
   },
   js.configs.recommended,
@@ -72,8 +73,6 @@ export default tseslint.config(
                 '../*/job.js',
                 '../*/service',
                 '../*/service.js',
-                '../*/consumer',
-                '../*/consumer.js',
                 '../*/projection',
                 '../*/projection.js',
               ],
@@ -85,9 +84,9 @@ export default tseslint.config(
       ],
     },
   },
-  // ③ worker/consumer/sweeper 后台进程不得 import Fastify app / 路由聚合（进程间只经 PG/Redis 间接通信，不拉起 Fastify app）。
+  // ③ Worker 后台进程不得 import Fastify app / 路由聚合（进程间只经 PG/Redis 间接通信，不拉起 Fastify app）。
   {
-    files: ['apps/authoring/src/processes/{worker,consumer,sweeper}.ts'],
+    files: ['apps/authoring/src/processes/worker.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -101,8 +100,35 @@ export default tseslint.config(
                 '**/bootstrap/routes.js',
               ],
               message:
-                '后台进程（worker/consumer/sweeper）不得 import HTTP app / 路由聚合（bootstrap）；进程间只经 PG/Redis 间接通信。',
+                'Worker 后台进程不得 import HTTP app / 路由聚合（bootstrap）；进程间只经 PG/Redis 间接通信。',
             },
+          ],
+        },
+      ],
+    },
+  },
+  // ④ Runtime 的模型工具与沙箱接线只能调用远端 sandboxd，禁止增加宿主文件或子进程回退。
+  {
+    files: [
+      'apps/runtime/src/modules/agent/**/*.ts',
+      'apps/runtime/src/platform/infra/sandbox-*.ts',
+      'apps/runtime/src/platform/infra/kubernetes-sandbox-backend.ts',
+    ],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            ...['fs', 'node:fs', 'fs/promises', 'node:fs/promises'].map((name) => ({
+              name,
+              message:
+                'Runtime 模型工具不得访问宿主文件系统；必须经 SandboxBackend 调用 sandboxd Pod。',
+            })),
+            ...['child_process', 'node:child_process'].map((name) => ({
+              name,
+              message:
+                'Runtime 模型工具不得启动宿主进程；必须经 SandboxBackend 调用 sandboxd Pod。',
+            })),
           ],
         },
       ],
@@ -111,6 +137,12 @@ export default tseslint.config(
   // 配置文件 / 脚本宽松
   {
     files: ['**/*.config.{js,ts}', 'scripts/**/*.{js,ts,mjs}'],
+    languageOptions: {
+      globals: {
+        process: 'readonly',
+        structuredClone: 'readonly',
+      },
+    },
     rules: {
       '@typescript-eslint/no-explicit-any': 'off',
     },

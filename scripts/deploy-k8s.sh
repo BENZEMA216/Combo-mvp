@@ -134,7 +134,7 @@ cleanup_on_error() {
 
     local current_auth_migration='unknown'
     current_auth_migration="$(
-      pg_scalar "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE filename = '0004_first_party_email_auth.sql');" \
+      pg_scalar "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE filename = '0007_first_party_email_auth.sql');" \
         2>/dev/null || printf unknown
     )"
     if [[ "$AUTH_MIGRATION_WAS_APPLIED" == t || "$current_auth_migration" == f ]]; then
@@ -152,11 +152,11 @@ trap cleanup_on_error EXIT
 
 rsync -a --delete "$SRC/" "$WORK/"
 
-# 在修改任何 Deployment 之前确认 0004 已执行，或旧 users 表仍为空。
+# 在修改任何 Deployment 之前确认 0007 已执行，或旧 users 表仍为空。
 schema_migrations_exists="$(pg_scalar "SELECT to_regclass('public.schema_migrations') IS NOT NULL;")"
 if [[ "$schema_migrations_exists" == t ]]; then
   AUTH_MIGRATION_WAS_APPLIED="$(
-    pg_scalar "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE filename = '0004_first_party_email_auth.sql');"
+    pg_scalar "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE filename = '0007_first_party_email_auth.sql');"
   )"
 fi
 if [[ "$AUTH_MIGRATION_WAS_APPLIED" != t ]]; then

@@ -4,18 +4,18 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../platform/config/env.js';
 import type { InfraContext } from '../platform/infra/index.js';
 import {
-  canonicalBrowserOrigin,
+  canonicalBrowserOrigins,
   corsOriginPolicy,
   requireTrustedMutationOrigin,
 } from '../platform/http/browser-origin.js';
 
 const productionEnv = {
   NODE_ENV: 'production',
-  PUBLIC_APP_ORIGIN: 'https://combo.example',
+  PUBLIC_APP_ORIGINS: 'https://combo.example,https://try.combo.example',
 } as Env;
 const developmentEnv = {
   NODE_ENV: 'development',
-  PUBLIC_APP_ORIGIN: 'http://localhost:5173',
+  PUBLIC_APP_ORIGINS: 'http://localhost:5173',
 } as Env;
 
 const apps: FastifyInstance[] = [];
@@ -44,14 +44,24 @@ afterEach(async () => {
 });
 
 describe('browser origin policy', () => {
-  it('accepts only an origin-shaped PUBLIC_APP_ORIGIN', () => {
-    expect(canonicalBrowserOrigin(productionEnv)).toBe('https://combo.example');
+  it('accepts only a strict, unique PUBLIC_APP_ORIGINS list', () => {
+    expect(canonicalBrowserOrigins(productionEnv)).toEqual([
+      'https://combo.example',
+      'https://try.combo.example',
+    ]);
     expect(() =>
-      canonicalBrowserOrigin({ PUBLIC_APP_ORIGIN: 'https://combo.example/path?secret=value' }),
-    ).toThrowError('PUBLIC_APP_ORIGIN');
+      canonicalBrowserOrigins({
+        PUBLIC_APP_ORIGINS: 'https://combo.example/path?secret=value',
+      }),
+    ).toThrowError('PUBLIC_APP_ORIGINS');
     expect(() =>
-      canonicalBrowserOrigin({ PUBLIC_APP_ORIGIN: 'javascript:secret-value' }),
-    ).toThrowError('PUBLIC_APP_ORIGIN');
+      canonicalBrowserOrigins({ PUBLIC_APP_ORIGINS: 'javascript:secret-value' }),
+    ).toThrowError('PUBLIC_APP_ORIGINS');
+    expect(() =>
+      canonicalBrowserOrigins({
+        PUBLIC_APP_ORIGINS: 'https://combo.example,https://combo.example',
+      }),
+    ).toThrowError('PUBLIC_APP_ORIGINS');
   });
 
   it('reflects only the exact configured origin in CORS responses', async () => {
@@ -66,6 +76,13 @@ describe('browser origin policy', () => {
     });
     expect(exact.statusCode).toBe(204);
     expect(exact.headers['access-control-allow-origin']).toBe('https://combo.example');
+
+    const secondAllowed = await app.inject({
+      method: 'GET',
+      url: '/probe',
+      headers: { origin: 'https://try.combo.example' },
+    });
+    expect(secondAllowed.headers['access-control-allow-origin']).toBe('https://try.combo.example');
 
     const sibling = await app.inject({
       method: 'GET',

@@ -3,11 +3,16 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '../platform/config/env.js';
 import type { InfraContext } from '../platform/infra/index.js';
-import { corsOriginPolicy, requireTrustedMutationOrigin } from '../platform/http/browser-origin.js';
+import {
+  canonicalBrowserOrigins,
+  corsOriginPolicy,
+  requireTrustedMutationOrigin,
+} from '../platform/http/browser-origin.js';
 
 const env = {
   NODE_ENV: 'production',
-  PUBLIC_APP_ORIGIN: 'https://combo.example',
+  PUBLIC_APP_ORIGINS: 'https://combo.example,https://review.combo.example',
+  SESSION_COOKIE_SECURE: true,
 } as Env;
 const apps: FastifyInstance[] = [];
 
@@ -16,7 +21,7 @@ afterEach(async () => {
 });
 
 describe('runtime browser origin boundary', () => {
-  it('reflects credentials only to the exact public app origin', async () => {
+  it('reflects credentials only to an exact configured public app origin', async () => {
     const app = Fastify({ logger: false });
     apps.push(app);
     await app.register(cors, { origin: corsOriginPolicy(env), credentials: true });
@@ -31,6 +36,13 @@ describe('runtime browser origin boundary', () => {
       },
     });
     expect(exact.headers['access-control-allow-origin']).toBe('https://combo.example');
+
+    const second = await app.inject({
+      method: 'GET',
+      url: '/probe',
+      headers: { origin: 'https://review.combo.example' },
+    });
+    expect(second.headers['access-control-allow-origin']).toBe('https://review.combo.example');
 
     const sibling = await app.inject({
       method: 'GET',
@@ -50,6 +62,23 @@ describe('runtime browser origin boundary', () => {
     expect(siblingPreflight.statusCode).toBeGreaterThanOrEqual(400);
     expect(siblingPreflight.statusCode).toBeLessThan(500);
     expect(siblingPreflight.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('uses the same strict origin-list grammar as authoring', () => {
+    expect(canonicalBrowserOrigins(env)).toEqual([
+      'https://combo.example',
+      'https://review.combo.example',
+    ]);
+    for (const invalid of [
+      'https://combo.example, https://review.combo.example',
+      'https://combo.example/',
+      'https://combo.example,https://combo.example',
+      'https://user@combo.example',
+    ]) {
+      expect(() => canonicalBrowserOrigins({ PUBLIC_APP_ORIGINS: invalid })).toThrowError(
+        'PUBLIC_APP_ORIGINS',
+      );
+    }
   });
 
   it('rejects a valid Cookie from a same-site sibling before any write handler runs', async () => {

@@ -37,18 +37,36 @@ export function bullConnectionFor(env: Env): {
 
 const queues = new Map<string, Queue>();
 
+type BullErrorEmitter = {
+  on(event: 'error', listener: (error: Error) => void): unknown;
+};
+
+/**
+ * BullMQ 会把依赖与内部故障作为 EventEmitter 的 error 事件发出。监听器只接收无参数通知，
+ * 避免默认错误输出或调用方日志意外带出连接材料；恢复与终态仍由 BullMQ、业务状态和探针判断。
+ */
+export function attachBullErrorHandler<T extends BullErrorEmitter>(
+  emitter: T,
+  onError: () => void = () => undefined,
+): T {
+  emitter.on('error', () => onError());
+  return emitter;
+}
+
 function queueFor(env: Env, name: string): Queue {
   let q = queues.get(name);
   if (!q) {
-    q = new Queue(name, {
-      prefix: QUEUE_PREFIX,
-      connection: bullConnectionFor(env),
-      defaultJobOptions: {
-        attempts: 1,
-        removeOnComplete: true,
-        removeOnFail: true,
-      },
-    });
+    q = attachBullErrorHandler(
+      new Queue(name, {
+        prefix: QUEUE_PREFIX,
+        connection: bullConnectionFor(env),
+        defaultJobOptions: {
+          attempts: 1,
+          removeOnComplete: true,
+          removeOnFail: true,
+        },
+      }),
+    );
     queues.set(name, q);
   }
   return q;

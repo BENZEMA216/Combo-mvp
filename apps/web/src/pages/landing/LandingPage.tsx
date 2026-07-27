@@ -1,351 +1,633 @@
-import type { ReactElement, ReactNode } from 'react';
+import { useState, type KeyboardEvent, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
+import {
+  clearLandingDraft,
+  normalizePublicProfileUrl,
+  readLandingDraft,
+  saveLandingDraft,
+  type LandingDraft,
+} from './landingDraft.js';
+import './landing.css';
 
-const workflowSteps = [
-  {
-    number: '01',
-    label: '导入真实工作',
-    title: '从你已经做过的事开始',
-    description: '连接本地 AI 工作会话。Combo 只分析你选择上传的记录，把重复出现的专业工作找出来。',
-    detail: '工作会话 · 决策过程 · 交付结果',
-  },
-  {
-    number: '02',
-    label: '提炼可复用能力',
-    title: '把经验变成有结构的产品',
-    description: '自动归纳输入、步骤、判断标准与使用边界，再由你试用、修改和决定是否发布。',
-    detail: '输入契约 · 工作流 · 使用边界',
-  },
-  {
-    number: '03',
-    label: '发布并持续交付',
-    title: '让别人直接获得你的方法',
-    description: '发布成可试用、可分享的 AI 能力。你保留作者身份，也保留最终的发布控制权。',
-    detail: '公开主页 · 能力页面 · 持续迭代',
-  },
-] as const;
+export const CODING_AGENT_CREATION_TASK = `请帮我用 Combo 创建一个 KOL Agent。
 
-const capabilityParts = [
-  ['知道需要什么', '明确用户要提供的材料，减少来回沟通。'],
-  ['知道如何开始', '把最常见的需求变成可直接使用的起手问题。'],
-  ['知道做到什么程度', '保留你的判断标准，而不只是模仿表达方式。'],
-  ['知道什么时候停下', '公开使用边界，不替创作者做越界承诺。'],
-] as const;
+- 开始前，先列出你计划读取的本地 Codex / Claude 会话目录和数据范围，等我确认。
+- 不删除或改写任何本地文件。
+- 打开 Combo 的「上传任务」页，按页面生成的一次性连接指令完成上传。
+- 上传结束后停止，并提醒我回到 Combo，在同一个项目里查看、试用和验收 Agent。
 
-function ArrowIcon(): ReactElement {
-  return (
-    <svg viewBox="0 0 20 20" aria-hidden="true">
-      <path d="M4 10h11M11 6l4 4-4 4" />
-    </svg>
-  );
+如果还没有一次性连接指令，请先停下并提醒我在 Combo 中打开连接页。`;
+
+const CREATOR_WORKSPACE_PATH = '/tasks';
+
+type CreationMethod = 'coding-agent' | 'combo';
+type DemoAgentId = 'style' | 'content' | 'reflection';
+type DemoAnswerMode = 'generic' | 'agent';
+type ValidationField = 'profileUrl' | 'consent' | 'sample' | 'storage';
+
+interface DemoAgent {
+  id: DemoAgentId;
+  tabLabel: string;
+  category: string;
+  name: string;
+  description: string;
+  input: string;
+  outputTitle: string;
+  outputBody: string;
+  outputPoints: readonly string[];
+  genericAnswer: string;
+  artifactLabel: string;
 }
 
-function LandingButton({
-  to,
-  children,
-  variant = 'primary',
+interface ValidationState {
+  field: ValidationField;
+  message: string;
+}
+
+const DEMO_AGENTS: readonly DemoAgent[] = [
+  {
+    id: 'style',
+    tabLabel: '穿搭',
+    category: '生活方式',
+    name: '场合穿搭顾问',
+    description: '根据场景、天气与个人偏好，给出能直接执行的搭配建议。',
+    input: '周六晚上上海约会，18℃。我想穿得松弛一点，但不要太随意。',
+    outputTitle: '奶油色针织衫 + 深灰直筒裤',
+    outputBody: '颜色柔和但轮廓清楚，适合室内外温差，也不会显得为了约会过度用力。',
+    outputPoints: ['外搭选择短款深色夹克', '鞋子用低饱和德训鞋', '下雨时替换为防水乐福鞋'],
+    genericAnswer: '可以选择舒适、简约的约会穿搭，并根据天气搭配一件合适的外套。',
+    artifactLabel: '搭配方案',
+  },
+  {
+    id: 'content',
+    tabLabel: '内容',
+    category: '内容创作',
+    name: '选题拆解助手',
+    description: '从一段公开内容中识别受众、冲突和可以复用的表达结构。',
+    input: '帮我把“低预算也能建立个人风格”拆成一条适合短视频的内容。',
+    outputTitle: '从“买得少”切入，而不是“买得便宜”',
+    outputBody: '先反转用户对低预算的理解，再用三件高频单品建立具体方法，结尾给出自检问题。',
+    outputPoints: [
+      '开头：预算不是风格的敌人',
+      '中段：三件单品重复搭配',
+      '结尾：你的衣柜是否有主线',
+    ],
+    genericAnswer: '可以从省钱技巧、平价单品推荐和搭配方法几个角度展开这条内容。',
+    artifactLabel: '内容结构',
+  },
+  {
+    id: 'reflection',
+    tabLabel: '复盘',
+    category: '个人成长',
+    name: '人生选择复盘',
+    description: '把一段经历整理成事件脉络、关键选择和下一步可以回答的问题。',
+    input: '我想换工作，但分不清自己是在逃避现在，还是确实需要新的成长空间。',
+    outputTitle: '先区分“消耗来源”和“成长缺口”',
+    outputBody: '过去三个月的疲惫并不完全来自工作量，更像是自主权下降和反馈周期变长的叠加。',
+    outputPoints: [
+      '哪些消耗换公司后仍会存在',
+      '你真正想增加的决策权是什么',
+      '先做一个两周的低成本验证',
+    ],
+    genericAnswer: '建议综合考虑薪资、发展空间、团队氛围和个人感受，再权衡是否换工作。',
+    artifactLabel: '选择复盘',
+  },
+];
+const DEFAULT_DEMO_AGENT = DEMO_AGENTS[0]!;
+
+async function writeClipboard(text: string): Promise<void> {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  const fallback = document.createElement('textarea');
+  fallback.value = text;
+  fallback.setAttribute('readonly', '');
+  fallback.style.position = 'fixed';
+  fallback.style.opacity = '0';
+  document.body.appendChild(fallback);
+  fallback.select();
+  const copied = document.execCommand('copy');
+  fallback.remove();
+  if (!copied) throw new Error('clipboard unavailable');
+}
+
+function PreparedSource({
+  draft,
+  onEdit,
 }: {
-  to: string;
-  children: ReactNode;
-  variant?: 'primary' | 'secondary' | 'light';
+  draft: LandingDraft;
+  onEdit: () => void;
 }): ReactElement {
   return (
-    <Link className={`cb-landing-button cb-landing-button--${variant}`} to={to}>
-      <span>{children}</span>
-      <ArrowIcon />
-    </Link>
-  );
-}
-
-function ProductPreview(): ReactElement {
-  return (
-    <div
-      className="cb-landing-preview"
-      role="img"
-      aria-label="Combo 把真实工作编译成能力的产品流程示意"
-    >
-      <div className="cb-landing-preview__bar">
-        <span>RAW WORK → METHOD → CAPABILITY</span>
-        <span className="cb-landing-preview__live">
-          <i aria-hidden="true" /> 提炼完成
-        </span>
+    <div className="cb-landing-prepared" role="status" aria-live="polite">
+      <div className="cb-landing-prepared__mark" aria-hidden="true">
+        ✓
       </div>
-
-      <div className="cb-landing-compiler">
-        <svg
-          className="cb-landing-compiler__paths"
-          viewBox="0 0 720 360"
-          preserveAspectRatio="none"
-          aria-hidden="true"
+      <div className="cb-landing-prepared__copy">
+        <strong>资料已准备好</strong>
+        <p>登录并绑定账号后才会上传并开始生成；现在仍只保存在这个浏览器会话中。</p>
+        <span title={draft.profileUrl}>{draft.profileUrl}</span>
+      </div>
+      <div className="cb-landing-prepared__actions">
+        <Link className="cb-landing-action cb-landing-action--primary" to={CREATOR_WORKSPACE_PATH}>
+          登录并继续创建
+        </Link>
+        <button
+          type="button"
+          className="cb-landing-action cb-landing-action--quiet"
+          onClick={onEdit}
         >
-          <path d="M150 78 C252 78 248 169 342 169" />
-          <path d="M150 171 C248 171 258 180 342 180" />
-          <path d="M150 264 C252 264 248 191 342 191" />
-          <path className="cb-landing-compiler__path-out" d="M420 180 C474 180 492 180 548 180" />
-        </svg>
-
-        <div className="cb-landing-compiler__source">
-          <p className="cb-landing-compiler__label">01 / 工作记录</p>
-          <div className="cb-landing-session-card">
-            <span>01</span>
-            <div>
-              <strong>品牌刷新评审</strong>
-              <small>结构与行为保留</small>
-            </div>
-          </div>
-          <div className="cb-landing-session-card">
-            <span>02</span>
-            <div>
-              <strong>前端验收闭环</strong>
-              <small>真实页面与回归证据</small>
-            </div>
-          </div>
-          <div className="cb-landing-session-card">
-            <span>03</span>
-            <div>
-              <strong>设计系统落地</strong>
-              <small>颜色职责与主题适配</small>
-            </div>
-          </div>
-        </div>
-
-        <div className="cb-landing-compiler__core" aria-hidden="true">
-          <p className="cb-landing-compiler__label">02 / 共同方法</p>
-          <div className="cb-landing-compiler__ring">
-            <span>提炼</span>
-            <strong>方法</strong>
-            <small>3 个共同模式</small>
-          </div>
-          <ul>
-            <li>判断标准</li>
-            <li>交付步骤</li>
-            <li>使用边界</li>
-          </ul>
-        </div>
-
-        <div className="cb-landing-compiler__output">
-          <p className="cb-landing-compiler__label">03 / 能力产品</p>
-          <div className="cb-landing-output-stack">
-            <article className="cb-landing-output-card">
-              <div className="cb-landing-output-card__status">
-                <span>可试用能力</span>
-                <b>待发布</b>
-              </div>
-              <h2>Figma 到前端的品牌刷新</h2>
-              <p>把品牌规范落进真实产品，同时保留结构、状态与交互。</p>
-              <div className="cb-landing-output-card__meta">
-                <span>输入契约</span>
-                <span>交付结果</span>
-                <span>使用边界</span>
-              </div>
-            </article>
-          </div>
-        </div>
-      </div>
-
-      <div className="cb-landing-preview__foot">
-        <span>多段真实工作进入</span>
-        <strong>结构化能力出来</strong>
+          修改资料
+        </button>
       </div>
     </div>
   );
 }
 
+function AgentPreview({
+  activeDemoId,
+  onDemoChange,
+}: {
+  activeDemoId: DemoAgentId;
+  onDemoChange: (id: DemoAgentId) => void;
+}): ReactElement {
+  const activeDemo = DEMO_AGENTS.find((demo) => demo.id === activeDemoId) ?? DEFAULT_DEMO_AGENT;
+  const [answerMode, setAnswerMode] = useState<DemoAnswerMode>('agent');
+
+  const selectDemo = (id: DemoAgentId): void => {
+    onDemoChange(id);
+    setAnswerMode('agent');
+  };
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number): void => {
+    let nextIndex = index;
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % DEMO_AGENTS.length;
+    else if (event.key === 'ArrowLeft')
+      nextIndex = (index - 1 + DEMO_AGENTS.length) % DEMO_AGENTS.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = DEMO_AGENTS.length - 1;
+    else return;
+
+    event.preventDefault();
+    const nextDemo = DEMO_AGENTS[nextIndex] ?? DEFAULT_DEMO_AGENT;
+    selectDemo(nextDemo.id);
+    requestAnimationFrame(() => document.getElementById(`cb-demo-tab-${nextDemo.id}`)?.focus());
+  };
+
+  return (
+    <section className="cb-landing-preview" aria-labelledby="cb-landing-preview-title">
+      <header className="cb-landing-preview__bar">
+        <div>
+          <span className="cb-landing-preview__live" aria-hidden="true" />
+          <strong id="cb-landing-preview-title">Agent 示例预览</strong>
+        </div>
+        <span>交互示意 · 示例数据</span>
+      </header>
+
+      <div className="cb-landing-preview__switcher" role="tablist" aria-label="切换 Agent 示例">
+        {DEMO_AGENTS.map((demo, index) => (
+          <button
+            key={demo.id}
+            id={`cb-demo-tab-${demo.id}`}
+            type="button"
+            role="tab"
+            aria-selected={activeDemo.id === demo.id}
+            aria-controls="cb-landing-demo-panel"
+            tabIndex={activeDemo.id === demo.id ? 0 : -1}
+            className="cb-landing-preview__tab"
+            onClick={() => selectDemo(demo.id)}
+            onKeyDown={(event) => handleTabKeyDown(event, index)}
+          >
+            {demo.tabLabel}
+          </button>
+        ))}
+      </div>
+
+      <div
+        id="cb-landing-demo-panel"
+        className="cb-landing-preview__canvas"
+        data-demo={activeDemo.id}
+        role="tabpanel"
+        aria-labelledby={`cb-demo-tab-${activeDemo.id}`}
+      >
+        <div className="cb-landing-preview__identity">
+          <span className="cb-landing-preview__avatar" aria-hidden="true">
+            {activeDemo.name.slice(0, 1)}
+          </span>
+          <div>
+            <span>{activeDemo.category}</span>
+            <strong>{activeDemo.name}</strong>
+          </div>
+          <span className="cb-landing-preview__badge">示例 Agent</span>
+        </div>
+
+        <div className="cb-landing-preview__intro">
+          <h2>{activeDemo.name}</h2>
+          <p>{activeDemo.description}</p>
+        </div>
+
+        <div className="cb-landing-preview__conversation">
+          <article className="cb-landing-preview__prompt">
+            <span>一个真实问题</span>
+            <p>{activeDemo.input}</p>
+          </article>
+
+          <div className="cb-landing-preview__compare" aria-label="比较回答方式">
+            <span>比较回答</span>
+            <div>
+              <button
+                type="button"
+                aria-pressed={answerMode === 'generic'}
+                onClick={() => setAnswerMode('generic')}
+              >
+                普通回答
+              </button>
+              <button
+                type="button"
+                aria-pressed={answerMode === 'agent'}
+                onClick={() => setAnswerMode('agent')}
+              >
+                这个 Agent
+              </button>
+            </div>
+          </div>
+
+          {answerMode === 'generic' ? (
+            <article className="cb-landing-preview__generic">
+              <span>常见的通用回答</span>
+              <p>{activeDemo.genericAnswer}</p>
+              <small>信息正确，但没有保留创作者独有的判断方式。</small>
+            </article>
+          ) : (
+            <article className="cb-landing-preview__answer">
+              <span>{activeDemo.artifactLabel}</span>
+              <h3>{activeDemo.outputTitle}</h3>
+              <p>{activeDemo.outputBody}</p>
+              <ol>
+                {activeDemo.outputPoints.map((point, index) => (
+                  <li key={point}>
+                    <span>{String(index + 1).padStart(2, '0')}</span>
+                    {point}
+                  </li>
+                ))}
+              </ol>
+            </article>
+          )}
+        </div>
+      </div>
+
+      <p className="cb-landing-preview__note">
+        这里展示的是交互与结果形态，不会发起真实推理，也不代表任何真实账号数据。
+      </p>
+    </section>
+  );
+}
+
 export function LandingPage(): ReactElement {
-  useDocumentTitle('把经验变成可交付的 AI 产品 · Combo');
+  useDocumentTitle('把内容变成可工作的 Agent · Combo');
+  const [prepared, setPrepared] = useState<LandingDraft | null>(() => readLandingDraft());
+  const [profileUrl, setProfileUrl] = useState(() => prepared?.profileUrl ?? '');
+  const [sampleText, setSampleText] = useState(() => prepared?.sampleText ?? '');
+  const [consent, setConsent] = useState(() => prepared?.consent ?? false);
+  const [validation, setValidation] = useState<ValidationState | null>(null);
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const [activeMethod, setActiveMethod] = useState<CreationMethod | null>(() =>
+    prepared ? 'combo' : null,
+  );
+  const [activeDemoId, setActiveDemoId] = useState<DemoAgentId>('style');
+
+  const copyTask = async (): Promise<void> => {
+    try {
+      await writeClipboard(CODING_AGENT_CREATION_TASK);
+      setCopyState('copied');
+    } catch {
+      setCopyState('failed');
+    }
+  };
+
+  const prepareManagedSource = (): void => {
+    const normalized = normalizePublicProfileUrl(profileUrl);
+    if (!normalized) {
+      setValidation({
+        field: 'profileUrl',
+        message: '请粘贴一个公开的 http(s) 主页链接。',
+      });
+      return;
+    }
+    if (!consent) {
+      setValidation({ field: 'consent', message: '请先确认你有权使用这份公开内容。' });
+      return;
+    }
+    const sample = sampleText.trim();
+    if (sample && sample.length < 20) {
+      setValidation({ field: 'sample', message: '代表内容至少写 20 个字，或者先留空。' });
+      return;
+    }
+
+    const result = saveLandingDraft({
+      profileUrl: normalized,
+      consent: true,
+      ...(sample ? { sampleText: sample } : {}),
+    });
+    if (!result.ok) {
+      setValidation({
+        field: 'storage',
+        message:
+          result.reason === 'unavailable'
+            ? '浏览器没能暂存这份资料，请检查隐私设置后重试。'
+            : '这份资料还不能保存，请检查后重试。',
+      });
+      return;
+    }
+
+    setProfileUrl(result.value.profileUrl);
+    setPrepared(result.value);
+    setValidation(null);
+  };
+
+  const editManagedSource = (): void => {
+    clearLandingDraft();
+    setPrepared(null);
+    setValidation(null);
+  };
 
   return (
     <article className="cb-landing">
-      <section className="cb-landing-hero" aria-labelledby="cb-landing-title">
-        <div className="cb-landing-container cb-landing-hero__grid">
-          <div className="cb-landing-hero__copy">
-            <p className="cb-landing-eyebrow">
-              <span aria-hidden="true">✦</span> 为专业创作者而生
-            </p>
-            <h1 id="cb-landing-title">
-              <span>把你反复提供的</span>
-              <span>专业服务，变成</span>
-              <span>
-                <em>可持续交付</em>的
-              </span>
-              <span>AI 产品。</span>
-            </h1>
-            <p className="cb-landing-hero__lead">
-              Combo 从真实工作记录里找到你的方法，帮你提炼、试用并发布成别人可以直接使用的能力。
-              不是重新写一套提示词，而是让已经被验证的经验继续工作。
-            </p>
-            <div className="cb-landing-hero__actions">
-              <LandingButton to="/tasks">用我的工作记录开始</LandingButton>
-              <LandingButton to="/a/cap-wskatc" variant="secondary">
-                查看一个能力示例
-              </LandingButton>
+      <section className="cb-landing-workbench" aria-labelledby="cb-landing-title">
+        <div className="cb-landing-workbench__bar" aria-hidden="true">
+          <span className="cb-landing-workbench__lights">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span>NEW AGENT</span>
+          <span>CONTEXT → AGENT</span>
+        </div>
+
+        <div className="cb-landing-workbench__grid">
+          <div className="cb-landing-builder">
+            <header className="cb-landing-builder__intro">
+              <p className="cb-landing-eyebrow">COMBO · CREATE</p>
+              <h1 id="cb-landing-title">把你的内容，变成一个可以工作的 Agent。</h1>
+              <p>
+                可以交给你的 Coding Agent，也可以把公开主页交给
+                Combo。先看懂结果形态，再登录承接生成。
+              </p>
+              <div className="cb-landing-builder__promise" aria-label="创建承诺">
+                <span>浏览无需登录</span>
+                <span>登录前不会上传</span>
+                <span>生成后可反复修改</span>
+              </div>
+            </header>
+
+            <div className="cb-landing-methods">
+              <p className="cb-landing-methods__label">选择准备 Context 的方式</p>
+              <div className="cb-landing-method-tabs" aria-label="创建 Agent 的方式">
+                <button
+                  id="cb-landing-agent-trigger"
+                  type="button"
+                  aria-expanded={activeMethod === 'coding-agent'}
+                  aria-controls="cb-landing-agent-panel"
+                  className="cb-landing-method-tab"
+                  onClick={() => setActiveMethod('coding-agent')}
+                >
+                  <span>01</span>
+                  <strong>使用 Coding Agent</strong>
+                  <small>Codex · WorkBuddy</small>
+                </button>
+                <button
+                  id="cb-landing-combo-trigger"
+                  type="button"
+                  aria-expanded={activeMethod === 'combo'}
+                  aria-controls="cb-landing-combo-panel"
+                  className="cb-landing-method-tab"
+                  onClick={() => setActiveMethod('combo')}
+                >
+                  <span>02</span>
+                  <strong>粘贴公开主页</strong>
+                  <small>Combo 托管创建</small>
+                </button>
+              </div>
+
+              {activeMethod === null && (
+                <div className="cb-landing-method-empty">
+                  <span aria-hidden="true">↳</span>
+                  <p>
+                    <strong>选择一种方式开始</strong>
+                    两条路径只负责准备 Context，最后都会进入同一个 Agent Studio。
+                  </p>
+                </div>
+              )}
+
+              {activeMethod === 'coding-agent' && (
+                <section
+                  className="cb-landing-method-panel"
+                  id="cb-landing-agent-panel"
+                  role="region"
+                  aria-labelledby="cb-landing-agent-trigger"
+                >
+                  <div className="cb-landing-method-panel__head">
+                    <div>
+                      <h2>把创建任务交给你的 Coding Agent</h2>
+                      <p>它会先列出读取范围，得到你确认后再连接 Combo。</p>
+                    </div>
+                    <span>本地执行</span>
+                  </div>
+
+                  <ol className="cb-landing-method-panel__steps">
+                    <li>复制任务</li>
+                    <li>确认读取范围</li>
+                    <li>回到 Combo 验收</li>
+                  </ol>
+
+                  <details className="cb-landing-task">
+                    <summary>查看将复制的完整任务</summary>
+                    <pre>{CODING_AGENT_CREATION_TASK}</pre>
+                  </details>
+
+                  <div className="cb-landing-method-panel__footer">
+                    <button
+                      type="button"
+                      className="cb-landing-action cb-landing-action--primary"
+                      onClick={() => void copyTask()}
+                    >
+                      {copyState === 'copied' ? '重新复制任务' : '复制创建任务'}
+                    </button>
+                    <p
+                      className="cb-landing-status"
+                      data-tone={copyState}
+                      role={
+                        copyState === 'failed'
+                          ? 'alert'
+                          : copyState === 'copied'
+                            ? 'status'
+                            : undefined
+                      }
+                      aria-live={copyState === 'idle' ? undefined : 'polite'}
+                    >
+                      {copyState === 'copied'
+                        ? '任务已复制。把它发给你的 Coding Agent 即可。'
+                        : copyState === 'failed'
+                          ? '没有成功写入剪贴板，请展开任务并手动复制。'
+                          : '只写入剪贴板，不会读取或上传本机文件。'}
+                    </p>
+                  </div>
+                </section>
+              )}
+
+              {activeMethod === 'combo' && (
+                <section
+                  className="cb-landing-method-panel"
+                  id="cb-landing-combo-panel"
+                  role="region"
+                  aria-labelledby="cb-landing-combo-trigger"
+                >
+                  <div className="cb-landing-method-panel__head">
+                    <div>
+                      <h2>粘贴你的公开主页</h2>
+                      <p>现在只在浏览器中准备资料，登录并绑定账号后才会真正上传。</p>
+                    </div>
+                    <span>云端托管</span>
+                  </div>
+
+                  {prepared ? (
+                    <PreparedSource draft={prepared} onEdit={editManagedSource} />
+                  ) : (
+                    <form
+                      className="cb-landing-form"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        prepareManagedSource();
+                      }}
+                    >
+                      <label className="cb-landing-field" htmlFor="landing-profile-url">
+                        <span>公开主页 URL</span>
+                        <input
+                          id="landing-profile-url"
+                          aria-label="公开主页 URL"
+                          type="url"
+                          inputMode="url"
+                          autoComplete="url"
+                          maxLength={2_048}
+                          aria-invalid={validation?.field === 'profileUrl'}
+                          aria-describedby={
+                            validation?.field === 'profileUrl'
+                              ? 'cb-landing-form-error'
+                              : 'cb-landing-profile-help'
+                          }
+                          placeholder="https://www.xiaohongshu.com/user/profile/..."
+                          value={profileUrl}
+                          onChange={(event) => {
+                            setProfileUrl(event.target.value);
+                            if (validation?.field === 'profileUrl') setValidation(null);
+                          }}
+                        />
+                        <small id="cb-landing-profile-help">
+                          支持公开访问的个人主页；现在填写不会立即上传。
+                        </small>
+                      </label>
+
+                      <label
+                        className="cb-landing-consent"
+                        htmlFor="landing-profile-consent"
+                        data-invalid={validation?.field === 'consent'}
+                      >
+                        <input
+                          id="landing-profile-consent"
+                          type="checkbox"
+                          checked={consent}
+                          aria-invalid={validation?.field === 'consent'}
+                          aria-describedby={
+                            validation?.field === 'consent' ? 'cb-landing-form-error' : undefined
+                          }
+                          onChange={(event) => {
+                            setConsent(event.target.checked);
+                            if (validation?.field === 'consent') setValidation(null);
+                          }}
+                        />
+                        <span>我是账号本人或已获授权，同意登录后分析本次公开内容。</span>
+                      </label>
+
+                      <details className="cb-landing-sample">
+                        <summary>可选：补充一段代表内容</summary>
+                        <label className="cb-landing-field">
+                          <span>代表内容</span>
+                          <textarea
+                            rows={5}
+                            maxLength={20_000}
+                            aria-invalid={validation?.field === 'sample'}
+                            aria-describedby={
+                              validation?.field === 'sample' ? 'cb-landing-form-error' : undefined
+                            }
+                            placeholder="一段口播、帖子、课程节选，或你最满意的真实案例…"
+                            value={sampleText}
+                            onChange={(event) => {
+                              setSampleText(event.target.value);
+                              if (validation?.field === 'sample') setValidation(null);
+                            }}
+                          />
+                          <small>{sampleText.length.toLocaleString('zh-CN')} / 20,000 字</small>
+                        </label>
+                      </details>
+
+                      {validation && (
+                        <p
+                          id="cb-landing-form-error"
+                          className="cb-landing-form__error"
+                          role="alert"
+                        >
+                          {validation.message}
+                        </p>
+                      )}
+
+                      <div className="cb-landing-method-panel__footer">
+                        <button
+                          type="submit"
+                          className="cb-landing-action cb-landing-action--primary"
+                        >
+                          准备这份资料
+                        </button>
+                        <p className="cb-landing-status">
+                          只暂存在当前标签页会话中，不会请求 Combo 服务。
+                        </p>
+                      </div>
+                    </form>
+                  )}
+                </section>
+              )}
             </div>
-            <ul className="cb-landing-hero__notes" aria-label="产品原则">
-              <li>从真实工作出发</li>
-              <li>由创作者确认后发布</li>
-              <li>保留方法与使用边界</li>
-            </ul>
           </div>
-          <ProductPreview />
+
+          <AgentPreview activeDemoId={activeDemoId} onDemoChange={setActiveDemoId} />
         </div>
       </section>
 
-      <section className="cb-landing-thesis" aria-label="Combo 的产品主张">
-        <ol className="cb-landing-container cb-landing-thesis__signals" aria-label="能力形成过程">
+      <section className="cb-landing-journey" aria-labelledby="cb-landing-journey-title">
+        <header>
+          <p className="cb-landing-eyebrow">CREATE → REFINE → PUBLISH</p>
+          <h2 id="cb-landing-journey-title">第一次创作，只需要把 Context 交进来。</h2>
+          <p>生成后再进入 Studio 调试内容、效果与 UI；满意之后，才需要决定是否发布。</p>
+        </header>
+        <ol>
           <li>
-            <span>01</span> 真实工作
+            <span>01</span>
+            <div>
+              <strong>创建 Agent</strong>
+              <p>公开主页或真实工作历史，最终都进入同一个 Agent 项目。</p>
+            </div>
           </li>
           <li>
-            <span>02</span> 支撑证据
-          </li>
-          <li>
-            <span>03</span> 判断方法
-          </li>
-          <li>
-            <span>04</span> 使用边界
-          </li>
-          <li>
-            <span>05</span> 可运行能力
+            <span>02</span>
+            <div>
+              <strong>调试并发布</strong>
+              <p>反复修改内容和页面，通过真实任务验证后再发布。</p>
+            </div>
           </li>
         </ol>
-        <div className="cb-landing-container cb-landing-thesis__grid">
-          <p>你不缺另一个 AI 助手。</p>
-          <blockquote>
-            你缺的是一种方法，让已经反复做对的事情，成为别人可以使用和持续复用的产品。
-          </blockquote>
-        </div>
       </section>
-
-      <section
-        className="cb-landing-section cb-landing-workflow"
-        id="how-it-works"
-        aria-labelledby="cb-landing-workflow-title"
-      >
-        <div className="cb-landing-container">
-          <div className="cb-landing-section__head">
-            <p className="cb-landing-kicker">如何工作</p>
-            <h2 id="cb-landing-workflow-title">从一段工作记录，到一个可以交付的能力。</h2>
-            <p>Combo 把复杂的产品化过程收敛成三步，但每一步都由你保留最终判断。</p>
-          </div>
-          <ol className="cb-landing-workflow__grid">
-            {workflowSteps.map((step) => (
-              <li key={step.number} className="cb-landing-workflow__card">
-                <div className="cb-landing-workflow__meta">
-                  <span>{step.number}</span>
-                  <small>{step.label}</small>
-                </div>
-                <h3>{step.title}</h3>
-                <p>{step.description}</p>
-                <strong>{step.detail}</strong>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </section>
-
-      <section
-        className="cb-landing-section cb-landing-product"
-        id="product"
-        aria-labelledby="cb-landing-product-title"
-      >
-        <div className="cb-landing-container cb-landing-product__grid">
-          <div className="cb-landing-product__copy">
-            <p className="cb-landing-kicker">能力，不是提示词</p>
-            <h2 id="cb-landing-product-title">把你的判断方式，一起放进产品里。</h2>
-            <p className="cb-landing-product__lead">
-              真正的专业服务不只是一条答案。Combo
-              把输入、过程、交付标准和边界组织成同一个可运行单元。
-            </p>
-            <ul className="cb-landing-product__parts">
-              {capabilityParts.map(([title, description]) => (
-                <li key={title}>
-                  <span aria-hidden="true">✦</span>
-                  <div>
-                    <h3>{title}</h3>
-                    <p>{description}</p>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="cb-landing-capability-card">
-            <div className="cb-landing-capability-card__top">
-              <span>能力页面示例</span>
-              <span>由创作者确认后发布</span>
-            </div>
-            <h3>真实长会话能力提取评审</h3>
-            <p>把一段真实工作会话变成可复用、可试用的能力项。</p>
-            <div className="cb-landing-capability-card__prompt">
-              <small>可以这样开始</small>
-              <strong>“帮我评审这个候选能力是否值得发布。”</strong>
-            </div>
-            <dl>
-              <div>
-                <dt>输入</dt>
-                <dd>候选能力 + 支撑材料</dd>
-              </div>
-              <div>
-                <dt>边界</dt>
-                <dd>只基于提供的证据评审</dd>
-              </div>
-            </dl>
-            <LandingButton to="/a/cap-wskatc" variant="secondary">
-              打开能力页面
-            </LandingButton>
-          </div>
-        </div>
-      </section>
-
-      <section className="cb-landing-section cb-landing-creator" aria-labelledby="cb-creator-title">
-        <div className="cb-landing-container cb-landing-creator__grid">
-          <div>
-            <p className="cb-landing-kicker">让经验产生复利</p>
-            <h2 id="cb-creator-title">你继续解决新的问题。重复的部分，交给已经产品化的能力。</h2>
-          </div>
-          <div className="cb-landing-creator__path" aria-label="创作者价值路径">
-            <div>
-              <span>现在</span>
-              <strong>每次服务都从头再来</strong>
-              <p>经验留在对话里，下一位客户仍然需要你重复解释。</p>
-            </div>
-            <i aria-hidden="true">→</i>
-            <div>
-              <span>使用 Combo 后</span>
-              <strong>一次方法，持续交付</strong>
-              <p>能力可以被试用、分享和迭代，你的名字与方法一起留下。</p>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="cb-landing-cta" aria-labelledby="cb-landing-cta-title">
-        <div className="cb-landing-container cb-landing-cta__inner">
-          <div>
-            <p>你的下一款 AI 产品，可能已经存在于一次工作记录里。</p>
-            <h2 id="cb-landing-cta-title">让 Combo 帮你把它找出来。</h2>
-          </div>
-          <LandingButton to="/tasks" variant="light">
-            开始提炼我的能力
-          </LandingButton>
-        </div>
-      </section>
-
-      <footer className="cb-landing-footer">
-        <div className="cb-landing-container cb-landing-footer__inner">
-          <div>
-            <strong>Combo.</strong>
-            <p>把反复验证过的专业经验，变成可以持续交付的 AI 产品。</p>
-          </div>
-          <nav aria-label="页尾导航">
-            <a href="#how-it-works">如何工作</a>
-            <a href="#product">能力是什么</a>
-            <Link to="/login">创作者登录</Link>
-          </nav>
-          <small>© 2026 Combo</small>
-        </div>
-      </footer>
     </article>
   );
 }

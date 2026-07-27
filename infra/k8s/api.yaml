@@ -42,9 +42,20 @@ spec:
               value: 0.0.0.0
             - name: PORT
               value: '3000'
-            - name: DATABASE_URL
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
               valueFrom:
-                secretKeyRef: { name: combo-env, key: API_DATABASE_URL }
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_api
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_API_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
             - name: REDIS_QUEUE_URL
               value: redis://redis-queue:6379/0
             - name: REDIS_HOT_URL
@@ -63,15 +74,15 @@ spec:
               valueFrom:
                 secretKeyRef: { name: combo-env, key: S3_SECRET_KEY }
             # 第一方认证写入只在 authoring API。生产基址固定为官方 HTTPS 地址。
-            - name: PUBLIC_APP_ORIGIN
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: PUBLIC_APP_ORIGIN }
+            - name: PUBLIC_APP_ORIGINS
+              value: combo-public-app-origin
+            - name: SESSION_COOKIE_SECURE
+              value: combo-session-cookie-secure
             - name: RESEND_API_KEY
               valueFrom:
                 secretKeyRef: { name: combo-env, key: RESEND_API_KEY }
             - name: RESEND_FROM_EMAIL
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: RESEND_FROM_EMAIL }
+              value: 'Combo <auth@buildwithcombo.com>'
             - name: RESEND_API_BASE_URL
               value: https://api.resend.com
             - name: OTP_HMAC_SECRET

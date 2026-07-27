@@ -6,6 +6,8 @@ export interface CopyButtonProps {
   text: string;
   /** 按钮文案（默认「复制」）。 */
   label?: string;
+  /** 可把简短视觉文案补成带对象语境的无障碍名称。 */
+  ariaLabel?: string;
   className?: string;
 }
 
@@ -18,7 +20,12 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function CopyButton({ text, label = '复制', className }: CopyButtonProps): ReactElement {
+export function CopyButton({
+  text,
+  label = '复制',
+  ariaLabel,
+  className,
+}: CopyButtonProps): ReactElement {
   const [feedback, setFeedback] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
@@ -39,6 +46,7 @@ export function CopyButton({ text, label = '复制', className }: CopyButtonProp
     <button
       type="button"
       className={className ? `cb-copy ${className}` : 'cb-copy'}
+      aria-label={ariaLabel}
       onClick={() => void handleClick()}
     >
       {feedback ?? label}

@@ -8,7 +8,7 @@ import type {
   Usage,
   UserMessage,
 } from '@earendil-works/pi-ai';
-import type { CapabilityDefinition } from '@cb/shared';
+import type { CapabilityDefinition, SessionMode } from '@cb/shared';
 import type { Env } from '../../platform/config/env.js';
 import {
   apiKeyFor,
@@ -17,6 +17,8 @@ import {
   type RuntimeModel,
 } from '../../platform/infra/llm.js';
 import type { MessageRecord } from '../session/repo.js';
+import { withDesignStudioInstructions } from './design-studio-prompt.js';
+import { DESIGN_STUDIO_BOOTSTRAP_MARKER } from './design-visual-profile.js';
 import { TurnAgentUnavailableError, type TurnAgent, type TurnAgentFactory } from './run-turn.js';
 
 /** 产物协议：约束模型「成品进产物、正文只放说明」。 */
@@ -34,6 +36,29 @@ const ARTIFACT_PROTOCOL = [
   '  - code：单文件代码产物（用 language 标注语言，如 ts/python/sql）。',
   '  - structured：结构化数据产物（评分卡/清单/字段表），content 用 JSON 字符串。',
   '- 产出后用一两句话说明你做了什么、可以怎么用，并主动邀请用户继续迭代；不要在正文重复产物全文。',
+].join('\n');
+
+/** Studio 模式把同一个运行时收束成“对话改 Miniapp”，而不是再次执行这个能力。 */
+const STUDIO_PROTOCOL = [
+  '# Miniapp 设计模式 —— 必须遵守',
+  '你现在是这个 Agent 的设计与前端实现助手。用户正在修改 Agent 的用户界面；',
+  '不要把本轮当成一次业务任务执行，也不要直接替用户运行这个能力。',
+  '',
+  '- 保留原能力的业务目标、输入输出与安全边界；只改用户明确提出的页面、交互、文案与视觉效果。',
+  '- 主结果始终是一份 kind=html 的 Miniapp 产物。每次保存都必须调用 upsert_artifact 生成新的不可变 revision；',
+  '  Studio 修改时不要传旧 artifactId。只有本轮完整成功后，平台才会把本轮最后一个合法 revision 提升为 Agent 当前 UI。',
+  '- 每次写入都必须是可直接渲染的完整自包含 HTML：包含 <!doctype html>、<html>、内联 CSS 与必要的内联 JavaScript。',
+  '  不使用外链脚本或外链样式，不依赖本机路径、私有鉴权资源或构建步骤；不能只返回 JSON、代码片段、检查清单、伪页面或实现计划。',
+  '  本段规则优先于后文通用 Artifact 协议：Studio 页面不得使用公共 CDN。',
+  '- 页面主操作必须带 data-combo-key="run-primary"，把用户当前填写的真实内容整理成非空 prompt，并且只通过',
+  "  window.parent.postMessage({ type: 'combo:run', version: 1, prompt }, '*') 请求 Combo Runtime 执行 Agent。",
+  '- 发出 combo:run 后，页面只能展示已提交/运行中的等待状态；真正结果由 Runtime 生成并在工作区展示。',
+  "- 页面必须监听宿主发回的 { type: 'combo:run-state', version: 1, state, message } 消息：",
+  '  running 时禁用主操作并展示真实运行中；completed / failed / blocked 时按宿主状态恢复按钮并展示 message。',
+  '  只有收到 state=completed 才能宣告完成，不能由页面自己推断或提前展示成功。',
+  '  禁止使用 setTimeout、setInterval、Math.random、mock/fake/dummy 数据、硬编码结果或伪网络请求伪造完成。',
+  '- 页面交互必须真实可操作，并清楚表达这项 Agent 的输入、执行动作、进行中、失败与重试状态。',
+  '- 没有成功调用 upsert_artifact 就不能声称页面已生成或修改完成。工具成功后，用很短的话说明这次改了什么并邀请继续调整。',
 ].join('\n');
 
 /**
@@ -57,8 +82,10 @@ function factDiscipline(now: Date): string {
 export function composeSystemPrompt(
   definition: CapabilityDefinition,
   now: Date = new Date(),
+  mode: SessionMode = 'consume',
+  studioContext: { taskText?: string; hasExistingPage?: boolean } = {},
 ): string {
-  return [
+  const basePrompt = [
     definition.instructions.trim(),
     '',
     '———',
@@ -70,8 +97,21 @@ export function composeSystemPrompt(
     '',
     factDiscipline(now),
     '',
+    ...(mode === 'studio' ? [STUDIO_PROTOCOL, ''] : []),
     ARTIFACT_PROTOCOL,
   ].join('\n');
+  if (mode !== 'studio') return basePrompt;
+
+  const taskText = studioContext.hasExistingPage
+    ? studioContext.taskText
+    : `${DESIGN_STUDIO_BOOTSTRAP_MARKER}\n${studioContext.taskText ?? ''}`;
+  return withDesignStudioInstructions(basePrompt, {
+    capabilityName: definition.name,
+    description: definition.summary,
+    inputLabels: definition.inputs.map((input) => input.label),
+    outputType: definition.kind,
+    taskText,
+  });
 }
 
 function zeroUsage(): Usage {
@@ -139,7 +179,7 @@ export function historyToAgentMessages(rows: MessageRecord[], model: RuntimeMode
 
 /** 生产 TurnAgentFactory：pi Agent 包装成 run-turn 消费的最小面。 */
 export function createPiTurnAgentFactory(env: Env): TurnAgentFactory {
-  return ({ definition, history, tools }) => {
+  return ({ definition, history, tools, mode, promptText, hasExistingStudioArtifact }) => {
     if (!hasLlmCredential(env)) {
       throw new TurnAgentUnavailableError(
         '试用服务未配置模型密钥（ANTHROPIC_API_KEY 或 OPENROUTER_API_KEY），暂时无法对话。',
@@ -148,7 +188,10 @@ export function createPiTurnAgentFactory(env: Env): TurnAgentFactory {
     const model = resolveModel(env);
     const agent = new Agent({
       initialState: {
-        systemPrompt: composeSystemPrompt(definition),
+        systemPrompt: composeSystemPrompt(definition, new Date(), mode, {
+          taskText: promptText,
+          hasExistingPage: hasExistingStudioArtifact,
+        }),
         model,
         tools,
         messages: historyToAgentMessages(history, model),

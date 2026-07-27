@@ -5,19 +5,21 @@
 import { Redis, type RedisOptions } from 'ioredis';
 import type { Env } from '../config/env.js';
 
+const reconnectDelay = (times: number): number => Math.min(times * 200, 2_000);
+
 /** redis_queue 连接（BullMQ）。maxRetriesPerRequest 必须为 null（BullMQ 阻塞命令要求）。 */
 const QUEUE_OPTS: RedisOptions = {
   maxRetriesPerRequest: null,
   enableReadyCheck: false,
   lazyConnect: true,
-  // 无限重连会拖死探针/退出；骨架阶段最多重试一次后放弃（探针据连不上判 down）。
-  retryStrategy: (times) => (times > 1 ? null : 200),
+  // 依赖重启期间持续限速重连；/ready 自己有短超时，关停则由 disconnect 立即终止。
+  retryStrategy: reconnectDelay,
 };
 
 /** redis_hot 连接（streams/lock/限流）。 */
 const HOT_OPTS: RedisOptions = {
   lazyConnect: true,
-  retryStrategy: (times) => (times > 1 ? null : 200),
+  retryStrategy: reconnectDelay,
 };
 
 let queueClient: Redis | undefined;

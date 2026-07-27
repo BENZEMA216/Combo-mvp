@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient } from '@tanstack/react-query';
-import { archiveSession, invalidateSessionMutation, updateSessionTitle } from './runtime.js';
+import {
+  archiveSession,
+  invalidateSessionMutation,
+  sessionsPath,
+  updateSessionTitle,
+} from './runtime.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -28,6 +33,16 @@ afterEach(() => {
 });
 
 describe('runtime 会话管理 API', () => {
+  it('Studio 会话列表与普通试用分开查询', () => {
+    expect(sessionsPath('capability-1', 'studio')).toBe(
+      '/runtime/sessions?capabilityId=capability-1&mode=studio',
+    );
+    expect(sessionsPath('capability-1', 'consume')).toBe(
+      '/runtime/sessions?capabilityId=capability-1&mode=consume',
+    );
+    expect(sessionsPath()).toBe('/runtime/sessions');
+  });
+
   it('改名使用 PATCH 并只提交 title', async () => {
     const fetchMock = vi.fn(async () => ok(session()));
     globalThis.fetch = fetchMock;

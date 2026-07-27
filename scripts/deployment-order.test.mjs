@@ -359,14 +359,23 @@ test('isolated auth E2E enables cleanup before build and audits every project-lo
   }
 });
 
-test('migration image includes the role provisioner imported by its entrypoint', () => {
-  assert.match(apiDockerfile, /db\/scripts\/provision-app-roles\.ts/);
+test('migration image includes only the ledger runner and its role provisioner', () => {
+  assert.deepEqual(apiDockerfile.match(/^COPY --from=build \/app\/db\/.*$/gm), [
+    'COPY --from=build /app/db/package.json ./db/package.json',
+    'COPY --from=build /app/db/migrations ./db/migrations',
+    'COPY --from=build /app/db/scripts/migrate.ts ./db/scripts/migrate.ts',
+    'COPY --from=build /app/db/scripts/provision-app-roles.ts ./db/scripts/provision-app-roles.ts',
+  ]);
+  assert.match(
+    readFileSync(new URL('../db/scripts/migrate.ts', import.meta.url), 'utf8'),
+    /from '\.\/provision-app-roles\.ts'/,
+  );
 });
 
 test('image publication and manual CD are gated by full same-SHA verification and auth compatibility', () => {
-  assert.match(ci, /image:[\s\S]*needs: \[gate, integration, auth_e2e\]/);
-  assert.match(cd, /手动部署必须匹配同 SHA 的完整成功 CI/);
-  assert.match(cd, /0004_first_party_email_auth\.sql/);
-  assert.match(cd, /0005_application_database_roles\.sql/);
-  assert.match(cd, /head_sha="\$DEPLOY_SHA"/);
+  assert.match(ci, /image:[\s\S]*needs: \[integration, sandbox-integration\]/);
+  assert.match(cd, /validate-preview-browser/);
+  assert.match(deploy, /0007_first_party_email_auth\.sql/);
+  assert.match(ci, /0008_application_database_roles\.sql/);
+  assert.match(cd, /\.head_sha == \$revision/);
 });

@@ -1,37 +1,22 @@
 import { ErrorCode } from '@cb/shared';
 import type { FastifyRequest, preHandlerHookHandler } from 'fastify';
-import type { Env } from '../config/env.js';
+import { parsePublicAppOrigins, type Env } from '../config/env.js';
 import { sendAuthError } from './_helpers.js';
 
-type BrowserOriginEnv = Pick<Env, 'PUBLIC_APP_ORIGIN'>;
+type BrowserOriginEnv = Pick<Env, 'PUBLIC_APP_ORIGINS'>;
 
-/** PUBLIC_APP_ORIGIN 必须自身就是 origin，不能夹带路径、凭据、查询或片段。 */
-export function canonicalBrowserOrigin(env: BrowserOriginEnv): string {
-  try {
-    const url = new URL(env.PUBLIC_APP_ORIGIN);
-    if (
-      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
-      url.username ||
-      url.password ||
-      url.pathname !== '/' ||
-      url.search ||
-      url.hash
-    ) {
-      throw new Error('invalid public origin');
-    }
-    return url.origin;
-  } catch {
-    throw new Error('[browser-origin] PUBLIC_APP_ORIGIN 必须是绝对 HTTP(S) origin');
-  }
+/** 返回已经过配置层严格校验、去重且保持声明顺序的公开站点 origin。 */
+export function canonicalBrowserOrigins(env: BrowserOriginEnv): readonly string[] {
+  return parsePublicAppOrigins(env.PUBLIC_APP_ORIGINS);
 }
 
-/** CORS 只反射唯一公开站点；无 Origin 的非浏览器读取请求仍可执行，但不会得到 CORS 响应头。 */
+/** CORS 只反射显式公开站点；无 Origin 的非浏览器读取请求不会得到 CORS 响应头。 */
 export function corsOriginPolicy(env: BrowserOriginEnv) {
-  const allowed = canonicalBrowserOrigin(env);
+  const allowed = new Set(canonicalBrowserOrigins(env));
   return (
     origin: string | undefined,
     callback: (error: Error | null, allow: boolean) => void,
-  ): void => callback(null, origin !== undefined && origin === allowed);
+  ): void => callback(null, origin !== undefined && allowed.has(origin));
 }
 
 function singleHeader(value: string | string[] | undefined): string | undefined {
@@ -44,7 +29,7 @@ function singleHeader(value: string | string[] | undefined): string | undefined 
  */
 export function isTrustedMutationRequest(req: FastifyRequest): boolean {
   const origin = singleHeader(req.headers.origin);
-  if (!origin || origin !== canonicalBrowserOrigin(req.server.infra.env)) return false;
+  if (!origin || !canonicalBrowserOrigins(req.server.infra.env).includes(origin)) return false;
 
   const rawFetchSite = req.headers['sec-fetch-site'];
   if (rawFetchSite === undefined) return true;

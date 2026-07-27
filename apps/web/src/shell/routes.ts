@@ -1,5 +1,5 @@
 // 导航单一真源：Shell 侧栏与 <Routes> 都读这里，不各写一套。
-// 两页结构：任务（默认页，建任务 + 进度）→ 能力（提取产出的能力项，发布/试用）。
+// 两页结构：上传任务 → 我的 Agent（持续编辑与管理）；创建入口并入列表顶部。
 import type { ComponentType, SVGProps } from 'react';
 import { IconCapabilities, IconTasks } from './icons.js';
 
@@ -17,5 +17,5 @@ export interface NavItem {
 /** 侧栏主导航。顺序即展示顺序。 */
 export const CREATOR_NAV: NavItem[] = [
   { path: '/tasks', label: '上传任务', icon: IconTasks },
-  { path: '/capabilities', label: '我的能力', icon: IconCapabilities },
+  { path: '/capabilities', label: '我的 Agent', icon: IconCapabilities },
 ];

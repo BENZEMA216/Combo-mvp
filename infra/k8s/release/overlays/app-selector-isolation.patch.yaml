@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app: release-api
+spec:
+  selector:
+    app: release-api
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app: release-api
+spec:
+  selector:
+    matchLabels:
+      app: release-api
+  template:
+    metadata:
+      labels:
+        app: release-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: runtime
+  labels:
+    app: release-runtime
+spec:
+  selector:
+    app: release-runtime
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+  labels:
+    app: release-runtime
+spec:
+  selector:
+    matchLabels:
+      app: release-runtime
+  template:
+    metadata:
+      labels:
+        app: release-runtime
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  labels:
+    app: release-web
+spec:
+  selector:
+    app: release-web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  labels:
+    app: release-web
+spec:
+  selector:
+    matchLabels:
+      app: release-web
+  template:
+    metadata:
+      labels:
+        app: release-web
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app: release-worker
+spec:
+  selector:
+    matchLabels:
+      app: release-worker
+  template:
+    metadata:
+      labels:
+        app: release-worker

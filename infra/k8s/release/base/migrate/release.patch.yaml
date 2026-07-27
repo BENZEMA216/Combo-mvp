@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+spec:
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      annotations:
+        combo.build/release-contract: v1
+    spec:
+      containers:
+        - name: migrate
+          envFrom:
+            - configMapRef:
+                name: combo-release

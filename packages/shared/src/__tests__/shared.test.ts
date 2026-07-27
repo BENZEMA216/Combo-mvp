@@ -12,7 +12,12 @@ import {
   ConnectUploadBodySchema,
   ConnectPrepareBodySchema,
   CapabilityDefinitionSchema,
+  CreateStudioSessionBodySchema,
+  ArtifactViewSchema,
   MessageViewSchema,
+  SessionDetailSchema,
+  SessionViewSchema,
+  StudioSessionEntrySchema,
   SESSION_TITLE_MAX_LENGTH,
   SendMessageBodySchema,
   UpdateSessionBodySchema,
@@ -145,6 +150,30 @@ describe('能力定义契约（生产端写 / 试用端读的唯一缝）', () =
 });
 
 describe('试用域 DTO', () => {
+  it('Studio 建会话只接受 capabilityId，响应明确标记 studio 模式', () => {
+    const capabilityId = '11111111-1111-4111-8111-111111111111';
+    expect(CreateStudioSessionBodySchema.safeParse({ capabilityId }).success).toBe(true);
+    expect(CreateStudioSessionBodySchema.safeParse({ capabilityId, mode: 'consume' }).success).toBe(
+      false,
+    );
+
+    const session = {
+      id: '22222222-2222-4222-8222-222222222222',
+      capabilityId,
+      mode: 'studio',
+      status: 'active',
+      createdAt: '2026-07-23T10:00:00+08:00',
+      updatedAt: '2026-07-23T10:00:00+08:00',
+    };
+    expect(StudioSessionEntrySchema.safeParse({ session }).success).toBe(true);
+    expect(
+      StudioSessionEntrySchema.safeParse({ session: { ...session, mode: 'consume' } }).success,
+    ).toBe(false);
+    // 旧响应不带 mode 仍可解析，便于滚动发布期间新旧前后端共存。
+    const { mode: _mode, ...legacy } = session;
+    expect(SessionViewSchema.safeParse(legacy).success).toBe(true);
+  });
+
   it('消息视图：content 是数组（pi 原生分块），严格校验在 runtime 侧', () => {
     const ok = MessageViewSchema.safeParse({
       id: 'm1',
@@ -167,6 +196,49 @@ describe('试用域 DTO', () => {
         createdAt: '2026-07-04T10:00:00+08:00',
       }).success,
     ).toBe(false);
+  });
+
+  it('Artifact 带来源 Turn 与创建时间；Session 详情必须明确返回 active Turn 或 null', () => {
+    const capabilityId = '11111111-1111-4111-8111-111111111111';
+    const sessionId = '22222222-2222-4222-8222-222222222222';
+    const artifact = {
+      id: '33333333-3333-4333-8333-333333333333',
+      kind: 'html',
+      sourceTurnId: '44444444-4444-4444-8444-444444444444',
+      createdAt: '2026-07-25T10:00:00+08:00',
+      updatedAt: '2026-07-25T10:00:01+08:00',
+    };
+    expect(ArtifactViewSchema.safeParse(artifact).success).toBe(true);
+
+    const detail = {
+      session: {
+        id: sessionId,
+        capabilityId,
+        mode: 'studio',
+        status: 'active',
+        createdAt: '2026-07-25T09:00:00+08:00',
+        updatedAt: '2026-07-25T10:00:00+08:00',
+      },
+      capability: {
+        id: capabilityId,
+        name: '设计助手',
+        summary: '修改页面',
+        kind: 'design',
+        inputs: [],
+        starterPrompts: [],
+      },
+      messages: [],
+      artifacts: [artifact],
+      activeTurn: {
+        id: '55555555-5555-4555-8555-555555555555',
+        createdAt: '2026-07-25T10:01:00+08:00',
+      },
+      currentUiArtifactId: null,
+    };
+    expect(SessionDetailSchema.safeParse(detail).success).toBe(true);
+    expect(SessionDetailSchema.safeParse({ ...detail, activeTurn: null }).success).toBe(true);
+    const { activeTurn: _activeTurn, ...missingActiveTurn } = detail;
+    expect(SessionDetailSchema.safeParse(missingActiveTurn).success).toBe(false);
   });
 
   it('发消息请求体拒绝空文本与超长文本', () => {

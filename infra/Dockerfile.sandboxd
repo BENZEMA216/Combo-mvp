@@ -1,0 +1,22 @@
+# sandboxd 只在按需创建的 gVisor Pod 内运行。构建阶段使用 Go，运行阶段仅保留守护进程与常用无交互命令。
+FROM golang:1.23-bookworm AS build
+WORKDIR /src/apps/sandboxd
+COPY apps/sandboxd/go.mod apps/sandboxd/go.sum ./
+RUN go mod download
+COPY apps/sandboxd ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/sandboxd . \
+  && CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags='-s -w' -o /out/sandbox-exec ./cmd/sandbox-exec
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends bash ca-certificates coreutils findutils grep sed util-linux \
+  && rm -rf /var/lib/apt/lists/*
+COPY --from=build /out/sandboxd /usr/local/bin/sandboxd
+COPY --from=build /out/sandbox-exec /usr/local/bin/sandbox-exec
+COPY --chmod=0555 apps/sandboxd/wipe-workspace.sh /usr/local/bin/wipe-workspace
+RUN mkdir -p /workspace /tmp \
+  && chown -R 10000:10000 /workspace /tmp
+USER 10000:10000
+WORKDIR /workspace
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/sandboxd"]

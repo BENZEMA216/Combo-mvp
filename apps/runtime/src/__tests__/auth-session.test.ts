@@ -24,7 +24,7 @@ function requestDouble(input: {
   db: Queryable;
   cookie?: string;
   cookies?: Record<string, string>;
-  nodeEnv?: 'test' | 'production';
+  sessionCookieSecure?: boolean;
   authorization?: string;
   query?: Record<string, unknown>;
 }): FastifyRequest {
@@ -33,7 +33,12 @@ function requestDouble(input: {
     headers: input.authorization === undefined ? {} : { authorization: input.authorization },
     cookies: input.cookies ?? (input.cookie ? { [AUTH_SESSION_COOKIE_NAME]: input.cookie } : {}),
     query: input.query ?? {},
-    server: { infra: { db: input.db, env: { NODE_ENV: input.nodeEnv ?? 'test' } } },
+    server: {
+      infra: {
+        db: input.db,
+        env: { SESSION_COOKIE_SECURE: input.sessionCookieSecure ?? false },
+      },
+    },
     log: { warn: vi.fn() },
   } as unknown as FastifyRequest;
 }
@@ -138,12 +143,12 @@ describe('runtime HTTP auth middleware', () => {
     );
   });
 
-  it('uses only the production __Host- cookie when an unprefixed sibling-domain cookie is also present', async () => {
+  it('uses only the secure __Host- cookie when an unprefixed sibling-domain cookie is also present', async () => {
     const attacker = `s1.${Buffer.alloc(32, 8).toString('base64url')}`;
     const db = dbWithRows([USER_ROW]);
     const req = requestDouble({
       db,
-      nodeEnv: 'production',
+      sessionCookieSecure: true,
       cookies: {
         [AUTH_SESSION_COOKIE_NAME]: attacker,
         [AUTH_SESSION_COOKIE_PRODUCTION_NAME]: SESSION,

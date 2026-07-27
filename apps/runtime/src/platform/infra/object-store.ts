@@ -8,11 +8,20 @@ import {
   ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { Readable } from 'node:stream';
-import type { Bucket, ObjectStorePort } from '@cb/shared';
+import type { Bucket } from '@cb/shared';
 import type { Env } from '../config/env.js';
 
-/** runtime 消费的对象存储最小面。 */
-export type RuntimeObjectStore = Pick<ObjectStorePort, 'getObjectText' | 'getObject' | 'putObject'>;
+/** Runtime 消费的对象存储最小面；写入额外支持 AbortSignal。 */
+export interface RuntimeObjectStore {
+  getObjectText(bucket: Bucket, key: string): Promise<string>;
+  getObject(bucket: Bucket, key: string): Promise<Uint8Array>;
+  putObject(
+    bucket: Bucket,
+    key: string,
+    body: Uint8Array,
+    opts?: { contentType?: string; abortSignal?: AbortSignal },
+  ): Promise<{ key: string }>;
+}
 
 let client: S3Client | undefined;
 
@@ -94,6 +103,7 @@ export function createS3ObjectStore(env: Env): RuntimeObjectStore {
           Body: body,
           ...(opts?.contentType ? { ContentType: opts.contentType } : {}),
         }),
+        opts?.abortSignal ? { abortSignal: opts.abortSignal } : undefined,
       );
       return { key };
     },

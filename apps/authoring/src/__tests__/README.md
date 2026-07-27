@@ -7,7 +7,8 @@
 - `fakes.ts` 提供任务、上传、能力项、对象存储、队列、事件流和大模型的内存假件。
 - `account-auth.test.ts` 验证四个认证 handler 的响应、错误映射、Cookie 属性、登出数据库故障和敏感日志边界。
 - `account-service.test.ts` 验证 challenge 两段事务编排、邮件结果映射、Redis 故障策略和 verification 结果映射。
-- `account-auth.pg.test.ts` 在显式开启时连接专用 PostgreSQL 测试库，验证冷却、重发、乱序投递完成、过期、五次失败、并发单次消费、首次建号、复登、停用和会话撤销。
+- `account-repo.test.ts` 使用假事务连接验证 Redis 限流不可用时的数据库硬守卫，不存在活动挑战的重复验证不会追加失败审计行。
+- `account-auth.pg.test.ts` 在显式开启时连接专用 PostgreSQL 测试库，验证冷却、重发、乱序投递完成、过期、五次失败、并发单次消费、首次建号、复登、停用、会话撤销，以及 Redis 故障下活动挑战继续验证且无匹配目标不产生审计写放大。
 - `auth-crypto.test.ts` 验证邮箱规范化、HMAC 域分离、前导零验证码、随机账号和会话格式。
 - `auth-session.test.ts` 验证生产与本地 Cookie 选择、父域无前缀 Cookie 忽略、会话摘要查询、401、403、503、Bearer 与查询参数凭据拒绝。
 - `auth-rate-limit.test.ts` 验证验证码请求的 Redis 窗口只按客户端摘要计数，验证码验证才同时使用目标与客户端摘要窗口。

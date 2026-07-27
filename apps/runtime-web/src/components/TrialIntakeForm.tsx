@@ -1,6 +1,5 @@
-// 开场表单（首次进入会话时盖在产物画布上）：按能力定义的 inputs 渲染输入字段，
-// 开场提示语一键填入补充要求；提交时把字段拼成第一条 user 消息交给对话流。
-// 定义没给字段时退化为只有「想要什么」一个输入框。
+// 普通试用的开场表单：按能力定义收取一次真实任务输入。
+// Studio 从左侧持续对话直接开始，不在画布里再造第二套输入表单。
 import { useState } from 'react';
 import type { CapabilityInputField, SessionDetail } from '@cb/shared';
 
@@ -25,10 +24,13 @@ export function TrialIntakeForm({
   capability,
   disabled,
   onSubmit,
+  preview = false,
 }: {
   capability: TrialCapability;
   disabled: boolean;
   onSubmit: (prompt: string) => void;
+  /** Studio 无自定义 UI 时，按消费者真实默认页做只读预览。 */
+  preview?: boolean;
 }) {
   const fields = capability.inputs;
   const [values, setValues] = useState<Record<string, string>>({});
@@ -37,9 +39,13 @@ export function TrialIntakeForm({
   const setField = (key: string, value: string) => setValues((s) => ({ ...s, [key]: value }));
   const requiredMissing = fields.some((f) => f.required && !(values[f.key]?.trim() ?? ''));
   const allEmpty = !extra.trim() && fields.every((f) => !(values[f.key]?.trim() ?? ''));
+  const controlsDisabled = disabled || preview;
 
   return (
-    <section className="rt-intake" aria-label="本次试用输入">
+    <section
+      className={`rt-intake${preview ? ' rt-intake--preview' : ''}`}
+      aria-label={preview ? '系统默认页面预览' : '本次试用输入'}
+    >
       <div className="rt-intake__head">
         <h2>开始生成 · {capability.name}</h2>
         <p>{capability.summary || '补充这次使用需要的上下文，按这个能力生成第一版产物。'}</p>
@@ -59,14 +65,14 @@ export function TrialIntakeForm({
                 className="rt-field__control"
                 rows={3}
                 value={values[field.key] ?? ''}
-                disabled={disabled}
+                disabled={controlsDisabled}
                 onChange={(event) => setField(field.key, event.target.value)}
               />
             ) : field.type === 'enum' ? (
               <select
                 className="rt-field__control"
                 value={values[field.key] ?? ''}
-                disabled={disabled}
+                disabled={controlsDisabled}
                 onChange={(event) => setField(field.key, event.target.value)}
               >
                 <option value="">请选择…</option>
@@ -81,7 +87,7 @@ export function TrialIntakeForm({
                 className="rt-field__control"
                 type={field.type === 'number' ? 'number' : 'text'}
                 value={values[field.key] ?? ''}
-                disabled={disabled}
+                disabled={controlsDisabled}
                 onChange={(event) => setField(field.key, event.target.value)}
               />
             )}
@@ -94,7 +100,7 @@ export function TrialIntakeForm({
             rows={3}
             placeholder="用一两句话描述这次想得到的产出…"
             value={extra}
-            disabled={disabled}
+            disabled={controlsDisabled}
             onChange={(event) => setExtra(event.target.value)}
           />
         </label>
@@ -108,7 +114,7 @@ export function TrialIntakeForm({
                 key={prompt}
                 type="button"
                 className="rt-starter"
-                disabled={disabled}
+                disabled={controlsDisabled}
                 onClick={() => setExtra(prompt)}
               >
                 {prompt}
@@ -120,10 +126,12 @@ export function TrialIntakeForm({
       <button
         type="button"
         className="rt-btn rt-btn--accent rt-intake__start"
-        disabled={disabled || requiredMissing || allEmpty}
-        onClick={() => onSubmit(buildPrompt(fields, values, extra))}
+        disabled={controlsDisabled || requiredMissing || allEmpty}
+        onClick={() => {
+          if (!preview) onSubmit(buildPrompt(fields, values, extra));
+        }}
       >
-        {disabled ? '正在生成…' : '开始生成 →'}
+        {preview ? '开始生成 →' : disabled ? '正在生成…' : '开始生成 →'}
       </button>
     </section>
   );

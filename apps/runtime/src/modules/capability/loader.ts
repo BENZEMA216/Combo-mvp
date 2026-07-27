@@ -25,6 +25,8 @@ export type LoadCapabilityResult =
   | { kind: 'unsupported_version' }
   | { kind: 'invalid_definition' };
 
+export type CapabilityAccess = 'consume' | 'owner';
+
 interface CapabilityDbRow {
   id: string;
   owner_user_id: string;
@@ -45,6 +47,7 @@ export async function loadCapability(
   objectStore: RuntimeObjectStore,
   capabilityId: string,
   userId: string,
+  access: CapabilityAccess = 'consume',
 ): Promise<LoadCapabilityResult> {
   const res = await db.query<CapabilityDbRow>(
     `SELECT id, owner_user_id, name, summary, kind, storage_key, published, created_at
@@ -55,7 +58,9 @@ export async function loadCapability(
   );
   const row = res.rows[0];
   if (!row) return { kind: 'not_found' };
-  if (row.owner_user_id !== userId && !row.published) return { kind: 'not_found' };
+  if (row.owner_user_id !== userId && (access === 'owner' || !row.published)) {
+    return { kind: 'not_found' };
+  }
 
   let raw: unknown;
   try {

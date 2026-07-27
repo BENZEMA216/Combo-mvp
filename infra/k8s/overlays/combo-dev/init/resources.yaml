@@ -1,0 +1,173 @@
+apiVersion: v1
+data:
+  init-buckets.sh: |
+    #!/bin/sh
+    set -eu
+    umask 077
+
+    attempt=0
+    until mc alias set local "$S3_ENDPOINT" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" >/dev/null 2>&1; do
+      attempt=$((attempt + 1))
+      [ "$attempt" -lt 30 ] || { echo "[minio-init] BLOCKED: object store unavailable" >&2; exit 2; }
+      sleep 2
+    done
+
+    for bucket in combo-raw combo-artifacts combo-exports combo-experience; do
+      mc mb --ignore-existing "local/$bucket" >/dev/null 2>&1 || { echo "[minio-init] FAIL: bucket initialization" >&2; exit 1; }
+      mc anonymous set none "local/$bucket" >/dev/null 2>&1 || { echo "[minio-init] FAIL: private bucket policy" >&2; exit 1; }
+      mc quota set "local/$bucket" --size 1GiB >/dev/null 2>&1 || { echo "[minio-init] FAIL: bucket quota" >&2; exit 1; }
+    done
+
+    mc admin user add local "$S3_ACCESS_KEY" "$S3_SECRET_KEY" >/dev/null 2>&1 || { echo "[minio-init] FAIL: application identity" >&2; exit 1; }
+
+    # 这是开发专用 MinIO。除当前应用身份外，所有旧应用用户都必须被撤销。
+    # 精确 mc 镜像没有 grep/sed/awk；清单只用 POSIX shell 内建解析，标识不写日志。
+    users_json=/tmp/minio-users.json
+    users=/tmp/minio-users
+    inventory_users() {
+      inventory_file=$1
+      identity_file=$2
+      inventory_records=0
+      inventory_app_seen=0
+      record=''
+      identity=''
+      : >"$identity_file"
+      while IFS= read -r record || [ -n "$record" ]; do
+        [ -n "$record" ] || continue
+        case "$record" in *'"status":"success"'*) ;; *) return 1 ;; esac
+        case "$record" in
+          *'"accessKey":"'*)
+            identity=${record#*'"accessKey":"'}
+            identity=${identity%%\"*}
+            ;;
+          *) return 1 ;;
+        esac
+        case "$identity" in ''|*[!A-Za-z0-9._-]*) return 1 ;; esac
+        printf '%s\n' "$identity" >>"$identity_file" || return 1
+        inventory_records=$((inventory_records + 1))
+        [ "$identity" != "$S3_ACCESS_KEY" ] || inventory_app_seen=$((inventory_app_seen + 1))
+      done <"$inventory_file"
+      [ "$inventory_records" -gt 0 ] && [ "$inventory_app_seen" -eq 1 ]
+    }
+
+    mc admin user list local --json >"$users_json" 2>/dev/null || { echo "[minio-init] FAIL: identity inventory" >&2; exit 1; }
+    inventory_users "$users_json" "$users" || { echo "[minio-init] FAIL: identity inventory" >&2; exit 1; }
+    while IFS= read -r identity; do
+      [ "$identity" = "$S3_ACCESS_KEY" ] && continue
+      mc admin user remove local "$identity" >/dev/null 2>&1 || { echo "[minio-init] FAIL: stale identity revocation" >&2; exit 1; }
+      if mc admin user info local "$identity" >/dev/null 2>&1; then
+        echo "[minio-init] FAIL: stale identity remains accepted" >&2
+        exit 1
+      fi
+      if mc alias set revoked "$S3_ENDPOINT" "$identity" "$S3_SECRET_KEY" >/dev/null 2>&1 && mc ls revoked/combo-raw >/dev/null 2>&1; then
+        echo "[minio-init] FAIL: stale credentials remain accepted" >&2
+        exit 1
+      fi
+      mc alias remove revoked >/dev/null 2>&1 || true
+    done <"$users"
+
+    mc admin user list local --json >"$users_json" 2>/dev/null || { echo "[minio-init] FAIL: reconciled identity inventory" >&2; exit 1; }
+    inventory_users "$users_json" "$users" || { echo "[minio-init] FAIL: reconciled identity inventory" >&2; exit 1; }
+    [ "$inventory_records" -eq 1 ] || { echo "[minio-init] FAIL: stale identity reconciliation" >&2; exit 1; }
+
+    mc admin policy create local combo-dev-app /config/minio-app-policy.json >/dev/null 2>&1 || { echo "[minio-init] FAIL: application policy" >&2; exit 1; }
+    mc admin policy attach local combo-dev-app --user "$S3_ACCESS_KEY" >/dev/null 2>&1 || { echo "[minio-init] FAIL: application policy binding" >&2; exit 1; }
+    mc alias remove local >/dev/null 2>&1 || true
+    echo "[minio-init] PASS"
+kind: ConfigMap
+metadata:
+  name: minio-init-script
+  namespace: combo-preview
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: minio-init
+  name: minio-init
+  namespace: combo-preview
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: minio-init
+        combo.dev/environment: combo-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - command:
+            - /bin/sh
+            - /scripts/init-buckets.sh
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  key: MINIO_ROOT_USER
+                  name: combo-dev-env
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: MINIO_ROOT_PASSWORD
+                  name: combo-dev-env
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: S3_ACCESS_KEY
+                  name: combo-dev-env
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: S3_SECRET_KEY
+                  name: combo-dev-env
+            - name: S3_ENDPOINT
+              value: http://minio:9000
+            - name: MC_CONFIG_DIR
+              value: /tmp/mc
+          image: minio/mc@sha256:fb8f773eac8ef9d6da0486d5dec2f42f219358bcb8de579d1623d518c9ebd4cc
+          name: minio-init
+          resources:
+            limits:
+              cpu: 100m
+              ephemeral-storage: 256Mi
+              memory: 256Mi
+            requests:
+              cpu: 50m
+              ephemeral-storage: 64Mi
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /config
+              name: config
+              readOnly: true
+            - mountPath: /tmp
+              name: tmp
+            - mountPath: /scripts
+              name: script
+              readOnly: true
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - configMap:
+            name: combo-dev-minio-config
+          name: config
+        - emptyDir:
+            sizeLimit: 64Mi
+          name: tmp
+        - configMap:
+            defaultMode: 365
+            name: minio-init-script
+          name: script
+  ttlSecondsAfterFinished: 300

@@ -6,6 +6,13 @@ import { createS3ObjectStore, type RuntimeObjectStore } from './object-store.js'
 import { createRedisSessionEventBus, type SessionEventBus } from './event-bus.js';
 import { createRedisSessionEventLog } from './redis-event-log.js';
 import type { SessionEventLog } from '../../modules/agent/event-log.js';
+import { createDisabledSandboxBackend, type SandboxBackend } from './sandbox-backend.js';
+
+interface InfraLogger {
+  info(fields: Record<string, unknown>, message: string): void;
+  warn(fields: Record<string, unknown>, message: string): void;
+  error(fields: Record<string, unknown>, message: string): void;
+}
 
 export interface InfraContext {
   env: Env;
@@ -13,16 +20,24 @@ export interface InfraContext {
   objectStore: RuntimeObjectStore;
   bus: SessionEventBus;
   eventLog: SessionEventLog;
+  sandbox: SandboxBackend;
 }
 
-/** 组装基础设施上下文（惰性客户端，不在启动期强连）。 */
-export function buildInfra(env: Env): InfraContext {
+/** 组装基础设施上下文。沙箱关闭时连 Kubernetes 客户端模块都不加载。 */
+export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraContext> {
+  const db = toRuntimeDb(getPool(env));
+  const sandbox = env.SANDBOX_TOOLS_ENABLED
+    ? (await import('./kubernetes-sandbox-backend.js')).createKubernetesSandboxBackend(env, db, {
+        log,
+      })
+    : createDisabledSandboxBackend();
   return {
     env,
-    db: toRuntimeDb(getPool(env)),
+    db,
     objectStore: createS3ObjectStore(env),
     bus: createRedisSessionEventBus(env),
     eventLog: createRedisSessionEventLog(env),
+    sandbox,
   };
 }
 
@@ -34,3 +49,6 @@ export * from './llm.js';
 export * from './redis.js';
 export * from './redis-interrupt-bus.js';
 export * from './redis-event-log.js';
+export * from './sandbox-backend.js';
+export * from './sandbox-capability.js';
+export * from './sandbox-client.js';

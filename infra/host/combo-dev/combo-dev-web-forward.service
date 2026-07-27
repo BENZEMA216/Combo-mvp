@@ -1,0 +1,27 @@
+[Unit]
+Description=Combo development Web loopback forward
+Documentation=file:/opt/combo-dev/current/infra/host/combo-dev/README.md
+After=k3s.service
+Requires=k3s.service
+ConditionPathExists=/etc/combo-dev/dispatcher.kubeconfig
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kubectl --cache-dir=/tmp/kubectl-cache --kubeconfig=/etc/combo-dev/dispatcher.kubeconfig --namespace=combo-preview port-forward --address=127.0.0.1 service/web 18080:80
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StandardOutput=null
+StandardError=null

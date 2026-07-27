@@ -1,0 +1,260 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: web-to-apps
+spec:
+  podSelector:
+    matchLabels:
+      app: web
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: api }
+      ports:
+        - { protocol: TCP, port: 3000 }
+    - to:
+        - podSelector:
+            matchLabels: { app: runtime }
+      ports:
+        - { protocol: TCP, port: 3100 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: app-ingress-from-web
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [api, runtime] }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: { app: web }
+      ports:
+        - { protocol: TCP, port: 3000 }
+        - { protocol: TCP, port: 3100 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-ingress
+spec:
+  podSelector:
+    matchLabels: { app: postgres }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [api, worker, runtime, migrate] }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-queue-ingress
+spec:
+  podSelector:
+    matchLabels: { app: redis-queue }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [api, worker, runtime] }
+      ports:
+        - { protocol: TCP, port: 6379 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-hot-ingress
+spec:
+  podSelector:
+    matchLabels: { app: redis-hot }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [api, worker] }
+      ports:
+        - { protocol: TCP, port: 6379 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-ingress
+spec:
+  podSelector:
+    matchLabels: { app: minio }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - { key: app, operator: In, values: [api, worker, runtime, minio-init] }
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: authoring-internal-egress
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [api, worker] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector:
+            matchLabels: { app: redis-queue }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector:
+            matchLabels: { app: redis-hot }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector:
+            matchLabels: { app: minio }
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: runtime-internal-egress
+spec:
+  podSelector:
+    matchLabels: { app: runtime }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+    - to:
+        - podSelector:
+            matchLabels: { app: redis-queue }
+      ports:
+        - { protocol: TCP, port: 6379 }
+    - to:
+        - podSelector:
+            matchLabels: { app: minio }
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migrate-egress
+spec:
+  podSelector:
+    matchLabels: { app: migrate }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: postgres }
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: minio-init-egress
+spec:
+  podSelector:
+    matchLabels: { app: minio-init }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels: { app: minio }
+      ports:
+        - { protocol: TCP, port: 9000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: approved-public-https
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [api, worker, runtime] }
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 0.0.0.0/8
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 224.0.0.0/4
+              - 240.0.0.0/4
+      ports:
+        - { protocol: TCP, port: 443 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: network-canary-dns-only
+spec:
+  podSelector:
+    matchLabels: { app: combo-dev-network-canary }
+  policyTypes: [Ingress, Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }

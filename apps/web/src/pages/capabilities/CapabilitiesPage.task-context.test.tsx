@@ -12,35 +12,36 @@ afterEach(() => {
   fm = undefined;
 });
 
-describe('CapabilitiesPage — Annotation 7 任务结果语境', () => {
-  it('保留 taskId 数据范围，但用页面标题说明语境且不再渲染可关闭筛选 chip', async () => {
+describe('CapabilitiesPage — 任务结果回流', () => {
+  it('保留 taskId 数据范围，并明确标出本次提取且可返回全部 Agent', async () => {
     fm = installFetchMock({
       status: 200,
-      json: paginatedBody([makeCapability({ id: 'cap-task-result', name: '任务产出的能力项' })]),
+      json: paginatedBody([makeCapability({ id: 'cap-task-result', name: '任务产出的 Agent' })]),
     });
     renderPage(<CapabilitiesPage />, {
       route: '/capabilities?taskId=task-annotation-7',
     });
 
-    expect(
-      await screen.findByRole('heading', { level: 2, name: '本次提取结果' }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText('这次上传提取出的能力项：查看状态、发布、试用与分享。'),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /只看单个任务/ })).toBeNull();
-    expect(screen.queryByText(/只看单个任务的能力项/)).toBeNull();
+    expect(screen.getByRole('heading', { level: 2, name: '我的 Agent' })).toBeInTheDocument();
+    expect(screen.getByText('本次提取')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '查看全部 Agent' })).toHaveAttribute(
+      'href',
+      '/capabilities',
+    );
+    expect(await screen.findByText('任务产出的 Agent')).toBeInTheDocument();
     expect(fm.calls[0]?.url).toContain('taskId=task-annotation-7');
   });
 
-  it('全局能力页继续使用“我的能力”标题且请求不带 taskId', async () => {
+  it('全局列表请求不带 taskId', async () => {
     fm = installFetchMock({
       status: 200,
-      json: paginatedBody([makeCapability({ id: 'cap-global', name: '全局能力项' })]),
+      json: paginatedBody([makeCapability({ id: 'cap-global', name: '全局 Agent' })]),
     });
     renderPage(<CapabilitiesPage />, { route: '/capabilities' });
 
-    expect(await screen.findByRole('heading', { level: 2, name: '我的能力' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: '我的 Agent' })).toBeInTheDocument();
+    expect(screen.queryByText('本次提取')).toBeNull();
+    expect(screen.queryByRole('link', { name: '查看全部 Agent' })).toBeNull();
     expect(fm.calls[0]?.url).not.toContain('taskId=');
   });
 });

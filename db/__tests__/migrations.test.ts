@@ -17,7 +17,7 @@ function allSql(): string {
     .join('\n');
 }
 
-// 2026-07-04 重设计基线：三层九表（设计真源见飞书文档「Combo 数据库表设计」）。
+// 2026-07-04 重设计基线：三层八表（设计真源见飞书文档「Combo 数据库表设计」）。
 // 本套测试守护基线完整性；此后新增迁移按编号追加，本文件按需补断言。
 
 const TABLES = [
@@ -31,7 +31,6 @@ const TABLES = [
   // 试用层
   'sessions',
   'messages',
-  'stream_events',
   'artifacts',
   // 保留的审计表
   'audit_llm_calls',
@@ -52,6 +51,7 @@ const LEGACY_TABLES = [
   'marketplace_listings',
   'outbox_events',
   'notifications',
+  'stream_events',
   'rt_chat_sessions',
 ];
 
@@ -80,6 +80,24 @@ describe('migrations', () => {
     }
   });
 
+  it('the full chain creates only the current data model', () => {
+    const created = [...allSql().matchAll(/CREATE TABLE\s+([a-z][a-z0-9_]*)\s*\(/gi)]
+      .map((match) => match[1]!.toLowerCase())
+      .sort();
+    expect(created).toEqual(
+      [
+        ...TABLES,
+        'turns',
+        'auth_identities',
+        'auth_otp_challenges',
+        'auth_sessions',
+        'auth_audit_events',
+      ].sort(),
+    );
+    expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
+    expect(created.some((table) => /(?:^|_)run_events$/.test(table))).toBe(false);
+  });
+
   it('tasks carries the two orthogonal state axes plus lease and idempotency', () => {
     const sql = allSql();
     // 双轴状态：step 只有 upload/extract（发布不在这个轴上）；status 三态。
@@ -106,7 +124,7 @@ describe('migrations', () => {
     expect(sql).toMatch(/role IN \('user', 'assistant', 'tool'\)/);
   });
 
-  it('0003 adds lock-free turns and per-turn message ordering', () => {
+  it('0003 adds autonomous turns and per-turn message ordering', () => {
     const sql = readFileSync(join(MIGRATIONS_DIR, '0003_turns.sql'), 'utf-8');
     expect(sql).toContain('CREATE TABLE turns (');
     expect(sql).toMatch(/status IN \('running', 'completed', 'failed', 'interrupted'\)/);
@@ -115,14 +133,63 @@ describe('migrations', () => {
       'uq_messages_turn_idx ON messages (turn_id, idx) WHERE turn_id IS NOT NULL',
     );
     expect(sql).toContain('idx_messages_turn ON messages (turn_id) WHERE turn_id IS NOT NULL');
-    expect(sql).toContain('ADD COLUMN turn_id uuid REFERENCES turns(id)');
+    expect(sql).toContain('CONSTRAINT uq_turns_id_session UNIQUE (id, session_id)');
+    expect(sql).toContain(
+      'CONSTRAINT fk_artifacts_turn_session\n  FOREIGN KEY (turn_id, session_id)\n  REFERENCES turns (id, session_id)\n  ON DELETE CASCADE',
+    );
+    expect(sql).toContain(
+      'CONSTRAINT fk_messages_turn_session\n  FOREIGN KEY (turn_id, session_id)\n  REFERENCES turns (id, session_id)',
+    );
+    expect(sql).toContain('idx_artifacts_turn ON artifacts (turn_id) WHERE turn_id IS NOT NULL');
     expect(sql).toContain('ADD COLUMN idx int');
     expect(sql).toContain('ALTER COLUMN seq DROP NOT NULL');
   });
 
-  it('stream_events use bigserial for resumable ordering', () => {
-    const sql = allSql();
-    expect(sql).toMatch(/CREATE TABLE stream_events \(\n\s+id\s+bigserial\s+PRIMARY KEY/);
+  it('0004 separates Studio sessions and atomically reuses one active design session', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0004_studio_sessions.sql'), 'utf-8');
+    expect(sql).toMatch(/ADD COLUMN mode text NOT NULL DEFAULT 'consume'/);
+    expect(sql).toMatch(/mode IN \('consume', 'studio'\)/);
+    expect(sql).toContain('uq_sessions_active_studio_owner_capability');
+    expect(sql).toContain('ON sessions (owner_user_id, capability_id)');
+    expect(sql).toContain("WHERE status = 'active' AND mode = 'studio'");
+  });
+
+  it('0005 lets each capability point at one current Studio UI artifact', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0005_capability_current_ui.sql'), 'utf-8');
+    expect(sql).toMatch(/ADD COLUMN ui_artifact_id uuid REFERENCES artifacts\(id\)/);
+    expect(sql).toContain('ON DELETE SET NULL');
+    expect(sql).toContain('uq_capabilities_ui_artifact');
+    expect(sql).toContain('WHERE ui_artifact_id IS NOT NULL');
+  });
+
+  it('0006 rejects historical duplicates before enforcing one running turn per session', () => {
+    const sql = readFileSync(
+      join(MIGRATIONS_DIR, '0006_one_running_turn_per_session.sql'),
+      'utf-8',
+    );
+    expect(sql).toMatch(
+      /status = 'running'[\s\S]+GROUP BY session_id[\s\S]+HAVING count\(\*\) > 1/,
+    );
+    expect(sql).toContain('RAISE EXCEPTION');
+    expect(sql).toContain(
+      "CREATE UNIQUE INDEX uq_turns_session_running\n  ON turns (session_id)\n  WHERE status = 'running'",
+    );
+    expect(sql).not.toMatch(/UPDATE\s+turns/i);
+  });
+
+  it('keeps the first-party authentication and role migrations after Goal B schema migrations', () => {
+    const list = files();
+    expect(list.slice(-2)).toEqual([
+      '0007_first_party_email_auth.sql',
+      '0008_application_database_roles.sql',
+    ]);
+  });
+
+  it('0002 rejects a PostgreSQL event ledger instead of bridging or deleting it', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0002_drop_stream_events.sql'), 'utf-8');
+    expect(sql).toContain("to_regclass('public.stream_events')");
+    expect(sql).toContain('RAISE EXCEPTION');
+    expect(sql).not.toMatch(/\b(?:CREATE|DROP|ALTER)\s+TABLE\s+stream_events\b/i);
   });
 
   it('provides gen_uuid_v7 helper in the baseline', () => {

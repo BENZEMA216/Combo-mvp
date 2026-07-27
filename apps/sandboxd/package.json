@@ -1,0 +1,12 @@
+{
+  "name": "@cb/sandboxd",
+  "version": "0.0.0",
+  "private": true,
+  "description": "会话复用的受限沙箱 Pod 内守护进程。",
+  "scripts": {
+    "build": "go build -o /dev/null . && go build -o /dev/null ./cmd/sandbox-exec",
+    "typecheck": "go vet ./...",
+    "test": "go test -p 1 ./...",
+    "clean": "rm -f sandboxd"
+  }
+}

@@ -1,5 +1,6 @@
 // 会话域路由（HTTP 端点 requireAuth；SSE 端点 requireSseAuth，仅同源 Cookie）。
 //   POST /runtime/sessions                开会话
+//   POST /runtime/studio/sessions         原子进入本人 Agent 的 Miniapp 设计空间
 //   GET  /runtime/sessions                我的会话列表
 //   GET  /runtime/sessions/:id            会话详情（消息 + 产物 + 能力摘要）
 //   PATCH /runtime/sessions/:id           会话改名
@@ -15,6 +16,7 @@ import { sessionStreamHandler } from '../agent/stream.js';
 import {
   archiveSessionHandler,
   createSessionHandler,
+  createStudioSessionHandler,
   getSessionDetailHandler,
   interruptHandler,
   listSessionsHandler,
@@ -25,6 +27,12 @@ import {
 const browserMutationGuards = [requireTrustedMutationOrigin(), requireAuth()];
 
 export const SESSION_ENDPOINTS: EndpointDecl[] = [
+  {
+    method: 'POST',
+    url: '/runtime/studio/sessions',
+    preHandlers: browserMutationGuards,
+    handler: createStudioSessionHandler(),
+  },
   {
     method: 'POST',
     url: '/runtime/sessions',

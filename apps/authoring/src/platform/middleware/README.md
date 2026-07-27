@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `auth.ts` 提供 `requireAuth`、`requireSseAuth` 和资源归属判断。两个守卫在生产只读取 `__Host-cb_session`，在本地 HTTP 开发测试只读取 `cb_session`，通过 `platform/infra/auth-session.ts` 查询有效会话与用户，并把业务用户编号、账号和角色写入 `req.auth`。生产不会回落到可由父域投放的无前缀 Cookie。缺失、畸形、未知、过期或已撤销会话返回 401，停用账号返回 403，数据库故障返回 503。任何 `Authorization` 头以及名为 `token` 或 `access_token` 的查询参数都被拒绝。
+- `auth.ts` 提供 `requireAuth`、`requireSseAuth` 和资源归属判断。两个守卫按 `SESSION_COOKIE_SECURE` 只读取 `__Host-cb_session` 或 `cb_session` 中的一种，通过 `platform/infra/auth-session.ts` 查询有效会话与用户，并把业务用户编号、账号和角色写入 `req.auth`。安全入口不会回落到可由父域投放的无前缀 Cookie。缺失、畸形、未知、过期或已撤销会话返回 401，停用账号返回 403，数据库故障返回 503。任何 `Authorization` 头以及名为 `token` 或 `access_token` 的查询参数都被拒绝。
 
 ## 上下游
 

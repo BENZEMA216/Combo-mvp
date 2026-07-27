@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: combo-preview
+resources:
+  - resources.yaml
+configMapGenerator:
+  - name: combo-dev-minio-config
+    files:
+      - minio-app-policy.json
+generatorOptions:
+  disableNameSuffixHash: true
+labels:
+  - includeSelectors: false
+    includeTemplates: true
+    pairs:
+      combo.dev/environment: combo-dev

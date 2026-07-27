@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { PRODUCTION_RESEND_FROM_EMAIL } from '../platform/config/env.js';
 
 const COMMON = {
   DATABASE_URL: 'postgres://test.invalid/test',
@@ -7,6 +8,12 @@ const COMMON = {
   S3_ENDPOINT: 'https://objects.example.test',
   S3_ACCESS_KEY: 'test-access-value',
   S3_SECRET_KEY: 'test-secret-value',
+  COMBO_ENVIRONMENT: 'test',
+  COMBO_SOURCE_SHA: 'a'.repeat(40),
+  COMBO_RELEASE_ID: `release-${'a'.repeat(40)}`,
+  COMBO_BUILT_AT: '2026-07-28T00:00:00.000Z',
+  COMBO_RELEASE_MANIFEST_DIGEST: `sha256:${'b'.repeat(64)}`,
+  COMBO_WEB_ASSET_MANIFEST: `sha256:${'c'.repeat(64)}`,
 };
 
 async function freshLoadEnv() {
@@ -30,7 +37,8 @@ describe('authoring authentication environment boundary', () => {
       ...COMMON,
       NODE_ENV: 'production',
       PROCESS: 'api',
-      PUBLIC_APP_ORIGIN: 'https://combo.example',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      SESSION_COOKIE_SECURE: 'true',
       RESEND_API_KEY: '',
       RESEND_FROM_EMAIL: '',
       OTP_HMAC_SECRET: '',
@@ -51,9 +59,10 @@ describe('authoring authentication environment boundary', () => {
       ...COMMON,
       NODE_ENV: 'production',
       PROCESS: 'api',
-      PUBLIC_APP_ORIGIN: 'https://combo.example',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      SESSION_COOKIE_SECURE: 'true',
       RESEND_API_KEY: 'test-resend-key-value',
-      RESEND_FROM_EMAIL: 'login@example.test',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
       OTP_HMAC_SECRET: 'h'.repeat(32),
       RESEND_API_BASE_URL: 'http://127.0.0.1:45678',
     });
@@ -74,7 +83,8 @@ describe('authoring authentication environment boundary', () => {
       ...COMMON,
       NODE_ENV: 'production',
       PROCESS: 'api',
-      PUBLIC_APP_ORIGIN: 'https://combo.example',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      SESSION_COOKIE_SECURE: 'true',
       RESEND_API_KEY: 'test-resend-key-value',
       RESEND_FROM_EMAIL: invalidSender,
       OTP_HMAC_SECRET: 'h'.repeat(32),
@@ -90,19 +100,27 @@ describe('authoring authentication environment boundary', () => {
     }
   });
 
-  it('accepts a display name with a syntactically valid Resend sender mailbox', async () => {
+  it('rejects a syntactically valid but unofficial production sender without printing it', async () => {
+    const unofficialSender = 'Combo Login <login@example.test>';
     stub({
       ...COMMON,
       NODE_ENV: 'production',
       PROCESS: 'api',
-      PUBLIC_APP_ORIGIN: 'https://combo.example',
+      PUBLIC_APP_ORIGINS: 'https://combo.example,https://try.combo.example',
+      SESSION_COOKIE_SECURE: 'true',
       RESEND_API_KEY: 'test-resend-key-value',
-      RESEND_FROM_EMAIL: 'Agora Login <login@example.test>',
+      RESEND_FROM_EMAIL: unofficialSender,
       OTP_HMAC_SECRET: 'h'.repeat(32),
     });
     const loadEnv = await freshLoadEnv();
 
-    expect(loadEnv().RESEND_FROM_EMAIL).toBe('Agora Login <login@example.test>');
+    expect(PRODUCTION_RESEND_FROM_EMAIL).toBe('Combo <auth@buildwithcombo.com>');
+    expect(loadEnv).toThrowError(/RESEND_FROM_EMAIL/);
+    try {
+      loadEnv();
+    } catch (error) {
+      expect(String(error)).not.toContain(unofficialSender);
+    }
   });
 
   it('does not require or materialize production auth secrets for the worker process', async () => {
@@ -129,9 +147,10 @@ describe('authoring authentication environment boundary', () => {
       ...COMMON,
       NODE_ENV: 'test',
       PROCESS: 'api',
-      PUBLIC_APP_ORIGIN: 'http://localhost',
+      PUBLIC_APP_ORIGINS: 'http://localhost',
+      SESSION_COOKIE_SECURE: 'false',
       RESEND_API_KEY: 'test-resend-key-value',
-      RESEND_FROM_EMAIL: 'login@example.test',
+      RESEND_FROM_EMAIL: 'Combo Login <login@example.test>',
       OTP_HMAC_SECRET: 'h'.repeat(32),
       RESEND_API_BASE_URL: 'http://127.0.0.1:45678',
     });
@@ -139,5 +158,64 @@ describe('authoring authentication environment boundary', () => {
 
     expect(loadEnv().RESEND_API_BASE_URL).toBe('http://127.0.0.1:45678');
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('test-resend-key-value'));
+  });
+
+  it('allows a production-built Test process to use an explicit loopback HTTP cookie', async () => {
+    stub({
+      ...COMMON,
+      NODE_ENV: 'production',
+      PROCESS: 'api',
+      PUBLIC_APP_ORIGINS: 'http://127.0.0.1:18080',
+      SESSION_COOKIE_SECURE: 'false',
+      RESEND_API_KEY: 'test-resend-key-value',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
+      OTP_HMAC_SECRET: 'h'.repeat(32),
+    });
+    const loadEnv = await freshLoadEnv();
+
+    expect(loadEnv()).toMatchObject({
+      NODE_ENV: 'production',
+      COMBO_ENVIRONMENT: 'test',
+      SESSION_COOKIE_SECURE: false,
+    });
+  });
+
+  it('requires Preview and Production to use an HTTPS host cookie', async () => {
+    stub({
+      ...COMMON,
+      COMBO_ENVIRONMENT: 'preview',
+      NODE_ENV: 'production',
+      PROCESS: 'api',
+      PUBLIC_APP_ORIGINS: 'http://127.0.0.1:18080',
+      SESSION_COOKIE_SECURE: 'false',
+      RESEND_API_KEY: 'test-resend-key-value',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
+      OTP_HMAC_SECRET: 'h'.repeat(32),
+    });
+    const loadEnv = await freshLoadEnv();
+
+    expect(loadEnv).toThrowError(/SESSION_COOKIE_SECURE/);
+  });
+
+  it.each([
+    'https://combo.example/',
+    ' https://combo.example',
+    'https://combo.example,https://combo.example',
+    'https://combo.example/path',
+    'javascript:alert(1)',
+  ])('rejects non-canonical PUBLIC_APP_ORIGINS entry %s', async (origins) => {
+    stub({
+      ...COMMON,
+      NODE_ENV: 'production',
+      PROCESS: 'api',
+      PUBLIC_APP_ORIGINS: origins,
+      SESSION_COOKIE_SECURE: 'true',
+      RESEND_API_KEY: 'test-resend-key-value',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
+      OTP_HMAC_SECRET: 'h'.repeat(32),
+    });
+    const loadEnv = await freshLoadEnv();
+
+    expect(loadEnv).toThrowError(/PUBLIC_APP_ORIGINS/);
   });
 });

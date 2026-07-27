@@ -1,9 +1,21 @@
-# 本地与单机生产共用的全栈编排。固定启动顺序是基础设施、建桶、业务迁移和业务容器。
-# PostgreSQL 保存第一方邮箱身份、验证码摘要和不透明会话摘要。邮件供应商不进入 readiness，
-# 因此 Resend 故障只阻塞新验证码，不影响已有会话访问 authoring 或 runtime。
+# 本地全栈编排（O-02/O-03）。本期【只写不跑】：无 Docker，留作后续 compose up。
 #
-# 本文件只引用真实 Resend 配置，不包含测试收件箱。仅本地测试替身位于 docker-compose.dev-test.yml。
-# 生产密钥使用 `${VAR:?...}` 强制显式配置；非密钥端口可由隔离测试覆盖，默认保持本机开发端口。
+# 固定启动顺序：基础设施 → 0000–0008 业务迁移与应用角色配置 → API/Worker/Runtime/Web。
+# 邮箱验证码由 API 通过 Resend 发出；PostgreSQL 保存验证码摘要和不透明会话摘要。
+#
+# Redis 物理拆两实例（70 §8.1 / 技术方案 §6.1）：
+#   redis_queue（appendonly AOF + noeviction，BullMQ 队列绝不被驱逐）/ redis_hot（maxmemory + allkeys-lru，事件 Streams/锁/限流，可驱逐、无持久卷）。
+#   两实例 compose/健康检查/env 全部独立——混一实例会让 noeviction 与 eviction 互相污染（队列被驱逐 = 丢任务触发）。
+#
+# 健康检查（O-04）：postgres/redis_queue/redis_hot/minio 用各自原生探针；
+# api 用 /health（liveness、轻量不查依赖，业务就绪由 /ready 自查依赖）。
+#
+# 镜像：api/worker 同镜像不同入口（PROCESS 环境变量分叉，见 Dockerfile.api ENTRYPOINT）；web 单独 nginx 镜像。
+#
+# 生产密钥不允许默认 fallback（Codex#13）：
+#   本编排即生产栈（业务容器 NODE_ENV=production）。真密钥用 `${VAR:?...}` 必填形式——未设则 `docker compose` 直接报错中止，
+#   绝不静默注入 minioadmin / combo:combo 这类默认凭据上生产（与 Authoring 环境 schema 的生产守卫双保险）。
+#   非密钥的运行参数（端口/region/由服务名推导的 endpoint）保留默认。dev 直跑请用 .env 显式提供这些值。
 services:
   # ───────────────────────── 数据与中间件 ──────────────────────────
   postgres:
@@ -14,7 +26,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必填（生产禁默认）}
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB 必填（生产禁默认）}
     ports:
-      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+      - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -31,7 +43,7 @@ services:
       - ./redis/redis-queue.conf:/usr/local/etc/redis/redis.conf:ro
       - redis_queue_data:/data # AOF 落盘，队列绝不丢（noeviction）
     ports:
-      - '127.0.0.1:${REDIS_QUEUE_PORT:-6379}:6379'
+      - '6379:6379'
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -45,7 +57,7 @@ services:
       - ./redis/redis-hot.conf:/usr/local/etc/redis/redis.conf:ro
       # 热态实例可驱逐、无须持久化（事件 Streams/锁/限流），故不挂数据卷
     ports:
-      - '127.0.0.1:${REDIS_HOT_PORT:-6380}:6379'
+      - '6380:6379'
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 5s
@@ -60,8 +72,8 @@ services:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:?S3_ACCESS_KEY 必填（生产禁默认）}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?S3_SECRET_KEY 必填（生产禁默认）}
     ports:
-      - '127.0.0.1:${MINIO_API_PORT:-9000}:9000'
-      - '127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001'
+      - '9000:9000'
+      - '9001:9001'
     volumes:
       - miniodata:/data
     healthcheck:
@@ -90,7 +102,7 @@ services:
     image: grafana/loki:3.5.0
     command: ['-config.file=/etc/loki/loki.yml']
     ports:
-      - '127.0.0.1:${LOKI_PORT:-3100}:3100'
+      - '3100:3100'
     volumes:
       - ./observability/loki.yml:/etc/loki/loki.yml:ro
       - loki_data:/loki
@@ -104,7 +116,7 @@ services:
     image: grafana/tempo:2.9.0
     command: ['-config.file=/etc/tempo/tempo.yml']
     ports:
-      - '127.0.0.1:${TEMPO_PORT:-3200}:3200'
+      - '3200:3200'
     volumes:
       - ./observability/tempo.yml:/etc/tempo/tempo.yml:ro
       - tempo_data:/var/tempo
@@ -126,8 +138,8 @@ services:
       tempo:
         condition: service_healthy
     ports:
-      - '127.0.0.1:${OTEL_GRPC_PORT:-4317}:4317'
-      - '127.0.0.1:${OTEL_HTTP_PORT:-4318}:4318'
+      - '4317:4317'
+      - '4318:4318'
     volumes:
       - ./observability/otel-collector.yml:/etc/otelcol/config.yml:ro
       # 本地自托管日志入口：tail Docker JSON stdout/stderr，保留应用 JSON 日志里的 traceId/trace_id/span_id。
@@ -149,7 +161,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: 'true'
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     ports:
-      - '127.0.0.1:${GRAFANA_PORT:-3003}:3000'
+      - '3003:3000'
     volumes:
       - grafana_data:/var/lib/grafana
       - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -160,8 +172,7 @@ services:
       timeout: 5s
       retries: 12
 
-  # ───────────────────────── 业务迁移 ──────────────────────────
-  # 业务迁移包含第一方认证表，并且只在 PostgreSQL 健康后由单个容器执行。
+  # ───────────────────────── 业务迁移（一次性，应用前）─────────────────────────
   migrate:
     build:
       context: ..
@@ -208,6 +219,11 @@ services:
       PORT: '3000'
       HOST: 0.0.0.0
       PROCESS: api
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: combo_api
+      PGPASSWORD: ${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
       DATABASE_URL: postgres://combo_api:${POSTGRES_API_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_QUEUE_URL: redis://redis_queue:6379/0
       REDIS_HOT_URL: redis://redis_hot:6379/0
@@ -218,12 +234,12 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?}
       S3_REGION: ${S3_REGION:-us-east-1}
-      # 只有 authoring API 消费邮件与验证码密钥。生产基址被应用启动校验固定为官方 HTTPS 地址。
-      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:?PUBLIC_APP_ORIGIN 必填}
-      RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY 必填（生产禁默认）}
-      RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:?RESEND_FROM_EMAIL 必填}
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 必填}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY 必填}
+      RESEND_FROM_EMAIL: 'Combo <auth@buildwithcombo.com>'
       RESEND_API_BASE_URL: ${RESEND_API_BASE_URL:-https://api.resend.com}
-      OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?OTP_HMAC_SECRET 必填（至少三十二字符）}
+      OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?OTP_HMAC_SECRET 必填}
       # LLM key 例外：上游 degraded 不计 /ready，缺失只降级不阻塞启动，故保留空默认（与 env.ts 一致）。
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # LLM provider 选择 + OpenRouter（OpenAI 兼容）接线：同 degraded 语义，全部允许空（缺则降级不阻塞）。
@@ -235,7 +251,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       OTEL_RESOURCE_ATTRIBUTES: deployment.environment=compose
     ports:
-      - '127.0.0.1:${API_PORT:-3000}:3000'
+      - '3000:3000'
     healthcheck:
       # liveness：/health 轻量、不查依赖（依赖就绪由 /ready 自查，编排/LB 据 /ready 判定接流量）
       test:
@@ -271,6 +287,11 @@ services:
       PROCESS: worker
       # OOM 护栏：限制 V8 老生代堆，配合容器 mem_limit 让内存超限时容器内优雅 OOM 而非拖垮宿主。
       NODE_OPTIONS: --max-old-space-size=1536
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: combo_worker
+      PGPASSWORD: ${POSTGRES_WORKER_PASSWORD:?POSTGRES_WORKER_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
       DATABASE_URL: postgres://combo_worker:${POSTGRES_WORKER_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_QUEUE_URL: redis://redis_queue:6379/0
       REDIS_HOT_URL: redis://redis_hot:6379/0
@@ -293,7 +314,7 @@ services:
     mem_reservation: 1g
     restart: unless-stopped
 
-  # runtime 只读第一方认证会话，并承载试用端业务接口。
+  # Runtime 使用独立镜像和 Redis 热数据面，不复用 Authoring Worker 入口。
   runtime:
     build:
       context: ..
@@ -309,13 +330,19 @@ services:
       NODE_ENV: production
       PORT: '3100'
       HOST: 0.0.0.0
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: combo_runtime
+      PGPASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?POSTGRES_RUNTIME_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
       DATABASE_URL: postgres://combo_runtime:${POSTGRES_RUNTIME_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_URL: redis://redis_queue:6379
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 必填}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?}
       S3_REGION: ${S3_REGION:-us-east-1}
-      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:?PUBLIC_APP_ORIGIN 必填}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       RUNTIME_LLM_PROVIDER: ${RUNTIME_LLM_PROVIDER:-}
@@ -347,7 +374,7 @@ services:
       runtime:
         condition: service_healthy
     ports:
-      - '127.0.0.1:${WEB_PORT:-80}:80'
+      - '80:80'
     healthcheck:
       # 用 127.0.0.1 而非 localhost：容器内 busybox wget 会先解析 localhost→::1(IPv6)，
       # 而 nginx 默认只 listen IPv4 0.0.0.0:80 → IPv6 连接被拒、健康检查误判 unhealthy(host 侧服务实为正常)。

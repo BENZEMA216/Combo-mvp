@@ -1,0 +1,196 @@
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: combo-sandbox-loopback
+provisioner: kubernetes.io/no-provisioner
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Retain
+allowVolumeExpansion: false
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-sandbox-workspace-slot-0
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '0'
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-sandbox-loopback
+  claimRef:
+    namespace: combo-sandbox
+    name: combo-sandbox-workspace-slot-0
+  local:
+    path: /var/lib/combo-sandbox-slots/slot-0
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [sandbox-node.invalid]
+  mountOptions: [nodev, nosuid]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: combo-sandbox-workspace-slot-0
+  namespace: combo-sandbox
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '0'
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: combo-sandbox-loopback
+  volumeName: combo-sandbox-workspace-slot-0
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-sandbox-workspace-slot-1
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '1'
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-sandbox-loopback
+  claimRef:
+    namespace: combo-sandbox
+    name: combo-sandbox-workspace-slot-1
+  local:
+    path: /var/lib/combo-sandbox-slots/slot-1
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [sandbox-node.invalid]
+  mountOptions: [nodev, nosuid]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: combo-sandbox-workspace-slot-1
+  namespace: combo-sandbox
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '1'
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: combo-sandbox-loopback
+  volumeName: combo-sandbox-workspace-slot-1
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-sandbox-workspace-slot-2
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '2'
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-sandbox-loopback
+  claimRef:
+    namespace: combo-sandbox
+    name: combo-sandbox-workspace-slot-2
+  local:
+    path: /var/lib/combo-sandbox-slots/slot-2
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [sandbox-node.invalid]
+  mountOptions: [nodev, nosuid]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: combo-sandbox-workspace-slot-2
+  namespace: combo-sandbox
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '2'
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: combo-sandbox-loopback
+  volumeName: combo-sandbox-workspace-slot-2
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-sandbox-workspace-slot-3
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '3'
+spec:
+  capacity:
+    storage: 1Gi
+  volumeMode: Filesystem
+  accessModes: [ReadWriteOnce]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-sandbox-loopback
+  claimRef:
+    namespace: combo-sandbox
+    name: combo-sandbox-workspace-slot-3
+  local:
+    path: /var/lib/combo-sandbox-slots/slot-3
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: [sandbox-node.invalid]
+  mountOptions: [nodev, nosuid]
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: combo-sandbox-workspace-slot-3
+  namespace: combo-sandbox
+  labels:
+    app.kubernetes.io/part-of: combo
+    app.kubernetes.io/component: model-sandbox-workspace
+    sandbox.combo.dev/slot: '3'
+spec:
+  accessModes: [ReadWriteOnce]
+  volumeMode: Filesystem
+  storageClassName: combo-sandbox-loopback
+  volumeName: combo-sandbox-workspace-slot-3
+  resources:
+    requests:
+      storage: 1Gi

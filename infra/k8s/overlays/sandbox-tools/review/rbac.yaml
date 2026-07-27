@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: runtime-sandbox-manager
+  namespace: combo-review
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sandbox-pod-manager
+  namespace: combo-review-sandbox
+rules:
+  - apiGroups: ['']
+    resources: [pods]
+    verbs: [get, list, create, delete, patch]
+  - apiGroups: ['']
+    resources: [persistentvolumeclaims]
+    resourceNames:
+      - combo-sandbox-workspace-slot-0
+      - combo-sandbox-workspace-slot-1
+      - combo-sandbox-workspace-slot-2
+      - combo-sandbox-workspace-slot-3
+      - combo-sandbox-workspace-slot-4
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: runtime-sandbox-manager
+  namespace: combo-review-sandbox
+subjects:
+  - kind: ServiceAccount
+    name: runtime-sandbox-manager
+    namespace: combo-review
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sandbox-pod-manager

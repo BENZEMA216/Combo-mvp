@@ -6,7 +6,7 @@
 
 - `_helpers.ts` 提供统一错误信封回复、端点声明和批量注册。端点声明可以附加请求期钩子、前置守卫和路由级请求体上限。
 - `auth-request.ts` 为四条认证路由在请求体解析前设置 `Cache-Control: no-store`，并要求三条认证 POST 使用 `application/json` 与四 KiB 请求体上限。
-- `browser-origin.ts` 校验 `PUBLIC_APP_ORIGIN`，为 CORS 只反射该唯一 origin，并要求认证接口及所有 Cookie 鉴权业务写请求携带完全相同的 `Origin`。请求若带 `Sec-Fetch-Site`，其值只能是 `same-origin`；配对码鉴权的助手上传接口不使用这个浏览器守卫。
+- `browser-origin.ts` 读取已经严格校验的 `PUBLIC_APP_ORIGINS` 列表，为 CORS 只反射其中的精确 origin，并要求认证接口及所有 Cookie 鉴权业务写请求携带列表中的完整 `Origin`。请求若带 `Sec-Fetch-Site`，其值只能是 `same-origin`；配对码鉴权的助手上传接口不使用这个浏览器守卫。
 - `health.ts` 注册 `/health` 与 `/ready`。就绪探针检查 PostgreSQL、双 Redis 和 MinIO，大模型只影响降级状态；Resend 不参加就绪判定。
 - `client-events.ts` 接收浏览器错误事件，但日志只保留事件类型、关联 traceId 和服务端固定的低基数路由桶。客户端 URL 与 route 只参与分类，原始 pathname、动态段、查询、消息和堆栈都不会写入日志；无法识别时只记录 `unknown`。
 - `fastify.ts` 为 Fastify 声明基础设施容器和请求鉴权上下文类型。

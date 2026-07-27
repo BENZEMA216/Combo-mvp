@@ -1,0 +1,140 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-dev-postgres
+  labels:
+    combo.dev/environment: combo-dev
+    combo.dev/volume: postgres
+spec:
+  capacity:
+    storage: 8Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-dev-bounded
+  claimRef:
+    namespace: combo-preview
+    name: data-postgres-0
+  local:
+    path: /home/xingzheng/data/combo-dev/postgres
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - COMBO_DEV_NODE_HOSTNAME
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-dev-redis-queue
+  labels:
+    combo.dev/environment: combo-dev
+    combo.dev/volume: redis-queue
+spec:
+  capacity:
+    storage: 2Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-dev-bounded
+  claimRef:
+    namespace: combo-preview
+    name: data-redis-queue-0
+  local:
+    path: /home/xingzheng/data/combo-dev/redis-queue
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - COMBO_DEV_NODE_HOSTNAME
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: combo-dev-minio
+  labels:
+    combo.dev/environment: combo-dev
+    combo.dev/volume: minio
+spec:
+  capacity:
+    storage: 6Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: combo-dev-bounded
+  claimRef:
+    namespace: combo-preview
+    name: data-minio-0
+  local:
+    path: /home/xingzheng/data/combo-dev/minio
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - COMBO_DEV_NODE_HOSTNAME
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-postgres-0
+  namespace: combo-preview
+  labels:
+    combo.dev/environment: combo-dev
+    combo.dev/volume: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  storageClassName: combo-dev-bounded
+  volumeName: combo-dev-postgres
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-redis-queue-0
+  namespace: combo-preview
+  labels:
+    combo.dev/environment: combo-dev
+    combo.dev/volume: redis-queue
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  storageClassName: combo-dev-bounded
+  volumeName: combo-dev-redis-queue
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-minio-0
+  namespace: combo-preview
+  labels:
+    combo.dev/environment: combo-dev
+    combo.dev/volume: minio
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  storageClassName: combo-dev-bounded
+  volumeName: combo-dev-minio
+  resources:
+    requests:
+      storage: 6Gi

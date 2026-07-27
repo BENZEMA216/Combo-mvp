@@ -43,6 +43,15 @@ const allowAll: AuthRateLimitPort = {
   },
 };
 
+const verificationRedisOutage: AuthRateLimitPort = {
+  async consumeChallenge() {
+    return { allowed: true, retryAfterSeconds: 1 };
+  },
+  async consumeVerification() {
+    throw new Error('redis unavailable');
+  },
+};
+
 pgDescribe('first-party auth PostgreSQL invariants', () => {
   let pool: Pool;
   let mailer: CapturingMailer;
@@ -73,11 +82,11 @@ pgDescribe('first-party auth PostgreSQL invariants', () => {
     nextOtp = 100_000;
   });
 
-  function dependencies(): AccountAuthDependencies {
+  function dependencies(rateLimiter: AuthRateLimitPort = allowAll): AccountAuthDependencies {
     return {
       db: asTxPool(pool),
       mailer,
-      rateLimiter: allowAll,
+      rateLimiter,
       hmacSecret: HMAC_SECRET,
       randomBytes: (size: number) => Buffer.alloc(size, randomByte++),
       randomInteger: () => nextOtp++,
@@ -105,8 +114,12 @@ pgDescribe('first-party auth PostgreSQL invariants', () => {
     );
   }
 
-  async function verify(code: string, email = 'Alice@example.com') {
-    return verifyEmail(dependencies(), {
+  async function verify(
+    code: string,
+    email = 'Alice@example.com',
+    rateLimiter: AuthRateLimitPort = allowAll,
+  ) {
+    return verifyEmail(dependencies(rateLimiter), {
       email,
       code,
       returnTo: '/tasks',
@@ -355,6 +368,56 @@ pgDescribe('first-party auth PostgreSQL invariants', () => {
       'SELECT invalidated_at IS NOT NULL AS invalidated FROM auth_otp_challenges',
     );
     expect(row.rows[0]?.invalidated).toBe(true);
+  });
+
+  it('keeps an active challenge usable during a Redis outage without unmatched audit growth', async () => {
+    const active = await challenge('active@example.com');
+    const expired = await challenge('expired@example.com');
+    const invalidated = await challenge('invalidated@example.com');
+    await pool.query(
+      `UPDATE auth_otp_challenges
+          SET created_at = now() - interval '6 minutes',
+              activated_at = now() - interval '6 minutes',
+              expires_at = now() - interval '1 minute'
+        WHERE id = $1`,
+      [expired.challengeId],
+    );
+    await pool.query(
+      `UPDATE auth_otp_challenges
+          SET invalidated_at = now()
+        WHERE id = $1`,
+      [invalidated.challengeId],
+    );
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(
+        verify('999999', 'absent@example.com', verificationRedisOutage),
+      ).resolves.toEqual({ kind: 'invalid_code' });
+      await expect(
+        verify(expired.code, 'expired@example.com', verificationRedisOutage),
+      ).resolves.toEqual({ kind: 'invalid_code' });
+      await expect(
+        verify(invalidated.code, 'invalidated@example.com', verificationRedisOutage),
+      ).resolves.toEqual({ kind: 'invalid_code' });
+    }
+
+    const beforeSuccess = await pool.query<{ count: number }>(
+      `SELECT count(*)::int AS count
+         FROM auth_audit_events
+        WHERE event_type = 'login_failed'`,
+    );
+    expect(beforeSuccess.rows[0]?.count).toBe(0);
+
+    await expect(
+      verify(active.code, 'active@example.com', verificationRedisOutage),
+    ).resolves.toMatchObject({ kind: 'ok' });
+    const audit = await pool.query<{ failed: number; succeeded: number }>(
+      `SELECT
+         count(*) FILTER (WHERE event_type = 'login_failed')::int AS failed,
+         count(*) FILTER (WHERE event_type = 'login_succeeded')::int AS succeeded
+       FROM auth_audit_events`,
+    );
+    expect(audit.rows[0]).toEqual({ failed: 0, succeeded: 1 });
   });
 
   it('allows exactly one concurrent verification to consume a code', async () => {

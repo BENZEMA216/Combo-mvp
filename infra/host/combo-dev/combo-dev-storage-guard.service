@@ -1,0 +1,19 @@
+[Unit]
+Description=Fence combo-dev writers on storage, credential, or persistent guard failure
+After=k3s.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/combo-dev/bin/combo-dev-storage-guard
+User=root
+Group=root
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+StateDirectory=combo-dev
+StateDirectoryMode=0711
+# ProtectHome makes /home read-only in this unit's mount namespace. Re-expose only the bounded
+# combo-dev filesystem as writable so findmnt can verify the host's real rw/nodev/nosuid contract.
+ReadWritePaths=/run /var/lib/combo-dev /home/xingzheng/data/combo-dev

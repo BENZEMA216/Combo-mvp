@@ -30,9 +30,9 @@ describe('custom login measurable accessibility rules', () => {
     expect(contrastRatio(muted!, card!)).toBeGreaterThanOrEqual(4.5);
   });
 
-  it('keeps the public header creation CTA at least 44px at every breakpoint', () => {
-    const rules = [...css.matchAll(/\.cb-public-shell__start\s*\{([^}]*)\}/g)];
-    expect(rules.length).toBeGreaterThanOrEqual(2);
+  it('keeps the public header Agent entry at least 44px at every breakpoint', () => {
+    const rules = [...css.matchAll(/\.cb-public-shell__agent-entry\s*\{([^}]*)\}/g)];
+    expect(rules.length).toBeGreaterThanOrEqual(1);
     for (const [, body] of rules) {
       const height = Number(body?.match(/min-height:\s*(\d+)px/)?.[1]);
       expect(height).toBeGreaterThanOrEqual(44);

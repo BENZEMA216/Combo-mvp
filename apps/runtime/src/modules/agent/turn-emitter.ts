@@ -20,6 +20,8 @@ export function createTurnEmitter(deps: {
   bus: SessionEventBus;
   sessionId: string;
   log: TurnLogger;
+  /** 返回 null 表示 Turn 已被终态事务栅栏，当前非终态事件必须丢弃。 */
+  append?: (event: Record<string, unknown>) => Promise<string | null>;
 }): TurnEmitter {
   let chain = Promise.resolve();
 
@@ -27,8 +29,10 @@ export function createTurnEmitter(deps: {
     emit(event) {
       chain = chain.then(async () => {
         try {
-          const id = await deps.eventLog.append(deps.sessionId, event);
-          deps.bus.publish(deps.sessionId, { id, event });
+          const id = await (deps.append
+            ? deps.append(event)
+            : deps.eventLog.append(deps.sessionId, event));
+          if (id !== null) deps.bus.publish(deps.sessionId, { id, event });
         } catch (err) {
           deps.log.error({ err, event: event.type }, 'stream event write failed (skipped)');
         }

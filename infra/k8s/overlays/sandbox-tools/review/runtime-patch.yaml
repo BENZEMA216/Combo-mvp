@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+  namespace: combo-review
+spec:
+  template:
+    spec:
+      serviceAccountName: runtime-sandbox-manager
+      containers:
+        - name: runtime
+          env:
+            - name: SANDBOX_TOOLS_ENABLED
+              value: 'false'
+            - name: SANDBOX_NAMESPACE
+              value: combo-review-sandbox
+            - name: SANDBOX_CONFIGURATION_REVISION
+              value: '3'
+            - name: SANDBOX_CAPACITY
+              value: '4'
+            - name: SANDBOX_FIFTH_SLOT_VALIDATED
+              value: 'false'
+            - name: SANDBOX_RUNTIME_CLASS
+              value: gvisor
+            - name: SANDBOX_IMAGE
+              value: combo-sandboxd@sha256:23d4c64fdcdbba89b1d091bad59b1dd36b65d67c046046179ed8352a36728226
+            - name: SANDBOX_CAPABILITY_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: combo-review-sandbox-signing
+                  key: private-key-pkcs8-base64
+            - name: SANDBOX_COMMAND_TIMEOUT_MS
+              value: '120000'
+            - name: SANDBOX_STARTUP_TIMEOUT_MS
+              value: '30000'
+            - name: SANDBOX_IDLE_TTL_MS
+              value: '900000'
+            - name: SANDBOX_ABSOLUTE_TTL_MS
+              value: '1800000'
+            - name: SANDBOX_SWEEP_INTERVAL_MS
+              value: '60000'

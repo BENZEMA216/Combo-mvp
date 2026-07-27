@@ -17,7 +17,7 @@ function rejectsNonCookieCredential(req: FastifyRequest): boolean {
 async function resolveRequestSession(req: FastifyRequest): Promise<AuthSessionResolution | null> {
   if (rejectsNonCookieCredential(req)) return { kind: 'invalid' };
   try {
-    const cookieName = authSessionCookieName(req.server.infra.env.NODE_ENV);
+    const cookieName = authSessionCookieName(req.server.infra.env.SESSION_COOKIE_SECURE);
     return await resolveAuthSession(req.server.infra.db, req.cookies?.[cookieName]);
   } catch {
     return null;

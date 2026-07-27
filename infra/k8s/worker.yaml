@@ -42,9 +42,20 @@ spec:
               value: http://otel-collector.observability.svc.cluster.local:4318
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: deployment.environment=k8s
-            - name: DATABASE_URL
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
               valueFrom:
-                secretKeyRef: { name: combo-env, key: WORKER_DATABASE_URL }
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_worker
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_WORKER_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef: { name: combo-env, key: S3_ACCESS_KEY }

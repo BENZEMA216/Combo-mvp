@@ -81,7 +81,13 @@ function GatePanel({ role, children }: { role: 'status' | 'alert'; children: Rea
   );
 }
 
-export function AuthGate({ children }: { children: ReactNode }) {
+export function AuthGate({
+  children,
+  navigateToAuth = (target) => window.location.assign(target),
+}: {
+  children: ReactNode;
+  navigateToAuth?: (target: string) => void;
+}) {
   const queryClient = useQueryClient();
   const query = useQuery<RuntimeMeProbe>({
     queryKey: RUNTIME_ME_QUERY_KEY,
@@ -139,7 +145,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
           <button
             type="button"
             className="rt-btn rt-btn--accent"
-            onClick={() => window.location.assign(loginUrl())}
+            onClick={() => navigateToAuth(loginUrl())}
           >
             去登录
           </button>

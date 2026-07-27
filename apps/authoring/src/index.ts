@@ -1,2 +1,2 @@
-// 默认入口是 api 进程；worker 使用 processes/worker.ts 独立启动。
+// 默认入口是 API 进程；Worker 由容器入口按 PROCESS=worker 单独启动。
 import './processes/api.js';

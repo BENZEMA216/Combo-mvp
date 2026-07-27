@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const migrationPath = resolve(__dirname, '..', 'migrations', '0004_first_party_email_auth.sql');
+const migrationPath = resolve(__dirname, '..', 'migrations', '0007_first_party_email_auth.sql');
 const sql = readFileSync(migrationPath, 'utf8');
 
 function tableDefinition(table: string): string {
@@ -13,7 +13,7 @@ function tableDefinition(table: string): string {
   return match?.[1] ?? '';
 }
 
-describe('0004_first_party_email_auth', () => {
+describe('0007_first_party_email_auth', () => {
   it('在改 users 结构前锁表并拒绝迁移任何已有用户', () => {
     const lockAt = sql.indexOf('LOCK TABLE users IN ACCESS EXCLUSIVE MODE');
     const gateAt = sql.indexOf('IF EXISTS (SELECT 1 FROM users)');

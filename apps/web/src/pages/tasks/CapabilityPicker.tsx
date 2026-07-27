@@ -146,6 +146,7 @@ export function CapabilityPicker({
             checked={!cap.published && !deselected.has(cap.id)}
             itemState={itemStates.get(cap.id)}
             disabled={publishing}
+            returnTo={`/tasks/${encodeURIComponent(taskId)}`}
             onToggle={() => toggle(cap.id)}
             onRetry={() => retryOne(cap)}
           />
@@ -183,6 +184,7 @@ function CapabilityPickRow({
   checked,
   itemState,
   disabled,
+  returnTo,
   onToggle,
   onRetry,
 }: {
@@ -190,6 +192,7 @@ function CapabilityPickRow({
   checked: boolean;
   itemState: ItemPublishState | undefined;
   disabled: boolean;
+  returnTo: string;
   onToggle: () => void;
   onRetry: () => void;
 }): ReactElement {
@@ -225,7 +228,7 @@ function CapabilityPickRow({
       </div>
 
       <div className="cb-cap-card__actions">
-        <a className="cb-cap-card__trial" href={trialUrl(cap.id)}>
+        <a className="cb-cap-card__trial" href={trialUrl(cap.id, returnTo)}>
           试用 →
         </a>
         {itemState?.state === 'publishing' && (

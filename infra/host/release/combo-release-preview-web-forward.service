@@ -1,0 +1,34 @@
+[Unit]
+Description=Combo Preview release Web loopback forward
+After=k3s.service
+Requires=k3s.service
+ConditionPathExists=/home/xingzheng/.kube/config
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=xingzheng
+Group=xingzheng
+EnvironmentFile=/etc/combo-release/preview-web-forward.env
+ExecStartPre=/usr/local/bin/kubectl --cache-dir=/tmp/kubectl-cache --kubeconfig=/home/xingzheng/.kube/config --namespace=combo-review get service/${COMBO_RELEASE_WEB_SERVICE}
+ExecStart=/usr/local/bin/kubectl --cache-dir=/tmp/kubectl-cache --kubeconfig=/home/xingzheng/.kube/config --namespace=combo-review port-forward --address=127.0.0.1 service/${COMBO_RELEASE_WEB_SERVICE} 18081:80
+Restart=always
+RestartSec=2
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

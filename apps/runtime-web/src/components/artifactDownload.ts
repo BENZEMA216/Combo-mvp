@@ -7,6 +7,25 @@ const DOWNLOAD_META: Record<ArtifactView['kind'], { extension: string; mime: str
   structured: { extension: 'json', mime: 'application/json;charset=utf-8' },
 };
 
+const DOWNLOAD_KIND_LABEL: Record<ArtifactView['kind'], string> = {
+  html: 'HTML',
+  markdown: 'Markdown',
+  code: '文本',
+  structured: 'JSON',
+};
+
+export function artifactDownloadLabel(kind: ArtifactView['kind'], studioMode = false): string {
+  const verb = studioMode && kind === 'html' ? '导出' : '下载';
+  return `${verb} ${DOWNLOAD_KIND_LABEL[kind] ?? '文件'}`;
+}
+
+export function artifactDownloadTitle(kind: ArtifactView['kind'], studioMode = false): string {
+  if (studioMode && kind === 'html') {
+    return '导出当前 UI 的静态 HTML 文件，不包含 Agent 运行能力';
+  }
+  return `下载当前${DOWNLOAD_KIND_LABEL[kind] ?? '产物'}文件`;
+}
+
 export function artifactDownloadMeta(kind: ArtifactView['kind']): {
   extension: string;
   mime: string;

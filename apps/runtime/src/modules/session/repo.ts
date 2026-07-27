@@ -1,6 +1,6 @@
 // sessions / messages 两表 SQL。owner 校验统一收在 SQL 的 owner_user_id 条件里：
 // 非本人与不存在同样 0 行（不暴露存在性）。
-import type { MessageRole, MessageStatus, MessageView, SessionView } from '@cb/shared';
+import type { MessageRole, MessageStatus, MessageView, SessionMode, SessionView } from '@cb/shared';
 import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
 import { parseMessageContent } from './message-content.js';
 
@@ -15,6 +15,7 @@ interface SessionDbRow {
   id: string;
   capability_id: string;
   owner_user_id: string;
+  mode: SessionMode;
   title: string | null;
   status: 'active' | 'closed';
   created_at: string | Date;
@@ -26,19 +27,21 @@ export interface SessionRow {
   id: string;
   capabilityId: string;
   ownerUserId: string;
+  mode: SessionMode;
   title: string | null;
   status: 'active' | 'closed';
   createdAt: string;
   updatedAt: string;
 }
 
-const SESSION_COLUMNS = `id, capability_id, owner_user_id, title, status, created_at, updated_at`;
+const SESSION_COLUMNS = `id, capability_id, owner_user_id, mode, title, status, created_at, updated_at`;
 
 function toSessionRow(r: SessionDbRow): SessionRow {
   return {
     id: r.id,
     capabilityId: r.capability_id,
     ownerUserId: r.owner_user_id,
+    mode: r.mode,
     title: r.title,
     status: r.status,
     createdAt: toIso(r.created_at),
@@ -50,6 +53,7 @@ export function toSessionView(row: SessionRow): SessionView {
   return {
     id: row.id,
     capabilityId: row.capabilityId,
+    mode: row.mode,
     ...(row.title ? { title: row.title } : {}),
     status: row.status,
     createdAt: row.createdAt,
@@ -90,8 +94,8 @@ export async function createSession(
   input: { capabilityId: string; ownerUserId: string },
 ): Promise<SessionRow> {
   const res = await db.query<SessionDbRow>(
-    `INSERT INTO sessions (capability_id, owner_user_id)
-     VALUES ($1, $2)
+    `INSERT INTO sessions (capability_id, owner_user_id, mode)
+     VALUES ($1, $2, 'consume')
      RETURNING ${SESSION_COLUMNS}`,
     [input.capabilityId, input.ownerUserId],
   );
@@ -100,11 +104,36 @@ export async function createSession(
   return toSessionRow(row);
 }
 
-/** 我的会话列表，按 updated_at 降序；给 capabilityId 时只列该能力下的会话（侧栏按能力隔离）。 */
+/**
+ * 幂等进入 Studio：同一 owner + capability 的 active 设计会话原子复用。
+ * 唯一部分索引负责并发闸；ON CONFLICT 让双击/重试只拿到同一条会话。
+ */
+export async function getOrCreateStudioSession(
+  db: Queryable,
+  input: { capabilityId: string; ownerUserId: string },
+): Promise<SessionRow> {
+  const res = await db.query<SessionDbRow>(
+    `INSERT INTO sessions (capability_id, owner_user_id, mode)
+     VALUES ($1, $2, 'studio')
+     ON CONFLICT (owner_user_id, capability_id)
+       WHERE status = 'active' AND mode = 'studio'
+     DO UPDATE SET updated_at = sessions.updated_at
+     RETURNING ${SESSION_COLUMNS}`,
+    [input.capabilityId, input.ownerUserId],
+  );
+  const row = res.rows[0];
+  if (!row) throw new Error('getOrCreateStudioSession: upsert returned no row');
+  return toSessionRow(row);
+}
+
+/**
+ * 我的会话列表，按 updated_at 降序；默认只列普通运行会话，避免 Studio 修改历史混进试用侧栏。
+ */
 export async function listSessions(
   db: Queryable,
   ownerUserId: string,
   capabilityId?: string,
+  mode: SessionMode = 'consume',
 ): Promise<SessionRow[]> {
   const res = await db.query<SessionDbRow>(
     `SELECT ${SESSION_COLUMNS}
@@ -112,9 +141,10 @@ export async function listSessions(
       WHERE owner_user_id = $1
         AND status = 'active'
         AND ($2::uuid IS NULL OR capability_id = $2)
+        AND mode = $3
       ORDER BY updated_at DESC
       LIMIT 100`,
-    [ownerUserId, capabilityId ?? null],
+    [ownerUserId, capabilityId ?? null, mode],
   );
   return res.rows.map(toSessionRow);
 }

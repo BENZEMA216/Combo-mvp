@@ -41,7 +41,7 @@ function noStore(reply: FastifyReply): void {
 function sessionCookieOptions(req: FastifyRequest, maxAge?: number) {
   return {
     httpOnly: AUTH_SESSION_COOKIE_HTTP_ONLY,
-    secure: req.server.infra.env.NODE_ENV === 'production',
+    secure: req.server.infra.env.SESSION_COOKIE_SECURE,
     sameSite: AUTH_SESSION_COOKIE_SAME_SITE,
     path: AUTH_SESSION_COOKIE_PATH,
     ...(maxAge === undefined ? {} : { maxAge }),
@@ -49,7 +49,7 @@ function sessionCookieOptions(req: FastifyRequest, maxAge?: number) {
 }
 
 function requestSessionCookieName(req: FastifyRequest): string {
-  return authSessionCookieName(req.server.infra.env.NODE_ENV);
+  return authSessionCookieName(req.server.infra.env.SESSION_COOKIE_SECURE);
 }
 
 function requestSessionCookie(req: FastifyRequest): string | undefined {
@@ -163,7 +163,7 @@ export function meHandler(): RouteHandlerMethod {
   };
 }
 
-/** 无会话、畸形会话、未知会话与重复调用都成功；可识别 Cookie 的数据库故障必须返回 503。 */
+/** 无会话、畸形会话、未知会话与重复调用都成功；可识别 Cookie 的数据库故障返回 503。 */
 export function logoutHandler(): RouteHandlerMethod {
   return async function (req, reply) {
     noStore(reply);

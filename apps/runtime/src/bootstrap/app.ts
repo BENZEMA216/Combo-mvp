@@ -17,6 +17,7 @@ import { loadEnv, type Env } from '../platform/config/env.js';
 import { buildInfra, createRedisInterruptBus } from '../platform/infra/index.js';
 import { registerHealthRoutes } from '../platform/http/health.js';
 import { corsOriginPolicy } from '../platform/http/browser-origin.js';
+import { registerVersionRoute } from '../platform/http/version.js';
 import {
   currentTraceId,
   currentTraceLogFields,
@@ -35,6 +36,25 @@ function resolveRequestTraceId(
   url?: string,
 ): string {
   return traceIdFromHeaders(headers) ?? traceIdFromUrl(url) ?? currentTraceId() ?? newTraceId();
+}
+
+async function settleBeforeShutdownDeadline(
+  promise: Promise<unknown>,
+  signal: AbortSignal,
+): Promise<void> {
+  void promise.catch(() => undefined);
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    signal.addEventListener('abort', finish, { once: true });
+    void promise.finally(finish).catch(() => undefined);
+  });
 }
 
 export interface BuildAppOptions {
@@ -59,7 +79,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   });
 
   // —— 基础设施容器 + 轮次编排器 ——
-  const infra = buildInfra(env);
+  const infra = await buildInfra(env, app.log);
   app.decorate('infra', infra);
   app.decorate(
     'turns',
@@ -71,7 +91,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       agentFactory: createPiTurnAgentFactory(env),
       idleTimeoutMs: env.RUNTIME_TURN_IDLE_TIMEOUT_MS,
       interrupts: createRedisInterruptBus(env),
+      sandbox: infra.sandbox,
       sweepIntervalMs: TURN_SWEEP_INTERVAL_MS,
+      shutdownTimeoutMs: env.RUNTIME_SHUTDOWN_TIMEOUT_MS,
       log: app.log,
     }),
   );
@@ -125,16 +147,21 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // 健康检查（不在 /api/v1 前缀）。
   await registerHealthRoutes(app);
 
+  // 公开发布身份（无密钥、no-store），供部署验收核对 Runtime 与同一 release manifest。
+  await registerVersionRoute(app, env);
+
   // 业务路由（capability / session / artifact）。
   await registerBusinessRoutes(app);
 
   // 进程退出时关闭基础设施连接。
   app.addHook('onClose', async () => {
-    app.turns.dispose();
+    const deadline = AbortSignal.timeout(env.RUNTIME_SHUTDOWN_TIMEOUT_MS);
+    await settleBeforeShutdownDeadline(app.turns.dispose(deadline), deadline);
+    await settleBeforeShutdownDeadline(infra.sandbox.dispose(deadline), deadline);
     const { closeDb, closeObjectStore, closeRedis } = await import('../platform/infra/index.js');
-    await closeDb();
     closeObjectStore();
-    await closeRedis();
+    await settleBeforeShutdownDeadline(closeDb(), deadline);
+    await settleBeforeShutdownDeadline(closeRedis(), deadline);
   });
 
   return app;

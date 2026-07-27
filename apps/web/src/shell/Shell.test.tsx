@@ -18,9 +18,12 @@ describe('Shell navigation', () => {
     );
 
     expect(screen.queryByRole('link', { name: '能力市集' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '我的能力' })).toHaveAttribute('href', '/capabilities');
+    expect(screen.getByRole('link', { name: '我的 Agent' })).toHaveAttribute(
+      'href',
+      '/capabilities',
+    );
 
     await userEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
-    expect(screen.getByRole('link', { name: '我的能力' })).toHaveAttribute('title', '我的能力');
+    expect(screen.getByRole('link', { name: '我的 Agent' })).toHaveAttribute('title', '我的 Agent');
   });
 });

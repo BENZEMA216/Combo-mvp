@@ -45,9 +45,10 @@ spec:
               value: 0.0.0.0
             - name: PORT
               value: '3100'
-            - name: PUBLIC_APP_ORIGIN
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: PUBLIC_APP_ORIGIN }
+            - name: PUBLIC_APP_ORIGINS
+              value: combo-public-app-origin
+            - name: SESSION_COOKIE_SECURE
+              value: combo-session-cookie-secure
             # runtime 的代码契约要求 REDIS_URL，不能使用 authoring 的 REDIS_QUEUE_URL 替代。
             - name: REDIS_URL
               value: redis://redis-queue:6379
@@ -62,9 +63,20 @@ spec:
               value: http://otel-collector.observability.svc.cluster.local:4318
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: deployment.environment=k8s
-            - name: DATABASE_URL
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
               valueFrom:
-                secretKeyRef: { name: combo-env, key: RUNTIME_DATABASE_URL }
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_runtime
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_RUNTIME_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef: { name: combo-env, key: S3_ACCESS_KEY }

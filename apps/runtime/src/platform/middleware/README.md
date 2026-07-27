@@ -1,6 +1,6 @@
 # platform/middleware —— 鉴权中间件
 
-这个目录把共享浏览器会话校验封装为可挂在业务端点前的守卫。守卫在生产只接受主机限定的 `__Host-cb_session`，在本地 HTTP 开发测试只接受 `cb_session`，并把查到的业务用户身份挂到 `req.auth`。生产不会回落到无前缀父域 Cookie。
+这个目录把共享浏览器会话校验封装为可挂在业务端点前的守卫。守卫按 `SESSION_COOKIE_SECURE` 选择 Cookie：true 只接受主机限定的 `__Host-cb_session`，false 只接受 `cb_session`，并把查到的业务用户身份挂到 `req.auth`。它不会在两个 Cookie 名之间回落。
 
 ## 文件
 

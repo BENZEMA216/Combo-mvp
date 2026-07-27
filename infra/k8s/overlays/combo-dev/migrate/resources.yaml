@@ -1,0 +1,97 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: migrate
+  name: migrate
+  namespace: combo-preview
+spec:
+  activeDeadlineSeconds: 600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: migrate
+        combo.dev/environment: combo-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - command:
+            - node
+            - --experimental-strip-types
+            - db/scripts/migrate.ts
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_USER
+                  name: combo-dev-env
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_PASSWORD
+                  name: combo-dev-env
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_DB
+                  name: combo-dev-env
+            - name: POSTGRES_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_API_PASSWORD
+                  name: combo-dev-env
+            - name: POSTGRES_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_WORKER_PASSWORD
+                  name: combo-dev-env
+            - name: POSTGRES_RUNTIME_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_RUNTIME_PASSWORD
+                  name: combo-dev-env
+            - name: EXPECTED_MIGRATION_HEAD
+              value: 0008_application_database_roles.sql
+            - name: MIGRATION_RUNS
+              value: '2'
+          image: ghcr.io/dangdang-tech/combo-api:latest
+          name: migrate
+          resources:
+            limits:
+              cpu: 300m
+              ephemeral-storage: 512Mi
+              memory: 512Mi
+            requests:
+              cpu: 100m
+              ephemeral-storage: 128Mi
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - mountPath: /tmp
+              name: tmp
+      imagePullSecrets:
+        - name: combo-dev-registry
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      volumes:
+        - emptyDir:
+            sizeLimit: 128Mi
+          name: tmp
+  # 总部署 deadline 为 6900 秒；迁移对象必须覆盖后续真实浏览器验收与证据采集窗口。
+  ttlSecondsAfterFinished: 7200

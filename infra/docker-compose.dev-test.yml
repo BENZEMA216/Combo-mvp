@@ -31,7 +31,8 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: development
-      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:?PUBLIC_APP_ORIGIN 仅测试时必填}
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 仅测试时必填}
+      SESSION_COOKIE_SECURE: 'false'
       RESEND_API_KEY: ${RESEND_MOCK_API_KEY:?RESEND_MOCK_API_KEY 仅测试时必填}
       RESEND_FROM_EMAIL: ${RESEND_MOCK_FROM_EMAIL:-login@example.test}
       RESEND_API_BASE_URL: http://resend-mock:4010
@@ -41,7 +42,8 @@ services:
   runtime:
     environment:
       NODE_ENV: development
-      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:?PUBLIC_APP_ORIGIN 仅测试时必填}
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 仅测试时必填}
+      SESSION_COOKIE_SECURE: 'false'
       REDIS_URL: redis://redis_queue:6379
       OTEL_SDK_DISABLED: 'true'
 

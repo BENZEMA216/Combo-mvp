@@ -25,6 +25,48 @@ describe('Redis Stream 事件日志', () => {
     expect(log.entries('a').map((entry) => entry.event.n)).toEqual([3, 4, 5]);
   });
 
+  it('同一 runId 的相同终态幂等，不同终态不能追加第二条', async () => {
+    const log = new FakeSessionEventLog(() => 10);
+    const finished = { type: 'RUN_FINISHED', runId: 'run-1' };
+    const first = await log.appendTerminal('a', 'run-1', finished);
+    expect(await log.appendTerminal('a', 'run-1', finished)).toBe(first);
+    await expect(
+      log.appendTerminal('a', 'run-1', { type: 'RUN_ERROR', runId: 'run-1' }),
+    ).rejects.toThrow('TERMINAL_EVENT_CONFLICT');
+    await expect(
+      log.append('a', { type: 'TEXT_MESSAGE_CONTENT', runId: 'run-1', delta: 'late' }),
+    ).rejects.toThrow('TERMINAL_ALREADY_APPENDED');
+    expect(log.entries('a')).toHaveLength(1);
+  });
+
+  it('修复匹配终态时会越过同一 run 的迟到普通事件并重放到尾部', async () => {
+    const log = new FakeSessionEventLog(() => 10);
+    const runId = 'run-late';
+    const terminal = { type: 'RUN_ERROR', runId, message: 'stopped' };
+    await log.append('a', { type: 'RUN_STARTED', runId });
+    const staleTerminalId = await log.appendTerminal('a', runId, terminal);
+    const lateStateId = log.appendUnfencedForTest('a', { type: 'STATE_DELTA', runId });
+    const lateTextId = log.appendUnfencedForTest('a', {
+      type: 'TEXT_MESSAGE_CONTENT',
+      runId,
+      delta: 'late',
+    });
+
+    const repairedId = await log.repairTerminal('a', runId, terminal);
+    expect(repairedId).not.toBe(staleTerminalId);
+    expect(compareStreamIds(repairedId, lateTextId)).toBeGreaterThan(0);
+    expect(compareStreamIds(lateTextId, lateStateId)).toBeGreaterThan(0);
+    expect(log.entries('a').map((entry) => entry.event.type)).toEqual([
+      'RUN_STARTED',
+      'STATE_DELTA',
+      'TEXT_MESSAGE_CONTENT',
+      'RUN_ERROR',
+    ]);
+    await expect(
+      log.append('a', { type: 'TEXT_MESSAGE_CONTENT', runId, delta: 'later' }),
+    ).rejects.toThrow('TERMINAL_ALREADY_APPENDED');
+  });
+
   it('rangeAfter 使用开区间并支持分批', async () => {
     const log = new FakeSessionEventLog(() => 10);
     for (let n = 1; n <= 4; n += 1) await log.append('a', { n });
