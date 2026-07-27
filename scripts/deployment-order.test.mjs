@@ -278,6 +278,31 @@ test('isolated auth E2E binds every published service to its run-scoped loopback
   assert.equal((composeDevTest.match(/ports: !override/g) ?? []).length, 7);
 });
 
+test('isolated auth E2E serves non-placeholder Test release metadata from the built Web image', () => {
+  const webOverride = composeDevTest.slice(composeDevTest.indexOf('  web:'));
+  assert.match(webOverride, /COMBO_ENVIRONMENT: test/);
+  for (const variable of [
+    'COMBO_SOURCE_SHA',
+    'COMBO_RELEASE_ID',
+    'COMBO_BUILT_AT',
+    'COMBO_RELEASE_MANIFEST_DIGEST',
+    'COMBO_WEB_ASSET_MANIFEST',
+  ]) {
+    assert.match(webOverride, new RegExp(`${variable}: \\$\\{${variable}:\\?`));
+  }
+  assert.match(authE2e, /docker run --rm --entrypoint sha256sum[\s\S]*web-asset-manifest\.json/);
+  const buildAt = authE2e.indexOf('"${COMPOSE[@]}" build');
+  const derivedDigestAt = authE2e.lastIndexOf('COMBO_WEB_ASSET_MANIFEST="sha256:$(');
+  const assetReadAt = authE2e.indexOf('docker run --rm --entrypoint sha256sum', derivedDigestAt);
+  const validatedConfigAt = authE2e.indexOf('"${COMPOSE[@]}" config -q', assetReadAt);
+  const upAt = authE2e.indexOf('"${COMPOSE[@]}" up -d --wait', validatedConfigAt);
+  assert.ok(buildAt >= 0);
+  assert.ok(derivedDigestAt > buildAt);
+  assert.ok(assetReadAt > derivedDigestAt);
+  assert.ok(validatedConfigAt > assetReadAt);
+  assert.ok(upAt > validatedConfigAt);
+});
+
 test('migration manifests pass owner credentials as discrete PG fields instead of an unescaped URI', () => {
   assert.doesNotMatch(migrationJob, /DATABASE_URL|postgres:\/\/\$\(POSTGRES_USER\)/);
   assert.match(migrationJob, /name: PGPASSWORD/);

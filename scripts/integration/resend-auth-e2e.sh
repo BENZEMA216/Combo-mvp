@@ -31,6 +31,9 @@ node --input-type=module -e '
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail 'not inside a git worktree'
 WORKTREE_ROOT="$(git rev-parse --show-toplevel)"
 [[ "$WORKTREE_ROOT" == "$ROOT_DIR" ]] || fail 'script must run from the checked-out repository root'
+SOURCE_SHA="${SOURCE_SHA:-$(git rev-parse HEAD)}"
+[[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] || fail 'SOURCE_SHA must be a full lowercase commit SHA'
+[[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]] || fail 'SOURCE_SHA does not match the checkout'
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agora-resend-auth-e2e.XXXXXX")"
 chmod 700 "$TMP_DIR"
@@ -78,6 +81,20 @@ RESEND_MOCK_FROM_EMAIL="$RESEND_FROM_EMAIL"
 ALTERNATE_BEARER="$(node --input-type=module -e 'import { randomBytes } from "node:crypto"; process.stdout.write("bearer-" + randomBytes(24).toString("base64url"));')"
 ALTERNATE_QUERY_TOKEN="$(node --input-type=module -e 'import { randomBytes } from "node:crypto"; process.stdout.write("query-" + randomBytes(24).toString("base64url"));')"
 PROXY_FAILURE_QUERY="$(node --input-type=module -e 'import { randomBytes } from "node:crypto"; process.stdout.write("proxy-" + randomBytes(24).toString("base64url"));')"
+COMBO_SOURCE_SHA="$SOURCE_SHA"
+COMBO_RELEASE_ID="release-$SOURCE_SHA"
+COMBO_BUILT_AT="$(SOURCE_TIMESTAMP="$(git show -s --format=%cI "$SOURCE_SHA")" node --input-type=module -e '
+  const timestamp = new Date(process.env.SOURCE_TIMESTAMP ?? "");
+  if (Number.isNaN(timestamp.getTime())) process.exit(1);
+  process.stdout.write(timestamp.toISOString());
+')"
+COMBO_RELEASE_MANIFEST_DIGEST="sha256:$(SOURCE_SHA="$SOURCE_SHA" node --input-type=module -e '
+  import { createHash } from "node:crypto";
+  process.stdout.write(createHash("sha256").update("auth-e2e:" + process.env.SOURCE_SHA).digest("hex"));
+')"
+# Compose validates the environment before the image exists. Replace this non-runtime placeholder
+# with the exact built asset digest before creating any container.
+COMBO_WEB_ASSET_MANIFEST="sha256:$(printf '0%.0s' {1..64})"
 
 export WEB_PORT PUBLIC_APP_ORIGIN PUBLIC_APP_ORIGINS RESEND_MOCK_PORT POSTGRES_PORT REDIS_QUEUE_PORT REDIS_HOT_PORT
 export MINIO_API_PORT MINIO_CONSOLE_PORT API_PORT S3_PUBLIC_ENDPOINT
@@ -85,6 +102,8 @@ export POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB POSTGRES_API_PASSWORD
 export POSTGRES_WORKER_PASSWORD POSTGRES_RUNTIME_PASSWORD S3_ACCESS_KEY S3_SECRET_KEY
 export GRAFANA_ADMIN_PASSWORD RESEND_MOCK_API_KEY RESEND_API_KEY OTP_HMAC_SECRET
 export RESEND_FROM_EMAIL RESEND_MOCK_FROM_EMAIL
+export COMBO_SOURCE_SHA COMBO_RELEASE_ID COMBO_BUILT_AT
+export COMBO_RELEASE_MANIFEST_DIGEST COMBO_WEB_ASSET_MANIFEST
 
 COMPOSE=(
   docker compose
@@ -403,6 +422,15 @@ step 'Validating and building the isolated Resend auth test stack...'
 for production_service in migrate api runtime web; do
   assert_production_image_clean "$production_service"
 done
+COMBO_WEB_ASSET_MANIFEST="sha256:$(
+  docker run --rm --entrypoint sha256sum \
+    "${PROJECT_NAME}-web:latest" /usr/share/nginx/html/web-asset-manifest.json |
+    awk 'NR == 1 { print $1 }'
+)"
+[[ "$COMBO_WEB_ASSET_MANIFEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+  fail 'could not derive the built Web asset manifest digest'
+export COMBO_WEB_ASSET_MANIFEST
+"${COMPOSE[@]}" config -q
 "${COMPOSE[@]}" up -d --wait postgres redis_queue redis_hot minio resend-mock migrate api runtime web
 set_mock_mode accepted
 
