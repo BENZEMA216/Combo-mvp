@@ -359,6 +359,13 @@ test('isolated auth E2E enables cleanup before build and audits every project-lo
   }
 });
 
+test('CI installs the pinned Playwright browser before the first-party auth E2E', () => {
+  const browserInstallAt = ci.indexOf('pnpm exec playwright install --with-deps chromium');
+  const authE2eAt = ci.indexOf('bash scripts/integration/resend-auth-e2e.sh');
+  assert.ok(browserInstallAt >= 0);
+  assert.ok(authE2eAt > browserInstallAt);
+});
+
 test('migration image includes only the ledger runner and its role provisioner', () => {
   assert.deepEqual(apiDockerfile.match(/^COPY --from=build \/app\/db\/.*$/gm), [
     'COPY --from=build /app/db/package.json ./db/package.json',
