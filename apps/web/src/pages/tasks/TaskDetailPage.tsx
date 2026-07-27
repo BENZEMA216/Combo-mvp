@@ -5,7 +5,7 @@
 //   - state_snapshot 全量 progress（subtasks 逐条点亮）+ progress 增量帧；
 //   - item-appended 帧触发能力项列表刷新（边提取边出现，刷新页面不丢）；
 //   - done 帧终态 → 重拉任务定格视图。
-import { useEffect, type ReactElement } from 'react';
+import { useEffect, useState, type ReactElement } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CapabilityView, TaskView } from '@cb/shared';
@@ -24,6 +24,7 @@ import {
   SlowHint,
   SubtaskChecklist,
 } from '../../components/index.js';
+import { goToLogin } from '../../shell/auth.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { CapabilityPicker } from './CapabilityPicker.js';
 import {
@@ -38,6 +39,7 @@ export function TaskDetailPage(): ReactElement {
   useDocumentTitle('任务详情 · Combo');
   const { taskId = '' } = useParams();
   const qc = useQueryClient();
+  const [sseReconnectKey, setSseReconnectKey] = useState(0);
 
   const taskQuery = useQuery({
     queryKey: ['task', taskId],
@@ -51,6 +53,7 @@ export function TaskDetailPage(): ReactElement {
   // 只有在跑的任务才建流；SSE 定终态后重拉任务（capabilityCount / lastError 定格）。
   const sse = useTaskEvents(task ? taskEventsUrl(task.id) : null, {
     enabled: task?.status === 'running',
+    reconnectKey: sseReconnectKey,
   });
   const sseTerminal = sse.status === 'done' || (sse.status === 'error' && !!sse.done);
   useEffect(() => {
@@ -126,7 +129,9 @@ export function TaskDetailPage(): ReactElement {
       </div>
 
       <UploadCard task={task} />
-      {extracting && <ExtractCard sse={sse} />}
+      {extracting && (
+        <ExtractCard sse={sse} onReconnect={() => setSseReconnectKey((value) => value + 1)} />
+      )}
       {extracting && (
         <TaskCapabilitiesArea taskId={taskId} task={task} query={capsQuery} extracting />
       )}
@@ -215,8 +220,33 @@ function uploadDetailLine(task: TaskView): string {
   return '运行连接命令后，这里会显示实时分片进度';
 }
 
-/** 提取阶段卡：SSE 实时进度（进度条 + 子任务点亮 + 慢提示 + 重连安抚）。 */
-function ExtractCard({ sse }: { sse: ReturnType<typeof useTaskEvents> }): ReactElement {
+/** 提取阶段卡：错误优先于旧进度；401 去自定义登录，依赖错误由用户显式重连。 */
+export function ExtractCard({
+  sse,
+  onReconnect,
+  onLogin = () => goToLogin(window.location.pathname + window.location.search),
+}: {
+  sse: ReturnType<typeof useTaskEvents>;
+  onReconnect: () => void;
+  onLogin?: () => void;
+}): ReactElement {
+  if (sse.error) {
+    const needsLogin = sse.error.action === 'escalate';
+    return (
+      <div className="cb-card cb-card--failed" data-sse-status={sse.status} role="alert">
+        <h3 className="cb-card__title">提取进度暂时不可用</h3>
+        <p className="cb-card__line cb-task-error">{sse.error.userMessage}</p>
+        <button
+          type="button"
+          className="cb-primary-btn"
+          onClick={needsLogin ? onLogin : onReconnect}
+        >
+          {needsLogin ? '去登录' : '重新连接'}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="cb-card" data-sse-status={sse.status}>
       <h3 className="cb-card__title">提取</h3>

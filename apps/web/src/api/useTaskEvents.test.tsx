@@ -105,6 +105,21 @@ describe('reduceTaskEvents — 帧归并（纯函数）', () => {
     });
   });
 
+  it('用户显式重连时清除旧握手错误，避免错误卡阻挡新连接状态', () => {
+    const failed = reduceTaskEvents(INITIAL_TASK_EVENTS_STATE, {
+      type: 'localError',
+      error: {
+        userMessage: '依赖服务暂时不可用。',
+        retriable: true,
+        action: 'retry',
+        traceId: 'trace-reconnect',
+      },
+    });
+    const reconnecting = reduceTaskEvents(failed, { type: 'connecting' });
+    expect(reconnecting.status).toBe('connecting');
+    expect(reconnecting.error).toBeUndefined();
+  });
+
   it('heartbeat：不改业务态', () => {
     const before = frame(INITIAL_TASK_EVENTS_STATE, 'state_snapshot', { progress: PROGRESS });
     const after = frame(before, 'heartbeat', { ts: 1 });
@@ -181,36 +196,13 @@ describe('useTaskEvents — 连接语义（MockFetchEventSource）', () => {
     expect(result.current.progress?.subtasks).toEqual(PROGRESS.subtasks);
   });
 
-  it('建流前 HTTP 401 → refresh 成功后只重连一次', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(null, { status: 204 })),
-    );
+  it('建流前 HTTP 401 直接进入统一错误态，不续期或重连', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
     restore = __setFetchEventSourceForTests(MockFetchEventSource.impl);
     const { result } = renderHook(() => useTaskEvents('/api/v1/tasks/t1/events'));
     const conn = MockFetchEventSource.last!;
-    await act(async () => {
-      conn.open(new Response(null, { status: 401 }));
-    });
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith(
-      '/api/v1/auth/refresh',
-      expect.objectContaining({ method: 'POST', credentials: 'include' }),
-    );
-    expect(result.current.status).toBe('reconnecting');
 
-    act(() => conn.open());
-    expect(result.current.status).toBe('open');
-  });
-
-  it('建流前 HTTP 401 且 refresh 被拒 → 统一错误态，不循环', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(null, { status: 401 })),
-    );
-    restore = __setFetchEventSourceForTests(MockFetchEventSource.impl);
-    const { result } = renderHook(() => useTaskEvents('/api/v1/tasks/t1/events'));
-    const conn = MockFetchEventSource.last!;
     await act(async () => {
       conn.open(
         new Response(
@@ -226,8 +218,11 @@ describe('useTaskEvents — 连接语义（MockFetchEventSource）', () => {
         ),
       );
     });
+
     expect(result.current.status).toBe('error');
     expect(result.current.error?.userMessage).toBe('请先登录。');
+    expect(MockFetchEventSource.connections).toHaveLength(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it('enabled=false / url=null 不建流', () => {

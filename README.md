@@ -74,10 +74,10 @@ node apps/authoring/dist/processes/api.js
 # 默认监听 :3000（可用 PORT/HOST 覆盖）
 ```
 
-无 DB / Redis / MinIO / Logto 时进程**不崩溃**，按设计降级：
+无 DB / Redis / MinIO 时进程**不崩溃**，按设计降级：
 
 - `GET /health` 返回 `200 {"status":"ok"}`（liveness，不查依赖）。
-- `GET /ready` 返回 `503`，结构化列出六依赖（db/redis_queue/redis_hot/minio/logto 标 `down`、llm 标 `degraded`），并给出 `ready:false`。
+- `GET /ready` 返回 `503`，结构化列出基础依赖并给出 `ready:false`；邮件供应商故障只阻塞新验证码，不使已有会话失效。
 - 受保护端点（如 `GET /api/v1/me`）返回 `401` ErrorEnvelope（`UNAUTHENTICATED` / `escalate`，绝不裸露 code）。
 - 未知路由返回 `404` 信封。
 - 每个响应带 `x-trace-id` 头 + 结构化 pino 日志
@@ -105,7 +105,7 @@ PROCESS=worker node apps/authoring/dist/processes/worker.js
 
 ## 数据库迁移
 
-DDL 真源在 `db/migrations/`（`0000` 至 `0006`，共 7 个 SQL，字典序即执行序）。
+DDL 真源在 `db/migrations/`（`0000` 至 `0008`，共 9 个 SQL，字典序即执行序）。
 Runner 自带记账表 `schema_migrations`，**幂等可重入**：已应用文件跳过、逐文件单事务、失败即止。
 
 ```bash
@@ -126,36 +126,28 @@ pnpm -F @cb/db migrate:status  # 列清单（无连接也能列）
 
 > 以下 Compose 命令只用于独立开发环境，不作为 Test、Preview 或 Production 的验收证据。tecent2 源码检查不运行这些命令。
 
-编排在 `infra/docker-compose.yml`，17 个服务和 6 个命名卷。固定启动顺序由 `depends_on` 与健康条件约束：
-
-PostgreSQL 就绪后依次运行 Logto 建库与变更任务，再启动 Logto。业务迁移完成后才会启动 API、Worker、Runtime 和 Web。
+编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0008` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
 
 要点：
 
-- Logto OSS 不自跑迁移：先 CLI `db seed` 建表（一次性容器），再 `db alteration deploy`（单实例一次性 job），跑完才起 logto 运行态。
-- 业务库 `combo` 与身份库 `logto` 同 PG 实例、不同 database，各自独立迁移，互不干扰。
+- 第一方邮箱 OTP 由 API 通过 Resend 发出；数据库只保存邮箱身份、验证码 HMAC 摘要和不透明会话摘要。
+- API、Worker、Runtime 分别使用 `combo_api`、`combo_worker`、`combo_runtime` 最小权限数据库角色。
 - Redis 物理拆两实例：`redis_queue`（AOF + noeviction，BullMQ 队列绝不被驱逐）/ `redis_hot`（maxmemory + allkeys-lru，事件 Streams / 锁 / 限流，可驱逐、无持久卷）。
-- 健康检查：postgres / redis×2 / minio 用原生探针；logto 断言 OIDC discovery（`{issuer}/.well-known/openid-configuration` 的 `issuer` / `jwks_uri`）；api 用 `/health`（liveness）；observability 栈提供 Grafana + Loki + Tempo + OpenTelemetry Collector。
+- 健康检查：postgres / redis×2 / minio 用原生探针；api 用 `/health`（liveness）；observability 栈提供 Grafana + Loki + Tempo + OpenTelemetry Collector。
 
 ```bash
 cp .env.compose.example .env    # 全栈起栈用：填全部密钥（不得留空/不得用弱默认）
 pnpm -F @cb/infra compose:config  # docker compose config（静态校验编排）
 bash scripts/start.sh           # 严格固定序起全栈（每步 --wait，失败即止；起栈前先跑弱密钥守卫）
-bash scripts/smoke.sh           # 端到端冒烟（/health /ready 结构 / ErrorEnvelope / Logto discovery）
+bash scripts/smoke.sh           # 端到端冒烟（/health /ready / 第一方邮箱认证边界）
 pnpm -F @cb/infra compose:down  # 拆栈
 ```
 
 观测入口：Grafana `http://localhost:3003/d/combo-trace-debug/trace-debug`，输入 UI 反馈码（`traceId`）即可查关联日志。
 
-#### 两套 env 示例（按运行语境二选一，issuer 各自自洽）
+#### 环境配置
 
-| 运行语境                   | 复制哪个               | Logto issuer（canonical）    | 密钥要求                                                                             |
-| -------------------------- | ---------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
-| **本机直跑**（无 Docker）  | `.env.local.example`   | `http://localhost:3001/oidc` | dev 占位可用（combo/minioadmin）；`LOGTO_AUDIENCE` 可空（不强校 aud）                |
-| **全栈 compose**（生产栈） | `.env.compose.example` | `http://logto:3001/oidc`     | **密钥必填、禁弱默认**；`start.sh` 起栈前守卫拒绝空值与 combo/minioadmin/postgres 等 |
-
-- **为何拆两套**：单一 `.env` 的 Logto URL 若用 `localhost`，在 compose 网络里会让 API 容器内 `/ready` 和 JWKS 打到自己（容器内 `localhost` ≠ `logto` 容器）。故 compose 用服务名 `logto:3001`，本机直跑用 `localhost:3001`，两套各自 `LOGTO_ENDPOINT == {LOGTO_ISSUER 去 /oidc}`、自洽不分裂。
-- **为何示例密钥留空**：示例里若带可用密钥（combo/minioadmin），会满足 compose 的 `${VAR:?}` = 绕过「生产无默认密钥」。故 `.env.compose.example` 所有密钥项留空，且 `scripts/start.sh` 加弱默认守卫（空或已知弱默认值即拒绝起栈），与 `apps/authoring/src/platform/config/env.ts` 生产守卫双保险。
+本机直跑复制 `.env.local.example`；Compose 使用 `.env.compose.example`。生产式配置必须提供 `PUBLIC_APP_ORIGINS`、三个数据库角色密码、`RESEND_API_KEY` 和 `OTP_HMAC_SECRET`。`scripts/start.sh` 会拒绝空值和已知弱默认值。
 
 环境变量真源是上述两个 `.env.*.example`，分两类消费者：`[app]`（Node 进程的环境 schema 校验）与 `[compose]`（compose 变量替换）。
 
@@ -196,6 +188,6 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 
 ## 验证
 
-源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0006`、再次幂等执行和异常账本拒绝。
+源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0008`、再次幂等执行、应用角色权限和异常账本拒绝。
 
 Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护工作流核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失；源码目录中的普通测试不启动 Docker 或 Docker Compose。

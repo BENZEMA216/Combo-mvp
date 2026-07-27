@@ -1,9 +1,10 @@
 // 极简 SQL 迁移 runner（B-03）。按文件名字典序执行 migrations/*.sql，记账到 schema_migrations。
-// 需 DATABASE_URL（无 Docker，连任意 PG 实例即可）。
+// 本地可用 DATABASE_URL；编排环境使用 PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE，避免把密码拼入 URI。
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client } from 'pg';
+import { provisionApplicationRoleLogins } from './provision-app-roles.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = resolve(__dirname, '..', 'migrations');
@@ -142,9 +143,30 @@ function parseOptions(argv: readonly string[]): CliOptions {
   };
 }
 
+function hasDiscreteConnectionConfig(): boolean {
+  return Boolean(process.env.PGHOST && process.env.PGUSER && process.env.PGDATABASE);
+}
+
+function migrationClient(): Client {
+  if (process.env.DATABASE_URL) return new Client({ connectionString: process.env.DATABASE_URL });
+  if (hasDiscreteConnectionConfig()) {
+    const port = Number(process.env.PGPORT ?? '5432');
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new Error('[migrate] PGPORT 配置不合法');
+    }
+    return new Client({
+      host: process.env.PGHOST,
+      port,
+      user: process.env.PGUSER,
+      password: process.env.PGPASSWORD,
+      database: process.env.PGDATABASE,
+    });
+  }
+  return new Client({ connectionString: 'postgres://combo:combo@localhost:5432/combo' });
+}
+
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
-  const databaseUrl = process.env.DATABASE_URL ?? 'postgres://combo:combo@localhost:5432/combo';
   const files = listMigrations();
   const sourcePlan = planMigrations(files, [], options.expectedHead);
 
@@ -153,7 +175,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  if (options.statusOnly && !process.env.DATABASE_URL) {
+  if (options.statusOnly && !process.env.DATABASE_URL && !hasDiscreteConnectionConfig()) {
     // 无连接也能列出迁移清单（CI/守门用）。
     console.log(
       `migration head: ${sourcePlan.head}\n` +
@@ -163,7 +185,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  const client = new Client({ connectionString: databaseUrl });
+  const client = migrationClient();
   await client.connect();
   try {
     let ledgerExists = (
@@ -282,6 +304,10 @@ async function main(): Promise<void> {
         `migration pass ${run}/${options.migrationRuns} up to date at ${finalPlan.head}.`,
       );
     }
+
+    // 0008 先以 NOLOGIN 创建并收口角色权限；全部迁移和账本复验成功后，才参数化设置密码。
+    const roleLoginsConfigured = await provisionApplicationRoleLogins(client);
+    if (roleLoginsConfigured) console.log('application database roles ready.');
   } finally {
     await client.end();
   }

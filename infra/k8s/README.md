@@ -2,7 +2,7 @@
 
 这套清单把生产 Docker Compose 栈中的 PostgreSQL、两个 Redis 实例、MinIO、桶初始化任务、数据库迁移任务和三个业务镜像部署到单节点 k3s。所有资源位于 `combo` 命名空间，持久卷使用默认可用的 `local-path` 存储类。
 
-清单保留了 Compose 中的数据持久化、Redis 队列不驱逐、Redis 热数据可驱逐、MinIO 建桶和独立数据库迁移等语义。Kubernetes 没有采用 Compose 的 `depends_on`；基础设施的就绪探针负责报告状态，两个一次性任务和业务工作负载由部署命令按顺序创建。生产使用外部 Logto，因此这里不部署 Logto 服务。
+清单保留数据持久化、Redis 队列不驱逐、Redis 热数据可驱逐、MinIO 建桶和独立数据库迁移等语义。Kubernetes 没有采用 Compose 的 `depends_on`；基础设施的就绪探针负责报告状态，两个一次性任务和业务工作负载由部署命令按顺序创建。认证由 API 的第一方邮箱 OTP、PostgreSQL 摘要和不透明会话完成。
 
 ## 可选 Sandbox Tools
 
@@ -30,7 +30,7 @@ kubectl -n combo create secret docker-registry ghcr-pull --docker-server=ghcr.io
 
 `ghcr-pull` 用的 token 需要长期有效：CD 流水线用的是 GitHub Actions 的临时 token、部署完即登出，集群里拉镜像必须另建一个 read:packages 权限的个人访问令牌（PAT）。
 
-`combo-env` 必须包含清单引用的 PostgreSQL、S3、Logto 和 LLM 配置。部署前还必须把 `kustomization.yaml` 中三个业务镜像的 `latest` 改成被部署提交的完整 SHA。可以在 `infra/k8s` 目录执行以下命令：
+`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。`RESEND_FROM_EMAIL` 固定为 `Combo <auth@buildwithcombo.com>`，不从 Secret 覆盖。部署前还必须把三个业务镜像的 `latest` 改成不可变摘要。
 
 ```sh
 kustomize edit set image ghcr.io/dangdang-tech/combo-api=ghcr.io/dangdang-tech/combo-api:<SHA> ghcr.io/dangdang-tech/combo-runtime=ghcr.io/dangdang-tech/combo-runtime:<SHA> ghcr.io/dangdang-tech/combo-web=ghcr.io/dangdang-tech/combo-web:<SHA>

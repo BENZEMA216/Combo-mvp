@@ -52,6 +52,9 @@ func TestLandlockAllowsOnlyWorkspaceTmpAndDevNullWrites(t *testing.T) {
 		"SANDBOX_EXEC_TEST_OUTSIDE="+outside,
 	)
 	if output, err := command.CombinedOutput(); err != nil {
+		if string(output) == "Landlock ABI 3 is required\n" {
+			t.Skip("host kernel does not expose Landlock ABI 3")
+		}
 		t.Fatalf("Landlock helper failed: %v: %s", err, output)
 	}
 	contents, err := os.ReadFile(outside)

@@ -21,25 +21,42 @@ spec:
             - --experimental-strip-types
             - db/scripts/migrate.ts
           env:
-            - name: POSTGRES_USER
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   key: POSTGRES_USER
                   name: combo-dev-env
-            - name: POSTGRES_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
                   key: POSTGRES_PASSWORD
                   name: combo-dev-env
-            - name: POSTGRES_DB
+            - name: PGDATABASE
               valueFrom:
                 secretKeyRef:
                   key: POSTGRES_DB
                   name: combo-dev-env
-            - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - name: POSTGRES_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_API_PASSWORD
+                  name: combo-dev-env
+            - name: POSTGRES_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_WORKER_PASSWORD
+                  name: combo-dev-env
+            - name: POSTGRES_RUNTIME_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  key: POSTGRES_RUNTIME_PASSWORD
+                  name: combo-dev-env
             - name: EXPECTED_MIGRATION_HEAD
-              value: 0006_one_running_turn_per_session.sql
+              value: 0008_application_database_roles.sql
             - name: MIGRATION_RUNS
               value: '2'
           image: ghcr.io/dangdang-tech/combo-api:latest

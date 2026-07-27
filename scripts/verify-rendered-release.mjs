@@ -9,7 +9,7 @@ const ENVIRONMENTS = Object.freeze({
   test: {
     namespace: 'combo-preview',
     environmentCredentialName: 'combo-dev-env',
-    additionalCredentialNames: ['combo-dev-session'],
+    additionalCredentialNames: [],
     pullCredentialName: 'combo-dev-registry',
   },
   preview: {
@@ -45,7 +45,7 @@ const CONFIG_MAP_DATA_DIGESTS = Object.freeze({
   'release-redis-queue-config': '8d2af3979e00c83bf940f53cc61c4d281bade324f8b7cae46c6575f07f31cd0f',
   'release-minio-init-script': 'd0a07211a19b1e6e09eedf28e6e24487f58c3da74bfbe1520aad6f79f288f5c6',
 });
-const REVIEW_GATE_DATA_DIGEST = 'f1b613b7654a56229b12cd11857332494de8c58c95575a3d96fd71f6d0f83e56';
+const REVIEW_GATE_DATA_DIGEST = '9ff5fe26d6b6882cdc113f8ef850a07194fe2c5fc824b51b8132c57b48071810';
 const REVIEW_GATE_COMMAND = Object.freeze(['/bin/sh', '-euc']);
 const REVIEW_GATE_SCRIPT =
   'case "$REVIEW_ACCESS_TOKEN" in\n' +
@@ -268,6 +268,44 @@ function validateApps(resources, options, manifest, manifestDigest) {
   assertOneContainer(deployment('web'), 'web', manifest.images.web);
   for (const name of ['api', 'worker', 'runtime', 'web']) {
     const resource = deployment(name);
+    const container = containers(resource)[0];
+    if ((container.envFrom ?? []).some((entry) => entry.secretRef)) {
+      fail(`${resourceIdentity(resource)} imports an entire Secret`);
+    }
+    if (name !== 'web') {
+      const env = new Map((container.env ?? []).map((entry) => [entry.name, entry]));
+      for (const forbidden of ['POSTGRES_USER', 'POSTGRES_PASSWORD']) {
+        if (env.has(forbidden)) fail(`${resourceIdentity(resource)} receives a database owner key`);
+      }
+      const expectedRole = {
+        api: ['combo_api', 'POSTGRES_API_PASSWORD'],
+        worker: ['combo_worker', 'POSTGRES_WORKER_PASSWORD'],
+        runtime: ['combo_runtime', 'POSTGRES_RUNTIME_PASSWORD'],
+      }[name];
+      if (
+        env.get('PGUSER')?.value !== expectedRole[0] ||
+        env.get('PGPASSWORD')?.valueFrom?.secretKeyRef?.key !== expectedRole[1] ||
+        env.get('PGDATABASE')?.valueFrom?.secretKeyRef?.key !== 'POSTGRES_DB' ||
+        env.get('DATABASE_URL')?.value !==
+          'postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)'
+      ) {
+        fail(`${resourceIdentity(resource)} does not use its fixed database role`);
+      }
+      const expectedOrigin = {
+        test: 'http://127.0.0.1:18080',
+        preview: 'https://review.43-160-242-46.sslip.io',
+        production:
+          'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
+      }[options.environment];
+      if (
+        name !== 'worker' &&
+        (env.get('PUBLIC_APP_ORIGINS')?.value !== expectedOrigin ||
+          env.get('SESSION_COOKIE_SECURE')?.value !==
+            (options.environment === 'test' ? 'false' : 'true'))
+      ) {
+        fail(`${resourceIdentity(resource)} has an incorrect browser auth origin`);
+      }
+    }
     if (options.environment === 'preview' && name === 'web') {
       assertCommand(containers(resource)[0], REVIEW_GATE_COMMAND, [REVIEW_GATE_SCRIPT]);
     } else {
@@ -358,11 +396,26 @@ function validateMigrate(resources, options, manifest, manifestDigest) {
   const name = `${applicationPrefix(options.environment, manifest)}migrate`;
   exactIdentities(resources, [`Job/${name}`], 'migrate');
   assertOneContainer(resources[0], 'migrate', manifest.images.api);
-  assertCommand(containers(resources[0])[0], [
-    'node',
-    '--experimental-strip-types',
-    'db/scripts/migrate.ts',
-  ]);
+  const container = containers(resources[0])[0];
+  assertCommand(container, ['node', '--experimental-strip-types', 'db/scripts/migrate.ts']);
+  const keys = new Set(
+    (container.env ?? [])
+      .map((entry) => entry.valueFrom?.secretKeyRef?.key)
+      .filter((key) => typeof key === 'string'),
+  );
+  for (const key of [
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'POSTGRES_DB',
+    'POSTGRES_API_PASSWORD',
+    'POSTGRES_WORKER_PASSWORD',
+    'POSTGRES_RUNTIME_PASSWORD',
+  ]) {
+    if (!keys.has(key)) fail(`Job/${name} lacks required migration key ${key}`);
+  }
+  if ((container.envFrom ?? []).some((entry) => entry.secretRef)) {
+    fail(`Job/${name} imports an entire Secret`);
+  }
   validateReleaseWorkload(resources[0], manifest, manifestDigest);
 }
 

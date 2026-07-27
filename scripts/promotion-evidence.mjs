@@ -49,10 +49,16 @@ const EXPECTED_MIGRATIONS = Object.freeze([
   '0004_studio_sessions.sql',
   '0005_capability_current_ui.sql',
   '0006_one_running_turn_per_session.sql',
+  '0007_first_party_email_auth.sql',
+  '0008_application_database_roles.sql',
 ]);
 const EXPECTED_DATABASE_TABLES = Object.freeze([
   'artifacts',
   'audit_llm_calls',
+  'auth_audit_events',
+  'auth_identities',
+  'auth_otp_challenges',
+  'auth_sessions',
   'capabilities',
   'messages',
   'schema_migrations',
@@ -105,7 +111,10 @@ export const SIX_AREA_CHECKS = Object.freeze({
     'prepare_and_upload',
     'terminal_upload_progress',
     'resumable_upload_reload',
-    'oidc_discovery_wait',
+    'email_challenge',
+    'email_verification',
+    'session_persistence',
+    'logout_revokes_session',
     'safe_auth_return',
     'owner_isolation',
   ]),
@@ -120,7 +129,7 @@ export const SIX_AREA_CHECKS = Object.freeze({
   ]),
   accessAndIdentity: Object.freeze([
     'environment_access_boundary',
-    'authentication_refresh_logout',
+    'email_auth_session_logout',
     'cookie_cleanup',
     'safe_return_to',
     'runtime_release_identity',
@@ -129,7 +138,7 @@ export const SIX_AREA_CHECKS = Object.freeze({
   operationsAndRelease: Object.freeze([
     'four_planes_ready',
     'immutable_image_match',
-    'migration_head_0006',
+    'migration_head_0008',
     'release_manifest_match',
     'web_asset_manifest_match',
     'version_json_match',
@@ -141,7 +150,7 @@ export const SIX_AREA_CHECKS = Object.freeze({
 export const LIVE_BROWSER_CHECKS = Object.freeze([
   'release_identity',
   'hashed_asset_404',
-  'authentication_login',
+  'email_otp_login',
   'preview_identity_badge_and_copy',
   'creation_idempotency',
   'authoring_prepare',
@@ -161,10 +170,10 @@ export const LIVE_BROWSER_CHECKS = Object.freeze([
   'runtime_current_ui_consume',
   'studio_trial_return',
   'task_trial_return',
-  'preview_gate_bootstrap_and_return_to',
+  'preview_gate_login_and_return_to',
   'owner_isolation',
-  'authentication_refresh',
-  'logout_clears_session',
+  'session_persistence',
+  'logout_revokes_session',
 ]);
 export const PREVIEW_BROWSER_CHECKS = LIVE_BROWSER_CHECKS;
 
@@ -210,11 +219,11 @@ export const PREVIEW_SIX_AREA_COVERAGE = Object.freeze({
   accessAndIdentity: Object.freeze([
     'release_identity',
     'hashed_asset_404',
-    'authentication_login',
+    'email_otp_login',
     'preview_identity_badge_and_copy',
-    'preview_gate_bootstrap_and_return_to',
-    'authentication_refresh',
-    'logout_clears_session',
+    'preview_gate_login_and_return_to',
+    'session_persistence',
+    'logout_revokes_session',
   ]),
   operationsAndRelease: Object.freeze(['release_identity', 'hashed_asset_404']),
 });
@@ -1250,7 +1259,7 @@ export function validateReleaseInventory(value, expectedIdentity) {
     value.migration.jobImage !== identity.images.api ||
     JSON.stringify(value.migration.ledger) !== JSON.stringify(EXPECTED_MIGRATIONS)
   ) {
-    fail('release inventory migration evidence is not exactly 0000 through 0006');
+    fail('release inventory migration evidence is not exactly 0000 through 0008');
   }
   timestamp(value.migration.jobCompletionTime, 'release inventory migration completion');
   exactKeys(value.resources, INVENTORY_RESOURCE_KEYS, 'release inventory resources');
@@ -1468,7 +1477,7 @@ export function validateLiveRuntimeEvidence(value, expectedIdentity) {
       value.migration.pod.uid ?? '',
     )
   ) {
-    fail('live runtime migration does not prove the exact immutable 0000 through 0006 run');
+    fail('live runtime migration does not prove the exact immutable 0000 through 0008 run');
   }
   timestamp(value.migration.job.completionTime, 'live runtime migration completion');
   assertSafeEvidence(value);

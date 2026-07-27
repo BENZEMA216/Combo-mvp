@@ -17,7 +17,6 @@ readonly STORAGE_LOW_MARKER='/run/combo-dev-storage-low'
 readonly KUBECONFIG_PATH='/etc/combo-dev/dispatcher.kubeconfig'
 readonly PRODUCTION_KUBECONFIG='/etc/combo-dev/production-observer.kubeconfig'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
-readonly SESSION_FILE='/etc/combo-dev/session.key'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 RESET_PROOF=''
@@ -232,7 +231,6 @@ preflight() {
   /opt/combo-dev/bin/combo-dev-storage-guard --check-only >/dev/null 2>&1 || blocked '独立挂载、静态卷路径、标记、所有权或安全水位不符合固定契约。'
   [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || blocked '持续存储守卫未启用。'
   timeout 180 systemctl start combo-dev-storage-guard.service >/dev/null 2>&1 || blocked '持续守卫无法证明两套凭据与失败收敛路径健康。'
-  can_i_exact yes patch secrets/combo-dev-session "$NAMESPACE"
   can_i_exact yes get persistentvolumes/combo-dev-postgres
   can_i_exact yes get persistentvolumes/combo-dev-redis-queue
   can_i_exact yes get persistentvolumes/combo-dev-minio
@@ -324,27 +322,6 @@ stop_and_delete_inventory() {
     kind=${item%%/*}; name=${item##*/}
     if resource_exists "$kind" "$name"; then return 1; else rc=$?; (( rc == 1 )) || return 1; fi
   done
-}
-
-rotate_session_credential() {
-  local next="$WORK/session.next" manifest="$WORK/session.secret.json"
-  openssl rand -hex 32 >"$next" 2>/dev/null || blocked '无法生成新的开发会话凭据。'
-  chmod 600 "$next"
-  python3 - "$next" "$manifest" <<'PY'
-import base64, json, sys
-value=open(sys.argv[1],'rb').read()
-with open(sys.argv[2],'w',encoding='utf-8') as f:
-    json.dump({
-        'apiVersion':'v1',
-        'kind':'Secret',
-        'metadata':{'name':'combo-dev-session','namespace':'combo-preview'},
-        'type':'Opaque',
-        'data':{'DEV_SESSION_SECRET':base64.b64encode(value).decode('ascii')},
-    },f,separators=(',',':'))
-PY
-  chmod 600 "$manifest"
-  install -m 0600 "$next" "$SESSION_FILE"
-  "${K[@]}" apply --server-side --field-manager=combo-dev-session --force-conflicts -f "$manifest" >/dev/null 2>&1 || blocked '开发会话 Secret 无法原地轮换。'
 }
 
 wipe_static_volume_data() {
@@ -543,7 +520,6 @@ main() {
   mark_failure_fence || blocked '无法写入持久失败收敛标记。'
   rm -rf -- /run/combo-dev-forwarders
   stop_and_delete_inventory || blocked '固定工作负载未能全部停止并删除。'
-  rotate_session_credential
   wipe_static_volume_data
   assert_static_volume_data_empty || blocked '三个 Test 数据目录未能证明在重建前为空。'
   storage_cleared_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -560,7 +536,7 @@ main() {
     "$reset_started" "$storage_cleared_at" "$foundation_proof" ||
     blocked '无法保存本次空数据重建证据。'
   SUCCESS=1
-  status 'PASS namespace=combo-preview pvc=retained data=cleared session=rotated writers=fenced'
+  status 'PASS namespace=combo-preview pvc=retained data=cleared writers=fenced'
 }
 
 main "$@"

@@ -2,9 +2,8 @@
 //
 // 受保护组（RequireAuth → ProtectedLayout）：任务页（默认）/ 任务详情 / 能力页。
 //   守卫在路由层堵住未登录直达：anon → 裸登录闸门，error → 人话重试（绝不裸转圈/裸错误码）。
-// 公开组（PublicLayout 裸壳，无侧栏/账号）：公开能力页 /a/:slug、公开创作者页 /c/:slug
-//   （两页数据走前端 mock 层）、登录页（承接 OIDC 失败回跳 ?failureId=）+ 404 兜底。
-//   在 AuthProvider 之外——匿名访问公开页不发 /me。
+// 公开组（PublicLayout 裸壳，无侧栏/账号）：公开能力页 /a/:slug、公开创作者页 /c/:slug、
+//   完全自定义的邮箱验证码登录页和 404。登录页自行探测一次 /me，其余公开页不发会话请求。
 import type { ReactElement } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet } from 'react-router-dom';
 import { AuthProvider, RequireAuth } from './shell/auth.js';
@@ -50,7 +49,7 @@ export function App(): ReactElement {
           {/* 公开能力页 / 公开创作者主页：匿名可读，数据走前端 mock 层（publicApi）。 */}
           <Route path="/a/:slug" element={<PublicCapabilityPage />} />
           <Route path="/c/:slug" element={<PublicCreatorPage />} />
-          {/* 登录页：承接 OIDC 回调失败回跳 /login?failureId=<opaque> + 通用登录引导。 */}
+          {/* 登录页：两步邮箱验证码表单，只接受共享契约允许的站内 returnTo。 */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

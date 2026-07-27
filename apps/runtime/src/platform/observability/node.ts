@@ -1,8 +1,9 @@
-import { context, trace } from '@opentelemetry/api';
+import { context, trace, type Attributes } from '@opentelemetry/api';
 import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { NodeSDK } from '@opentelemetry/sdk-node';
+import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import { buildTraceparent, traceHexToUuid, uuidToTraceHex, type TraceId } from '@cb/shared';
 import type { Env } from '../config/env.js';
@@ -29,6 +30,70 @@ function parseResourceAttributes(raw: string): Record<string, string> {
   return attrs;
 }
 
+const BLOCKED_SPAN_ATTRIBUTE = [
+  /^url\.(?:full|query)$/i,
+  /^http\.(?:url|target|client_ip)$/i,
+  /(?:^|\.)(?:request|response)\.headers?(?:\.|$)/i,
+  /(?:^|\.)(?:cookie|set-cookie|authorization)(?:\.|$)/i,
+  /(?:^|\.)(?:client|peer)\.(?:address|port)$/i,
+  /^net\.(?:peer|sock\.peer)\./i,
+  /^network\.peer\./i,
+  /^exception\.(?:message|stacktrace)$/i,
+  /(?:^|\.)(?:request|response)\.body(?:\.|$)/i,
+];
+
+function safeSpanAttributes(attributes: Attributes): Attributes {
+  return Object.fromEntries(
+    Object.entries(attributes).filter(
+      ([key]) => !BLOCKED_SPAN_ATTRIBUTE.some((pattern) => pattern.test(key)),
+    ),
+  );
+}
+
+function safeSpanName(name: string): string {
+  const queryAt = name.indexOf('?');
+  return queryAt === -1 ? name : name.slice(0, queryAt);
+}
+
+/** 在任何 span 离开进程前删除原始查询、客户端地址、头、正文与异常消息。 */
+function safeReadableSpan(span: ReadableSpan): ReadableSpan {
+  return {
+    name: safeSpanName(span.name),
+    kind: span.kind,
+    spanContext: () => span.spanContext(),
+    ...(span.parentSpanContext ? { parentSpanContext: span.parentSpanContext } : {}),
+    startTime: span.startTime,
+    endTime: span.endTime,
+    status: { code: span.status.code },
+    attributes: safeSpanAttributes(span.attributes),
+    links: span.links.map((link) => ({
+      ...link,
+      attributes: safeSpanAttributes(link.attributes ?? {}),
+    })),
+    events: span.events.map((event) => ({
+      ...event,
+      ...(event.attributes ? { attributes: safeSpanAttributes(event.attributes) } : {}),
+    })),
+    duration: span.duration,
+    ended: span.ended,
+    resource: span.resource,
+    instrumentationScope: span.instrumentationScope,
+    droppedAttributesCount: span.droppedAttributesCount,
+    droppedEventsCount: span.droppedEventsCount,
+    droppedLinksCount: span.droppedLinksCount,
+  };
+}
+
+export function createSafeTraceExporter(delegate: SpanExporter): SpanExporter {
+  return {
+    export(spans, resultCallback) {
+      delegate.export(spans.map(safeReadableSpan), resultCallback);
+    },
+    shutdown: () => delegate.shutdown(),
+    ...(delegate.forceFlush ? { forceFlush: () => delegate.forceFlush!() } : {}),
+  };
+}
+
 export function startNodeObservability(env: Env): ObservabilityHandle {
   const endpoint = env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim();
   if (env.OTEL_SDK_DISABLED === 'true' || !endpoint) {
@@ -49,7 +114,7 @@ export function startNodeObservability(env: Env): ObservabilityHandle {
 
   sdk = new NodeSDK({
     resource,
-    traceExporter: new OTLPTraceExporter({ url: otlpTraceUrl(endpoint) }),
+    traceExporter: createSafeTraceExporter(new OTLPTraceExporter({ url: otlpTraceUrl(endpoint) })),
     instrumentations: [
       getNodeAutoInstrumentations({
         '@opentelemetry/instrumentation-fs': { enabled: false },

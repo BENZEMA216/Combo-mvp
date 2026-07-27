@@ -123,10 +123,14 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
 
   async function seedSession(): Promise<SeededChain> {
     const suffix = randomUUID();
+    const account = `creator-${suffix
+      .replaceAll('-', '')
+      .slice(0, 8)
+      .replace(/[0189]/g, 'a')}`;
     const user = await db.query<{ id: string }>(
-      `INSERT INTO users (logto_user_id, account)
-       VALUES ($1, $1) RETURNING id`,
-      [`terminal-fence-${suffix}`],
+      `INSERT INTO users (account)
+       VALUES ($1) RETURNING id`,
+      [account],
     );
     const userId = user.rows[0]!.id;
     const task = await db.query<{ id: string }>(

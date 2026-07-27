@@ -3,7 +3,7 @@
 # 两种模式：
 #   本地（默认）   ：直接用宿主 node 跑 @cb/db migrate（需 DATABASE_URL 指向可达 PG）。
 #   compose（--compose）：通过 docker compose run --rm migrate（同镜像、容器内跑）。
-# 与 Logto 迁移各自独立 schema/库，互不干扰。
+# 第一方认证表与业务表由同一个 runner 按文件顺序迁移。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,9 +43,9 @@ command -v pnpm >/dev/null 2>&1 || die "需要 pnpm"
 : "${DATABASE_URL:?需设置 DATABASE_URL（指向可达的 PostgreSQL）}"
 
 if [ "$STATUS_ONLY" -eq 1 ]; then
-  log "迁移状态（DATABASE_URL=${DATABASE_URL%%@*}@...）"
+  log "迁移状态（使用已配置的 DATABASE_URL，不输出连接信息）"
   pnpm -C "$ROOT_DIR" -F @cb/db migrate:status
 else
-  log "执行业务迁移（DATABASE_URL=${DATABASE_URL%%@*}@...）"
+  log "执行业务迁移（使用已配置的 DATABASE_URL，不输出连接信息）"
   pnpm -C "$ROOT_DIR" -F @cb/db migrate
 fi

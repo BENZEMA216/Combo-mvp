@@ -49,7 +49,7 @@ const RELEASE_MANIFEST = {
     runtime: imageArgs[3],
     web: imageArgs[5],
   },
-  migrationHead: '0006_one_running_turn_per_session.sql',
+  migrationHead: '0008_application_database_roles.sql',
   builtAt: '2026-07-24T08:00:00.000Z',
   webAssetManifest: `sha256:${digest('e')}`,
 };
@@ -495,17 +495,17 @@ test('Test apps share one exact immutable release identity without Secret expans
   }
 });
 
-test('Test migration pins the 0006 ledger and proves a second idempotent pass', () => {
+test('Test migration pins the 0008 ledger and proves a second idempotent pass', () => {
   const migrate = documentFor('Job', 'migrate');
   assert.match(
     migrate,
-    /^ {8}- name: EXPECTED_MIGRATION_HEAD\n {10}value: 0006_one_running_turn_per_session\.sql$/m,
+    /^ {8}- name: EXPECTED_MIGRATION_HEAD\n {10}value: 0008_application_database_roles\.sql$/m,
   );
   assert.match(migrate, /^ {8}- name: MIGRATION_RUNS\n {10}value: "2"$/m);
   assert.match(migrate, /^ {2}ttlSecondsAfterFinished: 7200$/m);
 });
 
-test('Test migration evidence uses the exact ordered 0000-0006 source ledger', () => {
+test('Test migration evidence uses the exact ordered 0000-0008 source ledger', () => {
   const expected = [
     '0000_baseline_schema.sql',
     '0001_expired_upload_reconciliation.sql',
@@ -514,6 +514,8 @@ test('Test migration evidence uses the exact ordered 0000-0006 source ledger', (
     '0004_studio_sessions.sql',
     '0005_capability_current_ui.sql',
     '0006_one_running_turn_per_session.sql',
+    '0007_first_party_email_auth.sql',
+    '0008_application_database_roles.sql',
   ];
   const sourceLedger = readdirSync(join(repo, 'db/migrations'))
     .filter((name) => name.endsWith('.sql'))
@@ -564,7 +566,7 @@ test('Test migration proof accepts containerd config digests but fences the live
   const expectedDigest = digest('b');
   const expectedImage = `ghcr.io/dangdang-tech/combo-api@sha256:${expectedDigest}`;
   const reportedImage = `sha256:${digest('c')}`;
-  const expectedHead = '0006_one_running_turn_per_session.sql';
+  const expectedHead = '0008_application_database_roles.sql';
   const jobUid = '11111111-1111-4111-8111-111111111111';
   const podUid = '22222222-2222-4222-8222-222222222222';
   const job = join(work, 'job.json');
@@ -579,6 +581,8 @@ test('Test migration proof accepts containerd config digests but fences the live
     '0004_studio_sessions.sql',
     '0005_capability_current_ui.sql',
     '0006_one_running_turn_per_session.sql',
+    '0007_first_party_email_auth.sql',
+    '0008_application_database_roles.sql',
   ];
   const jobObject = {
     metadata: {
@@ -743,7 +747,7 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   assert.match(workflow, /\.reset\.workflowRunAttempt == \$runAttempt/);
   assert.match(workflow, /\.migration\.workflowRunId == \$runId/);
   assert.match(workflow, /\.migration\.workflowRunAttempt == \$runAttempt/);
-  assert.match(workflow, /migration\.head == "0006_one_running_turn_per_session\.sql"/);
+  assert.match(workflow, /migration\.head == "0008_application_database_roles\.sql"/);
   assert.match(workflow, /migration\.job\.ttlSecondsAfterFinished == 7200/);
   assert.match(workflow, /legacyObjectsAbsent == true/);
   assert.doesNotMatch(workflow, /\. \+ \{workflowRunId:/);
@@ -1124,9 +1128,7 @@ test('Test evidence inventories every relevant namespaced kind without reading S
       /- apiGroups: \[''\]\n {4}resources: \['secrets'\]\n {4}resourceNames: \[([^\]]+)\]\n {4}verbs: \[([^\]]+)\]/g,
     ),
   ];
-  assert.equal(secretRules.length, 1);
-  assert.equal(secretRules[0][1], "'combo-dev-session'");
-  assert.equal(secretRules[0][2], "'patch', 'update'");
+  assert.equal(secretRules.length, 0);
   for (const rule of [
     "resources: ['serviceaccounts', 'resourcequotas', 'limitranges']\n    verbs: ['get', 'list', 'watch']",
     "resources: ['daemonsets']\n    verbs: ['get', 'list', 'watch']",
@@ -2172,8 +2174,6 @@ test('bootstrap failure injection at every apply and credential boundary leaves 
     'development-secrets',
     'env-secret-apply',
     'registry-secret-apply',
-    'session-credential-file',
-    'session-secret-apply',
     'control-files-install',
   ];
   const actualBoundaries = [...bootstrap.matchAll(/bootstrap_boundary ([a-z][a-z0-9-]+)/g)].map(
@@ -3294,11 +3294,7 @@ test('existing deployment invariants remain fail-closed', () => {
     reset,
     /apply --server-side --dry-run=server --field-manager=combo-dev-dispatcher --force-conflicts -k "\$FOUNDATION"/,
   );
-  assert.match(
-    reset,
-    /apply --server-side --field-manager=combo-dev-session --force-conflicts -f "\$manifest"/,
-  );
-  assert.doesNotMatch(reset, /patch secret\/combo-dev-session/);
+  assert.doesNotMatch(reset, /combo-dev-session|DEV_SESSION_SECRET/);
   for (const manifest of [testMinioInit, releaseMinioInit]) {
     assert.match(manifest, /name: minio-init/);
     assert.match(manifest, /limits:[\s\S]*?memory: 256Mi/);

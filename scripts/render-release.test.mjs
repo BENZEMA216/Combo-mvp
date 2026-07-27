@@ -24,7 +24,7 @@ const release = {
     runtime: `ghcr.io/dangdang-tech/combo-runtime@${digest('2')}`,
     web: `ghcr.io/dangdang-tech/combo-web@${digest('3')}`,
   },
-  migrationHead: '0006_one_running_turn_per_session.sql',
+  migrationHead: '0008_application_database_roles.sql',
   builtAt: '2026-07-24T08:00:00.000Z',
   webAssetManifest: digest('4'),
 };
@@ -146,6 +146,23 @@ for (const [environment, namespace, prefix] of [
       );
       assert.equal(releaseReference.configMapRef.name, `combo-release-meta-${SHA.slice(0, 12)}`);
     }
+    const expectedOrigins = {
+      test: 'http://127.0.0.1:18080',
+      preview: 'https://review.43-160-242-46.sslip.io',
+      production:
+        'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
+    }[environment];
+    for (const logicalName of ['api', 'runtime']) {
+      const deployment = resources.find(
+        (resource) =>
+          resource.kind === 'Deployment' && resource.metadata.name === `${prefix}${logicalName}`,
+      );
+      const environmentEntries = deployment.spec.template.spec.containers[0].env;
+      assert.equal(
+        environmentEntries.find((entry) => entry.name === 'PUBLIC_APP_ORIGINS').value,
+        expectedOrigins,
+      );
+    }
     for (const service of resources.filter((resource) => resource.kind === 'Service')) {
       const logicalName = service.metadata.name.slice(prefix.length);
       assert.deepEqual(service.spec.selector, {
@@ -234,7 +251,11 @@ test('Preview release carries a SHA-scoped access gate without Secret material',
     gate.data['default.conf.template'],
     /location \^~ \/try\/[\s\S]*?alias \/usr\/share\/nginx\/html\/try\/;/,
   );
-  assert.match(gate.data['bootstrap.html'], /\/api\/v1\/auth\/dev-login/);
+  assert.match(
+    gate.data['bootstrap.html'],
+    /location\.replace\(`\/login\?returnTo=\$\{encodeURIComponent\(returnTo\)\}`\)/,
+  );
+  assert.doesNotMatch(gate.data['bootstrap.html'], /\/api\/v1\/auth\/dev-login/);
   for (const page of [gate.data['enter.html'], gate.data['bootstrap.html']]) {
     assert.match(page, /decodeURIComponent\(decoded\)/);
     assert.match(page, /decoded\.startsWith\('\/\/'\)/);
@@ -242,6 +263,14 @@ test('Preview release carries a SHA-scoped access gate without Secret material',
     assert.doesNotMatch(page, /target\.hash/);
   }
   assert.doesNotMatch(gate.data['default.conf.template'], /rt_uid/);
+  assert.match(
+    gate.data['default.conf.template'],
+    /map \$http_cookie \$combo_review_upstream_cookie \{[\s\S]*?default "";[\s\S]*?__Host-cb_session=\(\?<combo_review_session_token>s1\\\.\[A-Za-z0-9_-\]\{43\}\)[\s\S]*?"__Host-cb_session=\$combo_review_session_token";/,
+  );
+  assert.doesNotMatch(
+    gate.data['default.conf.template'],
+    /proxy_set_header Cookie[^\n]*combo_review_access/,
+  );
   assert.doesNotMatch(gate.data['default.conf.template'], /\/api\/v1\/import\/connect/);
   assert.match(
     gate.data['default.conf.template'],

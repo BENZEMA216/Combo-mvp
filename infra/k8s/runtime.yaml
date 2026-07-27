@@ -41,12 +41,14 @@ spec:
           env:
             - name: NODE_ENV
               value: production
-            - name: DEV_LOGIN_ENABLED
-              value: 'false'
             - name: HOST
               value: 0.0.0.0
             - name: PORT
               value: '3100'
+            - name: PUBLIC_APP_ORIGINS
+              value: combo-public-app-origin
+            - name: SESSION_COOKIE_SECURE
+              value: combo-session-cookie-secure
             # runtime 的代码契约要求 REDIS_URL，不能使用 authoring 的 REDIS_QUEUE_URL 替代。
             - name: REDIS_URL
               value: redis://redis-queue:6379
@@ -61,32 +63,27 @@ spec:
               value: http://otel-collector.observability.svc.cluster.local:4318
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: deployment.environment=k8s
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: POSTGRES_USER }
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: POSTGRES_PASSWORD }
-            - name: POSTGRES_DB
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
               valueFrom:
                 secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_runtime
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_RUNTIME_PASSWORD }
             - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef: { name: combo-env, key: S3_ACCESS_KEY }
             - name: S3_SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: combo-env, key: S3_SECRET_KEY }
-            - name: LOGTO_ISSUER
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: LOGTO_ISSUER }
-            - name: LOGTO_JWKS_URI
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: LOGTO_JWKS_URI }
-            - name: LOGTO_AUDIENCE
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: LOGTO_AUDIENCE }
+            # runtime 只使用 DATABASE_URL 查询 authoring 写入的不透明会话，不持有邮件或验证码密钥。
             # LLM 相关键允许缺失（代码契约：缺 key 只降级不阻塞启动），必须 optional，
             # 否则 Secret 缺键时 Pod 直接 CreateContainerConfigError 起不来。
             - name: ANTHROPIC_API_KEY

@@ -30,7 +30,7 @@
   --cb-on-dark-soft: #a09d96;
   --cb-fg: #141413;
   --cb-body: #3d3d3a;
-  --cb-muted: #6c6a64;
+  --cb-muted: #68655f;
   --cb-muted-soft: #8e8b82;
   --cb-border: #e6dfd8;
   --cb-border-soft: #ebe6df;
@@ -1850,7 +1850,7 @@ body {
 
 .cb-public-shell__agent-entry {
   display: inline-flex;
-  min-height: 38px;
+  min-height: 44px;
   align-items: center;
   gap: 9px;
   border: 1px solid var(--cb-border);
@@ -2157,6 +2157,11 @@ body {
 
   .cb-public-shell__content {
     padding: 20px;
+  }
+
+  .cb-public-shell__nav,
+  .cb-public-shell__login {
+    display: none;
   }
 
   .cb-public-capability__title {
@@ -2581,5 +2586,298 @@ body {
 
   .cb-page--tasks .cb-pairing {
     padding: 18px;
+  }
+}
+
+/* ---------- First-party email login: compact two-step form in the existing public shell. ---------- */
+.cb-login-page {
+  display: flex;
+  min-height: calc(100vh - 112px);
+  min-height: calc(100dvh - 112px);
+  align-items: center;
+  justify-content: center;
+  padding-block: 40px;
+}
+
+.cb-login {
+  width: min(100%, 420px);
+}
+
+.cb-login__step {
+  margin: 0 0 10px;
+  color: var(--cb-muted);
+  font-family: var(--cb-font-mono);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.cb-login__title {
+  margin: 0;
+  color: var(--cb-fg);
+  font-family: var(--cb-font-serif);
+  font-size: 36px;
+  font-weight: 400;
+  letter-spacing: -0.02em;
+  line-height: 1.14;
+  text-wrap: balance;
+}
+
+.cb-login__lead {
+  margin: 12px 0 24px;
+  color: var(--cb-body);
+  font-size: 15px;
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
+.cb-login__panel {
+  border-radius: var(--cb-radius-card);
+  background: var(--cb-surface-card);
+  padding: 28px;
+}
+
+.cb-login__form,
+.cb-login__status {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.cb-login__field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cb-login__field label {
+  color: var(--cb-fg);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.cb-login__field input {
+  width: 100%;
+  min-height: 48px;
+  border: 1px solid var(--cb-border-control);
+  border-radius: var(--cb-radius-control);
+  background: var(--cb-bg);
+  color: var(--cb-fg);
+  padding: 11px 13px;
+  font-family: var(--cb-font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.cb-login__field input[aria-invalid='true'] {
+  border-color: var(--cb-state-error-border);
+}
+
+.cb-login__field input:disabled {
+  color: var(--cb-muted);
+  cursor: wait;
+  opacity: 0.74;
+}
+
+.cb-login__code-input {
+  font-family: var(--cb-font-mono) !important;
+  font-size: 20px !important;
+  letter-spacing: 0.28em;
+  font-variant-numeric: tabular-nums;
+}
+
+.cb-login__field-hint,
+.cb-login__field-error,
+.cb-login__privacy,
+.cb-login__sent-to,
+.cb-login__status p,
+.cb-login__status small {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.cb-login__field-hint,
+.cb-login__privacy,
+.cb-login__status small {
+  color: var(--cb-muted);
+  font-size: 12px;
+}
+
+.cb-login__field-error {
+  color: var(--cb-state-error-fg);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.cb-login__sent-to {
+  color: var(--cb-body);
+  font-size: 14px;
+}
+
+.cb-login__sent-to strong {
+  color: var(--cb-fg);
+  font-family: var(--cb-font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.cb-login__primary {
+  display: inline-flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cb-action-primary);
+  border-radius: var(--cb-radius-control);
+  background: var(--cb-action-primary);
+  color: var(--cb-on-action-primary);
+  padding: 11px 18px;
+  font-family: var(--cb-font-sans);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.cb-login__primary:hover:not(:disabled) {
+  border-color: var(--cb-action-primary-hover);
+  background: var(--cb-action-primary-hover);
+}
+
+.cb-login__primary:active:not(:disabled) {
+  border-color: var(--cb-action-primary-pressed);
+  background: var(--cb-action-primary-pressed);
+}
+
+.cb-login__primary:disabled {
+  border-color: var(--cb-border);
+  background: var(--cb-border);
+  color: var(--cb-muted);
+  cursor: wait;
+}
+
+.cb-login__secondary-actions,
+.cb-login__error-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cb-login__error-actions {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.cb-login__text-action {
+  min-height: 44px;
+  border: 0;
+  border-radius: var(--cb-radius-control);
+  background: transparent;
+  color: var(--cb-action-link);
+  padding: 8px 4px;
+  font-family: var(--cb-font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.cb-login__text-action:hover:not(:disabled) {
+  color: var(--cb-fg);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.cb-login__text-action:disabled {
+  color: var(--cb-muted);
+  cursor: not-allowed;
+  text-decoration: none;
+}
+
+.cb-login__privacy {
+  text-align: center;
+}
+
+.cb-login__status {
+  align-items: center;
+  min-height: 176px;
+  justify-content: center;
+  text-align: center;
+}
+
+.cb-login__status p {
+  max-width: 30ch;
+  color: var(--cb-body);
+  font-size: 14px;
+}
+
+.cb-login__status--error {
+  border-radius: var(--cb-radius-control);
+  background: var(--cb-state-error-bg);
+  padding: 20px;
+}
+
+.cb-login__status--error p {
+  color: var(--cb-state-error-fg);
+  font-weight: 500;
+}
+
+.cb-login__status-mark {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--cb-feedback-live-fg);
+  animation: cb-login-pulse 1.4s ease-in-out infinite;
+}
+
+.cb-login__live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes cb-login-pulse {
+  0%,
+  100% {
+    opacity: 0.38;
+    transform: scale(0.82);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (max-width: 520px) {
+  .cb-login-page {
+    min-height: auto;
+    align-items: flex-start;
+    padding-block: 32px;
+  }
+
+  .cb-login__title {
+    font-size: 32px;
+  }
+
+  .cb-login__panel {
+    padding: 22px;
+  }
+
+  .cb-login__secondary-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cb-login__status-mark {
+    animation: none;
   }
 }

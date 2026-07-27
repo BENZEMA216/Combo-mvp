@@ -22,6 +22,8 @@ tsconfig.tsbuildinfo
 coverage/
 .vitest/
 .eslintcache
+playwright-report/
+test-results/
 
 # 验收测试证据(截图 / 报告，体量大，不入库；本地保留作复测参考）
 docs/测试/

@@ -6,7 +6,7 @@
   "scripts": {
     "build": "go build -o /dev/null . && go build -o /dev/null ./cmd/sandbox-exec",
     "typecheck": "go vet ./...",
-    "test": "go test ./...",
+    "test": "go test -p 1 ./...",
     "clean": "rm -f sandboxd"
   }
 }

@@ -209,7 +209,11 @@ function CapabilitySection({
                   </button>
                 )}
               </div>
-              {errorById?.id === c.id && <div className="rt-card__error">{errorById.message}</div>}
+              {errorById?.id === c.id && (
+                <div className="rt-card__error" role="alert" aria-live="polite">
+                  {errorById.message}
+                </div>
+              )}
             </article>
           );
         })}

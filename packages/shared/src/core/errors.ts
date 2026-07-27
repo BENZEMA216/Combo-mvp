@@ -1,6 +1,5 @@
-// ErrorEnvelope：绝不裸露错误码。
-// 对外信封一律不含 code —— 对外仅 {userMessage, action, retriable, traceId, failureId?, details?}。
-// 内部 code 只用于日志/告警/文案映射，绝不进对外 payload；排障经 traceId 关联日志里的 code。
+// ErrorEnvelope 绝不暴露内部错误码。对外只提供人话、退路和 traceId；
+// 排障通过 traceId 关联服务端日志中的内部分类。
 import { z } from 'zod';
 import { TraceIdSchema } from './ids.js';
 
@@ -11,21 +10,21 @@ export type ErrorAction = z.infer<typeof ErrorActionSchema>;
 export const DISPLAYABLE_ACTIONS = ['retry', 'change_input', 'escalate'] as const;
 export type DisplayableAction = (typeof DISPLAYABLE_ACTIONS)[number];
 
-/** 对外错误体。userMessage 是唯一可展示的人话；绝不含 code/状态码/堆栈。 */
+/** 对外错误体。userMessage 是唯一可展示的人话；不包含 code、状态码或堆栈。 */
 export const ErrorBodySchema = z.object({
   userMessage: z.string().min(1),
   retriable: z.boolean(),
   action: ErrorActionSchema,
-  /** 关联日志（日志里有内部 code）；前端可作「反馈代码」展示但非错误码。 */
+  /** 关联日志；前端可作“反馈代码”展示，但它不是错误分类码。 */
   traceId: TraceIdSchema,
-  /** 仅登录等重定向场景：不透明失败标识，替代 URL 里的内部 code。 */
+  /** 仅登录等重定向场景使用的不透明失败标识。 */
   failureId: z.string().optional(),
-  /** 结构化可安全展示补充；禁放堆栈/原始报错/内部路径/code。 */
+  /** 结构化可安全展示补充；禁放堆栈、原始报错、内部路径或内部 code。 */
   details: z.record(z.string(), z.unknown()).optional(),
 });
 export type ErrorBody = z.infer<typeof ErrorBodySchema>;
 
-/** 完整对外错误信封。所有非 2xx、所有 SSE error 帧、所有前端可见失败都只出它。 */
+/** 完整对外错误信封。所有非 2xx 和前端可见失败都只使用这一形态。 */
 export const ErrorEnvelopeSchema = z.object({ error: ErrorBodySchema });
 export type ErrorEnvelope = z.infer<typeof ErrorEnvelopeSchema>;
 
@@ -49,11 +48,9 @@ export const ErrorCode = {
   LLM_UPSTREAM_FAILED: 'LLM_UPSTREAM_FAILED',
   DEPENDENCY_UNAVAILABLE: 'DEPENDENCY_UNAVAILABLE',
   TASK_TIMEOUT: 'TASK_TIMEOUT',
-  // 登录
-  AUTH_STATE_MISMATCH: 'AUTH_STATE_MISMATCH',
-  AUTH_CONSENT_DENIED: 'AUTH_CONSENT_DENIED',
-  AUTH_CALLBACK_FAILED: 'AUTH_CALLBACK_FAILED',
-  AUTH_UPSTREAM_UNAVAILABLE: 'AUTH_UPSTREAM_UNAVAILABLE',
+  // 邮箱验证码认证
+  AUTH_OTP_INVALID: 'AUTH_OTP_INVALID',
+  AUTH_ACCOUNT_DISABLED: 'AUTH_ACCOUNT_DISABLED',
   // 上传（配对路径）
   PAIRING_CODE_INVALID: 'PAIRING_CODE_INVALID',
   PAIRING_EXPIRED: 'PAIRING_EXPIRED',
@@ -165,33 +162,19 @@ export const ERROR_CLASSIFICATION: Record<ErrorCodeValue, ErrorClassification> =
     action: 'retry',
     userMessageTemplate: '这次处理超时了，点重试再来一次。',
   },
-  AUTH_STATE_MISMATCH: {
-    code: 'AUTH_STATE_MISMATCH',
-    http: 400,
-    retriable: true,
-    action: 'retry',
-    userMessageTemplate: '登录状态校验失败，请重新登录。',
+  AUTH_OTP_INVALID: {
+    code: 'AUTH_OTP_INVALID',
+    http: 401,
+    retriable: false,
+    action: 'change_input',
+    userMessageTemplate: '验证码无效或已过期，请重新获取。',
   },
-  AUTH_CONSENT_DENIED: {
-    code: 'AUTH_CONSENT_DENIED',
+  AUTH_ACCOUNT_DISABLED: {
+    code: 'AUTH_ACCOUNT_DISABLED',
     http: 403,
     retriable: false,
-    action: 'none',
-    userMessageTemplate: '你取消了授权，未完成登录。',
-  },
-  AUTH_CALLBACK_FAILED: {
-    code: 'AUTH_CALLBACK_FAILED',
-    http: 502,
-    retriable: true,
-    action: 'retry',
-    userMessageTemplate: '登录没成功，请再试一次。',
-  },
-  AUTH_UPSTREAM_UNAVAILABLE: {
-    code: 'AUTH_UPSTREAM_UNAVAILABLE',
-    http: 503,
-    retriable: true,
-    action: 'retry',
-    userMessageTemplate: '登录服务暂时不可用，请稍后重试。',
+    action: 'escalate',
+    userMessageTemplate: '账号已停用，请联系支持。',
   },
   PAIRING_CODE_INVALID: {
     code: 'PAIRING_CODE_INVALID',
@@ -223,7 +206,7 @@ export const ERROR_CLASSIFICATION: Record<ErrorCodeValue, ErrorClassification> =
   },
 };
 
-/** 按内部 code 组装对外错误体（模板可被更具体的人话覆盖）。 */
+/** 按内部 code 组装对外错误体。内部 code 不进入响应。 */
 export function errorBodyFor(
   code: ErrorCodeValue,
   traceId: string,

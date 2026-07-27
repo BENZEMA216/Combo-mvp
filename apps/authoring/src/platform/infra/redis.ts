@@ -19,6 +19,10 @@ const QUEUE_OPTS: RedisOptions = {
 /** redis_hot 连接（streams/lock/限流）。 */
 const HOT_OPTS: RedisOptions = {
   lazyConnect: true,
+  // 热态命令不能在依赖中断时排队数十秒：认证 challenge 要快速失败关闭，
+  // verification 则快速回落 PostgreSQL 的硬限制。客户端仍在后台持续重连。
+  connectTimeout: 2_000,
+  maxRetriesPerRequest: 1,
   retryStrategy: reconnectDelay,
 };
 

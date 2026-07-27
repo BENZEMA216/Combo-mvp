@@ -80,11 +80,12 @@ SHA、releaseId 和 Web asset digest，并通过真实 Clipboard API 检查脱�
 按钮进入 bootstrap 并返回原路径；协议相对和多重编码外链必须落到同源兜底。
 
 Preview 访问 token 只能来自受保护的 `cloud-review` Environment Secret
-`CLOUD_REVIEW_ACCESS_TOKEN`，通过标准输入短暂传给远端进程。Production 使用
-`PRODUCTION_ACCEPTANCE_EMAIL`、`PRODUCTION_ACCEPTANCE_PASSWORD` 及独立的第二组
-同名 secondary Secret 完成两次真实 Logto OIDC 登录和 owner 隔离。四行凭据在任何
-SSH 或 Production 变更前由 release artifact 内同一个 parser 校验；空白占位值、
-多重 `@`、控制字符、非规范边界或相同邮箱会失败，值不进入参数、文件、日志和证据。
+`CLOUD_REVIEW_ACCESS_TOKEN`，通过标准输入短暂传给远端进程。Test、Preview 与
+Production 分别从对应 GitHub Environment 的 `ACCEPTANCE_RESEND_API_KEY` 读取独立
+验收权限，并为每次 workflow attempt 生成两个唯一的 `delivered+…@resend.dev`
+收件地址。runner 按精确收件人、主题、发件身份和挑战时间从 Resend sent-email API
+在内存中提取验证码，完成两次首次注册、Session 持久化、退出撤销和 owner 隔离。
+Resend key、验证码和邮件正文不进入参数、文件、日志、artifact 或 evidence。
 
 Production 准入必须验证 Preview 的完整浏览器结果以及 Preview 证据中的 Test
 admission 链。Production 先以 `--defer-cleanup` 激活候选并保留回滚对象，受保护

@@ -1,12 +1,11 @@
-// Fastify app 工厂。挂基础设施容器 + 全局插件 + 统一错误信封 + 健康检查 + 业务路由。
-// 对外绝不裸露错误码/堆栈：所有非 2xx 只出 ErrorEnvelope，内部 code 只进结构化日志（经 traceId 关联）。
+// Fastify app 工厂。挂基础设施容器、全局插件、统一错误信封、健康检查与业务路由。
+// 对外不暴露内部错误码、供应商细节或堆栈。
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import {
-  API_PREFIX,
   ErrorCode,
   errorBodyFor,
   newTraceId,
@@ -21,10 +20,6 @@ import { buildInfra } from '../platform/infra/index.js';
 import { registerHealthRoutes } from '../platform/http/health.js';
 import { registerVersionRoute } from '../platform/http/version.js';
 import { registerBusinessRoutes } from './routes.js';
-import { registerDevAccountRoutes } from '../modules/account/routes.js';
-import { provisionUser } from '../modules/account/repo.js';
-import type { ProvisionUserFn } from '../platform/middleware/auth.js';
-import { devLoginAvailable } from '../platform/infra/dev-session.js';
 import { corsOriginPolicy } from '../platform/http/browser-origin.js';
 import {
   currentTraceId,
@@ -62,22 +57,19 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       },
     },
     genReqId: (req) => resolveRequestTraceId(req.headers, req.url),
-    disableRequestLogging: false,
-    // 反代后取真实 IP（限流/日志用）。
-    trustProxy: true,
+    // 关闭 Fastify 默认的原始 URL 请求日志；完成日志只记录路由模板与低敏元数据。
+    disableRequestLogging: true,
+    // 只信任回环、链路本地和私网代理；公网直连不能伪造转发链覆盖客户端地址。
+    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
   });
 
-  // —— 基础设施容器：注入 app.infra（db/redis/queue/objectStore/llm），handler 经 req.server.infra 取用 ——
+  // 基础设施容器还包含 Resend HTTP 适配器与 Redis 认证软限流器；认证事实仍只写 PostgreSQL。
   app.decorate('infra', buildInfra(env));
-  // —— provision 接线（依赖反转）：platform 鉴权中间件领域无关，查/建 users 的实现由组合根注入 account 域 ——
-  const provision: ProvisionUserFn = (input) => provisionUser(app.infra.db, input);
-  app.decorate('provisionUser', provision);
 
   // —— 全局插件 ——
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, {
-    // 生产只允许 LOGTO_REDIRECT_URI 推导出的 canonical origin；dev/test 只额外允许固定 Vite origin。
-    // 无 Origin 的服务端/CLI 请求不受影响。Cookie 变更端点另有服务端来源守卫，不能只依赖 CORS。
+    // 只反射 PUBLIC_APP_ORIGINS 白名单。认证 POST 另有强制 Origin 与 Fetch Metadata 守卫。
     origin: corsOriginPolicy(env),
     credentials: true,
   });
@@ -99,36 +91,56 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       {
         ...currentTraceLogFields(req.id),
         method: req.method,
-        url: req.url,
-        route: req.routeOptions.url ?? req.url,
+        route: req.routeOptions.url ?? 'unmatched',
         statusCode: reply.statusCode,
       },
       'request completed',
     );
   });
 
-  // —— 统一错误信封：对外只发 { error: ErrorBody }（无 code、无原始 message/stack/SQL）；
-  //    内部 code + 原始 err 进结构化日志，经 traceId 关联。 ——
+  // —— 统一错误信封不发送内部 code、原始 message、stack 或 SQL。 ——
   app.setErrorHandler((err, req, reply) => {
     // 未知/内部异常一律映射为安全通用 code。限流 → RATE_LIMITED；校验/400 → VALIDATION_FAILED。
     let code: ErrorCodeValue = ErrorCode.INTERNAL;
     const statusCode = (err as { statusCode?: number }).statusCode;
     if (statusCode === 429) {
       code = ErrorCode.RATE_LIMITED;
-    } else if ((err as { validation?: unknown }).validation || statusCode === 400) {
+    } else if (
+      (err as { validation?: unknown }).validation ||
+      statusCode === 400 ||
+      statusCode === 413 ||
+      statusCode === 415
+    ) {
       code = ErrorCode.VALIDATION_FAILED;
-    } else if (statusCode === 413) {
-      code = ErrorCode.VALIDATION_FAILED; // 载荷超限：人话直说，不落 INTERNAL 的「开小差」
     }
-    const { http, body } = errorBodyFor(
-      code,
-      req.id,
+    const route = req.routeOptions.url ?? '';
+    const authRoute =
+      route.endsWith('/auth/email/challenges') ||
+      route.endsWith('/auth/email/verifications') ||
+      route.endsWith('/auth/logout') ||
+      route.endsWith('/me');
+    const oversizedMessage = authRoute
+      ? '认证请求内容过大，请检查后重试。'
+      : '这一片内容太大，重跑助手命令即可（新版脚本会切成更小的分片）。';
+    const unsupportedMessage = authRoute ? '认证请求必须使用 JSON 格式。' : undefined;
+    const overrides =
       statusCode === 413
-        ? { userMessage: '这一片内容太大，重跑助手命令即可（新版脚本会切成更小的分片）。' }
-        : undefined,
+        ? { userMessage: oversizedMessage }
+        : statusCode === 415 && unsupportedMessage
+          ? { userMessage: unsupportedMessage }
+          : undefined;
+    const { http, body } = errorBodyFor(code, req.id, overrides);
+    // 认证错误不附带原始异常，避免 parser 或供应商实现把请求内容带入日志。
+    req.log.error(
+      {
+        ...(authRoute ? {} : { err }),
+        code,
+        ...currentTraceLogFields(req.id),
+      },
+      'request failed',
     );
-    req.log.error({ err, code, ...currentTraceLogFields(req.id) }, 'request failed');
-    reply.code(statusCode === 413 ? 413 : http).send({ error: body });
+    const preservedStatus = statusCode === 413 || statusCode === 415 ? statusCode : http;
+    reply.code(preservedStatus).send({ error: body });
   });
 
   // —— 404 也走信封（不裸露路由信息）——
@@ -146,18 +158,6 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
   // 业务路由（account / task / capability）。
   await registerBusinessRoutes(app);
-
-  // —— 仅 dev/test 种子登录（安全双守卫，绝不上生产）——
-  //   仅当 devLoginAvailable 才注册 POST /api/v1/auth/dev-login；生产/开关关 → 端点根本不存在（404）。
-  if (devLoginAvailable(env)) {
-    await app.register(
-      async (scoped) => {
-        await registerDevAccountRoutes(scoped);
-      },
-      { prefix: API_PREFIX },
-    );
-    app.log.warn('[dev-login] 已启用种子登录端点 POST /api/v1/auth/dev-login（仅 dev/test）');
-  }
 
   // 进程退出时关闭基础设施连接。
   app.addHook('onClose', async () => {

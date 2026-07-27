@@ -12,6 +12,10 @@ export interface MockResponseSpec {
   notJson?: boolean;
   /** true 时模拟 fetch 本身 reject（网络断）。 */
   networkError?: boolean;
+  /** 响应头（认证限流测试会读取 Retry-After）。 */
+  headers?: Record<string, string>;
+  /** 测试显式释放后才返回的响应，用于覆盖异步状态竞争。 */
+  deferred?: Promise<MockResponseSpec>;
   /**
    * 只响应 url 含此子串（或匹配此正则）的请求；不带 match 的 spec 按调用序兜底。
    * 页面同时打多个端点、调用序不稳时用它定向（如任务详情页的能力列表请求）。
@@ -33,6 +37,7 @@ function makeResponse(spec: MockResponseSpec): Response {
   return {
     status,
     ok,
+    headers: new Headers(spec.headers),
     json: async () => {
       if (spec.notJson) throw new SyntaxError('Unexpected token < in JSON');
       return spec.json;
@@ -95,7 +100,8 @@ export function installFetchMock(responses: MockResponseSpec | MockResponseSpec[
     };
     if (init?.credentials) captured.credentials = init.credentials;
     calls.push(captured);
-    const spec = pickSpec(url);
+    const selected = pickSpec(url);
+    const spec = selected.deferred ? await selected.deferred : selected;
     if (spec.networkError) throw new TypeError('Failed to fetch');
     return makeResponse(spec);
   });

@@ -1,22 +1,83 @@
-# Pass 1 dev-test override（仅本地 live 测试用，绝不上生产）。
-# 叠加在 infra/docker-compose.yml 之上：把 api/worker 切到 NODE_ENV=development，
-# 以启用 dev 种子登录（双守卫仍需 DEV_LOGIN_ENABLED=true + DEV_SESSION_SECRET 非空，均来自 .env）。
-# 用法：docker compose -f infra/docker-compose.yml -f infra/docker-compose.dev-test.yml up -d --wait ...
-# 生产/真实 Logto 验收（Pass 2）只用基础 compose（NODE_ENV=production，dev-login 自动强制关停）。
+# 仅供本地开发和端到端测试的覆盖层。生产 Compose 与 Kubernetes 清单不会加载本文件。
+# 它把 authoring 的 Resend 基址指向容器内测试替身，并只把检查端口绑定到宿主回环地址。
 services:
+  postgres:
+    ports: !override
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+
+  redis_queue:
+    ports: !override
+      - '127.0.0.1:${REDIS_QUEUE_PORT:-6379}:6379'
+
+  redis_hot:
+    ports: !override
+      - '127.0.0.1:${REDIS_HOT_PORT:-6380}:6379'
+
+  minio:
+    ports: !override
+      - '127.0.0.1:${MINIO_API_PORT:-9000}:9000'
+      - '127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001'
+
+  resend-mock:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.resend-mock
+    environment:
+      RESEND_MOCK_API_KEY: ${RESEND_MOCK_API_KEY:?RESEND_MOCK_API_KEY 仅测试时必填}
+      HOST: 0.0.0.0
+      PORT: '4010'
+    ports: !override
+      - '127.0.0.1:${RESEND_MOCK_PORT:-4010}:4010'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          'fetch("http://127.0.0.1:4010/health").then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))',
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+      start_period: 2s
+    restart: 'no'
+
   api:
+    depends_on:
+      resend-mock:
+        condition: service_healthy
     environment:
       NODE_ENV: development
-      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-}
-      DEV_SESSION_SECRET: ${DEV_SESSION_SECRET:-}
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 仅测试时必填}
+      SESSION_COOKIE_SECURE: 'false'
+      RESEND_API_KEY: ${RESEND_MOCK_API_KEY:?RESEND_MOCK_API_KEY 仅测试时必填}
+      RESEND_FROM_EMAIL: ${RESEND_MOCK_FROM_EMAIL:-login@example.test}
+      RESEND_API_BASE_URL: http://resend-mock:4010
+      OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?OTP_HMAC_SECRET 仅测试时必填}
+      OTEL_SDK_DISABLED: 'true'
+    ports: !override
+      - '127.0.0.1:${API_PORT:-3000}:3000'
+
   runtime:
     environment:
       NODE_ENV: development
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 仅测试时必填}
+      SESSION_COOKIE_SECURE: 'false'
       REDIS_URL: redis://redis_queue:6379
-      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-}
-      DEV_SESSION_SECRET: ${DEV_SESSION_SECRET:-}
+      OTEL_SDK_DISABLED: 'true'
+
   worker:
     environment:
       NODE_ENV: development
-      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-}
-      DEV_SESSION_SECRET: ${DEV_SESSION_SECRET:-}
+      OTEL_SDK_DISABLED: 'true'
+
+  web:
+    environment:
+      COMBO_ENVIRONMENT: test
+      COMBO_SOURCE_SHA: ${COMBO_SOURCE_SHA:?COMBO_SOURCE_SHA 仅测试时必填}
+      COMBO_RELEASE_ID: ${COMBO_RELEASE_ID:?COMBO_RELEASE_ID 仅测试时必填}
+      COMBO_BUILT_AT: ${COMBO_BUILT_AT:?COMBO_BUILT_AT 仅测试时必填}
+      COMBO_RELEASE_MANIFEST_DIGEST: ${COMBO_RELEASE_MANIFEST_DIGEST:?COMBO_RELEASE_MANIFEST_DIGEST 仅测试时必填}
+      COMBO_WEB_ASSET_MANIFEST: ${COMBO_WEB_ASSET_MANIFEST:?COMBO_WEB_ASSET_MANIFEST 仅测试时必填}
+    ports: !override
+      - '127.0.0.1:${WEB_PORT:-80}:80'

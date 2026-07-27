@@ -38,7 +38,7 @@ readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 RESET_PROOF=''
 CONSUMED_RESET_PROOF=''
 readonly RESET_PROOF_MAX_AGE_SECONDS=900
-readonly MIGRATION_HEAD='0006_one_running_turn_per_session.sql'
+readonly MIGRATION_HEAD='0008_application_database_roles.sql'
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
 readonly APP_NAMES=(api worker runtime web)
@@ -282,7 +282,6 @@ rbac_preflight() {
   can_i_exact no get secrets "$NAMESPACE"
   can_i_exact no list secrets "$NAMESPACE"
   can_i_exact no delete secrets/combo-dev-env "$NAMESPACE"
-  can_i_exact yes patch secrets/combo-dev-session "$NAMESPACE"
   can_i_exact no patch secrets/combo-dev-env "$NAMESPACE"
   can_i_exact no patch deployments.apps "$PRODUCTION_NAMESPACE"
   can_i_exact no create jobs.batch "$PRODUCTION_NAMESPACE"
@@ -1177,16 +1176,16 @@ for name,doc in policy_docs.items():
 if not all(value in policy_docs['default-deny'] for value in ('podSelector: {}','policyTypes:','- Egress','- Ingress')):
     raise SystemExit('guard:default-deny')
 
-allowed_secret_names={'combo-dev-env','combo-dev-session'}
+allowed_secret_names={'combo-dev-env'}
 expected_secret_keys={
  'minio':{'MINIO_ROOT_USER','MINIO_ROOT_PASSWORD'},
  'postgres':{'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB'},
  'redis-hot':set(),'redis-queue':set(),
  'minio-init':{'MINIO_ROOT_USER','MINIO_ROOT_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY'},
- 'migrate':{'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB'},
- 'api':{'DEV_SESSION_SECRET','S3_ACCESS_KEY','S3_SECRET_KEY','LOGTO_ENDPOINT','LOGTO_ISSUER','LOGTO_JWKS_URI','LOGTO_APP_ID','LOGTO_APP_SECRET','LOGTO_AUDIENCE','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL','POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB'},
- 'runtime':{'DEV_SESSION_SECRET','POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB','S3_ACCESS_KEY','S3_SECRET_KEY','LOGTO_ISSUER','LOGTO_JWKS_URI','LOGTO_AUDIENCE','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','RUNTIME_LLM_PROVIDER','RUNTIME_LLM_MODEL'},
- 'worker':{'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB','S3_ACCESS_KEY','S3_SECRET_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL'},
+ 'migrate':{'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB','POSTGRES_API_PASSWORD','POSTGRES_WORKER_PASSWORD','POSTGRES_RUNTIME_PASSWORD'},
+ 'api':{'POSTGRES_DB','POSTGRES_API_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','RESEND_API_KEY','OTP_HMAC_SECRET','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL'},
+ 'runtime':{'POSTGRES_DB','POSTGRES_RUNTIME_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','RUNTIME_LLM_PROVIDER','RUNTIME_LLM_MODEL'},
+ 'worker':{'POSTGRES_DB','POSTGRES_WORKER_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL'},
  'web':set()}
 for name,doc in workloads.items():
     env_from=re.findall(
@@ -1202,7 +1201,7 @@ for name,doc in workloads.items():
     if len(refs_found)!=doc.count('secretKeyRef:'): raise SystemExit('guard:secret-reference-shape')
     if {key for key,_ in refs_found}!=expected_secret_keys[name] or any(secret not in allowed_secret_names for _,secret in refs_found):
         raise SystemExit('guard:secret-reference')
-    if any(secret != ('combo-dev-session' if key == 'DEV_SESSION_SECRET' else 'combo-dev-env') for key,secret in refs_found):
+    if any(secret != 'combo-dev-env' for _,secret in refs_found):
         raise SystemExit('guard:secret-reference-name')
     pull_refs=re.findall(r'^      imagePullSecrets:\n      - name:\s*(\S+)$',doc,re.M)
     expected_pull=['combo-dev-registry'] if name in {'api','runtime','web','worker','migrate'} else []
@@ -1446,6 +1445,8 @@ expected_migrations = [
     '0004_studio_sessions.sql',
     '0005_capability_current_ui.sql',
     '0006_one_running_turn_per_session.sql',
+    '0007_first_party_email_auth.sql',
+    '0008_application_database_roles.sql',
 ]
 uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 
@@ -1747,7 +1748,7 @@ if (
     or not re.fullmatch(r'[1-9][0-9]*', workflow_run_attempt)
     or manifest.get('sourceSha') != revision
     or manifest.get('releaseId') != f'release-{revision}'
-    or manifest.get('migrationHead') != '0006_one_running_turn_per_session.sql'
+    or manifest.get('migrationHead') != '0008_application_database_roles.sql'
 ):
     raise SystemExit(2)
 if not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest_digest):
@@ -1794,10 +1795,12 @@ expected_migrations = [
     '0004_studio_sessions.sql',
     '0005_capability_current_ui.sql',
     '0006_one_running_turn_per_session.sql',
+    '0007_first_party_email_auth.sql',
+    '0008_application_database_roles.sql',
 ]
 expected_passes = [
-    {'run': 1, 'head': '0006_one_running_turn_per_session.sql'},
-    {'run': 2, 'head': '0006_one_running_turn_per_session.sql'},
+    {'run': 1, 'head': '0008_application_database_roles.sql'},
+    {'run': 2, 'head': '0008_application_database_roles.sql'},
 ]
 if (
     migration.get('schemaVersion') != 1

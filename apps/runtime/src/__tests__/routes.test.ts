@@ -84,12 +84,13 @@ describe('route registry self-check', () => {
     }
   });
 
-  it('所有端点都带鉴权守卫（runtime 无匿名路径）', () => {
+  it('所有端点都带鉴权守卫，所有写端点还在鉴权前带浏览器来源守卫', () => {
     for (const ep of ALL_ENDPOINTS) {
-      expect(
-        (ep.preHandlers ?? []).length,
-        `${String(ep.method)} ${ep.url} 缺守卫`,
-      ).toBeGreaterThan(0);
+      const guards = (ep.preHandlers ?? []).length;
+      expect(guards, `${String(ep.method)} ${ep.url} 缺守卫`).toBeGreaterThan(0);
+      if (ep.method === 'POST' || ep.method === 'PATCH' || ep.method === 'DELETE') {
+        expect(guards, `${String(ep.method)} ${ep.url} 缺浏览器来源守卫`).toBeGreaterThanOrEqual(2);
+      }
     }
   });
 });
@@ -141,7 +142,7 @@ function makeReq(input: {
   });
   return {
     id: 'trace-test',
-    auth: { userId: input.userId, account: 'tester', roles: ['creator'] },
+    auth: { userId: input.userId, account: 'creator-testerxx', roles: ['creator'] },
     params: input.params ?? {},
     query: input.query ?? {},
     body: input.body,

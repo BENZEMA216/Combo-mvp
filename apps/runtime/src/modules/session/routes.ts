@@ -11,6 +11,7 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth, requireSseAuth } from '../../platform/middleware/auth.js';
 import { registerEndpoints, type EndpointDecl } from '../../platform/http/_helpers.js';
+import { requireTrustedMutationOrigin } from '../../platform/http/browser-origin.js';
 import { sessionStreamHandler } from '../agent/stream.js';
 import {
   archiveSessionHandler,
@@ -23,17 +24,19 @@ import {
   updateSessionHandler,
 } from './handlers.js';
 
+const browserMutationGuards = [requireTrustedMutationOrigin(), requireAuth()];
+
 export const SESSION_ENDPOINTS: EndpointDecl[] = [
   {
     method: 'POST',
     url: '/runtime/studio/sessions',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: createStudioSessionHandler(),
   },
   {
     method: 'POST',
     url: '/runtime/sessions',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: createSessionHandler(),
   },
   {
@@ -51,25 +54,25 @@ export const SESSION_ENDPOINTS: EndpointDecl[] = [
   {
     method: 'PATCH',
     url: '/runtime/sessions/:id',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: updateSessionHandler(),
   },
   {
     method: 'DELETE',
     url: '/runtime/sessions/:id',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: archiveSessionHandler(),
   },
   {
     method: 'POST',
     url: '/runtime/sessions/:id/messages',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: sendMessageHandler(),
   },
   {
     method: 'POST',
     url: '/runtime/sessions/:id/interrupt',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: interruptHandler(),
   },
   {

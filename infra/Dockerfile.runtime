@@ -1,6 +1,6 @@
 # 试用端 runtime（消费链路）镜像：Fastify HTTP + AG-UI SSE + pi 执行层，单进程 api。
 #   多阶段：build 阶段装全依赖 + tsc -b（shared 先于 runtime）；runtime 阶段只带产物 + 生产依赖。
-#   与 Dockerfile.api 同模子，但只构建 @cb/runtime；无 go importbins / logto / s3 / 多进程分叉。
+#   与 Dockerfile.api 同模子，但只构建 @cb/runtime；无 Go 导入助手、邮件适配器或多进程分叉。
 FROM node:24-slim AS build
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
@@ -9,7 +9,7 @@ COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfi
 COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 # shared 先 build（runtime 依赖其 dist + .d.ts），再 build runtime
 RUN pnpm -F @cb/shared build && pnpm -F @cb/runtime build
 
@@ -21,7 +21,7 @@ RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /app/apps/runtime/package.json ./apps/runtime/package.json
-RUN pnpm install --prod --frozen-lockfile=false
+RUN pnpm install --prod --frozen-lockfile
 # 产物：shared dist + runtime dist
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/apps/runtime/dist ./apps/runtime/dist

@@ -54,11 +54,15 @@ integrationDescribe('真实 PostgreSQL Session 一致性', () => {
 
   async function seedStudio(): Promise<SeededChain> {
     const suffix = randomUUID();
+    const account = `creator-${suffix
+      .replaceAll('-', '')
+      .slice(0, 8)
+      .replace(/[0189]/g, 'a')}`;
     const user = await db.query<{ id: string }>(
-      `INSERT INTO users (logto_user_id, account)
-       VALUES ($1, $1)
+      `INSERT INTO users (account)
+       VALUES ($1)
        RETURNING id`,
-      [`session-consistency-${suffix}`],
+      [account],
     );
     const userId = user.rows[0]!.id;
     const task = await db.query<{ id: string }>(

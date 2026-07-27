@@ -517,7 +517,7 @@ jobs:
               and .webAssetManifestDigest == $webAssetDigest
               and .testIdentityDigest == $identityDigest
               and .liveBrowserAcceptanceDigest == $browserDigest
-              and .migrationHead == "0006_one_running_turn_per_session.sql"
+              and .migrationHead == "0008_application_database_roles.sql"
               and .images == {
                 api: $apiImage,
                 runtime: $runtimeImage,
@@ -1132,12 +1132,18 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           REVIEW_ACCESS_TOKEN: ${{ secrets.CLOUD_REVIEW_ACCESS_TOKEN }}
+          ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
           set -euo pipefail
+          set +x
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$REVIEW_ACCESS_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
             echo 'The protected cloud-review Environment lacks a valid REVIEW_ACCESS_TOKEN.' >&2
+            exit 1
+          }
+          [[ "$ACCEPTANCE_RESEND_API_KEY" =~ ^re_[A-Za-z0-9_-]{16,252}$ ]] || {
+            echo 'The cloud-review Environment lacks a valid full-access acceptance Resend key.' >&2
             exit 1
           }
           archive="$RUNNER_TEMP/combo-preview-acceptance-${REVISION}.tar.gz"
@@ -1150,8 +1156,10 @@ jobs:
           ssh release-target mv -fT -- "$temporary" "$remote"
           {
             printf '%s\n' "$REVIEW_ACCESS_TOKEN"
+            printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
             cat <<'REMOTE'
           set -euo pipefail
+          set +x
           incoming=$1
           revision=$2
           run_id=$3
@@ -1165,7 +1173,7 @@ jobs:
           output_dir="$HOME/data/combo-acceptance/preview"
           output="$output_dir/${revision}.${run_id}.${run_attempt}.json"
           cleanup() {
-            unset COMBO_REVIEW_ACCESS_TOKEN
+            unset COMBO_REVIEW_ACCESS_TOKEN ACCEPTANCE_RESEND_API_KEY
             rm -f -- "$archive"
             rm -rf -- "$work"
           }
@@ -1187,12 +1195,14 @@ jobs:
           node "$work/acceptance/live-browser-acceptance.mjs" \
             --environment preview \
             --revision "$revision" \
+            --run-id "$run_id" \
+            --run-attempt "$run_attempt" \
             --web-origin https://review.43-160-242-46.sslip.io \
             --output "$output"
           chmod 0600 "$output"
           REMOTE
           } | ssh release-target \
-            "IFS= read -r review_access; export COMBO_REVIEW_ACCESS_TOKEN=\"\$review_access\"; unset review_access; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
+            "IFS= read -r review_access; IFS= read -r acceptance_resend_api_key; export COMBO_REVIEW_ACCESS_TOKEN=\"\$review_access\" ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset review_access acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
 
       - name: Fetch and validate the six-area Preview browser evidence
         id: browser_admission

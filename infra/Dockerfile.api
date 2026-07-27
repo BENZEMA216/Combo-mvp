@@ -28,10 +28,13 @@ COPY --from=build /app/packages/shared/package.json ./packages/shared/package.js
 COPY --from=build /app/apps/authoring/package.json ./apps/authoring/package.json
 COPY --from=build /app/db/package.json ./db/package.json
 RUN pnpm install --prod --frozen-lockfile=false
-# 产物：shared dist + api dist + db 迁移源（migrate 容器用 --experimental-strip-types 直跑 TS）
+# 产物：shared dist + api dist + 迁移运行时白名单（migrate 容器用 --experimental-strip-types 直跑 TS）。
+# 不复制完整 db 源码树，避免把测试、fixture 或开发辅助文件带入生产镜像。
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/apps/authoring/dist ./apps/authoring/dist
-COPY --from=build /app/db ./db
+COPY --from=build /app/db/migrations ./db/migrations
+COPY --from=build /app/db/scripts/migrate.ts ./db/scripts/migrate.ts
+COPY --from=build /app/db/scripts/provision-app-roles.ts ./db/scripts/provision-app-roles.ts
 # entrypoint 分叉脚本
 COPY infra/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh

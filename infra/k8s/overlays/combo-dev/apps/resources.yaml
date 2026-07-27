@@ -68,20 +68,13 @@ spec:
       containers:
         - env:
             - name: NODE_ENV
-              value: development
+              value: production
             - name: HOME
               value: /tmp
             - name: XDG_CACHE_HOME
               value: /tmp/cache
             - name: LOG_LEVEL
               value: warn
-            - name: DEV_LOGIN_ENABLED
-              value: 'true'
-            - name: DEV_SESSION_SECRET
-              valueFrom:
-                secretKeyRef:
-                  key: DEV_SESSION_SECRET
-                  name: combo-dev-session
             - name: OTEL_SDK_DISABLED
               value: 'true'
             - name: REDIS_QUEUE_URL
@@ -102,38 +95,24 @@ spec:
                 secretKeyRef:
                   key: S3_SECRET_KEY
                   name: combo-dev-env
-            - name: LOGTO_ENDPOINT
+            - name: PUBLIC_APP_ORIGINS
+              value: http://127.0.0.1:18080
+            - name: SESSION_COOKIE_SECURE
+              value: 'false'
+            - name: RESEND_API_KEY
               valueFrom:
                 secretKeyRef:
-                  key: LOGTO_ENDPOINT
+                  key: RESEND_API_KEY
                   name: combo-dev-env
-            - name: LOGTO_ISSUER
+            - name: RESEND_FROM_EMAIL
+              value: 'Combo <auth@buildwithcombo.com>'
+            - name: RESEND_API_BASE_URL
+              value: https://api.resend.com
+            - name: OTP_HMAC_SECRET
               valueFrom:
                 secretKeyRef:
-                  key: LOGTO_ISSUER
+                  key: OTP_HMAC_SECRET
                   name: combo-dev-env
-            - name: LOGTO_JWKS_URI
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_JWKS_URI
-                  name: combo-dev-env
-            - name: LOGTO_APP_ID
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_APP_ID
-                  name: combo-dev-env
-            - name: LOGTO_APP_SECRET
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_APP_SECRET
-                  name: combo-dev-env
-            - name: LOGTO_AUDIENCE
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_AUDIENCE
-                  name: combo-dev-env
-            - name: LOGTO_REDIRECT_URI
-              value: http://127.0.0.1:18080/api/v1/auth/callback
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -174,23 +153,24 @@ spec:
               value: us-east-1
             - name: OTEL_SERVICE_NAME
               value: cb-authoring-api
-            - name: POSTGRES_USER
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              value: combo_api
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  key: POSTGRES_USER
+                  key: POSTGRES_API_PASSWORD
                   name: combo-dev-env
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: POSTGRES_PASSWORD
-                  name: combo-dev-env
-            - name: POSTGRES_DB
+            - name: PGDATABASE
               valueFrom:
                 secretKeyRef:
                   key: POSTGRES_DB
                   name: combo-dev-env
             - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
           image: ghcr.io/dangdang-tech/combo-api:latest
           livenessProbe:
             failureThreshold: 6
@@ -269,35 +249,31 @@ spec:
       containers:
         - env:
             - name: NODE_ENV
-              value: development
+              value: production
             - name: HOME
               value: /tmp
             - name: XDG_CACHE_HOME
               value: /tmp/cache
             - name: LOG_LEVEL
               value: warn
-            - name: DEV_LOGIN_ENABLED
-              value: 'true'
-            - name: DEV_SESSION_SECRET
-              valueFrom:
-                secretKeyRef:
-                  key: DEV_SESSION_SECRET
-                  name: combo-dev-session
-            - name: CORS_ORIGIN
+            - name: PUBLIC_APP_ORIGINS
               value: http://127.0.0.1:18080
+            - name: SESSION_COOKIE_SECURE
+              value: 'false'
             - name: OTEL_SDK_DISABLED
               value: 'true'
-            - name: POSTGRES_USER
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              value: combo_runtime
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  key: POSTGRES_USER
+                  key: POSTGRES_RUNTIME_PASSWORD
                   name: combo-dev-env
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: POSTGRES_PASSWORD
-                  name: combo-dev-env
-            - name: POSTGRES_DB
+            - name: PGDATABASE
               valueFrom:
                 secretKeyRef:
                   key: POSTGRES_DB
@@ -311,21 +287,6 @@ spec:
               valueFrom:
                 secretKeyRef:
                   key: S3_SECRET_KEY
-                  name: combo-dev-env
-            - name: LOGTO_ISSUER
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_ISSUER
-                  name: combo-dev-env
-            - name: LOGTO_JWKS_URI
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_JWKS_URI
-                  name: combo-dev-env
-            - name: LOGTO_AUDIENCE
-              valueFrom:
-                secretKeyRef:
-                  key: LOGTO_AUDIENCE
                   name: combo-dev-env
             - name: ANTHROPIC_API_KEY
               valueFrom:
@@ -364,7 +325,7 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: cb-runtime-api
             - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
           image: ghcr.io/dangdang-tech/combo-runtime:latest
           livenessProbe:
             failureThreshold: 6
@@ -550,17 +511,18 @@ spec:
               value: --max-old-space-size=1024
             - name: OTEL_SDK_DISABLED
               value: 'true'
-            - name: POSTGRES_USER
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
+              value: combo_worker
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef:
-                  key: POSTGRES_USER
+                  key: POSTGRES_WORKER_PASSWORD
                   name: combo-dev-env
-            - name: POSTGRES_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  key: POSTGRES_PASSWORD
-                  name: combo-dev-env
-            - name: POSTGRES_DB
+            - name: PGDATABASE
               valueFrom:
                 secretKeyRef:
                   key: POSTGRES_DB
@@ -618,7 +580,7 @@ spec:
             - name: OTEL_SERVICE_NAME
               value: cb-authoring-worker
             - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
           image: ghcr.io/dangdang-tech/combo-api:latest
           name: worker
           resources:

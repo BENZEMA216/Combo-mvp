@@ -1,18 +1,22 @@
 # domains — 业务域契约
 
-这个目录按业务域定义对外接口的数据形状与校验规则，覆盖登录、任务、能力项、试用会话四个域，另含去敏规则引擎。每个域同时导出 zod（运行时校验库）schema 和推导出的类型。
+这个目录按业务域定义对外接口的数据形状与校验规则，覆盖认证、任务、能力项和试用会话，另含去敏规则引擎。每个域同时导出 Zod 运行时 schema 和推导出的 TypeScript 类型。
 
 ## 文件
 
-- `auth.ts` 定义登录域：登录与回调接口的查询参数 schema、当前用户视图 `MeView`、登出结果，以及鉴权中间件注入请求的 `AuthContext`（非对外响应体）。
+- `auth.ts` 定义邮箱验证码认证域。该文件提供严格的 challenge、verification 与 logout 请求 schema、必填 traceId 的成功包络、当前用户视图 `MeView`、中间件使用的 `AuthContext`、六位验证码与七天会话常量，以及 `sanitizeAuthReturnTo` 站内回跳净化函数。显式安全入口使用 `__Host-cb_session`，显式本地 HTTP 入口使用 `cb_session`，两者都使用根路径。`MeView.email` 是必填的规范邮箱，`MeView.account` 固定为 `creator-` 加八位小写 Base32，登出结果的已知字段只有 `loggedOut: true`。
 - `task.ts` 定义任务域：带幂等键的建任务请求、任务视图 `TaskView`（含两轴状态、上传分片计数，以及不可再收片但保留清理诊断的 `expired` 上传态）、建任务响应（配对码只在此明文出现一次），以及本机助手分片上传接口的请求与结果。
 - `capability.ts` 定义能力项域：库内轻量索引视图 `CapabilityView`、存在 MinIO 里的完整可运行定义 `CapabilityDefinition`（提取流水线写入、试用端读出注入 agent，是两个服务之间唯一的契约缝，除系统提示词外还带试用开场表单字段 `inputs` 与开场提示语 `starterPrompts`），以及发布动作的结果。
 - `trial.ts` 定义试用域：会话、消息、产物和运行中 Turn 的视图，以及建会话、发消息的请求体；Artifact 会带可选来源 Turn 和创建时间，会话详情能从 PostgreSQL 恢复 active Turn，并用 `currentUiArtifactId` 标识 Studio 当前 UI 或普通会话创建时冻结的 UI 副本。会话详情里的能力摘要带开场表单字段与提示语（来自能力定义，定义读不出时为空数组）。消息内容是 agent 原生分块格式，共享层只约束到「是数组」，严格校验在 runtime 侧。
 - `redaction.ts` 是去敏规则引擎，纯函数、无任何 IO：`redact` 与 `redactBatch` 按带版本号的规则集抹掉手机号、邮箱、密钥、证件号、银行卡号、IP 等隐私信息，产出只含类别与计数的聚合报告，且对已去敏文本重跑结果不变。
 - `index.ts` 汇总转出以上全部文件。
 
+## 认证契约边界
+
+认证域只定义邮箱六位验证码、`GET /me`、`POST logout` 和一枚按显式传入的 HTTPS 策略命名的不透明 Cookie 所需契约。请求邮箱只执行保守结构校验，不裁剪地址；authoring 使用同一规范化结果完成投递、摘要和身份写入。`sanitizeAuthReturnTo` 最多接受五百一十二字符，并只保留 `/tasks`、`/tasks/` 子路径、`/capabilities`、`/try` 与 `/try/` 子路径。绝对地址、双斜杠、反斜杠、控制字符、编码斜杠和其他路径统一回落到 `/tasks`。
+
 ## 上下游
 
-runtime 侧：`platform/middleware/auth.ts`、`platform/infra/logto.ts` 和 `platform/infra/dev-session.ts` 用 auth 域的角色与 `AuthContext`；`modules/capability/loader.ts` 用 `CapabilityDefinitionSchema` 校验从 MinIO 读出的定义，`modules/agent` 的 `build-agent.ts` 与 `run-turn.ts` 拿它构建 agent；`modules/session` 与 `modules/artifact` 用 trial 域的请求 schema 和视图类型。
+runtime 的认证中间件使用 `AuthSessionCookieValueSchema`、Cookie 常量、角色和 `AuthContext`，并用会话摘要读取 PostgreSQL。authoring 的账号模块使用邮箱请求、验证结果、当前用户、登出、Cookie 和回跳契约。web 与 runtime-web 使用相同请求、响应和回跳定义实现自定义登录与站内导航。
 
-authoring 侧：`modules/account` 用 auth 域的角色与视图；`modules/task` 的 `handlers.ts`、`repo.ts`、`service.ts`、`pairing.ts` 用 task 域的全部请求与视图，`pipeline.ts` 在提取流水线里调用 `redactBatch` 去敏并用 `CapabilityDefinitionSchema` 生成能力定义；`modules/capability` 用 `CapabilityView` 和 `PublishResult`。
+runtime 的能力加载模块使用 `CapabilityDefinitionSchema` 校验从 MinIO 读出的定义，agent 与会话模块使用 capability 和 trial 域类型。authoring 的任务、能力与提取流水线使用 task、capability 和 redaction 域定义。

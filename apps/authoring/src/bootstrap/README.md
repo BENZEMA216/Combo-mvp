@@ -1,14 +1,14 @@
-# bootstrap — api 进程组装层
+# bootstrap — API 进程组装层
 
-这个目录负责把 Fastify 应用组装起来：注入基础设施容器、挂全局插件与统一错误处理、注册健康检查和全部业务路由。api 进程入口只需要调 buildApp 再 listen。
+这个目录负责构建 Fastify 应用，注入基础设施容器，注册全局插件、统一错误处理、健康检查和全部业务路由。
 
 ## 文件
 
-- `app.ts` 是 Fastify 应用工厂：加载环境配置，创建带结构化日志和 traceId 的 Fastify 实例，把 buildInfra 组装的基础设施容器挂到 app.infra，把 account 域的 provisionUser 以 app.decorate 注入给 platform 鉴权中间件（依赖反转：platform 不 import 业务域，接线在组合根做），注册 helmet、cors、cookie、限流四个全局插件，设置统一错误信封（对外只出人话错误体，内部错误码和堆栈只进日志）和 404 处理，注册健康检查与业务路由，并在 dev/test 且开关打开时条件注册种子登录端点，最后挂进程退出时关闭数据库、Redis、队列、对象存储连接的钩子。
-- `routes.ts` 是业务路由聚合器：把 account、task、capability 三个模块的路由外加浏览器侧错误上报端点统一挂到 `/api/v1` 前缀下，并导出 ALL_ENDPOINTS 全量端点声明清单供测试核对端点数、方法和鉴权链。
+- `app.ts` 加载环境配置并构造 Fastify。它关闭默认原始请求日志，只记录方法、路由模板、状态和 traceId；认证解析错误不把原始异常写入日志。应用注册 Helmet、精确 CORS、Cookie 和路由级限流插件，认证与 Cookie 鉴权写路由共用同一来源边界，统一保留认证 413 与 415 状态，并在关闭时释放数据库、Redis、队列和对象存储客户端。
+- `routes.ts` 把 account、task、capability 与浏览器观测路由统一挂到 `/api/v1`，并导出完整端点声明供测试核对。
 
 ## 上下游
 
-被谁使用：`processes/api.ts` 在启动时动态加载 `app.ts` 的 buildApp；集成测试也用 buildApp 起内存应用。
+`processes/api.ts` 调用 `buildApp` 后监听端口。`app.ts` 依赖 `platform/config/env.ts`、`platform/infra/index.ts`、`platform/http/` 和 `platform/observability/node.ts`；`routes.ts` 依赖三个业务模块的路由声明。
 
-依赖什么：`app.ts` 引用 `platform/config/env.ts`（配置）、`platform/infra/index.ts`（基础设施容器与关闭函数）、`platform/http/health.ts`（健康检查路由）、`platform/http/fastify.ts`（类型增强）、`platform/infra/dev-session.ts`（种子登录开关判定）、`platform/observability/node.ts`（traceId 工具）、`platform/middleware/auth.ts`（ProvisionUserFn 类型）、`modules/account/routes.ts`（种子登录路由）、`modules/account/repo.ts`（provisionUser 实现，注入用）；`routes.ts` 引用三个模块的 routes 文件、`platform/http/client-events.ts` 和 `platform/http/_helpers.ts`。错误码、traceId 工具、API 前缀等常量来自共享包 `@cb/shared`。本层自己不直接访问数据库或 Redis，只负责把客户端实例注入给下游。
+组合根只负责接线，不实现账号、任务或能力项规则。第一方认证所需的 PostgreSQL、Resend 和 Redis 端口都由基础设施容器提供，账号事务由 account 模块执行。

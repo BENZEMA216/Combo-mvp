@@ -3,8 +3,6 @@ kind: Kustomization
 namespace: combo-preview
 resources:
   - ../../../base/apps
-patches:
-  - path: dev-session.patch.yaml
 labels:
   - includeSelectors: true
     pairs:

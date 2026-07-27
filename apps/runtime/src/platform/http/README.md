@@ -1,10 +1,12 @@
 # platform/http HTTP 公共设施
 
-这个目录保存端点声明、统一错误回复、Fastify 类型增强、健康检查和浏览器事件上报。
+这个目录保存不属于具体业务模块的路由工具、浏览器来源边界、统一错误回复、Fastify 类型增强、健康检查、发布版本和浏览器事件端点。
 
-- `_helpers.ts` 定义端点声明、批量注册和统一 ErrorEnvelope 输出。
-- `fastify.ts` 为 Fastify 增加 `app.infra`、`app.turns` 和 `req.auth` 类型。`app.infra` 包含默认禁用或显式启用的 SandboxBackend。
-- `health.ts` 注册 `GET /health` 和 `GET /ready`。沙箱 Pod 只在首次工具调用时创建，不参与 Runtime readiness，也不会预创建。
-- `client-events.ts` 接收浏览器错误事件并只写结构化日志。
+- `_helpers.ts` 定义端点声明、批量注册和共享错误信封。
+- `browser-origin.ts` 用与 authoring 相同的严格语法解析 `PUBLIC_APP_ORIGINS`，为凭据型 CORS 只反射白名单成员，并拒绝其他跨站或同站子域发起的 Cookie 鉴权写请求。
+- `fastify.ts` 为 Fastify 增加 `app.infra`、`app.turns` 和 `req.auth` 类型。
+- `health.ts` 注册 `/health` 与 `/ready`，检查数据库、对象存储和 Redis。模型密钥缺失只产生降级状态。
+- `version.ts` 从经过共享 schema 校验的发布元数据生成 `/version.json`。
+- `client-events.ts` 只记录事件类型、traceId 和固定低基数路由桶，不保留原始地址、用户输入、查询参数或凭据。
 
-Runtime 没有增加浏览器可调用的沙箱管理端点。sandboxd 的认证协议只在 Pod 网络中由 SandboxClient 调用，不通过 Fastify 暴露。
+Runtime 不暴露浏览器可调用的沙箱管理端点。sandboxd 协议只在 Pod 网络内由 SandboxClient 使用。

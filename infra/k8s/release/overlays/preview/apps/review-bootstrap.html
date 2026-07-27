@@ -97,7 +97,7 @@
       <h1>正在进入 Combo</h1>
       <p>当前发布正在云端运行；预览账号和数据与生产环境隔离，刷新后仍可继续。</p>
       <button id="retry" type="button" hidden>重新尝试</button>
-      <p id="status" role="status" aria-live="polite">正在创建预览身份…</p>
+      <p id="status" role="status" aria-live="polite">正在进入邮箱验证…</p>
     </main>
     <script>
       const retry = document.querySelector('#retry');
@@ -112,7 +112,7 @@
           raw.includes('\\') ||
           /[\u0000-\u001f\u007f]/.test(raw)
         ) {
-          return '/';
+          return '/tasks';
         }
         let decoded = raw;
         let stabilized = false;
@@ -123,7 +123,7 @@
             decoded.includes('\\') ||
             /[\u0000-\u001f\u007f]/.test(decoded)
           ) {
-            return '/';
+            return '/tasks';
           }
           try {
             const next = decodeURIComponent(decoded);
@@ -133,46 +133,37 @@
             }
             decoded = next;
           } catch {
-            return '/';
+            return '/tasks';
           }
         }
-        if (!stabilized) return '/';
+        if (!stabilized) return '/tasks';
         try {
           const target = new URL(raw, location.origin);
-          if (target.origin === location.origin && !target.pathname.startsWith('//')) {
+          const allowed =
+            target.pathname === '/tasks' ||
+            target.pathname.startsWith('/tasks/') ||
+            target.pathname === '/capabilities' ||
+            target.pathname === '/try' ||
+            target.pathname.startsWith('/try/');
+          if (target.origin === location.origin && !target.pathname.startsWith('//') && allowed) {
             return `${target.pathname}${target.search}`;
           }
         } catch {
-          return '/';
+          return '/tasks';
         }
-        return '/';
+        return '/tasks';
       }
       const returnTo = safeReturnTo(new URLSearchParams(location.search).get('returnTo'));
 
-      async function start() {
+      function start() {
         retry.hidden = true;
         retry.disabled = true;
-        status.textContent = '正在创建预览身份…';
-        try {
-          const response = await fetch('/api/v1/auth/dev-login', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'content-type': 'application/json' },
-            body: '{}',
-          });
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          status.textContent = '准备完成，正在进入 Combo…';
-          location.replace(returnTo);
-        } catch (error) {
-          status.textContent = `暂时无法创建预览身份（${error.message}）。`;
-          retry.hidden = false;
-          retry.disabled = false;
-          retry.focus();
-        }
+        status.textContent = '正在进入邮箱验证…';
+        location.replace(`/login?returnTo=${encodeURIComponent(returnTo)}`);
       }
 
-      retry.addEventListener('click', () => void start());
-      void start();
+      retry.addEventListener('click', start);
+      start();
     </script>
   </body>
 </html>

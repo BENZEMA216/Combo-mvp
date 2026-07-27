@@ -429,30 +429,16 @@ jobs:
           node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" validate-identity \
             --identity "$RUNNER_TEMP/production-identity.json" >/dev/null
 
-      - name: Validate protected Production acceptance credentials before mutation
+      - name: Validate the protected Production Resend reader before mutation
         env:
-          ACCEPTANCE_EMAIL: ${{ secrets.PRODUCTION_ACCEPTANCE_EMAIL }}
-          ACCEPTANCE_PASSWORD: ${{ secrets.PRODUCTION_ACCEPTANCE_PASSWORD }}
-          SECONDARY_EMAIL: ${{ secrets.PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL }}
-          SECONDARY_PASSWORD: ${{ secrets.PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD }}
+          ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
           set -euo pipefail
           set +x
-          validator_root=$(mktemp -d "$RUNNER_TEMP/production-credential-validator.XXXXXX")
-          trap 'rm -rf -- "$validator_root"' EXIT
-          runner="$RUNNER_TEMP/combo-release/acceptance/live-browser-acceptance.mjs"
-          playwright="$RUNNER_TEMP/combo-release/acceptance/playwright-core.tgz"
-          [[ -f "$runner" && ! -L "$runner" && -f "$playwright" && ! -L "$playwright" ]]
-          install -d -m 0700 "$validator_root/node_modules"
-          install -m 0600 "$runner" "$validator_root/live-browser-acceptance.mjs"
-          tar -xzf "$playwright" --no-same-owner -C "$validator_root/node_modules"
-          [[ -f "$validator_root/node_modules/playwright-core/package.json" ]]
+          helper="$RUNNER_TEMP/combo-release/acceptance/resend-sent-email.mjs"
+          [[ -f "$helper" && ! -L "$helper" ]]
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
-          printf '%s\n%s\n%s\n%s\n' \
-            "$ACCEPTANCE_EMAIL" "$ACCEPTANCE_PASSWORD" \
-            "$SECONDARY_EMAIL" "$SECONDARY_PASSWORD" |
-            node "$validator_root/live-browser-acceptance.mjs" \
-              --validate-production-credentials
+          node "$helper" --validate-key
 
       - name: Configure the existing deployment SSH identity
         env:
@@ -790,21 +776,22 @@ jobs:
             awk '{print "sha256:" $1}')
           printf 'digest=%s\n' "$activation_digest" >>"$GITHUB_OUTPUT"
 
-      - name: Run the exact-bundle Production OIDC and six-area browser acceptance
+      - name: Run the exact-bundle Production email OTP and six-area browser acceptance
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.resolve.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          ACCEPTANCE_EMAIL: ${{ secrets.PRODUCTION_ACCEPTANCE_EMAIL }}
-          ACCEPTANCE_PASSWORD: ${{ secrets.PRODUCTION_ACCEPTANCE_PASSWORD }}
-          SECONDARY_EMAIL: ${{ secrets.PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL }}
-          SECONDARY_PASSWORD: ${{ secrets.PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD }}
+          ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
           set -euo pipefail
           set +x
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$ACCEPTANCE_RESEND_API_KEY" =~ ^re_[A-Za-z0-9_-]{16,252}$ ]] || {
+            echo 'The production Environment lacks a valid full-access acceptance Resend key.' >&2
+            exit 1
+          }
           archive="$RUNNER_TEMP/combo-production-acceptance-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" acceptance
           chmod 0600 "$archive"
@@ -814,9 +801,7 @@ jobs:
           scp -q "$archive" "release-target:$temporary"
           ssh release-target mv -fT -- "$temporary" "$remote"
           {
-            printf '%s\n%s\n%s\n%s\n' \
-              "$ACCEPTANCE_EMAIL" "$ACCEPTANCE_PASSWORD" \
-              "$SECONDARY_EMAIL" "$SECONDARY_PASSWORD"
+            printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
             cat <<'REMOTE'
           set -euo pipefail
           set +x
@@ -833,9 +818,7 @@ jobs:
           output_dir="$HOME/data/combo-acceptance/production"
           output="$output_dir/${revision}.${run_id}.${run_attempt}.browser.json"
           cleanup() {
-            unset \
-              PRODUCTION_ACCEPTANCE_EMAIL PRODUCTION_ACCEPTANCE_PASSWORD \
-              PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD
+            unset ACCEPTANCE_RESEND_API_KEY
             rm -f -- "$archive"
             rm -rf -- "$work"
           }
@@ -854,29 +837,17 @@ jobs:
           source "$HOME/.nvm/nvm.sh"
           nvm use 24 >/dev/null
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
-          acceptance_email=$PRODUCTION_ACCEPTANCE_EMAIL
-          acceptance_password=$PRODUCTION_ACCEPTANCE_PASSWORD
-          secondary_email=$PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL
-          secondary_password=$PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD
-          unset \
-            PRODUCTION_ACCEPTANCE_EMAIL PRODUCTION_ACCEPTANCE_PASSWORD \
-            PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD
-          printf '%s\n%s\n%s\n%s\n' \
-            "$acceptance_email" "$acceptance_password" \
-            "$secondary_email" "$secondary_password" |
-            node "$work/acceptance/live-browser-acceptance.mjs" \
-              --environment production \
-              --revision "$revision" \
-              --web-origin https://buildwithcombo.com \
-              --output "$output"
-          acceptance_email=
-          acceptance_password=
-          secondary_email=
-          secondary_password=
+          node "$work/acceptance/live-browser-acceptance.mjs" \
+            --environment production \
+            --revision "$revision" \
+            --run-id "$run_id" \
+            --run-attempt "$run_attempt" \
+            --web-origin https://buildwithcombo.com \
+            --output "$output"
           chmod 0600 "$output"
           REMOTE
           } | ssh release-target \
-            "IFS= read -r production_email; IFS= read -r production_password; IFS= read -r secondary_email; IFS= read -r secondary_password; export PRODUCTION_ACCEPTANCE_EMAIL=\"\$production_email\" PRODUCTION_ACCEPTANCE_PASSWORD=\"\$production_password\" PRODUCTION_ACCEPTANCE_SECONDARY_EMAIL=\"\$secondary_email\" PRODUCTION_ACCEPTANCE_SECONDARY_PASSWORD=\"\$secondary_password\"; unset production_email production_password secondary_email secondary_password; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
+            "IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
 
       - name: Fetch and validate Production browser evidence
         id: production_browser

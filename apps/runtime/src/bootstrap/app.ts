@@ -1,5 +1,5 @@
-// Fastify app 工厂（试用端）。挂基础设施容器 + 轮次编排器 + 全局插件 + 统一错误信封 + 健康检查 + 业务路由。
-// 对外绝不裸露错误码/堆栈：所有非 2xx 只出 ErrorEnvelope，内部 code 只进结构化日志（经 traceId 关联）。
+// Fastify app 工厂（试用端）。挂基础设施容器、轮次编排器、全局插件、统一错误信封、健康检查与业务路由。
+// 对外不暴露内部错误码或堆栈。
 import Fastify, { type FastifyInstance } from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
@@ -16,6 +16,7 @@ import {
 import { loadEnv, type Env } from '../platform/config/env.js';
 import { buildInfra, createRedisInterruptBus } from '../platform/infra/index.js';
 import { registerHealthRoutes } from '../platform/http/health.js';
+import { corsOriginPolicy } from '../platform/http/browser-origin.js';
 import { registerVersionRoute } from '../platform/http/version.js';
 import {
   currentTraceId,
@@ -72,7 +73,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       formatters: { log: (obj) => obj },
     },
     genReqId: (req) => resolveRequestTraceId(req.headers, req.url),
-    trustProxy: true,
+    // 关闭 Fastify 默认的原始 URL 请求日志，避免查询参数进入日志。
+    disableRequestLogging: true,
+    trustProxy: ['loopback', 'linklocal', 'uniquelocal'],
   });
 
   // —— 基础设施容器 + 轮次编排器 ——
@@ -97,7 +100,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
   // —— 全局插件（同源 Cookie 会话需 credentials）——
   await app.register(cors, {
-    origin: env.CORS_ORIGIN ? env.CORS_ORIGIN.split(',').map((s) => s.trim()) : true,
+    origin: corsOriginPolicy(env),
     credentials: true,
   });
   await app.register(cookie);
@@ -113,8 +116,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       {
         ...currentTraceLogFields(req.id),
         method: req.method,
-        url: req.url,
-        route: req.routeOptions.url ?? req.url,
+        route: req.routeOptions.url ?? 'unmatched',
         statusCode: reply.statusCode,
       },
       'request completed',

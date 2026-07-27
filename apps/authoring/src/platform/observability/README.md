@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `node.ts` 提供四个导出。startNodeObservability 在进程启动时初始化 NodeSDK 和自动埋点，只有配置了 OTLP 导出端点才启用，返回带 shutdown 的句柄。currentTraceId 取当前活跃 span 的 traceId（转成 UUID 形态），取不到回落传入值。currentTraceLogFields 生成写进结构化日志的 traceId、trace_id、span_id 字段。currentTraceparent 生成 W3C traceparent 响应头值，没有活跃 span 时用请求 traceId 合成。
+- `node.ts` 启动 NodeSDK 和自动埋点，并在 span 导出前删除原始 URL 查询、客户端地址、请求头、请求正文、异常消息和状态消息。只有配置了 OTLP 导出端点才启用网络导出。该文件还提供当前 traceId、结构化日志字段和 W3C traceparent 响应头的读取函数，并导出可由内存导出器测试的安全包装器。
 
 ## 上下游
 

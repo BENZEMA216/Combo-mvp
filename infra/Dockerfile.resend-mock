@@ -1,0 +1,7 @@
+FROM node:24-alpine
+WORKDIR /app
+ENV NODE_ENV=test HOST=0.0.0.0 PORT=4010
+COPY infra/resend-mock/server.mjs ./server.mjs
+USER node
+EXPOSE 4010
+CMD ["node", "server.mjs"]

@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `node.ts` 提供 startNodeObservability：只有配置了导出地址且未显式禁用时才启动追踪，装上 Node 自动埋点并把 span 数据发往采集端，返回带 shutdown 的句柄；另外导出三个读取当前追踪上下文的函数——currentTraceId 取当前 traceId（无活跃 span 时回落传入值）、currentTraceLogFields 生成写进结构化日志的 traceId 与 span 字段、currentTraceparent 生成响应头里的 traceparent 值。
+- `node.ts` 提供 `startNodeObservability`。只有配置了导出地址且未显式禁用时才启动追踪，并在 span 离开进程前删除原始 URL 查询、客户端地址、请求头、请求正文、异常消息和状态消息。该文件还提供当前 traceId、结构化日志字段和 traceparent 响应头读取函数，并导出可由内存导出器测试的安全包装器。
 
 ## 上下游
 

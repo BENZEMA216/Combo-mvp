@@ -18,7 +18,7 @@ k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data
 
 ## 开发专用配置
 
-`/etc/combo-dev/combo-dev.env` 必须归 root 所有且权限为 `0600`。它只保存开发专用的 PostgreSQL、MinIO、身份提供商和大语言模型配置。必须提供 `POSTGRES_USER`、`POSTGRES_PASSWORD`、`POSTGRES_DB`、`MINIO_ROOT_USER`、`MINIO_ROOT_PASSWORD`、`S3_ACCESS_KEY`、`S3_SECRET_KEY`、`LOGTO_ENDPOINT`、`LOGTO_ISSUER`、`LOGTO_JWKS_URI`、`LOGTO_APP_ID`、`LOGTO_APP_SECRET`、`LOGTO_AUDIENCE`、`LLM_PROVIDER` 和 `RUNTIME_LLM_PROVIDER`。MinIO 管理身份必须与应用存储身份不同。所选模型提供商还必须有对应的开发密钥。身份提供商端点必须使用 HTTPS。
+`/etc/combo-dev/combo-dev.env` 必须归 root 所有且权限为 `0600`。它保存 PostgreSQL 管理身份、互不相同的 `POSTGRES_API_PASSWORD`、`POSTGRES_WORKER_PASSWORD`、`POSTGRES_RUNTIME_PASSWORD`，MinIO 配置，`S3_PUBLIC_ENDPOINT`，`RESEND_API_KEY`、`OTP_HMAC_SECRET` 和 LLM 配置。MinIO 管理身份必须与应用存储身份不同。Test 使用生产式邮箱 OTP，不创建 `combo-dev-session`，也不接受任何 Logto 配置。
 
 `/etc/combo-dev/registry.json` 必须归 root 所有且权限为 `0600`，只包含 `ghcr.io` 的开发只读拉取身份。`/etc/combo-dev/production-observer.kubeconfig` 必须使用单一嵌入式客户端证书，并与本机审核凭据使用完全相同的 API 服务端和证书颁发机构。该身份只能在生产命名空间对 Deployment、StatefulSet、Service、PVC 和 Pod 执行 `get`、`list` 与 `watch`。bootstrap、部署和重置会解析全部命名空间的有效规则与关联绑定，拒绝通配符、Secret 读取、任何持久变更权限、生产命名空间之外的资源权限和额外集群资源权限。Kubernetes 为已认证身份提供的不落盘自省请求与只读发现端点是唯一例外。
 

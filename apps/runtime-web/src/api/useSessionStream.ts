@@ -7,11 +7,9 @@ import { useEffect, useReducer, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ArtifactView, MessageView, SessionDetail } from '@cb/shared';
 import { ApiError, isUnauthenticated } from './client.js';
-import { authenticationUrl } from '../navigation/login.js';
-import { useReleaseMetadata } from '../shell/releaseIdentity.js';
+import { goToLogin } from '../navigation/login.js';
 import { interruptSession, sendSessionMessage } from './runtime.js';
 import { reportClientEvent } from './telemetry.js';
-import { refreshSession } from './sessionRefresh.js';
 import {
   initialStreamUiState,
   isTerminalEvent,
@@ -32,50 +30,29 @@ export interface SessionStream extends StreamUiState {
 interface SessionEventSubscription {
   onMessage: (data: string) => void;
   onFatal: () => void;
-  onAuthRejected?: () => void;
 }
 
-/** 原生 EventSource 无法读取 HTTP 状态；CLOSED 时只做一次续期并重建，避免无限循环。 */
+/** 原生 EventSource 关闭后直接进入可见错误态；固定会话不续期，也不透明重建请求。 */
 export function subscribeSessionEvents(
   url: string,
   callbacks: SessionEventSubscription,
 ): () => void {
-  let source: EventSource | null = null;
   let stopped = false;
-  let refreshAttempted = false;
-
-  const connect = () => {
-    if (stopped) return;
-    source?.close();
-    const current = new EventSource(url, { withCredentials: true });
-    source = current;
-    current.onopen = () => {
-      if (!stopped && current === source) refreshAttempted = false;
-    };
-    current.onmessage = (raw) => {
-      if (!stopped && current === source) callbacks.onMessage(raw.data as string);
-    };
-    current.onerror = () => {
-      if (stopped || current !== source || current.readyState !== EventSource.CLOSED) return;
-      current.close();
-      if (refreshAttempted) {
-        callbacks.onFatal();
-        return;
-      }
-      refreshAttempted = true;
-      void refreshSession().then((result) => {
-        if (stopped) return;
-        if (result === 'refreshed') connect();
-        else if (result === 'rejected' && callbacks.onAuthRejected) callbacks.onAuthRejected();
-        else callbacks.onFatal();
-      });
-    };
+  let fatalReported = false;
+  const source = new EventSource(url, { withCredentials: true });
+  source.onmessage = (raw) => {
+    if (!stopped) callbacks.onMessage(raw.data as string);
+  };
+  source.onerror = () => {
+    if (stopped || fatalReported || source.readyState !== EventSource.CLOSED) return;
+    fatalReported = true;
+    source.close();
+    callbacks.onFatal();
   };
 
-  connect();
   return () => {
     stopped = true;
-    source?.close();
+    source.close();
   };
 }
 
@@ -84,7 +61,6 @@ export function useSessionStream(
   detail: SessionDetail | undefined,
 ): SessionStream {
   const qc = useQueryClient();
-  const releaseMetadata = useReleaseMetadata();
   const [state, dispatch] = useReducer(streamUiReducer, initialStreamUiState);
   const activeSessionIdRef = useRef(sessionId);
   const sendInFlightRef = useRef<{ sessionId: string; token: symbol } | null>(null);
@@ -119,14 +95,8 @@ export function useSessionStream(
         reportClientEvent('sse_error', { message: 'session stream closed', url });
         dispatch({ kind: 'error', message: '事件流连接不上，请刷新页面重试。' });
       },
-      onAuthRejected: () => {
-        if (!sessionIsCurrent()) return;
-        reportClientEvent('sse_error', { message: 'session stream session expired', url });
-        dispatch({ kind: 'error', message: '登录态失效了，正在恢复会话。' });
-        window.location.assign(authenticationUrl(releaseMetadata.environment));
-      },
     });
-  }, [sessionId, qc, releaseMetadata.environment]);
+  }, [sessionId, qc]);
 
   // 声明在 reset/subscription effect 之后，保证首屏详情不会先协调后又被 reset 清空。
   // reducer 用 message turn ids 判定世代：同 active turn 只合并，确认终态才整表收敛。
@@ -201,7 +171,7 @@ export function useSessionStream(
       const requestIsCurrent = activeSessionIdRef.current === requestSessionId;
       // 登录态失效：跳创作端登录（回来落在当前会话页）。
       if (requestIsCurrent && isUnauthenticated(err)) {
-        window.location.assign(authenticationUrl(releaseMetadata.environment));
+        goToLogin();
       }
       // 服务端错误信封中的 userMessage 已是人话；同时 reject 给 Miniapp bridge，
       // 让它不依赖一次可能来不及渲染的 optimistic running 状态。

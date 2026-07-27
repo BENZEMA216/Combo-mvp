@@ -33,28 +33,61 @@ spec:
       containers:
         - name: api
           image: ghcr.io/dangdang-tech/combo-api:latest
-          envFrom:
-            - secretRef:
-                name: combo-env
           env:
             - name: PROCESS
               value: api
             - name: NODE_ENV
               value: production
-            - name: DEV_LOGIN_ENABLED
-              value: 'false'
             - name: HOST
               value: 0.0.0.0
             - name: PORT
               value: '3000'
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_api
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_API_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
             - name: REDIS_QUEUE_URL
               value: redis://redis-queue:6379/0
             - name: REDIS_HOT_URL
               value: redis://redis-hot:6379/0
             - name: S3_ENDPOINT
               value: http://minio:9000
+            - name: S3_PUBLIC_ENDPOINT
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: S3_PUBLIC_ENDPOINT }
             - name: S3_REGION
               value: us-east-1
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: S3_ACCESS_KEY }
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: S3_SECRET_KEY }
+            # 第一方认证写入只在 authoring API。生产基址固定为官方 HTTPS 地址。
+            - name: PUBLIC_APP_ORIGINS
+              value: combo-public-app-origin
+            - name: SESSION_COOKIE_SECURE
+              value: combo-session-cookie-secure
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: RESEND_API_KEY }
+            - name: RESEND_FROM_EMAIL
+              value: 'Combo <auth@buildwithcombo.com>'
+            - name: RESEND_API_BASE_URL
+              value: https://api.resend.com
+            - name: OTP_HMAC_SECRET
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: OTP_HMAC_SECRET }
             # 观测：OTLP 指向 observability 命名空间的采集器（HTTP 4318），缺失时应用自动降级不阻塞。
             - name: OTEL_SERVICE_NAME
               value: cb-authoring-api
@@ -62,17 +95,21 @@ spec:
               value: http://otel-collector.observability.svc.cluster.local:4318
             - name: OTEL_RESOURCE_ATTRIBUTES
               value: deployment.environment=k8s
-            - name: POSTGRES_USER
+            - name: ANTHROPIC_API_KEY
               valueFrom:
-                secretKeyRef: { name: combo-env, key: POSTGRES_USER }
-            - name: POSTGRES_PASSWORD
+                secretKeyRef: { name: combo-env, key: ANTHROPIC_API_KEY, optional: true }
+            - name: LLM_PROVIDER
               valueFrom:
-                secretKeyRef: { name: combo-env, key: POSTGRES_PASSWORD }
-            - name: POSTGRES_DB
+                secretKeyRef: { name: combo-env, key: LLM_PROVIDER, optional: true }
+            - name: OPENROUTER_API_KEY
               valueFrom:
-                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
-            - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+                secretKeyRef: { name: combo-env, key: OPENROUTER_API_KEY, optional: true }
+            - name: LLM_BASE_URL
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LLM_BASE_URL, optional: true }
+            - name: LLM_MODEL
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LLM_MODEL, optional: true }
           ports:
             - name: http
               containerPort: 3000

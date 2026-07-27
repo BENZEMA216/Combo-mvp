@@ -2,12 +2,12 @@
   "name": "@cb/infra",
   "version": "0.0.0",
   "private": true,
-  "description": "基础设施编排：docker-compose、Logto 初始化、业务迁移、Authoring API/Worker 镜像、Runtime 镜像、Web Nginx、Redis 双实例与存储初始化。",
+  "description": "基础设施编排：第一方邮箱认证、业务迁移、Authoring API/Worker、Runtime、Web、Redis 双实例与存储初始化。",
   "type": "module",
   "scripts": {
-    "compose:config": "docker compose -f docker-compose.yml config",
-    "compose:up": "docker compose -f docker-compose.yml up -d",
-    "compose:down": "docker compose -f docker-compose.yml down",
+    "compose:config": "docker compose --env-file ../.env -f docker-compose.yml config --quiet",
+    "compose:up": "docker compose --env-file ../.env -f docker-compose.yml up -d",
+    "compose:down": "docker compose --env-file ../.env -f docker-compose.yml down",
     "typecheck": "echo 'no ts in infra' && exit 0",
     "test": "node --test k8s/overlays/sandbox-tools/render.test.mjs"
   },

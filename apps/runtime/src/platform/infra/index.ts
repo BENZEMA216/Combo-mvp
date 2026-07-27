@@ -1,4 +1,4 @@
-// 基础设施容器：db / objectStore / 会话事件总线聚成一个上下文，注入 Fastify（app.decorate('infra')）。
+// 基础设施容器：数据库（含只读认证会话查询）、对象存储和会话事件能力聚成一个上下文并注入 Fastify。
 // 业务 handler 经 req.server.infra 取用；TurnRunner 在 bootstrap 组装（依赖 modules/agent，不在本层建）。
 import type { Env } from '../config/env.js';
 import { getPool, toRuntimeDb, type RuntimeDb } from './db.js';
@@ -42,11 +42,10 @@ export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraCont
 }
 
 export * from './db.js';
+export * from './auth-session.js';
 export * from './object-store.js';
 export * from './event-bus.js';
 export * from './llm.js';
-export * from './logto.js';
-export * from './dev-session.js';
 export * from './redis.js';
 export * from './redis-interrupt-bus.js';
 export * from './redis-event-log.js';

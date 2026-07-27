@@ -58,40 +58,37 @@ beforeEach(() => {
   sendSessionMessageMock.mockReset();
 });
 
-describe('runtime session EventSource auth recovery', () => {
-  it('refreshes and rebuilds once after a CLOSED stream', async () => {
+describe('runtime session EventSource fixed-session behavior', () => {
+  it('uses the shared HttpOnly cookie and never calls a refresh endpoint', () => {
     vi.stubGlobal('EventSource', MockEventSource);
-    const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
-    vi.stubGlobal('fetch', fetchMock);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
     const onFatal = vi.fn();
+
     const stop = subscribeSessionEvents('/stream', { onMessage: vi.fn(), onFatal });
+    const source = MockEventSource.instances[0]!;
+    expect(source.options.withCredentials).toBe(true);
 
-    MockEventSource.instances[0]!.failClosed();
-    await vi.waitFor(() => expect(MockEventSource.instances).toHaveLength(2));
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(MockEventSource.instances[1]!.options.withCredentials).toBe(true);
+    source.failClosed();
 
-    // 新连接尚未成功 open 就再次 CLOSED：不再 refresh，避免循环。
-    MockEventSource.instances[1]!.failClosed();
     expect(onFatal).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(MockEventSource.instances).toHaveLength(1);
+    expect(fetchSpy).not.toHaveBeenCalled();
     stop();
   });
 
-  it('surfaces a fatal state when refresh is rejected', async () => {
+  it('reports a closed stream only once and closes it during cleanup', () => {
     vi.stubGlobal('EventSource', MockEventSource);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response(null, { status: 401 })),
-    );
     const onFatal = vi.fn();
-    const onAuthRejected = vi.fn();
-    subscribeSessionEvents('/stream', { onMessage: vi.fn(), onFatal, onAuthRejected });
+    const stop = subscribeSessionEvents('/stream', { onMessage: vi.fn(), onFatal });
+    const source = MockEventSource.instances[0]!;
 
-    MockEventSource.instances[0]!.failClosed();
-    await vi.waitFor(() => expect(onAuthRejected).toHaveBeenCalledTimes(1));
-    expect(onFatal).not.toHaveBeenCalled();
-    expect(MockEventSource.instances).toHaveLength(1);
+    source.failClosed();
+    source.failClosed();
+    expect(onFatal).toHaveBeenCalledTimes(1);
+
+    stop();
+    expect(source.close).toHaveBeenCalled();
   });
 
   it('ignores queued events after the subscription is stopped', () => {

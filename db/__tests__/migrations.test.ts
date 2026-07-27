@@ -84,7 +84,16 @@ describe('migrations', () => {
     const created = [...allSql().matchAll(/CREATE TABLE\s+([a-z][a-z0-9_]*)\s*\(/gi)]
       .map((match) => match[1]!.toLowerCase())
       .sort();
-    expect(created).toEqual([...TABLES, 'turns'].sort());
+    expect(created).toEqual(
+      [
+        ...TABLES,
+        'turns',
+        'auth_identities',
+        'auth_otp_challenges',
+        'auth_sessions',
+        'auth_audit_events',
+      ].sort(),
+    );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
     expect(created.some((table) => /(?:^|_)run_events$/.test(table))).toBe(false);
   });
@@ -166,6 +175,14 @@ describe('migrations', () => {
       "CREATE UNIQUE INDEX uq_turns_session_running\n  ON turns (session_id)\n  WHERE status = 'running'",
     );
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
+  });
+
+  it('keeps the first-party authentication and role migrations after Goal B schema migrations', () => {
+    const list = files();
+    expect(list.slice(-2)).toEqual([
+      '0007_first_party_email_auth.sql',
+      '0008_application_database_roles.sql',
+    ]);
   });
 
   it('0002 rejects a PostgreSQL event ledger instead of bridging or deleting it', () => {

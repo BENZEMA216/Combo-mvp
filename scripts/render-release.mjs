@@ -19,6 +19,8 @@ const ENVIRONMENTS = Object.freeze({
     redisQueueHost: 'redis-queue',
     redisHotHost: 'redis-hot',
     minioHost: 'minio',
+    publicAppOrigin: 'http://127.0.0.1:18080',
+    sessionCookieSecure: 'false',
   },
   preview: {
     namespace: 'combo-review',
@@ -28,6 +30,8 @@ const ENVIRONMENTS = Object.freeze({
     redisQueueHost: 'release-redis-queue',
     redisHotHost: 'release-redis-hot',
     minioHost: 'release-minio',
+    publicAppOrigin: 'https://review.43-160-242-46.sslip.io',
+    sessionCookieSecure: 'true',
   },
   production: {
     namespace: 'combo',
@@ -37,6 +41,9 @@ const ENVIRONMENTS = Object.freeze({
     redisQueueHost: 'release-redis-queue',
     redisHotHost: 'release-redis-hot',
     minioHost: 'release-minio',
+    publicAppOrigin:
+      'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
+    sessionCookieSecure: 'true',
   },
 });
 const FIXTURE_DIGESTS = Object.freeze({
@@ -118,6 +125,9 @@ function replaceEnvironmentScalar(value, environment, manifest) {
   if (value === 'combo-env') return config.environmentCredentialName;
   if (value === 'ghcr-pull') return config.pullCredentialName;
   if (value === 'combo-release') return releaseMetadataName(manifest);
+  if (value === 'combo-postgres-host') return config.postgresHost;
+  if (value === 'combo-public-app-origin') return config.publicAppOrigin;
+  if (value === 'combo-session-cookie-secure') return config.sessionCookieSecure;
   if (environment !== 'test') {
     if (value === 'release-minio-init') return `${prefix}minio-init`;
     for (const name of ['api', 'runtime', 'web', 'worker']) {

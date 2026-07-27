@@ -6,12 +6,15 @@
 import type { FastifyInstance } from 'fastify';
 import { requireAuth } from '../../platform/middleware/auth.js';
 import { registerEndpoints, type EndpointDecl } from '../../platform/http/_helpers.js';
+import { requireTrustedMutationOrigin } from '../../platform/http/browser-origin.js';
 import {
   getCapabilityHandler,
   listCapabilitiesHandler,
   publishHandler,
   unpublishHandler,
 } from './handlers.js';
+
+const browserMutationGuards = [requireTrustedMutationOrigin(), requireAuth()];
 
 export const CAPABILITY_ENDPOINTS: EndpointDecl[] = [
   {
@@ -29,13 +32,13 @@ export const CAPABILITY_ENDPOINTS: EndpointDecl[] = [
   {
     method: 'POST',
     url: '/capabilities/:capabilityId/publish',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: publishHandler(),
   },
   {
     method: 'POST',
     url: '/capabilities/:capabilityId/unpublish',
-    preHandlers: [requireAuth()],
+    preHandlers: browserMutationGuards,
     handler: unpublishHandler(),
   },
 ];

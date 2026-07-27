@@ -1,5 +1,5 @@
-// 路由公共工具：端点声明/注册 + 统一 ErrorEnvelope 回复（与 authoring 同形态）。
-// 对外错误一律经 sendError 出信封（人话 + action，绝不裸露内部 code/堆栈，HTTP 状态由分类表决定）。
+// 路由公共工具：端点声明、注册与统一 ErrorEnvelope 回复（与 authoring 同形态）。
+// 普通业务和认证边界都不暴露内部 code、状态细节或堆栈。
 import type {
   FastifyReply,
   FastifyRequest,
@@ -14,6 +14,18 @@ import { errorBodyFor, type ErrorBody, type ErrorCodeValue } from '@cb/shared';
  * overrides 可换更具体的人话 userMessage / details。
  */
 export function sendError(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  code: ErrorCodeValue,
+  overrides?: Partial<Pick<ErrorBody, 'userMessage' | 'details' | 'failureId'>>,
+): FastifyReply {
+  const { http, body } = errorBodyFor(code, req.id, overrides);
+  reply.code(http).send({ error: body });
+  return reply;
+}
+
+/** 认证边界使用同一个无 code 错误信封；独立函数名只用于标明调用边界。 */
+export function sendAuthError(
   req: FastifyRequest,
   reply: FastifyReply,
   code: ErrorCodeValue,

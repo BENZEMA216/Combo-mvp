@@ -77,4 +77,6 @@ bash scripts/integration/sandbox-tools-local.sh
 
 这个脚本加载 Runtime 编译产物中的生产 Pi 工具、`SandboxClient` 和能力签名器，通过 Docker 内部网络调用 sandboxd。Linux CI 使用 1 GiB loopback ext4 工作区和 384 MiB 容器内存，并验证超额写入失败、初始化清空、文件变更、命令流、超时、HTTP 取消、Abort、HTTP 断连、脱离进程组后代、日志文件描述符和模拟 Kubernetes 终止消息文件的隔离。
 
+宿主单元测试按 Go package 串行运行，避免进程清理契约与同一测试进程树中的并发 package 相互干扰。宿主内核没有 Landlock ABI 3 时，只跳过无法执行的 Landlock 写边界用例；GitHub Actions 的受控 Sandbox 容器验收仍必须实际通过 Landlock 和完整协议测试。
+
 脚本不会创建 Kubernetes 资源，也不会验证 gVisor、Local PV 调度、NetworkPolicy 或 k3s。真实集群验证只能在获批维护窗口中进行。

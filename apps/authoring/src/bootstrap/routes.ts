@@ -7,7 +7,7 @@ import { CAPABILITY_ENDPOINTS, registerCapabilityRoutes } from '../modules/capab
 import { registerClientEventRoutes } from '../platform/http/client-events.js';
 import type { EndpointDecl } from '../platform/http/_helpers.js';
 
-/** 全部业务端点声明汇总（供守门/测试核对端点数、方法、鉴权链）。dev-login 不在此（条件注册）。 */
+/** 全部业务端点声明汇总，供守门测试核对端点数、方法、来源边界和鉴权链。 */
 export const ALL_ENDPOINTS: EndpointDecl[] = [
   ...ACCOUNT_ENDPOINTS,
   ...TASK_ENDPOINTS,

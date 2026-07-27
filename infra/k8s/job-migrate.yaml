@@ -20,17 +20,28 @@ spec:
           image: ghcr.io/dangdang-tech/combo-api:latest
           command: ['node', '--experimental-strip-types', 'db/scripts/migrate.ts']
           env:
-            - name: POSTGRES_USER
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: '5432'
+            - name: PGUSER
               valueFrom:
                 secretKeyRef: { name: combo-env, key: POSTGRES_USER }
-            - name: POSTGRES_PASSWORD
+            - name: PGPASSWORD
               valueFrom:
                 secretKeyRef: { name: combo-env, key: POSTGRES_PASSWORD }
-            - name: POSTGRES_DB
+            - name: PGDATABASE
               valueFrom:
                 secretKeyRef: { name: combo-env, key: POSTGRES_DB }
-            - name: DATABASE_URL
-              value: postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@postgres:5432/$(POSTGRES_DB)
+            - name: POSTGRES_API_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_API_PASSWORD }
+            - name: POSTGRES_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_WORKER_PASSWORD }
+            - name: POSTGRES_RUNTIME_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_RUNTIME_PASSWORD }
           resources:
             requests:
               memory: 128Mi

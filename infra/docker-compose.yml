@@ -1,16 +1,14 @@
 # 本地全栈编排（O-02/O-03）。本期【只写不跑】：无 Docker，留作后续 compose up。
 #
-# 固定启动顺序（技术方案 §6.2，硬性）：
-#   postgres → logto_db_seed → logto_alteration → logto → migrate(业务迁移) → 业务容器(api/worker/runtime/web)
-#   Logto OSS 不自跑迁移：必须先 CLI `db seed` 建表，再把 `db alteration deploy` 作为单实例一次性 job 跑；跑完才起 logto 运行态。
-#   业务迁移与 Logto 迁移各自独立 schema/库（combo / logto），互不干扰；任一迁移失败即止、不起后续。
+# 固定启动顺序：基础设施 → 0000–0008 业务迁移与应用角色配置 → API/Worker/Runtime/Web。
+# 邮箱验证码由 API 通过 Resend 发出；PostgreSQL 保存验证码摘要和不透明会话摘要。
 #
 # Redis 物理拆两实例（70 §8.1 / 技术方案 §6.1）：
 #   redis_queue（appendonly AOF + noeviction，BullMQ 队列绝不被驱逐）/ redis_hot（maxmemory + allkeys-lru，事件 Streams/锁/限流，可驱逐、无持久卷）。
 #   两实例 compose/健康检查/env 全部独立——混一实例会让 noeviction 与 eviction 互相污染（队列被驱逐 = 丢任务触发）。
 #
-# 健康检查（O-04）：postgres/redis_queue/redis_hot/minio 用各自原生探针；logto 断言 OIDC discovery（issuer/jwks_uri）；
-#   api 用 /health（liveness、轻量不查依赖，业务就绪由 /ready 自查五依赖）。
+# 健康检查（O-04）：postgres/redis_queue/redis_hot/minio 用各自原生探针；
+# api 用 /health（liveness、轻量不查依赖，业务就绪由 /ready 自查依赖）。
 #
 # 镜像：api/worker 同镜像不同入口（PROCESS 环境变量分叉，见 Dockerfile.api ENTRYPOINT）；web 单独 nginx 镜像。
 #
@@ -19,7 +17,7 @@
 #   绝不静默注入 minioadmin / combo:combo 这类默认凭据上生产（与 Authoring 环境 schema 的生产守卫双保险）。
 #   非密钥的运行参数（端口/region/由服务名推导的 endpoint）保留默认。dev 直跑请用 .env 显式提供这些值。
 services:
-  # ───────────────────────── 数据与中间件（先起，业务/Logto 都依赖）─────────────────────────
+  # ───────────────────────── 数据与中间件 ──────────────────────────
   postgres:
     image: postgres:16
     environment:
@@ -31,8 +29,6 @@ services:
       - '5432:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # 首次启动建 logto 独立库（业务库 combo 与身份库 logto 同实例、不同 database，§6.1）
-      - ./postgres/init-logto-db.sh:/docker-entrypoint-initdb.d/10-init-logto-db.sh:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:?} -d ${POSTGRES_DB:?}']
       interval: 5s
@@ -176,71 +172,7 @@ services:
       timeout: 5s
       retries: 12
 
-  # ───────────────────────── Logto 身份（一次性 seed/alteration → 运行态）─────────────────────────
-  # 一次性容器（首次部署跑一次，跑完退出）：CLI `logto db seed`，Logto OSS 不自跑迁移，必须先 seed 建表 + 初始数据。幂等可重入。
-  logto_db_seed:
-    image: svhd/logto:latest
-    depends_on:
-      postgres:
-        condition: service_healthy
-    environment:
-      DB_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/logto
-      # CI=true：非交互，避免 CLI 等待人工确认而卡死（alteration/seed 在容器里无 TTY）
-      CI: 'true'
-    entrypoint: ['sh', '-c', 'npm run cli db seed -- --swe']
-    restart: 'no'
-
-  # 一次性 job（版本升级跑、单实例）：CLI `logto db alteration deploy`，schema alteration 必须单实例跑（多实例并发会破坏 schema）。
-  # CI=true + 显式目标版本（LOGTO_DB_ALTERATION_TARGET）避免非交互卡住（技术方案 O-02）。
-  logto_alteration:
-    image: svhd/logto:latest
-    depends_on:
-      logto_db_seed:
-        condition: service_completed_successfully
-    environment:
-      DB_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/logto
-      CI: 'true'
-    # 目标版本固定到镜像内置最新（next）；显式传 target 避免交互式选择卡住
-    entrypoint: ['sh', '-c', 'npm run cli db alteration deploy ${LOGTO_DB_ALTERATION_TARGET:-next}']
-    restart: 'no'
-
-  # 自托管身份提供方（Auth 唯一方案）：自身不建表，依赖 seed/alteration 完成后才起。
-  logto:
-    image: svhd/logto:latest
-    depends_on:
-      logto_alteration:
-        condition: service_completed_successfully
-    environment:
-      DB_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/logto
-      # canonical issuer 单一权威（Codex#11-r4）：ENDPOINT 决定 Logto 铸 token 的 iss（= {ENDPOINT}/oidc），
-      #   必须与 API 验签 issuer / healthcheck 断言 issuer 三者完全相等。compose 网内服务名统一用 logto:3001，
-      #   故 ENDPOINT 默认 http://logto:3001（不再用 localhost:3001——那会让 iss 与 API 的 http://logto:3001/oidc 分裂）。
-      ENDPOINT: ${LOGTO_ENDPOINT:-http://logto:3001}
-      ADMIN_ENDPOINT: ${LOGTO_ADMIN_ENDPOINT:-http://logto:3002}
-      TRUST_PROXY_HEADER: '1'
-      # healthcheck 自检的 canonical issuer = {ENDPOINT}/oidc，与 API LOGTO_ISSUER 同值（消除 iss/ready/验签分裂）。
-      LOGTO_ISSUER: ${LOGTO_ISSUER:-http://logto:3001/oidc}
-    ports:
-      - '3001:3001'
-      - '3002:3002'
-    # logto 运行态自身不再跑迁移（seed/alteration 已先行完成）
-    entrypoint: ['sh', '-c', 'npm start']
-    healthcheck:
-      # 断言 OIDC discovery 可达，且 issuer 严格等于 LOGTO_ISSUER（不只是字段存在）+ jwks_uri 存在
-      # （技术方案 §6.3 / O-04 / Codex#11；用 issuer 的 .well-known，不用 /api/.well-known）。
-      # issuer 不等于配置值 = 配错 ENDPOINT/反代域名，OIDC 校验下游必崩，故 healthcheck 就拦住。
-      test:
-        [
-          'CMD-SHELL',
-          'node -e "fetch(process.env.LOGTO_ISSUER+\"/.well-known/openid-configuration\").then(r=>r.json()).then(j=>{if(j.issuer!==process.env.LOGTO_ISSUER||!j.jwks_uri){process.exit(1)}}).catch(()=>process.exit(1))"',
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-      start_period: 30s
-
-  # ───────────────────────── 业务迁移（一次性，logto 起后、业务容器前）─────────────────────────
-  # 业务迁移一次性容器：postgres healthy 后跑 `pnpm -F @cb/db migrate`，失败即止、不起业务容器。与 Logto 迁移各自独立库。
+  # ───────────────────────── 业务迁移（一次性，应用前）─────────────────────────
   migrate:
     build:
       context: ..
@@ -248,12 +180,15 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # 满足固定启动序 postgres→logto seed/alteration→logto→migrate→业务（Codex#10）：
-      #   logto healthy 已隐含 logto_alteration 成功完成（其 depends_on 链），故业务迁移等 logto 健康才跑。
-      logto:
-        condition: service_healthy
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: ${POSTGRES_USER:?POSTGRES_USER 必填}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
+      POSTGRES_API_PASSWORD: ${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD 必填}
+      POSTGRES_WORKER_PASSWORD: ${POSTGRES_WORKER_PASSWORD:?POSTGRES_WORKER_PASSWORD 必填}
+      POSTGRES_RUNTIME_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?POSTGRES_RUNTIME_PASSWORD 必填}
     # 同镜像、覆盖入口跑迁移（runner 在镜像内 db/scripts/migrate.ts）
     entrypoint: ['node', '--experimental-strip-types', 'db/scripts/migrate.ts']
     restart: 'no'
@@ -277,18 +212,19 @@ services:
       # --wait 会把它的正常退出（exit 0）误判为失败。
       minio_mc:
         condition: service_completed_successfully
-      logto:
-        condition: service_healthy
       migrate:
         condition: service_completed_successfully
     environment:
-      NODE_ENV: test # 验收栈启用 dev-login；生产部署换回 production（双守卫自动关死）
+      NODE_ENV: production
       PORT: '3000'
       HOST: 0.0.0.0
       PROCESS: api
-      DEV_LOGIN_ENABLED: 'true'
-      DEV_SESSION_SECRET: ${DEV_SESSION_SECRET:?}
-      DATABASE_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: combo_api
+      PGPASSWORD: ${POSTGRES_API_PASSWORD:?POSTGRES_API_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
+      DATABASE_URL: postgres://combo_api:${POSTGRES_API_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_QUEUE_URL: redis://redis_queue:6379/0
       REDIS_HOT_URL: redis://redis_hot:6379/0
       S3_ENDPOINT: http://minio:9000
@@ -298,18 +234,12 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?}
       S3_REGION: ${S3_REGION:-us-east-1}
-      # canonical issuer 三处一致（Codex#11-r4）：API 验签 iss / probeLogto(/ready) / logto healthcheck 同值。
-      #   LOGTO_ISSUER 必须 == {logto ENDPOINT}/oidc（铸 token 的 iss），绝不分裂（compose 网内统一 logto:3001）。
-      #   JWKS 走容器内网取，与 issuer 同主机（logto:3001），jose 仍以 canonical LOGTO_ISSUER 断言 iss（URL 与 iss 分离）。
-      LOGTO_ENDPOINT: ${LOGTO_ENDPOINT:-http://logto:3001}
-      LOGTO_ISSUER: ${LOGTO_ISSUER:-http://logto:3001/oidc}
-      LOGTO_JWKS_URI: ${LOGTO_JWKS_URI:-http://logto:3001/oidc/jwks}
-      # Logto application 凭据与回调必填（Codex#13）：生产禁空 fallback，未设即 compose 中止（与 env.ts 守卫双保险）。
-      LOGTO_APP_ID: ${LOGTO_APP_ID:?LOGTO_APP_ID 必填（生产禁默认）}
-      LOGTO_APP_SECRET: ${LOGTO_APP_SECRET:?LOGTO_APP_SECRET 必填（生产禁默认）}
-      LOGTO_REDIRECT_URI: ${LOGTO_REDIRECT_URI:?LOGTO_REDIRECT_URI 必填（生产禁默认）}
-      # JWT 受众必填（Codex#2）：api 生产无条件校 aud，缺则启动失败（与 env.ts 守卫双保险）。
-      LOGTO_AUDIENCE: ${LOGTO_AUDIENCE:?LOGTO_AUDIENCE 必填（生产无条件校 aud）}
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 必填}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
+      RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY 必填}
+      RESEND_FROM_EMAIL: 'Combo <auth@buildwithcombo.com>'
+      RESEND_API_BASE_URL: ${RESEND_API_BASE_URL:-https://api.resend.com}
+      OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?OTP_HMAC_SECRET 必填}
       # LLM key 例外：上游 degraded 不计 /ready，缺失只降级不阻塞启动，故保留空默认（与 env.ts 一致）。
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # LLM provider 选择 + OpenRouter（OpenAI 兼容）接线：同 degraded 语义，全部允许空（缺则降级不阻塞）。
@@ -357,7 +287,12 @@ services:
       PROCESS: worker
       # OOM 护栏：限制 V8 老生代堆，配合容器 mem_limit 让内存超限时容器内优雅 OOM 而非拖垮宿主。
       NODE_OPTIONS: --max-old-space-size=1536
-      DATABASE_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: combo_worker
+      PGPASSWORD: ${POSTGRES_WORKER_PASSWORD:?POSTGRES_WORKER_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
+      DATABASE_URL: postgres://combo_worker:${POSTGRES_WORKER_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_QUEUE_URL: redis://redis_queue:6379/0
       REDIS_HOT_URL: redis://redis_hot:6379/0
       S3_ENDPOINT: http://minio:9000
@@ -392,16 +327,18 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      NODE_ENV: test
+      NODE_ENV: production
       PORT: '3100'
       HOST: 0.0.0.0
-      DATABASE_URL: postgres://${POSTGRES_USER:?}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
+      PGHOST: postgres
+      PGPORT: '5432'
+      PGUSER: combo_runtime
+      PGPASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?POSTGRES_RUNTIME_PASSWORD 必填}
+      PGDATABASE: ${POSTGRES_DB:?POSTGRES_DB 必填}
+      DATABASE_URL: postgres://combo_runtime:${POSTGRES_RUNTIME_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_URL: redis://redis_queue:6379
-      LOGTO_ISSUER: ${LOGTO_ISSUER:?}
-      LOGTO_JWKS_URI: ${LOGTO_JWKS_URI:?}
-      LOGTO_AUDIENCE: ${LOGTO_AUDIENCE:?}
-      DEV_LOGIN_ENABLED: 'true'
-      DEV_SESSION_SECRET: ${DEV_SESSION_SECRET:?}
+      PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 必填}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?}

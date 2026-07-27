@@ -30,6 +30,8 @@ const migrations = [
   '0004_studio_sessions.sql',
   '0005_capability_current_ui.sql',
   '0006_one_running_turn_per_session.sql',
+  '0007_first_party_email_auth.sql',
+  '0008_application_database_roles.sql',
 ];
 const identity = {
   schemaVersion: 1,
@@ -73,6 +75,21 @@ const evidence = {
     ]),
   ),
 };
+
+test('six-area contract names only first-party auth and the current migration head', () => {
+  const serialized = JSON.stringify(SIX_AREA_CHECKS);
+  for (const required of [
+    'email_challenge',
+    'email_verification',
+    'session_persistence',
+    'logout_revokes_session',
+    'owner_isolation',
+    'migration_head_0008',
+  ]) {
+    assert.match(serialized, new RegExp(required));
+  }
+  assert.doesNotMatch(serialized, /oidc|logto|migration_head_0006/i);
+});
 
 const productionIdentity = {
   ...identity,
@@ -316,6 +333,10 @@ function inventory() {
     databaseTables: [
       'artifacts',
       'audit_llm_calls',
+      'auth_audit_events',
+      'auth_identities',
+      'auth_otp_challenges',
+      'auth_sessions',
       'capabilities',
       'messages',
       'schema_migrations',
@@ -621,6 +642,15 @@ test('resource inventory is exact and rejects legacy names, NodePorts, and omitt
   const oldCloudReview = inventory();
   oldCloudReview.resources.ingresses.push('cloud-review');
   assert.throws(() => validateReleaseInventory(oldCloudReview, identity));
+
+  const missingAuthTable = inventory();
+  missingAuthTable.databaseTables = missingAuthTable.databaseTables.filter(
+    (table) => table !== 'auth_sessions',
+  );
+  assert.throws(
+    () => validateReleaseInventory(missingAuthTable, identity),
+    /database tables do not match/,
+  );
 });
 
 test('live runtime evidence proves four live imageIDs and the exact migration ledger', () => {
@@ -702,6 +732,7 @@ test('release workflows bundle and consume only the controlled admission impleme
     'scripts/release-nginx-route.mjs',
     'scripts/rollback-release-traffic.sh',
     'acceptance/live-browser-acceptance.mjs',
+    'acceptance/resend-sent-email.mjs',
     'acceptance/playwright-core.tgz',
   ]) {
     assert.match(ci, new RegExp(path.replaceAll('.', '\\.').replaceAll('/', '\\/')));
@@ -762,7 +793,7 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(production, /\$uploadJobs\[0\]\.started_at <= \$artifactCreatedAt/);
   assert.match(production, /\$artifactCreatedAt <= \$uploadJobs\[0\]\.completed_at/);
   const credentialValidation = production.indexOf(
-    'Validate protected Production acceptance credentials before mutation',
+    'Validate the protected Production Resend reader before mutation',
   );
   const sshConfiguration = production.indexOf('Configure the existing deployment SSH identity');
   assert.ok(
@@ -772,7 +803,7 @@ test('release workflows bundle and consume only the controlled admission impleme
   );
   assert.match(
     production.slice(credentialValidation, sshConfiguration),
-    /live-browser-acceptance\.mjs[\s\S]*--validate-production-credentials/,
+    /resend-sent-email\.mjs[\s\S]*--validate-key/,
   );
   const previewLiveRecheck = production.indexOf(
     'Recollect and validate current Preview live runtime before mutation',

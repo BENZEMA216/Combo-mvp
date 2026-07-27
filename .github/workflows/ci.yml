@@ -99,16 +99,16 @@ jobs:
           POSTGRES_USER: ci
           POSTGRES_PASSWORD: ci
           POSTGRES_DB: ci
+          POSTGRES_API_PASSWORD: ci-api-role
+          POSTGRES_WORKER_PASSWORD: ci-worker-role
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role
           S3_ACCESS_KEY: ci
           S3_SECRET_KEY: ci
-          LOGTO_APP_ID: ci
-          LOGTO_APP_SECRET: ci
-          LOGTO_AUDIENCE: ci
-          LOGTO_ISSUER: http://logto:3001/oidc
-          LOGTO_JWKS_URI: http://logto:3001/oidc/jwks
-          LOGTO_REDIRECT_URI: http://ci.local/callback
+          PUBLIC_APP_ORIGINS: https://ci.example.test
+          SESSION_COOKIE_SECURE: 'true'
+          RESEND_API_KEY: re_ci_only_not_a_live_key
+          OTP_HMAC_SECRET: ci-only-otp-hmac-secret-at-least-32-bytes
           GRAFANA_ADMIN_PASSWORD: ci
-          DEV_SESSION_SECRET: ci
           IMAGE_TAG: ci
         run: |
           set -euo pipefail
@@ -124,7 +124,6 @@ jobs:
             scripts/*.sh \
             scripts/integration/*.sh \
             infra/entrypoint.sh \
-            infra/postgres/init-logto-db.sh \
             infra/minio/init-buckets.sh \
             infra/k8s/overlays/sandbox-tools/maintenance/*.sh
 
@@ -181,6 +180,9 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
+      - name: Install Playwright Chromium
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Build shared first
         run: pnpm -F @cb/shared build
 
@@ -200,7 +202,20 @@ jobs:
       - name: Database migration integration
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
-        run: bash scripts/integration/db-migrate.sh
+          POSTGRES_API_PASSWORD: ci-api-role-password
+          POSTGRES_WORKER_PASSWORD: ci-worker-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          APPLICATION_ROLE_PG_TEST: '1'
+        run: |
+          set -euo pipefail
+          bash scripts/integration/db-migrate.sh
+          pnpm --dir db exec vitest run __tests__/application-database-roles.pg.test.ts
+
+      - name: First-party authentication PostgreSQL invariants
+        env:
+          AUTH_PG_TEST: '1'
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+        run: pnpm --dir apps/authoring exec vitest run src/__tests__/account-auth.pg.test.ts
 
       - name: Runtime terminal fence integration
         env:
@@ -220,6 +235,9 @@ jobs:
           REDIS_HOT_HOST: localhost
           REDIS_HOT_PORT: '6380'
         run: bash scripts/integration/redis-dual.sh
+
+      - name: First-party email authentication integration
+        run: bash scripts/integration/resend-auth-e2e.sh
 
   sandbox-integration:
     name: sandbox protocol / process / path
@@ -492,7 +510,9 @@ jobs:
             0003_turns.sql \
             0004_studio_sessions.sql \
             0005_capability_current_ui.sql \
-            0006_one_running_turn_per_session.sql > "$expected_migrations"
+            0006_one_running_turn_per_session.sql \
+            0007_first_party_email_auth.sql \
+            0008_application_database_roles.sql > "$expected_migrations"
           cmp -s "$expected_migrations" "$bundle/metadata/migration-files.txt"
           migration_head=$(tail -n 1 "$bundle/metadata/migration-files.txt")
 
@@ -561,8 +581,11 @@ jobs:
             scripts/web-asset-manifest.mjs \
             scripts/verify-rendered-release.mjs \
             "$bundle/scripts/"
-          install -m 0644 scripts/goal-b-test-acceptance.mjs \
+          install -m 0644 \
+            scripts/goal-b-test-acceptance.mjs \
             "$bundle/acceptance/live-browser-acceptance.mjs"
+          install -m 0644 scripts/resend-sent-email.mjs \
+            "$bundle/acceptance/resend-sent-email.mjs"
           tar -C "$(dirname "$(realpath scripts/node_modules/playwright-core)")" \
             -czf "$bundle/acceptance/playwright-core.tgz" playwright-core
           install -m 0644 infra/host/release/*.service "$bundle/infra/host/release/"

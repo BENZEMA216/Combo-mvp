@@ -283,15 +283,17 @@ validate_migrations() {
     0004_studio_sessions.sql
     0005_capability_current_ui.sql
     0006_one_running_turn_per_session.sql
+    0007_first_party_email_auth.sql
+    0008_application_database_roles.sql
   )
   local actual=()
   mapfile -t actual <"$MIGRATIONS"
   ((${#actual[@]} == ${#expected[@]})) ||
-    fail 'migration file list must contain exactly 0000 through 0006'
+    fail 'migration file list must contain exactly 0000 through 0008'
   local index
   for index in "${!expected[@]}"; do
     [[ "${actual[$index]}" == "${expected[$index]}" ]] ||
-      fail 'migration file list differs from the exact 0000 through 0006 contract'
+      fail 'migration file list differs from the exact 0000 through 0008 contract'
   done
   [[ "${actual[-1]}" == "$migration_head" ]] ||
     fail 'migration file list does not reach the release migration head'
@@ -349,23 +351,17 @@ secret_has_nonempty_key() {
 
 validate_secret_keys() {
   local key
-  for key in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB S3_ACCESS_KEY S3_SECRET_KEY \
-    LOGTO_ISSUER LOGTO_JWKS_URI LOGTO_AUDIENCE; do
+  for key in POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB \
+    POSTGRES_API_PASSWORD POSTGRES_WORKER_PASSWORD POSTGRES_RUNTIME_PASSWORD \
+    S3_ACCESS_KEY S3_SECRET_KEY S3_PUBLIC_ENDPOINT RESEND_API_KEY OTP_HMAC_SECRET; do
     secret_has_nonempty_key "$ENV_SECRET" "$key" ||
       fail "$ENV_SECRET is missing required key $key"
   done
   secret_has_nonempty_key "$PULL_SECRET" .dockerconfigjson ||
     fail "$PULL_SECRET is missing its registry key"
   if [[ "$ENVIRONMENT" == preview ]]; then
-    secret_has_nonempty_key combo-preview-bootstrap DEV_SESSION_SECRET ||
-      fail 'combo-preview-bootstrap is missing DEV_SESSION_SECRET'
     secret_has_nonempty_key combo-preview-bootstrap REVIEW_ACCESS_TOKEN ||
       fail 'combo-preview-bootstrap is missing REVIEW_ACCESS_TOKEN'
-  else
-    for key in LOGTO_ENDPOINT LOGTO_APP_ID LOGTO_APP_SECRET LOGTO_REDIRECT_URI; do
-      secret_has_nonempty_key "$ENV_SECRET" "$key" ||
-        fail "$ENV_SECRET is missing required key $key"
-    done
   fi
 }
 
@@ -1594,7 +1590,7 @@ apply_foundation() {
 }
 
 run_migration() {
-  status 'running the exact 0000 through 0006 migration set'
+  status 'running the exact 0000 through 0008 migration set'
   delete_candidate_job "${PREFIX}migrate"
   "${K[@]}" apply -f "$MIGRATE_YAML" >/dev/null
   if ! "${K[@]}" -n "$NAMESPACE" wait --for=condition=complete \
@@ -1612,7 +1608,7 @@ run_migration() {
       -c "SELECT filename FROM schema_migrations ORDER BY filename"
   ' >"$actual_migrations"
   cmp -s "$MIGRATIONS" "$actual_migrations" ||
-    fail 'fresh database migration ledger differs from 0000 through 0006'
+    fail 'fresh database migration ledger differs from 0000 through 0008'
 
   [[ "$("${K[@]}" -n "$NAMESPACE" get "job/${PREFIX}migrate" \
     -o jsonpath='{.spec.template.spec.containers[0].image}')" == "$api_image" ]] ||

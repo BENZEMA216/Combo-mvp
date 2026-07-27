@@ -29,7 +29,6 @@ readonly PRODUCTION_KUBECONFIG='/etc/combo-dev/production-observer.kubeconfig'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly CONFIG_FILE='/etc/combo-dev/combo-dev.env'
 readonly REGISTRY_FILE='/etc/combo-dev/registry.json'
-readonly SESSION_FILE='/etc/combo-dev/session.key'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 readonly BEFORE_FREE_BYTES=$((45 * 1024 * 1024 * 1024))
@@ -316,11 +315,15 @@ for raw in open(config, encoding='utf-8'):
     values[key]=value
 required={
  'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB','MINIO_ROOT_USER','MINIO_ROOT_PASSWORD',
- 'S3_ACCESS_KEY','S3_SECRET_KEY','LOGTO_ENDPOINT','LOGTO_ISSUER','LOGTO_JWKS_URI',
- 'LOGTO_APP_ID','LOGTO_APP_SECRET','LOGTO_AUDIENCE','LLM_PROVIDER','RUNTIME_LLM_PROVIDER'
+ 'POSTGRES_API_PASSWORD','POSTGRES_WORKER_PASSWORD','POSTGRES_RUNTIME_PASSWORD',
+ 'S3_ACCESS_KEY','S3_SECRET_KEY','S3_PUBLIC_ENDPOINT','RESEND_API_KEY','OTP_HMAC_SECRET',
+ 'LLM_PROVIDER','RUNTIME_LLM_PROVIDER'
 }
 if not required <= set(values): raise SystemExit(2)
-if 'DEV_SESSION_SECRET' in values: raise SystemExit(2)
+if any(key in values for key in (
+    'DEV_SESSION_SECRET','LOGTO_ENDPOINT','LOGTO_ISSUER','LOGTO_JWKS_URI',
+    'LOGTO_APP_ID','LOGTO_APP_SECRET','LOGTO_AUDIENCE','LOGTO_REDIRECT_URI',
+)): raise SystemExit(2)
 if values['MINIO_ROOT_USER'] == values['S3_ACCESS_KEY'] or values['MINIO_ROOT_PASSWORD'] == values['S3_SECRET_KEY']:
     raise SystemExit(2)
 if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{2,63}', values['S3_ACCESS_KEY']):
@@ -329,9 +332,18 @@ if values['LLM_PROVIDER'] != values['RUNTIME_LLM_PROVIDER'] or values['LLM_PROVI
     raise SystemExit(2)
 key = 'ANTHROPIC_API_KEY' if values['LLM_PROVIDER']=='anthropic' else 'OPENROUTER_API_KEY'
 if not values.get(key): raise SystemExit(2)
-for key in ('LOGTO_ENDPOINT','LOGTO_ISSUER','LOGTO_JWKS_URI'):
-    u=urllib.parse.urlsplit(values[key])
-    if u.scheme != 'https' or not u.hostname or u.username or u.password: raise SystemExit(2)
+if not re.fullmatch(r're_[A-Za-z0-9_-]{16,252}', values['RESEND_API_KEY']):
+    raise SystemExit(2)
+if len(values['OTP_HMAC_SECRET']) < 32: raise SystemExit(2)
+for key in ('POSTGRES_API_PASSWORD','POSTGRES_WORKER_PASSWORD','POSTGRES_RUNTIME_PASSWORD'):
+    if len(values[key]) < 16: raise SystemExit(2)
+if len({values[key] for key in (
+    'POSTGRES_PASSWORD','POSTGRES_API_PASSWORD','POSTGRES_WORKER_PASSWORD',
+    'POSTGRES_RUNTIME_PASSWORD',
+)}) != 4: raise SystemExit(2)
+u=urllib.parse.urlsplit(values['S3_PUBLIC_ENDPOINT'])
+if u.scheme not in {'http','https'} or not u.hostname or u.username or u.password:
+    raise SystemExit(2)
 if values.get('LLM_BASE_URL'):
     u=urllib.parse.urlsplit(values['LLM_BASE_URL'])
     if u.scheme != 'https' or not u.hostname or u.username or u.password: raise SystemExit(2)
@@ -738,7 +750,6 @@ dispatcher_credential_valid() {
   can_i_dispatcher no get secrets "$NAMESPACE" || return 1
   can_i_dispatcher no list secrets "$NAMESPACE" || return 1
   can_i_dispatcher no delete secrets/combo-dev-env "$NAMESPACE" || return 1
-  can_i_dispatcher yes patch secrets/combo-dev-session "$NAMESPACE" || return 1
   can_i_dispatcher no patch secrets/combo-dev-env "$NAMESPACE" || return 1
   can_i_dispatcher no create pods "$NAMESPACE" || return 1
 }
@@ -837,26 +848,12 @@ apply_secret_without_output() {
     "${AK[@]}" apply --server-side --field-manager=combo-dev-bootstrap -f - >/dev/null 2>&1
 }
 
-ensure_session_file() {
-  if [[ ! -f "$SESSION_FILE" ]]; then
-    local tmp="$WORK/session.key"
-    openssl rand -hex 32 >"$tmp" 2>/dev/null || return 1
-    chmod 600 "$tmp"
-    install -m 0600 "$tmp" "$SESSION_FILE" || return 1
-  fi
-  private_file "$SESSION_FILE" || return 1
-  [[ $(wc -c <"$SESSION_FILE" | tr -d ' ') == 65 ]]
-}
-
 provision_secrets() {
   bootstrap_boundary env-secret-apply apply_secret_without_output \
     combo-dev-env '' "--from-env-file=$CONFIG_FILE" || blocked '开发环境 Secret 写入失败。'
   bootstrap_boundary registry-secret-apply apply_secret_without_output \
     combo-dev-registry '--type=kubernetes.io/dockerconfigjson' \
     "--from-file=.dockerconfigjson=$REGISTRY_FILE" || blocked '只读仓库 Secret 写入失败。'
-  bootstrap_boundary session-credential-file ensure_session_file || blocked '开发会话凭据无法建立。'
-  bootstrap_boundary session-secret-apply apply_secret_without_output \
-    combo-dev-session '' "--from-file=DEV_SESSION_SECRET=$SESSION_FILE" || blocked '开发会话 Secret 写入失败。'
 }
 
 control_tree_digest() {

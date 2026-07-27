@@ -4,7 +4,7 @@ import type { InfraContext } from '../infra/index.js';
 
 declare module 'fastify' {
   interface FastifyInstance {
-    /** 基础设施容器（db/redis/queue/objectStore/llm），app.decorate('infra') 注入。 */
+    /** 数据库、Redis、队列、对象存储、大模型、邮件与认证限流容器。 */
     infra: InfraContext;
   }
   interface FastifyRequest {

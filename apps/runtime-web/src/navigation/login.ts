@@ -1,7 +1,5 @@
-import type { ReleaseMetadata } from '@cb/shared';
-
-export const AUTH_LOGIN_PATH = '/api/v1/auth/login';
-export const PREVIEW_BOOTSTRAP_PATH = '/__review/bootstrap';
+/** 同站 React 登录页；authoring 在该页签发 authoring 与 runtime 共用的 HttpOnly Cookie。 */
+export const AUTH_LOGIN_PATH = '/login';
 export const RUNTIME_AUTH_FALLBACK = '/try/';
 
 const RETURN_TO_ORIGIN = 'https://combo.invalid';
@@ -75,21 +73,16 @@ function currentRuntimeLocation(): string {
   return `${window.location.pathname}${window.location.search}`;
 }
 
-/** 非 Preview 保持现有 OIDC 登录入口。 */
+/** 未登录时整页进入自定义登录页，并只携带经过递归审计的 runtime 深链。 */
 export function loginUrl(returnTo?: string): string {
   const target = safeRuntimeAuthReturnTo(returnTo ?? currentRuntimeLocation());
   return `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(target)}`;
 }
 
-/** Preview 使用受访问闸保护的种子会话恢复页，不进入正式 OIDC。 */
-export function previewBootstrapUrl(returnTo?: string): string {
-  const target = safeRuntimeAuthReturnTo(returnTo ?? currentRuntimeLocation());
-  return `${PREVIEW_BOOTSTRAP_PATH}?returnTo=${encodeURIComponent(target)}`;
-}
-
-export function authenticationUrl(
-  environment: ReleaseMetadata['environment'],
+/** 单次请求收到 401 时整页进入自定义登录页，不重放原请求。 */
+export function goToLogin(
   returnTo?: string,
-): string {
-  return environment === 'preview' ? previewBootstrapUrl(returnTo) : loginUrl(returnTo);
+  navigate: (url: string) => void = (url) => window.location.assign(url),
+): void {
+  navigate(loginUrl(returnTo));
 }

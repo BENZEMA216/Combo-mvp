@@ -1,12 +1,22 @@
 // typed client 测试：轻包络解包 / ErrorEnvelope 白名单重建 / 非契约响应兜底人话。
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { installFetchMock, type FetchMock } from '../test/mockFetch.js';
-import { ApiError, apiGet, apiGetEnvelope, apiPost, sanitizeErrorBody } from './client.js';
+import {
+  ApiError,
+  apiGet,
+  apiGetEnvelope,
+  apiPost,
+  resetUnauthorizedRedirectForTest,
+  sanitizeErrorBody,
+  unauthorizedNavigation,
+} from './client.js';
 
 let fm: FetchMock | undefined;
 afterEach(() => {
   fm?.restore();
   fm = undefined;
+  resetUnauthorizedRedirectForTest();
+  vi.restoreAllMocks();
 });
 
 describe('apiGet — 轻包络 { data, meta } 解包', () => {
@@ -50,44 +60,54 @@ describe('apiPost — JSON body', () => {
   });
 });
 
-describe('401 session refresh — 单次续期与原请求重放', () => {
-  it('refresh 204 后把原 GET 重放一次', async () => {
-    fm = installFetchMock([
-      { status: 401, json: { error: { userMessage: 'expired' } } },
-      { status: 204, match: '/auth/refresh' },
-      { status: 200, json: { data: { ok: true } } },
-    ]);
+describe('401 fixed session semantics', () => {
+  it('surfaces 401 metadata and navigates once without refresh or GET replay', async () => {
+    window.history.replaceState({}, '', '/tasks?cursor=expired');
+    const navigate = vi.spyOn(unauthorizedNavigation, 'assign').mockImplementation(() => undefined);
+    fm = installFetchMock({
+      status: 401,
+      json: {
+        error: {
+          userMessage: '请先登录。',
+          retriable: false,
+          action: 'escalate',
+          traceId: 'trace-401',
+        },
+      },
+    });
 
-    await expect(apiGet<{ ok: boolean }>('/tasks')).resolves.toEqual({ ok: true });
-    expect(fm.calls.map((call) => call.url)).toEqual([
-      '/api/v1/tasks',
-      '/api/v1/auth/refresh',
-      '/api/v1/tasks',
-    ]);
+    const error = (await apiGet('/tasks').catch((cause: unknown) => cause)) as ApiError;
+    expect(error.userMessage).toBe('请先登录。');
+    expect(error.retriable).toBe(false);
+    expect(error.httpStatus).toBe(401);
+    expect(error.envelope.error).not.toHaveProperty('status');
+    expect(Object.keys(error)).not.toContain('httpStatus');
+    expect(fm.calls.map((call) => call.url)).toEqual(['/api/v1/tasks']);
+    expect(navigate).toHaveBeenCalledWith('/login?returnTo=%2Ftasks%3Fcursor%3Dexpired');
+
+    await expect(apiGet('/capabilities')).rejects.toBeInstanceOf(ApiError);
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 
-  it('refresh 204 后重放 POST 时保留原始 JSON body', async () => {
-    fm = installFetchMock([
-      { status: 401, json: { error: { userMessage: 'expired' } } },
-      { status: 204, match: '/auth/refresh' },
-      { status: 200, json: { data: { id: 't1' } } },
-    ]);
+  it('never replays a state-changing POST after a 401', async () => {
+    const navigate = vi.spyOn(unauthorizedNavigation, 'assign').mockImplementation(() => undefined);
+    fm = installFetchMock({
+      status: 401,
+      json: {
+        error: {
+          userMessage: '请先登录。',
+          retriable: false,
+          action: 'escalate',
+          traceId: 'trace-post-401',
+        },
+      },
+    });
     const body = { idempotencyKey: 'key-12345678' };
 
-    await expect(apiPost('/tasks', body)).resolves.toEqual({ id: 't1' });
+    await expect(apiPost('/tasks', body)).rejects.toBeInstanceOf(ApiError);
+    expect(fm.calls).toHaveLength(1);
     expect(fm.calls[0]?.body).toEqual(body);
-    expect(fm.calls[2]?.body).toEqual(body);
-  });
-
-  it('只有 refresh 401 视为匿名；403 保持可重试错误且不重放业务请求', async () => {
-    fm = installFetchMock([
-      { status: 401, json: { error: { userMessage: 'expired' } } },
-      { status: 403, match: '/auth/refresh' },
-    ]);
-    const err = (await apiGet('/tasks').catch((cause: unknown) => cause)) as ApiError;
-    expect(err.userMessage).toBe('登录状态暂时无法续期，请稍后重试。');
-    expect(err.retriable).toBe(true);
-    expect(fm.calls).toHaveLength(2);
+    expect(navigate).toHaveBeenCalledTimes(1);
   });
 });
 

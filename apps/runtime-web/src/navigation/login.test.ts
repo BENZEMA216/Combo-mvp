@@ -1,30 +1,26 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AUTH_LOGIN_PATH,
-  PREVIEW_BOOTSTRAP_PATH,
   RUNTIME_AUTH_FALLBACK,
-  authenticationUrl,
+  goToLogin,
   loginUrl,
-  previewBootstrapUrl,
   safeRuntimeAuthReturnTo,
 } from './login.js';
 
-describe('runtime authentication navigation', () => {
-  it('preserves an exact /try capability deep link for normal OIDC', () => {
+describe('runtime first-party login navigation', () => {
+  it('preserves an exact /try capability deep link', () => {
     const returnTo =
       '/try/c/11111111-1111-4111-8111-111111111111?returnTo=%2Ftasks%2F018f47ea-bc32-7a3d-8f6e-2f90c7b01d43';
-
     expect(loginUrl(returnTo)).toBe(`${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(returnTo)}`);
-    expect(authenticationUrl('production', returnTo)).toBe(loginUrl(returnTo));
   });
 
-  it('uses Preview bootstrap with the same safe runtime return', () => {
-    const returnTo = '/try/session/11111111-1111-4111-8111-111111111111?mode=studio';
-
-    expect(previewBootstrapUrl(returnTo)).toBe(
-      `${PREVIEW_BOOTSTRAP_PATH}?returnTo=${encodeURIComponent(returnTo)}`,
+  it('navigates a failed mutation to login while preserving its runtime deep link', () => {
+    const navigate = vi.fn<(url: string) => void>();
+    const returnTo = '/try/session/11111111-1111-4111-8111-111111111111?tab=artifact';
+    goToLogin(returnTo, navigate);
+    expect(navigate).toHaveBeenCalledWith(
+      `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(returnTo)}`,
     );
-    expect(authenticationUrl('preview', returnTo)).toBe(previewBootstrapUrl(returnTo));
   });
 
   it.each([
@@ -43,9 +39,6 @@ describe('runtime authentication navigation', () => {
     expect(safeRuntimeAuthReturnTo(returnTo)).toBe(RUNTIME_AUTH_FALLBACK);
     expect(loginUrl(returnTo)).toBe(
       `${AUTH_LOGIN_PATH}?returnTo=${encodeURIComponent(RUNTIME_AUTH_FALLBACK)}`,
-    );
-    expect(previewBootstrapUrl(returnTo)).toBe(
-      `${PREVIEW_BOOTSTRAP_PATH}?returnTo=${encodeURIComponent(RUNTIME_AUTH_FALLBACK)}`,
     );
   });
 

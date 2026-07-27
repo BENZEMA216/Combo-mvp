@@ -31,7 +31,7 @@ function manifest(overrides = {}) {
       runtime: `ghcr.io/dangdang-tech/combo-runtime@${digest('2')}`,
       web: `ghcr.io/dangdang-tech/combo-web@${digest('3')}`,
     },
-    migrationHead: '0006_one_running_turn_per_session.sql',
+    migrationHead: '0008_application_database_roles.sql',
     builtAt: '2026-07-24T08:00:00.000Z',
     webAssetManifest: digest('4'),
     ...overrides,
@@ -168,7 +168,7 @@ test('web asset manifest rejects missing applications, duplicates, and unsafe pa
 test('release and Web asset digest vectors are stable', () => {
   assert.equal(
     releaseManifestDigest(manifest()),
-    'sha256:cbf6d69442156e09e9a45c3dbfdb87e3603cfe20a859b2fc5932c21455f3cbdd',
+    'sha256:d8b9f637739b87c6fe6176533352959a27eb3375161f137e14d3c5ddfb61139a',
   );
   const assets = validateWebAssetManifest({
     schemaVersion: 1,

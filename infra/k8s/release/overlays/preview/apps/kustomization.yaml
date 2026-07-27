@@ -5,7 +5,6 @@ namePrefix: release-
 resources:
   - ../../../base/apps
 patches:
-  - path: dev-session.patch.yaml
   - path: review-gate.patch.yaml
   - path: ../../app-selector-isolation.patch.yaml
 configMapGenerator:

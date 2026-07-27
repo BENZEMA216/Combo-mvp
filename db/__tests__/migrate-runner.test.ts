@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0006_one_running_turn_per_session.sql');
+    expect(plan.head).toBe('0008_application_database_roles.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -53,8 +53,8 @@ describe('migration runner contract', () => {
   });
 
   it('rejects a release whose expected migration head differs from source', () => {
-    expect(() => planMigrations(migrations, [], '0005_capability_current_ui.sql')).toThrow(
-      /migration head mismatch: expected 0005_capability_current_ui\.sql, source is 0006_one_running_turn_per_session\.sql/,
+    expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0008_application_database_roles\.sql/,
     );
   });
 

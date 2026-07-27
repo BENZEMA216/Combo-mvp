@@ -1,13 +1,13 @@
 # platform/middleware —— 鉴权中间件
 
-这个目录只有一个文件，负责把「验登录态」做成可挂在任意端点前面的守卫：验证创作端登录后写入的 cb_session Cookie，查 users 表解出业务用户 id，挂到 req.auth 上。
+这个目录把共享浏览器会话校验封装为可挂在业务端点前的守卫。守卫按 `SESSION_COOKIE_SECURE` 选择 Cookie：true 只接受主机限定的 `__Host-cb_session`，false 只接受 `cb_session`，并把查到的业务用户身份挂到 `req.auth`。它不会在两个 Cookie 名之间回落。
 
 ## 文件
 
-- `auth.ts` 提供两个守卫工厂。requireAuth 用于普通 HTTP 端点：优先取 Authorization 头的 Bearer 令牌，否则取会话 Cookie，先走 Logto 验签，判定无效时再尝试开发登录兜底分支，验签通过后查 users 表构造鉴权上下文；runtime 不创建用户，库里查无此人一律按未登录处理。requireSseAuth 用于流式端点：只接受同源 Cookie，请求带了 Authorization 头或查询串令牌反而直接拒绝，失败在建流之前就以普通 HTTP 响应返回。两个守卫都把「上游不可达」与「令牌无效」区分开，分别回 503 和 401 的错误信封。
+- `auth.ts` 提供 `requireAuth` 和 `requireSseAuth`。普通请求和流式请求带任何 `Authorization` 头，或带 `token` 与 `access_token` 查询参数，都会返回 401，不会回落到 Cookie。流式请求会在建立响应流之前完成同一套 PostgreSQL 会话查询。缺失、畸形、未知、过期或已撤销会话返回 401，停用账号返回 403，数据库不可用返回 503。有效请求保留共享 `AuthContext` 的 `userId`、`account` 与 `roles`。
 
 ## 上下游
 
-被谁使用：`modules/capability/routes.ts`、`modules/session/routes.ts`、`modules/artifact/routes.ts` 三个路由表把这两个守卫挂在各自端点的前置处理链上。
+能力、会话和产物路由把守卫放在各自的前置处理链中。会话流路由使用流式请求专用守卫，其余业务路由使用普通守卫。
 
-依赖什么：引用 `platform/infra/logto.ts` 与 `platform/infra/dev-session.ts` 做两路验签，引用 `platform/infra/db.ts` 的句柄类型并直接查数据库的 users 表，引用 `platform/http/_helpers.ts` 回错误信封，角色与鉴权上下文的类型来自共享包 @cb/shared。
+本目录调用 `platform/infra/auth-session.ts` 读取会话，并使用 `platform/http/_helpers.ts` 返回统一错误信封。鉴权上下文与 Cookie 常量来自 `@cb/shared`。

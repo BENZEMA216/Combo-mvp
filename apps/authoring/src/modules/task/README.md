@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `routes.ts` 声明八个端点：建任务、任务列表、任务详情、任务进度 SSE、重试失败任务（以上要求登录，SSE 用仅认同源 Cookie 的专用守卫），以及无登录态、凭配对码鉴权的助手脚本下发、快照准备和分片上传三个端点。
+- `routes.ts` 声明八个端点。建任务与重试先校验精确浏览器来源再校验登录，任务列表与详情要求登录，任务进度使用只认 Cookie 的流式守卫。助手脚本下发、快照准备和分片上传不使用浏览器会话，只由配对码鉴权，因此明确豁免浏览器来源守卫。
 - `handlers.ts` 是 HTTP 薄壳：校验入参、调 service/repo/pairing、包响应信封；脚本下发端点在配对码失效时也返回可执行脚本（打印人话后退出），不向管道输出裸 JSON 错误。
 - `service.ts` 是任务状态机服务：transition 是常规状态轴变更入口（UPDATE 带期望现态做乐观锁，0 行即放弃）；createTask 在一个事务里插 tasks 和 uploads 两行，幂等键冲突时回读已有任务并轮换新配对码；retryTask 只允许 extract/failed 重试；过期上传对账用 repo 的加锁 CTE 原子落 upload=expired + task=failed，并在 worker 中可重试清理原始对象。
 - `repo.ts` 收拢 tasks 和 uploads 两表的全部 SQL：建行、按幂等键回读、任务视图组装（联 uploads 并统计能力项数）、分片登记、租约认领与续租、进度快照持久化、过期上传原子收口及待清理队列等。
@@ -21,7 +21,7 @@
 
 被谁使用：路由由 `bootstrap/routes.ts` 挂载；`processes/worker.ts` 消费队列时调 pipeline.ts 的 runPipeline、对账时调 repo.ts 的 findStalledExtractTasks。
 
-依赖什么：`platform/middleware/auth.ts`（登录与 SSE 守卫）、`platform/http/_helpers.ts`（错误信封）、`platform/infra/db.ts` 与 `db-tx.ts`（连接池与事务）、`platform/infra/queue.ts`（BullMQ 队列名与入队）、`platform/sse/`（建流与 Redis 流桥）、`platform/infra/llm/`（LLM 网关端口与审计类型）、`platform/text/session-noise.ts`（平台噪声识别）、`modules/capability/index.ts`（域出口，落能力项行）。toIso 时间格式化来自 `platform/infra/db.ts`。外部资源：PostgreSQL 的 tasks、uploads、capabilities 表，MinIO 的 combo-raw（原始件，处理完清除）与 combo-artifacts（能力项定义，长期保留）两个桶，Redis 队列（BullMQ）与 Redis 热流（进度帧），以及经网关调用的大模型上游。
+依赖什么：`platform/middleware/auth.ts`（登录与 SSE 守卫）、`platform/http/browser-origin.ts`（浏览器写请求来源守卫）、`platform/http/_helpers.ts`（错误信封）、`platform/infra/db.ts` 与 `db-tx.ts`（连接池与事务）、`platform/infra/queue.ts`（BullMQ 队列名与入队）、`platform/sse/`（建流与 Redis 流桥）、`platform/infra/llm/`（LLM 网关端口与审计类型）、`platform/text/session-noise.ts`（平台噪声识别）、`modules/capability/index.ts`（域出口，落能力项行）。toIso 时间格式化来自 `platform/infra/db.ts`。外部资源：PostgreSQL 的 tasks、uploads、capabilities 表，MinIO 的 combo-raw（原始件，处理完清除）与 combo-artifacts（能力项定义，长期保留）两个桶，Redis 队列（BullMQ）与 Redis 热流（进度帧），以及经网关调用的大模型上游。
 
 ## 典型流程：prepare 后逐片上传
 

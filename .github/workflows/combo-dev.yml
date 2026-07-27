@@ -277,7 +277,7 @@ jobs:
           migration_head=$(jq -er '.migrationHead' "$RELEASE_ROOT/metadata/release.json")
           web_asset_digest=$(jq -er '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")
           [[ "$release_id" == "release-${REVISION}" ]]
-          [[ "$migration_head" == 0006_one_running_turn_per_session.sql ]]
+          [[ "$migration_head" == 0008_application_database_roles.sql ]]
           [[ "$web_asset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           node "$RELEASE_ROOT/scripts/web-asset-manifest.mjs" verify \
             --manifest "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
@@ -623,8 +623,10 @@ jobs:
           API_IMAGE: ${{ steps.images.outputs.api }}
           RUNTIME_IMAGE: ${{ steps.images.outputs.runtime }}
           WEB_IMAGE: ${{ steps.images.outputs.web }}
+          ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
           set -euo pipefail
+          set +x
           umask 077
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           for value in \
@@ -638,6 +640,10 @@ jobs:
           [[ "$RELEASE_MANIFEST_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$ARTIFACT_FILE_SET_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$WEB_ASSET_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$ACCEPTANCE_RESEND_API_KEY" =~ ^re_[A-Za-z0-9_-]{16,252}$ ]] || {
+            echo 'The combo-dev Environment lacks a valid full-access acceptance Resend key.' >&2
+            exit 1
+          }
           runner="$RELEASE_ROOT/acceptance/live-browser-acceptance.mjs"
           playwright="$RELEASE_ROOT/acceptance/playwright-core.tgz"
           validator="$RELEASE_ROOT/scripts/promotion-evidence.mjs"
@@ -772,7 +778,8 @@ jobs:
           archive="$RUNNER_TEMP/combo-dev-live-browser-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" \
             acceptance/live-browser-acceptance.mjs \
-            acceptance/playwright-core.tgz
+            acceptance/playwright-core.tgz \
+            acceptance/resend-sent-email.mjs
           chmod 600 "$archive"
           remote="/opt/combo-dev/incoming/${REVISION}.acceptance.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           temporary="/opt/combo-dev/incoming/.${REVISION}.acceptance.${RUN_ID}.${RUN_ATTEMPT}.upload"
@@ -780,9 +787,11 @@ jobs:
           ssh combo-dev-target rm -f -- "$temporary"
           scp -q "$archive" "combo-dev-target:$temporary"
           ssh combo-dev-target mv -fT -- "$temporary" "$remote"
-          ssh combo-dev-target bash -s -- \
-            "$remote" "$remote_output" "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+          {
+            printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
+            cat <<'REMOTE'
           set -euo pipefail
+          set +x
           incoming=$1
           output_relative=$2
           revision=$3
@@ -797,14 +806,16 @@ jobs:
           [[ -f "$archive" && ! -L "$archive" && ! -e "$output" ]]
           work=$(mktemp -d "$HOME/data/combo-test-live-browser.XXXXXX")
           cleanup() {
+            unset ACCEPTANCE_RESEND_API_KEY
             rm -f -- "$archive"
             rm -rf -- "$work"
           }
           trap cleanup EXIT
           mapfile -t archive_paths < <(tar -tzf "$archive" | LC_ALL=C sort)
-          [[ "${#archive_paths[@]}" == 2 ]]
+          [[ "${#archive_paths[@]}" == 3 ]]
           [[ "${archive_paths[0]}" == acceptance/live-browser-acceptance.mjs ]]
           [[ "${archive_paths[1]}" == acceptance/playwright-core.tgz ]]
+          [[ "${archive_paths[2]}" == acceptance/resend-sent-email.mjs ]]
           tar -xzf "$archive" --no-same-owner -C "$work"
           runner="$work/acceptance/live-browser-acceptance.mjs"
           playwright="$work/acceptance/playwright-core.tgz"
@@ -827,6 +838,8 @@ jobs:
           node "$runner" \
             --environment test \
             --revision "$revision" \
+            --run-id "$run_id" \
+            --run-attempt "$run_attempt" \
             --web-origin http://127.0.0.1:18080 \
             --output "$output"
           [[ -f "$output" && ! -L "$output" ]]
@@ -834,6 +847,8 @@ jobs:
           output_bytes=$(stat -c '%s' "$output")
           [[ "$output_bytes" =~ ^[0-9]+$ && "$output_bytes" -gt 0 && "$output_bytes" -le 1048576 ]]
           REMOTE
+          } | ssh combo-dev-target \
+            "IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset acceptance_resend_api_key; exec bash -s -- '$remote' '$remote_output' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
 
           evidence="$RUNNER_TEMP/combo-test-live-browser-${REVISION}.json"
           scp -q "combo-dev-target:$remote_output" "$evidence"
@@ -939,7 +954,7 @@ jobs:
             }
             and ([.reset.foundation[].plane] | sort) == ["minio", "postgres", "redis-hot", "redis-queue"]
             and all(.reset.foundation[]; .ready == true and (.podUid | test("^[0-9a-f-]{36}$")))
-            and .migration.head == "0006_one_running_turn_per_session.sql"
+            and .migration.head == "0008_application_database_roles.sql"
             and .migration.runs == 2
             and .migration.sourceSha == $revision
             and .migration.workflowRunId == $runId
@@ -951,11 +966,13 @@ jobs:
               "0003_turns.sql",
               "0004_studio_sessions.sql",
               "0005_capability_current_ui.sql",
-              "0006_one_running_turn_per_session.sql"
+              "0006_one_running_turn_per_session.sql",
+              "0007_first_party_email_auth.sql",
+              "0008_application_database_roles.sql"
             ]
             and .migration.passes == [
-              {run: 1, head: "0006_one_running_turn_per_session.sql"},
-              {run: 2, head: "0006_one_running_turn_per_session.sql"}
+              {run: 1, head: "0008_application_database_roles.sql"},
+              {run: 2, head: "0008_application_database_roles.sql"}
             ]
             and .migration.job.succeeded == 1
             and .migration.job.ttlSecondsAfterFinished == 7200
@@ -1120,7 +1137,7 @@ jobs:
                 webAssetManifestDigest: $webAssetManifestDigest,
                 liveBrowserAcceptanceDigest: $liveBrowserAcceptanceDigest,
                 testIdentityDigest: $testIdentityDigest,
-                migrationHead: "0006_one_running_turn_per_session.sql",
+                migrationHead: "0008_application_database_roles.sql",
                 images: {
                   api: $apiImage,
                   runtime: $runtimeImage,
@@ -1184,7 +1201,7 @@ jobs:
               and (.webAssetManifestDigest | test("^sha256:[0-9a-f]{64}$"))
               and .liveBrowserAcceptanceDigest == $liveBrowserAcceptanceDigest
               and .testIdentityDigest == $testIdentityDigest
-              and .migrationHead == "0006_one_running_turn_per_session.sql"
+              and .migrationHead == "0008_application_database_roles.sql"
               and (.images | keys == ["api", "runtime", "web"])
               and (.images.api | test("^ghcr.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$"))
               and (.images.runtime | test("^ghcr.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$"))

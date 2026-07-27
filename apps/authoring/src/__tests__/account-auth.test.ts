@@ -1,383 +1,298 @@
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import '../platform/http/fastify.js';
+import {
+  AUTH_SESSION_COOKIE_NAME,
+  AUTH_SESSION_COOKIE_PRODUCTION_NAME,
+  AUTH_SESSION_COOKIE_VALUE_PATTERN,
+  type MeView,
+} from '@cb/shared';
 
-const oidcMocks = vi.hoisted(() => ({
-  buildLogoutUrl: vi.fn(),
-  exchangeCodeForToken: vi.fn(),
-  readNonceFromIdToken: vi.fn(),
-  refreshAccessToken: vi.fn(),
+const serviceMocks = vi.hoisted(() => ({
+  requestEmailChallenge: vi.fn(),
+  verifyEmail: vi.fn(),
 }));
-
-const logtoMocks = vi.hoisted(() => ({
-  verifyLogtoIdToken: vi.fn(),
-  verifyLogtoJwt: vi.fn(),
-}));
-
 const repoMocks = vi.hoisted(() => ({
-  provisionUser: vi.fn(),
   readMe: vi.fn(),
+  revokeSession: vi.fn(),
 }));
 
-vi.mock('../platform/infra/logto-oidc.js', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, ...oidcMocks };
-});
-
-vi.mock('../platform/infra/logto.js', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, ...logtoMocks };
-});
-
+vi.mock('../modules/account/service.js', () => serviceMocks);
 vi.mock('../modules/account/repo.js', () => repoMocks);
 
 import {
-  AUTH_TX_COOKIE,
-  callbackHandler,
+  emailChallengeHandler,
+  emailVerificationHandler,
   logoutHandler,
-  REFRESH_COOKIE,
-  refreshHandler,
+  meHandler,
 } from '../modules/account/handlers.js';
-import { SESSION_COOKIE } from '../platform/middleware/auth.js';
 
-type TestHandler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+const USER: MeView = {
+  id: '01900000-0000-7000-8000-000000000001',
+  account: 'creator-aaaaaaaa',
+  email: 'Alice@example.com',
+  roles: ['creator'],
+  createdAt: '2026-01-01T00:00:00.000Z',
+  lastLoginAt: '2026-01-01T01:00:00.000Z',
+};
+const SESSION = `s1.${Buffer.alloc(32, 7).toString('base64url')}`;
 
-function requestDouble(
-  input: {
-    cookies?: Record<string, string>;
-    query?: Record<string, string>;
-    nodeEnv?: 'development' | 'test' | 'production';
-    comboEnvironment?: string;
-  } = {},
-): FastifyRequest {
+type Handler = (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
+
+function requestDouble(input: {
+  body?: unknown;
+  cookies?: Record<string, string>;
+  auth?: FastifyRequest['auth'];
+  nodeEnv?: 'test' | 'production';
+  sessionCookieSecure?: boolean;
+}): FastifyRequest {
   return {
-    id: 'trace-auth-test',
+    id: 'trace-account-test',
+    ip: '192.0.2.10',
+    body: input.body,
     cookies: input.cookies ?? {},
-    query: input.query ?? {},
+    auth: input.auth,
     server: {
       infra: {
         env: {
-          NODE_ENV: input.nodeEnv ?? 'production',
-          COMBO_ENVIRONMENT:
-            input.comboEnvironment ?? (input.nodeEnv === 'test' ? 'test' : 'production'),
+          NODE_ENV: input.nodeEnv ?? 'test',
+          SESSION_COOKIE_SECURE: input.sessionCookieSecure ?? false,
+          OTP_HMAC_SECRET: 'x'.repeat(32),
         },
-        db: {},
+        db: { query: vi.fn(), connect: vi.fn() },
+        resend: {},
+        authRateLimiter: {},
       },
     },
-    log: {
-      warn: vi.fn(),
-      error: vi.fn(),
-    },
+    log: { warn: vi.fn(), error: vi.fn() },
   } as unknown as FastifyRequest;
 }
 
-function replyDouble(): FastifyReply & {
-  setCookie: ReturnType<typeof vi.fn>;
-  clearCookie: ReturnType<typeof vi.fn>;
+interface TestReply extends FastifyReply {
+  header: ReturnType<typeof vi.fn>;
   code: ReturnType<typeof vi.fn>;
   send: ReturnType<typeof vi.fn>;
-  redirect: ReturnType<typeof vi.fn>;
-} {
+  setCookie: ReturnType<typeof vi.fn>;
+  clearCookie: ReturnType<typeof vi.fn>;
+}
+
+function replyDouble(): TestReply {
   const reply = {
-    setCookie: vi.fn(),
-    clearCookie: vi.fn(),
+    header: vi.fn(),
     code: vi.fn(),
     send: vi.fn(),
-    redirect: vi.fn(),
+    setCookie: vi.fn(),
+    clearCookie: vi.fn(),
   };
   for (const method of Object.values(reply)) method.mockReturnValue(reply);
-  return reply as unknown as ReturnType<typeof replyDouble>;
+  return reply as unknown as TestReply;
 }
 
 async function run(
-  handler: ReturnType<typeof refreshHandler>,
+  factory: () => unknown,
   req: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
-  await (handler as unknown as TestHandler)(req, reply);
+  await (factory() as Handler)(req, reply);
 }
 
-describe('account refresh-token handlers', () => {
+describe('first-party account handlers', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    oidcMocks.buildLogoutUrl.mockResolvedValue(null);
-    oidcMocks.readNonceFromIdToken.mockReturnValue('nonce-1');
-    logtoMocks.verifyLogtoIdToken.mockResolvedValue({ kind: 'ok', token: { sub: 'user-1' } });
-    logtoMocks.verifyLogtoJwt.mockResolvedValue({
+    serviceMocks.requestEmailChallenge.mockResolvedValue({ kind: 'accepted' });
+    serviceMocks.verifyEmail.mockResolvedValue({
       kind: 'ok',
-      token: {
-        sub: 'user-1',
-        account: 'creator',
-        email: 'creator@example.com',
-        roles: ['creator'],
-      },
+      user: USER,
+      sessionCookie: SESSION,
+      returnTo: '/tasks',
     });
-    repoMocks.provisionUser.mockResolvedValue({ id: 'user-db-1' });
+    repoMocks.revokeSession.mockResolvedValue(undefined);
+    repoMocks.readMe.mockResolvedValue({ ...USER, disabledAt: null });
   });
 
-  it('callback stores refresh_token in a separate narrowed secure cookie', async () => {
-    oidcMocks.exchangeCodeForToken.mockResolvedValue({
-      kind: 'ok',
-      accessToken: 'access-1',
-      idToken: 'id-1',
-      refreshToken: 'refresh-1',
+  it('returns the uniform 202 challenge envelope without reflecting the email', async () => {
+    const req = requestDouble({ body: { email: 'Alice@example.com' } });
+    const reply = replyDouble();
+
+    await run(emailChallengeHandler, req, reply);
+
+    expect(serviceMocks.requestEmailChallenge).toHaveBeenCalledWith(
+      expect.objectContaining({ hmacSecret: 'x'.repeat(32) }),
+      expect.objectContaining({ email: 'Alice@example.com', clientAddress: '192.0.2.10' }),
+    );
+    expect(reply.code).toHaveBeenCalledWith(202);
+    expect(reply.send).toHaveBeenCalledWith({
+      data: { accepted: true, expiresInSeconds: 300, resendAfterSeconds: 60 },
+      meta: { traceId: 'trace-account-test' },
     });
+    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('Alice@example.com');
+    expect(reply.header).toHaveBeenCalledWith('cache-control', 'no-store');
+  });
+
+  it('preserves a leading-zero code and sets the explicit HTTPS session cookie', async () => {
     const req = requestDouble({
-      cookies: {
-        [AUTH_TX_COOKIE]: JSON.stringify({
-          state: 'state-1',
-          nonce: 'nonce-1',
-          codeVerifier: 'verifier-1',
-          returnTo: '/tasks',
-        }),
-      },
-      query: { code: 'code-1', state: 'state-1' },
+      body: { email: 'Alice@example.com', code: '004271', returnTo: '/tasks' },
+      nodeEnv: 'test',
+      sessionCookieSecure: true,
     });
     const reply = replyDouble();
 
-    await (callbackHandler() as unknown as TestHandler)(req, reply);
+    await run(emailVerificationHandler, req, reply);
 
-    expect(reply.setCookie).toHaveBeenCalledWith(
-      SESSION_COOKIE,
-      'access-1',
-      expect.objectContaining({ httpOnly: true, secure: true, sameSite: 'lax', path: '/' }),
+    expect(serviceMocks.verifyEmail).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ code: '004271', returnTo: '/tasks' }),
     );
-    expect(reply.setCookie).toHaveBeenCalledWith(
-      REFRESH_COOKIE,
-      'refresh-1',
-      expect.objectContaining({
-        httpOnly: true,
-        secure: true,
-        sameSite: 'lax',
-        path: '/api/v1/auth',
-      }),
-    );
-    expect(reply.redirect).toHaveBeenCalledWith('/tasks', 302);
-  });
-
-  it('keeps Preview cookies Secure when its API process uses development mode', async () => {
-    oidcMocks.exchangeCodeForToken.mockResolvedValue({
-      kind: 'ok',
-      accessToken: 'access-preview',
-      refreshToken: 'refresh-preview',
-    });
-    const req = requestDouble({
-      nodeEnv: 'development',
-      comboEnvironment: 'preview',
-      cookies: {
-        [AUTH_TX_COOKIE]: JSON.stringify({
-          state: 'state-1',
-          nonce: 'nonce-1',
-          codeVerifier: 'verifier-1',
-          returnTo: '/tasks',
-        }),
-      },
-      query: { code: 'code-1', state: 'state-1' },
-    });
-    const reply = replyDouble();
-
-    await (callbackHandler() as unknown as TestHandler)(req, reply);
-
-    expect(reply.setCookie).toHaveBeenCalledWith(
-      SESSION_COOKIE,
-      'access-preview',
-      expect.objectContaining({ secure: true }),
-    );
-    expect(reply.setCookie).toHaveBeenCalledWith(
-      REFRESH_COOKIE,
-      'refresh-preview',
-      expect.objectContaining({ secure: true }),
-    );
-  });
-
-  it('revalidates a forged auth transaction returnTo before callback redirect', async () => {
-    oidcMocks.exchangeCodeForToken.mockResolvedValue({
-      kind: 'ok',
-      accessToken: 'access-1',
-      refreshToken: 'refresh-1',
-    });
-    const req = requestDouble({
-      cookies: {
-        [AUTH_TX_COOKIE]: JSON.stringify({
-          state: 'state-1',
-          nonce: 'nonce-1',
-          codeVerifier: 'verifier-1',
-          returnTo: '/%252f%252fevil.example/phish',
-        }),
-      },
-      query: { code: 'code-1', state: 'state-1' },
-    });
-    const reply = replyDouble();
-
-    await (callbackHandler() as unknown as TestHandler)(req, reply);
-
-    expect(reply.redirect).toHaveBeenCalledWith('/tasks', 302);
-  });
-
-  it('returns 401 without a clearing Set-Cookie when the refresh cookie is missing', async () => {
-    const req = requestDouble();
-    const reply = replyDouble();
-
-    await run(refreshHandler(), req, reply);
-
-    expect(oidcMocks.refreshAccessToken).not.toHaveBeenCalled();
-    expect(reply.clearCookie).not.toHaveBeenCalled();
-    expect(reply.code).toHaveBeenCalledWith(401);
-  });
-
-  it('does not clear cookies when the token endpoint rejects an old refresh token', async () => {
-    oidcMocks.refreshAccessToken.mockResolvedValue({ kind: 'invalid_grant' });
-    const req = requestDouble({ cookies: { [REFRESH_COOKIE]: 'refresh-secret' } });
-    const reply = replyDouble();
-
-    await run(refreshHandler(), req, reply);
-
-    expect(reply.clearCookie).not.toHaveBeenCalled();
-    expect(reply.code).toHaveBeenCalledWith(401);
-    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('refresh-secret');
-  });
-
-  it('preserves both cookies when the token endpoint is temporarily unavailable', async () => {
-    oidcMocks.refreshAccessToken.mockResolvedValue({ kind: 'upstream_unavailable' });
-    const req = requestDouble({ cookies: { [REFRESH_COOKIE]: 'refresh-secret' } });
-    const reply = replyDouble();
-
-    await run(refreshHandler(), req, reply);
-
-    expect(reply.clearCookie).not.toHaveBeenCalled();
-    expect(reply.setCookie).not.toHaveBeenCalled();
-    expect(reply.code).toHaveBeenCalledWith(503);
-    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('refresh-secret');
-  });
-
-  it('keeps a rotated refresh token when JWKS is unavailable without writing unverified access', async () => {
-    oidcMocks.refreshAccessToken.mockResolvedValue({
-      kind: 'ok',
-      accessToken: 'unverified-access',
-      refreshToken: 'refresh-rotated',
-    });
-    logtoMocks.verifyLogtoJwt.mockResolvedValue({ kind: 'upstream_unavailable' });
-    const req = requestDouble({ cookies: { [REFRESH_COOKIE]: 'refresh-old' } });
-    const reply = replyDouble();
-
-    await run(refreshHandler(), req, reply);
-
+    expect(SESSION).toMatch(AUTH_SESSION_COOKIE_VALUE_PATTERN);
     expect(reply.setCookie).toHaveBeenCalledTimes(1);
+    expect(reply.setCookie).toHaveBeenCalledWith(AUTH_SESSION_COOKIE_PRODUCTION_NAME, SESSION, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 604800,
+    });
+    expect(reply.setCookie.mock.calls[0]?.[2]).not.toHaveProperty('domain');
+    expect(reply.code).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith({
+      data: { user: USER, returnTo: '/tasks' },
+      meta: { traceId: 'trace-account-test' },
+    });
+  });
+
+  it('uses the local HTTP cookie when a production Test process explicitly disables Secure', async () => {
+    const req = requestDouble({
+      body: { email: 'Alice@example.com', code: '004271', returnTo: '/tasks' },
+      nodeEnv: 'production',
+      sessionCookieSecure: false,
+    });
+    const reply = replyDouble();
+
+    await run(emailVerificationHandler, req, reply);
+
     expect(reply.setCookie).toHaveBeenCalledWith(
-      REFRESH_COOKIE,
-      'refresh-rotated',
-      expect.objectContaining({ path: '/api/v1/auth', secure: true, httpOnly: true }),
+      AUTH_SESSION_COOKIE_NAME,
+      SESSION,
+      expect.objectContaining({ secure: false, path: '/' }),
     );
     expect(reply.setCookie).not.toHaveBeenCalledWith(
-      SESSION_COOKIE,
+      AUTH_SESSION_COOKIE_PRODUCTION_NAME,
       expect.anything(),
       expect.anything(),
     );
-    expect(reply.clearCookie).not.toHaveBeenCalled();
-    expect(reply.code).toHaveBeenCalledWith(503);
-    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('unverified-access');
-    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('refresh-rotated');
   });
 
   it.each([
-    ['refresh-2', 'refresh-2'],
-    [null, 'refresh-1'],
-  ])(
-    'verifies access token, rotates safely, and returns 204 (new=%s)',
-    async (rotated, expected) => {
-      oidcMocks.refreshAccessToken.mockResolvedValue({
-        kind: 'ok',
-        accessToken: 'access-2',
-        refreshToken: rotated,
-      });
-      const req = requestDouble({ cookies: { [REFRESH_COOKIE]: 'refresh-1' } });
-      const reply = replyDouble();
-
-      await run(refreshHandler(), req, reply);
-
-      expect(logtoMocks.verifyLogtoJwt).toHaveBeenCalledWith('access-2', req.server.infra.env);
-      expect(reply.setCookie).toHaveBeenCalledWith(
-        SESSION_COOKIE,
-        'access-2',
-        expect.objectContaining({ path: '/', secure: true, httpOnly: true, sameSite: 'lax' }),
-      );
-      expect(reply.setCookie).toHaveBeenCalledWith(
-        REFRESH_COOKIE,
-        expected,
-        expect.objectContaining({
-          path: '/api/v1/auth',
-          secure: true,
-          httpOnly: true,
-          sameSite: 'lax',
-        }),
-      );
-      expect(reply.code).toHaveBeenCalledWith(204);
-      expect(reply.send).toHaveBeenCalledWith();
-    },
-  );
-
-  it('keeps a rotated token and returns 503 when new access verification is temporarily invalid', async () => {
-    oidcMocks.refreshAccessToken.mockResolvedValue({
-      kind: 'ok',
-      accessToken: 'invalid-access',
-      refreshToken: 'rotated-secret',
-    });
-    logtoMocks.verifyLogtoJwt.mockResolvedValue({ kind: 'invalid' });
-    const req = requestDouble({ cookies: { [REFRESH_COOKIE]: 'refresh-secret' } });
+    ['invalid_code', 401],
+    ['account_disabled', 403],
+    ['dependency_unavailable', 503],
+  ])('maps verification %s safely to HTTP %s without a cookie', async (kind, status) => {
+    serviceMocks.verifyEmail.mockResolvedValue({ kind });
+    const req = requestDouble({ body: { email: 'Alice@example.com', code: '111111' } });
     const reply = replyDouble();
 
-    await run(refreshHandler(), req, reply);
+    await run(emailVerificationHandler, req, reply);
 
-    expect(reply.setCookie).toHaveBeenCalledWith(
-      REFRESH_COOKIE,
-      'rotated-secret',
-      expect.objectContaining({ path: '/api/v1/auth', secure: true, httpOnly: true }),
+    expect(reply.code).toHaveBeenCalledWith(status);
+    const payload = (reply.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      error?: Record<string, unknown>;
+    };
+    expect(payload.error?.userMessage).toEqual(expect.any(String));
+    expect(payload.error).not.toHaveProperty('code');
+    expect(reply.setCookie).not.toHaveBeenCalled();
+    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('111111');
+    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('Alice@example.com');
+    expect(JSON.stringify((req.log.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+      '111111',
     );
-    expect(reply.setCookie).not.toHaveBeenCalledWith(
-      SESSION_COOKIE,
-      expect.anything(),
-      expect.anything(),
+    expect(JSON.stringify((req.log.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+      'Alice@example.com',
     );
-    expect(reply.clearCookie).not.toHaveBeenCalled();
-    expect(reply.code).toHaveBeenCalledWith(503);
-    expect(JSON.stringify(reply.send.mock.calls)).not.toContain('rotated-secret');
   });
 
-  it('logout clears both access and refresh cookies with their matching paths', async () => {
-    const req = requestDouble();
+  it('returns /me from the verified email identity and maps DB failure to 503', async () => {
+    const req = requestDouble({
+      auth: { userId: USER.id, account: USER.account, roles: ['creator'] },
+    });
+    const reply = replyDouble();
+    await run(meHandler, req, reply);
+    expect(reply.code).toHaveBeenCalledWith(200);
+    expect(reply.send).toHaveBeenCalledWith({
+      data: USER,
+      meta: { traceId: 'trace-account-test' },
+    });
+
+    repoMocks.readMe.mockRejectedValueOnce(new Error('database unavailable'));
+    const failedReply = replyDouble();
+    await run(meHandler, req, failedReply);
+    expect(failedReply.code).toHaveBeenCalledWith(503);
+    const failedPayload = (failedReply.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      error?: Record<string, unknown>;
+    };
+    expect(failedPayload.error?.userMessage).toEqual(expect.any(String));
+    expect(failedPayload.error).not.toHaveProperty('code');
+  });
+
+  it('logs out idempotently, revokes a formatted cookie, then clears matching attributes', async () => {
+    const req = requestDouble({
+      body: {},
+      cookies: { [AUTH_SESSION_COOKIE_PRODUCTION_NAME]: SESSION },
+      sessionCookieSecure: true,
+    });
     const reply = replyDouble();
 
-    await (logoutHandler() as unknown as TestHandler)(req, reply);
+    await run(logoutHandler, req, reply);
 
-    expect(reply.clearCookie).toHaveBeenCalledWith(
-      SESSION_COOKIE,
-      expect.objectContaining({ path: '/' }),
+    expect(repoMocks.revokeSession).toHaveBeenCalledWith(
+      req.server.infra.db,
+      expect.any(Buffer),
+      'trace-account-test',
     );
-    expect(reply.clearCookie).toHaveBeenCalledWith(
-      REFRESH_COOKIE,
-      expect.objectContaining({ path: '/api/v1/auth' }),
-    );
-    expect(oidcMocks.buildLogoutUrl).toHaveBeenCalledWith(req.server.infra.env);
+    expect(reply.clearCookie).toHaveBeenCalledWith(AUTH_SESSION_COOKIE_PRODUCTION_NAME, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'lax',
+      path: '/',
+    });
+    expect(reply.clearCookie.mock.calls[0]?.[1]).not.toHaveProperty('domain');
     expect(reply.code).toHaveBeenCalledWith(200);
     expect(reply.send).toHaveBeenCalledWith({
       data: { loggedOut: true },
-      meta: { traceId: 'trace-auth-test' },
+      meta: { traceId: 'trace-account-test' },
     });
   });
 
-  it('logout returns the upstream end-session URL in the success envelope when available', async () => {
-    const logoutUrl =
-      'https://tenant.logto.app/oidc/session/end?client_id=app-id&post_logout_redirect_uri=https%3A%2F%2Fcombo.example%2Flogin';
-    oidcMocks.buildLogoutUrl.mockResolvedValue(logoutUrl);
-    const req = requestDouble();
+  it('does not claim logout success or clear the cookie when PostgreSQL fails', async () => {
+    repoMocks.revokeSession.mockRejectedValueOnce(new Error('database unavailable'));
+    const req = requestDouble({ body: {}, cookies: { [AUTH_SESSION_COOKIE_NAME]: SESSION } });
     const reply = replyDouble();
 
-    await (logoutHandler() as unknown as TestHandler)(req, reply);
+    await run(logoutHandler, req, reply);
 
-    expect(oidcMocks.buildLogoutUrl).toHaveBeenCalledWith(req.server.infra.env);
-    expect(reply.code).toHaveBeenCalledWith(200);
-    expect(reply.send).toHaveBeenCalledWith({
-      data: { loggedOut: true, logoutUrl },
-      meta: { traceId: 'trace-auth-test' },
+    expect(reply.code).toHaveBeenCalledWith(503);
+    const payload = (reply.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      error?: Record<string, unknown>;
+    };
+    expect(payload.error?.userMessage).toEqual(expect.any(String));
+    expect(payload.error).not.toHaveProperty('code');
+    expect(reply.clearCookie).not.toHaveBeenCalled();
+    expect(JSON.stringify(reply.send.mock.calls)).not.toContain(SESSION);
+    expect(JSON.stringify((req.log.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+      SESSION,
+    );
+  });
+
+  it('clears a malformed or absent cookie without querying PostgreSQL', async () => {
+    const req = requestDouble({
+      body: {},
+      cookies: { [AUTH_SESSION_COOKIE_NAME]: 'not-a-session' },
     });
+    const reply = replyDouble();
+
+    await run(logoutHandler, req, reply);
+
+    expect(repoMocks.revokeSession).not.toHaveBeenCalled();
+    expect(reply.clearCookie).toHaveBeenCalledTimes(1);
+    expect(reply.code).toHaveBeenCalledWith(200);
   });
 });

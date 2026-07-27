@@ -50,9 +50,8 @@ describe('runtime release version', () => {
       S3_ENDPOINT: 'http://localhost:9000',
       S3_ACCESS_KEY: 'test-access',
       S3_SECRET_KEY: 'test-secret',
-      LOGTO_ISSUER: 'https://identity.example/oidc',
-      LOGTO_JWKS_URI: 'https://identity.example/oidc/jwks',
-      LOGTO_AUDIENCE: 'https://combo.example/api',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      SESSION_COOKIE_SECURE: 'true',
     };
     for (const key of Object.keys(releaseEnvironment)) delete process.env[key];
 
@@ -71,9 +70,9 @@ describe('runtime release version', () => {
         S3_ENDPOINT: 'http://localhost:9000',
         S3_ACCESS_KEY: 'test-access',
         S3_SECRET_KEY: 'test-secret',
-        LOGTO_ISSUER: 'https://identity.example/oidc',
-        LOGTO_JWKS_URI: 'https://identity.example/oidc/jwks',
-        LOGTO_AUDIENCE: 'https://combo.example/api',
+        PUBLIC_APP_ORIGINS:
+          environment === 'test' ? 'http://combo-test.internal' : 'https://combo.example',
+        SESSION_COOKIE_SECURE: environment === 'test' ? 'false' : 'true',
         ...releaseEnvironment,
         COMBO_ENVIRONMENT: environment,
       };

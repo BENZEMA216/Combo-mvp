@@ -12,7 +12,7 @@ export interface AccountMenuProps {
   requestLogout?: () => Promise<LogoutResult | null>;
   /** 测试注入点；生产默认整页跳转。 */
   navigateAfterLogout?: (url: string) => void;
-  /** 运行时发布环境；Preview 登出后返回访问闸，不跟随外部 OIDC 地址。 */
+  /** 运行时发布环境；Preview 登出后返回外层访问闸。 */
   environment?: ReleaseMetadata['environment'];
 }
 

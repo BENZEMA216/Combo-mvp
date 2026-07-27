@@ -14,6 +14,9 @@ fail() {
 }
 
 : "${DATABASE_URL:?需设置 DATABASE_URL（指向可达 PostgreSQL）}"
+: "${POSTGRES_API_PASSWORD:?需设置 POSTGRES_API_PASSWORD}"
+: "${POSTGRES_WORKER_PASSWORD:?需设置 POSTGRES_WORKER_PASSWORD}"
+: "${POSTGRES_RUNTIME_PASSWORD:?需设置 POSTGRES_RUNTIME_PASSWORD}"
 command -v pnpm >/dev/null 2>&1 || fail "需要 pnpm"
 command -v psql >/dev/null 2>&1 || fail "需要 psql（断言 schema 用）"
 
@@ -29,11 +32,12 @@ applied="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 log "记账 ${applied}/${expected} ✓"
 
 # 3) 断言迁移终态表精确；除 runner 账本外不允许旧模型或额外业务表。
-for tbl in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls; do
+for tbl in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls \
+  auth_identities auth_otp_challenges auth_sessions auth_audit_events; do
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='artifacts,audit_llm_calls,capabilities,messages,sessions,tasks,turns,uploads,users'
+expected_tables='artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,capabilities,messages,sessions,tasks,turns,uploads,users'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables
@@ -65,8 +69,8 @@ DECLARE
   session_id uuid;
   violated_constraint text;
 BEGIN
-  INSERT INTO users (logto_user_id, account)
-  VALUES ('sandbox-index-check', 'sandbox-index-check') RETURNING id INTO user_id;
+  INSERT INTO users (account)
+  VALUES ('creator-aaaaaaa2') RETURNING id INTO user_id;
   INSERT INTO tasks (owner_user_id, idempotency_key)
   VALUES (user_id, 'sandbox-index-check') RETURNING id INTO task_id;
   INSERT INTO capabilities (task_id, owner_user_id, name, storage_key)
@@ -104,8 +108,8 @@ DECLARE
   capability_id uuid;
   session_id uuid;
 BEGIN
-  INSERT INTO users (logto_user_id, account)
-  VALUES ('sandbox-history-check', 'sandbox-history-check') RETURNING id INTO user_id;
+  INSERT INTO users (account)
+  VALUES ('creator-bbbbbbb2') RETURNING id INTO user_id;
   INSERT INTO tasks (owner_user_id, idempotency_key)
   VALUES (user_id, 'sandbox-history-check') RETURNING id INTO task_id;
   INSERT INTO capabilities (task_id, owner_user_id, name, storage_key)
@@ -128,7 +132,7 @@ case "$historical_error" in
   *) fail "0006 没有由显式历史重复检查失败" ;;
 esac
 post_failure_idx="$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM pg_indexes WHERE indexname='uq_turns_session_running'")"
-post_failure_rows="$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users WHERE logto_user_id='sandbox-history-check'")"
+post_failure_rows="$(psql "$DATABASE_URL" -tAc "SELECT count(*) FROM users WHERE account='creator-bbbbbbb2'")"
 [ "$post_failure_idx" = "1" ] || fail "0006 失败事务没有恢复唯一索引"
 [ "$post_failure_rows" = "0" ] || fail "0006 失败事务遗留测试数据"
 log "0006 历史重复检查与事务回滚齐全 ✓"

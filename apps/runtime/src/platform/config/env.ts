@@ -10,8 +10,13 @@ import { z } from 'zod';
 
 /** 「留空即默认」：compose `X=${X:-}` 注入会把未设变量变成空串 ''，统一规整成 undefined 走 schema 语义。 */
 const emptyToUndefined = (v: unknown): unknown => (v === '' ? undefined : v);
+const booleanFromString = z
+  .enum(['true', 'false'])
+  .default('false')
+  .transform((value) => value === 'true');
 const immutableImagePattern = /@sha256:[a-f0-9]{64}$/;
 const placeholderImagePattern = /@sha256:0{64}$/;
+export const MAX_PUBLIC_APP_ORIGINS = 8;
 
 const EnvSchema = z
   .object({
@@ -50,12 +55,10 @@ const EnvSchema = z
     S3_SECRET_KEY: z.string().default('minioadmin'),
     S3_REGION: z.string().default('us-east-1'),
 
-    // 登录态验证：复用 authoring 写入的 cb_session Cookie（Logto access_token）。
-    // runtime 只验签 + 查 users，不做 OIDC 回调、不建用户。
-    LOGTO_ISSUER: z.string().default('http://localhost:3001/oidc'),
-    LOGTO_JWKS_URI: z.string().default('http://localhost:3001/oidc/jwks'),
-    // 生产必填且无条件校 aud；dev/test 配了才校。
-    LOGTO_AUDIENCE: z.string().default(''),
+    // 逗号分隔的严格 origin 列表。Cookie 是否 Secure 独立于 NODE_ENV 显式配置。
+    // Runtime 只读取 authoring 写入的 PostgreSQL 不透明会话，不持有身份提供商配置。
+    PUBLIC_APP_ORIGINS: z.string().default('http://localhost'),
+    SESSION_COOKIE_SECURE: booleanFromString,
 
     // LLM（pi 执行层）。provider 留空按 key 自动判定；缺 key → 对话轮次报「未配置模型密钥」。
     RUNTIME_LLM_PROVIDER: z.preprocess(
@@ -71,17 +74,6 @@ const EnvSchema = z
     RUNTIME_TURN_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
     // 从 Turn 中止到数据库、Kubernetes 与连接关闭共用同一个绝对截止时间。
     RUNTIME_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(15_000),
-
-    // CORS 允许来源（dev 走 vite 代理同源；留空 = 反射来源放开，生产收敛）。
-    CORS_ORIGIN: z.string().default(''),
-
-    // dev 种子登录验证分支（与 authoring 同一把 HS256 密钥；runtime 只验不签）。
-    // 双守卫：NODE_ENV !== 'production' 且 DEV_LOGIN_ENABLED=true；生产无条件强制关闭。
-    DEV_LOGIN_ENABLED: z
-      .enum(['true', 'false'])
-      .default('false')
-      .transform((v) => v === 'true'),
-    DEV_SESSION_SECRET: z.string().default(''),
 
     // 模型工具沙箱默认关闭。只有显式开启时才加载 Kubernetes 集群配置和签名私钥。
     SANDBOX_TOOLS_ENABLED: z
@@ -160,6 +152,52 @@ const EnvSchema = z
   });
 export type Env = z.infer<typeof EnvSchema>;
 
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
+/** 与 authoring 使用同一严格语法；不接受空项、空白、重复项、路径或隐式规范化。 */
+export function parsePublicAppOrigins(value: string): readonly string[] {
+  if (value.length === 0 || value.length > 2_048 || containsControlCharacter(value)) {
+    throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
+  }
+
+  const candidates = value.split(',');
+  if (candidates.length === 0 || candidates.length > MAX_PUBLIC_APP_ORIGINS) {
+    throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
+  }
+
+  const origins: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (!candidate || candidate !== candidate.trim()) {
+      throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
+    }
+    let url: URL;
+    try {
+      url = new URL(candidate);
+    } catch {
+      throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
+    }
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username ||
+      url.password ||
+      candidate !== url.origin ||
+      seen.has(url.origin)
+    ) {
+      throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
+    }
+    seen.add(url.origin);
+    origins.push(url.origin);
+  }
+  return origins;
+}
+
 function assertReleaseMetadata(env: Env): void {
   try {
     const metadata = releaseMetadataFromEnv(env);
@@ -177,33 +215,31 @@ function assertReleaseMetadata(env: Env): void {
   }
 }
 
-/** 生产必填（缺失即启动 throw，绝不带默认凭据上生产）。LLM key 不在列。 */
+/** 生产必填。认证只依赖 PostgreSQL，不需要 JWT、OIDC 或本地签名密钥。 */
 const PRODUCTION_REQUIRED = [
   'DATABASE_URL',
   'REDIS_URL',
   'S3_ENDPOINT',
   'S3_ACCESS_KEY',
   'S3_SECRET_KEY',
-  'LOGTO_ISSUER',
-  'LOGTO_JWKS_URI',
-  'LOGTO_AUDIENCE',
+  'PUBLIC_APP_ORIGINS',
+  'SESSION_COOKIE_SECURE',
   ...RELEASE_METADATA_ENV_KEYS,
 ] as const;
 
 let cached: Env | undefined;
 
-/** 解析进程 env（缓存）。production 缺必填 → throw；dev/test 回落默认 + warn。 */
+/** 解析进程 env（缓存）。生产缺必填时抛错，且错误只包含配置名。 */
 export function loadEnv(): Env {
   if (cached) return cached;
   const isProduction = process.env.NODE_ENV === 'production';
 
   if (isProduction) {
-    const missing = PRODUCTION_REQUIRED.filter((k) => {
-      const v = process.env[k];
-      return v === undefined || v.trim() === '';
+    const missing = PRODUCTION_REQUIRED.filter((key) => {
+      const value = process.env[key];
+      return value === undefined || value.trim() === '';
     });
     if (missing.length > 0) {
-      // 只打印缺失的 key 名，绝不打印值。
       throw new Error(
         `[env] 生产模式缺少必需配置（不允许默认 fallback）：${missing.join(', ')}。请显式设置后重启。`,
       );
@@ -222,7 +258,7 @@ export function loadEnv(): Env {
       );
     }
     console.warn(
-      '[env] 部分环境变量缺失/不合法，回落默认值（dev/test 守卫）：',
+      '[env] 部分环境变量缺失或不合法，回落默认值（dev/test 守卫）：',
       parsed.error.flatten().fieldErrors,
     );
     cached = EnvSchema.parse({});
@@ -230,24 +266,47 @@ export function loadEnv(): Env {
     return cached;
   }
 
-  cached = parsed.data;
-  assertReleaseMetadata(cached);
+  const env = parsed.data;
+  cached = env;
+  assertReleaseMetadata(env);
 
-  // 生产无条件强制关闭 dev 登录验证分支（即便误配 true）。
-  if (isProduction && cached.DEV_LOGIN_ENABLED) {
-    console.warn('[env] 生产模式禁止 DEV_LOGIN_ENABLED=true：已强制关闭。');
-    cached = { ...cached, DEV_LOGIN_ENABLED: false };
+  let publicOrigins: readonly string[];
+  try {
+    publicOrigins = parsePublicAppOrigins(env.PUBLIC_APP_ORIGINS);
+  } catch {
+    throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
+  }
+
+  if (isProduction) {
+    const invalidKeys: string[] = [];
+    if (
+      publicOrigins.some(
+        (origin) => new URL(origin).protocol !== (env.SESSION_COOKIE_SECURE ? 'https:' : 'http:'),
+      )
+    ) {
+      invalidKeys.push('PUBLIC_APP_ORIGINS', 'SESSION_COOKIE_SECURE');
+    }
+    const releaseEnvironment = releaseMetadataFromEnv(env).environment;
+    if (
+      (releaseEnvironment === 'preview' || releaseEnvironment === 'production') &&
+      !env.SESSION_COOKIE_SECURE
+    ) {
+      invalidKeys.push('SESSION_COOKIE_SECURE');
+    }
+    if (invalidKeys.length > 0) {
+      throw new Error(`[env] 生产浏览器认证配置不合法：${[...new Set(invalidKeys)].join(', ')}`);
+    }
   }
 
   if (!isProduction) {
-    const usingDefaults = PRODUCTION_REQUIRED.filter((k) => {
-      const v = process.env[k];
-      return v === undefined || v.trim() === '';
+    const usingDefaults = PRODUCTION_REQUIRED.filter((key) => {
+      const value = process.env[key];
+      return value === undefined || value.trim() === '';
     });
     if (usingDefaults.length > 0) {
       console.warn(`[env] dev/test 使用默认值（生产将拒绝启动）：${usingDefaults.join(', ')}`);
     }
   }
 
-  return cached;
+  return env;
 }

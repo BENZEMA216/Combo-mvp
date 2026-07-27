@@ -1,47 +1,60 @@
-// 路由注册自检：端点总数、无重复、写命令带守卫、助手端点豁免登录。
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 17 endpoints (account 5 + task 8 + capability 4;dev-login 条件注册不进表)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(17);
+  it('registers exactly 16 endpoints (account 4 + task 8 + capability 4)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(16);
   });
 
-  it('no duplicate (method,url) pairs', () => {
+  it('has no duplicate method and URL pairs', () => {
     const seen = new Set<string>();
-    for (const ep of ALL_ENDPOINTS) {
-      const key = `${String(ep.method)} ${ep.url}`;
+    for (const endpoint of ALL_ENDPOINTS) {
+      const key = `${String(endpoint.method)} ${endpoint.url}`;
       expect(seen.has(key), `duplicate route: ${key}`).toBe(false);
       seen.add(key);
     }
   });
 
-  it('写命令（非 GET）除助手上传外都带守卫链', () => {
-    // /auth/*：登录流程本身；/connect/upload：助手侧凭配对码鉴权（handler 内验码），无登录态。
-    // refresh/logout 不挂 requireAuth，但必须挂 Cookie 变更来源守卫。
+  it('exposes only the four first-party authentication endpoints', () => {
+    const account = ALL_ENDPOINTS.filter(
+      (endpoint) => endpoint.url === '/me' || endpoint.url.startsWith('/auth/'),
+    );
+    expect(account.map((endpoint) => `${String(endpoint.method)} ${endpoint.url}`)).toEqual([
+      'POST /auth/email/challenges',
+      'POST /auth/email/verifications',
+      'GET /me',
+      'POST /auth/logout',
+    ]);
+  });
+
+  it('puts no-store on all auth responses and a 4 KiB JSON/origin guard on auth POSTs', () => {
+    const account = ALL_ENDPOINTS.filter(
+      (endpoint) => endpoint.url === '/me' || endpoint.url.startsWith('/auth/'),
+    );
+    for (const endpoint of account) expect(endpoint.onRequest).toHaveLength(1);
+
+    const mutations = account.filter((endpoint) => endpoint.method === 'POST');
+    for (const endpoint of mutations) {
+      expect(endpoint.bodyLimit).toBe(4_096);
+      expect(endpoint.preHandlers).toHaveLength(2);
+    }
+    expect(account.find((endpoint) => endpoint.url === '/me')?.preHandlers).toHaveLength(1);
+  });
+
+  it('puts an Origin guard before every browser write and exempts only pairing-code uploads', () => {
     const exempt = new Set(['/connect/prepare', '/connect/upload']);
-    for (const ep of ALL_ENDPOINTS) {
-      if (ep.method === 'GET' || exempt.has(ep.url)) continue;
+    for (const endpoint of ALL_ENDPOINTS) {
+      if (endpoint.method === 'GET' || exempt.has(endpoint.url)) continue;
       expect(
-        (ep.preHandlers ?? []).length,
-        `${String(ep.method)} ${ep.url} 缺守卫`,
-      ).toBeGreaterThan(0);
+        (endpoint.preHandlers ?? []).length,
+        `${String(endpoint.method)} ${endpoint.url} 缺浏览器来源守卫`,
+      ).toBeGreaterThanOrEqual(2);
     }
   });
 
-  it('助手侧端点不要求登录（无 requireAuth 前置）', () => {
-    const connect = ALL_ENDPOINTS.filter((ep) => ep.url.startsWith('/connect/'));
+  it('keeps assistant endpoints independent from browser login', () => {
+    const connect = ALL_ENDPOINTS.filter((endpoint) => endpoint.url.startsWith('/connect/'));
     expect(connect.length).toBeGreaterThanOrEqual(2);
-    for (const ep of connect) {
-      expect(ep.preHandlers ?? []).toHaveLength(0);
-    }
-  });
-
-  it('Cookie 变更来源守卫排在 refresh/logout 的 handler 与宽松鉴权之前', () => {
-    const refresh = ALL_ENDPOINTS.find((ep) => ep.url === '/auth/refresh');
-    const logout = ALL_ENDPOINTS.find((ep) => ep.url === '/auth/logout');
-
-    expect(refresh?.preHandlers).toHaveLength(1);
-    expect(logout?.preHandlers).toHaveLength(2);
+    for (const endpoint of connect) expect(endpoint.preHandlers ?? []).toHaveLength(0);
   });
 });

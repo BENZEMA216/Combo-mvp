@@ -15,9 +15,9 @@ import {
   type ErrorBody,
   type ErrorEnvelope,
   type Meta,
+  sanitizeAuthReturnTo,
 } from '@cb/shared';
 import { clientTraceHeaders, reportClientEvent } from './telemetry.js';
-import { refreshSession } from './sessionRefresh.js';
 
 /**
  * 统一前端错误：内部承载完整对外 ErrorEnvelope（不含 code）。
@@ -25,11 +25,15 @@ import { refreshSession } from './sessionRefresh.js';
  */
 export class ApiError extends Error {
   readonly envelope: ErrorEnvelope;
+  /** 只供请求控制流判断，不进入错误信封或用户文案。 */
+  readonly httpStatus: number | null;
 
-  constructor(envelope: ErrorEnvelope) {
+  constructor(envelope: ErrorEnvelope, httpStatus: number | null = null) {
     super(envelope.error.userMessage);
     this.name = 'ApiError';
     this.envelope = envelope;
+    this.httpStatus = httpStatus;
+    Object.defineProperty(this, 'httpStatus', { enumerable: false });
   }
 
   /** 唯一可对 UI 渲染的人话。 */
@@ -50,6 +54,29 @@ export class ApiError extends Error {
   get traceId(): string {
     return this.envelope.error.traceId;
   }
+}
+
+let unauthorizedRedirectStarted = false;
+
+/** 单一可替换的浏览器导航边界，单元测试只替换这个方法，不模拟会话刷新。 */
+export const unauthorizedNavigation = {
+  assign(url: string): void {
+    window.location.assign(url);
+  },
+};
+
+/** 当前页面生命周期内只处理第一次业务 401；新登录完成后的整页加载会自然重置该门闩。 */
+export function redirectAfterUnauthorized(): boolean {
+  if (unauthorizedRedirectStarted || typeof window === 'undefined') return false;
+  unauthorizedRedirectStarted = true;
+  const returnTo = sanitizeAuthReturnTo(window.location.pathname + window.location.search);
+  unauthorizedNavigation.assign(`/login?returnTo=${encodeURIComponent(returnTo)}`);
+  return true;
+}
+
+/** 只供隔离单元测试重置模块级页面生命周期。 */
+export function resetUnauthorizedRedirectForTest(): void {
+  unauthorizedRedirectStarted = false;
 }
 
 const VALID_ACTIONS: ReadonlySet<string> = new Set<ErrorAction>([
@@ -162,20 +189,7 @@ async function request<T>(path: string, opts: RawRequestOptions): Promise<Envelo
     }
   };
 
-  let res = await fetchOnce();
-  if (res.status === 401) {
-    // 业务 API 与路由守卫共用同一 single-flight + Web Lock 续期；成功后原请求只重放一次。
-    const refreshed = await refreshSession();
-    if (refreshed === 'refreshed') {
-      if (opts.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
-      res = await fetchOnce();
-    } else if (refreshed === 'error') {
-      throw new ApiError({
-        error: fallbackErrorBody('登录状态暂时无法续期，请稍后重试。'),
-      });
-    }
-  }
-
+  const res = await fetchOnce();
   let body: unknown;
   try {
     body = await res.json();
@@ -186,7 +200,11 @@ async function request<T>(path: string, opts: RawRequestOptions): Promise<Envelo
         message: 'non-json error response',
         url,
       });
-      throw new ApiError({ error: fallbackErrorBody('服务暂时没有正确响应，请稍后重试。') });
+      if (res.status === 401) redirectAfterUnauthorized();
+      throw new ApiError(
+        { error: fallbackErrorBody('服务暂时没有正确响应，请稍后重试。') },
+        res.status,
+      );
     }
     return { data: undefined as T };
   }
@@ -195,7 +213,8 @@ async function request<T>(path: string, opts: RawRequestOptions): Promise<Envelo
     // 白名单重建：只摘安全字段，code/状态码/堆栈绝不进 envelope；缺人话则兜底人话。
     const error = unwrapErrorBody(body);
     reportClientEvent('api_error', { traceId: error.traceId, message: error.userMessage, url });
-    throw new ApiError({ error });
+    if (res.status === 401) redirectAfterUnauthorized();
+    throw new ApiError({ error }, res.status);
   }
 
   return body as Envelope<T>;

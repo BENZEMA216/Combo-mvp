@@ -1,7 +1,6 @@
-// 查询失败的统一提示：401 显示「请先登录」并给创作端登录入口，其余展示人话 + 重试。
+// 查询失败的统一提示：401 显示「请先登录」并进入同站自定义登录页，其余展示人话与重试。
 import { ApiError, isUnauthenticated } from '../api/client.js';
-import { authenticationUrl } from '../navigation/login.js';
-import { useReleaseMetadata } from '../shell/releaseIdentity.js';
+import { loginUrl } from '../navigation/login.js';
 
 export function QueryErrorNotice({
   error,
@@ -12,18 +11,16 @@ export function QueryErrorNotice({
   onRetry: () => void;
   navigateToAuth?: (target: string) => void;
 }) {
-  const releaseMetadata = useReleaseMetadata();
   if (isUnauthenticated(error)) {
-    const preview = releaseMetadata.environment === 'preview';
     return (
       <div className="rt-empty rt-empty--error">
-        {preview ? '预览会话已失效。' : '请先登录。'}{' '}
+        请先登录。{' '}
         <button
           type="button"
           className="rt-btn rt-btn--accent"
-          onClick={() => navigateToAuth(authenticationUrl(releaseMetadata.environment))}
+          onClick={() => navigateToAuth(loginUrl())}
         >
-          {preview ? '恢复预览会话' : '去登录'}
+          去登录
         </button>
       </div>
     );

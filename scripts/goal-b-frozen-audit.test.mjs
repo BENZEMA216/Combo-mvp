@@ -86,7 +86,7 @@ test('audit rejects the frozen migrations and Cloud Review topology', () => {
   assert.equal(existsSync(join(repo, 'tools/combo-import')), false);
 });
 
-test('Goal B keeps the migration source exactly at 0000 through 0006', () => {
+test('the migration source is the exact ordered 0000 through 0008 ledger', () => {
   expectMigrationFiles([
     '0000_baseline_schema.sql',
     '0001_expired_upload_reconciliation.sql',
@@ -95,6 +95,8 @@ test('Goal B keeps the migration source exactly at 0000 through 0006', () => {
     '0004_studio_sessions.sql',
     '0005_capability_current_ui.sql',
     '0006_one_running_turn_per_session.sql',
+    '0007_first_party_email_auth.sql',
+    '0008_application_database_roles.sql',
   ]);
 });
 

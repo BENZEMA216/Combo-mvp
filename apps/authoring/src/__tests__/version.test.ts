@@ -52,13 +52,11 @@ describe('authoring release version', () => {
       S3_ENDPOINT: 'http://localhost:9000',
       S3_ACCESS_KEY: 'test-access',
       S3_SECRET_KEY: 'test-secret',
-      LOGTO_ENDPOINT: 'https://identity.example',
-      LOGTO_ISSUER: 'https://identity.example/oidc',
-      LOGTO_JWKS_URI: 'https://identity.example/oidc/jwks',
-      LOGTO_APP_ID: 'test-app',
-      LOGTO_APP_SECRET: 'test-app-secret',
-      LOGTO_REDIRECT_URI: 'https://combo.example/api/v1/auth/callback',
-      LOGTO_AUDIENCE: 'https://combo.example/api',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      SESSION_COOKIE_SECURE: 'true',
+      RESEND_API_KEY: 'test-resend-key',
+      RESEND_FROM_EMAIL: 'Combo <auth@buildwithcombo.com>',
+      OTP_HMAC_SECRET: 'h'.repeat(32),
     };
     for (const key of Object.keys(releaseEnvironment)) delete process.env[key];
 

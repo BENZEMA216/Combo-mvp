@@ -384,7 +384,7 @@ function manifestFor(sourceSha, builtAt) {
       runtime: `ghcr.io/dangdang-tech/combo-runtime@${digest('2')}`,
       web: `ghcr.io/dangdang-tech/combo-web@${digest('3')}`,
     },
-    migrationHead: '0006_one_running_turn_per_session.sql',
+    migrationHead: '0008_application_database_roles.sql',
     builtAt,
     webAssetManifest: sha256(WEB_ASSET_MANIFEST),
   };

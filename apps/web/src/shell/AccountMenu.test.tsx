@@ -85,12 +85,9 @@ describe('AccountMenu', () => {
     expect(requestLogout).toHaveBeenCalledTimes(2);
   });
 
-  it('Preview 退出后回到访问闸，不跟随外部 OIDC 登出地址', async () => {
+  it('Preview 退出后回到访问闸并保留任务上下文', async () => {
     window.history.replaceState({}, '', '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history');
-    const requestLogout = vi.fn(async () => ({
-      loggedOut: true as const,
-      logoutUrl: 'https://auth.example/oidc/session/end?client_id=combo',
-    }));
+    const requestLogout = vi.fn(async () => ({ loggedOut: true as const }));
     const navigateAfterLogout = vi.fn<(url: string) => void>();
     render(
       <AccountMenu

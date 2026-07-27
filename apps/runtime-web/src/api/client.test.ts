@@ -6,6 +6,7 @@ const originalFetch = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 function json(status: number, body?: unknown): Response {
@@ -15,51 +16,58 @@ function json(status: number, body?: unknown): Response {
   });
 }
 
-describe('runtime API session refresh', () => {
-  it('refreshes once and replays the original request with its body', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(json(401, { error: { userMessage: 'expired' } }))
-      .mockResolvedValueOnce(json(204))
-      .mockResolvedValueOnce(json(200, { data: { id: 'm1' } }));
+describe('runtime API fixed session semantics', () => {
+  it('surfaces the first 401 without refresh or request replay', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json(401, {
+        error: { userMessage: '请先登录。', traceId: 'trace-401' },
+      }),
+    );
     globalThis.fetch = fetchMock;
 
-    await expect(apiPost('/runtime/sessions/s1/messages', { text: 'hello' })).resolves.toEqual({
-      id: 'm1',
+    const error = await apiGet('/runtime/sessions').catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 401, userMessage: '请先登录。' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/v1/runtime/sessions']);
+  });
+
+  it('redirects a 401 mutation once with the current safe returnTo and never replays it', async () => {
+    const navigate = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        pathname: '/try/c/11111111-1111-4111-8111-111111111111',
+        search: '?from=market',
+        assign: navigate,
+      },
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
-      '/api/v1/runtime/sessions/s1/messages',
-      '/api/v1/auth/refresh',
-      '/api/v1/runtime/sessions/s1/messages',
-    ]);
-    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify({ text: 'hello' }));
-    expect(fetchMock.mock.calls[2]?.[1]?.body).toBe(JSON.stringify({ text: 'hello' }));
+    const fetchMock = vi.fn().mockResolvedValue(
+      json(401, {
+        error: { userMessage: '请先登录。', traceId: 'trace-post-401' },
+      }),
+    );
+    globalThis.fetch = fetchMock;
+    const body = { text: 'hello' };
+
+    await expect(apiPost('/runtime/sessions/s1/messages', body)).rejects.toBeInstanceOf(ApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]?.body).toBe(JSON.stringify(body));
+    expect(navigate).toHaveBeenCalledWith(
+      `/login?returnTo=${encodeURIComponent('/try/c/11111111-1111-4111-8111-111111111111?from=market')}`,
+    );
   });
 
-  it('does not replay when refresh is rejected', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(json(401, { error: { userMessage: 'expired' } }))
-      .mockResolvedValueOnce(json(401));
+  it('keeps non-401 dependency failures distinct from unauthenticated', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      json(503, {
+        error: { userMessage: '依赖服务暂时不可用。', traceId: 'trace-503' },
+      }),
+    );
     globalThis.fetch = fetchMock;
 
     const error = await apiGet('/runtime/sessions').catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(ApiError);
-    expect((error as ApiError).status).toBe(401);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
-
-  it('treats refresh 403 as a retryable policy error, not anonymous', async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(json(401, { error: { userMessage: 'expired' } }))
-      .mockResolvedValueOnce(json(403));
-    globalThis.fetch = fetchMock;
-
-    const error = await apiGet('/runtime/sessions').catch((cause: unknown) => cause);
-    expect(error).toBeInstanceOf(ApiError);
-    expect((error as ApiError).status).toBe(503);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(error).toMatchObject({ status: 503, userMessage: '依赖服务暂时不可用。' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

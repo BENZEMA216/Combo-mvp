@@ -5,7 +5,8 @@
     "outDir": "./dist",
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "types": ["node"],
-    "noEmit": true
+    "noEmit": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["scripts/**/*.ts"],
   "exclude": ["node_modules", "dist"]
