@@ -18,6 +18,10 @@ const migrationJob = readFileSync(
   'utf8',
 );
 const compose = readFileSync(new URL('../infra/docker-compose.yml', import.meta.url), 'utf8');
+const composeDevTest = readFileSync(
+  new URL('../infra/docker-compose.dev-test.yml', import.meta.url),
+  'utf8',
+);
 const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const cd = readFileSync(new URL('../.github/workflows/cd.yml', import.meta.url), 'utf8');
 const authE2e = readFileSync(new URL('./integration/resend-auth-e2e.sh', import.meta.url), 'utf8');
@@ -250,6 +254,28 @@ test('infra package scripts bind the root env file and quiet configuration outpu
   );
   assert.match(infraPackage.scripts['compose:up'], /--env-file \.\.\/\.env/);
   assert.match(infraPackage.scripts['compose:down'], /--env-file \.\.\/\.env/);
+});
+
+test('isolated auth E2E binds every published service to its run-scoped loopback port', () => {
+  for (const [service, variable, containerPort] of [
+    ['postgres', 'POSTGRES_PORT', '5432'],
+    ['redis_queue', 'REDIS_QUEUE_PORT', '6379'],
+    ['redis_hot', 'REDIS_HOT_PORT', '6379'],
+    ['minio', 'MINIO_API_PORT', '9000'],
+    ['minio', 'MINIO_CONSOLE_PORT', '9001'],
+    ['resend-mock', 'RESEND_MOCK_PORT', '4010'],
+    ['api', 'API_PORT', '3000'],
+    ['web', 'WEB_PORT', '80'],
+  ]) {
+    assert.match(
+      composeDevTest,
+      new RegExp(
+        `(?:^|\\n)  ${service}:[\\s\\S]*?127\\.0\\.0\\.1:\\$\\{${variable}:-[0-9]+\\}:${containerPort}(?:'|\\n)`,
+      ),
+      `${service} does not consume ${variable}`,
+    );
+  }
+  assert.equal((composeDevTest.match(/ports: !override/g) ?? []).length, 7);
 });
 
 test('migration manifests pass owner credentials as discrete PG fields instead of an unescaped URI', () => {

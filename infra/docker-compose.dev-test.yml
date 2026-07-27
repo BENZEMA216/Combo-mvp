@@ -1,6 +1,23 @@
 # 仅供本地开发和端到端测试的覆盖层。生产 Compose 与 Kubernetes 清单不会加载本文件。
 # 它把 authoring 的 Resend 基址指向容器内测试替身，并只把检查端口绑定到宿主回环地址。
 services:
+  postgres:
+    ports: !override
+      - '127.0.0.1:${POSTGRES_PORT:-5432}:5432'
+
+  redis_queue:
+    ports: !override
+      - '127.0.0.1:${REDIS_QUEUE_PORT:-6379}:6379'
+
+  redis_hot:
+    ports: !override
+      - '127.0.0.1:${REDIS_HOT_PORT:-6380}:6379'
+
+  minio:
+    ports: !override
+      - '127.0.0.1:${MINIO_API_PORT:-9000}:9000'
+      - '127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001'
+
   resend-mock:
     build:
       context: ..
@@ -9,7 +26,7 @@ services:
       RESEND_MOCK_API_KEY: ${RESEND_MOCK_API_KEY:?RESEND_MOCK_API_KEY 仅测试时必填}
       HOST: 0.0.0.0
       PORT: '4010'
-    ports:
+    ports: !override
       - '127.0.0.1:${RESEND_MOCK_PORT:-4010}:4010'
     healthcheck:
       test:
@@ -38,6 +55,8 @@ services:
       RESEND_API_BASE_URL: http://resend-mock:4010
       OTP_HMAC_SECRET: ${OTP_HMAC_SECRET:?OTP_HMAC_SECRET 仅测试时必填}
       OTEL_SDK_DISABLED: 'true'
+    ports: !override
+      - '127.0.0.1:${API_PORT:-3000}:3000'
 
   runtime:
     environment:
@@ -51,3 +70,7 @@ services:
     environment:
       NODE_ENV: development
       OTEL_SDK_DISABLED: 'true'
+
+  web:
+    ports: !override
+      - '127.0.0.1:${WEB_PORT:-80}:80'
