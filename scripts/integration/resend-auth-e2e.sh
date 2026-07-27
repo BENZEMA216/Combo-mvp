@@ -470,7 +470,7 @@ AUTH_E2E_SENTINEL_FILE="$SENTINEL_FILE" \
 AUTH_E2E_COMPOSE_PROJECT="$PROJECT_NAME" \
 AUTH_E2E_REPO_ROOT="$ROOT_DIR" \
 PLAYWRIGHT_OUTPUT_DIR="$TMP_DIR/playwright" \
-  pnpm exec playwright test --config playwright.config.ts
+  pnpm exec playwright test --config playwright.config.ts --tsconfig tsconfig.e2e.json
 rm -rf "$TMP_DIR/playwright"
 
 step 'Checking challenge cooldown rate limiting...'

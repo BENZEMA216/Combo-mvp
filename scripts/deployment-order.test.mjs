@@ -390,6 +390,10 @@ test('CI installs the pinned Playwright browser before the first-party auth E2E'
   const authE2eAt = ci.indexOf('bash scripts/integration/resend-auth-e2e.sh');
   assert.ok(browserInstallAt >= 0);
   assert.ok(authE2eAt > browserInstallAt);
+  assert.match(
+    authE2e,
+    /playwright test --config playwright\.config\.ts --tsconfig tsconfig\.e2e\.json/,
+  );
 });
 
 test('migration image includes only the ledger runner and its role provisioner', () => {
