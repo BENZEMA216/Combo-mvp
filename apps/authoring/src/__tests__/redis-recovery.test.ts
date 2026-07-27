@@ -15,7 +15,9 @@ afterEach(async () => {
 
 describe('Redis dependency recovery', () => {
   it('keeps retrying both clients with a bounded delay after repeated connection failures', () => {
-    const clients = [getQueueRedis(env), getHotRedis(env)];
+    const queue = getQueueRedis(env);
+    const hot = getHotRedis(env);
+    const clients = [queue, hot];
 
     for (const client of clients) {
       const retryStrategy = client.options.retryStrategy;
@@ -25,6 +27,10 @@ describe('Redis dependency recovery', () => {
       expect(retryStrategy?.(10)).toBe(2_000);
       expect(retryStrategy?.(1_000)).toBe(2_000);
     }
+
+    expect(queue.options.maxRetriesPerRequest).toBeNull();
+    expect(hot.options.maxRetriesPerRequest).toBe(1);
+    expect(hot.options.connectTimeout).toBe(2_000);
   });
 
   it('handles BullMQ error events without exposing their payload to the observer', () => {
