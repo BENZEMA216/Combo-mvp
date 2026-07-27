@@ -17,7 +17,7 @@ describe('App landing route', () => {
 
     expect(
       screen.getByRole('heading', {
-        name: /把你反复提供的\s*专业服务，\s*变成\s*可持续交付\s*的 AI 产品/,
+        name: '把你的内容，变成一个可以工作的 Agent。',
       }),
     ).toBeInTheDocument();
     expect(fetchSpy).not.toHaveBeenCalled();
