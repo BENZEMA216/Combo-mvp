@@ -1839,6 +1839,8 @@ body {
 
 .cb-public-shell__top {
   min-height: 64px;
+  justify-content: space-between;
+  gap: 20px;
   padding-inline: clamp(20px, 4vw, 48px);
 }
 
@@ -1846,43 +1848,42 @@ body {
   flex: 0 0 auto;
 }
 
-.cb-public-shell__nav {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  margin-left: clamp(40px, 6vw, 88px);
-}
-
-.cb-public-shell__nav a,
-.cb-public-shell__login {
-  color: var(--cb-body);
-  font-size: 13px;
-  font-weight: 500;
-  text-decoration: none;
-}
-
-.cb-public-shell__actions {
-  display: flex;
-  align-items: center;
-  gap: 20px;
-  margin-left: auto;
-}
-
-.cb-public-shell__start {
+.cb-public-shell__agent-entry {
   display: inline-flex;
-  min-height: 40px;
+  min-height: 38px;
   align-items: center;
-  border-radius: var(--cb-radius-control);
-  color: var(--cb-on-action-primary);
-  background: var(--cb-action-primary);
-  padding-inline: 16px;
-  font-size: 13px;
-  font-weight: 500;
+  gap: 9px;
+  border: 1px solid var(--cb-border);
+  border-radius: var(--cb-radius-pill);
+  padding: 0 14px;
+  color: var(--cb-body);
+  background: var(--cb-surface-raised);
+  font-size: 12px;
+  font-weight: 600;
   text-decoration: none;
+  transition:
+    border-color 150ms ease,
+    color 150ms ease,
+    background 150ms ease,
+    transform 150ms ease;
 }
 
-.cb-public-shell__start:active {
-  background: var(--cb-action-primary-pressed);
+.cb-public-shell__agent-entry span {
+  color: var(--cb-action-link);
+  font-family: var(--cb-font-mono);
+  font-size: 11px;
+  transition: transform 150ms ease;
+}
+
+.cb-public-shell__agent-entry:hover {
+  border-color: var(--cb-selection-border);
+  color: var(--cb-fg);
+  background: var(--cb-surface-soft);
+  transform: translateY(-1px);
+}
+
+.cb-public-shell__agent-entry:hover span {
+  transform: translateX(2px);
 }
 
 .cb-public-shell__content {
@@ -2156,16 +2157,6 @@ body {
 
   .cb-public-shell__content {
     padding: 20px;
-  }
-
-  .cb-public-shell__nav,
-  .cb-public-shell__login {
-    display: none;
-  }
-
-  .cb-public-shell__start {
-    min-height: 38px;
-    padding-inline: 13px;
   }
 
   .cb-public-capability__title {
