@@ -11,16 +11,17 @@ const CONTRACTS = Object.freeze({
         legacy: 'http://127.0.0.1:30081',
         release: 'http://127.0.0.1:18081',
         count: 1,
-        blocks: 1,
+        blocks: 2,
       }),
       Object.freeze({
         names: Object.freeze(['review-s3.43-160-242-46.sslip.io']),
         legacy: 'http://127.0.0.1:30901',
         release: 'http://127.0.0.1:19001',
         count: 1,
-        blocks: 1,
+        blocks: 2,
       }),
     ]),
+    exactServerBlocks: 4,
   }),
   'production-canary': Object.freeze({
     routes: Object.freeze([
