@@ -11,6 +11,9 @@ spec:
     spec:
       containers:
         - name: migrate
+          env:
+            - name: PGHOST
+              value: combo-postgres-host
           envFrom:
             - configMapRef:
                 name: combo-release

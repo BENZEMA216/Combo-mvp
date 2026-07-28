@@ -11,6 +11,7 @@ const ENVIRONMENTS = Object.freeze({
     environmentCredentialName: 'combo-dev-env',
     additionalCredentialNames: [],
     pullCredentialName: 'combo-dev-registry',
+    postgresHost: 'postgres',
   },
   preview: {
     namespace: 'combo-review',
@@ -18,6 +19,7 @@ const ENVIRONMENTS = Object.freeze({
     additionalCredentialNames: ['combo-preview-bootstrap'],
     pullCredentialName: 'combo-preview-ghcr-pull',
     foundationTrack: 'preview-v1',
+    postgresHost: 'release-postgres',
   },
   production: {
     namespace: 'combo',
@@ -25,6 +27,7 @@ const ENVIRONMENTS = Object.freeze({
     additionalCredentialNames: [],
     pullCredentialName: 'ghcr-pull',
     foundationTrack: 'production-v1',
+    postgresHost: 'release-postgres',
   },
 });
 
@@ -273,7 +276,11 @@ function validateApps(resources, options, manifest, manifestDigest) {
       fail(`${resourceIdentity(resource)} imports an entire Secret`);
     }
     if (name !== 'web') {
-      const env = new Map((container.env ?? []).map((entry) => [entry.name, entry]));
+      const entries = container.env ?? [];
+      const env = new Map(entries.map((entry) => [entry.name, entry]));
+      if (env.size !== entries.length) {
+        fail(`${resourceIdentity(resource)} has duplicate environment variables`);
+      }
       for (const forbidden of ['POSTGRES_USER', 'POSTGRES_PASSWORD']) {
         if (env.has(forbidden)) fail(`${resourceIdentity(resource)} receives a database owner key`);
       }
@@ -286,6 +293,8 @@ function validateApps(resources, options, manifest, manifestDigest) {
         env.get('PGUSER')?.value !== expectedRole[0] ||
         env.get('PGPASSWORD')?.valueFrom?.secretKeyRef?.key !== expectedRole[1] ||
         env.get('PGDATABASE')?.valueFrom?.secretKeyRef?.key !== 'POSTGRES_DB' ||
+        env.get('PGHOST')?.value !== ENVIRONMENTS[options.environment].postgresHost ||
+        env.get('PGPORT')?.value !== '5432' ||
         env.get('DATABASE_URL')?.value !==
           'postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)'
       ) {
@@ -415,6 +424,18 @@ function validateMigrate(resources, options, manifest, manifestDigest) {
   }
   if ((container.envFrom ?? []).some((entry) => entry.secretRef)) {
     fail(`Job/${name} imports an entire Secret`);
+  }
+  const entries = container.env ?? [];
+  const environment = new Map(entries.map((entry) => [entry.name, entry]));
+  if (environment.size !== entries.length) {
+    fail(`Job/${name} has duplicate environment variables`);
+  }
+  if (
+    environment.has('DATABASE_URL') ||
+    environment.get('PGHOST')?.value !== ENVIRONMENTS[options.environment].postgresHost ||
+    environment.get('PGPORT')?.value !== '5432'
+  ) {
+    fail(`Job/${name} has an incorrect PostgreSQL endpoint`);
   }
   validateReleaseWorkload(resources[0], manifest, manifestDigest);
 }

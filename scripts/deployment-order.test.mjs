@@ -306,6 +306,8 @@ test('isolated auth E2E serves non-placeholder Test release metadata from the bu
 test('migration manifests pass owner credentials as discrete PG fields instead of an unescaped URI', () => {
   assert.doesNotMatch(migrationJob, /DATABASE_URL|postgres:\/\/\$\(POSTGRES_USER\)/);
   assert.match(migrationJob, /name: PGPASSWORD/);
+  assert.match(migrationJob, /name: PGHOST\s+value: postgres/);
+  assert.doesNotMatch(migrationJob, /combo-postgres-host/);
   const migrateBlock = compose.slice(compose.indexOf('  migrate:'), compose.indexOf('  api:'));
   assert.doesNotMatch(migrateBlock, /DATABASE_URL:/);
   assert.match(migrateBlock, /PGPASSWORD:/);
