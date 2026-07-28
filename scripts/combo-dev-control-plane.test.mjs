@@ -108,7 +108,7 @@ function fixture() {
   return root;
 }
 
-function runLogsAuditFixture(mode) {
+function runLogsAuditFixture(mode, activityMode = 'product') {
   const root = mkdtempSync(join(tmpdir(), 'combo-dev-logs-fixture-'));
   const bin = join(root, 'bin');
   const audit = join(root, 'combo-dev-logs');
@@ -256,7 +256,15 @@ exec /usr/bin/grep "$@"
   try {
     const result = spawnSync(
       'bash',
-      [audit, '--since-time', '2026-07-25T14:00:00Z', '--marker-file', marker],
+      [
+        audit,
+        '--since-time',
+        '2026-07-25T14:00:00Z',
+        '--marker-file',
+        marker,
+        '--activity-mode',
+        activityMode,
+      ],
       {
         encoding: 'utf8',
         timeout: 10_000,
@@ -305,7 +313,7 @@ function runSmokeLogProbeFixture(mode) {
     `  esac`,
     `}`,
     check,
-    `check_logs_fail_closed '2026-07-25T14:00:00Z'`,
+    `check_logs_fail_closed '2026-07-25T14:00:00Z' baseline`,
   ].join('\n');
   try {
     return spawnSync('bash', ['-c', harness, 'combo-dev-smoke-probe', root], {
@@ -724,7 +732,7 @@ test('Test migration proof accepts containerd config digests but fences the live
 test('Test live image evidence binds PodSpec and imageID without trusting runtime aliases', () => {
   const deploy = text('scripts/combo-dev-deploy.sh');
   const liveStart = deploy.indexOf('expected_images = {');
-  const liveEnd = deploy.indexOf('\nchecks = acceptance.get', liveStart);
+  const liveEnd = deploy.indexOf('\ninventory_keys = {', liveStart);
   const liveVerifier = deploy.slice(liveStart, liveEnd);
   assert.match(liveVerifier, /containers\[0\]\.get\('image'\) != expected_image/);
   assert.match(
@@ -765,7 +773,7 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   assert.match(deploy, /readonly NAMESPACE='combo-preview'/);
   assert.match(
     deploy,
-    /write_test_evidence[\s\\\n]*"\$revision" "\$workflow_run_id" "\$workflow_run_attempt"[\s\\\n]*"\$manifest" "\$digest_file" "\$evidence"[\s\\\n]*"\$RESET_PROOF_IN_USE" "\$migration_proof"/,
+    /write_test_evidence[\s\\\n]*"\$revision" "\$workflow_run_id" "\$workflow_run_attempt"[\s\\\n]*"\$manifest" "\$digest_file" "\$RESET_PROOF_IN_USE" "\$migration_proof"/,
   );
   assert.match(deploy, /local evidence_dir='\/var\/lib\/combo-dev\/evidence'/);
   assert.match(
@@ -804,8 +812,32 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
       deploy.indexOf('write_test_evidence() {'),
       deploy.indexOf('prune_stale_configs() {'),
     ),
-    /combo-review|Kubernetes Secrets|PRODUCTION_NAMESPACE|PRODUCTION_KUBECONFIG/,
+    /combo-review|Kubernetes Secrets|PRODUCTION_NAMESPACE|PRODUCTION_KUBECONFIG|productAcceptance/,
   );
+});
+
+test('Test host gate remains credential-free and delegates product acceptance to the artifact', () => {
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const smoke = text('scripts/combo-dev-smoke.sh');
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const dispatcherStart = workflow.indexOf(
+    'Upload the fixed bundle and invoke the root-owned dispatcher',
+  );
+  const dispatcherEnd = workflow.indexOf('Prove development ports remain private', dispatcherStart);
+  const dispatcherStep = workflow.slice(dispatcherStart, dispatcherEnd);
+
+  assert.doesNotMatch(deploy, /ACCEPTANCE_RUNNER|\/opt\/combo-dev\/acceptance\/run/);
+  assert.doesNotMatch(deploy, /productAcceptance|acceptance_path|acceptance = load/);
+  assert.match(deploy, /combo-dev-smoke"[\s\\\n]*--revision "\$revision" --since-time "\$start"/);
+  assert.doesNotMatch(smoke, /validate_external_evidence|--evidence|browser_auth/);
+  assert.match(smoke, /check_loopback_only[\s\S]*check_logs_fail_closed "\$since" baseline/);
+  assert.match(
+    smoke,
+    /logs_only == 1[\s\S]*verify_pending_acceptance_identity[\s\S]*check_logs_fail_closed "\$since" product/,
+  );
+  assert.match(dispatcherStep, /id: deploy_test/);
+  assert.match(dispatcherStep, /mutation_started=true/);
+  assert.doesNotMatch(dispatcherStep, /ACCEPTANCE_RESEND_API_KEY|resend-sent-email/);
 });
 
 test('Test runs and validates the exact release artifact six-area browser acceptance', () => {
@@ -817,6 +849,8 @@ test('Test runs and validates the exact release artifact six-area browser accept
   const live = workflow.indexOf('Run the exact artifact six-area Test browser acceptance');
   const evidence = workflow.indexOf('Collect and verify sanitized Test evidence');
   const upload = workflow.indexOf('Upload sanitized Test evidence');
+  const accept = workflow.indexOf('Complete the exact Test acceptance');
+  const fence = workflow.indexOf('Fence Test after post-deploy acceptance failure');
   const cleanup = workflow.indexOf('Remove transient runner and upload files');
   assert.ok(
     checkout > 0 &&
@@ -826,7 +860,9 @@ test('Test runs and validates the exact release artifact six-area browser accept
       live > deploy &&
       evidence > live &&
       upload > evidence &&
-      cleanup > upload,
+      accept > upload &&
+      fence > accept &&
+      cleanup > fence,
   );
   assert.match(
     workflow,
@@ -840,11 +876,21 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.match(liveStep, /validator="\$RELEASE_ROOT\/scripts\/promotion-evidence\.mjs"/);
   assert.match(
     liveStep,
+    /ACCEPTANCE_RESEND_API_KEY: \$\{\{ secrets\.ACCEPTANCE_RESEND_API_KEY \}\}/,
+  );
+  assert.match(
+    liveStep,
     /tar -C "\$RELEASE_ROOT" -czf "\$archive"[\s\\\n]*acceptance\/live-browser-acceptance\.mjs[\s\\\n]*acceptance\/playwright-core\.tgz/,
   );
   assert.match(liveStep, /--environment test/);
   assert.match(liveStep, /--web-origin http:\/\/127\.0\.0\.1:18080/);
   assert.match(liveStep, /--output "\$output"/);
+  assert.match(liveStep, /acceptance\/resend-sent-email\.mjs/);
+  assert.match(
+    liveStep,
+    /printf '%s\\n' "\$ACCEPTANCE_RESEND_API_KEY"[\s\S]*IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY/,
+  );
+  assert.match(liveStep, /unset ACCEPTANCE_RESEND_API_KEY/);
   assert.match(liveStep, /nvm_script="\$HOME\/\.nvm\/nvm\.sh"/);
   assert.match(liveStep, /\[\[ -f "\$nvm_script" && ! -L "\$nvm_script" \]\]/);
   assert.match(liveStep, /nvm use --silent 24 >\/dev\/null/);
@@ -874,15 +920,26 @@ test('Test runs and validates the exact release artifact six-area browser accept
     /for _ in \$\(seq 1 45\); do[\s\S]*forwarders_are inactive[\s\S]*stopped=1/,
   );
   assert.ok(liveStep.indexOf('lease_ready == 1') < liveStep.indexOf('node "$runner"'));
+  assert.match(
+    liveStep,
+    /combo-dev-smoke[\s\\\n]*--logs-only[\s\\\n]*--revision "\$revision"[\s\\\n]*--since-time "\$product_started_at"[\s\\\n]*--workflow-run-id "\$workflow_run_id"[\s\\\n]*--workflow-run-attempt "\$workflow_run_attempt"/,
+  );
+  assert.match(liveStep, /product_started_at=\$\(ssh combo-dev-target date -u/);
+  assert.ok(liveStep.indexOf('product_started_at=') < liveStep.indexOf('node "$runner"'));
+  assert.ok(liveStep.indexOf('node "$runner"') < liveStep.indexOf('--logs-only'));
   assert.doesNotMatch(
     liveStep,
     /sudo (?:-- )?systemctl (?:start|stop) combo-dev-(?:web|s3)-forward/,
   );
   assert.doesNotMatch(liveStep, /docker|COMBO_PRODUCTION_ACCEPTANCE|CLOUD_REVIEW_ACCESS_TOKEN/);
+  assert.doesNotMatch(
+    `${workflow.slice(0, live)}${workflow.slice(evidence)}`,
+    /ACCEPTANCE_RESEND_API_KEY/,
+  );
 
   const evidenceStep = workflow.slice(evidence, upload);
   assert.doesNotMatch(evidenceStep, /all\(\.productAcceptance|\.productAcceptance\[\]/);
-  assert.match(evidenceStep, /jq 'del\(\.productAcceptance\)' "\$raw"/);
+  assert.doesNotMatch(evidenceStep, /del\(\.productAcceptance\)/);
   assert.match(evidenceStep, /has\("productAcceptance"\) \| not/);
   assert.match(evidenceStep, /test-live-browser-acceptance\.json/);
   assert.match(evidenceStep, /test-promotion-identity\.json/);
@@ -900,6 +957,26 @@ test('Test runs and validates the exact release artifact six-area browser accept
     /"combo-test-evidence-\$\{REVISION\}\.json"[\s\\\n]*source-release\.json[\s\\\n]*test-live-browser-acceptance\.json[\s\\\n]*test-promotion-identity\.json/,
   );
   assert.match(evidenceStep, /cmp -s "\$expected_files" "\$actual_files"/);
+
+  const acceptStep = workflow.slice(accept, fence);
+  assert.match(acceptStep, /id: accept_test/);
+  assert.match(
+    acceptStep,
+    /combo-dev-storage-guard[\s\\\n]*--complete-acceptance "\$REVISION" "\$RUN_ID" "\$RUN_ATTEMPT"/,
+  );
+
+  const fenceStep = workflow.slice(fence, cleanup);
+  assert.match(
+    fenceStep,
+    /always\(\) && steps\.deploy_test\.outputs\.mutation_started == 'true' && steps\.accept_test\.outcome != 'success'/,
+  );
+  assert.match(fenceStep, /timeout-minutes: 15/);
+  assert.match(
+    fenceStep,
+    /combo-dev-storage-guard[\s\\\n]*--fence-attempt "\$REVISION" "\$RUN_ID" "\$RUN_ATTEMPT"/,
+  );
+  assert.doesNotMatch(fenceStep, /combo-dev-reset|flock|reset-proof/);
+  assert.doesNotMatch(fenceStep, /ACCEPTANCE_RESEND_API_KEY|kubectl|combo-review|namespace\/combo/);
 
   const cleanupStep = workflow.slice(cleanup);
   assert.match(cleanupStep, /if: always\(\)/);
@@ -2312,6 +2389,61 @@ test('first bootstrap tolerates absent forwarder units and serializes the persis
   );
 });
 
+test('post-deploy acceptance is TTL-bound and failure fencing cannot mint a replay proof', () => {
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const reset = text('scripts/combo-dev-reset.sh');
+  const guard = text('scripts/combo-dev-storage-guard.sh');
+
+  assert.match(deploy, /ACCEPTANCE_PENDING_SECONDS=7200/);
+  assert.match(
+    deploy,
+    /consume_reset_proof[\s\S]*clear_stale_acceptance_state "\$revision" "\$workflow_run_id" "\$workflow_run_attempt"/,
+  );
+  const staleState = deploy.slice(
+    deploy.indexOf('clear_stale_acceptance_state() {'),
+    deploy.indexOf('apply_foundation_replicas() {'),
+  );
+  assert.match(staleState, /flock -w 300 8/);
+  assert.match(
+    staleState,
+    /"attempt \$revision \$workflow_run_id \$workflow_run_attempt"[\s\S]*return 2/,
+  );
+  assert.match(staleState, /\^attempt\\ \[0-9a-f\]\{40\}/);
+  assert.match(
+    deploy,
+    /flock -w 300 8[\s\S]*\[\[ ! -e "\$EXTERNAL_FENCE_MARKER" && ! -L "\$EXTERNAL_FENCE_MARKER" \]\][\s\S]*write_acceptance_pending[\s\S]*rm -f -- "\$FAILURE_FENCE_MARKER"/,
+  );
+  assert.match(guard, /--fence-attempt\)/);
+  assert.match(guard, /fence_now '受控 Test 后置验收未完成' 0 0/);
+  assert.match(guard, /mark_failure_fence[\s\S]*mark_external_fence/);
+  assert.match(guard, /existing_attempt_fence_identity\(\)[\s\S]*\^attempt\\ \[0-9a-f\]\{40\}/);
+  assert.match(
+    guard,
+    /fence_now\(\)[\s\S]*flock -w 300 8[\s\S]*identity" == preserve-attempt[\s\S]*existing_attempt_fence_identity/,
+  );
+  assert.match(
+    guard,
+    /FAILURE_FENCE_MARKER[\s\S]*fence_now '持久失败阻断标记仍然存在' 0 0 preserve-attempt/,
+  );
+  assert.match(
+    guard,
+    /ACCEPTANCE_PENDING_MARKER[\s\S]*flock -w 300 8[\s\S]*pending_acceptance_state[\s\S]*fence_now_locked 'Test 后置验收超过固定期限'/,
+  );
+  assert.match(
+    guard,
+    /complete_acceptance[\s\S]*marker_run_id[\s\S]*marker_run_attempt[\s\S]*rm -f -- "\$ACCEPTANCE_PENDING_MARKER"/,
+  );
+  assert.doesNotMatch(guard, /reset-proof|RESET_PROOF|wipe_static_volume_data/);
+  assert.doesNotMatch(reset, /EXTERNAL_FENCE_MARKER|ACCEPTANCE_PENDING_MARKER/);
+  const failureFence = workflow.slice(
+    workflow.indexOf('Fence Test after post-deploy acceptance failure'),
+    workflow.indexOf('Remove transient runner and upload files'),
+  );
+  assert.match(failureFence, /--fence-attempt "\$REVISION" "\$RUN_ID" "\$RUN_ATTEMPT"/);
+  assert.doesNotMatch(failureFence, /combo-dev-reset|DESTROY-COMBO-PREVIEW-DATA/);
+});
+
 test('the always-on host guard uses an independent minimal fencer for missing, malformed, expiring, or unauthorized dispatcher credentials', () => {
   const bootstrap = text('scripts/combo-dev-bootstrap.sh');
   const deploy = text('scripts/combo-dev-deploy.sh');
@@ -2386,7 +2518,10 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
   }
   assert.match(lease, /FAILURE_FENCE_MARKER/);
 
-  const fenceBody = guard.slice(guard.indexOf('fence_now() {'), guard.lastIndexOf('main() {'));
+  const fenceBody = guard.slice(
+    guard.indexOf('fence_now_locked() {'),
+    guard.indexOf('fence_now() {'),
+  );
   assert.ok(fenceBody.indexOf('stop_forwarders') < fenceBody.indexOf('mark_failure_fence'));
   assert.ok(
     fenceBody.indexOf('mark_failure_fence') <
@@ -2488,6 +2623,24 @@ test('log audit retries delayed activity without weakening its fixed evidence se
   assert.equal(result.status, 0, JSON.stringify(result));
   assert.match(result.stdout, /PASS sources=8 activity=3 redaction=PASS/);
   assert.equal((result.invocations.match(/logs worker-pod/g) ?? []).length, 2);
+});
+
+test('pre-artifact log baseline accepts an idle Worker while retaining all-source leak scans', () => {
+  const result = runLogsAuditFixture('missing', 'baseline');
+  assert.equal(result.status, 0, JSON.stringify(result));
+  assert.match(result.stdout, /PASS sources=8 activity=baseline redaction=PASS/);
+  for (const app of [
+    'api',
+    'worker',
+    'runtime',
+    'web',
+    'postgres',
+    'redis-queue',
+    'redis-hot',
+    'minio',
+  ]) {
+    assert.match(result.invocations, new RegExp(`logs ${app}-pod`));
+  }
 });
 
 test('log audit includes one bounded previous container after dependency recovery', () => {
@@ -3295,8 +3448,7 @@ test('existing deployment invariants remain fail-closed', () => {
   assert.match(workflow, /scp -q "\$ARCHIVE" "combo-dev-target:\$temporary"/);
   assert.match(workflow, /ssh combo-dev-target mv -fT -- "\$temporary" "\$remote"/);
   assert.match(deploy, /INCOMING_BUNDLE=\$bundle/);
-  assert.match(deploy, /head -c 65537 >"\$evidence"/);
-  assert.match(deploy, /"\$evidence_bytes" -le 65536/);
+  assert.doesNotMatch(deploy, /head -c 65537|evidence_bytes/);
   assert.doesNotMatch(deploy, /ulimit -f/);
   assert.match(deploy, /\[\[ -z "\$INCOMING_BUNDLE" \]\] \|\| rm -f -- "\$INCOMING_BUNDLE"/);
   assert.match(reset, /wipe_static_volume_data/);

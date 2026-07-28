@@ -121,7 +121,7 @@ capture_complete_log() {
 }
 
 collect_snapshot() {
-  local since=$1 marker=$2 snapshot=$3
+  local since=$1 marker=$2 snapshot=$3 activity_mode=$4
   local app container identity identity_after pod uid restart_count corpus previous combined rc
   rm -rf -- "$snapshot" || {
     LAST_REASON='snapshot-cleanup-unavailable'
@@ -276,6 +276,9 @@ SOURCES
     fi
     return 2
   fi
+  if [[ "$activity_mode" == baseline ]]; then
+    return
+  fi
   if grep -Fq 'pipeline finished' "$snapshot/worker.current.log"; then
     :
   else
@@ -290,16 +293,19 @@ SOURCES
 }
 
 main() {
-  local since='' marker_file='' arg marker mode attempt rc snapshot now
+  local since='' marker_file='' activity_mode='product' arg marker mode attempt rc snapshot now
   while (($#)); do
     arg=$1; shift
     case "$arg" in
       --since-time) since=${1:?}; shift ;;
       --marker-file) marker_file=${1:?}; shift ;;
+      --activity-mode) activity_mode=${1:?}; shift ;;
       *) fail '未知参数。' ;;
     esac
   done
   [[ "$since" =~ $TIME_RE ]] || blocked '缺少合法的验收时间窗口。'
+  [[ "$activity_mode" == baseline || "$activity_mode" == product ]] ||
+    blocked '日志活动模式不合法。'
   [[ -f "$marker_file" ]] || blocked '缺少合成泄漏标记文件。'
   mode=$(stat -c '%a' "$marker_file" 2>/dev/null) || blocked '无法读取标记文件权限。'
   [[ "$mode" == 600 || "$mode" == 400 ]] || blocked '合成标记文件权限不安全。'
@@ -312,14 +318,18 @@ main() {
   AUDIT_DEADLINE_EPOCH=$((now + AUDIT_MAX_SECONDS))
   snapshot="$WORK/snapshot"
   for ((attempt = 1; attempt <= ACTIVITY_ATTEMPTS; attempt++)); do
-    if collect_snapshot "$since" "$marker" "$snapshot"; then
+    if collect_snapshot "$since" "$marker" "$snapshot" "$activity_mode"; then
       rc=0
     else
       rc=$?
     fi
     case $rc in
       0)
-        status 'PASS sources=8 activity=3 redaction=PASS'
+        if [[ "$activity_mode" == product ]]; then
+          status 'PASS sources=8 activity=3 redaction=PASS'
+        else
+          status 'PASS sources=8 activity=baseline redaction=PASS'
+        fi
         return
         ;;
       1)

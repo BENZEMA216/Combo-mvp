@@ -16,6 +16,8 @@ Test 的迁移任务固定校验 `0008_application_database_roles.sql`，并在�
 
 `combo-dev-logs.sh` 在真实验收完成后读取八个唯一就绪日志源，要求 API、Runtime 和 Worker 都留下当前窗口活动，并扫描合成标记及固定凭据模式。依赖恢复导致容器重启时，它只接受至多一次可审计重启，并同时检查该 Pod 的 current 与 previous 日志；日志流尚未追平时会短时重试。失败时只能输出固定 reason code，不能回显日志正文、请求内容或合成标记。
 
+Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行态、存储、网络、健康、日志与发布身份等基础设施事实，不再调用旧的 `/opt/combo-dev/acceptance/run` 或声明产品验收通过。部署基线允许空数据 Worker 暂无 pipeline，邮箱 OTP、双身份隔离和六区产品流程只由不可变 main CI artifact 中的浏览器 runner 判定；浏览器完成后再执行要求 Worker 活动的八来源日志泄漏审计。dispatcher 会写入两小时有界的待验收标记；端口、浏览器、日志、evidence、artifact 上传或完成确认失败时，受保护 workflow 使用独立最小 fencer 关闭 Test 写入面，不清数据、不生成新的 reset proof，硬取消时由持久 guard 在期限后收敛。
+
 `combo-dev-control-plane.test.mjs` 的容器镜像探针只有在 `COMBO_RUN_CONTAINER_CONTRACTS=1` 时才会调用 Docker。GitHub Actions 的受控 Test 步骤显式启用该变量；tecent2 上的普通源码检查不会探测或启动 Docker。
 
 `goal-b-frozen-audit.test.mjs` 将固定冻结提交相对共同基线的 256 个路径，与 `docs/goal-b-frozen-preview-audit.md` 逐项比对，并强制旧迁移与旧 Cloud Review 拓扑保持明确废弃。

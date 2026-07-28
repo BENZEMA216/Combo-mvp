@@ -30,7 +30,10 @@ readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.js
 readonly CONFIG_FILE='/etc/combo-dev/combo-dev.env'
 readonly REGISTRY_FILE='/etc/combo-dev/registry.json'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
+readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
+readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
 readonly BEFORE_FREE_BYTES=$((45 * 1024 * 1024 * 1024))
 readonly DISPATCHER_RENEW_BEFORE_SECONDS=$((30 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
@@ -270,7 +273,7 @@ PY
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'bootstrap 必须由主机所有者以 root 手工执行。'
   local cmd free canonical
-  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep rm; do require_command "$cmd"; done
   trusted_source_tree || blocked 'bootstrap 源目录不是 root-owned 只读快照。'
   private_directory /etc/combo-dev || blocked '开发配置目录不是 root-owned 私有目录。'
   if [[ -e /opt/combo-dev ]] && ! private_directory /opt/combo-dev; then blocked '安装目录不是 root-owned 安全目录。'; fi
@@ -869,7 +872,7 @@ control_tree_digest() {
 
 install_control_files() {
   [[ -f "$WORK/cluster-platform.canonical.json" ]] || blocked '缺少规范化集群平台契约。'
-  install -d -o root -g root -m 0755 /opt/combo-dev /opt/combo-dev/bin /opt/combo-dev/releases /opt/combo-dev/acceptance
+  install -d -o root -g root -m 0755 /opt/combo-dev /opt/combo-dev/bin /opt/combo-dev/releases
   install -d -o root -g root -m 0711 /var/lib/combo-dev
   install -o root -g root -m 0600 "$WORK/cluster-platform.canonical.json" "$CLUSTER_PLATFORM_CONTRACT"
   install -d -o root -g root -m 1733 /opt/combo-dev/incoming
@@ -1053,6 +1056,10 @@ main() {
   forwarders_stopped || blocked 'bootstrap 后无法证明回环转发器保持关闭。'
   after=$(production_fingerprint)
   [[ "$before" == "$after" ]] || fail 'bootstrap 期间生产指纹发生变化。'
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || blocked 'bootstrap 无法取得失败收敛锁。'
+  rm -f -- "$EXTERNAL_FENCE_MARKER" "$ACCEPTANCE_PENDING_MARKER" ||
+    blocked 'bootstrap 无法清理旧验收状态。'
 
   rm -rf -- "$WORK"
   WORK=''

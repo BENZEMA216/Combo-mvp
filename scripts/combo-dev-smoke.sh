@@ -11,6 +11,7 @@ readonly STORAGE_CLASS='combo-dev-bounded'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly HOST_BOUNDARY_APPROVAL='/etc/combo-dev/host-network-boundary.approved'
 readonly HOST_BOUNDARY_CHECK='/opt/combo-dev/host-boundary/check'
+readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly TIME_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 readonly CANARY_IMAGE='python@sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf'
@@ -34,9 +35,29 @@ trap cleanup EXIT
 
 require_tools() {
   local cmd
-  for cmd in kubectl curl jq python3 openssl ss timeout stat findmnt readlink df dirname awk systemctl; do
+  for cmd in kubectl curl jq python3 openssl ss timeout stat findmnt readlink df dirname awk systemctl date; do
     command -v "$cmd" >/dev/null 2>&1 || blocked "缺少验收工具：$cmd"
   done
+}
+
+verify_pending_acceptance_identity() {
+  local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
+  local marker_revision marker_run_id marker_run_attempt deadline extra now mode
+  root_owned_not_writable "$ACCEPTANCE_PENDING_MARKER" ||
+    blocked '待验收标记不存在或可被非 root 修改。'
+  mode=$(stat -c '%a' "$ACCEPTANCE_PENDING_MARKER" 2>/dev/null) ||
+    blocked '待验收标记权限不可读。'
+  [[ "$mode" == 600 || "$mode" == 400 ]] || blocked '待验收标记不是 owner-only 文件。'
+  IFS=' ' read -r marker_revision marker_run_id marker_run_attempt deadline extra \
+    <"$ACCEPTANCE_PENDING_MARKER" || blocked '待验收标记不可读。'
+  [[ -z "$extra" && "$marker_revision" == "$revision" ]] ||
+    blocked '待验收标记 revision 不匹配。'
+  [[ "$marker_run_id" == "$workflow_run_id" &&
+    "$marker_run_attempt" == "$workflow_run_attempt" ]] ||
+    blocked '待验收标记 workflow identity 不匹配。'
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || blocked '待验收标记期限不合法。'
+  now=$(date +%s 2>/dev/null) || blocked '待验收时钟不可读。'
+  (( now <= deadline )) || blocked '待验收标记已经过期。'
 }
 
 root_owned_not_writable() {
@@ -53,53 +74,6 @@ verify_host_boundary_control() {
     blocked '主机级隔离检查器不可用或可被非 root 修改。'
   fi
   timeout 30 "$HOST_BOUNDARY_CHECK" --check >/dev/null 2>&1 || blocked '主机级 Pod 到节点隔离未生效。'
-}
-
-validate_external_evidence() {
-  local file=$1 revision=$2 since=$3 mode size
-  [[ -f "$file" ]] || blocked '外部浏览器与产品流证据不存在。'
-  mode=$(stat -c '%a' "$file" 2>/dev/null) || blocked '无法读取外部证据权限。'
-  [[ "$mode" == 600 || "$mode" == 400 ]] || blocked '外部证据不是 owner-only 文件。'
-  size=$(stat -c '%s' "$file" 2>/dev/null) || blocked '无法读取外部证据大小。'
-  (( size > 0 && size <= 65536 )) || blocked '外部证据大小越界。'
-  local rc
-  set +e
-  python3 - "$file" "$revision" "$since" <<'PY'
-import datetime as dt, json, re, sys
-path, revision, since = sys.argv[1:]
-required = {
-  'browser_spa', 'browser_auth', 'browser_logout', 'production_dev_login_unavailable',
-  'product_task_idempotency', 'product_pairing_upload', 'product_sse_worker',
-  'product_capability_publish', 'product_runtime_turn', 'product_artifact',
-  's3_signed_roundtrip', 's3_exact_origin_cors', 'persistence_restarts',
-  'private_ssh_forwards', 'off_host_private_access', 'temporary_artifacts_clean',
-}
-try:
-    data = json.load(open(path, encoding='utf-8'))
-except Exception:
-    raise SystemExit(2)
-if set(data) != {'revision', 'createdAt', 'checks'} or data['revision'] != revision:
-    raise SystemExit(2)
-if not isinstance(data['checks'], dict) or set(data['checks']) != required:
-    raise SystemExit(2)
-for value in data['checks'].values():
-    if not isinstance(value, dict) or set(value) != {'status', 'id'} or value['status'] != 'PASS':
-        raise SystemExit(1)
-    if not isinstance(value['id'], str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,80}', value['id']):
-        raise SystemExit(2)
-def parse(value):
-    return dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
-try:
-    created, started = parse(data['createdAt']), parse(since)
-except Exception:
-    raise SystemExit(2)
-delta = (created - started).total_seconds()
-if delta < 0 or delta > 7200:
-    raise SystemExit(2)
-PY
-  rc=$?
-  set -e
-  case $rc in 0) ;; 1) fail '外部浏览器或产品流存在失败项。' ;; *) blocked '外部浏览器与产品流证据不完整或过期。' ;; esac
 }
 
 check_controller_readiness() {
@@ -361,7 +335,8 @@ EOF
 }
 
 check_logs_fail_closed() {
-  local since=$1 marker_file="$WORK/synthetic-marker" api_cfg="$WORK/api.curl" runtime_cfg="$WORK/runtime.curl"
+  local since=$1 activity_mode=$2
+  local marker_file="$WORK/synthetic-marker" api_cfg="$WORK/api.curl" runtime_cfg="$WORK/runtime.curl"
   local diagnostic="$WORK/log-audit.status" diagnostic_line safe_reason='helper-diagnostic-unavailable'
   local api_code runtime_code rc size
   openssl rand -hex 24 >"$marker_file" 2>/dev/null || blocked '无法生成一次性合成标记。'
@@ -391,7 +366,8 @@ EOF
   chmod 600 "$diagnostic"
   set +e
   /opt/combo-dev/bin/combo-dev-logs \
-    --since-time "$since" --marker-file "$marker_file" >/dev/null 2>"$diagnostic"
+    --since-time "$since" --marker-file "$marker_file" \
+    --activity-mode "$activity_mode" >/dev/null 2>"$diagnostic"
   rc=$?
   set -e
   (( rc == 0 )) && return
@@ -422,13 +398,15 @@ main() {
     status 'PASS network-canary=isolated'
     return
   fi
-  local revision='' since='' evidence='' arg
+  local revision='' since='' workflow_run_id='' workflow_run_attempt='' logs_only=0 arg
   while (($#)); do
     arg=$1; shift
     case "$arg" in
       --revision) revision=${1:?}; shift ;;
       --since-time) since=${1:?}; shift ;;
-      --evidence) evidence=${1:?}; shift ;;
+      --workflow-run-id) workflow_run_id=${1:?}; shift ;;
+      --workflow-run-attempt) workflow_run_attempt=${1:?}; shift ;;
+      --logs-only) logs_only=1 ;;
       *) fail '未知参数。' ;;
     esac
   done
@@ -436,14 +414,23 @@ main() {
   [[ "$since" =~ $TIME_RE ]] || blocked '验收起始时间不合法。'
   require_tools
   WORK=$(mktemp -d)
-  validate_external_evidence "$evidence" "$revision" "$since"
+  if (( logs_only == 1 )); then
+    [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ &&
+      "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]] ||
+      blocked '后置日志验收 workflow identity 不合法。'
+    verify_pending_acceptance_identity "$revision" "$workflow_run_id" "$workflow_run_attempt"
+    check_controller_readiness
+    check_logs_fail_closed "$since" product
+    status "PASS revision=$revision gates=post-acceptance-logs"
+    return
+  fi
   check_loopback_only
   check_controller_readiness
   check_live_limits_and_access
   check_health_and_origin
   run_network_canary
-  check_logs_fail_closed "$since"
-  status "PASS revision=$revision gates=7"
+  check_logs_fail_closed "$since" baseline
+  status "PASS revision=$revision gates=6"
 }
 
 main "$@"
