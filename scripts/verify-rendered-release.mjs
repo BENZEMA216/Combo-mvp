@@ -263,6 +263,17 @@ function validateApps(resources, options, manifest, manifestDigest) {
   assertOneContainer(deployment('worker'), 'worker', manifest.images.api);
   assertOneContainer(deployment('runtime'), 'runtime', manifest.images.runtime);
   assertOneContainer(deployment('web'), 'web', manifest.images.web);
+  const paymentEnvironmentNames = [
+    'BILLING_RECHARGE_PACKAGES_JSON',
+    'LESHOUYING_ENABLED',
+    'LESHOUYING_ENVIRONMENT',
+    'LESHOUYING_PRODUCTION_ENABLED',
+    'LESHOUYING_INSTITUTION_NO',
+    'LESHOUYING_MERCHANT_NO',
+    'LESHOUYING_INSTITUTION_KEY',
+    'LESHOUYING_NOTIFY_URL',
+    'LESHOUYING_FRONT_URL',
+  ];
   for (const name of ['api', 'worker', 'runtime', 'web']) {
     const resource = deployment(name);
     const container = containers(resource)[0];
@@ -307,6 +318,27 @@ function validateApps(resources, options, manifest, manifestDigest) {
             (options.environment === 'test' ? 'false' : 'true'))
       ) {
         fail(`${resourceIdentity(resource)} has an incorrect browser auth origin`);
+      }
+      if (name === 'api') {
+        for (const variable of paymentEnvironmentNames) {
+          const reference = env.get(variable)?.valueFrom?.secretKeyRef;
+          if (
+            reference?.name !== ENVIRONMENTS[options.environment].environmentCredentialName ||
+            reference?.key !== variable ||
+            reference?.optional !== true
+          ) {
+            fail(`${resourceIdentity(resource)} has an unsafe ${variable} binding`);
+          }
+        }
+      } else if (paymentEnvironmentNames.some((variable) => env.has(variable))) {
+        fail(`${resourceIdentity(resource)} unexpectedly receives payment configuration`);
+      }
+      if (
+        name === 'runtime' &&
+        (env.get('RUNTIME_BILLING_FREE_USES')?.value !== '3' ||
+          env.get('RUNTIME_BILLING_UNIT_PRICE_CENTS')?.value !== '100')
+      ) {
+        fail(`${resourceIdentity(resource)} lacks explicit fixed billing policy`);
       }
     }
     assertCommand(containers(resource)[0], undefined);

@@ -5,7 +5,7 @@
 ## 文件
 
 - `turn-repo.ts` 封装 Turn 创建、运行态查询、最近持久终态读取、Session 与 Turn 行锁、条件收尾和超时清扫。它只把 `uq_turns_session_running` 的 PostgreSQL 唯一冲突映射为 `SessionBusyError`。
-- `run-turn.ts` 在 Session 行锁事务中创建 Turn 和用户消息，并异步执行模型。它统一让 PostgreSQL 终态先提交、Redis 终态后追加，并在开下一轮前按数据库事实修复最近终态事件。它跟踪活动 Turn 和尚未提交的开轮事务，在人工打断、空闲超时、清扫和关闭时同时停止 Pi 与远程命令。Studio 成功终态会在同一数据库事务中提升本轮最后一个合规 UI revision。
+- `run-turn.ts` 在 Session 行锁事务中预留用量、创建 Turn 和用户消息，并异步执行模型。它统一让 PostgreSQL 终态与计费处理先提交、Redis 终态后追加，并在开下一轮前按数据库事实修复最近终态事件。它跟踪活动 Turn 和尚未提交的开轮事务，在人工打断、空闲超时、清扫和关闭时同时停止 Pi 与远程命令并释放预留。Studio 成功终态会在同一数据库事务中提升本轮最后一个合规 UI revision。
 - `build-agent.ts` 把 CapabilityDefinition、Session 模式、本轮用户要求、已完成历史、平台约束和工具交给 Pi Agent。Studio 使用单独的 Miniapp 设计协议和视觉规则，模型凭据始终由 Runtime 提供。
 - `design-studio-prompt.ts` 定义适配当前不可变 Artifact revision 的 Studio 设计规则、视觉连续性、运行桥和确定性页面质量检查。
 - `design-visual-profile.ts` 根据冻结的 Capability 元数据为首版页面选择有界视觉合同，并判断后续请求是否明确要求整体换视觉方向。
@@ -16,9 +16,9 @@
 
 ## 一轮生成
 
-提交消息时，数据库部分唯一索引保证一个 Session 只有一个 `running` Turn。异步执行只读取已完成历史。Studio 构造 Agent 时还会读取当前可见 HTML，用它区分首版视觉合同和后续视觉连续性。工具顺序固定为可信的 `upsert_artifact` 在前；显式开启沙箱后才追加四个远程工具。
+提交消息时，数据库部分唯一索引保证一个 Session 只有一个 `running` Turn。`usageId` 的事务级锁与唯一约束保证重试返回原 Turn；新任务只有在免费额度或钱包预留成功后才会创建。异步执行只读取已完成历史。Studio 构造 Agent 时还会读取当前可见 HTML，用它区分首版视觉合同和后续视觉连续性。工具顺序固定为可信的 `upsert_artifact` 在前；显式开启沙箱后才追加四个远程工具。
 
-普通文本、产物状态和 `RUN_STARTED` 都通过受保护的 TurnEmitter 写入。每次追加先锁住 Session，再确认同一个 Turn 仍为 `running`。完成、中断、失败和清扫路径都先提交 PostgreSQL 的 Turn 状态与 Message，提交后才追加 Redis 终态。跨副本终态提交后，旧 Pi 即使没有收到 Redis 打断通知，也不能通过数据库守卫继续追加事件。Studio 的 Capability UI 指针更新仍与成功终态处于同一个数据库事务中。
+普通文本、产物状态和 `RUN_STARTED` 都通过受保护的 TurnEmitter 写入。每次追加先锁住 Session，再确认同一个 Turn 仍为 `running`。完成、中断、失败和清扫路径都先提交 PostgreSQL 的 Turn 状态、Message 与计费结算或释放，提交后才追加 Redis 终态。启动和周期清扫还会按已提交 Turn 终态修复异常遗留的预留，但不会越过运行态栅栏释放仍在运行的 Turn。跨副本终态提交后，旧 Pi 即使没有收到 Redis 打断通知，也不能通过数据库守卫继续追加事件。Studio 的 Capability UI 指针更新仍与成功终态处于同一个数据库事务中。
 
 终态追加按 `runId` 幂等。相同终态在 Stream 条目仍保留时返回原编号，条目已过期或被修剪时只重放同一个持久终态；不同终态重试失败，迟到普通事件也会被终态标记拒绝。标记缺失或仍是旧版 `OPEN` 时，普通事件与终态脚本都会先扫描保留的 Stream。Redis 超时或结果不明确不会改变已经提交的数据库终态。下一轮在 Session 行锁内读取最近的持久终态，并允许 PostgreSQL 事实替换升级前遗留的冲突 Redis 终态。修复模式不会只相信匹配的标记；如果旧终态后仍有同一 Turn 的普通事件，它会删除旧终态并在 Stream 尾部重放数据库终态。恢复失败事件时只使用错误码对应的固定公开文案，未知错误码使用安全兜底文案。
 

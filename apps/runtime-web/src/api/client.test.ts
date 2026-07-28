@@ -70,4 +70,26 @@ describe('runtime API fixed session semantics', () => {
     expect(error).toMatchObject({ status: 503, userMessage: '依赖服务暂时不可用。' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('preserves a typed 402 business body without logging or displaying arbitrary fields', async () => {
+    const responseBody = {
+      rechargeRequired: true,
+      rechargeIntentId: '11111111-1111-4111-8111-111111111111',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    globalThis.fetch = vi.fn().mockResolvedValue(json(402, responseBody));
+
+    const error = await apiPost('/runtime/sessions/s1/messages', {
+      text: 'hello',
+      usageId: '11111111-1111-4111-8111-111111111111',
+    }).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 402,
+      responseBody,
+      userMessage: '请求失败，请稍后重试。',
+    });
+  });
 });

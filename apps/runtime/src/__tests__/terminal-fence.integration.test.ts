@@ -44,6 +44,10 @@ interface SeededChain {
   session: SessionRow;
 }
 
+function billingIdentity(session: SessionRow) {
+  return { usageId: randomUUID(), capabilityOwnerUserId: session.ownerUserId };
+}
+
 function cleanupSandbox(): SandboxBackend {
   return {
     enabled: true,
@@ -91,7 +95,6 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
   let db: RuntimeDb;
   let redis: Redis;
   let eventLog: SessionEventLog;
-  const seeded: SeededChain[] = [];
 
   beforeAll(async () => {
     pool = new Pool({ connectionString: databaseUrl!, max: 10 });
@@ -107,16 +110,10 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
   });
 
   afterAll(async () => {
-    for (const chain of seeded.reverse()) {
-      await db
-        .query('DELETE FROM sessions WHERE id = $1', [chain.session.id])
-        .catch(() => undefined);
-      await db
-        .query('DELETE FROM capabilities WHERE id = $1', [chain.capabilityId])
-        .catch(() => undefined);
-      await db.query('DELETE FROM tasks WHERE id = $1', [chain.taskId]).catch(() => undefined);
-      await db.query('DELETE FROM users WHERE id = $1', [chain.userId]).catch(() => undefined);
-    }
+    // CI supplies an ephemeral PostgreSQL service. Billing records include an
+    // append-only ledger, so row-by-row cleanup would either violate that
+    // contract or silently leave a partial graph. The fixture is discarded as
+    // a whole after the integration job instead.
     await redis.quit().catch(() => undefined);
     await pool.end().catch(() => undefined);
   });
@@ -146,9 +143,7 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
     );
     const capabilityId = capability.rows[0]!.id;
     const session = await createSession(db, { capabilityId, ownerUserId: userId });
-    const chain = { userId, taskId, capabilityId, session };
-    seeded.push(chain);
-    return chain;
+    return { userId, taskId, capabilityId, session };
   }
 
   async function turnRows(sessionId: string): Promise<
@@ -231,7 +226,13 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
       interrupts: createInterruptBus(),
       log: silentLog,
     });
-    await owner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await owner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await uploadStarted;
     await waitFor(async () =>
       (await eventLog.rangeAfter(session.id, '0-0', 10)).some(
@@ -296,7 +297,13 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
       interrupts: createInterruptBus(),
       log: { error },
     });
-    await runner.startTurn({ session, definition, text: 'go', log: { error } });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: { error },
+    });
     await waitFor(() =>
       error.mock.calls.some((call) => call[1] === 'persist failed terminal state failed'),
     );
@@ -360,12 +367,24 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
       log: silentLog,
     });
 
-    await runner.startTurn({ session, definition, text: 'first', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'first',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitFor(async () => (await turnRows(session.id))[0]?.status === 'completed');
     const firstRunId = (await turnRows(session.id))[0]!.id;
     await new Promise((resolve) => setTimeout(resolve, 35));
 
-    await runner.startTurn({ session, definition, text: 'second', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'second',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitFor(async () =>
       (await turnRows(session.id)).some((turn) => turn.status === 'running'),
     );
@@ -487,7 +506,13 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
       interrupts: createInterruptBus(),
       log: silentLog,
     });
-    await runner.startTurn({ session, definition, text: 'next', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'next',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitFor(async () =>
       (await eventLog.rangeAfter(session.id, '0-0', 100)).some(
         (entry) => entry.event.runId !== legacyRunId && entry.event.type === EventType.RUN_STARTED,
@@ -552,7 +577,13 @@ integrationDescribe('真实 PostgreSQL/Redis 终态栅栏', () => {
       interrupts: createInterruptBus(),
       log: silentLog,
     });
-    await runner.startTurn({ session, definition, text: 'next', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'next',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitFor(async () =>
       (await eventLog.rangeAfter(session.id, '0-0', 100)).some(
         (entry) => entry.event.runId !== legacyRunId && entry.event.type === EventType.RUN_STARTED,

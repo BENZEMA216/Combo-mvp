@@ -67,6 +67,19 @@ const EnvSchema = z.object({
   ),
   OTP_HMAC_SECRET: z.string().default(''),
 
+  // 余额充值只由 API 进程使用。网关环境是固定枚举，正式网关另有显式二次开关。
+  BILLING_RECHARGE_PACKAGES_JSON: z.string().default('[]'),
+  LESHOUYING_ENABLED: booleanFromString,
+  LESHOUYING_ENVIRONMENT: z.enum(['TEST', 'PRODUCTION']).default('TEST'),
+  LESHOUYING_PRODUCTION_ENABLED: booleanFromString,
+  LESHOUYING_INSTITUTION_NO: z.string().default(''),
+  LESHOUYING_MERCHANT_NO: z.string().default(''),
+  LESHOUYING_INSTITUTION_KEY: z.string().default(''),
+  LESHOUYING_NOTIFY_URL: z.string().default(''),
+  LESHOUYING_FRONT_URL: z.string().default(''),
+  LESHOUYING_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(5_000),
+  BILLING_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
+
   LLM_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['anthropic', 'openrouter']).optional()),
   ANTHROPIC_API_KEY: z.string().default(''),
   OPENROUTER_API_KEY: z.string().default(''),
@@ -145,6 +158,128 @@ const AUTH_API_REQUIRED = [
   'RESEND_FROM_EMAIL',
   'OTP_HMAC_SECRET',
 ] as const;
+
+const RechargePackageSchema = z
+  .object({
+    id: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/u),
+    amountCents: z.union([
+      z.number().int().positive().max(99_999_999),
+      z.string().regex(/^[1-9][0-9]{0,7}$/u),
+    ]),
+    label: z.string().trim().min(1).max(40),
+  })
+  .strict();
+
+export interface BillingRechargePackage {
+  id: string;
+  amountCents: bigint;
+  label: string;
+}
+
+export interface BillingConfiguration {
+  packages: readonly BillingRechargePackage[];
+  gatewayEnabled: boolean;
+  submissionRecoveryMs: number;
+}
+
+function parseHttpsEndpoint(value: string, expectedPath?: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    (expectedPath !== undefined && (url.pathname !== expectedPath || url.search))
+  ) {
+    return null;
+  }
+  return url;
+}
+
+/** 解析配置化充值套餐；金额在进程内始终使用 bigint，HTTP 边界再转十进制字符串。 */
+export function billingConfigurationFromEnv(env: Env): BillingConfiguration {
+  let rawPackages: unknown;
+  try {
+    rawPackages = JSON.parse(env.BILLING_RECHARGE_PACKAGES_JSON);
+  } catch {
+    throw new Error('[env] BILLING_RECHARGE_PACKAGES_JSON 配置不合法');
+  }
+  const parsedPackages = z.array(RechargePackageSchema).max(20).safeParse(rawPackages);
+  if (!parsedPackages.success) {
+    throw new Error('[env] BILLING_RECHARGE_PACKAGES_JSON 配置不合法');
+  }
+  const seen = new Set<string>();
+  const packages = parsedPackages.data.map((item) => {
+    if (seen.has(item.id)) {
+      throw new Error('[env] BILLING_RECHARGE_PACKAGES_JSON 配置不合法');
+    }
+    seen.add(item.id);
+    return {
+      id: item.id,
+      amountCents: BigInt(item.amountCents),
+      label: item.label,
+    };
+  });
+
+  if (!env.LESHOUYING_ENABLED) {
+    return {
+      packages,
+      gatewayEnabled: false,
+      submissionRecoveryMs: env.LESHOUYING_TIMEOUT_MS + 5_000,
+    };
+  }
+
+  const invalidKeys: string[] = [];
+  if (packages.length === 0) invalidKeys.push('BILLING_RECHARGE_PACKAGES_JSON');
+  if (
+    !/^[\x21-\x7e]{1,32}$/u.test(env.LESHOUYING_INSTITUTION_NO) ||
+    env.LESHOUYING_INSTITUTION_NO.includes('&') ||
+    env.LESHOUYING_INSTITUTION_NO.includes('=')
+  ) {
+    invalidKeys.push('LESHOUYING_INSTITUTION_NO');
+  }
+  if (
+    !/^[\x21-\x7e]{1,64}$/u.test(env.LESHOUYING_MERCHANT_NO) ||
+    env.LESHOUYING_MERCHANT_NO.includes('&') ||
+    env.LESHOUYING_MERCHANT_NO.includes('=')
+  ) {
+    invalidKeys.push('LESHOUYING_MERCHANT_NO');
+  }
+  if (
+    env.LESHOUYING_INSTITUTION_KEY.length === 0 ||
+    env.LESHOUYING_INSTITUTION_KEY.length > 512 ||
+    containsControlCharacter(env.LESHOUYING_INSTITUTION_KEY)
+  ) {
+    invalidKeys.push('LESHOUYING_INSTITUTION_KEY');
+  }
+  if (!parseHttpsEndpoint(env.LESHOUYING_NOTIFY_URL, '/api/v1/billing/leshouying/payment-notify')) {
+    invalidKeys.push('LESHOUYING_NOTIFY_URL');
+  }
+  if (env.LESHOUYING_FRONT_URL && !parseHttpsEndpoint(env.LESHOUYING_FRONT_URL)) {
+    invalidKeys.push('LESHOUYING_FRONT_URL');
+  }
+  if (
+    env.LESHOUYING_ENVIRONMENT === 'PRODUCTION' &&
+    (!env.LESHOUYING_PRODUCTION_ENABLED ||
+      env.NODE_ENV !== 'production' ||
+      releaseMetadataFromEnv(env).environment !== 'production')
+  ) {
+    invalidKeys.push('LESHOUYING_PRODUCTION_ENABLED', 'LESHOUYING_ENVIRONMENT');
+  }
+  if (invalidKeys.length > 0) {
+    throw new Error(`[env] 支付配置不合法：${[...new Set(invalidKeys)].join(', ')}`);
+  }
+  return {
+    packages,
+    gatewayEnabled: true,
+    submissionRecoveryMs: env.LESHOUYING_TIMEOUT_MS + 5_000,
+  };
+}
 
 const PRODUCTION_REQUIRED_BY_PROCESS: Record<Env['PROCESS'], readonly string[]> = {
   api: [
@@ -271,6 +406,7 @@ export function loadEnv(): Env {
     ) {
       throw new Error('[env] 邮件发件配置不合法：RESEND_FROM_EMAIL');
     }
+    billingConfigurationFromEnv(cached);
     if (isProduction) validateProductionAuthConfig(cached);
   }
 

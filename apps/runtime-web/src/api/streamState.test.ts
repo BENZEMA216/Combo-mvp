@@ -364,6 +364,22 @@ describe('产物 STATE_DELTA 归并', () => {
     expect(state.awaitingRunId).toBe(false);
     expect(state.activeRunId).toBeNull();
   });
+
+  it('undoes optimistic submitting when an already-terminal usageId is replayed', () => {
+    let state = replay([
+      { type: EventType.RUN_STARTED, runId: 'turn-finished' },
+      { type: EventType.RUN_FINISHED, runId: 'turn-finished' },
+    ]);
+    state = streamUiReducer(state, { kind: 'turn-submitting' });
+    state = streamUiReducer(state, { kind: 'turn-replayed', runId: 'turn-finished' });
+
+    expect(state).toMatchObject({
+      running: false,
+      awaitingRunId: false,
+      activeRunId: null,
+      terminalRun: { runId: 'turn-finished', state: 'completed' },
+    });
+  });
 });
 
 describe('帧解析与终态判定', () => {

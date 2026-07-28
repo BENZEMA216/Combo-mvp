@@ -37,8 +37,34 @@ export const UpdateSessionBodySchema = z
   .strict();
 export type UpdateSessionBody = z.infer<typeof UpdateSessionBodySchema>;
 
-export const SendMessageBodySchema = z.object({ text: z.string().min(1).max(20_000) }).strict();
+/** 浏览器为一次真实任务生成并在网络重试时复用的幂等标识。 */
+export const UsageIdSchema = z
+  .string()
+  .uuid()
+  .transform((value) => value.toLowerCase());
+export type UsageId = z.infer<typeof UsageIdSchema>;
+
+export const SendMessageBodySchema = z
+  .object({
+    text: z.string().min(1).max(20_000),
+    usageId: UsageIdSchema,
+  })
+  .strict();
 export type SendMessageBody = z.infer<typeof SendMessageBodySchema>;
+
+const CentsStringSchema = z.string().regex(/^(0|[1-9]\d*)$/);
+
+/** 免费额度耗尽且可用余额不足时，发消息端点返回的 HTTP 402 业务响应。 */
+export const RechargeRequiredBodySchema = z
+  .object({
+    rechargeRequired: z.literal(true),
+    /** 与被阻止的 usageId 相同，供充值后继续原任务。 */
+    rechargeIntentId: UsageIdSchema,
+    balanceCents: CentsStringSchema,
+    requiredCents: CentsStringSchema,
+  })
+  .strict();
+export type RechargeRequiredBody = z.infer<typeof RechargeRequiredBodySchema>;
 
 // ---------- 视图 ----------
 export const SessionViewSchema = z.object({

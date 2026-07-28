@@ -1,6 +1,6 @@
 // 类型化 fetch 封装（API 面唯一入口）。同源 Cookie（cb_session，与创作端共享）鉴权。
 //   成功响应统一轻包络 { data, meta } → 此处解包直接返回 data；
-//   失败响应统一 ErrorEnvelope → 只读 userMessage（绝不暴露内部 code/状态码给用户）。
+//   普通失败响应统一 ErrorEnvelope → 只读 userMessage；Runtime 402 由调用方按严格结构识别。
 import { goToLogin } from '../navigation/login.js';
 import { clientTraceHeaders, reportClientEvent } from './telemetry.js';
 
@@ -11,6 +11,11 @@ export class ApiError extends Error {
     public readonly userMessage: string,
     public readonly status: number,
     public readonly traceId?: string,
+    /**
+     * 服务器返回的已解析 JSON。调用方只能读取自己明确识别的业务错误结构，
+     * 不能把未知错误体直接展示或上报。
+     */
+    public readonly responseBody?: unknown,
   ) {
     super(userMessage);
     this.name = 'ApiError';
@@ -57,8 +62,10 @@ async function doFetch(method: string, path: string, body?: unknown): Promise<Re
   if (!res.ok) {
     let userMessage = res.status === 401 ? '请先登录。' : '请求失败，请稍后重试。';
     let traceId: string | undefined;
+    let responseBody: unknown;
     try {
-      const env = (await res.json()) as { error?: { userMessage?: string; traceId?: string } };
+      responseBody = await res.json();
+      const env = responseBody as { error?: { userMessage?: string; traceId?: string } };
       if (env.error?.userMessage) userMessage = env.error.userMessage;
       traceId = env.error?.traceId;
     } catch {
@@ -73,7 +80,7 @@ async function doFetch(method: string, path: string, body?: unknown): Promise<Re
       // 导航后仍抛错让当前调用链终止；绝不自动重放已经失败的写请求。
       goToLogin();
     }
-    throw new ApiError(userMessage, res.status, traceId);
+    throw new ApiError(userMessage, res.status, traceId, responseBody);
   }
   return res;
 }

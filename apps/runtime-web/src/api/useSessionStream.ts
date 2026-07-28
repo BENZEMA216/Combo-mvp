@@ -3,12 +3,17 @@
 //   - EventSource 断线自动重连并自带 Last-Event-ID 续传（浏览器原生行为）；
 //   - 终态（RUN_FINISHED / RUN_ERROR）后回拉一次会话详情对齐真源；
 //   - 页面关闭只断订阅，不打断后端生成；打断必须显式点按钮。
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { ArtifactView, MessageView, SessionDetail } from '@cb/shared';
 import { ApiError, isUnauthenticated } from './client.js';
 import { goToLogin } from '../navigation/login.js';
-import { interruptSession, sendSessionMessage } from './runtime.js';
+import {
+  interruptSession,
+  readRechargeRequired,
+  sendSessionMessage,
+  type RechargeRequired,
+} from './runtime.js';
 import { reportClientEvent } from './telemetry.js';
 import {
   initialStreamUiState,
@@ -25,11 +30,85 @@ export interface SessionStream extends StreamUiState {
   /** Resolves with the accepted user message, whose turnId links this request to SSE terminal events. */
   send: (text: string) => Promise<MessageView>;
   interrupt: () => void;
+  rechargeRequired: RechargeRequired | null;
+  clearRechargeRequired: () => void;
+  /** 页面重载后原调用源已丢失时，显示统一的安全重试入口。 */
+  pendingRetryAvailable: boolean;
+  retryPending: () => Promise<MessageView>;
+  /** 只清理由 402 确认“未创建 Turn”的原任务；网络未知请求不能放弃。 */
+  abandonRechargeUsage: () => void;
 }
 
 interface SessionEventSubscription {
   onMessage: (data: string) => void;
   onFatal: () => void;
+}
+
+interface PendingUsage {
+  sessionId: string;
+  text: string;
+  usageId: string;
+  reason: 'uncertain' | 'recharge_required';
+}
+
+const PENDING_USAGE_STORAGE_PREFIX = 'combo:pending-usage:v1:';
+
+function pendingUsageStorageKey(sessionId: string): string {
+  return `${PENDING_USAGE_STORAGE_PREFIX}${sessionId}`;
+}
+
+function readStoredPendingUsage(sessionId: string): PendingUsage | null {
+  try {
+    const raw = window.sessionStorage.getItem(pendingUsageStorageKey(sessionId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<PendingUsage>;
+    if (
+      parsed.sessionId !== sessionId ||
+      typeof parsed.text !== 'string' ||
+      parsed.text.length < 1 ||
+      parsed.text.length > 20_000 ||
+      typeof parsed.usageId !== 'string' ||
+      (parsed.reason !== undefined &&
+        parsed.reason !== 'uncertain' &&
+        parsed.reason !== 'recharge_required') ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+        parsed.usageId,
+      )
+    ) {
+      window.sessionStorage.removeItem(pendingUsageStorageKey(sessionId));
+      return null;
+    }
+    return {
+      sessionId,
+      text: parsed.text,
+      usageId: parsed.usageId,
+      reason: parsed.reason === 'recharge_required' ? 'recharge_required' : 'uncertain',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function storePendingUsage(pending: PendingUsage): void {
+  try {
+    window.sessionStorage.setItem(
+      pendingUsageStorageKey(pending.sessionId),
+      JSON.stringify(pending),
+    );
+  } catch {
+    // 浏览器禁用或耗尽 sessionStorage 时仍保留当前组件内的幂等保护。
+  }
+}
+
+function clearStoredPendingUsage(sessionId: string, usageId: string): void {
+  try {
+    const pending = readStoredPendingUsage(sessionId);
+    if (pending?.usageId === usageId) {
+      window.sessionStorage.removeItem(pendingUsageStorageKey(sessionId));
+    }
+  } catch {
+    // 当前组件内的 ref 仍会被清理。
+  }
 }
 
 /** 原生 EventSource 关闭后直接进入可见错误态；固定会话不续期，也不透明重建请求。 */
@@ -62,8 +141,11 @@ export function useSessionStream(
 ): SessionStream {
   const qc = useQueryClient();
   const [state, dispatch] = useReducer(streamUiReducer, initialStreamUiState);
+  const [rechargeRequired, setRechargeRequired] = useState<RechargeRequired | null>(null);
+  const [pendingRetryAvailable, setPendingRetryAvailable] = useState(false);
   const activeSessionIdRef = useRef(sessionId);
   const sendInFlightRef = useRef<{ sessionId: string; token: symbol } | null>(null);
+  const pendingUsageRef = useRef<PendingUsage | null>(null);
 
   // Route parameters can change before effects clean up the previous subscription. Keep the
   // generation pointer current during render so an old POST/SSE callback cannot mutate the new
@@ -72,9 +154,16 @@ export function useSessionStream(
   if (sendInFlightRef.current && sendInFlightRef.current.sessionId !== sessionId) {
     sendInFlightRef.current = null;
   }
+  if (pendingUsageRef.current && pendingUsageRef.current.sessionId !== sessionId) {
+    pendingUsageRef.current = null;
+  }
 
   useEffect(() => {
     dispatch({ kind: 'reset' });
+    setRechargeRequired(null);
+    const storedPending = sessionId ? readStoredPendingUsage(sessionId) : null;
+    pendingUsageRef.current = storedPending;
+    setPendingRetryAvailable(storedPending !== null);
     if (!sessionId) return;
     const subscribedSessionId = sessionId;
     const sessionIsCurrent = (): boolean => activeSessionIdRef.current === subscribedSessionId;
@@ -135,34 +224,78 @@ export function useSessionStream(
     const trimmed = text.trim();
     if (!sessionId) throw new Error('会话还没有准备好，请稍后重试。');
     if (!trimmed) throw new Error('请输入任务内容。');
+    if (rechargeRequired) {
+      throw new Error('请先完成或关闭当前充值流程。');
+    }
     if (state.running || sendInFlightRef.current) {
       throw new Error('Agent 正在处理当前任务，请稍候。');
     }
     const requestSessionId = sessionId;
     const requestToken = Symbol('runtime-send');
+    const previousUsage =
+      pendingUsageRef.current?.sessionId === requestSessionId
+        ? pendingUsageRef.current
+        : readStoredPendingUsage(requestSessionId);
+    if (previousUsage && previousUsage.text !== trimmed) {
+      throw new Error('上一次发送结果仍待确认，请先重试原任务。');
+    }
+    const usageId =
+      previousUsage?.sessionId === requestSessionId && previousUsage.text === trimmed
+        ? previousUsage.usageId
+        : crypto.randomUUID();
+    pendingUsageRef.current = {
+      sessionId: requestSessionId,
+      text: trimmed,
+      usageId,
+      reason: previousUsage?.reason ?? 'uncertain',
+    };
+    storePendingUsage(pendingUsageRef.current);
+    // 当前调用源（聊天、首屏表单或 Miniapp）仍持有自己的草稿和生命周期；
+    // 只有页面重载、调用源丢失后才显示统一恢复入口。
+    setPendingRetryAvailable(false);
     sendInFlightRef.current = { sessionId: requestSessionId, token: requestToken };
     dispatch({ kind: 'turn-submitting' });
     try {
-      const message = await sendSessionMessage(requestSessionId, trimmed);
+      const accepted = await sendSessionMessage(requestSessionId, trimmed, usageId);
+      const { message } = accepted;
       const turnId = message.turnId;
       if (!turnId) {
         throw new Error('服务端已接受消息，但没有返回轮次标识。请刷新页面确认结果。');
       }
-      // 202 的 turnId 先落 reducer，关闭“STATE_DELTA 已到、cache 仍旧”的竞态窗口。
+      // usageId 重放只返回原消息，不会启动新轮。必须撤销 submitting，并回拉真源，
+      // 否则已完成的原 Turn 会被错误复活为 running，且永远等不到新的 SSE 终态。
       if (activeSessionIdRef.current === requestSessionId) {
-        dispatch({ kind: 'turn-accepted', runId: turnId });
+        dispatch({
+          kind: accepted.replayed ? 'turn-replayed' : 'turn-accepted',
+          runId: turnId,
+        });
       }
-      // 缓存更新只负责让聊天立即可见，并标记本轮 active；其 artifacts 不是权威快照。
-      // reducer 看到同 active turn 时会保留/合并 SSE 候选，绝不会整表替换。
+      // 缓存更新只负责让聊天立即可见。只有新启动的轮次可以乐观标记 active；
+      // replay 必须保留缓存中的真实 activeTurn，并立即回拉详情。
       qc.setQueryData<SessionDetail>(['session', requestSessionId], (cur) =>
         cur
           ? {
               ...cur,
               messages: appendMessage(cur.messages, message),
-              activeTurn: { id: turnId, createdAt: message.createdAt },
+              ...(accepted.replayed
+                ? {}
+                : { activeTurn: { id: turnId, createdAt: message.createdAt } }),
             }
           : cur,
       );
+      if (accepted.replayed) {
+        // Keep the synchronous send lock until the authoritative detail refetch settles.
+        // This closes the brief replay window where the original Turn may still be running.
+        await Promise.all([
+          qc.invalidateQueries({ queryKey: ['session', requestSessionId] }),
+          qc.invalidateQueries({ queryKey: ['sessions'] }),
+        ]);
+        if (sendInFlightRef.current?.token === requestToken) sendInFlightRef.current = null;
+      }
+      clearStoredPendingUsage(requestSessionId, usageId);
+      if (pendingUsageRef.current?.usageId === usageId) pendingUsageRef.current = null;
+      if (activeSessionIdRef.current === requestSessionId) setPendingRetryAvailable(false);
+      if (activeSessionIdRef.current === requestSessionId) setRechargeRequired(null);
       return message;
     } catch (err: unknown) {
       if (sendInFlightRef.current?.token === requestToken) {
@@ -173,13 +306,33 @@ export function useSessionStream(
       if (requestIsCurrent && isUnauthenticated(err)) {
         goToLogin();
       }
+      const recharge = readRechargeRequired(err, usageId);
+      if (recharge) {
+        const pending = pendingUsageRef.current;
+        if (pending?.usageId === usageId) {
+          pending.reason = 'recharge_required';
+          storePendingUsage(pending);
+        }
+        if (requestIsCurrent) setRechargeRequired(recharge);
+      }
+      const outcomeMayHaveCommitted =
+        recharge !== null || !(err instanceof ApiError) || err.status === 0 || err.status >= 500;
+      if (outcomeMayHaveCommitted) {
+        if (requestIsCurrent) setPendingRetryAvailable(true);
+      } else {
+        clearStoredPendingUsage(requestSessionId, usageId);
+        if (pendingUsageRef.current?.usageId === usageId) pendingUsageRef.current = null;
+        if (requestIsCurrent) setPendingRetryAvailable(false);
+      }
       // 服务端错误信封中的 userMessage 已是人话；同时 reject 给 Miniapp bridge，
       // 让它不依赖一次可能来不及渲染的 optimistic running 状态。
       const message = isUnauthenticated(err)
         ? '登录态失效了，请重新登录。'
-        : err instanceof ApiError
-          ? err.userMessage
-          : '发送失败，请重试。';
+        : recharge
+          ? '免费次数已用完，充值后可继续使用。'
+          : err instanceof ApiError
+            ? err.userMessage
+            : '发送失败，请重试。';
       if (requestIsCurrent) dispatch({ kind: 'error', message });
       throw new Error(message, { cause: err });
     }
@@ -196,6 +349,30 @@ export function useSessionStream(
     selectArtifact: (id) => dispatch({ kind: 'select-artifact', id }),
     send,
     interrupt,
+    rechargeRequired,
+    clearRechargeRequired: () => setRechargeRequired(null),
+    pendingRetryAvailable,
+    retryPending: () => {
+      if (!sessionId) return Promise.reject(new Error('会话还没有准备好，请稍后重试。'));
+      const pending =
+        pendingUsageRef.current?.sessionId === sessionId
+          ? pendingUsageRef.current
+          : readStoredPendingUsage(sessionId);
+      if (!pending) return Promise.reject(new Error('没有需要重试的任务。'));
+      return send(pending.text);
+    },
+    abandonRechargeUsage: () => {
+      if (!sessionId) return;
+      const pending =
+        pendingUsageRef.current?.sessionId === sessionId
+          ? pendingUsageRef.current
+          : readStoredPendingUsage(sessionId);
+      if (!pending || pending.reason !== 'recharge_required') return;
+      clearStoredPendingUsage(sessionId, pending.usageId);
+      if (pendingUsageRef.current?.usageId === pending.usageId) pendingUsageRef.current = null;
+      setPendingRetryAvailable(false);
+      setRechargeRequired(null);
+    },
   };
 }
 

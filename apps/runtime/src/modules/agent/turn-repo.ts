@@ -138,7 +138,11 @@ export async function finishTurnWithMessage(
     content: unknown[];
     lastError: { code: string; message: string };
   },
-  options: { beforeFinish?: () => Promise<void>; transaction?: TransactionOptions } = {},
+  options: {
+    beforeFinish?: () => Promise<void>;
+    afterFinish?: (transaction: Queryable) => Promise<void>;
+    transaction?: TransactionOptions;
+  } = {},
 ): Promise<boolean> {
   return withTransaction(
     db,
@@ -153,6 +157,7 @@ export async function finishTurnWithMessage(
         lastError: input.lastError,
       });
       if (!won) return false;
+      await options.afterFinish?.(transaction);
       await appendTurnMessage(transaction, {
         sessionId: input.sessionId,
         turnId: input.id,
@@ -273,6 +278,10 @@ export async function sweepExpiredTurns(
   cutoff: Date,
   options: {
     beforeFinish?: (turn: { id: string; sessionId: string }) => Promise<void>;
+    afterFinish?: (
+      transaction: Queryable,
+      turn: { id: string; sessionId: string },
+    ) => Promise<void>;
   } = {},
 ): Promise<TerminalTurn[]> {
   const candidates = await db.query<{ id: string; session_id: string }>(
@@ -300,6 +309,10 @@ export async function sweepExpiredTurns(
         [candidate.id, JSON.stringify(lastError)],
       );
       if (updated.rowCount !== 1) return false;
+      await options.afterFinish?.(tx, {
+        id: candidate.id,
+        sessionId: candidate.session_id,
+      });
       await tx.query(
         `INSERT INTO messages (session_id, turn_id, idx, seq, role, content, status)
          SELECT $1, $2, COALESCE(MAX(idx), 0) + 1, NULL, 'assistant', $3::jsonb, 'failed'

@@ -72,6 +72,14 @@ const EnvSchema = z
     // 轮次空闲看门狗：LLM 流两次活动间隔超过此值（毫秒）判连接夯死，abort 本轮并发送 RUN_ERROR。
     // 只判无输出的停滞，不限制轮次总时长（issue #51）。
     RUNTIME_TURN_IDLE_TIMEOUT_MS: z.coerce.number().int().positive().default(180_000),
+    // 消费计费策略。dev/test 使用可控默认值；生产必须显式配置并写入每笔用量快照。
+    RUNTIME_BILLING_FREE_USES: z.coerce.number().int().min(0).max(10_000).default(3),
+    RUNTIME_BILLING_UNIT_PRICE_CENTS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .default(100),
     // 从 Turn 中止到数据库、Kubernetes 与连接关闭共用同一个绝对截止时间。
     RUNTIME_SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().positive().max(60_000).default(15_000),
 
@@ -224,6 +232,8 @@ const PRODUCTION_REQUIRED = [
   'S3_SECRET_KEY',
   'PUBLIC_APP_ORIGINS',
   'SESSION_COOKIE_SECURE',
+  'RUNTIME_BILLING_FREE_USES',
+  'RUNTIME_BILLING_UNIT_PRICE_CENTS',
   ...RELEASE_METADATA_ENV_KEYS,
 ] as const;
 

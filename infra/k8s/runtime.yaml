@@ -49,6 +49,12 @@ spec:
               value: combo-public-app-origin
             - name: SESSION_COOKIE_SECURE
               value: combo-session-cookie-secure
+            # 固定按成功 Turn 收费；这是部署配置而非业务代码常量。后续环境可通过
+            # Kustomize patch 调整，但一次发布内必须显式、稳定且写入每笔计费快照。
+            - name: RUNTIME_BILLING_FREE_USES
+              value: '3'
+            - name: RUNTIME_BILLING_UNIT_PRICE_CENTS
+              value: '100'
             # runtime 的代码契约要求 REDIS_URL，不能使用 authoring 的 REDIS_QUEUE_URL 替代。
             - name: REDIS_URL
               value: redis://redis-queue:6379

@@ -16,11 +16,20 @@ import {
   appendTurnMessage,
   getMessages,
   lockActiveSession,
+  SessionBusyError,
   type MessageRecord,
   type SessionRow,
 } from '../session/repo.js';
 import { createArtifactTool, type ArtifactAgentTool } from '../artifact/tool.js';
 import { bindCapabilityUiArtifact, readLatestHtmlArtifactInSession } from '../artifact/repo.js';
+import {
+  createUsageBillingService,
+  DEFAULT_USAGE_BILLING_POLICY,
+  usageRequestFingerprint,
+  type UsageBillingPolicy,
+  type UsageRequest,
+} from '../billing/service.js';
+import { findUsageCharge } from '../billing/repo.js';
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
 import { createTurnEmitter, type TurnEmitter, type TurnLogger } from './turn-emitter.js';
 import {
@@ -72,6 +81,58 @@ export class SessionInactiveError extends Error {
   }
 }
 
+export const START_TURN_DATABASE_TIMEOUT_MS = 8_000;
+export const START_TURN_DEADLINE_MS = 10_000;
+const TURN_OWNERSHIP_CONFIRMATION_DATABASE_TIMEOUT_MS = 1_500;
+const TURN_OWNERSHIP_CONFIRMATION_DEADLINE_MS = 2_000;
+const TURN_OWNERSHIP_RETRY_MAX_DELAY_MS = 5_000;
+
+export type TurnAdmissionStage =
+  | 'transaction_setup'
+  | 'session_lock'
+  | 'usage_prepare'
+  | 'usage_replay_lookup'
+  | 'running_check'
+  | 'terminal_repair'
+  | 'turn_insert'
+  | 'usage_reservation'
+  | 'message_insert'
+  | 'commit'
+  | 'commit_recovery';
+
+export type TurnAdmissionDatabaseCode = '40001' | '40P01' | '55P03' | '57014';
+export type TurnAdmissionFailureReason = 'database_transient' | 'deadline' | 'commit_unknown';
+
+export class TurnAdmissionUnavailableError extends Error {
+  readonly stage: TurnAdmissionStage;
+  readonly reason: TurnAdmissionFailureReason;
+  readonly databaseCode: TurnAdmissionDatabaseCode | undefined;
+
+  constructor(
+    stage: TurnAdmissionStage,
+    reason: TurnAdmissionFailureReason,
+    databaseCode: TurnAdmissionDatabaseCode | undefined,
+    cause: unknown,
+  ) {
+    super('turn admission is temporarily unavailable', { cause });
+    this.name = 'TurnAdmissionUnavailableError';
+    this.stage = stage;
+    this.reason = reason;
+    this.databaseCode = databaseCode;
+  }
+}
+
+function errorCode(error: unknown): string | null {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return null;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : null;
+}
+
+function admissionDatabaseCode(error: unknown): TurnAdmissionDatabaseCode | null {
+  const code = errorCode(error);
+  return code === '40001' || code === '40P01' || code === '55P03' || code === '57014' ? code : null;
+}
+
 export interface TurnRunnerDeps {
   db: RuntimeDb;
   objectStore: RuntimeObjectStore;
@@ -85,14 +146,21 @@ export interface TurnRunnerDeps {
   shutdownTimeoutMs?: number;
   terminalEventTimeoutMs?: number;
   sandboxCleanupTimeoutMs?: number;
+  turnAdmissionDatabaseTimeoutMs?: number;
+  turnAdmissionDeadlineMs?: number;
+  billingPolicy?: UsageBillingPolicy;
   log: TurnLogger;
 }
-export type StartTurnResult = { status: 'started'; userMessage: MessageRecord };
+export type StartTurnResult =
+  | { status: 'started' | 'replayed'; userMessage: MessageRecord }
+  | { status: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
 export interface TurnRunner {
   startTurn(input: {
     session: SessionRow;
     definition: CapabilityDefinition;
     text: string;
+    usageId: string;
+    capabilityOwnerUserId: string;
     log: TurnLogger;
   }): Promise<StartTurnResult>;
   interrupt(sessionId: string): Promise<boolean>;
@@ -193,8 +261,26 @@ function waitUntilSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
   });
 }
 
+function waitForDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
 export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   const sandbox = deps.sandbox ?? createDisabledSandboxBackend();
+  const billing = createUsageBillingService(deps.billingPolicy ?? DEFAULT_USAGE_BILLING_POLICY);
   interface ActiveTurn {
     controller: AbortController;
     runId: string;
@@ -213,6 +299,9 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   const shutdownTimeoutMs = deps.shutdownTimeoutMs ?? 15_000;
   const terminalEventTimeoutMs = deps.terminalEventTimeoutMs ?? 3_000;
   const sandboxCleanupTimeoutMs = deps.sandboxCleanupTimeoutMs ?? 10_000;
+  const turnAdmissionDatabaseTimeoutMs =
+    deps.turnAdmissionDatabaseTimeoutMs ?? START_TURN_DATABASE_TIMEOUT_MS;
+  const turnAdmissionDeadlineMs = deps.turnAdmissionDeadlineMs ?? START_TURN_DEADLINE_MS;
   if (!Number.isSafeInteger(shutdownTimeoutMs) || shutdownTimeoutMs <= 0) {
     throw new Error('turn shutdown timeout must be positive');
   }
@@ -222,8 +311,21 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   if (!Number.isSafeInteger(sandboxCleanupTimeoutMs) || sandboxCleanupTimeoutMs <= 0) {
     throw new Error('sandbox cleanup timeout must be positive');
   }
+  if (
+    !Number.isSafeInteger(turnAdmissionDatabaseTimeoutMs) ||
+    turnAdmissionDatabaseTimeoutMs <= 0
+  ) {
+    throw new Error('turn admission database timeout must be positive');
+  }
+  if (
+    !Number.isSafeInteger(turnAdmissionDeadlineMs) ||
+    turnAdmissionDeadlineMs <= turnAdmissionDatabaseTimeoutMs
+  ) {
+    throw new Error('turn admission deadline must exceed its database timeout');
+  }
   const promptAbortGraceMs = Math.max(1, Math.min(1_000, Math.floor(shutdownTimeoutMs / 2)));
   let disposing = false;
+  const disposalController = new AbortController();
   let disposePromise: Promise<void> | undefined;
   const appendTerminalEvent = async (
     sessionId: string,
@@ -351,45 +453,83 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     }).catch(() => undefined);
   });
   let sweepInFlight: Promise<void> | undefined;
+  const runSweep = (): Promise<void> => {
+    if (sweepInFlight) return sweepInFlight;
+    const run = (async () => {
+      try {
+        const swept = await sweepExpiredTurns(
+          deps.db,
+          new Date(Date.now() - TURN_ABANDON_AFTER_MS),
+          {
+            beforeFinish: async (turn) => {
+              deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
+              // The Session row remains locked until sandboxd confirms its
+              // descendant sweep or the exact Pod UID is observed gone.
+              await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
+                localExecution: active.get(turn.sessionId)?.runId === turn.id,
+              });
+            },
+            afterFinish: (transaction, turn) => billing.releaseUsage(transaction, turn.id),
+          },
+        );
+        // PostgreSQL is the terminal truth. Redis is appended only after each
+        // terminal transaction commits; startTurn repairs a missing event
+        // under the same Session lock before a successor can be created.
+        for (const turn of swept) {
+          await appendCommittedTerminal(turn).catch((err) => {
+            deps.log.error({ err, runId: turn.id }, 'swept terminal event append failed');
+          });
+        }
+      } catch (err) {
+        deps.log.error({ err }, 'turn sweep failed');
+      }
+      try {
+        await billing.reconcileTerminalReservations(deps.db);
+      } catch (err) {
+        deps.log.error({ err }, 'billing reservation reconciliation failed');
+      }
+    })().finally(() => {
+      if (sweepInFlight === run) sweepInFlight = undefined;
+    });
+    sweepInFlight = run;
+    return run;
+  };
   const sweepTimer =
     deps.sweepIntervalMs === undefined
       ? undefined
       : setInterval(() => {
-          if (sweepInFlight) return;
-          const run = (async () => {
-            try {
-              const swept = await sweepExpiredTurns(
-                deps.db,
-                new Date(Date.now() - TURN_ABANDON_AFTER_MS),
-                {
-                  beforeFinish: async (turn) => {
-                    deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
-                    // The Session row remains locked until sandboxd confirms its
-                    // descendant sweep or the exact Pod UID is observed gone.
-                    await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
-                      localExecution: active.get(turn.sessionId)?.runId === turn.id,
-                    });
-                  },
-                },
-              );
-              // PostgreSQL is the terminal truth. Redis is appended only after each
-              // terminal transaction commits; startTurn repairs a missing event
-              // under the same Session lock before a successor can be created.
-              for (const turn of swept) {
-                await appendCommittedTerminal(turn).catch((err) => {
-                  deps.log.error({ err, runId: turn.id }, 'swept terminal event append failed');
-                });
-              }
-            } catch (err) {
-              deps.log.error({ err }, 'turn sweep failed');
-            }
-          })().finally(() => {
-            if (sweepInFlight === run) sweepInFlight = undefined;
-          });
-          sweepInFlight = run;
-          void run;
+          void runSweep();
         }, deps.sweepIntervalMs);
   sweepTimer?.unref?.();
+  if (deps.sweepIntervalMs !== undefined) void runSweep();
+
+  const waitForExecutableTurn = async (
+    sessionId: string,
+    runId: string,
+    running: ActiveTurn,
+  ): Promise<boolean> => {
+    let retryDelayMs = 250;
+    for (;;) {
+      if (disposing || shutdownOwnedRuns.has(runId) || active.get(sessionId) !== running) {
+        return false;
+      }
+      const confirmationSignal = AbortSignal.any([
+        disposalController.signal,
+        AbortSignal.timeout(TURN_OWNERSHIP_CONFIRMATION_DEADLINE_MS),
+      ]);
+      const currentRunId = await withTransaction(
+        deps.db,
+        (transaction) => getRunningTurnId(transaction, sessionId),
+        {
+          signal: confirmationSignal,
+          timeoutMs: TURN_OWNERSHIP_CONFIRMATION_DATABASE_TIMEOUT_MS,
+        },
+      ).catch(() => undefined);
+      if (currentRunId !== undefined) return currentRunId === runId;
+      await waitForDelay(retryDelayMs, disposalController.signal);
+      retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
+    }
+  };
 
   async function executeTurn(args: {
     sessionId: string;
@@ -404,7 +544,10 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   }): Promise<void> {
     const { sessionId, controller, log, runId } = args;
     const localHandle = active.get(sessionId);
-    if (localHandle?.runId !== runId || (await getRunningTurnId(deps.db, sessionId)) !== runId) {
+    if (
+      localHandle?.runId !== runId ||
+      !(await waitForExecutableTurn(sessionId, runId, localHandle))
+    ) {
       return;
     }
     const emitter: TurnEmitter = createTurnEmitter({
@@ -461,14 +604,18 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       try {
         await emitter.flush();
         if (shutdownOwnedRuns.has(runId)) return;
-        ok = await finishTurnWithMessage(deps.db, {
-          id: runId,
-          sessionId,
-          idx: nextIdx++,
-          status: 'failed',
-          content: failedContent ?? [{ type: 'text', text: userMessage }],
-          lastError,
-        });
+        ok = await finishTurnWithMessage(
+          deps.db,
+          {
+            id: runId,
+            sessionId,
+            idx: nextIdx++,
+            status: 'failed',
+            content: failedContent ?? [{ type: 'text', text: userMessage }],
+            lastError,
+          },
+          { afterFinish: (transaction) => billing.releaseUsage(transaction, runId) },
+        );
       } catch (err) {
         log.error({ err }, 'persist failed terminal state failed');
         return;
@@ -493,16 +640,20 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       try {
         await emitter.flush();
         if (shutdownOwnedRuns.has(runId)) return;
-        ok = await finishTurnWithMessage(deps.db, {
-          id: runId,
-          sessionId,
-          idx: nextIdx++,
-          status: 'interrupted',
-          content: assistantText
-            ? [{ type: 'text', text: assistantText }]
-            : [{ type: 'text', text: message }],
-          lastError,
-        });
+        ok = await finishTurnWithMessage(
+          deps.db,
+          {
+            id: runId,
+            sessionId,
+            idx: nextIdx++,
+            status: 'interrupted',
+            content: assistantText
+              ? [{ type: 'text', text: assistantText }]
+              : [{ type: 'text', text: message }],
+            lastError,
+          },
+          { afterFinish: (transaction) => billing.releaseUsage(transaction, runId) },
+        );
       } catch (err) {
         log.error({ err }, 'persist interrupted terminal state failed');
         return;
@@ -751,6 +902,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         if (!(await lockRunningTurn(transaction, runId, sessionId))) return null;
         const won = await finishTurnCas(transaction, { id: runId, status: 'completed' });
         if (!won) return null;
+        await billing.settleUsage(transaction, runId);
         // 先在事务内把 Turn CAS 为 completed，再提升同一 Turn 的最终 Artifact；
         // 任一后续步骤失败都会回滚两者，Redis 仍要等整笔 PostgreSQL 事务提交。
         if (args.mode === 'studio' && lastStudioArtifactId) {
@@ -818,44 +970,272 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       // There is no await between the shutdown check and this registration, so
       // dispose either rejects this start or owns its complete transaction window.
       starting.add(startingTurn);
-      let userMessage: MessageRecord;
+      const usageRequest: UsageRequest = {
+        ownerUserId: input.session.ownerUserId,
+        capabilityOwnerUserId: input.capabilityOwnerUserId,
+        capabilityId: input.session.capabilityId,
+        sessionId,
+        usageId: input.usageId,
+        text: input.text,
+      };
+      type OpenTurnOutcome =
+        | { kind: 'started'; userMessage: MessageRecord }
+        | { kind: 'replayed'; userMessage: MessageRecord }
+        | { kind: 'recharge_required'; balanceCents: bigint; requiredCents: bigint };
+      let outcome: OpenTurnOutcome | undefined;
       let repairedTerminal: PublishedStreamEvent | undefined;
-      try {
-        userMessage = await withTransaction(
+      let admissionStage: TurnAdmissionStage = 'transaction_setup';
+      let retainActiveForRecovery = false;
+      const admissionDeadline = AbortSignal.timeout(turnAdmissionDeadlineMs);
+      const admissionSignal = AbortSignal.any([transactionController.signal, admissionDeadline]);
+      type CommitConfirmation =
+        | { kind: 'committed'; outcome: Extract<OpenTurnOutcome, { kind: 'started' }> }
+        | { kind: 'absent' }
+        | { kind: 'unknown' };
+      const confirmCommittedStart = async (signal: AbortSignal): Promise<CommitConfirmation> => {
+        const confirmed = await withTransaction(
           deps.db,
           async (tx) => {
             const lockedSession = await lockActiveSession(tx, sessionId, input.session.ownerUserId);
-            if (!lockedSession) throw new SessionInactiveError();
-            // PostgreSQL is authoritative for a previous committed terminal. Under
-            // this Session lock, repair can replace a conflicting pre-fix marker;
-            // ordinary terminal races still use strict appendTerminal semantics.
-            const previous = await getLatestTerminalTurn(tx, sessionId);
-            if (previous) {
-              repairedTerminal = await appendTerminalEvent(
-                previous.sessionId,
-                previous.id,
-                terminalEventForTurn(previous),
-                transactionController.signal,
-                'repair',
+            if (!lockedSession) return null;
+            const charge = await findUsageCharge(
+              tx,
+              usageRequest.ownerUserId,
+              usageRequest.usageId,
+            );
+            if (
+              !charge ||
+              charge.turnId !== runId ||
+              charge.sessionId !== sessionId ||
+              charge.status !== 'reserved' ||
+              charge.requestFingerprint !== usageRequestFingerprint(usageRequest) ||
+              (await getRunningTurnId(tx, sessionId)) !== runId
+            ) {
+              return null;
+            }
+            const messages = await getMessages(tx, sessionId);
+            const original = messages.find(
+              (message) =>
+                message.turnId === runId &&
+                message.role === 'user' &&
+                message.status === 'completed',
+            );
+            return original ? { kind: 'started' as const, userMessage: original } : null;
+          },
+          {
+            signal,
+            timeoutMs: TURN_OWNERSHIP_CONFIRMATION_DATABASE_TIMEOUT_MS,
+          },
+        ).catch(() => undefined);
+        return confirmed
+          ? { kind: 'committed', outcome: confirmed }
+          : confirmed === null
+            ? { kind: 'absent' }
+            : { kind: 'unknown' };
+      };
+      const scheduleCommitRecovery = (): void => {
+        retainActiveForRecovery = true;
+        let retryDelayMs = 250;
+        running.completion = (async () => {
+          for (;;) {
+            if (disposing || shutdownOwnedRuns.has(runId) || active.get(sessionId) !== running) {
+              return;
+            }
+            const confirmation = await confirmCommittedStart(
+              AbortSignal.any([
+                disposalController.signal,
+                AbortSignal.timeout(TURN_OWNERSHIP_CONFIRMATION_DEADLINE_MS),
+              ]),
+            );
+            if (confirmation.kind === 'committed') {
+              if (active.get(sessionId) !== running || disposing) return;
+              // Preserve the same ordering as the ordinary admission path: a
+              // repaired prior terminal must be visible before RUN_STARTED.
+              if (repairedTerminal) deps.bus.publish(sessionId, repairedTerminal);
+              await executeTurn({
+                sessionId,
+                capabilityId: input.session.capabilityId,
+                definition: input.definition,
+                mode: input.session.mode,
+                text: input.text,
+                controller,
+                runId,
+                ownerUserId: input.session.ownerUserId,
+                log: input.log,
+              });
+              return;
+            }
+            if (confirmation.kind === 'absent') return;
+            await waitForDelay(retryDelayMs, disposalController.signal);
+            retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
+          }
+        })()
+          .catch((err) => input.log.error({ err, runId }, 'commit recovery execution failed'))
+          .finally(() => {
+            if (active.get(sessionId) === running) active.delete(sessionId);
+          });
+      };
+      try {
+        try {
+          outcome = await withTransaction(
+            deps.db,
+            async (tx) => {
+              admissionStage = 'session_lock';
+              const lockedSession = await lockActiveSession(
+                tx,
+                sessionId,
+                input.session.ownerUserId,
+              );
+              if (!lockedSession) throw new SessionInactiveError();
+              // usageId 锁跨 Session 生效；完全相同的重试优先于 SESSION_BUSY，
+              // 因而原 Turn 仍运行时也能稳定返回原 user Message。
+              admissionStage = 'usage_prepare';
+              const preparation = await billing.prepareUsage(tx, usageRequest);
+              if (preparation.kind === 'replay') {
+                admissionStage = 'usage_replay_lookup';
+                const messages = await getMessages(tx, sessionId);
+                const original = messages.find(
+                  (message) =>
+                    message.turnId === preparation.turnId &&
+                    message.role === 'user' &&
+                    message.status === 'completed',
+                );
+                if (!original) throw new Error('replayed usage user message is missing');
+                admissionStage = 'commit';
+                return { kind: 'replayed' as const, userMessage: original };
+              }
+              // 不同 usageId 仍遵守单 Session 单 running Turn。额度的真正计数和金额
+              // 尚未修改，所以 busy 或余额不足都不会留下预留。
+              admissionStage = 'running_check';
+              if (await getRunningTurnId(tx, sessionId)) {
+                throw new SessionBusyError();
+              }
+              // PostgreSQL is authoritative for a previous committed terminal. Under
+              // this Session lock, repair can replace a conflicting pre-fix marker;
+              // ordinary terminal races still use strict appendTerminal semantics.
+              admissionStage = 'terminal_repair';
+              const previous = await getLatestTerminalTurn(tx, sessionId);
+              if (previous) {
+                repairedTerminal = await appendTerminalEvent(
+                  previous.sessionId,
+                  previous.id,
+                  terminalEventForTurn(previous),
+                  admissionSignal,
+                  'repair',
+                );
+              }
+              if (preparation.kind === 'insufficient') {
+                admissionStage = 'commit';
+                return {
+                  kind: 'recharge_required' as const,
+                  balanceCents: preparation.balanceCents,
+                  requiredCents: preparation.requiredCents,
+                };
+              }
+              admissionStage = 'turn_insert';
+              await createTurn(tx, { id: runId, sessionId });
+              admissionStage = 'usage_reservation';
+              await billing.reservePreparedUsage(tx, {
+                ...usageRequest,
+                turnId: runId,
+                preparation,
+              });
+              admissionStage = 'message_insert';
+              const message = await appendTurnMessage(tx, {
+                sessionId,
+                turnId: runId,
+                idx: 0,
+                role: 'user',
+                content: [{ type: 'text', text: input.text }],
+                status: 'completed',
+              });
+              // Publish the local handle before COMMIT. A concurrent interrupt waits on
+              // the Session row, then can verify this exact runId instead of falling
+              // through the post-commit/pre-handle gap.
+              active.set(sessionId, running);
+              admissionStage = 'commit';
+              return { kind: 'started' as const, userMessage: message };
+            },
+            {
+              signal: admissionSignal,
+              timeoutMs: turnAdmissionDatabaseTimeoutMs,
+            },
+          );
+        } catch (err) {
+          if (disposing || transactionController.signal.aborted) {
+            throw new Error('turn runner is shutting down');
+          }
+          // TypeScript cannot observe assignments performed inside the transaction
+          // callback, so widen the captured phase before classifying its failure.
+          const failedStage = admissionStage as TurnAdmissionStage;
+          const databaseCode = admissionDatabaseCode(err);
+          const rawDatabaseCode = errorCode(err);
+          const hasRawSqlState = rawDatabaseCode !== null && /^[0-9A-Z]{5}$/.test(rawDatabaseCode);
+          // A server-returned non-transient, non-connection SQLSTATE is a
+          // definitive transaction failure, including deferred constraints at
+          // COMMIT. Do not turn it into an uncertain background recovery merely
+          // because a subsequent confirmation query might also be unavailable.
+          if (hasRawSqlState && !databaseCode && !rawDatabaseCode.startsWith('08')) {
+            throw err;
+          }
+          let commitRecovered = false;
+          if (failedStage === 'commit' && active.get(sessionId) === running) {
+            const recoveryDeadline = AbortSignal.timeout(TURN_OWNERSHIP_CONFIRMATION_DEADLINE_MS);
+            const recoverySignal = AbortSignal.any([
+              transactionController.signal,
+              recoveryDeadline,
+            ]);
+            admissionStage = 'commit_recovery';
+            const confirmation = await confirmCommittedStart(recoverySignal);
+            if (disposing || transactionController.signal.aborted) {
+              throw new Error('turn runner is shutting down');
+            }
+            if (confirmation.kind === 'committed') {
+              outcome = confirmation.outcome;
+              commitRecovered = true;
+            } else if (confirmation.kind === 'unknown') {
+              scheduleCommitRecovery();
+              throw new TurnAdmissionUnavailableError(
+                'commit_recovery',
+                admissionDeadline.aborted
+                  ? 'deadline'
+                  : databaseCode
+                    ? 'database_transient'
+                    : 'commit_unknown',
+                databaseCode ?? undefined,
+                err,
               );
             }
-            await createTurn(tx, { id: runId, sessionId });
-            const message = await appendTurnMessage(tx, {
-              sessionId,
-              turnId: runId,
-              idx: 0,
-              role: 'user',
-              content: [{ type: 'text', text: input.text }],
-              status: 'completed',
-            });
-            // Publish the local handle before COMMIT. A concurrent interrupt waits on
-            // the Session row, then can verify this exact runId instead of falling
-            // through the post-commit/pre-handle gap.
-            active.set(sessionId, running);
-            return message;
-          },
-          { signal: transactionController.signal },
-        );
+          }
+          if (!commitRecovered) {
+            if (databaseCode) {
+              throw new TurnAdmissionUnavailableError(
+                failedStage,
+                'database_transient',
+                databaseCode,
+                err,
+              );
+            }
+            if (hasRawSqlState && failedStage !== 'commit') {
+              // A connection-class error outside COMMIT cannot have persisted this
+              // transaction and retains the ordinary internal-error path.
+              throw err;
+            }
+            if (admissionDeadline.aborted) {
+              throw new TurnAdmissionUnavailableError(failedStage, 'deadline', undefined, err);
+            }
+            if (failedStage === 'commit') {
+              throw new TurnAdmissionUnavailableError(
+                failedStage,
+                'commit_unknown',
+                undefined,
+                err,
+              );
+            }
+            throw err;
+          }
+        }
+        if (!outcome) throw new Error('turn admission completed without an outcome');
         if (disposing || transactionController.signal.aborted || shutdownOwnedRuns.has(runId)) {
           throw new Error('turn runner is shutting down');
         }
@@ -863,6 +1243,16 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         // Stream id filtering makes this safe when the original terminal publisher
         // also wakes up and publishes the same id later.
         if (repairedTerminal) deps.bus.publish(sessionId, repairedTerminal);
+        if (outcome.kind === 'replayed') {
+          return { status: 'replayed', userMessage: outcome.userMessage };
+        }
+        if (outcome.kind === 'recharge_required') {
+          return {
+            status: 'recharge_required',
+            balanceCents: outcome.balanceCents,
+            requiredCents: outcome.requiredCents,
+          };
+        }
         // A synchronous bus subscriber can initiate disposal, so fence once more
         // immediately before the only place that starts Pi execution.
         if (disposing || transactionController.signal.aborted || shutdownOwnedRuns.has(runId)) {
@@ -883,9 +1273,11 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           .finally(() => {
             if (active.get(sessionId) === running) active.delete(sessionId);
           });
-        return { status: 'started', userMessage };
+        return { status: 'started', userMessage: outcome.userMessage };
       } catch (err) {
-        if (active.get(sessionId) === running) active.delete(sessionId);
+        if (!retainActiveForRecovery && active.get(sessionId) === running) {
+          active.delete(sessionId);
+        }
         // dispose retains this StartingTurn record even when COMMIT had an unknown
         // outcome, so a committed row joins the same cleanup and terminal fallback.
         if (disposing || transactionController.signal.aborted) {
@@ -939,6 +1331,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             deps.interrupts.publish({ sessionId, runId });
             await stopSandboxCommands(sessionId, 'cross-replica-interrupt');
           },
+          afterFinish: (transaction) => billing.releaseUsage(transaction, runId),
         },
       );
       if (won) {
@@ -953,6 +1346,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     dispose(externalSignal) {
       if (disposePromise) return disposePromise;
       disposing = true;
+      disposalController.abort();
       const deadline = Date.now() + shutdownTimeoutMs;
       const localDeadline = AbortSignal.timeout(shutdownTimeoutMs);
       const shutdownSignal = externalSignal
@@ -1059,7 +1453,10 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                   content: [{ type: 'text', text: message }],
                   lastError,
                 },
-                { transaction: { signal: shutdownSignal, timeoutMs: remaining } },
+                {
+                  afterFinish: (transaction) => billing.releaseUsage(transaction, running.runId),
+                  transaction: { signal: shutdownSignal, timeoutMs: remaining },
+                },
               ).catch((err) => {
                 deps.log.error({ err, runId: running.runId }, 'shutdown terminal fallback failed');
                 return false;

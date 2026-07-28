@@ -423,6 +423,41 @@ test('CI installs the pinned Playwright browser before the first-party auth E2E'
   );
 });
 
+test('CI runs both billing PostgreSQL suites against the migrated ephemeral database', () => {
+  const migrationAt = ci.indexOf('bash scripts/integration/db-migrate.sh');
+  const authoringAt = ci.indexOf(
+    'pnpm --dir apps/authoring exec vitest run src/__tests__/billing.pg.test.ts',
+  );
+  const runtimeAt = ci.indexOf(
+    'pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts',
+  );
+  assert.ok(migrationAt >= 0);
+  assert.ok(authoringAt > migrationAt);
+  assert.ok(runtimeAt > authoringAt);
+  assert.equal((ci.match(/BILLING_PG_TEST: '1'/g) ?? []).length, 2);
+  assert.equal(
+    (ci.match(/BILLING_TEST_DATABASE_URL: postgres:\/\/agora:agora@localhost:5432\/agora/g) ?? [])
+      .length,
+    2,
+  );
+  assert.equal(
+    (
+      ci.match(
+        /BILLING_AUTHORING_TEST_DATABASE_URL: postgres:\/\/combo_api:ci-api-role-password@localhost:5432\/agora/g,
+      ) ?? []
+    ).length,
+    1,
+  );
+  assert.equal(
+    (
+      ci.match(
+        /BILLING_RUNTIME_TEST_DATABASE_URL: postgres:\/\/combo_runtime:ci-runtime-role-password@localhost:5432\/agora/g,
+      ) ?? []
+    ).length,
+    1,
+  );
+});
+
 test('migration image includes only the ledger runner and its role provisioner', () => {
   assert.deepEqual(apiDockerfile.match(/^COPY --from=build \/app\/db\/.*$/gm), [
     'COPY --from=build /app/db/package.json ./db/package.json',

@@ -176,6 +176,56 @@ for (const [environment, namespace, prefix] of [
         expectedOrigins,
       );
     }
+    const credentialName = {
+      test: 'combo-dev-env',
+      preview: 'combo-preview-env',
+      production: 'combo-env',
+    }[environment];
+    const api = resources.find(
+      (resource) => resource.kind === 'Deployment' && resource.metadata.name === `${prefix}api`,
+    );
+    const apiEnvironment = new Map(
+      api.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+    );
+    for (const name of [
+      'BILLING_RECHARGE_PACKAGES_JSON',
+      'LESHOUYING_ENABLED',
+      'LESHOUYING_ENVIRONMENT',
+      'LESHOUYING_PRODUCTION_ENABLED',
+      'LESHOUYING_INSTITUTION_NO',
+      'LESHOUYING_MERCHANT_NO',
+      'LESHOUYING_INSTITUTION_KEY',
+      'LESHOUYING_NOTIFY_URL',
+      'LESHOUYING_FRONT_URL',
+    ]) {
+      assert.deepEqual(apiEnvironment.get(name).valueFrom.secretKeyRef, {
+        name: credentialName,
+        key: name,
+        optional: true,
+      });
+    }
+    for (const logicalName of ['worker', 'runtime']) {
+      const deployment = resources.find(
+        (resource) =>
+          resource.kind === 'Deployment' && resource.metadata.name === `${prefix}${logicalName}`,
+      );
+      const names = new Set(
+        deployment.spec.template.spec.containers[0].env.map((entry) => entry.name),
+      );
+      assert.equal(
+        [...names].some((name) => name.startsWith('LESHOUYING_')),
+        false,
+      );
+      assert.equal(names.has('BILLING_RECHARGE_PACKAGES_JSON'), false);
+    }
+    const runtime = resources.find(
+      (resource) => resource.kind === 'Deployment' && resource.metadata.name === `${prefix}runtime`,
+    );
+    const runtimeEnvironment = new Map(
+      runtime.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+    );
+    assert.equal(runtimeEnvironment.get('RUNTIME_BILLING_FREE_USES').value, '3');
+    assert.equal(runtimeEnvironment.get('RUNTIME_BILLING_UNIT_PRICE_CENTS').value, '100');
     for (const service of resources.filter((resource) => resource.kind === 'Service')) {
       const logicalName = service.metadata.name.slice(prefix.length);
       assert.deepEqual(service.spec.selector, {

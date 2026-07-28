@@ -1,13 +1,15 @@
 // 试用端 API：端点函数 + React Query hooks。类型全来自 @cb/shared 试用域契约。
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
-import type {
-  ArtifactView,
-  MessageView,
-  SessionDetail,
-  SessionMode,
-  SessionView,
+import {
+  RechargeRequiredBodySchema,
+  type ArtifactView,
+  type MessageView,
+  type RechargeRequiredBody,
+  type SessionDetail,
+  type SessionMode,
+  type SessionView,
 } from '@cb/shared';
-import { apiDelete, apiGet, apiGetText, apiPatch, apiPost } from './client.js';
+import { ApiError, apiDelete, apiGet, apiGetText, apiPatch, apiPost } from './client.js';
 
 /** GET /runtime/capabilities 列表项（runtime 侧 TrialCapabilityItem，shared 未收录，这里对齐声明）。 */
 export interface TrialCapability {
@@ -102,11 +104,34 @@ export function useArchiveSession() {
   });
 }
 
+export type RechargeRequired = RechargeRequiredBody;
+
+/** 只识别 runtime 明确定义的 402 结构，避免把普通网关错误误当作充值提示。 */
+export function readRechargeRequired(
+  error: unknown,
+  expectedUsageId: string,
+): RechargeRequired | null {
+  if (!(error instanceof ApiError) || error.status !== 402) return null;
+  const parsed = RechargeRequiredBodySchema.safeParse(error.responseBody);
+  return parsed.success && parsed.data.rechargeIntentId === expectedUsageId ? parsed.data : null;
+}
+
+export interface SendSessionMessageResult {
+  message: MessageView;
+  /** true 表示 usageId 已存在，服务端没有再次启动 Agent 或扣费。 */
+  replayed: boolean;
+}
+
 /** 发消息：202 即返回（user 消息已落库，生成在后端异步跑，进展经 /stream 订阅）。 */
-export function sendSessionMessage(sessionId: string, text: string): Promise<MessageView> {
-  return apiPost<{ message: MessageView }>(`/runtime/sessions/${sessionId}/messages`, {
+export function sendSessionMessage(
+  sessionId: string,
+  text: string,
+  usageId: string,
+): Promise<SendSessionMessageResult> {
+  return apiPost<SendSessionMessageResult>(`/runtime/sessions/${sessionId}/messages`, {
     text,
-  }).then((r) => r.message);
+    usageId,
+  });
 }
 
 /** 打断当前轮（无进行中的轮 → interrupted=false，幂等）。 */

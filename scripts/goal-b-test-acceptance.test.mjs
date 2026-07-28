@@ -243,13 +243,21 @@ test('live Studio submit passively observes the real request after draining inje
   assert.ok(checkStart > 0 && checkEnd > checkStart);
   const check = source.slice(checkStart, checkEnd);
 
+  assert.match(source, /button instanceof HTMLButtonElement && !button\.disabled/);
   assert.match(check, /page\.on\('request', countMessageRequest\)/);
+  assert.match(check, /page\.on\('requestfailed', observeMessageRequestFailure\)/);
   assert.match(check, /requestCount = Math\.min\(100, requestCount \+ 1\)/);
   assert.match(check, /page\.waitForRequest\(/);
   assert.match(check, /await sendButton\.evaluate/);
   assert.equal(check.match(/button\.click\(\);/g)?.length, 2);
   assert.match(check, /page\.off\('request', countMessageRequest\)/);
+  assert.match(check, /page\.off\('requestfailed', observeMessageRequestFailure\)/);
   assert.match(check, /submittedUsageId !== resolvedUncertainUsageId/);
+  assert.match(
+    check,
+    /diagnoseTimedOutStudioMessage\([\s\S]*api,[\s\S]*studioSession\.id[\s\S]*interrupt[\s\S]*submittedText/,
+  );
+  assert.doesNotMatch(check, /request\.failure\(\)/);
   assert.doesNotMatch(check, /page\.route\(|route\.fallback\(/);
 });
 
@@ -289,6 +297,41 @@ test('timed-out Studio submit only interrupts its exact active Turn', async () =
     [detailPath, { timeout: 5_000 }],
     [interruptPath, { method: 'POST', data: {}, timeout: 5_000 }],
   ]);
+
+  let unsafeTurnInterrupts = 0;
+  assert.equal(
+    await diagnoseTimedOutStudioMessage(
+      {
+        raw: async (path) => {
+          if (path === interruptPath) {
+            unsafeTurnInterrupts += 1;
+            return { status: () => 200 };
+          }
+          return {
+            status: () => 200,
+            json: async () => ({
+              data: {
+                messages: [
+                  {
+                    role: 'user',
+                    status: 'completed',
+                    turnId: 'not-a-uuid',
+                    content: [{ type: 'text', text }],
+                  },
+                ],
+                activeTurn: { id: 'not-a-uuid' },
+              },
+            }),
+          };
+        },
+      },
+      detailPath,
+      interruptPath,
+      text,
+    ),
+    'MESSAGE_RESPONSE_TIMEOUT_DETAIL_MESSAGE_COMMITTED',
+  );
+  assert.equal(unsafeTurnInterrupts, 0);
 
   for (const [messageText, activeId, expected] of [
     ['another prompt', activeTurnId, 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ABSENT'],

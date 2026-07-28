@@ -9,6 +9,8 @@ const MANAGED_KEYS = [
   'S3_SECRET_KEY',
   'PUBLIC_APP_ORIGINS',
   'SESSION_COOKIE_SECURE',
+  'RUNTIME_BILLING_FREE_USES',
+  'RUNTIME_BILLING_UNIT_PRICE_CENTS',
   'COMBO_ENVIRONMENT',
   'COMBO_SOURCE_SHA',
   'COMBO_RELEASE_ID',
@@ -42,6 +44,8 @@ function setProductionInfrastructure(): void {
   process.env.S3_SECRET_KEY = 'test-placeholder';
   process.env.PUBLIC_APP_ORIGINS = 'https://combo.example,https://review.combo.example';
   process.env.SESSION_COOKIE_SECURE = 'true';
+  process.env.RUNTIME_BILLING_FREE_USES = '3';
+  process.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = '100';
   process.env.COMBO_ENVIRONMENT = 'production';
   process.env.COMBO_SOURCE_SHA = 'a'.repeat(40);
   process.env.COMBO_RELEASE_ID = `release-${'a'.repeat(40)}`;
@@ -106,6 +110,8 @@ describe('runtime authentication configuration', () => {
       'S3_SECRET_KEY',
       'PUBLIC_APP_ORIGINS',
       'SESSION_COOKIE_SECURE',
+      'RUNTIME_BILLING_FREE_USES',
+      'RUNTIME_BILLING_UNIT_PRICE_CENTS',
     ] as const) {
       delete process.env[key];
     }
@@ -124,6 +130,18 @@ describe('runtime authentication configuration', () => {
     expect(message).toContain('S3_ENDPOINT');
     expect(message).toContain('PUBLIC_APP_ORIGINS');
     expect(message).toContain('SESSION_COOKIE_SECURE');
+    expect(message).toContain('RUNTIME_BILLING_FREE_USES');
+    expect(message).toContain('RUNTIME_BILLING_UNIT_PRICE_CENTS');
     expect(message).not.toMatch(/identity|issuer|jwks|audience|session.*secret/i);
+  });
+
+  it('validates configurable free uses and integer cent price', async () => {
+    setProductionInfrastructure();
+    process.env.RUNTIME_BILLING_FREE_USES = '-1';
+    process.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = '0';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    expect(() => loadEnv()).toThrowError(/RUNTIME_BILLING_FREE_USES/);
   });
 });

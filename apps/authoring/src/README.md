@@ -6,7 +6,7 @@
 
 - `processes/` 放 API 与 worker 两个进程入口。
 - `bootstrap/` 组装 Fastify、基础设施、健康检查和业务路由。
-- `modules/` 按 account、task 和 capability 三个业务领域组织代码。account 是第一方认证唯一写入方。
+- `modules/` 按 account、task、capability 和 billing 四个业务领域组织代码。account 是第一方认证唯一写入方，billing 是外部充值与内部钱包入账的唯一写入方。
 - `platform/` 提供配置、HTTP 边界、PostgreSQL、Redis、队列、对象存储、Resend、本地会话校验、链路追踪和事件流等公共设施。
 
 依赖保持单向。processes 使用 bootstrap 与 modules，bootstrap 使用 modules 与 platform，modules 使用 platform，platform 不依赖业务模块。共享类型、错误信封、Cookie 常量和校验契约来自 `@cb/shared`。
@@ -23,3 +23,10 @@
 3. 浏览器只持有一枚 HttpOnly Cookie。HTTPS 入口显式配置根路径、Secure 且主机限定的 `__Host-cb_session`，loopback HTTP 验收显式配置根路径 `cb_session`，选择不依赖 `NODE_ENV`。authoring 的受保护路由只按当前安全策略对应的 Cookie 查询本地会话，不接受 Bearer 或 refresh 凭据。
 4. 创作者创建任务后，本机助手凭配对码上传分片。worker 消费任务，读取原文、解析、脱敏、调用大模型并写入能力项。
 5. 浏览器通过任务事件流读取进度，终态仍以 PostgreSQL 中的任务状态为准。
+
+## 充值主链路
+
+1. 已登录用户读取配置化充值套餐并用 `rechargeIntentId` 创建内部充值订单。
+2. billing 模块调用固定环境的乐收赢 H5 或聚合码接口，只把经过验签和安全校验的支付动作返回浏览器。
+3. 浏览器支付结果不改变余额；乐收赢通知或原订单主动查单确认成功后，数据库事务同时完成订单成功、钱包增加和不可变资金流水追加。
+4. 网络结果不确定时订单进入 `unknown`。用户轮询内部订单会在短租约保护下查询原支付流水，不会生成新的支付流水。

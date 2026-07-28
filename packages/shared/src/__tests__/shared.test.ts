@@ -15,6 +15,7 @@ import {
   CreateStudioSessionBodySchema,
   ArtifactViewSchema,
   MessageViewSchema,
+  RechargeRequiredBodySchema,
   SessionDetailSchema,
   SessionViewSchema,
   StudioSessionEntrySchema,
@@ -287,10 +288,46 @@ describe('试用域 DTO', () => {
     ).toBe(false);
   });
 
-  it('发消息请求体拒绝空文本与超长文本', () => {
-    expect(SendMessageBodySchema.safeParse({ text: '你好' }).success).toBe(true);
-    expect(SendMessageBodySchema.safeParse({ text: '' }).success).toBe(false);
-    expect(SendMessageBodySchema.safeParse({ text: 'a'.repeat(20_001) }).success).toBe(false);
+  it('发消息请求体严格要求 text 与 UUID usageId', () => {
+    const usageId = '11111111-1111-4111-8111-111111111111';
+    expect(SendMessageBodySchema.safeParse({ text: '你好', usageId }).success).toBe(true);
+    expect(
+      SendMessageBodySchema.parse({
+        text: '你好',
+        usageId: 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA',
+      }).usageId,
+    ).toBe('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(SendMessageBodySchema.safeParse({ text: '', usageId }).success).toBe(false);
+    expect(SendMessageBodySchema.safeParse({ text: 'a'.repeat(20_001), usageId }).success).toBe(
+      false,
+    );
+    expect(SendMessageBodySchema.safeParse({ text: '你好' }).success).toBe(false);
+    expect(SendMessageBodySchema.safeParse({ text: '你好', usageId: 'not-a-uuid' }).success).toBe(
+      false,
+    );
+    expect(SendMessageBodySchema.safeParse({ text: '你好', usageId, extra: true }).success).toBe(
+      false,
+    );
+  });
+
+  it('余额不足响应只接受十进制分金额和原 usageId', () => {
+    const rechargeIntentId = '11111111-1111-4111-8111-111111111111';
+    expect(
+      RechargeRequiredBodySchema.safeParse({
+        rechargeRequired: true,
+        rechargeIntentId,
+        balanceCents: '0',
+        requiredCents: '100',
+      }).success,
+    ).toBe(true);
+    expect(
+      RechargeRequiredBodySchema.safeParse({
+        rechargeRequired: true,
+        rechargeIntentId,
+        balanceCents: -1,
+        requiredCents: '100',
+      }).success,
+    ).toBe(false);
   });
 
   it('改名请求体会 trim，并拒绝空标题与超长标题', () => {
