@@ -284,6 +284,12 @@ test('Preview release carries a SHA-scoped access gate without Secret material',
     assert.doesNotMatch(page, /target\.hash/);
   }
   assert.doesNotMatch(gate.data['default.conf.template'], /rt_uid/);
+  assert.equal(
+    gate.data['default.conf.template']
+      .split('\n')
+      .find((line) => line.includes('__Host-cb_session=(?<combo_review_session_token>')),
+    '  "~(?:^|;\\s*)__Host-cb_session=(?<combo_review_session_token>s1\\.[A-Za-z0-9_-]{43})(?:;|$)" "__Host-cb_session=$combo_review_session_token";',
+  );
   assert.match(
     gate.data['default.conf.template'],
     /map \$http_cookie \$combo_review_upstream_cookie \{[\s\S]*?default "";[\s\S]*?__Host-cb_session=\(\?<combo_review_session_token>s1\\\.\[A-Za-z0-9_-\]\{43\}\)[\s\S]*?"__Host-cb_session=\$combo_review_session_token";/,
