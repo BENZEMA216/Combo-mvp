@@ -1579,6 +1579,7 @@ expected_lines = (
     + [
         f'migration pass 1/2 up to date at {expected_head}.',
         f'migration pass 2/2 up to date at {expected_head}.',
+        'application database roles ready.',
     ]
 )
 if lines != expected_lines:

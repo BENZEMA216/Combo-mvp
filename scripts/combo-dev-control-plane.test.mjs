@@ -660,6 +660,7 @@ test('Test migration proof accepts containerd config digests but fences the live
     ...expectedMigrations.map((name) => `applying ${name} ...`),
     `migration pass 1/2 up to date at ${expectedHead}.`,
     `migration pass 2/2 up to date at ${expectedHead}.`,
+    'application database roles ready.',
   ];
 
   try {
@@ -675,6 +676,16 @@ test('Test migration proof accepts containerd config digests but fences the live
     const proof = JSON.parse(readFileSync(output, 'utf8'));
     assert.equal(proof.pod.image, expectedImage);
     assert.equal(proof.pod.imageID, expectedImage);
+
+    writeFileSync(logs, `${logLines.slice(0, -1).join('\n')}\n`);
+    rmSync(output, { force: true });
+    const missingRoleProof = spawnSync('python3', args, {
+      input: verifier,
+      encoding: 'utf8',
+    });
+    assert.equal(missingRoleProof.status, 2);
+    assert.equal(existsSync(output), false);
+    writeFileSync(logs, `${logLines.join('\n')}\n`);
 
     podObject.status.containerStatuses[0].imageID = `ghcr.io/dangdang-tech/combo-api@sha256:${digest('d')}`;
     writeFileSync(pods, JSON.stringify({ items: [podObject] }));
