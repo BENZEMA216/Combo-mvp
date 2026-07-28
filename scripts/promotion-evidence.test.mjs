@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import process from 'node:process';
 import test from 'node:test';
-import { URL } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 import {
   PREVIEW_BROWSER_CHECKS,
   SIX_AREA_CHECKS,
@@ -11,6 +15,7 @@ import {
   validateAcceptanceAttestation,
   validateLiveBrowserAcceptanceAttestation,
   validateLiveBrowserEvidence,
+  validateLiveBrowserFailureEvidence,
   validateLiveRuntimeEvidence,
   validatePromotionIdentity,
   validateReleaseInventory,
@@ -98,6 +103,15 @@ const productionIdentity = {
   deploymentWorkflow: '.github/workflows/cd.yml',
   deploymentRunId: 505,
   deploymentRunAttempt: 1,
+};
+
+const testIdentity = {
+  ...identity,
+  environment: 'test',
+  namespace: 'combo-preview',
+  deploymentWorkflow: '.github/workflows/combo-dev.yml',
+  deploymentRunId: 404,
+  deploymentRunAttempt: 2,
 };
 
 function testDeploymentEvidence() {
@@ -299,6 +313,42 @@ function browserEvidence(environment = 'preview') {
       webAssetManifest: expectedIdentity.webAssetManifestDigest,
     },
   };
+}
+
+function browserFailureEvidence(prefixLength = 2, failure = undefined) {
+  const value = {
+    schemaVersion: 1,
+    suite: 'goal-b-test-browser',
+    environment: 'test',
+    revision: REVISION,
+    webOrigin: 'http://127.0.0.1:18080',
+    startedAt: '2026-07-25T00:00:00.000Z',
+    completedAt: '2026-07-25T00:00:03.000Z',
+    status: 'failed',
+    checks: PREVIEW_BROWSER_CHECKS.slice(0, prefixLength).map((id) => ({
+      id,
+      status: 'passed',
+      durationMs: 1,
+    })),
+    resources: {},
+    metrics: { uploadParts: 0, completedStudioRevisions: 0 },
+    failure: failure ?? {
+      check: PREVIEW_BROWSER_CHECKS[prefixLength],
+      reason: 'http_status',
+      statusCode: 202,
+    },
+  };
+  if (prefixLength > 0) {
+    value.release = {
+      environment: 'test',
+      sourceSha: REVISION,
+      releaseId: `release-${REVISION}`,
+      builtAt: '2026-07-24T00:00:00.000Z',
+      releaseManifestDigest: testIdentity.releaseManifestDigest,
+      webAssetManifest: testIdentity.webAssetManifestDigest,
+    };
+  }
+  return value;
 }
 
 function inventory() {
@@ -680,6 +730,279 @@ test('Preview browser admission requires all live checks and exact release ident
   const wrongRelease = structuredClone(browser);
   wrongRelease.release.releaseManifestDigest = digest('f');
   assert.throws(() => validatePreviewBrowserEvidence(wrongRelease, identity), /does not match/);
+});
+
+test('Test live-browser failure admission accepts only the next check after a passed prefix', () => {
+  const failed = browserFailureEvidence();
+  assert.equal(failed.failure.check, 'email_otp_login');
+  assert.deepEqual(validateLiveBrowserFailureEvidence(failed, testIdentity), failed);
+
+  const runtimeFailure = browserFailureEvidence(2, {
+    check: 'acceptance_runtime',
+    reason: 'browser',
+  });
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(runtimeFailure, testIdentity),
+    runtimeFailure,
+  );
+
+  const beforeReleaseIdentity = browserFailureEvidence(0, {
+    check: 'release_identity',
+    reason: 'timeout',
+  });
+  assert.equal(Object.hasOwn(beforeReleaseIdentity, 'release'), false);
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(beforeReleaseIdentity, testIdentity),
+    beforeReleaseIdentity,
+  );
+
+  const skipped = browserFailureEvidence();
+  skipped.checks[1].id = 'email_otp_login';
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(skipped, testIdentity),
+    /exact passed prefix/,
+  );
+
+  const wrongFailureCheck = browserFailureEvidence();
+  wrongFailureCheck.failure.check = 'authoring_prepare';
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(wrongFailureCheck, testIdentity),
+    /next ordered check/,
+  );
+
+  const complete = browserFailureEvidence(PREVIEW_BROWSER_CHECKS.length, {
+    check: 'acceptance_runtime',
+    reason: 'browser',
+  });
+  assert.deepEqual(validateLiveBrowserFailureEvidence(complete, testIdentity), complete);
+
+  const completeWithRepeatedCheck = structuredClone(complete);
+  completeWithRepeatedCheck.failure.check = PREVIEW_BROWSER_CHECKS.at(-1);
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(completeWithRepeatedCheck, testIdentity),
+    /next ordered check/,
+  );
+});
+
+test('Test live-browser failure admission locks Test origin, release, SHA, and exact run integers', () => {
+  const failed = browserFailureEvidence();
+
+  const wrongOrigin = structuredClone(failed);
+  wrongOrigin.webOrigin = 'https://review.43-160-242-46.sslip.io';
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(wrongOrigin, testIdentity),
+    /locked Test deployment/,
+  );
+
+  const wrongRelease = structuredClone(failed);
+  wrongRelease.release.releaseManifestDigest = digest('f');
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(wrongRelease, testIdentity),
+    /immutable Test identity/,
+  );
+
+  const missingRelease = structuredClone(failed);
+  delete missingRelease.release;
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(missingRelease, testIdentity),
+    /release must exist exactly/,
+  );
+
+  const prematureRelease = browserFailureEvidence(0, {
+    check: 'release_identity',
+    reason: 'assertion',
+  });
+  prematureRelease.release = structuredClone(failed.release);
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(prematureRelease, testIdentity),
+    /release must exist exactly/,
+  );
+
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(failed, identity),
+    /identity must select Test/,
+  );
+  assert.throws(
+    () =>
+      validateLiveBrowserFailureEvidence(failed, {
+        ...testIdentity,
+        sourceSha: 'b'.repeat(40),
+        releaseArtifactName: `combo-release-${'b'.repeat(40)}`,
+        releaseId: `release-${'b'.repeat(40)}`,
+      }),
+    /locked Test deployment/,
+  );
+  assert.throws(
+    () =>
+      validateLiveBrowserFailureEvidence(failed, {
+        ...testIdentity,
+        deploymentRunId: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    /exact safe integer/,
+  );
+  assert.throws(
+    () =>
+      validateLiveBrowserFailureEvidence(failed, {
+        ...testIdentity,
+        deploymentRunAttempt: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    /exact safe integer/,
+  );
+  assert.throws(
+    () =>
+      validateLiveBrowserFailureEvidence(failed, {
+        ...testIdentity,
+        releaseArtifactId: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    /exact safe integer/,
+  );
+});
+
+test('Test live-browser failure admission strictly allows failure, resource, metric, and release fields', () => {
+  const invalidReason = browserFailureEvidence();
+  invalidReason.failure.reason = 'provider_error';
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(invalidReason, testIdentity),
+    /reason is not allowed/,
+  );
+
+  const lowStatus = browserFailureEvidence();
+  lowStatus.failure.statusCode = 99;
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(lowStatus, testIdentity),
+    /reasonable HTTP status/,
+  );
+
+  const highStatus = browserFailureEvidence();
+  highStatus.failure.statusCode = 600;
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(highStatus, testIdentity),
+    /reasonable HTTP status/,
+  );
+
+  const misplacedStatus = browserFailureEvidence(2, {
+    check: 'email_otp_login',
+    reason: 'assertion',
+    statusCode: 400,
+  });
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(misplacedStatus, testIdentity),
+    /reasonable HTTP status/,
+  );
+
+  for (const mutate of [
+    (value) => {
+      value.failure.detail = 'no';
+    },
+    (value) => {
+      value.resources.artifactId = '11111111-1111-4111-8111-111111111111';
+    },
+    (value) => {
+      value.metrics.extra = 0;
+    },
+    (value) => {
+      value.metrics.uploadParts = 3;
+    },
+    (value) => {
+      value.metrics.completedStudioRevisions = 3;
+    },
+    (value) => {
+      value.release.extra = true;
+    },
+  ]) {
+    const changed = browserFailureEvidence();
+    mutate(changed);
+    assert.throws(() => validateLiveBrowserFailureEvidence(changed, testIdentity));
+  }
+});
+
+test('Test live-browser failure admission recursively rejects auth and email material', () => {
+  for (const mutate of [
+    (value) => {
+      value.failure.responseBody = 'redacted';
+    },
+    (value) => {
+      value.failure.email = 'redacted';
+    },
+    (value) => {
+      value.failure.otp = 'redacted';
+    },
+    (value) => {
+      value.failure.resend = 'redacted';
+    },
+    (value) => {
+      value.failure.cookie = 'redacted';
+    },
+    (value) => {
+      value.failure.token = 'redacted';
+    },
+    (value) => {
+      value.failure.key = 'redacted';
+    },
+    (value) => {
+      value.resources.taskId = 'acceptance@resend.dev';
+    },
+    (value) => {
+      value.resources.taskId = 'acceptance@example.com';
+    },
+    (value) => {
+      value.resources.taskId = 'verification code 123456';
+    },
+    (value) => {
+      value.resources.taskId = `s1.${'A'.repeat(43)}`;
+    },
+    (value) => {
+      value.resources.taskId = `re_${'A'.repeat(32)}`;
+    },
+  ]) {
+    const changed = browserFailureEvidence();
+    mutate(changed);
+    assert.throws(
+      () => validateLiveBrowserFailureEvidence(changed, testIdentity),
+      /unsafe live browser failure/,
+    );
+  }
+});
+
+test('live-browser failure CLI digest canonically binds the Test identity and workflow attempt', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'combo-live-browser-failure-'));
+  const evidencePath = join(directory, 'evidence.json');
+  const identityPath = join(directory, 'identity.json');
+  const changedIdentityPath = join(directory, 'changed-identity.json');
+  const validator = fileURLToPath(new URL('./promotion-evidence.mjs', import.meta.url));
+  try {
+    writeFileSync(evidencePath, `${JSON.stringify(browserFailureEvidence())}\n`, {
+      mode: 0o600,
+    });
+    writeFileSync(identityPath, `${JSON.stringify(testIdentity)}\n`, { mode: 0o600 });
+    writeFileSync(
+      changedIdentityPath,
+      `${JSON.stringify({ ...testIdentity, deploymentRunAttempt: 3 })}\n`,
+      { mode: 0o600 },
+    );
+    const validate = (selectedIdentity) =>
+      execFileSync(
+        process.execPath,
+        [
+          validator,
+          'validate-live-browser-failure',
+          '--environment',
+          'test',
+          '--evidence',
+          evidencePath,
+          '--identity',
+          selectedIdentity,
+        ],
+        { encoding: 'utf8' },
+      ).trim();
+    const exactAttemptDigest = validate(identityPath);
+    const changedAttemptDigest = validate(changedIdentityPath);
+    assert.match(exactAttemptDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.match(changedAttemptDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.notEqual(changedAttemptDigest, exactAttemptDigest);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('Production live-browser admission and workflow attestation bind exact run and evidence', () => {

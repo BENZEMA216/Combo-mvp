@@ -24,7 +24,7 @@ Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行
 
 `goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
 
-Test workflow 从不可变 release artifact 安装 runner、`resend-sent-email.mjs` 和 `playwright-core.tgz`，把结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>`；Preview 和 Production 复用同一 artifact 中的文件。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Production 在任何环境变更前用 artifact 内同一 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
+Test workflow 从不可变 release artifact 安装 runner、`resend-sent-email.mjs` 和 `playwright-core.tgz`，把成功结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>`；Preview 和 Production 复用同一 artifact 中的文件。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含 `source-release.json`，不能作为 Preview 准入。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Production 在任何环境变更前用 artifact 内同一 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
 
 在 Test Web 已通过本机 loopback 转发后，从仓库根目录运行：
 
