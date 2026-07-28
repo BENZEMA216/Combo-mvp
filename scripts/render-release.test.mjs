@@ -152,6 +152,19 @@ for (const [environment, namespace, prefix] of [
       production:
         'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
     }[environment];
+    const expectedPostgresHost = environment === 'test' ? 'postgres' : 'release-postgres';
+    for (const logicalName of ['api', 'worker', 'runtime']) {
+      const deployment = resources.find(
+        (resource) =>
+          resource.kind === 'Deployment' && resource.metadata.name === `${prefix}${logicalName}`,
+      );
+      const environmentEntries = deployment.spec.template.spec.containers[0].env;
+      assert.equal(
+        environmentEntries.find((entry) => entry.name === 'PGHOST').value,
+        expectedPostgresHost,
+      );
+      assert.equal(environmentEntries.find((entry) => entry.name === 'PGPORT').value, '5432');
+    }
     for (const logicalName of ['api', 'runtime']) {
       const deployment = resources.find(
         (resource) =>
@@ -189,6 +202,14 @@ for (const [environment, namespace, prefix] of [
       resources[0].spec.template.spec.containers[0].envFrom[0].configMapRef.name,
       `combo-release-meta-${SHA.slice(0, 12)}`,
     );
+    const migrationEnvironment = new Map(
+      resources[0].spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+    );
+    assert.equal(
+      migrationEnvironment.get('PGHOST').value,
+      environment === 'test' ? 'postgres' : 'release-postgres',
+    );
+    assert.equal(migrationEnvironment.get('PGPORT').value, '5432');
     const verification = verifyRendered(resources, environment, 'migrate');
     assert.equal(verification.status, 0, verification.stderr);
   });
@@ -402,6 +423,43 @@ test('deployment-side allowlist rejects extra resources and image drift before a
   const escaped = verifyRendered(migrate, 'production', 'migrate');
   assert.notEqual(escaped.status, 0);
   assert.match(escaped.stderr, /escaped namespace/);
+
+  const wrongMigrationHost = render('preview', 'migrate');
+  const postgresHost = wrongMigrationHost[0].spec.template.spec.containers[0].env.find(
+    (entry) => entry.name === 'PGHOST',
+  );
+  postgresHost.value = 'postgres';
+  const wrongEndpoint = verifyRendered(wrongMigrationHost, 'preview', 'migrate');
+  assert.notEqual(wrongEndpoint.status, 0);
+  assert.match(wrongEndpoint.stderr, /incorrect PostgreSQL endpoint/);
+
+  const wrongTestMigrationHost = render('test', 'migrate');
+  wrongTestMigrationHost[0].spec.template.spec.containers[0].env.find(
+    (entry) => entry.name === 'PGHOST',
+  ).value = 'release-postgres';
+  const wrongTestEndpoint = verifyRendered(wrongTestMigrationHost, 'test', 'migrate');
+  assert.notEqual(wrongTestEndpoint.status, 0);
+  assert.match(wrongTestEndpoint.stderr, /incorrect PostgreSQL endpoint/);
+
+  const migrationDatabaseUrl = render('preview', 'migrate');
+  migrationDatabaseUrl[0].spec.template.spec.containers[0].env.push({
+    name: 'DATABASE_URL',
+    value: 'postgres://override.invalid/database',
+  });
+  const bypassedEndpoint = verifyRendered(migrationDatabaseUrl, 'preview', 'migrate');
+  assert.notEqual(bypassedEndpoint.status, 0);
+  assert.match(bypassedEndpoint.stderr, /incorrect PostgreSQL endpoint/);
+
+  const wrongAppHost = render('preview', 'apps');
+  const api = wrongAppHost.find(
+    (resource) =>
+      resource.kind === 'Deployment' && resource.metadata.name === `${RELEASE_PREFIX}api`,
+  );
+  api.spec.template.spec.containers[0].env.find((entry) => entry.name === 'PGHOST').value =
+    'postgres';
+  const wrongAppEndpoint = verifyRendered(wrongAppHost, 'preview', 'apps');
+  assert.notEqual(wrongAppEndpoint.status, 0);
+  assert.match(wrongAppEndpoint.stderr, /fixed database role/);
 });
 
 test('deployment-side allowlist rejects mutable foundation commands', () => {
