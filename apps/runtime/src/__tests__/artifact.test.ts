@@ -308,6 +308,11 @@ describe('capability 当前 UI 会话快照', () => {
       studioSessionId: studio.id,
       turnId,
     });
+    const promotionSql = db.queries.find((query) =>
+      query.startsWith('UPDATE capabilities c SET ui_artifact_id = $2'),
+    );
+    expect(promotionSql).toContain('SET ui_artifact_id = $2 WHERE');
+    expect(promotionSql).not.toContain('updated_at');
 
     const oldSession = await createSession(db, {
       capabilityId: cap.id,
