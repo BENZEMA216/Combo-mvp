@@ -190,6 +190,21 @@ const LIVE_BROWSER_FAILURE_REASONS = Object.freeze([
   'timeout',
   'unsafe_input',
 ]);
+const LIVE_BROWSER_TURN_DIAGNOSTIC_CODES = Object.freeze([
+  'TURN_ABANDONED',
+  'TURN_HISTORY_LOAD_FAILED',
+  'TURN_AGENT_UNAVAILABLE',
+  'TURN_IDLE_TIMEOUT',
+  'TURN_PROMPT_FAILED',
+  'TURN_RUNTIME_ERROR',
+  'TURN_PERSIST_FAILED',
+  'TURN_INTERRUPTED',
+  'TURN_SHUTDOWN',
+  'TURN_STUDIO_ARTIFACT_MISSING',
+  'TURN_FAILED',
+  'TURN_COMPLETED_WITHOUT_ARTIFACT',
+  'TURN_DETAIL_INVARIANT',
+]);
 const LIVE_BROWSER_FAILURE_SENSITIVE_KEY_PATTERN = /(?:body|cookie|email|key|otp|resend|token)/i;
 const LIVE_BROWSER_FAILURE_SENSITIVE_VALUE_PATTERNS = Object.freeze([
   /[^\s@]+@[^\s@]+/i,
@@ -1252,12 +1267,16 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
   });
 
   if (!isObject(value.failure)) fail('live browser failure must be an object');
-  const failureKeys = Object.keys(value.failure).sort();
+  const failureKeys = Object.keys(value.failure);
+  const allowedFailureKeys = new Set(['check', 'diagnosticCode', 'reason', 'statusCode']);
   if (
-    JSON.stringify(failureKeys) !== JSON.stringify(['check', 'reason']) &&
-    JSON.stringify(failureKeys) !== JSON.stringify(['check', 'reason', 'statusCode'])
+    !Object.hasOwn(value.failure, 'check') ||
+    !Object.hasOwn(value.failure, 'reason') ||
+    failureKeys.some((key) => !allowedFailureKeys.has(key))
   ) {
-    fail('live browser failure keys must be check, reason, and optional statusCode');
+    fail(
+      'live browser failure keys must be check, reason, and optional statusCode or diagnosticCode',
+    );
   }
   const nextCheck = LIVE_BROWSER_CHECKS[value.checks.length];
   if (value.failure.check !== nextCheck && value.failure.check !== 'acceptance_runtime') {
@@ -1274,6 +1293,19 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
       value.failure.reason !== 'http_status')
   ) {
     fail('live browser failure statusCode must be a reasonable HTTP status');
+  }
+  if (
+    Object.hasOwn(value.failure, 'diagnosticCode') &&
+    (value.failure.reason !== 'invalid_response' ||
+      ![
+        'studio_active_turn_reload',
+        'studio_first_revision',
+        'runtime_sse_replay_and_terminal',
+        'studio_second_revision',
+      ].includes(value.failure.check) ||
+      !LIVE_BROWSER_TURN_DIAGNOSTIC_CODES.includes(value.failure.diagnosticCode))
+  ) {
+    fail('live browser failure diagnosticCode must be an allowed Studio Turn code');
   }
 
   if (!isObject(value.resources)) fail('live browser failure resources must be an object');

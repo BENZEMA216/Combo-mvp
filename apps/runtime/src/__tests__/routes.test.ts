@@ -515,14 +515,49 @@ describe('session 端点 owner 守卫', () => {
         .activeTurn,
     ).toEqual({ id: turnId, createdAt: turn.createdAt });
 
-    await finishTurnCas(db, { id: turnId, status: 'interrupted' });
+    await finishTurnCas(db, {
+      id: turnId,
+      status: 'interrupted',
+      lastError: {
+        code: 'TURN_PROMPT_FAILED',
+        message: 'provider-sensitive-sentinel-must-never-leave-the-database',
+      },
+    });
     const terminal = await call(
       getSessionDetailHandler(),
       makeReq({ db, userId: ME, params: { id: sessionId } }),
     );
     expect(
-      (terminal.body as { data: { activeTurn: { id: string } | null } }).data.activeTurn,
+      (
+        terminal.body as {
+          data: {
+            activeTurn: { id: string } | null;
+            latestTerminalTurn: {
+              id: string;
+              status: string;
+              errorCode: string;
+            } | null;
+          };
+        }
+      ).data.activeTurn,
     ).toBeNull();
+    expect(
+      (
+        terminal.body as {
+          data: {
+            latestTerminalTurn: {
+              id: string;
+              status: string;
+              errorCode: string;
+            } | null;
+          };
+        }
+      ).data.latestTerminalTurn,
+    ).toEqual({ id: turnId, status: 'interrupted', errorCode: 'TURN_PROMPT_FAILED' });
+    expect(JSON.stringify(terminal.body)).not.toContain('last_error');
+    expect(JSON.stringify(terminal.body)).not.toContain(
+      'provider-sensitive-sentinel-must-never-leave-the-database',
+    );
   });
 
   it('Studio 详情只保留种子、completed 最终 revision 和 active 最新候选', async () => {

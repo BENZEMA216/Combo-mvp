@@ -233,12 +233,58 @@ describe('试用域 DTO', () => {
         id: '55555555-5555-4555-8555-555555555555',
         createdAt: '2026-07-25T10:01:00+08:00',
       },
+      latestTerminalTurn: {
+        id: '66666666-6666-4666-8666-666666666666',
+        status: 'failed',
+        errorCode: 'TURN_RUNTIME_ERROR',
+      },
       currentUiArtifactId: null,
     };
     expect(SessionDetailSchema.safeParse(detail).success).toBe(true);
     expect(SessionDetailSchema.safeParse({ ...detail, activeTurn: null }).success).toBe(true);
     const { activeTurn: _activeTurn, ...missingActiveTurn } = detail;
     expect(SessionDetailSchema.safeParse(missingActiveTurn).success).toBe(false);
+    expect(
+      SessionDetailSchema.safeParse({
+        ...detail,
+        latestTerminalTurn: {
+          id: '66666666-6666-4666-8666-666666666666',
+          status: 'failed',
+          errorCode: 'provider returned a raw error',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionDetailSchema.safeParse({
+        ...detail,
+        latestTerminalTurn: {
+          id: '66666666-6666-4666-8666-666666666666',
+          status: 'completed',
+          errorCode: null,
+          message: 'raw database error',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionDetailSchema.safeParse({
+        ...detail,
+        latestTerminalTurn: {
+          id: '66666666-6666-4666-8666-666666666666',
+          status: 'completed',
+          errorCode: 'TURN_FAILED',
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      SessionDetailSchema.safeParse({
+        ...detail,
+        latestTerminalTurn: {
+          id: '66666666-6666-4666-8666-666666666666',
+          status: 'failed',
+          errorCode: null,
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('发消息请求体拒绝空文本与超长文本', () => {

@@ -199,6 +199,45 @@ integrationDescribe('真实 PostgreSQL Session 一致性', () => {
     expect(snapshot?.currentUiArtifact?.id).toBe(oldRevision.artifactId);
     expect(snapshot?.currentUiArtifact?.id).not.toBe(newRevision.artifactId);
     expect(snapshot?.activeTurn).toBeNull();
+    expect(snapshot?.latestTerminalTurn).toEqual({
+      id: oldRevision.turnId,
+      status: 'completed',
+      errorCode: null,
+    });
+    expect(snapshot?.latestTerminalTurn?.id).not.toBe(newRevision.turnId);
+  });
+
+  it('真实 PostgreSQL 详情只投影终态白名单码，不返回原始错误文本', async () => {
+    const chain = await seedStudio();
+    const turnId = randomUUID();
+    await db.query(
+      `INSERT INTO turns
+         (id, session_id, status, last_error, created_at, finished_at)
+       VALUES
+         ($1, $2, 'failed', $3::jsonb, now(), now())`,
+      [
+        turnId,
+        chain.studio.id,
+        JSON.stringify({
+          code: 'TURN_RUNTIME_ERROR',
+          message: 'provider-sensitive-sentinel-must-never-leave-the-database',
+        }),
+      ],
+    );
+
+    const snapshot = await readSessionDetailDbSnapshot(db, {
+      sessionId: chain.studio.id,
+      ownerUserId: chain.userId,
+    });
+
+    expect(snapshot?.latestTerminalTurn).toEqual({
+      id: turnId,
+      status: 'failed',
+      errorCode: 'TURN_RUNTIME_ERROR',
+    });
+    expect(JSON.stringify(snapshot)).not.toContain(
+      'provider-sensitive-sentinel-must-never-leave-the-database',
+    );
   });
 
   it('并发 seed 在真实 Session 行锁下只创建一个 null-turn 快照', async () => {

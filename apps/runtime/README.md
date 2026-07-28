@@ -24,7 +24,7 @@ Turn 创建受数据库部分唯一索引保护。终态状态、错误和消息
 
 `upsert_artifact` 先写不可变对象，再只在绑定 Turn 仍运行时提交带来源 Turn 的索引。Studio Turn 只有完整成功后，最后一个合格 HTML revision 才能在同一终态事务中晋升为 Capability 当前 UI。详情只展示种子副本、每个成功 Turn 的最终 revision 和 active Turn 的最新候选；失败或中断 Turn 的 Artifact 不进入历史。普通 Session 会复制创建时的 UI 隔离副本，不随之后的 Studio 修改漂移。
 
-详情的 owner 复验、Message、Artifact、当前 UI 和 active Turn 来自同一条 `REPEATABLE READ READ ONLY` PostgreSQL 快照。Capability 定义在快照结束后再从对象存储读取。
+详情的 owner 复验、Message、Artifact、当前 UI、active Turn 和最近终态 Turn 来自同一条 `REPEATABLE READ READ ONLY` PostgreSQL 快照。最近终态只投影固定白名单错误码；`last_error.message`、未知历史码和模型/provider 原始错误不会进入 HTTP 响应。Capability 定义在快照结束后再从对象存储读取。
 
 ## 可选沙箱工具
 

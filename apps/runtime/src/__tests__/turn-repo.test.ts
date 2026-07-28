@@ -4,6 +4,7 @@ import {
   createTurn,
   finishTurnCas,
   getLatestTerminalTurn,
+  getLatestTerminalTurnView,
   hasRunningTurn,
   sweepExpiredTurns,
 } from '../modules/agent/turn-repo.js';
@@ -142,6 +143,46 @@ describe('turn repo', () => {
       status: 'interrupted',
       lastError: { code: 'TURN_FAILED', message: '本轮生成已打断。' },
     });
+  });
+
+  it('详情只投影白名单终态码，未知值降级且不暴露原始错误', async () => {
+    const db = new FakeDb();
+    const completedSessionId = await seedSession(db);
+    await createTurn(db, { id: 'completed', sessionId: completedSessionId });
+    await finishTurnCas(db, {
+      id: 'completed',
+      status: 'completed',
+      lastError: { code: 'TURN_RUNTIME_ERROR', message: 'must stay private' },
+    });
+    expect(await getLatestTerminalTurnView(db, completedSessionId)).toEqual({
+      id: 'completed',
+      status: 'completed',
+      errorCode: null,
+    });
+
+    const failedSessionId = await seedSession(db);
+    await createTurn(db, { id: 'failed', sessionId: failedSessionId });
+    await finishTurnCas(db, {
+      id: 'failed',
+      status: 'failed',
+      lastError: { code: 'TURN_IDLE_TIMEOUT', message: 'must stay private' },
+    });
+    expect(await getLatestTerminalTurnView(db, failedSessionId)).toEqual({
+      id: 'failed',
+      status: 'failed',
+      errorCode: 'TURN_IDLE_TIMEOUT',
+    });
+
+    db.turns.get('failed')!.last_error = {
+      code: 'provider: leaked raw response',
+      message: 'must stay private',
+    };
+    expect(await getLatestTerminalTurnView(db, failedSessionId)).toEqual({
+      id: 'failed',
+      status: 'failed',
+      errorCode: 'TURN_FAILED',
+    });
+    expect(db.queries.at(-1)).not.toContain('message');
   });
 
   it('迟到收尾与清扫交错时只有 CAS 胜者生效且消息不重复', async () => {

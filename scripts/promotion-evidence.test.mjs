@@ -890,6 +890,54 @@ test('Test live-browser failure admission strictly allows failure, resource, met
     /reasonable HTTP status/,
   );
 
+  const terminalTurn = browserFailureEvidence(14, {
+    check: 'studio_first_revision',
+    reason: 'invalid_response',
+    diagnosticCode: 'TURN_IDLE_TIMEOUT',
+  });
+  assert.deepEqual(validateLiveBrowserFailureEvidence(terminalTurn, testIdentity), terminalTurn);
+  const reloadTerminalTurn = browserFailureEvidence(13, {
+    check: 'studio_active_turn_reload',
+    reason: 'invalid_response',
+    diagnosticCode: 'TURN_PROMPT_FAILED',
+  });
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(reloadTerminalTurn, testIdentity),
+    reloadTerminalTurn,
+  );
+  const sseTerminalTurn = browserFailureEvidence(16, {
+    check: 'runtime_sse_replay_and_terminal',
+    reason: 'invalid_response',
+    diagnosticCode: 'TURN_RUNTIME_ERROR',
+  });
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(sseTerminalTurn, testIdentity),
+    sseTerminalTurn,
+  );
+
+  for (const changed of [
+    browserFailureEvidence(14, {
+      check: 'studio_first_revision',
+      reason: 'invalid_response',
+      diagnosticCode: 'provider returned raw error',
+    }),
+    browserFailureEvidence(14, {
+      check: 'studio_first_revision',
+      reason: 'timeout',
+      diagnosticCode: 'TURN_IDLE_TIMEOUT',
+    }),
+    browserFailureEvidence(2, {
+      check: 'email_otp_login',
+      reason: 'invalid_response',
+      diagnosticCode: 'TURN_IDLE_TIMEOUT',
+    }),
+  ]) {
+    assert.throws(
+      () => validateLiveBrowserFailureEvidence(changed, testIdentity),
+      /allowed Studio Turn code/,
+    );
+  }
+
   for (const mutate of [
     (value) => {
       value.failure.detail = 'no';

@@ -519,6 +519,31 @@ export class FakeDb implements Queryable, TxPool {
       return { rows: [{ exists }] as R[], rowCount: 1 };
     }
     if (
+      s.startsWith("SELECT id, status, last_error ->> 'code' AS error_code FROM turns") &&
+      s.includes("status <> 'running'")
+    ) {
+      const row = [...this.turns.values()]
+        .filter((candidate) => candidate.session_id === params[0] && candidate.status !== 'running')
+        .sort(
+          (a, b) =>
+            (b.finished_at ?? '').localeCompare(a.finished_at ?? '') ||
+            b.created_at.localeCompare(a.created_at) ||
+            b.id.localeCompare(a.id),
+        )[0];
+      return row
+        ? {
+            rows: [
+              {
+                id: row.id,
+                status: row.status,
+                error_code: row.last_error?.code ?? null,
+              },
+            ] as R[],
+            rowCount: 1,
+          }
+        : { rows: [], rowCount: 0 };
+    }
+    if (
       s.startsWith(
         'SELECT id, session_id, status, last_error, created_at, finished_at FROM turns',
       ) &&
