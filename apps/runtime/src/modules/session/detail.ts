@@ -1,5 +1,5 @@
-import type { ArtifactView } from '@cb/shared';
-import { getActiveTurn } from '../agent/turn-repo.js';
+import type { ArtifactView, TerminalTurnView } from '@cb/shared';
+import { getActiveTurn, getLatestTerminalTurnView } from '../agent/turn-repo.js';
 import { listArtifacts, readCapabilityUiArtifact, type StoredArtifact } from '../artifact/repo.js';
 import { readCapabilitySummary, type CapabilitySummary } from '../capability/loader.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
@@ -12,6 +12,7 @@ export interface SessionDetailDbSnapshot {
   artifacts: ArtifactView[];
   currentUiArtifact: StoredArtifact | null;
   activeTurn: { id: string; createdAt: string } | null;
+  latestTerminalTurn: TerminalTurnView | null;
 }
 
 /**
@@ -36,6 +37,7 @@ export async function readSessionDetailDbSnapshot(
       const currentUiArtifact =
         session.mode === 'studio' ? await readCapabilityUiArtifact(tx, session.capabilityId) : null;
       const activeTurn = await getActiveTurn(tx, session.id);
+      const latestTerminalTurn = await getLatestTerminalTurnView(tx, session.id);
 
       return {
         session,
@@ -44,6 +46,7 @@ export async function readSessionDetailDbSnapshot(
         artifacts,
         currentUiArtifact,
         activeTurn,
+        latestTerminalTurn,
       };
     },
     { readOnlySnapshot: true },

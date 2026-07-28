@@ -1,3 +1,4 @@
+import { TerminalTurnErrorCodeSchema, type TerminalTurnView } from '@cb/shared';
 import {
   withTransaction,
   type Queryable,
@@ -214,6 +215,41 @@ export async function getLatestTerminalTurn(
   );
   const row = result.rows[0];
   return row ? toTerminalTurn(row) : null;
+}
+
+interface TerminalTurnViewDbRow {
+  id: string;
+  status: TerminalTurnStatus;
+  error_code: unknown;
+}
+
+/**
+ * Owner-scoped Session 详情使用的最小终态投影。SQL 只读取 last_error.code；
+ * 原始 message、模型/provider 响应及未知历史 code 均不会离开数据库边界。
+ */
+export async function getLatestTerminalTurnView(
+  db: Queryable,
+  sessionId: string,
+): Promise<TerminalTurnView | null> {
+  const result = await db.query<TerminalTurnViewDbRow>(
+    `SELECT id, status, last_error ->> 'code' AS error_code
+       FROM turns
+      WHERE session_id = $1 AND status <> 'running'
+      ORDER BY finished_at DESC NULLS LAST, created_at DESC, id DESC
+      LIMIT 1`,
+    [sessionId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  if (row.status === 'completed') {
+    return { id: row.id, status: 'completed', errorCode: null };
+  }
+  const parsed = TerminalTurnErrorCodeSchema.safeParse(row.error_code);
+  return {
+    id: row.id,
+    status: row.status,
+    errorCode: parsed.success ? parsed.data : 'TURN_FAILED',
+  };
 }
 
 export async function sweepExpiredTurns(

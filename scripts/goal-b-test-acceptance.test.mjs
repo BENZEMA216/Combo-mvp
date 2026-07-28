@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { URL } from 'node:url';
 import {
+  AcceptanceFailure,
   GOAL_B_ACCEPTANCE_CHECKS,
   GOAL_B_UPLOAD_PARTS,
   buildAcceptanceEvidence,
+  classifyStudioTurnDetail,
   consumeUiSnapshot,
   isAllowedAcceptanceRequest,
   isAllowedAcceptanceWebSocket,
@@ -507,6 +509,132 @@ test('acceptance Turn cleanup recovers an unknown POST outcome without killing a
   });
   assert.equal(unchanged.activeTurn.id, otherTurnId);
   assert.equal(interrupts, 0);
+});
+
+test('Studio Turn classifier binds the accepted Turn and fails terminal errors without raw detail', () => {
+  const turnId = '71982e62-6d6e-7f4d-8fe8-b55f62720b5b';
+  const artifact = {
+    id: '81982e62-6d6e-7f4d-8fe8-b55f62720b5b',
+    sourceTurnId: turnId,
+  };
+  assert.deepEqual(
+    classifyStudioTurnDetail(
+      {
+        activeTurn: { id: turnId },
+        latestTerminalTurn: null,
+        artifacts: [],
+      },
+      turnId,
+    ),
+    { state: 'pending' },
+  );
+  assert.deepEqual(
+    classifyStudioTurnDetail(
+      {
+        activeTurn: null,
+        latestTerminalTurn: { id: turnId, status: 'completed', errorCode: null },
+        artifacts: [artifact],
+      },
+      turnId,
+    ),
+    { state: 'completed' },
+  );
+  assert.deepEqual(
+    classifyStudioTurnDetail(
+      {
+        activeTurn: null,
+        latestTerminalTurn: {
+          id: turnId,
+          status: 'failed',
+          errorCode: 'TURN_PROMPT_FAILED',
+        },
+        artifacts: [],
+      },
+      turnId,
+    ),
+    { state: 'failed', diagnosticCode: 'TURN_PROMPT_FAILED' },
+  );
+  assert.deepEqual(
+    classifyStudioTurnDetail(
+      {
+        activeTurn: null,
+        latestTerminalTurn: {
+          id: turnId,
+          status: 'interrupted',
+          errorCode: 'TURN_INTERRUPTED',
+        },
+        artifacts: [],
+      },
+      turnId,
+    ),
+    { state: 'failed', diagnosticCode: 'TURN_INTERRUPTED' },
+  );
+  assert.deepEqual(
+    classifyStudioTurnDetail(
+      {
+        activeTurn: null,
+        latestTerminalTurn: { id: turnId, status: 'completed', errorCode: null },
+        artifacts: [],
+      },
+      turnId,
+    ),
+    { state: 'failed', diagnosticCode: 'TURN_COMPLETED_WITHOUT_ARTIFACT' },
+  );
+  assert.deepEqual(
+    classifyStudioTurnDetail(
+      {
+        activeTurn: null,
+        latestTerminalTurn: {
+          id: '91982e62-6d6e-7f4d-8fe8-b55f62720b5b',
+          status: 'failed',
+          errorCode: 'TURN_FAILED',
+        },
+        artifacts: [],
+      },
+      turnId,
+    ),
+    { state: 'failed', diagnosticCode: 'TURN_DETAIL_INVARIANT' },
+  );
+});
+
+test('failure evidence retains only an allowlisted Studio Turn diagnostic code', () => {
+  const evidence = buildAcceptanceEvidence({
+    revision: REVISION,
+    webOrigin: ORIGIN,
+    startedAt: '2026-07-25T00:00:00.000Z',
+    completedAt: '2026-07-25T00:01:00.000Z',
+    checks: [],
+    resources: {},
+    metrics: {},
+    failure: new AcceptanceFailure(
+      'studio_first_revision',
+      'invalid_response',
+      undefined,
+      'TURN_RUNTIME_ERROR',
+    ),
+  });
+  assert.deepEqual(evidence.failure, {
+    check: 'studio_first_revision',
+    reason: 'invalid_response',
+    diagnosticCode: 'TURN_RUNTIME_ERROR',
+  });
+
+  const redacted = buildAcceptanceEvidence({
+    revision: REVISION,
+    webOrigin: ORIGIN,
+    startedAt: '2026-07-25T00:00:00.000Z',
+    completedAt: '2026-07-25T00:01:00.000Z',
+    checks: [],
+    resources: {},
+    metrics: {},
+    failure: new AcceptanceFailure(
+      'studio_first_revision',
+      'invalid_response',
+      undefined,
+      'provider returned raw error',
+    ),
+  });
+  assert.equal(Object.hasOwn(redacted.failure, 'diagnosticCode'), false);
 });
 
 test('secure writer creates a new 0600 evidence file and refuses overwrite', () => {

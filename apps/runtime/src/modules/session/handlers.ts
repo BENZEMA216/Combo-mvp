@@ -281,7 +281,15 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
         ownerUserId: userId,
       });
       if (!snapshot) return sendError(req, reply, ErrorCode.NOT_FOUND);
-      const { session, capability, messages, artifacts, currentUiArtifact, activeTurn } = snapshot;
+      const {
+        session,
+        capability,
+        messages,
+        artifacts,
+        currentUiArtifact,
+        activeTurn,
+        latestTerminalTurn,
+      } = snapshot;
       // 能力行被删属于数据异常（会话仍指着它），按 500 收口而不是装作没会话。
       if (!capability) {
         req.log.error(
@@ -346,6 +354,7 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
         })),
         artifacts,
         activeTurn,
+        latestTerminalTurn,
         currentUiArtifactId: sessionCurrentUiArtifactId,
       };
       const body: Envelope<SessionDetail> = { data: detail, meta: { traceId: req.id } };

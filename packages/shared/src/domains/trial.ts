@@ -95,6 +95,53 @@ export const ActiveTurnViewSchema = z.object({
 });
 export type ActiveTurnView = z.infer<typeof ActiveTurnViewSchema>;
 
+export const TerminalTurnStatusSchema = z.enum(['completed', 'failed', 'interrupted']);
+export type TerminalTurnStatus = z.infer<typeof TerminalTurnStatusSchema>;
+
+/**
+ * Turn 的 owner 可见安全诊断码。Runtime 只会返回这个固定集合；数据库中的
+ * last_error.message、未知历史 code 和模型/provider 原始错误绝不进入 HTTP 响应。
+ */
+export const TerminalTurnErrorCodeSchema = z.enum([
+  'TURN_ABANDONED',
+  'TURN_HISTORY_LOAD_FAILED',
+  'TURN_AGENT_UNAVAILABLE',
+  'TURN_IDLE_TIMEOUT',
+  'TURN_PROMPT_FAILED',
+  'TURN_RUNTIME_ERROR',
+  'TURN_PERSIST_FAILED',
+  'TURN_INTERRUPTED',
+  'TURN_SHUTDOWN',
+  'TURN_STUDIO_ARTIFACT_MISSING',
+  'TURN_FAILED',
+]);
+export type TerminalTurnErrorCode = z.infer<typeof TerminalTurnErrorCodeSchema>;
+
+export const TerminalTurnViewSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      id: IdSchema,
+      status: z.literal('completed'),
+      errorCode: z.null(),
+    })
+    .strict(),
+  z
+    .object({
+      id: IdSchema,
+      status: z.literal('failed'),
+      errorCode: TerminalTurnErrorCodeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: IdSchema,
+      status: z.literal('interrupted'),
+      errorCode: TerminalTurnErrorCodeSchema,
+    })
+    .strict(),
+]);
+export type TerminalTurnView = z.infer<typeof TerminalTurnViewSchema>;
+
 /** 会话详情：一次请求把聊天流和画布恢复出来所需的全部。 */
 export const SessionDetailSchema = z.object({
   session: SessionViewSchema,
@@ -111,6 +158,11 @@ export const SessionDetailSchema = z.object({
   artifacts: z.array(ArtifactViewSchema),
   /** PostgreSQL 中仍在运行的 Turn；页面刷新后据此恢复运行态，再由 SSE 补齐事件。 */
   activeTurn: ActiveTurnViewSchema.nullable(),
+  /**
+   * 最近一次 PostgreSQL 已提交终态。字段保持 optional 以兼容旧 Runtime；新 Runtime
+   * 始终返回。只含安全状态与 allowlist code，用于刷新后及时识别失败而非空等超时。
+   */
+  latestTerminalTurn: TerminalTurnViewSchema.nullable().optional(),
   /**
    * Studio 返回会话内与 Agent 生效 UI 对应的 artifact；consume 返回创建会话时
    * 冻结的 UI 副本 id。没有唯一可确认副本时为 null；字段缺失时前端安全降级。

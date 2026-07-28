@@ -22,7 +22,7 @@ Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行
 
 `goal-b-frozen-audit.test.mjs` 将固定冻结提交相对共同基线的 256 个路径，与 `docs/goal-b-frozen-preview-audit.md` 逐项比对，并强制旧迁移与旧 Cloud Review 拓扑保持明确废弃。
 
-`goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
+`goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Studio 验收按服务端接受的精确 Turn ID 等待；若 Turn 已进入失败、中断或“完成但无 Artifact”状态，会立即记录固定白名单诊断码，不保存原始错误或继续空等。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
 
 Test workflow 从不可变 release artifact 安装 runner、`resend-sent-email.mjs` 和 `playwright-core.tgz`，把成功结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>`；Preview 和 Production 复用同一 artifact 中的文件。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含 `source-release.json`，不能作为 Preview 准入。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Production 在任何环境变更前用 artifact 内同一 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
 

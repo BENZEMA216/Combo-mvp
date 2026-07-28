@@ -67,6 +67,21 @@ const PRODUCTION_ORIGIN = 'https://buildwithcombo.com';
 const TASK_TIMEOUT_MS = 15 * 60_000;
 const TURN_TIMEOUT_MS = 12 * 60_000;
 const POLL_INTERVAL_MS = 1_000;
+const TURN_DIAGNOSTIC_CODES = Object.freeze([
+  'TURN_ABANDONED',
+  'TURN_HISTORY_LOAD_FAILED',
+  'TURN_AGENT_UNAVAILABLE',
+  'TURN_IDLE_TIMEOUT',
+  'TURN_PROMPT_FAILED',
+  'TURN_RUNTIME_ERROR',
+  'TURN_PERSIST_FAILED',
+  'TURN_INTERRUPTED',
+  'TURN_SHUTDOWN',
+  'TURN_STUDIO_ARTIFACT_MISSING',
+  'TURN_FAILED',
+  'TURN_COMPLETED_WITHOUT_ARTIFACT',
+  'TURN_DETAIL_INVARIANT',
+]);
 const RELEASE_METADATA_KEYS = Object.freeze([
   'builtAt',
   'environment',
@@ -116,8 +131,8 @@ export const GOAL_B_UPLOAD_PARTS = Object.freeze([
   ),
 ]);
 
-class AcceptanceFailure extends Error {
-  constructor(check, reason, statusCode) {
+export class AcceptanceFailure extends Error {
+  constructor(check, reason, statusCode, diagnosticCode) {
     super(`${check}:${reason}`);
     this.name = 'AcceptanceFailure';
     this.check = GOAL_B_ACCEPTANCE_CHECKS.includes(check) ? check : 'acceptance_runtime';
@@ -132,11 +147,14 @@ class AcceptanceFailure extends Error {
       ? reason
       : 'browser';
     this.statusCode = Number.isInteger(statusCode) ? statusCode : undefined;
+    this.diagnosticCode = TURN_DIAGNOSTIC_CODES.includes(diagnosticCode)
+      ? diagnosticCode
+      : undefined;
   }
 }
 
-function fail(check, reason = 'assertion', statusCode) {
-  throw new AcceptanceFailure(check, reason, statusCode);
+function fail(check, reason = 'assertion', statusCode, diagnosticCode) {
+  throw new AcceptanceFailure(check, reason, statusCode, diagnosticCode);
 }
 
 function ensure(condition, check, reason = 'assertion') {
@@ -389,6 +407,9 @@ export function buildAcceptanceEvidence(state) {
           ...(state.failure.statusCode === undefined
             ? {}
             : { statusCode: state.failure.statusCode }),
+          ...(state.failure.diagnosticCode === undefined
+            ? {}
+            : { diagnosticCode: state.failure.diagnosticCode }),
         }
       : undefined;
   const release = safeRelease(state.release, state.revision, state.environment ?? 'test');
@@ -668,7 +689,80 @@ async function readRuntimeStreamFrame(page, { sessionId, runId, afterId, termina
 }
 
 function artifactForTurn(detail, turnId) {
-  return detail.artifacts.find((artifact) => artifact.sourceTurnId === turnId);
+  return Array.isArray(detail?.artifacts)
+    ? detail.artifacts.find((artifact) => artifact?.sourceTurnId === turnId)
+    : undefined;
+}
+
+/**
+ * Classify one accepted Studio Turn only from owner-scoped, sanitized SessionDetail state.
+ * No provider/model response or persisted last_error.message is accepted by this boundary.
+ */
+export function classifyStudioTurnDetail(detail, turnId) {
+  if (
+    !detail ||
+    typeof detail !== 'object' ||
+    !UUID_PATTERN.test(turnId ?? '') ||
+    !Object.hasOwn(detail, 'latestTerminalTurn') ||
+    !Array.isArray(detail.artifacts)
+  ) {
+    return { state: 'failed', diagnosticCode: 'TURN_DETAIL_INVARIANT' };
+  }
+  const artifact = artifactForTurn(detail, turnId);
+  const activeTurn = detail.activeTurn;
+  if (activeTurn !== null) {
+    if (
+      !activeTurn ||
+      typeof activeTurn !== 'object' ||
+      !UUID_PATTERN.test(activeTurn.id ?? '') ||
+      activeTurn.id !== turnId
+    ) {
+      return { state: 'failed', diagnosticCode: 'TURN_DETAIL_INVARIANT' };
+    }
+    return { state: 'pending' };
+  }
+
+  const terminal = detail.latestTerminalTurn;
+  if (
+    !terminal ||
+    typeof terminal !== 'object' ||
+    terminal.id !== turnId ||
+    !['completed', 'failed', 'interrupted'].includes(terminal.status)
+  ) {
+    return { state: 'failed', diagnosticCode: 'TURN_DETAIL_INVARIANT' };
+  }
+  if (terminal.status === 'completed') {
+    if (terminal.errorCode !== null) {
+      return { state: 'failed', diagnosticCode: 'TURN_DETAIL_INVARIANT' };
+    }
+    return artifact
+      ? { state: 'completed' }
+      : { state: 'failed', diagnosticCode: 'TURN_COMPLETED_WITHOUT_ARTIFACT' };
+  }
+  if (!TURN_DIAGNOSTIC_CODES.includes(terminal.errorCode)) {
+    return { state: 'failed', diagnosticCode: 'TURN_DETAIL_INVARIANT' };
+  }
+  return { state: 'failed', diagnosticCode: terminal.errorCode };
+}
+
+function requireSafeStudioTurnClassification(check, detail, turnId) {
+  const classification = classifyStudioTurnDetail(detail, turnId);
+  if (classification.state === 'failed') {
+    fail(check, 'invalid_response', undefined, classification.diagnosticCode);
+  }
+  return classification;
+}
+
+async function waitForStudioRevision(check, turnId, readDetail) {
+  return poll(
+    check,
+    readDetail,
+    (detail) => {
+      const classification = requireSafeStudioTurnClassification(check, detail, turnId);
+      return classification.state === 'completed';
+    },
+    TURN_TIMEOUT_MS,
+  );
 }
 
 function sortedChronologically(artifacts) {
@@ -1340,56 +1434,61 @@ async function runAcceptance(options) {
     });
 
     await checked('studio_active_turn_reload', async () => {
-      await poll(
+      const observed = await poll(
         activeCheck,
         async () =>
           (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
-        (detail) => detail?.activeTurn?.id === firstTurnId,
+        (detail) => {
+          const classification = requireSafeStudioTurnClassification(
+            activeCheck,
+            detail,
+            firstTurnId,
+          );
+          return classification.state === 'pending' || classification.state === 'completed';
+        },
         20_000,
+      );
+      ensure(
+        observed.activeTurn?.id === firstTurnId || Boolean(artifactForTurn(observed, firstTurnId)),
+        activeCheck,
       );
       await page.reload({ waitUntil: 'domcontentloaded' });
       const restored = await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`);
-      ensure(
-        restored.data?.activeTurn?.id === firstTurnId ||
-          Boolean(artifactForTurn(restored.data, firstTurnId)),
-        activeCheck,
-      );
+      requireSafeStudioTurnClassification(activeCheck, restored.data, firstTurnId);
       await page.getByRole('complementary', { name: 'UI 设计对话' }).waitFor({
         state: 'visible',
         timeout: 30_000,
       });
-      await page.waitForFunction(
-        () =>
-          document.querySelector('button[aria-label="停止当前修改"]') !== null ||
-          document.querySelector('iframe.rt-artifact__frame') !== null,
-        undefined,
-        { timeout: 30_000 },
+      await poll(
+        activeCheck,
+        async () => ({
+          detail: (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`))
+            .data,
+          uiShowsRunning: await page.getByRole('button', { name: '停止当前修改' }).isVisible(),
+          uiShowsArtifact: await page.locator('iframe.rt-artifact__frame').isVisible(),
+        }),
+        ({ detail, uiShowsRunning, uiShowsArtifact }) => {
+          const classification = requireSafeStudioTurnClassification(
+            activeCheck,
+            detail,
+            firstTurnId,
+          );
+          return classification.state === 'pending'
+            ? uiShowsRunning
+            : uiShowsArtifact && Boolean(artifactForTurn(detail, firstTurnId));
+        },
+        30_000,
       );
-      const uiShowsRunning = await page.getByRole('button', { name: '停止当前修改' }).isVisible();
-      if (uiShowsRunning) {
-        ensure(restored.data?.activeTurn?.id === firstTurnId, activeCheck);
-      } else {
-        const converged = await api.json(
-          activeCheck,
-          `/api/v1/runtime/sessions/${studioSession.id}`,
-        );
-        ensure(
-          Boolean(artifactForTurn(converged.data, firstTurnId)) &&
-            (await page.locator('iframe.rt-artifact__frame').isVisible()),
-          activeCheck,
-        );
-      }
     });
 
     let firstArtifact;
     let firstDetail;
     await checked('studio_first_revision', async () => {
-      firstDetail = await poll(
+      firstDetail = await waitForStudioRevision(
         activeCheck,
+        firstTurnId,
         async () =>
           (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
-        (detail) => detail?.activeTurn === null && Boolean(artifactForTurn(detail, firstTurnId)),
-        TURN_TIMEOUT_MS,
       );
       firstArtifact = artifactForTurn(firstDetail, firstTurnId);
       ensure(firstArtifact?.kind === 'html', activeCheck);
@@ -1465,11 +1564,19 @@ async function runAcceptance(options) {
       ensure(
         terminal.status === 200 &&
           terminal.contentType.startsWith('text/event-stream') &&
-          terminal.eventType === 'RUN_FINISHED' &&
           terminal.runId === secondTurnId &&
           compareRedisStreamIds(terminal.id, started.id) === 1,
         activeCheck,
       );
+      if (terminal.eventType === 'RUN_ERROR') {
+        const failedDetail = await api.json(
+          activeCheck,
+          `/api/v1/runtime/sessions/${studioSession.id}`,
+        );
+        requireSafeStudioTurnClassification(activeCheck, failedDetail.data, secondTurnId);
+        fail(activeCheck, 'invalid_response', undefined, 'TURN_DETAIL_INVARIANT');
+      }
+      ensure(terminal.eventType === 'RUN_FINISHED', activeCheck);
       const replayedTerminal = await readRuntimeStreamFrame(page, {
         sessionId: studioSession.id,
         runId: secondTurnId,
@@ -1486,12 +1593,11 @@ async function runAcceptance(options) {
     });
 
     await checked('studio_second_revision', async () => {
-      secondDetail = await poll(
+      secondDetail = await waitForStudioRevision(
         activeCheck,
+        secondTurnId,
         async () =>
           (await api.json(activeCheck, `/api/v1/runtime/sessions/${studioSession.id}`)).data,
-        (detail) => detail?.activeTurn === null && Boolean(artifactForTurn(detail, secondTurnId)),
-        TURN_TIMEOUT_MS,
       );
       secondArtifact = artifactForTurn(secondDetail, secondTurnId);
       ensure(secondArtifact?.kind === 'html', activeCheck);
