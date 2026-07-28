@@ -119,8 +119,32 @@ pgDescribe('application database roles on PostgreSQL', () => {
         'has_column_privilege',
         'public.capabilities',
         'UPDATE',
+        'updated_at',
+      ),
+    ).toBe(false);
+    expect(
+      await privilege(
+        runtime,
+        'has_column_privilege',
+        'public.capabilities',
+        'UPDATE',
         'storage_key',
       ),
     ).toBe(false);
+
+    await expect(
+      runtime.query(
+        `UPDATE capabilities
+            SET ui_artifact_id = ui_artifact_id
+          WHERE false`,
+      ),
+    ).resolves.toMatchObject({ rowCount: 0 });
+    await expect(
+      runtime.query(
+        `UPDATE capabilities
+            SET updated_at = now()
+          WHERE false`,
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
   });
 });

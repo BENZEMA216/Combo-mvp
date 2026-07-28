@@ -256,7 +256,7 @@ async function bindCapabilityUiArtifactWithGuard(
 ): Promise<boolean> {
   const res = await db.query<{ id: string }>(
     `UPDATE capabilities c
-        SET ui_artifact_id = $2, updated_at = now()
+        SET ui_artifact_id = $2
       WHERE c.id = $1
         ${onlyIfEmpty ? 'AND c.ui_artifact_id IS NULL' : ''}
         AND EXISTS (
