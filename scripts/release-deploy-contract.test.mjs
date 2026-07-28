@@ -34,6 +34,56 @@ function functionBody(name) {
   return nextFunction < 0 ? DEPLOY.slice(start) : DEPLOY.slice(start, start + 1 + nextFunction);
 }
 
+function cleanupPlanValidator(functionName, inputVariable) {
+  const body = functionBody(functionName);
+  const startMarker = '--arg init "$INIT_JOB" \'';
+  const start = body.lastIndexOf(startMarker);
+  assert.ok(start >= 0, `${functionName} must pass the init Job to its jq validator`);
+  const programStart = start + startMarker.length;
+  const endMarker = `\n    ' "$${inputVariable}" >/dev/null`;
+  const end = body.indexOf(endMarker, programStart);
+  assert.ok(end > programStart, `${functionName} must execute its embedded jq validator`);
+  return body.slice(programStart, end);
+}
+
+function runCleanupPlanValidator(filter, plan, identity) {
+  return spawnSync(
+    'jq',
+    [
+      '-e',
+      '--arg',
+      'environment',
+      identity.environment,
+      '--arg',
+      'namespace',
+      identity.namespace,
+      '--arg',
+      'sourceSha',
+      identity.sourceSha,
+      '--arg',
+      'releaseId',
+      identity.releaseId,
+      '--arg',
+      'manifestDigest',
+      identity.manifestDigest,
+      '--arg',
+      'prefix',
+      identity.prefix,
+      '--arg',
+      'metadata',
+      identity.metadata,
+      '--arg',
+      'init',
+      identity.init,
+      filter,
+    ],
+    {
+      encoding: 'utf8',
+      input: JSON.stringify(plan),
+    },
+  );
+}
+
 function environmentArm(name) {
   const environmentCase = DEPLOY.slice(indexOf(/case "\$ENVIRONMENT" in/, 'environment dispatch'));
   const match = environmentCase.match(new RegExp(`${name}\\)([\\s\\S]*?);;`));
@@ -777,6 +827,93 @@ test('Production validates every rollback checkpoint backup before irreversible 
     /validate_live_candidate_for_finalize[\s\S]*prepare_cleanup_plan[\s\S]*cleanup_for_finalize/,
     'rollback material must be proven before superseded workloads or PVCs are removed',
   );
+});
+
+test('cleanup plan jq validators compile and bind every PVC UID to captured storage', () => {
+  const sourceSha = 'a'.repeat(40);
+  const identity = {
+    environment: 'preview',
+    namespace: 'combo-review',
+    sourceSha,
+    releaseId: `release-${sourceSha}`,
+    manifestDigest: `sha256:${'b'.repeat(64)}`,
+    prefix: `release-${sourceSha.slice(0, 12)}-`,
+    metadata: `combo-release-meta-${sourceSha.slice(0, 12)}`,
+    init: 'release-minio-init',
+  };
+  const plans = [
+    {
+      functionName: 'validate_cleanup_plan',
+      inputVariable: 'cleanup_plan',
+      plan: {
+        schemaVersion: 1,
+        purpose: 'superseded-release-cleanup',
+        environment: identity.environment,
+        namespace: identity.namespace,
+        sourceSha: identity.sourceSha,
+        releaseId: identity.releaseId,
+        manifestDigest: identity.manifestDigest,
+        targets: [{ kind: 'pvc', name: 'data-postgres-0', uid: 'claim-uid' }],
+        targetCount: 1,
+        capturedStorage: [
+          {
+            claim: 'data-postgres-0',
+            claimUid: 'claim-uid',
+            path: '/var/lib/rancher/k3s/storage/pvc-test',
+            volume: 'pv-test',
+            volumeUid: 'volume-uid',
+          },
+        ],
+        plannedAt: '2026-07-28T00:00:00.000Z',
+      },
+    },
+    {
+      functionName: 'validate_rollback_cleanup_plan',
+      inputVariable: 'rollback_cleanup_plan',
+      plan: {
+        schemaVersion: 1,
+        purpose: 'candidate-rollback-cleanup',
+        environment: 'production',
+        namespace: 'combo',
+        sourceSha: identity.sourceSha,
+        releaseId: identity.releaseId,
+        manifestDigest: identity.manifestDigest,
+        foundationCreated: true,
+        targets: [{ kind: 'pvc', name: 'data-release-postgres-0', uid: 'claim-uid' }],
+        targetCount: 1,
+        capturedStorage: [
+          {
+            claim: 'data-release-postgres-0',
+            claimUid: 'claim-uid',
+            path: '/var/lib/rancher/k3s/storage/pvc-test',
+            volume: 'pv-test',
+            volumeUid: 'volume-uid',
+          },
+        ],
+        plannedAt: '2026-07-28T00:00:00.000Z',
+      },
+    },
+  ];
+
+  for (const { functionName, inputVariable, plan } of plans) {
+    const filter = cleanupPlanValidator(functionName, inputVariable);
+    const accepted = runCleanupPlanValidator(filter, plan, identity);
+    assert.equal(
+      accepted.status,
+      0,
+      `${functionName} must compile and accept its exact PVC mapping:\n${accepted.stderr}`,
+    );
+
+    const mismatched = {
+      ...plan,
+      capturedStorage: plan.capturedStorage.map((storage) => ({
+        ...storage,
+        claimUid: 'different-uid',
+      })),
+    };
+    const rejected = runCleanupPlanValidator(filter, mismatched, identity);
+    assert.equal(rejected.status, 1, `${functionName} must reject a mismatched PVC UID`);
+  }
 });
 
 test('Production finalization persists an exact cleanup plan and resumes partial deletion', () => {

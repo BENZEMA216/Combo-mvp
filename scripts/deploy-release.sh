@@ -3239,9 +3239,8 @@ validate_rollback_cleanup_plan() {
         and (.path | type == "string" and startswith("/")))
       and (.capturedStorage | length)
         == ([.targets[] | select(.kind == "pvc")] | length)
-      and all(.targets[] | select(.kind == "pvc") as $target;
-        any(.capturedStorage[];
-          .claim == $target.name and .claimUid == $target.uid))
+      and ([.targets[] | select(.kind == "pvc") | [.name, .uid]] | sort)
+        == ([.capturedStorage[] | [.claim, .claimUid]] | sort)
     ' "$rollback_cleanup_plan" >/dev/null ||
     fail 'Production rollback cleanup plan is invalid'
   [[ "$(jq -r '.foundationCreated' "$rollback_cleanup_plan")" == \
@@ -3717,7 +3716,8 @@ validate_cleanup_plan() {
     --arg prefix "$PREFIX" \
     --arg metadata "$metadata_name" \
     --arg init "$INIT_JOB" '
-      keys == [
+      . as $plan
+      | keys == [
         "capturedStorage",
         "environment",
         "manifestDigest",
@@ -3798,9 +3798,8 @@ validate_cleanup_plan() {
         == (.capturedStorage | length)
       and (.capturedStorage | length)
         == ([.targets[] | select(.kind == "pvc")] | length)
-      and all(.targets[] | select(.kind == "pvc") as $target;
-        any(.capturedStorage[];
-          .claim == $target.name and .claimUid == $target.uid))
+      and ([.targets[] | select(.kind == "pvc") | [.name, .uid]] | sort)
+        == ([$plan.capturedStorage[] | [.claim, .claimUid]] | sort)
     ' "$cleanup_plan" >/dev/null ||
     fail 'durable release cleanup plan is invalid'
 }
