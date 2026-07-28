@@ -3131,6 +3131,15 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   );
   assert.match(webContract, /"\$IMAGE_REF" >\/dev\/null/);
   assert.doesNotMatch(webContract, /docker pull "\$IMAGE_TAG"/);
+  assert.match(
+    webContract,
+    /infra\/k8s\/release\/overlays\/preview\/apps\/review-nginx\.conf,dst=\/etc\/nginx\/templates\/default\.conf\.template,readonly/,
+  );
+  assert.match(
+    webContract,
+    /--env REVIEW_ACCESS_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
+  );
+  assert.match(webContract, /"\$IMAGE_REF" nginx -t/);
   assert.match(workflow, /combo-release-mutation\.lock/);
   assert.match(workflow, /flock -n 9/);
   assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);

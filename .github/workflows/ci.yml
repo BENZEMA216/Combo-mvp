@@ -402,6 +402,23 @@ jobs:
             and .webAssetManifest != ("sha256:" + ("0" * 64))
           ' "$RUNNER_TEMP/web-version.json" >/dev/null
 
+          cleanup
+          container="combo-web-preview-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --rm --name "$container" \
+            --read-only \
+            --user 101:101 \
+            --cap-drop ALL \
+            --tmpfs /etc/nginx/conf.d:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0755 \
+            --tmpfs /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=0755 \
+            --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
+            --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
+            --mount "type=bind,src=$PWD/infra/k8s/release/overlays/preview/apps/review-nginx.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
+            --env NGINX_RESOLVER=127.0.0.11 \
+            --env API_UPSTREAM_HOST=api.invalid \
+            --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
+            --env REVIEW_ACCESS_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            "$IMAGE_REF" nginx -t
+
       - name: Record the immutable image reference
         if: >-
           (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
