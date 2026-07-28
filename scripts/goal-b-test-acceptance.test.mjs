@@ -260,6 +260,23 @@ test('Test origin, Nginx allowlist, and page interception preserve one loopback 
   assert.doesNotMatch(source, /page\.route\(\s*`\*\*\$\{messagePath\}`/);
 });
 
+test('email OTP acceptance honors the asynchronous challenge status contract', () => {
+  const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
+  const helperStart = source.indexOf('async function authenticateWithEmailOtp(');
+  const helperEnd = source.indexOf('\nasync function ', helperStart + 1);
+  assert.ok(helperStart > 0 && helperEnd > helperStart);
+  const helper = source.slice(helperStart, helperEnd);
+
+  assert.match(
+    helper,
+    /api\.json\(check, '\/api\/v1\/auth\/email\/challenges', \{[\s\S]*?method: 'POST',[\s\S]*?data: \{ email \},[\s\S]*?expected: \[202\],[\s\S]*?\}\)/,
+  );
+  assert.doesNotMatch(
+    helper,
+    /api\.json\(check, '\/api\/v1\/auth\/email\/challenges', \{[\s\S]*?expected: \[200\]/,
+  );
+});
+
 test('successful upload fixtures are independently sniffable Claude JSONL sessions', () => {
   assert.equal(GOAL_B_UPLOAD_PARTS.length, 2);
   for (const part of GOAL_B_UPLOAD_PARTS) {

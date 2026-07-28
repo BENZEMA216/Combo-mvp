@@ -847,6 +847,8 @@ test('Test runs and validates the exact release artifact six-area browser accept
   const download = workflow.indexOf('Download the immutable release artifact');
   const deploy = workflow.indexOf('Upload the fixed bundle and invoke the root-owned dispatcher');
   const live = workflow.indexOf('Run the exact artifact six-area Test browser acceptance');
+  const failureUpload = workflow.indexOf('Upload sanitized Test browser failure evidence');
+  const failureStop = workflow.indexOf('Fail Test after preserving browser failure evidence');
   const evidence = workflow.indexOf('Collect and verify sanitized Test evidence');
   const upload = workflow.indexOf('Upload sanitized Test evidence');
   const accept = workflow.indexOf('Complete the exact Test acceptance');
@@ -858,7 +860,9 @@ test('Test runs and validates the exact release artifact six-area browser accept
       download > setupNode &&
       deploy > download &&
       live > deploy &&
-      evidence > live &&
+      failureUpload > live &&
+      failureStop > failureUpload &&
+      evidence > failureStop &&
       upload > evidence &&
       accept > upload &&
       fence > accept &&
@@ -870,7 +874,7 @@ test('Test runs and validates the exact release artifact six-area browser accept
   );
   assert.match(workflow.slice(workflow.indexOf('\n  deploy:'), checkout), /timeout-minutes: 300/);
 
-  const liveStep = workflow.slice(live, evidence);
+  const liveStep = workflow.slice(live, failureUpload);
   assert.match(liveStep, /runner="\$RELEASE_ROOT\/acceptance\/live-browser-acceptance\.mjs"/);
   assert.match(liveStep, /playwright="\$RELEASE_ROOT\/acceptance\/playwright-core\.tgz"/);
   assert.match(liveStep, /validator="\$RELEASE_ROOT\/scripts\/promotion-evidence\.mjs"/);
@@ -896,6 +900,17 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.match(liveStep, /nvm use --silent 24 >\/dev\/null/);
   assert.match(liveStep, /node_major[\s\S]*\[\[ "\$node_major" == 24 \]\]/);
   assert.match(liveStep, /\[\[ "\$\(stat -c '%a' "\$output"\)" == 600 \]\]/);
+  assert.match(liveStep, /runner_rc=\$\?/);
+  assert.match(liveStep, /\[\[ "\$runner_rc" == 0 \|\| "\$runner_rc" == 1 \]\]/);
+  assert.match(
+    liveStep,
+    /validate-live-browser-failure[\s\\\n]*--environment test[\s\\\n]*--evidence "\$evidence"[\s\\\n]*--identity "\$identity"/,
+  );
+  assert.match(liveStep, /printf 'acceptance_status=%s\\n' "\$acceptance_status"/);
+  assert.match(
+    liveStep,
+    /combo-test-failure-evidence-\$\{REVISION\}-\$\{RUN_ID\}-\$\{RUN_ATTEMPT\}/,
+  );
   assert.match(
     liveStep,
     /validate-live-browser[\s\\\n]*--environment test[\s\\\n]*--evidence "\$evidence"[\s\\\n]*--identity "\$identity"/,
@@ -937,7 +952,25 @@ test('Test runs and validates the exact release artifact six-area browser accept
     /ACCEPTANCE_RESEND_API_KEY/,
   );
 
+  const failureSteps = workflow.slice(failureUpload, evidence);
+  assert.match(
+    failureSteps,
+    /always\(\) && steps\.live_browser\.outputs\.acceptance_status == 'failed'/,
+  );
+  assert.match(
+    failureSteps,
+    /name: combo-test-failure-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.match(failureSteps, /path: \$\{\{ steps\.live_browser\.outputs\.failure_path \}\}/);
+  assert.match(
+    failureSteps,
+    /always\(\) && steps\.live_browser\.outputs\.acceptance_status == 'failed'/,
+  );
+  assert.doesNotMatch(failureSteps, /combo-test-evidence-\$\{\{/);
+  assert.doesNotMatch(failureSteps, /source-release\.json|ACCEPTANCE_RESEND_API_KEY/);
+
   const evidenceStep = workflow.slice(evidence, upload);
+  assert.match(evidenceStep, /if: steps\.live_browser\.outputs\.acceptance_status == 'passed'/);
   assert.doesNotMatch(evidenceStep, /all\(\.productAcceptance|\.productAcceptance\[\]/);
   assert.doesNotMatch(evidenceStep, /del\(\.productAcceptance\)/);
   assert.match(evidenceStep, /has\("productAcceptance"\) \| not/);
@@ -1000,6 +1033,10 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.match(
     cleanupStep,
     /rm -rf --[\s\\\n]*"\$RUNNER_TEMP\/combo-release"[\s\\\n]*"\$RUNNER_TEMP\/combo-test-evidence-\$\{REVISION\}"/,
+  );
+  assert.match(
+    cleanupStep,
+    /combo-test-failure-evidence-\$\{REVISION\}-\$\{RUN_ID\}-\$\{RUN_ATTEMPT\}/,
   );
   assert.match(cleanupStep, /if ! rm -f --/);
   assert.match(cleanupStep, /if ! rm -rf --/);

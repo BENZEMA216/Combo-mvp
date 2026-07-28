@@ -182,6 +182,23 @@ const LIVE_BROWSER_ORIGINS = Object.freeze({
   preview: 'https://review.43-160-242-46.sslip.io',
   production: 'https://buildwithcombo.com',
 });
+const LIVE_BROWSER_FAILURE_REASONS = Object.freeze([
+  'assertion',
+  'browser',
+  'http_status',
+  'invalid_response',
+  'timeout',
+  'unsafe_input',
+]);
+const LIVE_BROWSER_FAILURE_SENSITIVE_KEY_PATTERN = /(?:body|cookie|email|key|otp|resend|token)/i;
+const LIVE_BROWSER_FAILURE_SENSITIVE_VALUE_PATTERNS = Object.freeze([
+  /[^\s@]+@[^\s@]+/i,
+  /@resend\.dev/i,
+  /\b[0-9]{6}\b/,
+  /(?:__Host-)?cb_session/i,
+  /s1\.[A-Za-z0-9_-]{43}/,
+  /\bre_[A-Za-z0-9_-]{16,}\b/,
+]);
 
 export const PREVIEW_SIX_AREA_COVERAGE = Object.freeze({
   creationJourney: Object.freeze([
@@ -464,6 +481,28 @@ function assertSafeEvidence(value, path = '$') {
     SENSITIVE_VALUE_PATTERNS.some((pattern) => pattern.test(value))
   ) {
     fail(`unsafe evidence value at ${path}`);
+  }
+}
+
+function assertSafeLiveBrowserFailureEvidence(value, path = '$') {
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => assertSafeLiveBrowserFailureEvidence(item, `${path}[${index}]`));
+    return;
+  }
+  if (isObject(value)) {
+    for (const [key, nested] of Object.entries(value)) {
+      if (LIVE_BROWSER_FAILURE_SENSITIVE_KEY_PATTERN.test(key)) {
+        fail(`unsafe live browser failure key at ${path}.${key}`);
+      }
+      assertSafeLiveBrowserFailureEvidence(nested, `${path}.${key}`);
+    }
+    return;
+  }
+  if (
+    typeof value === 'string' &&
+    LIVE_BROWSER_FAILURE_SENSITIVE_VALUE_PATTERNS.some((pattern) => pattern.test(value))
+  ) {
+    fail(`unsafe live browser failure value at ${path}`);
   }
 }
 
@@ -1136,6 +1175,173 @@ export function validatePreviewBrowserEvidence(value, expectedIdentity) {
   return validateLiveBrowserEvidence(value, expectedIdentity, 'preview');
 }
 
+export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
+  const identity = validatePromotionIdentity(expectedIdentity);
+  if (identity.environment !== 'test') {
+    fail('live browser failure identity must select Test');
+  }
+  for (const field of [
+    'sourceCiRunId',
+    'sourceCiRunAttempt',
+    'deploymentRunId',
+    'deploymentRunAttempt',
+    'releaseArtifactId',
+  ]) {
+    if (!Number.isSafeInteger(identity[field])) {
+      fail(`live browser failure identity ${field} must be an exact safe integer`);
+    }
+  }
+
+  assertSafeLiveBrowserFailureEvidence(value);
+  assertSafeEvidence(value);
+  if (!isObject(value)) fail('live browser failure evidence must be an object');
+  const requiredKeys = [
+    'checks',
+    'completedAt',
+    'environment',
+    'failure',
+    'metrics',
+    'resources',
+    'revision',
+    'schemaVersion',
+    'startedAt',
+    'status',
+    'suite',
+    'webOrigin',
+  ];
+  const allowedKeys = new Set([...requiredKeys, 'release']);
+  const actualKeys = Object.keys(value);
+  if (
+    requiredKeys.some((key) => !Object.hasOwn(value, key)) ||
+    actualKeys.some((key) => !allowedKeys.has(key))
+  ) {
+    fail(
+      'live browser failure evidence keys must be the required failure keys and optional release',
+    );
+  }
+  if (
+    value.schemaVersion !== 1 ||
+    value.suite !== 'goal-b-test-browser' ||
+    value.environment !== 'test' ||
+    value.revision !== identity.sourceSha ||
+    value.webOrigin !== LIVE_BROWSER_ORIGINS.test ||
+    value.status !== 'failed'
+  ) {
+    fail('live browser failure evidence does not match the locked Test deployment');
+  }
+
+  const started = timestamp(value.startedAt, 'live browser failure startedAt');
+  const completed = timestamp(value.completedAt, 'live browser failure completedAt');
+  if (completed < started) {
+    fail('live browser failure completedAt must not precede startedAt');
+  }
+
+  if (!Array.isArray(value.checks) || value.checks.length > LIVE_BROWSER_CHECKS.length) {
+    fail('live browser failure checks must be a passed prefix');
+  }
+  value.checks.forEach((check, index) => {
+    exactKeys(check, ['durationMs', 'id', 'status'], `live browser failure checks[${index}]`);
+    if (
+      check.id !== LIVE_BROWSER_CHECKS[index] ||
+      check.status !== 'passed' ||
+      !Number.isSafeInteger(check.durationMs) ||
+      check.durationMs < 0
+    ) {
+      fail(`live browser failure checks[${index}] is not the exact passed prefix`);
+    }
+  });
+
+  if (!isObject(value.failure)) fail('live browser failure must be an object');
+  const failureKeys = Object.keys(value.failure).sort();
+  if (
+    JSON.stringify(failureKeys) !== JSON.stringify(['check', 'reason']) &&
+    JSON.stringify(failureKeys) !== JSON.stringify(['check', 'reason', 'statusCode'])
+  ) {
+    fail('live browser failure keys must be check, reason, and optional statusCode');
+  }
+  const nextCheck = LIVE_BROWSER_CHECKS[value.checks.length];
+  if (value.failure.check !== nextCheck && value.failure.check !== 'acceptance_runtime') {
+    fail('live browser failure check must be the next ordered check or acceptance_runtime');
+  }
+  if (!LIVE_BROWSER_FAILURE_REASONS.includes(value.failure.reason)) {
+    fail('live browser failure reason is not allowed');
+  }
+  if (
+    Object.hasOwn(value.failure, 'statusCode') &&
+    (!Number.isInteger(value.failure.statusCode) ||
+      value.failure.statusCode < 100 ||
+      value.failure.statusCode > 599 ||
+      value.failure.reason !== 'http_status')
+  ) {
+    fail('live browser failure statusCode must be a reasonable HTTP status');
+  }
+
+  if (!isObject(value.resources)) fail('live browser failure resources must be an object');
+  const allowedResourceKeys = new Set([
+    'capabilityId',
+    'consumeSessionId',
+    'studioSessionId',
+    'taskId',
+  ]);
+  for (const [key, resource] of Object.entries(value.resources)) {
+    if (!allowedResourceKeys.has(key)) {
+      fail('live browser failure resources contain an unknown key');
+    }
+    if (
+      typeof resource !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(resource)
+    ) {
+      fail(`live browser failure resources.${key} must be a UUID`);
+    }
+  }
+
+  exactKeys(
+    value.metrics,
+    ['completedStudioRevisions', 'uploadParts'],
+    'live browser failure metrics',
+  );
+  if (
+    !Number.isSafeInteger(value.metrics.uploadParts) ||
+    value.metrics.uploadParts < 0 ||
+    value.metrics.uploadParts > 2 ||
+    !Number.isSafeInteger(value.metrics.completedStudioRevisions) ||
+    value.metrics.completedStudioRevisions < 0 ||
+    value.metrics.completedStudioRevisions > 2
+  ) {
+    fail('live browser failure metrics are outside the acceptance bounds');
+  }
+
+  const releaseIdentityPassed = value.checks.length > 0;
+  if (releaseIdentityPassed !== Object.hasOwn(value, 'release')) {
+    fail('live browser failure release must exist exactly after release identity passed');
+  }
+  if (releaseIdentityPassed) {
+    exactKeys(
+      value.release,
+      [
+        'builtAt',
+        'environment',
+        'releaseId',
+        'releaseManifestDigest',
+        'sourceSha',
+        'webAssetManifest',
+      ],
+      'live browser failure release',
+    );
+    if (
+      value.release.environment !== 'test' ||
+      value.release.sourceSha !== identity.sourceSha ||
+      value.release.releaseId !== identity.releaseId ||
+      value.release.releaseManifestDigest !== identity.releaseManifestDigest ||
+      value.release.webAssetManifest !== identity.webAssetManifestDigest
+    ) {
+      fail('live browser failure release does not match the immutable Test identity');
+    }
+    timestamp(value.release.builtAt, 'live browser failure release builtAt');
+  }
+  return value;
+}
+
 function expectedInventoryNames(identity) {
   const prefix = `release-${identity.sourceSha.slice(0, 12)}-`;
   const values = {
@@ -1706,6 +1912,21 @@ function runCli(argv) {
     if (values.size !== 0) fail('unknown command argument');
     process.stdout.write(
       `${sha256(canonicalJson(validateLiveBrowserEvidence(evidence, identity, environment)))}\n`,
+    );
+    return;
+  }
+  if (command === 'validate-live-browser-failure') {
+    const evidence = readJson(take('--evidence'), 'live browser failure evidence').value;
+    const identity = readJson(take('--identity'), 'promotion identity').value;
+    const environment = take('--environment');
+    if (environment !== 'test') {
+      fail('--environment must be test for live browser failure evidence');
+    }
+    if (values.size !== 0) fail('unknown command argument');
+    const validatedIdentity = validatePromotionIdentity(identity);
+    const validatedEvidence = validateLiveBrowserFailureEvidence(evidence, validatedIdentity);
+    process.stdout.write(
+      `${sha256(canonicalJson({ evidence: validatedEvidence, identity: validatedIdentity }))}\n`,
     );
     return;
   }

@@ -702,6 +702,7 @@ async function authenticateWithEmailOtp({
   const challenge = await api.json(check, '/api/v1/auth/email/challenges', {
     method: 'POST',
     data: { email },
+    expected: [202],
   });
   ensure(
     challenge.data?.accepted === true &&

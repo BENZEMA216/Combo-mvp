@@ -791,6 +791,7 @@ jobs:
           ssh combo-dev-target rm -f -- "$temporary"
           scp -q "$archive" "combo-dev-target:$temporary"
           ssh combo-dev-target mv -fT -- "$temporary" "$remote"
+          set +e
           {
             printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
             cat <<'REMOTE'
@@ -839,6 +840,7 @@ jobs:
           node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
           [[ "$node_major" == 24 ]]
           umask 077
+          set +e
           node "$runner" \
             --environment test \
             --revision "$revision" \
@@ -846,13 +848,20 @@ jobs:
             --run-attempt "$run_attempt" \
             --web-origin http://127.0.0.1:18080 \
             --output "$output"
+          runner_rc=$?
+          set -e
+          [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"
           [[ -f "$output" && ! -L "$output" ]]
           [[ "$(stat -c '%a' "$output")" == 600 ]]
           output_bytes=$(stat -c '%s' "$output")
           [[ "$output_bytes" =~ ^[0-9]+$ && "$output_bytes" -gt 0 && "$output_bytes" -le 1048576 ]]
+          exit "$runner_rc"
           REMOTE
           } | ssh combo-dev-target \
             "IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset acceptance_resend_api_key; exec bash -s -- '$remote' '$remote_output' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
+          runner_rc=$?
+          set -e
+          [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"
 
           evidence="$RUNNER_TEMP/combo-test-live-browser-${REVISION}.json"
           scp -q "combo-dev-target:$remote_output" "$evidence"
@@ -861,11 +870,47 @@ jobs:
           [[ -f "$evidence" && ! -L "$evidence" ]]
           evidence_bytes=$(stat -c '%s' "$evidence")
           [[ "$evidence_bytes" =~ ^[0-9]+$ && "$evidence_bytes" -gt 0 && "$evidence_bytes" -le 1048576 ]]
-          evidence_digest=$(node "$validator" validate-live-browser \
-            --environment test \
-            --evidence "$evidence" \
-            --identity "$identity")
+          if [[ "$runner_rc" == 0 ]]; then
+            acceptance_status=passed
+            evidence_digest=$(node "$validator" validate-live-browser \
+              --environment test \
+              --evidence "$evidence" \
+              --identity "$identity")
+          else
+            acceptance_status=failed
+            evidence_digest=$(node "$validator" validate-live-browser-failure \
+              --environment test \
+              --evidence "$evidence" \
+              --identity "$identity")
+          fi
           [[ "$evidence_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          {
+            printf 'archive=%s\n' "$archive"
+            printf 'evidence=%s\n' "$evidence"
+            printf 'evidence_digest=%s\n' "$evidence_digest"
+            printf 'identity=%s\n' "$identity"
+            printf 'identity_digest=%s\n' "$identity_digest"
+            printf 'acceptance_status=%s\n' "$acceptance_status"
+          } >> "$GITHUB_OUTPUT"
+          if [[ "$acceptance_status" == failed ]]; then
+            failure_dir="$RUNNER_TEMP/combo-test-failure-evidence-${REVISION}-${RUN_ID}-${RUN_ATTEMPT}"
+            install -d -m 0700 "$failure_dir"
+            install -m 0600 "$evidence" "$failure_dir/test-live-browser-failure.json"
+            install -m 0600 "$identity" "$failure_dir/test-promotion-identity.json"
+            [[ "$(node "$validator" validate-live-browser-failure \
+              --environment test \
+              --evidence "$failure_dir/test-live-browser-failure.json" \
+              --identity "$failure_dir/test-promotion-identity.json")" == "$evidence_digest" ]]
+            mapfile -t failure_files < <(
+              find "$failure_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort
+            )
+            [[ "${#failure_files[@]}" == 2 ]]
+            [[ "${failure_files[0]}" == test-live-browser-failure.json ]]
+            [[ "${failure_files[1]}" == test-promotion-identity.json ]]
+            ! find "$failure_dir" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .
+            printf 'failure_path=%s\n' "$failure_dir" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ssh combo-dev-target bash -s -- \
             "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" "$product_started_at" <<'REMOTE'
           set -euo pipefail
@@ -884,16 +929,32 @@ jobs:
             --workflow-run-id "$workflow_run_id" \
             --workflow-run-attempt "$workflow_run_attempt"
           REMOTE
-          {
-            printf 'archive=%s\n' "$archive"
-            printf 'evidence=%s\n' "$evidence"
-            printf 'evidence_digest=%s\n' "$evidence_digest"
-            printf 'identity=%s\n' "$identity"
-            printf 'identity_digest=%s\n' "$identity_digest"
-          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload sanitized Test browser failure evidence
+        id: upload_test_failure_evidence
+        if: ${{ always() && steps.live_browser.outputs.acceptance_status == 'failed' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-test-failure-evidence-${{ needs.authorize.outputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.live_browser.outputs.failure_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail Test after preserving browser failure evidence
+        if: ${{ always() && steps.live_browser.outputs.acceptance_status == 'failed' }}
+        env:
+          FAILURE_UPLOAD_OUTCOME: ${{ steps.upload_test_failure_evidence.outcome }}
+        run: |
+          if [[ "$FAILURE_UPLOAD_OUTCOME" == success ]]; then
+            echo 'The six-area Test browser acceptance failed; sanitized failure evidence was preserved.' >&2
+          else
+            echo 'The six-area Test browser acceptance failed before evidence upload could be confirmed.' >&2
+          fi
+          exit 1
 
       - name: Collect and verify sanitized Test evidence
         id: evidence
+        if: steps.live_browser.outputs.acceptance_status == 'passed'
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.authorize.outputs.revision }}
@@ -1244,6 +1305,7 @@ jobs:
 
       - name: Upload sanitized Test evidence
         id: upload_test_evidence
+        if: steps.live_browser.outputs.acceptance_status == 'passed'
         uses: actions/upload-artifact@v4
         with:
           name: combo-test-evidence-${{ needs.authorize.outputs.revision }}
@@ -1253,6 +1315,7 @@ jobs:
 
       - name: Complete the exact Test acceptance
         id: accept_test
+        if: steps.live_browser.outputs.acceptance_status == 'passed'
         env:
           REVISION: ${{ needs.authorize.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
@@ -1321,7 +1384,8 @@ jobs:
           fi
           if ! rm -rf -- \
             "$RUNNER_TEMP/combo-release" \
-            "$RUNNER_TEMP/combo-test-evidence-${REVISION}"; then
+            "$RUNNER_TEMP/combo-test-evidence-${REVISION}" \
+            "$RUNNER_TEMP/combo-test-failure-evidence-${REVISION}-${RUN_ID}-${RUN_ATTEMPT}"; then
             cleanup_rc=1
           fi
           if (( cleanup_rc != 0 )); then echo 'Remote transient cleanup could not be confirmed.' >&2; fi
