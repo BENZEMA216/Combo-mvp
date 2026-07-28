@@ -50,15 +50,13 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 开发者使用 `scripts/combo-dev-connect.sh` 时，远端 `/opt/combo-dev/bin/combo-dev-forwarder-lease` 会为该 SSH 会话持有共享操作锁和独立租约。多个开发者可以同时持有租约，一个会话退出只释放自己的租约，最后一个会话退出才停止全局转发器。部署、重置和 bootstrap 持有同一把排他锁，因此会拒绝新的开发连接；只要仍有开发租约，它们也不会开始。受保护 Test workflow 的 artifact 浏览器验收也通过同一 root-owned 协调器持有一次短租约：启动前和释放后必须证明两个单元均为 `inactive`，runner 执行期间必须证明两者均为 `active`；成功、失败或取消都会关闭租约输入并等待转发器停止，不能把它们留成常驻服务。受限 sudo 规则只能允许无参数执行这个 root-owned 租约协调器。
 
-## 外部真实验收器
+## 基础设施与六区验收
 
-主机所有者必须在 `/opt/combo-dev/acceptance/run` 安装独立审核的基础真实验收器。部署只执行这份 root 所有且普通用户不可写的固定入口，不会从候选 bundle 安装或替换它。验收器必须在 60 分钟内完成 SPA、同源开发登录、身份读取、登出失效、生产开发登录不可用、任务幂等重放、合成配对上传、健康路径 SSE、Worker 完成、能力发布、单轮 Runtime、终态 SSE、持久助手输出、可读产物、私有签名 PUT、GET 与删除、精确 CORS、逐个重启与持久化回读、SSH 回环访问、异机不可达和临时产物清理。
+root-owned `combo-dev-smoke` 只负责主机和集群基础设施真实性：回环监听者、八个稳态工作负载、静态存储、资源上限、私有 Service、NetworkPolicy、健康与精确 Origin、网络 canary，以及当前窗口日志覆盖和凭据泄漏扫描。部署内的基线日志检查要求 API/Runtime 合成活动，但允许空数据 Worker 尚未产生 pipeline；不可变 artifact 完成真实流程后，同一 smoke 的后置模式会在转发租约仍有效时重新扫描八个来源，并强制要求 API、Runtime 与 Worker 的真实活动。它不执行登录或产品流程，也不读取 Resend full-access key。旧 `/opt/combo-dev/acceptance/run` 和 `product-flow.js` 不再属于 Test 准入链，不得通过恢复 dev-login、注入 Session 或向主机持久化验收 key 来兼容它们。
 
-验收器只能向标准输出写一份不超过 64 KiB 的 JSON。顶层只能有 `revision`、`createdAt` 和 `checks`。每个检查只能包含 `status` 与不含敏感信息的 `id`，状态必须为 `PASS`。它不得输出响应体、请求地址、会话材料、签名 URL、配对材料、日志正文或任何凭据。`combo-dev-smoke.sh` 会严格校验固定检查键；缺少验收器、缺少检查或证据过期都会返回 `BLOCKED`。
+基础设施 gate 通过后，受保护的 Test workflow 从已校验文件集的 main CI release artifact 中提取 `acceptance/live-browser-acceptance.mjs`、`acceptance/resend-sent-email.mjs` 和 `acceptance/playwright-core.tgz`，在 tecent2 使用已安装的 Chrome 对唯一入口 `http://127.0.0.1:18080` 运行完整六区验收。该验收独占真实邮箱 OTP、双身份 owner 隔离、Session 持久化与登出，以及 Creation、Authoring、Studio、Runtime 和发布身份的产品判定。Resend full-access key 只由受保护的 GitHub Environment 提供，经标准输入短暂进入验收进程，不写入主机配置、Kubernetes、日志或 evidence。
 
-固定验收器完成持久化重启后，日志审计会读取八个唯一就绪来源，并验证 API、Runtime 和 Worker 的当前窗口活动。单个容器发生一次依赖恢复重启时，审计同时覆盖该 Pod 的 current 与 previous 日志；重启历史超过一次、previous 不可读或活动证据在有界重试后仍不完整都会返回 `BLOCKED`。审计只向 smoke 传递固定 reason code，不传递原始日志或合成标记。
-
-主机固定验收器的 `productAcceptance` 只保留为主机基础健康诊断，不能单独准许 Test 通过。受保护的 Test workflow 会在部署完成后，从已校验文件集的 main CI release artifact 中提取 `acceptance/live-browser-acceptance.mjs` 和 `acceptance/playwright-core.tgz`，在 tecent2 使用已安装的 Chrome 对唯一入口 `http://127.0.0.1:18080` 运行完整六区验收。该验收覆盖 Creation、Authoring、Studio、Runtime、认证和发布身份，输出新的、权限为 `0600`、不含凭据的 JSON。workflow 会把结果复制回 runner，并使用同一 artifact 内的 `scripts/promotion-evidence.mjs` 校验固定检查顺序、完整 release identity、source CI run/attempt、artifact ID/digest 和 Test workflow run/attempt；只有该校验通过，结果和 Test promotion identity 才会进入 `combo-test-evidence-<SHA>`。主机状态根 `/var/lib/combo-dev` 固定为 root-owned `0711`：部署 SSH 用户不能列出其中的阻断标记或单次回执，但可以穿越到 `0755` 的 `evidence` 子目录，按已知 SHA/run/attempt 精确读取 `0644` 的脱敏环境证据；其余状态文件继续为 `0600`。远端 runner、依赖包、结果文件和上传临时文件无论成功或失败都会清理。
+workflow 使用同一 artifact 内的 `scripts/promotion-evidence.mjs` 校验固定检查顺序、完整 release identity、source CI run/attempt、artifact ID/digest 和 Test workflow run/attempt；只有基础设施 evidence、六区浏览器 evidence、后置日志审计、identity 和上传步骤全部成功，才会生成 `combo-test-evidence-<SHA>` 并按精确 SHA/run/attempt 完成待验收标记。dispatcher 自身失败时由其 trap 关闭全部写入者；dispatcher 已开始后的端口、浏览器、日志、evidence、上传或完成确认失败时，workflow 调用独立最小 fencer，只关闭 Test 转发器、固定任务与固定控制器，不清数据，也不生成可重放的 reset proof。部署写入的 owner-only 待验收标记最多存活两小时；即使 runner 硬取消导致 workflow 清理未执行，持久 storage guard 也会在期限后收敛。主机状态根 `/var/lib/combo-dev` 固定为 root-owned `0711`：部署 SSH 用户不能列出其中的阻断标记或单次回执，但可以穿越到 `0755` 的 `evidence` 子目录，按已知 SHA/run/attempt 精确读取 `0644` 的脱敏环境证据；其余状态文件继续为 `0600`。远端 runner、依赖包、结果文件和上传临时文件无论成功或失败都会清理。
 
 ## 重置
 

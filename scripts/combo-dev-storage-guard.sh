@@ -21,6 +21,8 @@ readonly DISPATCHER_KUBECONFIG='/etc/combo-dev/dispatcher.kubeconfig'
 readonly FENCER_KUBECONFIG='/etc/combo-dev/fencer.kubeconfig'
 readonly LOW_MARKER='/run/combo-dev-storage-low'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
+readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
 readonly OPERATION_LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
 readonly FORWARDER_LOCK_FILE='/run/lock/combo-dev-forwarders.lock'
@@ -32,6 +34,9 @@ readonly APPS=(api worker runtime web)
 readonly FOUNDATION_STATEFUL=(postgres redis-queue minio)
 readonly JOBS=(minio-init migrate combo-dev-network-canary)
 readonly FORWARDER_UNITS=(combo-dev-web-forward.service combo-dev-s3-forward.service)
+PENDING_REVISION=''
+PENDING_RUN_ID=''
+PENDING_RUN_ATTEMPT=''
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 if [[ -f "$SCRIPT_DIR/combo-dev-production-safety" ]]; then
@@ -216,6 +221,26 @@ mark_failure_fence() {
   chmod 0600 "$FAILURE_FENCE_MARKER"
 }
 
+mark_external_fence() {
+  local identity=$1
+  if [[ "$identity" == system ]]; then
+    printf '%s\n' 'system' >"$EXTERNAL_FENCE_MARKER"
+  else
+    [[ "$identity" =~ ^attempt\ [0-9a-f]{40}\ [1-9][0-9]*\ [1-9][0-9]*$ ]] ||
+      return 1
+    printf '%s\n' "$identity" >"$EXTERNAL_FENCE_MARKER"
+  fi
+  chmod 0600 "$EXTERNAL_FENCE_MARKER"
+}
+
+existing_attempt_fence_identity() {
+  local identity
+  private_file "$EXTERNAL_FENCE_MARKER" || return 1
+  identity=$(<"$EXTERNAL_FENCE_MARKER")
+  [[ "$identity" =~ ^attempt\ [0-9a-f]{40}\ [1-9][0-9]*\ [1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$identity"
+}
+
 stop_forwarders() {
   local failed=0 unit active
   exec 7>"$FORWARDER_LOCK_FILE"
@@ -304,14 +329,12 @@ fence_writers_with_minimal_credential() {
   return 1
 }
 
-fence_now() {
-  local reason=$1 low=${2:-0} terminal=${3:-1} failed=0
-  exec 8>"$FENCE_LOCK_FILE"
-  flock -w 300 8 || fail "$reason，且无法取得失败收敛锁。"
-
+fence_now_locked() {
+  local reason=$1 low=${2:-0} terminal=${3:-1} identity=${4:-system} failed=0
   # 这两步不读取任何 Kubernetes 凭据，必须先于所有集群收敛动作。
   stop_forwarders || failed=1
   mark_failure_fence || fail "$reason，且持久阻断标记无法写入。"
+  mark_external_fence "$identity" || fail "$reason，且外部阻断标记无法写入。"
   if (( low == 1 )); then install -o root -g root -m 0600 /dev/null "$LOW_MARKER" || failed=1; fi
 
   if ! credential_certificate_valid_for "$FENCER_KUBECONFIG" combo-dev-fencer "$FENCER_OPERATION_MIN_SECONDS"; then
@@ -328,21 +351,109 @@ fence_now() {
   if (( terminal == 1 )); then
     fail "$reason；回环入口与全部写入者已关闭，必须由主机所有者修复后重新 bootstrap。"
   fi
-  status 'PASS storage=bounded credentials=healthy writers=fenced forwarders=inactive'
+  status 'PASS writers=fenced forwarders=inactive'
+}
+
+fence_now() {
+  local reason=$1 low=${2:-0} terminal=${3:-1} identity=${4:-system} existing_identity
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || fail "$reason，且无法取得失败收敛锁。"
+  if [[ "$identity" == preserve-attempt ]]; then
+    identity=system
+    if existing_identity=$(existing_attempt_fence_identity); then
+      identity=$existing_identity
+    fi
+  fi
+  fence_now_locked "$reason" "$low" "$terminal" "$identity"
+}
+
+pending_acceptance_state() {
+  local revision run_id run_attempt deadline extra now
+  private_file "$ACCEPTANCE_PENDING_MARKER" || return 2
+  IFS=' ' read -r revision run_id run_attempt deadline extra <"$ACCEPTANCE_PENDING_MARKER" ||
+    return 2
+  [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ ]] || return 2
+  [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 2
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || return 2
+  now=$(date +%s 2>/dev/null) || return 2
+  [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 2
+  PENDING_REVISION=$revision
+  PENDING_RUN_ID=$run_id
+  PENDING_RUN_ATTEMPT=$run_attempt
+  (( now <= deadline ))
+}
+
+complete_acceptance() {
+  local revision=$1 run_id=$2 run_attempt=$3
+  local marker_revision marker_run_id marker_run_attempt deadline extra now
+  [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || fail '验收完成 revision 不合法。'
+  [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] ||
+    fail '验收完成 workflow identity 不合法。'
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || fail '无法取得验收完成锁。'
+  private_file "$ACCEPTANCE_PENDING_MARKER" || fail '不存在 owner-only 的待验收标记。'
+  IFS=' ' read -r marker_revision marker_run_id marker_run_attempt deadline extra \
+    <"$ACCEPTANCE_PENDING_MARKER" || fail '待验收标记不可读。'
+  [[ -z "$extra" && "$marker_revision" == "$revision" ]] ||
+    fail '待验收标记 revision 不匹配。'
+  [[ "$marker_run_id" == "$run_id" && "$marker_run_attempt" == "$run_attempt" ]] ||
+    fail '待验收标记 workflow identity 不匹配。'
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || fail '待验收标记期限不合法。'
+  now=$(date +%s 2>/dev/null) || fail '验收完成时钟不可读。'
+  (( now <= deadline )) || fail '待验收标记已经过期。'
+  [[ ! -e "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
+    ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" ]] ||
+    fail 'Test 已处于失败阻断状态。'
+  rm -f -- "$ACCEPTANCE_PENDING_MARKER" || fail '无法原子完成 Test 验收。'
+  status 'PASS acceptance=complete'
 }
 
 main() {
-  local check_only=0 cmd
-  [[ $# -le 1 ]] || fail '参数数量不合法。'
-  if [[ $# == 1 ]]; then
-    [[ $1 == '--check-only' ]] || fail '未知参数。'
-    check_only=1
-  fi
+  local check_only=0 fence_only=0 complete_only=0
+  local fence_identity='system'
+  local complete_revision='' complete_run_id='' complete_run_attempt='' cmd pending_rc
+  case $# in
+    0) ;;
+    1)
+      case $1 in
+        --check-only) check_only=1 ;;
+        --fence-only) fence_only=1 ;;
+        *) fail '参数不合法。' ;;
+      esac
+      ;;
+    4)
+      case $1 in
+        --fence-attempt)
+          [[ "$2" =~ ^[0-9a-f]{40}$ ]] || fail '失败收敛 revision 不合法。'
+          [[ "$3" =~ ^[1-9][0-9]*$ && "$4" =~ ^[1-9][0-9]*$ ]] ||
+            fail '失败收敛 workflow identity 不合法。'
+          fence_only=1
+          fence_identity="attempt $2 $3 $4"
+          ;;
+        --complete-acceptance)
+          complete_only=1
+          complete_revision=$2
+          complete_run_id=$3
+          complete_run_attempt=$4
+          ;;
+        *) fail '参数不合法。' ;;
+      esac
+      ;;
+    *) fail '参数不合法。' ;;
+  esac
   for cmd in findmnt readlink df awk dirname stat systemctl timeout python3; do require_command "$cmd"; done
   [[ -f "$SAFETY_TOOL" ]] || fail '共享安全检查器不存在。'
   if (( check_only == 0 )); then
     [[ $(id -u) -eq 0 ]] || fail '存储收敛必须由 root 执行。'
-    for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm; do require_command "$cmd"; done
+    for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm date; do require_command "$cmd"; done
+  fi
+  if (( fence_only == 1 )); then
+    fence_now '受控 Test 后置验收未完成' 0 0 "$fence_identity"
+    return
+  fi
+  if (( complete_only == 1 )); then
+    complete_acceptance "$complete_revision" "$complete_run_id" "$complete_run_attempt"
+    return
   fi
 
   if ! verify_static_paths || ! verify_k3s_mount_dependencies; then
@@ -372,11 +483,31 @@ main() {
   if [[ -e "$FAILURE_FENCE_MARKER" ]]; then
     exec 9>"$OPERATION_LOCK_FILE"
     if flock -n 9; then
-      fence_now '持久失败阻断标记仍然存在' 0 0
+      fence_now '持久失败阻断标记仍然存在' 0 0 preserve-attempt
       return
     fi
     status 'PASS storage=bounded credentials=healthy operation=active'
     return
+  fi
+  if [[ -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    exec 8>"$FENCE_LOCK_FILE"
+    flock -w 300 8 || fail '无法取得待验收期限判定锁。'
+    if [[ ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+      status 'PASS storage=static-local headroom=available credentials=healthy'
+      return
+    fi
+    if pending_acceptance_state; then
+      status 'PASS storage=bounded credentials=healthy acceptance=pending'
+      return
+    else
+      pending_rc=$?
+    fi
+    if (( pending_rc == 1 )); then
+      fence_now_locked 'Test 后置验收超过固定期限' 0 1 \
+        "attempt $PENDING_REVISION $PENDING_RUN_ID $PENDING_RUN_ATTEMPT"
+    else
+      fence_now_locked 'Test 待验收标记损坏'
+    fi
   fi
   status 'PASS storage=static-local headroom=available credentials=healthy'
 }

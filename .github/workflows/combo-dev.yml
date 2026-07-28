@@ -422,6 +422,7 @@ jobs:
           done
 
       - name: Upload the fixed bundle and invoke the root-owned dispatcher
+        id: deploy_test
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIEW_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
@@ -522,6 +523,7 @@ jobs:
               and .workflow_run.head_branch == "main"
               and .workflow_run.head_sha == $revision
             ' <<<"$release_artifact" >/dev/null
+          printf 'mutation_started=true\n' >> "$GITHUB_OUTPUT"
           remote="/opt/combo-dev/incoming/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           temporary="/opt/combo-dev/incoming/.${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.upload"
           cleanup_upload() {
@@ -731,6 +733,8 @@ jobs:
             echo 'Test browser forwarder lease did not become active.' >&2
             exit 1
           }
+          product_started_at=$(ssh combo-dev-target date -u +%Y-%m-%dT%H:%M:%SZ)
+          [[ "$product_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 
           identity="$RUNNER_TEMP/combo-test-identity-${REVISION}.json"
           jq -n \
@@ -862,6 +866,24 @@ jobs:
             --evidence "$evidence" \
             --identity "$identity")
           [[ "$evidence_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          ssh combo-dev-target bash -s -- \
+            "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" "$product_started_at" <<'REMOTE'
+          set -euo pipefail
+          revision=$1
+          workflow_run_id=$2
+          workflow_run_attempt=$3
+          product_started_at=$4
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]]
+          [[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]]
+          [[ "$product_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+          sudo /opt/combo-dev/bin/combo-dev-smoke \
+            --logs-only \
+            --revision "$revision" \
+            --since-time "$product_started_at" \
+            --workflow-run-id "$workflow_run_id" \
+            --workflow-run-attempt "$workflow_run_attempt"
+          REMOTE
           {
             printf 'archive=%s\n' "$archive"
             printf 'evidence=%s\n' "$evidence"
@@ -1013,11 +1035,8 @@ jobs:
               worker: $apiImage
             }
           ' "$raw" >/dev/null
-          sanitized="$RUNNER_TEMP/combo-test-evidence-${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.sanitized.json"
-          jq 'del(.productAcceptance)' "$raw" > "$sanitized"
-          chmod 600 "$sanitized"
-          mv -fT -- "$sanitized" "$evidence"
-          rm -f -- "$raw"
+          jq -e 'has("productAcceptance") | not' "$raw" >/dev/null
+          mv -fT -- "$raw" "$evidence"
           jq -e '
             keys == ([
               "createdAt",
@@ -1224,12 +1243,41 @@ jobs:
           printf 'path=%s\n' "$evidence_dir" >> "$GITHUB_OUTPUT"
 
       - name: Upload sanitized Test evidence
+        id: upload_test_evidence
         uses: actions/upload-artifact@v4
         with:
           name: combo-test-evidence-${{ needs.authorize.outputs.revision }}
           path: ${{ steps.evidence.outputs.path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Complete the exact Test acceptance
+        id: accept_test
+        env:
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          ssh combo-dev-target sudo /opt/combo-dev/bin/combo-dev-storage-guard \
+            --complete-acceptance "$REVISION" "$RUN_ID" "$RUN_ATTEMPT"
+
+      - name: Fence Test after post-deploy acceptance failure
+        if: ${{ always() && steps.deploy_test.outputs.mutation_started == 'true' && steps.accept_test.outcome != 'success' }}
+        timeout-minutes: 15
+        env:
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          ssh combo-dev-target timeout 840 \
+            sudo /opt/combo-dev/bin/combo-dev-storage-guard \
+              --fence-attempt "$REVISION" "$RUN_ID" "$RUN_ATTEMPT"
 
       - name: Remove transient runner and upload files
         if: always()
