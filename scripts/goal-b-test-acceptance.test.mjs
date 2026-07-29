@@ -756,6 +756,14 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   );
   assert.match(
     source,
+    /RUNTIME_BADGE_PROBE_PAGE =\s*'\/try\/session\/00000000-0000-4000-8000-000000000000'/,
+  );
+  assert.match(source, /\.cb-shell, \.cb-auth-gate/);
+  assert.match(source, /\.rt-shell, \.rt-auth-gate/);
+  assert.match(source, /new URL\(page\.url\(\)\)\.pathname === expectedPage/);
+  assert.doesNotMatch(source, /'\/try\/\?acceptance=hidden#secret'/);
+  assert.match(
+    source,
     /value: authenticationCookieValue[\s\S]*const revoked = await replayApi\.raw\('\/api\/v1\/me'\)[\s\S]*revoked\.status\(\) === 401/,
   );
   assert.match(source, /aside\[aria-label="Preview 发布身份"\]/);
