@@ -485,6 +485,78 @@ test('a reused foundation accepts a false checkpoint boolean', () => {
   );
 });
 
+test('the post-cut checkpoint validator accepts its exact persisted schema', () => {
+  const load = functionBody('load_post_cut_checkpoint');
+  const startMarker = '--arg webService "${PREFIX}web" \'';
+  const start = load.indexOf(startMarker);
+  assert.ok(start >= 0, 'the post-cut checkpoint validator must receive the Web service');
+  const programStart = start + startMarker.length;
+  const endMarker = `\n    ' "$pending_checkpoint" >/dev/null`;
+  const end = load.indexOf(endMarker, programStart);
+  assert.ok(end > programStart, 'the post-cut checkpoint validator must execute embedded jq');
+  const filter = load.slice(programStart, end);
+  const sourceSha = '1'.repeat(40);
+  const releaseId = `release-${sourceSha}`;
+  const manifestDigest = `sha256:${'2'.repeat(64)}`;
+  const foundationResetEvidenceDigest = `sha256:${'3'.repeat(64)}`;
+  const webService = `release-${sourceSha.slice(0, 12)}-web`;
+  const checkpoint = {
+    schemaVersion: 3,
+    environment: 'preview',
+    namespace: 'combo-review',
+    sourceSha,
+    releaseId,
+    manifestDigest,
+    foundationResetEvidenceDigest,
+    schemaStructureProofDigest: `sha256:${'4'.repeat(64)}`,
+    webService,
+    foundationCreated: false,
+    phase: 'post-cut',
+    trafficCutAt: '2026-07-29T13:20:09.000Z',
+    cleanupPlanDigest: `sha256:${'5'.repeat(64)}`,
+  };
+  const args = [
+    '-e',
+    '--arg',
+    'environment',
+    checkpoint.environment,
+    '--arg',
+    'namespace',
+    checkpoint.namespace,
+    '--arg',
+    'sourceSha',
+    sourceSha,
+    '--arg',
+    'releaseId',
+    releaseId,
+    '--arg',
+    'manifestDigest',
+    manifestDigest,
+    '--arg',
+    'foundationResetEvidenceDigest',
+    foundationResetEvidenceDigest,
+    '--arg',
+    'webService',
+    webService,
+    filter,
+  ];
+  const accepted = spawnSync('jq', args, {
+    encoding: 'utf8',
+    input: JSON.stringify(checkpoint),
+  });
+  assert.equal(
+    accepted.status,
+    0,
+    `an exact post-cut checkpoint must be accepted:\n${accepted.stderr}`,
+  );
+
+  const rejected = spawnSync('jq', args, {
+    encoding: 'utf8',
+    input: JSON.stringify({ ...checkpoint, unexpected: true }),
+  });
+  assert.equal(rejected.status, 1, 'an extra checkpoint field must remain fail-closed');
+});
+
 test('schema structure identity is stable across activation and finalization', () => {
   const verify = functionBody('verify_release_schema_structure');
   const reuse = functionBody('reuse_completed_release');
