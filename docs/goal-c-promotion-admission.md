@@ -1,7 +1,8 @@
 # Goal C 晋级准入与证据契约
 
 Goal C 把一次发布候选定义为一个完整的 `main` 提交、该提交对应的成功 CI
-运行及其运行次数，以及该运行生成的唯一 `combo-release-<SHA>` artifact。Test、
+运行及其运行次数，以及该运行生成的唯一
+`combo-release-<SHA>-<source-CI-attempt>` artifact。Test、
 Preview 和 Production 的发布身份必须引用同一个候选，不能只按 artifact 名称、
 分支名或最近一次成功运行来选择输入。
 
@@ -21,7 +22,8 @@ Preview 在任何远端变更前重新检查以下事实：
   endpoint。
 - source CI 的 ID、run attempt、workflow、事件、分支、SHA 和结论仍然匹配。
 - source artifact 的 ID、所属运行和 GitHub digest 仍然匹配。
-- 同一 SHA 的 Test workflow run、run attempt 和 `combo-test-evidence-<SHA>` artifact
+- 同一 SHA 的 Test workflow run、run attempt 和
+  `combo-test-evidence-<SHA>-<Test-attempt>` artifact
   均已成功，且 Test identity、浏览器结果、source release 和部署证据摘要逐项匹配。
 
 Test 的远端 bundle、reset proof、migration proof 和部署证据路径全部使用
@@ -69,7 +71,9 @@ Test、Preview 和 Production 都从同一 release artifact 取出
 在 tecent2 已安装的 Chrome 中运行。Test 通过固定 loopback Web forward，Preview
 使用固定公网 Review 入口，Production 使用 `https://buildwithcombo.com`。Test
 workflow 会把受校验的浏览器结果和 promotion identity 一并纳入
-`combo-test-evidence-<SHA>`，Preview 不接受没有这份 Test admission 的候选。
+`combo-test-evidence-<SHA>-<Test-attempt>`，Preview 不接受没有这份 Test
+admission 的候选。CI、Test、Preview 和 Production 的 artifact 名均包含实际生成它的
+run attempt；重跑只生成新的不可变 artifact，不覆盖上一 attempt。
 
 浏览器 runner 的固定检查真实覆盖能力勾选与 UI 发布、Runtime SSE 建流、事件 id、
 主动断开、携带 `Last-Event-ID` 的重连和终态 Redis replay。中断 Turn 必须收到

@@ -1011,8 +1011,10 @@ export function validatePromotionIdentity(value) {
   ]) {
     positiveInteger(value[field], label);
   }
-  if (value.releaseArtifactName !== `combo-release-${value.sourceSha}`) {
-    fail('identity release artifact name does not match sourceSha');
+  if (
+    value.releaseArtifactName !== `combo-release-${value.sourceSha}-${value.sourceCiRunAttempt}`
+  ) {
+    fail('identity release artifact name does not match sourceSha and source CI attempt');
   }
   if (value.releaseId !== `release-${value.sourceSha}`) {
     fail('identity releaseId does not match sourceSha');

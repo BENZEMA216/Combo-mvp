@@ -21,6 +21,10 @@ APPS_YAML=''
 WEB_ASSETS=''
 ACCEPTANCE_ATTESTATION=''
 ACCEPTANCE_ATTESTATION_DIGEST=''
+ACCEPTANCE_EVIDENCE=''
+PROMOTION_IDENTITY=''
+FOUNDATION_RESET_EVIDENCE=''
+RESET_ROLL_FORWARD_EVIDENCE=''
 KUBECONFIG_PATH=${KUBECONFIG:-"$HOME/.kube/config"}
 EVIDENCE_ROOT=${COMBO_RELEASE_EVIDENCE_ROOT:-"$HOME/data/combo-releases/goal-a"}
 MUTATION_LOCK=${COMBO_MUTATION_LOCK:-"$HOME/data/combo-release-mutation.lock"}
@@ -62,8 +66,12 @@ Usage: deploy-release.sh
   --migrate-yaml rendered-migrate.yaml
   --apps-yaml rendered-apps.yaml
   --web-assets web-asset-manifest.json
+  [--foundation-reset-evidence foundation-reset-evidence.json]
+  [--reset-roll-forward-evidence reset-roll-forward-evidence.json]
   [--acceptance-attestation acceptance-attestation.json
-   --acceptance-attestation-digest sha256:...]
+   --acceptance-attestation-digest sha256:...
+   --acceptance-evidence production-browser-acceptance.json
+   --promotion-identity production-identity.json]
 EOF
   exit 2
 }
@@ -88,7 +96,10 @@ while (($# > 0)); do
       ;;
     --environment | --manifest | --manifest-digest | --migrations | --foundation-yaml | \
       --init-yaml | --migrate-yaml | --apps-yaml | --web-assets | \
-      --acceptance-attestation | --acceptance-attestation-digest)
+      --foundation-reset-evidence | --reset-roll-forward-evidence | \
+      --acceptance-attestation | \
+      --acceptance-attestation-digest | --acceptance-evidence | \
+      --promotion-identity)
       (($# >= 2)) || usage
       case "$1" in
         --environment) ENVIRONMENT=$2 ;;
@@ -100,8 +111,12 @@ while (($# > 0)); do
         --migrate-yaml) MIGRATE_YAML=$2 ;;
         --apps-yaml) APPS_YAML=$2 ;;
         --web-assets) WEB_ASSETS=$2 ;;
+        --foundation-reset-evidence) FOUNDATION_RESET_EVIDENCE=$2 ;;
+        --reset-roll-forward-evidence) RESET_ROLL_FORWARD_EVIDENCE=$2 ;;
         --acceptance-attestation) ACCEPTANCE_ATTESTATION=$2 ;;
         --acceptance-attestation-digest) ACCEPTANCE_ATTESTATION_DIGEST=$2 ;;
+        --acceptance-evidence) ACCEPTANCE_EVIDENCE=$2 ;;
+        --promotion-identity) PROMOTION_IDENTITY=$2 ;;
       esac
       shift 2
       ;;
@@ -191,11 +206,13 @@ else
 fi
 if ((FINALIZE == 1)); then
   [[ -n "$ACCEPTANCE_ATTESTATION" &&
-    "$ACCEPTANCE_ATTESTATION_DIGEST" =~ $DIGEST_RE ]] ||
-    fail 'Production finalization requires an acceptance attestation and digest'
+    "$ACCEPTANCE_ATTESTATION_DIGEST" =~ $DIGEST_RE &&
+    -n "$ACCEPTANCE_EVIDENCE" && -n "$PROMOTION_IDENTITY" ]] ||
+    fail 'Production finalization requires acceptance evidence, identity, attestation, and digest'
 else
-  [[ -z "$ACCEPTANCE_ATTESTATION" && -z "$ACCEPTANCE_ATTESTATION_DIGEST" ]] ||
-    fail 'acceptance attestation is only accepted during finalization'
+  [[ -z "$ACCEPTANCE_ATTESTATION" && -z "$ACCEPTANCE_ATTESTATION_DIGEST" &&
+    -z "$ACCEPTANCE_EVIDENCE" && -z "$PROMOTION_IDENTITY" ]] ||
+    fail 'acceptance evidence is only accepted during finalization'
 fi
 
 RELEASE_STATEFULSETS=(release-postgres release-redis-queue release-minio)
@@ -221,6 +238,12 @@ done
   fail 'release traffic rollback controller is missing or not executable'
 [[ -x "$SCRIPT_DIR/seal-release-traffic.sh" ]] ||
   fail 'release traffic checkpoint sealer is missing or not executable'
+[[ -f "$SCRIPT_DIR/verify-release-schema.mjs" &&
+  ! -L "$SCRIPT_DIR/verify-release-schema.mjs" ]] ||
+  fail 'release database schema verifier is missing or not executable'
+[[ -f "$SCRIPT_DIR/promotion-evidence.mjs" &&
+  ! -L "$SCRIPT_DIR/promotion-evidence.mjs" ]] ||
+  fail 'release acceptance evidence verifier is missing'
 
 K=(kubectl --kubeconfig "$KUBECONFIG_PATH")
 source_sha=''
@@ -262,6 +285,10 @@ inventory_configmaps=''
 inventory_pvcs=''
 pvc_inventory=''
 release_storage_evidence=''
+schema_structure_evidence=''
+schema_structure_digest=''
+foundation_reset_digest=''
+reset_roll_forward_digest=''
 mutation_started=0
 deployment_succeeded=0
 traffic_cut_succeeded=0
@@ -299,8 +326,636 @@ validate_migrations() {
     fail 'migration file list does not reach the release migration head'
 }
 
+validate_foundation_reset_evidence() {
+  local expected_claims expected_foundation expected_request_id storage_root
+  [[ -n "$FOUNDATION_RESET_EVIDENCE" ]] || {
+    foundation_reset_digest=''
+    return 0
+  }
+  [[ -f "$FOUNDATION_RESET_EVIDENCE" && ! -L "$FOUNDATION_RESET_EVIDENCE" ]] ||
+    fail 'foundation reset evidence is not a regular file'
+  foundation_reset_digest=$(sha256sum "$FOUNDATION_RESET_EVIDENCE" |
+    awk '{print "sha256:" $1}')
+  [[ "$foundation_reset_digest" =~ $DIGEST_RE ]] ||
+    fail 'foundation reset evidence digest is invalid'
+  expected_claims=$(printf '%s\n' "${RELEASE_CLAIMS[@]}" |
+    jq -R . | jq -s 'sort')
+  expected_foundation=$(printf '%s\n' \
+    'configmap/release-redis-hot-config' \
+    'configmap/release-redis-queue-config' \
+    'deployment/release-redis-hot' \
+    'service/release-minio' \
+    'service/release-postgres' \
+    'service/release-redis-hot' \
+    'service/release-redis-queue' \
+    'statefulset/release-minio' \
+    'statefulset/release-postgres' \
+    'statefulset/release-redis-queue' |
+    jq -R . | jq -s 'sort')
+  expected_request_id=$(printf '%s\0%s\0%s\0%s\0%s' \
+    combo-foundation-reset-v1 "$ENVIRONMENT" "$source_sha" \
+    "$MANIFEST_DIGEST" established-clean-slate-v1 |
+    sha256sum | awk '{print "sha256:" $1}')
+  storage_root=$(sudo -n realpath -e "$K3S_STORAGE_ROOT")
+  jq -e \
+    --arg environment "$ENVIRONMENT" \
+    --arg namespace "$NAMESPACE" \
+    --arg sourceSha "$source_sha" \
+    --arg releaseId "$release_id" \
+    --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg requestId "$expected_request_id" \
+    --arg storageRoot "$storage_root" \
+    --argjson expectedClaims "$expected_claims" \
+    --argjson expectedFoundation "$expected_foundation" '
+      keys == ([
+        "authorityDigest",
+        "checks",
+        "completedAt",
+        "environment",
+        "foundation",
+        "foundationReadyAt",
+        "foundationSnapshotDigest",
+        "manifestDigest",
+        "namespace",
+        "newStorage",
+        "oldStorage",
+        "planDigest",
+        "policy",
+        "preservedWeb",
+        "releaseId",
+        "requestId",
+        "schemaVersion",
+        "sourceSha",
+        "startedAt",
+        "status",
+        "storageClearedAt"
+      ] | sort)
+      and .schemaVersion == 1
+      and .status == "passed"
+      and .policy == "established-clean-slate-v1"
+      and .environment == $environment
+      and .namespace == $namespace
+      and .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+      and .requestId == $requestId
+      and .authorityDigest == $manifestDigest
+      and (.planDigest | test("^sha256:[0-9a-f]{64}$"))
+      and (.foundationSnapshotDigest | test("^sha256:[0-9a-f]{64}$"))
+      and ([.oldStorage[].claim] | sort) == $expectedClaims
+      and ([.newStorage[].claim] | sort) == $expectedClaims
+      and all(.oldStorage[], .newStorage[];
+        keys == ([
+          "claim", "claimUid", "claimResourceVersion", "path", "volume",
+          "volumeUid", "volumeResourceVersion"
+        ] | sort)
+        and (.claimUid | test("^[0-9a-f-]{36}$"))
+        and (.claimResourceVersion | test("^[1-9][0-9]*$"))
+        and .volume == ("pvc-" + .claimUid)
+        and (.volumeUid | test("^[0-9a-f-]{36}$"))
+        and (.volumeResourceVersion | test("^[1-9][0-9]*$"))
+        and .path == (
+          $storageRoot + "/" + .volume + "_" + $namespace + "_" + .claim
+        ))
+      and all(.newStorage[] as $new;
+        any(.oldStorage[];
+          .claim == $new.claim
+          and .claimUid != $new.claimUid
+          and .volume != $new.volume
+          and .volumeUid != $new.volumeUid
+          and .path != $new.path))
+      and ([.foundation[] | .kind + "/" + .name] | sort) == $expectedFoundation
+      and all(.foundation[];
+        keys == ["kind", "name", "uid"]
+        and (.uid | test("^[0-9a-f-]{36}$")))
+      and (.preservedWeb | keys) == ["name", "uid"]
+      and (.preservedWeb.name | test("^release-[0-9a-f]{12}-web$"))
+      and (.preservedWeb.uid | test("^[0-9a-f-]{36}$"))
+      and .checks == {
+        activeWebPreserved: true,
+        newStorageIdentity: true,
+        oldStorageRemoved: true,
+        writersFenced: true
+      }
+      and all([
+        .startedAt,
+        .storageClearedAt,
+        .foundationReadyAt,
+        .completedAt
+      ][]; type == "string" and test("Z$"))
+  ' "$FOUNDATION_RESET_EVIDENCE" >/dev/null ||
+    fail 'foundation reset evidence does not match this exact release'
+}
+
+validate_reset_roll_forward_evidence() {
+  local expected_request_id request_hex state_root internal_evidence
+  local plan checkpoint archive seal cancellation file pending_path
+  expected_request_id=$(printf '%s\0%s\0%s\0%s' \
+    combo-reset-roll-forward-v1 production "$source_sha" "$MANIFEST_DIGEST" |
+    sha256sum | awk '{print "sha256:" $1}')
+  request_hex=${expected_request_id#sha256:}
+  state_root="$EVIDENCE_ROOT/reset-roll-forwards/production"
+  internal_evidence="$state_root/$request_hex.evidence.json"
+  plan="$state_root/$request_hex.plan.json"
+  checkpoint="$state_root/$request_hex.checkpoint.json"
+  archive="$state_root/$request_hex.old-pending.json"
+  seal="$state_root/$request_hex.handoff-seal.json"
+  cancellation="$state_root/$request_hex.cancellation.json"
+  [[ -n "$RESET_ROLL_FORWARD_EVIDENCE" ]] || {
+    reset_roll_forward_digest=''
+    if [[ "$ENVIRONMENT" == production ]]; then
+      if [[ -f "$checkpoint" && ! -L "$checkpoint" ]] &&
+        [[ "$(jq -r '.phase // empty' "$checkpoint")" == cancelled-finalized ]]; then
+        [[ -f "$plan" && ! -L "$plan" &&
+          -f "$archive" && ! -L "$archive" &&
+          -f "$cancellation" && ! -L "$cancellation" &&
+          ! -e "$internal_evidence" && ! -L "$internal_evidence" &&
+          ! -e "$seal" && ! -L "$seal" ]] ||
+          fail 'cancelled reset roll-forward durable state is incomplete or unsafe'
+        return 0
+      fi
+      for file in "$internal_evidence" "$plan" "$checkpoint" "$archive" "$seal"; do
+        [[ ! -e "$file" && ! -L "$file" ]] ||
+          fail 'this candidate entered reset roll-forward and requires its evidence'
+      done
+      [[ ! -e "$cancellation" && ! -L "$cancellation" ]] ||
+        fail 'orphan reset roll-forward cancellation blocks this candidate'
+    fi
+    return 0
+  }
+  [[ "$ENVIRONMENT" == production ]] ||
+    fail 'reset roll-forward evidence is restricted to Production'
+  [[ -z "$FOUNDATION_RESET_EVIDENCE" ]] ||
+    fail 'foundation reset and reset roll-forward evidence are mutually exclusive'
+  [[ -f "$RESET_ROLL_FORWARD_EVIDENCE" &&
+    ! -L "$RESET_ROLL_FORWARD_EVIDENCE" ]] ||
+    fail 'reset roll-forward evidence is not a regular file'
+  reset_roll_forward_digest=$(sha256sum "$RESET_ROLL_FORWARD_EVIDENCE" |
+    awk '{print "sha256:" $1}')
+  [[ "$reset_roll_forward_digest" =~ $DIGEST_RE ]] ||
+    fail 'reset roll-forward evidence digest is invalid'
+  for file in "$internal_evidence" "$plan" "$checkpoint" "$archive" "$seal"; do
+    [[ -f "$file" && ! -L "$file" ]] ||
+      fail 'reset roll-forward durable state is incomplete or unsafe'
+  done
+  cmp -s "$RESET_ROLL_FORWARD_EVIDENCE" "$internal_evidence" ||
+    fail 'reset roll-forward evidence differs from its durable completion record'
+  jq -e \
+    --arg requestId "$expected_request_id" \
+    --arg sourceSha "$source_sha" \
+    --arg releaseId "$release_id" \
+    --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg planDigest "$(sha256sum "$plan" | awk '{print "sha256:" $1}')" \
+    --arg archiveDigest "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" \
+    --arg sealDigest "$(sha256sum "$seal" | awk '{print "sha256:" $1}')" '
+      (keys | sort) == ([
+        "schemaVersion", "status", "operation", "environment", "namespace",
+        "requestId", "planDigest", "pendingArchiveDigest", "handoffSealDigest",
+        "oldSourceSha", "oldReleaseId", "oldManifestDigest",
+        "resetEvidenceDigest", "newSourceSha", "newReleaseId",
+        "newManifestDigest", "preservedWeb", "removedTargets", "checks",
+        "completedAt"
+      ] | sort)
+      and .schemaVersion == 1
+      and .status == "passed"
+      and .operation == "production-reset-roll-forward"
+      and .environment == "production"
+      and .namespace == "combo"
+      and .requestId == $requestId
+      and .planDigest == $planDigest
+      and .pendingArchiveDigest == $archiveDigest
+      and .handoffSealDigest == $sealDigest
+      and (.oldSourceSha | test("^[0-9a-f]{40}$"))
+      and .oldSourceSha != $sourceSha
+      and .oldReleaseId == ("release-" + .oldSourceSha)
+      and (.oldManifestDigest | test("^sha256:[0-9a-f]{64}$"))
+      and (.resetEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+      and .newSourceSha == $sourceSha
+      and .newReleaseId == $releaseId
+      and .newManifestDigest == $manifestDigest
+      and .preservedWeb.name
+        == ("release-" + .oldSourceSha[0:12] + "-web")
+      and (.preservedWeb.uid | type == "string" and length > 0)
+      and .preservedWeb.serviceName == .preservedWeb.name
+      and (.preservedWeb.serviceUid | type == "string" and length > 0)
+      and ([.removedTargets[] | .kind + "/" + .name] | sort) == ([
+        "deployment/release-" + .oldSourceSha[0:12] + "-api",
+        "deployment/release-" + .oldSourceSha[0:12] + "-runtime",
+        "deployment/release-" + .oldSourceSha[0:12] + "-worker",
+        "job/release-" + .oldSourceSha[0:12] + "-migrate",
+        "job/release-" + .oldSourceSha[0:12] + "-minio-init"
+      ] | sort)
+      and all(.removedTargets[];
+        (keys | sort) == ["kind", "name", "state", "uid"]
+        and (
+          (.state == "present"
+            and (.uid | type == "string" and length > 0))
+          or
+          (.state == "already-absent" and .kind == "job" and .uid == null)
+        ))
+      and .checks == {
+        activeWebPreserved: true,
+        oldCandidateWritersRemoved: true,
+        pendingArchived: true,
+        pendingRemoved: true,
+        resetBoundaryRetained: true,
+        rollForwardOnly: true,
+        secretMaterialAccessed: false
+      }
+      and (.completedAt | type == "string" and test("Z$"))
+    ' "$RESET_ROLL_FORWARD_EVIDENCE" >/dev/null ||
+    fail 'reset roll-forward evidence does not authorize this exact release'
+  jq -e \
+    --arg requestId "$expected_request_id" \
+    --arg evidenceDigest "$reset_roll_forward_digest" \
+    --arg planDigest "$(sha256sum "$plan" | awk '{print "sha256:" $1}')" '
+      .schemaVersion == 1
+      and .requestId == $requestId
+      and .planDigest == $planDigest
+      and .phase == "completed"
+      and .evidenceDigest == $evidenceDigest
+    ' "$checkpoint" >/dev/null ||
+    fail 'reset roll-forward completion checkpoint is invalid'
+  pending_path="$EVIDENCE_ROOT/$ENVIRONMENT/pending.json"
+  if [[ -e "$pending_path" || -L "$pending_path" ]]; then
+    [[ -f "$pending_path" && ! -L "$pending_path" ]] ||
+      fail 'Production pending path is unsafe after reset roll-forward'
+  fi
+}
+
+audit_reset_roll_forward_journals() {
+  local -a args
+  [[ "$ENVIRONMENT" == production ]] || return 0
+  [[ -f "$SCRIPT_DIR/reset-roll-forward-journal.mjs" &&
+    ! -L "$SCRIPT_DIR/reset-roll-forward-journal.mjs" ]] ||
+    fail 'reset roll-forward journal auditor is missing or unsafe'
+  args=(
+    audit
+    --evidence-root "$EVIDENCE_ROOT"
+    --environment production
+    --source-sha "$source_sha"
+    --manifest-digest "$MANIFEST_DIGEST"
+    --mode consumer
+  )
+  if [[ -n "$RESET_ROLL_FORWARD_EVIDENCE" ]]; then
+    args+=(--evidence "$RESET_ROLL_FORWARD_EVIDENCE")
+  fi
+  node "$SCRIPT_DIR/reset-roll-forward-journal.mjs" "${args[@]}" >/dev/null ||
+    fail 'global reset roll-forward journal audit failed'
+}
+
+validate_reset_roll_forward_copy() {
+  local directory=$1 context=$2 path
+  path="$directory/reset-roll-forward-evidence.json"
+  if [[ -n "$RESET_ROLL_FORWARD_EVIDENCE" ]]; then
+    [[ -f "$path" && ! -L "$path" ]] ||
+      fail "$context lacks sealed reset roll-forward evidence"
+    cmp -s "$RESET_ROLL_FORWARD_EVIDENCE" "$path" ||
+      fail "$context reset roll-forward evidence changed"
+  else
+    [[ ! -e "$path" && ! -L "$path" ]] ||
+      fail "$context unexpectedly contains reset roll-forward evidence"
+  fi
+}
+
+checksum_set_lists_file_once() {
+  local checksum_file=$1 expected_name=$2 count
+  count=$(awk -v expected="$expected_name" '
+    $2 == expected { count += 1 }
+    END { print count + 0 }
+  ' "$checksum_file")
+  [[ "$count" == 1 ]]
+}
+
+validate_completed_foundation_reset_journal() {
+  local plan_file=$1 checkpoint_file=$2 ready_file=$3 evidence_file=$4 stem=$5
+  local plan_digest ready_digest
+  plan_digest=$(sha256sum "$plan_file" | awk '{print "sha256:" $1}')
+  ready_digest=$(sha256sum "$ready_file" | awk '{print "sha256:" $1}')
+  jq -e \
+    --arg requestId "sha256:$stem" \
+    --arg environment "$ENVIRONMENT" \
+    --arg namespace "$NAMESPACE" '
+      .schemaVersion == 1
+      and .policy == "established-clean-slate-v1"
+      and .requestId == $requestId
+      and .authorityDigest == .manifestDigest
+      and .environment == $environment
+      and .namespace == $namespace
+      and (.sourceSha | test("^[0-9a-f]{40}$"))
+      and .releaseId == ("release-" + .sourceSha)
+      and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
+      and (.foundationYamlDigest | test("^sha256:[0-9a-f]{64}$"))
+      and (.createdAt | type == "string" and length > 0)
+      and (.oldStorage | type == "array" and length == 3)
+      and (.preservedWeb.name | test("^release-[0-9a-f]{12}-web$"))
+      and (.preservedWeb.uid | type == "string" and length > 0)
+    ' "$plan_file" >/dev/null ||
+    fail 'completed foundation reset plan is invalid'
+  jq -e \
+    --arg requestId "sha256:$stem" \
+    --arg planDigest "$plan_digest" \
+    --arg snapshotDigest "$ready_digest" '
+      (keys | sort) == ([
+        "schemaVersion", "requestId", "planDigest", "phase", "startedAt",
+        "storageClearedAt", "foundationReadyAt", "foundationSnapshotDigest",
+        "updatedAt"
+      ] | sort)
+      and .schemaVersion == 1
+      and .requestId == $requestId
+      and .planDigest == $planDigest
+      and .phase == "foundation-ready"
+      and .foundationSnapshotDigest == $snapshotDigest
+      and all([
+        .startedAt, .storageClearedAt, .foundationReadyAt, .updatedAt
+      ][]; type == "string" and length > 0)
+    ' "$checkpoint_file" >/dev/null ||
+    fail 'completed foundation reset checkpoint chain is invalid'
+  jq -e \
+    --arg requestId "sha256:$stem" \
+    --arg planDigest "$plan_digest" '
+      (keys | sort) == [
+        "foundation", "newStorage", "planDigest", "requestId", "schemaVersion"
+      ]
+      and .schemaVersion == 1
+      and .requestId == $requestId
+      and .planDigest == $planDigest
+      and (.newStorage | type == "array" and length == 3)
+      and (.foundation | type == "array" and length == 10)
+    ' "$ready_file" >/dev/null ||
+    fail 'completed foundation reset ready snapshot chain is invalid'
+  jq -e \
+    --arg requestId "sha256:$stem" \
+    --arg planDigest "$plan_digest" \
+    --arg snapshotDigest "$ready_digest" \
+    --arg environment "$ENVIRONMENT" \
+    --arg namespace "$NAMESPACE" \
+    --slurpfile plan "$plan_file" \
+    --slurpfile ready "$ready_file" '
+      .schemaVersion == 1
+      and .status == "passed"
+      and .policy == "established-clean-slate-v1"
+      and .requestId == $requestId
+      and .authorityDigest == .manifestDigest
+      and .environment == $environment
+      and .namespace == $namespace
+      and .sourceSha == $plan[0].sourceSha
+      and .releaseId == $plan[0].releaseId
+      and .manifestDigest == $plan[0].manifestDigest
+      and .authorityDigest == $plan[0].authorityDigest
+      and .planDigest == $planDigest
+      and .foundationSnapshotDigest == $snapshotDigest
+      and .oldStorage
+        == ($plan[0].oldStorage
+          | map(del(.claimAuthorityDigest, .volumeAuthorityDigest)))
+      and .newStorage
+        == ($ready[0].newStorage
+          | map(del(.claimAuthorityDigest, .volumeAuthorityDigest)))
+      and .foundation == $ready[0].foundation
+      and .preservedWeb == {
+        name: $plan[0].preservedWeb.name,
+        uid: $plan[0].preservedWeb.uid
+      }
+      and .checks == {
+        writersFenced: true,
+        oldStorageRemoved: true,
+        newStorageIdentity: true,
+        activeWebPreserved: true
+      }
+    ' "$evidence_file" >/dev/null ||
+    fail 'completed foundation reset evidence chain is invalid'
+}
+
+foundation_reset_consumption_directory_matches() {
+  local directory=$1 proof_name=$2 reset_evidence=$3 reset_digest=$4
+  local journal_source=$5 journal_release=$6 journal_manifest=$7 proof
+  proof="$directory/$proof_name"
+  [[ -f "$proof" && ! -L "$proof" &&
+    -f "$directory/foundation-reset-evidence.json" &&
+    ! -L "$directory/foundation-reset-evidence.json" &&
+    -f "$directory/SHA256SUMS" && ! -L "$directory/SHA256SUMS" ]] ||
+    return 1
+  checksum_set_lists_file_once "$directory/SHA256SUMS" "$proof_name" ||
+    return 1
+  checksum_set_lists_file_once \
+    "$directory/SHA256SUMS" foundation-reset-evidence.json || return 1
+  (
+    cd "$directory"
+    sha256sum --quiet -c SHA256SUMS
+  ) || return 1
+  cmp -s "$reset_evidence" "$directory/foundation-reset-evidence.json" ||
+    return 1
+  if [[ "$proof_name" == deploy-evidence.json ]]; then
+    jq -e \
+      --arg environment "$ENVIRONMENT" \
+      --arg namespace "$NAMESPACE" \
+      --arg sourceSha "$journal_source" \
+      --arg releaseId "$journal_release" \
+      --arg manifestDigest "$journal_manifest" \
+      --arg digest "$reset_digest" '
+        .schemaVersion == 1
+        and .status == "passed"
+        and .environment == $environment
+        and .namespace == $namespace
+        and .sourceSha == $sourceSha
+        and .releaseId == $releaseId
+        and .manifestDigest == $manifestDigest
+        and .foundationMode == "reset"
+        and .foundationResetEvidenceDigest == $digest
+        and .foundationReset.status == "passed"
+      ' "$proof" >/dev/null
+  else
+    jq -e \
+      --arg sourceSha "$journal_source" \
+      --arg releaseId "$journal_release" \
+      --arg manifestDigest "$journal_manifest" \
+      --arg digest "$reset_digest" '
+        .schemaVersion == 1
+        and .status == "awaiting-acceptance"
+        and .environment == "production"
+        and .namespace == "combo"
+        and .sourceSha == $sourceSha
+        and .releaseId == $releaseId
+        and .manifestDigest == $manifestDigest
+        and .foundationResetEvidenceDigest == $digest
+      ' "$proof" >/dev/null
+  fi
+}
+
+completed_foundation_reset_is_consumed_for_reuse() {
+  local reset_evidence=$1 reset_digest journal_source journal_release journal_manifest
+  local pending environment_root finalized activation
+  reset_digest=$(sha256sum "$reset_evidence" | awk '{print "sha256:" $1}')
+  journal_source=$(jq -er '.sourceSha' "$reset_evidence") ||
+    fail 'completed reset journal lacks a source SHA'
+  journal_release=$(jq -er '.releaseId' "$reset_evidence") ||
+    fail 'completed reset journal lacks a release ID'
+  journal_manifest=$(jq -er '.manifestDigest' "$reset_evidence") ||
+    fail 'completed reset journal lacks a manifest digest'
+  [[ "$journal_source" =~ $SHA_RE &&
+    "$journal_release" == "release-$journal_source" &&
+    "$journal_manifest" =~ $DIGEST_RE ]] ||
+    fail 'completed reset journal has an invalid release identity'
+
+  environment_root="$EVIDENCE_ROOT/$ENVIRONMENT"
+  finalized="$environment_root/$journal_release"
+  if [[ -e "$finalized" || -L "$finalized" ]]; then
+    [[ -d "$finalized" && ! -L "$finalized" ]] ||
+      fail 'final release evidence directory is unsafe during reset journal audit'
+    foundation_reset_consumption_directory_matches \
+      "$finalized" deploy-evidence.json "$reset_evidence" "$reset_digest" \
+      "$journal_source" "$journal_release" "$journal_manifest" ||
+      fail 'final release evidence does not consume its reset journal'
+    return 0
+  fi
+
+  pending="$environment_root/pending.json"
+  if [[ -e "$pending" || -L "$pending" ]]; then
+    [[ -f "$pending" && ! -L "$pending" ]] ||
+      fail 'release pending checkpoint is unsafe during reset journal audit'
+    if jq -e \
+      --arg sourceSha "$journal_source" \
+      --arg releaseId "$journal_release" \
+      --arg manifestDigest "$journal_manifest" \
+      --arg digest "$reset_digest" '
+        .schemaVersion == 3
+        and .sourceSha == $sourceSha
+        and .releaseId == $releaseId
+        and .manifestDigest == $manifestDigest
+        and .foundationResetEvidenceDigest == $digest
+        and (.phase == "armed"
+          or .phase == "post-cut"
+          or .phase == "finalizing")
+      ' "$pending" >/dev/null; then
+      return 0
+    fi
+  fi
+
+  activation="$environment_root/$journal_release.activation"
+  if [[ -e "$activation" || -L "$activation" ]]; then
+    [[ -d "$activation" && ! -L "$activation" ]] ||
+      fail 'activation evidence directory is unsafe during reset journal audit'
+    foundation_reset_consumption_directory_matches \
+      "$activation" activation-evidence.json "$reset_evidence" "$reset_digest" \
+      "$journal_source" "$journal_release" "$journal_manifest" ||
+      fail 'activation evidence does not consume its reset journal'
+    return 0
+  fi
+  return 1
+}
+
+validate_foundation_reuse_admission() {
+  local journals_root state_root environment_root
+  local plan_file stem checkpoint_file ready_file evidence_file phase pending
+  local expected_request_id request_hex candidate_output
+  local -a plan_files=() checkpoint_files=() ready_files=() evidence_files=()
+
+  [[ -z "$foundation_reset_digest" ]] || return 0
+
+  journals_root="$EVIDENCE_ROOT/foundation-resets"
+  state_root="$journals_root/$ENVIRONMENT"
+  environment_root="$EVIDENCE_ROOT/$ENVIRONMENT"
+  if [[ -e "$journals_root" || -L "$journals_root" ]]; then
+    [[ -d "$journals_root" && ! -L "$journals_root" ]] ||
+      fail 'foundation reset journal root is unsafe during reuse admission'
+  fi
+  if [[ -e "$state_root" || -L "$state_root" ]]; then
+    [[ -d "$state_root" && ! -L "$state_root" ]] ||
+      fail 'foundation reset state directory is unsafe during reuse admission'
+    shopt -s nullglob
+    plan_files=("$state_root"/*.foundation-reset-plan.json)
+    checkpoint_files=("$state_root"/*.foundation-reset-checkpoint.json)
+    ready_files=("$state_root"/*.foundation-reset-ready.json)
+    evidence_files=("$state_root"/*.foundation-reset-evidence.json)
+    shopt -u nullglob
+  fi
+
+  for plan_file in "${plan_files[@]}"; do
+    [[ -f "$plan_file" && ! -L "$plan_file" ]] ||
+      fail 'foundation reset journal plan path is unsafe'
+    stem=${plan_file##*/}
+    stem=${stem%.foundation-reset-plan.json}
+    [[ "$stem" =~ ^[0-9a-f]{64}$ ]] ||
+      fail 'foundation reset journal plan name is invalid'
+    checkpoint_file="$state_root/$stem.foundation-reset-checkpoint.json"
+    ready_file="$state_root/$stem.foundation-reset-ready.json"
+    evidence_file="$state_root/$stem.foundation-reset-evidence.json"
+    [[ -f "$checkpoint_file" && ! -L "$checkpoint_file" ]] ||
+      fail 'foundation reset journal lacks its checkpoint'
+    jq -e --arg requestId "sha256:$stem" '
+      .schemaVersion == 1
+      and .requestId == $requestId
+      and (.phase == "planned"
+        or .phase == "storage-removed"
+        or .phase == "foundation-ready")
+    ' "$checkpoint_file" >/dev/null ||
+      fail 'foundation reset journal checkpoint is invalid'
+    phase=$(jq -er '.phase' "$checkpoint_file")
+    if [[ -e "$evidence_file" || -L "$evidence_file" ]]; then
+      [[ -f "$evidence_file" && ! -L "$evidence_file" ]] ||
+        fail 'foundation reset journal evidence path is unsafe'
+      [[ "$phase" == foundation-ready ]] ||
+        fail 'foundation reset evidence is paired with an incomplete checkpoint'
+      [[ -f "$ready_file" && ! -L "$ready_file" ]] ||
+        fail 'completed foundation reset journal lacks its ready snapshot'
+      validate_completed_foundation_reset_journal \
+        "$plan_file" "$checkpoint_file" "$ready_file" "$evidence_file" "$stem"
+      completed_foundation_reset_is_consumed_for_reuse "$evidence_file" ||
+        fail 'an unconsumed completed foundation reset blocks reuse deployment'
+    else
+      fail 'an unfinished foundation reset journal blocks reuse deployment'
+    fi
+  done
+
+  for checkpoint_file in "${checkpoint_files[@]}"; do
+    stem=${checkpoint_file##*/}
+    stem=${stem%.foundation-reset-checkpoint.json}
+    [[ -f "$state_root/$stem.foundation-reset-plan.json" ]] ||
+      fail 'orphan foundation reset checkpoint blocks reuse deployment'
+  done
+  for ready_file in "${ready_files[@]}"; do
+    stem=${ready_file##*/}
+    stem=${stem%.foundation-reset-ready.json}
+    [[ -f "$state_root/$stem.foundation-reset-plan.json" ]] ||
+      fail 'orphan foundation reset ready snapshot blocks reuse deployment'
+  done
+  for evidence_file in "${evidence_files[@]}"; do
+    stem=${evidence_file##*/}
+    stem=${stem%.foundation-reset-evidence.json}
+    [[ -f "$state_root/$stem.foundation-reset-plan.json" ]] ||
+      fail 'orphan foundation reset evidence blocks reuse deployment'
+  done
+
+  pending="$environment_root/pending.json"
+  if [[ -e "$pending" || -L "$pending" ]]; then
+    [[ -f "$pending" && ! -L "$pending" ]] ||
+      fail 'release pending checkpoint is unsafe during reuse admission'
+    jq -e '.foundationResetEvidenceDigest == null' "$pending" >/dev/null ||
+      fail 'a pending clean-slate boundary requires controlled roll-forward'
+  fi
+
+  expected_request_id=$(printf '%s\0%s\0%s\0%s\0%s' \
+    combo-foundation-reset-v1 "$ENVIRONMENT" "$source_sha" \
+    "$MANIFEST_DIGEST" established-clean-slate-v1 |
+    sha256sum | awk '{print "sha256:" $1}')
+  request_hex=${expected_request_id#sha256:}
+  candidate_output="$environment_root/${release_id}.foundation-reset.json"
+  for plan_file in \
+    "$state_root/$request_hex.foundation-reset-plan.json" \
+    "$state_root/$request_hex.foundation-reset-checkpoint.json" \
+    "$state_root/$request_hex.foundation-reset-ready.json" \
+    "$state_root/$request_hex.foundation-reset-evidence.json" \
+    "$candidate_output"; do
+    [[ ! -e "$plan_file" && ! -L "$plan_file" ]] ||
+      fail 'this candidate entered the clean-slate boundary and cannot use reuse'
+  done
+
+  status 'foundation reuse admission revalidated under the deployment mutation lock'
+}
+
 validate_inputs() {
   local file verified_digest verified_web_digest actual_attestation_digest
+  local acceptance_repository acceptance_run_id acceptance_run_attempt
   for file in "$MANIFEST" "$MIGRATIONS" "$FOUNDATION_YAML" "$INIT_YAML" \
     "$MIGRATE_YAML" "$APPS_YAML" "$WEB_ASSETS"; do
     [[ -f "$file" && ! -L "$file" ]] || fail "input is not a regular file: $file"
@@ -308,6 +963,10 @@ validate_inputs() {
   if ((FINALIZE == 1)); then
     [[ -f "$ACCEPTANCE_ATTESTATION" && ! -L "$ACCEPTANCE_ATTESTATION" ]] ||
       fail 'acceptance attestation is not a regular file'
+    [[ -f "$ACCEPTANCE_EVIDENCE" && ! -L "$ACCEPTANCE_EVIDENCE" ]] ||
+      fail 'acceptance evidence is not a regular file'
+    [[ -f "$PROMOTION_IDENTITY" && ! -L "$PROMOTION_IDENTITY" ]] ||
+      fail 'promotion identity is not a regular file'
     actual_attestation_digest=$(sha256sum "$ACCEPTANCE_ATTESTATION" |
       awk '{print "sha256:" $1}')
     [[ "$actual_attestation_digest" == "$ACCEPTANCE_ATTESTATION_DIGEST" ]] ||
@@ -338,6 +997,21 @@ validate_inputs() {
   [[ "$verified_web_digest" == "$web_asset_digest" ]] ||
     fail 'Web asset manifest verifier returned another digest'
   validate_migrations
+  validate_foundation_reset_evidence
+  if ((FINALIZE == 1)); then
+    acceptance_repository=$(jq -er '.repository' "$ACCEPTANCE_ATTESTATION")
+    acceptance_run_id=$(jq -er '.acceptanceWorkflowRunId' "$ACCEPTANCE_ATTESTATION")
+    acceptance_run_attempt=$(jq -er \
+      '.acceptanceWorkflowRunAttempt' "$ACCEPTANCE_ATTESTATION")
+    node "$SCRIPT_DIR/promotion-evidence.mjs" validate-live-attestation \
+      --evidence "$ACCEPTANCE_EVIDENCE" \
+      --identity "$PROMOTION_IDENTITY" \
+      --attestation "$ACCEPTANCE_ATTESTATION" \
+      --repository "$acceptance_repository" \
+      --workflow-run-id "$acceptance_run_id" \
+      --workflow-run-attempt "$acceptance_run_attempt" >/dev/null ||
+      fail 'Production acceptance evidence, identity, and attestation do not match'
+  fi
 }
 
 secret_has_nonempty_key() {
@@ -526,11 +1200,22 @@ reuse_completed_release() {
   done
   if [[ "$ENVIRONMENT" == production ]]; then
     for evidence_file in acceptance-attestation.json activation-evidence.json \
+      acceptance-evidence.json promotion-identity.json \
       traffic-finalizing-evidence.json traffic-seal-evidence.json; do
       [[ -f "$release_directory/$evidence_file" &&
         ! -L "$release_directory/$evidence_file" ]] || return 0
     done
   fi
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    [[ -f "$release_directory/foundation-reset-evidence.json" &&
+      ! -L "$release_directory/foundation-reset-evidence.json" ]] || return 0
+    cmp -s "$FOUNDATION_RESET_EVIDENCE" \
+      "$release_directory/foundation-reset-evidence.json" || return 0
+  else
+    [[ ! -e "$release_directory/foundation-reset-evidence.json" &&
+      ! -L "$release_directory/foundation-reset-evidence.json" ]] || return 0
+  fi
+  validate_reset_roll_forward_copy "$release_directory" 'completed release'
   (
     cd "$release_directory"
     sha256sum --quiet -c SHA256SUMS
@@ -554,14 +1239,38 @@ reuse_completed_release() {
     --arg sourceSha "$source_sha" \
     --arg releaseId "$release_id" \
     --arg apiImage "$api_image" \
+    --arg foundationResetDigest "$foundation_reset_digest" \
     --arg webService "${PREFIX}web" '
       .schemaVersion == 1
       and .status == "passed"
       and .environment == $environment
       and .sourceSha == $sourceSha
       and .releaseId == $releaseId
-      and (.foundationMode == "fresh" or .foundationMode == "reused")
+      and (.foundationMode == "fresh"
+        or .foundationMode == "reused"
+        or .foundationMode == "reset")
       and (.checks.freshFoundation | type == "boolean")
+      and .checks.schemaStructure == true
+      and (.schemaStructure.contractDigest | test("^sha256:[0-9a-f]{64}$"))
+      and .schemaStructure.actualDigest == .schemaStructure.contractDigest
+      and .schemaStructure.verified == true
+      and (.schemaStructureDigest | test("^sha256:[0-9a-f]{64}$"))
+      and .schemaStructureDigest == .schemaStructure.actualDigest
+      and (
+        if .foundationMode == "reset" then
+          $foundationResetDigest != ""
+          and .foundationResetEvidenceDigest == $foundationResetDigest
+          and .foundationReset.status == "passed"
+          and .foundationReset.sourceSha == $sourceSha
+          and .checks.foundationReset == true
+          and .checks.freshFoundation == true
+        else
+          $foundationResetDigest == ""
+          and .foundationResetEvidenceDigest == null
+          and .foundationReset == null
+          and .checks.foundationReset == false
+        end
+      )
       and .checks.foundationReady == true
       and .checks.releaseStorage == true
       and .checks.minioInitialization == true
@@ -642,6 +1351,21 @@ reuse_completed_release() {
       -c "SELECT filename FROM schema_migrations ORDER BY filename"
   ' >"$actual_migrations" 2>/dev/null || return 0
   cmp -s "$MIGRATIONS" "$actual_migrations" || return 0
+  verify_release_schema_structure >/dev/null 2>&1 || return 0
+  [[ "$schema_structure_digest" == \
+    "$(jq -er '.schemaStructureDigest' \
+      "$release_directory/deploy-evidence.json")" ]] || return 0
+  jq -e --slurpfile schema "$schema_structure_evidence" '
+    .schemaStructure.contractVersion == $schema[0].contractVersion
+    and .schemaStructure.environment == $schema[0].environment
+    and .schemaStructure.namespace == $schema[0].namespace
+    and .schemaStructure.sourceSha == $schema[0].sourceSha
+    and .schemaStructure.migrationHead == $schema[0].migrationHead
+    and .schemaStructure.contractDigest == $schema[0].contractDigest
+    and .schemaStructure.actualDigest == $schema[0].actualDigest
+    and .schemaStructure.verified == $schema[0].verified
+    and .schemaStructure.counts == $schema[0].counts
+  ' "$release_directory/deploy-evidence.json" >/dev/null 2>&1 || return 0
 
   sudo -n systemctl is-active --quiet "$WEB_FORWARD_UNIT" || return 0
   sudo -n systemctl is-active --quiet "$MINIO_FORWARD_UNIT" || return 0
@@ -733,26 +1457,33 @@ load_post_cut_checkpoint() {
     --arg sourceSha "$source_sha" \
     --arg releaseId "$release_id" \
     --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg foundationResetEvidenceDigest "$foundation_reset_digest" \
     --arg webService "${PREFIX}web" '
       keys == [
         "cleanupPlanDigest",
         "environment",
         "foundationCreated",
+        "foundationResetEvidenceDigest",
         "manifestDigest",
         "namespace",
         "phase",
         "releaseId",
         "schemaVersion",
+        "schemaStructureProofDigest",
         "sourceSha",
         "trafficCutAt",
         "webService"
       ]
-      and .schemaVersion == 2
+      and .schemaVersion == 3
       and .environment == $environment
       and .namespace == $namespace
       and .sourceSha == $sourceSha
       and .releaseId == $releaseId
       and .manifestDigest == $manifestDigest
+      and .foundationResetEvidenceDigest ==
+        (if $foundationResetEvidenceDigest == "" then null
+          else $foundationResetEvidenceDigest end)
+      and (.schemaStructureProofDigest | test("^sha256:[0-9a-f]{64}$"))
       and .webService == $webService
       and (.foundationCreated | type == "boolean")
       and (.phase == "armed" or .phase == "post-cut" or .phase == "finalizing")
@@ -782,12 +1513,15 @@ load_post_cut_checkpoint() {
   [[ "$created" == true ]] && FOUNDATION_CREATED_THIS_RELEASE=1 ||
     FOUNDATION_CREATED_THIS_RELEASE=0
   CHECKPOINT_PHASE=$(jq -er '.phase' "$pending_checkpoint")
+  schema_structure_digest=$(jq -er '.schemaStructureProofDigest' "$pending_checkpoint")
 }
 
 write_release_checkpoint() {
   local phase=$1 checkpoint_stage created=false traffic_cut_at plan_digest=''
   [[ "$phase" == armed || "$phase" == post-cut || "$phase" == finalizing ]] ||
     fail 'invalid release checkpoint phase'
+  [[ "$schema_structure_digest" =~ $DIGEST_RE ]] ||
+    fail 'release checkpoint requires a verified schema structure digest'
   ((FOUNDATION_CREATED_THIS_RELEASE == 0)) || created=true
   if [[ "$phase" == finalizing ]]; then
     [[ "$CHECKPOINT_PHASE" == post-cut || "$CHECKPOINT_PHASE" == finalizing ]] ||
@@ -822,17 +1556,23 @@ write_release_checkpoint() {
     --arg sourceSha "$source_sha" \
     --arg releaseId "$release_id" \
     --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg foundationResetEvidenceDigest "$foundation_reset_digest" \
+    --arg schemaStructureProofDigest "$schema_structure_digest" \
     --arg webService "${PREFIX}web" \
     --arg phase "$phase" \
     --arg trafficCutAt "$traffic_cut_at" \
     --arg cleanupPlanDigest "$plan_digest" \
     --argjson foundationCreated "$created" '{
-      schemaVersion: 2,
+      schemaVersion: 3,
       environment: $environment,
       namespace: $namespace,
       sourceSha: $sourceSha,
       releaseId: $releaseId,
       manifestDigest: $manifestDigest,
+      foundationResetEvidenceDigest:
+        (if $foundationResetEvidenceDigest == "" then null
+          else $foundationResetEvidenceDigest end),
+      schemaStructureProofDigest: $schemaStructureProofDigest,
       webService: $webService,
       foundationCreated: $foundationCreated,
       phase: $phase,
@@ -1579,6 +2319,21 @@ apply_foundation() {
     "${K[@]}" -n "$NAMESPACE" rollout status "$workload" --timeout=600s
   done
   validate_live_release_storage
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    jq -e --slurpfile storage "$release_storage_evidence" '
+      .newStorage == (
+        $storage[0].claims
+        | map({
+            claim,
+            claimUid,
+            volume,
+            volumeUid,
+            path
+          })
+      )
+    ' "$FOUNDATION_RESET_EVIDENCE" >/dev/null ||
+      fail 'live release storage no longer matches the clean-slate reset evidence'
+  fi
 
   delete_candidate_job "$INIT_JOB"
   "${K[@]}" apply -f "$INIT_YAML" >/dev/null
@@ -1622,6 +2377,65 @@ run_migration() {
         | (.imageID | sub("^docker-pullable://"; "") | sub("^docker://"; ""))]
       | length >= 1 and all(. == $image)
     ' >/dev/null || fail 'migration Pod digest or completion evidence is invalid'
+}
+
+verify_release_schema_structure() {
+  local digest
+  schema_structure_evidence="$work/schema-structure-evidence.json"
+  node "$SCRIPT_DIR/verify-release-schema.mjs" \
+    --environment "$ENVIRONMENT" \
+    --namespace "$NAMESPACE" \
+    --source-sha "$source_sha" \
+    --migration-head "$migration_head" \
+    --output "$schema_structure_evidence" >/dev/null
+  [[ -f "$schema_structure_evidence" && ! -L "$schema_structure_evidence" ]] ||
+    fail 'release database schema verifier did not produce regular evidence'
+  jq -e \
+    --arg environment "$ENVIRONMENT" \
+    --arg namespace "$NAMESPACE" \
+    --arg sourceSha "$source_sha" \
+    --arg migrationHead "$migration_head" '
+      keys == ([
+        "actualDigest",
+        "contractDigest",
+        "contractVersion",
+        "counts",
+        "environment",
+        "migrationHead",
+        "namespace",
+        "schemaVersion",
+        "sourceSha",
+        "status",
+        "verified",
+        "verifiedAt"
+      ] | sort)
+      and .schemaVersion == 1
+      and .status == "passed"
+      and .contractVersion == "combo-schema-0008-v1"
+      and .environment == $environment
+      and .namespace == $namespace
+      and .sourceSha == $sourceSha
+      and .migrationHead == $migrationHead
+      and (.contractDigest | test("^sha256:[0-9a-f]{64}$"))
+      and .actualDigest == .contractDigest
+      and .verified == true
+      and (.counts | keys) == [
+        "columns",
+        "constraints",
+        "functions",
+        "grants",
+        "indexes",
+        "relations",
+        "roles"
+      ]
+      and all(.counts[]; type == "number" and . > 0 and floor == .)
+      and (.verifiedAt | type == "string" and test("Z$"))
+    ' "$schema_structure_evidence" >/dev/null ||
+    fail 'release database schema structure evidence is invalid'
+  digest=$(jq -er '.actualDigest' "$schema_structure_evidence")
+  [[ "$digest" =~ $DIGEST_RE ]] ||
+    fail 'release database schema identity digest is invalid'
+  schema_structure_digest=$digest
 }
 
 assert_release_metadata() {
@@ -1796,6 +2610,19 @@ write_activation_evidence() {
         ! -L "$activation_directory/$file" ]] ||
         fail "Production activation evidence lacks $file"
     done
+    if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+      [[ -f "$activation_directory/foundation-reset-evidence.json" &&
+        ! -L "$activation_directory/foundation-reset-evidence.json" ]] ||
+        fail 'Production activation lost its sealed foundation reset evidence'
+      cmp -s "$FOUNDATION_RESET_EVIDENCE" \
+        "$activation_directory/foundation-reset-evidence.json" ||
+        fail 'Production activation foundation reset evidence changed'
+    else
+      [[ ! -e "$activation_directory/foundation-reset-evidence.json" &&
+        ! -L "$activation_directory/foundation-reset-evidence.json" ]] ||
+        fail 'Production activation unexpectedly contains foundation reset evidence'
+    fi
+    validate_reset_roll_forward_copy "$activation_directory" 'Production activation'
     (
       cd "$activation_directory"
       sha256sum --quiet -c SHA256SUMS
@@ -1819,7 +2646,8 @@ write_activation_evidence() {
     jq -e \
       --arg sourceSha "$source_sha" \
       --arg releaseId "$release_id" \
-      --arg manifestDigest "$MANIFEST_DIGEST" '
+      --arg manifestDigest "$MANIFEST_DIGEST" \
+      --arg foundationResetEvidenceDigest "$foundation_reset_digest" '
         .schemaVersion == 1
         and .status == "awaiting-acceptance"
         and .environment == "production"
@@ -1827,6 +2655,10 @@ write_activation_evidence() {
         and .sourceSha == $sourceSha
         and .releaseId == $releaseId
         and .manifestDigest == $manifestDigest
+        and .foundationResetEvidenceDigest ==
+          (if $foundationResetEvidenceDigest == "" then null
+            else $foundationResetEvidenceDigest end)
+        and (.schemaStructureProofDigest | test("^sha256:[0-9a-f]{64}$"))
         and .rollbackCheckpointId == $releaseId
         and (.rollbackCheckpointDigest | test("^sha256:[0-9a-f]{64}$"))
         and .checks.candidateReady == true
@@ -1853,6 +2685,14 @@ write_activation_evidence() {
   install -m 0644 "$APPS_YAML" "$stage/apps.yaml"
   install -m 0644 "$traffic_evidence" "$stage/traffic-evidence.json"
   install -m 0644 "$release_storage_evidence" "$stage/release-storage-evidence.json"
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    install -m 0644 "$FOUNDATION_RESET_EVIDENCE" \
+      "$stage/foundation-reset-evidence.json"
+  fi
+  if [[ -n "$RESET_ROLL_FORWARD_EVIDENCE" ]]; then
+    install -m 0644 "$RESET_ROLL_FORWARD_EVIDENCE" \
+      "$stage/reset-roll-forward-evidence.json"
+  fi
   printf '%s\n' "$MANIFEST_DIGEST" >"$stage/release.sha256"
   chmod 0644 "$stage/release.sha256"
   jq -n \
@@ -1861,6 +2701,8 @@ write_activation_evidence() {
     --arg sourceSha "$source_sha" \
     --arg releaseId "$release_id" \
     --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg foundationResetEvidenceDigest "$foundation_reset_digest" \
+    --arg schemaStructureProofDigest "$schema_structure_digest" \
     --arg activatedAt "$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')" \
     --slurpfile traffic "$traffic_evidence" '{
       schemaVersion: 1,
@@ -1870,6 +2712,10 @@ write_activation_evidence() {
       sourceSha: $sourceSha,
       releaseId: $releaseId,
       manifestDigest: $manifestDigest,
+      foundationResetEvidenceDigest:
+        (if $foundationResetEvidenceDigest == "" then null
+          else $foundationResetEvidenceDigest end),
+      schemaStructureProofDigest: $schemaStructureProofDigest,
       rollbackCheckpointId: $traffic[0].rollback.checkpointId,
       rollbackCheckpointDigest: $traffic[0].rollback.checkpointDigest,
       checks: {
@@ -1883,9 +2729,26 @@ write_activation_evidence() {
   chmod 0644 "$stage/activation-evidence.json"
   (
     cd "$stage"
-    sha256sum release.json release.sha256 migration-files.txt web-asset-manifest.json \
-      foundation.yaml init.yaml migrate.yaml apps.yaml traffic-evidence.json \
-      release-storage-evidence.json activation-evidence.json >SHA256SUMS
+    activation_files=(
+      release.json release.sha256 migration-files.txt web-asset-manifest.json
+      foundation.yaml init.yaml migrate.yaml apps.yaml traffic-evidence.json
+      release-storage-evidence.json activation-evidence.json
+    )
+    if [[ -e foundation-reset-evidence.json ||
+      -L foundation-reset-evidence.json ]]; then
+      [[ -f foundation-reset-evidence.json &&
+        ! -L foundation-reset-evidence.json ]] ||
+        fail 'Production activation staged an unsafe foundation reset evidence path'
+      activation_files+=(foundation-reset-evidence.json)
+    fi
+    if [[ -e reset-roll-forward-evidence.json ||
+      -L reset-roll-forward-evidence.json ]]; then
+      [[ -f reset-roll-forward-evidence.json &&
+        ! -L reset-roll-forward-evidence.json ]] ||
+        fail 'Production activation staged an unsafe reset roll-forward evidence path'
+      activation_files+=(reset-roll-forward-evidence.json)
+    fi
+    sha256sum "${activation_files[@]}" >SHA256SUMS
   )
   chmod 0644 "$stage/SHA256SUMS"
   mv "$stage" "$activation_directory"
@@ -1901,6 +2764,22 @@ load_activation_evidence() {
     [[ -f "$activation_directory/$file" && ! -L "$activation_directory/$file" ]] ||
       fail "Production activation evidence lacks $file"
   done
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    [[ -f "$activation_directory/foundation-reset-evidence.json" &&
+      ! -L "$activation_directory/foundation-reset-evidence.json" ]] ||
+      fail 'Production finalization lacks sealed foundation reset evidence'
+    [[ "$(sha256sum "$activation_directory/foundation-reset-evidence.json" |
+      awk '{print "sha256:" $1}')" == "$foundation_reset_digest" ]] ||
+      fail 'Production activation foundation reset evidence digest changed'
+    cmp -s "$FOUNDATION_RESET_EVIDENCE" \
+      "$activation_directory/foundation-reset-evidence.json" ||
+      fail 'Production finalization reset evidence differs from activation'
+  else
+    [[ ! -e "$activation_directory/foundation-reset-evidence.json" &&
+      ! -L "$activation_directory/foundation-reset-evidence.json" ]] ||
+      fail 'Production finalization omitted its reset authorization'
+  fi
+  validate_reset_roll_forward_copy "$activation_directory" 'Production finalization'
   (
     cd "$activation_directory"
     sha256sum --quiet -c SHA256SUMS
@@ -1926,7 +2805,8 @@ load_activation_evidence() {
   jq -e \
     --arg sourceSha "$source_sha" \
     --arg releaseId "$release_id" \
-    --arg manifestDigest "$MANIFEST_DIGEST" '
+    --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg foundationResetEvidenceDigest "$foundation_reset_digest" '
       .schemaVersion == 1
       and .status == "awaiting-acceptance"
       and .environment == "production"
@@ -1934,6 +2814,10 @@ load_activation_evidence() {
       and .sourceSha == $sourceSha
       and .releaseId == $releaseId
       and .manifestDigest == $manifestDigest
+      and .foundationResetEvidenceDigest ==
+        (if $foundationResetEvidenceDigest == "" then null
+          else $foundationResetEvidenceDigest end)
+      and (.schemaStructureProofDigest | test("^sha256:[0-9a-f]{64}$"))
       and .rollbackCheckpointId == $releaseId
       and (.rollbackCheckpointDigest | test("^sha256:[0-9a-f]{64}$"))
       and .checks.candidateReady == true
@@ -2372,6 +3256,20 @@ validate_activation_directory_for_removal() {
       ! -L "$activation_directory/$file" ]] ||
       fail "Production activation cleanup target lacks $file"
   done
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    [[ -f "$activation_directory/foundation-reset-evidence.json" &&
+      ! -L "$activation_directory/foundation-reset-evidence.json" ]] ||
+      fail 'Production activation cleanup target lost reset evidence'
+    [[ "$(sha256sum "$activation_directory/foundation-reset-evidence.json" |
+      awk '{print "sha256:" $1}')" == "$foundation_reset_digest" ]] ||
+      fail 'Production activation cleanup reset evidence changed'
+  else
+    [[ ! -e "$activation_directory/foundation-reset-evidence.json" &&
+      ! -L "$activation_directory/foundation-reset-evidence.json" ]] ||
+      fail 'Production activation cleanup target has unexpected reset evidence'
+  fi
+  validate_reset_roll_forward_copy \
+    "$activation_directory" 'Production activation cleanup target'
   (
     cd "$activation_directory"
     sha256sum --quiet -c SHA256SUMS
@@ -2448,6 +3346,11 @@ validate_live_candidate_for_finalize() {
   ' >"$actual_migrations"
   cmp -s "$MIGRATIONS" "$actual_migrations" ||
     fail 'Production migration ledger changed after activation'
+  verify_release_schema_structure
+  [[ "$schema_structure_digest" == \
+    "$(jq -er '.schemaStructureProofDigest' \
+      "$activation_directory/activation-evidence.json")" ]] ||
+    fail 'Production schema structure changed after activation'
   validate_live_host_traffic_for_finalize
   validate_persisted_rollback_checkpoint_for_finalize
   candidate_is_active_traffic ||
@@ -4156,7 +5059,7 @@ cleanup_legacy() {
 
 write_release_evidence() {
   local stage deployments_json migration_json foundation_json init_json
-  local foundation_mode fresh_foundation
+  local foundation_mode fresh_foundation foundation_reset_json
   [[ -f "$cleanup_evidence" && ! -L "$cleanup_evidence" ]] ||
     fail 'cleanup evidence is missing'
   [[ -f "$release_storage_evidence" && ! -L "$release_storage_evidence" ]] ||
@@ -4175,12 +5078,24 @@ write_release_evidence() {
   if ((FINALIZE == 1)); then
     install -m 0644 "$ACCEPTANCE_ATTESTATION" \
       "$stage/acceptance-attestation.json"
+    install -m 0644 "$ACCEPTANCE_EVIDENCE" \
+      "$stage/acceptance-evidence.json"
+    install -m 0644 "$PROMOTION_IDENTITY" \
+      "$stage/promotion-identity.json"
     install -m 0644 "$activation_directory/activation-evidence.json" \
       "$stage/activation-evidence.json"
     install -m 0644 "$activation_directory/traffic-finalizing-evidence.json" \
       "$stage/traffic-finalizing-evidence.json"
     install -m 0644 "$traffic_seal_evidence" \
       "$stage/traffic-seal-evidence.json"
+  fi
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    install -m 0644 "$FOUNDATION_RESET_EVIDENCE" \
+      "$stage/foundation-reset-evidence.json"
+  fi
+  if [[ -n "$RESET_ROLL_FORWARD_EVIDENCE" ]]; then
+    install -m 0644 "$RESET_ROLL_FORWARD_EVIDENCE" \
+      "$stage/reset-roll-forward-evidence.json"
   fi
   printf '%s\n' "$MANIFEST_DIGEST" >"$stage/release.sha256"
   chmod 0644 "$stage/release.sha256"
@@ -4223,7 +5138,15 @@ write_release_evidence() {
       image: .spec.template.spec.containers[0].image,
       completionTime: .status.completionTime
     }')
-  if ((FOUNDATION_CREATED_THIS_RELEASE == 1)); then
+  [[ -f "$schema_structure_evidence" && ! -L "$schema_structure_evidence" &&
+    "$schema_structure_digest" =~ $DIGEST_RE ]] ||
+    fail 'schema structure evidence is missing before release evidence commit'
+  foundation_reset_json=null
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    foundation_mode=reset
+    fresh_foundation=true
+    foundation_reset_json=$(<"$FOUNDATION_RESET_EVIDENCE")
+  elif ((FOUNDATION_CREATED_THIS_RELEASE == 1)); then
     foundation_mode=fresh
     fresh_foundation=true
   else
@@ -4238,12 +5161,16 @@ write_release_evidence() {
     --arg manifestDigest "$MANIFEST_DIGEST" \
     --arg acceptanceAttestationDigest "$ACCEPTANCE_ATTESTATION_DIGEST" \
     --arg foundationMode "$foundation_mode" \
+    --arg foundationResetEvidenceDigest "$foundation_reset_digest" \
+    --arg schemaStructureDigest "$schema_structure_digest" \
     --arg completedAt "$(date -u +'%Y-%m-%dT%H:%M:%S.000Z')" \
     --argjson freshFoundation "$fresh_foundation" \
+    --argjson foundationReset "$foundation_reset_json" \
     --argjson deployments "$deployments_json" \
     --argjson migration "$migration_json" \
     --argjson foundation "$foundation_json" \
     --argjson init "$init_json" \
+    --slurpfile schemaStructure "$schema_structure_evidence" \
     --slurpfile storage "$release_storage_evidence" \
     --slurpfile traffic "$traffic_evidence" \
     --slurpfile cleanup "$cleanup_evidence" '{
@@ -4258,19 +5185,27 @@ write_release_evidence() {
         (if $acceptanceAttestationDigest == "" then null
           else $acceptanceAttestationDigest end),
       foundationMode: $foundationMode,
+      foundationResetEvidenceDigest:
+        (if $foundationResetEvidenceDigest == "" then null
+          else $foundationResetEvidenceDigest end),
+      foundationReset: $foundationReset,
       foundation: $foundation,
       storage: $storage[0],
       initialization: $init,
       deployments: $deployments,
       migration: $migration,
+      schemaStructureDigest: $schemaStructureDigest,
+      schemaStructure: $schemaStructure[0],
       traffic: $traffic[0],
       cleanup: $cleanup[0],
       checks: {
         freshFoundation: $freshFoundation,
+        foundationReset: ($foundationMode == "reset"),
         foundationReady: true,
         releaseStorage: true,
         minioInitialization: true,
         exactMigrations: true,
+        schemaStructure: true,
         applicationImages: true,
         publicTraffic: true,
         legacyCleanup: true,
@@ -4287,8 +5222,25 @@ write_release_evidence() {
       cleanup-plan.json cleanup-evidence.json deploy-evidence.json
     )
     if ((FINALIZE == 1)); then
-      evidence_files+=(acceptance-attestation.json activation-evidence.json)
+      evidence_files+=(
+        acceptance-attestation.json acceptance-evidence.json
+        promotion-identity.json activation-evidence.json
+      )
       evidence_files+=(traffic-finalizing-evidence.json traffic-seal-evidence.json)
+    fi
+    if [[ -e foundation-reset-evidence.json ||
+      -L foundation-reset-evidence.json ]]; then
+      [[ -f foundation-reset-evidence.json &&
+        ! -L foundation-reset-evidence.json ]] ||
+        fail 'release evidence staged an unsafe foundation reset evidence path'
+      evidence_files+=(foundation-reset-evidence.json)
+    fi
+    if [[ -e reset-roll-forward-evidence.json ||
+      -L reset-roll-forward-evidence.json ]]; then
+      [[ -f reset-roll-forward-evidence.json &&
+        ! -L reset-roll-forward-evidence.json ]] ||
+        fail 'release evidence staged an unsafe reset roll-forward evidence path'
+      evidence_files+=(reset-roll-forward-evidence.json)
     fi
     sha256sum "${evidence_files[@]}" >SHA256SUMS
   )
@@ -4364,6 +5316,9 @@ install -d -m 0750 "$EVIDENCE_ROOT" "$EVIDENCE_ROOT/$ENVIRONMENT"
 install -d -m 0750 "$(dirname "$MUTATION_LOCK")"
 exec 9>"$MUTATION_LOCK"
 flock -n 9 || fail 'another environment mutation is running'
+audit_reset_roll_forward_journals
+validate_reset_roll_forward_evidence
+validate_foundation_reuse_admission
 
 "${K[@]}" get namespace "$NAMESPACE" >/dev/null
 validate_secret_keys
@@ -4393,6 +5348,8 @@ if ((ROLLBACK == 1)); then
   load_post_cut_checkpoint
   [[ "$CHECKPOINT_PHASE" == armed || "$CHECKPOINT_PHASE" == post-cut ]] ||
     fail 'Production rollback requires the active armed or post-cut checkpoint'
+  [[ "$(jq -r '.foundationResetEvidenceDigest // ""' "$pending_checkpoint")" == "" ]] ||
+    fail 'this clean-slate schema boundary is roll-forward only; rollback is disabled'
   load_host_rollback_status
   if {
     [[ "$HOST_ROLLBACK_STATUS" == rolled-back ]] ||
@@ -4454,8 +5411,11 @@ if ((FINALIZE == 1)); then
     reuse_completed_release
     ((REUSE_COMPLETED == 1)) ||
       fail 'existing Production release evidence is not safely reusable'
+    if [[ -e "$activation_directory" ]]; then
+      validate_activation_directory_for_removal
+    fi
     finalize_release_commit 0
-    rm -rf -- "$activation_directory"
+    [[ ! -e "$activation_directory" ]] || rm -rf -- "$activation_directory"
     deployment_succeeded=1
     status "$ENVIRONMENT release $release_id finalization was already committed"
     exit 0
@@ -4483,7 +5443,13 @@ if ((FINALIZE == 1)); then
 fi
 reuse_completed_release
 if ((REUSE_COMPLETED == 1)); then
+  if [[ "$ENVIRONMENT" == production && -e "$activation_directory" ]]; then
+    validate_activation_directory_for_removal
+  fi
   finalize_release_commit 0
+  if [[ "$ENVIRONMENT" == production && -e "$activation_directory" ]]; then
+    rm -rf -- "$activation_directory"
+  fi
   status "$ENVIRONMENT already runs the verified $release_id"
   exit 0
 fi
@@ -4516,6 +5482,7 @@ else
 fi
 apply_foundation
 run_migration
+verify_release_schema_structure
 apply_apps
 if ((RESUME_POST_CUT == 0)); then
   write_release_checkpoint armed

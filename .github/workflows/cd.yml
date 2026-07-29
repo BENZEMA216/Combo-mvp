@@ -19,6 +19,19 @@ on:
         description: 该 Preview attempt 生成的精确 promotion evidence artifact ID。
         required: true
         type: string
+      production_foundation_policy:
+        description: Production 数据基础策略；本次旧基础切换必须选择 clean-slate。
+        required: true
+        default: reuse-existing-v1
+        type: choice
+        options:
+          - reuse-existing-v1
+          - established-clean-slate-v1
+      confirm_production_data_reset:
+        description: 明确确认删除并重建 Production 可丢弃业务数据。
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -34,6 +47,8 @@ jobs:
       preview_run_attempt: ${{ steps.resolve.outputs.preview_run_attempt }}
       preview_evidence_artifact_id: ${{ steps.resolve.outputs.preview_evidence_artifact_id }}
       preview_evidence_artifact_digest: ${{ steps.resolve.outputs.preview_evidence_artifact_digest }}
+      foundation_reset: ${{ steps.resolve.outputs.foundation_reset }}
+      foundation_policy: ${{ steps.resolve.outputs.foundation_policy }}
     steps:
       - name: Authorize actor and lock exact Preview deployment and acceptance attempts
         id: resolve
@@ -45,6 +60,8 @@ jobs:
           PREVIEW_EVIDENCE_ARTIFACT_ID: ${{ inputs.preview_evidence_artifact_id }}
           ACTOR: ${{ github.actor }}
           WORKFLOW_REF: ${{ github.ref }}
+          FOUNDATION_POLICY: ${{ inputs.production_foundation_policy }}
+          CONFIRM_DATA_RESET: ${{ inputs.confirm_production_data_reset }}
         run: |
           set -euo pipefail
           [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
@@ -55,6 +72,14 @@ jobs:
             echo 'Production revision must be a complete lowercase commit SHA.' >&2
             exit 1
           }
+          case "$FOUNDATION_POLICY:$CONFIRM_DATA_RESET" in
+            established-clean-slate-v1:true) foundation_reset=true ;;
+            reuse-existing-v1:false) foundation_reset=false ;;
+            *)
+              echo 'Production clean-slate requires the exact policy and explicit reset confirmation.' >&2
+              exit 1
+              ;;
+          esac
           for value in \
             "$PREVIEW_RUN_ID" \
             "$PREVIEW_RUN_ATTEMPT" \
@@ -100,7 +125,7 @@ jobs:
           preview_artifact=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/artifacts/${PREVIEW_EVIDENCE_ARTIFACT_ID}")
           jq -e \
-            --arg name "combo-preview-promotion-${REVISION}" \
+            --arg name "combo-preview-promotion-${REVISION}-${PREVIEW_RUN_ATTEMPT}" \
             --argjson runId "$PREVIEW_RUN_ID" \
             --argjson artifactId "$PREVIEW_EVIDENCE_ARTIFACT_ID" '
               .id == $artifactId
@@ -135,6 +160,8 @@ jobs:
             printf 'preview_run_attempt=%s\n' "$PREVIEW_RUN_ATTEMPT"
             printf 'preview_evidence_artifact_id=%s\n' "$PREVIEW_EVIDENCE_ARTIFACT_ID"
             printf 'preview_evidence_artifact_digest=%s\n' "$preview_artifact_digest"
+            printf 'foundation_reset=%s\n' "$foundation_reset"
+            printf 'foundation_policy=%s\n' "$FOUNDATION_POLICY"
           } >>"$GITHUB_OUTPUT"
 
   deploy:
@@ -249,14 +276,19 @@ jobs:
               and .previewRunId == $previewRunId
               and .previewRunAttempt == $previewRunAttempt
               and .releaseArtifact == ("combo-release-" + $revision)
-              and .sourceArtifactName == .releaseArtifact
+              and .sourceArtifactName == (
+                .releaseArtifact + "-" + (.sourceCiRunAttempt | tostring)
+              )
               and (.sourceCiRunId | type == "number" and . > 0 and floor == .)
               and (.sourceCiRunAttempt | type == "number" and . > 0 and floor == .)
               and (.sourceArtifactId | type == "number" and . > 0 and floor == .)
               and (.testRunId | type == "number" and . > 0 and floor == .)
               and (.testRunAttempt | type == "number" and . > 0 and floor == .)
               and (.testEvidenceArtifactId | type == "number" and . > 0 and floor == .)
-              and .testEvidenceArtifactName == ("combo-test-evidence-" + $revision)
+              and .testEvidenceArtifactName == (
+                "combo-test-evidence-" + $revision
+                + "-" + (.testRunAttempt | tostring)
+              )
               and (.sourceArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
               and (.testEvidenceArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
               and (.testIdentityDigest | test("^sha256:[0-9a-f]{64}$"))
@@ -291,6 +323,28 @@ jobs:
             and .namespace == "combo-review"
             and .sourceSha == $revision
             and .checks.releaseStorage == true
+            and .checks.schemaStructure == true
+            and (.schemaStructureDigest | test("^sha256:[0-9a-f]{64}$"))
+            and .schemaStructureDigest == .schemaStructure.actualDigest
+            and .schemaStructure.actualDigest == .schemaStructure.contractDigest
+            and .schemaStructure.verified == true
+            and (
+              if .foundationMode == "reset" then
+                .checks.freshFoundation == true
+                and .checks.foundationReset == true
+                and (.foundationResetEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+                and .foundationReset.status == "passed"
+                and .foundationReset.environment == "preview"
+                and .foundationReset.sourceSha == $revision
+                and .foundationReset.manifestDigest == .manifestDigest
+                and .foundationReset.authorityDigest == .manifestDigest
+              else
+                (.foundationMode == "fresh" or .foundationMode == "reused")
+                and .checks.foundationReset == false
+                and .foundationResetEvidenceDigest == null
+                and .foundationReset == null
+              end
+            )
             and .storage.verified == true
             and (.storage.claims | length) == 3
             and .cleanup.verifiedAbsent == true
@@ -325,23 +379,32 @@ jobs:
           printf 'source_ci_run_attempt=%s\n' "$source_ci_run_attempt" >> "$GITHUB_OUTPUT"
           printf 'source_artifact_id=%s\n' "$(jq -er '.sourceArtifactId' "$EVIDENCE")" \
             >>"$GITHUB_OUTPUT"
+          printf 'source_artifact_name=%s\n' \
+            "$(jq -er '.sourceArtifactName' "$EVIDENCE")" >>"$GITHUB_OUTPUT"
           printf 'source_artifact_digest=%s\n' \
             "$(jq -er '.sourceArtifactDigest' "$EVIDENCE")" >>"$GITHUB_OUTPUT"
 
       - name: Download the exact release artifact that passed Preview
         env:
           GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.resolve.outputs.revision }}
+          SOURCE_CI_RUN_ATTEMPT: ${{ steps.evidence.outputs.source_ci_run_attempt }}
           SOURCE_ARTIFACT_ID: ${{ steps.evidence.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ steps.evidence.outputs.source_artifact_name }}
           SOURCE_ARTIFACT_DIGEST: ${{ steps.evidence.outputs.source_artifact_digest }}
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
         run: |
           set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_NAME" == \
+            "combo-release-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}" ]]
           [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           artifact=$(gh api \
             "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}")
           jq -e \
-            --arg name "combo-release-${{ needs.resolve.outputs.revision }}" \
+            --arg name "$SOURCE_ARTIFACT_NAME" \
             --arg digest "$SOURCE_ARTIFACT_DIGEST" \
             --argjson runId "${{ steps.evidence.outputs.source_ci_run_id }}" '
               .name == $name
@@ -609,10 +672,13 @@ jobs:
           PREVIEW_RUN_ATTEMPT: ${{ needs.resolve.outputs.preview_run_attempt }}
           PREVIEW_EVIDENCE_ARTIFACT_ID: ${{ needs.resolve.outputs.preview_evidence_artifact_id }}
           PREVIEW_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.resolve.outputs.preview_evidence_artifact_digest }}
+          FOUNDATION_RESET: ${{ needs.resolve.outputs.foundation_reset }}
+          FOUNDATION_POLICY: ${{ needs.resolve.outputs.foundation_policy }}
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          [[ "$FOUNDATION_RESET" == true || "$FOUNDATION_RESET" == false ]]
           archive="$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" .
           chmod 0600 "$archive"
@@ -646,15 +712,20 @@ jobs:
               and .expired == false
               and .workflow_run.id == $runId
             ' <<<"$preview_artifact" >/dev/null
-          ssh release-target bash -s -- "$remote" "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+          ssh release-target bash -s -- \
+            "$remote" "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" \
+            "$FOUNDATION_RESET" "$FOUNDATION_POLICY" <<'REMOTE'
           set -euo pipefail
           incoming=$1
           revision=$2
           run_id=$3
           run_attempt=$4
+          foundation_reset=$5
+          foundation_policy=$6
           [[ "$incoming" == "data/combo-release-incoming/${revision}.production.${run_id}.${run_attempt}.tar.gz" ]]
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          [[ "$foundation_reset" == true || "$foundation_reset" == false ]]
           archive="$HOME/$incoming"
           [[ -f "$archive" && ! -L "$archive" ]]
           work=$(mktemp -d "$HOME/data/combo-release-production.XXXXXX")
@@ -673,6 +744,8 @@ jobs:
             "$work/scripts/collect-live-runtime-evidence.sh" \
             "$work/scripts/collect-release-inventory.sh" \
             "$work/scripts/deploy-release.sh" \
+            "$work/scripts/prepare-reset-roll-forward.sh" \
+            "$work/scripts/reset-release-foundation.sh" \
             "$work/scripts/rollback-release-traffic.sh" \
             "$work/scripts/seal-release-traffic.sh" \
             "$work/scripts/switch-release-traffic.sh"
@@ -682,10 +755,259 @@ jobs:
           source "$HOME/.nvm/nvm.sh"
           nvm use 24 >/dev/null
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          deploy_args=()
+          release_directory="$HOME/data/combo-releases/goal-a/production/release-${revision}"
+          activation_directory="${release_directory}.activation"
+          pending_checkpoint="$HOME/data/combo-releases/goal-a/production/pending.json"
+          reset_output="${release_directory}.foundation-reset.json"
+          roll_forward_output="${release_directory}.reset-roll-forward.json"
+          existing_bundle=
+          bundle_kind=
+          pending_present=0
+          pending_source=
+          pending_reset_digest=
+          roll_forward_evidence=
+          authority_digest=$manifest_digest
+          reset_request_id=$(printf '%s\0%s\0%s\0%s\0%s' \
+            combo-foundation-reset-v1 production "$revision" \
+            "$manifest_digest" established-clean-slate-v1 |
+            sha256sum | awk '{print "sha256:" $1}')
+          roll_forward_request_id=$(printf '%s\0%s\0%s\0%s' \
+            combo-reset-roll-forward-v1 production "$revision" \
+            "$manifest_digest" |
+            sha256sum | awk '{print "sha256:" $1}')
+          roll_forward_request_hex=${roll_forward_request_id#sha256:}
+          roll_forward_state_root="$HOME/data/combo-releases/goal-a/reset-roll-forwards/production"
+          candidate_roll_forward_state=0
+          for candidate_state_path in \
+            "$roll_forward_state_root/$roll_forward_request_hex.plan.json" \
+            "$roll_forward_state_root/$roll_forward_request_hex.checkpoint.json" \
+            "$roll_forward_state_root/$roll_forward_request_hex.old-pending.json" \
+            "$roll_forward_state_root/$roll_forward_request_hex.handoff-seal.json" \
+            "$roll_forward_state_root/$roll_forward_request_hex.evidence.json" \
+            "$roll_forward_output"; do
+            if [[ -e "$candidate_state_path" || -L "$candidate_state_path" ]]; then
+              candidate_roll_forward_state=1
+            fi
+          done
+          if [[ -e "$release_directory" || -L "$release_directory" ]]; then
+            [[ -d "$release_directory" && ! -L "$release_directory" ]]
+            existing_bundle=$release_directory
+            bundle_kind=finalized
+          fi
+          if [[ -e "$activation_directory" || -L "$activation_directory" ]]; then
+            [[ -d "$activation_directory" && ! -L "$activation_directory" ]]
+            if [[ -z "$existing_bundle" ]]; then
+              existing_bundle=$activation_directory
+              bundle_kind=activation
+            fi
+          fi
+          if [[ -e "$pending_checkpoint" || -L "$pending_checkpoint" ]]; then
+            [[ -f "$pending_checkpoint" && ! -L "$pending_checkpoint" ]]
+            jq -e \
+              '
+                (keys | sort) == ([
+                  "cleanupPlanDigest", "environment", "foundationCreated",
+                  "foundationResetEvidenceDigest", "manifestDigest", "namespace",
+                  "phase", "releaseId", "schemaVersion",
+                  "schemaStructureProofDigest", "sourceSha", "trafficCutAt",
+                  "webService"
+                ] | sort)
+                and .schemaVersion == 3
+                and .environment == "production"
+                and .namespace == "combo"
+                and (.sourceSha | test("^[0-9a-f]{40}$"))
+                and .releaseId == ("release-" + .sourceSha)
+                and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
+                and (
+                  .foundationResetEvidenceDigest == null
+                  or (.foundationResetEvidenceDigest
+                    | test("^sha256:[0-9a-f]{64}$"))
+                )
+                and (.phase == "armed"
+                  or .phase == "post-cut"
+                  or .phase == "finalizing")
+              ' "$pending_checkpoint" >/dev/null
+            pending_present=1
+            pending_source=$(jq -er '.sourceSha' "$pending_checkpoint")
+            pending_reset_digest=$(jq -r \
+              '.foundationResetEvidenceDigest // ""' "$pending_checkpoint")
+            if [[ "$pending_source" == "$revision" ]]; then
+              [[ "$(jq -er '.manifestDigest' "$pending_checkpoint")" == \
+                "$manifest_digest" ]]
+            else
+              [[ "$foundation_reset" == false ]]
+              [[ "$foundation_policy" == reuse-existing-v1 ]]
+              [[ "$(jq -er '.phase' "$pending_checkpoint")" == post-cut ]]
+              [[ "$pending_reset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              [[ -z "$existing_bundle" ]]
+              [[ ! -e "$reset_output" && ! -L "$reset_output" ]]
+              roll_forward_evidence=$roll_forward_output
+              bash "$work/scripts/prepare-reset-roll-forward.sh" \
+                --environment production \
+                --manifest "$work/metadata/release.json" \
+                --manifest-digest "$manifest_digest" \
+                --output "$roll_forward_evidence"
+              [[ ! -e "$pending_checkpoint" && ! -L "$pending_checkpoint" ]]
+              if [[ -e "$roll_forward_evidence" || -L "$roll_forward_evidence" ]]; then
+                [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+              else
+                roll_forward_evidence=
+              fi
+              pending_present=0
+              pending_source=
+              pending_reset_digest=
+            fi
+          fi
+          if [[ -z "$roll_forward_evidence" &&
+            "$candidate_roll_forward_state" == 1 ]]; then
+            [[ "$foundation_reset" == false ]]
+            [[ "$foundation_policy" == reuse-existing-v1 ]]
+            roll_forward_evidence=$roll_forward_output
+            bash "$work/scripts/prepare-reset-roll-forward.sh" \
+              --environment production \
+              --manifest "$work/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --output "$roll_forward_evidence"
+            [[ ! -e "$pending_checkpoint" && ! -L "$pending_checkpoint" ]]
+            if [[ -e "$roll_forward_evidence" || -L "$roll_forward_evidence" ]]; then
+              [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+            else
+              roll_forward_evidence=
+            fi
+            pending_present=0
+            pending_source=
+            pending_reset_digest=
+          fi
+          if [[ -n "$existing_bundle" ]]; then
+            (
+              cd "$existing_bundle"
+              sha256sum --quiet -c SHA256SUMS
+            )
+            [[ "$(<"$existing_bundle/release.sha256")" == "$manifest_digest" ]]
+            cmp -s "$work/metadata/release.json" "$existing_bundle/release.json"
+            if [[ "$foundation_reset" == true ]]; then
+              [[ "$foundation_policy" == established-clean-slate-v1 ]]
+              [[ ! -e "$existing_bundle/reset-roll-forward-evidence.json" &&
+                ! -L "$existing_bundle/reset-roll-forward-evidence.json" ]]
+              [[ ! -e "$roll_forward_output" && ! -L "$roll_forward_output" ]]
+              foundation_reset_evidence="$existing_bundle/foundation-reset-evidence.json"
+              [[ -f "$foundation_reset_evidence" &&
+                ! -L "$foundation_reset_evidence" ]]
+              reset_digest=$(sha256sum "$foundation_reset_evidence" |
+                awk '{print "sha256:" $1}')
+              if [[ "$bundle_kind" == finalized ]]; then
+                [[ "$(jq -er '.foundationMode' \
+                  "$existing_bundle/deploy-evidence.json")" == reset ]]
+                [[ "$(jq -er '.foundationResetEvidenceDigest' \
+                  "$existing_bundle/deploy-evidence.json")" == "$reset_digest" ]]
+              else
+                [[ "$(jq -er '.foundationResetEvidenceDigest' \
+                  "$existing_bundle/activation-evidence.json")" == "$reset_digest" ]]
+              fi
+              if ((pending_present == 1)); then
+                [[ "$pending_reset_digest" == "$reset_digest" ]]
+              fi
+              deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+            else
+              [[ "$foundation_policy" == reuse-existing-v1 ]]
+              [[ ! -e "$existing_bundle/foundation-reset-evidence.json" &&
+                ! -L "$existing_bundle/foundation-reset-evidence.json" ]]
+              [[ -z "$pending_reset_digest" ]]
+              if [[ "$bundle_kind" == finalized ]]; then
+                jq -e '
+                  (.foundationMode == "fresh" or .foundationMode == "reused")
+                  and .foundationResetEvidenceDigest == null
+                ' "$existing_bundle/deploy-evidence.json" >/dev/null
+              else
+                jq -e '.foundationResetEvidenceDigest == null' \
+                  "$existing_bundle/activation-evidence.json" >/dev/null
+              fi
+              if [[ -e "$existing_bundle/reset-roll-forward-evidence.json" ||
+                -L "$existing_bundle/reset-roll-forward-evidence.json" ]]; then
+                roll_forward_evidence="$existing_bundle/reset-roll-forward-evidence.json"
+                [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+                if [[ -e "$roll_forward_output" || -L "$roll_forward_output" ]]; then
+                  [[ -f "$roll_forward_output" && ! -L "$roll_forward_output" ]]
+                  cmp -s "$roll_forward_output" "$roll_forward_evidence"
+                fi
+              else
+                [[ ! -e "$roll_forward_output" && ! -L "$roll_forward_output" ]]
+              fi
+            fi
+          elif ((pending_present == 1)); then
+            if [[ "$foundation_reset" == true ]]; then
+              [[ "$foundation_policy" == established-clean-slate-v1 ]]
+              [[ ! -e "$roll_forward_output" && ! -L "$roll_forward_output" ]]
+              [[ "$pending_reset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              foundation_reset_evidence=$reset_output
+              [[ -f "$foundation_reset_evidence" &&
+                ! -L "$foundation_reset_evidence" ]]
+              [[ "$(sha256sum "$foundation_reset_evidence" |
+                awk '{print "sha256:" $1}')" == "$pending_reset_digest" ]]
+              deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+            else
+              [[ "$foundation_policy" == reuse-existing-v1 ]]
+              [[ -z "$pending_reset_digest" ]]
+              [[ ! -e "$reset_output" && ! -L "$reset_output" ]]
+              if [[ -e "$roll_forward_output" || -L "$roll_forward_output" ]]; then
+                roll_forward_evidence=$roll_forward_output
+                [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+              fi
+            fi
+          elif [[ "$foundation_reset" == true ]]; then
+            [[ "$foundation_policy" == established-clean-slate-v1 ]]
+            [[ ! -e "$roll_forward_output" && ! -L "$roll_forward_output" ]]
+            foundation_reset_evidence=$reset_output
+            deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+          else
+            [[ "$foundation_policy" == reuse-existing-v1 ]]
+            [[ ! -e "$reset_output" && ! -L "$reset_output" ]]
+            if [[ -z "$roll_forward_evidence" &&
+              ( -e "$roll_forward_output" || -L "$roll_forward_output" ) ]]; then
+              roll_forward_evidence=$roll_forward_output
+              [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+            fi
+          fi
+          if [[ -n "$roll_forward_evidence" ]]; then
+            deploy_args+=(--reset-roll-forward-evidence "$roll_forward_evidence")
+          fi
+          if [[ "$foundation_reset" == true ]]; then
+            bash "$work/scripts/reset-release-foundation.sh" \
+              --operation reset \
+              --environment production \
+              --manifest "$work/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --foundation-yaml "$work/rendered/production/foundation.yaml" \
+              --authority-digest "$authority_digest" \
+              --request-id "$reset_request_id" \
+              --policy established-clean-slate-v1 \
+              --output "$reset_output"
+            cmp -s "$reset_output" "$foundation_reset_evidence"
+          else
+            reuse_admission_args=()
+            if [[ -n "$roll_forward_evidence" ]]; then
+              reuse_admission_args+=(
+                --reset-roll-forward-evidence "$roll_forward_evidence"
+              )
+            fi
+            bash "$work/scripts/reset-release-foundation.sh" \
+              --operation assert-reuse \
+              --environment production \
+              --manifest "$work/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --foundation-yaml "$work/rendered/production/foundation.yaml" \
+              --authority-digest "$authority_digest" \
+              --request-id "$reset_request_id" \
+              --policy reuse-existing-v1 \
+              --output "$reset_output" \
+              "${reuse_admission_args[@]}"
+          fi
           bash "$work/scripts/deploy-release.sh" \
             --environment production \
             --fresh-reset \
             --defer-cleanup \
+            "${deploy_args[@]}" \
             --manifest "$work/metadata/release.json" \
             --manifest-digest "$manifest_digest" \
             --migrations "$work/metadata/migration-files.txt" \
@@ -694,27 +1016,76 @@ jobs:
             --migrate-yaml "$work/rendered/production/migrate.yaml" \
             --apps-yaml "$work/rendered/production/apps.yaml" \
             --web-assets "$work/metadata/web-asset-manifest.json"
+          completed="$HOME/data/combo-releases/goal-a/production/release-${revision}"
+          if [[ -d "$completed" && ! -L "$completed" ]]; then
+            inventory_directory="$HOME/data/combo-acceptance/production"
+            inventory="$inventory_directory/${revision}.${run_id}.${run_attempt}.inventory.json"
+            live_runtime="$inventory_directory/${revision}.${run_id}.${run_attempt}.live-runtime.json"
+            install -d -m 0700 "$inventory_directory"
+            [[ ! -e "$inventory" && ! -e "$live_runtime" ]]
+            bash "$work/scripts/collect-release-inventory.sh" \
+              --environment production \
+              --source-sha "$revision" \
+              --output "$inventory"
+            bash "$work/scripts/collect-live-runtime-evidence.sh" \
+              --environment production \
+              --source-sha "$revision" \
+              --output "$live_runtime"
+          fi
           REMOTE
 
-      - name: Fetch and validate the pending Production activation evidence
+      - name: Fetch and validate pending or finalized Production evidence
         id: activation_evidence
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.resolve.outputs.revision }}
+          FOUNDATION_RESET: ${{ needs.resolve.outputs.foundation_reset }}
         run: |
           set -euo pipefail
           evidence_dir="$RUNNER_TEMP/production-activation-evidence"
           install -d -m 0700 "$evidence_dir"
-          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          ssh release-target bash -s -- "$REVISION" "$FOUNDATION_RESET" <<'REMOTE' |
           set -euo pipefail
           revision=$1
+          foundation_reset=$2
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
-          directory="$HOME/data/combo-releases/goal-a/production/release-${revision}.activation"
-          files=(
-            release.json release.sha256 migration-files.txt web-asset-manifest.json
-            foundation.yaml init.yaml migrate.yaml apps.yaml traffic-evidence.json
-            release-storage-evidence.json activation-evidence.json SHA256SUMS
-          )
+          [[ "$foundation_reset" == true || "$foundation_reset" == false ]]
+          finalized="$HOME/data/combo-releases/goal-a/production/release-${revision}"
+          pending="${finalized}.activation"
+          if [[ -d "$finalized" && ! -L "$finalized" ]]; then
+            directory=$finalized
+            files=(
+              release.json release.sha256 migration-files.txt web-asset-manifest.json
+              foundation.yaml init.yaml migrate.yaml apps.yaml traffic-evidence.json
+              cleanup-plan.json cleanup-evidence.json deploy-evidence.json
+              acceptance-attestation.json acceptance-evidence.json
+              promotion-identity.json activation-evidence.json
+              traffic-finalizing-evidence.json traffic-seal-evidence.json
+              SHA256SUMS
+            )
+          else
+            [[ -d "$pending" && ! -L "$pending" ]]
+            directory=$pending
+            files=(
+              release.json release.sha256 migration-files.txt web-asset-manifest.json
+              foundation.yaml init.yaml migrate.yaml apps.yaml traffic-evidence.json
+              release-storage-evidence.json activation-evidence.json SHA256SUMS
+            )
+          fi
+          if [[ "$foundation_reset" == true ]]; then
+            files+=(foundation-reset-evidence.json)
+            [[ ! -e "$directory/reset-roll-forward-evidence.json" &&
+              ! -L "$directory/reset-roll-forward-evidence.json" ]]
+          else
+            [[ ! -e "$directory/foundation-reset-evidence.json" &&
+              ! -L "$directory/foundation-reset-evidence.json" ]]
+            if [[ -e "$directory/reset-roll-forward-evidence.json" ||
+              -L "$directory/reset-roll-forward-evidence.json" ]]; then
+              [[ -f "$directory/reset-roll-forward-evidence.json" &&
+                ! -L "$directory/reset-roll-forward-evidence.json" ]]
+              files+=(reset-roll-forward-evidence.json)
+            fi
+          fi
           for file in "${files[@]}"; do
             [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
           done
@@ -739,7 +1110,8 @@ jobs:
           done
           jq -e \
             --arg revision "$REVISION" \
-            --arg manifestDigest "$manifest_digest" '
+            --arg manifestDigest "$manifest_digest" \
+            --argjson foundationReset "$FOUNDATION_RESET" '
               .schemaVersion == 1
               and .status == "awaiting-acceptance"
               and .environment == "production"
@@ -747,6 +1119,14 @@ jobs:
               and .sourceSha == $revision
               and .releaseId == ("release-" + $revision)
               and .manifestDigest == $manifestDigest
+              and (.schemaStructureProofDigest | test("^sha256:[0-9a-f]{64}$"))
+              and (
+                if $foundationReset then
+                  (.foundationResetEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+                else
+                  .foundationResetEvidenceDigest == null
+                end
+              )
               and .rollbackCheckpointId == ("release-" + $revision)
               and (.rollbackCheckpointDigest | test("^sha256:[0-9a-f]{64}$"))
               and .checks.candidateReady == true
@@ -754,6 +1134,15 @@ jobs:
               and .checks.formalDomainVerified == true
               and .checks.supersededReleaseRetained == true
             ' "$evidence_dir/activation-evidence.json" >/dev/null
+          if [[ "$FOUNDATION_RESET" == true ]]; then
+            [[ "$(sha256sum "$evidence_dir/foundation-reset-evidence.json" |
+              awk '{print "sha256:" $1}')" == \
+              "$(jq -er '.foundationResetEvidenceDigest' \
+                "$evidence_dir/activation-evidence.json")" ]]
+          else
+            [[ ! -e "$evidence_dir/foundation-reset-evidence.json" &&
+              ! -L "$evidence_dir/foundation-reset-evidence.json" ]]
+          fi
           jq -e \
             --arg revision "$REVISION" \
             --arg manifestDigest "$manifest_digest" '
@@ -775,9 +1164,47 @@ jobs:
           activation_digest=$(sha256sum "$evidence_dir/activation-evidence.json" |
             awk '{print "sha256:" $1}')
           printf 'digest=%s\n' "$activation_digest" >>"$GITHUB_OUTPUT"
+          if [[ -f "$evidence_dir/acceptance-evidence.json" ]]; then
+            [[ -f "$evidence_dir/acceptance-attestation.json" &&
+              -f "$evidence_dir/promotion-identity.json" ]]
+            install -m 0600 "$evidence_dir/acceptance-evidence.json" \
+              "$RUNNER_TEMP/production-browser-acceptance.json"
+            install -m 0600 "$evidence_dir/acceptance-attestation.json" \
+              "$RUNNER_TEMP/production-acceptance-attestation.json"
+            install -m 0600 "$evidence_dir/promotion-identity.json" \
+              "$RUNNER_TEMP/production-identity.json"
+            acceptance_repository=$(jq -er '.repository' \
+              "$RUNNER_TEMP/production-acceptance-attestation.json")
+            acceptance_run_id=$(jq -er '.acceptanceWorkflowRunId' \
+              "$RUNNER_TEMP/production-acceptance-attestation.json")
+            acceptance_run_attempt=$(jq -er '.acceptanceWorkflowRunAttempt' \
+              "$RUNNER_TEMP/production-acceptance-attestation.json")
+            node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+              validate-live-attestation \
+              --evidence "$RUNNER_TEMP/production-browser-acceptance.json" \
+              --identity "$RUNNER_TEMP/production-identity.json" \
+              --attestation "$RUNNER_TEMP/production-acceptance-attestation.json" \
+              --repository "$acceptance_repository" \
+              --workflow-run-id "$acceptance_run_id" \
+              --workflow-run-attempt "$acceptance_run_attempt"
+            browser_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+              validate-live-browser \
+              --environment production \
+              --evidence "$RUNNER_TEMP/production-browser-acceptance.json" \
+              --identity "$RUNNER_TEMP/production-identity.json")
+            attestation_digest=$(sha256sum \
+              "$RUNNER_TEMP/production-acceptance-attestation.json" |
+              awk '{print "sha256:" $1}')
+            printf 'finalized=true\n' >>"$GITHUB_OUTPUT"
+            printf 'browser_digest=%s\n' "$browser_digest" >>"$GITHUB_OUTPUT"
+            printf 'attestation_digest=%s\n' "$attestation_digest" >>"$GITHUB_OUTPUT"
+          else
+            printf 'finalized=false\n' >>"$GITHUB_OUTPUT"
+          fi
 
       - name: Run the exact-bundle Production email OTP and six-area browser acceptance
         id: production_browser
+        if: steps.activation_evidence.outputs.finalized != 'true'
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.resolve.outputs.revision }}
@@ -945,6 +1372,7 @@ jobs:
 
       - name: Generate and validate the workflow-owned Production acceptance attestation
         id: acceptance_attestation
+        if: steps.activation_evidence.outputs.finalized != 'true'
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
@@ -976,8 +1404,55 @@ jobs:
           [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           printf 'digest=%s\n' "$attestation_digest" >>"$GITHUB_OUTPUT"
 
+      - name: Select and revalidate the immutable Production acceptance
+        id: acceptance_selection
+        if: steps.production_browser.outputs.acceptance_status == 'passed' || steps.activation_evidence.outputs.finalized == 'true'
+        env:
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
+          IDENTITY: ${{ runner.temp }}/production-identity.json
+          ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
+          FINALIZED: ${{ steps.activation_evidence.outputs.finalized }}
+          FINALIZED_BROWSER_DIGEST: ${{ steps.activation_evidence.outputs.browser_digest }}
+          FINALIZED_ATTESTATION_DIGEST: ${{ steps.activation_evidence.outputs.attestation_digest }}
+          NEW_BROWSER_DIGEST: ${{ steps.production_browser.outputs.digest }}
+          NEW_ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$FINALIZED" == true || "$FINALIZED" == false ]]
+          [[ -f "$EVIDENCE" && ! -L "$EVIDENCE" ]]
+          [[ -f "$IDENTITY" && ! -L "$IDENTITY" ]]
+          [[ -f "$ATTESTATION" && ! -L "$ATTESTATION" ]]
+          repository=$(jq -er '.repository' "$ATTESTATION")
+          run_id=$(jq -er '.acceptanceWorkflowRunId' "$ATTESTATION")
+          run_attempt=$(jq -er '.acceptanceWorkflowRunAttempt' "$ATTESTATION")
+          node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" validate-live-attestation \
+            --evidence "$EVIDENCE" \
+            --identity "$IDENTITY" \
+            --attestation "$ATTESTATION" \
+            --repository "$repository" \
+            --workflow-run-id "$run_id" \
+            --workflow-run-attempt "$run_attempt"
+          browser_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+            validate-live-browser \
+            --environment production \
+            --evidence "$EVIDENCE" \
+            --identity "$IDENTITY")
+          attestation_digest=$(sha256sum "$ATTESTATION" |
+            awk '{print "sha256:" $1}')
+          if [[ "$FINALIZED" == true ]]; then
+            [[ "$browser_digest" == "$FINALIZED_BROWSER_DIGEST" ]]
+            [[ "$attestation_digest" == "$FINALIZED_ATTESTATION_DIGEST" ]]
+          else
+            [[ "$browser_digest" == "$NEW_BROWSER_DIGEST" ]]
+            [[ "$attestation_digest" == "$NEW_ATTESTATION_DIGEST" ]]
+          fi
+          printf 'browser_digest=%s\n' "$browser_digest" >>"$GITHUB_OUTPUT"
+          printf 'attestation_digest=%s\n' "$attestation_digest" >>"$GITHUB_OUTPUT"
+
       - name: Revalidate candidate and finalize the accepted Production release
         id: finalize
+        if: steps.activation_evidence.outputs.finalized != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
@@ -985,7 +1460,10 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
-          ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+          ATTESTATION_DIGEST: ${{ steps.acceptance_selection.outputs.attestation_digest }}
+          ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
+          PROMOTION_IDENTITY: ${{ runner.temp }}/production-identity.json
+          FOUNDATION_RESET: ${{ needs.resolve.outputs.foundation_reset }}
         run: |
           set -euo pipefail
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" \
@@ -996,37 +1474,56 @@ jobs:
           [[ -f "$archive" && ! -L "$archive" ]]
           remote="data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           remote_attestation="data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.json"
+          remote_acceptance="data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.browser.json"
+          remote_identity="data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.identity.json"
           temporary=".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.upload"
           temporary_attestation=".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload"
+          temporary_acceptance=".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.browser.upload"
+          temporary_identity=".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.identity.upload"
           scp -q "$archive" "release-target:$temporary"
           scp -q "$ATTESTATION" "release-target:$temporary_attestation"
+          scp -q "$ACCEPTANCE_EVIDENCE" "release-target:$temporary_acceptance"
+          scp -q "$PROMOTION_IDENTITY" "release-target:$temporary_identity"
           ssh release-target mv -fT -- "$temporary" "$remote"
           ssh release-target mv -fT -- "$temporary_attestation" "$remote_attestation"
+          ssh release-target mv -fT -- "$temporary_acceptance" "$remote_acceptance"
+          ssh release-target mv -fT -- "$temporary_identity" "$remote_identity"
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
             --jq '.object.sha')" == "$REVISION" ]]
           [[ "$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')" \
             == "$ATTESTATION_DIGEST" ]]
           ssh release-target bash -s -- \
-            "$remote" "$remote_attestation" "$ATTESTATION_DIGEST" \
-            "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+            "$remote" "$remote_attestation" "$remote_acceptance" "$remote_identity" \
+            "$ATTESTATION_DIGEST" "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" \
+            "$FOUNDATION_RESET" <<'REMOTE'
           set -euo pipefail
           incoming=$1
           attestation_relative=$2
-          attestation_digest=$3
-          revision=$4
-          run_id=$5
-          run_attempt=$6
+          acceptance_relative=$3
+          identity_relative=$4
+          attestation_digest=$5
+          revision=$6
+          run_id=$7
+          run_attempt=$8
+          foundation_reset=$9
           [[ "$incoming" == "data/combo-release-incoming/${revision}.production-finalize.${run_id}.${run_attempt}.tar.gz" ]]
           [[ "$attestation_relative" == "data/combo-release-incoming/${revision}.production-finalize.${run_id}.${run_attempt}.attestation.json" ]]
+          [[ "$acceptance_relative" == "data/combo-release-incoming/${revision}.production-finalize.${run_id}.${run_attempt}.browser.json" ]]
+          [[ "$identity_relative" == "data/combo-release-incoming/${revision}.production-finalize.${run_id}.${run_attempt}.identity.json" ]]
           [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$foundation_reset" == true || "$foundation_reset" == false ]]
           archive="$HOME/$incoming"
           attestation="$HOME/$attestation_relative"
+          acceptance="$HOME/$acceptance_relative"
+          identity="$HOME/$identity_relative"
           [[ -f "$archive" && ! -L "$archive" ]]
           [[ -f "$attestation" && ! -L "$attestation" ]]
+          [[ -f "$acceptance" && ! -L "$acceptance" ]]
+          [[ -f "$identity" && ! -L "$identity" ]]
           [[ "$(sha256sum "$attestation" | awk '{print "sha256:" $1}')" == "$attestation_digest" ]]
           work=$(mktemp -d "$HOME/data/combo-release-production-finalize.XXXXXX")
           cleanup() {
-            rm -f -- "$archive" "$attestation"
+            rm -f -- "$archive" "$attestation" "$acceptance" "$identity"
             rm -rf -- "$work"
           }
           trap cleanup EXIT
@@ -1046,12 +1543,25 @@ jobs:
           source "$HOME/.nvm/nvm.sh"
           nvm use 24 >/dev/null
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          deploy_args=()
+          activation_directory="$HOME/data/combo-releases/goal-a/production/release-${revision}.activation"
+          roll_forward_evidence="$activation_directory/reset-roll-forward-evidence.json"
+          if [[ "$foundation_reset" == true ]]; then
+            [[ ! -e "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+            foundation_reset_evidence="$activation_directory/foundation-reset-evidence.json"
+            [[ -f "$foundation_reset_evidence" && ! -L "$foundation_reset_evidence" ]]
+            deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+          elif [[ -e "$roll_forward_evidence" || -L "$roll_forward_evidence" ]]; then
+            [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+            deploy_args+=(--reset-roll-forward-evidence "$roll_forward_evidence")
+          fi
           finalized=0
           for retry in 1 2 3; do
             if bash "$work/scripts/deploy-release.sh" \
               --environment production \
               --fresh-reset \
               --finalize \
+              "${deploy_args[@]}" \
               --manifest "$work/metadata/release.json" \
               --manifest-digest "$manifest_digest" \
               --migrations "$work/metadata/migration-files.txt" \
@@ -1060,6 +1570,8 @@ jobs:
               --migrate-yaml "$work/rendered/production/migrate.yaml" \
               --apps-yaml "$work/rendered/production/apps.yaml" \
               --web-assets "$work/metadata/web-asset-manifest.json" \
+              --acceptance-evidence "$acceptance" \
+              --promotion-identity "$identity" \
               --acceptance-attestation "$attestation" \
               --acceptance-attestation-digest "$attestation_digest"; then
               finalized=1
@@ -1084,58 +1596,157 @@ jobs:
           REMOTE
 
       - name: Recover any Production activation that was not finalized
-        if: ${{ (failure() || cancelled()) && steps.activation.outputs.attempted == 'true' && steps.finalize.outcome != 'success' }}
+        id: recovery
+        if: ${{ (failure() || cancelled()) && steps.activation.outputs.attempted == 'true' && steps.activation_evidence.outputs.finalized != 'true' && steps.finalize.outcome != 'success' && needs.resolve.outputs.foundation_reset != 'true' }}
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.resolve.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
-          ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+          ATTESTATION_DIGEST: ${{ steps.acceptance_selection.outputs.attestation_digest }}
+          ACCEPTANCE_EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
+          PROMOTION_IDENTITY: ${{ runner.temp }}/production-identity.json
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
+          [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          auditor="$RELEASE_ROOT/scripts/reset-roll-forward-journal.mjs"
+          [[ -f "$auditor" && ! -L "$auditor" ]]
+          remote_auditor="data/combo-release-incoming/${REVISION}.journal-audit.${RUN_ID}.${RUN_ATTEMPT}.mjs"
+          temporary_auditor=".${REVISION}.journal-audit.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          scp -q "$auditor" "release-target:$temporary_auditor"
+          ssh release-target mv -fT -- "$temporary_auditor" "$remote_auditor"
+          recovery_audit=$(ssh release-target bash -s -- \
+            "$REVISION" "$manifest_digest" "$remote_auditor" \
+            "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+          set -euo pipefail
+          revision=$1
+          manifest_digest=$2
+          auditor_relative=$3
+          run_id=$4
+          run_attempt=$5
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
+          [[ "$auditor_relative" == \
+            "data/combo-release-incoming/${revision}.journal-audit.${run_id}.${run_attempt}.mjs" ]]
+          auditor="$HOME/$auditor_relative"
+          [[ -f "$auditor" && ! -L "$auditor" ]]
+          cleanup() {
+            rm -f -- "$auditor"
+          }
+          trap cleanup EXIT
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          node "$auditor" audit \
+            --evidence-root "$HOME/data/combo-releases/goal-a" \
+            --environment production \
+            --source-sha "$revision" \
+            --manifest-digest "$manifest_digest" \
+            --mode prepare
+          REMOTE
+          ) || {
+            echo 'Production recovery state could not be classified safely.' >&2
+            exit 1
+          }
+          jq -e \
+            --arg sourceSha "$REVISION" \
+            --arg releaseId "release-$REVISION" \
+            --arg manifestDigest "$manifest_digest" '
+              .schemaVersion == 1
+              and .status == "passed"
+              and .environment == "production"
+              and .sourceSha == $sourceSha
+              and .releaseId == $releaseId
+              and .manifestDigest == $manifestDigest
+              and (.currentState == "absent"
+                or .currentState == "incomplete"
+                or .currentState == "cancelling-finalized"
+                or .currentState == "completed"
+                or .currentState == "cancelled-finalized")
+            ' <<<"$recovery_audit" >/dev/null
+          recovery_classification=$(jq -er '.currentState' <<<"$recovery_audit")
+          case "$recovery_classification" in
+            incomplete | cancelling-finalized | completed)
+              printf 'roll_forward_only=true\n' >>"$GITHUB_OUTPUT"
+              echo 'Production reset roll-forward candidate cannot return to deleted old writers.'
+              exit 0
+              ;;
+            absent | cancelled-finalized)
+              printf 'roll_forward_only=false\n' >>"$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo 'Production recovery returned an unknown state classification.' >&2
+              exit 1
+              ;;
+          esac
           archive="$RUNNER_TEMP/combo-release-production-${REVISION}.tar.gz"
           [[ -f "$archive" && ! -L "$archive" ]]
           remote="data/combo-release-incoming/${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           temporary=".${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.upload"
           remote_attestation="data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.json"
           temporary_attestation=".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload"
+          remote_acceptance="data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.acceptance.json"
+          temporary_acceptance=".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.acceptance.upload"
+          remote_identity="data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.identity.json"
+          temporary_identity=".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.identity.upload"
           scp -q "$archive" "release-target:$temporary"
           ssh release-target mv -fT -- "$temporary" "$remote"
-          has_attestation=0
-          if [[ -f "$ATTESTATION" && ! -L "$ATTESTATION" ]]; then
-            [[ "$ATTESTATION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-            [[ "$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')" \
-              == "$ATTESTATION_DIGEST" ]]
+          has_acceptance_bundle=0
+          if [[
+            -f "$ATTESTATION" && ! -L "$ATTESTATION" &&
+              -f "$ACCEPTANCE_EVIDENCE" && ! -L "$ACCEPTANCE_EVIDENCE" &&
+              -f "$PROMOTION_IDENTITY" && ! -L "$PROMOTION_IDENTITY" &&
+              "$ATTESTATION_DIGEST" =~ ^sha256:[0-9a-f]{64}$ &&
+              "$(sha256sum "$ATTESTATION" | awk '{print "sha256:" $1}')" ==
+                "$ATTESTATION_DIGEST"
+          ]]; then
             scp -q "$ATTESTATION" "release-target:$temporary_attestation"
             ssh release-target mv -fT -- "$temporary_attestation" "$remote_attestation"
-            has_attestation=1
+            scp -q "$ACCEPTANCE_EVIDENCE" "release-target:$temporary_acceptance"
+            ssh release-target mv -fT -- "$temporary_acceptance" "$remote_acceptance"
+            scp -q "$PROMOTION_IDENTITY" "release-target:$temporary_identity"
+            ssh release-target mv -fT -- "$temporary_identity" "$remote_identity"
+            has_acceptance_bundle=1
           fi
           ssh release-target bash -s -- \
-            "$remote" "$remote_attestation" "$has_attestation" "$ATTESTATION_DIGEST" \
-            "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
+            "$remote" "$remote_attestation" "$remote_acceptance" "$remote_identity" \
+            "$has_acceptance_bundle" "$ATTESTATION_DIGEST" "$REVISION" "$RUN_ID" \
+            "$RUN_ATTEMPT" <<'REMOTE'
           set -euo pipefail
           incoming=$1
           attestation_relative=$2
-          has_attestation=$3
-          attestation_digest=$4
-          revision=$5
-          run_id=$6
-          run_attempt=$7
+          acceptance_relative=$3
+          identity_relative=$4
+          has_acceptance_bundle=$5
+          attestation_digest=$6
+          revision=$7
+          run_id=$8
+          run_attempt=$9
           [[ "$incoming" == "data/combo-release-incoming/${revision}.production-rollback.${run_id}.${run_attempt}.tar.gz" ]]
           [[ "$attestation_relative" == "data/combo-release-incoming/${revision}.production-recovery.${run_id}.${run_attempt}.attestation.json" ]]
-          [[ "$has_attestation" == 0 || "$has_attestation" == 1 ]]
+          [[ "$acceptance_relative" == "data/combo-release-incoming/${revision}.production-recovery.${run_id}.${run_attempt}.acceptance.json" ]]
+          [[ "$identity_relative" == "data/combo-release-incoming/${revision}.production-recovery.${run_id}.${run_attempt}.identity.json" ]]
+          [[ "$has_acceptance_bundle" == 0 || "$has_acceptance_bundle" == 1 ]]
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]]
           archive="$HOME/$incoming"
           attestation="$HOME/$attestation_relative"
+          acceptance="$HOME/$acceptance_relative"
+          identity="$HOME/$identity_relative"
           [[ -f "$archive" && ! -L "$archive" ]]
           work=$(mktemp -d "$HOME/data/combo-release-production-rollback.XXXXXX")
           cleanup() {
             rm -f -- "$archive"
-            ((has_attestation == 0)) || rm -f -- "$attestation"
+            if ((has_acceptance_bundle == 1)); then
+              rm -f -- "$attestation" "$acceptance" "$identity"
+            fi
             rm -rf -- "$work"
           }
           trap cleanup EXIT
@@ -1157,7 +1768,7 @@ jobs:
             --arg revision "$revision" \
             --arg manifestDigest "$manifest_digest" '
               select(
-                .schemaVersion == 2
+                .schemaVersion == 3
                 and .environment == "production"
                 and .namespace == "combo"
                 and .sourceSha == $revision
@@ -1180,13 +1791,17 @@ jobs:
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
           phase_args=(--rollback)
           if [[ "$phase" == finalizing ]]; then
-            ((has_attestation == 1))
+            ((has_acceptance_bundle == 1))
             [[ -f "$attestation" && ! -L "$attestation" ]]
+            [[ -f "$acceptance" && ! -L "$acceptance" ]]
+            [[ -f "$identity" && ! -L "$identity" ]]
             [[ "$attestation_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
             [[ "$(sha256sum "$attestation" | awk '{print "sha256:" $1}')" \
               == "$attestation_digest" ]]
             phase_args=(
               --finalize
+              --acceptance-evidence "$acceptance"
+              --promotion-identity "$identity"
               --acceptance-attestation "$attestation"
               --acceptance-attestation-digest "$attestation_digest"
             )
@@ -1205,31 +1820,55 @@ jobs:
             --web-assets "$work/metadata/web-asset-manifest.json"
           REMOTE
 
+      - name: Preserve the clean-slate Production boundary for roll-forward recovery
+        if: ${{ (failure() || cancelled()) && steps.activation.outputs.attempted == 'true' && steps.activation_evidence.outputs.finalized != 'true' && steps.finalize.outcome != 'success' && (needs.resolve.outputs.foundation_reset == 'true' || steps.recovery.outputs.roll_forward_only == 'true') }}
+        run: |
+          echo 'Production crossed an explicitly confirmed clean-slate schema boundary.'
+          echo 'Automatic rollback to the pre-reset application is disabled; roll-forward by rerunning this exact candidate or promoting a newer main candidate.'
+
       - name: Fetch and validate the tecent2 Production evidence
         id: remote_evidence
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.resolve.outputs.revision }}
           ATTESTATION: ${{ runner.temp }}/production-acceptance-attestation.json
-          ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+          ATTESTATION_DIGEST: ${{ steps.acceptance_selection.outputs.attestation_digest }}
+          FOUNDATION_RESET: ${{ needs.resolve.outputs.foundation_reset }}
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           evidence_dir="$RUNNER_TEMP/production-remote-evidence"
           install -d -m 0700 "$evidence_dir"
-          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          ssh release-target bash -s -- "$REVISION" "$FOUNDATION_RESET" <<'REMOTE' |
           set -euo pipefail
           revision=$1
+          foundation_reset=$2
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$foundation_reset" == true || "$foundation_reset" == false ]]
           directory="$HOME/data/combo-releases/goal-a/production/release-$revision"
           files=(
             release.json release.sha256 migration-files.txt web-asset-manifest.json
             foundation.yaml init.yaml migrate.yaml apps.yaml
             traffic-evidence.json cleanup-plan.json cleanup-evidence.json
             deploy-evidence.json
-            acceptance-attestation.json activation-evidence.json
+            acceptance-attestation.json acceptance-evidence.json
+            promotion-identity.json activation-evidence.json
             traffic-finalizing-evidence.json traffic-seal-evidence.json SHA256SUMS
           )
+          if [[ "$foundation_reset" == true ]]; then
+            files+=(foundation-reset-evidence.json)
+            [[ ! -e "$directory/reset-roll-forward-evidence.json" &&
+              ! -L "$directory/reset-roll-forward-evidence.json" ]]
+          else
+            [[ ! -e "$directory/foundation-reset-evidence.json" &&
+              ! -L "$directory/foundation-reset-evidence.json" ]]
+            if [[ -e "$directory/reset-roll-forward-evidence.json" ||
+              -L "$directory/reset-roll-forward-evidence.json" ]]; then
+              [[ -f "$directory/reset-roll-forward-evidence.json" &&
+                ! -L "$directory/reset-roll-forward-evidence.json" ]]
+              files+=(reset-roll-forward-evidence.json)
+            fi
+          fi
           for file in "${files[@]}"; do
             [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
           done
@@ -1251,6 +1890,10 @@ jobs:
           cmp -s "$RUNNER_TEMP/production-activation-evidence/activation-evidence.json" \
             "$evidence_dir/activation-evidence.json"
           cmp -s "$ATTESTATION" "$evidence_dir/acceptance-attestation.json"
+          cmp -s "$RUNNER_TEMP/production-browser-acceptance.json" \
+            "$evidence_dir/acceptance-evidence.json"
+          cmp -s "$RUNNER_TEMP/production-identity.json" \
+            "$evidence_dir/promotion-identity.json"
           [[ "$(sha256sum "$evidence_dir/acceptance-attestation.json" |
             awk '{print "sha256:" $1}')" == "$ATTESTATION_DIGEST" ]]
           for phase in foundation init migrate apps; do
@@ -1263,6 +1906,7 @@ jobs:
           jq -e \
             --arg revision "$REVISION" \
             --arg manifestDigest "$manifest_digest" \
+            --argjson foundationReset "$FOUNDATION_RESET" \
             --arg apiImage "$api_image" \
             --arg runtimeImage "$runtime_image" \
             --arg webImage "$web_image" \
@@ -1277,6 +1921,29 @@ jobs:
               and .releaseId == ("release-" + $revision)
               and .manifestDigest == $manifestDigest
               and .checks.foundationReady == true
+              and .checks.schemaStructure == true
+              and (.schemaStructureDigest | test("^sha256:[0-9a-f]{64}$"))
+              and .schemaStructureDigest == .schemaStructure.actualDigest
+              and .schemaStructure.actualDigest == .schemaStructure.contractDigest
+              and .schemaStructure.verified == true
+              and (
+                if $foundationReset then
+                  .foundationMode == "reset"
+                  and .checks.freshFoundation == true
+                  and .checks.foundationReset == true
+                  and (.foundationResetEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+                  and .foundationReset.status == "passed"
+                  and .foundationReset.environment == "production"
+                  and .foundationReset.sourceSha == $revision
+                  and .foundationReset.manifestDigest == $manifestDigest
+                  and .foundationReset.authorityDigest == $manifestDigest
+                else
+                  (.foundationMode == "fresh" or .foundationMode == "reused")
+                  and .checks.foundationReset == false
+                  and .foundationResetEvidenceDigest == null
+                  and .foundationReset == null
+                end
+              )
               and .checks.releaseStorage == true
               and .checks.minioInitialization == true
               and .checks.exactMigrations == true
@@ -1438,13 +2105,20 @@ jobs:
           PRODUCTION_LIVE_RUNTIME_DIGEST: ${{ steps.production_inventory.outputs.live_runtime_digest }}
           PREVIEW_LIVE_RUNTIME_RECHECK_DIGEST: ${{ steps.preview_live_recheck.outputs.digest }}
           ACTIVATION_EVIDENCE_DIGEST: ${{ steps.activation_evidence.outputs.digest }}
-          PRODUCTION_BROWSER_ACCEPTANCE_DIGEST: ${{ steps.production_browser.outputs.digest }}
-          ACCEPTANCE_ATTESTATION_DIGEST: ${{ steps.acceptance_attestation.outputs.digest }}
+          PRODUCTION_BROWSER_ACCEPTANCE_DIGEST: ${{ steps.acceptance_selection.outputs.browser_digest }}
+          ACCEPTANCE_ATTESTATION_DIGEST: ${{ steps.acceptance_selection.outputs.attestation_digest }}
         run: |
           set -euo pipefail
           manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
           file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" | awk '{print "sha256:" $1}')
           [[ "$file_set_digest" == "$(jq -er '.artifactFileSetDigest' "$PREVIEW_EVIDENCE")" ]]
+          roll_forward_evidence="$RUNNER_TEMP/production-remote-evidence/reset-roll-forward-evidence.json"
+          roll_forward_digest=
+          if [[ -e "$roll_forward_evidence" || -L "$roll_forward_evidence" ]]; then
+            [[ -f "$roll_forward_evidence" && ! -L "$roll_forward_evidence" ]]
+            roll_forward_digest=$(sha256sum "$roll_forward_evidence" |
+              awk '{print "sha256:" $1}')
+          fi
           deployed_at=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
           jq -n \
             --slurpfile release "$RELEASE_ROOT/metadata/release.json" \
@@ -1489,6 +2163,7 @@ jobs:
             --arg productionBrowserAcceptanceDigest \
               "$PRODUCTION_BROWSER_ACCEPTANCE_DIGEST" \
             --arg acceptanceAttestationDigest "$ACCEPTANCE_ATTESTATION_DIGEST" \
+            --arg resetRollForwardEvidenceDigest "$roll_forward_digest" \
             --arg deployedAt "$deployed_at" '
               {
                 schemaVersion: 4,
@@ -1527,6 +2202,9 @@ jobs:
                 activationEvidenceDigest: $activationEvidenceDigest,
                 productionBrowserAcceptanceDigest: $productionBrowserAcceptanceDigest,
                 acceptanceAttestationDigest: $acceptanceAttestationDigest,
+                resetRollForwardEvidenceDigest:
+                  (if $resetRollForwardEvidenceDigest == ""
+                    then null else $resetRollForwardEvidenceDigest end),
                 images: $release[0].images,
                 deployedAt: $deployedAt
               }
@@ -1535,7 +2213,7 @@ jobs:
       - name: Upload Production deployment evidence
         uses: actions/upload-artifact@v4
         with:
-          name: combo-production-deployment-${{ needs.resolve.outputs.revision }}
+          name: combo-production-deployment-${{ needs.resolve.outputs.revision }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/production-deployment.json
             ${{ runner.temp }}/production-remote-deploy-evidence.json
@@ -1548,6 +2226,7 @@ jobs:
             ${{ runner.temp }}/production-browser-acceptance.json
             ${{ runner.temp }}/production-acceptance-attestation.json
             ${{ runner.temp }}/production-remote-evidence/traffic-seal-evidence.json
+            ${{ runner.temp }}/production-remote-evidence/reset-roll-forward-evidence.json
           if-no-files-found: error
           retention-days: 30
 
@@ -1572,14 +2251,24 @@ jobs:
               ".${REVISION}.production-acceptance.${RUN_ID}.${RUN_ATTEMPT}.upload" \
               "data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
               "data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.json" \
+              "data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.browser.json" \
+              "data/combo-release-incoming/${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.identity.json" \
               ".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.upload" \
               ".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload" \
+              ".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.browser.upload" \
+              ".${REVISION}.production-finalize.${RUN_ID}.${RUN_ATTEMPT}.identity.upload" \
               "data/combo-release-incoming/${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.tar.gz" \
               "data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.json" \
+              "data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.acceptance.json" \
+              "data/combo-release-incoming/${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.identity.json" \
               ".${REVISION}.production-rollback.${RUN_ID}.${RUN_ATTEMPT}.upload" \
               ".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.attestation.upload" \
+              ".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.acceptance.upload" \
+              ".${REVISION}.production-recovery.${RUN_ID}.${RUN_ATTEMPT}.identity.upload" \
               "data/combo-release-incoming/${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.sh" \
               ".${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.upload" \
+              "data/combo-release-incoming/${REVISION}.journal-audit.${RUN_ID}.${RUN_ATTEMPT}.mjs" \
+              ".${REVISION}.journal-audit.${RUN_ID}.${RUN_ATTEMPT}.upload" \
               "data/combo-acceptance/preview/${REVISION}.production-preflight.${RUN_ID}.${RUN_ATTEMPT}.live-runtime.json" \
               "data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.browser.json" \
               "data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.inventory.json" \

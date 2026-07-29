@@ -97,7 +97,7 @@ test('the sandbox overlay remains opt-in and keeps RuntimeClass installation sep
   assert.doesNotMatch(rootKustomization, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
   assert.doesNotMatch(productionDeploy, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
   assert.doesNotMatch(continuousDeployment, /\brsync\b|sandbox-tools|Dockerfile\.sandboxd/);
-  assert.match(continuousDeployment, /combo-release-\$\{\{/);
+  assert.match(continuousDeployment, /combo-release-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}/);
   assert.match(continuousDeployment, /scripts\/deploy-release\.sh/);
   assert.match(continuousIntegration, /"\$bundle\/rendered\/production"/);
   assert.match(continuousIntegration, /"\$bundle\/infra\/host\/release"/);

@@ -49,7 +49,7 @@ const identity = {
   deploymentRunId: 202,
   deploymentRunAttempt: 3,
   releaseArtifactId: 303,
-  releaseArtifactName: `combo-release-${REVISION}`,
+  releaseArtifactName: `combo-release-${REVISION}-2`,
   releaseArtifactDigest: digest('1'),
   releaseId: `release-${REVISION}`,
   releaseManifestDigest: digest('2'),
@@ -854,7 +854,7 @@ test('Test live-browser failure admission locks Test origin, release, SHA, and e
       validateLiveBrowserFailureEvidence(failed, {
         ...testIdentity,
         sourceSha: 'b'.repeat(40),
-        releaseArtifactName: `combo-release-${'b'.repeat(40)}`,
+        releaseArtifactName: `combo-release-${'b'.repeat(40)}-2`,
         releaseId: `release-${'b'.repeat(40)}`,
       }),
     /locked deployment/,
@@ -1135,6 +1135,10 @@ test('release workflows bundle and consume only the controlled admission impleme
     'utf8',
   );
   const production = readFileSync(new URL('../.github/workflows/cd.yml', import.meta.url), 'utf8');
+  const testDeployment = readFileSync(
+    new URL('../.github/workflows/combo-dev.yml', import.meta.url),
+    'utf8',
+  );
   const collector = readFileSync(
     new URL('./collect-release-inventory.sh', import.meta.url),
     'utf8',
@@ -1144,8 +1148,12 @@ test('release workflows bundle and consume only the controlled admission impleme
     'scripts/collect-release-inventory.sh',
     'scripts/collect-live-runtime-evidence.sh',
     'scripts/promotion-evidence.mjs',
+    'scripts/prepare-reset-roll-forward.sh',
+    'scripts/reset-roll-forward-journal.mjs',
     'scripts/release-nginx-route.mjs',
+    'scripts/reset-release-foundation.sh',
     'scripts/rollback-release-traffic.sh',
+    'scripts/verify-release-schema.mjs',
     'acceptance/live-browser-acceptance.mjs',
     'acceptance/resend-sent-email.mjs',
     'acceptance/playwright-core.tgz',
@@ -1153,6 +1161,26 @@ test('release workflows bundle and consume only the controlled admission impleme
     assert.match(ci, new RegExp(path.replaceAll('.', '\\.').replaceAll('/', '\\/')));
   }
   assert.match(ci, /sha256sum -c metadata\/artifact-files\.sha256/);
+  assert.match(
+    ci,
+    /combo-image-digest-\$\{\{ env\.SOURCE_SHA \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ matrix\.key \}\}/,
+  );
+  assert.match(
+    ci,
+    /pattern: combo-image-digest-\$\{\{ env\.SOURCE_SHA \}\}-\$\{\{ github\.run_attempt \}\}-\*/,
+  );
+  assert.match(ci, /name=combo-release-%s-%s[\s\S]*"\$SOURCE_SHA" "\$GITHUB_RUN_ATTEMPT"/);
+  assert.match(
+    testDeployment,
+    /artifact_name="combo-release-\$\{REVISION\}-\$\{source_ci_run_attempt\}"/,
+  );
+  assert.match(
+    testDeployment,
+    /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.match(production, /source_artifact_name=%s[\s\S]*\.sourceArtifactName/);
+  assert.match(production, /"combo-release-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}"/);
+  assert.match(production, /--arg name "\$SOURCE_ARTIFACT_NAME"/);
 
   for (const contract of [
     'CLOUD_REVIEW_ACCESS_TOKEN',
@@ -1176,6 +1204,32 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(preview, /\.name == "assemble immutable release artifact"/);
   assert.match(preview, /\$releaseJobs\[0\]\.started_at <= \$artifactCreatedAt/);
   assert.match(preview, /\$artifactCreatedAt <= \$releaseJobs\[0\]\.completed_at/);
+  assert.match(
+    preview,
+    /test_evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{test_run_attempt\}"/,
+  );
+  const previewCompletedReleaseCheck = preview.indexOf(
+    'release_directory="$HOME/data/combo-releases/goal-a/preview/release-${revision}"',
+  );
+  const previewFoundationReset = preview.indexOf(
+    'bash "$work/scripts/reset-release-foundation.sh"',
+  );
+  assert.ok(
+    previewCompletedReleaseCheck >= 0 && previewFoundationReset > previewCompletedReleaseCheck,
+    'Preview must bind completed evidence before invoking the destructive reset helper',
+  );
+  assert.match(
+    preview.slice(previewCompletedReleaseCheck, previewFoundationReset),
+    /pending_checkpoint="\$HOME\/data\/combo-releases\/goal-a\/preview\/pending\.json"[\s\S]*sha256sum --quiet -c SHA256SUMS[\s\S]*foundation-reset-evidence\.json[\s\S]*foundationResetEvidenceDigest[\s\S]*\.schemaVersion == 3[\s\S]*pending_reset_digest/,
+  );
+  assert.match(
+    preview,
+    /ssh release-target bash -s -- "\$REVISION" "\$FOUNDATION_RESET"[\s\S]*files\+=\(foundation-reset-evidence\.json\)/,
+  );
+  assert.match(
+    preview,
+    /reset_digest=\$\(sha256sum "\$evidence_dir\/foundation-reset-evidence\.json"[\s\S]*\.foundationResetEvidenceDigest/,
+  );
 
   for (const contract of [
     'preview_run_attempt:',
@@ -1199,6 +1253,18 @@ test('release workflows bundle and consume only the controlled admission impleme
   }
   assert.doesNotMatch(production, /actions\/download-artifact/);
   assert.match(production, /preview_run\.run_attempt|\.run_attempt == \$runAttempt/);
+  assert.match(
+    production,
+    /--arg name "combo-preview-promotion-\$\{REVISION\}-\$\{PREVIEW_RUN_ATTEMPT\}"/,
+  );
+  assert.match(
+    preview,
+    /name: combo-preview-promotion-\$\{\{ needs\.policy\.outputs\.revision \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.match(
+    production,
+    /name: combo-production-deployment-\$\{\{ needs\.resolve\.outputs\.revision \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
   assert.match(production, /sha256sum "\$archive"/);
   assert.match(
     production,
@@ -1207,6 +1273,29 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(production, /\.name == "deploy the main release artifact to Preview"/);
   assert.match(production, /\$uploadJobs\[0\]\.started_at <= \$artifactCreatedAt/);
   assert.match(production, /\$artifactCreatedAt <= \$uploadJobs\[0\]\.completed_at/);
+  const productionCompletedReleaseCheck = production.indexOf(
+    'release_directory="$HOME/data/combo-releases/goal-a/production/release-${revision}"',
+  );
+  const productionFoundationReset = production.indexOf(
+    'bash "$work/scripts/reset-release-foundation.sh"',
+  );
+  assert.ok(
+    productionCompletedReleaseCheck >= 0 &&
+      productionFoundationReset > productionCompletedReleaseCheck,
+    'Production must bind completed or activation evidence before invoking reset',
+  );
+  assert.match(
+    production.slice(productionCompletedReleaseCheck, productionFoundationReset),
+    /activation_directory="\$\{release_directory\}\.activation"[\s\S]*pending_checkpoint="\$HOME\/data\/combo-releases\/goal-a\/production\/pending\.json"[\s\S]*\.schemaVersion == 3[\s\S]*pending_reset_digest[\s\S]*sha256sum --quiet -c SHA256SUMS[\s\S]*foundation-reset-evidence\.json/,
+  );
+  const previewEvidenceStart = production.indexOf(
+    'Validate Preview evidence and its source main CI run',
+  );
+  const previewEvidenceEnd = production.indexOf('\n      - name:', previewEvidenceStart + 1);
+  const previewEvidenceValidation = production.slice(previewEvidenceStart, previewEvidenceEnd);
+  assert.match(previewEvidenceValidation, /if \.foundationMode == "reset" then/);
+  assert.match(previewEvidenceValidation, /\.foundationReset\.authorityDigest == \.manifestDigest/);
+  assert.doesNotMatch(previewEvidenceValidation, /--argjson foundationReset/);
   const credentialValidation = production.indexOf(
     'Validate the protected Production Resend reader before mutation',
   );
@@ -1234,8 +1323,47 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(production, /previewLiveRuntimeRecheckDigest/);
   assert.match(
     production,
-    /if: \$\{\{ \(failure\(\) \|\| cancelled\(\)\) && steps\.activation\.outputs\.attempted == 'true' && steps\.finalize\.outcome != 'success' \}\}/,
+    /if: \$\{\{ \(failure\(\) \|\| cancelled\(\)\) && steps\.activation\.outputs\.attempted == 'true' && steps\.activation_evidence\.outputs\.finalized != 'true' && steps\.finalize\.outcome != 'success' && needs\.resolve\.outputs\.foundation_reset != 'true' \}\}/,
   );
+  assert.match(
+    production,
+    /if: \$\{\{ \(failure\(\) \|\| cancelled\(\)\) && steps\.activation\.outputs\.attempted == 'true' && steps\.activation_evidence\.outputs\.finalized != 'true' && steps\.finalize\.outcome != 'success' && \(needs\.resolve\.outputs\.foundation_reset == 'true' \|\| steps\.recovery\.outputs\.roll_forward_only == 'true'\) \}\}/,
+  );
+  assert.match(production, /prepare-reset-roll-forward\.sh[\s\S]*--reset-roll-forward-evidence/);
+  assert.match(production, /reset-roll-forward-evidence\.json[\s\S]*roll_forward_only=true/);
+  assert.match(
+    production,
+    /Fetch and validate pending or finalized Production evidence[\s\S]*finalized="\$HOME\/data\/combo-releases\/goal-a\/production\/release-\$\{revision\}"[\s\S]*if \[\[ -d "\$finalized" && ! -L "\$finalized" \]\]/,
+  );
+  assert.match(
+    production,
+    /Run the exact-bundle Production email OTP and six-area browser acceptance[\s\S]*if: steps\.activation_evidence\.outputs\.finalized != 'true'/,
+  );
+  assert.match(
+    production,
+    /Generate and validate the workflow-owned Production acceptance attestation[\s\S]*if: steps\.activation_evidence\.outputs\.finalized != 'true'/,
+  );
+  assert.match(
+    production,
+    /Revalidate candidate and finalize the accepted Production release[\s\S]*if: steps\.activation_evidence\.outputs\.finalized != 'true'/,
+  );
+  assert.match(
+    production,
+    /Select and revalidate the immutable Production acceptance[\s\S]*FINALIZED_BROWSER_DIGEST:[\s\S]*FINALIZED_ATTESTATION_DIGEST:/,
+  );
+  assert.match(
+    production,
+    /production-recovery\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}\.acceptance\.json[\s\S]*--acceptance-evidence "\$acceptance"/,
+  );
+  assert.match(
+    production,
+    /production-recovery\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}\.identity\.json[\s\S]*--promotion-identity "\$identity"/,
+  );
+  assert.match(
+    production,
+    /has_acceptance_bundle=0[\s\S]*"\$ATTESTATION_DIGEST" =~ \^sha256:\[0-9a-f\]\{64\}\$[\s\S]*has_acceptance_bundle=1/,
+  );
+  assert.match(production, /clean-slate schema boundary[\s\S]*roll-forward/);
   assert.match(production, /production-rollback\.\$\{RUN_ID\}\.\$\{RUN_ATTEMPT\}[\s\S]*--rollback/);
   for (const evidence of [
     'activationEvidenceDigest',
@@ -1243,6 +1371,9 @@ test('release workflows bundle and consume only the controlled admission impleme
     'acceptanceAttestationDigest',
     'production-browser-acceptance.json',
     'production-acceptance-attestation.json',
+    'acceptance-evidence.json',
+    'promotion-identity.json',
+    'foundation-reset-evidence.json',
     'traffic-seal-evidence.json',
   ]) {
     assert.match(production, new RegExp(evidence.replaceAll('.', '\\.')));

@@ -12,7 +12,7 @@
     "acceptance:goal-b": "node ./goal-b-test-acceptance.mjs",
     "sandbox:e2e": "./integration/sandbox-tools-local.sh",
     "typecheck": "tsc -b",
-    "test": "node --test resend-sent-email.test.mjs release-contract.test.mjs render-release.test.mjs release-deploy-contract.test.mjs release-nginx-route.test.mjs release-traffic-contract.test.mjs promotion-evidence.test.mjs goal-b-frozen-audit.test.mjs goal-b-test-acceptance.test.mjs deployment-order.test.mjs"
+    "test": "node --test resend-sent-email.test.mjs release-contract.test.mjs render-release.test.mjs release-deploy-contract.test.mjs foundation-reset-contract.test.mjs reset-roll-forward-contract.test.mjs reset-roll-forward-journal.test.mjs release-nginx-route.test.mjs release-traffic-contract.test.mjs promotion-evidence.test.mjs goal-b-frozen-audit.test.mjs goal-b-test-acceptance.test.mjs deployment-order.test.mjs verify-release-schema.test.mjs"
   },
   "dependencies": {
     "@cb/shared": "workspace:*",
