@@ -557,15 +557,26 @@ async function poll(check, read, accept, timeoutMs, intervalMs = POLL_INTERVAL_M
 }
 
 /**
- * Runtime 的同文档路由会动态挂载 UI artifact iframe。URL 与业务界面已经就绪时，
- * Playwright 默认等待整页 load 仍可能被 iframe 或其他子资源拖住；路由验收只等待当前
- * 文档的 DOMContentLoaded，再由后续可见元素和 API 断言验证真实业务状态。
+ * Runtime 的同文档路由使用 history API 更新地址，不会触发新的文档生命周期事件。
+ * 验收器直接轮询当前文档地址，再由后续可见元素和 API 断言验证真实业务状态。
  */
-export async function waitForAcceptanceUrl(page, predicate) {
-  await page.waitForURL(predicate, {
-    waitUntil: 'domcontentloaded',
-    timeout: 30_000,
-  });
+export async function waitForAcceptanceUrl(page, expectation) {
+  await page.waitForFunction(
+    ({ origin, pathname, pathnamePattern, searchParams = {} }) => {
+      const current = new URL(window.location.href);
+      return (
+        (origin === undefined || current.origin === origin) &&
+        (pathname === undefined || current.pathname === pathname) &&
+        (pathnamePattern === undefined ||
+          new RegExp(pathnamePattern, 'i').test(current.pathname)) &&
+        Object.entries(searchParams).every(
+          ([name, value]) => current.searchParams.get(name) === value,
+        )
+      );
+    },
+    expectation,
+    { timeout: 30_000 },
+  );
 }
 
 export async function settleOwnedAcceptanceTurn({
@@ -1797,17 +1808,20 @@ async function runAcceptance(options) {
       const trialButton = page.getByRole('button', { name: '试用当前 UI' });
       await trialButton.waitFor({ state: 'visible', timeout: 30_000 });
       await trialButton.click();
-      await waitForAcceptanceUrl(
-        page,
-        (url) =>
-          /^\/try\/session\/[0-9a-f-]+$/i.test(url.pathname) &&
-          url.searchParams.get('returnTo') === `/try/session/${studioSession.id}`,
-      );
-      await page.getByRole('button', { name: '返回 UI 设计' }).click();
-      await waitForAcceptanceUrl(
-        page,
-        (url) => url.pathname === `/try/session/${studioSession.id}`,
-      );
+      await waitForAcceptanceUrl(page, {
+        pathnamePattern: '^/try/session/[0-9a-f-]+$',
+        searchParams: { returnTo: `/try/session/${studioSession.id}` },
+      });
+      const studioReturnButton = page.getByRole('button', {
+        name: '返回 UI 设计',
+        exact: true,
+      });
+      await studioReturnButton.waitFor({ state: 'visible', timeout: 30_000 });
+      await studioReturnButton.click();
+      await waitForAcceptanceUrl(page, { pathname: `/try/session/${studioSession.id}` });
+      await page
+        .getByRole('complementary', { name: 'UI 设计对话' })
+        .waitFor({ state: 'visible', timeout: 30_000 });
     });
 
     await checked('task_trial_return', async () => {
@@ -1815,17 +1829,20 @@ async function runAcceptance(options) {
       await page.goto(`/try/c/${capability.id}?returnTo=${encodeURIComponent(returnTo)}`, {
         waitUntil: 'domcontentloaded',
       });
-      await waitForAcceptanceUrl(
-        page,
-        (url) =>
-          /^\/try\/session\/[0-9a-f-]+$/i.test(url.pathname) &&
-          url.searchParams.get('returnTo') === returnTo,
-      );
-      await page.getByRole('button', { name: '返回发布流程' }).click();
-      await waitForAcceptanceUrl(page, (url) => url.pathname === returnTo);
-      await page.waitForFunction(() => document.body.innerText.includes('你的能力'), undefined, {
-        timeout: 30_000,
+      await waitForAcceptanceUrl(page, {
+        pathnamePattern: '^/try/session/[0-9a-f-]+$',
+        searchParams: { returnTo },
       });
+      const taskReturnButton = page.getByRole('button', {
+        name: '返回发布流程',
+        exact: true,
+      });
+      await taskReturnButton.waitFor({ state: 'visible', timeout: 30_000 });
+      await taskReturnButton.click();
+      await waitForAcceptanceUrl(page, { pathname: returnTo });
+      await page
+        .getByRole('heading', { name: '你的能力，挑选后一键发布', exact: true })
+        .waitFor({ state: 'visible', timeout: 30_000 });
     });
 
     await checked('preview_gate_login_and_return_to', async () => {
@@ -1856,24 +1873,20 @@ async function runAcceptance(options) {
           `/__review/bootstrap?returnTo=${encodeURIComponent(recoveryPath)}`,
           { waitUntil: 'domcontentloaded' },
         );
-        await waitForAcceptanceUrl(
-          recoveryPage,
-          (url) =>
-            url.origin === options.webOrigin &&
-            url.pathname === '/login' &&
-            url.searchParams.get('returnTo') === recoveryPath,
-        );
+        await waitForAcceptanceUrl(recoveryPage, {
+          origin: options.webOrigin,
+          pathname: '/login',
+          searchParams: { returnTo: recoveryPath },
+        });
         for (const hostile of ['//evil.example/phish', '/%252f%252fevil.example/phish']) {
           await recoveryPage.goto(`/__review/bootstrap?returnTo=${encodeURIComponent(hostile)}`, {
             waitUntil: 'domcontentloaded',
           });
-          await waitForAcceptanceUrl(
-            recoveryPage,
-            (url) =>
-              url.origin === options.webOrigin &&
-              url.pathname === '/login' &&
-              url.searchParams.get('returnTo') === '/tasks',
-          );
+          await waitForAcceptanceUrl(recoveryPage, {
+            origin: options.webOrigin,
+            pathname: '/login',
+            searchParams: { returnTo: '/tasks' },
+          });
         }
       } finally {
         await unauthenticated.close();
@@ -2018,7 +2031,7 @@ async function runAcceptance(options) {
         await page.goto(`/__review/enter?returnTo=${encodeURIComponent(`/tasks/${task.id}`)}`, {
           waitUntil: 'domcontentloaded',
         });
-        await waitForAcceptanceUrl(page, (url) => url.pathname === '/__review/enter');
+        await waitForAcceptanceUrl(page, { pathname: '/__review/enter' });
       } else {
         await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
         await page.getByRole('button', { name: '去登录' }).waitFor({

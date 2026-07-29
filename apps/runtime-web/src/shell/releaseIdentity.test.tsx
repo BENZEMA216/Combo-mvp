@@ -1,4 +1,6 @@
 import type { ReleaseMetadata } from '@cb/shared';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import {
@@ -73,6 +75,20 @@ describe('resolveRuntimeReleaseMetadata', () => {
 });
 
 describe('ReleaseIdentityBadge', () => {
+  it('reserves non-overlapping toolbar space in Preview viewports', () => {
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8');
+
+    expect(styles).toMatch(
+      /\.rt-release-identity\s*\{[\s\S]*?right:\s*64px;[\s\S]*?z-index:\s*90;/,
+    );
+    expect(styles).toMatch(
+      /@media \(min-width: 901px\)\s*\{[\s\S]*?\.rt-release-identity ~ \.rt-shell \.rt-trial__toolbar\s*\{[\s\S]*?padding-right:\s*224px;/,
+    );
+    expect(styles).toMatch(
+      /@media \(max-width: 900px\)\s*\{[\s\S]*?\.rt-release-identity ~ \.rt-shell \.rt-trial__toolbar\s*\{[\s\S]*?padding-top:\s*58px;/,
+    );
+  });
+
   it('stays hidden outside Preview', () => {
     render(<ReleaseIdentityBadge metadata={{ ...PREVIEW_METADATA, environment: 'production' }} />);
     expect(screen.queryByLabelText('Preview 发布身份')).toBeNull();

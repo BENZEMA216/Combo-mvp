@@ -2332,9 +2332,19 @@ body {
 .rt-release-identity {
   position: fixed;
   top: 14px;
-  right: 16px;
+  right: 64px;
   z-index: 90;
   font-size: 12px;
+}
+
+/*
+ * Preview 的发布身份与主题开关共用全局顶栏。桌面端为两者保留完整宽度，
+ * 避免覆盖试用页右侧的返回按钮。
+ */
+@media (min-width: 901px) {
+  .rt-release-identity ~ .rt-shell .rt-trial__toolbar {
+    padding-right: 224px;
+  }
 }
 
 .rt-release-identity__trigger {
@@ -2491,14 +2501,20 @@ body {
   cursor: pointer;
 }
 
+@media (max-width: 900px) {
+  .rt-release-identity ~ .rt-shell .rt-trial__toolbar {
+    padding-top: 58px;
+  }
+}
+
 @media (max-width: 560px) {
   .rt-release-identity {
     top: 10px;
-    right: 10px;
+    right: 64px;
   }
 
   .rt-release-identity__panel {
-    width: calc(100vw - 20px);
+    width: calc(100vw - 80px);
   }
 
   .rt-release-identity__panel dl > div {
