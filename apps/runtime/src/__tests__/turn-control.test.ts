@@ -5,7 +5,13 @@ import { createTurnRunner, type TurnAgentFactory } from '../modules/agent/run-tu
 import { createTurn, finishTurnCas, TURN_ABANDON_AFTER_MS } from '../modules/agent/turn-repo.js';
 import { appendTurnMessage, createSession, SessionBusyError } from '../modules/session/repo.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
-import { createInterruptBus, type InterruptBus } from '../platform/infra/redis-interrupt-bus.js';
+import {
+  createInterruptBus,
+  decodeInterruptRequest,
+  encodeInterruptRequest,
+  type InterruptBus,
+  type InterruptRequest,
+} from '../platform/infra/redis-interrupt-bus.js';
 import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
 import {
   FakeDb,
@@ -67,6 +73,37 @@ function cleanupSandbox(): SandboxBackend {
     dispose: async () => undefined,
   };
 }
+
+describe('跨副本中断消息协议', () => {
+  const request: InterruptRequest = {
+    sessionId: '019fae77-90b4-7afe-bed7-5b80a453b1d0',
+    runId: '019fae77-3314-752b-9510-8319df44b27e',
+  };
+
+  it('只接受精确的 Session 与 Turn UUID', () => {
+    const encoded = encodeInterruptRequest(request);
+    expect(decodeInterruptRequest(encoded)).toEqual(request);
+    expect(
+      decodeInterruptRequest(
+        JSON.stringify({ sessionId: request.sessionId, runId: request.runId, text: 'ignored' }),
+      ),
+    ).toBeUndefined();
+    expect(decodeInterruptRequest(request.sessionId)).toBeUndefined();
+    expect(decodeInterruptRequest('{')).toBeUndefined();
+    expect(
+      decodeInterruptRequest(
+        JSON.stringify({ sessionId: request.sessionId, runId: request.runId.toUpperCase() }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('新 JSON 消息在旧订阅者中不会匹配任何真实 Session', () => {
+    const encoded = encodeInterruptRequest(request);
+    const legacyActiveSessions = new Map([[request.sessionId, true]]);
+    expect(encoded).not.toBe(request.sessionId);
+    expect(legacyActiveSessions.get(encoded)).toBeUndefined();
+  });
+});
 
 describe('单会话单运行轮次控制', () => {
   it('同会话并发提交只有一轮 started，另一轮精确映射为 SessionBusyError', async () => {
@@ -369,7 +406,7 @@ describe('单会话单运行轮次控制', () => {
 
   it('本地打断走执行句柄快路径，不发布广播', async () => {
     const inner = createInterruptBus();
-    const publish = vi.fn((sessionId: string) => inner.publish(sessionId));
+    const publish = vi.fn((request: InterruptRequest) => inner.publish(request));
     const interrupts: InterruptBus = { publish, subscribe: (cb) => inner.subscribe(cb) };
     const handle = makeFakeAgentFactory({ hangUntilAbort: true });
     const { db, session, runner } = await setup(handle.factory, interrupts);
@@ -378,6 +415,64 @@ describe('单会话单运行轮次控制', () => {
     await waitDone(db);
     expect(publish).not.toHaveBeenCalled();
     await runner.dispose();
+  });
+
+  it('过期 runId 的广播不会打断同 Session 的当前轮次', async () => {
+    const interrupts = createInterruptBus();
+    const handle = makeFakeAgentFactory({ hangUntilAbort: true });
+    const { db, session, runner } = await setup(handle.factory, interrupts);
+    await runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await waitFor(() => handle.calls.length === 1);
+
+    interrupts.publish({
+      sessionId: session.id,
+      runId: '019fae77-3314-752b-9510-8319df44b27e',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect([...db.turns.values()][0]?.status).toBe('running');
+
+    expect(await runner.interrupt(session.id)).toBe(true);
+    await waitDone(db);
+    await runner.dispose();
+  });
+
+  it('两个关闭 Sandbox 的副本由 owner 终态确认跨副本打断', async () => {
+    const interrupts = createInterruptBus();
+    const handle = makeFakeAgentFactory({ hangUntilAbort: true });
+    const owner = await setup(handle.factory, interrupts);
+    await owner.runner.startTurn({
+      session: owner.session,
+      definition,
+      text: 'go',
+      log: silentLog,
+    });
+    await waitFor(() => handle.calls.length === 1);
+
+    const peer = createTurnRunner({
+      db: owner.db,
+      objectStore: new FakeObjectStore(),
+      bus: createSessionEventBus(),
+      eventLog: owner.eventLog,
+      agentFactory: makeFakeAgentFactory().factory,
+      idleTimeoutMs: 60_000,
+      interrupts,
+      sandboxCleanupTimeoutMs: 500,
+      log: silentLog,
+    });
+    expect(await peer.interrupt(owner.session.id)).toBe(true);
+    await waitDone(owner.db);
+    expect([...owner.db.turns.values()][0]?.status).toBe('interrupted');
+    expect(
+      owner.eventLog
+        .entries(owner.session.id)
+        .filter(
+          (entry) =>
+            entry.event.type === EventType.RUN_FINISHED || entry.event.type === EventType.RUN_ERROR,
+        ),
+    ).toHaveLength(1);
+
+    await peer.dispose();
+    await owner.runner.dispose();
   });
 
   it('跨实例广播打断真正执行轮次', async () => {
@@ -550,7 +645,7 @@ describe('单会话单运行轮次控制', () => {
     await owner.runner.dispose();
   });
 
-  it('功能关闭的副本在广播丢失时不能替外部 owner 释放 running Turn', async () => {
+  it('功能关闭的副本在 Redis 发布未送达时超时失败并保留 running Turn', async () => {
     const ownerHandle = makeFakeAgentFactory({ hangUntilAbort: true });
     const owner = await setup(ownerHandle.factory, createInterruptBus());
     await owner.runner.startTurn({
@@ -560,7 +655,13 @@ describe('单会话单运行轮次控制', () => {
       log: silentLog,
     });
     await waitFor(() => ownerHandle.calls.length === 1);
+    const runId = [...owner.db.turns.values()][0]!.id;
 
+    const publish = vi.fn((_request: InterruptRequest) => undefined);
+    const lostInterrupts: InterruptBus = {
+      publish,
+      subscribe: () => () => undefined,
+    };
     const disabledPeer = createTurnRunner({
       db: owner.db,
       objectStore: new FakeObjectStore(),
@@ -568,12 +669,17 @@ describe('单会话单运行轮次控制', () => {
       eventLog: owner.eventLog,
       agentFactory: makeFakeAgentFactory().factory,
       idleTimeoutMs: 60_000,
-      // 独立内存总线模拟 Redis 通知丢失。
-      interrupts: createInterruptBus(),
+      // Redis publish 的异步失败不会进入调用栈，数据库确认超时仍必须失败关闭。
+      interrupts: lostInterrupts,
+      sandboxCleanupTimeoutMs: 20,
       log: silentLog,
     });
     await expect(disabledPeer.interrupt(owner.session.id)).rejects.toMatchObject({
       code: 'cleanup_unconfirmed',
+    });
+    expect(publish).toHaveBeenCalledWith({
+      sessionId: owner.session.id,
+      runId,
     });
     expect([...owner.db.turns.values()][0]?.status).toBe('running');
 

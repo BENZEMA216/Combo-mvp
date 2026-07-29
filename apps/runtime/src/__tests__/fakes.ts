@@ -512,6 +512,18 @@ export class FakeDb implements Queryable, TxPool {
       );
       return row ? { rows: [{ id: row.id }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
+    if (
+      s.startsWith(
+        'SELECT id, session_id, status, last_error, created_at, finished_at FROM turns',
+      ) &&
+      s.includes("id = $1 AND session_id = $2 AND status <> 'running'")
+    ) {
+      const [id, sessionId] = params as [string, string];
+      const row = this.turns.get(id);
+      return row?.session_id === sessionId && row.status !== 'running'
+        ? { rows: [{ ...row }] as R[], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
     if (s.startsWith('SELECT EXISTS (SELECT 1 FROM turns')) {
       const exists = [...this.turns.values()].some(
         (row) => row.session_id === params[0] && row.status === 'running',

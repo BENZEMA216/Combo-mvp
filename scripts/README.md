@@ -73,6 +73,15 @@ Test、Preview 和 Production 的 GitHub Environment 各自只需要一个 `ACCE
 
 `github all` 会先用 artifact 同款 sent-email reader 验证 full-access key 的读取权限，验证失败时不会写任何 Environment。`kubernetes all` 会先完成三个目标 Secret 的权限和元数据预检，再使用 UID/resourceVersion 条件 Patch 原位更新；不会删除 Secret 或改变 UID。单环境模式仍可用于精确轮换，运行脚本不带参数可查看用法。
 
+Goal C 的 Production 六区验收、正式域名验证和发布最终化全部成功后，管理员使用下面的显式确认命令退役三个环境 Secret 中的旧外部认证与开发会话键：
+
+```sh
+./scripts/retire-legacy-auth-secrets.sh \
+  --confirm=RETIRE-LEGACY-AUTH-AFTER-PRODUCTION all
+```
+
+`retire-legacy-auth-secrets.sh` 只允许操作 `combo-preview/combo-dev-env`、`combo-review/combo-preview-env` 和 `combo/combo-env`。它在任何写入前完成三个目标的精确权限和元数据预检，只输出环境、对象名称以及 UID、resourceVersion 与类型相关的布尔验证结果，不输出 UID、resourceVersion 或 Secret 值。每次删除都使用带 UID 和 resourceVersion 条件的 JSON Patch，并且只能删除脚本内固定列出的旧认证键；键已经不存在时会以稳定的服务端缺失路径结果证明幂等。脚本不会删除或重建 Secret 对象，也不会修改无关键。完成这个步骤并确认运行对象不再依赖旧身份提供商后，管理员才可以在旧身份提供商控制台撤销 Combo 应用凭据并删除 Combo 专属租户。
+
 `collect-live-runtime-evidence.sh` 从目标 namespace 的实际 Deployment、Pod、迁移 Job 和迁移 Pod 采集 Ready 状态、容器 `imageID`、退出码及精确 `0000` 至 `0008` 账本。Preview 晋级证据会保存该结果；Production 变更前还会即时重采 Preview并重新验证。
 
 `verify-release-schema.mjs` 在 Preview 或 Production 的 `release-postgres-0` 内开启只读事务，从 PostgreSQL 系统目录核对 `0000` 至 `0008` 的完整表和列、Turn 关联约束、部分索引、邮箱认证表、UUID v7 函数及三个应用角色的最小权限。它不读取业务行或输出数据库凭据，只原子写入权限为 `0600` 的脱敏结构证明及摘要；任何旧表、结构漂移或越权授权都会使验证失败。

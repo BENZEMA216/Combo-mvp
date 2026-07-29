@@ -18,50 +18,17 @@ Runtime 在创建动态 Pod 前先用 PVC 资源版本原子写入 Session 和�
 
 `overlays/sandbox-tools/maintenance/runtimeclass-gvisor.yaml` 只是未引用的维护样例。仓库不会安装 runsc、重启 k3s 或自动应用任何沙箱资源。`pnpm -F @cb/infra test` 只做本地静态渲染和断言，不能替代 gVisor、Local PV 或 NetworkPolicy 的现场验证。
 
-## 部署前准备
+## 受控发布前置条件
 
-先创建命名空间，再从服务器上的生产环境文件创建应用配置 Secret：
+tecent2 的 Test、Preview 和 Production 命名空间及凭据 Secret 都由现有受控发布契约维护。管理员不得通过 `kubectl create secret`、环境文件导入或删除后重建来更新凭据，也不得在服务器上把业务镜像改成可移动标签。需要轮换第一方认证凭据时，应使用 `scripts/configure-first-party-auth-secrets.sh` 做带 UID 和 resourceVersion 条件的原位更新；镜像拉取凭据也必须原位轮换并保留 Secret 身份。
 
-```sh
-kubectl apply -f infra/k8s/namespace.yaml
-kubectl -n combo create secret generic combo-env --from-env-file=/opt/combo/infra/.env
-kubectl -n combo create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=<GitHub 用户名> --docker-password=<具有 read:packages 权限的 PAT>
-```
+`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。`RESEND_FROM_EMAIL` 固定为 `Combo <auth@buildwithcombo.com>`，不从 Secret 覆盖。业务镜像只能来自成功 main CI 生成的不可变 release artifact，并且必须使用清单中记录的摘要引用。
 
-`ghcr-pull` 用的 token 需要长期有效：CD 流水线用的是 GitHub Actions 的临时 token、部署完即登出，集群里拉镜像必须另建一个 read:packages 权限的个人访问令牌（PAT）。
+## 发布顺序
 
-`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。`RESEND_FROM_EMAIL` 固定为 `Combo <auth@buildwithcombo.com>`，不从 Secret 覆盖。部署前还必须把三个业务镜像的 `latest` 改成不可变摘要。
+受保护工作流从不可变 release artifact 渲染并验证基础设施、建桶任务、迁移任务和四个业务面清单。部署控制器先等待 PostgreSQL、Redis 和 MinIO 就绪，再完成建桶和 `0000` 至 `0008` 迁移，最后启动 API、Worker、Runtime 和 Web。就绪探针只能报告单个工作负载状态，不能替代迁移、发布身份和真实六区验收。
 
-```sh
-kustomize edit set image ghcr.io/dangdang-tech/combo-api=ghcr.io/dangdang-tech/combo-api:<SHA> ghcr.io/dangdang-tech/combo-runtime=ghcr.io/dangdang-tech/combo-runtime:<SHA> ghcr.io/dangdang-tech/combo-web=ghcr.io/dangdang-tech/combo-web:<SHA>
-```
-
-## 首次部署
-
-首次部署应先创建基础设施，并等待 PostgreSQL、Redis 和 MinIO 就绪：
-
-```sh
-kubectl apply -f infra/k8s/postgres.yaml -f infra/k8s/redis-queue.yaml -f infra/k8s/redis-hot.yaml -f infra/k8s/minio.yaml
-kubectl -n combo rollout status statefulset/postgres
-kubectl -n combo rollout status statefulset/redis-queue
-kubectl -n combo rollout status statefulset/minio
-kubectl -n combo rollout status deployment/redis-hot
-```
-
-基础设施就绪后创建建桶任务和数据库迁移任务，并等待它们成功完成：
-
-```sh
-kubectl apply -f infra/k8s/job-minio-init.yaml -f infra/k8s/job-migrate.yaml
-kubectl -n combo wait --for=condition=complete job/minio-init job/migrate --timeout=300s
-```
-
-两个任务完成后创建业务工作负载：
-
-```sh
-kubectl apply -f infra/k8s/api.yaml -f infra/k8s/worker.yaml -f infra/k8s/runtime.yaml -f infra/k8s/web.yaml
-```
-
-完成首次分阶段部署后，整套声明也可以使用 `kubectl apply -k infra/k8s` 重复应用。就绪探针会阻止尚未就绪的 API 和 runtime 接收流量，但不会替代首次部署时对任务完成状态的检查。
+Production 只允许通过 `.github/workflows/cd.yml` 晋级已经通过 Preview 的同一 artifact。服务器上的 `kubectl apply`、Kustomize 镜像改写或 Nginx 热改都不是正式发布入口。
 
 ## 日常更新
 
