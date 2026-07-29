@@ -1421,8 +1421,8 @@ function expectedInventoryNames(identity) {
     cronJobs: [],
     daemonSets: [],
     networkPolicies: [],
-    roles: [],
-    roleBindings: [],
+    roles: identity.environment === 'production' ? ['combo-dev-production-observer'] : [],
+    roleBindings: identity.environment === 'production' ? ['combo-dev-production-observer'] : [],
     clusterRoleBindings: [],
     serviceAccounts: ['default'],
     configMaps: [
@@ -1470,8 +1470,8 @@ export function validateReleaseInventory(value, expectedIdentity) {
   if (JSON.stringify(value.databaseTables) !== JSON.stringify(EXPECTED_DATABASE_TABLES)) {
     fail('release inventory database tables do not match the exact current schema');
   }
-  if (!Array.isArray(value.livePods) || value.livePods.length < 4) {
-    fail('release inventory lacks live release Pods');
+  if (!Array.isArray(value.livePods) || value.livePods.length !== 6) {
+    fail('release inventory does not prove the exact live release replica count');
   }
   const prefix = `release-${identity.sourceSha.slice(0, 12)}-`;
   const expectedImages = {
@@ -1480,7 +1480,14 @@ export function validateReleaseInventory(value, expectedIdentity) {
     [`${prefix}runtime`]: identity.images.runtime,
     [`${prefix}web`]: identity.images.web,
   };
-  const podApps = new Set();
+  const expectedLivePodCounts = {
+    [`${prefix}api`]: 2,
+    [`${prefix}runtime`]: 2,
+    [`${prefix}web`]: 1,
+    [`${prefix}worker`]: 1,
+  };
+  const podAppCounts = new Map();
+  const livePodNames = new Set();
   for (const [index, pod] of value.livePods.entries()) {
     exactKeys(
       pod,
@@ -1499,10 +1506,16 @@ export function validateReleaseInventory(value, expectedIdentity) {
     ) {
       fail(`release inventory livePods[${index}] does not prove a ready immutable image`);
     }
-    podApps.add(pod.app);
+    if (livePodNames.has(pod.name)) {
+      fail('release inventory livePods names must be unique');
+    }
+    livePodNames.add(pod.name);
+    podAppCounts.set(pod.app, (podAppCounts.get(pod.app) ?? 0) + 1);
   }
-  if (JSON.stringify([...podApps].sort()) !== JSON.stringify(Object.keys(expectedImages).sort())) {
-    fail('release inventory does not cover all four business planes');
+  for (const [app, expectedCount] of Object.entries(expectedLivePodCounts)) {
+    if (podAppCounts.get(app) !== expectedCount) {
+      fail('release inventory does not prove the exact business-plane replica counts');
+    }
   }
   exactKeys(
     value.migration,
@@ -1521,19 +1534,28 @@ export function validateReleaseInventory(value, expectedIdentity) {
   const expected = expectedInventoryNames(identity);
   for (const key of Object.keys(expected)) {
     sortedUniqueStrings(value.resources[key], `release inventory resources.${key}`);
-    if (JSON.stringify(value.resources[key]) !== JSON.stringify(expected[key])) {
+    const isKnownPreviewSandboxServiceAccountSet =
+      key === 'serviceAccounts' &&
+      identity.environment === 'preview' &&
+      JSON.stringify(value.resources[key]) ===
+        JSON.stringify(['default', 'runtime-sandbox-manager']);
+    if (
+      JSON.stringify(value.resources[key]) !== JSON.stringify(expected[key]) &&
+      !isKnownPreviewSandboxServiceAccountSet
+    ) {
       fail(`release inventory resources.${key} does not match the exact release set`);
     }
   }
   sortedUniqueStrings(value.resources.replicaSets, 'release inventory resources.replicaSets');
-  const replicaSetPrefixes = [
-    `${prefix}api-`,
-    `${prefix}runtime-`,
-    `${prefix}web-`,
-    `${prefix}worker-`,
-    'release-redis-hot-',
+  const replicaSetExpectations = [
+    [`${prefix}api-`, 2],
+    [`${prefix}runtime-`, 2],
+    [`${prefix}web-`, 1],
+    [`${prefix}worker-`, 1],
+    ['release-redis-hot-', 1],
   ];
-  for (const replicaSetPrefix of replicaSetPrefixes) {
+  const replicaSetPodCounts = new Map();
+  for (const [replicaSetPrefix, expectedPodCount] of replicaSetExpectations) {
     const matches = value.resources.replicaSets.filter((name) => name.startsWith(replicaSetPrefix));
     if (
       matches.length !== 1 ||
@@ -1541,8 +1563,9 @@ export function validateReleaseInventory(value, expectedIdentity) {
     ) {
       fail('release inventory ReplicaSets do not match the exact five deployments');
     }
+    replicaSetPodCounts.set(matches[0], expectedPodCount);
   }
-  if (value.resources.replicaSets.length !== replicaSetPrefixes.length) {
+  if (value.resources.replicaSets.length !== replicaSetExpectations.length) {
     fail('release inventory contains an extra ReplicaSet');
   }
   sortedUniqueStrings(value.resources.pods, 'release inventory resources.pods');
@@ -1552,15 +1575,24 @@ export function validateReleaseInventory(value, expectedIdentity) {
       fail('release inventory lacks an exact foundation Pod');
     }
   }
-  for (const replicaSet of value.resources.replicaSets) {
+  const businessReplicaSetPodNames = [];
+  for (const [replicaSet, expectedPodCount] of replicaSetPodCounts) {
     const matches = value.resources.pods.filter(
       (name) =>
         name.startsWith(`${replicaSet}-`) &&
         /^[a-z0-9]{5}$/.test(name.slice(replicaSet.length + 1)),
     );
-    if (matches.length !== 1) {
+    if (matches.length !== expectedPodCount) {
       fail('release inventory Pods do not match the exact ReplicaSet owners');
     }
+    if (!replicaSet.startsWith('release-redis-hot-')) {
+      businessReplicaSetPodNames.push(...matches);
+    }
+  }
+  if (
+    JSON.stringify([...livePodNames].sort()) !== JSON.stringify(businessReplicaSetPodNames.sort())
+  ) {
+    fail('release inventory livePods do not match the exact business ReplicaSet Pods');
   }
   for (const job of [`${prefix}migrate-`, `${prefix}minio-init-`]) {
     const matches = value.resources.pods.filter(
@@ -1572,7 +1604,9 @@ export function validateReleaseInventory(value, expectedIdentity) {
   }
   if (
     value.resources.pods.length !==
-    expectedFixedPods.length + value.resources.replicaSets.length + 2
+    expectedFixedPods.length +
+      [...replicaSetPodCounts.values()].reduce((total, count) => total + count, 0) +
+      2
   ) {
     fail('release inventory contains an extra Pod');
   }
