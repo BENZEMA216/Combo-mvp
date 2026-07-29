@@ -11,6 +11,7 @@ FRESH_RESET=0
 DEFER_CLEANUP=0
 FINALIZE=0
 ROLLBACK=0
+RECOVER_EXISTING_POST_CUT=0
 MANIFEST=''
 MANIFEST_DIGEST=''
 MIGRATIONS=''
@@ -57,7 +58,7 @@ usage() {
 Usage: deploy-release.sh
   --environment preview|production
   --fresh-reset
-  [--defer-cleanup | --finalize | --rollback]
+  [--defer-cleanup | --finalize | --rollback | --recover-existing-post-cut]
   --manifest release.json
   --manifest-digest sha256:...
   --migrations migration-files.txt
@@ -92,6 +93,10 @@ while (($# > 0)); do
       ;;
     --rollback)
       ROLLBACK=1
+      shift
+      ;;
+    --recover-existing-post-cut)
+      RECOVER_EXISTING_POST_CUT=1
       shift
       ;;
     --environment | --manifest | --manifest-digest | --migrations | --foundation-yaml | \
@@ -195,8 +200,12 @@ case "$ENVIRONMENT" in
   *) usage ;;
 esac
 ((FRESH_RESET == 1)) || fail 'this deployment requires --fresh-reset'
-((DEFER_CLEANUP + FINALIZE + ROLLBACK <= 1)) ||
-  fail '--defer-cleanup, --finalize, and --rollback are mutually exclusive'
+((DEFER_CLEANUP + FINALIZE + ROLLBACK + RECOVER_EXISTING_POST_CUT <= 1)) ||
+  fail 'deployment phases are mutually exclusive'
+if ((RECOVER_EXISTING_POST_CUT == 1)); then
+  [[ "$ENVIRONMENT" == preview ]] ||
+    fail '--recover-existing-post-cut is restricted to Preview'
+fi
 if [[ "$ENVIRONMENT" == production ]]; then
   ((DEFER_CLEANUP == 1 || FINALIZE == 1 || ROLLBACK == 1)) ||
     fail 'Production requires an explicit activation, finalization, or rollback phase'
@@ -300,6 +309,7 @@ RESUME_POST_CUT=0
 FOUNDATION_CREATED_THIS_RELEASE=0
 REUSE_COMPLETED=0
 CHECKPOINT_PHASE=''
+RECOVERY_CURRENT_IS_CANDIDATE=0
 
 validate_migrations() {
   local expected=(
@@ -5371,15 +5381,175 @@ finalize_release_commit() {
     load_post_cut_checkpoint
   fi
   write_current_checkpoint
-  if [[ -e "$pending_checkpoint" ]]; then
-    load_post_cut_checkpoint
-    rm -f -- "$pending_checkpoint"
-    CHECKPOINT_PHASE=''
-  fi
-  rm -f -- "$pending_traffic_evidence"
   if [[ "$ENVIRONMENT" == preview ]]; then
+    rm -f -- "$pending_traffic_evidence"
     rm -f -- "$EVIDENCE_ROOT/$ENVIRONMENT/${release_id}.cleanup-plan.pending.json"
+    if [[ -e "$pending_checkpoint" ]]; then
+      load_post_cut_checkpoint
+      rm -f -- "$pending_checkpoint"
+      CHECKPOINT_PHASE=''
+    fi
+  else
+    if [[ -e "$pending_checkpoint" ]]; then
+      load_post_cut_checkpoint
+      rm -f -- "$pending_checkpoint"
+      CHECKPOINT_PHASE=''
+    fi
+    rm -f -- "$pending_traffic_evidence"
   fi
+}
+
+validate_existing_release_current_for_recovery() {
+  local current="$EVIDENCE_ROOT/$ENVIRONMENT/current.json"
+  RECOVERY_CURRENT_IS_CANDIDATE=0
+  if [[ ! -e "$current" && ! -L "$current" ]]; then
+    return 0
+  fi
+  [[ -f "$current" && ! -L "$current" ]] ||
+    fail 'Preview release current checkpoint is unsafe during post-cut recovery'
+  jq -e \
+    --arg environment "$ENVIRONMENT" \
+    --arg namespace "$NAMESPACE" \
+    --arg evidenceRoot "$EVIDENCE_ROOT/$ENVIRONMENT" '
+      keys == [
+        "environment",
+        "evidencePath",
+        "manifestDigest",
+        "namespace",
+        "releaseId",
+        "schemaVersion",
+        "sourceSha",
+        "status"
+      ]
+      and .schemaVersion == 1
+      and .status == "passed"
+      and .environment == $environment
+      and .namespace == $namespace
+      and (.sourceSha | test("^[0-9a-f]{40}$"))
+      and .releaseId == ("release-" + .sourceSha)
+      and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
+      and .evidencePath == ($evidenceRoot + "/release-" + .sourceSha)
+    ' "$current" >/dev/null ||
+    fail 'Preview release current checkpoint is invalid during post-cut recovery'
+  if jq -e \
+    --arg sourceSha "$source_sha" \
+    --arg releaseId "$release_id" \
+    --arg manifestDigest "$MANIFEST_DIGEST" '
+      .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+    ' "$current" >/dev/null; then
+    RECOVERY_CURRENT_IS_CANDIDATE=1
+  fi
+}
+
+validate_existing_post_cut_traffic_current() {
+  local traffic_root traffic_preview current
+  traffic_root=${COMBO_RELEASE_TRAFFIC_STATE_ROOT:-"$HOME/data/combo-releases/traffic"}
+  traffic_preview="$traffic_root/preview"
+  current="$traffic_preview/current.json"
+  [[ "$traffic_root" == /* && -d "$traffic_root" && ! -L "$traffic_root" &&
+    "$(realpath -e "$traffic_root")" == "$traffic_root" ]] ||
+    fail 'Preview traffic state root is missing or unsafe during post-cut recovery'
+  [[ -d "$traffic_preview" && ! -L "$traffic_preview" &&
+    "$(realpath -e "$traffic_preview")" == "$traffic_preview" ]] ||
+    fail 'Preview traffic state directory is missing or unsafe during post-cut recovery'
+  [[ -f "$current" && ! -L "$current" ]] ||
+    fail 'Preview traffic current state is missing or unsafe during post-cut recovery'
+  jq -e \
+    --arg sourceSha "$source_sha" \
+    --arg releaseId "$release_id" \
+    --arg manifestDigest "$MANIFEST_DIGEST" \
+    --arg webService "${PREFIX}web" '
+      keys == [
+        "canaryNginxSha256",
+        "environment",
+        "formalNginxSha256",
+        "manifestDigest",
+        "releaseId",
+        "schemaVersion",
+        "sourceSha",
+        "webService"
+      ]
+      and .schemaVersion == 1
+      and .environment == "preview"
+      and .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+      and (.canaryNginxSha256 | test("^sha256:[0-9a-f]{64}$"))
+      and .formalNginxSha256 == null
+      and .webService == $webService
+    ' "$current" >/dev/null ||
+    fail 'Preview traffic current state changed during post-cut recovery'
+}
+
+validate_existing_post_cut_auxiliary_evidence() {
+  local path pending_cleanup_plan
+  local -a auxiliary=()
+  pending_cleanup_plan="$EVIDENCE_ROOT/$ENVIRONMENT/${release_id}.cleanup-plan.pending.json"
+  shopt -s nullglob
+  auxiliary=(
+    "$EVIDENCE_ROOT/$ENVIRONMENT"/release-*.traffic.pending.json
+    "$EVIDENCE_ROOT/$ENVIRONMENT"/release-*.cleanup-plan.pending.json
+  )
+  shopt -u nullglob
+  for path in "${auxiliary[@]}"; do
+    [[ "$path" == "$pending_traffic_evidence" || "$path" == "$pending_cleanup_plan" ]] ||
+      fail 'Preview has foreign auxiliary pending evidence during post-cut recovery'
+  done
+  for path in "$pending_traffic_evidence" "$pending_cleanup_plan"; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      [[ -f "$path" && ! -L "$path" ]] ||
+        fail 'Preview post-cut recovery auxiliary evidence is unsafe'
+    elif ((RECOVERY_CURRENT_IS_CANDIDATE == 0)); then
+      fail 'Preview post-cut recovery auxiliary evidence is missing before current commit'
+    fi
+  done
+  if [[ -e "$pending_traffic_evidence" ]]; then
+    cmp -s "$pending_traffic_evidence" "$release_directory/traffic-evidence.json" ||
+      fail 'Preview post-cut recovery traffic evidence changed'
+  fi
+  if [[ -e "$pending_cleanup_plan" ]]; then
+    cmp -s "$pending_cleanup_plan" "$release_directory/cleanup-plan.json" ||
+      fail 'Preview post-cut recovery cleanup plan changed'
+  fi
+}
+
+recover_existing_post_cut_release() {
+  local checkpoint_schema_digest traffic_lock
+  [[ -d "$release_directory" && ! -L "$release_directory" ]] ||
+    fail 'Preview post-cut recovery requires existing release evidence'
+  traffic_lock=${COMBO_RELEASE_TRAFFIC_LOCK:-"$HOME/data/combo-release-traffic.lock"}
+  install -d -m 0750 "$(dirname "$traffic_lock")"
+  if [[ -e "$traffic_lock" || -L "$traffic_lock" ]]; then
+    [[ -f "$traffic_lock" && ! -L "$traffic_lock" ]] ||
+      fail 'Preview traffic lock path is unsafe during post-cut recovery'
+  fi
+  exec 8>"$traffic_lock"
+  chmod 0600 "$traffic_lock"
+  flock -n 8 || fail 'another release traffic transaction is running'
+  validate_existing_release_current_for_recovery
+  load_post_cut_checkpoint
+  [[ "$CHECKPOINT_PHASE" == post-cut ]] ||
+    fail 'Preview post-cut recovery requires the exact pending post-cut checkpoint'
+  checkpoint_schema_digest=$schema_structure_digest
+  capture_inventory
+  ((RESUME_POST_CUT == 1)) ||
+    fail 'Preview post-cut recovery candidate is not active traffic'
+  validate_existing_post_cut_traffic_current
+  reuse_completed_release
+  ((REUSE_COMPLETED == 1)) ||
+    fail 'Preview post-cut release evidence is not safely reusable'
+  [[ "$schema_structure_digest" == "$checkpoint_schema_digest" &&
+    "$(jq -er '.schemaStructureDigest' \
+      "$release_directory/deploy-evidence.json")" == "$checkpoint_schema_digest" ]] ||
+    fail 'Preview post-cut schema proof changed during recovery'
+  validate_existing_post_cut_auxiliary_evidence
+  finalize_release_commit 1
+  flock -u 8
+  exec 8>&-
+  deployment_succeeded=1
+  status "$ENVIRONMENT release $release_id post-cut checkpoint was recovered"
 }
 
 on_exit() {
@@ -5491,6 +5661,10 @@ if ((ROLLBACK == 1)); then
   cleanup_pending_candidate_after_rollback
   deployment_succeeded=1
   status "$ENVIRONMENT release $release_id was rolled back"
+  exit 0
+fi
+if ((RECOVER_EXISTING_POST_CUT == 1)); then
+  recover_existing_post_cut_release
   exit 0
 fi
 if ((FINALIZE == 1)); then

@@ -629,6 +629,7 @@ jobs:
             scripts/deploy-release.sh \
             scripts/foundation-reset-journal.mjs \
             scripts/prepare-reset-roll-forward.sh \
+            scripts/recover-preview-post-cut.sh \
             scripts/reset-roll-forward-journal.mjs \
             scripts/reset-release-foundation.sh \
             scripts/rollback-release-traffic.sh \

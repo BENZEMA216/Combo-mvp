@@ -266,10 +266,210 @@ jobs:
             printf 'foundation_reset=%s\n' "$foundation_reset"
           } >> "$GITHUB_OUTPUT"
 
+  recover_preview:
+    name: recover a completed foreign Preview post-cut transaction
+    if: needs.policy.outputs.mode == 'enabled'
+    needs: policy
+    concurrency:
+      group: cd-tecent2
+      queue: max
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: cloud-review
+    steps:
+      - name: Validate the protected recovery admission
+        env:
+          POLICY_MODE: ${{ needs.policy.outputs.mode }}
+          ADMISSION_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
+        run: |
+          set -euo pipefail
+          [[ "$POLICY_MODE" == enabled ]]
+          [[ "$ADMISSION_MODE" == enabled ]]
+
+      - name: Download the exact recovery controller artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          archive="$RUNNER_TEMP/combo-recovery-controller.zip"
+          trap 'rm -f "$archive"' EXIT
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}/zip" \
+            >"$archive"
+          [[ -s "$archive" ]]
+          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" \
+            == "$SOURCE_ARTIFACT_DIGEST" ]]
+          mapfile -t archive_paths < <(unzip -Z1 "$archive")
+          (( ${#archive_paths[@]} > 0 && ${#archive_paths[@]} <= 512 ))
+          for path in "${archive_paths[@]}"; do
+            [[ -n "$path" && "$path" != /* && "$path" != *\\* ]]
+            [[ "/$path/" != */../* ]]
+          done
+          install -d -m 0700 "$RELEASE_ROOT"
+          unzip -q "$archive" -d "$RELEASE_ROOT"
+          (
+            cd "$RELEASE_ROOT"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+
+      - name: Configure the recovery SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_SSH_KNOWN_HOSTS" ]]
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          ssh-keygen -F "$DEPLOY_HOST" -f "$HOME/.ssh/known_hosts" >/dev/null 2>&1
+          {
+            echo 'Host release-target'
+            echo "  HostName $DEPLOY_HOST"
+            echo "  User $DEPLOY_USER"
+            echo '  IdentityFile ~/.ssh/deploy_key'
+            echo '  UserKnownHostsFile ~/.ssh/known_hosts'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+            echo '  BatchMode yes'
+            echo '  ServerAliveInterval 30'
+            echo '  ServerAliveCountMax 20'
+            echo '  TCPKeepAlive yes'
+            echo '  LogLevel ERROR'
+          } > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config"
+
+      - name: Recover the exact foreign Preview checkpoint
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POLICY_MODE: ${{ needs.policy.outputs.mode }}
+          ADMISSION_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
+          RELEASE_ROOT: ${{ runner.temp }}/combo-release
+          REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$POLICY_MODE" == enabled ]]
+          [[ "$ADMISSION_MODE" == enabled ]]
+
+          revalidate_recovery_authority() {
+            local source_run source_artifact
+            source_run=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+            jq -e \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg revision "$REVISION" \
+              --argjson runId "$SOURCE_RUN_ID" \
+              --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
+                .id == $runId
+                and .run_attempt == $runAttempt
+                and .path == ".github/workflows/ci.yml"
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $revision
+                and .status == "completed"
+                and .conclusion == "success"
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
+              ' <<<"$source_run" >/dev/null
+            source_artifact=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}")
+            jq -e \
+              --arg name "$SOURCE_ARTIFACT_NAME" \
+              --arg revision "$REVISION" \
+              --arg digest "$SOURCE_ARTIFACT_DIGEST" \
+              --argjson artifactId "$SOURCE_ARTIFACT_ID" \
+              --argjson runId "$SOURCE_RUN_ID" \
+              --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
+                .id == $artifactId
+                and .name == $name
+                and .name == (
+                  "combo-release-" + $revision + "-" + ($runAttempt | tostring)
+                )
+                and .digest == $digest
+                and .expired == false
+                and .workflow_run.id == $runId
+                and .workflow_run.head_branch == "main"
+                and .workflow_run.head_sha == $revision
+              ' <<<"$source_artifact" >/dev/null
+            [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha')" == "$REVISION" ]]
+            [[ "$POLICY_MODE" == enabled ]]
+            [[ "$ADMISSION_MODE" == enabled ]]
+          }
+
+          revalidate_recovery_authority
+          archive="$RUNNER_TEMP/combo-release-preview-recovery-${REVISION}.tar.gz"
+          tar -C "$RELEASE_ROOT" -czf "$archive" .
+          chmod 0600 "$archive"
+          remote="data/combo-release-incoming/${REVISION}.preview-recovery.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
+          temporary=".${REVISION}.preview-recovery.${RUN_ID}.${RUN_ATTEMPT}.upload"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
+          scp -q "$archive" "release-target:$temporary"
+          ssh release-target mv -fT -- "$temporary" "$remote"
+          revalidate_recovery_authority
+          ssh release-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
+          set -euo pipefail
+          incoming=$1
+          revision=$2
+          [[ "$incoming" == \
+            "data/combo-release-incoming/${revision}.preview-recovery."*.tar.gz ]]
+          [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          archive="$HOME/$incoming"
+          [[ -f "$archive" && ! -L "$archive" ]]
+          work=$(mktemp -d "$HOME/data/combo-release-preview-recovery.XXXXXX")
+          cleanup() {
+            rm -f -- "$archive"
+            rm -rf -- "$work"
+          }
+          trap cleanup EXIT
+          tar -xzf "$archive" --no-same-owner -C "$work"
+          (
+            cd "$work"
+            sha256sum -c metadata/artifact-files.sha256 >/dev/null
+          )
+          chmod 0700 \
+            "$work/scripts/deploy-release.sh" \
+            "$work/scripts/recover-preview-post-cut.sh"
+          [[ -f "$HOME/.nvm/nvm.sh" && ! -L "$HOME/.nvm/nvm.sh" &&
+            -s "$HOME/.nvm/nvm.sh" ]]
+          # shellcheck disable=SC1091
+          source "$HOME/.nvm/nvm.sh"
+          nvm use 24 >/dev/null
+          [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          bash "$work/scripts/recover-preview-post-cut.sh" \
+            --candidate-source-sha "$revision"
+          REMOTE
+
   deploy:
     name: deploy the main release artifact to Preview
     if: needs.policy.outputs.mode == 'enabled'
-    needs: policy
+    needs: [policy, recover_preview]
     concurrency:
       group: cd-tecent2
       queue: max
@@ -916,6 +1116,11 @@ jobs:
           ADMISSION_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.policy.outputs.revision }}
+          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
+          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
+          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
+          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           FOUNDATION_RESET: ${{ needs.policy.outputs.foundation_reset }}
@@ -924,6 +1129,10 @@ jobs:
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$POLICY_MODE" == enabled ]]
           [[ "$ADMISSION_MODE" == enabled ]]
           [[ "$FOUNDATION_RESET" == true || "$FOUNDATION_RESET" == false ]]
@@ -932,8 +1141,60 @@ jobs:
           else
             [[ -z "$FOUNDATION_RESET_SHA" || "$FOUNDATION_RESET_SHA" != "$REVISION" ]]
           fi
-          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-            --jq '.object.sha')" == "$REVISION" ]]
+
+          revalidate_deployment_authority() {
+            local source_run source_artifact
+            source_run=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}")
+            jq -e \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg revision "$REVISION" \
+              --argjson runId "$SOURCE_RUN_ID" \
+              --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
+                .id == $runId
+                and .run_attempt == $runAttempt
+                and .path == ".github/workflows/ci.yml"
+                and .event == "push"
+                and .head_branch == "main"
+                and .head_sha == $revision
+                and .status == "completed"
+                and .conclusion == "success"
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
+              ' <<<"$source_run" >/dev/null
+            source_artifact=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}")
+            jq -e \
+              --arg name "$SOURCE_ARTIFACT_NAME" \
+              --arg revision "$REVISION" \
+              --arg digest "$SOURCE_ARTIFACT_DIGEST" \
+              --argjson artifactId "$SOURCE_ARTIFACT_ID" \
+              --argjson runId "$SOURCE_RUN_ID" \
+              --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
+                .id == $artifactId
+                and .name == $name
+                and .name == (
+                  "combo-release-" + $revision + "-" + ($runAttempt | tostring)
+                )
+                and .digest == $digest
+                and .expired == false
+                and .workflow_run.id == $runId
+                and .workflow_run.head_branch == "main"
+                and .workflow_run.head_sha == $revision
+              ' <<<"$source_artifact" >/dev/null
+            [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha')" == "$REVISION" ]]
+            [[ "$POLICY_MODE" == enabled ]]
+            [[ "$ADMISSION_MODE" == enabled ]]
+            if [[ "$FOUNDATION_RESET" == true ]]; then
+              [[ "$FOUNDATION_RESET_SHA" == "$REVISION" ]]
+            else
+              [[ -z "$FOUNDATION_RESET_SHA" ||
+                "$FOUNDATION_RESET_SHA" != "$REVISION" ]]
+            fi
+          }
+
+          revalidate_deployment_authority
           archive="$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" .
           chmod 0600 "$archive"
@@ -945,8 +1206,7 @@ jobs:
           ssh release-target mv -fT -- "$temporary" "$remote"
           [[ "$POLICY_MODE" == enabled ]]
           [[ "$ADMISSION_MODE" == enabled ]]
-          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-            --jq '.object.sha')" == "$REVISION" ]]
+          revalidate_deployment_authority
           ssh release-target bash -s -- \
             "$remote" "$REVISION" "$FOUNDATION_RESET" <<'REMOTE'
           set -euo pipefail

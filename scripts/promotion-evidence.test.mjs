@@ -1150,6 +1150,7 @@ test('release workflows bundle and consume only the controlled admission impleme
     'scripts/foundation-reset-journal.mjs',
     'scripts/promotion-evidence.mjs',
     'scripts/prepare-reset-roll-forward.sh',
+    'scripts/recover-preview-post-cut.sh',
     'scripts/reset-roll-forward-journal.mjs',
     'scripts/release-nginx-route.mjs',
     'scripts/reset-release-foundation.sh',
@@ -1162,6 +1163,113 @@ test('release workflows bundle and consume only the controlled admission impleme
     assert.match(ci, new RegExp(path.replaceAll('.', '\\.').replaceAll('/', '\\/')));
   }
   assert.match(ci, /sha256sum -c metadata\/artifact-files\.sha256/);
+  const recoveryJobStart = preview.indexOf('\n  recover_preview:');
+  const recoveryStepStart = preview.indexOf('- name: Recover the exact foreign Preview checkpoint');
+  const deployJobStart = preview.indexOf('\n  deploy:');
+  const candidateGateStart = preview.indexOf(
+    '- name: Revalidate all frozen admissions immediately before the first Preview mutation',
+  );
+  const candidateDeployStart = preview.indexOf(
+    '- name: Upload and deploy the exact Preview bundle',
+  );
+  const remoteEvidenceStart = preview.indexOf(
+    '- name: Fetch and validate the tecent2 Preview evidence',
+  );
+  assert.ok(recoveryJobStart > 0);
+  assert.ok(recoveryStepStart > recoveryJobStart);
+  assert.ok(deployJobStart > recoveryStepStart);
+  assert.ok(candidateGateStart > deployJobStart);
+  assert.ok(candidateDeployStart > candidateGateStart);
+  assert.ok(remoteEvidenceStart > candidateDeployStart);
+  assert.match(
+    preview.slice(deployJobStart, candidateGateStart),
+    /needs: \[policy, recover_preview\]/,
+  );
+
+  const recoveryStep = preview.slice(recoveryStepStart, deployJobStart);
+  const candidateGate = preview.slice(candidateGateStart, candidateDeployStart);
+  const candidateDeploy = preview.slice(candidateDeployStart, remoteEvidenceStart);
+  const recoveryHelper = 'bash "$work/scripts/recover-preview-post-cut.sh"';
+  assert.equal(recoveryStep.split(recoveryHelper).length - 1, 1);
+  assert.match(recoveryStep, /sha256sum -c metadata\/artifact-files\.sha256/);
+  assert.match(recoveryStep, /--candidate-source-sha "\$revision"/);
+  assert.doesNotMatch(recoveryStep, /bash "\$work\/scripts\/reset-release-foundation\.sh"/);
+  assert.doesNotMatch(recoveryStep, /bash "\$work\/scripts\/deploy-release\.sh"/);
+  assert.doesNotMatch(candidateDeploy, /recover-preview-post-cut/);
+  assert.doesNotMatch(preview, /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/);
+
+  for (const admission of [recoveryStep, candidateGate, candidateDeploy]) {
+    assert.match(admission, /ADMISSION_MODE: \$\{\{ vars\.COMBO_PREVIEW_AUTO_PROMOTION_MODE \}\}/);
+    assert.match(admission, /\[\[ "\$ADMISSION_MODE" == enabled \]\]/);
+    assert.match(admission, /git\/ref\/heads\/main/);
+    assert.match(admission, /actions\/runs\/\$\{SOURCE_RUN_ID\}/);
+    assert.match(admission, /actions\/artifacts\/\$\{SOURCE_ARTIFACT_ID\}/);
+    assert.match(admission, /\.run_attempt == \$runAttempt/);
+    assert.match(admission, /\.path == "\.github\/workflows\/ci\.yml"/);
+    assert.match(admission, /\.event == "push"/);
+    assert.match(admission, /\.head_branch == "main"/);
+    assert.match(admission, /\.head_sha == \$revision/);
+    assert.match(admission, /\.conclusion == "success"/);
+    assert.match(admission, /\.repository\.full_name == \$repository/);
+    assert.match(admission, /\.head_repository\.full_name == \$repository/);
+    assert.match(admission, /\.id == \$artifactId/);
+    assert.match(admission, /\.digest == \$digest/);
+    assert.match(admission, /\.expired == false/);
+    assert.match(
+      admission,
+      /"combo-release-" \+ \$revision \+ "-" \+ \(\$runAttempt \| tostring\)/,
+    );
+  }
+  for (const admission of [candidateGate, candidateDeploy]) {
+    assert.match(admission, /FOUNDATION_RESET_SHA/);
+    assert.match(admission, /"\$FOUNDATION_RESET_SHA" == "\$REVISION"/);
+  }
+  for (const admission of [recoveryStep, candidateDeploy]) {
+    const sourceRun = admission.indexOf(
+      '"repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}"',
+    );
+    const sourceArtifact = admission.indexOf(
+      '"repos/${GITHUB_REPOSITORY}/actions/artifacts/${SOURCE_ARTIFACT_ID}"',
+    );
+    const liveMain = admission.indexOf('"repos/${GITHUB_REPOSITORY}/git/ref/heads/main"');
+    assert.ok(sourceRun > 0 && sourceArtifact > sourceRun && liveMain > sourceArtifact);
+  }
+  const recoveryUpload = recoveryStep.indexOf(
+    'ssh release-target mv -fT -- "$temporary" "$remote"',
+  );
+  const recoveryFinalAuthority = recoveryStep.indexOf(
+    'revalidate_recovery_authority',
+    recoveryUpload,
+  );
+  const recoverySsh = recoveryStep.indexOf('ssh release-target bash -s --', recoveryFinalAuthority);
+  assert.ok(
+    recoveryUpload > 0 &&
+      recoveryFinalAuthority > recoveryUpload &&
+      recoverySsh > recoveryFinalAuthority,
+  );
+  assert.doesNotMatch(recoveryStep.slice(recoverySsh), /GH_TOKEN/);
+
+  const remoteUpload = candidateDeploy.indexOf(
+    'ssh release-target mv -fT -- "$temporary" "$remote"',
+  );
+  const finalAuthority = candidateDeploy.indexOf('revalidate_deployment_authority', remoteUpload);
+  const candidateSsh = candidateDeploy.indexOf('ssh release-target bash -s --', finalAuthority);
+  assert.ok(remoteUpload > 0 && finalAuthority > remoteUpload && candidateSsh > finalAuthority);
+  const candidateRemote = candidateDeploy.slice(candidateSsh);
+  const checksum = candidateRemote.indexOf('sha256sum -c metadata/artifact-files.sha256');
+  const previewReset = candidateRemote.indexOf('bash "$work/scripts/reset-release-foundation.sh"');
+  const previewDeploy = candidateRemote.indexOf('bash "$work/scripts/deploy-release.sh"');
+  assert.ok(checksum > 0 && previewReset > checksum && previewDeploy > previewReset);
+  assert.equal(
+    [...candidateRemote.matchAll(/bash "\$work\/scripts\/reset-release-foundation\.sh"/g)].length,
+    2,
+  );
+  assert.equal(
+    [...candidateRemote.matchAll(/bash "\$work\/scripts\/deploy-release\.sh"/g)].length,
+    1,
+  );
+  assert.doesNotMatch(candidateRemote, /GH_TOKEN/);
+  assert.doesNotMatch(production, /recover-preview-post-cut/);
   assert.match(
     ci,
     /combo-image-digest-\$\{\{ env\.SOURCE_SHA \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ matrix\.key \}\}/,
