@@ -18,6 +18,7 @@ import {
   parseAcceptanceArgs,
   serializeAcceptanceEvidence,
   settleOwnedAcceptanceTurn,
+  waitForAcceptanceUrl,
   writeAcceptanceEvidence,
 } from './goal-b-test-acceptance.mjs';
 
@@ -44,6 +45,18 @@ const UUIDS = {
   studioSessionId: '21982e62-6d6e-7f4d-8fe8-b55f62720b5b',
   consumeSessionId: '31982e62-6d6e-7f4d-8fe8-b55f62720b5b',
 };
+
+test('browser URL waits do not bind acceptance to subresource load', async () => {
+  const predicate = () => true;
+  const calls = [];
+  const page = {
+    waitForURL: async (...args) => calls.push(args),
+  };
+
+  await waitForAcceptanceUrl(page, predicate);
+
+  assert.deepEqual(calls, [[predicate, { waitUntil: 'domcontentloaded', timeout: 30_000 }]]);
+});
 
 test('accepts only the exact SHA, loopback origin, and fresh output arguments', () => {
   const output = join(mkdtempSync(join(tmpdir(), 'goal-b-browser-args-')), 'result.json');
@@ -781,5 +794,18 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /\/api\/v1\/auth\/email\/verifications/);
   assert.match(source, /waitForDeliveredAcceptanceOtp/);
   assert.match(source, /__Host-cb_session/);
+  assert.match(
+    source,
+    /async function waitForAcceptanceUrl\(page, predicate\) \{[\s\S]*page\.waitForURL\(predicate, \{[\s\S]*waitUntil: 'domcontentloaded',[\s\S]*timeout: 30_000/,
+  );
+  assert.equal(
+    source.match(/\.waitForURL\(/g)?.length,
+    1,
+    'all browser URL assertions must use the DOMContentLoaded-safe helper',
+  );
+  assert.match(
+    source,
+    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*返回发布流程[\s\S]*waitForAcceptanceUrl\([\s\S]*document\.body\.innerText\.includes\('你的能力'\)/,
+  );
   assert.doesNotMatch(source, /recordVideo|tracing\.start|page\.screenshot/);
 });
