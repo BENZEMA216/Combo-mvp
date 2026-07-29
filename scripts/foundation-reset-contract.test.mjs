@@ -124,18 +124,37 @@ test('all planned deletes and writer fences are compare-and-swap operations', ()
 });
 
 test('workload surface closes scheduler and controller ownership escape paths', () => {
+  const workloadSurface = source.slice(
+    source.indexOf('validate_namespace_workload_surface()'),
+    source.indexOf('\ncapture_targets()', source.indexOf('validate_namespace_workload_surface()')),
+  );
   for (const resource of ['cronjobs', 'daemonsets', 'replicationcontrollers']) {
-    assert.match(source, new RegExp(`get ${resource} -o json`));
+    assert.match(workloadSurface, new RegExp(`get ${resource} -o json`));
   }
-  assert.match(source, /\(\$cronjobs\.items \| length\) == 0/);
-  assert.match(source, /\(\$daemonsets\.items \| length\) == 0/);
-  assert.match(source, /\(\$replicationcontrollers\.items \| length\) == 0/);
-  assert.match(source, /exact_owner\(\$deploymentItems; "apps\/v1"; "Deployment"\)/);
-  assert.match(source, /exact_owner\(\$replicasetItems; "apps\/v1"; "ReplicaSet"\)/);
-  assert.match(source, /exact_owner\(\$statefulsetItems; "apps\/v1"; "StatefulSet"\)/);
-  assert.match(source, /exact_owner\(\$jobItems; "batch\/v1"; "Job"\)/);
+  for (const resource of [
+    'deployments',
+    'statefulsets',
+    'jobs',
+    'replicasets',
+    'pods',
+    'cronjobs',
+    'daemonsets',
+    'replicationcontrollers',
+  ]) {
+    assert.match(workloadSurface, new RegExp(`--slurpfile ${resource}`));
+    assert.doesNotMatch(workloadSurface, new RegExp(`--argjson ${resource}`));
+  }
+  assert.match(workloadSurface, /def exact_list:/);
+  assert.match(workloadSurface, /length == 1 and \(\.\[0\] \| exact_list\)/);
+  assert.match(workloadSurface, /\(\$cronjobs\[0\]\.items \| length\) == 0/);
+  assert.match(workloadSurface, /\(\$daemonsets\[0\]\.items \| length\) == 0/);
+  assert.match(workloadSurface, /\(\$replicationcontrollers\[0\]\.items \| length\) == 0/);
+  assert.match(workloadSurface, /exact_owner\(\$deploymentItems; "apps\/v1"; "Deployment"\)/);
+  assert.match(workloadSurface, /exact_owner\(\$replicasetItems; "apps\/v1"; "ReplicaSet"\)/);
+  assert.match(workloadSurface, /exact_owner\(\$statefulsetItems; "apps\/v1"; "StatefulSet"\)/);
+  assert.match(workloadSurface, /exact_owner\(\$jobItems; "batch\/v1"; "Job"\)/);
   assert.doesNotMatch(
-    source,
+    workloadSurface,
     /release-\[0-9a-f\]\{12\}-\(api\|runtime\|web\|worker\|review-gate\)/,
   );
 });
@@ -659,7 +678,7 @@ if (command === 'get') {
     const items = Object.entries(state.resources)
       .filter(([key]) => key.startsWith(kind + '/'))
       .map(([, value]) => value);
-    process.stdout.write(JSON.stringify({items}));
+    fs.writeFileSync(1, JSON.stringify({items}));
     process.exit(0);
   }
   if (target.startsWith('pv/')) {
@@ -895,6 +914,7 @@ cat -- "\${FAKE_VERSION_JSON:?}"
       });
       assert.equal(rejected.status, 1, rejected.stderr);
       assert.match(rejected.stderr, expected);
+      assert.doesNotMatch(rejected.stderr, /Argument list too long|E2BIG/);
       writeFileSync(stateFile, pristineState);
     };
 
@@ -916,6 +936,32 @@ cat -- "\${FAKE_VERSION_JSON:?}"
         spec: {},
       };
     }, /unowned or unexpected workload writer surface/);
+    rejectSurface((state) => {
+      state.resources['replicaset/oversized-surface-owner'] = {
+        apiVersion: 'apps/v1',
+        kind: 'ReplicaSet',
+        metadata: {
+          name: 'oversized-surface-owner',
+          namespace,
+          uid: 'oversized-replicaset-uid',
+          resourceVersion: '1',
+          annotations: {
+            'test.combo.build/argmax-padding': 'x'.repeat(256 * 1024),
+          },
+          ownerReferences: [
+            {
+              apiVersion: 'apps/v1',
+              kind: 'Deployment',
+              name: activeWeb,
+              uid: 'web-uid',
+              controller: true,
+            },
+          ],
+        },
+        spec: {},
+      };
+      state.resources[`service/${activeWeb}`].spec.ports[0].targetPort = 8080;
+    }, /active release Web Service is not identity-bound/);
     rejectSurface((state) => {
       state.resources['replicaset/forged-owner'] = {
         apiVersion: 'apps/v1',

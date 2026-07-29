@@ -1159,29 +1159,42 @@ capture_jobs() {
 }
 
 validate_namespace_workload_surface() {
-  local deployments statefulsets jobs replicasets pods
-  local cronjobs daemonsets replicationcontrollers
-  deployments=$("${K[@]}" -n "$NAMESPACE" get deployments -o json)
-  statefulsets=$("${K[@]}" -n "$NAMESPACE" get statefulsets -o json)
-  jobs=$("${K[@]}" -n "$NAMESPACE" get jobs -o json)
-  replicasets=$("${K[@]}" -n "$NAMESPACE" get replicasets -o json)
-  pods=$("${K[@]}" -n "$NAMESPACE" get pods -o json)
-  cronjobs=$("${K[@]}" -n "$NAMESPACE" get cronjobs -o json)
-  daemonsets=$("${K[@]}" -n "$NAMESPACE" get daemonsets -o json)
-  replicationcontrollers=$("${K[@]}" -n "$NAMESPACE" \
-    get replicationcontrollers -o json)
+  local resource surface_dir
+  surface_dir="$work/workload-surface"
+  install -d -m 0700 "$surface_dir"
+  for resource in deployments statefulsets jobs replicasets pods cronjobs \
+    daemonsets replicationcontrollers; do
+    install -m 0600 /dev/null "$surface_dir/$resource.json"
+  done
+  "${K[@]}" -n "$NAMESPACE" get deployments -o json \
+    >"$surface_dir/deployments.json"
+  "${K[@]}" -n "$NAMESPACE" get statefulsets -o json \
+    >"$surface_dir/statefulsets.json"
+  "${K[@]}" -n "$NAMESPACE" get jobs -o json >"$surface_dir/jobs.json"
+  "${K[@]}" -n "$NAMESPACE" get replicasets -o json \
+    >"$surface_dir/replicasets.json"
+  "${K[@]}" -n "$NAMESPACE" get pods -o json >"$surface_dir/pods.json"
+  "${K[@]}" -n "$NAMESPACE" get cronjobs -o json \
+    >"$surface_dir/cronjobs.json"
+  "${K[@]}" -n "$NAMESPACE" get daemonsets -o json \
+    >"$surface_dir/daemonsets.json"
+  "${K[@]}" -n "$NAMESPACE" get replicationcontrollers -o json \
+    >"$surface_dir/replicationcontrollers.json"
   jq -n -e \
     --arg track "$FOUNDATION_TRACK" \
-    --argjson deployments "$deployments" \
-    --argjson statefulsets "$statefulsets" \
-    --argjson jobs "$jobs" \
-    --argjson replicasets "$replicasets" \
-    --argjson pods "$pods" \
-    --argjson cronjobs "$cronjobs" \
-    --argjson daemonsets "$daemonsets" \
-    --argjson replicationcontrollers "$replicationcontrollers" '
+    --slurpfile deployments "$surface_dir/deployments.json" \
+    --slurpfile statefulsets "$surface_dir/statefulsets.json" \
+    --slurpfile jobs "$surface_dir/jobs.json" \
+    --slurpfile replicasets "$surface_dir/replicasets.json" \
+    --slurpfile pods "$surface_dir/pods.json" \
+    --slurpfile cronjobs "$surface_dir/cronjobs.json" \
+    --slurpfile daemonsets "$surface_dir/daemonsets.json" \
+    --slurpfile replicationcontrollers \
+      "$surface_dir/replicationcontrollers.json" '
       def controller:
         [.metadata.ownerReferences[]? | select(.controller == true)];
+      def exact_list:
+        type == "object" and (.items | type == "array");
       def stable:
         (.metadata.uid | type == "string" and length > 0)
         and (.metadata.resourceVersion | type == "string" and length > 0)
@@ -1300,27 +1313,39 @@ validate_namespace_workload_surface() {
         and [.spec.template.spec.containers[].name] == ["minio-init"]
         and ((.spec.template.spec.initContainers // []) | length) == 0
         and ((.spec.template.spec.ephemeralContainers // []) | length) == 0;
-      ($deployments.items) as $deploymentItems
-      | ($statefulsets.items) as $statefulsetItems
-      | ($jobs.items) as $jobItems
-      | ($replicasets.items) as $replicasetItems
-      | all($deploymentItems[];
-          exact_foundation_deployment or exact_release_deployment)
-      and all($statefulsetItems[]; exact_foundation_statefulset)
-      and all($jobItems[]; exact_foundation_job or exact_release_job)
-      and ($cronjobs.items | length) == 0
-      and ($daemonsets.items | length) == 0
-      and ($replicationcontrollers.items | length) == 0
-      and all($replicasets.items[];
-        stable
-        and exact_owner($deploymentItems; "apps/v1"; "Deployment"))
-      and all($pods.items[];
-        stable
-        and (
-          exact_owner($replicasetItems; "apps/v1"; "ReplicaSet")
-          or exact_owner($statefulsetItems; "apps/v1"; "StatefulSet")
-          or exact_owner($jobItems; "batch/v1"; "Job")
-        ))
+      ([
+        $deployments,
+        $statefulsets,
+        $jobs,
+        $replicasets,
+        $pods,
+        $cronjobs,
+        $daemonsets,
+        $replicationcontrollers
+      ] | all(.[]; length == 1 and (.[0] | exact_list)))
+      and (
+        ($deployments[0].items) as $deploymentItems
+        | ($statefulsets[0].items) as $statefulsetItems
+        | ($jobs[0].items) as $jobItems
+        | ($replicasets[0].items) as $replicasetItems
+        | all($deploymentItems[];
+            exact_foundation_deployment or exact_release_deployment)
+        and all($statefulsetItems[]; exact_foundation_statefulset)
+        and all($jobItems[]; exact_foundation_job or exact_release_job)
+        and ($cronjobs[0].items | length) == 0
+        and ($daemonsets[0].items | length) == 0
+        and ($replicationcontrollers[0].items | length) == 0
+        and all($replicasetItems[];
+          stable
+          and exact_owner($deploymentItems; "apps/v1"; "Deployment"))
+        and all($pods[0].items[];
+          stable
+          and (
+            exact_owner($replicasetItems; "apps/v1"; "ReplicaSet")
+            or exact_owner($statefulsetItems; "apps/v1"; "StatefulSet")
+            or exact_owner($jobItems; "batch/v1"; "Job")
+          ))
+      )
     ' >/dev/null ||
     fail 'namespace contains an unowned or unexpected workload writer surface'
 }
