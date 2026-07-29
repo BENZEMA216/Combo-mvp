@@ -84,6 +84,85 @@ function runCleanupPlanValidator(filter, plan, identity) {
   );
 }
 
+function foundationResetEvidenceValidator() {
+  const body = functionBody('validate_foundation_reset_evidence');
+  const startMarker = '--argjson expectedFoundation "$expected_foundation" \'';
+  const start = body.indexOf(startMarker);
+  assert.ok(start >= 0, 'foundation reset validator must receive the exact foundation list');
+  const programStart = start + startMarker.length;
+  const endMarker = `\n  ' "$FOUNDATION_RESET_EVIDENCE" >/dev/null`;
+  const end = body.indexOf(endMarker, programStart);
+  assert.ok(end > programStart, 'foundation reset evidence must execute its embedded jq validator');
+  return body.slice(programStart, end);
+}
+
+function runFoundationResetEvidenceValidator(filter, evidence, identity) {
+  return spawnSync(
+    'jq',
+    [
+      '-e',
+      '--arg',
+      'environment',
+      identity.environment,
+      '--arg',
+      'namespace',
+      identity.namespace,
+      '--arg',
+      'sourceSha',
+      identity.sourceSha,
+      '--arg',
+      'releaseId',
+      identity.releaseId,
+      '--arg',
+      'manifestDigest',
+      identity.manifestDigest,
+      '--arg',
+      'requestId',
+      identity.requestId,
+      '--arg',
+      'storageRoot',
+      identity.storageRoot,
+      '--argjson',
+      'expectedClaims',
+      JSON.stringify(identity.expectedClaims),
+      '--argjson',
+      'expectedFoundation',
+      JSON.stringify(identity.expectedFoundation),
+      filter,
+    ],
+    {
+      encoding: 'utf8',
+      input: JSON.stringify(evidence),
+    },
+  );
+}
+
+function foundationLiveStorageValidator() {
+  const body = functionBody('apply_foundation');
+  const startMarker = `jq -e --slurpfile storage "$release_storage_evidence" '`;
+  const start = body.indexOf(startMarker);
+  assert.ok(start >= 0, 'foundation apply must compare live storage to reset evidence');
+  const programStart = start + startMarker.length;
+  const endMarker = `\n    ' "$FOUNDATION_RESET_EVIDENCE" >/dev/null`;
+  const end = body.indexOf(endMarker, programStart);
+  assert.ok(end > programStart, 'foundation apply must execute its embedded storage validator');
+  return body.slice(programStart, end);
+}
+
+function runFoundationLiveStorageValidator(filter, evidence, liveStorage) {
+  const directory = mkdtempSync(join(tmpdir(), 'combo-release-storage-validator-'));
+  const storageFile = join(directory, 'storage.json');
+  try {
+    writeFileSync(storageFile, `${JSON.stringify(liveStorage)}\n`);
+    return spawnSync('jq', ['-e', '--slurpfile', 'storage', storageFile, filter], {
+      encoding: 'utf8',
+      input: JSON.stringify(evidence),
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 function environmentArm(name) {
   const environmentCase = DEPLOY.slice(indexOf(/case "\$ENVIRONMENT" in/, 'environment dispatch'));
   const match = environmentCase.match(new RegExp(`${name}\\)([\\s\\S]*?);;`));
@@ -420,6 +499,7 @@ test('schema structure identity is stable across activation and finalization', (
 
 test('foundation reset authority is deterministic and storage paths stay exact', () => {
   const validate = functionBody('validate_foundation_reset_evidence');
+  const filter = foundationResetEvidenceValidator();
   assert.match(validate, /combo-foundation-reset-v1[\s\S]*expected_request_id/);
   assert.match(validate, /\.requestId == \$requestId/);
   assert.match(validate, /\.authorityDigest == \$manifestDigest/);
@@ -428,39 +508,198 @@ test('foundation reset authority is deterministic and storage paths stay exact',
     validate,
     /\$storageRoot \+ "\/" \+ \.volume \+ "_" \+ \$namespace \+ "_" \+ \.claim/,
   );
+
+  const sourceSha = '1'.repeat(40);
+  const manifestDigest = `sha256:${'2'.repeat(64)}`;
+  const requestId = `sha256:${'3'.repeat(64)}`;
+  const namespace = 'combo-review';
+  const storageRoot = '/home/xingzheng/data/k3s/storage';
+  const expectedClaims = [
+    'data-release-minio-0',
+    'data-release-postgres-0',
+    'data-release-redis-queue-0',
+  ];
+  const expectedFoundation = [
+    'configmap/release-redis-hot-config',
+    'configmap/release-redis-queue-config',
+    'deployment/release-redis-hot',
+    'service/release-minio',
+    'service/release-postgres',
+    'service/release-redis-hot',
+    'service/release-redis-queue',
+    'statefulset/release-minio',
+    'statefulset/release-postgres',
+    'statefulset/release-redis-queue',
+  ].sort();
+  const uuid = (digit) =>
+    `${digit.repeat(8)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(4)}-${digit.repeat(12)}`;
+  const storage = (claim, claimUid, volumeUid) => {
+    const volume = `pvc-${claimUid}`;
+    return {
+      claim,
+      claimUid,
+      claimResourceVersion: '1',
+      path: `${storageRoot}/${volume}_${namespace}_${claim}`,
+      volume,
+      volumeUid,
+      volumeResourceVersion: '1',
+    };
+  };
+  const evidence = {
+    authorityDigest: manifestDigest,
+    checks: {
+      activeWebPreserved: true,
+      newStorageIdentity: true,
+      oldStorageRemoved: true,
+      writersFenced: true,
+    },
+    completedAt: '2026-07-29T00:03:00Z',
+    environment: 'preview',
+    foundation: expectedFoundation.map((value, index) => {
+      const [kind, name] = value.split('/');
+      return { kind, name, uid: uuid(((index % 9) + 1).toString(16)) };
+    }),
+    foundationReadyAt: '2026-07-29T00:02:00Z',
+    foundationSnapshotDigest: `sha256:${'4'.repeat(64)}`,
+    manifestDigest,
+    namespace,
+    newStorage: expectedClaims.map((claim, index) =>
+      storage(claim, uuid((index + 4).toString(16)), uuid((index + 7).toString(16))),
+    ),
+    oldStorage: expectedClaims.map((claim, index) =>
+      storage(claim, uuid((index + 1).toString(16)), uuid((index + 10).toString(16))),
+    ),
+    planDigest: `sha256:${'5'.repeat(64)}`,
+    policy: 'established-clean-slate-v1',
+    preservedWeb: {
+      name: `release-${sourceSha.slice(0, 12)}-web`,
+      uid: uuid('d'),
+    },
+    releaseId: `release-${sourceSha}`,
+    requestId,
+    schemaVersion: 1,
+    sourceSha,
+    startedAt: '2026-07-29T00:00:00Z',
+    status: 'passed',
+    storageClearedAt: '2026-07-29T00:01:00Z',
+  };
+  const identity = {
+    environment: 'preview',
+    namespace,
+    sourceSha,
+    releaseId: `release-${sourceSha}`,
+    manifestDigest,
+    requestId,
+    storageRoot,
+    expectedClaims,
+    expectedFoundation,
+  };
+  const accepted = runFoundationResetEvidenceValidator(filter, evidence, identity);
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  const superseded = structuredClone(evidence);
+  superseded.schemaVersion = 2;
+  superseded.supersededReset = {
+    environment: 'preview',
+    namespace,
+    requestId: `sha256:${'6'.repeat(64)}`,
+    sourceSha: '0'.repeat(40),
+    releaseId: `release-${'0'.repeat(40)}`,
+    manifestDigest: `sha256:${'7'.repeat(64)}`,
+    planDigest: `sha256:${'8'.repeat(64)}`,
+    foundationSnapshotDigest: `sha256:${'9'.repeat(64)}`,
+    evidenceDigest: `sha256:${'a'.repeat(64)}`,
+  };
+  superseded.checks.supersededResetContinuity = true;
+  const acceptedSupersession = runFoundationResetEvidenceValidator(filter, superseded, identity);
+  assert.equal(acceptedSupersession.status, 0, acceptedSupersession.stderr);
+
+  const sameSourceSupersession = structuredClone(superseded);
+  sameSourceSupersession.supersededReset.sourceSha = sourceSha;
+  sameSourceSupersession.supersededReset.releaseId = `release-${sourceSha}`;
+  const rejectedSameSource = runFoundationResetEvidenceValidator(
+    filter,
+    sameSourceSupersession,
+    identity,
+  );
+  assert.equal(rejectedSameSource.status, 1, rejectedSameSource.stderr);
+
+  const reusedIdentity = structuredClone(evidence);
+  reusedIdentity.newStorage[0] = structuredClone(reusedIdentity.oldStorage[0]);
+  const rejected = runFoundationResetEvidenceValidator(filter, reusedIdentity, identity);
+  assert.equal(rejected.status, 1, rejected.stderr);
+
+  const reusedVolumeUid = structuredClone(evidence);
+  reusedVolumeUid.newStorage[0].volumeUid = reusedVolumeUid.oldStorage[0].volumeUid;
+  const rejectedVolumeUid = runFoundationResetEvidenceValidator(filter, reusedVolumeUid, identity);
+  assert.equal(rejectedVolumeUid.status, 1, rejectedVolumeUid.stderr);
+
+  const crossClaimReuse = structuredClone(evidence);
+  crossClaimReuse.newStorage[0].volumeUid = crossClaimReuse.oldStorage[1].volumeUid;
+  const rejectedCrossClaimReuse = runFoundationResetEvidenceValidator(
+    filter,
+    crossClaimReuse,
+    identity,
+  );
+  assert.equal(rejectedCrossClaimReuse.status, 1, rejectedCrossClaimReuse.stderr);
+
+  const duplicateNewIdentity = structuredClone(evidence);
+  duplicateNewIdentity.newStorage[0].volumeUid = duplicateNewIdentity.newStorage[1].volumeUid;
+  const rejectedDuplicateNewIdentity = runFoundationResetEvidenceValidator(
+    filter,
+    duplicateNewIdentity,
+    identity,
+  );
+  assert.equal(rejectedDuplicateNewIdentity.status, 1, rejectedDuplicateNewIdentity.stderr);
 });
 
-test('reuse admission is revalidated while the deployment mutation lock is held', () => {
-  const completed = functionBody('completed_foundation_reset_is_consumed_for_reuse');
-  const chain = functionBody('validate_completed_foundation_reset_journal');
-  const consumer = functionBody('foundation_reset_consumption_directory_matches');
-  const admission = functionBody('validate_foundation_reuse_admission');
+test('live foundation storage compares stable reset identity on both sides', () => {
+  const filter = foundationLiveStorageValidator();
+  const claims = ['data-release-minio-0', 'data-release-postgres-0', 'data-release-redis-queue-0'];
+  const newStorage = claims.map((claim, index) => ({
+    claim,
+    claimUid: `${index + 1}`.repeat(36),
+    claimResourceVersion: `${index + 10}`,
+    path: `/srv/k3s/storage/pvc-${index + 1}_combo-review_${claim}`,
+    volume: `pvc-${index + 1}`,
+    volumeUid: `${index + 4}`.repeat(36),
+    volumeResourceVersion: `${index + 20}`,
+  }));
+  const liveStorage = {
+    claims: [...newStorage]
+      .reverse()
+      .map(({ claim, claimUid, path, volume, volumeUid }, index) => ({
+        claim,
+        claimUid,
+        claimResourceVersion: `${index + 100}`,
+        path,
+        volume,
+        volumeUid,
+        volumeResourceVersion: `${index + 200}`,
+      })),
+  };
+  const accepted = runFoundationLiveStorageValidator(filter, { newStorage }, liveStorage);
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  const changed = structuredClone(liveStorage);
+  changed.claims[0].volumeUid = 'f'.repeat(36);
+  const rejected = runFoundationLiveStorageValidator(filter, { newStorage }, changed);
+  assert.equal(rejected.status, 1, rejected.stderr);
+});
+
+test('foundation journal admission is revalidated while the deployment lock is held', () => {
+  const admission = functionBody('audit_foundation_reset_journals');
   const lock = indexOf(/flock -n 9 \|\| fail 'another environment mutation is running'/);
   const lockedJournalAudit = indexOf(/\naudit_reset_roll_forward_journals\n/);
   const lockedRollForwardValidation = indexOf(/\nvalidate_reset_roll_forward_evidence\n/);
-  const lockedAdmission = indexOf(/\nvalidate_foundation_reuse_admission\n/);
+  const lockedAdmission = indexOf(/\naudit_foundation_reset_journals\n/);
   const firstClusterRead = indexOf(/"\$\{K\[@\]\}" get namespace "\$NAMESPACE"/);
 
-  assert.match(consumer, /sha256sum --quiet -c SHA256SUMS/);
-  assert.match(consumer, /cmp -s "\$reset_evidence"/);
-  assert.match(consumer, /checksum_set_lists_file_once/);
-  assert.match(completed, /\.foundationResetEvidenceDigest == \$digest/);
-  assert.match(
-    completed,
-    /finalized=.*\n[\s\S]*foundation_reset_consumption_directory_matches[\s\S]*pending=.*\n[\s\S]*activation=/,
-    'a valid finalized proof must be considered before pending and activation crash residue',
-  );
-  assert.match(chain, /\.planDigest == \$planDigest/);
-  assert.match(chain, /\.foundationSnapshotDigest == \$snapshotDigest/);
-  assert.match(
-    chain,
-    /\.newStorage[\s\S]*map\(del\(\.claimAuthorityDigest, \.volumeAuthorityDigest\)\)/,
-  );
-  assert.match(admission, /unconsumed completed foundation reset blocks reuse deployment/);
-  assert.match(admission, /unfinished foundation reset journal blocks reuse deployment/);
-  assert.match(admission, /orphan foundation reset checkpoint blocks reuse deployment/);
-  assert.match(admission, /pending clean-slate boundary requires controlled roll-forward/);
-  assert.match(admission, /this candidate entered the clean-slate boundary/);
+  assert.match(admission, /foundation-reset-journal\.mjs/);
+  assert.match(admission, /mode=deploy-reset/);
+  assert.match(admission, /--evidence "\$FOUNDATION_RESET_EVIDENCE"/);
+  assert.match(admission, /mode=reuse/);
+  assert.match(admission, /exact-reset-deploy/);
   assertBefore(
     lock,
     lockedJournalAudit,
@@ -474,13 +713,17 @@ test('reuse admission is revalidated while the deployment mutation lock is held'
   assertBefore(
     lockedRollForwardValidation,
     lockedAdmission,
-    'roll-forward evidence validation must precede foundation reuse admission',
+    'roll-forward evidence validation must precede foundation journal admission',
   );
-  assertBefore(lock, lockedAdmission, 'reuse admission must run after taking the mutation lock');
+  assertBefore(
+    lock,
+    lockedAdmission,
+    'foundation journal admission must run after taking the mutation lock',
+  );
   assertBefore(
     lockedAdmission,
     firstClusterRead,
-    'reuse admission must finish before the deployment reads or mutates Kubernetes',
+    'foundation journal admission must finish before deployment reads or mutates Kubernetes',
   );
 });
 

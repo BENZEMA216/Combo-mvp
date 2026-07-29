@@ -19,6 +19,9 @@ REQUEST_ID=''
 POLICY=''
 OUTPUT=''
 RESET_ROLL_FORWARD_EVIDENCE=''
+PREDECESSOR_RESET_EVIDENCE=''
+SUPERSEDED_RESET_JSON='null'
+AUDITED_SUPERSEDED_RESET_JSON='null'
 KUBECONFIG_PATH=${KUBECONFIG:-"$HOME/.kube/config"}
 EVIDENCE_ROOT=${COMBO_RELEASE_EVIDENCE_ROOT:-"$HOME/data/combo-releases/goal-a"}
 MUTATION_LOCK=${COMBO_MUTATION_LOCK:-"$HOME/data/combo-release-mutation.lock"}
@@ -178,6 +181,14 @@ file_digest() {
   sha256sum "$1" | awk '{print "sha256:" $1}'
 }
 
+foundation_reset_request_id() {
+  local environment=$1 source=$2 manifest_digest=$3
+  printf '%s\0%s\0%s\0%s\0%s' \
+    combo-foundation-reset-v1 "$environment" "$source" \
+    "$manifest_digest" "$POLICY_VALUE" |
+    sha256sum | awk '{print "sha256:" $1}'
+}
+
 resource_authority_digest() {
   jq -Sc '
     {
@@ -215,10 +226,8 @@ release_id=$(jq -er '.releaseId' "$MANIFEST")
 [[ "$release_id" == "release-$source_sha" ]] || fail 'manifest release ID is invalid'
 [[ "$AUTHORITY_DIGEST" == "$MANIFEST_DIGEST" ]] ||
   fail 'reset authority must be the exact release manifest digest'
-expected_request_id=$(printf '%s\0%s\0%s\0%s\0%s' \
-  combo-foundation-reset-v1 "$ENVIRONMENT" "$source_sha" \
-  "$MANIFEST_DIGEST" "$POLICY_VALUE" |
-  sha256sum | awk '{print "sha256:" $1}')
+expected_request_id=$(foundation_reset_request_id \
+  "$ENVIRONMENT" "$source_sha" "$MANIFEST_DIGEST")
 [[ "$REQUEST_ID" == "$expected_request_id" ]] ||
   fail 'reset request ID does not bind the exact release authority'
 foundation_yaml_digest=$(file_digest "$FOUNDATION_YAML")
@@ -759,7 +768,117 @@ audit_reset_journals() {
   fi
 }
 
-audit_reset_journals
+audit_foundation_reset_journals() {
+  local mode result predecessor_path state_root_real predecessor_real
+  [[ -f "$SCRIPT_DIR/foundation-reset-journal.mjs" &&
+    ! -L "$SCRIPT_DIR/foundation-reset-journal.mjs" ]] ||
+    fail 'foundation reset journal auditor is missing or unsafe'
+  if [[ "$OPERATION" == reset ]]; then
+    mode=reset
+  else
+    mode=reuse
+  fi
+  result=$(node "$SCRIPT_DIR/foundation-reset-journal.mjs" audit \
+    --evidence-root "$EVIDENCE_ROOT" \
+    --environment "$ENVIRONMENT" \
+    --source-sha "$source_sha" \
+    --manifest-digest "$MANIFEST_DIGEST" \
+    --mode "$mode") ||
+    fail 'global foundation reset journal audit failed'
+  jq -e \
+    --arg environment "$ENVIRONMENT" \
+    --arg mode "$mode" \
+    --arg requestId "$expected_request_id" '
+      (keys | sort) == ([
+        "schemaVersion", "status", "environment", "mode",
+        "currentRequestId", "authorization", "predecessorEvidencePath",
+        "supersededReset", "currentRetry", "chainHeadRequestId",
+        "chainConsumed", "journalCount", "completedJournalCount"
+      ] | sort)
+      and .schemaVersion == 1
+      and .status == "passed"
+      and .environment == $environment
+      and .mode == $mode
+      and .currentRequestId == $requestId
+      and (.currentRetry | type == "boolean")
+      and (.chainHeadRequestId == null
+        or (.chainHeadRequestId | test("^sha256:[0-9a-f]{64}$")))
+      and (.chainConsumed | type == "boolean")
+      and all([.journalCount, .completedJournalCount][];
+        type == "number" and . >= 0 and floor == .)
+      and .completedJournalCount <= .journalCount
+      and (
+        (.supersededReset == null and .predecessorEvidencePath == null)
+        or (
+          (.supersededReset | keys | sort) == ([
+            "environment", "namespace", "requestId", "sourceSha", "releaseId",
+            "manifestDigest", "planDigest", "foundationSnapshotDigest",
+            "evidenceDigest"
+          ] | sort)
+          and .supersededReset.environment == "preview"
+          and .supersededReset.namespace == "combo-review"
+          and (.supersededReset.requestId | test("^sha256:[0-9a-f]{64}$"))
+          and (.supersededReset.sourceSha | test("^[0-9a-f]{40}$"))
+          and .supersededReset.releaseId
+            == ("release-" + .supersededReset.sourceSha)
+          and all([
+            .supersededReset.manifestDigest,
+            .supersededReset.planDigest,
+            .supersededReset.foundationSnapshotDigest,
+            .supersededReset.evidenceDigest
+          ][]; test("^sha256:[0-9a-f]{64}$"))
+          and (.predecessorEvidencePath
+            | type == "string" and length > 0)
+        )
+      )
+      and (
+        if $mode == "reuse"
+        then
+          .authorization == "reuse"
+          and .currentRetry == false
+          and .supersededReset == null
+          and .predecessorEvidencePath == null
+          and .chainConsumed == true
+        elif .authorization == "normal-reset"
+        then
+          .currentRetry == false
+          and .supersededReset == null
+          and .predecessorEvidencePath == null
+          and .chainConsumed == true
+        elif .authorization == "superseding-reset"
+        then
+          .currentRetry == false
+          and .supersededReset != null
+          and .chainHeadRequestId == .supersededReset.requestId
+          and .chainConsumed == false
+        elif .authorization == "exact-reset-retry"
+        then .currentRetry == true
+        else false
+        end
+      )
+    ' <<<"$result" >/dev/null ||
+    fail 'foundation reset journal auditor returned an invalid admission'
+  AUDITED_SUPERSEDED_RESET_JSON=$(jq -c '.supersededReset' <<<"$result")
+  if [[ "$OPERATION" == assert-reuse ]]; then
+    status 'foundation_reuse_admission=true reset_journal_consumed=true'
+    exit 0
+  fi
+  predecessor_path=$(jq -r '.predecessorEvidencePath // ""' <<<"$result")
+  PREDECESSOR_RESET_EVIDENCE=''
+  if [[ -n "$predecessor_path" ]]; then
+    [[ "$ENVIRONMENT" == preview && "$OPERATION" == reset ]] ||
+      fail 'only Preview reset may receive a supersession predecessor'
+    state_root_real=$(realpath -e "$state_root")
+    predecessor_real=$(realpath -e "$predecessor_path")
+    [[ "${predecessor_real%/*}" == "$state_root_real" &&
+      "${predecessor_real##*/}" =~ \
+        ^[0-9a-f]{64}\.foundation-reset-evidence\.json$ ]] ||
+      fail 'foundation reset auditor returned an unsafe predecessor path'
+    PREDECESSOR_RESET_EVIDENCE=$predecessor_real
+  fi
+}
+
+audit_foundation_reset_journals
 
 "${K[@]}" -n "$NAMESPACE" apply --dry-run=server \
   -f "$FOUNDATION_YAML" -o json |
@@ -1034,10 +1153,13 @@ capture_active_route_web() {
 }
 
 capture_writer_deployments() {
-  local active_source=$1 deployments row
+  local active_source=$1 predecessor_source=${2:-} predecessor_manifest=${3:-}
+  local deployments row
   deployments=$("${K[@]}" -n "$NAMESPACE" get deployments -o json)
   jq -e \
-    --arg activeSource "$active_source" '
+    --arg activeSource "$active_source" \
+    --arg predecessorSource "$predecessor_source" \
+    --arg predecessorManifest "$predecessor_manifest" '
       [
         .items[]
         | select(
@@ -1089,19 +1211,31 @@ capture_writer_deployments() {
             | length
           ) == 1)
       and (
-        [
-          $writers[]
-          | select(
-              .spec.template.metadata.annotations["combo.build/source-sha"]
-              == $activeSource
-            )
-          | .metadata.name
-        ] | sort
-      ) == ([
-        "release-" + $activeSource[0:12] + "-api",
-        "release-" + $activeSource[0:12] + "-runtime",
-        "release-" + $activeSource[0:12] + "-worker"
-      ] | sort)
+        if $predecessorSource == ""
+        then
+          ([$writers[]
+            | select(
+                .spec.template.metadata.annotations["combo.build/source-sha"]
+                == $activeSource
+              )
+            | .metadata.name] | sort)
+          == ([
+            "release-" + $activeSource[0:12] + "-api",
+            "release-" + $activeSource[0:12] + "-runtime",
+            "release-" + $activeSource[0:12] + "-worker"
+          ] | sort)
+        else
+          all($writers[];
+            .spec.template.metadata.annotations["combo.build/source-sha"]
+              == $predecessorSource
+            and .spec.template.metadata.annotations[
+              "combo.build/release-manifest-digest"
+            ] == $predecessorManifest)
+          and ($writers | length) <= 3
+          and (($writers | map(.metadata.name) | unique | length)
+            == ($writers | length))
+        end
+      )
     ' <<<"$deployments" >/dev/null ||
     fail 'release writer deployments are incomplete or outside their identity contract'
   : >"$work/writer-deployments.jsonl"
@@ -1127,11 +1261,16 @@ capture_writer_deployments() {
 }
 
 capture_jobs() {
+  local active_source=$1 predecessor_source=${2:-} predecessor_manifest=${3:-}
   local jobs row
   jobs=$("${K[@]}" -n "$NAMESPACE" get jobs -o json)
-  jq -e --arg track "$FOUNDATION_TRACK" '
-    [
-      .items[]
+  jq -e \
+    --arg track "$FOUNDATION_TRACK" \
+    --arg activeSource "$active_source" \
+    --arg predecessorSource "$predecessor_source" \
+    --arg predecessorManifest "$predecessor_manifest" '
+      [
+        .items[]
       | select(
           (
             .metadata.name == "release-minio-init"
@@ -1170,6 +1309,19 @@ capture_jobs() {
               ]
               | test("^sha256:[0-9a-f]{64}$")
             )
+            and (
+              if $predecessorSource == ""
+              then
+                .spec.template.metadata.annotations["combo.build/source-sha"]
+                  == $activeSource
+              else
+                .spec.template.metadata.annotations["combo.build/source-sha"]
+                  == $predecessorSource
+                and .spec.template.metadata.annotations[
+                  "combo.build/release-manifest-digest"
+                ] == $predecessorManifest
+              end
+            )
           end
         ))
   ' <<<"$jobs" >/dev/null ||
@@ -1199,7 +1351,8 @@ capture_jobs() {
 }
 
 validate_namespace_workload_surface() {
-  local resource surface_dir
+  local active_source=$1 active_manifest=$2 predecessor_source=${3:-}
+  local predecessor_manifest=${4:-} resource surface_dir
   surface_dir="$work/workload-surface"
   install -d -m 0700 "$surface_dir"
   for resource in deployments statefulsets jobs replicasets pods cronjobs \
@@ -1222,6 +1375,10 @@ validate_namespace_workload_surface() {
     >"$surface_dir/replicationcontrollers.json"
   jq -n -e \
     --arg track "$FOUNDATION_TRACK" \
+    --arg activeSource "$active_source" \
+    --arg activeManifest "$active_manifest" \
+    --arg predecessorSource "$predecessor_source" \
+    --arg predecessorManifest "$predecessor_manifest" \
     --slurpfile deployments "$surface_dir/deployments.json" \
     --slurpfile statefulsets "$surface_dir/statefulsets.json" \
     --slurpfile jobs "$surface_dir/jobs.json" \
@@ -1279,6 +1436,26 @@ validate_namespace_workload_surface() {
             $deployment.spec.template.metadata.annotations[
               "combo.build/release-manifest-digest"
             ] | test("^sha256:[0-9a-f]{64}$")
+          )
+          and (
+            if $role == "web"
+            then
+              $source == $activeSource
+              and $deployment.spec.template.metadata.annotations[
+                "combo.build/release-manifest-digest"
+              ] == $activeManifest
+            elif $predecessorSource == ""
+            then
+              $source == $activeSource
+              and $deployment.spec.template.metadata.annotations[
+                "combo.build/release-manifest-digest"
+              ] == $activeManifest
+            else
+              $source == $predecessorSource
+              and $deployment.spec.template.metadata.annotations[
+                "combo.build/release-manifest-digest"
+              ] == $predecessorManifest
+            end
           )
           and $deployment.spec.selector.matchLabels == {
             app: $deployment.metadata.name,
@@ -1339,6 +1516,20 @@ validate_namespace_workload_surface() {
             $job.spec.template.metadata.annotations[
               "combo.build/release-manifest-digest"
             ] | test("^sha256:[0-9a-f]{64}$")
+          )
+          and (
+            if $predecessorSource == ""
+            then
+              $source == $activeSource
+              and $job.spec.template.metadata.annotations[
+                "combo.build/release-manifest-digest"
+              ] == $activeManifest
+            else
+              $source == $predecessorSource
+              and $job.spec.template.metadata.annotations[
+                "combo.build/release-manifest-digest"
+              ] == $predecessorManifest
+            end
           )
           and [$job.spec.template.spec.containers[].name] == [$role]
           and (($job.spec.template.spec.initContainers // []) | length) == 0
@@ -1516,6 +1707,109 @@ capture_storage() {
   jq -s 'sort_by(.claim)' "$work/storage.jsonl" >"$output"
 }
 
+load_superseded_reset_descriptor() {
+  local predecessor_stem predecessor_root predecessor_plan predecessor_ready
+  if [[ -z "$PREDECESSOR_RESET_EVIDENCE" ]]; then
+    [[ "$AUDITED_SUPERSEDED_RESET_JSON" == null ]] ||
+      fail 'foundation reset auditor predecessor output is inconsistent'
+    SUPERSEDED_RESET_JSON=null
+    return
+  fi
+  [[ "$ENVIRONMENT" == preview && "$OPERATION" == reset ]] ||
+    fail 'foundation reset supersession is restricted to Preview reset'
+  [[ -f "$PREDECESSOR_RESET_EVIDENCE" &&
+    ! -L "$PREDECESSOR_RESET_EVIDENCE" ]] ||
+    fail 'superseded reset evidence path is unsafe'
+  predecessor_stem=${PREDECESSOR_RESET_EVIDENCE##*/}
+  predecessor_stem=${predecessor_stem%.foundation-reset-evidence.json}
+  [[ "$predecessor_stem" =~ ^[0-9a-f]{64}$ ]] ||
+    fail 'superseded reset evidence name is invalid'
+  predecessor_root=${PREDECESSOR_RESET_EVIDENCE%/*}
+  predecessor_plan="$predecessor_root/$predecessor_stem.foundation-reset-plan.json"
+  predecessor_ready="$predecessor_root/$predecessor_stem.foundation-reset-ready.json"
+  for predecessor_file in "$predecessor_plan" "$predecessor_ready"; do
+    [[ -f "$predecessor_file" && ! -L "$predecessor_file" ]] ||
+      fail 'superseded reset journal is incomplete or unsafe'
+  done
+  SUPERSEDED_RESET_JSON=$(jq -cn \
+    --arg environment "$ENVIRONMENT" \
+    --arg namespace "$NAMESPACE" \
+    --arg requestId "sha256:$predecessor_stem" \
+    --arg sourceSha "$(jq -er '.sourceSha' "$PREDECESSOR_RESET_EVIDENCE")" \
+    --arg releaseId "$(jq -er '.releaseId' "$PREDECESSOR_RESET_EVIDENCE")" \
+    --arg manifestDigest \
+      "$(jq -er '.manifestDigest' "$PREDECESSOR_RESET_EVIDENCE")" \
+    --arg planDigest "$(file_digest "$predecessor_plan")" \
+    --arg foundationSnapshotDigest "$(file_digest "$predecessor_ready")" \
+    --arg evidenceDigest "$(file_digest "$PREDECESSOR_RESET_EVIDENCE")" '{
+      environment: $environment,
+      namespace: $namespace,
+      requestId: $requestId,
+      sourceSha: $sourceSha,
+      releaseId: $releaseId,
+      manifestDigest: $manifestDigest,
+      planDigest: $planDigest,
+      foundationSnapshotDigest: $foundationSnapshotDigest,
+      evidenceDigest: $evidenceDigest
+    }')
+  jq -e \
+    --arg sourceSha "$source_sha" \
+    --arg manifestDigest "$MANIFEST_DIGEST" \
+    --argjson audited "$AUDITED_SUPERSEDED_RESET_JSON" '
+      (keys | sort) == ([
+        "environment", "namespace", "requestId", "sourceSha", "releaseId",
+        "manifestDigest", "planDigest", "foundationSnapshotDigest",
+        "evidenceDigest"
+      ] | sort)
+      and .environment == "preview"
+      and .namespace == "combo-review"
+      and (.requestId | test("^sha256:[0-9a-f]{64}$"))
+      and (.sourceSha | test("^[0-9a-f]{40}$"))
+      and .releaseId == ("release-" + .sourceSha)
+      and all([
+        .manifestDigest, .planDigest, .foundationSnapshotDigest,
+        .evidenceDigest
+      ][]; test("^sha256:[0-9a-f]{64}$"))
+      and .sourceSha != $sourceSha
+      and . == $audited
+    ' <<<"$SUPERSEDED_RESET_JSON" >/dev/null ||
+    fail 'superseded reset descriptor is invalid'
+}
+
+validate_superseded_reset_live_continuity() {
+  local predecessor_stem predecessor_root predecessor_plan
+  [[ "$SUPERSEDED_RESET_JSON" != null ]] || return 0
+  predecessor_stem=$(jq -er '.requestId | sub("^sha256:"; "")' \
+    <<<"$SUPERSEDED_RESET_JSON")
+  predecessor_root=${PREDECESSOR_RESET_EVIDENCE%/*}
+  predecessor_plan="$predecessor_root/$predecessor_stem.foundation-reset-plan.json"
+  jq -e \
+    --argjson capturedWeb "$preserved_web" \
+    --argjson capturedTargets "$targets" \
+    --slurpfile capturedStorage "$work/old-storage.json" \
+    --slurpfile predecessorPlan "$predecessor_plan" '
+      (
+        $capturedStorage[0]
+        | map(del(.claimAuthorityDigest, .volumeAuthorityDigest))
+        | sort_by(.claim)
+      ) == (.newStorage | sort_by(.claim))
+      and (
+        $capturedTargets
+        | map(select(.name != "release-minio-init-script"))
+        | map({kind, name, uid})
+        | sort_by(.kind, .name)
+      ) == (.foundation | sort_by(.kind, .name))
+      and ($capturedWeb | {name, uid}) == .preservedWeb
+      and (
+        $capturedWeb | del(.resourceVersion, .serviceResourceVersion)
+      ) == (
+        $predecessorPlan[0].preservedWeb
+        | del(.resourceVersion, .serviceResourceVersion)
+      )
+    ' "$PREDECESSOR_RESET_EVIDENCE" >/dev/null ||
+    fail 'live Preview foundation does not exactly continue the superseded reset'
+}
+
 validate_plan() {
   local storage_root_real
   storage_root_real=$(sudo -n realpath -e "$K3S_STORAGE_ROOT")
@@ -1529,14 +1823,31 @@ validate_plan() {
     --arg releaseId "$release_id" \
     --arg manifestDigest "$MANIFEST_DIGEST" \
     --arg foundationYamlDigest "$foundation_yaml_digest" \
-    --arg storageRoot "$storage_root_real" '
-      (keys | sort) == ([
-        "schemaVersion", "policy", "requestId", "authorityDigest",
-        "environment", "namespace", "sourceSha", "releaseId",
-        "manifestDigest", "foundationYamlDigest", "createdAt",
-        "preservedWeb", "writerDeployments", "jobs", "targets", "oldStorage"
-      ] | sort)
-      and .schemaVersion == 1
+    --arg storageRoot "$storage_root_real" \
+    --argjson supersededReset "$SUPERSEDED_RESET_JSON" '
+      (
+        if $supersededReset == null
+        then
+          .schemaVersion == 1
+          and (keys | sort) == ([
+            "schemaVersion", "policy", "requestId", "authorityDigest",
+            "environment", "namespace", "sourceSha", "releaseId",
+            "manifestDigest", "foundationYamlDigest", "createdAt",
+            "preservedWeb", "writerDeployments", "jobs", "targets", "oldStorage"
+          ] | sort)
+          and .supersededReset == null
+        else
+          .schemaVersion == 2
+          and (keys | sort) == ([
+            "schemaVersion", "policy", "requestId", "authorityDigest",
+            "environment", "namespace", "sourceSha", "releaseId",
+            "manifestDigest", "foundationYamlDigest", "createdAt",
+            "preservedWeb", "writerDeployments", "jobs", "targets",
+            "oldStorage", "supersededReset"
+          ] | sort)
+          and .supersededReset == $supersededReset
+        end
+      )
       and .policy == $policy
       and .requestId == $requestId
       and .authorityDigest == $authorityDigest
@@ -1617,6 +1928,28 @@ validate_plan() {
           type == "string" and test("^[A-Za-z0-9._-]+$")))
       and ((.jobs | map(.name) | length)
         == (.jobs | map(.name) | unique | length))
+      and (
+        .preservedWeb.sourceSha[0:12] as $activePrefix
+        | ($supersededReset.sourceSha // "")[0:12] as $predecessorPrefix
+        |
+        if $supersededReset == null
+        then
+          ([.writerDeployments[].name] | sort) == ([
+            "release-" + $activePrefix + "-api",
+            "release-" + $activePrefix + "-runtime",
+            "release-" + $activePrefix + "-worker"
+          ] | sort)
+          and all(.jobs[];
+            .name == "release-minio-init"
+            or (.name | startswith("release-" + $activePrefix + "-")))
+        else
+          all(.writerDeployments[];
+            .name | startswith("release-" + $predecessorPrefix + "-"))
+          and all(.jobs[];
+            .name == "release-minio-init"
+            or (.name | startswith("release-" + $predecessorPrefix + "-")))
+        end
+      )
       and (.targets | type == "array")
       and all(.targets[];
         (keys | sort)
@@ -1678,6 +2011,11 @@ validate_plan() {
         and .path == (
           $storageRoot + "/" + .volume + "_" + $namespace + "_" + .claim
         ))
+      and (. as $plan |
+        all(["claimUid", "volume", "volumeUid", "path"][];
+          . as $field |
+          ($plan.oldStorage | map(.[$field])) as $values |
+          ($values | length) == ($values | unique | length)))
     ' "$plan" >/dev/null ||
     fail 'persistent foundation reset plan does not match this request'
 }
@@ -1750,17 +2088,27 @@ write_checkpoint() {
   atomic_install "$staged" "$checkpoint"
 }
 
+load_superseded_reset_descriptor
+
 if [[ -e "$plan" ]]; then
   [[ -f "$plan" && ! -L "$plan" ]] || fail 'persistent plan path is unsafe'
   validate_plan
 else
-  validate_namespace_workload_surface
   preserved_web=$(capture_active_route_web)
+  active_source=$(jq -er '.sourceSha' <<<"$preserved_web")
+  active_manifest=$(jq -er '.manifestDigest' <<<"$preserved_web")
+  predecessor_source=$(jq -r '.sourceSha // ""' <<<"$SUPERSEDED_RESET_JSON")
+  predecessor_manifest=$(jq -r '.manifestDigest // ""' <<<"$SUPERSEDED_RESET_JSON")
+  validate_namespace_workload_surface \
+    "$active_source" "$active_manifest" \
+    "$predecessor_source" "$predecessor_manifest"
   writer_deployments=$(capture_writer_deployments \
-    "$(jq -er '.sourceSha' <<<"$preserved_web")")
-  jobs=$(capture_jobs)
+    "$active_source" "$predecessor_source" "$predecessor_manifest")
+  jobs=$(capture_jobs \
+    "$active_source" "$predecessor_source" "$predecessor_manifest")
   targets=$(capture_targets)
   capture_storage "$work/old-storage.json"
+  validate_superseded_reset_live_continuity
   jq -n \
     --arg policy "$POLICY" \
     --arg requestId "$REQUEST_ID" \
@@ -1776,8 +2124,9 @@ else
     --argjson writerDeployments "$writer_deployments" \
     --argjson jobs "$jobs" \
     --argjson targets "$targets" \
+    --argjson supersededReset "$SUPERSEDED_RESET_JSON" \
     --slurpfile oldStorage "$work/old-storage.json" '{
-      schemaVersion: 1,
+      schemaVersion: (if $supersededReset == null then 1 else 2 end),
       policy: $policy,
       requestId: $requestId,
       authorityDigest: $authorityDigest,
@@ -1793,7 +2142,12 @@ else
       jobs: $jobs,
       targets: $targets,
       oldStorage: $oldStorage[0]
-    }' >"$work/plan.json"
+    } + (
+      if $supersededReset == null
+      then {}
+      else {supersededReset: $supersededReset}
+      end
+    )' >"$work/plan.json"
   atomic_install "$work/plan.json" "$plan"
 fi
 plan_digest=$(file_digest "$plan")
@@ -2074,6 +2428,20 @@ validate_foundation_workloads_ready() {
 
 validate_new_storage_identity() {
   local new_file=$1 claim old new
+  jq -e --slurpfile plan "$plan" '
+    . as $new
+    | $plan[0].oldStorage as $old
+    | ([ $new[].claim ] | sort) == ([$old[].claim] | sort)
+    and all(["claimUid", "volume", "volumeUid", "path"][];
+      . as $field
+      | ($old | map(.[$field])) as $oldValues
+      | ($new | map(.[$field])) as $newValues
+      | ($oldValues | length) == ($oldValues | unique | length)
+      and ($newValues | length) == ($newValues | unique | length)
+      and all($newValues[];
+        . as $value | ($oldValues | index($value)) == null))
+  ' "$new_file" >/dev/null ||
+    fail 'new foundation storage identities are not globally unique'
   for claim in "${CLAIMS[@]}"; do
     old=$(jq -c --arg claim "$claim" \
       'first(.oldStorage[] | select(.claim == $claim))' "$plan")
@@ -2211,15 +2579,35 @@ validate_evidence() {
     --arg sourceSha "$source_sha" \
     --arg releaseId "$release_id" \
     --arg manifestDigest "$MANIFEST_DIGEST" \
-    --arg planDigest "$plan_digest" '
-      (keys | sort) == ([
-        "schemaVersion", "status", "policy", "requestId", "authorityDigest",
-        "environment", "namespace", "sourceSha", "releaseId",
-        "manifestDigest", "planDigest", "startedAt", "storageClearedAt",
-        "foundationReadyAt", "foundationSnapshotDigest", "oldStorage",
-        "newStorage", "foundation", "preservedWeb", "checks", "completedAt"
-      ] | sort)
-      and .schemaVersion == 1
+    --arg planDigest "$plan_digest" \
+    --argjson supersededReset "$SUPERSEDED_RESET_JSON" '
+      (
+        if $supersededReset == null
+        then
+          .schemaVersion == 1
+          and (keys | sort) == ([
+            "schemaVersion", "status", "policy", "requestId",
+            "authorityDigest", "environment", "namespace", "sourceSha",
+            "releaseId", "manifestDigest", "planDigest", "startedAt",
+            "storageClearedAt", "foundationReadyAt",
+            "foundationSnapshotDigest", "oldStorage", "newStorage",
+            "foundation", "preservedWeb", "checks", "completedAt"
+          ] | sort)
+          and .supersededReset == null
+        else
+          .schemaVersion == 2
+          and (keys | sort) == ([
+            "schemaVersion", "status", "policy", "requestId",
+            "authorityDigest", "environment", "namespace", "sourceSha",
+            "releaseId", "manifestDigest", "planDigest", "startedAt",
+            "storageClearedAt", "foundationReadyAt",
+            "foundationSnapshotDigest", "oldStorage", "newStorage",
+            "foundation", "preservedWeb", "supersededReset", "checks",
+            "completedAt"
+          ] | sort)
+          and .supersededReset == $supersededReset
+        end
+      )
       and .status == "passed"
       and .policy == $policy
       and .requestId == $requestId
@@ -2246,12 +2634,19 @@ validate_evidence() {
       and all(.foundation[];
         (keys | sort) == ["kind", "name", "uid"])
       and (.preservedWeb | keys | sort) == ["name", "uid"]
-      and .checks == {
-        writersFenced: true,
-        oldStorageRemoved: true,
-        newStorageIdentity: true,
-        activeWebPreserved: true
-      }
+      and .checks == (
+        {
+          writersFenced: true,
+          oldStorageRemoved: true,
+          newStorageIdentity: true,
+          activeWebPreserved: true
+        } + (
+          if $supersededReset == null
+          then {}
+          else {supersededResetContinuity: true}
+          end
+        )
+      )
     ' "$evidence" >/dev/null ||
     fail 'foundation reset evidence is invalid'
 }
@@ -2335,12 +2730,13 @@ jq -n \
   --arg storageClearedAt "$storage_at" \
   --arg foundationReadyAt "$foundation_at" \
   --arg foundationSnapshotDigest "$ready_digest" \
+  --argjson supersededReset "$SUPERSEDED_RESET_JSON" \
   --slurpfile oldStorage "$plan" \
   --slurpfile ready "$ready_snapshot" \
   --arg preservedWebName "$(jq -er '.preservedWeb.name' "$plan")" \
   --arg preservedWebUid "$(jq -er '.preservedWeb.uid' "$plan")" \
   --arg completedAt "$(now)" '{
-    schemaVersion: 1,
+    schemaVersion: (if $supersededReset == null then 1 else 2 end),
     status: "passed",
     policy: $policy,
     requestId: $requestId,
@@ -2375,7 +2771,24 @@ jq -n \
       activeWebPreserved: true
     },
     completedAt: $completedAt
-  }' >"$work/evidence.json"
+  }
+  + (
+    if $supersededReset == null
+    then {}
+    else {
+      supersededReset: $supersededReset,
+      checks: (
+        {
+          writersFenced: true,
+          oldStorageRemoved: true,
+          newStorageIdentity: true,
+          activeWebPreserved: true,
+          supersededResetContinuity: true
+        }
+      )
+    }
+    end
+  )' >"$work/evidence.json"
 
 atomic_install "$work/evidence.json" "$evidence"
 validate_evidence

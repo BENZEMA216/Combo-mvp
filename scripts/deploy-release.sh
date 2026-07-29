@@ -367,30 +367,49 @@ validate_foundation_reset_evidence() {
     --arg storageRoot "$storage_root" \
     --argjson expectedClaims "$expected_claims" \
     --argjson expectedFoundation "$expected_foundation" '
-      keys == ([
-        "authorityDigest",
-        "checks",
-        "completedAt",
-        "environment",
-        "foundation",
-        "foundationReadyAt",
-        "foundationSnapshotDigest",
-        "manifestDigest",
-        "namespace",
-        "newStorage",
-        "oldStorage",
-        "planDigest",
-        "policy",
-        "preservedWeb",
-        "releaseId",
-        "requestId",
-        "schemaVersion",
-        "sourceSha",
-        "startedAt",
-        "status",
-        "storageClearedAt"
-      ] | sort)
-      and .schemaVersion == 1
+      (
+        if .schemaVersion == 1
+        then
+          keys == ([
+            "authorityDigest", "checks", "completedAt", "environment",
+            "foundation", "foundationReadyAt", "foundationSnapshotDigest",
+            "manifestDigest", "namespace", "newStorage", "oldStorage",
+            "planDigest", "policy", "preservedWeb", "releaseId",
+            "requestId", "schemaVersion", "sourceSha", "startedAt",
+            "status", "storageClearedAt"
+          ] | sort)
+          and .supersededReset == null
+        elif .schemaVersion == 2
+        then
+          keys == ([
+            "authorityDigest", "checks", "completedAt", "environment",
+            "foundation", "foundationReadyAt", "foundationSnapshotDigest",
+            "manifestDigest", "namespace", "newStorage", "oldStorage",
+            "planDigest", "policy", "preservedWeb", "releaseId",
+            "requestId", "schemaVersion", "sourceSha", "startedAt",
+            "status", "storageClearedAt", "supersededReset"
+          ] | sort)
+          and (.supersededReset | keys | sort) == ([
+            "environment", "namespace", "requestId", "sourceSha", "releaseId",
+            "manifestDigest", "planDigest", "foundationSnapshotDigest",
+            "evidenceDigest"
+          ] | sort)
+          and .supersededReset.environment == "preview"
+          and .supersededReset.namespace == "combo-review"
+          and (.supersededReset.requestId | test("^sha256:[0-9a-f]{64}$"))
+          and (.supersededReset.sourceSha | test("^[0-9a-f]{40}$"))
+          and .supersededReset.releaseId
+            == ("release-" + .supersededReset.sourceSha)
+          and all([
+            .supersededReset.manifestDigest,
+            .supersededReset.planDigest,
+            .supersededReset.foundationSnapshotDigest,
+            .supersededReset.evidenceDigest
+          ][]; test("^sha256:[0-9a-f]{64}$"))
+          and .supersededReset.sourceSha != $sourceSha
+        else false
+        end
+      )
       and .status == "passed"
       and .policy == "established-clean-slate-v1"
       and .environment == $environment
@@ -417,13 +436,15 @@ validate_foundation_reset_evidence() {
         and .path == (
           $storageRoot + "/" + .volume + "_" + $namespace + "_" + .claim
         ))
-      and all(.newStorage[] as $new;
-        any(.oldStorage[];
-          .claim == $new.claim
-          and .claimUid != $new.claimUid
-          and .volume != $new.volume
-          and .volumeUid != $new.volumeUid
-          and .path != $new.path))
+      and (. as $evidence |
+        all(["claimUid", "volume", "volumeUid", "path"][];
+          . as $field |
+          ($evidence.oldStorage | map(.[$field])) as $oldValues |
+          ($evidence.newStorage | map(.[$field])) as $newValues |
+          ($oldValues | length) == ($oldValues | unique | length)
+          and ($newValues | length) == ($newValues | unique | length)
+          and all($newValues[];
+            . as $value | ($oldValues | index($value)) == null)))
       and ([.foundation[] | .kind + "/" + .name] | sort) == $expectedFoundation
       and all(.foundation[];
         keys == ["kind", "name", "uid"]
@@ -431,12 +452,19 @@ validate_foundation_reset_evidence() {
       and (.preservedWeb | keys) == ["name", "uid"]
       and (.preservedWeb.name | test("^release-[0-9a-f]{12}-web$"))
       and (.preservedWeb.uid | test("^[0-9a-f-]{36}$"))
-      and .checks == {
-        activeWebPreserved: true,
-        newStorageIdentity: true,
-        oldStorageRemoved: true,
-        writersFenced: true
-      }
+      and .checks == (
+        {
+          activeWebPreserved: true,
+          newStorageIdentity: true,
+          oldStorageRemoved: true,
+          writersFenced: true
+        } + (
+          if .schemaVersion == 2
+          then {supersededResetContinuity: true}
+          else {}
+          end
+        )
+      )
       and all([
         .startedAt,
         .storageClearedAt,
@@ -951,6 +979,66 @@ validate_foundation_reuse_admission() {
   done
 
   status 'foundation reuse admission revalidated under the deployment mutation lock'
+}
+
+audit_foundation_reset_journals() {
+  local mode result expected_request_id
+  [[ -f "$SCRIPT_DIR/foundation-reset-journal.mjs" &&
+    ! -L "$SCRIPT_DIR/foundation-reset-journal.mjs" ]] ||
+    fail 'foundation reset journal auditor is missing or unsafe'
+  if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
+    mode=deploy-reset
+    result=$(node "$SCRIPT_DIR/foundation-reset-journal.mjs" audit \
+      --evidence-root "$EVIDENCE_ROOT" \
+      --environment "$ENVIRONMENT" \
+      --source-sha "$source_sha" \
+      --manifest-digest "$MANIFEST_DIGEST" \
+      --mode "$mode" \
+      --evidence "$FOUNDATION_RESET_EVIDENCE") ||
+      fail 'global foundation reset journal audit failed'
+  else
+    mode=reuse
+    result=$(node "$SCRIPT_DIR/foundation-reset-journal.mjs" audit \
+      --evidence-root "$EVIDENCE_ROOT" \
+      --environment "$ENVIRONMENT" \
+      --source-sha "$source_sha" \
+      --manifest-digest "$MANIFEST_DIGEST" \
+      --mode "$mode") ||
+      fail 'global foundation reset journal audit failed'
+  fi
+  expected_request_id=$(printf '%s\0%s\0%s\0%s\0%s' \
+    combo-foundation-reset-v1 "$ENVIRONMENT" "$source_sha" \
+    "$MANIFEST_DIGEST" established-clean-slate-v1 |
+    sha256sum | awk '{print "sha256:" $1}')
+  jq -e \
+    --arg environment "$ENVIRONMENT" \
+    --arg mode "$mode" \
+    --arg requestId "$expected_request_id" '
+      (keys | sort) == ([
+        "schemaVersion", "status", "environment", "mode",
+        "currentRequestId", "authorization", "predecessorEvidencePath",
+        "supersededReset", "currentRetry", "chainHeadRequestId",
+        "chainConsumed", "journalCount", "completedJournalCount"
+      ] | sort)
+      and .schemaVersion == 1
+      and .status == "passed"
+      and .environment == $environment
+      and .mode == $mode
+      and .currentRequestId == $requestId
+      and .authorization == (
+        if $mode == "deploy-reset" then "exact-reset-deploy" else "reuse" end
+      )
+      and .predecessorEvidencePath == null
+      and .supersededReset == null
+      and (.currentRetry | type == "boolean")
+      and (.chainHeadRequestId == null
+        or (.chainHeadRequestId | test("^sha256:[0-9a-f]{64}$")))
+      and (.chainConsumed | type == "boolean")
+      and all([.journalCount, .completedJournalCount][];
+        type == "number" and . >= 0 and floor == .)
+    ' <<<"$result" >/dev/null ||
+    fail 'foundation reset journal auditor returned an invalid deployment admission'
+  status 'foundation reset journal admission revalidated under the deployment mutation lock'
 }
 
 validate_inputs() {
@@ -2321,15 +2409,14 @@ apply_foundation() {
   validate_live_release_storage
   if [[ -n "$FOUNDATION_RESET_EVIDENCE" ]]; then
     jq -e --slurpfile storage "$release_storage_evidence" '
-      .newStorage == (
+      (
+        .newStorage
+        | map({claim, claimUid, volume, volumeUid, path})
+        | sort_by(.claim)
+      ) == (
         $storage[0].claims
-        | map({
-            claim,
-            claimUid,
-            volume,
-            volumeUid,
-            path
-          })
+        | map({claim, claimUid, volume, volumeUid, path})
+        | sort_by(.claim)
       )
     ' "$FOUNDATION_RESET_EVIDENCE" >/dev/null ||
       fail 'live release storage no longer matches the clean-slate reset evidence'
@@ -5318,7 +5405,7 @@ exec 9>"$MUTATION_LOCK"
 flock -n 9 || fail 'another environment mutation is running'
 audit_reset_roll_forward_journals
 validate_reset_roll_forward_evidence
-validate_foundation_reuse_admission
+audit_foundation_reset_journals
 
 "${K[@]}" get namespace "$NAMESPACE" >/dev/null
 validate_secret_keys

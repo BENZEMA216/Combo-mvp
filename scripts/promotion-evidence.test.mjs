@@ -1147,6 +1147,7 @@ test('release workflows bundle and consume only the controlled admission impleme
   for (const path of [
     'scripts/collect-release-inventory.sh',
     'scripts/collect-live-runtime-evidence.sh',
+    'scripts/foundation-reset-journal.mjs',
     'scripts/promotion-evidence.mjs',
     'scripts/prepare-reset-roll-forward.sh',
     'scripts/reset-roll-forward-journal.mjs',
