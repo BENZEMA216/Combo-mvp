@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 
 const ROOT = resolve(import.meta.dirname, '..');
@@ -170,6 +170,100 @@ function environmentArm(name) {
   return match[1];
 }
 
+function runExistingPostCutRecovery({
+  phase = 'post-cut',
+  active = 1,
+  reusable = 1,
+  releaseExists = true,
+  reusedSchemaDigest = `sha256:${'b'.repeat(64)}`,
+  deploySchemaDigest = `sha256:${'b'.repeat(64)}`,
+} = {}) {
+  const releaseDirectory = mkdtempSync(join(tmpdir(), 'combo-preview-recovery-control-'));
+  if (!releaseExists) rmSync(releaseDirectory, { recursive: true, force: true });
+  const harness = `
+set -euo pipefail
+release_directory=${JSON.stringify(releaseDirectory)}
+EVIDENCE_ROOT=${JSON.stringify(dirname(releaseDirectory))}
+CHECKPOINT_PHASE=''
+schema_structure_digest=''
+RESUME_POST_CUT=0
+REUSE_COMPLETED=0
+RECOVERY_CURRENT_IS_CANDIDATE=0
+deployment_succeeded=0
+ENVIRONMENT=preview
+release_id=release-${'a'.repeat(40)}
+COMBO_RELEASE_TRAFFIC_LOCK=${JSON.stringify(join(releaseDirectory, 'traffic.lock'))}
+fail() { printf 'fail:%s\\n' "$1" >&2; exit 1; }
+status() { :; }
+validate_existing_release_current_for_recovery() { printf 'current\\n'; }
+load_post_cut_checkpoint() {
+  printf 'load\\n'
+  CHECKPOINT_PHASE=${JSON.stringify(phase)}
+  schema_structure_digest=sha256:${'b'.repeat(64)}
+}
+capture_inventory() {
+  printf 'capture\\n'
+  RESUME_POST_CUT=${active}
+}
+validate_existing_post_cut_traffic_current() { printf 'traffic\\n'; }
+reuse_completed_release() {
+  printf 'reuse\\n'
+  REUSE_COMPLETED=${reusable}
+  schema_structure_digest=${JSON.stringify(reusedSchemaDigest)}
+}
+validate_existing_post_cut_auxiliary_evidence() { printf 'auxiliary\\n'; }
+jq() { printf '%s\\n' ${JSON.stringify(deploySchemaDigest)}; }
+finalize_release_commit() {
+  [[ "$1" == 1 ]]
+  printf 'finalize\\n'
+}
+${functionBody('recover_existing_post_cut_release')}
+recover_existing_post_cut_release
+[[ "$deployment_succeeded" == 1 ]]
+`;
+  try {
+    return spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+  } finally {
+    rmSync(releaseDirectory, { recursive: true, force: true });
+  }
+}
+
+function runPreviewFinalize(directory, faultAt) {
+  const previewRoot = join(directory, 'preview');
+  const sourceSha = 'a'.repeat(40);
+  const releaseId = `release-${sourceSha}`;
+  const harness = `
+set -euo pipefail
+EVIDENCE_ROOT=${JSON.stringify(directory)}
+ENVIRONMENT=preview
+NAMESPACE=combo-review
+source_sha=${sourceSha}
+release_id=${releaseId}
+MANIFEST_DIGEST=sha256:${'b'.repeat(64)}
+release_directory=${JSON.stringify(join(previewRoot, releaseId))}
+pending_checkpoint=${JSON.stringify(join(previewRoot, 'pending.json'))}
+pending_traffic_evidence=${JSON.stringify(join(previewRoot, `${releaseId}.traffic.pending.json`))}
+CHECKPOINT_PHASE=post-cut
+remove_count=0
+fault_at=${faultAt}
+load_post_cut_checkpoint() {
+  [[ -f "$pending_checkpoint" && ! -L "$pending_checkpoint" ]]
+  CHECKPOINT_PHASE=post-cut
+}
+rm() {
+  remove_count=$((remove_count + 1))
+  if ((fault_at > 0 && remove_count == fault_at)); then
+    return 97
+  fi
+  command rm "$@"
+}
+${functionBody('write_current_checkpoint')}
+${functionBody('finalize_release_commit')}
+finalize_release_commit 1
+`;
+  return spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+}
+
 function validateCapturedJobOwnership(jobs) {
   const work = mkdtempSync(join(tmpdir(), 'combo-release-job-ownership-'));
   try {
@@ -240,6 +334,160 @@ test('fresh deploy exposes only the disposable-data interface for Preview and Pr
     /\bbackup\b|backup[-_]|cosfs|\/lhcos-data|offhost|pg_restore|isolated.{0,20}restore/i,
     'business data remains disposable; host routing rollback files are a separate control-plane concern',
   );
+});
+
+test('existing post-cut recovery is Preview-only and commits only a live completed release', () => {
+  assert.match(DEPLOY, /--recover-existing-post-cut/);
+  assert.match(
+    DEPLOY,
+    /RECOVER_EXISTING_POST_CUT == 1[\s\S]*ENVIRONMENT" == preview[\s\S]*restricted to Preview/,
+  );
+
+  const lock = DEPLOY.indexOf('flock -n 9');
+  const recoveryStart = DEPLOY.lastIndexOf('if ((RECOVER_EXISTING_POST_CUT == 1)); then');
+  const finalizationStart = DEPLOY.indexOf('if ((FINALIZE == 1)); then', recoveryStart);
+  const dispatch = DEPLOY.slice(recoveryStart, finalizationStart);
+  const recovery = functionBody('recover_existing_post_cut_release');
+  assert.ok(lock > 0 && recoveryStart > lock);
+  for (const fragment of [
+    'Preview post-cut recovery requires existing release evidence',
+    'validate_existing_release_current_for_recovery',
+    'load_post_cut_checkpoint',
+    '[[ "$CHECKPOINT_PHASE" == post-cut ]]',
+    'checkpoint_schema_digest=$schema_structure_digest',
+    'capture_inventory',
+    '((RESUME_POST_CUT == 1))',
+    'validate_existing_post_cut_traffic_current',
+    'reuse_completed_release',
+    '((REUSE_COMPLETED == 1))',
+    '"$schema_structure_digest" == "$checkpoint_schema_digest"',
+    '"$release_directory/deploy-evidence.json"',
+    'validate_existing_post_cut_auxiliary_evidence',
+    'finalize_release_commit 1',
+  ]) {
+    assert.ok(recovery.includes(fragment), `missing recovery gate: ${fragment}`);
+  }
+  assert.ok(recovery.indexOf('load_post_cut_checkpoint') < recovery.indexOf('capture_inventory'));
+  assert.ok(
+    recovery.indexOf('checkpoint_schema_digest=$schema_structure_digest') <
+      recovery.indexOf('capture_inventory'),
+  );
+  assert.ok(
+    recovery.indexOf('capture_inventory') <
+      recovery.indexOf('validate_existing_post_cut_traffic_current'),
+  );
+  assert.ok(
+    recovery.indexOf('validate_existing_post_cut_traffic_current') <
+      recovery.indexOf('reuse_completed_release'),
+  );
+  assert.ok(
+    recovery.indexOf('reuse_completed_release') <
+      recovery.indexOf('"$schema_structure_digest" == "$checkpoint_schema_digest"'),
+  );
+  assert.ok(
+    recovery.indexOf('"$schema_structure_digest" == "$checkpoint_schema_digest"') <
+      recovery.indexOf('validate_existing_post_cut_auxiliary_evidence'),
+  );
+  assert.ok(
+    recovery.indexOf('validate_existing_post_cut_auxiliary_evidence') <
+      recovery.indexOf('finalize_release_commit 1'),
+  );
+  assert.match(dispatch, /recover_existing_post_cut_release[\s\S]*exit 0/);
+  assert.doesNotMatch(
+    recovery,
+    /fresh_reset_release_data|apply_foundation|run_migration|apply_apps|switch_release_traffic/,
+  );
+  assert.doesNotMatch(recovery, /rm\s+-[^\n]*(?:pending|current)/);
+
+  const success = runExistingPostCutRecovery();
+  assert.equal(success.status, 0, success.stderr);
+  assert.equal(success.stdout, 'current\nload\ncapture\ntraffic\nreuse\nauxiliary\nfinalize\n');
+
+  const missing = runExistingPostCutRecovery({ releaseExists: false });
+  assert.notEqual(missing.status, 0);
+  assert.equal(missing.stdout, '');
+
+  const armed = runExistingPostCutRecovery({ phase: 'armed' });
+  assert.notEqual(armed.status, 0);
+  assert.equal(armed.stdout, 'current\nload\n');
+
+  const inactive = runExistingPostCutRecovery({ active: 0 });
+  assert.notEqual(inactive.status, 0);
+  assert.equal(inactive.stdout, 'current\nload\ncapture\n');
+
+  const incomplete = runExistingPostCutRecovery({ reusable: 0 });
+  assert.notEqual(incomplete.status, 0);
+  assert.equal(incomplete.stdout, 'current\nload\ncapture\ntraffic\nreuse\n');
+
+  const liveSchemaDrift = runExistingPostCutRecovery({
+    reusedSchemaDigest: `sha256:${'c'.repeat(64)}`,
+  });
+  assert.notEqual(liveSchemaDrift.status, 0);
+  assert.equal(liveSchemaDrift.stdout, 'current\nload\ncapture\ntraffic\nreuse\n');
+
+  const evidenceSchemaDrift = runExistingPostCutRecovery({
+    deploySchemaDigest: `sha256:${'d'.repeat(64)}`,
+  });
+  assert.notEqual(evidenceSchemaDrift.status, 0);
+  assert.equal(evidenceSchemaDrift.stdout, 'current\nload\ncapture\ntraffic\nreuse\n');
+});
+
+test('existing post-cut recovery binds auxiliary pending evidence before commit', () => {
+  const validator = functionBody('validate_existing_post_cut_auxiliary_evidence');
+  assert.match(validator, /pending_traffic_evidence/);
+  assert.match(validator, /release_directory\/traffic-evidence\.json/);
+  assert.match(validator, /cleanup-plan\.pending\.json/);
+  assert.match(validator, /release_directory\/cleanup-plan\.json/);
+  assert.match(validator, /release-\*\.traffic\.pending\.json/);
+  assert.match(validator, /release-\*\.cleanup-plan\.pending\.json/);
+  assert.match(validator, /-f "\$path" && ! -L "\$path"/);
+  assert.match(validator, /RECOVERY_CURRENT_IS_CANDIDATE == 0/);
+  assert.equal((validator.match(/cmp -s/g) ?? []).length, 2);
+});
+
+test('Preview checkpoint commit is crash-resumable and removes the main pending file last', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'combo-preview-finalize-'));
+  const previewRoot = join(directory, 'preview');
+  const sourceSha = 'a'.repeat(40);
+  const releaseId = `release-${sourceSha}`;
+  const pending = join(previewRoot, 'pending.json');
+  const traffic = join(previewRoot, `${releaseId}.traffic.pending.json`);
+  const cleanup = join(previewRoot, `${releaseId}.cleanup-plan.pending.json`);
+  const current = join(previewRoot, 'current.json');
+  mkdirSync(previewRoot);
+  for (const path of [pending, traffic, cleanup]) {
+    writeFileSync(path, '{}\n');
+  }
+
+  try {
+    const expectedPresence = [
+      { traffic: true, cleanup: true },
+      { traffic: false, cleanup: true },
+      { traffic: false, cleanup: false },
+    ];
+    for (const [index, faultAt] of [1, 2, 3].entries()) {
+      const failed = runPreviewFinalize(directory, faultAt);
+      assert.equal(failed.status, 97, failed.stderr);
+      assert.ok(existsSync(pending), 'the main pending checkpoint must survive every crash');
+      assert.equal(existsSync(traffic), expectedPresence[index].traffic);
+      assert.equal(existsSync(cleanup), expectedPresence[index].cleanup);
+      const checkpoint = JSON.parse(readFileSync(current, 'utf8'));
+      assert.equal(checkpoint.sourceSha, sourceSha);
+      assert.equal(checkpoint.releaseId, releaseId);
+      assert.equal(checkpoint.evidencePath, join(previewRoot, releaseId));
+    }
+
+    const completed = runPreviewFinalize(directory, 0);
+    assert.equal(completed.status, 0, completed.stderr);
+    assert.equal(existsSync(pending), false);
+    assert.equal(existsSync(traffic), false);
+    assert.equal(existsSync(cleanup), false);
+    const checkpoint = JSON.parse(readFileSync(current, 'utf8'));
+    assert.equal(checkpoint.status, 'passed');
+    assert.equal(checkpoint.sourceSha, sourceSha);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('all local and server-side validation gates precede the first fresh reset mutation', () => {
