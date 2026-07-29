@@ -72,6 +72,7 @@ case "$ENVIRONMENT" in
   preview)
     NAMESPACE=combo-review
     FOUNDATION_TRACK=preview-v1
+    PUBLIC_ORIGIN=https://review.43-160-242-46.sslip.io
     WEB_FORWARD_ENV=${COMBO_RELEASE_WEB_FORWARD_ENV:-/etc/combo-release/preview-web-forward.env}
     WEB_FORWARD_UNIT=combo-release-preview-web-forward.service
     WEB_FORWARD_PORT=18081
@@ -81,6 +82,7 @@ case "$ENVIRONMENT" in
   production)
     NAMESPACE=combo
     FOUNDATION_TRACK=production-v1
+    PUBLIC_ORIGIN=https://agora.43-160-242-46.sslip.io
     WEB_FORWARD_ENV=${COMBO_RELEASE_WEB_FORWARD_ENV:-/etc/combo-release/production-web-forward.env}
     WEB_FORWARD_UNIT=combo-release-production-web-forward.service
     WEB_FORWARD_PORT=18082
@@ -89,7 +91,7 @@ case "$ENVIRONMENT" in
     ;;
   *) usage ;;
 esac
-readonly NAMESPACE FOUNDATION_TRACK WEB_FORWARD_ENV WEB_FORWARD_UNIT
+readonly NAMESPACE FOUNDATION_TRACK PUBLIC_ORIGIN WEB_FORWARD_ENV WEB_FORWARD_UNIT
 readonly WEB_FORWARD_PORT NGINX_CONFIG FORMAL_NGINX_CONFIG
 
 [[ "$MANIFEST_DIGEST" =~ $DIGEST_RE ]] || fail 'invalid manifest digest'
@@ -800,6 +802,40 @@ captured_resource() {
   printf '%s\n' "$value"
 }
 
+preview_gate_is_closed() {
+  local origin=$1 label=$2 headers health_status version_status
+  headers="$work/active-route-$label-gate.headers"
+  health_status=$(curl --silent --show-error --output /dev/null \
+    --write-out '%{http_code}' --max-time 10 --max-filesize 1048576 \
+    "$origin/__review/healthz") ||
+    return 1
+  [[ "$health_status" == 200 ]] || return 1
+  version_status=$(curl --silent --show-error --output /dev/null \
+    --dump-header "$headers" --write-out '%{http_code}' --max-time 10 \
+    --max-filesize 1048576 "$origin/version.json") ||
+    return 1
+  [[ "$version_status" == 401 ]] || return 1
+  grep -Eqi \
+    '^X-Combo-Review-Gate:[[:space:]]*required[[:space:]]*$' \
+    "$headers"
+}
+
+capture_preview_route_version() {
+  local name=$1 output=$2
+  preview_gate_is_closed \
+    "http://127.0.0.1:${WEB_FORWARD_PORT}" loopback ||
+    fail 'active Preview Web forward gate is not healthy and closed'
+  preview_gate_is_closed "$PUBLIC_ORIGIN" public ||
+    fail 'active public Preview Web gate is not healthy and closed'
+  # The gate token expands only inside the exact active Web container.
+  # shellcheck disable=SC2016
+  "${K[@]}" -n "$NAMESPACE" exec "deployment/$name" -c web -- \
+    sh -euc \
+      'test -n "${REVIEW_ACCESS_TOKEN:-}" && exec wget --header="Cookie: combo_review_access=$REVIEW_ACCESS_TOKEN" -qO- "$1/version.json"' \
+      sh "$PUBLIC_ORIGIN" >"$output" ||
+    fail 'active authenticated Preview Web route is not readable'
+}
+
 capture_active_route_web() {
   local current_state web name service source release manifest web_image
   local traffic_digest forward_digest forward_service canary_digest formal_digest
@@ -924,9 +960,13 @@ capture_active_route_web() {
     ' <<<"$service" >/dev/null ||
     fail 'active release Web Service is not identity-bound'
   route_version="$work/active-route-version.json"
-  curl --fail --silent --show-error --max-time 10 --max-filesize 1048576 \
-    "http://127.0.0.1:${WEB_FORWARD_PORT}/version.json" >"$route_version" ||
-    fail 'active release Web forward route is not readable'
+  if [[ "$ENVIRONMENT" == preview ]]; then
+    capture_preview_route_version "$name" "$route_version"
+  else
+    curl --fail --silent --show-error --max-time 10 --max-filesize 1048576 \
+      "http://127.0.0.1:${WEB_FORWARD_PORT}/version.json" >"$route_version" ||
+      fail 'active release Web forward route is not readable'
+  fi
   jq -e \
     --arg environment "$ENVIRONMENT" \
     --arg sourceSha "$source" \

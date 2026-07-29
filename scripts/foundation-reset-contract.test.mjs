@@ -168,7 +168,17 @@ test('active Web route binds exact Service ports and live forwarder identity', (
   assert.match(source, /\.spec\.ports\[0\]\.nodePort == null/);
   assert.match(source, /systemctl is-enabled --quiet "\$WEB_FORWARD_UNIT"/);
   assert.match(source, /systemctl is-active --quiet "\$WEB_FORWARD_UNIT"/);
-  assert.match(source, /127\.0\.0\.1:\$\{WEB_FORWARD_PORT\}\/version\.json/);
+  assert.match(source, /PUBLIC_ORIGIN=https:\/\/review\.43-160-242-46\.sslip\.io/);
+  assert.match(source, /preview_gate_is_closed/);
+  assert.match(source, /\[\[ "\$health_status" == 200 \]\]/);
+  assert.match(source, /\[\[ "\$version_status" == 401 \]\]/);
+  assert.match(source, /\^X-Combo-Review-Gate:\[\[:space:\]\]\*required\[\[:space:\]\]\*\$/);
+  assert.match(source, /"http:\/\/127\.0\.0\.1:\$\{WEB_FORWARD_PORT\}" loopback/);
+  assert.match(source, /preview_gate_is_closed "\$PUBLIC_ORIGIN" public/);
+  assert.match(source, /exec "deployment\/\$name" -c web --/);
+  assert.match(source, /Cookie: combo_review_access=\$REVIEW_ACCESS_TOKEN/);
+  assert.match(source, /capture_preview_route_version "\$name" "\$route_version"/);
+  assert.doesNotMatch(source, /get secret/);
   assert.match(source, /routeVersionDigest/);
   assert.match(source, /\.preservedWeb \| del\(\.resourceVersion, \.serviceResourceVersion\)/);
 });
@@ -633,6 +643,13 @@ const pluralKind = {
   replicationcontrollers: 'replicationcontroller'
 };
 const command = args.shift();
+if (command === 'exec') {
+  if (process.env.FAKE_AUTHENTICATED_ROUTE_FAILURE) fail();
+  if (!/^deployment\\/release-[0-9a-f]{12}-web$/.test(args[0]) ||
+      args[1] !== '-c' || args[2] !== 'web' || args[3] !== '--') fail();
+  process.stdout.write(fs.readFileSync(process.env.FAKE_VERSION_JSON));
+  process.exit(0);
+}
 if (command === 'create') {
   process.stdout.write([
     'configmap/release-redis-hot-config',
@@ -858,7 +875,33 @@ esac
       fakeCurl,
       `#!/usr/bin/env bash
 set -euo pipefail
-cat -- "\${FAKE_VERSION_JSON:?}"
+url=\${!#}
+if [[ "$url" == */__review/healthz ]]; then
+  printf '%s' "\${FAKE_HEALTH_STATUS:-200}"
+  exit 0
+fi
+if [[ "$url" == */version.json ]]; then
+  header_file=''
+  while (($# > 0)); do
+    if [[ "$1" == --dump-header ]]; then
+      header_file=$2
+      break
+    fi
+    shift
+  done
+  if [[ -n "$header_file" ]]; then
+    {
+      printf 'HTTP/1.1 %s Test\\r\\n' "\${FAKE_GATE_STATUS:-401}"
+      if [[ -n "\${FAKE_GATE_HEADER-X-Combo-Review-Gate: required}" ]]; then
+        printf '%s\\r\\n' "\${FAKE_GATE_HEADER-X-Combo-Review-Gate: required}"
+      fi
+      printf '\\r\\n'
+    } >"$header_file"
+  fi
+  printf '%s' "\${FAKE_GATE_STATUS:-401}"
+  exit 0
+fi
+exit 1
 `,
     );
     chmodSync(fakeCurl, 0o755);
@@ -923,6 +966,34 @@ cat -- "\${FAKE_VERSION_JSON:?}"
         'combo.build/release-track'
       ];
     }, /unowned or unexpected workload writer surface/);
+    rejectSurface(() => {}, /active Preview Web forward gate is not healthy and closed/, {
+      ...env,
+      FAKE_GATE_STATUS: '200',
+    });
+    rejectSurface(() => {}, /active Preview Web forward gate is not healthy and closed/, {
+      ...env,
+      FAKE_HEALTH_STATUS: '503',
+    });
+    rejectSurface(() => {}, /active Preview Web forward gate is not healthy and closed/, {
+      ...env,
+      FAKE_GATE_HEADER: '',
+    });
+    rejectSurface(() => {}, /active authenticated Preview Web route is not readable/, {
+      ...env,
+      FAKE_AUTHENTICATED_ROUTE_FAILURE: '1',
+    });
+    const wrongRouteVersion = join(directory, 'wrong-route-version.json');
+    writeFileSync(
+      wrongRouteVersion,
+      `${JSON.stringify({
+        ...JSON.parse(readFileSync(routeVersion, 'utf8')),
+        sourceSha: 'f'.repeat(40),
+      })}\n`,
+    );
+    rejectSurface(() => {}, /active release Web forward route has the wrong release identity/, {
+      ...env,
+      FAKE_VERSION_JSON: wrongRouteVersion,
+    });
     rejectSurface((state) => {
       state.resources['cronjob/zero-pod-scheduler'] = {
         apiVersion: 'batch/v1',
