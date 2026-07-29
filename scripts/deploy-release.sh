@@ -1556,8 +1556,8 @@ load_post_cut_checkpoint() {
         "namespace",
         "phase",
         "releaseId",
-        "schemaVersion",
         "schemaStructureProofDigest",
+        "schemaVersion",
         "sourceSha",
         "trafficCutAt",
         "webService"
