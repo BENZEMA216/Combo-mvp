@@ -63,6 +63,8 @@ const SENSITIVE_VALUE_PATTERN =
   /(?:bearer\s+[a-z0-9._~-]+|(?:__Host-)?cb_session=|s1\.[A-Za-z0-9_-]{43}|@resend\.dev|set-cookie|pairingCode)/i;
 const OTP_VALUE_PATTERN = /^[0-9]{6}$/;
 const CHROME_EXECUTABLE = '/usr/bin/google-chrome';
+// Runtime 的 index route 会整页返回创作端；不存在的 Session 是稳定、只读且不写业务数据的探针。
+const RUNTIME_BADGE_PROBE_PAGE = '/try/session/00000000-0000-4000-8000-000000000000';
 const PRODUCTION_ORIGIN = 'https://buildwithcombo.com';
 const TASK_TIMEOUT_MS = 15 * 60_000;
 const TURN_TIMEOUT_MS = 12 * 60_000;
@@ -1014,11 +1016,16 @@ async function runAcceptance(options) {
     });
 
     await checked('preview_identity_badge_and_copy', async () => {
-      const verifyBadge = async (path, contextHeading, expectedPage) => {
+      const verifyBadge = async (path, contextHeading, expectedPage, mountedSelector) => {
         const navigation = await page.goto(path, { waitUntil: 'domcontentloaded' });
         if (navigation?.status() !== 200) {
           fail(activeCheck, 'http_status', navigation?.status());
         }
+        await page.locator(mountedSelector).first().waitFor({
+          state: 'visible',
+          timeout: 30_000,
+        });
+        ensure(new URL(page.url()).pathname === expectedPage, activeCheck);
         const badge = page.locator('aside[aria-label="Preview 发布身份"]');
         if (options.environment !== 'preview') {
           ensure((await badge.count()) === 0, activeCheck);
@@ -1066,11 +1073,13 @@ async function runAcceptance(options) {
         '/tasks?acceptance=hidden#secret',
         'Combo Preview acceptance context',
         '/tasks',
+        '.cb-shell, .cb-auth-gate',
       );
       await verifyBadge(
-        '/try/?acceptance=hidden#secret',
+        `${RUNTIME_BADGE_PROBE_PAGE}?acceptance=hidden#secret`,
         'Combo Runtime Preview acceptance context',
-        '/try/',
+        RUNTIME_BADGE_PROBE_PAGE,
+        '.rt-shell, .rt-auth-gate',
       );
       await page.goto('/tasks', { waitUntil: 'domcontentloaded' });
     });
