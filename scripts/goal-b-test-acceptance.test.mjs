@@ -46,16 +46,45 @@ const UUIDS = {
   consumeSessionId: '31982e62-6d6e-7f4d-8fe8-b55f62720b5b',
 };
 
-test('browser URL waits do not bind acceptance to subresource load', async () => {
-  const predicate = () => true;
+test('browser URL waits poll same-document location without a lifecycle wait', async () => {
+  const expectation = {
+    origin: 'https://review.example',
+    pathnamePattern: '^/try/session/[0-9a-f-]+$',
+    searchParams: { returnTo: '/tasks/task-1' },
+  };
   const calls = [];
   const page = {
-    waitForURL: async (...args) => calls.push(args),
+    waitForFunction: async (...args) => calls.push(args),
   };
 
-  await waitForAcceptanceUrl(page, predicate);
+  await waitForAcceptanceUrl(page, expectation);
 
-  assert.deepEqual(calls, [[predicate, { waitUntil: 'domcontentloaded', timeout: 30_000 }]]);
+  assert.equal(calls.length, 1);
+  const [predicate, argument, options] = calls[0];
+  assert.deepEqual(argument, expectation);
+  assert.deepEqual(options, { timeout: 30_000 });
+
+  const originalWindow = globalThis.window;
+  try {
+    globalThis.window = {
+      location: {
+        href: 'https://review.example/try/session/ABC-123?returnTo=%2Ftasks%2Ftask-1',
+      },
+    };
+    assert.equal(predicate(argument), true);
+    globalThis.window.location.href =
+      'https://review.example/try/session/ABC-123?returnTo=%2Ftasks%2Fother';
+    assert.equal(predicate(argument), false);
+    globalThis.window.location.href =
+      'https://other.example/try/session/ABC-123?returnTo=%2Ftasks%2Ftask-1';
+    assert.equal(predicate(argument), false);
+  } finally {
+    if (originalWindow === undefined) {
+      delete globalThis.window;
+    } else {
+      globalThis.window = originalWindow;
+    }
+  }
 });
 
 test('accepts only the exact SHA, loopback origin, and fresh output arguments', () => {
@@ -796,16 +825,20 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /__Host-cb_session/);
   assert.match(
     source,
-    /async function waitForAcceptanceUrl\(page, predicate\) \{[\s\S]*page\.waitForURL\(predicate, \{[\s\S]*waitUntil: 'domcontentloaded',[\s\S]*timeout: 30_000/,
+    /async function waitForAcceptanceUrl\(page, expectation\) \{[\s\S]*page\.waitForFunction\([\s\S]*window\.location\.href[\s\S]*expectation,[\s\S]*timeout: 30_000/,
   );
   assert.equal(
-    source.match(/\.waitForURL\(/g)?.length,
-    1,
-    'all browser URL assertions must use the DOMContentLoaded-safe helper',
+    source.match(/\.waitForURL\(/g)?.length ?? 0,
+    0,
+    'same-document route assertions must not wait for a document lifecycle event',
   );
   assert.match(
     source,
-    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*返回发布流程[\s\S]*waitForAcceptanceUrl\([\s\S]*document\.body\.innerText\.includes\('你的能力'\)/,
+    /await checked\('studio_trial_return',[\s\S]*name: '返回 UI 设计',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'UI 设计对话'/,
+  );
+  assert.match(
+    source,
+    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回发布流程',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '你的能力，挑选后一键发布',[\s\S]*exact: true/,
   );
   assert.doesNotMatch(source, /recordVideo|tracing\.start|page\.screenshot/);
 });
