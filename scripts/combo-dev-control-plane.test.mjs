@@ -3106,6 +3106,12 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /actions\/workflows\/preview\.yml\/runs\?event=workflow_run/);
   assert.match(
     workflow,
+    /\.name == \$title[\s\S]*and \.display_title == \$title/,
+    'Test must bind both GitHub run-name fields to the exact source CI run and attempt',
+  );
+  assert.doesNotMatch(workflow, /\.name == "Preview promotion"/);
+  assert.match(
+    workflow,
     /actions\/runs\/\$\{preview_run_id\}\/attempts\/\$\{preview_run_attempt\}\/jobs/,
   );
   assert.match(workflow, /\$deployJobs\[0\]\.conclusion == "skipped"/);

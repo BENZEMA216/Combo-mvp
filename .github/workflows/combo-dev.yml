@@ -453,7 +453,7 @@ jobs:
                 [
                   .[].workflow_runs[]
                   | select(
-                      .name == "Preview promotion"
+                      .name == $title
                       and .path == ".github/workflows/preview.yml"
                       and .event == "workflow_run"
                       and .head_branch == "main"
