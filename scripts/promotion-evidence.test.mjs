@@ -367,32 +367,41 @@ function browserFailureEvidence(prefixLength = 2, failure = undefined, environme
   return value;
 }
 
-function inventory() {
+function inventory(expectedIdentity = identity) {
   const prefix = `release-${REVISION.slice(0, 12)}-`;
-  const replicaSets = [
-    `${prefix}api-1111111111`,
-    `${prefix}runtime-2222222222`,
-    `${prefix}web-3333333333`,
-    `${prefix}worker-4444444444`,
-    'release-redis-hot-5555555555',
-  ].sort();
+  const replicaSetSpecs = [
+    [`${prefix}api-1111111111`, 2],
+    [`${prefix}runtime-2222222222`, 2],
+    [`${prefix}web-3333333333`, 1],
+    [`${prefix}worker-4444444444`, 1],
+    ['release-redis-hot-5555555555', 1],
+  ];
+  const replicaSets = replicaSetSpecs.map(([name]) => name).sort();
+  const replicaSetPods = replicaSetSpecs.map(([name, replicas], groupIndex) =>
+    Array.from(
+      { length: replicas },
+      (_, replicaIndex) => `${name}-${groupIndex}${replicaIndex}abc`,
+    ),
+  );
   const livePods = [
-    ['api', identity.images.api],
-    ['runtime', identity.images.runtime],
-    ['web', identity.images.web],
-    ['worker', identity.images.api],
-  ].map(([component, image], index) => ({
-    app: `${prefix}${component}`,
-    image,
-    imageID: image,
-    name: `${prefix}${component}-${index}`,
-    ready: true,
-    sourceSha: REVISION,
-  }));
+    ['api', expectedIdentity.images.api, 0],
+    ['runtime', expectedIdentity.images.runtime, 1],
+    ['web', expectedIdentity.images.web, 2],
+    ['worker', expectedIdentity.images.api, 3],
+  ].flatMap(([component, image, replicaSetIndex]) =>
+    replicaSetPods[replicaSetIndex].map((name) => ({
+      app: `${prefix}${component}`,
+      image,
+      imageID: image,
+      name,
+      ready: true,
+      sourceSha: REVISION,
+    })),
+  );
   return {
     schemaVersion: 2,
-    environment: 'preview',
-    namespace: 'combo-review',
+    environment: expectedIdentity.environment,
+    namespace: expectedIdentity.namespace,
     sourceSha: REVISION,
     collectedAt: '2026-07-25T00:11:00.000Z',
     excludedKinds: ['Secret'],
@@ -417,7 +426,7 @@ function inventory() {
     migration: {
       head: migrations.at(-1),
       jobCompletionTime: '2026-07-25T00:10:00Z',
-      jobImage: identity.images.api,
+      jobImage: expectedIdentity.images.api,
       ledger: migrations,
     },
     nodePorts: [],
@@ -455,7 +464,7 @@ function inventory() {
         },
       ],
       pods: [
-        ...replicaSets.map((name) => `${name}-abc12`),
+        ...replicaSetPods.flat(),
         `${prefix}migrate-def34`,
         `${prefix}minio-init-ghi56`,
         'release-minio-0',
@@ -466,17 +475,21 @@ function inventory() {
       cronJobs: [],
       daemonSets: [],
       networkPolicies: [],
-      roles: [],
-      roleBindings: [],
+      roles: expectedIdentity.environment === 'production' ? ['combo-dev-production-observer'] : [],
+      roleBindings:
+        expectedIdentity.environment === 'production' ? ['combo-dev-production-observer'] : [],
       clusterRoleBindings: [],
-      serviceAccounts: ['default'],
+      serviceAccounts:
+        expectedIdentity.environment === 'preview'
+          ? ['default', 'runtime-sandbox-manager']
+          : ['default'],
       configMaps: [
         `combo-release-meta-${REVISION.slice(0, 12)}`,
-        `${prefix}review-gate`,
         'kube-root-ca.crt',
         'release-minio-init-script',
         'release-redis-hot-config',
         'release-redis-queue-config',
+        ...(expectedIdentity.environment === 'preview' ? [`${prefix}review-gate`] : []),
       ].sort(),
     },
   };
@@ -691,6 +704,22 @@ test('attestation pins the exact acceptance workflow attempt and evidence digest
 
 test('resource inventory is exact and rejects legacy names, NodePorts, and omitted kinds', () => {
   assert.deepEqual(validateReleaseInventory(inventory(), identity), inventory());
+  assert.deepEqual(
+    validateReleaseInventory(inventory(productionIdentity), productionIdentity),
+    inventory(productionIdentity),
+  );
+
+  const previewWithoutSandboxManager = inventory();
+  previewWithoutSandboxManager.resources.serviceAccounts = ['default'];
+  assert.deepEqual(
+    validateReleaseInventory(previewWithoutSandboxManager, identity),
+    previewWithoutSandboxManager,
+  );
+
+  const unexpectedPreviewServiceAccount = inventory();
+  unexpectedPreviewServiceAccount.resources.serviceAccounts.push('unexpected-manager');
+  unexpectedPreviewServiceAccount.resources.serviceAccounts.sort();
+  assert.throws(() => validateReleaseInventory(unexpectedPreviewServiceAccount, identity));
 
   const oldPlane = inventory();
   oldPlane.resources.deployments.push('consumer');
@@ -708,6 +737,63 @@ test('resource inventory is exact and rejects legacy names, NodePorts, and omitt
   const oldCloudReview = inventory();
   oldCloudReview.resources.ingresses.push('cloud-review');
   assert.throws(() => validateReleaseInventory(oldCloudReview, identity));
+
+  const unexpectedProductionSandboxManager = inventory(productionIdentity);
+  unexpectedProductionSandboxManager.resources.serviceAccounts.push('runtime-sandbox-manager');
+  assert.throws(() =>
+    validateReleaseInventory(unexpectedProductionSandboxManager, productionIdentity),
+  );
+
+  const missingProductionObserver = inventory(productionIdentity);
+  missingProductionObserver.resources.roles = [];
+  assert.throws(() => validateReleaseInventory(missingProductionObserver, productionIdentity));
+
+  const missingProductionObserverBinding = inventory(productionIdentity);
+  missingProductionObserverBinding.resources.roleBindings = [];
+  assert.throws(() =>
+    validateReleaseInventory(missingProductionObserverBinding, productionIdentity),
+  );
+
+  const missingApiReplica = inventory();
+  missingApiReplica.livePods.splice(0, 1);
+  assert.throws(() => validateReleaseInventory(missingApiReplica, identity), /replica/);
+
+  const duplicateLivePod = inventory();
+  duplicateLivePod.livePods[1] = structuredClone(duplicateLivePod.livePods[0]);
+  assert.throws(() => validateReleaseInventory(duplicateLivePod, identity), /names must be unique/);
+
+  const wrongLiveReplicaDistribution = inventory();
+  wrongLiveReplicaDistribution.livePods[1] = {
+    ...wrongLiveReplicaDistribution.livePods[1],
+    app: `release-${REVISION.slice(0, 12)}-web`,
+    image: identity.images.web,
+    imageID: identity.images.web,
+  };
+  assert.throws(
+    () => validateReleaseInventory(wrongLiveReplicaDistribution, identity),
+    /business-plane replica counts/,
+  );
+
+  const unmatchedLivePod = inventory();
+  unmatchedLivePod.livePods[0].name = `release-${REVISION.slice(0, 12)}-api-1111111111-zzzzz`;
+  assert.throws(
+    () => validateReleaseInventory(unmatchedLivePod, identity),
+    /exact business ReplicaSet Pods/,
+  );
+
+  const missingApiReplicaPod = inventory();
+  const apiReplicaSet = missingApiReplicaPod.resources.replicaSets.find((name) =>
+    name.startsWith(`release-${REVISION.slice(0, 12)}-api-`),
+  );
+  assert.ok(apiReplicaSet);
+  const apiReplicaPod = missingApiReplicaPod.resources.pods.find((name) =>
+    name.startsWith(`${apiReplicaSet}-`),
+  );
+  assert.ok(apiReplicaPod);
+  missingApiReplicaPod.resources.pods = missingApiReplicaPod.resources.pods.filter(
+    (name) => name !== apiReplicaPod,
+  );
+  assert.throws(() => validateReleaseInventory(missingApiReplicaPod, identity), /ReplicaSet/);
 
   const missingAuthTable = inventory();
   missingAuthTable.databaseTables = missingAuthTable.databaseTables.filter(
