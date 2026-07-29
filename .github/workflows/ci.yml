@@ -627,6 +627,7 @@ jobs:
             scripts/collect-live-runtime-evidence.sh \
             scripts/collect-release-inventory.sh \
             scripts/deploy-release.sh \
+            scripts/foundation-reset-journal.mjs \
             scripts/prepare-reset-roll-forward.sh \
             scripts/reset-roll-forward-journal.mjs \
             scripts/reset-release-foundation.sh \

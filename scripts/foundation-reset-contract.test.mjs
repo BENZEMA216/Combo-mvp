@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -97,17 +98,21 @@ test('artifact verifier consumes a server-side dry-run before mutation', () => {
   assert.match(source, /--manifest-digest "\$MANIFEST_DIGEST"/);
 });
 
-test('global roll-forward journal admission runs under both locks before cluster reads', () => {
+test('global reset journal admissions run under both locks before cluster reads', () => {
   const mutationLock = source.indexOf('flock -x 9');
   const trafficLock = source.indexOf('flock -x 8');
   const journalAudit = source.indexOf('\naudit_reset_roll_forward_journals\n');
   const localEvidence = source.indexOf('\nvalidate_reset_roll_forward_evidence\n');
+  const foundationAudit = source.indexOf('\naudit_foundation_reset_journals\n');
   const serverDryRun = source.indexOf('"${K[@]}" -n "$NAMESPACE" apply --dry-run=server');
 
   assert.ok(mutationLock >= 0 && trafficLock > mutationLock);
   assert.ok(journalAudit > trafficLock);
   assert.ok(localEvidence > journalAudit);
-  assert.ok(serverDryRun > localEvidence);
+  assert.ok(foundationAudit > localEvidence);
+  assert.ok(serverDryRun > foundationAudit);
+  assert.match(source, /foundation-reset-journal\.mjs" audit/);
+  assert.match(source, /--mode "\$mode"/);
 });
 
 test('all planned deletes and writer fences are compare-and-swap operations', () => {
@@ -229,10 +234,12 @@ test('success evidence has the exact public schema and fixed checks', () => {
   assert.match(source, /oldStorageRemoved: true/);
   assert.match(source, /newStorageIdentity: true/);
   assert.match(source, /activeWebPreserved: true/);
+  assert.match(source, /supersededResetContinuity: true/);
+  assert.match(source, /authorization[\s\S]*"superseding-reset"/);
+  assert.match(source, /PREDECESSOR_RESET_EVIDENCE=\$predecessor_real/);
   assert.match(source, /chmod 0600 "\$OUTPUT"/);
   assert.match(source, /foundation_reset_reused=true evidence_ready=true/);
-  assert.match(source, /foundation_reuse_admission=true reset_journal_absent=true/);
-  assert.match(source, /an unconsumed completed foundation reset blocks this operation/);
+  assert.match(source, /global foundation reset journal audit failed/);
   assert.match(source, /a pending clean-slate boundary requires controlled roll-forward/);
   assert.match(source, /this candidate entered reset roll-forward and requires its evidence/);
   assert.match(source, /reset roll-forward evidence does not authorize this exact reuse/);
@@ -338,7 +345,7 @@ test('CLI rejects symbolic-link inputs and output paths', () => {
   }
 });
 
-test('behavior: storage-removed resumes without recapturing or deleting active Web', () => {
+test('behavior: storage-removed resumes and Preview reset supersession stays linear', () => {
   const directory = mkdtempSync(join(tmpdir(), 'combo-foundation-reset-behavior-'));
   try {
     const bin = join(directory, 'bin');
@@ -355,6 +362,7 @@ test('behavior: storage-removed resumes without recapturing or deleting active W
     const routeVersion = join(directory, 'route-version.json');
     const bumpDeleteRvOnce = join(directory, 'bump-delete-rv-once');
     const failOptionalGetOnce = join(directory, 'fail-optional-get-once');
+    const kubectlCommandLog = join(directory, 'kubectl-commands.log');
     mkdirSync(bin);
     mkdirSync(storage);
     mkdirSync(join(trafficStateRoot, 'preview'), { recursive: true });
@@ -643,6 +651,9 @@ const pluralKind = {
   replicationcontrollers: 'replicationcontroller'
 };
 const command = args.shift();
+if (process.env.FAKE_KUBE_COMMAND_LOG) {
+  fs.appendFileSync(process.env.FAKE_KUBE_COMMAND_LOG, [command, ...args].join(' ') + '\\n');
+}
 if (command === 'exec') {
   if (process.env.FAKE_AUTHENTICATED_ROUTE_FAILURE) fail();
   if (!/^deployment\\/release-[0-9a-f]{12}-web$/.test(args[0]) ||
@@ -934,6 +945,7 @@ exit 1
       FAKE_BUMP_DELETE_RV_ONCE: bumpDeleteRvOnce,
       FAKE_FAIL_OPTIONAL_GET_ONCE: failOptionalGetOnce,
       FAKE_VERSION_JSON: routeVersion,
+      FAKE_KUBE_COMMAND_LOG: kubectlCommandLog,
       KUBECONFIG: join(directory, 'kubeconfig'),
       COMBO_RELEASE_EVIDENCE_ROOT: evidenceRoot,
       COMBO_MUTATION_LOCK: join(directory, 'mutation.lock'),
@@ -946,6 +958,29 @@ exit 1
       COMBO_FOUNDATION_RESET_WAIT_SECONDS: '2',
     };
     const pristineState = readFileSync(stateFile, 'utf8');
+    const cleanReuseArgs = [...args];
+    cleanReuseArgs[cleanReuseArgs.indexOf('--operation') + 1] = 'assert-reuse';
+    cleanReuseArgs[cleanReuseArgs.indexOf('--policy') + 1] = 'reuse-existing-v1';
+    const cleanReuse = spawnSync('bash', [script, ...cleanReuseArgs], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(cleanReuse.status, 0, cleanReuse.stderr);
+    assert.match(cleanReuse.stdout, /foundation_reuse_admission=true/);
+    assert.equal(readFileSync(stateFile, 'utf8'), pristineState);
+    assert.equal(existsSync(output), false);
+    assert.deepEqual(
+      readdirSync(join(evidenceRoot, 'foundation-resets', 'preview')),
+      [],
+      'reuse admission must not create a reset journal',
+    );
+    assert.doesNotMatch(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      /^(?:apply|delete)(?: |$)/m,
+      'reuse admission must not call kubectl apply or delete',
+    );
+    writeFileSync(kubectlCommandLog, '');
     const rejectSurface = (mutate, expected, environment = env) => {
       const rejectedState = JSON.parse(pristineState);
       mutate(rejectedState);
@@ -1151,7 +1186,7 @@ exit 1
     assert.equal(rejectedExpansion.status, 1);
     assert.match(
       rejectedExpansion.stderr,
-      /persistent foundation reset plan does not match this request/,
+      /persistent foundation reset plan does not match this request|foundation reset plan .* targets has an invalid captured foundation target/,
     );
     writeFileSync(plan, originalPlan);
     writeFileSync(checkpoint, originalCheckpoint);
@@ -1217,10 +1252,150 @@ exit 1
       /unconsumed completed foundation reset|entered the clean-slate boundary/,
     );
 
+    const resetStateRoot = join(evidenceRoot, 'foundation-resets', 'preview');
+    const firstStem = requestId.slice('sha256:'.length);
+    const firstReady = join(resetStateRoot, `${firstStem}.foundation-reset-ready.json`);
+    const firstEvidence = join(resetStateRoot, `${firstStem}.foundation-reset-evidence.json`);
+    const sha256 = (value) => `sha256:${createHash('sha256').update(value).digest('hex')}`;
+    const firstFiles = [plan, checkpoint, firstReady, firstEvidence, output].map((path) => {
+      const bytes = readFileSync(path);
+      return { path, bytes, digest: sha256(bytes) };
+    });
+    const firstResult = structuredClone(result);
+    const stateAfterFirstReset = readFileSync(stateFile, 'utf8');
+
+    const successorSourceSha = 'b'.repeat(40);
+    const successorManifest = {
+      ...manifest,
+      sourceSha: successorSourceSha,
+      releaseId: `release-${successorSourceSha}`,
+      images: {
+        api: `ghcr.io/dangdang-tech/combo-api@sha256:${'c'.repeat(64)}`,
+        runtime: `ghcr.io/dangdang-tech/combo-runtime@sha256:${'d'.repeat(64)}`,
+        web: `ghcr.io/dangdang-tech/combo-web@sha256:${'e'.repeat(64)}`,
+      },
+      builtAt: '2026-07-29T01:00:00.000Z',
+      webAssetManifest: `sha256:${'f'.repeat(64)}`,
+    };
+    const successorManifestDigest = releaseManifestDigest(successorManifest);
+    const successorRequestId = `sha256:${createHash('sha256')
+      .update(
+        [
+          'combo-foundation-reset-v1',
+          'preview',
+          successorSourceSha,
+          successorManifestDigest,
+          'established-clean-slate-v1',
+        ].join('\0'),
+      )
+      .digest('hex')}`;
+    const successorManifestFile = join(directory, 'successor-release.json');
+    const successorOutput = join(directory, 'successor-reset-evidence.json');
+    writeFileSync(successorManifestFile, serializeReleaseManifest(successorManifest));
+    const successorArgs = [...args];
+    for (const [option, value] of [
+      ['--manifest', successorManifestFile],
+      ['--manifest-digest', successorManifestDigest],
+      ['--authority-digest', successorManifestDigest],
+      ['--request-id', successorRequestId],
+      ['--output', successorOutput],
+    ]) {
+      successorArgs[successorArgs.indexOf(option) + 1] = value;
+    }
+    const successorStem = successorRequestId.slice('sha256:'.length);
+    const successorPlan = join(resetStateRoot, `${successorStem}.foundation-reset-plan.json`);
+    const successorCheckpoint = join(
+      resetStateRoot,
+      `${successorStem}.foundation-reset-checkpoint.json`,
+    );
+
+    const tamperedFoundation = JSON.parse(stateAfterFirstReset);
+    tamperedFoundation.resources['deployment/release-redis-hot'].metadata.uid =
+      'tampered-foundation-uid';
+    const tamperedState = `${JSON.stringify(tamperedFoundation)}\n`;
+    writeFileSync(stateFile, tamperedState);
+    const rejectedSuccessor = spawnSync('bash', [script, ...successorArgs], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rejectedSuccessor.status, 1, rejectedSuccessor.stderr);
+    assert.match(
+      rejectedSuccessor.stderr,
+      /live Preview foundation does not exactly continue the superseded reset|predecessor foundation UIDs/,
+    );
+    assert.equal(readFileSync(stateFile, 'utf8'), tamperedState);
+    assert.equal(existsSync(successorPlan), false);
+    assert.equal(existsSync(successorCheckpoint), false);
+    assert.equal(existsSync(successorOutput), false);
+    writeFileSync(stateFile, stateAfterFirstReset);
+
+    const successorReset = spawnSync('bash', [script, ...successorArgs], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(successorReset.status, 0, successorReset.stderr);
+    assert.match(successorReset.stdout, /foundation_reset_completed=true evidence_ready=true/);
+    const successorResult = JSON.parse(readFileSync(successorOutput, 'utf8'));
+    assert.equal(successorResult.schemaVersion, 2);
+    assert.deepEqual(successorResult.supersededReset, {
+      environment: 'preview',
+      namespace,
+      requestId,
+      sourceSha,
+      releaseId: `release-${sourceSha}`,
+      manifestDigest,
+      planDigest: sha256(readFileSync(plan)),
+      foundationSnapshotDigest: sha256(readFileSync(firstReady)),
+      evidenceDigest: sha256(readFileSync(firstEvidence)),
+    });
+    assert.deepEqual(successorResult.checks, {
+      writersFenced: true,
+      oldStorageRemoved: true,
+      newStorageIdentity: true,
+      activeWebPreserved: true,
+      supersededResetContinuity: true,
+    });
+    assert.deepEqual(successorResult.oldStorage, firstResult.newStorage);
+    for (let index = 0; index < 3; index += 1) {
+      assert.notEqual(
+        successorResult.newStorage[index].claimUid,
+        successorResult.oldStorage[index].claimUid,
+      );
+      assert.notEqual(
+        successorResult.newStorage[index].volumeUid,
+        successorResult.oldStorage[index].volumeUid,
+      );
+      assert.notEqual(
+        successorResult.newStorage[index].path,
+        successorResult.oldStorage[index].path,
+      );
+    }
+    for (const firstFile of firstFiles) {
+      const current = readFileSync(firstFile.path);
+      assert.deepEqual(current, firstFile.bytes);
+      assert.equal(sha256(current), firstFile.digest);
+    }
+
+    const successorReuseArgs = [...successorArgs];
+    successorReuseArgs[successorReuseArgs.indexOf('--operation') + 1] = 'assert-reuse';
+    successorReuseArgs[successorReuseArgs.indexOf('--policy') + 1] = 'reuse-existing-v1';
+    const rejectedSuccessorReuse = spawnSync('bash', [script, ...successorReuseArgs], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rejectedSuccessorReuse.status, 1);
+    assert.match(
+      rejectedSuccessorReuse.stderr,
+      /unconsumed foundation reset chain|entered the clean-slate boundary/,
+    );
+
     const activated = JSON.parse(readFileSync(stateFile, 'utf8'));
     delete activated.resources[`deployment/${activeWeb}`];
     delete activated.resources[`service/${activeWeb}`];
-    const candidateWeb = `release-${sourceSha.slice(0, 12)}-web`;
+    const candidateWeb = `release-${successorSourceSha.slice(0, 12)}-web`;
     activated.resources[`deployment/${candidateWeb}`] = {
       apiVersion: 'apps/v1',
       kind: 'Deployment',
@@ -1246,12 +1421,14 @@ exit 1
               'combo.build/release-track': 'release-v1',
             },
             annotations: {
-              'combo.build/source-sha': sourceSha,
-              'combo.build/release-id': `release-${sourceSha}`,
-              'combo.build/release-manifest-digest': manifestDigest,
+              'combo.build/source-sha': successorSourceSha,
+              'combo.build/release-id': `release-${successorSourceSha}`,
+              'combo.build/release-manifest-digest': successorManifestDigest,
             },
           },
-          spec: { containers: [{ name: 'web', image: manifest.images.web }] },
+          spec: {
+            containers: [{ name: 'web', image: successorManifest.images.web }],
+          },
         },
       },
       status: { readyReplicas: 1, availableReplicas: 1 },
@@ -1282,9 +1459,9 @@ exit 1
       `${JSON.stringify({
         schemaVersion: 1,
         environment: 'preview',
-        sourceSha,
-        releaseId: `release-${sourceSha}`,
-        manifestDigest,
+        sourceSha: successorSourceSha,
+        releaseId: `release-${successorSourceSha}`,
+        manifestDigest: successorManifestDigest,
         canaryNginxSha256: nginxDigest,
         formalNginxSha256: null,
         webService: candidateWeb,
@@ -1295,23 +1472,28 @@ exit 1
       `${JSON.stringify({
         schemaVersion: 1,
         environment: 'preview',
-        sourceSha,
-        releaseId: `release-${sourceSha}`,
-        builtAt: manifest.builtAt,
-        releaseManifestDigest: manifestDigest,
-        webAssetManifest: manifest.webAssetManifest,
+        sourceSha: successorSourceSha,
+        releaseId: `release-${successorSourceSha}`,
+        builtAt: successorManifest.builtAt,
+        releaseManifestDigest: successorManifestDigest,
+        webAssetManifest: successorManifest.webAssetManifest,
       })}\n`,
     );
-    const third = spawnSync('bash', [script, ...args], {
+    const successorRetry = spawnSync('bash', [script, ...successorArgs], {
       cwd: scriptDirectory,
       encoding: 'utf8',
       env,
     });
-    assert.equal(third.status, 0, third.stderr);
-    assert.match(third.stdout, /foundation_reset_reused=true evidence_ready=true/);
+    assert.equal(successorRetry.status, 0, successorRetry.stderr);
+    assert.match(successorRetry.stdout, /foundation_reset_reused=true evidence_ready=true/);
     const live = JSON.parse(readFileSync(stateFile, 'utf8'));
     assert.equal(live.resources[`deployment/${candidateWeb}`].metadata.uid, 'candidate-web-uid');
     assert.equal(live.resources[`service/${candidateWeb}`].metadata.uid, 'candidate-service-uid');
+    for (const firstFile of firstFiles) {
+      const current = readFileSync(firstFile.path);
+      assert.deepEqual(current, firstFile.bytes);
+      assert.equal(sha256(current), firstFile.digest);
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
