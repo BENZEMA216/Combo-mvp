@@ -29,6 +29,7 @@ import {
   finishTurnWithMessage,
   getLatestTerminalTurn,
   getRunningTurnId,
+  getTerminalTurn,
   lockRunningTurn,
   lockTurnSession,
   sweepExpiredTurns,
@@ -131,6 +132,9 @@ class TerminalEventAppendTimeoutError extends Error {
     this.name = 'TerminalEventAppendTimeoutError';
   }
 }
+
+const REMOTE_INTERRUPT_REPUBLISH_MS = 250;
+const REMOTE_INTERRUPT_POLL_MS = 50;
 
 function terminalTurn(
   id: string,
@@ -268,6 +272,36 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     if (!signal?.aborted) deps.bus.publish(turn.sessionId, terminal);
     return terminal;
   };
+  const waitForOwnerInterrupt = async (sessionId: string, runId: string): Promise<boolean> => {
+    const deadline = Date.now() + sandboxCleanupTimeoutMs;
+    let nextPublishAt = 0;
+    for (;;) {
+      const now = Date.now();
+      if (now >= nextPublishAt) {
+        deps.interrupts.publish({ sessionId, runId });
+        nextPublishAt = now + REMOTE_INTERRUPT_REPUBLISH_MS;
+      }
+      const terminal = await getTerminalTurn(deps.db, runId, sessionId);
+      if (terminal) {
+        if (terminal.status !== 'interrupted') return false;
+        // The owner commits PostgreSQL only after its local cleanup proof. Make
+        // the corresponding Redis terminal visible before acknowledging the
+        // cross-replica HTTP request; appendTerminal is idempotent for this event.
+        await appendCommittedTerminal(terminal);
+        return true;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new SandboxBackendError(
+          'cleanup_unconfirmed',
+          'the owning Runtime replica did not confirm interrupt cleanup',
+        );
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, Math.min(REMOTE_INTERRUPT_POLL_MS, remaining));
+      });
+    }
+  };
   const stopSandboxCommands = (
     sessionId: string,
     reason: string,
@@ -308,14 +342,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       });
     return pending;
   };
-  const unsubscribeInterrupts = deps.interrupts.subscribe((sessionId) => {
+  const unsubscribeInterrupts = deps.interrupts.subscribe(({ sessionId, runId }) => {
     const running = active.get(sessionId);
-    running?.controller.abort();
-    if (running) {
-      void stopSandboxCommands(sessionId, 'interrupt-broadcast', {
-        localExecution: true,
-      }).catch(() => undefined);
-    }
+    if (running?.runId !== runId) return;
+    running.controller.abort();
+    void stopSandboxCommands(sessionId, 'interrupt-broadcast', {
+      localExecution: true,
+    }).catch(() => undefined);
   });
   let sweepInFlight: Promise<void> | undefined;
   const sweepTimer =
@@ -330,7 +363,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 new Date(Date.now() - TURN_ABANDON_AFTER_MS),
                 {
                   beforeFinish: async (turn) => {
-                    deps.interrupts.publish(turn.sessionId);
+                    deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
                     // The Session row remains locked until sandboxd confirms its
                     // descendant sweep or the exact Pod UID is observed gone.
                     await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
@@ -881,6 +914,12 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         await stopSandboxCommands(sessionId, 'local-interrupt', { localExecution: true });
         return true;
       }
+      if (!sandbox.enabled) {
+        // A feature-off replica cannot prove cleanup for a foreign owner itself.
+        // It broadcasts the exact runId without holding row locks, then accepts
+        // only that Turn's committed interrupted state as the owner's proof.
+        return waitForOwnerInterrupt(sessionId, runId);
+      }
       const message = '本轮生成已打断。';
       const lastError = { code: 'TURN_INTERRUPTED', message };
       const won = await finishTurnWithMessage(
@@ -897,7 +936,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           beforeFinish: async () => {
             // Keep the Session and running Turn rows locked until the remote
             // process namespace is gone. Redis is appended only after COMMIT.
-            deps.interrupts.publish(sessionId);
+            deps.interrupts.publish({ sessionId, runId });
             await stopSandboxCommands(sessionId, 'cross-replica-interrupt');
           },
         },

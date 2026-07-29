@@ -185,6 +185,22 @@ export async function getRunningTurnId(db: Queryable, sessionId: string): Promis
   return result.rows[0]?.id ?? null;
 }
 
+/** 跨副本控制只接受精确 Turn 已提交的终态，不以同 Session 的其他轮次代替。 */
+export async function getTerminalTurn(
+  db: Queryable,
+  id: string,
+  sessionId: string,
+): Promise<TerminalTurn | null> {
+  const result = await db.query<TurnDbRow>(
+    `SELECT id, session_id, status, last_error, created_at, finished_at
+       FROM turns
+      WHERE id = $1 AND session_id = $2 AND status <> 'running'`,
+    [id, sessionId],
+  );
+  const row = result.rows[0];
+  return row ? toTerminalTurn(row) : null;
+}
+
 /** 详情页刷新恢复使用；运行态以 PostgreSQL 为真源，Redis 只负责事件补发。 */
 export async function getActiveTurn(
   db: Queryable,
