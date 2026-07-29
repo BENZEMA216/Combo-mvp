@@ -1103,6 +1103,8 @@ export function validateLiveBrowserEvidence(value, expectedIdentity, expectedEnv
       'status',
       'suite',
       'webOrigin',
+      'workflowRunAttempt',
+      'workflowRunId',
     ],
     'live browser evidence',
   );
@@ -1112,7 +1114,9 @@ export function validateLiveBrowserEvidence(value, expectedIdentity, expectedEnv
     value.status !== 'passed' ||
     value.environment !== environment ||
     value.revision !== identity.sourceSha ||
-    value.webOrigin !== LIVE_BROWSER_ORIGINS[environment]
+    value.webOrigin !== LIVE_BROWSER_ORIGINS[environment] ||
+    value.workflowRunId !== identity.deploymentRunId ||
+    value.workflowRunAttempt !== identity.deploymentRunAttempt
   ) {
     fail('live browser evidence does not match the locked deployment');
   }
@@ -1190,11 +1194,18 @@ export function validatePreviewBrowserEvidence(value, expectedIdentity) {
   return validateLiveBrowserEvidence(value, expectedIdentity, 'preview');
 }
 
-export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
+export function validateLiveBrowserFailureEvidence(value, expectedIdentity, expectedEnvironment) {
   const identity = validatePromotionIdentity(expectedIdentity);
-  if (identity.environment !== 'test') {
-    fail('live browser failure identity must select Test');
+  if (
+    expectedEnvironment !== undefined &&
+    !Object.hasOwn(LIVE_BROWSER_ORIGINS, expectedEnvironment)
+  ) {
+    fail('live browser failure environment must be test, preview, or production');
   }
+  if (expectedEnvironment !== undefined && identity.environment !== expectedEnvironment) {
+    fail('live browser failure identity does not match the requested environment');
+  }
+  const environment = identity.environment;
   for (const field of [
     'sourceCiRunId',
     'sourceCiRunAttempt',
@@ -1223,6 +1234,8 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
     'status',
     'suite',
     'webOrigin',
+    'workflowRunAttempt',
+    'workflowRunId',
   ];
   const allowedKeys = new Set([...requiredKeys, 'release']);
   const actualKeys = Object.keys(value);
@@ -1236,13 +1249,15 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
   }
   if (
     value.schemaVersion !== 1 ||
-    value.suite !== 'goal-b-test-browser' ||
-    value.environment !== 'test' ||
+    value.suite !== `goal-b-${environment}-browser` ||
+    value.environment !== environment ||
     value.revision !== identity.sourceSha ||
-    value.webOrigin !== LIVE_BROWSER_ORIGINS.test ||
+    value.webOrigin !== LIVE_BROWSER_ORIGINS[environment] ||
+    value.workflowRunId !== identity.deploymentRunId ||
+    value.workflowRunAttempt !== identity.deploymentRunAttempt ||
     value.status !== 'failed'
   ) {
-    fail('live browser failure evidence does not match the locked Test deployment');
+    fail('live browser failure evidence does not match the locked deployment');
   }
 
   const started = timestamp(value.startedAt, 'live browser failure startedAt');
@@ -1361,13 +1376,13 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity) {
       'live browser failure release',
     );
     if (
-      value.release.environment !== 'test' ||
+      value.release.environment !== environment ||
       value.release.sourceSha !== identity.sourceSha ||
       value.release.releaseId !== identity.releaseId ||
       value.release.releaseManifestDigest !== identity.releaseManifestDigest ||
       value.release.webAssetManifest !== identity.webAssetManifestDigest
     ) {
-      fail('live browser failure release does not match the immutable Test identity');
+      fail('live browser failure release does not match the immutable identity');
     }
     timestamp(value.release.builtAt, 'live browser failure release builtAt');
   }
@@ -1951,12 +1966,16 @@ function runCli(argv) {
     const evidence = readJson(take('--evidence'), 'live browser failure evidence').value;
     const identity = readJson(take('--identity'), 'promotion identity').value;
     const environment = take('--environment');
-    if (environment !== 'test') {
-      fail('--environment must be test for live browser failure evidence');
+    if (!Object.hasOwn(LIVE_BROWSER_ORIGINS, environment)) {
+      fail('--environment must be test, preview, or production for live browser failure evidence');
     }
     if (values.size !== 0) fail('unknown command argument');
     const validatedIdentity = validatePromotionIdentity(identity);
-    const validatedEvidence = validateLiveBrowserFailureEvidence(evidence, validatedIdentity);
+    const validatedEvidence = validateLiveBrowserFailureEvidence(
+      evidence,
+      validatedIdentity,
+      environment,
+    );
     process.stdout.write(
       `${sha256(canonicalJson({ evidence: validatedEvidence, identity: validatedIdentity }))}\n`,
     );

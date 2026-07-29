@@ -3137,9 +3137,15 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   );
   assert.match(
     webContract,
-    /--env REVIEW_ACCESS_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
+    /preview_token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
   );
-  assert.match(webContract, /"\$IMAGE_REF" nginx -t/);
+  assert.match(webContract, /--env REVIEW_ACCESS_TOKEN="\$preview_token"/);
+  assert.match(webContract, /docker exec "\$container" nginx -t/);
+  assert.match(webContract, /docker run -d --name "\$container"/);
+  assert.match(webContract, /http:\/\/127\.0\.0\.1\/try\//);
+  assert.match(webContract, /try\/sessions\/combo-runtime-route-contract/);
+  assert.match(webContract, /runtime_asset=.*sed -n/s);
+  assert.match(webContract, /http:\/\/127\.0\.0\.1\/try\/assets\/combo-missing-deadbeef\.js/);
   assert.match(workflow, /combo-release-mutation\.lock/);
   assert.match(workflow, /flock -n 9/);
   assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);
@@ -3199,6 +3205,89 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.doesNotMatch(credentialCheck, /GHCR_(?:TOKEN|USER)|docker-registry|create secret/);
   assert.doesNotMatch(preview, /steps\.pull_credential\.outputs\.refresh|GITHUB_OUTPUT.*refresh/);
   assert.doesNotMatch(workflow, /issue\s*#?112/i);
+});
+
+test('Preview and Production preserve exact sanitized browser failure evidence', () => {
+  const preview = text('.github/workflows/preview.yml');
+  const production = text('.github/workflows/cd.yml');
+
+  const previewRun = preview.indexOf('Run the exact-bundle six-area Preview browser acceptance');
+  const previewUpload = preview.indexOf(
+    'Upload sanitized Preview browser failure evidence',
+    previewRun,
+  );
+  const previewFail = preview.indexOf(
+    'Fail Preview after preserving browser failure evidence',
+    previewUpload,
+  );
+  const previewAdmission = preview.indexOf(
+    'Prove the current Preview checkpoint and complete resource inventory',
+    previewFail,
+  );
+  assert.ok(
+    previewRun > 0 &&
+      previewUpload > previewRun &&
+      previewFail > previewUpload &&
+      previewAdmission > previewFail,
+  );
+  const previewBrowser = preview.slice(previewRun, previewUpload);
+  assert.match(previewBrowser, /id: browser_admission/);
+  assert.match(previewBrowser, /runner_rc=\$\?/);
+  assert.match(previewBrowser, /validate-live-browser-failure[\s\\\n]*--environment preview/);
+  assert.match(
+    previewBrowser,
+    /combo-preview-failure-evidence-\$\{REVISION\}-\$\{RUN_ID\}-\$\{RUN_ATTEMPT\}/,
+  );
+  const previewFailure = preview.slice(previewUpload, previewAdmission);
+  assert.match(
+    previewFailure,
+    /always\(\) && steps\.browser_admission\.outputs\.acceptance_status == 'failed'/,
+  );
+  assert.match(
+    previewFailure,
+    /combo-preview-failure-evidence-\$\{\{ needs\.policy\.outputs\.revision \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.doesNotMatch(previewFailure, /preview-promotion\.json|ACCEPTANCE_RESEND_API_KEY/);
+
+  const productionRun = production.indexOf(
+    'Run the exact-bundle Production email OTP and six-area browser acceptance',
+  );
+  const productionUpload = production.indexOf(
+    'Upload sanitized Production browser failure evidence',
+    productionRun,
+  );
+  const productionFail = production.indexOf(
+    'Fail Production after preserving browser failure evidence',
+    productionUpload,
+  );
+  const productionAttestation = production.indexOf(
+    'Generate and validate the workflow-owned Production acceptance attestation',
+    productionFail,
+  );
+  assert.ok(
+    productionRun > 0 &&
+      productionUpload > productionRun &&
+      productionFail > productionUpload &&
+      productionAttestation > productionFail,
+  );
+  const productionBrowser = production.slice(productionRun, productionUpload);
+  assert.match(productionBrowser, /id: production_browser/);
+  assert.match(productionBrowser, /runner_rc=\$\?/);
+  assert.match(productionBrowser, /validate-live-browser-failure[\s\\\n]*--environment production/);
+  assert.match(
+    productionBrowser,
+    /combo-production-failure-evidence-\$\{REVISION\}-\$\{RUN_ID\}-\$\{RUN_ATTEMPT\}/,
+  );
+  const productionFailure = production.slice(productionUpload, productionAttestation);
+  assert.match(
+    productionFailure,
+    /always\(\) && steps\.production_browser\.outputs\.acceptance_status == 'failed'/,
+  );
+  assert.match(
+    productionFailure,
+    /combo-production-failure-evidence-\$\{\{ needs\.resolve\.outputs\.revision \}\}-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}/,
+  );
+  assert.doesNotMatch(productionFailure, /production-deployment\.json|ACCEPTANCE_RESEND_API_KEY/);
 });
 
 test('every retained cluster-scoped object is compared against one canonical bootstrap contract', () => {

@@ -322,6 +322,22 @@ test('migration is a hard fence before applications, traffic, and legacy cleanup
   );
 });
 
+test('application preflight validates Runtime Web routes and immutable asset behavior', () => {
+  const apps = functionBody('apply_apps');
+  assert.match(
+    apps,
+    /select\(\.application == "runtime-web" and \(\.path \| startswith\("assets\/"\)\)\)/,
+  );
+  assert.match(apps, /web_fetch http:\/\/127\.0\.0\.1\/try\/ >\/dev\/null/);
+  assert.match(
+    apps,
+    /web_fetch http:\/\/127\.0\.0\.1\/try\/sessions\/combo-release-route-contract >\/dev\/null/,
+  );
+  assert.match(apps, /web_fetch "http:\/\/127\.0\.0\.1\/try\/\$runtime_asset_path"/);
+  assert.match(apps, /try\/assets\/combo-missing-deadbeef\.js/);
+  assert.match(apps, /a missing hashed Runtime Web asset returned success/);
+});
+
 test('traffic cutover uses a recoverable two-phase checkpoint', () => {
   const activationStart = DEPLOY.lastIndexOf('\nreuse_completed_release\n');
   const activation = DEPLOY.slice(activationStart);

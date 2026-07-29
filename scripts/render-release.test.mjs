@@ -266,11 +266,19 @@ test('Preview release carries a SHA-scoped access gate without Secret material',
   );
   assert.match(
     gate.data['default.conf.template'],
-    /location \^~ \/try\/assets\/[\s\S]*?alias \/usr\/share\/nginx\/html\/try\/assets\/;[\s\S]*?try_files \$uri =404;/,
+    /location \^~ \/try\/assets\/[\s\S]*?try_files \$uri =404;/,
   );
   assert.match(
     gate.data['default.conf.template'],
-    /location \^~ \/try\/[\s\S]*?alias \/usr\/share\/nginx\/html\/try\/;/,
+    /location = \/try\/index\.html[\s\S]*?try_files \$uri =404;/,
+  );
+  assert.match(
+    gate.data['default.conf.template'],
+    /location \^~ \/try\/[\s\S]*?try_files \$uri \$uri\/ \/try\/index\.html;/,
+  );
+  assert.doesNotMatch(
+    gate.data['default.conf.template'],
+    /alias \/usr\/share\/nginx\/html\/try(?:\/assets\/|\/index\.html|\/);/,
   );
   assert.match(
     gate.data['bootstrap.html'],

@@ -242,9 +242,11 @@ export function parseAcceptanceArgs(argv) {
     typeof runId !== 'string' ||
     typeof runAttempt !== 'string' ||
     !/^[1-9][0-9]{0,19}$/u.test(runId) ||
-    !/^[1-9][0-9]{0,19}$/u.test(runAttempt)
+    !/^[1-9][0-9]{0,19}$/u.test(runAttempt) ||
+    !Number.isSafeInteger(Number(runId)) ||
+    !Number.isSafeInteger(Number(runAttempt))
   ) {
-    throw new Error('--run-id and --run-attempt must be positive decimal integers');
+    throw new Error('--run-id and --run-attempt must be positive safe decimal integers');
   }
   return {
     environment,
@@ -425,11 +427,17 @@ export function buildAcceptanceEvidence(state) {
     environment: state.environment ?? 'test',
     revision: state.revision,
     webOrigin: state.webOrigin,
+    workflowRunId: state.workflowRunId,
+    workflowRunAttempt: state.workflowRunAttempt,
     startedAt: state.startedAt,
     completedAt: state.completedAt,
     status:
       !failure &&
       SHA_PATTERN.test(state.revision ?? '') &&
+      Number.isSafeInteger(state.workflowRunId) &&
+      state.workflowRunId > 0 &&
+      Number.isSafeInteger(state.workflowRunAttempt) &&
+      state.workflowRunAttempt > 0 &&
       release !== undefined &&
       hasAllResources &&
       metrics.uploadParts === GOAL_B_UPLOAD_PARTS.length &&
@@ -864,6 +872,8 @@ async function runAcceptance(options) {
     environment: options.environment,
     revision: options.revision,
     webOrigin: options.webOrigin,
+    workflowRunId: Number(options.runId),
+    workflowRunAttempt: Number(options.runAttempt),
     startedAt: new Date().toISOString(),
     completedAt: '',
     checks: [],
@@ -1005,7 +1015,10 @@ async function runAcceptance(options) {
 
     await checked('preview_identity_badge_and_copy', async () => {
       const verifyBadge = async (path, contextHeading, expectedPage) => {
-        await page.goto(path, { waitUntil: 'domcontentloaded' });
+        const navigation = await page.goto(path, { waitUntil: 'domcontentloaded' });
+        if (navigation?.status() !== 200) {
+          fail(activeCheck, 'http_status', navigation?.status());
+        }
         const badge = page.locator('aside[aria-label="Preview 发布身份"]');
         if (options.environment !== 'preview') {
           ensure((await badge.count()) === 0, activeCheck);
