@@ -1702,13 +1702,26 @@ apply_apps() {
   [[ "$live_web_asset_digest" == "$web_asset_digest" ]] ||
     fail 'live Web asset manifest digest differs from the release'
 
-  local asset_path
+  local asset_path runtime_asset_path
   asset_path=$(jq -er '
     first(.assets[] | select(.application == "web" and (.path | startswith("assets/"))) | .path)
   ' "$WEB_ASSETS")
+  runtime_asset_path=$(jq -er '
+    first(
+      .assets[]
+      | select(.application == "runtime-web" and (.path | startswith("assets/")))
+      | .path
+    )
+  ' "$WEB_ASSETS")
   web_fetch "http://127.0.0.1/$asset_path" >/dev/null
+  web_fetch http://127.0.0.1/try/ >/dev/null
+  web_fetch http://127.0.0.1/try/sessions/combo-release-route-contract >/dev/null
+  web_fetch "http://127.0.0.1/try/$runtime_asset_path" >/dev/null
   if web_fetch http://127.0.0.1/assets/combo-missing-deadbeef.js >/dev/null; then
     fail 'a missing hashed Web asset returned success'
+  fi
+  if web_fetch http://127.0.0.1/try/assets/combo-missing-deadbeef.js >/dev/null; then
+    fail 'a missing hashed Runtime Web asset returned success'
   fi
 }
 

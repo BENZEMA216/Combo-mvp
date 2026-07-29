@@ -1126,11 +1126,13 @@ jobs:
             }' >"$RUNNER_TEMP/preview-identity.json"
 
       - name: Run the exact-bundle six-area Preview browser acceptance
+        id: browser_admission
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.policy.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          IDENTITY: ${{ runner.temp }}/preview-identity.json
           REVIEW_ACCESS_TOKEN: ${{ secrets.CLOUD_REVIEW_ACCESS_TOKEN }}
           ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
@@ -1146,6 +1148,9 @@ jobs:
             echo 'The cloud-review Environment lacks a valid full-access acceptance Resend key.' >&2
             exit 1
           }
+          validator="$RELEASE_ROOT/scripts/promotion-evidence.mjs"
+          [[ -f "$validator" && ! -L "$validator" ]]
+          [[ -f "$IDENTITY" && ! -L "$IDENTITY" ]]
           archive="$RUNNER_TEMP/combo-preview-acceptance-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" acceptance
           chmod 0600 "$archive"
@@ -1154,6 +1159,7 @@ jobs:
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
           scp -q "$archive" "release-target:$temporary"
           ssh release-target mv -fT -- "$temporary" "$remote"
+          set +e
           {
             printf '%s\n' "$REVIEW_ACCESS_TOKEN"
             printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
@@ -1192,6 +1198,8 @@ jobs:
           source "$HOME/.nvm/nvm.sh"
           nvm use 24 >/dev/null
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          umask 077
+          set +e
           node "$work/acceptance/live-browser-acceptance.mjs" \
             --environment preview \
             --revision "$revision" \
@@ -1199,33 +1207,88 @@ jobs:
             --run-attempt "$run_attempt" \
             --web-origin https://review.43-160-242-46.sslip.io \
             --output "$output"
+          runner_rc=$?
+          set -e
+          [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"
+          [[ -f "$output" && ! -L "$output" ]]
           chmod 0600 "$output"
+          [[ "$(stat -c '%a' "$output")" == 600 ]]
+          output_bytes=$(stat -c '%s' "$output")
+          [[ "$output_bytes" =~ ^[1-9][0-9]*$ && "$output_bytes" -le 1048576 ]]
+          exit "$runner_rc"
           REMOTE
           } | ssh release-target \
             "IFS= read -r review_access; IFS= read -r acceptance_resend_api_key; export COMBO_REVIEW_ACCESS_TOKEN=\"\$review_access\" ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset review_access acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
-
-      - name: Fetch and validate the six-area Preview browser evidence
-        id: browser_admission
-        env:
-          RELEASE_ROOT: ${{ runner.temp }}/combo-release
-          REVISION: ${{ needs.policy.outputs.revision }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          IDENTITY: ${{ runner.temp }}/preview-identity.json
-        run: |
-          set -euo pipefail
+          runner_rc=$?
+          set -e
+          [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"
           remote="data/combo-acceptance/preview/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.json"
           evidence="$RUNNER_TEMP/preview-browser-acceptance.json"
           scp -q "release-target:$remote" "$evidence"
           chmod 0600 "$evidence"
           ssh release-target rm -f -- "$remote"
-          evidence_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
-            validate-live-browser \
-            --environment preview \
-            --evidence "$evidence" \
-            --identity "$IDENTITY")
+          [[ -f "$evidence" && ! -L "$evidence" ]]
+          evidence_bytes=$(stat -c '%s' "$evidence")
+          [[ "$evidence_bytes" =~ ^[1-9][0-9]*$ && "$evidence_bytes" -le 1048576 ]]
+          if [[ "$runner_rc" == 0 ]]; then
+            acceptance_status=passed
+            evidence_digest=$(node "$validator" validate-live-browser \
+              --environment preview \
+              --evidence "$evidence" \
+              --identity "$IDENTITY")
+          else
+            acceptance_status=failed
+            evidence_digest=$(node "$validator" validate-live-browser-failure \
+              --environment preview \
+              --evidence "$evidence" \
+              --identity "$IDENTITY")
+          fi
           [[ "$evidence_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf 'evidence_digest=%s\n' "$evidence_digest" >>"$GITHUB_OUTPUT"
+          {
+            printf 'acceptance_status=%s\n' "$acceptance_status"
+            printf 'evidence_digest=%s\n' "$evidence_digest"
+          } >>"$GITHUB_OUTPUT"
+          if [[ "$acceptance_status" == failed ]]; then
+            failure_dir="$RUNNER_TEMP/combo-preview-failure-evidence-${REVISION}-${RUN_ID}-${RUN_ATTEMPT}"
+            install -d -m 0700 "$failure_dir"
+            install -m 0600 "$evidence" "$failure_dir/preview-live-browser-failure.json"
+            install -m 0600 "$IDENTITY" "$failure_dir/preview-promotion-identity.json"
+            [[ "$(node "$validator" validate-live-browser-failure \
+              --environment preview \
+              --evidence "$failure_dir/preview-live-browser-failure.json" \
+              --identity "$failure_dir/preview-promotion-identity.json")" == "$evidence_digest" ]]
+            mapfile -t failure_files < <(
+              find "$failure_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' |
+                LC_ALL=C sort
+            )
+            [[ "${#failure_files[@]}" == 2 ]]
+            [[ "${failure_files[0]}" == preview-live-browser-failure.json ]]
+            [[ "${failure_files[1]}" == preview-promotion-identity.json ]]
+            ! find "$failure_dir" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .
+            printf 'failure_path=%s\n' "$failure_dir" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload sanitized Preview browser failure evidence
+        id: upload_preview_failure_evidence
+        if: ${{ always() && steps.browser_admission.outputs.acceptance_status == 'failed' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-preview-failure-evidence-${{ needs.policy.outputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.browser_admission.outputs.failure_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail Preview after preserving browser failure evidence
+        if: ${{ always() && steps.browser_admission.outputs.acceptance_status == 'failed' }}
+        env:
+          FAILURE_UPLOAD_OUTCOME: ${{ steps.upload_preview_failure_evidence.outcome }}
+        run: |
+          if [[ "$FAILURE_UPLOAD_OUTCOME" == success ]]; then
+            echo 'The six-area Preview browser acceptance failed; sanitized failure evidence was preserved.' >&2
+          else
+            echo 'The six-area Preview browser acceptance failed before evidence upload could be confirmed.' >&2
+          fi
+          exit 1
 
       - name: Prove the current Preview checkpoint and complete resource inventory
         id: live_admission

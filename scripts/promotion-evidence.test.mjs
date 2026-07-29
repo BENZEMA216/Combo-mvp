@@ -289,6 +289,8 @@ function browserEvidence(environment = 'preview') {
     suite: `goal-b-${environment}-browser`,
     environment,
     revision: REVISION,
+    workflowRunId: expectedIdentity.deploymentRunId,
+    workflowRunAttempt: expectedIdentity.deploymentRunAttempt,
     webOrigin:
       environment === 'production'
         ? 'https://buildwithcombo.com'
@@ -315,13 +317,27 @@ function browserEvidence(environment = 'preview') {
   };
 }
 
-function browserFailureEvidence(prefixLength = 2, failure = undefined) {
+function browserFailureEvidence(prefixLength = 2, failure = undefined, environment = 'test') {
+  const expectedIdentity =
+    environment === 'test'
+      ? testIdentity
+      : environment === 'preview'
+        ? identity
+        : productionIdentity;
+  const webOrigin =
+    environment === 'test'
+      ? 'http://127.0.0.1:18080'
+      : environment === 'preview'
+        ? 'https://review.43-160-242-46.sslip.io'
+        : 'https://buildwithcombo.com';
   const value = {
     schemaVersion: 1,
-    suite: 'goal-b-test-browser',
-    environment: 'test',
+    suite: `goal-b-${environment}-browser`,
+    environment,
     revision: REVISION,
-    webOrigin: 'http://127.0.0.1:18080',
+    workflowRunId: expectedIdentity.deploymentRunId,
+    workflowRunAttempt: expectedIdentity.deploymentRunAttempt,
+    webOrigin,
     startedAt: '2026-07-25T00:00:00.000Z',
     completedAt: '2026-07-25T00:00:03.000Z',
     status: 'failed',
@@ -340,12 +356,12 @@ function browserFailureEvidence(prefixLength = 2, failure = undefined) {
   };
   if (prefixLength > 0) {
     value.release = {
-      environment: 'test',
+      environment,
       sourceSha: REVISION,
       releaseId: `release-${REVISION}`,
       builtAt: '2026-07-24T00:00:00.000Z',
-      releaseManifestDigest: testIdentity.releaseManifestDigest,
-      webAssetManifest: testIdentity.webAssetManifestDigest,
+      releaseManifestDigest: expectedIdentity.releaseManifestDigest,
+      webAssetManifest: expectedIdentity.webAssetManifestDigest,
     };
   }
   return value;
@@ -730,6 +746,10 @@ test('Preview browser admission requires all live checks and exact release ident
   const wrongRelease = structuredClone(browser);
   wrongRelease.release.releaseManifestDigest = digest('f');
   assert.throws(() => validatePreviewBrowserEvidence(wrongRelease, identity), /does not match/);
+
+  const wrongAttempt = structuredClone(browser);
+  wrongAttempt.workflowRunAttempt += 1;
+  assert.throws(() => validatePreviewBrowserEvidence(wrongAttempt, identity), /does not match/);
 });
 
 test('Test live-browser failure admission accepts only the next check after a passed prefix', () => {
@@ -791,14 +811,21 @@ test('Test live-browser failure admission locks Test origin, release, SHA, and e
   wrongOrigin.webOrigin = 'https://review.43-160-242-46.sslip.io';
   assert.throws(
     () => validateLiveBrowserFailureEvidence(wrongOrigin, testIdentity),
-    /locked Test deployment/,
+    /locked deployment/,
+  );
+
+  const wrongAttempt = structuredClone(failed);
+  wrongAttempt.workflowRunAttempt += 1;
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(wrongAttempt, testIdentity),
+    /locked deployment/,
   );
 
   const wrongRelease = structuredClone(failed);
   wrongRelease.release.releaseManifestDigest = digest('f');
   assert.throws(
     () => validateLiveBrowserFailureEvidence(wrongRelease, testIdentity),
-    /immutable Test identity/,
+    /immutable identity/,
   );
 
   const missingRelease = structuredClone(failed);
@@ -819,8 +846,8 @@ test('Test live-browser failure admission locks Test origin, release, SHA, and e
   );
 
   assert.throws(
-    () => validateLiveBrowserFailureEvidence(failed, identity),
-    /identity must select Test/,
+    () => validateLiveBrowserFailureEvidence(failed, identity, 'test'),
+    /does not match the requested environment/,
   );
   assert.throws(
     () =>
@@ -830,7 +857,7 @@ test('Test live-browser failure admission locks Test origin, release, SHA, and e
         releaseArtifactName: `combo-release-${'b'.repeat(40)}`,
         releaseId: `release-${'b'.repeat(40)}`,
       }),
-    /locked Test deployment/,
+    /locked deployment/,
   );
   assert.throws(
     () =>
@@ -855,6 +882,25 @@ test('Test live-browser failure admission locks Test origin, release, SHA, and e
         releaseArtifactId: Number.MAX_SAFE_INTEGER + 1,
       }),
     /exact safe integer/,
+  );
+});
+
+test('Preview and Production live-browser failure admission bind their exact environment', () => {
+  const preview = browserFailureEvidence(3, undefined, 'preview');
+  assert.deepEqual(validateLiveBrowserFailureEvidence(preview, identity, 'preview'), preview);
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(preview, identity, 'production'),
+    /does not match the requested environment/,
+  );
+
+  const production = browserFailureEvidence(3, undefined, 'production');
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(production, productionIdentity, 'production'),
+    production,
+  );
+  assert.throws(
+    () => validateLiveBrowserFailureEvidence(production, identity, 'preview'),
+    /locked deployment/,
   );
 });
 
@@ -1012,7 +1058,7 @@ test('Test live-browser failure admission recursively rejects auth and email mat
   }
 });
 
-test('live-browser failure CLI digest canonically binds the Test identity and workflow attempt', () => {
+test('live-browser failure CLI rejects a mismatched workflow attempt', () => {
   const directory = mkdtempSync(join(tmpdir(), 'combo-live-browser-failure-'));
   const evidencePath = join(directory, 'evidence.json');
   const identityPath = join(directory, 'identity.json');
@@ -1044,10 +1090,8 @@ test('live-browser failure CLI digest canonically binds the Test identity and wo
         { encoding: 'utf8' },
       ).trim();
     const exactAttemptDigest = validate(identityPath);
-    const changedAttemptDigest = validate(changedIdentityPath);
     assert.match(exactAttemptDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.match(changedAttemptDigest, /^sha256:[0-9a-f]{64}$/);
-    assert.notEqual(changedAttemptDigest, exactAttemptDigest);
+    assert.throws(() => validate(changedIdentityPath), /locked deployment/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

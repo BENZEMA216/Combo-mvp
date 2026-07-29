@@ -25,6 +25,10 @@ const REVISION = 'a'.repeat(40);
 const ORIGIN = 'http://127.0.0.1:18080';
 const RUN_ID = '30123456789';
 const RUN_ATTEMPT = '2';
+const WORKFLOW_RUN = {
+  workflowRunId: Number(RUN_ID),
+  workflowRunAttempt: Number(RUN_ATTEMPT),
+};
 const RELEASE = {
   schemaVersion: 1,
   environment: 'test',
@@ -154,6 +158,20 @@ test('accepts only the exact SHA, loopback origin, and fresh output arguments', 
       REVISION,
       '--run-id',
       '0',
+      '--run-attempt',
+      RUN_ATTEMPT,
+      '--web-origin',
+      ORIGIN,
+      '--output',
+      output,
+    ],
+    [
+      '--environment',
+      'test',
+      '--revision',
+      REVISION,
+      '--run-id',
+      String(Number.MAX_SAFE_INTEGER + 1),
       '--run-attempt',
       RUN_ATTEMPT,
       '--web-origin',
@@ -334,6 +352,7 @@ test('release identity requires the exact deployed Test schema and revision', ()
 
 test('evidence allowlist drops cookies, pairing codes, tokens, and arbitrary response data', () => {
   const evidence = buildAcceptanceEvidence({
+    ...WORKFLOW_RUN,
     revision: REVISION,
     webOrigin: ORIGIN,
     startedAt: '2026-07-25T00:00:00.000Z',
@@ -360,6 +379,8 @@ test('evidence allowlist drops cookies, pairing codes, tokens, and arbitrary res
   });
   const serialized = serializeAcceptanceEvidence(evidence);
   assert.equal(evidence.status, 'passed');
+  assert.equal(evidence.workflowRunId, Number(RUN_ID));
+  assert.equal(evidence.workflowRunAttempt, Number(RUN_ATTEMPT));
   assert.deepEqual(evidence.resources, UUIDS);
   assert.deepEqual(evidence.metrics, { uploadParts: 2, completedStudioRevisions: 2 });
   assert.doesNotMatch(
@@ -392,6 +413,7 @@ test('evidence allowlist drops cookies, pairing codes, tokens, and arbitrary res
 
 test('passed evidence requires release identity, all resource ids, and real flow metrics', () => {
   const base = {
+    ...WORKFLOW_RUN,
     revision: REVISION,
     webOrigin: ORIGIN,
     startedAt: '2026-07-25T00:00:00.000Z',
@@ -402,6 +424,10 @@ test('passed evidence requires release identity, all resource ids, and real flow
     release: RELEASE,
   };
   assert.equal(buildAcceptanceEvidence(base).status, 'passed');
+  assert.equal(
+    buildAcceptanceEvidence({ ...base, workflowRunAttempt: undefined }).status,
+    'failed',
+  );
   assert.equal(buildAcceptanceEvidence({ ...base, release: undefined }).status, 'failed');
   assert.equal(
     buildAcceptanceEvidence({
@@ -599,6 +625,7 @@ test('Studio Turn classifier binds the accepted Turn and fails terminal errors w
 
 test('failure evidence retains only an allowlisted Studio Turn diagnostic code', () => {
   const evidence = buildAcceptanceEvidence({
+    ...WORKFLOW_RUN,
     revision: REVISION,
     webOrigin: ORIGIN,
     startedAt: '2026-07-25T00:00:00.000Z',
@@ -620,6 +647,7 @@ test('failure evidence retains only an allowlisted Studio Turn diagnostic code',
   });
 
   const redacted = buildAcceptanceEvidence({
+    ...WORKFLOW_RUN,
     revision: REVISION,
     webOrigin: ORIGIN,
     startedAt: '2026-07-25T00:00:00.000Z',
@@ -644,6 +672,7 @@ test('secure writer creates a new 0600 evidence file and refuses overwrite', () 
     'result.json',
   );
   const evidence = buildAcceptanceEvidence({
+    ...WORKFLOW_RUN,
     revision: REVISION,
     webOrigin: ORIGIN,
     startedAt: '2026-07-25T00:00:00.000Z',
@@ -721,6 +750,10 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /gateCookie\.secure === true/);
   assert.match(source, /gateCookie\.sameSite === 'Strict'/);
   assert.match(source, /previewGateCookie = \{ \.\.\.gateCookie \}/);
+  assert.match(
+    source,
+    /const navigation = await page\.goto\(path,[\s\S]*navigation\?\.status\(\) !== 200[\s\S]*fail\(activeCheck, 'http_status', navigation\?\.status\(\)\)/,
+  );
   assert.match(
     source,
     /value: authenticationCookieValue[\s\S]*const revoked = await replayApi\.raw\('\/api\/v1\/me'\)[\s\S]*revoked\.status\(\) === 401/,

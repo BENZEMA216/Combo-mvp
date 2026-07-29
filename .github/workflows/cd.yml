@@ -777,11 +777,13 @@ jobs:
           printf 'digest=%s\n' "$activation_digest" >>"$GITHUB_OUTPUT"
 
       - name: Run the exact-bundle Production email OTP and six-area browser acceptance
+        id: production_browser
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.resolve.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          IDENTITY: ${{ runner.temp }}/production-identity.json
           ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
           set -euo pipefail
@@ -792,6 +794,9 @@ jobs:
             echo 'The production Environment lacks a valid full-access acceptance Resend key.' >&2
             exit 1
           }
+          validator="$RELEASE_ROOT/scripts/promotion-evidence.mjs"
+          [[ -f "$validator" && ! -L "$validator" ]]
+          [[ -f "$IDENTITY" && ! -L "$IDENTITY" ]]
           archive="$RUNNER_TEMP/combo-production-acceptance-${REVISION}.tar.gz"
           tar -C "$RELEASE_ROOT" -czf "$archive" acceptance
           chmod 0600 "$archive"
@@ -800,6 +805,7 @@ jobs:
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-release-incoming"'
           scp -q "$archive" "release-target:$temporary"
           ssh release-target mv -fT -- "$temporary" "$remote"
+          set +e
           {
             printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
             cat <<'REMOTE'
@@ -837,6 +843,8 @@ jobs:
           source "$HOME/.nvm/nvm.sh"
           nvm use 24 >/dev/null
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          umask 077
+          set +e
           node "$work/acceptance/live-browser-acceptance.mjs" \
             --environment production \
             --revision "$revision" \
@@ -844,24 +852,24 @@ jobs:
             --run-attempt "$run_attempt" \
             --web-origin https://buildwithcombo.com \
             --output "$output"
+          runner_rc=$?
+          set -e
+          [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"
+          [[ -f "$output" && ! -L "$output" ]]
           chmod 0600 "$output"
+          [[ "$(stat -c '%a' "$output")" == 600 ]]
+          output_bytes=$(stat -c '%s' "$output")
+          [[ "$output_bytes" =~ ^[1-9][0-9]*$ && "$output_bytes" -le 1048576 ]]
+          exit "$runner_rc"
           REMOTE
           } | ssh release-target \
             "IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
-
-      - name: Fetch and validate Production browser evidence
-        id: production_browser
-        env:
-          RELEASE_ROOT: ${{ runner.temp }}/combo-release
-          REVISION: ${{ needs.resolve.outputs.revision }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          IDENTITY: ${{ runner.temp }}/production-identity.json
-          EVIDENCE: ${{ runner.temp }}/production-browser-acceptance.json
-        run: |
-          set -euo pipefail
+          runner_rc=$?
+          set -e
+          [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"
           remote="data/combo-acceptance/production/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.browser.json"
-          ssh release-target bash -s -- "$remote" <<'REMOTE' >"$EVIDENCE"
+          evidence="$RUNNER_TEMP/production-browser-acceptance.json"
+          ssh release-target bash -s -- "$remote" <<'REMOTE' >"$evidence"
           set -euo pipefail
           evidence="$HOME/$1"
           [[ -f "$evidence" && ! -L "$evidence" ]]
@@ -870,14 +878,70 @@ jobs:
           [[ "$bytes" =~ ^[1-9][0-9]*$ && "$bytes" -le 1048576 ]]
           cat "$evidence"
           REMOTE
-          chmod 0600 "$EVIDENCE"
-          browser_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
-            validate-live-browser \
-            --environment production \
-            --evidence "$EVIDENCE" \
-            --identity "$IDENTITY")
+          chmod 0600 "$evidence"
+          ssh release-target rm -f -- "$remote"
+          [[ -f "$evidence" && ! -L "$evidence" ]]
+          evidence_bytes=$(stat -c '%s' "$evidence")
+          [[ "$evidence_bytes" =~ ^[1-9][0-9]*$ && "$evidence_bytes" -le 1048576 ]]
+          if [[ "$runner_rc" == 0 ]]; then
+            acceptance_status=passed
+            browser_digest=$(node "$validator" validate-live-browser \
+              --environment production \
+              --evidence "$evidence" \
+              --identity "$IDENTITY")
+          else
+            acceptance_status=failed
+            browser_digest=$(node "$validator" validate-live-browser-failure \
+              --environment production \
+              --evidence "$evidence" \
+              --identity "$IDENTITY")
+          fi
           [[ "$browser_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          printf 'digest=%s\n' "$browser_digest" >>"$GITHUB_OUTPUT"
+          {
+            printf 'acceptance_status=%s\n' "$acceptance_status"
+            printf 'digest=%s\n' "$browser_digest"
+          } >>"$GITHUB_OUTPUT"
+          if [[ "$acceptance_status" == failed ]]; then
+            failure_dir="$RUNNER_TEMP/combo-production-failure-evidence-${REVISION}-${RUN_ID}-${RUN_ATTEMPT}"
+            install -d -m 0700 "$failure_dir"
+            install -m 0600 "$evidence" "$failure_dir/production-live-browser-failure.json"
+            install -m 0600 "$IDENTITY" "$failure_dir/production-promotion-identity.json"
+            [[ "$(node "$validator" validate-live-browser-failure \
+              --environment production \
+              --evidence "$failure_dir/production-live-browser-failure.json" \
+              --identity "$failure_dir/production-promotion-identity.json")" == "$browser_digest" ]]
+            mapfile -t failure_files < <(
+              find "$failure_dir" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' |
+                LC_ALL=C sort
+            )
+            [[ "${#failure_files[@]}" == 2 ]]
+            [[ "${failure_files[0]}" == production-live-browser-failure.json ]]
+            [[ "${failure_files[1]}" == production-promotion-identity.json ]]
+            ! find "$failure_dir" -mindepth 1 -maxdepth 1 -type l -print -quit | grep -q .
+            printf 'failure_path=%s\n' "$failure_dir" >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload sanitized Production browser failure evidence
+        id: upload_production_failure_evidence
+        if: ${{ always() && steps.production_browser.outputs.acceptance_status == 'failed' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: combo-production-failure-evidence-${{ needs.resolve.outputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.production_browser.outputs.failure_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Fail Production after preserving browser failure evidence
+        if: ${{ always() && steps.production_browser.outputs.acceptance_status == 'failed' }}
+        env:
+          FAILURE_UPLOAD_OUTCOME: ${{ steps.upload_production_failure_evidence.outcome }}
+        run: |
+          if [[ "$FAILURE_UPLOAD_OUTCOME" == success ]]; then
+            echo 'The six-area Production browser acceptance failed; sanitized failure evidence was preserved.' >&2
+          else
+            echo 'The six-area Production browser acceptance failed before evidence upload could be confirmed.' >&2
+          fi
+          exit 1
 
       - name: Generate and validate the workflow-owned Production acceptance attestation
         id: acceptance_attestation

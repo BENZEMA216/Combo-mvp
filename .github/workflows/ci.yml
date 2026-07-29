@@ -404,7 +404,8 @@ jobs:
 
           cleanup
           container="combo-web-preview-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          docker run --rm --name "$container" \
+          preview_token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          docker run -d --name "$container" \
             --read-only \
             --user 101:101 \
             --cap-drop ALL \
@@ -416,8 +417,46 @@ jobs:
             --env NGINX_RESOLVER=127.0.0.11 \
             --env API_UPSTREAM_HOST=api.invalid \
             --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
-            --env REVIEW_ACCESS_TOKEN=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-            "$IMAGE_REF" nginx -t
+            --env REVIEW_ACCESS_TOKEN="$preview_token" \
+            "$IMAGE_REF" >/dev/null
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec "$container" \
+                wget -qO /dev/null http://127.0.0.1/__review/healthz; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          [[ "$ready" == 1 ]]
+          docker exec "$container" nginx -t
+          cookie_header="Cookie: combo_review_access=$preview_token"
+          docker exec "$container" \
+            wget --header="$cookie_header" -qO- http://127.0.0.1/try/ \
+            >"$RUNNER_TEMP/preview-runtime-index.html"
+          docker exec "$container" cat /usr/share/nginx/html/try/index.html \
+            >"$RUNNER_TEMP/expected-runtime-index.html"
+          cmp "$RUNNER_TEMP/expected-runtime-index.html" \
+            "$RUNNER_TEMP/preview-runtime-index.html"
+          docker exec "$container" \
+            wget --header="$cookie_header" -qO- \
+            http://127.0.0.1/try/sessions/combo-runtime-route-contract \
+            >"$RUNNER_TEMP/preview-runtime-deep-link.html"
+          cmp "$RUNNER_TEMP/expected-runtime-index.html" \
+            "$RUNNER_TEMP/preview-runtime-deep-link.html"
+          runtime_asset=$(sed -n \
+            's/.*src="\([^"]*\/try\/assets\/[^"]*\.js\)".*/\1/p' \
+            "$RUNNER_TEMP/preview-runtime-index.html" | head -n 1)
+          [[ "$runtime_asset" =~ ^/try/assets/[A-Za-z0-9_-]+\.js$ ]]
+          docker exec "$container" \
+            wget --header="$cookie_header" -qO /dev/null \
+            "http://127.0.0.1$runtime_asset"
+          if docker exec "$container" \
+              wget --header="$cookie_header" -qO /dev/null \
+              http://127.0.0.1/try/assets/combo-missing-deadbeef.js; then
+            echo 'Preview returned success for a missing Runtime Web asset.' >&2
+            exit 1
+          fi
 
       - name: Record the immutable image reference
         if: >-
