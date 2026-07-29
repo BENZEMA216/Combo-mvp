@@ -378,7 +378,7 @@ test('traffic cutover uses a recoverable two-phase checkpoint', () => {
 
   const load = functionBody('load_post_cut_checkpoint');
   const write = functionBody('write_release_checkpoint');
-  assert.match(load, /\.schemaVersion == 2/);
+  assert.match(load, /\.schemaVersion == 3/);
   assert.match(load, /\.phase == "armed" or \.phase == "post-cut" or \.phase == "finalizing"/);
   assert.match(write, /mv -fT "\$checkpoint_stage" "\$pending_checkpoint"/);
   assert.match(
@@ -403,6 +403,147 @@ test('a reused foundation accepts a false checkpoint boolean', () => {
     load,
     /created=\$\(jq -er '\.foundationCreated'/,
     'jq -e treats the valid boolean false as a failing exit status',
+  );
+});
+
+test('schema structure identity is stable across activation and finalization', () => {
+  const verify = functionBody('verify_release_schema_structure');
+  const reuse = functionBody('reuse_completed_release');
+  const finalize = functionBody('validate_live_candidate_for_finalize');
+
+  assert.match(verify, /digest=\$\(jq -er '\.actualDigest'/);
+  assert.doesNotMatch(verify, /schema_structure_evidence" \| awk '\{print "sha256:" \$1\}'/);
+  assert.match(reuse, /\.schemaStructure\.actualDigest == \$schema\[0\]\.actualDigest/);
+  assert.doesNotMatch(reuse, /\.schemaStructure == \$schema\[0\]/);
+  assert.match(finalize, /schema_structure_digest" ==[\s\S]*\.schemaStructureProofDigest/);
+});
+
+test('foundation reset authority is deterministic and storage paths stay exact', () => {
+  const validate = functionBody('validate_foundation_reset_evidence');
+  assert.match(validate, /combo-foundation-reset-v1[\s\S]*expected_request_id/);
+  assert.match(validate, /\.requestId == \$requestId/);
+  assert.match(validate, /\.authorityDigest == \$manifestDigest/);
+  assert.match(validate, /\.volume == \("pvc-" \+ \.claimUid\)/);
+  assert.match(
+    validate,
+    /\$storageRoot \+ "\/" \+ \.volume \+ "_" \+ \$namespace \+ "_" \+ \.claim/,
+  );
+});
+
+test('reuse admission is revalidated while the deployment mutation lock is held', () => {
+  const completed = functionBody('completed_foundation_reset_is_consumed_for_reuse');
+  const chain = functionBody('validate_completed_foundation_reset_journal');
+  const consumer = functionBody('foundation_reset_consumption_directory_matches');
+  const admission = functionBody('validate_foundation_reuse_admission');
+  const lock = indexOf(/flock -n 9 \|\| fail 'another environment mutation is running'/);
+  const lockedJournalAudit = indexOf(/\naudit_reset_roll_forward_journals\n/);
+  const lockedRollForwardValidation = indexOf(/\nvalidate_reset_roll_forward_evidence\n/);
+  const lockedAdmission = indexOf(/\nvalidate_foundation_reuse_admission\n/);
+  const firstClusterRead = indexOf(/"\$\{K\[@\]\}" get namespace "\$NAMESPACE"/);
+
+  assert.match(consumer, /sha256sum --quiet -c SHA256SUMS/);
+  assert.match(consumer, /cmp -s "\$reset_evidence"/);
+  assert.match(consumer, /checksum_set_lists_file_once/);
+  assert.match(completed, /\.foundationResetEvidenceDigest == \$digest/);
+  assert.match(
+    completed,
+    /finalized=.*\n[\s\S]*foundation_reset_consumption_directory_matches[\s\S]*pending=.*\n[\s\S]*activation=/,
+    'a valid finalized proof must be considered before pending and activation crash residue',
+  );
+  assert.match(chain, /\.planDigest == \$planDigest/);
+  assert.match(chain, /\.foundationSnapshotDigest == \$snapshotDigest/);
+  assert.match(
+    chain,
+    /\.newStorage[\s\S]*map\(del\(\.claimAuthorityDigest, \.volumeAuthorityDigest\)\)/,
+  );
+  assert.match(admission, /unconsumed completed foundation reset blocks reuse deployment/);
+  assert.match(admission, /unfinished foundation reset journal blocks reuse deployment/);
+  assert.match(admission, /orphan foundation reset checkpoint blocks reuse deployment/);
+  assert.match(admission, /pending clean-slate boundary requires controlled roll-forward/);
+  assert.match(admission, /this candidate entered the clean-slate boundary/);
+  assertBefore(
+    lock,
+    lockedJournalAudit,
+    'the global roll-forward journal audit must run after taking the mutation lock',
+  );
+  assertBefore(
+    lockedJournalAudit,
+    lockedRollForwardValidation,
+    'the global journal audit must precede candidate-local roll-forward validation',
+  );
+  assertBefore(
+    lockedRollForwardValidation,
+    lockedAdmission,
+    'roll-forward evidence validation must precede foundation reuse admission',
+  );
+  assertBefore(lock, lockedAdmission, 'reuse admission must run after taking the mutation lock');
+  assertBefore(
+    lockedAdmission,
+    firstClusterRead,
+    'reuse admission must finish before the deployment reads or mutates Kubernetes',
+  );
+});
+
+test('reset roll-forward authority is exact, non-downgradable, and sealed with release evidence', () => {
+  const validate = functionBody('validate_reset_roll_forward_evidence');
+  const copy = functionBody('validate_reset_roll_forward_copy');
+  const activation = functionBody('write_activation_evidence');
+  const loadActivation = functionBody('load_activation_evidence');
+  const release = functionBody('write_release_evidence');
+  const reuse = functionBody('reuse_completed_release');
+
+  assert.match(validate, /combo-reset-roll-forward-v1/);
+  assert.match(validate, /\.newSourceSha == \$sourceSha/);
+  assert.match(validate, /\.newManifestDigest == \$manifestDigest/);
+  assert.match(validate, /\.phase == "completed"/);
+  assert.match(validate, /requires its evidence/);
+  assert.match(validate, /durable completion record/);
+  assert.match(copy, /cmp -s "\$RESET_ROLL_FORWARD_EVIDENCE"/);
+  assert.match(activation, /reset-roll-forward-evidence\.json/);
+  assert.match(loadActivation, /validate_reset_roll_forward_copy/);
+  assert.match(release, /reset-roll-forward-evidence\.json/);
+  assert.match(reuse, /validate_reset_roll_forward_copy/);
+  assert.match(DEPLOY, /foundation reset and reset roll-forward evidence are mutually exclusive/);
+});
+
+test('foundation reset and protected acceptance remain sealed across activation and finalization', () => {
+  const activation = functionBody('write_activation_evidence');
+  const loadActivation = functionBody('load_activation_evidence');
+  const release = functionBody('write_release_evidence');
+  const reuse = functionBody('reuse_completed_release');
+
+  assert.match(
+    DEPLOY,
+    /Production finalization requires acceptance evidence, identity, attestation, and digest/,
+  );
+  assert.match(
+    DEPLOY,
+    /promotion-evidence\.mjs" validate-live-attestation[\s\S]*--evidence "\$ACCEPTANCE_EVIDENCE"[\s\S]*--identity "\$PROMOTION_IDENTITY"/,
+  );
+  assert.match(
+    activation,
+    /install -m 0644 "\$FOUNDATION_RESET_EVIDENCE"[\s\S]*foundation-reset-evidence\.json/,
+  );
+  assert.match(
+    activation,
+    /activation_files\+=\(foundation-reset-evidence\.json\)[\s\S]*sha256sum "\$\{activation_files\[@\]\}"/,
+  );
+  assert.match(
+    loadActivation,
+    /sha256sum "\$activation_directory\/foundation-reset-evidence\.json"[\s\S]*cmp -s "\$FOUNDATION_RESET_EVIDENCE"/,
+  );
+  for (const evidence of [
+    'acceptance-attestation.json',
+    'acceptance-evidence.json',
+    'promotion-identity.json',
+    'foundation-reset-evidence.json',
+  ]) {
+    assert.match(release, new RegExp(evidence.replaceAll('.', '\\.')));
+    assert.match(reuse, new RegExp(evidence.replaceAll('.', '\\.')));
+  }
+  assert.match(
+    release,
+    /evidence_files\+=\([\s\S]*acceptance-evidence\.json[\s\S]*promotion-identity\.json[\s\S]*sha256sum "\$\{evidence_files\[@\]\}"/,
   );
 });
 
@@ -496,7 +637,10 @@ test('evidence commit and same-release reuse finish any interrupted checkpoint',
   assert.match(finalize, /load_post_cut_checkpoint/);
   assert.match(finalize, /write_current_checkpoint/);
   assert.match(finalize, /rm -f -- "\$pending_checkpoint"/);
-  assert.match(reuse, /finalize_release_commit 0[\s\S]*exit 0/);
+  assert.match(
+    reuse,
+    /validate_activation_directory_for_removal[\s\S]*finalize_release_commit 0[\s\S]*rm -rf -- "\$activation_directory"[\s\S]*exit 0/,
+  );
 });
 
 test('Production finalization retries reuse persisted irreversible evidence', () => {

@@ -754,7 +754,7 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   assert.ok(evidence > 0 && cleanup > evidence);
   assert.match(
     workflow,
-    /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}/,
+    /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}-\$\{\{ github\.run_attempt \}\}/,
   );
   assert.match(
     workflow,
@@ -3024,6 +3024,18 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(production, /\^\[0-9a-f\]\{40\}\$/);
   assert.match(production, /compare\/\$\{REVISION\}\.\.\.main/);
+  const productionCleanup = production.slice(
+    production.indexOf('      - name: Remove transient SSH and bundle files'),
+  );
+  for (const remotePath of [
+    'data/combo-release-incoming/${REVISION}.journal-audit.${RUN_ID}.${RUN_ATTEMPT}.mjs',
+    '.${REVISION}.journal-audit.${RUN_ID}.${RUN_ATTEMPT}.upload',
+  ]) {
+    assert.ok(
+      productionCleanup.includes(remotePath),
+      `Production always-cleanup must remove ${remotePath}`,
+    );
+  }
   assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
   assert.doesNotMatch(workflow, /publish_release:\s*true/);
   assert.doesNotMatch(workflow, /packages:\s*write/);
@@ -3092,7 +3104,10 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     'Test must bind the paused snapshot to the exact candidate Preview policy result',
   );
   assert.match(workflow, /actions\/workflows\/preview\.yml\/runs\?event=workflow_run/);
-  assert.match(workflow, /actions\/runs\/\$\{preview_run_id\}\/attempts\/1\/jobs/);
+  assert.match(
+    workflow,
+    /actions\/runs\/\$\{preview_run_id\}\/attempts\/\$\{preview_run_attempt\}\/jobs/,
+  );
   assert.match(workflow, /\$deployJobs\[0\]\.conclusion == "skipped"/);
   assert.doesNotMatch(
     workflow,
@@ -3168,7 +3183,7 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /combo-dev-reset[\s\\\n]*--confirm=DESTROY-COMBO-PREVIEW-DATA[\s\S]*combo-dev-deploy/,
   );
   assert.match(preview, /combo-preview-promotion-\$\{\{/);
-  assert.match(production, /combo-preview-promotion-\$\{REVISION\}/);
+  assert.match(production, /combo-preview-promotion-\$\{REVISION\}-\$\{PREVIEW_RUN_ATTEMPT\}/);
   assert.match(production, /artifactFileSetDigest/);
   const productionPreviewEvidence = production.slice(
     production.indexOf('      - name: Validate Preview evidence and its source main CI run'),

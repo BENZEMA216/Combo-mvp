@@ -116,11 +116,11 @@ jobs:
               and (.run_attempt | type == "number" and . > 0 and floor == .)
             ' "$work/source-run.json" >/dev/null
 
-          artifact_name="combo-release-${REVISION}"
           repository_id=$(jq -er '.repository.id' "$work/source-run.json")
           source_ci_run_attempt=$(jq -er '.run_attempt' "$work/source-run.json")
           [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$source_ci_run_attempt" =~ ^[1-9][0-9]*$ ]]
+          artifact_name="combo-release-${REVISION}-${source_ci_run_attempt}"
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/artifacts?per_page=100&name=${artifact_name}" \
             > "$work/artifacts.json"
@@ -442,11 +442,14 @@ jobs:
             exit 1
           }
           verify_preview_policy_is_paused() {
-            local preview_runs preview_run_id preview_jobs
+            local preview_runs preview_run preview_run_id preview_run_attempt
+            local preview_jobs expected_title
             preview_runs=$(gh api --paginate --slurp \
               "repos/${GITHUB_REPOSITORY}/actions/workflows/preview.yml/runs?event=workflow_run&branch=main&per_page=100")
-            preview_run_id=$(jq -er \
-              --arg revision "$REVISION" '
+            expected_title="Preview promotion for CI ${SOURCE_CI_RUN_ID} attempt ${SOURCE_CI_RUN_ATTEMPT}"
+            preview_run=$(jq -ec \
+              --arg revision "$REVISION" \
+              --arg title "$expected_title" '
                 [
                   .[].workflow_runs[]
                   | select(
@@ -455,21 +458,26 @@ jobs:
                       and .event == "workflow_run"
                       and .head_branch == "main"
                       and .head_sha == $revision
+                      and .display_title == $title
                     )
                 ] as $runs
                 | if (
                     ($runs | length) == 1
-                    and $runs[0].run_attempt == 1
+                    and ($runs[0].run_attempt | type == "number"
+                      and . > 0 and floor == .)
                     and $runs[0].status == "completed"
                     and $runs[0].conclusion == "success"
                   )
-                  then $runs[0].id
+                  then $runs[0]
                   else error("the exact candidate does not have one completed paused Preview policy run")
                   end
               ' <<<"$preview_runs")
-            [[ "$preview_run_id" =~ ^[1-9][0-9]*$ ]]
+            preview_run_id=$(jq -er '.id' <<<"$preview_run")
+            preview_run_attempt=$(jq -er '.run_attempt' <<<"$preview_run")
+            [[ "$preview_run_id" =~ ^[1-9][0-9]*$ &&
+              "$preview_run_attempt" =~ ^[1-9][0-9]*$ ]]
             preview_jobs=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/runs/${preview_run_id}/attempts/1/jobs?per_page=100")
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${preview_run_id}/attempts/${preview_run_attempt}/jobs?per_page=100")
             jq -e '
               [
                 .jobs[]
@@ -514,9 +522,12 @@ jobs:
             --arg revision "$REVISION" \
             --arg digest "$RELEASE_ARTIFACT_DIGEST" \
             --argjson artifactId "$RELEASE_ARTIFACT_ID" \
-            --argjson runId "$SOURCE_CI_RUN_ID" '
+            --argjson runId "$SOURCE_CI_RUN_ID" \
+            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
               .id == $artifactId
-              and .name == ("combo-release-" + $revision)
+              and .name == (
+                "combo-release-" + $revision + "-" + ($runAttempt | tostring)
+              )
               and .digest == $digest
               and .expired == false
               and .workflow_run.id == $runId
@@ -556,9 +567,12 @@ jobs:
             --arg revision "$REVISION" \
             --arg digest "$RELEASE_ARTIFACT_DIGEST" \
             --argjson artifactId "$RELEASE_ARTIFACT_ID" \
-            --argjson runId "$SOURCE_CI_RUN_ID" '
+            --argjson runId "$SOURCE_CI_RUN_ID" \
+            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
               .id == $artifactId
-              and .name == ("combo-release-" + $revision)
+              and .name == (
+                "combo-release-" + $revision + "-" + ($runAttempt | tostring)
+              )
               and .digest == $digest
               and .expired == false
               and .workflow_run.id == $runId
@@ -636,7 +650,8 @@ jobs:
             "$RELEASE_ARTIFACT_ID"; do
             [[ "$value" =~ ^[1-9][0-9]*$ ]]
           done
-          [[ "$RELEASE_ARTIFACT_NAME" == "combo-release-${REVISION}" ]]
+          [[ "$RELEASE_ARTIFACT_NAME" == \
+            "combo-release-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}" ]]
           [[ "$RELEASE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$RELEASE_ID" == "release-${REVISION}" ]]
           [[ "$RELEASE_MANIFEST_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -983,7 +998,8 @@ jobs:
           [[ "$SOURCE_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$RELEASE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$RELEASE_ARTIFACT_NAME" == "combo-release-${REVISION}" ]]
+          [[ "$RELEASE_ARTIFACT_NAME" == \
+            "combo-release-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}" ]]
           [[ "$RELEASE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           [[ "$RELEASE_ID" == "release-${REVISION}" ]]
           [[ "$RELEASE_MANIFEST_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
@@ -1308,7 +1324,7 @@ jobs:
         if: steps.live_browser.outputs.acceptance_status == 'passed'
         uses: actions/upload-artifact@v4
         with:
-          name: combo-test-evidence-${{ needs.authorize.outputs.revision }}
+          name: combo-test-evidence-${{ needs.authorize.outputs.revision }}-${{ github.run_attempt }}
           path: ${{ steps.evidence.outputs.path }}
           if-no-files-found: error
           retention-days: 30

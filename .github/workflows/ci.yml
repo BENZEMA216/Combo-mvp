@@ -477,7 +477,7 @@ jobs:
           inputs.publish_release == true
         uses: actions/upload-artifact@v4
         with:
-          name: combo-image-digest-${{ env.SOURCE_SHA }}-${{ matrix.key }}
+          name: combo-image-digest-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}-${{ matrix.key }}
           path: ${{ runner.temp }}/${{ matrix.key }}.image
           if-no-files-found: error
           retention-days: 1
@@ -520,7 +520,7 @@ jobs:
       - name: Download the three image digests from this run
         uses: actions/download-artifact@v4
         with:
-          pattern: combo-image-digest-${{ env.SOURCE_SHA }}-*
+          pattern: combo-image-digest-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}-*
           path: ${{ runner.temp }}/image-digests
           merge-multiple: true
 
@@ -537,6 +537,7 @@ jobs:
           set -euo pipefail
           umask 077
           [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
 
           bundle=$(mktemp -d "$RUNNER_TEMP/combo-release-${SOURCE_SHA}.XXXXXX")
@@ -626,6 +627,9 @@ jobs:
             scripts/collect-live-runtime-evidence.sh \
             scripts/collect-release-inventory.sh \
             scripts/deploy-release.sh \
+            scripts/prepare-reset-roll-forward.sh \
+            scripts/reset-roll-forward-journal.mjs \
+            scripts/reset-release-foundation.sh \
             scripts/rollback-release-traffic.sh \
             scripts/seal-release-traffic.sh \
             scripts/switch-release-traffic.sh \
@@ -634,6 +638,7 @@ jobs:
             scripts/release-manifest.mjs \
             scripts/promotion-evidence.mjs \
             scripts/release-nginx-route.mjs \
+            scripts/verify-release-schema.mjs \
             scripts/web-asset-manifest.mjs \
             scripts/verify-rendered-release.mjs \
             "$bundle/scripts/"
@@ -665,7 +670,8 @@ jobs:
           )
 
           printf 'path=%s\n' "$bundle" >> "$GITHUB_OUTPUT"
-          printf 'name=combo-release-%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          printf 'name=combo-release-%s-%s\n' \
+            "$SOURCE_SHA" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
       - name: Upload the only promotable release artifact
         id: release-artifact

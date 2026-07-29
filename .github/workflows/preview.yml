@@ -1,4 +1,5 @@
 name: Preview promotion
+run-name: Preview promotion for CI ${{ github.event.workflow_run.id }} attempt ${{ github.event.workflow_run.run_attempt }}
 
 on:
   workflow_run:
@@ -29,12 +30,14 @@ jobs:
       test_evidence_artifact_id: ${{ steps.policy.outputs.test_evidence_artifact_id }}
       test_evidence_artifact_name: ${{ steps.policy.outputs.test_evidence_artifact_name }}
       test_evidence_artifact_digest: ${{ steps.policy.outputs.test_evidence_artifact_digest }}
+      foundation_reset: ${{ steps.policy.outputs.foundation_reset }}
     steps:
       - name: Validate the trusted main CI run
         id: policy
         env:
           GH_TOKEN: ${{ github.token }}
           MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
+          FOUNDATION_RESET_SHA: ${{ vars.COMBO_PREVIEW_FOUNDATION_RESET_SHA }}
           REVISION: ${{ github.event.workflow_run.head_sha }}
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
           SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
@@ -70,7 +73,7 @@ jobs:
 
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
-          artifact_name="combo-release-${REVISION}"
+          artifact_name="combo-release-${REVISION}-${SOURCE_RUN_ATTEMPT}"
           artifacts="$work/source-artifacts.json"
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/artifacts?per_page=100&name=${artifact_name}" \
@@ -127,6 +130,15 @@ jobs:
               exit 1
               ;;
           esac
+          [[ -z "$FOUNDATION_RESET_SHA" ||
+            "$FOUNDATION_RESET_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'COMBO_PREVIEW_FOUNDATION_RESET_SHA must be empty or one complete SHA.' >&2
+            exit 1
+          }
+          foundation_reset=false
+          if [[ "$FOUNDATION_RESET_SHA" == "$REVISION" ]]; then
+            foundation_reset=true
+          fi
 
           test_run_id=
           test_run_attempt=
@@ -183,7 +195,7 @@ jobs:
           test_run_attempt=$(jq -er '.run_attempt' "$work/test-run.json")
           [[ "$test_run_attempt" =~ ^[1-9][0-9]*$ ]]
 
-          test_evidence_artifact_name="combo-test-evidence-${REVISION}"
+          test_evidence_artifact_name="combo-test-evidence-${REVISION}-${test_run_attempt}"
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/artifacts?per_page=100&name=${test_evidence_artifact_name}" \
             >"$work/test-artifacts.json"
@@ -251,6 +263,7 @@ jobs:
             printf 'test_evidence_artifact_id=%s\n' "$test_evidence_artifact_id"
             printf 'test_evidence_artifact_name=%s\n' "$test_evidence_artifact_name"
             printf 'test_evidence_artifact_digest=%s\n' "$test_evidence_artifact_digest"
+            printf 'foundation_reset=%s\n' "$foundation_reset"
           } >> "$GITHUB_OUTPUT"
 
   deploy:
@@ -356,9 +369,11 @@ jobs:
             "$TEST_RUN_ID" "$TEST_RUN_ATTEMPT" "$TEST_EVIDENCE_ARTIFACT_ID"; do
             [[ "$value" =~ ^[1-9][0-9]*$ ]]
           done
-          [[ "$SOURCE_ARTIFACT_NAME" == "combo-release-${REVISION}" ]]
+          [[ "$SOURCE_ARTIFACT_NAME" == \
+            "combo-release-${REVISION}-${SOURCE_RUN_ATTEMPT}" ]]
           [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$TEST_EVIDENCE_ARTIFACT_NAME" == "combo-test-evidence-${REVISION}" ]]
+          [[ "$TEST_EVIDENCE_ARTIFACT_NAME" == \
+            "combo-test-evidence-${REVISION}-${TEST_RUN_ATTEMPT}" ]]
           [[ "$TEST_EVIDENCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
 
           archive="$RUNNER_TEMP/test-evidence.zip"
@@ -636,10 +651,18 @@ jobs:
           TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
           TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
           TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
+          FOUNDATION_RESET: ${{ needs.policy.outputs.foundation_reset }}
+          FOUNDATION_RESET_SHA: ${{ vars.COMBO_PREVIEW_FOUNDATION_RESET_SHA }}
         run: |
           set -euo pipefail
           [[ "$POLICY_MODE" == enabled ]]
           [[ "$ADMISSION_MODE" == enabled ]]
+          [[ "$FOUNDATION_RESET" == true || "$FOUNDATION_RESET" == false ]]
+          if [[ "$FOUNDATION_RESET" == true ]]; then
+            [[ "$FOUNDATION_RESET_SHA" == "$REVISION" ]]
+          else
+            [[ -z "$FOUNDATION_RESET_SHA" || "$FOUNDATION_RESET_SHA" != "$REVISION" ]]
+          fi
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" \
             == "$REVISION" ]]
 
@@ -667,10 +690,13 @@ jobs:
             --arg revision "$REVISION" \
             --arg digest "$SOURCE_ARTIFACT_DIGEST" \
             --argjson artifactId "$SOURCE_ARTIFACT_ID" \
-            --argjson runId "$SOURCE_RUN_ID" '
+            --argjson runId "$SOURCE_RUN_ID" \
+            --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
               .id == $artifactId
               and .name == $name
-              and .name == ("combo-release-" + $revision)
+              and .name == (
+                "combo-release-" + $revision + "-" + ($runAttempt | tostring)
+              )
               and .digest == $digest
               and .expired == false
               and .workflow_run.id == $runId
@@ -703,10 +729,13 @@ jobs:
             --arg revision "$REVISION" \
             --arg digest "$TEST_EVIDENCE_ARTIFACT_DIGEST" \
             --argjson artifactId "$TEST_EVIDENCE_ARTIFACT_ID" \
-            --argjson runId "$TEST_RUN_ID" '
+            --argjson runId "$TEST_RUN_ID" \
+            --argjson runAttempt "$TEST_RUN_ATTEMPT" '
               .id == $artifactId
               and .name == $name
-              and .name == ("combo-test-evidence-" + $revision)
+              and .name == (
+                "combo-test-evidence-" + $revision + "-" + ($runAttempt | tostring)
+              )
               and .digest == $digest
               and .expired == false
               and .workflow_run.id == $runId
@@ -889,12 +918,20 @@ jobs:
           REVISION: ${{ needs.policy.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          FOUNDATION_RESET: ${{ needs.policy.outputs.foundation_reset }}
+          FOUNDATION_RESET_SHA: ${{ vars.COMBO_PREVIEW_FOUNDATION_RESET_SHA }}
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]]
           [[ "$POLICY_MODE" == enabled ]]
           [[ "$ADMISSION_MODE" == enabled ]]
+          [[ "$FOUNDATION_RESET" == true || "$FOUNDATION_RESET" == false ]]
+          if [[ "$FOUNDATION_RESET" == true ]]; then
+            [[ "$FOUNDATION_RESET_SHA" == "$REVISION" ]]
+          else
+            [[ -z "$FOUNDATION_RESET_SHA" || "$FOUNDATION_RESET_SHA" != "$REVISION" ]]
+          fi
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
             --jq '.object.sha')" == "$REVISION" ]]
           archive="$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz"
@@ -910,12 +947,15 @@ jobs:
           [[ "$ADMISSION_MODE" == enabled ]]
           [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
             --jq '.object.sha')" == "$REVISION" ]]
-          ssh release-target bash -s -- "$remote" "$REVISION" <<'REMOTE'
+          ssh release-target bash -s -- \
+            "$remote" "$REVISION" "$FOUNDATION_RESET" <<'REMOTE'
           set -euo pipefail
           incoming=$1
           revision=$2
+          foundation_reset=$3
           [[ "$incoming" == "data/combo-release-incoming/${revision}.preview."*.tar.gz ]]
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$foundation_reset" == true || "$foundation_reset" == false ]]
           archive="$HOME/$incoming"
           [[ -f "$archive" && ! -L "$archive" ]]
           work=$(mktemp -d "$HOME/data/combo-release-preview.XXXXXX")
@@ -933,6 +973,7 @@ jobs:
           chmod 0700 \
             "$work/scripts/collect-release-inventory.sh" \
             "$work/scripts/deploy-release.sh" \
+            "$work/scripts/reset-release-foundation.sh" \
             "$work/scripts/rollback-release-traffic.sh" \
             "$work/scripts/seal-release-traffic.sh" \
             "$work/scripts/switch-release-traffic.sh"
@@ -942,9 +983,103 @@ jobs:
           source "$HOME/.nvm/nvm.sh"
           nvm use 24 >/dev/null
           [[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+          deploy_args=()
+          release_directory="$HOME/data/combo-releases/goal-a/preview/release-${revision}"
+          pending_checkpoint="$HOME/data/combo-releases/goal-a/preview/pending.json"
+          reset_output="${release_directory}.foundation-reset.json"
+          authority_digest=$manifest_digest
+          reset_request_id=$(printf '%s\0%s\0%s\0%s\0%s' \
+            combo-foundation-reset-v1 preview "$revision" \
+            "$manifest_digest" established-clean-slate-v1 |
+            sha256sum | awk '{print "sha256:" $1}')
+          if [[ -e "$release_directory" || -L "$release_directory" ]]; then
+            [[ -d "$release_directory" && ! -L "$release_directory" ]]
+            (
+              cd "$release_directory"
+              sha256sum --quiet -c SHA256SUMS
+            )
+            [[ "$(<"$release_directory/release.sha256")" == "$manifest_digest" ]]
+            cmp -s "$work/metadata/release.json" "$release_directory/release.json"
+            if [[ "$foundation_reset" == true ]]; then
+              foundation_reset_evidence="$release_directory/foundation-reset-evidence.json"
+              [[ -f "$foundation_reset_evidence" &&
+                ! -L "$foundation_reset_evidence" ]]
+              reset_digest=$(sha256sum "$foundation_reset_evidence" |
+                awk '{print "sha256:" $1}')
+              [[ "$(jq -er '.foundationMode' \
+                "$release_directory/deploy-evidence.json")" == reset ]]
+              [[ "$(jq -er '.foundationResetEvidenceDigest' \
+                "$release_directory/deploy-evidence.json")" == "$reset_digest" ]]
+              deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+            else
+              [[ ! -e "$release_directory/foundation-reset-evidence.json" &&
+                ! -L "$release_directory/foundation-reset-evidence.json" ]]
+              jq -e '
+                (.foundationMode == "fresh" or .foundationMode == "reused")
+                and .foundationResetEvidenceDigest == null
+              ' "$release_directory/deploy-evidence.json" >/dev/null
+            fi
+          elif [[ -e "$pending_checkpoint" || -L "$pending_checkpoint" ]]; then
+            [[ -f "$pending_checkpoint" && ! -L "$pending_checkpoint" ]]
+            jq -e \
+              --arg revision "$revision" \
+              --arg manifestDigest "$manifest_digest" '
+                .schemaVersion == 3
+                and .environment == "preview"
+                and .namespace == "combo-review"
+                and .sourceSha == $revision
+                and .releaseId == ("release-" + $revision)
+                and .manifestDigest == $manifestDigest
+                and (.phase == "armed" or .phase == "post-cut")
+              ' "$pending_checkpoint" >/dev/null
+            pending_reset_digest=$(jq -r \
+              '.foundationResetEvidenceDigest // ""' "$pending_checkpoint")
+            if [[ "$foundation_reset" == true ]]; then
+              [[ "$pending_reset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+              foundation_reset_evidence=$reset_output
+              [[ -f "$foundation_reset_evidence" &&
+                ! -L "$foundation_reset_evidence" ]]
+              [[ "$(sha256sum "$foundation_reset_evidence" |
+                awk '{print "sha256:" $1}')" == "$pending_reset_digest" ]]
+              deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+            else
+              [[ -z "$pending_reset_digest" ]]
+              [[ ! -e "$reset_output" && ! -L "$reset_output" ]]
+            fi
+          elif [[ "$foundation_reset" == true ]]; then
+            foundation_reset_evidence=$reset_output
+            deploy_args+=(--foundation-reset-evidence "$foundation_reset_evidence")
+          else
+            [[ ! -e "$reset_output" && ! -L "$reset_output" ]]
+          fi
+          if [[ "$foundation_reset" == true ]]; then
+            bash "$work/scripts/reset-release-foundation.sh" \
+              --operation reset \
+              --environment preview \
+              --manifest "$work/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --foundation-yaml "$work/rendered/preview/foundation.yaml" \
+              --authority-digest "$authority_digest" \
+              --request-id "$reset_request_id" \
+              --policy established-clean-slate-v1 \
+              --output "$reset_output"
+            cmp -s "$reset_output" "$foundation_reset_evidence"
+          else
+            bash "$work/scripts/reset-release-foundation.sh" \
+              --operation assert-reuse \
+              --environment preview \
+              --manifest "$work/metadata/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --foundation-yaml "$work/rendered/preview/foundation.yaml" \
+              --authority-digest "$authority_digest" \
+              --request-id "$reset_request_id" \
+              --policy reuse-existing-v1 \
+              --output "$reset_output"
+          fi
           bash "$work/scripts/deploy-release.sh" \
             --environment preview \
             --fresh-reset \
+            "${deploy_args[@]}" \
             --manifest "$work/metadata/release.json" \
             --manifest-digest "$manifest_digest" \
             --migrations "$work/metadata/migration-files.txt" \
@@ -960,15 +1095,18 @@ jobs:
         env:
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.policy.outputs.revision }}
+          FOUNDATION_RESET: ${{ needs.policy.outputs.foundation_reset }}
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           evidence_dir="$RUNNER_TEMP/preview-remote-evidence"
           install -d -m 0700 "$evidence_dir"
-          ssh release-target bash -s -- "$REVISION" <<'REMOTE' |
+          ssh release-target bash -s -- "$REVISION" "$FOUNDATION_RESET" <<'REMOTE' |
           set -euo pipefail
           revision=$1
+          foundation_reset=$2
           [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$foundation_reset" == true || "$foundation_reset" == false ]]
           directory="$HOME/data/combo-releases/goal-a/preview/release-$revision"
           files=(
             release.json release.sha256 migration-files.txt web-asset-manifest.json
@@ -976,6 +1114,12 @@ jobs:
             traffic-evidence.json cleanup-plan.json cleanup-evidence.json
             deploy-evidence.json SHA256SUMS
           )
+          if [[ "$foundation_reset" == true ]]; then
+            files+=(foundation-reset-evidence.json)
+          else
+            [[ ! -e "$directory/foundation-reset-evidence.json" &&
+              ! -L "$directory/foundation-reset-evidence.json" ]]
+          fi
           for file in "${files[@]}"; do
             [[ -f "$directory/$file" && ! -L "$directory/$file" ]]
           done
@@ -994,6 +1138,15 @@ jobs:
             "$evidence_dir/migration-files.txt"
           cmp -s "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
             "$evidence_dir/web-asset-manifest.json"
+          if [[ "$FOUNDATION_RESET" == true ]]; then
+            reset_digest=$(sha256sum "$evidence_dir/foundation-reset-evidence.json" |
+              awk '{print "sha256:" $1}')
+            [[ "$(jq -er '.foundationResetEvidenceDigest' \
+              "$evidence_dir/deploy-evidence.json")" == "$reset_digest" ]]
+          else
+            [[ ! -e "$evidence_dir/foundation-reset-evidence.json" &&
+              ! -L "$evidence_dir/foundation-reset-evidence.json" ]]
+          fi
           for phase in foundation init migrate apps; do
             cmp -s "$RELEASE_ROOT/rendered/preview/$phase.yaml" \
               "$evidence_dir/$phase.yaml"
@@ -1004,6 +1157,7 @@ jobs:
           jq -e \
             --arg revision "$REVISION" \
             --arg manifestDigest "$manifest_digest" \
+            --argjson foundationReset "$FOUNDATION_RESET" \
             --arg apiImage "$api_image" \
             --arg runtimeImage "$runtime_image" \
             --arg webImage "$web_image" \
@@ -1017,6 +1171,29 @@ jobs:
               and .releaseId == ("release-" + $revision)
               and .manifestDigest == $manifestDigest
               and .checks.foundationReady == true
+              and .checks.schemaStructure == true
+              and (.schemaStructureDigest | test("^sha256:[0-9a-f]{64}$"))
+              and .schemaStructureDigest == .schemaStructure.actualDigest
+              and .schemaStructure.actualDigest == .schemaStructure.contractDigest
+              and .schemaStructure.verified == true
+              and (
+                if $foundationReset then
+                  .foundationMode == "reset"
+                  and .checks.freshFoundation == true
+                  and .checks.foundationReset == true
+                  and (.foundationResetEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
+                  and .foundationReset.status == "passed"
+                  and .foundationReset.environment == "preview"
+                  and .foundationReset.sourceSha == $revision
+                  and .foundationReset.manifestDigest == $manifestDigest
+                  and .foundationReset.authorityDigest == $manifestDigest
+                else
+                  (.foundationMode == "fresh" or .foundationMode == "reused")
+                  and .checks.foundationReset == false
+                  and .foundationResetEvidenceDigest == null
+                  and .foundationReset == null
+                end
+              )
               and .checks.releaseStorage == true
               and .checks.minioInitialization == true
               and .checks.exactMigrations == true
@@ -1485,7 +1662,7 @@ jobs:
       - name: Upload the Production admission evidence
         uses: actions/upload-artifact@v4
         with:
-          name: combo-preview-promotion-${{ needs.policy.outputs.revision }}
+          name: combo-preview-promotion-${{ needs.policy.outputs.revision }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/preview-promotion.json
             ${{ runner.temp }}/preview-remote-deploy-evidence.json
