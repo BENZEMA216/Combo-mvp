@@ -165,7 +165,7 @@ jobs:
                   [
                     .workflow_runs[]
                     | select(
-                        .name == "Test deployment"
+                        .name == $title
                         and .display_title == $title
                         and .path == ".github/workflows/combo-dev.yml"
                         and .event == "workflow_run"
@@ -214,7 +214,7 @@ jobs:
             --arg title "$expected_test_title" \
             --argjson runId "$test_run_id" '
               .id == $runId
-              and .name == "Test deployment"
+              and .name == $title
               and .display_title == $title
               and .path == ".github/workflows/combo-dev.yml"
               and .event == "workflow_run"
@@ -952,7 +952,7 @@ jobs:
             --argjson runAttempt "$TEST_RUN_ATTEMPT" '
               .id == $runId
               and .run_attempt == $runAttempt
-              and .name == "Test deployment"
+              and .name == $title
               and .display_title == $title
               and .path == ".github/workflows/combo-dev.yml"
               and .event == "workflow_run"
