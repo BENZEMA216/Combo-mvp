@@ -682,19 +682,24 @@ function readJournalNodes(stateRoot, environment) {
 
   const nodes = new Map();
   for (const [stem, files] of groups) {
-    if (!files.plan || !files.checkpoint) {
+    if (!files.plan) {
       fail(`foundation reset journal ${stem} has an orphan file`);
     }
     const plan = validatePlan(files.plan, stem, environment);
     const planDigest = sha256File(files.plan);
-    const checkpoint = validateCheckpoint(files.checkpoint, stem, planDigest);
+    if (!files.checkpoint && (files.ready || files.evidence)) {
+      fail(`foundation reset journal ${stem} has state without a checkpoint`);
+    }
+    const checkpoint = files.checkpoint
+      ? validateCheckpoint(files.checkpoint, stem, planDigest)
+      : null;
     if (files.evidence && !files.ready) {
       fail(`foundation reset journal ${stem} has evidence without a ready snapshot`);
     }
-    if (files.evidence && checkpoint.phase !== 'foundation-ready') {
+    if (files.evidence && checkpoint?.phase !== 'foundation-ready') {
       fail(`foundation reset journal ${stem} has evidence before foundation-ready`);
     }
-    if (checkpoint.phase === 'foundation-ready' && !files.ready) {
+    if (checkpoint?.phase === 'foundation-ready' && !files.ready) {
       fail(`foundation reset journal ${stem} lacks its ready snapshot`);
     }
     let ready = null;
@@ -703,7 +708,7 @@ function readJournalNodes(stateRoot, environment) {
       ready = validateReady(files.ready, stem, plan, planDigest);
       readyDigest = sha256File(files.ready);
       if (
-        checkpoint.phase === 'foundation-ready' &&
+        checkpoint?.phase === 'foundation-ready' &&
         checkpoint.foundationSnapshotDigest !== readyDigest
       ) {
         fail(`foundation reset journal ${stem} ready digest changed`);

@@ -485,6 +485,48 @@ validate_foundation_reset_evidence() {
     fail 'foundation reset evidence does not match this exact release'
 }
 
+validate_live_foundation_reset_uids() {
+  local evidence_json current_digest rows row kind name uid current count=0
+  [[ -n "$FOUNDATION_RESET_EVIDENCE" ]] || return 0
+  IFS= read -r -d '' evidence_json <"$FOUNDATION_RESET_EVIDENCE" ||
+    [[ -n "$evidence_json" ]] ||
+    fail 'foundation reset evidence became unreadable before live UID validation'
+  current_digest=$(printf '%s' "$evidence_json" |
+    sha256sum | awk '{print "sha256:" $1}') ||
+    fail 'foundation reset evidence digest could not be recomputed'
+  [[ "$current_digest" == "$foundation_reset_digest" ]] ||
+    fail 'foundation reset evidence changed before live UID validation'
+  rows=$(jq -cer '
+    .foundation
+    | if type == "array" and length == 10
+      then .[]
+      else error("expected exactly ten foundation resources")
+      end
+  ' <<<"$evidence_json") ||
+    fail 'foundation reset evidence lost its exact foundation resource set'
+  while IFS= read -r row; do
+    kind=$(jq -er '.kind' <<<"$row")
+    name=$(jq -er '.name' <<<"$row")
+    uid=$(jq -er '.uid' <<<"$row")
+    current=$("${K[@]}" -n "$NAMESPACE" get "$kind/$name" -o json) ||
+      fail "reset foundation resource disappeared: $kind/$name"
+    jq -e \
+      --arg name "$name" \
+      --arg uid "$uid" \
+      --arg track "$FOUNDATION_TRACK" '
+        .metadata.name == $name
+        and .metadata.uid == $uid
+        and .metadata.deletionTimestamp == null
+        and .metadata.labels["combo.build/environment-foundation"] == $track
+      ' <<<"$current" >/dev/null ||
+      fail "reset foundation resource changed UID or ownership: $kind/$name"
+    ((count += 1))
+  done <<<"$rows"
+  ((count == 10)) ||
+    fail 'foundation reset evidence did not validate all ten live resources'
+  status 'live foundation UIDs still match the clean-slate reset evidence'
+}
+
 validate_reset_roll_forward_evidence() {
   local expected_request_id request_hex state_root internal_evidence
   local plan checkpoint archive seal cancellation file pending_path
@@ -5578,6 +5620,7 @@ validate_reset_roll_forward_evidence
 audit_foundation_reset_journals
 
 "${K[@]}" get namespace "$NAMESPACE" >/dev/null
+validate_live_foundation_reset_uids
 validate_secret_keys
 status 'server-side validating and allowlisting every rendered phase'
 validate_rendered_phase foundation "$FOUNDATION_YAML"

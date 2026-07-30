@@ -22,6 +22,10 @@ import { releaseManifestDigest, serializeReleaseManifest } from './release-manif
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const script = join(scriptDirectory, 'reset-release-foundation.sh');
 const source = readFileSync(script, 'utf8');
+const switchTrafficSource = readFileSync(
+  join(scriptDirectory, 'switch-release-traffic.sh'),
+  'utf8',
+);
 const digest = `sha256:${'a'.repeat(64)}`;
 
 function invoke(args) {
@@ -188,6 +192,509 @@ test('active Web route binds exact Service ports and live forwarder identity', (
   assert.match(source, /\.preservedWeb \| del\(\.resourceVersion, \.serviceResourceVersion\)/);
 });
 
+test('first Production reset imports only a fully trusted legacy traffic authority', () => {
+  const fallbackStart = source.indexOf('capture_legacy_production_authority()');
+  const fallbackEnd = source.indexOf('\ncapture_preview_route_version()', fallbackStart);
+  const fallback = source.slice(fallbackStart, fallbackEnd);
+  const captureStart = source.indexOf('capture_active_route_web()');
+  const captureEnd = source.indexOf('\ncapture_writer_deployments()', captureStart);
+  const capture = source.slice(captureStart, captureEnd);
+
+  assert.ok(fallbackStart > 0 && fallbackEnd > fallbackStart);
+  assert.ok(captureStart > fallbackEnd && captureEnd > captureStart);
+  assert.match(capture, /\[\[ -e "\$current_state" \|\| -L "\$current_state" \]\]/);
+  assert.match(capture, /\[\[ -f "\$current_state" && ! -L "\$current_state" \]\]/);
+  assert.match(capture, /\[\[ "\$ENVIRONMENT" == production \]\]/);
+  assert.match(capture, /capture_legacy_production_authority/);
+  assert.match(capture, /legacy-production/);
+  assert.match(capture, /\$expectedWebImage == ""/);
+  assert.match(capture, /\.image[\s\S]*== \$expectedWebImage/);
+  assert.match(capture, /active-public-route-version\.json/);
+  assert.match(capture, /public and loopback release identity disagree/);
+
+  assert.match(fallback, /legacy release checkpoint fallback is Production-only/);
+  assert.match(fallback, /production\/pending\.json/);
+  assert.match(fallback, /blocked by a pending release/);
+  assert.match(fallback, /TRAFFIC_CHECKPOINT_ROOT/);
+  assert.match(fallback, /blocked by a traffic checkpoint/);
+  assert.match(fallback, /production\/current\.json/);
+  assert.match(fallback, /\(keys \| sort\).*evidencePath/s);
+  assert.match(fallback, /realpath -e "\$EVIDENCE_ROOT\/production"/);
+  assert.match(fallback, /"\$environment_root\/\$prior_release"/);
+  assert.match(fallback, /unexpected file set/);
+  assert.match(fallback, /checksum set is malformed/);
+  assert.match(fallback, /sha256sum --quiet -c SHA256SUMS/);
+  assert.match(fallback, /release-manifest\.mjs" verify/);
+  assert.match(fallback, /--source-sha "\$prior_source"/);
+  assert.match(fallback, /--release-id "\$prior_release"/);
+  assert.match(fallback, /\.images\.web/);
+  assert.match(fallback, /webImage: \$webImage/);
+  assert.match(fallback, /\.traffic == \$traffic\[0\]/);
+  assert.match(fallback, /combo-release-production-web-forward\.service/);
+  assert.match(fallback, /combo-release-production-minio-forward\.service/);
+  assert.match(fallback, /systemctl is-enabled --quiet "\$unit"/);
+  assert.match(fallback, /systemctl is-active --quiet "\$unit"/);
+  assert.match(fallback, /legacy Production forward unit changed/);
+  assert.match(fallback, /production-canary/);
+  assert.match(fallback, /production-formal/);
+  assert.match(fallback, /\.beforeMode == "release"/);
+  assert.match(fallback, /\.beforeMode == "legacy"/);
+  assert.match(fallback, /bootstrap-traffic-state\.json/);
+  assert.match(fallback, /trafficStateDigest/);
+  assert.doesNotMatch(fallback, /kubectl|"\$\{K\[@\]\}"/);
+  assert.doesNotMatch(fallback, /systemctl (?:restart|reload|enable|disable)/);
+  assert.doesNotMatch(fallback, /atomic_install|mv -|install -|rm -/);
+
+  const resetAllowlist = source.match(/readonly FORMAL_INITIAL_SHA256='(sha256:[0-9a-f]{64})'/);
+  const switchAllowlist = switchTrafficSource.match(
+    /readonly FORMAL_INITIAL_SHA256='(sha256:[0-9a-f]{64})'/,
+  );
+  assert.ok(resetAllowlist);
+  assert.ok(switchAllowlist);
+  assert.equal(resetAllowlist[1], switchAllowlist[1]);
+});
+
+test('legacy Production live Web must use the exact manifest image digest', () => {
+  const captureStart = source.indexOf('capture_active_route_web()');
+  const captureEnd = source.indexOf('\ncapture_writer_deployments()', captureStart);
+  const capture = source.slice(captureStart, captureEnd);
+  const filter = capture.match(
+    /--arg expectedWebImage "\$expected_web_image" '([\s\S]*?)'\s*<<<"\$web"/,
+  )?.[1];
+  assert.ok(filter);
+
+  const sourceSha = '1'.repeat(40);
+  const releaseId = `release-${sourceSha}`;
+  const manifestDigest = `sha256:${'2'.repeat(64)}`;
+  const name = `release-${sourceSha.slice(0, 12)}-web`;
+  const expectedImage = `ghcr.io/dangdang-tech/combo-web@sha256:${'3'.repeat(64)}`;
+  const deployment = {
+    metadata: {
+      namespace: 'combo',
+      name,
+      uid: 'web-uid',
+      resourceVersion: '1',
+      deletionTimestamp: null,
+      labels: { 'combo.build/release-track': 'release-v1' },
+    },
+    spec: {
+      replicas: 1,
+      selector: {
+        matchLabels: { app: name, 'combo.build/release-track': 'release-v1' },
+      },
+      template: {
+        metadata: {
+          labels: { app: name, 'combo.build/release-track': 'release-v1' },
+          annotations: {
+            'combo.build/source-sha': sourceSha,
+            'combo.build/release-id': releaseId,
+            'combo.build/release-manifest-digest': manifestDigest,
+          },
+        },
+        spec: { containers: [{ name: 'web', image: expectedImage }] },
+      },
+    },
+    status: { readyReplicas: 1, availableReplicas: 1 },
+  };
+  const args = [
+    '-e',
+    '--arg',
+    'namespace',
+    'combo',
+    '--arg',
+    'name',
+    name,
+    '--arg',
+    'sourceSha',
+    sourceSha,
+    '--arg',
+    'releaseId',
+    releaseId,
+    '--arg',
+    'manifestDigest',
+    manifestDigest,
+    '--arg',
+    'expectedWebImage',
+    expectedImage,
+    filter,
+  ];
+  const exact = spawnSync('jq', args, { input: JSON.stringify(deployment), encoding: 'utf8' });
+  assert.equal(exact.status, 0, exact.stderr);
+
+  deployment.spec.template.spec.containers[0].image = `ghcr.io/dangdang-tech/combo-web@sha256:${'4'.repeat(64)}`;
+  const wrong = spawnSync('jq', args, { input: JSON.stringify(deployment), encoding: 'utf8' });
+  assert.notEqual(wrong.status, 0);
+});
+
+test('legacy Production authority is deterministic and fails closed without mutations', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'combo-legacy-production-authority-'));
+  try {
+    const bin = join(directory, 'bin');
+    const work = join(directory, 'work');
+    const evidenceRoot = join(directory, 'evidence');
+    const productionRoot = join(evidenceRoot, 'production');
+    const checkpointRoot = join(directory, 'traffic-checkpoints');
+    const unitRoot = join(directory, 'units');
+    const sourceSha = '1'.repeat(40);
+    const releaseId = `release-${sourceSha}`;
+    const canaryDigest = `sha256:${'3'.repeat(64)}`;
+    const formalDigest = `sha256:a2b92b1cf53fb6cbc72fae5687cdefcd60962dcceab9d823e220c7cef0262118`;
+    const webUnitDigest = `sha256:${'4'.repeat(64)}`;
+    const minioUnitDigest = `sha256:${'5'.repeat(64)}`;
+    const webImage = `ghcr.io/dangdang-tech/combo-web@sha256:${'6'.repeat(64)}`;
+    const legacyManifest = {
+      schemaVersion: 1,
+      sourceSha,
+      releaseId,
+      images: {
+        api: `ghcr.io/dangdang-tech/combo-api@sha256:${'7'.repeat(64)}`,
+        runtime: `ghcr.io/dangdang-tech/combo-runtime@sha256:${'8'.repeat(64)}`,
+        web: webImage,
+      },
+      migrationHead: '0008_application_database_roles.sql',
+      builtAt: '2026-07-25T00:00:00.000Z',
+      webAssetManifest: `sha256:${'9'.repeat(64)}`,
+    };
+    const manifestDigest = releaseManifestDigest(legacyManifest);
+    const webService = `release-${sourceSha.slice(0, 12)}-web`;
+    const releaseDirectory = join(productionRoot, releaseId);
+    const canaryConfig = join(directory, 'canary.conf');
+    const formalConfig = join(directory, 'formal.conf');
+    const harness = join(directory, 'harness.sh');
+    const managedCurrent = join(directory, 'traffic', 'production', 'current.json');
+    const sudoLog = join(directory, 'sudo.log');
+
+    for (const path of [
+      bin,
+      work,
+      releaseDirectory,
+      join(checkpointRoot, 'production'),
+      unitRoot,
+    ]) {
+      mkdirSync(path, { recursive: true });
+    }
+    writeFileSync(canaryConfig, 'trusted canary route\n');
+    writeFileSync(formalConfig, 'trusted initial formal route\n');
+    writeFileSync(join(unitRoot, 'combo-release-production-web-forward.service'), 'web\n');
+    writeFileSync(join(unitRoot, 'combo-release-production-minio-forward.service'), 'minio\n');
+
+    const traffic = {
+      schemaVersion: 1,
+      environment: 'production',
+      sourceSha,
+      releaseId,
+      manifestDigest,
+      publicOrigin: 'https://agora.43-160-242-46.sslip.io',
+      s3Origin: 'https://s3.43-160-242-46.sslip.io',
+      nginx: { path: canaryConfig, sha256: canaryDigest },
+      units: [
+        {
+          name: 'combo-release-production-web-forward.service',
+          service: webService,
+          port: 18082,
+          mainPid: 101,
+          sha256: webUnitDigest,
+        },
+        {
+          name: 'combo-release-production-minio-forward.service',
+          service: 'release-minio',
+          port: 19002,
+          mainPid: 102,
+          sha256: minioUnitDigest,
+        },
+      ],
+      checks: {
+        loopbackWebRelease: true,
+        loopbackMinioReady: true,
+        publicWebRelease: true,
+        publicMinioReady: true,
+      },
+      activatedAt: '2026-07-25T00:00:00.000Z',
+    };
+    const files = new Map([
+      ['apps.yaml', 'apps\n'],
+      ['cleanup-evidence.json', '{}\n'],
+      [
+        'deploy-evidence.json',
+        `${JSON.stringify({
+          schemaVersion: 1,
+          status: 'passed',
+          environment: 'production',
+          namespace: 'combo',
+          sourceSha,
+          releaseId,
+          manifestDigest,
+          traffic,
+        })}\n`,
+      ],
+      ['foundation.yaml', 'foundation\n'],
+      ['init.yaml', 'init\n'],
+      ['migrate.yaml', 'migrate\n'],
+      ['migration-files.txt', '0008_application_database_roles.sql\n'],
+      ['release.json', serializeReleaseManifest(legacyManifest)],
+      ['release.sha256', `${manifestDigest}\n`],
+      ['traffic-evidence.json', `${JSON.stringify(traffic)}\n`],
+      ['web-asset-manifest.json', '{}\n'],
+    ]);
+    for (const [name, contents] of files) {
+      writeFileSync(join(releaseDirectory, name), contents);
+    }
+    const writeChecksums = () => {
+      const checksumSet = [...files.keys()]
+        .map((name) => {
+          const contents = readFileSync(join(releaseDirectory, name));
+          return `${createHash('sha256').update(contents).digest('hex')}  ${name}\n`;
+        })
+        .join('');
+      writeFileSync(join(releaseDirectory, 'SHA256SUMS'), checksumSet);
+    };
+    writeChecksums();
+    writeFileSync(
+      join(productionRoot, 'current.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        status: 'passed',
+        environment: 'production',
+        namespace: 'combo',
+        sourceSha,
+        releaseId,
+        manifestDigest,
+        evidencePath: releaseDirectory,
+      })}\n`,
+    );
+
+    const fakeNode = join(bin, 'node');
+    writeFileSync(
+      fakeNode,
+      `#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  *release-manifest.mjs)
+    exec "$REAL_NODE" "$@"
+    ;;
+  *release-nginx-route.mjs)
+    output=''
+    contract=''
+    while (($#)); do
+      case "$1" in
+        --output) output=$2; shift 2 ;;
+        --contract) contract=$2; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf 'candidate\\n' >"$output"
+    if [[ "$contract" == production-canary ]]; then
+      printf '{"contract":"production-canary","beforeMode":"release","afterMode":"release","beforeSha256":"%s","afterSha256":"%s"}\\n' \
+        "$FAKE_CANARY_DIGEST" "$FAKE_CANARY_DIGEST"
+    else
+      printf '{"contract":"production-formal","beforeMode":"legacy","afterMode":"release","beforeSha256":"%s","afterSha256":"sha256:%064d"}\\n' \
+        "$FAKE_FORMAL_DIGEST" 6
+    fi
+    ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    chmodSync(fakeNode, 0o755);
+
+    const fakeSudo = join(bin, 'sudo');
+    writeFileSync(
+      fakeSudo,
+      `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\\n' "$*" >>"$FAKE_SUDO_LOG"
+[[ "\${1:-}" == -n ]] && shift
+command_name=$1
+shift
+case "$command_name" in
+  test)
+    mapped=()
+    for value in "$@"; do
+      case "$value" in
+        /etc/systemd/system/*) mapped+=("$FAKE_UNIT_ROOT/\${value##*/}") ;;
+        *) mapped+=("$value") ;;
+      esac
+    done
+    /usr/bin/test "\${mapped[@]}"
+    ;;
+  find) /usr/bin/find "$@" ;;
+  systemctl) exit 0 ;;
+  sha256sum)
+    case "\${1##*/}" in
+      combo-release-production-web-forward.service)
+        printf '%s  %s\\n' "\${FAKE_WEB_UNIT_DIGEST#sha256:}" "$1"
+        ;;
+      combo-release-production-minio-forward.service)
+        printf '%s  %s\\n' "\${FAKE_MINIO_UNIT_DIGEST#sha256:}" "$1"
+        ;;
+      *) exit 1 ;;
+    esac
+    ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    chmodSync(fakeSudo, 0o755);
+
+    const fallbackStart = source.indexOf('capture_legacy_production_authority()');
+    const fallbackEnd = source.indexOf('\ncapture_preview_route_version()', fallbackStart);
+    const fallback = source.slice(fallbackStart, fallbackEnd);
+    writeFileSync(
+      harness,
+      `#!/usr/bin/env bash
+set -euo pipefail
+readonly FORMAL_INITIAL_SHA256='${formalDigest}'
+ENVIRONMENT=production
+EVIDENCE_ROOT='${evidenceRoot}'
+TRAFFIC_CHECKPOINT_ROOT='${checkpointRoot}'
+NGINX_CONFIG='${canaryConfig}'
+FORMAL_NGINX_CONFIG='${formalConfig}'
+SCRIPT_DIR='${scriptDirectory}'
+work='${work}'
+fail() { printf 'FAIL: %s\\n' "$1" >&2; exit 1; }
+file_digest() { sha256sum "$1" | awk '{print "sha256:" $1}'; }
+${fallback}
+capture_legacy_production_authority '${webService}' '${canaryDigest}' '${formalDigest}'
+`,
+    );
+    chmodSync(harness, 0o700);
+
+    const env = {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH}`,
+      FAKE_CANARY_DIGEST: canaryDigest,
+      FAKE_FORMAL_DIGEST: formalDigest,
+      FAKE_UNIT_ROOT: unitRoot,
+      FAKE_WEB_UNIT_DIGEST: webUnitDigest,
+      FAKE_MINIO_UNIT_DIGEST: minioUnitDigest,
+      FAKE_SUDO_LOG: sudoLog,
+      REAL_NODE: process.execPath,
+    };
+    const first = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(first.status, 0, first.stderr);
+    const second = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(second.status, 0, second.stderr);
+    assert.deepEqual(JSON.parse(first.stdout), JSON.parse(second.stdout));
+    assert.equal(JSON.parse(first.stdout).webImage, webImage);
+    assert.match(JSON.parse(first.stdout).trafficStateDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(existsSync(managedCurrent), false);
+    assert.doesNotMatch(
+      readFileSync(sudoLog, 'utf8'),
+      /\b(?:apply|delete|install|mv|rm|restart|reload|enable|disable)\b/,
+    );
+
+    writeFileSync(
+      join(productionRoot, 'pending.json'),
+      `${JSON.stringify({
+        schemaVersion: 3,
+        environment: 'production',
+        namespace: 'combo',
+        sourceSha,
+        releaseId,
+        manifestDigest,
+        phase: 'armed',
+        foundationResetEvidenceDigest: `sha256:${'a'.repeat(64)}`,
+      })}\n`,
+    );
+    const pending = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(pending.status, 1);
+    assert.match(pending.stderr, /blocked by a pending release/);
+    rmSync(join(productionRoot, 'pending.json'));
+
+    writeFileSync(join(checkpointRoot, 'production', 'armed'), '{}\n');
+    const checkpoint = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(checkpoint.status, 1);
+    assert.match(checkpoint.stderr, /blocked by a traffic checkpoint/);
+    rmSync(join(checkpointRoot, 'production', 'armed'));
+
+    const currentPath = join(productionRoot, 'current.json');
+    const currentBytes = readFileSync(currentPath);
+    const escapedEvidence = join(directory, 'escaped-evidence');
+    mkdirSync(escapedEvidence);
+    writeFileSync(
+      currentPath,
+      `${JSON.stringify({
+        ...JSON.parse(currentBytes.toString('utf8')),
+        evidencePath: escapedEvidence,
+      })}\n`,
+    );
+    const escaped = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(escaped.status, 1);
+    assert.match(escaped.stderr, /escaped its allowlist/);
+    writeFileSync(currentPath, currentBytes);
+
+    const wrongUnit = spawnSync('bash', [harness], {
+      encoding: 'utf8',
+      env: { ...env, FAKE_WEB_UNIT_DIGEST: `sha256:${'f'.repeat(64)}` },
+    });
+    assert.equal(wrongUnit.status, 1);
+    assert.match(wrongUnit.stderr, /forward unit changed/);
+
+    const identityFiles = [
+      'release.json',
+      'release.sha256',
+      'traffic-evidence.json',
+      'deploy-evidence.json',
+      'SHA256SUMS',
+    ];
+    const identityBytes = new Map(
+      identityFiles.map((name) => [name, readFileSync(join(releaseDirectory, name))]),
+    );
+    const otherSource = 'b'.repeat(40);
+    const mismatchedManifest = {
+      ...legacyManifest,
+      sourceSha: otherSource,
+      releaseId: `release-${otherSource}`,
+    };
+    const mismatchedDigest = releaseManifestDigest(mismatchedManifest);
+    const mismatchedTraffic = { ...traffic, manifestDigest: mismatchedDigest };
+    writeFileSync(
+      join(releaseDirectory, 'release.json'),
+      serializeReleaseManifest(mismatchedManifest),
+    );
+    writeFileSync(join(releaseDirectory, 'release.sha256'), `${mismatchedDigest}\n`);
+    writeFileSync(
+      join(releaseDirectory, 'traffic-evidence.json'),
+      `${JSON.stringify(mismatchedTraffic)}\n`,
+    );
+    writeFileSync(
+      join(releaseDirectory, 'deploy-evidence.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        status: 'passed',
+        environment: 'production',
+        namespace: 'combo',
+        sourceSha,
+        releaseId,
+        manifestDigest: mismatchedDigest,
+        traffic: mismatchedTraffic,
+      })}\n`,
+    );
+    writeFileSync(
+      currentPath,
+      `${JSON.stringify({
+        ...JSON.parse(currentBytes.toString('utf8')),
+        manifestDigest: mismatchedDigest,
+      })}\n`,
+    );
+    writeChecksums();
+    const mismatchedIdentity = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(mismatchedIdentity.status, 1);
+    assert.match(mismatchedIdentity.stderr, /manifest no longer verifies/);
+    for (const [name, contents] of identityBytes) {
+      writeFileSync(join(releaseDirectory, name), contents);
+    }
+    writeFileSync(currentPath, currentBytes);
+
+    writeFileSync(join(releaseDirectory, 'traffic-evidence.json'), '{}\n');
+    const tampered = spawnSync('bash', [harness], { encoding: 'utf8', env });
+    assert.equal(tampered.status, 1);
+    assert.match(tampered.stderr, /digest set changed/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('durable state machine is bound to an immutable plan and exact storage identities', () => {
   for (const phase of ['planned', 'storage-removed', 'foundation-ready']) {
     assert.ok(source.includes(phase), `missing phase ${phase}`);
@@ -195,6 +702,11 @@ test('durable state machine is bound to an immutable plan and exact storage iden
   assert.match(source, /foundation-reset-plan\.json/);
   assert.match(source, /foundation-reset-checkpoint\.json/);
   assert.match(source, /foundation-reset-evidence\.json/);
+  assert.match(source, /staging_root="\$foundation_reset_root\/\.staging"/);
+  assert.match(source, /cleanup_stale_atomic_stages/);
+  assert.match(source, /foundation reset staging entry has unsafe metadata/);
+  assert.match(source, /validate_plan_only_live_continuity/);
+  assert.match(source, /live foundation no longer matches the plan-only reset boundary/);
   assert.match(source, /plan_digest=\$\(file_digest "\$plan"\)/);
   assert.match(source, /new PVC reused the old UID/);
   assert.match(source, /new PV reused the old UID/);
@@ -353,6 +865,7 @@ test('behavior: storage-removed resumes and Preview reset supersession stays lin
     const evidenceRoot = join(directory, 'evidence');
     const stateFile = join(directory, 'state.json');
     const failApplyOnce = join(directory, 'fail-apply-once');
+    const failAfterPlanOnce = join(directory, 'fail-after-plan-once');
     const manifestFile = join(directory, 'release.json');
     const foundationFile = join(directory, 'foundation.yaml');
     const output = join(directory, 'reset-evidence.json');
@@ -916,6 +1429,22 @@ exit 1
 `,
     );
     chmodSync(fakeCurl, 0o755);
+    const fakeMv = join(bin, 'mv');
+    writeFileSync(
+      fakeMv,
+      `#!/usr/bin/env bash
+set -euo pipefail
+/usr/bin/mv "$@"
+target=\${!#}
+if [[ -n "\${FAKE_FAIL_AFTER_PLAN_ONCE:-}" &&
+  -f "$FAKE_FAIL_AFTER_PLAN_ONCE" &&
+  "$target" == *.foundation-reset-plan.json ]]; then
+  /usr/bin/rm -f -- "$FAKE_FAIL_AFTER_PLAN_ONCE"
+  exit 86
+fi
+`,
+    );
+    chmodSync(fakeMv, 0o755);
 
     const args = [
       '--operation',
@@ -942,6 +1471,7 @@ exit 1
       PATH: `${bin}:${process.env.PATH}`,
       FAKE_KUBE_STATE: stateFile,
       FAKE_FAIL_APPLY_ONCE: failApplyOnce,
+      FAKE_FAIL_AFTER_PLAN_ONCE: failAfterPlanOnce,
       FAKE_BUMP_DELETE_RV_ONCE: bumpDeleteRvOnce,
       FAKE_FAIL_OPTIONAL_GET_ONCE: failOptionalGetOnce,
       FAKE_VERSION_JSON: routeVersion,
@@ -1137,6 +1667,79 @@ exit 1
       undefined,
     );
 
+    const resetStateRoot = join(evidenceRoot, 'foundation-resets', 'preview');
+    const requestStem = requestId.slice('sha256:'.length);
+    const plan = join(resetStateRoot, `${requestStem}.foundation-reset-plan.json`);
+    const checkpoint = join(resetStateRoot, `${requestStem}.foundation-reset-checkpoint.json`);
+    const stagingRoot = join(evidenceRoot, 'foundation-resets', '.staging');
+
+    writeFileSync(failAfterPlanOnce, '1\n');
+    writeFileSync(kubectlCommandLog, '');
+    const planOnlyCrash = spawnSync('bash', [script, ...args], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(planOnlyCrash.status, 86, planOnlyCrash.stderr);
+    assert.equal(existsSync(failAfterPlanOnce), false);
+    assert.equal(existsSync(plan), true);
+    assert.equal(existsSync(checkpoint), false);
+    assert.equal(existsSync(output), false);
+    assert.equal(readFileSync(stateFile, 'utf8'), pristineState);
+    assert.doesNotMatch(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      /^(?:delete|patch)(?: |$)|^apply (?!.*--dry-run=server)/m,
+    );
+
+    const driftedPlanOnlyState = JSON.parse(pristineState);
+    driftedPlanOnlyState.resources['deployment/release-000000000000-api'].metadata.uid =
+      'drifted-api-uid';
+    writeFileSync(stateFile, `${JSON.stringify(driftedPlanOnlyState)}\n`);
+    writeFileSync(kubectlCommandLog, '');
+    const rejectedPlanOnlyDrift = spawnSync('bash', [script, ...args], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rejectedPlanOnlyDrift.status, 1, rejectedPlanOnlyDrift.stderr);
+    assert.match(
+      rejectedPlanOnlyDrift.stderr,
+      /live foundation no longer matches the plan-only reset boundary/,
+    );
+    assert.equal(existsSync(checkpoint), false);
+    assert.doesNotMatch(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      /^(?:delete|patch)(?: |$)|^apply (?!.*--dry-run=server)/m,
+    );
+    writeFileSync(stateFile, pristineState);
+
+    const unsafeStage = join(stagingRoot, '.foundation-reset.BAD123');
+    symlinkSync(plan, unsafeStage);
+    const rejectedUnsafeStage = spawnSync('bash', [script, ...args], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rejectedUnsafeStage.status, 1);
+    assert.match(rejectedUnsafeStage.stderr, /staging directory contains an unsafe entry/);
+    assert.equal(existsSync(checkpoint), false);
+    rmSync(unsafeStage);
+
+    const wrongModeStage = join(stagingRoot, '.foundation-reset.BAD124');
+    writeFileSync(wrongModeStage, 'unsafe mode\n', { mode: 0o644 });
+    chmodSync(wrongModeStage, 0o644);
+    const rejectedWrongModeStage = spawnSync('bash', [script, ...args], {
+      cwd: scriptDirectory,
+      encoding: 'utf8',
+      env,
+    });
+    assert.equal(rejectedWrongModeStage.status, 1);
+    assert.match(rejectedWrongModeStage.stderr, /staging entry has unsafe metadata/);
+    assert.equal(existsSync(checkpoint), false);
+    rmSync(wrongModeStage);
+
+    const staleStage = join(stagingRoot, '.foundation-reset.ABC123');
+    writeFileSync(staleStage, 'stale atomic stage\n', { mode: 0o600 });
     writeFileSync(bumpDeleteRvOnce, '1\n');
     const first = spawnSync('bash', [script, ...args], {
       cwd: scriptDirectory,
@@ -1145,23 +1748,12 @@ exit 1
     });
     assert.equal(first.status, 1);
     assert.match(first.stderr, /rendered foundation apply failed/);
+    assert.equal(existsSync(staleStage), false);
     assert.equal(existsSync(bumpDeleteRvOnce), false);
     const storageRemovedState = JSON.parse(readFileSync(stateFile, 'utf8'));
     assert.equal(storageRemovedState.resources['deployment/release-000000000000-api'], undefined);
     assert.equal(storageRemovedState.resources['pvc/data-release-postgres-0'], undefined);
-    const checkpoint = join(
-      evidenceRoot,
-      'foundation-resets',
-      'preview',
-      `${requestId.slice('sha256:'.length)}.foundation-reset-checkpoint.json`,
-    );
     assert.equal(JSON.parse(readFileSync(checkpoint, 'utf8')).phase, 'storage-removed');
-    const plan = join(
-      evidenceRoot,
-      'foundation-resets',
-      'preview',
-      `${requestId.slice('sha256:'.length)}.foundation-reset-plan.json`,
-    );
     const originalPlan = readFileSync(plan, 'utf8');
     const originalCheckpoint = readFileSync(checkpoint, 'utf8');
     const expandedPlan = JSON.parse(originalPlan);
@@ -1252,7 +1844,6 @@ exit 1
       /unconsumed completed foundation reset|entered the clean-slate boundary/,
     );
 
-    const resetStateRoot = join(evidenceRoot, 'foundation-resets', 'preview');
     const firstStem = requestId.slice('sha256:'.length);
     const firstReady = join(resetStateRoot, `${firstStem}.foundation-reset-ready.json`);
     const firstEvidence = join(resetStateRoot, `${firstStem}.foundation-reset-evidence.json`);

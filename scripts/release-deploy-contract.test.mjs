@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -158,6 +159,89 @@ function runFoundationLiveStorageValidator(filter, evidence, liveStorage) {
       encoding: 'utf8',
       input: JSON.stringify(evidence),
     });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function liveFoundationResetUidValidator() {
+  const body = functionBody('validate_live_foundation_reset_uids');
+  const startMarker = `--arg track "$FOUNDATION_TRACK" '`;
+  const start = body.indexOf(startMarker);
+  assert.ok(start >= 0, 'live foundation validator must receive the exact environment track');
+  const programStart = start + startMarker.length;
+  const endMarker = `\n      ' <<<"$current" >/dev/null`;
+  const end = body.indexOf(endMarker, programStart);
+  assert.ok(end > programStart, 'live foundation validator must execute its embedded jq filter');
+  return body.slice(programStart, end);
+}
+
+function runLiveFoundationResetUidValidator(filter, resource, identity) {
+  return spawnSync(
+    'jq',
+    [
+      '-e',
+      '--arg',
+      'name',
+      identity.name,
+      '--arg',
+      'uid',
+      identity.uid,
+      '--arg',
+      'track',
+      identity.track,
+      filter,
+    ],
+    {
+      encoding: 'utf8',
+      input: JSON.stringify(resource),
+    },
+  );
+}
+
+function runLiveFoundationResetUidFunction({ evidence, liveResources, expectedDigest }) {
+  const directory = mkdtempSync(join(tmpdir(), 'combo-release-live-foundation-'));
+  const evidenceFile = join(directory, 'reset-evidence.json');
+  const resourcesFile = join(directory, 'live-resources.json');
+  const callsFile = join(directory, 'calls.txt');
+  const evidenceBytes = `${JSON.stringify(evidence)}\n`;
+  writeFileSync(evidenceFile, evidenceBytes);
+  writeFileSync(resourcesFile, `${JSON.stringify(liveResources)}\n`);
+  const digest =
+    expectedDigest ?? `sha256:${createHash('sha256').update(evidenceBytes).digest('hex')}`;
+  const harness = `
+set -euo pipefail
+FOUNDATION_RESET_EVIDENCE=${JSON.stringify(evidenceFile)}
+foundation_reset_digest=${JSON.stringify(digest)}
+FOUNDATION_TRACK=production
+NAMESPACE=combo
+LIVE_RESOURCES=${JSON.stringify(resourcesFile)}
+CALLS=${JSON.stringify(callsFile)}
+K=(fake_kubectl)
+fail() { printf 'fail:%s\\n' "$1" >&2; exit 91; }
+status() { :; }
+fake_kubectl() {
+  local reference=''
+  while (($#)); do
+    if [[ "$1" == get && $# -ge 2 ]]; then
+      reference=$2
+      break
+    fi
+    shift
+  done
+  [[ -n "$reference" ]] || return 92
+  printf '%s\\n' "$reference" >>"$CALLS"
+  jq -cer --arg reference "$reference" '.[$reference]' "$LIVE_RESOURCES"
+}
+${functionBody('validate_live_foundation_reset_uids')}
+validate_live_foundation_reset_uids
+`;
+  try {
+    const result = spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
+    const calls = existsSync(callsFile)
+      ? readFileSync(callsFile, 'utf8').trim().split('\n').filter(Boolean)
+      : [];
+    return { result, calls };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -1045,6 +1129,141 @@ test('foundation journal admission is revalidated while the deployment lock is h
     firstClusterRead,
     'foundation journal admission must finish before deployment reads or mutates Kubernetes',
   );
+});
+
+test('reset evidence rebinds every live foundation UID before deployment mutation', () => {
+  const validator = functionBody('validate_live_foundation_reset_uids');
+  const filter = liveFoundationResetUidValidator();
+  const identity = {
+    name: 'release-postgres',
+    uid: '11111111-1111-1111-1111-111111111111',
+    track: 'production',
+  };
+  const resource = {
+    metadata: {
+      name: identity.name,
+      uid: identity.uid,
+      labels: {
+        'combo.build/environment-foundation': identity.track,
+      },
+    },
+  };
+
+  assert.match(validator, /foundation reset evidence changed before live UID validation/);
+  assert.match(validator, /type == "array" and length == 10/);
+  assert.match(validator, /\(\(count == 10\)\)/);
+  assert.doesNotMatch(validator, /done < <\(/);
+  assert.match(
+    validator,
+    /current=\$\("\$\{K\[@\]\}" -n "\$NAMESPACE" get "\$kind\/\$name" -o json\) \|\|/,
+  );
+  assert.match(validator, /reset foundation resource disappeared/);
+
+  const accepted = runLiveFoundationResetUidValidator(filter, resource, identity);
+  assert.equal(accepted.status, 0, accepted.stderr);
+
+  const changedUid = structuredClone(resource);
+  changedUid.metadata.uid = '22222222-2222-2222-2222-222222222222';
+  const rejectedUid = runLiveFoundationResetUidValidator(filter, changedUid, identity);
+  assert.equal(rejectedUid.status, 1, rejectedUid.stderr);
+
+  const changedOwnership = structuredClone(resource);
+  changedOwnership.metadata.labels['combo.build/environment-foundation'] = 'preview';
+  const rejectedOwnership = runLiveFoundationResetUidValidator(filter, changedOwnership, identity);
+  assert.equal(rejectedOwnership.status, 1, rejectedOwnership.stderr);
+
+  const deleting = structuredClone(resource);
+  deleting.metadata.deletionTimestamp = '2026-07-30T00:00:00Z';
+  const rejectedDeleting = runLiveFoundationResetUidValidator(filter, deleting, identity);
+  assert.equal(rejectedDeleting.status, 1, rejectedDeleting.stderr);
+
+  const lockedAdmission = indexOf(/\naudit_foundation_reset_journals\n/);
+  const namespaceRead = indexOf(/"\$\{K\[@\]\}" get namespace "\$NAMESPACE"/);
+  const liveUidValidation = indexOf(/\nvalidate_live_foundation_reset_uids\n/);
+  const secretValidation = indexOf(/\nvalidate_secret_keys\n/);
+  const renderedValidation = indexOf(/validate_rendered_phase foundation "\$FOUNDATION_YAML"/);
+  const workCreation = indexOf(/\nwork=\$\(mktemp -d\)\n/);
+
+  assertBefore(
+    lockedAdmission,
+    liveUidValidation,
+    'foundation journal admission must precede live UID rebinding',
+  );
+  assertBefore(
+    namespaceRead,
+    liveUidValidation,
+    'the namespace must exist before live UID rebinding',
+  );
+  assertBefore(
+    liveUidValidation,
+    secretValidation,
+    'live UID rebinding must precede secret admission',
+  );
+  assertBefore(
+    liveUidValidation,
+    renderedValidation,
+    'live UID rebinding must precede rendered admission',
+  );
+  assertBefore(
+    liveUidValidation,
+    workCreation,
+    'live UID rebinding must precede deployment mutation setup',
+  );
+});
+
+test('live foundation UID rebinding propagates evidence and resource producer failures', () => {
+  const foundation = Array.from({ length: 10 }, (_, index) => ({
+    kind: index < 2 ? 'configmap' : index < 3 ? 'deployment' : 'service',
+    name: `release-foundation-${index}`,
+    uid: `${String(index + 1).repeat(8)}-${String(index + 1).repeat(4)}-${String(index + 1).repeat(4)}-${String(index + 1).repeat(4)}-${String(index + 1).repeat(12)}`,
+  }));
+  const evidence = { foundation };
+  const liveResources = Object.fromEntries(
+    foundation.map(({ kind, name, uid }) => [
+      `${kind}/${name}`,
+      {
+        metadata: {
+          name,
+          uid,
+          labels: {
+            'combo.build/environment-foundation': 'production',
+          },
+        },
+      },
+    ]),
+  );
+
+  const accepted = runLiveFoundationResetUidFunction({ evidence, liveResources });
+  assert.equal(accepted.result.status, 0, accepted.result.stderr);
+  assert.equal(accepted.calls.length, 10);
+  assert.deepEqual(accepted.calls.sort(), Object.keys(liveResources).sort());
+
+  const changedEvidence = runLiveFoundationResetUidFunction({
+    evidence,
+    liveResources,
+    expectedDigest: `sha256:${'0'.repeat(64)}`,
+  });
+  assert.equal(changedEvidence.result.status, 91, changedEvidence.result.stderr);
+  assert.match(changedEvidence.result.stderr, /evidence changed before live UID validation/);
+  assert.equal(changedEvidence.calls.length, 0);
+
+  const shortEvidence = runLiveFoundationResetUidFunction({
+    evidence: { foundation: foundation.slice(0, 9) },
+    liveResources,
+  });
+  assert.equal(shortEvidence.result.status, 91, shortEvidence.result.stderr);
+  assert.match(shortEvidence.result.stderr, /lost its exact foundation resource set/);
+  assert.equal(shortEvidence.calls.length, 0);
+
+  const missingResources = structuredClone(liveResources);
+  delete missingResources[`${foundation[0].kind}/${foundation[0].name}`];
+  const missingResource = runLiveFoundationResetUidFunction({
+    evidence,
+    liveResources: missingResources,
+  });
+  assert.equal(missingResource.result.status, 91, missingResource.result.stderr);
+  assert.match(missingResource.result.stderr, /reset foundation resource disappeared/);
+  assert.deepEqual(missingResource.calls, [`${foundation[0].kind}/${foundation[0].name}`]);
 });
 
 test('reset roll-forward authority is exact, non-downgradable, and sealed with release evidence', () => {

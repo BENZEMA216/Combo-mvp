@@ -5,6 +5,7 @@ readonly DIGEST_RE='^sha256:[0-9a-f]{64}$'
 readonly SOURCE_SHA_RE='^[0-9a-f]{40}$'
 readonly POLICY_VALUE='established-clean-slate-v1'
 readonly REUSE_POLICY_VALUE='reuse-existing-v1'
+readonly FORMAL_INITIAL_SHA256='sha256:a2b92b1cf53fb6cbc72fae5687cdefcd60962dcceab9d823e220c7cef0262118'
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 readonly SCRIPT_DIR
@@ -27,6 +28,7 @@ EVIDENCE_ROOT=${COMBO_RELEASE_EVIDENCE_ROOT:-"$HOME/data/combo-releases/goal-a"}
 MUTATION_LOCK=${COMBO_MUTATION_LOCK:-"$HOME/data/combo-release-mutation.lock"}
 TRAFFIC_LOCK=${COMBO_RELEASE_TRAFFIC_LOCK:-"$HOME/data/combo-release-traffic.lock"}
 TRAFFIC_STATE_ROOT=${COMBO_RELEASE_TRAFFIC_STATE_ROOT:-"$HOME/data/combo-releases/traffic"}
+TRAFFIC_CHECKPOINT_ROOT=${COMBO_RELEASE_TRAFFIC_CHECKPOINT_ROOT:-/var/lib/combo-release/traffic-checkpoints}
 K3S_STORAGE_ROOT=${COMBO_K3S_STORAGE_ROOT:-"$HOME/data/k3s/storage"}
 WAIT_SECONDS=${COMBO_FOUNDATION_RESET_WAIT_SECONDS:-180}
 
@@ -118,7 +120,7 @@ done
   fail 'output parent must be an existing regular directory'
 
 for command in node jq sha256sum flock kubectl awk install mktemp realpath mv \
-  rm dirname sleep seq sudo date chmod mkdir cmp sort sed curl systemctl; do
+  rm dirname sleep seq sudo date chmod mkdir cmp sort sed curl systemctl find tr stat; do
   command -v "$command" >/dev/null 2>&1 || fail "missing host command: $command"
 done
 [[ -f "$SCRIPT_DIR/release-manifest.mjs" && ! -L "$SCRIPT_DIR/release-manifest.mjs" ]] ||
@@ -126,6 +128,9 @@ done
 [[ -f "$SCRIPT_DIR/verify-rendered-release.mjs" &&
   ! -L "$SCRIPT_DIR/verify-rendered-release.mjs" ]] ||
   fail 'rendered release verifier is missing'
+[[ -f "$SCRIPT_DIR/release-nginx-route.mjs" &&
+  ! -L "$SCRIPT_DIR/release-nginx-route.mjs" ]] ||
+  fail 'structured Nginx route controller is missing'
 
 K=(kubectl --kubeconfig "$KUBECONFIG_PATH")
 readonly -a K
@@ -149,7 +154,11 @@ readonly -a FOUNDATION_TARGETS=(
 readonly -a OPTIONAL_TARGETS=('configmap:release-minio-init-script')
 
 work=$(mktemp -d)
+atomic_stage=''
 cleanup() {
+  if [[ -n "$atomic_stage" && -f "$atomic_stage" && ! -L "$atomic_stage" ]]; then
+    rm -f -- "$atomic_stage"
+  fi
   rm -rf -- "$work"
 }
 trap cleanup EXIT
@@ -157,12 +166,17 @@ chmod 0700 "$work"
 
 atomic_install() {
   local source=$1 target=$2 stage
-  stage=$(mktemp "$(dirname -- "$target")/.foundation-reset.XXXXXX")
+  [[ "$(stat -c '%d' "$staging_root")" == \
+    "$(stat -c '%d' "$(dirname -- "$target")")" ]] ||
+    fail "atomic target is on another filesystem: $target"
+  stage=$(mktemp "$staging_root/.foundation-reset.XXXXXX")
+  atomic_stage=$stage
   install -m 0600 "$source" "$stage"
   [[ "$(sha256sum "$stage" | awk '{print $1}')" == \
     "$(sha256sum "$source" | awk '{print $1}')" ]] ||
     fail "atomic staging changed: $target"
   mv -fT "$stage" "$target"
+  atomic_stage=''
 }
 
 immutable_install() {
@@ -253,10 +267,37 @@ foundation_names="$work/foundation-names.txt"
 cmp -s "$expected_foundation_names" "$foundation_names" ||
   fail 'rendered foundation has an unexpected resource set'
 
-mkdir -p "$EVIDENCE_ROOT/foundation-resets"
-chmod 0700 "$EVIDENCE_ROOT/foundation-resets"
-state_root="$EVIDENCE_ROOT/foundation-resets/$ENVIRONMENT"
-mkdir -p "$state_root"
+if [[ -e "$EVIDENCE_ROOT" || -L "$EVIDENCE_ROOT" ]]; then
+  [[ -d "$EVIDENCE_ROOT" && ! -L "$EVIDENCE_ROOT" ]] ||
+    fail 'release evidence root is unsafe'
+else
+  mkdir -p "$EVIDENCE_ROOT"
+fi
+foundation_reset_root="$EVIDENCE_ROOT/foundation-resets"
+if [[ -e "$foundation_reset_root" || -L "$foundation_reset_root" ]]; then
+  [[ -d "$foundation_reset_root" && ! -L "$foundation_reset_root" ]] ||
+    fail 'foundation reset root is unsafe'
+else
+  mkdir "$foundation_reset_root"
+fi
+chmod 0700 "$foundation_reset_root"
+staging_root="$foundation_reset_root/.staging"
+if [[ -e "$staging_root" || -L "$staging_root" ]]; then
+  [[ -d "$staging_root" && ! -L "$staging_root" ]] ||
+    fail 'foundation reset staging directory is unsafe'
+else
+  mkdir "$staging_root"
+fi
+chmod 0700 "$staging_root"
+[[ -d "$staging_root" && ! -L "$staging_root" ]] ||
+  fail 'foundation reset staging directory is unsafe'
+state_root="$foundation_reset_root/$ENVIRONMENT"
+if [[ -e "$state_root" || -L "$state_root" ]]; then
+  [[ -d "$state_root" && ! -L "$state_root" ]] ||
+    fail 'foundation reset state directory is unsafe'
+else
+  mkdir "$state_root"
+fi
 chmod 0700 "$state_root"
 [[ -d "$state_root" && ! -L "$state_root" ]] ||
   fail 'foundation reset state directory is unsafe'
@@ -265,7 +306,8 @@ plan="$state_root/$request_hex.foundation-reset-plan.json"
 checkpoint="$state_root/$request_hex.foundation-reset-checkpoint.json"
 ready_snapshot="$state_root/$request_hex.foundation-reset-ready.json"
 evidence="$state_root/$request_hex.foundation-reset-evidence.json"
-readonly state_root request_hex plan checkpoint ready_snapshot evidence
+readonly foundation_reset_root staging_root state_root request_hex
+readonly plan checkpoint ready_snapshot evidence
 
 mkdir -p "$(dirname -- "$MUTATION_LOCK")"
 exec 9>"$MUTATION_LOCK"
@@ -273,6 +315,28 @@ flock -x 9
 mkdir -p "$(dirname -- "$TRAFFIC_LOCK")"
 exec 8>"$TRAFFIC_LOCK"
 flock -x 8
+
+cleanup_stale_atomic_stages() {
+  local entries="$work/staging-entries" stage name owner mode links size
+  find "$staging_root" -mindepth 1 -maxdepth 1 -print0 >"$entries" ||
+    fail 'foundation reset staging directory is unreadable'
+  while IFS= read -r -d '' stage; do
+    name=${stage##*/}
+    [[ "$name" =~ ^\.foundation-reset\.[A-Za-z0-9]{6}$ &&
+      -f "$stage" && ! -L "$stage" ]] ||
+      fail 'foundation reset staging directory contains an unsafe entry'
+    owner=$(stat -c '%u' "$stage")
+    mode=$(stat -c '%a' "$stage")
+    links=$(stat -c '%h' "$stage")
+    size=$(stat -c '%s' "$stage")
+    [[ "$owner" == "$EUID" && "$mode" == 600 && "$links" == 1 &&
+      "$size" =~ ^[0-9]+$ && "$size" -le 16777216 ]] ||
+      fail 'foundation reset staging entry has unsafe metadata'
+    rm -f -- "$stage"
+  done <"$entries"
+}
+
+cleanup_stale_atomic_stages
 
 validate_reset_roll_forward_evidence() {
   local roll_request_id request_id_hex roll_root internal_evidence
@@ -939,6 +1003,286 @@ preview_gate_is_closed() {
     "$headers"
 }
 
+capture_legacy_production_authority() {
+  local forward_service=$1 canary_digest=$2 formal_digest=$3
+  local legacy_current pending checkpoint_root checkpoint_entry
+  local evidence_path evidence_real environment_root verified_prior
+  local prior_source prior_release prior_manifest prior_web_image
+  local expected_files actual_files file
+  local traffic_evidence deploy_evidence unit unit_digest
+  local route_work canary_route_evidence formal_route_evidence
+
+  [[ "$ENVIRONMENT" == production ]] ||
+    fail 'legacy release checkpoint fallback is Production-only'
+
+  pending="$EVIDENCE_ROOT/production/pending.json"
+  [[ ! -e "$pending" && ! -L "$pending" ]] ||
+    fail 'legacy Production fallback is blocked by a pending release'
+
+  checkpoint_root="$TRAFFIC_CHECKPOINT_ROOT/production"
+  if sudo -n test -e "$checkpoint_root" ||
+    sudo -n test -L "$checkpoint_root"; then
+    if ! sudo -n test -d "$checkpoint_root" ||
+      ! sudo -n test ! -L "$checkpoint_root"; then
+      fail 'legacy Production traffic checkpoint root is unsafe'
+    fi
+    checkpoint_entry=$(sudo -n find "$checkpoint_root" \
+      -mindepth 1 -maxdepth 1 -printf . -quit) ||
+      fail 'legacy Production traffic checkpoint root is unreadable'
+    [[ -z "$checkpoint_entry" ]] ||
+      fail 'legacy Production fallback is blocked by a traffic checkpoint'
+  fi
+
+  legacy_current="$EVIDENCE_ROOT/production/current.json"
+  [[ -f "$legacy_current" && ! -L "$legacy_current" ]] ||
+    fail 'legacy Production release checkpoint is missing or unsafe'
+  jq -e '
+    (keys | sort) == ([
+      "schemaVersion", "status", "environment", "namespace", "sourceSha",
+      "releaseId", "manifestDigest", "evidencePath"
+    ] | sort)
+    and .schemaVersion == 1
+    and .status == "passed"
+    and .environment == "production"
+    and .namespace == "combo"
+    and (.sourceSha | type == "string" and test("^[0-9a-f]{40}$"))
+    and .releaseId == ("release-" + .sourceSha)
+    and (.manifestDigest | type == "string"
+      and test("^sha256:[0-9a-f]{64}$"))
+    and (.evidencePath | type == "string" and length > 0)
+  ' "$legacy_current" >/dev/null ||
+    fail 'legacy Production release checkpoint is invalid'
+  prior_source=$(jq -er '.sourceSha' "$legacy_current")
+  prior_release=$(jq -er '.releaseId' "$legacy_current")
+  prior_manifest=$(jq -er '.manifestDigest' "$legacy_current")
+  [[ "$forward_service" == "release-${prior_source:0:12}-web" ]] ||
+    fail 'legacy Production Web forward and checkpoint disagree'
+
+  evidence_path=$(jq -er '.evidencePath' "$legacy_current")
+  environment_root=$(realpath -e "$EVIDENCE_ROOT/production") ||
+    fail 'legacy Production evidence root is missing'
+  evidence_real=$(realpath -e "$evidence_path") ||
+    fail 'legacy Production release evidence is missing'
+  [[ "$evidence_real" == "$environment_root/$prior_release" &&
+    -d "$evidence_real" && ! -L "$evidence_path" ]] ||
+    fail 'legacy Production release evidence escaped its allowlist'
+
+  expected_files="$work/legacy-production-files.expected"
+  actual_files="$work/legacy-production-files.actual"
+  cat >"$expected_files" <<'EOF'
+SHA256SUMS
+apps.yaml
+cleanup-evidence.json
+deploy-evidence.json
+foundation.yaml
+init.yaml
+migrate.yaml
+migration-files.txt
+release.json
+release.sha256
+traffic-evidence.json
+web-asset-manifest.json
+EOF
+  find "$evidence_real" -mindepth 1 -maxdepth 1 -printf '%f\n' |
+    LC_ALL=C sort >"$actual_files"
+  cmp -s "$expected_files" "$actual_files" ||
+    fail 'legacy Production release evidence has an unexpected file set'
+  while IFS= read -r file; do
+    [[ -f "$evidence_real/$file" && ! -L "$evidence_real/$file" ]] ||
+      fail "legacy Production release evidence file is unsafe: $file"
+  done <"$expected_files"
+
+  awk '
+    (NF == 2 &&
+      length($1) == 64 &&
+      $1 ~ /^[0-9a-f]+$/ &&
+      $2 ~ /^[A-Za-z0-9._-]+$/) {
+        print $2
+        next
+      }
+    { exit 1 }
+  ' "$evidence_real/SHA256SUMS" |
+    LC_ALL=C sort >"$work/legacy-production-checksums.actual" ||
+    fail 'legacy Production checksum set is malformed'
+  sed '/^SHA256SUMS$/d' "$expected_files" \
+    >"$work/legacy-production-checksums.expected"
+  cmp -s \
+    "$work/legacy-production-checksums.expected" \
+    "$work/legacy-production-checksums.actual" ||
+    fail 'legacy Production checksum set has an unexpected file set'
+  (
+    cd "$evidence_real"
+    sha256sum --quiet -c SHA256SUMS
+  ) || fail 'legacy Production release evidence digest set changed'
+  [[ "$(tr -d '\n' <"$evidence_real/release.sha256")" == "$prior_manifest" ]] ||
+    fail 'legacy Production release manifest digest changed'
+  verified_prior=$(node "$SCRIPT_DIR/release-manifest.mjs" verify \
+    --manifest "$evidence_real/release.json" \
+    --source-sha "$prior_source" \
+    --release-id "$prior_release" \
+    --digest "$prior_manifest") ||
+    fail 'legacy Production release manifest no longer verifies'
+  [[ "$verified_prior" == "$prior_manifest" ]] ||
+    fail 'legacy Production release manifest verifier returned another digest'
+  prior_web_image=$(jq -er '.images.web' "$evidence_real/release.json")
+  [[ "$prior_web_image" =~ \
+    ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]] ||
+    fail 'legacy Production release manifest Web image is invalid'
+
+  traffic_evidence="$evidence_real/traffic-evidence.json"
+  deploy_evidence="$evidence_real/deploy-evidence.json"
+  jq -e \
+    --arg sourceSha "$prior_source" \
+    --arg releaseId "$prior_release" \
+    --arg manifestDigest "$prior_manifest" \
+    --arg canaryPath "$NGINX_CONFIG" \
+    --arg canaryDigest "$canary_digest" \
+    --arg webService "$forward_service" '
+      (keys | sort) == ([
+        "schemaVersion", "environment", "sourceSha", "releaseId",
+        "manifestDigest", "publicOrigin", "s3Origin", "nginx", "units",
+        "checks", "activatedAt"
+      ] | sort)
+      and .schemaVersion == 1
+      and .environment == "production"
+      and .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+      and .publicOrigin == "https://agora.43-160-242-46.sslip.io"
+      and .s3Origin == "https://s3.43-160-242-46.sslip.io"
+      and .nginx == {path: $canaryPath, sha256: $canaryDigest}
+      and (.activatedAt | type == "string" and length > 0)
+      and .checks == {
+        loopbackWebRelease: true,
+        loopbackMinioReady: true,
+        publicWebRelease: true,
+        publicMinioReady: true
+      }
+      and (.units | type == "array" and length == 2)
+      and ([.units[].name] | sort) == ([
+        "combo-release-production-web-forward.service",
+        "combo-release-production-minio-forward.service"
+      ] | sort)
+      and all(.units[];
+        (keys | sort) == ["mainPid", "name", "port", "service", "sha256"]
+        and (.mainPid | type == "number" and . > 0 and floor == .)
+        and (.sha256 | test("^sha256:[0-9a-f]{64}$"))
+        and (
+          if .name == "combo-release-production-web-forward.service"
+          then .service == $webService and .port == 18082
+          else
+            .name == "combo-release-production-minio-forward.service"
+            and .service == "release-minio"
+            and .port == 19002
+          end
+        ))
+    ' "$traffic_evidence" >/dev/null ||
+    fail 'legacy Production traffic evidence is invalid'
+  jq -e \
+    --arg sourceSha "$prior_source" \
+    --arg releaseId "$prior_release" \
+    --arg manifestDigest "$prior_manifest" \
+    --slurpfile traffic "$traffic_evidence" '
+      .schemaVersion == 1
+      and .status == "passed"
+      and .environment == "production"
+      and .namespace == "combo"
+      and .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+      and .traffic == $traffic[0]
+    ' "$deploy_evidence" >/dev/null ||
+    fail 'legacy Production deploy evidence does not match its checkpoint'
+
+  for unit in \
+    combo-release-production-web-forward.service \
+    combo-release-production-minio-forward.service; do
+    sudo -n systemctl is-enabled --quiet "$unit" ||
+      fail "legacy Production forward unit is not enabled: $unit"
+    sudo -n systemctl is-active --quiet "$unit" ||
+      fail "legacy Production forward unit is not active: $unit"
+    sudo -n test -f "/etc/systemd/system/$unit" ||
+      fail "legacy Production forward unit is missing: $unit"
+    sudo -n test ! -L "/etc/systemd/system/$unit" ||
+      fail "legacy Production forward unit is unsafe: $unit"
+    unit_digest=$(sudo -n sha256sum "/etc/systemd/system/$unit" |
+      awk '{print "sha256:" $1}')
+    [[ "$unit_digest" == "$(jq -er --arg unit "$unit" \
+      'first(.units[] | select(.name == $unit) | .sha256)' \
+      "$traffic_evidence")" ]] ||
+      fail "legacy Production forward unit changed: $unit"
+  done
+
+  [[ "$formal_digest" == "$FORMAL_INITIAL_SHA256" ]] ||
+    fail 'legacy Production formal route is outside its initial allowlist'
+  route_work=$(mktemp -d "$work/legacy-production-routes.XXXXXX")
+  canary_route_evidence="$route_work/canary-route.json"
+  formal_route_evidence="$route_work/formal-route.json"
+  node "$SCRIPT_DIR/release-nginx-route.mjs" rewrite \
+    --input "$NGINX_CONFIG" \
+    --output "$route_work/canary.candidate" \
+    --contract production-canary \
+    --target release >"$canary_route_evidence" ||
+    fail 'legacy Production canary route is structurally invalid'
+  node "$SCRIPT_DIR/release-nginx-route.mjs" rewrite \
+    --input "$FORMAL_NGINX_CONFIG" \
+    --output "$route_work/formal.candidate" \
+    --contract production-formal \
+    --target release >"$formal_route_evidence" ||
+    fail 'legacy Production formal route is structurally invalid'
+  jq -e \
+    --arg canaryDigest "$canary_digest" '
+      .contract == "production-canary"
+      and .beforeMode == "release"
+      and .afterMode == "release"
+      and .beforeSha256 == $canaryDigest
+      and .afterSha256 == $canaryDigest
+    ' "$canary_route_evidence" >/dev/null ||
+    fail 'legacy Production canary route is not the trusted release route'
+  jq -e \
+    --arg formalDigest "$formal_digest" '
+      .contract == "production-formal"
+      and .beforeMode == "legacy"
+      and .afterMode == "release"
+      and .beforeSha256 == $formalDigest
+      and (.afterSha256 | test("^sha256:[0-9a-f]{64}$"))
+      and .afterSha256 != .beforeSha256
+    ' "$formal_route_evidence" >/dev/null ||
+    fail 'legacy Production formal route is not the initial legacy route'
+
+  jq -n \
+    --arg sourceSha "$prior_source" \
+    --arg releaseId "$prior_release" \
+    --arg manifestDigest "$prior_manifest" \
+    --arg canaryNginxSha256 "$canary_digest" \
+    --arg formalNginxSha256 "$formal_digest" \
+    --arg webService "$forward_service" '{
+      schemaVersion: 1,
+      environment: "production",
+      sourceSha: $sourceSha,
+      releaseId: $releaseId,
+      manifestDigest: $manifestDigest,
+      canaryNginxSha256: $canaryNginxSha256,
+      formalNginxSha256: $formalNginxSha256,
+      webService: $webService
+    }' >"$route_work/bootstrap-traffic-state.json"
+  jq -n \
+    --arg sourceSha "$prior_source" \
+    --arg releaseId "$prior_release" \
+    --arg manifestDigest "$prior_manifest" \
+    --arg webService "$forward_service" \
+    --arg webImage "$prior_web_image" \
+    --arg trafficStateDigest \
+      "$(file_digest "$route_work/bootstrap-traffic-state.json")" '{
+      sourceSha: $sourceSha,
+      releaseId: $releaseId,
+      manifestDigest: $manifestDigest,
+      webService: $webService,
+      webImage: $webImage,
+      trafficStateDigest: $trafficStateDigest
+    }'
+}
+
 capture_preview_route_version() {
   local name=$1 output=$2
   preview_gate_is_closed \
@@ -958,32 +1302,9 @@ capture_preview_route_version() {
 capture_active_route_web() {
   local current_state web name service source release manifest web_image
   local traffic_digest forward_digest forward_service canary_digest formal_digest
-  local route_version route_version_digest
+  local route_version route_version_digest authority_mode authority_json
+  local expected_web_image
   current_state="$TRAFFIC_STATE_ROOT/$ENVIRONMENT/current.json"
-  [[ -f "$current_state" && ! -L "$current_state" ]] ||
-    fail 'active release traffic state is missing or unsafe'
-  jq -e \
-    --arg environment "$ENVIRONMENT" '
-      (keys | sort) == ([
-        "schemaVersion", "environment", "sourceSha", "releaseId",
-        "manifestDigest", "canaryNginxSha256", "formalNginxSha256",
-        "webService"
-      ] | sort)
-      and .schemaVersion == 1
-      and .environment == $environment
-      and (.sourceSha | test("^[0-9a-f]{40}$"))
-      and .releaseId == ("release-" + .sourceSha)
-      and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
-      and (.canaryNginxSha256 | test("^sha256:[0-9a-f]{64}$"))
-      and (
-        if $environment == "preview"
-        then .formalNginxSha256 == null
-        else (.formalNginxSha256 | test("^sha256:[0-9a-f]{64}$"))
-        end
-      )
-      and .webService == ("release-" + .sourceSha[0:12] + "-web")
-    ' "$current_state" >/dev/null ||
-    fail 'active release traffic state is invalid'
 
   if ! sudo -n test -f "$WEB_FORWARD_ENV" ||
     ! sudo -n test ! -L "$WEB_FORWARD_ENV"; then
@@ -994,9 +1315,6 @@ capture_active_route_web() {
   forward_service=$(sudo -n awk -F= '
     $1 == "COMBO_RELEASE_WEB_SERVICE" {print $2}
   ' "$WEB_FORWARD_ENV")
-  name=$(jq -er '.webService' "$current_state")
-  [[ "$forward_service" == "$name" ]] ||
-    fail 'active release Web forward does not match the traffic state'
   sudo -n systemctl is-enabled --quiet "$WEB_FORWARD_UNIT" ||
     fail 'active release Web forward unit is not enabled'
   sudo -n systemctl is-active --quiet "$WEB_FORWARD_UNIT" ||
@@ -1008,8 +1326,6 @@ capture_active_route_web() {
   fi
   canary_digest=$(sudo -n sha256sum "$NGINX_CONFIG" |
     awk '{print "sha256:" $1}')
-  [[ "$canary_digest" == "$(jq -er '.canaryNginxSha256' "$current_state")" ]] ||
-    fail 'active release Nginx route changed outside its traffic state'
   formal_digest=''
   if [[ -n "$FORMAL_NGINX_CONFIG" ]]; then
     if ! sudo -n test -f "$FORMAL_NGINX_CONFIG" ||
@@ -1018,14 +1334,84 @@ capture_active_route_web() {
     fi
     formal_digest=$(sudo -n sha256sum "$FORMAL_NGINX_CONFIG" |
       awk '{print "sha256:" $1}')
-    [[ "$formal_digest" == \
-      "$(jq -er '.formalNginxSha256' "$current_state")" ]] ||
-      fail 'formal release Nginx route changed outside its traffic state'
   fi
 
-  source=$(jq -er '.sourceSha' "$current_state")
-  release=$(jq -er '.releaseId' "$current_state")
-  manifest=$(jq -er '.manifestDigest' "$current_state")
+  if [[ -e "$current_state" || -L "$current_state" ]]; then
+    [[ -f "$current_state" && ! -L "$current_state" ]] ||
+      fail 'active release traffic state is missing or unsafe'
+    jq -e \
+      --arg environment "$ENVIRONMENT" '
+        (keys | sort) == ([
+          "schemaVersion", "environment", "sourceSha", "releaseId",
+          "manifestDigest", "canaryNginxSha256", "formalNginxSha256",
+          "webService"
+        ] | sort)
+        and .schemaVersion == 1
+        and .environment == $environment
+        and (.sourceSha | test("^[0-9a-f]{40}$"))
+        and .releaseId == ("release-" + .sourceSha)
+        and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
+        and (.canaryNginxSha256 | test("^sha256:[0-9a-f]{64}$"))
+        and (
+          if $environment == "preview"
+          then .formalNginxSha256 == null
+          else (.formalNginxSha256 | test("^sha256:[0-9a-f]{64}$"))
+          end
+        )
+        and .webService == ("release-" + .sourceSha[0:12] + "-web")
+      ' "$current_state" >/dev/null ||
+      fail 'active release traffic state is invalid'
+    [[ "$canary_digest" == \
+      "$(jq -er '.canaryNginxSha256' "$current_state")" ]] ||
+      fail 'active release Nginx route changed outside its traffic state'
+    if [[ -n "$FORMAL_NGINX_CONFIG" ]]; then
+      [[ "$formal_digest" == \
+        "$(jq -er '.formalNginxSha256' "$current_state")" ]] ||
+        fail 'formal release Nginx route changed outside its traffic state'
+    fi
+    authority_mode=traffic-state
+    authority_json=$(jq -c \
+      --arg trafficStateDigest "$(file_digest "$current_state")" '{
+        sourceSha,
+        releaseId,
+        manifestDigest,
+        webService,
+        webImage: null,
+        trafficStateDigest: $trafficStateDigest
+      }' "$current_state")
+  else
+    [[ "$ENVIRONMENT" == production ]] ||
+      fail 'active release traffic state is missing or unsafe'
+    authority_mode=legacy-production
+    authority_json=$(capture_legacy_production_authority \
+      "$forward_service" "$canary_digest" "$formal_digest")
+  fi
+  jq -e '
+    (keys | sort) == ([
+      "sourceSha", "releaseId", "manifestDigest", "webService",
+      "webImage", "trafficStateDigest"
+    ] | sort)
+    and (.sourceSha | test("^[0-9a-f]{40}$"))
+    and .releaseId == ("release-" + .sourceSha)
+    and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
+    and .webService == ("release-" + .sourceSha[0:12] + "-web")
+    and (
+      .webImage == null
+      or (.webImage
+        | test("^ghcr.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$"))
+    )
+    and (.trafficStateDigest | test("^sha256:[0-9a-f]{64}$"))
+  ' <<<"$authority_json" >/dev/null ||
+    fail 'active release traffic authority is invalid'
+
+  name=$(jq -er '.webService' <<<"$authority_json")
+  [[ "$forward_service" == "$name" ]] ||
+    fail 'active release Web forward does not match the traffic authority'
+  source=$(jq -er '.sourceSha' <<<"$authority_json")
+  release=$(jq -er '.releaseId' <<<"$authority_json")
+  manifest=$(jq -er '.manifestDigest' <<<"$authority_json")
+  expected_web_image=$(jq -r '.webImage // ""' <<<"$authority_json")
+  traffic_digest=$(jq -er '.trafficStateDigest' <<<"$authority_json")
   web=$(captured_resource deployment "$name")
   service=$(captured_resource service "$name")
   jq -e \
@@ -1033,7 +1419,8 @@ capture_active_route_web() {
     --arg name "$name" \
     --arg sourceSha "$source" \
     --arg releaseId "$release" \
-    --arg manifestDigest "$manifest" '
+    --arg manifestDigest "$manifest" \
+    --arg expectedWebImage "$expected_web_image" '
       .metadata.namespace == $namespace
       and .metadata.name == $name
       and .metadata.deletionTimestamp == null
@@ -1055,6 +1442,14 @@ capture_active_route_web() {
       and (
         first(.spec.template.spec.containers[] | select(.name == "web") | .image)
         | test("^ghcr.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$")
+      )
+      and (
+        $expectedWebImage == ""
+        or first(
+          .spec.template.spec.containers[]
+          | select(.name == "web")
+          | .image
+        ) == $expectedWebImage
       )
     ' <<<"$web" >/dev/null ||
     fail 'active release Web deployment is not ready or identity-bound'
@@ -1103,12 +1498,19 @@ capture_active_route_web() {
       and (.builtAt
         | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"))
       and (.webAssetManifest | test("^sha256:[0-9a-f]{64}$"))
-    ' "$route_version" >/dev/null ||
+  ' "$route_version" >/dev/null ||
     fail 'active release Web forward route has the wrong release identity'
+  if [[ "$authority_mode" == legacy-production ]]; then
+    curl --fail --silent --show-error --max-time 10 --max-filesize 1048576 \
+      "$PUBLIC_ORIGIN/version.json" >"$work/active-public-route-version.json" ||
+      fail 'legacy Production public Web route is not readable'
+    jq -e --slurpfile loopback "$route_version" \
+      '. == $loopback[0]' "$work/active-public-route-version.json" >/dev/null ||
+      fail 'legacy Production public and loopback release identity disagree'
+  fi
   web_image=$(jq -er \
     'first(.spec.template.spec.containers[] | select(.name == "web") | .image)' \
     <<<"$web")
-  traffic_digest=$(file_digest "$current_state")
   forward_digest=$(sudo -n sha256sum "$WEB_FORWARD_ENV" |
     awk '{print "sha256:" $1}')
   route_version_digest=$(file_digest "$route_version")
@@ -2090,7 +2492,9 @@ write_checkpoint() {
 
 load_superseded_reset_descriptor
 
+plan_was_present=0
 if [[ -e "$plan" ]]; then
+  plan_was_present=1
   [[ -f "$plan" && ! -L "$plan" ]] || fail 'persistent plan path is unsafe'
   validate_plan
 else
@@ -2153,17 +2557,6 @@ fi
 plan_digest=$(file_digest "$plan")
 readonly plan_digest
 
-if [[ -e "$checkpoint" ]]; then
-  [[ -f "$checkpoint" && ! -L "$checkpoint" ]] ||
-    fail 'persistent checkpoint path is unsafe'
-  validate_checkpoint "$plan_digest"
-elif [[ -e "$evidence" ]]; then
-  fail 'completed reset evidence exists without its phase checkpoint'
-else
-  started_at=$(jq -er '.createdAt' "$plan")
-  write_checkpoint planned "$plan_digest" "$started_at" null null ''
-fi
-
 validate_preserved_web() {
   local live
   live=$(capture_active_route_web)
@@ -2204,6 +2597,60 @@ validate_preserved_or_candidate_web() {
   fi
   validate_candidate_web "$live"
 }
+
+validate_plan_only_live_continuity() {
+  local active_source active_manifest predecessor_source predecessor_manifest
+  local live_writers live_jobs live_targets
+  active_source=$(jq -er '.preservedWeb.sourceSha' "$plan")
+  active_manifest=$(jq -er '.preservedWeb.manifestDigest' "$plan")
+  predecessor_source=$(jq -r '.sourceSha // ""' <<<"$SUPERSEDED_RESET_JSON")
+  predecessor_manifest=$(jq -r '.manifestDigest // ""' <<<"$SUPERSEDED_RESET_JSON")
+
+  validate_preserved_web
+  validate_namespace_workload_surface \
+    "$active_source" "$active_manifest" \
+    "$predecessor_source" "$predecessor_manifest"
+  live_writers=$(capture_writer_deployments \
+    "$active_source" "$predecessor_source" "$predecessor_manifest")
+  live_jobs=$(capture_jobs \
+    "$active_source" "$predecessor_source" "$predecessor_manifest")
+  live_targets=$(capture_targets)
+  capture_storage "$work/plan-only-live-storage.json"
+
+  jq -e \
+    --argjson liveWriters "$live_writers" \
+    --argjson liveJobs "$live_jobs" \
+    --argjson liveTargets "$live_targets" \
+    --slurpfile liveStorage "$work/plan-only-live-storage.json" '
+      def stable_resources:
+        map(del(.resourceVersion)) | sort_by(.kind, .name);
+      def stable_storage:
+        map(del(.claimResourceVersion, .volumeResourceVersion))
+        | sort_by(.claim);
+      (.writerDeployments | stable_resources)
+        == ($liveWriters | stable_resources)
+      and (.jobs | stable_resources) == ($liveJobs | stable_resources)
+      and (.targets | stable_resources) == ($liveTargets | stable_resources)
+      and (.oldStorage | stable_storage)
+        == ($liveStorage[0] | stable_storage)
+    ' "$plan" >/dev/null ||
+    fail 'live foundation no longer matches the plan-only reset boundary'
+}
+
+if [[ -e "$checkpoint" ]]; then
+  [[ -f "$checkpoint" && ! -L "$checkpoint" ]] ||
+    fail 'persistent checkpoint path is unsafe'
+  validate_checkpoint "$plan_digest"
+elif [[ -e "$ready_snapshot" || -L "$ready_snapshot" ||
+  -e "$evidence" || -L "$evidence" ]]; then
+  fail 'persistent reset state exists without its phase checkpoint'
+else
+  if ((plan_was_present == 1)); then
+    validate_plan_only_live_continuity
+  fi
+  started_at=$(jq -er '.createdAt' "$plan")
+  write_checkpoint planned "$plan_digest" "$started_at" null null ''
+fi
 
 resource_api_path() {
   local kind=$1 name=$2
