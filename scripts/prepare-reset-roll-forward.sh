@@ -15,6 +15,7 @@ OUTPUT=''
 KUBECONFIG_PATH=${KUBECONFIG:-"$HOME/.kube/config"}
 EVIDENCE_ROOT=${COMBO_RELEASE_EVIDENCE_ROOT:-"$HOME/data/combo-releases/goal-a"}
 TRAFFIC_STATE_ROOT=${COMBO_RELEASE_TRAFFIC_STATE_ROOT:-"$HOME/data/combo-releases/traffic"}
+TRAFFIC_CHECKPOINT_ROOT=${COMBO_RELEASE_TRAFFIC_CHECKPOINT_ROOT:-/var/lib/combo-release/traffic-checkpoints}
 MUTATION_LOCK=${COMBO_MUTATION_LOCK:-"$HOME/data/combo-release-mutation.lock"}
 TRAFFIC_LOCK=${COMBO_RELEASE_TRAFFIC_LOCK:-"$HOME/data/combo-release-traffic.lock"}
 WEB_FORWARD_ENV=${COMBO_RELEASE_WEB_FORWARD_ENV:-/etc/combo-release/production-web-forward.env}
@@ -65,7 +66,7 @@ if [[ ! "$WAIT_SECONDS" =~ ^[1-9][0-9]{0,2}$ ]] ||
 fi
 
 for command in node jq sha256sum flock kubectl awk install mktemp mv rm dirname \
-  sleep seq sudo date chmod mkdir cmp sort systemctl; do
+  sleep seq sudo date chmod mkdir cmp sort systemctl cp chown id; do
   command -v "$command" >/dev/null 2>&1 ||
     fail "missing host command: $command"
 done
@@ -510,6 +511,219 @@ validate_activation() {
     fail 'old Production activation evidence is invalid'
 }
 
+validate_finalizing_cleanup_plan() {
+  local old_phase=$1 old_source=$2 old_release=$3 old_manifest=$4
+  local directory=$5 checkpoint_path=$6 cleanup_digest cleanup_plan_path
+  local prefix metadata init evidence_path host_directory host_checkpoint
+  local host_checkpoint_copy expected_checkpoint_digest row kind name uid current
+  [[ "$old_phase" == post-cut || "$old_phase" == finalizing ]] ||
+    fail 'old Production reset checkpoint phase is invalid'
+  [[ "$old_phase" == finalizing ]] || return 0
+  [[ -f "$checkpoint_path" && ! -L "$checkpoint_path" ]] ||
+    fail 'finalizing predecessor checkpoint is missing or unsafe'
+  cleanup_digest=$(jq -er '.cleanupPlanDigest' "$checkpoint_path")
+  [[ "$cleanup_digest" =~ $DIGEST_RE ]] ||
+    fail 'finalizing predecessor lacks a cleanup plan digest'
+  cleanup_plan_path="$directory/cleanup-plan.json"
+  [[ -f "$cleanup_plan_path" && ! -L "$cleanup_plan_path" ]] ||
+    fail 'finalizing predecessor cleanup plan is missing or unsafe'
+  [[ "$(file_digest "$cleanup_plan_path")" == "$cleanup_digest" ]] ||
+    fail 'finalizing predecessor cleanup plan changed after it was bound'
+  prefix="release-${old_source:0:12}-"
+  metadata="combo-release-meta-${old_source:0:12}"
+  init="${prefix}minio-init"
+  jq -e \
+    --arg sourceSha "$old_source" \
+    --arg releaseId "$old_release" \
+    --arg manifestDigest "$old_manifest" \
+    --arg prefix "$prefix" \
+    --arg metadata "$metadata" \
+    --arg init "$init" '
+      . as $plan
+      | keys == [
+          "capturedStorage",
+          "environment",
+          "manifestDigest",
+          "namespace",
+          "plannedAt",
+          "purpose",
+          "releaseId",
+          "schemaVersion",
+          "sourceSha",
+          "targetCount",
+          "targets"
+        ]
+      and .schemaVersion == 1
+      and .purpose == "superseded-release-cleanup"
+      and .environment == "production"
+      and .namespace == "combo"
+      and .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+      and (.plannedAt | type == "string" and length > 0)
+      and (.targets | type == "array")
+      and (.capturedStorage | type == "array")
+      and (.targetCount | type == "number" and floor == . and . >= 0)
+      and .targetCount == (.targets | length)
+      and ([.targets[] | [.kind, .name]] | unique | length) == .targetCount
+      and all(.targets[];
+        keys == ["kind", "name", "uid"]
+        and (.uid | type == "string" and length > 0
+          and test("^[A-Za-z0-9._:-]+$"))
+        and (
+          (
+            .kind == "deployment"
+            and (.name | test("^(api|redis-hot|runtime|web|worker|release-[0-9a-f]{12}-(api|runtime|web|worker))$"))
+            and .name != ($prefix + "api")
+            and .name != ($prefix + "runtime")
+            and .name != ($prefix + "web")
+            and .name != ($prefix + "worker")
+          )
+          or
+          (
+            .kind == "statefulset"
+            and (.name | test("^(postgres|redis-queue|minio)$"))
+          )
+          or
+          (
+            .kind == "job"
+            and (.name | test("^(migrate|minio-init|release-minio-init|release-[0-9a-f]{12}-(migrate|minio-init))$"))
+            and .name != ($prefix + "migrate")
+            and .name != $init
+          )
+          or
+          (
+            .kind == "service"
+            and (.name | test("^(api|runtime|web|postgres|redis-queue|redis-hot|minio|release-[0-9a-f]{12}-(api|runtime|web))$"))
+            and .name != ($prefix + "api")
+            and .name != ($prefix + "runtime")
+            and .name != ($prefix + "web")
+          )
+          or
+          (
+            .kind == "configmap"
+            and (.name | test("^(redis-queue-config|redis-hot-config|minio-init-script|combo-release-meta-[0-9a-f]{12}|release-[0-9a-f]{12}-review-gate)$"))
+            and .name != $metadata
+            and .name != ($prefix + "review-gate")
+          )
+          or
+          (
+            .kind == "pvc"
+            and (.name | test("^data-(postgres|redis-queue|minio)-0$"))
+          )
+        ))
+      and all(.capturedStorage[];
+        keys == ["claim", "claimUid", "path", "volume", "volumeUid"]
+        and (.claim | test("^data-(release-)?(postgres|redis-queue|minio)-0$"))
+        and (.claimUid | type == "string" and length > 0)
+        and (.volume | type == "string" and length > 0)
+        and (.volumeUid | type == "string" and length > 0)
+        and (.path | type == "string" and startswith("/")))
+      and ([.capturedStorage[].claim] | unique | length)
+        == (.capturedStorage | length)
+      and (.capturedStorage | length)
+        == ([.targets[] | select(.kind == "pvc")] | length)
+      and ([.targets[] | select(.kind == "pvc") | [.name, .uid]] | sort)
+        == ([$plan.capturedStorage[] | [.claim, .claimUid]] | sort)
+    ' "$cleanup_plan_path" >/dev/null ||
+    fail 'finalizing predecessor cleanup plan identity is invalid'
+
+  for evidence_path in traffic-finalizing-evidence.json cleanup-evidence.json \
+    traffic-seal-evidence.json; do
+    [[ ! -e "$directory/$evidence_path" && ! -L "$directory/$evidence_path" ]] ||
+      fail 'finalizing predecessor cleanup or host sealing already started'
+  done
+
+  host_directory="$TRAFFIC_CHECKPOINT_ROOT/production/$old_release"
+  host_checkpoint="$host_directory/checkpoint.json"
+  for evidence_path in "$host_checkpoint.staging" \
+    "$host_directory/rollback-in-progress.json" \
+    "$host_directory/rollback-in-progress.json.staging"; do
+    if sudo -n test -e "$evidence_path" || sudo -n test -L "$evidence_path"; then
+      fail 'finalizing predecessor has an in-progress host transaction'
+    fi
+  done
+  if ! sudo -n test -d "$host_directory" ||
+    ! sudo -n test ! -L "$host_directory" ||
+    ! sudo -n test -f "$host_checkpoint" ||
+    ! sudo -n test ! -L "$host_checkpoint"; then
+    fail 'finalizing predecessor host checkpoint is missing or unsafe'
+  fi
+  host_checkpoint_copy="$work/finalizing-predecessor-host-checkpoint.json"
+  sudo -n cp -- "$host_checkpoint" "$host_checkpoint_copy"
+  sudo -n chown "$(id -u):$(id -g)" "$host_checkpoint_copy"
+  chmod 0600 "$host_checkpoint_copy"
+  expected_checkpoint_digest=$(jq -er '
+    .rollbackCheckpointId == .releaseId
+    and (.rollbackCheckpointDigest | test("^sha256:[0-9a-f]{64}$"))
+    | if . then . else error("invalid rollback checkpoint binding") end
+  ' "$directory/activation-evidence.json" >/dev/null &&
+    jq -er '.rollbackCheckpointDigest' "$directory/activation-evidence.json") ||
+    fail 'finalizing predecessor activation lacks its host checkpoint binding'
+  [[ "$(file_digest "$host_checkpoint_copy")" == "$expected_checkpoint_digest" ]] ||
+    fail 'finalizing predecessor host checkpoint changed after activation'
+  jq -e \
+    --arg sourceSha "$old_source" \
+    --arg releaseId "$old_release" \
+    --arg manifestDigest "$old_manifest" \
+    --arg webService "${prefix}web" \
+    --arg canaryNginxSha256 "$(jq -er '.canaryNginxSha256' "$current_state")" \
+    --arg formalNginxSha256 "$(jq -er '.formalNginxSha256' "$current_state")" '
+      keys == [
+        "activatedAt",
+        "armedAt",
+        "candidate",
+        "environment",
+        "initialFormalAllowlist",
+        "manifestDigest",
+        "previous",
+        "releaseId",
+        "schemaVersion",
+        "sourceSha",
+        "status"
+      ]
+      and .schemaVersion == 1
+      and .status == "activated"
+      and .environment == "production"
+      and .sourceSha == $sourceSha
+      and .releaseId == $releaseId
+      and .manifestDigest == $manifestDigest
+      and (.candidate | keys) == [
+        "canaryNginxSha256",
+        "formalNginxSha256",
+        "webService"
+      ]
+      and .candidate.webService == $webService
+      and .candidate.canaryNginxSha256 == $canaryNginxSha256
+      and .candidate.formalNginxSha256 == $formalNginxSha256
+      and (.initialFormalAllowlist | type == "boolean")
+      and (.armedAt | type == "string" and length > 0)
+      and (.activatedAt | type == "string" and length > 0)
+      and (.previous | type == "object")
+    ' "$host_checkpoint_copy" >/dev/null ||
+    fail 'finalizing predecessor host checkpoint is not the untouched activated state'
+
+  while IFS= read -r row; do
+    kind=$(jq -er '.kind' <<<"$row")
+    name=$(jq -er '.name' <<<"$row")
+    uid=$(jq -er '.uid' <<<"$row")
+    current=$(get_resource_optional "$kind" "$name") ||
+      fail "failed to verify untouched cleanup target: $kind/$name"
+    [[ -n "$current" ]] ||
+      fail "finalizing predecessor cleanup already removed a target: $kind/$name"
+    jq -e \
+      --arg namespace "$NAMESPACE" \
+      --arg name "$name" \
+      --arg uid "$uid" '
+        .metadata.namespace == $namespace
+        and .metadata.name == $name
+        and .metadata.uid == $uid
+        and .metadata.deletionTimestamp == null
+      ' <<<"$current" >/dev/null ||
+      fail "finalizing predecessor cleanup target changed: $kind/$name"
+  done < <(jq -c '.targets[]' "$cleanup_plan_path")
+}
+
 finalized_reset_release_is_current() {
   local old_source=$1 old_release=$2 old_manifest=$3 reset_digest=$4
   local schema_digest=$5 directory current live verified file
@@ -655,7 +869,8 @@ validate_plan() {
       and .oldPending.releaseId == ("release-" + .oldPending.sourceSha)
       and .oldPending.sourceSha != $newSourceSha
       and (.oldPending.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
-      and .oldPending.phase == "post-cut"
+      and (.oldPending.phase == "post-cut"
+        or .oldPending.phase == "finalizing")
       and (.oldPending.foundationResetEvidenceDigest
         | test("^sha256:[0-9a-f]{64}$"))
       and (.oldPending.schemaStructureProofDigest
@@ -663,8 +878,10 @@ validate_plan() {
       and (.oldPending.digest | test("^sha256:[0-9a-f]{64}$"))
       and ((.oldPending | keys | sort) == ([
         "sourceSha", "releaseId", "manifestDigest", "phase",
-        "foundationResetEvidenceDigest", "schemaStructureProofDigest", "digest"
+        "foundationCreated", "foundationResetEvidenceDigest",
+        "schemaStructureProofDigest", "digest"
       ] | sort))
+      and (.oldPending.foundationCreated | type == "boolean")
       and ((.activation | keys | sort) == ([
         "sha256SumsDigest", "activationEvidenceDigest",
         "resetEvidenceDigest", "schemaStructureProofDigest"
@@ -1051,10 +1268,11 @@ verify_targets_absent() {
 
 validate_bound_old_state() {
   local old_source old_release old_manifest reset_digest schema_digest
-  local activation_directory live
+  local activation_directory live old_phase old_checkpoint
   old_source=$(jq -er '.oldPending.sourceSha' "$plan")
   old_release=$(jq -er '.oldPending.releaseId' "$plan")
   old_manifest=$(jq -er '.oldPending.manifestDigest' "$plan")
+  old_phase=$(jq -er '.oldPending.phase' "$plan")
   reset_digest=$(jq -er '.oldPending.foundationResetEvidenceDigest' "$plan")
   schema_digest=$(jq -er '.oldPending.schemaStructureProofDigest' "$plan")
   activation_directory="$environment_root/$old_release.activation"
@@ -1066,6 +1284,17 @@ validate_bound_old_state() {
   [[ "$(file_digest "$activation_directory/activation-evidence.json")" == \
     "$(jq -er '.activation.activationEvidenceDigest' "$plan")" ]] ||
     fail 'old activation evidence changed after roll-forward planning'
+  old_checkpoint=$pending
+  if [[ ! -e "$old_checkpoint" && ! -L "$old_checkpoint" ]]; then
+    old_checkpoint=$pending_archive
+  fi
+  [[ -f "$old_checkpoint" && ! -L "$old_checkpoint" ]] ||
+    fail 'old reset checkpoint authority is missing'
+  [[ "$(file_digest "$old_checkpoint")" == \
+    "$(jq -er '.oldPending.digest' "$plan")" ]] ||
+    fail 'old reset checkpoint authority changed'
+  validate_finalizing_cleanup_plan "$old_phase" "$old_source" "$old_release" \
+    "$old_manifest" "$activation_directory" "$old_checkpoint"
   live=$(capture_active_web)
   jq -e --argjson live "$live" '
     (.preservedWeb | del(.resourceVersion, .serviceResourceVersion))
@@ -1264,26 +1493,40 @@ else
     and .schemaVersion == 3
     and .environment == "production"
     and .namespace == "combo"
-    and .phase == "post-cut"
+    and (.phase == "post-cut" or .phase == "finalizing")
     and (.sourceSha | test("^[0-9a-f]{40}$"))
     and .releaseId == ("release-" + .sourceSha)
     and (.manifestDigest | test("^sha256:[0-9a-f]{64}$"))
     and (.foundationResetEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
     and (.schemaStructureProofDigest | test("^sha256:[0-9a-f]{64}$"))
     and .webService == ("release-" + .sourceSha[0:12] + "-web")
-    and .foundationCreated == true
+    and (.foundationCreated | type == "boolean")
     and (
-      .cleanupPlanDigest == null
-      or (.cleanupPlanDigest | test("^sha256:[0-9a-f]{64}$"))
+      (
+        .phase == "post-cut"
+        and (
+          .cleanupPlanDigest == null
+          or (.cleanupPlanDigest | test("^sha256:[0-9a-f]{64}$"))
+        )
+      )
+      or
+      (
+        .phase == "finalizing"
+        and (.cleanupPlanDigest | test("^sha256:[0-9a-f]{64}$"))
+      )
     )
     and (.trafficCutAt | type == "string" and test("Z$"))
   ' "$pending" >/dev/null ||
-    fail 'Production pending checkpoint is not a post-cut reset boundary'
+    fail 'Production pending checkpoint is not a post-cut or finalizing reset boundary'
   old_source_sha=$(jq -er '.sourceSha' "$pending")
   old_release_id=$(jq -er '.releaseId' "$pending")
   old_manifest_digest=$(jq -er '.manifestDigest' "$pending")
+  old_phase=$(jq -er '.phase' "$pending")
   old_reset_digest=$(jq -er '.foundationResetEvidenceDigest' "$pending")
   old_schema_digest=$(jq -er '.schemaStructureProofDigest' "$pending")
+  old_foundation_created=$(jq -r '.foundationCreated' "$pending")
+  [[ "$old_foundation_created" == true || "$old_foundation_created" == false ]] ||
+    fail 'Production pending checkpoint foundation mode is invalid'
   old_pending_digest=$(file_digest "$pending")
   [[ "$old_source_sha" != "$new_source_sha" ]] ||
     fail 'reset roll-forward requires a newer distinct candidate'
@@ -1300,6 +1543,8 @@ else
   validate_activation "$old_source_sha" "$old_release_id" \
     "$old_manifest_digest" "$old_reset_digest" "$old_schema_digest" \
     "$activation_directory"
+  validate_finalizing_cleanup_plan "$old_phase" "$old_source_sha" \
+    "$old_release_id" "$old_manifest_digest" "$activation_directory" "$pending"
   active_web=$(capture_active_web)
   jq -e \
     --arg sourceSha "$old_source_sha" \
@@ -1310,7 +1555,7 @@ else
       and .manifestDigest == $manifestDigest
       and .name == ("release-" + $sourceSha[0:12] + "-web")
     ' <<<"$active_web" >/dev/null ||
-    fail 'post-cut Production traffic is not the old reset candidate'
+    fail 'active Production traffic is not the old reset candidate'
   targets=$(capture_targets \
     "$old_source_sha" "$old_release_id" "$old_manifest_digest")
   jq -n \
@@ -1322,7 +1567,8 @@ else
     --arg oldSourceSha "$old_source_sha" \
     --arg oldReleaseId "$old_release_id" \
     --arg oldManifestDigest "$old_manifest_digest" \
-    --arg oldPhase post-cut \
+    --arg oldPhase "$old_phase" \
+    --argjson oldFoundationCreated "$old_foundation_created" \
     --arg resetEvidenceDigest "$old_reset_digest" \
     --arg schemaStructureProofDigest "$old_schema_digest" \
     --arg oldPendingDigest "$old_pending_digest" \
@@ -1345,6 +1591,7 @@ else
         releaseId: $oldReleaseId,
         manifestDigest: $oldManifestDigest,
         phase: $oldPhase,
+        foundationCreated: $oldFoundationCreated,
         foundationResetEvidenceDigest: $resetEvidenceDigest,
         schemaStructureProofDigest: $schemaStructureProofDigest,
         digest: $oldPendingDigest

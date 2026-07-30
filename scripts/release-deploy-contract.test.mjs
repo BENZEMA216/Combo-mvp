@@ -10,6 +10,7 @@ const ROOT = resolve(import.meta.dirname, '..');
 const DEPLOY_FILE = resolve(ROOT, 'scripts/deploy-release.sh');
 const DEPLOY = readFileSync(DEPLOY_FILE, 'utf8');
 const ROLLBACK = readFileSync(resolve(ROOT, 'scripts/rollback-release-traffic.sh'), 'utf8');
+const SEAL = readFileSync(resolve(ROOT, 'scripts/seal-release-traffic.sh'), 'utf8');
 
 function indexOf(pattern, label = String(pattern)) {
   const match = DEPLOY.match(pattern);
@@ -45,6 +46,21 @@ function cleanupPlanValidator(functionName, inputVariable) {
   const end = body.indexOf(endMarker, programStart);
   assert.ok(end > programStart, `${functionName} must execute its embedded jq validator`);
   return body.slice(programStart, end);
+}
+
+function releaseCheckpointSealerValidator() {
+  const startMarker = '--arg cleanupPlanDigest "$CLEANUP_PLAN_DIGEST" \'';
+  const failureMarker = "fail 'finalizing release checkpoint does not bind the cleanup plan'";
+  const failure = SEAL.indexOf(failureMarker);
+  assert.ok(failure >= 0, 'traffic sealer must fail closed on a foreign release checkpoint');
+  const blockStart = SEAL.lastIndexOf('jq -e \\', failure);
+  const start = SEAL.indexOf(startMarker, blockStart);
+  assert.ok(start >= 0, 'traffic sealer must receive the cleanup plan digest');
+  const programStart = start + startMarker.length;
+  const endMarker = `\n  ' "$RELEASE_CHECKPOINT" >/dev/null`;
+  const end = SEAL.indexOf(endMarker, programStart);
+  assert.ok(end > programStart, 'traffic sealer must validate the release checkpoint');
+  return SEAL.slice(programStart, end);
 }
 
 function runCleanupPlanValidator(filter, plan, identity) {
@@ -887,6 +903,73 @@ test('the post-cut checkpoint validator accepts its exact persisted schema', () 
     input: JSON.stringify({ ...checkpoint, unexpected: true }),
   });
   assert.equal(rejected.status, 1, 'an extra checkpoint field must remain fail-closed');
+});
+
+test('the traffic sealer accepts only the schema-3 finalizing release checkpoint', () => {
+  const filter = releaseCheckpointSealerValidator();
+  const sourceSha = '1'.repeat(40);
+  const releaseId = `release-${sourceSha}`;
+  const manifestDigest = `sha256:${'2'.repeat(64)}`;
+  const cleanupPlanDigest = `sha256:${'3'.repeat(64)}`;
+  const checkpoint = {
+    schemaVersion: 3,
+    environment: 'production',
+    namespace: 'combo',
+    sourceSha,
+    releaseId,
+    manifestDigest,
+    foundationResetEvidenceDigest: `sha256:${'4'.repeat(64)}`,
+    schemaStructureProofDigest: `sha256:${'5'.repeat(64)}`,
+    webService: `release-${sourceSha.slice(0, 12)}-web`,
+    foundationCreated: false,
+    phase: 'finalizing',
+    trafficCutAt: '2026-07-29T13:20:09.000Z',
+    cleanupPlanDigest,
+  };
+  const args = [
+    '-e',
+    '--arg',
+    'sourceSha',
+    sourceSha,
+    '--arg',
+    'releaseId',
+    releaseId,
+    '--arg',
+    'manifestDigest',
+    manifestDigest,
+    '--arg',
+    'cleanupPlanDigest',
+    cleanupPlanDigest,
+    filter,
+  ];
+  for (const valid of [checkpoint, { ...checkpoint, foundationResetEvidenceDigest: null }]) {
+    const accepted = spawnSync('jq', args, {
+      encoding: 'utf8',
+      input: JSON.stringify(valid),
+    });
+    assert.equal(accepted.status, 0, accepted.stderr);
+  }
+
+  for (const invalid of [
+    { ...checkpoint, schemaVersion: 2 },
+    { ...checkpoint, cleanupPlanDigest: `sha256:${'6'.repeat(64)}` },
+    { ...checkpoint, sourceSha: '7'.repeat(40) },
+    { ...checkpoint, releaseId: `release-${'8'.repeat(40)}` },
+    { ...checkpoint, manifestDigest: `sha256:${'9'.repeat(64)}` },
+    { ...checkpoint, phase: 'post-cut' },
+    { ...checkpoint, unexpected: true },
+  ]) {
+    const rejected = spawnSync('jq', args, {
+      encoding: 'utf8',
+      input: JSON.stringify(invalid),
+    });
+    assert.equal(rejected.status, 1);
+  }
+  assert.match(
+    SEAL,
+    /--slurpfile plan "\$CLEANUP_PLAN" '[\s\S]*?\.schemaVersion == 2[\s\S]*?'\s+"\$CLEANUP_EVIDENCE"/,
+    'cleanup evidence remains an independent schema-2 contract',
+  );
 });
 
 test('schema structure identity is stable across activation and finalization', () => {
@@ -1855,6 +1938,14 @@ test('cleanup plan jq validators compile and bind every PVC UID to captured stor
     };
     const rejected = runCleanupPlanValidator(filter, mismatched, identity);
     assert.equal(rejected.status, 1, `${functionName} must reject a mismatched PVC UID`);
+
+    for (const invalidContainer of [
+      { ...plan, targets: null, targetCount: 0, capturedStorage: null },
+      { ...plan, targets: {}, targetCount: 0, capturedStorage: {} },
+    ]) {
+      const invalid = runCleanupPlanValidator(filter, invalidContainer, identity);
+      assert.equal(invalid.status, 1, `${functionName} must reject non-array cleanup containers`);
+    }
   }
 });
 

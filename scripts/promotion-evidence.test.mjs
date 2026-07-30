@@ -1357,6 +1357,11 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.doesNotMatch(candidateRemote, /GH_TOKEN/);
   assert.doesNotMatch(production, /recover-preview-post-cut/);
   assert.match(
+    production,
+    /\[\[ "\$foundation_reset" == false \]\][\s\S]*\[\[ "\$foundation_policy" == reuse-existing-v1 \]\][\s\S]*pending_phase=\$\(jq -er '\.phase' "\$pending_checkpoint"\)[\s\S]*\[\[ "\$pending_phase" == post-cut \|\| "\$pending_phase" == finalizing \]\][\s\S]*\[\[ "\$pending_reset_digest" =~ \^sha256:\[0-9a-f\]\{64\}\$ \]\][\s\S]*\[\[ -z "\$existing_bundle" \]\][\s\S]*\[\[ ! -e "\$reset_output" && ! -L "\$reset_output" \]\][\s\S]*prepare-reset-roll-forward\.sh/,
+    'a foreign clean-slate boundary must retain every reuse-only guard before the controlled roll-forward journal',
+  );
+  assert.match(
     ci,
     /combo-image-digest-\$\{\{ env\.SOURCE_SHA \}\}-\$\{\{ github\.run_attempt \}\}-\$\{\{ matrix\.key \}\}/,
   );

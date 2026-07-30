@@ -159,7 +159,13 @@ jq -e \
   --arg releaseId "$release_id" \
   --arg manifestDigest "$MANIFEST_DIGEST" \
   --arg cleanupPlanDigest "$CLEANUP_PLAN_DIGEST" '
-    .schemaVersion == 2
+    (keys | sort) == ([
+      "cleanupPlanDigest", "environment", "foundationCreated",
+      "foundationResetEvidenceDigest", "manifestDigest", "namespace", "phase",
+      "releaseId", "schemaVersion", "schemaStructureProofDigest", "sourceSha",
+      "trafficCutAt", "webService"
+    ] | sort)
+    and .schemaVersion == 3
     and .phase == "finalizing"
     and .environment == "production"
     and .namespace == "combo"
@@ -167,6 +173,12 @@ jq -e \
     and .releaseId == $releaseId
     and .manifestDigest == $manifestDigest
     and .cleanupPlanDigest == $cleanupPlanDigest
+    and (.foundationCreated | type == "boolean")
+    and (.foundationResetEvidenceDigest == null
+      or (.foundationResetEvidenceDigest | test("^sha256:[0-9a-f]{64}$")))
+    and (.schemaStructureProofDigest | test("^sha256:[0-9a-f]{64}$"))
+    and .webService == ("release-" + $sourceSha[0:12] + "-web")
+    and (.trafficCutAt | type == "string" and test("Z$"))
   ' "$RELEASE_CHECKPOINT" >/dev/null ||
   fail 'finalizing release checkpoint does not bind the cleanup plan'
 
