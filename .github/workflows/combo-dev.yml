@@ -298,11 +298,13 @@ jobs:
               jq -e \
                 --arg controller "$CONTROLLER_SHA" \
                 --arg repository "$GITHUB_REPOSITORY" \
+                --arg title "Test branch deployment request ${SOURCE_CI_RUN_ID}" \
                 --argjson runId "$SOURCE_CI_RUN_ID" \
                 --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
                   .id == $runId
                   and .run_attempt == $runAttempt
-                  and .name == "Test deployment"
+                  and .name == $title
+                  and .display_title == $title
                   and .path == ".github/workflows/combo-dev.yml"
                   and .event == "workflow_dispatch"
                   and .head_branch == "main"
