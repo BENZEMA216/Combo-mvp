@@ -17,6 +17,7 @@ jobs:
     name: validate main release and repository promotion mode
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     outputs:
       mode: ${{ steps.policy.outputs.mode }}
       revision: ${{ steps.policy.outputs.revision }}
@@ -147,43 +148,76 @@ jobs:
           test_evidence_artifact_digest=
           if [[ "$MODE" == enabled ]]; then
             test_runs="$work/test-runs.json"
-          gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/combo-dev.yml/runs?event=workflow_dispatch&status=success&branch=main&per_page=100" \
-            >"$test_runs"
-          test_run_id=$(jq -er \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" '
-              [
-                .[].workflow_runs[]
-                | select(
-                    .name == "Test deployment"
-                    and .path == ".github/workflows/combo-dev.yml"
-                    and .event == "workflow_dispatch"
-                    and .head_branch == "main"
-                    and .head_sha == $revision
-                    and .status == "completed"
-                    and .conclusion == "success"
-                    and .repository.full_name == $repository
-                    and .head_repository.full_name == $repository
-                  )
-              ]
-              | if length == 0 then
-                  error("No successful Test workflow exists for the exact main SHA")
-                else
-                  max_by(.id).id
-                end
-            ' "$test_runs")
+            expected_test_title="Test deployment for CI ${SOURCE_RUN_ID} attempt ${SOURCE_RUN_ATTEMPT}"
+            for _ in $(seq 1 900); do
+              [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                --jq '.object.sha')" == "$REVISION" ]] || {
+                echo 'main advanced before the exact automatic Test completed.' >&2
+                exit 1
+              }
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/actions/workflows/combo-dev.yml/runs?event=workflow_run&branch=main&head_sha=${REVISION}&per_page=100" \
+                >"$test_runs"
+              matching_test_runs=$(jq -c \
+                --arg repository "$GITHUB_REPOSITORY" \
+                --arg revision "$REVISION" \
+                --arg title "$expected_test_title" '
+                  [
+                    .workflow_runs[]
+                    | select(
+                        .name == "Test deployment"
+                        and .display_title == $title
+                        and .path == ".github/workflows/combo-dev.yml"
+                        and .event == "workflow_run"
+                        and .head_branch == "main"
+                        and .head_sha == $revision
+                        and .repository.full_name == $repository
+                        and .head_repository.full_name == $repository
+                      )
+                  ]
+                ' "$test_runs")
+              matching_test_count=$(jq -r 'length' <<<"$matching_test_runs")
+              [[ "$matching_test_count" =~ ^[0-9]+$ ]]
+              if (( matching_test_count > 1 )); then
+                echo 'Multiple automatic Test workflows matched the exact main CI run.' >&2
+                exit 1
+              fi
+              if (( matching_test_count == 0 )); then
+                sleep 20
+                continue
+              fi
+              test_run_id=$(jq -er '.[0].id' <<<"$matching_test_runs")
+              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}" \
+                >"$work/test-run.json"
+              test_status=$(jq -er '.status' "$work/test-run.json")
+              if [[ "$test_status" == completed ]]; then
+                test_conclusion=$(jq -er '.conclusion' "$work/test-run.json")
+                [[ "$test_conclusion" == success ]] || {
+                  echo "The exact automatic Test concluded ${test_conclusion}." >&2
+                  exit 1
+                }
+                break
+              fi
+              [[ "$test_status" == queued || "$test_status" == in_progress ||
+                "$test_status" == waiting || "$test_status" == pending ||
+                "$test_status" == requested ]] || {
+                echo "The exact automatic Test has unexpected status ${test_status}." >&2
+                exit 1
+              }
+              test_run_id=
+              sleep 20
+            done
           [[ "$test_run_id" =~ ^[1-9][0-9]*$ ]]
-          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}" \
-            >"$work/test-run.json"
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg revision "$REVISION" \
+            --arg title "$expected_test_title" \
             --argjson runId "$test_run_id" '
               .id == $runId
               and .name == "Test deployment"
+              and .display_title == $title
               and .path == ".github/workflows/combo-dev.yml"
-              and .event == "workflow_dispatch"
+              and .event == "workflow_run"
               and .head_branch == "main"
               and .head_sha == $revision
               and .status == "completed"
@@ -670,6 +704,7 @@ jobs:
               }
             ' "$identity" >/dev/null
           jq -e \
+            --arg controllerSha "$REVISION" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg revision "$REVISION" \
             --argjson sourceRunId "$SOURCE_RUN_ID" \
@@ -690,6 +725,7 @@ jobs:
             --arg webImage "$web_image" '
               keys == ([
                 "artifactFileSetDigest",
+                "controllerSha",
                 "images",
                 "liveBrowserAcceptanceDigest",
                 "migrationHead",
@@ -704,6 +740,7 @@ jobs:
                 "sourceCiRunId",
                 "sourceConclusion",
                 "sourceEvent",
+                "sourceMode",
                 "sourceRepository",
                 "sourceSha",
                 "sourceWorkflow",
@@ -713,10 +750,12 @@ jobs:
                 "webAssetManifestDigest"
               ] | sort)
               and .schemaVersion == 1
+              and .controllerSha == $controllerSha
               and .sourceRepository == $repository
               and .sourceWorkflow == ".github/workflows/ci.yml"
               and .sourceEvent == "push"
               and .sourceBranch == "main"
+              and .sourceMode == "main-ci"
               and .sourceConclusion == "success"
               and .sourceSha == $revision
               and .sourceCiRunId == $sourceRunId
@@ -908,13 +947,15 @@ jobs:
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg revision "$REVISION" \
+            --arg title "Test deployment for CI ${SOURCE_RUN_ID} attempt ${SOURCE_RUN_ATTEMPT}" \
             --argjson runId "$TEST_RUN_ID" \
             --argjson runAttempt "$TEST_RUN_ATTEMPT" '
               .id == $runId
               and .run_attempt == $runAttempt
               and .name == "Test deployment"
+              and .display_title == $title
               and .path == ".github/workflows/combo-dev.yml"
-              and .event == "workflow_dispatch"
+              and .event == "workflow_run"
               and .head_branch == "main"
               and .head_sha == $revision
               and .status == "completed"

@@ -165,6 +165,10 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 
 所有步骤直接以仓库根（= monorepo 根）为工作目录；`cache-dependency-path: pnpm-lock.yaml`、`docker build -f infra/Dockerfile.* .`（context `.` = 仓库根）等路径均相对仓库根。
 
+发布环境按 Test、Preview、Production 逐级隔离。成功的 `main` CI 会自动触发同一提交的 Test 部署；具有仓库写入权限的成员也可以从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意同仓库分支及其精确 tip SHA，为该提交构建不可变、摘要固定的 artifact 并部署到 Test。`combo-dev` GitHub Environment 的分支策略仍只允许 `main`，因为读取 SSH 和验收 Secret 的是受信任控制器；这项策略不限制 Test 候选源码所在的分支，分支自身的 workflow 也不会接触环境 Secret。
+
+只有 `main` 的自动 Test 成功证据可以进入 Preview。仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 为 `enabled` 时，Preview 自动消费该 `main` 候选的同一 artifact；为 `paused` 时只记录策略并跳过 Preview 部署。Production 不自动跟随 `main` 或任意 Test，只能在 GitHub `production` Environment 人工批准后，消费精确成功的 Preview artifact。
+
 ---
 
 ## 目录结构
@@ -190,4 +194,4 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 
 源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0008`、再次幂等执行、应用角色权限和异常账本拒绝。
 
-Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护工作流核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失；源码目录中的普通测试不启动 Docker 或 Docker Compose。
+Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；两类候选都要核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。分支 Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通测试也不启动 Docker 或 Docker Compose。

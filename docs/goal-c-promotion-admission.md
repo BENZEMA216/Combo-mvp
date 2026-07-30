@@ -6,6 +6,24 @@ Goal C 把一次发布候选定义为一个完整的 `main` 提交、该提交�
 Preview 和 Production 的发布身份必须引用同一个候选，不能只按 artifact 名称、
 分支名或最近一次成功运行来选择输入。
 
+## 控制面与环境拓扑
+
+成功的 `main` CI 会自动触发同一 SHA 的 Test 部署。Test 还提供手工分支入口：
+具有仓库写入权限的成员从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意
+同仓库分支及其精确 tip SHA，由该控制器调用 `main` 定义的可复用 CI 构建不可变
+artifact，再使用 `main` 固定的部署和验收程序部署到 `combo-preview`。候选分支的
+workflow、控制脚本和验收脚本不会在受保护 Environment 中执行。
+
+GitHub `combo-dev` Environment 的分支策略仍然只允许 `main`。该策略约束的是可以读取
+SSH 与 Resend Secret 的控制器版本，不是候选源码所在分支，因此与“任意同仓库分支
+可以部署 Test”并不冲突。手工分支 Test 使用隔离证据，不能进入 Preview 或
+Production。
+
+只有成功 `main` CI 所对应的自动 Test 可以成为 Preview 准入。Preview 只接收该
+`main` SHA 的同一 artifact；`COMBO_PREVIEW_AUTO_PROMOTION_MODE=enabled` 时自动部署，
+`paused` 时记录策略并跳过部署。Production 没有自动入口，只能在 GitHub
+`production` Environment 完成人工审批后，消费精确成功的 Preview artifact。
+
 ## 不可变输入
 
 发布身份使用 `scripts/promotion-evidence.mjs` 校验。身份包含完整 source SHA、
@@ -28,10 +46,11 @@ Preview 在任何远端变更前重新检查以下事实：
 
 Test 的远端 bundle、reset proof、migration proof 和部署证据路径全部使用
 `source SHA + workflow run ID + run attempt` 三元组；任何字段或路径 attempt 漂移都会
-在进入 Preview 前失败。Test 首次 mutation 前及 bundle 上传后还会复验同一 SHA
-只有一个 attempt 1 的 Preview policy run，且 policy 成功、deploy job 为
-`skipped`；三个环境的 deploy job 共用 `cd-tecent2` concurrency group，因此新的
-Preview rerun 不能与正在执行的 Test mutation 并发。脱敏部署证据的顶层以及
+失败。Preview 会等待并精确匹配触发它的 `main` CI 所对应的自动 Test workflow
+run、run attempt 和 `combo-test-evidence-*`；手工分支产生的
+`combo-branch-test-evidence-*` 永远不能满足这项准入。三个环境的 deploy job 共用
+`cd-tecent2` concurrency group，因此 Preview 不能与正在执行的 Test mutation
+并发。脱敏部署证据的顶层以及
 reset、storage、foundation、
 migration、Job、Pod、release metadata、resource inventory 和 live plane 的每个
 嵌套对象都采用 exact schema，并扫描敏感键、Bearer/Cookie/私钥、裸

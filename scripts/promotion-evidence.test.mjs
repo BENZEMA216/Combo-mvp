@@ -1372,12 +1372,46 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(ci, /name=combo-release-%s-%s[\s\S]*"\$SOURCE_SHA" "\$GITHUB_RUN_ATTEMPT"/);
   assert.match(
     testDeployment,
-    /artifact_name="combo-release-\$\{REVISION\}-\$\{source_ci_run_attempt\}"/,
+    /artifact_name="combo-release-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}"/,
   );
   assert.match(
     testDeployment,
-    /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}-\$\{\{ github\.run_attempt \}\}/,
+    /main-ci\)[\s\S]*evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"[\s\S]*branch-build\)[\s\S]*evidence_artifact_name="combo-branch-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"/,
   );
+  assert.match(testDeployment, /name: \$\{\{ steps\.evidence\.outputs\.artifact_name \}\}/);
+  assert.match(testDeployment, /sourceWorkflow: \$sourceWorkflow/);
+  assert.match(testDeployment, /sourceEvent: \$sourceEvent/);
+  assert.match(testDeployment, /sourceBranch: \$sourceBranch/);
+  assert.match(testDeployment, /sourceConclusion: \$sourceConclusion/);
+  assert.match(testDeployment, /controllerSha: \$controllerSha/);
+  assert.match(testDeployment, /sourceMode: \$sourceMode/);
+  assert.match(
+    testDeployment,
+    /main-ci\)[\s\S]*source_conclusion=success[\s\S]*branch-build\)[\s\S]*source_conclusion=release-job-success/,
+  );
+  assert.match(testDeployment, /\.sourceConclusion == \$sourceConclusion/);
+  assert.match(testDeployment, /\.controllerSha == \$controllerSha/);
+  assert.match(testDeployment, /\.sourceMode == \$sourceMode/);
+  assert.match(
+    testDeployment,
+    /main-ci\)[\s\S]*\[\[ "\$CONTROLLER_SHA" == "\$REVISION" \]\][\s\S]*branch-build\)[\s\S]*\[\[ "\$SOURCE_EVENT" == workflow_dispatch \]\]/,
+  );
+  assert.match(
+    testDeployment,
+    /branch-build\)[\s\S]*git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
+  );
+  assert.match(
+    testDeployment,
+    /build_branch_release:[\s\S]*uses: \.\/\.github\/workflows\/ci\.yml[\s\S]*publish_release: true/,
+  );
+  assert.match(
+    testDeployment,
+    /Check out the trusted main Test controller[\s\S]*ref: \$\{\{ needs\.authorize\.outputs\.controller_sha \}\}/,
+  );
+  const testPrivilegedDeploy = testDeployment.slice(testDeployment.indexOf('\n  deploy:'));
+  assert.doesNotMatch(testPrivilegedDeploy, /\$RELEASE_ROOT\/(?:scripts|acceptance|infra)\//);
+  assert.match(testPrivilegedDeploy, /runner=scripts\/goal-b-test-acceptance\.mjs/);
+  assert.match(testPrivilegedDeploy, /validator=scripts\/promotion-evidence\.mjs/);
   assert.match(production, /source_artifact_name=%s[\s\S]*\.sourceArtifactName/);
   assert.match(production, /"combo-release-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}"/);
   assert.match(production, /--arg name "\$SOURCE_ARTIFACT_NAME"/);
@@ -1408,6 +1442,21 @@ test('release workflows bundle and consume only the controlled admission impleme
     preview,
     /test_evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{test_run_attempt\}"/,
   );
+  assert.match(
+    preview,
+    /expected_test_title="Test deployment for CI \$\{SOURCE_RUN_ID\} attempt \$\{SOURCE_RUN_ATTEMPT\}"/,
+  );
+  assert.match(
+    preview,
+    /actions\/workflows\/combo-dev\.yml\/runs\?event=workflow_run&branch=main&head_sha=\$\{REVISION\}&per_page=100/,
+  );
+  assert.match(preview, /\.display_title == \$title/);
+  assert.match(preview, /\.event == "workflow_run"/);
+  assert.match(preview, /\.sourceWorkflow == "\.github\/workflows\/ci\.yml"/);
+  assert.match(preview, /\.sourceEvent == "push"/);
+  assert.match(preview, /\.sourceBranch == "main"/);
+  assert.match(preview, /\.controllerSha == \$controllerSha/);
+  assert.match(preview, /\.sourceMode == "main-ci"/);
   const previewCompletedReleaseCheck = preview.indexOf(
     'release_directory="$HOME/data/combo-releases/goal-a/preview/release-${revision}"',
   );

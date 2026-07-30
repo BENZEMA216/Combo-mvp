@@ -1,14 +1,24 @@
 name: Test deployment
+run-name: >-
+  ${{ github.event_name == 'workflow_run'
+    && format('Test deployment for CI {0} attempt {1}',
+      github.event.workflow_run.id,
+      github.event.workflow_run.run_attempt)
+    || format('Test branch deployment request {0}', github.run_id) }}
 
 on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
     inputs:
-      revision:
-        description: 当前 main 的完整提交 SHA。
+      source_branch:
+        description: 要部署到 Test 的仓库分支名称。
         required: true
         type: string
-      source_ci_run_id:
-        description: 为该 SHA 生成不可变发布产物的成功 main CI run ID。
+      revision:
+        description: 该分支当前 tip 的完整提交 SHA。
         required: true
         type: string
 
@@ -17,116 +27,310 @@ permissions:
   actions: read
 
 jobs:
-  authorize:
-    name: authorize the exact main release artifact
+  select:
+    name: authorize the immutable Test source
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     outputs:
-      revision: ${{ steps.revision.outputs.revision }}
-      source_ci_run_id: ${{ steps.revision.outputs.source_ci_run_id }}
-      source_ci_run_attempt: ${{ steps.trust.outputs.source_ci_run_attempt }}
-      release_artifact_id: ${{ steps.trust.outputs.release_artifact_id }}
-      release_artifact_name: ${{ steps.trust.outputs.release_artifact_name }}
-      release_artifact_digest: ${{ steps.trust.outputs.release_artifact_digest }}
+      controller_sha: ${{ steps.source.outputs.controller_sha }}
+      revision: ${{ steps.source.outputs.revision }}
+      source_branch: ${{ steps.source.outputs.source_branch }}
+      source_ci_run_attempt: ${{ steps.source.outputs.source_ci_run_attempt }}
+      source_ci_run_id: ${{ steps.source.outputs.source_ci_run_id }}
+      source_event: ${{ steps.source.outputs.source_event }}
+      source_mode: ${{ steps.source.outputs.source_mode }}
+      source_workflow: ${{ steps.source.outputs.source_workflow }}
     steps:
-      - name: Authorize a trusted repository actor
+      - name: Authorize a trusted repository actor for a manual branch deployment
+        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
         run: |
           set -euo pipefail
-          permission=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.permission')
-          role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${ACTOR}/permission" --jq '.role_name // ""')
-          case "$permission:$role" in
-            admin:*|write:*|*:maintain) ;;
-            *)
-              echo 'Test deployment requires repository write, maintain, or admin permission.' >&2
-              exit 1
-              ;;
-          esac
+          for candidate in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            [[ "$candidate" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]
+            permission=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/collaborators/${candidate}/permission" \
+              --jq '.permission')
+            role=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/collaborators/${candidate}/permission" \
+              --jq '.role_name // ""')
+            case "$permission:$role" in
+              admin:*|write:*|*:maintain) ;;
+              *)
+                echo 'Test deployment and reruns require repository write, maintain, or admin permission.' >&2
+                exit 1
+                ;;
+            esac
+          done
 
-      - name: Select an immutable main CI release
-        id: revision
-        env:
-          INPUT_REVISION: ${{ inputs.revision }}
-          INPUT_SOURCE_CI_RUN_ID: ${{ inputs.source_ci_run_id }}
-        run: |
-          set -euo pipefail
-          [[ "$INPUT_REVISION" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid immutable revision.' >&2; exit 1; }
-          [[ "$INPUT_SOURCE_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]] || {
-            echo 'Invalid source main CI run ID.' >&2
-            exit 1
-          }
-          {
-            printf 'revision=%s\n' "$INPUT_REVISION"
-            printf 'source_ci_run_id=%s\n' "$INPUT_SOURCE_CI_RUN_ID"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Check out exact revision
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ steps.revision.outputs.revision }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Verify the trusted main run and its unique release artifact
-        id: trust
+      - name: Resolve an exact main or branch source
+        id: source
         env:
           GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ steps.revision.outputs.revision }}
-          SOURCE_CI_RUN_ID: ${{ steps.revision.outputs.source_ci_run_id }}
+          CONTROLLER_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_REVISION: ${{ inputs.revision }}
+          INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
+          MAIN_CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          MAIN_CI_EVENT: ${{ github.event.workflow_run.event }}
+          MAIN_CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          MAIN_CI_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          MAIN_CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MAIN_CI_PATH: ${{ github.event.workflow_run.path }}
+          MAIN_CI_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          MAIN_CI_RUN_ID: ${{ github.event.workflow_run.id }}
           WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
-            echo 'Test deployment workflow must run from main.' >&2
+            echo 'The trusted Test deployment controller must run from main.' >&2
             exit 1
           }
+          [[ "$CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          remote_main=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')
+          [[ "$remote_main" == "$CONTROLLER_SHA" ]] || {
+            echo 'main advanced before the Test source was authorized.' >&2
+            exit 1
+          }
+
+          case "$EVENT_NAME" in
+            workflow_run)
+              [[ "$MAIN_CI_CONCLUSION" == success ]]
+              [[ "$MAIN_CI_EVENT" == push ]]
+              [[ "$MAIN_CI_HEAD_BRANCH" == main ]]
+              [[ "$MAIN_CI_HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
+              [[ "$MAIN_CI_PATH" == .github/workflows/ci.yml ]]
+              [[ "$MAIN_CI_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$MAIN_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              [[ "$MAIN_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              [[ "$CONTROLLER_SHA" == "$MAIN_CI_HEAD_SHA" ]] || {
+                echo 'A newer main superseded this automatic Test candidate.' >&2
+                exit 1
+              }
+              revision=$MAIN_CI_HEAD_SHA
+              source_branch=main
+              source_ci_run_id=$MAIN_CI_RUN_ID
+              source_ci_run_attempt=$MAIN_CI_RUN_ATTEMPT
+              source_event=push
+              source_mode=main-ci
+              source_workflow=.github/workflows/ci.yml
+              ;;
+            workflow_dispatch)
+              [[ "$INPUT_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+                echo 'The Test revision must be a complete lowercase commit SHA.' >&2
+                exit 1
+              }
+              git check-ref-format "refs/heads/$INPUT_SOURCE_BRANCH" >/dev/null || {
+                echo 'The Test source branch is invalid.' >&2
+                exit 1
+              }
+              [[ "$INPUT_SOURCE_BRANCH" != HEAD ]]
+              encoded_branch=$(jq -rn \
+                --arg branch "$INPUT_SOURCE_BRANCH" \
+                '$branch | @uri')
+              branch_sha=$(gh api \
+                "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
+                --jq '.object.sha')
+              [[ "$branch_sha" == "$INPUT_REVISION" ]] || {
+                echo 'The Test revision must equal the selected branch tip.' >&2
+                exit 1
+              }
+              gh api "repos/${GITHUB_REPOSITORY}/git/commits/${INPUT_REVISION}" \
+                --jq '.sha' | grep -Fx "$INPUT_REVISION" >/dev/null
+              revision=$INPUT_REVISION
+              source_branch=$INPUT_SOURCE_BRANCH
+              source_ci_run_id=$GITHUB_RUN_ID
+              source_ci_run_attempt=$GITHUB_RUN_ATTEMPT
+              source_event=workflow_dispatch
+              source_mode=branch-build
+              source_workflow=.github/workflows/combo-dev.yml
+              ;;
+            *)
+              echo 'Unsupported Test deployment event.' >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            printf 'controller_sha=%s\n' "$CONTROLLER_SHA"
+            printf 'revision=%s\n' "$revision"
+            printf 'source_branch=%s\n' "$source_branch"
+            printf 'source_ci_run_attempt=%s\n' "$source_ci_run_attempt"
+            printf 'source_ci_run_id=%s\n' "$source_ci_run_id"
+            printf 'source_event=%s\n' "$source_event"
+            printf 'source_mode=%s\n' "$source_mode"
+            printf 'source_workflow=%s\n' "$source_workflow"
+          } >> "$GITHUB_OUTPUT"
+
+  build_branch_release:
+    name: build the exact branch Test artifact
+    needs: select
+    if: needs.select.outputs.source_mode == 'branch-build'
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.select.outputs.revision }}
+      publish_release: true
+
+  authorize:
+    name: authorize the exact Test release artifact
+    needs: [select, build_branch_release]
+    if: >-
+      always() &&
+      needs.select.result == 'success' &&
+      (needs.select.outputs.source_mode == 'main-ci' ||
+        needs.build_branch_release.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      controller_sha: ${{ needs.select.outputs.controller_sha }}
+      revision: ${{ needs.select.outputs.revision }}
+      source_branch: ${{ needs.select.outputs.source_branch }}
+      source_ci_run_id: ${{ needs.select.outputs.source_ci_run_id }}
+      source_ci_run_attempt: ${{ needs.select.outputs.source_ci_run_attempt }}
+      source_event: ${{ needs.select.outputs.source_event }}
+      source_mode: ${{ needs.select.outputs.source_mode }}
+      source_workflow: ${{ needs.select.outputs.source_workflow }}
+      release_artifact_id: ${{ steps.trust.outputs.release_artifact_id }}
+      release_artifact_name: ${{ steps.trust.outputs.release_artifact_name }}
+      release_artifact_digest: ${{ steps.trust.outputs.release_artifact_digest }}
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.select.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the trusted build and its unique release artifact
+        id: trust
+        env:
+          CONTROLLER_SHA: ${{ needs.select.outputs.controller_sha }}
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.select.outputs.revision }}
+          SOURCE_BRANCH: ${{ needs.select.outputs.source_branch }}
+          SOURCE_CI_RUN_ATTEMPT: ${{ needs.select.outputs.source_ci_run_attempt }}
+          SOURCE_CI_RUN_ID: ${{ needs.select.outputs.source_ci_run_id }}
+          SOURCE_MODE: ${{ needs.select.outputs.source_mode }}
+        run: |
+          set -euo pipefail
           gh api "repos/${GITHUB_REPOSITORY}/git/commits/${REVISION}" --jq '.sha' \
             | grep -Fx "$REVISION" >/dev/null
           [[ "$(git rev-parse HEAD)" == "$REVISION" ]]
           git diff --quiet
           git diff --cached --quiet
-          remote_main=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          [[ "$remote_main" == "$REVISION" ]] || {
-            echo 'Test revision must equal the current main head.' >&2
-            exit 1
-          }
+
+          encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
+          case "$SOURCE_MODE" in
+            main-ci)
+              [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                --jq '.object.sha')" == "$CONTROLLER_SHA" ]]
+              [[ "$SOURCE_BRANCH" == main && "$REVISION" == "$CONTROLLER_SHA" ]]
+              ;;
+            branch-build)
+              [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
+                echo 'main advanced before the branch Test artifact was authorized.' >&2
+                exit 1
+              }
+              branch_status=$(gh api \
+                "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...${encoded_branch}" \
+                --jq '.status')
+              [[ "$branch_status" == ahead || "$branch_status" == identical ]] || {
+                echo 'The selected Test revision is no longer reachable from its branch.' >&2
+                exit 1
+              }
+              ;;
+            *)
+              echo 'Invalid Test source mode.' >&2
+              exit 1
+              ;;
+          esac
 
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}" \
             > "$work/source-run.json"
-          jq -e \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" \
-            --argjson runId "$SOURCE_CI_RUN_ID" '
-              .id == $runId
-              and .name == "CI"
-              and .path == ".github/workflows/ci.yml"
-              and .event == "push"
-              and .head_branch == "main"
-              and .head_sha == $revision
-              and .status == "completed"
-              and .conclusion == "success"
-              and .repository.full_name == $repository
-              and .head_repository.full_name == $repository
-              and (.run_attempt | type == "number" and . > 0 and floor == .)
-            ' "$work/source-run.json" >/dev/null
+          case "$SOURCE_MODE" in
+            main-ci)
+              jq -e \
+                --arg repository "$GITHUB_REPOSITORY" \
+                --arg revision "$REVISION" \
+                --argjson runId "$SOURCE_CI_RUN_ID" \
+                --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
+                  .id == $runId
+                  and .run_attempt == $runAttempt
+                  and .name == "CI"
+                  and .path == ".github/workflows/ci.yml"
+                  and .event == "push"
+                  and .head_branch == "main"
+                  and .head_sha == $revision
+                  and .status == "completed"
+                  and .conclusion == "success"
+                  and .repository.full_name == $repository
+                  and .head_repository.full_name == $repository
+                ' "$work/source-run.json" >/dev/null
+              artifact_head_sha=$REVISION
+              artifact_release_job='assemble immutable release artifact'
+              image_job_prefix=
+              ;;
+            branch-build)
+              [[ "$SOURCE_CI_RUN_ID" == "$GITHUB_RUN_ID" ]]
+              [[ "$SOURCE_CI_RUN_ATTEMPT" == "$GITHUB_RUN_ATTEMPT" ]] || {
+                echo 'Branch Test reruns must use Re-run all jobs to rebuild the exact artifact.' >&2
+                exit 1
+              }
+              jq -e \
+                --arg controller "$CONTROLLER_SHA" \
+                --arg repository "$GITHUB_REPOSITORY" \
+                --argjson runId "$SOURCE_CI_RUN_ID" \
+                --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
+                  .id == $runId
+                  and .run_attempt == $runAttempt
+                  and .name == "Test deployment"
+                  and .path == ".github/workflows/combo-dev.yml"
+                  and .event == "workflow_dispatch"
+                  and .head_branch == "main"
+                  and .head_sha == $controller
+                  and .status == "in_progress"
+                  and .conclusion == null
+                  and .repository.full_name == $repository
+                  and .head_repository.full_name == $repository
+                ' "$work/source-run.json" >/dev/null
+              artifact_head_sha=$CONTROLLER_SHA
+              artifact_release_job='build the exact branch Test artifact / assemble immutable release artifact'
+              image_job_prefix='build the exact branch Test artifact / '
+              ;;
+            *)
+              echo 'Invalid Test source mode.' >&2
+              exit 1
+              ;;
+          esac
 
           repository_id=$(jq -er '.repository.id' "$work/source-run.json")
-          source_ci_run_attempt=$(jq -er '.run_attempt' "$work/source-run.json")
           [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
-          [[ "$source_ci_run_attempt" =~ ^[1-9][0-9]*$ ]]
-          artifact_name="combo-release-${REVISION}-${source_ci_run_attempt}"
+          artifact_name="combo-release-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}"
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/artifacts?per_page=100&name=${artifact_name}" \
             > "$work/artifacts.json"
           jq -e \
+            --arg headSha "$artifact_head_sha" \
             --arg name "$artifact_name" \
-            --arg revision "$REVISION" \
             --argjson repositoryId "$repository_id" \
             --argjson runId "$SOURCE_CI_RUN_ID" '
               [.artifacts[] | select(.name == $name)] as $matches
@@ -143,7 +347,7 @@ jobs:
                 and $matches[0].workflow_run.repository_id == $repositoryId
                 and $matches[0].workflow_run.head_repository_id == $repositoryId
                 and $matches[0].workflow_run.head_branch == "main"
-                and $matches[0].workflow_run.head_sha == $revision
+                and $matches[0].workflow_run.head_sha == $headSha
             ' "$work/artifacts.json" >/dev/null
           artifact_id=$(jq -er \
             --arg name "$artifact_name" \
@@ -158,12 +362,13 @@ jobs:
             '.artifacts[] | select(.name == $name) | .created_at' \
             "$work/artifacts.json")
           gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/attempts/${source_ci_run_attempt}/jobs?per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/attempts/${SOURCE_CI_RUN_ATTEMPT}/jobs?per_page=100" \
             > "$work/source-attempt-jobs.json"
           jq -e \
+            --arg releaseJob "$artifact_release_job" \
             --arg artifactCreatedAt "$artifact_created_at" '
               [.jobs[]
-                | select(.name == "assemble immutable release artifact")] as $releaseJobs
+                | select(.name == $releaseJob)] as $releaseJobs
               | ($releaseJobs | length) == 1
                 and $releaseJobs[0].status == "completed"
                 and $releaseJobs[0].conclusion == "success"
@@ -175,8 +380,115 @@ jobs:
                 and $releaseJobs[0].started_at <= $artifactCreatedAt
                 and $artifactCreatedAt <= $releaseJobs[0].completed_at
             ' "$work/source-attempt-jobs.json" >/dev/null
+
+          digest_root="$work/image-digests"
+          install -d -m 0700 "$digest_root"
+          for key in api runtime web; do
+            case "$key" in
+              api) image_repository=ghcr.io/dangdang-tech/combo-api ;;
+              runtime) image_repository=ghcr.io/dangdang-tech/combo-runtime ;;
+              web) image_repository=ghcr.io/dangdang-tech/combo-web ;;
+            esac
+            image_artifact_name="combo-image-digest-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}-${key}"
+            image_artifacts="$work/${key}-artifacts.json"
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/artifacts?per_page=100&name=${image_artifact_name}" \
+              >"$image_artifacts"
+            jq -e \
+              --arg headSha "$artifact_head_sha" \
+              --arg name "$image_artifact_name" \
+              --argjson repositoryId "$repository_id" \
+              --argjson runId "$SOURCE_CI_RUN_ID" '
+                [.artifacts[] | select(.name == $name)] as $matches
+                | .total_count == 1
+                  and ($matches | length) == 1
+                  and ($matches[0].id | type == "number" and . > 0 and floor == .)
+                  and (
+                    $matches[0].size_in_bytes
+                    | type == "number" and . > 0 and . <= 4096 and floor == .
+                  )
+                  and $matches[0].expired == false
+                  and ($matches[0].digest | test("^sha256:[0-9a-f]{64}$"))
+                  and $matches[0].workflow_run.id == $runId
+                  and $matches[0].workflow_run.repository_id == $repositoryId
+                  and $matches[0].workflow_run.head_repository_id == $repositoryId
+                  and $matches[0].workflow_run.head_branch == "main"
+                  and $matches[0].workflow_run.head_sha == $headSha
+              ' "$image_artifacts" >/dev/null
+            image_artifact_id=$(jq -er \
+              --arg name "$image_artifact_name" \
+              '.artifacts[] | select(.name == $name) | .id' \
+              "$image_artifacts")
+            image_artifact_digest=$(jq -er \
+              --arg name "$image_artifact_name" \
+              '.artifacts[] | select(.name == $name) | .digest' \
+              "$image_artifacts")
+            image_artifact_created_at=$(jq -er \
+              --arg name "$image_artifact_name" \
+              '.artifacts[] | select(.name == $name) | .created_at' \
+              "$image_artifacts")
+            image_job="${image_job_prefix}image / ${key}"
+            jq -e \
+              --arg artifactCreatedAt "$image_artifact_created_at" \
+              --arg imageJob "$image_job" '
+                [.jobs[] | select(.name == $imageJob)] as $imageJobs
+                | ($imageJobs | length) == 1
+                  and $imageJobs[0].status == "completed"
+                  and $imageJobs[0].conclusion == "success"
+                  and ($imageJobs[0].started_at | type == "string" and test("Z$"))
+                  and ($imageJobs[0].completed_at | type == "string" and test("Z$"))
+                  and ($artifactCreatedAt | test("Z$"))
+                  and $imageJobs[0].started_at <= $artifactCreatedAt
+                  and $artifactCreatedAt <= $imageJobs[0].completed_at
+              ' "$work/source-attempt-jobs.json" >/dev/null
+            image_archive="$work/${key}.zip"
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${image_artifact_id}/zip" \
+              >"$image_archive"
+            [[ "$(sha256sum "$image_archive" | awk '{print "sha256:" $1}')" == \
+              "$image_artifact_digest" ]]
+            mapfile -t image_archive_paths < <(unzip -Z1 "$image_archive")
+            [[ "${#image_archive_paths[@]}" == 1 ]]
+            [[ "${image_archive_paths[0]}" == "${key}.image" ]]
+            image_file="$digest_root/${key}.image"
+            unzip -p "$image_archive" "${key}.image" >"$image_file"
+            [[ -f "$image_file" && ! -L "$image_file" ]]
+            image_file_size=$(stat -c '%s' "$image_file")
+            [[ "$image_file_size" =~ ^[1-9][0-9]*$ && "$image_file_size" -le 256 ]]
+            [[ "$(tail -c 1 "$image_file" | od -An -t x1 | tr -d ' \n')" == 0a ]]
+            image_reference=$(<"$image_file")
+            [[ "$image_reference" == "$image_repository"@* ]]
+            image_digest=${image_reference#"$image_repository"@}
+            [[ "$image_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          done
+
+          release_archive="$work/release.zip"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" \
+            >"$release_archive"
+          [[ "$(sha256sum "$release_archive" | awk '{print "sha256:" $1}')" == \
+            "$artifact_digest" ]]
+          mapfile -t release_archive_paths < <(unzip -Z1 "$release_archive")
+          (( ${#release_archive_paths[@]} > 0 && ${#release_archive_paths[@]} <= 256 ))
+          [[ "$(printf '%s\n' "${release_archive_paths[@]}" \
+            | grep -Fxc metadata/release.json)" == 1 ]]
+          release_manifest="$work/release.json"
+          unzip -p "$release_archive" metadata/release.json >"$release_manifest"
+          [[ -f "$release_manifest" && ! -L "$release_manifest" ]]
+          release_manifest_size=$(stat -c '%s' "$release_manifest")
+          [[ "$release_manifest_size" =~ ^[1-9][0-9]*$ &&
+            "$release_manifest_size" -le 65536 ]]
+          jq -e \
+            --arg apiImage "$(<"$digest_root/api.image")" \
+            --arg runtimeImage "$(<"$digest_root/runtime.image")" \
+            --arg webImage "$(<"$digest_root/web.image")" '
+              .images == {
+                api: $apiImage,
+                runtime: $runtimeImage,
+                web: $webImage
+              }
+            ' "$release_manifest" >/dev/null
           {
-            printf 'source_ci_run_attempt=%s\n' "$source_ci_run_attempt"
             printf 'release_artifact_id=%s\n' "$artifact_id"
             printf 'release_artifact_name=%s\n' "$artifact_name"
             printf 'release_artifact_digest=%s\n' "$artifact_digest"
@@ -196,17 +508,26 @@ jobs:
       actions: read
       contents: read
     steps:
-      - name: Check out the exact release source
+      - name: Check out the trusted main Test controller
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          ref: ${{ needs.authorize.outputs.revision }}
+          ref: ${{ needs.authorize.outputs.controller_sha }}
           fetch-depth: 1
           persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11.0.9
 
       - name: Use Node 24 for release artifact validation
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install trusted Test control dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Download the immutable release artifact
         env:
@@ -269,7 +590,7 @@ jobs:
           )
           manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
           [[ "$manifest_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          node "$RELEASE_ROOT/scripts/release-manifest.mjs" verify \
+          node scripts/release-manifest.mjs verify \
             --manifest "$RELEASE_ROOT/metadata/release.json" \
             --source-sha "$REVISION" \
             --digest "$manifest_digest" >/dev/null
@@ -279,7 +600,7 @@ jobs:
           [[ "$release_id" == "release-${REVISION}" ]]
           [[ "$migration_head" == 0008_application_database_roles.sql ]]
           [[ "$web_asset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          node "$RELEASE_ROOT/scripts/web-asset-manifest.mjs" verify \
+          node scripts/web-asset-manifest.mjs verify \
             --manifest "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
             --digest "$web_asset_digest" >/dev/null
           file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" \
@@ -424,116 +745,144 @@ jobs:
       - name: Upload the fixed bundle and invoke the root-owned dispatcher
         id: deploy_test
         env:
-          GH_TOKEN: ${{ github.token }}
-          PREVIEW_MODE: ${{ vars.COMBO_PREVIEW_AUTO_PROMOTION_MODE }}
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
-          REVISION: ${{ needs.authorize.outputs.revision }}
-          RUN_ID: ${{ github.run_id }}
-          RUN_ATTEMPT: ${{ github.run_attempt }}
-          SOURCE_CI_RUN_ID: ${{ needs.authorize.outputs.source_ci_run_id }}
-          SOURCE_CI_RUN_ATTEMPT: ${{ needs.authorize.outputs.source_ci_run_attempt }}
-          RELEASE_ARTIFACT_ID: ${{ needs.authorize.outputs.release_artifact_id }}
+          CONTROLLER_SHA: ${{ needs.authorize.outputs.controller_sha }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.release_artifact_digest }}
+          RELEASE_ARTIFACT_ID: ${{ needs.authorize.outputs.release_artifact_id }}
+          RELEASE_ARTIFACT_NAME: ${{ needs.authorize.outputs.release_artifact_name }}
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_ID: ${{ github.run_id }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.source_branch }}
+          SOURCE_CI_RUN_ATTEMPT: ${{ needs.authorize.outputs.source_ci_run_attempt }}
+          SOURCE_CI_RUN_ID: ${{ needs.authorize.outputs.source_ci_run_id }}
+          SOURCE_MODE: ${{ needs.authorize.outputs.source_mode }}
         run: |
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || exit 1
-          [[ "$PREVIEW_MODE" == paused ]] || {
-            echo 'Test deployment requires Preview automatic promotion to remain paused.' >&2
-            exit 1
-          }
-          verify_preview_policy_is_paused() {
-            local preview_runs preview_run preview_run_id preview_run_attempt
-            local preview_jobs expected_title
-            preview_runs=$(gh api --paginate --slurp \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/preview.yml/runs?event=workflow_run&branch=main&per_page=100")
-            expected_title="Preview promotion for CI ${SOURCE_CI_RUN_ID} attempt ${SOURCE_CI_RUN_ATTEMPT}"
-            preview_run=$(jq -ec \
+          revalidate_test_authority() {
+            local artifact_head_sha branch_status encoded_branch
+            local release_artifact release_job source_jobs source_run
+
+            encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
+            case "$SOURCE_MODE" in
+              main-ci)
+                [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                  --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
+                  echo 'main advanced while Test waited for its deployment gate.' >&2
+                  return 1
+                }
+                [[ "$SOURCE_BRANCH" == main && "$REVISION" == "$CONTROLLER_SHA" ]]
+                ;;
+              branch-build)
+                [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+                  --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
+                  echo 'main advanced while branch Test waited for its deployment gate.' >&2
+                  return 1
+                }
+                branch_status=$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...${encoded_branch}" \
+                  --jq '.status')
+                [[ "$branch_status" == ahead || "$branch_status" == identical ]] || {
+                  echo 'The selected Test revision is no longer reachable from its branch.' >&2
+                  return 1
+                }
+                ;;
+              *)
+                echo 'Invalid Test source mode.' >&2
+                return 1
+                ;;
+            esac
+
+            source_run=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}")
+            case "$SOURCE_MODE" in
+              main-ci)
+                jq -e \
+                  --arg repository "$GITHUB_REPOSITORY" \
+                  --arg revision "$REVISION" \
+                  --argjson runId "$SOURCE_CI_RUN_ID" \
+                  --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
+                    .id == $runId
+                    and .run_attempt == $runAttempt
+                    and .path == ".github/workflows/ci.yml"
+                    and .event == "push"
+                    and .head_branch == "main"
+                    and .head_sha == $revision
+                    and .status == "completed"
+                    and .conclusion == "success"
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  ' <<<"$source_run" >/dev/null
+                artifact_head_sha=$REVISION
+                release_job='assemble immutable release artifact'
+                ;;
+              branch-build)
+                [[ "$SOURCE_CI_RUN_ID" == "$RUN_ID" ]]
+                [[ "$SOURCE_CI_RUN_ATTEMPT" == "$RUN_ATTEMPT" ]] || {
+                  echo 'Branch Test reruns must use Re-run all jobs to rebuild the exact artifact.' >&2
+                  return 1
+                }
+                jq -e \
+                  --arg controller "$CONTROLLER_SHA" \
+                  --arg repository "$GITHUB_REPOSITORY" \
+                  --argjson runId "$SOURCE_CI_RUN_ID" \
+                  --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
+                    .id == $runId
+                    and .run_attempt == $runAttempt
+                    and .path == ".github/workflows/combo-dev.yml"
+                    and .event == "workflow_dispatch"
+                    and .head_branch == "main"
+                    and .head_sha == $controller
+                    and .status == "in_progress"
+                    and .conclusion == null
+                    and .repository.full_name == $repository
+                    and .head_repository.full_name == $repository
+                  ' <<<"$source_run" >/dev/null
+                artifact_head_sha=$CONTROLLER_SHA
+                release_job='build the exact branch Test artifact / assemble immutable release artifact'
+                ;;
+              *)
+                echo 'Invalid Test source mode.' >&2
+                return 1
+                ;;
+            esac
+
+            source_jobs=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/attempts/${SOURCE_CI_RUN_ATTEMPT}/jobs?per_page=100")
+            jq -e \
+              --arg releaseJob "$release_job" '
+                [.jobs[] | select(.name == $releaseJob)] as $releaseJobs
+                | ($releaseJobs | length) == 1
+                  and $releaseJobs[0].status == "completed"
+                  and $releaseJobs[0].conclusion == "success"
+              ' <<<"$source_jobs" >/dev/null
+
+            release_artifact=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/artifacts/${RELEASE_ARTIFACT_ID}")
+            jq -e \
+              --arg digest "$RELEASE_ARTIFACT_DIGEST" \
+              --arg headSha "$artifact_head_sha" \
+              --arg name "$RELEASE_ARTIFACT_NAME" \
               --arg revision "$REVISION" \
-              --arg title "$expected_title" '
-                [
-                  .[].workflow_runs[]
-                  | select(
-                      .name == $title
-                      and .path == ".github/workflows/preview.yml"
-                      and .event == "workflow_run"
-                      and .head_branch == "main"
-                      and .head_sha == $revision
-                      and .display_title == $title
-                    )
-                ] as $runs
-                | if (
-                    ($runs | length) == 1
-                    and ($runs[0].run_attempt | type == "number"
-                      and . > 0 and floor == .)
-                    and $runs[0].status == "completed"
-                    and $runs[0].conclusion == "success"
-                  )
-                  then $runs[0]
-                  else error("the exact candidate does not have one completed paused Preview policy run")
-                  end
-              ' <<<"$preview_runs")
-            preview_run_id=$(jq -er '.id' <<<"$preview_run")
-            preview_run_attempt=$(jq -er '.run_attempt' <<<"$preview_run")
-            [[ "$preview_run_id" =~ ^[1-9][0-9]*$ &&
-              "$preview_run_attempt" =~ ^[1-9][0-9]*$ ]]
-            preview_jobs=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/runs/${preview_run_id}/attempts/${preview_run_attempt}/jobs?per_page=100")
-            jq -e '
-              [
-                .jobs[]
-                | select(.name == "validate main release and repository promotion mode")
-              ] as $policyJobs
-              | [
-                  .jobs[]
-                  | select(.name == "deploy the main release artifact to Preview")
-                ] as $deployJobs
-              | ($policyJobs | length) == 1
-                and $policyJobs[0].status == "completed"
-                and $policyJobs[0].conclusion == "success"
-                and ($deployJobs | length) == 1
-                and $deployJobs[0].status == "completed"
-                and $deployJobs[0].conclusion == "skipped"
-            ' <<<"$preview_jobs" >/dev/null
+              --argjson artifactId "$RELEASE_ARTIFACT_ID" \
+              --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" \
+              --argjson runId "$SOURCE_CI_RUN_ID" '
+                .id == $artifactId
+                and .name == $name
+                and .name == (
+                  "combo-release-" + $revision + "-" + ($runAttempt | tostring)
+                )
+                and .digest == $digest
+                and .expired == false
+                and .workflow_run.id == $runId
+                and .workflow_run.head_branch == "main"
+                and .workflow_run.head_sha == $headSha
+              ' <<<"$release_artifact" >/dev/null
           }
-          verify_preview_policy_is_paused
-          remote_main=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')
-          [[ "$remote_main" == "$REVISION" ]] || {
-            echo 'main advanced while Test waited for its deployment gate.' >&2
-            exit 1
-          }
-          source_run=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}")
-          jq -e \
-            --arg revision "$REVISION" \
-            --argjson runId "$SOURCE_CI_RUN_ID" \
-            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-              .id == $runId
-              and .run_attempt == $runAttempt
-              and .path == ".github/workflows/ci.yml"
-              and .event == "push"
-              and .head_branch == "main"
-              and .head_sha == $revision
-              and .status == "completed"
-              and .conclusion == "success"
-            ' <<<"$source_run" >/dev/null
-          release_artifact=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${RELEASE_ARTIFACT_ID}")
-          jq -e \
-            --arg revision "$REVISION" \
-            --arg digest "$RELEASE_ARTIFACT_DIGEST" \
-            --argjson artifactId "$RELEASE_ARTIFACT_ID" \
-            --argjson runId "$SOURCE_CI_RUN_ID" \
-            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-              .id == $artifactId
-              and .name == (
-                "combo-release-" + $revision + "-" + ($runAttempt | tostring)
-              )
-              and .digest == $digest
-              and .expired == false
-              and .workflow_run.id == $runId
-              and .workflow_run.head_branch == "main"
-              and .workflow_run.head_sha == $revision
-            ' <<<"$release_artifact" >/dev/null
+
+          revalidate_test_authority
           printf 'mutation_started=true\n' >> "$GITHUB_OUTPUT"
           remote="/opt/combo-dev/incoming/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           temporary="/opt/combo-dev/incoming/.${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.upload"
@@ -545,39 +894,7 @@ jobs:
           cleanup_upload
           scp -q "$ARCHIVE" "combo-dev-target:$temporary"
           ssh combo-dev-target mv -fT -- "$temporary" "$remote"
-          [[ "$PREVIEW_MODE" == paused ]]
-          verify_preview_policy_is_paused
-          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-            --jq '.object.sha')" == "$REVISION" ]]
-          source_run=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}")
-          jq -e \
-            --arg revision "$REVISION" \
-            --argjson runId "$SOURCE_CI_RUN_ID" \
-            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-              .id == $runId
-              and .run_attempt == $runAttempt
-              and .head_sha == $revision
-              and .status == "completed"
-              and .conclusion == "success"
-            ' <<<"$source_run" >/dev/null
-          release_artifact=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${RELEASE_ARTIFACT_ID}")
-          jq -e \
-            --arg revision "$REVISION" \
-            --arg digest "$RELEASE_ARTIFACT_DIGEST" \
-            --argjson artifactId "$RELEASE_ARTIFACT_ID" \
-            --argjson runId "$SOURCE_CI_RUN_ID" \
-            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-              .id == $artifactId
-              and .name == (
-                "combo-release-" + $revision + "-" + ($runAttempt | tostring)
-              )
-              and .digest == $digest
-              and .expired == false
-              and .workflow_run.id == $runId
-              and .workflow_run.head_sha == $revision
-            ' <<<"$release_artifact" >/dev/null
+          revalidate_test_authority
           ssh combo-dev-target bash -s -- \
             "$remote" "$REVISION" "$RUN_ID" "$RUN_ATTEMPT" <<'REMOTE'
           set -euo pipefail
@@ -627,8 +944,12 @@ jobs:
           REVISION: ${{ needs.authorize.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.source_branch }}
           SOURCE_CI_RUN_ID: ${{ needs.authorize.outputs.source_ci_run_id }}
           SOURCE_CI_RUN_ATTEMPT: ${{ needs.authorize.outputs.source_ci_run_attempt }}
+          SOURCE_EVENT: ${{ needs.authorize.outputs.source_event }}
+          SOURCE_MODE: ${{ needs.authorize.outputs.source_mode }}
+          SOURCE_WORKFLOW: ${{ needs.authorize.outputs.source_workflow }}
           RELEASE_ARTIFACT_ID: ${{ needs.authorize.outputs.release_artifact_id }}
           RELEASE_ARTIFACT_NAME: ${{ needs.authorize.outputs.release_artifact_name }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.release_artifact_digest }}
@@ -661,12 +982,18 @@ jobs:
             echo 'The combo-dev Environment lacks a valid full-access acceptance Resend key.' >&2
             exit 1
           }
-          runner="$RELEASE_ROOT/acceptance/live-browser-acceptance.mjs"
-          playwright="$RELEASE_ROOT/acceptance/playwright-core.tgz"
-          validator="$RELEASE_ROOT/scripts/promotion-evidence.mjs"
-          for file in "$runner" "$playwright" "$validator"; do
+          runner=scripts/goal-b-test-acceptance.mjs
+          resend_reader=scripts/resend-sent-email.mjs
+          validator=scripts/promotion-evidence.mjs
+          playwright_dir=scripts/node_modules/playwright-core
+          for file in "$runner" "$resend_reader" "$validator"; do
             [[ -f "$file" && ! -L "$file" ]]
           done
+          [[ -f "$playwright_dir/package.json" ]]
+          [[ "$(jq -r '.version' "$playwright_dir/package.json")" == 1.62.0 ]]
+          playwright_real=$(realpath "$playwright_dir")
+          [[ "$playwright_real" == \
+            "$GITHUB_WORKSPACE/node_modules/.pnpm/playwright-core@1.62.0/node_modules/playwright-core" ]]
 
           forwarders_are() {
             local expected=$1
@@ -794,8 +1121,19 @@ jobs:
           identity_digest=$(node "$validator" validate-identity --identity "$identity")
           [[ "$identity_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 
+          trusted_acceptance="$RUNNER_TEMP/trusted-test-acceptance"
+          install -d -m 0700 "$trusted_acceptance/acceptance"
+          install -m 0600 \
+            "$runner" \
+            "$trusted_acceptance/acceptance/live-browser-acceptance.mjs"
+          install -m 0600 \
+            "$resend_reader" \
+            "$trusted_acceptance/acceptance/resend-sent-email.mjs"
+          tar -C "$(dirname "$playwright_real")" \
+            -czf "$trusted_acceptance/acceptance/playwright-core.tgz" \
+            playwright-core
           archive="$RUNNER_TEMP/combo-dev-live-browser-${REVISION}.tar.gz"
-          tar -C "$RELEASE_ROOT" -czf "$archive" \
+          tar -C "$trusted_acceptance" -czf "$archive" \
             acceptance/live-browser-acceptance.mjs \
             acceptance/playwright-core.tgz \
             acceptance/resend-sent-email.mjs
@@ -948,7 +1286,7 @@ jobs:
       - name: Upload sanitized Test browser failure evidence
         id: upload_test_failure_evidence
         if: ${{ always() && steps.live_browser.outputs.acceptance_status == 'failed' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: combo-test-failure-evidence-${{ needs.authorize.outputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.live_browser.outputs.failure_path }}
@@ -971,12 +1309,17 @@ jobs:
         id: evidence
         if: steps.live_browser.outputs.acceptance_status == 'passed'
         env:
+          CONTROLLER_SHA: ${{ needs.authorize.outputs.controller_sha }}
           RELEASE_ROOT: ${{ runner.temp }}/combo-release
           REVISION: ${{ needs.authorize.outputs.revision }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.source_branch }}
           SOURCE_CI_RUN_ID: ${{ needs.authorize.outputs.source_ci_run_id }}
           SOURCE_CI_RUN_ATTEMPT: ${{ needs.authorize.outputs.source_ci_run_attempt }}
+          SOURCE_EVENT: ${{ needs.authorize.outputs.source_event }}
+          SOURCE_MODE: ${{ needs.authorize.outputs.source_mode }}
+          SOURCE_WORKFLOW: ${{ needs.authorize.outputs.source_workflow }}
           RELEASE_ARTIFACT_ID: ${{ needs.authorize.outputs.release_artifact_id }}
           RELEASE_ARTIFACT_NAME: ${{ needs.authorize.outputs.release_artifact_name }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.release_artifact_digest }}
@@ -995,8 +1338,29 @@ jobs:
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ && "$RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$SOURCE_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_EVENT" == push || "$SOURCE_EVENT" == workflow_dispatch ]]
+          [[ "$SOURCE_MODE" == main-ci || "$SOURCE_MODE" == branch-build ]]
+          [[ "$SOURCE_WORKFLOW" == .github/workflows/ci.yml ||
+            "$SOURCE_WORKFLOW" == .github/workflows/combo-dev.yml ]]
+          git check-ref-format "refs/heads/$SOURCE_BRANCH" >/dev/null
+          case "$SOURCE_MODE" in
+            main-ci)
+              [[ "$CONTROLLER_SHA" == "$REVISION" ]]
+              [[ "$SOURCE_WORKFLOW" == .github/workflows/ci.yml ]]
+              [[ "$SOURCE_EVENT" == push && "$SOURCE_BRANCH" == main ]]
+              source_conclusion=success
+              evidence_artifact_name="combo-test-evidence-${REVISION}-${RUN_ATTEMPT}"
+              ;;
+            branch-build)
+              [[ "$SOURCE_WORKFLOW" == .github/workflows/combo-dev.yml ]]
+              [[ "$SOURCE_EVENT" == workflow_dispatch ]]
+              source_conclusion=release-job-success
+              evidence_artifact_name="combo-branch-test-evidence-${REVISION}-${RUN_ATTEMPT}"
+              ;;
+          esac
           [[ "$RELEASE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$RELEASE_ARTIFACT_NAME" == \
             "combo-release-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}" ]]
@@ -1176,17 +1540,17 @@ jobs:
             )
             and (has("productAcceptance") | not)
           ' "$evidence" >/dev/null
-          sanitized_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+          sanitized_digest=$(node scripts/promotion-evidence.mjs \
             validate-sanitized-json --evidence "$evidence")
           [[ "$sanitized_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           live_browser="$evidence_dir/test-live-browser-acceptance.json"
           test_identity="$evidence_dir/test-promotion-identity.json"
           install -m 0600 "$LIVE_BROWSER_EVIDENCE" "$live_browser"
           install -m 0600 "$TEST_IDENTITY" "$test_identity"
-          actual_identity_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+          actual_identity_digest=$(node scripts/promotion-evidence.mjs \
             validate-identity --identity "$test_identity")
           [[ "$actual_identity_digest" == "$TEST_IDENTITY_DIGEST" ]]
-          actual_live_browser_digest=$(node "$RELEASE_ROOT/scripts/promotion-evidence.mjs" \
+          actual_live_browser_digest=$(node scripts/promotion-evidence.mjs \
             validate-live-browser \
             --environment test \
             --evidence "$live_browser" \
@@ -1195,7 +1559,13 @@ jobs:
           source_release="$evidence_dir/source-release.json"
           jq -n \
             --arg repository "$GITHUB_REPOSITORY" \
+            --arg controllerSha "$CONTROLLER_SHA" \
             --arg revision "$REVISION" \
+            --arg sourceBranch "$SOURCE_BRANCH" \
+            --arg sourceConclusion "$source_conclusion" \
+            --arg sourceEvent "$SOURCE_EVENT" \
+            --arg sourceMode "$SOURCE_MODE" \
+            --arg sourceWorkflow "$SOURCE_WORKFLOW" \
             --argjson testRunId "$RUN_ID" \
             --argjson testRunAttempt "$RUN_ATTEMPT" \
             --argjson sourceCiRunId "$SOURCE_CI_RUN_ID" \
@@ -1214,11 +1584,13 @@ jobs:
             --arg webImage "$WEB_IMAGE" '
               {
                 schemaVersion: 1,
+                controllerSha: $controllerSha,
                 sourceRepository: $repository,
-                sourceWorkflow: ".github/workflows/ci.yml",
-                sourceEvent: "push",
-                sourceBranch: "main",
-                sourceConclusion: "success",
+                sourceWorkflow: $sourceWorkflow,
+                sourceEvent: $sourceEvent,
+                sourceBranch: $sourceBranch,
+                sourceMode: $sourceMode,
+                sourceConclusion: $sourceConclusion,
                 sourceSha: $revision,
                 sourceCiRunId: $sourceCiRunId,
                 sourceCiRunAttempt: $sourceCiRunAttempt,
@@ -1244,7 +1616,13 @@ jobs:
           chmod 600 "$source_release"
           jq -e \
             --arg repository "$GITHUB_REPOSITORY" \
+            --arg controllerSha "$CONTROLLER_SHA" \
             --arg revision "$REVISION" \
+            --arg sourceBranch "$SOURCE_BRANCH" \
+            --arg sourceConclusion "$source_conclusion" \
+            --arg sourceEvent "$SOURCE_EVENT" \
+            --arg sourceMode "$SOURCE_MODE" \
+            --arg sourceWorkflow "$SOURCE_WORKFLOW" \
             --argjson testRunId "$RUN_ID" \
             --argjson testRunAttempt "$RUN_ATTEMPT" \
             --argjson sourceCiRunId "$SOURCE_CI_RUN_ID" \
@@ -1255,6 +1633,7 @@ jobs:
             --arg testIdentityDigest "$TEST_IDENTITY_DIGEST" '
               keys == ([
                 "artifactFileSetDigest",
+                "controllerSha",
                 "images",
                 "liveBrowserAcceptanceDigest",
                 "migrationHead",
@@ -1269,6 +1648,7 @@ jobs:
                 "sourceCiRunId",
                 "sourceConclusion",
                 "sourceEvent",
+                "sourceMode",
                 "sourceRepository",
                 "sourceSha",
                 "sourceWorkflow",
@@ -1278,11 +1658,13 @@ jobs:
                 "webAssetManifestDigest"
               ] | sort)
               and .schemaVersion == 1
+              and .controllerSha == $controllerSha
               and .sourceRepository == $repository
-              and .sourceWorkflow == ".github/workflows/ci.yml"
-              and .sourceEvent == "push"
-              and .sourceBranch == "main"
-              and .sourceConclusion == "success"
+              and .sourceWorkflow == $sourceWorkflow
+              and .sourceEvent == $sourceEvent
+              and .sourceBranch == $sourceBranch
+              and .sourceMode == $sourceMode
+              and .sourceConclusion == $sourceConclusion
               and .sourceSha == $revision
               and .sourceCiRunId == $sourceCiRunId
               and .sourceCiRunAttempt == $sourceCiRunAttempt
@@ -1317,14 +1699,17 @@ jobs:
           cmp -s "$expected_files" "$actual_files"
           ! find "$evidence_dir" -mindepth 1 -maxdepth 1 -type l -print -quit \
             | grep -q .
-          printf 'path=%s\n' "$evidence_dir" >> "$GITHUB_OUTPUT"
+          {
+            printf 'artifact_name=%s\n' "$evidence_artifact_name"
+            printf 'path=%s\n' "$evidence_dir"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Upload sanitized Test evidence
         id: upload_test_evidence
         if: steps.live_browser.outputs.acceptance_status == 'passed'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: combo-test-evidence-${{ needs.authorize.outputs.revision }}-${{ github.run_attempt }}
+          name: ${{ steps.evidence.outputs.artifact_name }}
           path: ${{ steps.evidence.outputs.path }}
           if-no-files-found: error
           retention-days: 30
