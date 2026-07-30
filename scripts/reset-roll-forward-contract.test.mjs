@@ -190,9 +190,16 @@ test('the immutable plan binds every old and new release authority', () => {
   }
   assert.match(source, /release-manifest\.mjs" verify[\s\S]*--digest "\$old_manifest"/);
   assert.match(source, /tr -d '\\n' <"\$directory\/release\.sha256"[\s\S]*== "\$old_manifest"/);
-  assert.match(source, /\.phase == "post-cut"/);
-  assert.match(source, /\.foundationCreated == true/);
+  assert.match(source, /\.phase == "post-cut"[\s\S]*\.phase == "finalizing"/);
+  assert.match(source, /validate_finalizing_cleanup_plan/);
+  assert.match(source, /finalizing predecessor cleanup plan changed after it was bound/);
+  assert.match(source, /\.foundationCreated \| type == "boolean"/);
+  assert.match(source, /foundationCreated: \$oldFoundationCreated/);
+  assert.match(source, /oldPending\.foundationCreated \| type == "boolean"/);
   assert.match(source, /\.foundationResetEvidenceDigest \| test\("\^sha256:\[0-9a-f\]\{64\}\$"\)/);
+  assert.match(source, /host checkpoint is not the untouched activated state/);
+  assert.match(source, /cleanup or host sealing already started/);
+  assert.match(source, /cleanup already removed a target/);
   assert.match(source, /oldPending\.digest/);
   assert.match(source, /plan_digest=\$\(file_digest "\$plan"\)/);
 });
@@ -386,7 +393,7 @@ test('CLI rejects symbolic-link manifest and output paths', () => {
   }
 });
 
-test('full handoff removes only the five CAS targets and is idempotent', () => {
+function runFullHandoff(predecessorPhase) {
   const directory = mkdtempSync(join(tmpdir(), 'combo-reset-roll-forward-state-'));
   try {
     const bin = join(directory, 'bin');
@@ -571,6 +578,36 @@ set -euo pipefail
         })
         .join('\n')}\n`,
     );
+    const cleanupPlanPath = join(activationDirectory, 'cleanup-plan.json');
+    const supersededSourceSha = '0'.repeat(40);
+    const supersededService = `release-${supersededSourceSha.slice(0, 12)}-api`;
+    const cleanupTargets = [
+      { kind: 'pvc', name: 'data-postgres-0', uid: 'uid-legacy-postgres-pvc' },
+      { kind: 'service', name: supersededService, uid: 'uid-superseded-api-service' },
+    ];
+    const validCleanupPlan = {
+      schemaVersion: 1,
+      purpose: 'superseded-release-cleanup',
+      environment: 'production',
+      namespace: 'combo',
+      sourceSha: oldSourceSha,
+      releaseId: oldReleaseId,
+      manifestDigest: oldManifestDigest,
+      targets: cleanupTargets,
+      targetCount: cleanupTargets.length,
+      capturedStorage: [
+        {
+          claim: 'data-postgres-0',
+          claimUid: 'uid-legacy-postgres-pvc',
+          path: '/srv/combo/legacy-postgres',
+          volume: 'pv-legacy-postgres',
+          volumeUid: 'uid-legacy-postgres-volume',
+        },
+      ],
+      plannedAt: '2026-07-29T00:01:30.000Z',
+    };
+    writeJson(cleanupPlanPath, validCleanupPlan);
+    const cleanupPlanDigest = sha256(readFileSync(cleanupPlanPath));
 
     const webName = `release-${oldSourceSha.slice(0, 12)}-web`;
     const pendingPath = join(productionEvidence, 'pending.json');
@@ -584,10 +621,10 @@ set -euo pipefail
       foundationResetEvidenceDigest: resetEvidenceDigest,
       schemaStructureProofDigest: schemaDigest,
       webService: webName,
-      foundationCreated: true,
-      phase: 'post-cut',
+      foundationCreated: predecessorPhase === 'post-cut',
+      phase: predecessorPhase,
       trafficCutAt: '2026-07-29T00:02:00.000Z',
-      cleanupPlanDigest: null,
+      cleanupPlanDigest: predecessorPhase === 'finalizing' ? cleanupPlanDigest : null,
     });
     const originalPending = readFileSync(pendingPath);
 
@@ -607,6 +644,45 @@ set -euo pipefail
       formalNginxSha256: sha256(readFileSync(formalNginx)),
       webService: webName,
     });
+    const trafficCheckpointRoot = join(host, 'traffic-checkpoints');
+    const hostCheckpointDirectory = join(trafficCheckpointRoot, 'production', oldReleaseId);
+    mkdirSync(hostCheckpointDirectory, { recursive: true });
+    const hostCheckpointPath = join(hostCheckpointDirectory, 'checkpoint.json');
+    const activatedHostCheckpoint = {
+      schemaVersion: 1,
+      status: 'activated',
+      environment: 'production',
+      sourceSha: oldSourceSha,
+      releaseId: oldReleaseId,
+      manifestDigest: oldManifestDigest,
+      candidate: {
+        webService: webName,
+        canaryNginxSha256: sha256(readFileSync(canaryNginx)),
+        formalNginxSha256: sha256(readFileSync(formalNginx)),
+      },
+      previous: {},
+      initialFormalAllowlist: false,
+      armedAt: '2026-07-29T00:00:30.000Z',
+      activatedAt: '2026-07-29T00:01:00.000Z',
+    };
+    const activationEvidencePath = join(activationDirectory, 'activation-evidence.json');
+    const activationEvidence = JSON.parse(readFileSync(activationEvidencePath, 'utf8'));
+    const bindHostCheckpoint = (checkpoint) => {
+      writeJson(hostCheckpointPath, checkpoint);
+      activationEvidence.rollbackCheckpointId = oldReleaseId;
+      activationEvidence.rollbackCheckpointDigest = sha256(readFileSync(hostCheckpointPath));
+      writeJson(activationEvidencePath, activationEvidence);
+      writeFileSync(
+        join(activationDirectory, 'SHA256SUMS'),
+        `${activationFiles
+          .map((name) => {
+            const value = readFileSync(join(activationDirectory, name));
+            return `${sha256(value).slice('sha256:'.length)}  ${name}`;
+          })
+          .join('\n')}\n`,
+      );
+    };
+    bindHostCheckpoint(activatedHostCheckpoint);
 
     const resourcePath = (kind, name) => join(cluster, `${kind}--${name}.json`);
     writeJson(
@@ -638,6 +714,28 @@ set -euo pipefail
         },
         ports: [{ name: 'http', port: 80, targetPort: 80, protocol: 'TCP' }],
       },
+    });
+    writeJson(resourcePath('service', supersededService), {
+      apiVersion: 'v1',
+      kind: 'Service',
+      metadata: {
+        namespace: 'combo',
+        name: supersededService,
+        uid: 'uid-superseded-api-service',
+        resourceVersion: 'rv-superseded-api-service',
+      },
+      spec: { type: 'ClusterIP' },
+    });
+    writeJson(resourcePath('pvc', 'data-postgres-0'), {
+      apiVersion: 'v1',
+      kind: 'PersistentVolumeClaim',
+      metadata: {
+        namespace: 'combo',
+        name: 'data-postgres-0',
+        uid: 'uid-legacy-postgres-pvc',
+        resourceVersion: 'rv-legacy-postgres-pvc',
+      },
+      spec: {},
     });
     for (const role of ['api', 'runtime', 'worker']) {
       const name = `release-${oldSourceSha.slice(0, 12)}-${role}`;
@@ -683,6 +781,7 @@ set -euo pipefail
       COMBO_FAKE_CLUSTER: cluster,
       COMBO_RELEASE_EVIDENCE_ROOT: evidenceRoot,
       COMBO_RELEASE_TRAFFIC_STATE_ROOT: trafficRoot,
+      COMBO_RELEASE_TRAFFIC_CHECKPOINT_ROOT: trafficCheckpointRoot,
       COMBO_MUTATION_LOCK: join(directory, 'mutation.lock'),
       COMBO_RELEASE_TRAFFIC_LOCK: join(directory, 'traffic.lock'),
       COMBO_RELEASE_WEB_FORWARD_ENV: forwardEnvironment,
@@ -770,6 +869,116 @@ set -euo pipefail
     rmSync(currentCheckpoint);
     rmSync(resourcePath('job', `release-${oldSourceSha.slice(0, 12)}-migrate`));
 
+    if (predecessorPhase === 'finalizing') {
+      const runRejectedCleanupPlan = (candidate) => {
+        writeJson(cleanupPlanPath, candidate);
+        const candidatePending = JSON.parse(originalPending.toString('utf8'));
+        candidatePending.cleanupPlanDigest = sha256(readFileSync(cleanupPlanPath));
+        writeJson(pendingPath, candidatePending);
+        const result = spawnSync('bash', [script, ...args], {
+          cwd: scriptDirectory,
+          encoding: 'utf8',
+          env: environment,
+        });
+        assert.equal(result.status, 1);
+        assert.match(result.stderr, /finalizing predecessor cleanup plan identity is invalid/);
+      };
+      const malformedCleanupPlans = [
+        { ...validCleanupPlan, extra: true },
+        { ...validCleanupPlan, targetCount: validCleanupPlan.targetCount + 1 },
+        { ...validCleanupPlan, targets: null, targetCount: 0, capturedStorage: null },
+        { ...validCleanupPlan, targets: {}, targetCount: 0, capturedStorage: {} },
+        {
+          ...validCleanupPlan,
+          targets: [cleanupTargets[0], cleanupTargets[0]],
+          targetCount: 2,
+        },
+        {
+          ...validCleanupPlan,
+          targets: [
+            ...cleanupTargets,
+            {
+              kind: 'deployment',
+              name: `release-${oldSourceSha.slice(0, 12)}-api`,
+              uid: 'uid-predecessor-api',
+            },
+          ],
+          targetCount: cleanupTargets.length + 1,
+        },
+        {
+          ...validCleanupPlan,
+          targets: [{ ...cleanupTargets[0], uid: 'unsafe uid' }, cleanupTargets[1]],
+        },
+        {
+          ...validCleanupPlan,
+          capturedStorage: [{ ...validCleanupPlan.capturedStorage[0], path: 'relative/path' }],
+        },
+      ];
+      for (const malformedCleanupPlan of malformedCleanupPlans) {
+        runRejectedCleanupPlan(malformedCleanupPlan);
+      }
+      writeJson(cleanupPlanPath, validCleanupPlan);
+      writeFileSync(pendingPath, originalPending);
+
+      bindHostCheckpoint({
+        ...activatedHostCheckpoint,
+        status: 'finalizing',
+        cleanupPlanDigest,
+        finalizingAt: '2026-07-29T00:02:30.000Z',
+      });
+      const rejectedHostFinalizing = spawnSync('bash', [script, ...args], {
+        cwd: scriptDirectory,
+        encoding: 'utf8',
+        env: environment,
+      });
+      assert.equal(rejectedHostFinalizing.status, 1);
+      assert.match(
+        rejectedHostFinalizing.stderr,
+        /host checkpoint is not the untouched activated state/,
+      );
+      bindHostCheckpoint(activatedHostCheckpoint);
+
+      const cleanupEvidencePath = join(activationDirectory, 'cleanup-evidence.json');
+      writeJson(cleanupEvidencePath, { status: 'partial' });
+      const rejectedCleanupEvidence = spawnSync('bash', [script, ...args], {
+        cwd: scriptDirectory,
+        encoding: 'utf8',
+        env: environment,
+      });
+      assert.equal(rejectedCleanupEvidence.status, 1);
+      assert.match(rejectedCleanupEvidence.stderr, /cleanup or host sealing already started/);
+      rmSync(cleanupEvidencePath);
+
+      const rollbackJournalPath = join(hostCheckpointDirectory, 'rollback-in-progress.json');
+      writeJson(rollbackJournalPath, { status: 'in-progress' });
+      const rejectedRollbackJournal = spawnSync('bash', [script, ...args], {
+        cwd: scriptDirectory,
+        encoding: 'utf8',
+        env: environment,
+      });
+      assert.equal(rejectedRollbackJournal.status, 1);
+      assert.match(rejectedRollbackJournal.stderr, /in-progress host transaction/);
+      rmSync(rollbackJournalPath);
+
+      const cleanupTargetPath = resourcePath('service', supersededService);
+      const originalCleanupTarget = readFileSync(cleanupTargetPath);
+      writeJson(cleanupTargetPath, {
+        ...JSON.parse(originalCleanupTarget.toString('utf8')),
+        metadata: {
+          ...JSON.parse(originalCleanupTarget.toString('utf8')).metadata,
+          uid: 'uid-replaced-service',
+        },
+      });
+      const rejectedCleanupTargetDrift = spawnSync('bash', [script, ...args], {
+        cwd: scriptDirectory,
+        encoding: 'utf8',
+        env: environment,
+      });
+      assert.equal(rejectedCleanupTargetDrift.status, 1);
+      assert.match(rejectedCleanupTargetDrift.stderr, /cleanup target changed/);
+      writeFileSync(cleanupTargetPath, originalCleanupTarget);
+    }
+
     writeFileSync(environment.COMBO_FAKE_BUMP_DELETE_RV_ONCE, '1\n');
     const interrupted = spawnSync('bash', [script, ...args], {
       cwd: scriptDirectory,
@@ -782,6 +991,25 @@ set -euo pipefail
     assert.equal(existsSync(pendingPath), true);
     assert.equal(existsSync(resourcePath('deployment', webName)), true);
     assert.equal(existsSync(resourcePath('service', webName)), true);
+
+    if (predecessorPhase === 'finalizing') {
+      const originalCleanupPlan = readFileSync(cleanupPlanPath);
+      writeJson(cleanupPlanPath, {
+        ...JSON.parse(originalCleanupPlan),
+        plannedAt: '2026-07-29T00:01:31.000Z',
+      });
+      const rejectedCleanupPlanDrift = spawnSync('bash', [script, ...args], {
+        cwd: scriptDirectory,
+        encoding: 'utf8',
+        env: environment,
+      });
+      assert.equal(rejectedCleanupPlanDrift.status, 1);
+      assert.match(
+        rejectedCleanupPlanDrift.stderr,
+        /finalizing predecessor cleanup plan changed after it was bound/,
+      );
+      writeFileSync(cleanupPlanPath, originalCleanupPlan);
+    }
 
     const runtimePath = resourcePath('deployment', `release-${oldSourceSha.slice(0, 12)}-runtime`);
     const originalRuntime = readFileSync(runtimePath, 'utf8');
@@ -886,4 +1114,9 @@ set -euo pipefail
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-});
+}
+
+for (const predecessorPhase of ['post-cut', 'finalizing']) {
+  test(`full ${predecessorPhase} handoff removes only the five CAS targets and is idempotent`, () =>
+    runFullHandoff(predecessorPhase));
+}

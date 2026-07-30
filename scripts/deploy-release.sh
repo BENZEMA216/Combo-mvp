@@ -4243,6 +4243,9 @@ validate_rollback_cleanup_plan() {
       and .manifestDigest == $manifestDigest
       and (.foundationCreated | type == "boolean")
       and (.plannedAt | type == "string" and length > 0)
+      and (.targets | type == "array")
+      and (.capturedStorage | type == "array")
+      and (.targetCount | type == "number" and floor == . and . >= 0)
       and .targetCount == (.targets | length)
       and ([.targets[] | [.kind, .name]] | unique | length) == .targetCount
       and all(.targets[];
@@ -4292,6 +4295,8 @@ validate_rollback_cleanup_plan() {
         and (.volume | type == "string" and length > 0)
         and (.volumeUid | type == "string" and length > 0)
         and (.path | type == "string" and startswith("/")))
+      and ([.capturedStorage[].claim] | unique | length)
+        == (.capturedStorage | length)
       and (.capturedStorage | length)
         == ([.targets[] | select(.kind == "pvc")] | length)
       and ([.targets[] | select(.kind == "pvc") | [.name, .uid]] | sort)
@@ -4793,6 +4798,8 @@ validate_cleanup_plan() {
       and .releaseId == $releaseId
       and .manifestDigest == $manifestDigest
       and (.plannedAt | type == "string" and length > 0)
+      and (.targets | type == "array")
+      and (.capturedStorage | type == "array")
       and (.targetCount | type == "number" and floor == . and . >= 0)
       and .targetCount == (.targets | length)
       and ([.targets[] | [.kind, .name]] | unique | length) == .targetCount

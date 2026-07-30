@@ -57,15 +57,15 @@ function makeRoot() {
   return root;
 }
 
-function oldPending() {
+function oldPending(phase = 'post-cut', foundationCreated = phase !== 'finalizing') {
   return {
-    cleanupPlanDigest: null,
+    cleanupPlanDigest: phase === 'finalizing' ? `sha256:${'f'.repeat(64)}` : null,
     environment: 'production',
-    foundationCreated: true,
+    foundationCreated,
     foundationResetEvidenceDigest: RESET_DIGEST,
     manifestDigest: OLD_MANIFEST,
     namespace: 'combo',
-    phase: 'post-cut',
+    phase,
     releaseId: `release-${OLD_SOURCE}`,
     schemaVersion: 3,
     schemaStructureProofDigest: SCHEMA_DIGEST,
@@ -82,13 +82,15 @@ function buildJournal(
     manifestDigest = MANIFEST_A,
     phase = 'completed',
     absentJobs = false,
+    oldPhase = 'post-cut',
+    oldFoundationCreated = oldPhase !== 'finalizing',
   } = {},
 ) {
   const id = requestId(sourceSha, manifestDigest);
   const stem = id.slice('sha256:'.length);
   const stateRoot = join(root, 'reset-roll-forwards', 'production');
   const prefix = join(stateRoot, stem);
-  const archiveValue = oldPending();
+  const archiveValue = oldPending(oldPhase, oldFoundationCreated);
   const archiveBuffer = jsonBuffer(archiveValue);
   const plan = {
     schemaVersion: 1,
@@ -104,7 +106,8 @@ function buildJournal(
       sourceSha: OLD_SOURCE,
       releaseId: `release-${OLD_SOURCE}`,
       manifestDigest: OLD_MANIFEST,
-      phase: 'post-cut',
+      phase: oldPhase,
+      foundationCreated: archiveValue.foundationCreated,
       foundationResetEvidenceDigest: RESET_DIGEST,
       schemaStructureProofDigest: SCHEMA_DIGEST,
       digest: digest(archiveBuffer),
@@ -404,6 +407,61 @@ test('the current prepare operation may resume an unfinished journal', () => {
     buildJournal(root, { phase: 'writers-removed' });
     const result = audit(root, SOURCE_A, MANIFEST_A, { mode: 'prepare' });
     assert.equal(result.currentState, 'incomplete');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a finalizing clean-slate predecessor remains a valid roll-forward authority', () => {
+  const root = makeRoot();
+  try {
+    buildJournal(root, { phase: 'completed', oldPhase: 'finalizing' });
+    const result = audit(root, SOURCE_A, MANIFEST_A, { mode: 'prepare' });
+    assert.equal(result.currentState, 'completed');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('both boundary phases accept either immutable foundation-created value', () => {
+  for (const oldPhase of ['post-cut', 'finalizing']) {
+    for (const oldFoundationCreated of [false, true]) {
+      const root = makeRoot();
+      try {
+        buildJournal(root, {
+          phase: 'completed',
+          oldPhase,
+          oldFoundationCreated,
+        });
+        const result = audit(root, SOURCE_A, MANIFEST_A, { mode: 'prepare' });
+        assert.equal(result.currentState, 'completed');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test('the pending foundation-created value is explicit immutable journal authority', () => {
+  const root = makeRoot();
+  try {
+    const journal = buildJournal(root, {
+      phase: 'writers-removed',
+      oldPhase: 'finalizing',
+      oldFoundationCreated: false,
+    });
+    const archive = JSON.parse(readFileSync(journal.archivePath, 'utf8'));
+    assert.equal(archive.foundationCreated, false);
+    const plan = JSON.parse(readFileSync(journal.planPath, 'utf8'));
+    plan.oldPending.foundationCreated = true;
+    writeJson(journal.planPath, plan);
+    const checkpoint = JSON.parse(readFileSync(journal.checkpointPath, 'utf8'));
+    checkpoint.planDigest = digest(readFileSync(journal.planPath));
+    writeJson(journal.checkpointPath, checkpoint);
+    assert.throws(
+      () => audit(root, SOURCE_A, MANIFEST_A, { mode: 'prepare' }),
+      /pending archive .* invalid contract/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

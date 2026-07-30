@@ -157,6 +157,7 @@ function validatePlan(path, stem) {
     'releaseId',
     'manifestDigest',
     'phase',
+    'foundationCreated',
     'foundationResetEvidenceDigest',
     'schemaStructureProofDigest',
     'digest',
@@ -168,7 +169,8 @@ function validatePlan(path, stem) {
     old.releaseId !== `release-${old.sourceSha}` ||
     old.sourceSha === plan.newSourceSha ||
     !DIGEST_RE.test(old.manifestDigest) ||
-    old.phase !== 'post-cut' ||
+    !['post-cut', 'finalizing'].includes(old.phase) ||
+    typeof old.foundationCreated !== 'boolean' ||
     !DIGEST_RE.test(old.foundationResetEvidenceDigest) ||
     !DIGEST_RE.test(old.schemaStructureProofDigest) ||
     !DIGEST_RE.test(old.digest)
@@ -431,12 +433,17 @@ function validatePendingArchive(path, plan, stem) {
     pending.sourceSha !== plan.oldPending.sourceSha ||
     pending.releaseId !== plan.oldPending.releaseId ||
     pending.manifestDigest !== plan.oldPending.manifestDigest ||
-    pending.phase !== 'post-cut' ||
+    pending.phase !== plan.oldPending.phase ||
+    pending.foundationCreated !== plan.oldPending.foundationCreated ||
     pending.foundationResetEvidenceDigest !== plan.oldPending.foundationResetEvidenceDigest ||
     pending.schemaStructureProofDigest !== plan.oldPending.schemaStructureProofDigest ||
     pending.webService !== `release-${plan.oldPending.sourceSha.slice(0, 12)}-web` ||
-    pending.foundationCreated !== true ||
-    !(pending.cleanupPlanDigest === null || DIGEST_RE.test(pending.cleanupPlanDigest)) ||
+    typeof pending.foundationCreated !== 'boolean' ||
+    !(
+      (pending.phase === 'post-cut' &&
+        (pending.cleanupPlanDigest === null || DIGEST_RE.test(pending.cleanupPlanDigest))) ||
+      (pending.phase === 'finalizing' && DIGEST_RE.test(pending.cleanupPlanDigest))
+    ) ||
     !hasTimestamp(pending.trafficCutAt)
   ) {
     fail(`roll-forward pending archive ${stem} has an invalid contract`);

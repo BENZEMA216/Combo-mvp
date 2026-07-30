@@ -838,7 +838,8 @@ jobs:
             else
               [[ "$foundation_reset" == false ]]
               [[ "$foundation_policy" == reuse-existing-v1 ]]
-              [[ "$(jq -er '.phase' "$pending_checkpoint")" == post-cut ]]
+              pending_phase=$(jq -er '.phase' "$pending_checkpoint")
+              [[ "$pending_phase" == post-cut || "$pending_phase" == finalizing ]]
               [[ "$pending_reset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
               [[ -z "$existing_bundle" ]]
               [[ ! -e "$reset_output" && ! -L "$reset_output" ]]
