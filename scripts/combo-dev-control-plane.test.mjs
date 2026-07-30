@@ -3208,6 +3208,11 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     'Test must fail when the downloaded archive differs from its GitHub artifact digest',
   );
   assert.match(workflow, /needs: authorize/);
+  assert.match(
+    workflow,
+    /deploy:[\s\S]*needs: authorize[\s\S]*if: always\(\) && needs\.authorize\.result == 'success'/,
+    'Test deployment must run after an authorized source even when its optional branch-build ancestor was skipped',
+  );
   assert.match(workflow, /environment: combo-dev/);
   assert.match(workflow, /sha256sum -c metadata\/artifact-files\.sha256/);
   assert.match(workflow, /cmp -s "\$expected" "\$actual"/);

@@ -497,6 +497,7 @@ jobs:
   deploy:
     name: deploy the trusted release to Test
     needs: authorize
+    if: always() && needs.authorize.result == 'success'
     concurrency:
       group: cd-tecent2
       queue: max
