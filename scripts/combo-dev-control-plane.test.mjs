@@ -3159,6 +3159,11 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   );
   assert.match(
     workflow,
+    /--arg title "Test branch deployment request \$\{SOURCE_CI_RUN_ID\}"[\s\S]*\.name == \$title[\s\S]*\.display_title == \$title[\s\S]*\.event == "workflow_dispatch"/,
+  );
+  assert.doesNotMatch(workflow, /\.name == "Test deployment"/);
+  assert.match(
+    workflow,
     /artifact_release_job='build the exact branch Test artifact \/ assemble immutable release artifact'/,
   );
   assert.match(workflow, /image_job_prefix='build the exact branch Test artifact \/ '/);
