@@ -1116,7 +1116,9 @@ test('Preview stays paused without Test and waits for the exact automatic main T
   );
   assert.match(enabledPolicy, /main advanced before the exact automatic Test completed/);
   assert.match(enabledPolicy, /for _ in \$\(seq 1 900\); do/);
-  assert.match(enabledPolicy, /\.name == "Test deployment"/);
+  assert.match(enabledPolicy, /\.name == \$title/);
+  assert.equal((preview.match(/\.name == \$title/g) ?? []).length, 3);
+  assert.doesNotMatch(preview, /\.name == "Test deployment"/);
   assert.match(enabledPolicy, /\.display_title == \$title/);
   assert.match(enabledPolicy, /\.path == "\.github\/workflows\/combo-dev\.yml"/);
   assert.match(enabledPolicy, /\.event == "workflow_run"/);
