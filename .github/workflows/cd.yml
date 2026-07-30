@@ -973,17 +973,34 @@ jobs:
             deploy_args+=(--reset-roll-forward-evidence "$roll_forward_evidence")
           fi
           if [[ "$foundation_reset" == true ]]; then
-            bash "$work/scripts/reset-release-foundation.sh" \
-              --operation reset \
-              --environment production \
-              --manifest "$work/metadata/release.json" \
-              --manifest-digest "$manifest_digest" \
-              --foundation-yaml "$work/rendered/production/foundation.yaml" \
-              --authority-digest "$authority_digest" \
-              --request-id "$reset_request_id" \
-              --policy established-clean-slate-v1 \
-              --output "$reset_output"
-            cmp -s "$reset_output" "$foundation_reset_evidence"
+            if [[ -e "$foundation_reset_evidence" ||
+              -L "$foundation_reset_evidence" ]]; then
+              [[ -f "$foundation_reset_evidence" &&
+                ! -L "$foundation_reset_evidence" ]]
+              node "$work/scripts/foundation-reset-journal.mjs" audit \
+                --evidence-root "$HOME/data/combo-releases/goal-a" \
+                --environment production \
+                --source-sha "$revision" \
+                --manifest-digest "$manifest_digest" \
+                --mode deploy-reset \
+                --evidence "$foundation_reset_evidence" >/dev/null
+              if [[ -e "$reset_output" || -L "$reset_output" ]]; then
+                [[ -f "$reset_output" && ! -L "$reset_output" ]]
+                cmp -s "$reset_output" "$foundation_reset_evidence"
+              fi
+            else
+              bash "$work/scripts/reset-release-foundation.sh" \
+                --operation reset \
+                --environment production \
+                --manifest "$work/metadata/release.json" \
+                --manifest-digest "$manifest_digest" \
+                --foundation-yaml "$work/rendered/production/foundation.yaml" \
+                --authority-digest "$authority_digest" \
+                --request-id "$reset_request_id" \
+                --policy established-clean-slate-v1 \
+                --output "$reset_output"
+              cmp -s "$reset_output" "$foundation_reset_evidence"
+            fi
           else
             reuse_admission_args=()
             if [[ -n "$roll_forward_evidence" ]]; then

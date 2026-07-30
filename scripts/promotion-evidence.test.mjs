@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -1483,6 +1483,14 @@ test('release workflows bundle and consume only the controlled admission impleme
     production.slice(productionCompletedReleaseCheck, productionFoundationReset),
     /activation_directory="\$\{release_directory\}\.activation"[\s\S]*pending_checkpoint="\$HOME\/data\/combo-releases\/goal-a\/production\/pending\.json"[\s\S]*\.schemaVersion == 3[\s\S]*pending_reset_digest[\s\S]*sha256sum --quiet -c SHA256SUMS[\s\S]*foundation-reset-evidence\.json/,
   );
+  assert.match(
+    production,
+    /if \[\[ -e "\$foundation_reset_evidence" \|\|[\s\S]*foundation-reset-journal\.mjs" audit[\s\S]*--mode deploy-reset[\s\S]*--evidence "\$foundation_reset_evidence"[\s\S]*else[\s\S]*bash "\$work\/scripts\/reset-release-foundation\.sh"/,
+  );
+  assert.match(
+    production,
+    /if \[\[ -e "\$reset_output" \|\| -L "\$reset_output" \]\]; then[\s\S]*cmp -s "\$reset_output" "\$foundation_reset_evidence"/,
+  );
   const previewEvidenceStart = production.indexOf(
     'Validate Preview evidence and its source main CI run',
   );
@@ -1610,4 +1618,68 @@ test('release workflows bundle and consume only the controlled admission impleme
     false,
   );
   assert.doesNotMatch(`${preview}\n${production}`, /evidence_json/);
+});
+
+test('completed Production reset evidence is audited and never invokes reset again', () => {
+  const production = readFileSync(new URL('../.github/workflows/cd.yml', import.meta.url), 'utf8');
+  const startMarker =
+    '          if [[ "$foundation_reset" == true ]]; then\n' +
+    '            if [[ -e "$foundation_reset_evidence" ||';
+  const start = production.indexOf(startMarker);
+  const end = production.indexOf('          else\n            reuse_admission_args=()', start);
+  assert.ok(start >= 0 && end > start);
+  const decision = `${production.slice(start, end)}          fi\n`;
+
+  const directory = mkdtempSync(join(tmpdir(), 'production-reset-workflow-decision-'));
+  try {
+    const harness = join(directory, 'harness.sh');
+    const evidence = join(directory, 'foundation-reset-evidence.json');
+    const resetOutput = evidence;
+    const log = join(directory, 'commands.log');
+    const work = join(directory, 'work');
+    const sourceSha = 'a'.repeat(40);
+    const manifestDigest = digest('b');
+    writeFileSync(
+      harness,
+      `#!/usr/bin/env bash
+set -euo pipefail
+foundation_reset=true
+foundation_reset_evidence=${JSON.stringify(evidence)}
+reset_output=${JSON.stringify(resetOutput)}
+work=${JSON.stringify(work)}
+revision=${JSON.stringify(sourceSha)}
+manifest_digest=${JSON.stringify(manifestDigest)}
+authority_digest=${JSON.stringify(manifestDigest)}
+reset_request_id=${JSON.stringify(digest('c'))}
+command_log=${JSON.stringify(log)}
+node() {
+  printf 'node %s\\n' "$*" >>"$command_log"
+}
+bash() {
+  printf 'bash %s\\n' "$*" >>"$command_log"
+  printf '{"status":"passed"}\\n' >"$reset_output"
+}
+${decision}
+`,
+    );
+
+    writeFileSync(evidence, '{"status":"passed"}\n');
+    const retry = spawnSync('bash', [harness], { encoding: 'utf8' });
+    assert.equal(retry.status, 0, retry.stderr);
+    const retryLog = readFileSync(log, 'utf8');
+    assert.match(retryLog, /foundation-reset-journal\.mjs audit/);
+    assert.match(retryLog, /--mode deploy-reset/);
+    assert.match(retryLog, new RegExp(`--source-sha ${sourceSha}`));
+    assert.match(retryLog, new RegExp(`--manifest-digest ${manifestDigest}`));
+    assert.doesNotMatch(retryLog, /reset-release-foundation\.sh/);
+
+    rmSync(evidence);
+    rmSync(log);
+    const first = spawnSync('bash', [harness], { encoding: 'utf8' });
+    assert.equal(first.status, 0, first.stderr);
+    assert.match(readFileSync(log, 'utf8'), /reset-release-foundation\.sh/);
+    assert.equal(readFileSync(resetOutput, 'utf8'), '{"status":"passed"}\n');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

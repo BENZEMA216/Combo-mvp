@@ -591,6 +591,75 @@ test('exact unfinished current reset can retry but cannot deploy or reuse', () =
   }
 });
 
+test('exact current plan-only crash can retry but no other operation can consume it', () => {
+  const root = createRoot();
+  try {
+    const current = createJournal(root, {
+      sourceCharacter: '7',
+      manifestCharacter: '8',
+      completed: false,
+      phase: 'planned',
+    });
+    rmSync(current.checkpointPath);
+
+    const retry = audit(root, {
+      mode: 'reset',
+      sourceSha: current.plan.sourceSha,
+      manifestDigest: current.plan.manifestDigest,
+    });
+    assert.equal(retry.authorization, 'exact-reset-retry');
+    assert.equal(retry.currentRetry, true);
+    assert.equal(retry.chainHeadRequestId, current.plan.requestId);
+
+    assert.throws(
+      () =>
+        audit(root, {
+          mode: 'reset',
+          sourceSha: '9'.repeat(40),
+          manifestDigest: digest('0'),
+        }),
+      /completed unconsumed chain head|unfinished foundation reset journal/,
+    );
+    assert.throws(() => audit(root, { mode: 'reuse' }), /unfinished foundation reset journal/);
+    assert.throws(
+      () =>
+        audit(root, {
+          mode: 'deploy-reset',
+          sourceSha: current.plan.sourceSha,
+          manifestDigest: current.plan.manifestDigest,
+          evidence: current.planPath,
+        }),
+      /completed current reset journal/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('plan-only recovery rejects ready or evidence state without a checkpoint', () => {
+  const root = createRoot();
+  try {
+    const current = createJournal(root, {
+      sourceCharacter: '7',
+      manifestCharacter: '8',
+      completed: false,
+      phase: 'foundation-ready',
+    });
+    rmSync(current.checkpointPath);
+    assert.throws(
+      () =>
+        audit(root, {
+          mode: 'reset',
+          sourceSha: current.plan.sourceSha,
+          manifestDigest: current.plan.manifestDigest,
+        }),
+      /state without a checkpoint/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('forked successor plans are rejected', () => {
   const root = createRoot();
   try {
