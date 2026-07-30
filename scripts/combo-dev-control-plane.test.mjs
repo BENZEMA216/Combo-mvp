@@ -754,8 +754,25 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   assert.ok(evidence > 0 && cleanup > evidence);
   assert.match(
     workflow,
-    /name: combo-test-evidence-\$\{\{ needs\.authorize\.outputs\.revision \}\}-\$\{\{ github\.run_attempt \}\}/,
+    /main-ci\)[\s\S]*evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"[\s\S]*branch-build\)[\s\S]*evidence_artifact_name="combo-branch-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"/,
   );
+  assert.match(workflow, /name: \$\{\{ steps\.evidence\.outputs\.artifact_name \}\}/);
+  assert.match(workflow, /--arg sourceBranch "\$SOURCE_BRANCH"/);
+  assert.match(workflow, /--arg sourceEvent "\$SOURCE_EVENT"/);
+  assert.match(workflow, /--arg sourceWorkflow "\$SOURCE_WORKFLOW"/);
+  assert.match(workflow, /sourceWorkflow: \$sourceWorkflow/);
+  assert.match(workflow, /sourceEvent: \$sourceEvent/);
+  assert.match(workflow, /sourceBranch: \$sourceBranch/);
+  assert.match(workflow, /sourceConclusion: \$sourceConclusion/);
+  assert.match(workflow, /controllerSha: \$controllerSha/);
+  assert.match(workflow, /sourceMode: \$sourceMode/);
+  assert.match(
+    workflow,
+    /main-ci\)[\s\S]*source_conclusion=success[\s\S]*branch-build\)[\s\S]*source_conclusion=release-job-success/,
+  );
+  assert.match(workflow, /\.sourceConclusion == \$sourceConclusion/);
+  assert.match(workflow, /\.controllerSha == \$controllerSha/);
+  assert.match(workflow, /\.sourceMode == \$sourceMode/);
   assert.match(
     workflow,
     /--revision "\$revision"[\s\\\n]*--workflow-run-id "\$workflow_run_id"[\s\\\n]*--workflow-run-attempt "\$workflow_run_attempt"/,
@@ -816,7 +833,7 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   );
 });
 
-test('Test host gate remains credential-free and delegates product acceptance to the artifact', () => {
+test('Test host gate remains credential-free and leaves product acceptance to trusted workflow control', () => {
   const deploy = text('scripts/combo-dev-deploy.sh');
   const smoke = text('scripts/combo-dev-smoke.sh');
   const workflow = text('.github/workflows/combo-dev.yml');
@@ -842,8 +859,9 @@ test('Test host gate remains credential-free and delegates product acceptance to
 
 test('Test runs and validates the exact release artifact six-area browser acceptance', () => {
   const workflow = text('.github/workflows/combo-dev.yml');
-  const checkout = workflow.indexOf('Check out the exact release source');
+  const checkout = workflow.indexOf('Check out the trusted main Test controller');
   const setupNode = workflow.indexOf('Use Node 24 for release artifact validation');
+  const installDependencies = workflow.indexOf('Install trusted Test control dependencies');
   const download = workflow.indexOf('Download the immutable release artifact');
   const deploy = workflow.indexOf('Upload the fixed bundle and invoke the root-owned dispatcher');
   const live = workflow.indexOf('Run the exact artifact six-area Test browser acceptance');
@@ -857,7 +875,8 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.ok(
     checkout > 0 &&
       setupNode > checkout &&
-      download > setupNode &&
+      installDependencies > setupNode &&
+      download > installDependencies &&
       deploy > download &&
       live > deploy &&
       failureUpload > live &&
@@ -873,19 +892,38 @@ test('Test runs and validates the exact release artifact six-area browser accept
     /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020[\s\S]*node-version: 24/,
   );
   assert.match(workflow.slice(workflow.indexOf('\n  deploy:'), checkout), /timeout-minutes: 300/);
+  const deployJob = workflow.slice(workflow.indexOf('\n  deploy:'));
+  assert.match(
+    deployJob,
+    /Check out the trusted main Test controller[\s\S]*ref: \$\{\{ needs\.authorize\.outputs\.controller_sha \}\}/,
+  );
+  assert.doesNotMatch(
+    deployJob.slice(0, download),
+    /ref: \$\{\{ needs\.(?:select|authorize)\.outputs\.revision \}\}/,
+  );
+  assert.match(deployJob, /pnpm install --frozen-lockfile --ignore-scripts/);
+  assert.match(deployJob, /node scripts\/release-manifest\.mjs verify/);
+  assert.match(deployJob, /node scripts\/web-asset-manifest\.mjs verify/);
 
   const liveStep = workflow.slice(live, failureUpload);
-  assert.match(liveStep, /runner="\$RELEASE_ROOT\/acceptance\/live-browser-acceptance\.mjs"/);
-  assert.match(liveStep, /playwright="\$RELEASE_ROOT\/acceptance\/playwright-core\.tgz"/);
-  assert.match(liveStep, /validator="\$RELEASE_ROOT\/scripts\/promotion-evidence\.mjs"/);
+  assert.match(liveStep, /runner=scripts\/goal-b-test-acceptance\.mjs/);
+  assert.match(liveStep, /resend_reader=scripts\/resend-sent-email\.mjs/);
+  assert.match(liveStep, /validator=scripts\/promotion-evidence\.mjs/);
+  assert.match(liveStep, /playwright_dir=scripts\/node_modules\/playwright-core/);
+  assert.match(liveStep, /trusted_acceptance="\$RUNNER_TEMP\/trusted-test-acceptance"/);
   assert.match(
     liveStep,
     /ACCEPTANCE_RESEND_API_KEY: \$\{\{ secrets\.ACCEPTANCE_RESEND_API_KEY \}\}/,
   );
   assert.match(
     liveStep,
-    /tar -C "\$RELEASE_ROOT" -czf "\$archive"[\s\\\n]*acceptance\/live-browser-acceptance\.mjs[\s\\\n]*acceptance\/playwright-core\.tgz/,
+    /install -m 0600[\s\\\n]*"\$runner"[\s\\\n]*"\$trusted_acceptance\/acceptance\/live-browser-acceptance\.mjs"/,
   );
+  assert.match(
+    liveStep,
+    /tar -C "\$trusted_acceptance" -czf "\$archive"[\s\\\n]*acceptance\/live-browser-acceptance\.mjs[\s\\\n]*acceptance\/playwright-core\.tgz[\s\\\n]*acceptance\/resend-sent-email\.mjs/,
+  );
+  assert.doesNotMatch(liveStep, /\$RELEASE_ROOT\/(?:acceptance|scripts)\//);
   assert.match(liveStep, /--environment test/);
   assert.match(liveStep, /--web-origin http:\/\/127\.0\.0\.1:18080/);
   assert.match(liveStep, /--output "\$output"/);
@@ -978,6 +1016,8 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.match(evidenceStep, /test-promotion-identity\.json/);
   assert.match(evidenceStep, /liveBrowserAcceptanceDigest/);
   assert.match(evidenceStep, /testIdentityDigest/);
+  assert.match(evidenceStep, /controllerSha: \$controllerSha/);
+  assert.match(evidenceStep, /sourceMode: \$sourceMode/);
   assert.match(evidenceStep, /validate-live-browser/);
   assert.match(evidenceStep, /validate-identity/);
   assert.match(evidenceStep, /\.workflowRunAttempt == \$runAttempt/);
@@ -1043,7 +1083,7 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.match(cleanupStep, /exit "\$cleanup_rc"/);
 });
 
-test('Preview stays paused without Test and admits enabled promotion only through exact Test evidence', () => {
+test('Preview stays paused without Test and waits for the exact automatic main Test evidence when enabled', () => {
   const preview = text('.github/workflows/preview.yml');
   const testWorkflow = text('.github/workflows/combo-dev.yml');
   const policyStart = preview.indexOf('  policy:');
@@ -1052,7 +1092,7 @@ test('Preview stays paused without Test and admits enabled promotion only throug
   const modeCheck = policy.indexOf('case "$MODE" in');
   const enabledGate = policy.indexOf('if [[ "$MODE" == enabled ]]');
   const testDiscovery = policy.indexOf(
-    'actions/workflows/combo-dev.yml/runs?event=workflow_dispatch&status=success&branch=main',
+    'actions/workflows/combo-dev.yml/runs?event=workflow_run&branch=main&head_sha=${REVISION}&per_page=100',
   );
   const outputWrite = policy.indexOf("printf 'mode=%s");
   assert.ok(
@@ -1070,13 +1110,24 @@ test('Preview stays paused without Test and admits enabled promotion only throug
   assert.match(preview, /if: needs\.policy\.outputs\.mode == 'enabled'/);
 
   const enabledPolicy = policy.slice(enabledGate, outputWrite);
+  assert.match(
+    enabledPolicy,
+    /expected_test_title="Test deployment for CI \$\{SOURCE_RUN_ID\} attempt \$\{SOURCE_RUN_ATTEMPT\}"/,
+  );
+  assert.match(enabledPolicy, /main advanced before the exact automatic Test completed/);
+  assert.match(enabledPolicy, /for _ in \$\(seq 1 900\); do/);
   assert.match(enabledPolicy, /\.name == "Test deployment"/);
+  assert.match(enabledPolicy, /\.display_title == \$title/);
   assert.match(enabledPolicy, /\.path == "\.github\/workflows\/combo-dev\.yml"/);
-  assert.match(enabledPolicy, /\.event == "workflow_dispatch"/);
+  assert.match(enabledPolicy, /\.event == "workflow_run"/);
   assert.match(enabledPolicy, /\.head_branch == "main"/);
   assert.match(enabledPolicy, /\.head_sha == \$revision/);
   assert.match(enabledPolicy, /\.status == "completed"/);
   assert.match(enabledPolicy, /\.conclusion == "success"/);
+  assert.match(enabledPolicy, /matching_test_count > 1/);
+  assert.match(enabledPolicy, /matching_test_count == 0[\s\S]*sleep 20/);
+  assert.match(enabledPolicy, /queued \|\| "\$test_status" == in_progress/);
+  assert.match(enabledPolicy, /The exact automatic Test concluded \$\{test_conclusion\}/);
   assert.match(enabledPolicy, /\.run_attempt \| type == "number"/);
   assert.match(
     enabledPolicy,
@@ -1124,6 +1175,11 @@ test('Preview stays paused without Test and admits enabled promotion only throug
     /validate-live-browser[\s\\\n]*--environment test[\s\\\n]*--evidence "\$browser"[\s\\\n]*--identity "\$identity"/,
   );
   for (const trustCheck of [
+    /\.sourceWorkflow == "\.github\/workflows\/ci\.yml"/,
+    /\.sourceEvent == "push"/,
+    /\.sourceBranch == "main"/,
+    /\.controllerSha == \$controllerSha/,
+    /\.sourceMode == "main-ci"/,
     /\.sourceCiRunId == \$sourceRunId/,
     /\.sourceCiRunAttempt == \$sourceRunAttempt/,
     /\.deploymentRunId == \$testRunId/,
@@ -3006,7 +3062,11 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     production.indexOf('on:\n'),
     production.indexOf('\npermissions:'),
   );
-  assert.doesNotMatch(triggers, /workflow_run/);
+  assert.match(triggers, /^ {2}workflow_run:/m);
+  assert.match(triggers, /workflows: \[CI\]/);
+  assert.match(triggers, /types: \[completed\]/);
+  assert.match(triggers, /branches: \[main\]/);
+  assert.match(triggers, /^ {2}workflow_dispatch:/m);
   assert.match(productionTriggers, /^ {2}workflow_dispatch:/m);
   assert.doesNotMatch(productionTriggers, /workflow_run|push:|pull_request:/);
   assert.match(preview, /^ {2}workflow_run:/m);
@@ -3014,11 +3074,23 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(preview, /COMBO_PREVIEW_AUTO_PROMOTION_MODE/);
   assert.match(
     workflow,
-    /revision:[\s\S]*required: true[\s\S]*INPUT_REVISION: \$\{\{ inputs\.revision \}\}/,
+    /source_branch:[\s\S]*required: true[\s\S]*revision:[\s\S]*required: true/,
+  );
+  assert.match(workflow, /INPUT_SOURCE_BRANCH: \$\{\{ inputs\.source_branch \}\}/);
+  assert.match(workflow, /INPUT_REVISION: \$\{\{ inputs\.revision \}\}/);
+  assert.match(
+    workflow,
+    /for candidate in "\$ACTOR" "\$TRIGGERING_ACTOR"; do[\s\S]*collaborators\/\$\{candidate\}\/permission[\s\S]*admin:\*\|write:\*\|\*:maintain/,
+  );
+  assert.match(workflow, /git check-ref-format "refs\/heads\/\$INPUT_SOURCE_BRANCH"/);
+  assert.match(workflow, /\[\[ "\$INPUT_REVISION" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
+  assert.match(
+    workflow,
+    /git\/ref\/heads\/\$\{encoded_branch\}[\s\S]*\[\[ "\$branch_sha" == "\$INPUT_REVISION" \]\]/,
   );
   assert.match(
     workflow,
-    /source_ci_run_id:[\s\S]*required: true[\s\S]*INPUT_SOURCE_CI_RUN_ID: \$\{\{ inputs\.source_ci_run_id \}\}/,
+    /git\/commits\/\$\{INPUT_REVISION\}"[\s\\\n]*--jq '\.sha' \| grep -Fx "\$INPUT_REVISION"/,
   );
   assert.match(production, /REVISION: \$\{\{ inputs\.revision \}\}/);
   assert.match(workflow, /\^\[0-9a-f\]\{40\}\$/);
@@ -3036,11 +3108,40 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
       `Production always-cleanup must remove ${remotePath}`,
     );
   }
-  assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\/ci\.yml/);
-  assert.doesNotMatch(workflow, /publish_release:\s*true/);
-  assert.doesNotMatch(workflow, /packages:\s*write/);
+  assert.match(
+    workflow,
+    /build_branch_release:[\s\S]*if: needs\.select\.outputs\.source_mode == 'branch-build'[\s\S]*packages: write[\s\S]*uses: \.\/\.github\/workflows\/ci\.yml[\s\S]*revision: \$\{\{ needs\.select\.outputs\.revision \}\}[\s\S]*publish_release: true/,
+  );
+  assert.doesNotMatch(
+    workflow.slice(
+      workflow.indexOf('\n  build_branch_release:'),
+      workflow.indexOf('\n  authorize:'),
+    ),
+    /secrets:\s*inherit/,
+  );
+  assert.match(ci, /^ {2}workflow_call:/m);
+  assert.match(
+    ci,
+    /workflow_call:[\s\S]*revision:[\s\S]*required: true[\s\S]*publish_release:[\s\S]*required: true/,
+  );
   assert.match(workflow, /\[\[ "\$WORKFLOW_REF" == refs\/heads\/main \]\]/);
-  assert.match(workflow, /\[\[ "\$remote_main" == "\$REVISION" \]\]/);
+  assert.match(workflow, /\[\[ "\$remote_main" == "\$CONTROLLER_SHA" \]\]/);
+  assert.match(
+    workflow,
+    /Check out the trusted main Test controller[\s\S]*ref: \$\{\{ needs\.authorize\.outputs\.controller_sha \}\}/,
+  );
+  const privilegedDeploy = workflow.slice(workflow.indexOf('\n  deploy:'));
+  assert.match(privilegedDeploy, /environment: combo-dev/);
+  assert.doesNotMatch(
+    privilegedDeploy,
+    /ref: \$\{\{ needs\.(?:select|authorize)\.outputs\.revision \}\}/,
+  );
+  assert.doesNotMatch(privilegedDeploy, /\$RELEASE_ROOT\/(?:scripts|acceptance|infra)\//);
+  assert.match(privilegedDeploy, /bash scripts\/combo-dev-deploy\.sh --render-only/);
+  assert.match(privilegedDeploy, /runner=scripts\/goal-b-test-acceptance\.mjs/);
+  assert.match(privilegedDeploy, /resend_reader=scripts\/resend-sent-email\.mjs/);
+  assert.match(privilegedDeploy, /validator=scripts\/promotion-evidence\.mjs/);
+
   assert.match(workflow, /repos\/\$\{GITHUB_REPOSITORY\}\/actions\/runs\/\$\{SOURCE_CI_RUN_ID\}/);
   assert.match(workflow, /\.path == "\.github\/workflows\/ci\.yml"/);
   assert.match(workflow, /\.event == "push"/);
@@ -3052,25 +3153,54 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /\.head_repository\.full_name == \$repository/);
   assert.match(
     workflow,
+    /branch-build\)[\s\S]*\[\[ "\$SOURCE_CI_RUN_ID" == "\$GITHUB_RUN_ID" \]\][\s\S]*\[\[ "\$SOURCE_CI_RUN_ATTEMPT" == "\$GITHUB_RUN_ATTEMPT" \]\]/,
+  );
+  assert.match(
+    workflow,
+    /artifact_release_job='build the exact branch Test artifact \/ assemble immutable release artifact'/,
+  );
+  assert.match(workflow, /image_job_prefix='build the exact branch Test artifact \/ '/);
+  assert.match(
+    workflow,
     /artifacts\?per_page=100&name=\$\{artifact_name\}/,
-    'Test must resolve only the named release artifact from the selected main CI run',
+    'Test must resolve only the named release artifact from the selected producer run',
   );
   assert.match(workflow, /\.total_count == 1/);
   assert.match(workflow, /\$matches\[0\]\.expired == false/);
   assert.match(workflow, /\$matches\[0\]\.digest \| test\("\^sha256:/);
   assert.match(workflow, /\$matches\[0\]\.workflow_run\.id == \$runId/);
-  assert.match(workflow, /\$matches\[0\]\.workflow_run\.head_sha == \$revision/);
+  assert.match(workflow, /\$matches\[0\]\.workflow_run\.head_sha == \$headSha/);
   assert.match(
     workflow,
-    /actions\/runs\/\$\{SOURCE_CI_RUN_ID\}\/attempts\/\$\{source_ci_run_attempt\}\/jobs/,
+    /actions\/runs\/\$\{SOURCE_CI_RUN_ID\}\/attempts\/\$\{SOURCE_CI_RUN_ATTEMPT\}\/jobs/,
   );
-  assert.match(workflow, /\.name == "assemble immutable release artifact"/);
+  assert.match(workflow, /\.name == \$releaseJob/);
   assert.match(workflow, /\$releaseJobs\[0\]\.started_at <= \$artifactCreatedAt/);
   assert.match(workflow, /\$artifactCreatedAt <= \$releaseJobs\[0\]\.completed_at/);
+  assert.match(workflow, /for key in api runtime web; do/);
+  assert.match(
+    workflow,
+    /image_artifact_name="combo-image-digest-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}-\$\{key\}"/,
+  );
+  assert.match(workflow, /image_job="\$\{image_job_prefix\}image \/ \$\{key\}"/);
+  assert.match(workflow, /\(\$imageJobs \| length\) == 1/);
+  assert.match(workflow, /actions\/artifacts\/\$\{image_artifact_id\}\/zip/);
+  assert.match(workflow, /sha256sum "\$image_archive"[\s\S]*==[\s\\\n]*"\$image_artifact_digest"/);
+  assert.match(workflow, /\[\[ "\$\{image_archive_paths\[0\]\}" == "\$\{key\}\.image" \]\]/);
+  for (const key of ['api', 'runtime', 'web']) {
+    assert.ok(
+      workflow.includes(`--arg ${key}Image "$(<"$digest_root/${key}.image")"`),
+      `release manifest must bind the exact ${key} digest artifact`,
+    );
+  }
+  assert.match(
+    workflow,
+    /\.images == \{[\s\S]*api: \$apiImage,[\s\S]*runtime: \$runtimeImage,[\s\S]*web: \$webImage/,
+  );
   assert.match(
     workflow,
     /actions\/artifacts\/\$\{RELEASE_ARTIFACT_ID\}\/zip/,
-    'Test must download the exact artifact ID selected from the main CI run',
+    'Test must download the exact artifact ID selected from the producer run',
   );
   assert.match(
     workflow,
@@ -3081,8 +3211,8 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /environment: combo-dev/);
   assert.match(workflow, /sha256sum -c metadata\/artifact-files\.sha256/);
   assert.match(workflow, /cmp -s "\$expected" "\$actual"/);
-  assert.match(workflow, /release-manifest\.mjs" verify/);
-  assert.match(workflow, /web-asset-manifest\.mjs" verify/);
+  assert.match(workflow, /node scripts\/release-manifest\.mjs verify/);
+  assert.match(workflow, /node scripts\/web-asset-manifest\.mjs verify/);
   assert.match(workflow, /file_set_digest/);
   assert.match(workflow, /release_artifact_digest/);
   assert.match(workflow, /source-release\.json/);
@@ -3092,29 +3222,30 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /releaseArtifactDigest/);
   assert.match(workflow, /artifactFileSetDigest/);
   assert.match(workflow, /webAssetManifestDigest/);
-  assert.match(workflow, /Test deployment requires Preview automatic promotion to remain paused/);
+  assert.doesNotMatch(workflow, /COMBO_PREVIEW_AUTO_PROMOTION_MODE|PREVIEW_MODE/);
+  assert.doesNotMatch(workflow, /verify_preview_policy_is_paused/);
+  assert.doesNotMatch(workflow, /actions\/workflows\/preview\.yml\/runs/);
   assert.match(
     workflow,
-    /PREVIEW_MODE: \$\{\{ vars\.COMBO_PREVIEW_AUTO_PROMOTION_MODE \}\}/,
-    'Test must admit only a job whose protected repository-variable snapshot is paused',
+    /main-ci\)[\s\S]*evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"[\s\S]*branch-build\)[\s\S]*evidence_artifact_name="combo-branch-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"/,
   );
+  assert.match(workflow, /sourceWorkflow: \$sourceWorkflow/);
+  assert.match(workflow, /sourceEvent: \$sourceEvent/);
+  assert.match(workflow, /sourceBranch: \$sourceBranch/);
+  assert.match(workflow, /controllerSha: \$controllerSha/);
+  assert.match(workflow, /sourceMode: \$sourceMode/);
   assert.match(
     workflow,
-    /verify_preview_policy_is_paused\(\)/,
-    'Test must bind the paused snapshot to the exact candidate Preview policy result',
+    /main-ci\)[\s\S]*\[\[ "\$CONTROLLER_SHA" == "\$REVISION" \]\][\s\S]*\[\[ "\$SOURCE_WORKFLOW" == \.github\/workflows\/ci\.yml \]\][\s\S]*branch-build\)[\s\S]*\[\[ "\$SOURCE_WORKFLOW" == \.github\/workflows\/combo-dev\.yml \]\]/,
   );
-  assert.match(workflow, /actions\/workflows\/preview\.yml\/runs\?event=workflow_run/);
   assert.match(
-    workflow,
-    /\.name == \$title[\s\S]*and \.display_title == \$title/,
-    'Test must bind both GitHub run-name fields to the exact source CI run and attempt',
+    preview,
+    /expected_test_title="Test deployment for CI \$\{SOURCE_RUN_ID\} attempt \$\{SOURCE_RUN_ATTEMPT\}"[\s\S]*\.display_title == \$title[\s\S]*\.event == "workflow_run"/,
   );
-  assert.doesNotMatch(workflow, /\.name == "Preview promotion"/);
   assert.match(
-    workflow,
-    /actions\/runs\/\$\{preview_run_id\}\/attempts\/\$\{preview_run_attempt\}\/jobs/,
+    preview,
+    /actions\/workflows\/combo-dev\.yml\/runs\?event=workflow_run&branch=main&head_sha=\$\{REVISION\}&per_page=100/,
   );
-  assert.match(workflow, /\$deployJobs\[0\]\.conclusion == "skipped"/);
   assert.doesNotMatch(
     workflow,
     /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
@@ -3125,10 +3256,16 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
     'Preview must use the policy output and protected job-admission vars context',
   );
-  assert.match(workflow, /main advanced while Test waited for its deployment gate/);
+  assert.match(workflow, /main advanced while (?:branch )?Test waited for its deployment gate/);
+  assert.match(
+    workflow,
+    /git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
+  );
+  const firstMutation = workflow.indexOf("printf 'mutation_started=true");
+  const finalControllerCheck = workflow.lastIndexOf('git/ref/heads/main', firstMutation);
+  assert.ok(finalControllerCheck > workflow.indexOf('Upload the fixed bundle'));
   assert.match(workflow, /\.run_attempt == \$runAttempt/);
   assert.match(workflow, /\.digest == \$digest/);
-  assert.doesNotMatch(ci, /github\.event_name == 'workflow_call'/);
   assert.match(
     ci,
     /^ {2}release:\n[\s\S]*?^ {4}if: >-\n\s+\(github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'\) \|\|\n\s+inputs\.publish_release == true/m,
@@ -3172,7 +3309,7 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);
   assert.match(
     workflow,
-    /mv -fT -- "\$temporary" "\$remote"[\s\S]*verify_preview_policy_is_paused[\s\S]*git\/ref\/heads\/main[\s\S]*actions\/artifacts\/\$\{RELEASE_ARTIFACT_ID\}[\s\S]*flock -n 9/,
+    /revalidate_test_authority[\s\S]*printf 'mutation_started=true[\s\S]*mv -fT -- "\$temporary" "\$remote"[\s\S]*revalidate_test_authority[\s\S]*flock -n 9/,
   );
   assert.match(
     workflow,
@@ -3189,6 +3326,12 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /combo-dev-reset[\s\\\n]*--confirm=DESTROY-COMBO-PREVIEW-DATA[\s\S]*combo-dev-deploy/,
   );
   assert.match(preview, /combo-preview-promotion-\$\{\{/);
+  assert.match(preview, /\.sourceWorkflow == "\.github\/workflows\/ci\.yml"/);
+  assert.match(preview, /\.sourceEvent == "push"/);
+  assert.match(preview, /\.sourceBranch == "main"/);
+  assert.match(preview, /\.controllerSha == \$controllerSha/);
+  assert.match(preview, /\.sourceMode == "main-ci"/);
+  assert.match(production, /environment: production/);
   assert.match(production, /combo-preview-promotion-\$\{REVISION\}-\$\{PREVIEW_RUN_ATTEMPT\}/);
   assert.match(production, /artifactFileSetDigest/);
   const productionPreviewEvidence = production.slice(

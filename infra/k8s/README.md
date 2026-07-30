@@ -22,11 +22,13 @@ Runtime 在创建动态 Pod 前先用 PVC 资源版本原子写入 Session 和�
 
 tecent2 的 Test、Preview 和 Production 命名空间及凭据 Secret 都由现有受控发布契约维护。管理员不得通过 `kubectl create secret`、环境文件导入或删除后重建来更新凭据，也不得在服务器上把业务镜像改成可移动标签。需要轮换第一方认证凭据时，应使用 `scripts/configure-first-party-auth-secrets.sh` 做带 UID 和 resourceVersion 条件的原位更新；镜像拉取凭据也必须原位轮换并保留 Secret 身份。
 
-`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。`RESEND_FROM_EMAIL` 固定为 `Combo <auth@buildwithcombo.com>`，不从 Secret 覆盖。业务镜像只能来自成功 main CI 生成的不可变 release artifact，并且必须使用清单中记录的摘要引用。
+`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。`RESEND_FROM_EMAIL` 固定为 `Combo <auth@buildwithcombo.com>`，不从 Secret 覆盖。Preview 和 Production 的业务镜像只能来自成功 `main` CI 生成的不可变 release artifact；Test 还允许由受信任 `main` 控制器为任意同仓库分支的精确 tip SHA 构建不可变 artifact。所有环境都必须使用清单中记录的摘要引用。
 
 ## 发布顺序
 
 受保护工作流从不可变 release artifact 渲染并验证基础设施、建桶任务、迁移任务和四个业务面清单。部署控制器先等待 PostgreSQL、Redis 和 MinIO 就绪，再完成建桶和 `0000` 至 `0008` 迁移，最后启动 API、Worker、Runtime 和 Web。就绪探针只能报告单个工作负载状态，不能替代迁移、发布身份和真实六区验收。
+
+成功的 `main` CI 自动部署同一候选到 Test；具有仓库写入权限的成员也可以通过只在 `main` 上运行的受信任手工控制器，把任意同仓库分支的精确 tip 构建并部署到 Test。只有 `main` 的自动 Test 成功证据可以继续进入 Preview，且 Preview 是否自动部署由 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 的 `enabled` 或 `paused` 状态控制。
 
 Production 只允许通过 `.github/workflows/cd.yml` 晋级已经通过 Preview 的同一 artifact。服务器上的 `kubectl apply`、Kustomize 镜像改写或 Nginx 热改都不是正式发布入口。
 
@@ -42,6 +44,6 @@ Production 不随 `main` 自动更新。受保护的 CD 流水线只接受已经
 
 ## combo-dev 覆盖层
 
-开发组合环境的固定覆盖层位于 `overlays/combo-dev/`。它只复用 `combo-preview` 命名空间，并用 Kubernetes 内置的静态卷模式把三个 PVC 预绑定到独立有界挂载中的三个本地 PV，不包含自定义存储 provisioner。共享 k3s 只依赖生产所需父数据盘，开发工作负载只挂载 PVC，不使用 `hostPath`。主机 bootstrap 会先完成全部只读检查，再写入持久阻断、关闭转发器并验证所有写入者停止，随后才清理通过精确绑定验证的旧 Cloud Review 三卷数据、创建固定目录或应用平台对象。额外、部分或路径漂移的旧存储不会被自动删除。Namespace、集群 RBAC、StorageClass 和三个 PV 必须与 bootstrap 保存的规范契约完整一致。应用清单只能由手工触发的受保护工作流处理；工作流要求当前 `main` 的完整 SHA 与成功 CI，并与生产 CD 共用 `cd-tecent2` 并发组。它注入镜像摘要后，从五个固定阶段的已验证字节按覆盖层 README 的顺序部署，不能直接应用仓库模板。
+开发组合环境的固定覆盖层位于 `overlays/combo-dev/`。它只复用 `combo-preview` 命名空间，并用 Kubernetes 内置的静态卷模式把三个 PVC 预绑定到独立有界挂载中的三个本地 PV，不包含自定义存储 provisioner。共享 k3s 只依赖生产所需父数据盘，开发工作负载只挂载 PVC，不使用 `hostPath`。主机 bootstrap 会先完成全部只读检查，再写入持久阻断、关闭转发器并验证所有写入者停止，随后才清理通过精确绑定验证的旧 Cloud Review 三卷数据、创建固定目录或应用平台对象。额外、部分或路径漂移的旧存储不会被自动删除。Namespace、集群 RBAC、StorageClass 和三个 PV 必须与 bootstrap 保存的规范契约完整一致。应用清单只能由受保护的 `main` 控制器处理；成功的 `main` CI 会自动发起 Test，手工入口则接受任意同仓库分支及其精确 tip SHA，并在进入受保护 Environment 前生成不可变 artifact。`combo-dev` Environment 只允许 `main` 是控制面 Secret 边界，不是目标源码分支限制。工作流与 Production CD 共用 `cd-tecent2` 并发组，注入镜像摘要后从五个固定阶段的已验证字节按覆盖层 README 的顺序部署，不能直接应用候选分支中的仓库模板。
 
 Sandbox Tools 的 PR 合并前现场验收清单位于 `overlays/sandbox-tools/review/`。它把动态沙箱放入独立的 `combo-review-sandbox` 命名空间，并为 `combo-review` Runtime 提供默认关闭的单独补丁。这个目录固定测试节点、四个测试专用静态本地卷和当前测试镜像摘要，不属于生产部署入口。使用前必须按目录 README 完成主机 loopback 准备、测试 Runtime 镜像部署和分阶段启用。

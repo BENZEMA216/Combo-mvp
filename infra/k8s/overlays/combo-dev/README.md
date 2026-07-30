@@ -18,7 +18,7 @@ PostgreSQL 使用固定摘要的 Alpine 镜像，并按镜像内真实的 UID/GI
 
 调度角色对 Secret 没有读取、列举、创建、修改或删除权限。为生成不含 Secret 的完整 Test 清单，它只读列举 DaemonSet、CronJob、Ingress、HPA、ServiceAccount、ResourceQuota 和 LimitRange。
 
-仓库中的应用镜像引用只是未发布模板，不能直接应用。受保护工作流必须先把当前 `main` 的 SHA 标签解析为 OCI 摘要，再由 `combo-dev-deploy.sh` 注入摘要。调度器只应用经过固定资源清单、Service 暴露、NetworkPolicy、镜像、命令、安全上下文、PVC 挂载和 Secret 引用检查的五个阶段渲染结果。
+仓库中的应用镜像引用只是未发布模板，不能直接应用。成功的 `main` CI 会自动生成并部署 Test 候选；手工 Test 可以由受信任的 `main` 控制器为任意同仓库分支的精确 tip SHA 构建不可变 artifact。受保护工作流必须把候选清单中的镜像标签解析为 OCI 摘要，再由 `combo-dev-deploy.sh` 注入摘要。`combo-dev` GitHub Environment 仍只允许 `main`，这样候选分支修改过的 workflow、清单或控制脚本都不能读取环境 Secret 或成为部署控制面。调度器只应用经过固定资源清单、Service 暴露、NetworkPolicy、镜像、命令、安全上下文、PVC 挂载和 Secret 引用检查的五个阶段渲染结果。
 
 配置保存在主机 `/etc/combo-dev` 的 owner-only 文件中，由主机所有者在 bootstrap 时写入命名空间 Secret。仓库与工作流只处理配置键是否存在，不读取或输出配置值。Web 浏览器来源固定为 `http://127.0.0.1:18080`，S3 浏览器端点固定为 `http://127.0.0.1:19000`。
 

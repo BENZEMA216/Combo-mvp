@@ -2,7 +2,7 @@
 
 本目录保存仓库级验证、部署和运维脚本。发布脚本不得输出、落盘、复制或提交任何环境 Secret 值；部署前只允许核对 Secret 名称与键名。需要凭据的步骤只能在对应的受保护 GitHub Environment 中运行。
 
-`release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。清单把一个完整 main 源码 SHA 唯一映射到 API、Runtime、Web 三个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。
+`release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。清单把一个完整源码 SHA 唯一映射到 API、Runtime、Web 三个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。Preview 和 Production 只接受 `main` 的发布清单；其他同仓库分支的清单只用于 Test。
 
 `web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。正式 CI 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。
 
@@ -12,11 +12,11 @@ Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 
 
 Test 的重置命令必须同时接收完整源码 SHA、GitHub workflow run ID 和 run attempt。它在证明 PostgreSQL、Redis Queue、MinIO 三个固定目录均已清空后重建四个基础工作负载，把三元身份、实际 Pod UID 和时间写入 attempt-scoped 的 `0600` 回执。部署命令只接受同一 SHA、同一 run ID、同一 run attempt、完成时间不超过十五分钟的回执，并通过同目录原子改名只消费一次。
 
-Test 的迁移任务固定校验 `0008_application_database_roles.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0008` 各应用一次，且两遍均到达 `0008`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再上传 attempt-scoped 的 `combo-test-evidence-<SHA>-<Test-attempt>`。
+Test 的迁移任务固定校验 `0008_application_database_roles.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0008` 各应用一次，且两遍均到达 `0008`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再按自动 `main` 或手工分支来源上传相互隔离的 attempt-scoped Test evidence。
 
 `combo-dev-logs.sh` 在真实验收完成后读取八个唯一就绪日志源，要求 API、Runtime 和 Worker 都留下当前窗口活动，并扫描合成标记及固定凭据模式。依赖恢复导致容器重启时，它只接受至多一次可审计重启，并同时检查该 Pod 的 current 与 previous 日志；日志流尚未追平时会短时重试。失败时只能输出固定 reason code，不能回显日志正文、请求内容或合成标记。
 
-Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行态、存储、网络、健康、日志与发布身份等基础设施事实，不再调用旧的 `/opt/combo-dev/acceptance/run` 或声明产品验收通过。部署基线允许空数据 Worker 暂无 pipeline，邮箱 OTP、双身份隔离和六区产品流程只由不可变 main CI artifact 中的浏览器 runner 判定；浏览器完成后再执行要求 Worker 活动的八来源日志泄漏审计。dispatcher 会写入两小时有界的待验收标记；端口、浏览器、日志、evidence、artifact 上传或完成确认失败时，受保护 workflow 使用独立最小 fencer 关闭 Test 写入面，不清数据、不生成新的 reset proof，硬取消时由持久 guard 在期限后收敛。
+Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行态、存储、网络、健康、日志与发布身份等基础设施事实，不再调用旧的 `/opt/combo-dev/acceptance/run` 或声明产品验收通过。部署基线允许空数据 Worker 暂无 pipeline，邮箱 OTP、双身份隔离和六区产品流程只由受信任的 `main` 控制器固定的浏览器 runner 判定；候选分支不能替换这套验收程序。浏览器完成后再执行要求 Worker 活动的八来源日志泄漏审计。dispatcher 会写入两小时有界的待验收标记；端口、浏览器、日志、evidence、artifact 上传或完成确认失败时，受保护 workflow 使用独立最小 fencer 关闭 Test 写入面，不清数据、不生成新的 reset proof，硬取消时由持久 guard 在期限后收敛。
 
 `combo-dev-control-plane.test.mjs` 的容器镜像探针只有在 `COMBO_RUN_CONTAINER_CONTRACTS=1` 时才会调用 Docker。GitHub Actions 的受控 Test 步骤显式启用该变量；tecent2 上的普通源码检查不会探测或启动 Docker。
 
@@ -24,7 +24,9 @@ Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行
 
 `goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Studio 验收按服务端接受的精确 Turn ID 等待；若 Turn 已进入失败、中断或“完成但无 Artifact”状态，会立即记录固定白名单诊断码，不保存原始错误或继续空等。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
 
-Test workflow 从 attempt-scoped 的不可变 `combo-release-<SHA>-<source-CI-attempt>` artifact 安装 runner、`resend-sent-email.mjs` 和 `playwright-core.tgz`，把成功结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>-<Test-attempt>`；Preview 和 Production 复用同一 artifact 中的文件。CI、Test、Preview 和 Production 的成功证据 artifact 名都包含实际 producer attempt，rerun 不会覆盖或混入前一次 attempt。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含 `source-release.json`，不能作为 Preview 准入。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Production 在任何环境变更前用 artifact 内同一 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
+成功的 `main` CI 会自动触发 Test，并直接消费 attempt-scoped 的不可变 `combo-release-<SHA>-<source-CI-attempt>` artifact。具有仓库写入权限的成员也可以从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意同仓库分支及其精确 tip SHA；控制器调用 `main` 定义的可复用 CI 为该提交构建同样不可变的 artifact，随后仍使用 `main` 固定的部署、校验和浏览器验收程序。`combo-dev` Environment 只允许 `main` 是为了阻止分支修改过的 workflow 读取 SSH 和 Resend Secret，不是对候选源码分支的限制。
+
+自动 `main` Test 的成功结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>-<Test-attempt>`；手工分支 Test 使用独立的 `combo-branch-test-evidence-<SHA>-<Test-attempt>`，不能作为 Preview 准入。只有前一种证据链允许 Preview 和 Production 复用同一 `main` artifact。CI、Test、Preview 和 Production 的成功证据 artifact 名都包含实际 producer attempt，rerun 不会覆盖或混入前一次 attempt。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含可用于晋级的 `source-release.json`。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Test 使用受信任 `main` 控制器中的 helper，Production 则在任何环境变更前使用已通过 Preview 的同一 `main` release artifact 内 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
 
 在 Test Web 已通过本机 loopback 转发后，从仓库根目录运行：
 
@@ -39,10 +41,11 @@ pnpm --filter @cb/scripts acceptance:goal-b -- \
 仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 必须是 `enabled` 或 `paused`。`enabled` 会把成功的 main release artifact 自动部署到 Preview；`paused` 仍保留 main 构建和 Preview policy 记录，但跳过部署 job，不改变线上 Preview。策略变更只影响之后触发的工作流，不取消已经开始的部署。
 
 晋级工作流通过受保护的 `vars` 准入快照和 Preview policy 输出读取该模式，不使用
-内置 `GITHUB_TOKEN` 无权访问的 Repository Variables REST endpoint。Test 在实际
-mutation 前和上传 bundle 后都会复验当前候选只有一个 attempt 1 的 paused policy
-结果（policy 成功、Preview deploy skipped）；共享 `cd-tecent2` concurrency group
-保证新的 Preview rerun 必须等正在执行的 Test deploy 退出后才能变更环境。
+内置 `GITHUB_TOKEN` 无权访问的 Repository Variables REST endpoint。模式只控制
+`main` 候选是否在 Test 成功后继续进入 Preview，不阻止 `main` 或其他同仓库分支
+部署 Test。Preview 会等待并精确匹配触发它的 `main` CI 所对应的自动 Test run、
+attempt 和成功证据；手工分支 Test 不参与匹配。共享 `cd-tecent2` concurrency
+group 保证 Preview 与 Test 不会并发变更环境。
 
 `verify-rendered-release.mjs` 在任何集群写入前复验 Kubernetes 服务端 dry-run 的原始对象：资源集合、namespace、镜像、命令、Secret 引用和 ClusterIP 边界必须精确符合环境契约。
 
