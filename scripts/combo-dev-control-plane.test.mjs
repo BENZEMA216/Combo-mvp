@@ -49,7 +49,7 @@ const RELEASE_MANIFEST = {
     runtime: imageArgs[3],
     web: imageArgs[5],
   },
-  migrationHead: '0008_application_database_roles.sql',
+  migrationHead: '0009_billing.sql',
   builtAt: '2026-07-24T08:00:00.000Z',
   webAssetManifest: `sha256:${digest('e')}`,
 };
@@ -503,17 +503,56 @@ test('Test apps share one exact immutable release identity without Secret expans
   }
 });
 
-test('Test migration pins the 0008 ledger and proves a second idempotent pass', () => {
+test('Test payment configuration is referenced only by Authoring API', () => {
+  const paymentNames = [
+    'BILLING_RECHARGE_PACKAGES_JSON',
+    'LESHOUYING_ENABLED',
+    'LESHOUYING_ENVIRONMENT',
+    'LESHOUYING_PRODUCTION_ENABLED',
+    'LESHOUYING_INSTITUTION_NO',
+    'LESHOUYING_MERCHANT_NO',
+    'LESHOUYING_INSTITUTION_KEY',
+    'LESHOUYING_NOTIFY_URL',
+    'LESHOUYING_FRONT_URL',
+  ];
+  const api = documentFor('Deployment', 'api');
+  for (const name of paymentNames) {
+    assert.match(
+      api,
+      new RegExp(
+        `- name: ${name}\\n\\s+valueFrom:\\n\\s+secretKeyRef:\\n\\s+key: ${name}\\n\\s+name: combo-dev-env\\n\\s+optional: true`,
+      ),
+    );
+  }
+  for (const workloadName of ['worker', 'runtime']) {
+    const workload = documentFor('Deployment', workloadName);
+    for (const name of paymentNames) {
+      assert.doesNotMatch(workload, new RegExp(`\\b${name}\\b`));
+    }
+  }
+  assert.match(api, /- name: LESHOUYING_TIMEOUT_MS\n\s+value: "5000"/);
+  assert.match(api, /- name: BILLING_RECONCILE_INTERVAL_MS\n\s+value: "15000"/);
+  const runtime = documentFor('Deployment', 'runtime');
+  assert.match(runtime, /- name: RUNTIME_BILLING_FREE_USES\n\s+value: "3"/);
+  assert.match(runtime, /- name: RUNTIME_BILLING_UNIT_PRICE_CENTS\n\s+value: "100"/);
+  for (const workloadName of ['api', 'worker']) {
+    const workload = documentFor('Deployment', workloadName);
+    assert.doesNotMatch(workload, /\bRUNTIME_BILLING_(?:FREE_USES|UNIT_PRICE_CENTS)\b/);
+  }
+  for (const workloadName of ['worker', 'runtime']) {
+    const workload = documentFor('Deployment', workloadName);
+    assert.doesNotMatch(workload, /\b(?:LESHOUYING_TIMEOUT_MS|BILLING_RECONCILE_INTERVAL_MS)\b/);
+  }
+});
+
+test('Test migration pins the 0009 ledger and proves a second idempotent pass', () => {
   const migrate = documentFor('Job', 'migrate');
-  assert.match(
-    migrate,
-    /^ {8}- name: EXPECTED_MIGRATION_HEAD\n {10}value: 0008_application_database_roles\.sql$/m,
-  );
+  assert.match(migrate, /^ {8}- name: EXPECTED_MIGRATION_HEAD\n {10}value: 0009_billing\.sql$/m);
   assert.match(migrate, /^ {8}- name: MIGRATION_RUNS\n {10}value: "2"$/m);
   assert.match(migrate, /^ {2}ttlSecondsAfterFinished: 7200$/m);
 });
 
-test('Test migration evidence uses the exact ordered 0000-0008 source ledger', () => {
+test('Test migration evidence uses the exact ordered 0000-0009 source ledger', () => {
   const expected = [
     '0000_baseline_schema.sql',
     '0001_expired_upload_reconciliation.sql',
@@ -524,6 +563,7 @@ test('Test migration evidence uses the exact ordered 0000-0008 source ledger', (
     '0006_one_running_turn_per_session.sql',
     '0007_first_party_email_auth.sql',
     '0008_application_database_roles.sql',
+    '0009_billing.sql',
   ];
   const sourceLedger = readdirSync(join(repo, 'db/migrations'))
     .filter((name) => name.endsWith('.sql'))
@@ -574,7 +614,7 @@ test('Test migration proof accepts containerd config digests but fences the live
   const expectedDigest = digest('b');
   const expectedImage = `ghcr.io/dangdang-tech/combo-api@sha256:${expectedDigest}`;
   const reportedImage = `sha256:${digest('c')}`;
-  const expectedHead = '0008_application_database_roles.sql';
+  const expectedHead = '0009_billing.sql';
   const jobUid = '11111111-1111-4111-8111-111111111111';
   const podUid = '22222222-2222-4222-8222-222222222222';
   const job = join(work, 'job.json');
@@ -591,6 +631,7 @@ test('Test migration proof accepts containerd config digests but fences the live
     '0006_one_running_turn_per_session.sql',
     '0007_first_party_email_auth.sql',
     '0008_application_database_roles.sql',
+    '0009_billing.sql',
   ];
   const jobObject = {
     metadata: {
@@ -783,7 +824,7 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
   assert.match(workflow, /\.reset\.workflowRunAttempt == \$runAttempt/);
   assert.match(workflow, /\.migration\.workflowRunId == \$runId/);
   assert.match(workflow, /\.migration\.workflowRunAttempt == \$runAttempt/);
-  assert.match(workflow, /migration\.head == "0008_application_database_roles\.sql"/);
+  assert.match(workflow, /migration\.head == "0009_billing\.sql"/);
   assert.match(workflow, /migration\.job\.ttlSecondsAfterFinished == 7200/);
   assert.match(workflow, /legacyObjectsAbsent == true/);
   assert.doesNotMatch(workflow, /\. \+ \{workflowRunId:/);

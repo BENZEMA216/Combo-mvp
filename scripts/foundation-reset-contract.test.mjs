@@ -892,7 +892,7 @@ test('behavior: storage-removed resumes and Preview reset supersession stays lin
         runtime: `ghcr.io/dangdang-tech/combo-runtime@sha256:${'3'.repeat(64)}`,
         web: `ghcr.io/dangdang-tech/combo-web@sha256:${'4'.repeat(64)}`,
       },
-      migrationHead: '0008_application_database_roles.sql',
+      migrationHead: '0009_billing.sql',
       builtAt: '2026-07-29T00:00:00.000Z',
       webAssetManifest: `sha256:${'5'.repeat(64)}`,
     };

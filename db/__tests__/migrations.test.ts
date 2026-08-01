@@ -92,6 +92,13 @@ describe('migrations', () => {
         'auth_otp_challenges',
         'auth_sessions',
         'auth_audit_events',
+        'billing_accounts',
+        'billing_free_allowances',
+        'usage_charges',
+        'recharge_orders',
+        'payment_attempts',
+        'payment_callback_events',
+        'wallet_ledger',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -177,11 +184,12 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps the first-party authentication and role migrations after Goal B schema migrations', () => {
+  it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-2)).toEqual([
+    expect(list.slice(-3)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
+      '0009_billing.sql',
     ]);
   });
 

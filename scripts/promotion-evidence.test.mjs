@@ -37,6 +37,7 @@ const migrations = [
   '0006_one_running_turn_per_session.sql',
   '0007_first_party_email_auth.sql',
   '0008_application_database_roles.sql',
+  '0009_billing.sql',
 ];
 const identity = {
   schemaVersion: 1,
@@ -89,7 +90,7 @@ test('six-area contract names only first-party auth and the current migration he
     'session_persistence',
     'logout_revokes_session',
     'owner_isolation',
-    'migration_head_0008',
+    'migration_head_0009',
   ]) {
     assert.match(serialized, new RegExp(required));
   }
@@ -412,14 +413,21 @@ function inventory(expectedIdentity = identity) {
       'auth_identities',
       'auth_otp_challenges',
       'auth_sessions',
+      'billing_accounts',
+      'billing_free_allowances',
       'capabilities',
       'messages',
+      'payment_attempts',
+      'payment_callback_events',
+      'recharge_orders',
       'schema_migrations',
       'sessions',
       'tasks',
       'turns',
       'uploads',
+      'usage_charges',
       'users',
+      'wallet_ledger',
     ],
     legacyFindings: [],
     livePods,

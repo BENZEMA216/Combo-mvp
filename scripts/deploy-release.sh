@@ -322,15 +322,16 @@ validate_migrations() {
     0006_one_running_turn_per_session.sql
     0007_first_party_email_auth.sql
     0008_application_database_roles.sql
+    0009_billing.sql
   )
   local actual=()
   mapfile -t actual <"$MIGRATIONS"
   ((${#actual[@]} == ${#expected[@]})) ||
-    fail 'migration file list must contain exactly 0000 through 0008'
+    fail 'migration file list must contain exactly 0000 through 0009'
   local index
   for index in "${!expected[@]}"; do
     [[ "${actual[$index]}" == "${expected[$index]}" ]] ||
-      fail 'migration file list differs from the exact 0000 through 0008 contract'
+      fail 'migration file list differs from the exact 0000 through 0009 contract'
   done
   [[ "${actual[-1]}" == "$migration_head" ]] ||
     fail 'migration file list does not reach the release migration head'
@@ -2484,7 +2485,7 @@ apply_foundation() {
 }
 
 run_migration() {
-  status 'running the exact 0000 through 0008 migration set'
+  status 'running the exact 0000 through 0009 migration set'
   delete_candidate_job "${PREFIX}migrate"
   "${K[@]}" apply -f "$MIGRATE_YAML" >/dev/null
   if ! "${K[@]}" -n "$NAMESPACE" wait --for=condition=complete \
@@ -2502,7 +2503,7 @@ run_migration() {
       -c "SELECT filename FROM schema_migrations ORDER BY filename"
   ' >"$actual_migrations"
   cmp -s "$MIGRATIONS" "$actual_migrations" ||
-    fail 'fresh database migration ledger differs from 0000 through 0008'
+    fail 'fresh database migration ledger differs from 0000 through 0009'
 
   [[ "$("${K[@]}" -n "$NAMESPACE" get "job/${PREFIX}migrate" \
     -o jsonpath='{.spec.template.spec.containers[0].image}')" == "$api_image" ]] ||
@@ -2550,7 +2551,7 @@ verify_release_schema_structure() {
       ] | sort)
       and .schemaVersion == 1
       and .status == "passed"
-      and .contractVersion == "combo-schema-0008-v1"
+      and .contractVersion == "combo-schema-0009-v1"
       and .environment == $environment
       and .namespace == $namespace
       and .sourceSha == $sourceSha
@@ -2565,7 +2566,8 @@ verify_release_schema_structure() {
         "grants",
         "indexes",
         "relations",
-        "roles"
+        "roles",
+        "triggers"
       ]
       and all(.counts[]; type == "number" and . > 0 and floor == .)
       and (.verifiedAt | type == "string" and test("Z$"))

@@ -771,7 +771,7 @@ jobs:
               and .webAssetManifestDigest == $webAssetDigest
               and .testIdentityDigest == $identityDigest
               and .liveBrowserAcceptanceDigest == $browserDigest
-              and .migrationHead == "0008_application_database_roles.sql"
+              and .migrationHead == "0009_billing.sql"
               and .images == {
                 api: $apiImage,
                 runtime: $runtimeImage,

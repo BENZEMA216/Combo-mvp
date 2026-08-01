@@ -40,7 +40,7 @@ readonly ACCEPTANCE_PENDING_SECONDS=7200
 RESET_PROOF=''
 CONSUMED_RESET_PROOF=''
 readonly RESET_PROOF_MAX_AGE_SECONDS=900
-readonly MIGRATION_HEAD='0008_application_database_roles.sql'
+readonly MIGRATION_HEAD='0009_billing.sql'
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
 readonly APP_NAMES=(api worker runtime web)
@@ -1216,7 +1216,7 @@ expected_secret_keys={
  'redis-hot':set(),'redis-queue':set(),
  'minio-init':{'MINIO_ROOT_USER','MINIO_ROOT_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY'},
  'migrate':{'POSTGRES_USER','POSTGRES_PASSWORD','POSTGRES_DB','POSTGRES_API_PASSWORD','POSTGRES_WORKER_PASSWORD','POSTGRES_RUNTIME_PASSWORD'},
- 'api':{'POSTGRES_DB','POSTGRES_API_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','RESEND_API_KEY','OTP_HMAC_SECRET','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL'},
+ 'api':{'POSTGRES_DB','POSTGRES_API_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','RESEND_API_KEY','OTP_HMAC_SECRET','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL','BILLING_RECHARGE_PACKAGES_JSON','LESHOUYING_ENABLED','LESHOUYING_ENVIRONMENT','LESHOUYING_PRODUCTION_ENABLED','LESHOUYING_INSTITUTION_NO','LESHOUYING_MERCHANT_NO','LESHOUYING_INSTITUTION_KEY','LESHOUYING_NOTIFY_URL','LESHOUYING_FRONT_URL'},
  'runtime':{'POSTGRES_DB','POSTGRES_RUNTIME_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','RUNTIME_LLM_PROVIDER','RUNTIME_LLM_MODEL'},
  'worker':{'POSTGRES_DB','POSTGRES_WORKER_PASSWORD','S3_ACCESS_KEY','S3_SECRET_KEY','ANTHROPIC_API_KEY','OPENROUTER_API_KEY','LLM_PROVIDER','LLM_BASE_URL','LLM_MODEL'},
  'web':set()}
@@ -1480,6 +1480,7 @@ expected_migrations = [
     '0006_one_running_turn_per_session.sql',
     '0007_first_party_email_auth.sql',
     '0008_application_database_roles.sql',
+    '0009_billing.sql',
 ]
 uuid = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 
@@ -1778,7 +1779,7 @@ if (
     or not re.fullmatch(r'[1-9][0-9]*', workflow_run_attempt)
     or manifest.get('sourceSha') != revision
     or manifest.get('releaseId') != f'release-{revision}'
-    or manifest.get('migrationHead') != '0008_application_database_roles.sql'
+    or manifest.get('migrationHead') != '0009_billing.sql'
 ):
     raise SystemExit(2)
 if not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest_digest):
@@ -1827,10 +1828,11 @@ expected_migrations = [
     '0006_one_running_turn_per_session.sql',
     '0007_first_party_email_auth.sql',
     '0008_application_database_roles.sql',
+    '0009_billing.sql',
 ]
 expected_passes = [
-    {'run': 1, 'head': '0008_application_database_roles.sql'},
-    {'run': 2, 'head': '0008_application_database_roles.sql'},
+    {'run': 1, 'head': '0009_billing.sql'},
+    {'run': 2, 'head': '0009_billing.sql'},
 ]
 if (
     migration.get('schemaVersion') != 1

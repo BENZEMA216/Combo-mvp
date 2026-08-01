@@ -601,7 +601,7 @@ jobs:
           migration_head=$(jq -er '.migrationHead' "$RELEASE_ROOT/metadata/release.json")
           web_asset_digest=$(jq -er '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")
           [[ "$release_id" == "release-${REVISION}" ]]
-          [[ "$migration_head" == 0008_application_database_roles.sql ]]
+          [[ "$migration_head" == 0009_billing.sql ]]
           [[ "$web_asset_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
           node scripts/web-asset-manifest.mjs verify \
             --manifest "$RELEASE_ROOT/metadata/web-asset-manifest.json" \
@@ -1420,7 +1420,7 @@ jobs:
             }
             and ([.reset.foundation[].plane] | sort) == ["minio", "postgres", "redis-hot", "redis-queue"]
             and all(.reset.foundation[]; .ready == true and (.podUid | test("^[0-9a-f-]{36}$")))
-            and .migration.head == "0008_application_database_roles.sql"
+            and .migration.head == "0009_billing.sql"
             and .migration.runs == 2
             and .migration.sourceSha == $revision
             and .migration.workflowRunId == $runId
@@ -1434,11 +1434,12 @@ jobs:
               "0005_capability_current_ui.sql",
               "0006_one_running_turn_per_session.sql",
               "0007_first_party_email_auth.sql",
-              "0008_application_database_roles.sql"
+              "0008_application_database_roles.sql",
+              "0009_billing.sql"
             ]
             and .migration.passes == [
-              {run: 1, head: "0008_application_database_roles.sql"},
-              {run: 2, head: "0008_application_database_roles.sql"}
+              {run: 1, head: "0009_billing.sql"},
+              {run: 2, head: "0009_billing.sql"}
             ]
             and .migration.job.succeeded == 1
             and .migration.job.ttlSecondsAfterFinished == 7200
@@ -1608,7 +1609,7 @@ jobs:
                 webAssetManifestDigest: $webAssetManifestDigest,
                 liveBrowserAcceptanceDigest: $liveBrowserAcceptanceDigest,
                 testIdentityDigest: $testIdentityDigest,
-                migrationHead: "0008_application_database_roles.sql",
+                migrationHead: "0009_billing.sql",
                 images: {
                   api: $apiImage,
                   runtime: $runtimeImage,
@@ -1682,7 +1683,7 @@ jobs:
               and (.webAssetManifestDigest | test("^sha256:[0-9a-f]{64}$"))
               and .liveBrowserAcceptanceDigest == $liveBrowserAcceptanceDigest
               and .testIdentityDigest == $testIdentityDigest
-              and .migrationHead == "0008_application_database_roles.sql"
+              and .migrationHead == "0009_billing.sql"
               and (.images | keys == ["api", "runtime", "web"])
               and (.images.api | test("^ghcr.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$"))
               and (.images.runtime | test("^ghcr.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$"))

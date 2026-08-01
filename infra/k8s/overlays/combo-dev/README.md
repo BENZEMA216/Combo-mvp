@@ -14,7 +14,7 @@ PostgreSQL 使用固定摘要的 Alpine 镜像，并按镜像内真实的 UID/GI
 
 `platform/` 负责命名空间配额、默认资源边界、默认拒绝网络策略、普通调度角色、最小失败收敛角色、静态存储类和静态卷绑定。`platform/namespace.yaml`、`platform/rbac.yaml`、`platform/storage-class.yaml` 和 `platform/storage-volumes.yaml` 只能由 bootstrap 应用，并全部纳入主机控制摘要。bootstrap 会保存 Namespace、ClusterRole、ClusterRoleBinding、StorageClass 和三个 PV 的规范化期望内容。部署、smoke 和重置会读取每个固定对象，去除 Kubernetes 明确生成的元数据后执行完整比较，任何额外字段或内容变化都会阻断操作。`platform/kustomization.yaml` 只聚合普通部署可更新的 `quota.yaml`、`limit-range.yaml` 和 `network-policies.yaml`。调度身份只能按固定名称读取三个 PV，不能列举或修改集群存储资源。
 
-`foundation/resources.yaml` 定义 PostgreSQL、双 Redis、MinIO 和它们的私有 Service。`migrate/resources.yaml` 固定校验 `0008` 迁移头，在同一空库上连续执行两遍迁移扫描，并配置 API、Worker、Runtime 三个固定数据库角色。`apps/resources.yaml` 定义生产式邮箱 OTP 的 API、Worker、Runtime、Web 和私有 Service；不存在 dev-login 或开发会话 Secret。Nginx 固定 hashed asset 缺失为 `404`。四个应用使用 `Recreate` 更新策略，并由固定字段管理器显式关闭和恢复副本。
+`foundation/resources.yaml` 定义 PostgreSQL、双 Redis、MinIO 和它们的私有 Service。`migrate/resources.yaml` 固定校验 `0009` 迁移头，在同一空库上连续执行两遍迁移扫描，并配置 API、Worker、Runtime 三个固定数据库角色。`apps/resources.yaml` 定义生产式邮箱 OTP 的 API、Worker、Runtime、Web 和私有 Service；不存在 dev-login 或开发会话 Secret。乐收赢 Test 配置只以 optional Secret 引用进入 API，Runtime 固定使用 3 次免费额度和每次 100 分的 Test 策略，Worker 与 Web 均不接收支付配置。Nginx 固定 hashed asset 缺失为 `404`。四个应用使用 `Recreate` 更新策略，并由固定字段管理器显式关闭和恢复副本。
 
 调度角色对 Secret 没有读取、列举、创建、修改或删除权限。为生成不含 Secret 的完整 Test 清单，它只读列举 DaemonSet、CronJob、Ingress、HPA、ServiceAccount、ResourceQuota 和 LimitRange。
 

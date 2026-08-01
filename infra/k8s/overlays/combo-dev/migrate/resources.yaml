@@ -56,7 +56,7 @@ spec:
                   key: POSTGRES_RUNTIME_PASSWORD
                   name: combo-dev-env
             - name: EXPECTED_MIGRATION_HEAD
-              value: 0008_application_database_roles.sql
+              value: 0009_billing.sql
             - name: MIGRATION_RUNS
               value: '2'
           image: ghcr.io/dangdang-tech/combo-api:latest
