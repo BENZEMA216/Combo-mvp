@@ -26,7 +26,7 @@ tecent2 的 Test、Preview 和 Production 命名空间及凭据 Secret 都由现
 
 ## 发布顺序
 
-受保护工作流从不可变 release artifact 渲染并验证基础设施、建桶任务、迁移任务和四个业务面清单。部署控制器先等待 PostgreSQL、Redis 和 MinIO 就绪，再完成建桶和 `0000` 至 `0008` 迁移，最后启动 API、Worker、Runtime 和 Web。就绪探针只能报告单个工作负载状态，不能替代迁移、发布身份和真实六区验收。
+受保护工作流从不可变 release artifact 渲染并验证基础设施、建桶任务、迁移任务和四个业务面清单。部署控制器先等待 PostgreSQL、Redis 和 MinIO 就绪，再完成建桶和 `0000` 至 `0009` 迁移，最后启动 API、Worker、Runtime 和 Web。就绪探针只能报告单个工作负载状态，不能替代迁移、发布身份和真实六区验收。
 
 成功的 `main` CI 自动部署同一候选到 Test；具有仓库写入权限的成员也可以通过只在 `main` 上运行的受信任手工控制器，把任意同仓库分支的精确 tip 构建并部署到 Test。只有 `main` 的自动 Test 成功证据可以继续进入 Preview，且 Preview 是否自动部署由 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 的 `enabled` 或 `paused` 状态控制。
 

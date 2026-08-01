@@ -40,7 +40,7 @@ function createManifest(sourceSha) {
       runtime: `ghcr.io/dangdang-tech/combo-runtime@sha256:${'2'.repeat(64)}`,
       web: `ghcr.io/dangdang-tech/combo-web@sha256:${'3'.repeat(64)}`,
     },
-    migrationHead: '0008_application_database_roles.sql',
+    migrationHead: '0009_billing.sql',
     builtAt: '2026-07-29T00:00:00.000Z',
     webAssetManifest: `sha256:${'4'.repeat(64)}`,
   };
@@ -137,7 +137,7 @@ rm -f -- \\
   writeFileSync(join(releaseDirectory, 'release.sha256'), `${manifestDigest}\n`);
   writeFileSync(
     join(releaseDirectory, 'migration-files.txt'),
-    '0007_first_party_email_auth.sql\n0008_application_database_roles.sql\n',
+    '0007_first_party_email_auth.sql\n0008_application_database_roles.sql\n0009_billing.sql\n',
   );
   writeJson(join(releaseDirectory, 'web-asset-manifest.json'), {
     schemaVersion: 1,

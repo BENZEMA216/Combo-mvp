@@ -16,6 +16,7 @@ import {
   isExpectedReleaseMetadata,
   isExpectedTestReleaseMetadata,
   parseAcceptanceArgs,
+  postRuntimeMessageCompat,
   serializeAcceptanceEvidence,
   settleOwnedAcceptanceTurn,
   waitForAcceptanceUrl,
@@ -45,6 +46,99 @@ const UUIDS = {
   studioSessionId: '21982e62-6d6e-7f4d-8fe8-b55f62720b5b',
   consumeSessionId: '31982e62-6d6e-7f4d-8fe8-b55f62720b5b',
 };
+
+test('trusted Runtime message compatibility sends at most one accepted request', async () => {
+  const usageId = '41982e62-6d6e-7f4d-8fe8-b55f62720b5b';
+  const path = '/api/v1/runtime/sessions/session/messages';
+  const text = 'compatibility probe';
+  const turn = { message: { turnId: UUIDS.studioSessionId } };
+
+  const modernCalls = [];
+  const modern = {
+    json: async (...args) => {
+      modernCalls.push(args);
+      return { status: 202, data: { data: turn } };
+    },
+  };
+  const modernResult = await postRuntimeMessageCompat(
+    modern,
+    'runtime_current_ui_consume',
+    path,
+    text,
+    usageId,
+  );
+  assert.deepEqual(modernResult, { status: 202, data: turn });
+  assert.equal(modernCalls.length, 1);
+  assert.deepEqual(modernCalls[0][2].data, { text, usageId });
+
+  const legacyCalls = [];
+  const legacy = {
+    json: async (...args) => {
+      legacyCalls.push(args);
+      if (legacyCalls.length === 1) {
+        return {
+          status: 400,
+          data: {
+            error: {
+              userMessage: '输入有点问题，改一下再试。',
+              action: 'change_input',
+              retriable: false,
+            },
+          },
+        };
+      }
+      return { status: 202, data: turn };
+    },
+  };
+  const legacyResult = await postRuntimeMessageCompat(
+    legacy,
+    'runtime_current_ui_consume',
+    path,
+    text,
+    usageId,
+  );
+  assert.deepEqual(legacyResult, { status: 202, data: turn });
+  assert.equal(legacyCalls.length, 2);
+  assert.deepEqual(legacyCalls[0][2].data, { text, usageId });
+  assert.deepEqual(legacyCalls[1][2].data, { text });
+
+  const unsafeCalls = [];
+  const unsafe = {
+    json: async (...args) => {
+      unsafeCalls.push(args);
+      return {
+        status: 400,
+        data: {
+          error: { userMessage: 'different failure', action: 'change_input', retriable: false },
+        },
+      };
+    },
+  };
+  await assert.rejects(
+    postRuntimeMessageCompat(unsafe, 'runtime_current_ui_consume', path, text, usageId),
+    AcceptanceFailure,
+  );
+  assert.equal(unsafeCalls.length, 1);
+
+  let networkCalls = 0;
+  const networkFailure = new Error('unknown request outcome');
+  await assert.rejects(
+    postRuntimeMessageCompat(
+      {
+        json: async () => {
+          networkCalls += 1;
+          throw networkFailure;
+        },
+      },
+      'runtime_current_ui_consume',
+      path,
+      text,
+      usageId,
+    ),
+    (error) => error === networkFailure,
+  );
+  assert.equal(networkCalls, 1);
+});
 
 test('browser URL waits poll same-document location without a lifecycle wait', async () => {
   const expectation = {
@@ -782,6 +876,7 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /artifactForTurn\(activeCandidate, interruptedTurnId\)/);
   assert.match(source, /严格分两个独立阶段执行，禁止合并工具调用/);
   assert.match(source, /必须等待第一次工具成功回执后才能进入第二阶段/);
+  assert.match(source, /postRuntimeMessageCompat\([\s\S]*interruptedPrompt/);
   assert.match(source, /artifactForTurn\(detail, interruptedTurnId\)[\s\S]*TURN_TIMEOUT_MS/);
   assert.match(source, /finally \{[\s\S]*settleOwnedAcceptanceTurn/);
   assert.match(source, /pairingCode = replay\.data\?\.pairingCode/);

@@ -440,6 +440,6 @@ test('image publication and manual CD are gated by full same-SHA verification an
   assert.match(ci, /image:[\s\S]*needs: \[integration, sandbox-integration\]/);
   assert.match(cd, /validate-preview-browser/);
   assert.match(deploy, /0007_first_party_email_auth\.sql/);
-  assert.match(ci, /0008_application_database_roles\.sql/);
+  assert.match(ci, /0009_billing\.sql/);
   assert.match(cd, /\.head_sha == \$revision/);
 });

@@ -20,7 +20,7 @@ import {
 
 const SCRIPT_PATH = fileURLToPath(new URL('./verify-release-schema.mjs', import.meta.url));
 const SOURCE_SHA = '0123456789abcdef0123456789abcdef01234567';
-const MIGRATION_HEAD = '0008_application_database_roles.sql';
+const MIGRATION_HEAD = '0009_billing.sql';
 
 function fixtureDirectory(response = SCHEMA_CONTRACT) {
   const directory = mkdtempSync(join(tmpdir(), 'combo-schema-proof-'));
@@ -83,9 +83,49 @@ test('catalog query is read-only and only uses catalog or ledger metadata', () =
   assert.match(query, /BEGIN READ ONLY;/);
   assert.match(query, /information_schema\.columns/);
   assert.match(query, /pg_catalog\.pg_constraint/);
+  assert.match(query, /pg_catalog\.pg_trigger/);
   assert.match(query, /pg_catalog\.aclexplode/);
   assert.match(query, /public\.schema_migrations/);
   assert.doesNotMatch(query, /\b(?:INSERT|UPDATE|DELETE|ALTER|DROP|TRUNCATE)\b/u);
+});
+
+test('0009 contract covers billing ownership, append-only ledger, and least privileges', () => {
+  assert.equal(SCHEMA_CONTRACT.ledger.at(-1), MIGRATION_HEAD);
+  for (const relation of [
+    'billing_accounts',
+    'billing_free_allowances',
+    'usage_charges',
+    'recharge_orders',
+    'payment_attempts',
+    'payment_callback_events',
+    'wallet_ledger',
+  ]) {
+    assert.ok(SCHEMA_CONTRACT.relations.includes(relation), `missing ${relation}`);
+  }
+  assert.ok(
+    SCHEMA_CONTRACT.constraints.includes(
+      'fk_wallet_ledger_recharge_owner|wallet_ledger|foreign|recharge_order_id,owner_user_id|recharge_orders|id,owner_user_id|no-action|not-deferrable',
+    ),
+  );
+  assert.deepEqual(SCHEMA_CONTRACT.triggers, [
+    'trg_billing_account_ledger_equation|billing_accounts|enforce_wallet_account_ledger_equation|after|row|delete,insert,update|enabled',
+    'trg_billing_free_allowance_equation|billing_free_allowances|enforce_free_allowance_equation|after|row|delete,insert,update|enabled',
+    'trg_recharge_order_credit_equation|recharge_orders|enforce_recharge_credit_equation|after|row|delete,insert,update|enabled',
+    'trg_usage_charge_account_equation|usage_charges|enforce_wallet_account_ledger_equation|after|row|delete,insert,update|enabled',
+    'trg_usage_charge_debit_equation|usage_charges|enforce_usage_debit_equation|after|row|delete,insert,update|enabled',
+    'trg_usage_charge_free_equation|usage_charges|enforce_free_allowance_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_account_equation|wallet_ledger|enforce_wallet_account_ledger_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_append_only|wallet_ledger|reject_wallet_ledger_mutation|before|row|delete,update|enabled',
+    'trg_wallet_ledger_no_truncate|wallet_ledger|reject_wallet_ledger_mutation|before|statement|truncate|enabled',
+    'trg_wallet_ledger_recharge_equation|wallet_ledger|enforce_recharge_credit_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_usage_equation|wallet_ledger|enforce_usage_debit_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_writer|wallet_ledger|enforce_wallet_ledger_writer|before|row|insert|enabled',
+  ]);
+  assert.ok(SCHEMA_CONTRACT.grants.includes('table|combo_api|wallet_ledger|INSERT'));
+  assert.ok(SCHEMA_CONTRACT.grants.includes('table|combo_runtime|wallet_ledger|INSERT'));
+  assert.ok(!SCHEMA_CONTRACT.grants.includes('table|combo_worker|wallet_ledger|SELECT'));
+  assert.ok(!SCHEMA_CONTRACT.grants.includes('table|combo_api|wallet_ledger|UPDATE'));
+  assert.ok(!SCHEMA_CONTRACT.grants.includes('table|combo_runtime|wallet_ledger|DELETE'));
 });
 
 test('writes an exact-key, mode 0600, digest-matched passed proof', () => {
@@ -112,7 +152,7 @@ test('writes an exact-key, mode 0600, digest-matched passed proof', () => {
   ]);
   assert.equal(evidence.schemaVersion, 1);
   assert.equal(evidence.status, 'passed');
-  assert.equal(evidence.contractVersion, 'combo-schema-0008-v1');
+  assert.equal(evidence.contractVersion, 'combo-schema-0009-v1');
   assert.equal(evidence.environment, 'preview');
   assert.equal(evidence.namespace, 'combo-review');
   assert.equal(evidence.sourceSha, SOURCE_SHA);
@@ -125,6 +165,7 @@ test('writes an exact-key, mode 0600, digest-matched passed proof', () => {
     'constraints',
     'indexes',
     'functions',
+    'triggers',
     'roles',
     'grants',
   ]);
@@ -228,7 +269,7 @@ test('buildPassedEvidence locks the public evidence schema', () => {
   assert.deepEqual(evidence, {
     schemaVersion: 1,
     status: 'passed',
-    contractVersion: 'combo-schema-0008-v1',
+    contractVersion: 'combo-schema-0009-v1',
     environment: 'production',
     namespace: 'combo',
     sourceSha: SOURCE_SHA,
@@ -242,6 +283,7 @@ test('buildPassedEvidence locks the public evidence schema', () => {
       constraints: SCHEMA_CONTRACT.constraints.length,
       indexes: SCHEMA_CONTRACT.indexes.length,
       functions: SCHEMA_CONTRACT.functions.length,
+      triggers: SCHEMA_CONTRACT.triggers.length,
       roles: SCHEMA_CONTRACT.roles.length,
       grants: SCHEMA_CONTRACT.grants.length,
     },

@@ -74,9 +74,28 @@ pgDescribe('first-party auth PostgreSQL invariants', () => {
   });
 
   beforeEach(async () => {
-    await pool.query(
-      'TRUNCATE auth_audit_events, auth_sessions, auth_otp_challenges, auth_identities, users CASCADE',
-    );
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const authUsers = await client.query<{ user_id: string }>(
+        'SELECT DISTINCT user_id FROM auth_identities',
+      );
+      await client.query('DELETE FROM auth_audit_events');
+      await client.query('DELETE FROM auth_sessions');
+      await client.query('DELETE FROM auth_otp_challenges');
+      await client.query('DELETE FROM auth_identities');
+      if (authUsers.rows.length > 0) {
+        await client.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [
+          authUsers.rows.map((row) => row.user_id),
+        ]);
+      }
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
     mailer = new CapturingMailer();
     randomByte = 1;
     nextOtp = 100_000;
@@ -146,7 +165,7 @@ pgDescribe('first-party auth PostgreSQL invariants', () => {
       session_digest_bytes: number;
     }>(
       `SELECT
-         (SELECT count(*)::int FROM users) AS users,
+         (SELECT count(DISTINCT user_id)::int FROM auth_identities) AS users,
          (SELECT count(*)::int FROM auth_identities) AS identities,
          (SELECT count(*)::int FROM auth_otp_challenges WHERE consumed_at IS NOT NULL) AS consumed,
          (SELECT octet_length(code_digest) FROM auth_otp_challenges LIMIT 1) AS code_digest_bytes,

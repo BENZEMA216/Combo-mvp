@@ -12,7 +12,7 @@ Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 
 
 Test 的重置命令必须同时接收完整源码 SHA、GitHub workflow run ID 和 run attempt。它在证明 PostgreSQL、Redis Queue、MinIO 三个固定目录均已清空后重建四个基础工作负载，把三元身份、实际 Pod UID 和时间写入 attempt-scoped 的 `0600` 回执。部署命令只接受同一 SHA、同一 run ID、同一 run attempt、完成时间不超过十五分钟的回执，并通过同目录原子改名只消费一次。
 
-Test 的迁移任务固定校验 `0008_application_database_roles.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0008` 各应用一次，且两遍均到达 `0008`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再按自动 `main` 或手工分支来源上传相互隔离的 attempt-scoped Test evidence。
+Test 的迁移任务固定校验 `0009_billing.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0009` 各应用一次，且两遍均到达 `0009`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再按自动 `main` 或手工分支来源上传相互隔离的 attempt-scoped Test evidence。
 
 `combo-dev-logs.sh` 在真实验收完成后读取八个唯一就绪日志源，要求 API、Runtime 和 Worker 都留下当前窗口活动，并扫描合成标记及固定凭据模式。依赖恢复导致容器重启时，它只接受至多一次可审计重启，并同时检查该 Pod 的 current 与 previous 日志；日志流尚未追平时会短时重试。失败时只能输出固定 reason code，不能回显日志正文、请求内容或合成标记。
 
@@ -49,7 +49,7 @@ group 保证 Preview 与 Test 不会并发变更环境。
 
 `verify-rendered-release.mjs` 在任何集群写入前复验 Kubernetes 服务端 dry-run 的原始对象：资源集合、namespace、镜像、命令、Secret 引用和 ClusterIP 边界必须精确符合环境契约。
 
-`deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换先建立空的 PostgreSQL、Redis 和 MinIO，再完成 bucket 初始化与单对象冒烟，然后执行 `0000` 至 `0008` 迁移并启动 API、Worker、Runtime 和 Web。消费 clean-slate reset evidence 时，它会在任何部署 mutation 前重新核对 evidence 摘要、强制精确十项，并把十个 foundation 资源的 UID 和 ownership 与 live 对象逐项重绑；基础验证阶段还会继续绑定三份 PVC/PV 身份。Preview 在公网检查后完成单次提交。Production 必须先使用 `--defer-cleanup` 激活候选并保留上一份 release，再由受保护的邮箱 OTP 六区验收产生 attestation，最后使用 `--finalize` 只读复验候选、清理旧对象并封存回滚点。复用既有基础时，进入 `finalizing` 前的验收失败、工作流失败或取消使用 `--rollback`；进入 `finalizing` 后只能以同一份 attestation 幂等续跑 `--finalize`。明确执行 `established-clean-slate-v1` 后，旧应用与新空数据基础不再构成有效回滚组合，因此从基础重建开始只能幂等续跑同一候选或前滚到更新的 main 候选。Secret、TLS、namespace 和无关资源始终不在删除范围。
+`deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换先建立空的 PostgreSQL、Redis 和 MinIO，再完成 bucket 初始化与单对象冒烟，然后执行 `0000` 至 `0009` 迁移并启动 API、Worker、Runtime 和 Web。消费 clean-slate reset evidence 时，它会在任何部署 mutation 前重新核对 evidence 摘要、强制精确十项，并把十个 foundation 资源的 UID 和 ownership 与 live 对象逐项重绑；基础验证阶段还会继续绑定三份 PVC/PV 身份。Preview 在公网检查后完成单次提交。Production 必须先使用 `--defer-cleanup` 激活候选并保留上一份 release，再由受保护的邮箱 OTP 六区验收产生 attestation，最后使用 `--finalize` 只读复验候选、清理旧对象并封存回滚点。复用既有基础时，进入 `finalizing` 前的验收失败、工作流失败或取消使用 `--rollback`；进入 `finalizing` 后只能以同一份 attestation 幂等续跑 `--finalize`。明确执行 `established-clean-slate-v1` 后，旧应用与新空数据基础不再构成有效回滚组合，因此从基础重建开始只能幂等续跑同一候选或前滚到更新的 main 候选。Secret、TLS、namespace 和无关资源始终不在删除范围。
 
 `recover-preview-post-cut.sh` 只处理 Preview 中属于旧候选、已经完成切流和清理但尚未提交 `current.json` 的 `post-cut` 检查点。它先验证检查点、发布目录、摘要集合、清理证据和当前流量身份，再使用本次不可变 artifact 内的 `deploy-release.sh` 对旧候选做完整实时复验并完成原子提交。Preview workflow 在独立的受保护 job 中执行该恢复；恢复完成后，新部署 job 必须重新取得晋级变量快照并复验 main、CI run 与 artifact，之后才能开始候选重建或部署。脚本不会直接删除检查点、改写流量或接受 Production 状态。
 
@@ -85,9 +85,9 @@ Goal C 的 Production 六区验收、正式域名验证和发布最终化全部�
 
 `retire-legacy-auth-secrets.sh` 只允许操作 `combo-preview/combo-dev-env`、`combo-review/combo-preview-env` 和 `combo/combo-env`。它在任何写入前完成三个目标的精确权限和元数据预检，只输出环境、对象名称以及 UID、resourceVersion 与类型相关的布尔验证结果，不输出 UID、resourceVersion 或 Secret 值。每次删除都使用带 UID 和 resourceVersion 条件的 JSON Patch，并且只能删除脚本内固定列出的旧认证键；键已经不存在时会以稳定的服务端缺失路径结果证明幂等。脚本不会删除或重建 Secret 对象，也不会修改无关键。完成这个步骤并确认运行对象不再依赖旧身份提供商后，管理员才可以在旧身份提供商控制台撤销 Combo 应用凭据并删除 Combo 专属租户。
 
-`collect-live-runtime-evidence.sh` 从目标 namespace 的实际 Deployment、Pod、迁移 Job 和迁移 Pod 采集 Ready 状态、容器 `imageID`、退出码及精确 `0000` 至 `0008` 账本。Preview 晋级证据会保存该结果；Production 变更前还会即时重采 Preview并重新验证。
+`collect-live-runtime-evidence.sh` 从目标 namespace 的实际 Deployment、Pod、迁移 Job 和迁移 Pod 采集 Ready 状态、容器 `imageID`、退出码及精确 `0000` 至 `0009` 账本。Preview 晋级证据会保存该结果；Production 变更前还会即时重采 Preview并重新验证。
 
-`verify-release-schema.mjs` 在 Preview 或 Production 的 `release-postgres-0` 内开启只读事务，从 PostgreSQL 系统目录核对 `0000` 至 `0008` 的完整表和列、Turn 关联约束、部分索引、邮箱认证表、UUID v7 函数及三个应用角色的最小权限。它不读取业务行或输出数据库凭据，只原子写入权限为 `0600` 的脱敏结构证明及摘要；任何旧表、结构漂移或越权授权都会使验证失败。
+`verify-release-schema.mjs` 在 Preview 或 Production 的 `release-postgres-0` 内开启只读事务，从 PostgreSQL 系统目录核对 `0000` 至 `0009` 的完整表和列、Turn 与计费关联约束、部分索引、邮箱认证表、UUID v7 与账本防篡改函数、账本触发器及三个应用角色的最小权限。它不读取业务行或输出数据库凭据，只原子写入权限为 `0600` 的脱敏结构证明及摘要；任何旧表、结构漂移或越权授权都会使验证失败。
 
 `release-nginx-route.mjs` 按固定 server_name、proxy_pass 数量和端口集合解析 Nginx，不执行全文件模糊替换。Production canary 配置与 `buildwithcombo.com` 的 `happy.conf` 分别做摘要 CAS；正式域名只允许四个 Web upstream 在 `30080` 和 `18082` 之间整体切换，证书指令保持原字节。
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /* global HTMLButtonElement, document, setTimeout, window */
 
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   closeSync,
   constants as fsConstants,
@@ -544,6 +544,31 @@ class BrowserApi {
       data: options.envelope === false ? body : responseData(body, check),
     };
   }
+}
+
+export async function postRuntimeMessageCompat(api, check, path, text, usageId = randomUUID()) {
+  let started = await api.json(check, path, {
+    method: 'POST',
+    data: { text, usageId },
+    expected: [202, 400],
+    envelope: false,
+  });
+  if (started.status === 400) {
+    ensure(
+      started.data?.error?.userMessage === '输入有点问题，改一下再试。' &&
+        started.data?.error?.action === 'change_input' &&
+        started.data?.error?.retriable === false,
+      check,
+      'invalid_response',
+    );
+    return api.json(check, path, {
+      method: 'POST',
+      data: { text },
+      expected: [202],
+    });
+  }
+  started = { ...started, data: responseData(started.data, check) };
+  return started;
 }
 
 async function poll(check, read, accept, timeoutMs, intervalMs = POLL_INTERVAL_MS) {
@@ -1677,16 +1702,13 @@ async function runAcceptance(options) {
       const currentUiBefore = secondDetail.currentUiArtifactId;
       let interruptedTurnId;
       try {
-        const started = await api.json(
+        const interruptedPrompt =
+          '严格分两个独立阶段执行，禁止合并工具调用。第一阶段不要先分析或重设计，只在当前页面基础上做一个极小、可见且不改变业务与交互的标题调整，立即省略 artifactId 调用 upsert_artifact 保存完整合法 HTML；必须等待第一次工具成功回执后才能进入第二阶段。第二阶段收到回执后，再开始逐区补充整个页面的大量细节，完成后另行省略 artifactId 调用 upsert_artifact；第二阶段结束前不要给最终答复。';
+        const started = await postRuntimeMessageCompat(
+          api,
           activeCheck,
           `/api/v1/runtime/sessions/${studioSession.id}/messages`,
-          {
-            method: 'POST',
-            data: {
-              text: '严格分两个独立阶段执行，禁止合并工具调用。第一阶段不要先分析或重设计，只在当前页面基础上做一个极小、可见且不改变业务与交互的标题调整，立即省略 artifactId 调用 upsert_artifact 保存完整合法 HTML；必须等待第一次工具成功回执后才能进入第二阶段。第二阶段收到回执后，再开始逐区补充整个页面的大量细节，完成后另行省略 artifactId 调用 upsert_artifact；第二阶段结束前不要给最终答复。',
-            },
-            expected: [202],
-          },
+          interruptedPrompt,
         );
         interruptedTurnId = started.data?.message?.turnId;
         ensure(UUID_PATTERN.test(interruptedTurnId ?? ''), activeCheck);

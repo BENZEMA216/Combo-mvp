@@ -15,8 +15,8 @@ import { basename, dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const CONTRACT_VERSION = 'combo-schema-0008-v1';
-const EXPECTED_MIGRATION_HEAD = '0008_application_database_roles.sql';
+const CONTRACT_VERSION = 'combo-schema-0009-v1';
+const EXPECTED_MIGRATION_HEAD = '0009_billing.sql';
 const ENVIRONMENT_NAMESPACES = Object.freeze({
   preview: 'combo-review',
   production: 'combo',
@@ -31,6 +31,7 @@ const MIGRATIONS = Object.freeze([
   '0005_capability_current_ui.sql',
   '0006_one_running_turn_per_session.sql',
   '0007_first_party_email_auth.sql',
+  '0008_application_database_roles.sql',
   EXPECTED_MIGRATION_HEAD,
 ]);
 
@@ -42,14 +43,21 @@ const RELATIONS = Object.freeze(
     'auth_identities',
     'auth_otp_challenges',
     'auth_sessions',
+    'billing_accounts',
+    'billing_free_allowances',
     'capabilities',
     'messages',
+    'payment_attempts',
+    'payment_callback_events',
+    'recharge_orders',
     'schema_migrations',
     'sessions',
     'tasks',
     'turns',
     'uploads',
+    'usage_charges',
     'users',
+    'wallet_ledger',
   ].sort(),
 );
 
@@ -201,6 +209,97 @@ const COLUMNS = Object.freeze(
     column('auth_audit_events', 'trace_id', 'text'),
     column('auth_audit_events', 'details', 'jsonb'),
     column('auth_audit_events', 'created_at', 'timestamptz'),
+
+    column('billing_accounts', 'owner_user_id', 'uuid'),
+    column('billing_accounts', 'balance_cents', 'int8'),
+    column('billing_accounts', 'reserved_cents', 'int8'),
+    column('billing_accounts', 'created_at', 'timestamptz'),
+    column('billing_accounts', 'updated_at', 'timestamptz'),
+
+    column('billing_free_allowances', 'owner_user_id', 'uuid'),
+    column('billing_free_allowances', 'capability_id', 'uuid'),
+    column('billing_free_allowances', 'policy_version', 'text'),
+    column('billing_free_allowances', 'free_limit_snapshot', 'int4'),
+    column('billing_free_allowances', 'free_used_count', 'int4'),
+    column('billing_free_allowances', 'free_reserved_count', 'int4'),
+    column('billing_free_allowances', 'created_at', 'timestamptz'),
+    column('billing_free_allowances', 'updated_at', 'timestamptz'),
+
+    column('usage_charges', 'id', 'uuid'),
+    column('usage_charges', 'owner_user_id', 'uuid'),
+    column('usage_charges', 'usage_id', 'uuid'),
+    column('usage_charges', 'capability_id', 'uuid'),
+    column('usage_charges', 'session_id', 'uuid'),
+    column('usage_charges', 'turn_id', 'uuid'),
+    column('usage_charges', 'request_fingerprint', 'bpchar'),
+    column('usage_charges', 'charge_source', 'text'),
+    column('usage_charges', 'status', 'text'),
+    column('usage_charges', 'unit_price_cents', 'int8'),
+    column('usage_charges', 'free_limit_snapshot', 'int4'),
+    column('usage_charges', 'reserved_cents', 'int8'),
+    column('usage_charges', 'settled_cents', 'int8'),
+    column('usage_charges', 'created_at', 'timestamptz'),
+    column('usage_charges', 'updated_at', 'timestamptz'),
+    column('usage_charges', 'finished_at', 'timestamptz', true),
+
+    column('recharge_orders', 'id', 'uuid'),
+    column('recharge_orders', 'order_no', 'text'),
+    column('recharge_orders', 'owner_user_id', 'uuid'),
+    column('recharge_orders', 'client_idempotency_key', 'text'),
+    column('recharge_orders', 'package_id', 'text'),
+    column('recharge_orders', 'amount_cents', 'int8'),
+    column('recharge_orders', 'payment_method', 'text'),
+    column('recharge_orders', 'gateway_environment', 'text'),
+    column('recharge_orders', 'institution_no', 'text'),
+    column('recharge_orders', 'merchant_no', 'text'),
+    column('recharge_orders', 'pay_trace_no', 'text'),
+    column('recharge_orders', 'pay_time', 'bpchar'),
+    column('recharge_orders', 'payment_status', 'text'),
+    column('recharge_orders', 'credit_status', 'text'),
+    column('recharge_orders', 'platform_trade_no', 'text', true),
+    column('recharge_orders', 'query_attempt_count', 'int4'),
+    column('recharge_orders', 'next_query_at', 'timestamptz', true),
+    column('recharge_orders', 'query_lease_owner', 'text', true),
+    column('recharge_orders', 'query_lease_expires_at', 'timestamptz', true),
+    column('recharge_orders', 'last_queried_at', 'timestamptz', true),
+    column('recharge_orders', 'paid_at', 'timestamptz', true),
+    column('recharge_orders', 'credited_at', 'timestamptz', true),
+    column('recharge_orders', 'created_at', 'timestamptz'),
+    column('recharge_orders', 'updated_at', 'timestamptz'),
+
+    column('payment_attempts', 'id', 'uuid'),
+    column('payment_attempts', 'recharge_order_id', 'uuid'),
+    column('payment_attempts', 'attempt_no', 'int4'),
+    column('payment_attempts', 'status', 'text'),
+    column('payment_attempts', 'request_fingerprint', 'bpchar'),
+    column('payment_attempts', 'gateway_result_code', 'text', true),
+    column('payment_attempts', 'platform_trade_no', 'text', true),
+    column('payment_attempts', 'action_kind', 'text', true),
+    column('payment_attempts', 'action_value', 'text', true),
+    column('payment_attempts', 'action_expires_at', 'timestamptz', true),
+    column('payment_attempts', 'started_at', 'timestamptz'),
+    column('payment_attempts', 'completed_at', 'timestamptz', true),
+    column('payment_attempts', 'updated_at', 'timestamptz'),
+
+    column('payment_callback_events', 'id', 'uuid'),
+    column('payment_callback_events', 'event_fingerprint', 'bpchar'),
+    column('payment_callback_events', 'recharge_order_id', 'uuid', true),
+    column('payment_callback_events', 'signature_valid', 'bool'),
+    column('payment_callback_events', 'platform_trade_no', 'text', true),
+    column('payment_callback_events', 'amount_cents', 'int8', true),
+    column('payment_callback_events', 'trade_status', 'text', true),
+    column('payment_callback_events', 'processing_status', 'text'),
+    column('payment_callback_events', 'rejection_code', 'text', true),
+    column('payment_callback_events', 'received_at', 'timestamptz'),
+    column('payment_callback_events', 'processed_at', 'timestamptz', true),
+
+    column('wallet_ledger', 'id', 'uuid'),
+    column('wallet_ledger', 'owner_user_id', 'uuid'),
+    column('wallet_ledger', 'entry_type', 'text'),
+    column('wallet_ledger', 'amount_cents', 'int8'),
+    column('wallet_ledger', 'recharge_order_id', 'uuid', true),
+    column('wallet_ledger', 'usage_charge_id', 'uuid', true),
+    column('wallet_ledger', 'created_at', 'timestamptz'),
   ].sort(),
 );
 
@@ -208,7 +307,19 @@ const CONSTRAINTS = Object.freeze(
   [
     'fk_artifacts_turn_session|artifacts|foreign|turn_id,session_id|turns|id,session_id|cascade|not-deferrable',
     'fk_messages_turn_session|messages|foreign|turn_id,session_id|turns|id,session_id|no-action|not-deferrable',
+    'fk_usage_charge_session_scope|usage_charges|foreign|session_id,capability_id,owner_user_id|sessions|id,capability_id,owner_user_id|no-action|not-deferrable',
+    'fk_usage_charge_turn_scope|usage_charges|foreign|turn_id,session_id|turns|id,session_id|no-action|not-deferrable',
+    'fk_wallet_ledger_recharge_owner|wallet_ledger|foreign|recharge_order_id,owner_user_id|recharge_orders|id,owner_user_id|no-action|not-deferrable',
+    'fk_wallet_ledger_usage_owner|wallet_ledger|foreign|usage_charge_id,owner_user_id|usage_charges|id,owner_user_id|no-action|not-deferrable',
+    'uq_payment_attempt_order_no|payment_attempts|unique|recharge_order_id,attempt_no||||not-deferrable',
+    'uq_recharge_gateway_trace|recharge_orders|unique|pay_trace_no,pay_time||||not-deferrable',
+    'uq_recharge_id_owner|recharge_orders|unique|id,owner_user_id||||not-deferrable',
+    'uq_recharge_owner_idempotency|recharge_orders|unique|owner_user_id,client_idempotency_key||||not-deferrable',
+    'uq_sessions_billing_scope|sessions|unique|id,capability_id,owner_user_id||||not-deferrable',
     'uq_turns_id_session|turns|unique|id,session_id||||not-deferrable',
+    'uq_usage_charge_id_owner|usage_charges|unique|id,owner_user_id||||not-deferrable',
+    'uq_usage_charge_owner_usage|usage_charges|unique|owner_user_id,usage_id||||not-deferrable',
+    'uq_usage_charge_turn|usage_charges|unique|turn_id||||not-deferrable',
   ].sort(),
 );
 
@@ -218,20 +329,56 @@ const INDEXES = Object.freeze(
     'idx_auth_audit_target_recent|auth_audit_events|non-unique|target_digest,created_at|(target_digestISNOTNULL)',
     'idx_auth_sessions_user_live|auth_sessions|non-unique|user_id,expires_at|(revoked_atISNULL)',
     'idx_messages_turn|messages|non-unique|turn_id|(turn_idISNOTNULL)',
+    'idx_payment_callback_order_recent|payment_callback_events|non-unique|recharge_order_id,received_at|(recharge_order_idISNOTNULL)',
+    "idx_payment_callback_rejected_retention|payment_callback_events|non-unique|received_at,id|(processing_status='rejected'::text)",
+    'idx_payment_attempts_action_expiry|payment_attempts|non-unique|action_expires_at,id|(action_valueISNOTNULL)',
+    "idx_recharge_query_due|recharge_orders|non-unique|next_query_at,created_at,id|((payment_status=ANY(ARRAY['created'::text,'pending'::text,'unknown'::text]))AND(credit_status='uncredited'::text))",
+    "idx_recharge_query_lease|recharge_orders|non-unique|query_lease_expires_at,id|((payment_status=ANY(ARRAY['created'::text,'pending'::text,'unknown'::text]))AND(credit_status='uncredited'::text))",
     "idx_sessions_owner_mode|sessions|non-unique|owner_user_id,mode,updated_at|(status='active'::text)",
     "idx_tasks_claimable|tasks|non-unique|lease_expires_at|(status='running'::text)",
     "idx_turns_running|turns|non-unique|created_at|(status='running'::text)",
     "idx_uploads_expired_unpurged|uploads|non-unique|updated_at,task_id|((status='expired'::text)AND(raw_purged_atISNULL))",
     "idx_uploads_pending_expiry|uploads|non-unique|pairing_expires_at,task_id|(status='pending'::text)",
+    "idx_usage_charges_reserved|usage_charges|non-unique|created_at,id|(status='reserved'::text)",
     'uq_auth_otp_unfinished_target|auth_otp_challenges|unique|channel,purpose,target_digest|((activated_atISNOTNULL)AND(consumed_atISNULL)AND(invalidated_atISNULL))',
     'uq_capabilities_ui_artifact|capabilities|unique|ui_artifact_id|(ui_artifact_idISNOTNULL)',
     'uq_messages_turn_idx|messages|unique|turn_id,idx|(turn_idISNOTNULL)',
+    'uq_recharge_platform_trade|recharge_orders|unique|gateway_environment,institution_no,merchant_no,platform_trade_no|(platform_trade_noISNOTNULL)',
     "uq_sessions_active_studio_owner_capability|sessions|unique|owner_user_id,capability_id|((status='active'::text)AND(mode='studio'::text))",
     "uq_turns_session_running|turns|unique|session_id|(status='running'::text)",
+    'uq_wallet_ledger_recharge_entry|wallet_ledger|unique|entry_type,recharge_order_id|(recharge_order_idISNOTNULL)',
+    'uq_wallet_ledger_usage_entry|wallet_ledger|unique|entry_type,usage_charge_id|(usage_charge_idISNOTNULL)',
   ].sort(),
 );
 
-const FUNCTIONS = Object.freeze(['gen_uuid_v7|uuid|plpgsql|volatile|0']);
+const FUNCTIONS = Object.freeze(
+  [
+    'enforce_free_allowance_equation|trigger|plpgsql|volatile|security-invoker|0',
+    'enforce_recharge_credit_equation|trigger|plpgsql|volatile|security-invoker|0',
+    'enforce_usage_debit_equation|trigger|plpgsql|volatile|security-invoker|0',
+    'enforce_wallet_account_ledger_equation|trigger|plpgsql|volatile|security-invoker|0',
+    'enforce_wallet_ledger_writer|trigger|plpgsql|volatile|security-invoker|0',
+    'gen_uuid_v7|uuid|plpgsql|volatile|security-invoker|0',
+    'reject_wallet_ledger_mutation|trigger|plpgsql|volatile|security-invoker|0',
+  ].sort(),
+);
+
+const TRIGGERS = Object.freeze(
+  [
+    'trg_billing_free_allowance_equation|billing_free_allowances|enforce_free_allowance_equation|after|row|delete,insert,update|enabled',
+    'trg_billing_account_ledger_equation|billing_accounts|enforce_wallet_account_ledger_equation|after|row|delete,insert,update|enabled',
+    'trg_recharge_order_credit_equation|recharge_orders|enforce_recharge_credit_equation|after|row|delete,insert,update|enabled',
+    'trg_usage_charge_account_equation|usage_charges|enforce_wallet_account_ledger_equation|after|row|delete,insert,update|enabled',
+    'trg_usage_charge_debit_equation|usage_charges|enforce_usage_debit_equation|after|row|delete,insert,update|enabled',
+    'trg_usage_charge_free_equation|usage_charges|enforce_free_allowance_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_account_equation|wallet_ledger|enforce_wallet_account_ledger_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_append_only|wallet_ledger|reject_wallet_ledger_mutation|before|row|delete,update|enabled',
+    'trg_wallet_ledger_no_truncate|wallet_ledger|reject_wallet_ledger_mutation|before|statement|truncate|enabled',
+    'trg_wallet_ledger_recharge_equation|wallet_ledger|enforce_recharge_credit_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_usage_equation|wallet_ledger|enforce_usage_debit_equation|after|row|delete,insert,update|enabled',
+    'trg_wallet_ledger_writer|wallet_ledger|enforce_wallet_ledger_writer|before|row|insert|enabled',
+  ].sort(),
+);
 
 const ROLES = Object.freeze(
   ['combo_api', 'combo_runtime', 'combo_worker']
@@ -276,6 +423,67 @@ const GRANTS = Object.freeze(
         (privilege) => `table|combo_runtime|${table}|${privilege}`,
       ),
     ),
+    ...[
+      'billing_accounts',
+      'payment_attempts',
+      'payment_callback_events',
+      'recharge_orders',
+      'wallet_ledger',
+    ].flatMap((table) =>
+      ['INSERT', 'SELECT'].map((privilege) => `table|combo_api|${table}|${privilege}`),
+    ),
+    ...['billing_free_allowances', 'usage_charges'].map(
+      (table) => `table|combo_api|${table}|SELECT`,
+    ),
+    ...['billing_accounts', 'billing_free_allowances', 'usage_charges', 'wallet_ledger'].flatMap(
+      (table) =>
+        ['INSERT', 'SELECT'].map((privilege) => `table|combo_runtime|${table}|${privilege}`),
+    ),
+    ...['balance_cents', 'updated_at'].map(
+      (name) => `column|combo_api|billing_accounts.${name}|UPDATE`,
+    ),
+    ...[
+      'credit_status',
+      'credited_at',
+      'last_queried_at',
+      'next_query_at',
+      'paid_at',
+      'payment_status',
+      'platform_trade_no',
+      'query_attempt_count',
+      'query_lease_expires_at',
+      'query_lease_owner',
+      'updated_at',
+    ].map((name) => `column|combo_api|recharge_orders.${name}|UPDATE`),
+    ...[
+      'action_expires_at',
+      'action_kind',
+      'action_value',
+      'completed_at',
+      'gateway_result_code',
+      'platform_trade_no',
+      'status',
+      'updated_at',
+    ].map((name) => `column|combo_api|payment_attempts.${name}|UPDATE`),
+    ...[
+      'amount_cents',
+      'platform_trade_no',
+      'processed_at',
+      'processing_status',
+      'recharge_order_id',
+      'rejection_code',
+      'signature_valid',
+      'trade_status',
+    ].map((name) => `column|combo_api|payment_callback_events.${name}|UPDATE`),
+    ...['balance_cents', 'reserved_cents', 'updated_at'].map(
+      (name) => `column|combo_runtime|billing_accounts.${name}|UPDATE`,
+    ),
+    ...['free_reserved_count', 'free_used_count', 'updated_at'].map(
+      (name) => `column|combo_runtime|billing_free_allowances.${name}|UPDATE`,
+    ),
+    ...['finished_at', 'settled_cents', 'status', 'updated_at'].map(
+      (name) => `column|combo_runtime|usage_charges.${name}|UPDATE`,
+    ),
     'column|combo_runtime|capabilities.ui_artifact_id|UPDATE',
     'function|combo_api|gen_uuid_v7()|EXECUTE',
     'function|combo_runtime|gen_uuid_v7()|EXECUTE',
@@ -294,6 +502,7 @@ export const SCHEMA_CONTRACT = Object.freeze({
   constraints: CONSTRAINTS,
   indexes: INDEXES,
   functions: FUNCTIONS,
+  triggers: TRIGGERS,
   roles: ROLES,
   grants: GRANTS,
 });
@@ -307,6 +516,7 @@ const ACTUAL_KEYS = Object.freeze([
   'ledger',
   'relations',
   'roles',
+  'triggers',
 ]);
 
 function canonicalJson(value) {
@@ -377,11 +587,7 @@ function sqlArray(expression, fromClause, whereClause = '') {
 }
 
 export function buildCatalogQuery() {
-  const constraints = [
-    'fk_artifacts_turn_session',
-    'fk_messages_turn_session',
-    'uq_turns_id_session',
-  ]
+  const constraints = CONSTRAINTS.map((fact) => fact.slice(0, fact.indexOf('|')))
     .map((name) => `'${name}'`)
     .join(', ');
 
@@ -497,6 +703,10 @@ SELECT json_build_object(
               WHEN 'i' THEN 'immutable'
               ELSE 'unsupported'
             END || '|'
+         || CASE WHEN function_record.prosecdef
+              THEN 'security-definer'
+              ELSE 'security-invoker'
+            END || '|'
          || function_record.pronargs::text`,
     `FROM pg_catalog.pg_proc function_record
          JOIN pg_catalog.pg_namespace namespace
@@ -506,7 +716,52 @@ SELECT json_build_object(
          JOIN pg_catalog.pg_language language
            ON language.oid = function_record.prolang`,
     `WHERE namespace.nspname = 'public'
-           AND function_record.proname = 'gen_uuid_v7'`,
+           AND function_record.proname IN (
+             'enforce_free_allowance_equation',
+             'enforce_recharge_credit_equation',
+             'enforce_usage_debit_equation',
+             'enforce_wallet_account_ledger_equation',
+             'enforce_wallet_ledger_writer',
+             'gen_uuid_v7',
+             'reject_wallet_ledger_mutation'
+           )`,
+  )},
+  'triggers',
+  ${sqlArray(
+    `trigger_record.tgname || '|' || relation.relname || '|' ||
+         function_record.proname || '|' ||
+         CASE
+           WHEN (trigger_record.tgtype::int & 2) <> 0 THEN 'before'
+           WHEN (trigger_record.tgtype::int & 64) <> 0 THEN 'instead-of'
+           ELSE 'after'
+         END || '|' ||
+         CASE
+           WHEN (trigger_record.tgtype::int & 1) <> 0 THEN 'row'
+           ELSE 'statement'
+         END || '|' ||
+         concat_ws(
+           ',',
+           CASE WHEN (trigger_record.tgtype::int & 8) <> 0 THEN 'delete' END,
+           CASE WHEN (trigger_record.tgtype::int & 4) <> 0 THEN 'insert' END,
+           CASE WHEN (trigger_record.tgtype::int & 32) <> 0 THEN 'truncate' END,
+           CASE WHEN (trigger_record.tgtype::int & 16) <> 0 THEN 'update' END
+         ) || '|' ||
+         CASE trigger_record.tgenabled
+           WHEN 'O' THEN 'enabled'
+           WHEN 'D' THEN 'disabled'
+           WHEN 'R' THEN 'replica'
+           WHEN 'A' THEN 'always'
+           ELSE 'unsupported'
+         END`,
+    `FROM pg_catalog.pg_trigger trigger_record
+         JOIN pg_catalog.pg_class relation
+           ON relation.oid = trigger_record.tgrelid
+         JOIN pg_catalog.pg_namespace namespace
+           ON namespace.oid = relation.relnamespace
+         JOIN pg_catalog.pg_proc function_record
+           ON function_record.oid = trigger_record.tgfoid`,
+    `WHERE namespace.nspname = 'public'
+           AND NOT trigger_record.tgisinternal`,
   )},
   'roles',
   ${sqlArray(
@@ -559,8 +814,8 @@ SELECT json_build_object(
              OR grantee.rolname IN ('combo_api', 'combo_worker', 'combo_runtime')
            )
         UNION ALL
-        SELECT 'function|' || COALESCE(grantee.rolname, 'PUBLIC') ||
-               '|gen_uuid_v7()|' ||
+        SELECT 'function|' || COALESCE(grantee.rolname, 'PUBLIC') || '|' ||
+               function_record.proname || '()|' ||
                function_acl.privilege_type
           FROM pg_catalog.pg_proc function_record
           JOIN pg_catalog.pg_namespace namespace
@@ -574,7 +829,15 @@ SELECT json_build_object(
           LEFT JOIN pg_catalog.pg_roles grantee
             ON grantee.oid = function_acl.grantee
          WHERE namespace.nspname = 'public'
-           AND function_record.proname = 'gen_uuid_v7'
+           AND function_record.proname IN (
+             'enforce_free_allowance_equation',
+             'enforce_recharge_credit_equation',
+             'enforce_usage_debit_equation',
+             'enforce_wallet_account_ledger_equation',
+             'enforce_wallet_ledger_writer',
+             'gen_uuid_v7',
+             'reject_wallet_ledger_mutation'
+           )
            AND function_record.pronargs = 0
            AND (
              function_acl.grantee = 0
@@ -677,6 +940,7 @@ function evidenceCounts(contract) {
     constraints: contract.constraints.length,
     indexes: contract.indexes.length,
     functions: contract.functions.length,
+    triggers: contract.triggers.length,
     roles: contract.roles.length,
     grants: contract.grants.length,
   };

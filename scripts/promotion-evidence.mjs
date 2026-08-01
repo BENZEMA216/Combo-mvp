@@ -51,6 +51,7 @@ const EXPECTED_MIGRATIONS = Object.freeze([
   '0006_one_running_turn_per_session.sql',
   '0007_first_party_email_auth.sql',
   '0008_application_database_roles.sql',
+  '0009_billing.sql',
 ]);
 const EXPECTED_DATABASE_TABLES = Object.freeze([
   'artifacts',
@@ -59,14 +60,21 @@ const EXPECTED_DATABASE_TABLES = Object.freeze([
   'auth_identities',
   'auth_otp_challenges',
   'auth_sessions',
+  'billing_accounts',
+  'billing_free_allowances',
   'capabilities',
   'messages',
+  'payment_attempts',
+  'payment_callback_events',
+  'recharge_orders',
   'schema_migrations',
   'sessions',
   'tasks',
   'turns',
   'uploads',
+  'usage_charges',
   'users',
+  'wallet_ledger',
 ]);
 
 export const PROMOTION_ENVIRONMENTS = Object.freeze({
@@ -138,7 +146,7 @@ export const SIX_AREA_CHECKS = Object.freeze({
   operationsAndRelease: Object.freeze([
     'four_planes_ready',
     'immutable_image_match',
-    'migration_head_0008',
+    'migration_head_0009',
     'release_manifest_match',
     'web_asset_manifest_match',
     'version_json_match',
@@ -1527,7 +1535,7 @@ export function validateReleaseInventory(value, expectedIdentity) {
     value.migration.jobImage !== identity.images.api ||
     JSON.stringify(value.migration.ledger) !== JSON.stringify(EXPECTED_MIGRATIONS)
   ) {
-    fail('release inventory migration evidence is not exactly 0000 through 0008');
+    fail('release inventory migration evidence is not exactly 0000 through 0009');
   }
   timestamp(value.migration.jobCompletionTime, 'release inventory migration completion');
   exactKeys(value.resources, INVENTORY_RESOURCE_KEYS, 'release inventory resources');
@@ -1766,7 +1774,7 @@ export function validateLiveRuntimeEvidence(value, expectedIdentity) {
       value.migration.pod.uid ?? '',
     )
   ) {
-    fail('live runtime migration does not prove the exact immutable 0000 through 0008 run');
+    fail('live runtime migration does not prove the exact immutable 0000 through 0009 run');
   }
   timestamp(value.migration.job.completionTime, 'live runtime migration completion');
   assertSafeEvidence(value);

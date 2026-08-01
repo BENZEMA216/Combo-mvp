@@ -113,6 +113,64 @@ spec:
                 secretKeyRef:
                   key: OTP_HMAC_SECRET
                   name: combo-dev-env
+            - name: BILLING_RECHARGE_PACKAGES_JSON
+              valueFrom:
+                secretKeyRef:
+                  key: BILLING_RECHARGE_PACKAGES_JSON
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_ENABLED
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_ENVIRONMENT
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_ENVIRONMENT
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_PRODUCTION_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_PRODUCTION_ENABLED
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_INSTITUTION_NO
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_INSTITUTION_NO
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_MERCHANT_NO
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_MERCHANT_NO
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_INSTITUTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_INSTITUTION_KEY
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_NOTIFY_URL
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_NOTIFY_URL
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_FRONT_URL
+              valueFrom:
+                secretKeyRef:
+                  key: LESHOUYING_FRONT_URL
+                  name: combo-dev-env
+                  optional: true
+            - name: LESHOUYING_TIMEOUT_MS
+              value: '5000'
+            - name: BILLING_RECONCILE_INTERVAL_MS
+              value: '15000'
             - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -260,6 +318,10 @@ spec:
               value: http://127.0.0.1:18080
             - name: SESSION_COOKIE_SECURE
               value: 'false'
+            - name: RUNTIME_BILLING_FREE_USES
+              value: '3'
+            - name: RUNTIME_BILLING_UNIT_PRICE_CENTS
+              value: '100'
             - name: OTEL_SDK_DISABLED
               value: 'true'
             - name: PGHOST
