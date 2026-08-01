@@ -213,6 +213,22 @@ const LIVE_BROWSER_TURN_DIAGNOSTIC_CODES = Object.freeze([
   'TURN_COMPLETED_WITHOUT_ARTIFACT',
   'TURN_DETAIL_INVARIANT',
 ]);
+const LIVE_BROWSER_MESSAGE_SUBMIT_DIAGNOSTIC_REASONS = Object.freeze({
+  MESSAGE_REQUEST_NOT_OBSERVED: 'timeout',
+  MESSAGE_REQUEST_FAILED: 'timeout',
+  MESSAGE_REQUEST_COUNT_UNEXPECTED: 'invalid_response',
+  MESSAGE_RESPONSE_STATUS_UNEXPECTED: 'http_status',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_ACCEPTED: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_REJECTED: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_MESSAGE_COMMITTED: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_ABSENT: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_CLIENT_REJECTED: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_SERVER_REJECTED: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_UNEXPECTED_STATUS: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_INVALID: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT: 'timeout',
+  MESSAGE_RESPONSE_TIMEOUT_DETAIL_FAILED: 'timeout',
+});
 const LIVE_BROWSER_FAILURE_SENSITIVE_KEY_PATTERN = /(?:body|cookie|email|key|otp|resend|token)/i;
 const LIVE_BROWSER_FAILURE_SENSITIVE_VALUE_PATTERNS = Object.freeze([
   /[^\s@]+@[^\s@]+/i,
@@ -1293,15 +1309,19 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity, expe
 
   if (!isObject(value.failure)) fail('live browser failure must be an object');
   const failureKeys = Object.keys(value.failure);
-  const allowedFailureKeys = new Set(['check', 'diagnosticCode', 'reason', 'statusCode']);
+  const allowedFailureKeys = new Set([
+    'check',
+    'diagnosticCode',
+    'reason',
+    'requestCount',
+    'statusCode',
+  ]);
   if (
     !Object.hasOwn(value.failure, 'check') ||
     !Object.hasOwn(value.failure, 'reason') ||
     failureKeys.some((key) => !allowedFailureKeys.has(key))
   ) {
-    fail(
-      'live browser failure keys must be check, reason, and optional statusCode or diagnosticCode',
-    );
+    fail('live browser failure keys must be check, reason, and optional bounded diagnostics');
   }
   const nextCheck = LIVE_BROWSER_CHECKS[value.checks.length];
   if (value.failure.check !== nextCheck && value.failure.check !== 'acceptance_runtime') {
@@ -1319,18 +1339,51 @@ export function validateLiveBrowserFailureEvidence(value, expectedIdentity, expe
   ) {
     fail('live browser failure statusCode must be a reasonable HTTP status');
   }
-  if (
-    Object.hasOwn(value.failure, 'diagnosticCode') &&
-    (value.failure.reason !== 'invalid_response' ||
-      ![
+  if (Object.hasOwn(value.failure, 'diagnosticCode')) {
+    const isTurnDiagnostic =
+      value.failure.reason === 'invalid_response' &&
+      [
         'studio_active_turn_reload',
         'studio_first_revision',
         'runtime_sse_replay_and_terminal',
         'studio_second_revision',
-      ].includes(value.failure.check) ||
-      !LIVE_BROWSER_TURN_DIAGNOSTIC_CODES.includes(value.failure.diagnosticCode))
+      ].includes(value.failure.check) &&
+      LIVE_BROWSER_TURN_DIAGNOSTIC_CODES.includes(value.failure.diagnosticCode);
+    const messageReason =
+      LIVE_BROWSER_MESSAGE_SUBMIT_DIAGNOSTIC_REASONS[value.failure.diagnosticCode];
+    const isMessageSubmitDiagnostic =
+      value.failure.check === 'studio_single_accept_and_clear' &&
+      value.failure.reason === messageReason;
+    if (!isTurnDiagnostic && !isMessageSubmitDiagnostic) {
+      fail('live browser failure diagnosticCode must be an allowed browser diagnostic code');
+    }
+  }
+  const isMessageSubmitDiagnostic =
+    typeof value.failure.diagnosticCode === 'string' &&
+    Object.hasOwn(LIVE_BROWSER_MESSAGE_SUBMIT_DIAGNOSTIC_REASONS, value.failure.diagnosticCode);
+  const hasRequestCount = Object.hasOwn(value.failure, 'requestCount');
+  if (
+    (isMessageSubmitDiagnostic && !hasRequestCount) ||
+    (!isMessageSubmitDiagnostic && hasRequestCount) ||
+    (hasRequestCount &&
+      (!Number.isSafeInteger(value.failure.requestCount) ||
+        value.failure.requestCount < 0 ||
+        value.failure.requestCount > 100))
   ) {
-    fail('live browser failure diagnosticCode must be an allowed Studio Turn code');
+    fail('live browser failure requestCount must be a bounded message diagnostic count');
+  }
+  if (
+    isMessageSubmitDiagnostic &&
+    ((value.failure.diagnosticCode === 'MESSAGE_REQUEST_NOT_OBSERVED' &&
+      value.failure.requestCount !== 0) ||
+      (value.failure.diagnosticCode === 'MESSAGE_REQUEST_COUNT_UNEXPECTED' &&
+        value.failure.requestCount === 1) ||
+      (!['MESSAGE_REQUEST_NOT_OBSERVED', 'MESSAGE_REQUEST_COUNT_UNEXPECTED'].includes(
+        value.failure.diagnosticCode,
+      ) &&
+        value.failure.requestCount < 1))
+  ) {
+    fail('live browser failure requestCount does not match its message diagnostic');
   }
 
   if (!isObject(value.resources)) fail('live browser failure resources must be an object');
