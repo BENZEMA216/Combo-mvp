@@ -1054,6 +1054,37 @@ test('Test live-browser failure admission strictly allows failure, resource, met
     validateLiveBrowserFailureEvidence(sseTerminalTurn, testIdentity),
     sseTerminalTurn,
   );
+  const timedOutSubmit = browserFailureEvidence(12, {
+    check: 'studio_single_accept_and_clear',
+    reason: 'timeout',
+    diagnosticCode: 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+    requestCount: 1,
+  });
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(timedOutSubmit, testIdentity),
+    timedOutSubmit,
+  );
+  const rejectedSubmit = browserFailureEvidence(12, {
+    check: 'studio_single_accept_and_clear',
+    reason: 'http_status',
+    statusCode: 503,
+    diagnosticCode: 'MESSAGE_RESPONSE_STATUS_UNEXPECTED',
+    requestCount: 1,
+  });
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(rejectedSubmit, testIdentity),
+    rejectedSubmit,
+  );
+  const duplicateSubmit = browserFailureEvidence(12, {
+    check: 'studio_single_accept_and_clear',
+    reason: 'invalid_response',
+    diagnosticCode: 'MESSAGE_REQUEST_COUNT_UNEXPECTED',
+    requestCount: 2,
+  });
+  assert.deepEqual(
+    validateLiveBrowserFailureEvidence(duplicateSubmit, testIdentity),
+    duplicateSubmit,
+  );
 
   for (const changed of [
     browserFailureEvidence(14, {
@@ -1071,10 +1102,60 @@ test('Test live-browser failure admission strictly allows failure, resource, met
       reason: 'invalid_response',
       diagnosticCode: 'TURN_IDLE_TIMEOUT',
     }),
+    browserFailureEvidence(12, {
+      check: 'studio_single_accept_and_clear',
+      reason: 'invalid_response',
+      diagnosticCode: 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+      requestCount: 1,
+    }),
+    browserFailureEvidence(12, {
+      check: 'studio_single_accept_and_clear',
+      reason: 'timeout',
+      diagnosticCode: 'raw socket failure',
+      requestCount: 1,
+    }),
   ]) {
     assert.throws(
       () => validateLiveBrowserFailureEvidence(changed, testIdentity),
-      /allowed Studio Turn code/,
+      /allowed browser diagnostic code/,
+    );
+  }
+
+  for (const requestCount of [-1, 101, 1.5]) {
+    const invalidRequestCount = browserFailureEvidence(12, {
+      check: 'studio_single_accept_and_clear',
+      reason: 'timeout',
+      diagnosticCode: 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+      requestCount,
+    });
+    assert.throws(
+      () => validateLiveBrowserFailureEvidence(invalidRequestCount, testIdentity),
+      /bounded message diagnostic count/,
+    );
+  }
+  for (const failure of [
+    {
+      check: 'studio_single_accept_and_clear',
+      reason: 'timeout',
+      diagnosticCode: 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+    },
+    {
+      check: 'studio_single_accept_and_clear',
+      reason: 'timeout',
+      diagnosticCode: 'MESSAGE_REQUEST_NOT_OBSERVED',
+      requestCount: 1,
+    },
+    {
+      check: 'studio_single_accept_and_clear',
+      reason: 'invalid_response',
+      diagnosticCode: 'MESSAGE_REQUEST_COUNT_UNEXPECTED',
+      requestCount: 1,
+    },
+  ]) {
+    const invalidRequestCount = browserFailureEvidence(12, failure);
+    assert.throws(
+      () => validateLiveBrowserFailureEvidence(invalidRequestCount, testIdentity),
+      /requestCount/,
     );
   }
 

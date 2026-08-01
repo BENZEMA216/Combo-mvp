@@ -9,8 +9,10 @@ import {
   GOAL_B_ACCEPTANCE_CHECKS,
   GOAL_B_UPLOAD_PARTS,
   buildAcceptanceEvidence,
+  classifyAcceptanceMessageProtocol,
   classifyStudioTurnDetail,
   consumeUiSnapshot,
+  diagnoseTimedOutStudioMessage,
   isAllowedAcceptanceRequest,
   isAllowedAcceptanceWebSocket,
   isExpectedReleaseMetadata,
@@ -138,6 +140,229 @@ test('trusted Runtime message compatibility sends at most one accepted request',
     (error) => error === networkFailure,
   );
   assert.equal(networkCalls, 1);
+});
+
+test('live browser resolves a billing-aware unknown write before changing task', () => {
+  const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
+  const checkStart = source.indexOf("await checked('studio_failed_send_retains_draft'");
+  const checkEnd = source.indexOf("await checked('studio_single_accept_and_clear'", checkStart);
+  assert.ok(checkStart > 0 && checkEnd > checkStart);
+  const check = source.slice(checkStart, checkEnd);
+
+  assert.match(check, /status: 503/);
+  assert.match(check, /status: 400/);
+  assert.match(check, /name: '重试原任务'/);
+  assert.match(check, /let injectedPhase = 'reject-503'/);
+  assert.match(check, /injectedPhase = 'reject-400'/);
+  assert.match(check, /unexpectedInjectedRequests \+= 1[\s\S]*status: 409/);
+  assert.doesNotMatch(check, /\{ times: 1 \}/);
+  assert.match(
+    check,
+    /studioMessageProtocol = classifyAcceptanceMessageProtocol\(uncertainUsageId\)/,
+  );
+  assert.match(check, /if \(studioMessageProtocol === 'usage-id'\)/);
+  assert.match(check, /retryButton\.waitFor\(\{ state: 'visible', timeout: 10_000 \}\)/);
+  assert.match(check, /ensure\(!\(await retryButton\.isVisible\(\)\)/);
+  assert.match(check, /retryUsageId === resolvedUncertainUsageId &&\s+retryText === uncertainText/);
+  assert.match(check, /retryButton\.waitFor\(\{ state: 'hidden', timeout: 10_000 \}\)/);
+  assert.match(check, /page\.unrouteAll\(\{ behavior: 'wait' \}\)/);
+});
+
+test('message protocol classification is exact for legacy and usageId clients', () => {
+  assert.equal(classifyAcceptanceMessageProtocol(undefined), 'legacy');
+  assert.equal(
+    classifyAcceptanceMessageProtocol('41982e62-6d6e-4f4d-8fe8-b55f62720b5b'),
+    'usage-id',
+  );
+  for (const value of [null, '', 'not-a-uuid', '41982e62-6d6e-0f4d-8fe8-b55f62720b5b']) {
+    assert.equal(classifyAcceptanceMessageProtocol(value), 'invalid');
+  }
+});
+
+test('live Studio submit passively observes the real request after draining injected routes', () => {
+  const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
+  const checkStart = source.indexOf("await checked('studio_single_accept_and_clear'");
+  const checkEnd = source.indexOf("await checked('studio_active_turn_reload'", checkStart);
+  assert.ok(checkStart > 0 && checkEnd > checkStart);
+  const check = source.slice(checkStart, checkEnd);
+
+  assert.match(check, /page\.on\('request', countMessageRequest\)/);
+  assert.match(check, /requestCount = Math\.min\(100, requestCount \+ 1\)/);
+  assert.match(check, /page\.waitForRequest\(/);
+  assert.match(check, /await sendButton\.evaluate/);
+  assert.equal(check.match(/button\.click\(\);/g)?.length, 2);
+  assert.match(check, /page\.off\('request', countMessageRequest\)/);
+  assert.match(check, /submittedUsageId !== resolvedUncertainUsageId/);
+  assert.doesNotMatch(check, /page\.route\(|route\.fallback\(/);
+});
+
+test('timed-out Studio submit only interrupts its exact active Turn', async () => {
+  const detailPath = '/api/v1/runtime/sessions/session';
+  const interruptPath = `${detailPath}/interrupt`;
+  const text = 'bounded diagnostic read';
+  const activeTurnId = '41982e62-6d6e-4f4d-8fe8-b55f62720b5b';
+  const calls = [];
+  const exact = {
+    raw: async (path, options) => {
+      calls.push([path, options]);
+      if (path === interruptPath) return { status: () => 200 };
+      return {
+        status: () => 200,
+        json: async () => ({
+          data: {
+            messages: [
+              {
+                role: 'user',
+                status: 'completed',
+                turnId: activeTurnId,
+                content: [{ type: 'text', text }],
+              },
+            ],
+            activeTurn: { id: activeTurnId },
+          },
+        }),
+      };
+    },
+  };
+  assert.equal(
+    await diagnoseTimedOutStudioMessage(exact, detailPath, interruptPath, text),
+    'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_ACCEPTED',
+  );
+  assert.deepEqual(calls, [
+    [detailPath, { timeout: 5_000 }],
+    [interruptPath, { method: 'POST', data: {}, timeout: 5_000 }],
+  ]);
+
+  for (const [messageText, activeId, expected] of [
+    ['another prompt', activeTurnId, 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ABSENT'],
+    [
+      text,
+      '11111111-1111-4111-8111-111111111111',
+      'MESSAGE_RESPONSE_TIMEOUT_DETAIL_MESSAGE_COMMITTED',
+    ],
+  ]) {
+    let interruptCalls = 0;
+    const diagnostic = await diagnoseTimedOutStudioMessage(
+      {
+        raw: async (path) => {
+          if (path === interruptPath) {
+            interruptCalls += 1;
+            return { status: () => 200 };
+          }
+          return {
+            status: () => 200,
+            json: async () => ({
+              data: {
+                messages: [
+                  {
+                    role: 'user',
+                    status: 'completed',
+                    turnId: activeTurnId,
+                    content: [{ type: 'text', text: messageText }],
+                  },
+                ],
+                activeTurn: { id: activeId },
+              },
+            }),
+          };
+        },
+      },
+      detailPath,
+      interruptPath,
+      text,
+    );
+    assert.equal(diagnostic, expected);
+    assert.equal(interruptCalls, 0);
+  }
+
+  assert.equal(
+    await diagnoseTimedOutStudioMessage(
+      {
+        raw: async () => ({
+          status: () => 200,
+          json: async () => ({ data: { messages: null } }),
+        }),
+      },
+      detailPath,
+      interruptPath,
+      text,
+    ),
+    'MESSAGE_RESPONSE_TIMEOUT_DETAIL_INVALID',
+  );
+  assert.equal(
+    await diagnoseTimedOutStudioMessage(
+      {
+        raw: async (path) =>
+          path === interruptPath
+            ? { status: () => 503 }
+            : {
+                status: () => 200,
+                json: async () => ({
+                  data: {
+                    messages: [
+                      {
+                        role: 'user',
+                        status: 'completed',
+                        turnId: activeTurnId,
+                        content: [{ type: 'text', text }],
+                      },
+                    ],
+                    activeTurn: { id: activeTurnId },
+                  },
+                }),
+              },
+      },
+      detailPath,
+      interruptPath,
+      text,
+    ),
+    'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_REJECTED',
+  );
+
+  for (const [status, expected] of [
+    [404, 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_CLIENT_REJECTED'],
+    [503, 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_SERVER_REJECTED'],
+    [204, 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_UNEXPECTED_STATUS'],
+  ]) {
+    assert.equal(
+      await diagnoseTimedOutStudioMessage(
+        { raw: async () => ({ status: () => status }) },
+        detailPath,
+        interruptPath,
+        text,
+      ),
+      expected,
+    );
+  }
+
+  const timeout = new Error('must not enter evidence');
+  timeout.name = 'TimeoutError';
+  assert.equal(
+    await diagnoseTimedOutStudioMessage(
+      {
+        raw: async () => {
+          throw timeout;
+        },
+      },
+      detailPath,
+      interruptPath,
+      text,
+    ),
+    'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+  );
+  assert.equal(
+    await diagnoseTimedOutStudioMessage(
+      {
+        raw: async () => {
+          throw new Error('must not enter evidence either');
+        },
+      },
+      detailPath,
+      interruptPath,
+      text,
+    ),
+    'MESSAGE_RESPONSE_TIMEOUT_DETAIL_FAILED',
+  );
 });
 
 test('browser URL waits poll same-document location without a lifecycle wait', async () => {
@@ -411,8 +636,10 @@ test('Test origin, Nginx allowlist, and page interception preserve one loopback 
 
   assert.match(nginx, /"http:\/\/127\.0\.0\.1:18080" 1;/);
   assert.match(source, /const messageUrl = `\$\{options\.webOrigin\}\$\{messagePath\}`/);
-  assert.match(source, /page\.route\(messageUrl/);
-  assert.match(source, /route\.fallback\(\)/);
+  assert.match(source, /page\.route\(\s*messageUrl/);
+  assert.match(source, /page\.waitForRequest\([\s\S]*request\.url\(\) === messageUrl/);
+  assert.match(source, /page\.unrouteAll\(\{ behavior: 'wait' \}\)/);
+  assert.doesNotMatch(source, /route\.fallback\(\)/);
   assert.doesNotMatch(source, /page\.route\(\s*`\*\*\$\{messagePath\}`/);
 });
 
@@ -799,6 +1026,50 @@ test('failure evidence retains only an allowlisted Studio Turn diagnostic code',
     ),
   });
   assert.equal(Object.hasOwn(redacted.failure, 'diagnosticCode'), false);
+});
+
+test('message submit evidence retains only allowlisted diagnostics and bounded request count', () => {
+  const base = {
+    ...WORKFLOW_RUN,
+    revision: REVISION,
+    webOrigin: ORIGIN,
+    startedAt: '2026-07-25T00:00:00.000Z',
+    completedAt: '2026-07-25T00:01:00.000Z',
+    checks: [],
+    resources: {},
+    metrics: {},
+  };
+  const evidence = buildAcceptanceEvidence({
+    ...base,
+    failure: new AcceptanceFailure(
+      'studio_single_accept_and_clear',
+      'timeout',
+      undefined,
+      'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+      1,
+    ),
+  });
+  assert.deepEqual(evidence.failure, {
+    check: 'studio_single_accept_and_clear',
+    reason: 'timeout',
+    diagnosticCode: 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+    requestCount: 1,
+  });
+
+  const redacted = buildAcceptanceEvidence({
+    ...base,
+    failure: new AcceptanceFailure(
+      'studio_single_accept_and_clear',
+      'timeout',
+      undefined,
+      'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+      101,
+    ),
+  });
+  assert.deepEqual(redacted.failure, {
+    check: 'studio_single_accept_and_clear',
+    reason: 'timeout',
+  });
 });
 
 test('secure writer creates a new 0600 evidence file and refuses overwrite', () => {

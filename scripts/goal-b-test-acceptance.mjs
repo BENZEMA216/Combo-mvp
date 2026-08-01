@@ -69,6 +69,7 @@ const PRODUCTION_ORIGIN = 'https://buildwithcombo.com';
 const TASK_TIMEOUT_MS = 15 * 60_000;
 const TURN_TIMEOUT_MS = 12 * 60_000;
 const POLL_INTERVAL_MS = 1_000;
+const MESSAGE_DIAGNOSTIC_TIMEOUT_MS = 5_000;
 const TURN_DIAGNOSTIC_CODES = Object.freeze([
   'TURN_ABANDONED',
   'TURN_HISTORY_LOAD_FAILED',
@@ -83,6 +84,26 @@ const TURN_DIAGNOSTIC_CODES = Object.freeze([
   'TURN_FAILED',
   'TURN_COMPLETED_WITHOUT_ARTIFACT',
   'TURN_DETAIL_INVARIANT',
+]);
+const MESSAGE_SUBMIT_DIAGNOSTIC_CODES = Object.freeze([
+  'MESSAGE_REQUEST_NOT_OBSERVED',
+  'MESSAGE_REQUEST_FAILED',
+  'MESSAGE_REQUEST_COUNT_UNEXPECTED',
+  'MESSAGE_RESPONSE_STATUS_UNEXPECTED',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_ACCEPTED',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_REJECTED',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_MESSAGE_COMMITTED',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ABSENT',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_CLIENT_REJECTED',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_SERVER_REJECTED',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_UNEXPECTED_STATUS',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_INVALID',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT',
+  'MESSAGE_RESPONSE_TIMEOUT_DETAIL_FAILED',
+]);
+const ACCEPTANCE_DIAGNOSTIC_CODES = Object.freeze([
+  ...TURN_DIAGNOSTIC_CODES,
+  ...MESSAGE_SUBMIT_DIAGNOSTIC_CODES,
 ]);
 const RELEASE_METADATA_KEYS = Object.freeze([
   'builtAt',
@@ -134,7 +155,7 @@ export const GOAL_B_UPLOAD_PARTS = Object.freeze([
 ]);
 
 export class AcceptanceFailure extends Error {
-  constructor(check, reason, statusCode, diagnosticCode) {
+  constructor(check, reason, statusCode, diagnosticCode, requestCount) {
     super(`${check}:${reason}`);
     this.name = 'AcceptanceFailure';
     this.check = GOAL_B_ACCEPTANCE_CHECKS.includes(check) ? check : 'acceptance_runtime';
@@ -149,14 +170,23 @@ export class AcceptanceFailure extends Error {
       ? reason
       : 'browser';
     this.statusCode = Number.isInteger(statusCode) ? statusCode : undefined;
-    this.diagnosticCode = TURN_DIAGNOSTIC_CODES.includes(diagnosticCode)
+    const allowedDiagnostic = ACCEPTANCE_DIAGNOSTIC_CODES.includes(diagnosticCode)
       ? diagnosticCode
       : undefined;
+    const boundedRequestCount =
+      Number.isInteger(requestCount) && requestCount >= 0 && requestCount <= 100
+        ? requestCount
+        : undefined;
+    const isMessageDiagnostic = MESSAGE_SUBMIT_DIAGNOSTIC_CODES.includes(allowedDiagnostic);
+    this.diagnosticCode =
+      isMessageDiagnostic && boundedRequestCount === undefined ? undefined : allowedDiagnostic;
+    this.requestCount =
+      this.diagnosticCode !== undefined && isMessageDiagnostic ? boundedRequestCount : undefined;
   }
 }
 
-function fail(check, reason = 'assertion', statusCode, diagnosticCode) {
-  throw new AcceptanceFailure(check, reason, statusCode, diagnosticCode);
+function fail(check, reason = 'assertion', statusCode, diagnosticCode, requestCount) {
+  throw new AcceptanceFailure(check, reason, statusCode, diagnosticCode, requestCount);
 }
 
 function ensure(condition, check, reason = 'assertion') {
@@ -258,6 +288,11 @@ export function parseAcceptanceArgs(argv) {
     webOrigin: validateWebOrigin(values.get('--web-origin'), environment),
     output: validateOutput(values.get('--output')),
   };
+}
+
+export function classifyAcceptanceMessageProtocol(usageId) {
+  if (usageId === undefined) return 'legacy';
+  return UUID_PATTERN.test(usageId) ? 'usage-id' : 'invalid';
 }
 
 export function isAllowedAcceptanceWebSocket(raw, webOrigin) {
@@ -414,6 +449,9 @@ export function buildAcceptanceEvidence(state) {
           ...(state.failure.diagnosticCode === undefined
             ? {}
             : { diagnosticCode: state.failure.diagnosticCode }),
+          ...(state.failure.requestCount === undefined
+            ? {}
+            : { requestCount: state.failure.requestCount }),
         }
       : undefined;
   const release = safeRelease(state.release, state.revision, state.environment ?? 'test');
@@ -569,6 +607,65 @@ export async function postRuntimeMessageCompat(api, check, path, text, usageId =
   }
   started = { ...started, data: responseData(started.data, check) };
   return started;
+}
+
+/**
+ * A timed-out browser POST has an unknown write outcome. Inspect only the
+ * authenticated Session detail. If that exact prompt owns the active Turn,
+ * make one bounded interrupt attempt so a failed acceptance does not leave
+ * model work running. Retain no request or response material.
+ */
+export async function diagnoseTimedOutStudioMessage(api, detailPath, interruptPath, text) {
+  try {
+    const response = await api.raw(detailPath, { timeout: MESSAGE_DIAGNOSTIC_TIMEOUT_MS });
+    const status = response.status();
+    if (status >= 400 && status < 500) {
+      return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_CLIENT_REJECTED';
+    }
+    if (status >= 500 && status < 600) {
+      return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_SERVER_REJECTED';
+    }
+    if (status !== 200) return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_UNEXPECTED_STATUS';
+    let body;
+    try {
+      body = await response.json();
+    } catch {
+      return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_INVALID';
+    }
+    const detail = body && typeof body === 'object' ? body.data : undefined;
+    if (!detail || !Array.isArray(detail.messages)) {
+      return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_INVALID';
+    }
+    const acceptedMessage = detail.messages.findLast(
+      (message) =>
+        message?.role === 'user' &&
+        message?.status === 'completed' &&
+        textFromMessage(message) === text,
+    );
+    if (!acceptedMessage) return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ABSENT';
+    if (
+      !UUID_PATTERN.test(acceptedMessage.turnId ?? '') ||
+      detail.activeTurn?.id !== acceptedMessage.turnId
+    ) {
+      return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_MESSAGE_COMMITTED';
+    }
+    try {
+      const interrupted = await api.raw(interruptPath, {
+        method: 'POST',
+        data: {},
+        timeout: MESSAGE_DIAGNOSTIC_TIMEOUT_MS,
+      });
+      return interrupted.status() >= 200 && interrupted.status() < 300
+        ? 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_ACCEPTED'
+        : 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_REJECTED';
+    } catch {
+      return 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_ACTIVE_INTERRUPT_REJECTED';
+    }
+  } catch (error) {
+    return error?.name === 'TimeoutError'
+      ? 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_TIMEOUT'
+      : 'MESSAGE_RESPONSE_TIMEOUT_DETAIL_FAILED';
+  }
 }
 
 async function poll(check, read, accept, timeoutMs, intervalMs = POLL_INTERVAL_MS) {
@@ -1420,12 +1517,30 @@ async function runAcceptance(options) {
     const composer = page.locator('.rt-conversation-composer textarea');
     const messagePath = `/api/v1/runtime/sessions/${studioSession.id}/messages`;
     const messageUrl = `${options.webOrigin}${messagePath}`;
+    let studioMessageProtocol;
+    let resolvedUncertainUsageId;
     await checked('studio_failed_send_retains_draft', async () => {
       const draft = 'Goal B 网络失败后必须保留的草稿';
+      let uncertainUsageId;
+      let uncertainText;
+      let retryUsageId;
+      let retryText;
+      let injectedPhase = 'reject-503';
+      let unexpectedInjectedRequests = 0;
       await composer.fill(draft);
-      await page.route(
-        messageUrl,
-        async (route) => {
+      // Keep one route for the complete injected-failure sequence. It catches
+      // unexpected duplicate retries instead of letting them reach Runtime.
+      await page.route(messageUrl, async (route) => {
+        let submitted;
+        try {
+          submitted = route.request().postDataJSON();
+        } catch {
+          submitted = undefined;
+        }
+        if (injectedPhase === 'reject-503') {
+          injectedPhase = 'await-retry';
+          uncertainUsageId = submitted?.usageId;
+          uncertainText = submitted?.text;
           await route.fulfill({
             status: 503,
             contentType: 'application/json',
@@ -1433,9 +1548,35 @@ async function runAcceptance(options) {
               error: { code: 'DEPENDENCY_UNAVAILABLE', userMessage: '暂时不可用' },
             }),
           });
-        },
-        { times: 1 },
-      );
+          return;
+        }
+        if (injectedPhase === 'reject-400') {
+          injectedPhase = 'done';
+          retryUsageId = submitted?.usageId;
+          retryText = submitted?.text;
+          await route.fulfill({
+            status: 400,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              error: {
+                code: 'VALIDATION_ERROR',
+                userMessage: '输入有点问题，改一下再试。',
+                action: 'change_input',
+                retriable: false,
+              },
+            }),
+          });
+          return;
+        }
+        unexpectedInjectedRequests += 1;
+        await route.fulfill({
+          status: 409,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            error: { code: 'IDEMPOTENCY_CONFLICT', userMessage: '请求状态冲突。' },
+          }),
+        });
+      });
       const rejectedResponse = page.waitForResponse(
         (response) => response.url() === messageUrl && response.request().method() === 'POST',
         { timeout: 30_000 },
@@ -1447,7 +1588,48 @@ async function runAcceptance(options) {
         timeout: 10_000,
       });
       ensure((await composer.inputValue()) === draft, activeCheck);
-      await page.unroute(messageUrl);
+      ensure(
+        injectedPhase === 'await-retry' && uncertainText === draft,
+        activeCheck,
+        'invalid_response',
+      );
+
+      // Billing-aware clients keep an unknown-write usageId after a 5xx and
+      // intentionally block a different task. Resolve that exact retry with a
+      // definitive validation response before the shared acceptance continues.
+      // Legacy clients do not expose this recovery action, so the same trusted
+      // controller remains compatible with the current main release.
+      const retryButton = page.getByRole('button', { name: '重试原任务' });
+      studioMessageProtocol = classifyAcceptanceMessageProtocol(uncertainUsageId);
+      ensure(studioMessageProtocol !== 'invalid', activeCheck, 'invalid_response');
+      resolvedUncertainUsageId = uncertainUsageId;
+      if (studioMessageProtocol === 'usage-id') {
+        await retryButton.waitFor({ state: 'visible', timeout: 10_000 });
+        injectedPhase = 'reject-400';
+        const retryResponse = page.waitForResponse(
+          (response) => response.url() === messageUrl && response.request().method() === 'POST',
+          { timeout: 30_000 },
+        );
+        await retryButton.click();
+        ensure((await retryResponse).status() === 400, activeCheck, 'http_status');
+        await page.getByRole('alert').filter({ hasText: '输入有点问题' }).waitFor({
+          state: 'visible',
+          timeout: 10_000,
+        });
+        await retryButton.waitFor({ state: 'hidden', timeout: 10_000 });
+        ensure((await composer.inputValue()) === draft, activeCheck);
+        ensure(
+          injectedPhase === 'done' &&
+            retryUsageId === resolvedUncertainUsageId &&
+            retryText === uncertainText,
+          activeCheck,
+          'invalid_response',
+        );
+      } else {
+        ensure(!(await retryButton.isVisible()), activeCheck, 'invalid_response');
+      }
+      await page.unrouteAll({ behavior: 'wait' });
+      ensure(unexpectedInjectedRequests === 0, activeCheck, 'invalid_response');
     });
 
     let firstTurnId;
@@ -1460,47 +1642,137 @@ async function runAcceptance(options) {
       ].join('\n');
       await composer.fill(prompt);
       let requestCount = 0;
+      let targetRequestFailed = false;
       let submittedText;
-      await page.route(messageUrl, async (route) => {
-        requestCount += 1;
+      let submittedUsageId;
+      const countMessageRequest = (request) => {
+        if (request.url() === messageUrl && request.method() === 'POST') {
+          requestCount = Math.min(100, requestCount + 1);
+        }
+      };
+      const observeMessageRequestFailure = (request) => {
+        if (request.url() === messageUrl && request.method() === 'POST') {
+          // Do not retain Playwright's raw failure text: it can contain transport
+          // details outside the evidence allowlist.
+          targetRequestFailed = true;
+        }
+      };
+      page.on('request', countMessageRequest);
+      page.on('requestfailed', observeMessageRequestFailure);
+      try {
+        // Observe the real request without intercepting it. This avoids a route
+        // update race after the injected failure and cannot delay the Runtime.
+        const sendButton = page.getByRole('button', { name: '生成第一版 UI' });
+        await page.waitForFunction(
+          () => {
+            const button = document.querySelector('button[aria-label="生成第一版 UI"]');
+            return button instanceof HTMLButtonElement && !button.disabled;
+          },
+          undefined,
+          { timeout: 10_000 },
+        );
+        const requestPromise = page.waitForRequest(
+          (request) => request.url() === messageUrl && request.method() === 'POST',
+          { timeout: 10_000 },
+        );
+        const responsePromise = page.waitForResponse(
+          (response) => response.url() === messageUrl && response.request().method() === 'POST',
+          { timeout: 30_000 },
+        );
+        await sendButton.evaluate((button) => {
+          if (!(button instanceof HTMLButtonElement)) throw new Error('missing send button');
+          button.click();
+          button.click();
+        });
+        let observedRequest;
         try {
-          submittedText = route.request().postDataJSON()?.text;
+          observedRequest = await requestPromise;
+        } catch (error) {
+          if (error?.name === 'TimeoutError') {
+            void responsePromise.catch(() => undefined);
+            throw new AcceptanceFailure(
+              activeCheck,
+              'timeout',
+              undefined,
+              'MESSAGE_REQUEST_NOT_OBSERVED',
+              requestCount,
+            );
+          }
+          throw error;
+        }
+        try {
+          const submitted = observedRequest.postDataJSON();
+          submittedText = submitted?.text;
+          submittedUsageId = submitted?.usageId;
         } catch {
           submittedText = undefined;
+          submittedUsageId = undefined;
         }
-        await new Promise((resolveDelay) => setTimeout(resolveDelay, 700));
-        await route.fallback();
-      });
-      const responsePromise = page.waitForResponse(
-        (response) => response.url() === messageUrl && response.request().method() === 'POST',
-        { timeout: 30_000 },
-      );
-      await page.evaluate(() => {
-        const button = document.querySelector('button[aria-label="生成第一版 UI"]');
-        if (!(button instanceof HTMLButtonElement)) throw new Error('missing send button');
-        button.click();
-        button.click();
-      });
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 150));
-      ensure((await composer.inputValue()) === prompt, activeCheck);
-      const response = await responsePromise;
-      ensure(response.status() === 202, activeCheck, 'http_status');
-      let body;
-      try {
-        body = await response.json();
-      } catch {
-        fail(activeCheck, 'invalid_response');
+        ensure(
+          submittedText === prompt &&
+            (studioMessageProtocol === 'legacy'
+              ? submittedUsageId === undefined
+              : studioMessageProtocol === 'usage-id' &&
+                UUID_PATTERN.test(submittedUsageId ?? '') &&
+                submittedUsageId !== resolvedUncertainUsageId),
+          activeCheck,
+          'invalid_response',
+        );
+        let response;
+        try {
+          response = await responsePromise;
+        } catch (error) {
+          if (error?.name !== 'TimeoutError') throw error;
+          const detailDiagnostic = await diagnoseTimedOutStudioMessage(
+            api,
+            `/api/v1/runtime/sessions/${studioSession.id}`,
+            `/api/v1/runtime/sessions/${studioSession.id}/interrupt`,
+            submittedText,
+          );
+          throw new AcceptanceFailure(
+            activeCheck,
+            'timeout',
+            undefined,
+            targetRequestFailed ? 'MESSAGE_REQUEST_FAILED' : detailDiagnostic,
+            requestCount,
+          );
+        }
+        if (response.status() !== 202) {
+          throw new AcceptanceFailure(
+            activeCheck,
+            'http_status',
+            response.status(),
+            'MESSAGE_RESPONSE_STATUS_UNEXPECTED',
+            requestCount,
+          );
+        }
+        let body;
+        try {
+          body = await response.json();
+        } catch {
+          fail(activeCheck, 'invalid_response');
+        }
+        firstTurnId = responseData(body, activeCheck)?.message?.turnId;
+        ensure(UUID_PATTERN.test(firstTurnId ?? ''), activeCheck);
+        await page.waitForFunction(
+          () => document.querySelector('.rt-conversation-composer textarea')?.value === '',
+          undefined,
+          { timeout: 10_000 },
+        );
+        await page.waitForTimeout(250);
+        if (requestCount !== 1) {
+          throw new AcceptanceFailure(
+            activeCheck,
+            'invalid_response',
+            undefined,
+            'MESSAGE_REQUEST_COUNT_UNEXPECTED',
+            requestCount,
+          );
+        }
+      } finally {
+        page.off('request', countMessageRequest);
+        page.off('requestfailed', observeMessageRequestFailure);
       }
-      firstTurnId = responseData(body, activeCheck)?.message?.turnId;
-      ensure(UUID_PATTERN.test(firstTurnId ?? ''), activeCheck);
-      await page.waitForFunction(
-        () => document.querySelector('.rt-conversation-composer textarea')?.value === '',
-        undefined,
-        { timeout: 10_000 },
-      );
-      await page.waitForTimeout(250);
-      ensure(requestCount === 1 && submittedText === prompt, activeCheck);
-      await page.unroute(messageUrl);
     });
 
     await checked('studio_active_turn_reload', async () => {
