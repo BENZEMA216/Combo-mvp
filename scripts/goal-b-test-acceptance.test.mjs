@@ -13,6 +13,7 @@ import {
   classifyStudioTurnDetail,
   consumeUiSnapshot,
   diagnoseTimedOutStudioMessage,
+  fetchAcceptanceRequest,
   isAllowedAcceptanceRequest,
   isAllowedAcceptanceWebSocket,
   isExpectedReleaseMetadata,
@@ -140,6 +141,62 @@ test('trusted Runtime message compatibility sends at most one accepted request',
     (error) => error === networkFailure,
   );
   assert.equal(networkCalls, 1);
+});
+
+test('live browser retries only idempotent GET transport failures once', async () => {
+  const transient = new Error('transient transport failure');
+  const response = { status: () => 200 };
+  const getCalls = [];
+  const getContext = {
+    request: {
+      fetch: async (...args) => {
+        getCalls.push(args);
+        if (getCalls.length === 1) throw transient;
+        return response;
+      },
+    },
+  };
+  assert.equal(
+    await fetchAcceptanceRequest(getContext, 'http://127.0.0.1:18080/detail', {
+      method: 'GET',
+    }),
+    response,
+  );
+  assert.equal(getCalls.length, 2);
+
+  let postCalls = 0;
+  await assert.rejects(
+    fetchAcceptanceRequest(
+      {
+        request: {
+          fetch: async () => {
+            postCalls += 1;
+            throw transient;
+          },
+        },
+      },
+      'http://127.0.0.1:18080/messages',
+      { method: 'POST' },
+    ),
+    (error) => error === transient,
+  );
+  assert.equal(postCalls, 1);
+});
+
+test('second Studio revision validates the detail message collection before lookup', () => {
+  const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
+  const checkStart = source.indexOf("await checked('studio_second_revision'");
+  const checkEnd = source.indexOf(
+    "await checked('studio_interrupted_artifact_excluded'",
+    checkStart,
+  );
+  assert.ok(checkStart > 0 && checkEnd > checkStart);
+  const check = source.slice(checkStart, checkEnd);
+
+  assert.match(
+    check,
+    /ensure\(Array\.isArray\(secondDetail\.messages\), activeCheck, 'invalid_response'\)/,
+  );
 });
 
 test('live browser resolves a billing-aware unknown write before changing task', () => {
