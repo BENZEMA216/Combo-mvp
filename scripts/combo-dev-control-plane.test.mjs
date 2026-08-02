@@ -3790,7 +3790,7 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   assert.match(cleanup, /safe_release_tree/);
   assert.match(cleanup, /value\.st_dev != expected_device/);
   assert.match(cleanup, /assert_release_tree_unmounted/);
-  assert.match(cleanup, /findmnt -rn -o TARGET/);
+  assert.match(reset, /findmnt -rn -o TARGET/);
   assert.match(
     cleanup,
     /assert_release_tree_unmounted[\s\S]*plan_stale_test_cleanup[\s\S]*for path in "\$\{stale_releases\[@\]\}"[\s\S]*assert_release_tree_unmounted[\s\S]*rm -rf --one-file-system/,
