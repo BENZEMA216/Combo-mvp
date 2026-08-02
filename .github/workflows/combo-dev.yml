@@ -675,7 +675,8 @@ jobs:
              infra/host/combo-dev/combo-dev-web-forward.service \
              infra/host/combo-dev/combo-dev-s3-forward.service \
              infra/host/combo-dev/combo-dev-storage-guard.service \
-             infra/host/combo-dev/combo-dev-storage-guard.timer "$root/infra/host/combo-dev/"
+             infra/host/combo-dev/combo-dev-storage-guard.timer \
+             infra/host/combo-dev/combo-host-syslog "$root/infra/host/combo-dev/"
           cp scripts/combo-dev-bootstrap.sh scripts/combo-dev-deploy.sh scripts/combo-dev-smoke.sh \
              scripts/combo-dev-connect.sh scripts/combo-dev-logs.sh scripts/combo-dev-reset.sh \
              scripts/combo-dev-forwarder-lease.sh scripts/combo-dev-storage-guard.sh \
@@ -744,6 +745,11 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Prepare bounded Test host capacity before mutation
+        run: |
+          set -euo pipefail
+          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-reset --prepare-capacity
 
       - name: Upload the fixed bundle and invoke the root-owned dispatcher
         id: deploy_test

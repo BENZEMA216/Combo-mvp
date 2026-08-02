@@ -7,6 +7,9 @@ export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 readonly NAMESPACE='combo-preview'
 readonly PRODUCTION_NAMESPACE='combo'
 readonly CONFIRMATION='DESTROY-COMBO-PREVIEW-DATA'
+readonly INSTALL_ROOT='/opt/combo-dev'
+readonly RELEASES_DIR='/opt/combo-dev/releases'
+readonly INCOMING_DIR='/opt/combo-dev/incoming'
 readonly DATA_MOUNT='/home/xingzheng/data'
 readonly STORAGE_POOL='/home/xingzheng/data/combo-dev'
 readonly STORAGE_CLASS='combo-dev-bounded'
@@ -19,6 +22,9 @@ readonly PRODUCTION_KUBECONFIG='/etc/combo-dev/production-observer.kubeconfig'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly HOST_SYSLOG_POLICY='/etc/logrotate.d/combo-host-syslog'
+readonly HOST_SYSLOG_POLICY_SHA256='aad4fc3b67504ff6dbec2a05b7230c8c78bb57e3465d5d6b75a3ef8e3d6eae94'
+readonly BEFORE_FREE_BYTES=$((45 * 1024 * 1024 * 1024))
 RESET_PROOF=''
 CONSUMED_RESET_PROOF=''
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
@@ -79,6 +85,200 @@ private_file() {
   mode=$(stat -c '%a' "$1" 2>/dev/null) || return 1
   owner=$(stat -c '%u' "$1" 2>/dev/null) || return 1
   [[ "$owner" == 0 && ( "$mode" == 600 || "$mode" == 400 ) ]]
+}
+
+free_bytes() {
+  df -PB1 -- "$1" | awk 'NR == 2 {print $4}'
+}
+
+host_syslog_policy_valid() {
+  local digest
+  [[ $(stat -c '%u:%g:%a' /etc/logrotate.d 2>/dev/null || true) == '0:0:755' ]] || return 1
+  root_owned_not_writable "$HOST_SYSLOG_POLICY" || return 1
+  [[ -f "$HOST_SYSLOG_POLICY" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$HOST_SYSLOG_POLICY" 2>/dev/null || true) == '0:0:644' ]] || return 1
+  digest=$(sha256sum "$HOST_SYSLOG_POLICY" 2>/dev/null | awk '{print $1}') || return 1
+  [[ "$digest" == "$HOST_SYSLOG_POLICY_SHA256" ]]
+}
+
+assert_capacity_ready() {
+  local free
+  host_syslog_policy_valid || blocked '受控主机 syslog 轮转策略缺失、可写或内容漂移；必须重新 bootstrap。'
+  findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '固定数据盘没有挂载。'
+  free=$(free_bytes /) || blocked '无法读取根盘容量。'
+  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then
+    blocked 'Test 主机根盘准备后仍不足 45 GiB；破坏性重置未开始。'
+  fi
+  free=$(free_bytes "$DATA_MOUNT") || blocked '无法读取数据盘容量。'
+  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then
+    blocked 'Test 主机数据盘准备后仍不足 45 GiB；破坏性重置未开始。'
+  fi
+}
+
+assert_release_tree_unmounted() {
+  local mounts target
+  mounts=$(findmnt -rn -o TARGET) || blocked '无法读取主机挂载表；拒绝清理旧 Test release。'
+  while IFS= read -r target; do
+    [[ "$target" == "$RELEASES_DIR" || "$target" == "$RELEASES_DIR"/* ]] || continue
+    blocked 'Test release 树内存在挂载点；拒绝越过挂载边界执行容量清理。'
+  done <<<"$mounts"
+}
+
+plan_stale_test_cleanup() {
+  local release_plan=$1 incoming_plan=$2
+  python3 - "$INSTALL_ROOT" "$RELEASES_DIR" "$INCOMING_DIR" \
+    "$INSTALL_ROOT/current" "$release_plan" "$incoming_plan" <<'PY'
+import os
+import re
+import stat
+import sys
+import time
+
+install_root, releases_dir, incoming_dir, current_link, release_plan, incoming_plan = sys.argv[1:]
+sha = re.compile(r'^[0-9a-f]{40}$')
+
+def safe_root_directory(path):
+    value = os.lstat(path)
+    if not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode):
+        raise SystemExit(2)
+    if value.st_uid != 0 or value.st_mode & 0o022:
+        raise SystemExit(2)
+
+def safe_release_tree(path, expected_device):
+    for current, dirs, files in os.walk(path, followlinks=False):
+        for entry in [current] + [os.path.join(current, name) for name in dirs + files]:
+            value = os.lstat(entry)
+            if value.st_dev != expected_device or value.st_uid != 0 or value.st_mode & 0o022:
+                raise SystemExit(2)
+            if stat.S_ISLNK(value.st_mode):
+                raise SystemExit(2)
+            if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                raise SystemExit(2)
+
+for path in (install_root, releases_dir):
+    safe_root_directory(path)
+releases_device = os.lstat(releases_dir).st_dev
+
+incoming = os.lstat(incoming_dir)
+if not stat.S_ISDIR(incoming.st_mode) or stat.S_ISLNK(incoming.st_mode):
+    raise SystemExit(2)
+if incoming.st_uid != 0 or stat.S_IMODE(incoming.st_mode) != 0o1733:
+    raise SystemExit(2)
+
+current = None
+if os.path.lexists(current_link):
+    if not os.path.islink(current_link):
+        raise SystemExit(2)
+    current = os.path.realpath(current_link)
+    if os.path.dirname(current) != os.path.realpath(releases_dir):
+        raise SystemExit(2)
+    if not sha.fullmatch(os.path.basename(current)):
+        raise SystemExit(2)
+    safe_root_directory(current)
+    safe_release_tree(current, releases_device)
+
+releases = []
+for name in os.listdir(releases_dir):
+    path = os.path.join(releases_dir, name)
+    if not sha.fullmatch(name):
+        raise SystemExit(2)
+    safe_root_directory(path)
+    safe_release_tree(path, releases_device)
+    releases.append((os.lstat(path).st_mtime_ns, name, path))
+
+releases.sort(key=lambda item: (-item[0], item[1]))
+keep = set()
+if current is not None:
+    keep.add(current)
+for _, _, path in releases:
+    if len(keep) >= 3:
+        break
+    keep.add(path)
+
+with open(release_plan, 'wb') as output:
+    for _, _, path in releases:
+        if path not in keep:
+            output.write(os.fsencode(path) + b'\0')
+
+incoming_name = re.compile(
+    r'^(?:[0-9a-f]{40}(?:\.acceptance)?\.[1-9][0-9]*\.[1-9][0-9]*\.tar\.gz|'
+    r'\.[0-9a-f]{40}(?:\.acceptance)?\.[1-9][0-9]*\.[1-9][0-9]*\.upload)$'
+)
+cutoff = time.time() - (2 * 24 * 60 * 60)
+with open(incoming_plan, 'wb') as output:
+    for name in os.listdir(incoming_dir):
+        path = os.path.join(incoming_dir, name)
+        value = os.lstat(path)
+        if (not incoming_name.fullmatch(name) or not stat.S_ISREG(value.st_mode)
+                or stat.S_ISLNK(value.st_mode)):
+            raise SystemExit(2)
+        if value.st_mtime < cutoff:
+            output.write(os.fsencode(path) + b'\0')
+PY
+}
+
+clean_stale_test_artifacts() {
+  local release_plan="$WORK/stale-releases.nul" incoming_plan="$WORK/stale-incoming.nul"
+  local path release_count=0 incoming_count=0
+  local -a stale_releases=() stale_incoming=()
+  assert_release_tree_unmounted
+  plan_stale_test_cleanup "$release_plan" "$incoming_plan" ||
+    blocked 'Test releases 或 incoming 目录包含不受信任的条目；未执行容量清理。'
+  mapfile -d '' -t stale_releases <"$release_plan"
+  mapfile -d '' -t stale_incoming <"$incoming_plan"
+  for path in "${stale_releases[@]}"; do
+    [[ "$path" =~ ^/opt/combo-dev/releases/[0-9a-f]{40}$ ]] ||
+      blocked '旧 Test release 清理计划越过固定目录。'
+    assert_release_tree_unmounted
+    rm -rf --one-file-system -- "$path" || blocked '旧 Test release 无法安全删除。'
+    [[ ! -e "$path" && ! -L "$path" ]] || blocked '旧 Test release 删除后仍然存在。'
+    ((release_count += 1))
+  done
+  for path in "${stale_incoming[@]}"; do
+    [[ "$path" == "$INCOMING_DIR"/* && "$path" != "$INCOMING_DIR"/*/* ]] ||
+      blocked '旧 incoming 文件清理计划越过固定目录。'
+    rm -f -- "$path" || blocked '旧 Test incoming 文件无法安全删除。'
+    [[ ! -e "$path" && ! -L "$path" ]] || blocked '旧 Test incoming 文件删除后仍然存在。'
+    ((incoming_count += 1))
+  done
+  status "capacity cleanup releases=$release_count incoming=$incoming_count"
+}
+
+prepare_capacity() {
+  [[ $(id -u) -eq 0 ]] || blocked '容量准备必须由受限 sudo 规则以 root 启动。'
+  local cmd active timer_active root_before root_after data_before data_after
+  for cmd in python3 sha256sum flock findmnt df systemctl timeout stat rm logrotate awk mktemp; do
+    command -v "$cmd" >/dev/null 2>&1 || blocked "缺少容量准备工具：$cmd"
+  done
+  root_owned_not_writable "${BASH_SOURCE[0]}" || blocked '当前 reset 调度器可被非 root 修改。'
+  host_syslog_policy_valid || blocked '受控主机 syslog 轮转策略缺失、可写或内容漂移；必须重新 bootstrap。'
+  active=$(timeout 10 systemctl is-active rsyslog.service 2>/dev/null || true)
+  [[ "$active" == active ]] || blocked 'rsyslog 未运行，拒绝在无法 HUP 写入者时轮转主机日志。'
+  timer_active=$(timeout 10 systemctl is-active systemd-tmpfiles-clean.timer 2>/dev/null || true)
+  [[ "$timer_active" == active ]] || blocked 'systemd-tmpfiles-clean.timer 未运行，拒绝绕过原生临时文件保留策略。'
+  timeout 30 logrotate --debug "$HOST_SYSLOG_POLICY" >/dev/null 2>&1 ||
+    blocked '主机 syslog 轮转策略未通过 logrotate 校验。'
+  findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '固定数据盘没有挂载。'
+  root_before=$(free_bytes /) || blocked '无法读取容量准备前根盘容量。'
+  data_before=$(free_bytes "$DATA_MOUNT") || blocked '无法读取容量准备前数据盘容量。'
+  [[ "$root_before" =~ ^[0-9]+$ && "$data_before" =~ ^[0-9]+$ ]] ||
+    blocked '容量准备前磁盘指标格式不合法。'
+  root_owned_not_writable /run || blocked '容量准备临时目录边界不安全。'
+  WORK=$(mktemp -d /run/combo-dev-capacity.XXXXXX) || blocked '无法在内存运行目录创建容量准备工作区。'
+  timeout 600 systemctl start systemd-tmpfiles-clean.service >/dev/null 2>&1 ||
+    blocked '原生 systemd-tmpfiles-clean.service 清理失败或超时；未直接删除 /tmp。'
+  timer_active=$(timeout 10 systemctl is-active systemd-tmpfiles-clean.timer 2>/dev/null || true)
+  [[ "$timer_active" == active ]] || blocked '原生临时文件清理后 timer 未保持运行。'
+  clean_stale_test_artifacts
+  timeout 900 logrotate "$HOST_SYSLOG_POLICY" >/dev/null 2>&1 ||
+    blocked '主机 syslog 轮转失败；破坏性重置未开始。'
+  root_after=$(free_bytes /) || blocked '无法读取容量准备后根盘容量。'
+  data_after=$(free_bytes "$DATA_MOUNT") || blocked '无法读取容量准备后数据盘容量。'
+  [[ "$root_after" =~ ^[0-9]+$ && "$data_after" =~ ^[0-9]+$ ]] ||
+    blocked '容量准备后磁盘指标格式不合法。'
+  status "capacity bytes root_before=$root_before root_after=$root_after data_before=$data_before data_after=$data_after"
+  assert_capacity_ready
+  status 'PASS prepare-capacity root>=45GiB data>=45GiB scope=tmpfiles,test-releases,incoming,host-syslog'
 }
 
 verify_k3s_mount_dependencies() {
@@ -489,11 +689,12 @@ PY
 }
 
 main() {
-  local revision='' workflow_run_id='' workflow_run_attempt='' confirmed=0 arg
+  local revision='' workflow_run_id='' workflow_run_attempt='' confirmed=0 prepare=0 arg
   while (($#)); do
     arg=$1
     shift
     case "$arg" in
+      --prepare-capacity) prepare=$((prepare + 1)) ;;
       "--confirm=$CONFIRMATION") confirmed=1 ;;
       --revision) revision=${1:?}; shift ;;
       --workflow-run-id) workflow_run_id=${1:?}; shift ;;
@@ -501,6 +702,18 @@ main() {
       *) blocked '未知 reset 参数。' ;;
     esac
   done
+  (( prepare <= 1 )) || blocked '容量准备参数只能出现一次。'
+  if (( prepare == 1 )); then
+    if (( confirmed != 0 )) ||
+      [[ -n "$revision" || -n "$workflow_run_id" || -n "$workflow_run_attempt" ]]; then
+      blocked '容量准备模式不能与破坏性 reset 参数组合。'
+    fi
+    exec 9>"$LOCK_FILE"
+    flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
+    prepare_capacity
+    SUCCESS=1
+    return
+  fi
   (( confirmed == 1 )) || blocked '必须提供完全匹配的破坏性确认串。'
   [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || blocked 'reset revision 不是完整提交 SHA。'
   [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked 'reset workflow run ID 不合法。'
@@ -510,6 +723,7 @@ main() {
   CONSUMED_RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.consumed.json"
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
+  assert_capacity_ready
   WORK=$(mktemp -d)
   rm -f -- "$RESET_PROOF" "$CONSUMED_RESET_PROOF"
   preflight

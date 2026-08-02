@@ -538,6 +538,19 @@ function responseData(body, check) {
   return body.data;
 }
 
+export async function fetchAcceptanceRequest(context, url, request) {
+  try {
+    return await context.request.fetch(url, request);
+  } catch (error) {
+    // A failed GET has no unknown write outcome. Retry exactly once so a
+    // transient socket reset cannot discard an otherwise completed Test run.
+    // Mutating requests remain single-shot and keep their dedicated recovery.
+    if (request.method !== 'GET') throw error;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+    return context.request.fetch(url, request);
+  }
+}
+
 class BrowserApi {
   constructor(context, origin) {
     this.context = context;
@@ -556,14 +569,17 @@ class BrowserApi {
   }
 
   async raw(path, options = {}) {
-    return this.context.request.fetch(this.safeUrl(path), {
-      method: options.method ?? 'GET',
+    const method = options.method ?? 'GET';
+    const request = {
+      method,
       ...(options.data === undefined ? {} : { data: options.data }),
       failOnStatusCode: false,
       maxRedirects: options.maxRedirects ?? 0,
       timeout: options.timeout ?? 30_000,
       headers: { Accept: options.accept ?? 'application/json', Origin: this.origin },
-    });
+    };
+    const url = this.safeUrl(path);
+    return fetchAcceptanceRequest(this.context, url, request);
   }
 
   async json(check, path, options = {}) {
@@ -1952,6 +1968,7 @@ async function runAcceptance(options) {
           sortedChronologically(secondDetail.artifacts),
         activeCheck,
       );
+      ensure(Array.isArray(secondDetail.messages), activeCheck, 'invalid_response');
       const userMessage = secondDetail.messages.find(
         (message) => message.role === 'user' && message.turnId === secondTurnId,
       );

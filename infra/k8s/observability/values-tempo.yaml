@@ -5,6 +5,10 @@ tempo:
   # 关闭多租户，与 Compose 中未配置租户认证的语义一致。
   multitenancyEnabled: false
   reportingEnabled: false
+  # Chart 2.2.3 默认给 Tempo 预留 1024Mi ballast；这高于本环境的
+  # 512Mi limit，会让 Pod 被 OOMKilled 并永久 CrashLoop。单节点开发环境
+  # 不需要这块固定 ballast，关闭后由 Go runtime 按真实负载管理内存。
+  memBallastSizeMbs: 0
   resources:
     requests:
       cpu: 100m

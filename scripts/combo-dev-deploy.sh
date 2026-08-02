@@ -58,6 +58,7 @@ readonly CONTROL_FILES=(
   infra/host/combo-dev/combo-dev-s3-forward.service
   infra/host/combo-dev/combo-dev-storage-guard.service
   infra/host/combo-dev/combo-dev-storage-guard.timer
+  infra/host/combo-dev/combo-host-syslog
   infra/k8s/overlays/combo-dev/kustomization.yaml
   infra/k8s/overlays/combo-dev/platform/kustomization.yaml
   infra/k8s/overlays/combo-dev/platform/limit-range.yaml
@@ -664,6 +665,7 @@ allowed_files = {
     'infra/host/combo-dev/combo-dev-s3-forward.service',
     'infra/host/combo-dev/combo-dev-storage-guard.service',
     'infra/host/combo-dev/combo-dev-storage-guard.timer',
+    'infra/host/combo-dev/combo-host-syslog',
     'infra/k8s/overlays/combo-dev/kustomization.yaml',
     'infra/k8s/overlays/combo-dev/platform/kustomization.yaml',
     'infra/k8s/overlays/combo-dev/platform/limit-range.yaml',
@@ -741,6 +743,7 @@ installed_control_digest() {
     /etc/systemd/system/combo-dev-s3-forward.service
     /etc/systemd/system/combo-dev-storage-guard.service
     /etc/systemd/system/combo-dev-storage-guard.timer
+    /etc/logrotate.d/combo-host-syslog
     "$INSTALL_ROOT/bootstrap-overlay/kustomization.yaml"
     "$INSTALL_ROOT/bootstrap-overlay/platform/kustomization.yaml"
     "$INSTALL_ROOT/bootstrap-overlay/platform/limit-range.yaml"
