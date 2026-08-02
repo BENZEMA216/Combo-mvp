@@ -3742,6 +3742,113 @@ test('OpenSSH effective configuration retains exactly the two approved local for
   }
 });
 
+test('Test capacity preparation is bounded, authenticated, and precedes every destructive reset', () => {
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const reset = text('scripts/combo-dev-reset.sh');
+  const bootstrap = text('scripts/combo-dev-bootstrap.sh');
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const policy = text('infra/host/combo-dev/combo-host-syslog');
+  const policyDigest = createHash('sha256').update(policy).digest('hex');
+
+  assert.match(
+    policy,
+    /^\/var\/log\/messages \/var\/log\/secure \/var\/log\/cron \/var\/log\/maillog \/var\/log\/spooler \{$/m,
+  );
+  assert.match(policy, /^ {4}size 256M$/m);
+  assert.match(policy, /^ {4}rotate 7$/m);
+  assert.match(policy, /^ {4}compress$/m);
+  assert.match(policy, /^ {4}create 0600 root root$/m);
+  assert.doesNotMatch(policy, /^ {4}delaycompress$/m);
+  assert.match(policy, /^ {8}\/bin\/systemctl kill -s HUP rsyslog\.service >\/dev\/null 2>&1$/m);
+  assert.match(reset, new RegExp(`HOST_SYSLOG_POLICY_SHA256='${policyDigest}'`));
+  assert.match(reset, /stat -c '%u:%g:%a' \/etc\/logrotate\.d[\s\S]*'0:0:755'/);
+  assert.match(reset, /stat -c '%u:%g:%a' "\$HOST_SYSLOG_POLICY"[\s\S]*'0:0:644'/);
+
+  const prepareStep = workflow.indexOf('Prepare bounded Test host capacity before mutation');
+  const uploadStep = workflow.indexOf(
+    'Upload the fixed bundle and invoke the root-owned dispatcher',
+  );
+  const mutationMarker = workflow.indexOf("printf 'mutation_started=true");
+  const destructiveReset = workflow.indexOf('--confirm=DESTROY-COMBO-PREVIEW-DATA');
+  assert.ok(prepareStep > 0 && uploadStep > prepareStep && mutationMarker > uploadStep);
+  assert.ok(destructiveReset > mutationMarker);
+  assert.match(
+    workflow.slice(prepareStep, uploadStep),
+    /ssh combo-dev-target sudo -n \/opt\/combo-dev\/bin\/combo-dev-reset --prepare-capacity/,
+  );
+  assert.doesNotMatch(workflow.slice(prepareStep, uploadStep), /mutation_started|scp|rm -rf/);
+
+  const cleanup = reset.slice(
+    reset.indexOf('plan_stale_test_cleanup() {'),
+    reset.indexOf('prepare_capacity() {'),
+  );
+  assert.match(reset, /readonly RELEASES_DIR='\/opt\/combo-dev\/releases'/);
+  assert.match(reset, /readonly INCOMING_DIR='\/opt\/combo-dev\/incoming'/);
+  assert.match(reset, /--prepare-capacity\) prepare=\$\(\(prepare \+ 1\)\)/);
+  assert.match(reset, /容量准备参数只能出现一次/);
+  assert.match(reset, /MUTATING=0/);
+  assert.match(cleanup, /safe_release_tree/);
+  assert.match(cleanup, /value\.st_dev != expected_device/);
+  assert.match(cleanup, /assert_release_tree_unmounted/);
+  assert.match(cleanup, /findmnt -rn -o TARGET/);
+  assert.match(
+    cleanup,
+    /assert_release_tree_unmounted[\s\S]*plan_stale_test_cleanup[\s\S]*for path in "\$\{stale_releases\[@\]\}"[\s\S]*assert_release_tree_unmounted[\s\S]*rm -rf --one-file-system/,
+  );
+  assert.match(cleanup, /len\(keep\) >= 3/);
+  assert.match(cleanup, /2 \* 24 \* 60 \* 60/);
+  assert.match(cleanup, /\.acceptance/);
+  assert.match(cleanup, /rm -rf --one-file-system -- "\$path"/);
+  assert.match(cleanup, /rm -f -- "\$path"/);
+  assert.doesNotMatch(
+    cleanup,
+    /docker|containerd|crictl|ctr |image prune|volume prune|\/var\/lib\/(?:docker|containerd)|\/home\/xingzheng\/data\/combo-dev/,
+  );
+
+  const prepareBody = reset.slice(
+    reset.indexOf('prepare_capacity() {'),
+    reset.indexOf('verify_k3s_mount_dependencies() {'),
+  );
+  const policyDebug = prepareBody.indexOf('logrotate --debug');
+  const tmpfilesStart = prepareBody.indexOf('systemctl start systemd-tmpfiles-clean.service');
+  const testCleanup = prepareBody.indexOf('clean_stale_test_artifacts');
+  const policyRun = prepareBody.indexOf('timeout 900 logrotate');
+  assert.ok(policyDebug > 0 && tmpfilesStart > policyDebug && testCleanup > tmpfilesStart);
+  assert.ok(policyRun > testCleanup);
+  assert.match(prepareBody, /systemctl is-active rsyslog\.service/);
+  assert.match(prepareBody, /systemctl is-active systemd-tmpfiles-clean\.timer/g);
+  assert.match(prepareBody, /timeout 600 systemctl start systemd-tmpfiles-clean\.service/);
+  assert.match(prepareBody, /WORK=\$\(mktemp -d \/run\/combo-dev-capacity\.XXXXXX\)/);
+  assert.match(prepareBody, /timeout 900 logrotate "\$HOST_SYSLOG_POLICY"/);
+  assert.match(
+    prepareBody,
+    /capacity bytes root_before=\$root_before root_after=\$root_after data_before=\$data_before data_after=\$data_after/,
+  );
+  assert.match(prepareBody, /assert_capacity_ready/);
+  assert.doesNotMatch(prepareBody, /rm[^\n]*\/tmp|find[^\n]*\/tmp/);
+  assert.doesNotMatch(prepareBody, /MUTATING=1|wipe_static_volume_data|fence_all_writers/);
+
+  const mainBody = reset.slice(reset.lastIndexOf('\nmain() {'));
+  const capacityRecheck = mainBody.lastIndexOf('assert_capacity_ready');
+  assert.ok(capacityRecheck > mainBody.indexOf('flock -w 300 9'));
+  assert.ok(capacityRecheck < mainBody.lastIndexOf('WORK=$(mktemp -d)'));
+  assert.ok(capacityRecheck < mainBody.indexOf('MUTATING=1'));
+
+  for (const control of [bootstrap, deploy]) {
+    assert.match(control, /infra\/host\/combo-dev\/combo-host-syslog/);
+    assert.match(control, /\/etc\/logrotate\.d\/combo-host-syslog/);
+  }
+  assert.match(
+    bootstrap,
+    /install -o root -g root -m 0644 "\$ROOT\/infra\/host\/combo-dev\/combo-host-syslog" \/etc\/logrotate\.d\/combo-host-syslog/,
+  );
+  assert.match(deploy, /'infra\/host\/combo-dev\/combo-host-syslog'/);
+  assert.match(
+    workflow,
+    /infra\/host\/combo-dev\/combo-host-syslog "\$root\/infra\/host\/combo-dev\/"/,
+  );
+});
+
 test('control digest authenticates every consumed kustomization and resource file', () => {
   const bootstrap = text('scripts/combo-dev-bootstrap.sh');
   const deploy = text('scripts/combo-dev-deploy.sh');
@@ -3767,6 +3874,7 @@ test('control digest authenticates every consumed kustomization and resource fil
     'infra/k8s/overlays/combo-dev/migrate/resources.yaml',
     'infra/k8s/overlays/combo-dev/apps/kustomization.yaml',
     'infra/k8s/overlays/combo-dev/apps/resources.yaml',
+    'infra/host/combo-dev/combo-host-syslog',
   ]) {
     assert.ok(bootstrapControls.includes(required));
   }

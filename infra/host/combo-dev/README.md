@@ -12,7 +12,7 @@ combo-dev 的持久数据只能写入 `/home/xingzheng/data/combo-dev`。该路�
 
 k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data-dir`。内容是数据盘内的绝对规范路径，不是 TLS 子目录。bootstrap 只从该目录下的 `server/tls/client-ca.crt` 和 `client-ca.key` 签发客户端证书；API 服务端信任根从展平后的管理 kubeconfig 读取。这样不会把客户端 CA 错当成服务端 CA，也不依赖标准安装路径。
 
-主机必须用原生 journald 或 syslog 配置限制日志占用，不能用 Docker 清理代替根盘治理。验证完成后，owner-only 文件 `/etc/combo-dev/journal-retention.approved` 必须写成固定状态 `journald=native-retention-bounded`。部署前根盘和父数据盘都必须至少有 45 GiB 可用空间，验收后都必须至少有 40 GiB。只允许清理主机所有者批准的内容。
+主机必须用原生 journald 或 syslog 配置限制日志占用，不能用 Docker 清理代替根盘治理。bootstrap 会把受控策略 `infra/host/combo-dev/combo-host-syslog` 安装为 `/etc/logrotate.d/combo-host-syslog`：只管理 `/var/log/messages`、`secure`、`cron`、`maillog` 和 `spooler`，单文件达到 256 MiB 时轮转，保留 7 份并压缩，轮转后向 `rsyslog.service` 发送 HUP。验证完成后，owner-only 文件 `/etc/combo-dev/journal-retention.approved` 必须写成固定状态 `journald=native-retention-bounded`。部署前根盘和父数据盘都必须至少有 45 GiB 可用空间，验收后都必须至少有 40 GiB。只允许清理主机所有者批准的内容。
 
 所有受限 sudo 入口必须使用包含 `/usr/local/bin` 的固定 `secure_path`。仓库内的 root 脚本也会主动把 `PATH` 固定为 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`，不会继承调用者路径。
 
@@ -25,6 +25,16 @@ k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data
 部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` Environment 必须只允许 `main`，不得配置部署审核人；开发 SSH 和 Resend 验收材料只能保存在该 Environment 中。这项分支策略保护的是读取 Secret 的受信任控制器，不是 Test 候选源码：成功的 `main` CI 会自动触发同一提交的 Test，具有仓库写入权限的成员也可以从 `main` 上的 `workflow_dispatch` 控制器输入任意同仓库分支及其精确 tip SHA。
 
 自动 `main` 路径会验证源 CI 的仓库、工作流、事件、分支、结论、源码 SHA 和 run attempt，再验证唯一未过期 release artifact 的 ID、名称、大小、GitHub digest 和关联 run。手工分支路径会同时验证触发者和重新运行者权限、分支 tip 与完整 SHA，然后调用 `main` 定义的可复用 CI 为该 SHA 构建不可变 artifact；候选分支的 workflow、部署脚本和验收脚本不会在受保护 Environment 中执行。两条路径都复验 release manifest、Web asset manifest、迁移头、三个镜像摘要和完整文件集。远端 bundle、reset proof、migration proof 和环境证据均绑定 Test workflow 的完整 SHA、run ID 与 run attempt；只有同一三元组才能被原子消费。上传的 Test evidence 会保留主机生成的原始环境验收 JSON，并用 exact-schema 的 `source-release.json` 记录不可变来源。自动 `main` Test 生成可供 Preview 准入的 `combo-test-evidence-*`，手工分支 Test 生成隔离的 `combo-branch-test-evidence-*`，不能进入 Preview 或 Production。Test 与 Production 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
+
+每次受保护 Test 在上传 bundle、设置 workflow 的 `mutation_started` 输出以及执行破坏性 reset 之前，都会先运行：
+
+```sh
+sudo -n /opt/combo-dev/bin/combo-dev-reset --prepare-capacity
+```
+
+这个模式持有与 reset/deploy 相同的主机排他锁，但始终保持应用数据面和写入者不变。它只调用原生 `systemd-tmpfiles-clean.service`（并在调用前后证明 `systemd-tmpfiles-clean.timer` 为 active），删除 `/opt/combo-dev/releases` 中当前版本和最近回滚版本之外的旧 Test release，删除 `/opt/combo-dev/incoming` 中超过两天且名称精确匹配 Test workflow attempt 的普通文件，并执行上述受控 syslog 轮转。它不会直接通配删除 `/tmp`，也不会清理 Kubernetes volume、Docker/containerd 镜像、容器或任何生产目录。原生 tmpfiles 清理超时、release 树内出现 symlink/嵌套挂载/非 root 可写内容、incoming 出现陌生条目、logrotate 策略漂移、rsyslog 不可 HUP 或轮转失败都会 fail closed。清理后根盘或父数据盘不足 45 GiB 时，workflow 会在任何 reset/mutation 之前停止；破坏性 reset 在取得锁后还会再次检查同一容量和策略条件，防止两个步骤之间发生容量漂移。
+
+首次合入这项控制时不能直接运行新版 workflow。主机所有者必须先用一次性人工安全清理把根盘恢复到 45 GiB 以上，再从 root-owned、非 root 不可写的审核快照重新执行 bootstrap，安装新版 `/opt/combo-dev/bin/combo-dev-reset` 和 `/etc/logrotate.d/combo-host-syslog`。旧 controller 不认识 `--prepare-capacity`，若跳过这个 owner bootstrap，新 Test 会按设计在 mutation 前失败。
 
 首次准备和控制文件升级时，主机所有者必须先把相关脚本、主机文件和 combo-dev 覆盖层复制到 root-owned 且非 root 不可写的审核快照中，再从该快照执行：
 

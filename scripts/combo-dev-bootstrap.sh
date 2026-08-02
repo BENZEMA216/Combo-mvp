@@ -51,6 +51,7 @@ readonly CONTROL_FILES=(
   infra/host/combo-dev/combo-dev-s3-forward.service
   infra/host/combo-dev/combo-dev-storage-guard.service
   infra/host/combo-dev/combo-dev-storage-guard.timer
+  infra/host/combo-dev/combo-host-syslog
   infra/k8s/overlays/combo-dev/kustomization.yaml
   infra/k8s/overlays/combo-dev/platform/kustomization.yaml
   infra/k8s/overlays/combo-dev/platform/limit-range.yaml
@@ -273,9 +274,12 @@ PY
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'bootstrap 必须由主机所有者以 root 手工执行。'
   local cmd free canonical
-  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep rm; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep rm logrotate; do require_command "$cmd"; done
   trusted_source_tree || blocked 'bootstrap 源目录不是 root-owned 只读快照。'
   private_directory /etc/combo-dev || blocked '开发配置目录不是 root-owned 私有目录。'
+  if [[ -e /etc/logrotate.d ]] && ! root_owned_not_writable /etc/logrotate.d; then
+    blocked 'logrotate 配置目录不是 root-owned 安全目录。'
+  fi
   if [[ -e /opt/combo-dev ]] && ! private_directory /opt/combo-dev; then blocked '安装目录不是 root-owned 安全目录。'; fi
   private_file "$ADMIN_KUBECONFIG" || blocked 'k3s 管理配置不是 root-only 文件。'
   private_file "$CONFIG_FILE" || blocked '开发配置文件必须由 root 独占读取。'
@@ -287,6 +291,8 @@ host_preflight() {
   root_owned_not_writable "$K3S_DATA_DIR" || blocked 'k3s 数据目录所有权或权限不安全。'
   [[ $(cat /etc/combo-dev/data-mount-reboot.approved 2>/dev/null || true) == 'controlled-reboot=parent-data-mount-pass' ]] || blocked '缺少生产所需父数据盘受控重启证据。'
   [[ $(cat /etc/combo-dev/journal-retention.approved 2>/dev/null || true) == 'journald=native-retention-bounded' ]] || blocked '缺少原生日志保留上限证据。'
+  timeout 30 logrotate --debug "$ROOT/infra/host/combo-dev/combo-host-syslog" >/dev/null 2>&1 ||
+    blocked '受控主机 syslog 轮转策略无效。'
   [[ $(cat "$STORAGE_APPROVAL" 2>/dev/null || true) == 'combo-dev-storage=dedicated-hard-18GiB-max' ]] || blocked '缺少独立有界存储池批准。'
   [[ $(cat "$HOST_BOUNDARY_APPROVAL" 2>/dev/null || true) == 'combo-dev-host-boundary=audited-and-active' ]] || blocked '缺少 Pod 到节点的主机级隔离批准。'
   if ! root_owned_not_writable "$HOST_BOUNDARY_CHECK" || [[ ! -x "$HOST_BOUNDARY_CHECK" ]]; then
@@ -873,6 +879,7 @@ control_tree_digest() {
 install_control_files() {
   [[ -f "$WORK/cluster-platform.canonical.json" ]] || blocked '缺少规范化集群平台契约。'
   install -d -o root -g root -m 0755 /opt/combo-dev /opt/combo-dev/bin /opt/combo-dev/releases
+  install -d -o root -g root -m 0755 /etc/logrotate.d
   install -d -o root -g root -m 0711 /var/lib/combo-dev
   install -o root -g root -m 0600 "$WORK/cluster-platform.canonical.json" "$CLUSTER_PLATFORM_CONTRACT"
   install -d -o root -g root -m 1733 /opt/combo-dev/incoming
@@ -901,6 +908,7 @@ install_control_files() {
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-s3-forward.service" /etc/systemd/system/combo-dev-s3-forward.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-storage-guard.service" /etc/systemd/system/combo-dev-storage-guard.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-storage-guard.timer" /etc/systemd/system/combo-dev-storage-guard.timer
+  install -o root -g root -m 0644 "$ROOT/infra/host/combo-dev/combo-host-syslog" /etc/logrotate.d/combo-host-syslog
   local digest installed_digest tmp file
   local installed_files=(
     /opt/combo-dev/bin/combo-dev-bootstrap
@@ -915,6 +923,7 @@ install_control_files() {
     /etc/systemd/system/combo-dev-s3-forward.service
     /etc/systemd/system/combo-dev-storage-guard.service
     /etc/systemd/system/combo-dev-storage-guard.timer
+    /etc/logrotate.d/combo-host-syslog
     /opt/combo-dev/bootstrap-overlay/kustomization.yaml
     /opt/combo-dev/bootstrap-overlay/platform/kustomization.yaml
     /opt/combo-dev/bootstrap-overlay/platform/limit-range.yaml
