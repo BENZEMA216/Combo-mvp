@@ -704,8 +704,10 @@ main() {
   done
   (( prepare <= 1 )) || blocked '容量准备参数只能出现一次。'
   if (( prepare == 1 )); then
-    (( confirmed == 0 )) && [[ -z "$revision" && -z "$workflow_run_id" && -z "$workflow_run_attempt" ]] ||
+    if (( confirmed != 0 )) ||
+      [[ -n "$revision" || -n "$workflow_run_id" || -n "$workflow_run_attempt" ]]; then
       blocked '容量准备模式不能与破坏性 reset 参数组合。'
+    fi
     exec 9>"$LOCK_FILE"
     flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
     prepare_capacity
