@@ -386,7 +386,7 @@ df() {
     *" --output=avail "*) metric=avail ;;
     *" --output=size "*) metric=size ;;
     *" --output=iavail "*) metric=iavail ;;
-    *" --output=inodes "*) metric=inodes ;;
+    *" --output=itotal "*) metric=itotal ;;
     *) return 2 ;;
   esac
   printf '%s\n' header
@@ -394,11 +394,11 @@ df() {
     /:avail) printf '%s\n' "$FAKE_ROOT_FREE" ;;
     /:size) printf '%s\n' "$FAKE_ROOT_TOTAL" ;;
     /:iavail) printf '%s\n' "$FAKE_ROOT_INODES" ;;
-    /:inodes) printf '%s\n' "$FAKE_TOTAL_INODES" ;;
+    /:itotal) printf '%s\n' "$FAKE_TOTAL_INODES" ;;
     "$DATA_MOUNT":avail) printf '%s\n' "$FAKE_DATA_FREE" ;;
     "$DATA_MOUNT":size) printf '%s\n' "$FAKE_DATA_TOTAL" ;;
     "$DATA_MOUNT":iavail) printf '%s\n' "$FAKE_DATA_INODES" ;;
-    "$DATA_MOUNT":inodes) printf '%s\n' "$FAKE_TOTAL_INODES" ;;
+    "$DATA_MOUNT":itotal) printf '%s\n' "$FAKE_TOTAL_INODES" ;;
     "$CONTROL_STATE":avail) printf '%s\n' "$FAKE_STATE_FREE" ;;
     "$CONTROL_STATE":iavail) printf '%s\n' "$FAKE_STATE_INODES" ;;
     *) return 2 ;;
@@ -4447,6 +4447,21 @@ printf 'verified\\n'
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'verified\n');
+});
+
+test('control-state capacity reads GNU df inode totals through the supported itotal field', () => {
+  const prepare = text('infra/host/combo-dev/combo-dev-prepare-control-state.sh');
+  const guard = text('scripts/combo-dev-storage-guard.sh');
+
+  assert.doesNotMatch(prepare, /df --output=inodes/);
+  assert.doesNotMatch(guard, /df --output=inodes/);
+  assert.equal(prepare.match(/df --output=itotal/g)?.length, 1);
+  assert.equal(guard.match(/df --output=itotal/g)?.length, 2);
+
+  if (process.platform !== 'linux') return;
+  const probe = spawnSync('df', ['--output=itotal', '/'], { encoding: 'utf8' });
+  assert.equal(probe.status, 0, `${probe.stdout}${probe.stderr}`);
+  assert.match(probe.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? '', /^\d+$/);
 });
 
 test('control-state migration stays owner-gated and excludes unrelated host-runtime work', () => {

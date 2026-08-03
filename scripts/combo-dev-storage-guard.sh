@@ -181,11 +181,11 @@ classify_host_capacity() {
   rf=$(df -B1 --output=avail / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   rt=$(df -B1 --output=size / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   ri=$(df --output=iavail / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
-  rit=$(df --output=inodes / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  rit=$(df --output=itotal / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   dfree=$(df -B1 --output=avail "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   dt=$(df -B1 --output=size "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   di=$(df --output=iavail "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
-  dit=$(df --output=inodes "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  dit=$(df --output=itotal "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   [[ "$rf" =~ ^[0-9]+$ && "$rt" =~ ^[0-9]+$ && "$ri" =~ ^[0-9]+$ && "$rit" =~ ^[0-9]+$ &&
     "$dfree" =~ ^[0-9]+$ && "$dt" =~ ^[0-9]+$ && "$di" =~ ^[0-9]+$ && "$dit" =~ ^[0-9]+$ ]] || return 1
   rw=$(max_threshold "$rt" "$ROOT_WARNING_MIN_BYTES" 15); rc=$(max_threshold "$rt" "$ROOT_CRITICAL_MIN_BYTES" 10)
