@@ -1,9 +1,9 @@
 name: Preview promotion
-run-name: Preview promotion for CI ${{ github.event.workflow_run.id }} attempt ${{ github.event.workflow_run.run_attempt }}
+run-name: Preview promotion for Main CD ${{ github.event.workflow_run.id }} attempt ${{ github.event.workflow_run.run_attempt }}
 
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Main CD]
     types: [completed]
     branches: [main]
 
@@ -17,7 +17,7 @@ jobs:
     name: validate main release and repository promotion mode
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    timeout-minutes: 30
     outputs:
       mode: ${{ steps.policy.outputs.mode }}
       revision: ${{ steps.policy.outputs.revision }}
@@ -26,14 +26,9 @@ jobs:
       source_artifact_id: ${{ steps.policy.outputs.source_artifact_id }}
       source_artifact_name: ${{ steps.policy.outputs.source_artifact_name }}
       source_artifact_digest: ${{ steps.policy.outputs.source_artifact_digest }}
-      test_run_id: ${{ steps.policy.outputs.test_run_id }}
-      test_run_attempt: ${{ steps.policy.outputs.test_run_attempt }}
-      test_evidence_artifact_id: ${{ steps.policy.outputs.test_evidence_artifact_id }}
-      test_evidence_artifact_name: ${{ steps.policy.outputs.test_evidence_artifact_name }}
-      test_evidence_artifact_digest: ${{ steps.policy.outputs.test_evidence_artifact_digest }}
       foundation_reset: ${{ steps.policy.outputs.foundation_reset }}
     steps:
-      - name: Validate the trusted main CI run
+      - name: Validate the trusted Main CD run
         id: policy
         env:
           GH_TOKEN: ${{ github.token }}
@@ -63,6 +58,7 @@ jobs:
             --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
               .id == $runId
               and .run_attempt == $runAttempt
+              and .name == "Main CD"
               and .path == ".github/workflows/ci.yml"
               and .event == "push"
               and .head_branch == "main"
@@ -141,149 +137,6 @@ jobs:
             foundation_reset=true
           fi
 
-          test_run_id=
-          test_run_attempt=
-          test_evidence_artifact_id=
-          test_evidence_artifact_name=
-          test_evidence_artifact_digest=
-          if [[ "$MODE" == enabled ]]; then
-            test_runs="$work/test-runs.json"
-            expected_test_title="Test deployment for CI ${SOURCE_RUN_ID} attempt ${SOURCE_RUN_ATTEMPT}"
-            for _ in $(seq 1 900); do
-              [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-                --jq '.object.sha')" == "$REVISION" ]] || {
-                echo 'main advanced before the exact automatic Test completed.' >&2
-                exit 1
-              }
-              gh api \
-                "repos/${GITHUB_REPOSITORY}/actions/workflows/combo-dev.yml/runs?event=workflow_run&branch=main&head_sha=${REVISION}&per_page=100" \
-                >"$test_runs"
-              matching_test_runs=$(jq -c \
-                --arg repository "$GITHUB_REPOSITORY" \
-                --arg revision "$REVISION" \
-                --arg title "$expected_test_title" '
-                  [
-                    .workflow_runs[]
-                    | select(
-                        .name == $title
-                        and .display_title == $title
-                        and .path == ".github/workflows/combo-dev.yml"
-                        and .event == "workflow_run"
-                        and .head_branch == "main"
-                        and .head_sha == $revision
-                        and .repository.full_name == $repository
-                        and .head_repository.full_name == $repository
-                      )
-                  ]
-                ' "$test_runs")
-              matching_test_count=$(jq -r 'length' <<<"$matching_test_runs")
-              [[ "$matching_test_count" =~ ^[0-9]+$ ]]
-              if (( matching_test_count > 1 )); then
-                echo 'Multiple automatic Test workflows matched the exact main CI run.' >&2
-                exit 1
-              fi
-              if (( matching_test_count == 0 )); then
-                sleep 20
-                continue
-              fi
-              test_run_id=$(jq -er '.[0].id' <<<"$matching_test_runs")
-              gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}" \
-                >"$work/test-run.json"
-              test_status=$(jq -er '.status' "$work/test-run.json")
-              if [[ "$test_status" == completed ]]; then
-                test_conclusion=$(jq -er '.conclusion' "$work/test-run.json")
-                [[ "$test_conclusion" == success ]] || {
-                  echo "The exact automatic Test concluded ${test_conclusion}." >&2
-                  exit 1
-                }
-                break
-              fi
-              [[ "$test_status" == queued || "$test_status" == in_progress ||
-                "$test_status" == waiting || "$test_status" == pending ||
-                "$test_status" == requested ]] || {
-                echo "The exact automatic Test has unexpected status ${test_status}." >&2
-                exit 1
-              }
-              test_run_id=
-              sleep 20
-            done
-          [[ "$test_run_id" =~ ^[1-9][0-9]*$ ]]
-          jq -e \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" \
-            --arg title "$expected_test_title" \
-            --argjson runId "$test_run_id" '
-              .id == $runId
-              and .name == $title
-              and .display_title == $title
-              and .path == ".github/workflows/combo-dev.yml"
-              and .event == "workflow_run"
-              and .head_branch == "main"
-              and .head_sha == $revision
-              and .status == "completed"
-              and .conclusion == "success"
-              and .repository.full_name == $repository
-              and .head_repository.full_name == $repository
-              and (.run_attempt | type == "number" and . > 0 and floor == .)
-            ' "$work/test-run.json" >/dev/null
-          test_run_attempt=$(jq -er '.run_attempt' "$work/test-run.json")
-          [[ "$test_run_attempt" =~ ^[1-9][0-9]*$ ]]
-
-          test_evidence_artifact_name="combo-test-evidence-${REVISION}-${test_run_attempt}"
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/artifacts?per_page=100&name=${test_evidence_artifact_name}" \
-            >"$work/test-artifacts.json"
-          test_repository_id=$(jq -er '.repository.id' "$work/test-run.json")
-          jq -e \
-            --arg name "$test_evidence_artifact_name" \
-            --arg revision "$REVISION" \
-            --argjson repositoryId "$test_repository_id" \
-            --argjson runId "$test_run_id" '
-              [.artifacts[] | select(.name == $name)] as $matches
-              | .total_count == 1
-                and ($matches | length) == 1
-                and ($matches[0].id | type == "number" and . > 0 and floor == .)
-                and (
-                  $matches[0].size_in_bytes
-                  | type == "number" and . > 0 and . <= 16777216 and floor == .
-                )
-                and $matches[0].expired == false
-                and ($matches[0].digest | test("^sha256:[0-9a-f]{64}$"))
-                and $matches[0].workflow_run.id == $runId
-                and $matches[0].workflow_run.repository_id == $repositoryId
-                and $matches[0].workflow_run.head_repository_id == $repositoryId
-                and $matches[0].workflow_run.head_branch == "main"
-                and $matches[0].workflow_run.head_sha == $revision
-            ' "$work/test-artifacts.json" >/dev/null
-          test_evidence_artifact_id=$(jq -er \
-            --arg name "$test_evidence_artifact_name" \
-            '.artifacts[] | select(.name == $name) | .id' \
-            "$work/test-artifacts.json")
-          test_evidence_artifact_digest=$(jq -er \
-            --arg name "$test_evidence_artifact_name" \
-            '.artifacts[] | select(.name == $name) | .digest' \
-            "$work/test-artifacts.json")
-          test_evidence_artifact_created_at=$(jq -er \
-            --arg name "$test_evidence_artifact_name" \
-            '.artifacts[] | select(.name == $name) | .created_at' \
-            "$work/test-artifacts.json")
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${test_run_id}/attempts/${test_run_attempt}/jobs?per_page=100" \
-            >"$work/test-attempt-jobs.json"
-          jq -e \
-            --arg artifactCreatedAt "$test_evidence_artifact_created_at" '
-              [.jobs[]
-                | select(.name == "deploy the trusted release to Test")] as $deployJobs
-              | ($deployJobs | length) == 1
-                and $deployJobs[0].status == "completed"
-                and $deployJobs[0].conclusion == "success"
-                and ($deployJobs[0].started_at | type == "string" and test("Z$"))
-                and ($deployJobs[0].completed_at | type == "string" and test("Z$"))
-                and ($artifactCreatedAt | test("Z$"))
-                and $deployJobs[0].started_at <= $artifactCreatedAt
-                and $artifactCreatedAt <= $deployJobs[0].completed_at
-            ' "$work/test-attempt-jobs.json" >/dev/null
-          fi
           {
             printf 'mode=%s\n' "$MODE"
             printf 'revision=%s\n' "$REVISION"
@@ -292,11 +145,6 @@ jobs:
             printf 'source_artifact_id=%s\n' "$source_artifact_id"
             printf 'source_artifact_name=%s\n' "$artifact_name"
             printf 'source_artifact_digest=%s\n' "$source_artifact_digest"
-            printf 'test_run_id=%s\n' "$test_run_id"
-            printf 'test_run_attempt=%s\n' "$test_run_attempt"
-            printf 'test_evidence_artifact_id=%s\n' "$test_evidence_artifact_id"
-            printf 'test_evidence_artifact_name=%s\n' "$test_evidence_artifact_name"
-            printf 'test_evidence_artifact_digest=%s\n' "$test_evidence_artifact_digest"
             printf 'foundation_reset=%s\n' "$foundation_reset"
           } >> "$GITHUB_OUTPUT"
 
@@ -422,6 +270,7 @@ jobs:
               --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
                 .id == $runId
                 and .run_attempt == $runAttempt
+                and .name == "Main CD"
                 and .path == ".github/workflows/ci.yml"
                 and .event == "push"
                 and .head_branch == "main"
@@ -567,241 +416,6 @@ jobs:
             [[ -s "$RELEASE_ROOT/rendered/preview/$phase.yaml" ]]
           done
 
-      - name: Download and validate the exact successful Test admission
-        id: test_admission
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_ROOT: ${{ runner.temp }}/combo-release
-          TEST_EVIDENCE_ROOT: ${{ runner.temp }}/test-evidence
-          REVISION: ${{ needs.policy.outputs.revision }}
-          SOURCE_RUN_ID: ${{ needs.policy.outputs.source_run_id }}
-          SOURCE_RUN_ATTEMPT: ${{ needs.policy.outputs.source_run_attempt }}
-          SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
-          SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
-          SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
-          TEST_RUN_ID: ${{ needs.policy.outputs.test_run_id }}
-          TEST_RUN_ATTEMPT: ${{ needs.policy.outputs.test_run_attempt }}
-          TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
-          TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
-          TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
-        run: |
-          set -euo pipefail
-          umask 077
-          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
-          for value in \
-            "$SOURCE_RUN_ID" "$SOURCE_RUN_ATTEMPT" "$SOURCE_ARTIFACT_ID" \
-            "$TEST_RUN_ID" "$TEST_RUN_ATTEMPT" "$TEST_EVIDENCE_ARTIFACT_ID"; do
-            [[ "$value" =~ ^[1-9][0-9]*$ ]]
-          done
-          [[ "$SOURCE_ARTIFACT_NAME" == \
-            "combo-release-${REVISION}-${SOURCE_RUN_ATTEMPT}" ]]
-          [[ "$SOURCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$TEST_EVIDENCE_ARTIFACT_NAME" == \
-            "combo-test-evidence-${REVISION}-${TEST_RUN_ATTEMPT}" ]]
-          [[ "$TEST_EVIDENCE_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
-
-          archive="$RUNNER_TEMP/test-evidence.zip"
-          trap 'rm -f "$archive"' EXIT
-          gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TEST_EVIDENCE_ARTIFACT_ID}/zip" \
-            >"$archive"
-          [[ -s "$archive" ]]
-          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" \
-            == "$TEST_EVIDENCE_ARTIFACT_DIGEST" ]]
-          mapfile -t archive_paths < <(unzip -Z1 "$archive" | LC_ALL=C sort)
-          expected_paths=(
-            "combo-test-evidence-${REVISION}.json"
-            source-release.json
-            test-live-browser-acceptance.json
-            test-promotion-identity.json
-          )
-          [[ "${#archive_paths[@]}" == "${#expected_paths[@]}" ]]
-          for index in "${!expected_paths[@]}"; do
-            [[ "${archive_paths[$index]}" == "${expected_paths[$index]}" ]]
-          done
-          install -d -m 0700 "$TEST_EVIDENCE_ROOT"
-          unzip -q "$archive" -d "$TEST_EVIDENCE_ROOT"
-          if find "$TEST_EVIDENCE_ROOT" -type l -print -quit | grep -q .; then
-            echo 'Test evidence artifact contains a symbolic link.' >&2
-            exit 1
-          fi
-          for path in "${expected_paths[@]}"; do
-            file="$TEST_EVIDENCE_ROOT/$path"
-            [[ -f "$file" && ! -L "$file" ]]
-            bytes=$(stat -c '%s' "$file")
-            [[ "$bytes" =~ ^[0-9]+$ && "$bytes" -gt 0 && "$bytes" -le 1048576 ]]
-            chmod 0600 "$file"
-          done
-
-          identity="$TEST_EVIDENCE_ROOT/test-promotion-identity.json"
-          browser="$TEST_EVIDENCE_ROOT/test-live-browser-acceptance.json"
-          source_release="$TEST_EVIDENCE_ROOT/source-release.json"
-          deployment="$TEST_EVIDENCE_ROOT/combo-test-evidence-${REVISION}.json"
-          validator="$RELEASE_ROOT/scripts/promotion-evidence.mjs"
-          identity_digest=$(node "$validator" validate-identity --identity "$identity")
-          browser_digest=$(node "$validator" validate-live-browser \
-            --environment test \
-            --evidence "$browser" \
-            --identity "$identity")
-          [[ "$identity_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$browser_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-
-          release_id=$(jq -er '.releaseId' "$RELEASE_ROOT/metadata/release.json")
-          manifest_digest=$(<"$RELEASE_ROOT/metadata/release-manifest-digest.txt")
-          file_set_digest=$(sha256sum "$RELEASE_ROOT/metadata/artifact-files.sha256" |
-            awk '{print "sha256:" $1}')
-          web_asset_digest=$(jq -er \
-            '.webAssetManifest' "$RELEASE_ROOT/metadata/release.json")
-          api_image=$(jq -er '.images.api' "$RELEASE_ROOT/metadata/release.json")
-          runtime_image=$(jq -er '.images.runtime' "$RELEASE_ROOT/metadata/release.json")
-          web_image=$(jq -er '.images.web' "$RELEASE_ROOT/metadata/release.json")
-          jq -e \
-            --arg revision "$REVISION" \
-            --argjson sourceRunId "$SOURCE_RUN_ID" \
-            --argjson sourceRunAttempt "$SOURCE_RUN_ATTEMPT" \
-            --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
-            --arg sourceArtifactName "$SOURCE_ARTIFACT_NAME" \
-            --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
-            --argjson testRunId "$TEST_RUN_ID" \
-            --argjson testRunAttempt "$TEST_RUN_ATTEMPT" \
-            --arg releaseId "$release_id" \
-            --arg manifestDigest "$manifest_digest" \
-            --arg fileSetDigest "$file_set_digest" \
-            --arg webAssetDigest "$web_asset_digest" \
-            --arg apiImage "$api_image" \
-            --arg runtimeImage "$runtime_image" \
-            --arg webImage "$web_image" '
-              .schemaVersion == 1
-              and .environment == "test"
-              and .namespace == "combo-preview"
-              and .sourceSha == $revision
-              and .sourceCiRunId == $sourceRunId
-              and .sourceCiRunAttempt == $sourceRunAttempt
-              and .deploymentWorkflow == ".github/workflows/combo-dev.yml"
-              and .deploymentRunId == $testRunId
-              and .deploymentRunAttempt == $testRunAttempt
-              and .releaseArtifactId == $sourceArtifactId
-              and .releaseArtifactName == $sourceArtifactName
-              and .releaseArtifactDigest == $sourceArtifactDigest
-              and .releaseId == $releaseId
-              and .releaseManifestDigest == $manifestDigest
-              and .artifactFileSetDigest == $fileSetDigest
-              and .webAssetManifestDigest == $webAssetDigest
-              and .images == {
-                api: $apiImage,
-                runtime: $runtimeImage,
-                web: $webImage
-              }
-            ' "$identity" >/dev/null
-          jq -e \
-            --arg controllerSha "$REVISION" \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" \
-            --argjson sourceRunId "$SOURCE_RUN_ID" \
-            --argjson sourceRunAttempt "$SOURCE_RUN_ATTEMPT" \
-            --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
-            --arg sourceArtifactName "$SOURCE_ARTIFACT_NAME" \
-            --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
-            --argjson testRunId "$TEST_RUN_ID" \
-            --argjson testRunAttempt "$TEST_RUN_ATTEMPT" \
-            --arg releaseId "$release_id" \
-            --arg manifestDigest "$manifest_digest" \
-            --arg fileSetDigest "$file_set_digest" \
-            --arg webAssetDigest "$web_asset_digest" \
-            --arg identityDigest "$identity_digest" \
-            --arg browserDigest "$browser_digest" \
-            --arg apiImage "$api_image" \
-            --arg runtimeImage "$runtime_image" \
-            --arg webImage "$web_image" '
-              keys == ([
-                "artifactFileSetDigest",
-                "controllerSha",
-                "images",
-                "liveBrowserAcceptanceDigest",
-                "migrationHead",
-                "releaseArtifactDigest",
-                "releaseArtifactId",
-                "releaseArtifactName",
-                "releaseId",
-                "releaseManifestDigest",
-                "schemaVersion",
-                "sourceBranch",
-                "sourceCiRunAttempt",
-                "sourceCiRunId",
-                "sourceConclusion",
-                "sourceEvent",
-                "sourceMode",
-                "sourceRepository",
-                "sourceSha",
-                "sourceWorkflow",
-                "testIdentityDigest",
-                "testRunAttempt",
-                "testRunId",
-                "webAssetManifestDigest"
-              ] | sort)
-              and .schemaVersion == 1
-              and .controllerSha == $controllerSha
-              and .sourceRepository == $repository
-              and .sourceWorkflow == ".github/workflows/ci.yml"
-              and .sourceEvent == "push"
-              and .sourceBranch == "main"
-              and .sourceMode == "main-ci"
-              and .sourceConclusion == "success"
-              and .sourceSha == $revision
-              and .sourceCiRunId == $sourceRunId
-              and .sourceCiRunAttempt == $sourceRunAttempt
-              and .testRunId == $testRunId
-              and .testRunAttempt == $testRunAttempt
-              and .releaseArtifactId == $sourceArtifactId
-              and .releaseArtifactName == $sourceArtifactName
-              and .releaseArtifactDigest == $sourceArtifactDigest
-              and .releaseId == $releaseId
-              and .releaseManifestDigest == $manifestDigest
-              and .artifactFileSetDigest == $fileSetDigest
-              and .webAssetManifestDigest == $webAssetDigest
-              and .testIdentityDigest == $identityDigest
-              and .liveBrowserAcceptanceDigest == $browserDigest
-              and .migrationHead == "0009_billing.sql"
-              and .images == {
-                api: $apiImage,
-                runtime: $runtimeImage,
-                web: $webImage
-              }
-            ' "$source_release" >/dev/null
-          jq -e \
-            --arg revision "$REVISION" \
-            --arg testRunId "$TEST_RUN_ID" \
-            --arg releaseId "$release_id" \
-            --arg manifestDigest "$manifest_digest" \
-            --arg webAssetDigest "$web_asset_digest" \
-            --arg apiImage "$api_image" \
-            --arg runtimeImage "$runtime_image" \
-            --arg webImage "$web_image" '
-              (has("productAcceptance") | not)
-              and .schemaVersion == 1
-              and .workflowRunId == $testRunId
-              and .sourceSha == $revision
-              and .releaseId == $releaseId
-              and .releaseManifestDigest == $manifestDigest
-              and .webAssetManifest == $webAssetDigest
-              and .images == {
-                api: $apiImage,
-                runtime: $runtimeImage,
-                web: $webImage
-              }
-            ' "$deployment" >/dev/null
-
-          source_release_digest=$(sha256sum "$source_release" | awk '{print "sha256:" $1}')
-          deployment_digest=$(sha256sum "$deployment" | awk '{print "sha256:" $1}')
-          [[ "$source_release_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          [[ "$deployment_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-          {
-            printf 'identity_digest=%s\n' "$identity_digest"
-            printf 'browser_digest=%s\n' "$browser_digest"
-            printf 'source_release_digest=%s\n' "$source_release_digest"
-            printf 'deployment_digest=%s\n' "$deployment_digest"
-          } >>"$GITHUB_OUTPUT"
-
       - name: Configure the existing deployment SSH identity
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -875,11 +489,6 @@ jobs:
           SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
           SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
           SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
-          TEST_RUN_ID: ${{ needs.policy.outputs.test_run_id }}
-          TEST_RUN_ATTEMPT: ${{ needs.policy.outputs.test_run_attempt }}
-          TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
-          TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
-          TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
           FOUNDATION_RESET: ${{ needs.policy.outputs.foundation_reset }}
           FOUNDATION_RESET_SHA: ${{ vars.COMBO_PREVIEW_FOUNDATION_RESET_SHA }}
         run: |
@@ -903,6 +512,7 @@ jobs:
             --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
               .id == $runId
               and .run_attempt == $runAttempt
+              and .name == "Main CD"
               and .path == ".github/workflows/ci.yml"
               and .event == "push"
               and .head_branch == "main"
@@ -932,47 +542,6 @@ jobs:
               and .workflow_run.head_branch == "main"
               and .workflow_run.head_sha == $revision
             ' <<<"$source_artifact" >/dev/null
-
-          test_run=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${TEST_RUN_ID}")
-          jq -e \
-            --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" \
-            --arg title "Test deployment for CI ${SOURCE_RUN_ID} attempt ${SOURCE_RUN_ATTEMPT}" \
-            --argjson runId "$TEST_RUN_ID" \
-            --argjson runAttempt "$TEST_RUN_ATTEMPT" '
-              .id == $runId
-              and .run_attempt == $runAttempt
-              and .name == $title
-              and .display_title == $title
-              and .path == ".github/workflows/combo-dev.yml"
-              and .event == "workflow_run"
-              and .head_branch == "main"
-              and .head_sha == $revision
-              and .status == "completed"
-              and .conclusion == "success"
-              and .repository.full_name == $repository
-              and .head_repository.full_name == $repository
-            ' <<<"$test_run" >/dev/null
-          test_evidence_artifact=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${TEST_EVIDENCE_ARTIFACT_ID}")
-          jq -e \
-            --arg name "$TEST_EVIDENCE_ARTIFACT_NAME" \
-            --arg revision "$REVISION" \
-            --arg digest "$TEST_EVIDENCE_ARTIFACT_DIGEST" \
-            --argjson artifactId "$TEST_EVIDENCE_ARTIFACT_ID" \
-            --argjson runId "$TEST_RUN_ID" \
-            --argjson runAttempt "$TEST_RUN_ATTEMPT" '
-              .id == $artifactId
-              and .name == $name
-              and .name == (
-                "combo-test-evidence-" + $revision + "-" + ($runAttempt | tostring)
-              )
-              and .digest == $digest
-              and .expired == false
-              and .workflow_run.id == $runId
-              and .workflow_run.head_branch == "main"
-              and .workflow_run.head_sha == $revision
-            ' <<<"$test_evidence_artifact" >/dev/null
 
       - name: Check the existing Preview registry credential
         env:
@@ -1184,6 +753,7 @@ jobs:
               --argjson runAttempt "$SOURCE_RUN_ATTEMPT" '
                 .id == $runId
                 and .run_attempt == $runAttempt
+                and .name == "Main CD"
                 and .path == ".github/workflows/ci.yml"
                 and .event == "push"
                 and .head_branch == "main"
@@ -1854,15 +1424,6 @@ jobs:
           SOURCE_ARTIFACT_ID: ${{ needs.policy.outputs.source_artifact_id }}
           SOURCE_ARTIFACT_NAME: ${{ needs.policy.outputs.source_artifact_name }}
           SOURCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.source_artifact_digest }}
-          TEST_RUN_ID: ${{ needs.policy.outputs.test_run_id }}
-          TEST_RUN_ATTEMPT: ${{ needs.policy.outputs.test_run_attempt }}
-          TEST_EVIDENCE_ARTIFACT_ID: ${{ needs.policy.outputs.test_evidence_artifact_id }}
-          TEST_EVIDENCE_ARTIFACT_NAME: ${{ needs.policy.outputs.test_evidence_artifact_name }}
-          TEST_EVIDENCE_ARTIFACT_DIGEST: ${{ needs.policy.outputs.test_evidence_artifact_digest }}
-          TEST_IDENTITY_DIGEST: ${{ steps.test_admission.outputs.identity_digest }}
-          TEST_BROWSER_ACCEPTANCE_DIGEST: ${{ steps.test_admission.outputs.browser_digest }}
-          TEST_SOURCE_RELEASE_DIGEST: ${{ steps.test_admission.outputs.source_release_digest }}
-          TEST_DEPLOYMENT_EVIDENCE_DIGEST: ${{ steps.test_admission.outputs.deployment_digest }}
           PREVIEW_RUN_ID: ${{ github.run_id }}
           PREVIEW_RUN_ATTEMPT: ${{ github.run_attempt }}
           REMOTE_DEPLOY_DIGEST: ${{ steps.remote_evidence.outputs.deploy_digest }}
@@ -1886,15 +1447,6 @@ jobs:
             --argjson sourceArtifactId "$SOURCE_ARTIFACT_ID" \
             --arg sourceArtifactName "$SOURCE_ARTIFACT_NAME" \
             --arg sourceArtifactDigest "$SOURCE_ARTIFACT_DIGEST" \
-            --argjson testRunId "$TEST_RUN_ID" \
-            --argjson testRunAttempt "$TEST_RUN_ATTEMPT" \
-            --argjson testEvidenceArtifactId "$TEST_EVIDENCE_ARTIFACT_ID" \
-            --arg testEvidenceArtifactName "$TEST_EVIDENCE_ARTIFACT_NAME" \
-            --arg testEvidenceArtifactDigest "$TEST_EVIDENCE_ARTIFACT_DIGEST" \
-            --arg testIdentityDigest "$TEST_IDENTITY_DIGEST" \
-            --arg testBrowserAcceptanceDigest "$TEST_BROWSER_ACCEPTANCE_DIGEST" \
-            --arg testSourceReleaseDigest "$TEST_SOURCE_RELEASE_DIGEST" \
-            --arg testDeploymentEvidenceDigest "$TEST_DEPLOYMENT_EVIDENCE_DIGEST" \
             --argjson previewRunId "$PREVIEW_RUN_ID" \
             --argjson previewRunAttempt "$PREVIEW_RUN_ATTEMPT" \
             --arg releaseManifestDigest "$manifest_digest" \
@@ -1908,7 +1460,7 @@ jobs:
             --arg browserAcceptanceDigest "$BROWSER_ACCEPTANCE_DIGEST" \
             --arg deployedAt "$deployed_at" '
               {
-                schemaVersion: 4,
+                schemaVersion: 5,
                 status: "passed",
                 environment: "preview",
                 namespace: "combo-review",
@@ -1918,15 +1470,6 @@ jobs:
                 sourceArtifactId: $sourceArtifactId,
                 sourceArtifactName: $sourceArtifactName,
                 sourceArtifactDigest: $sourceArtifactDigest,
-                testRunId: $testRunId,
-                testRunAttempt: $testRunAttempt,
-                testEvidenceArtifactId: $testEvidenceArtifactId,
-                testEvidenceArtifactName: $testEvidenceArtifactName,
-                testEvidenceArtifactDigest: $testEvidenceArtifactDigest,
-                testIdentityDigest: $testIdentityDigest,
-                testBrowserAcceptanceDigest: $testBrowserAcceptanceDigest,
-                testSourceReleaseDigest: $testSourceReleaseDigest,
-                testDeploymentEvidenceDigest: $testDeploymentEvidenceDigest,
                 previewRunId: $previewRunId,
                 previewRunAttempt: $previewRunAttempt,
                 releaseArtifact: ("combo-release-" + $sourceSha),
@@ -2077,7 +1620,6 @@ jobs:
           fi
           if ! rm -f -- \
             "$RUNNER_TEMP/combo-release.zip" \
-            "$RUNNER_TEMP/test-evidence.zip" \
             "$RUNNER_TEMP/combo-release-preview-${REVISION}.tar.gz" \
             "$RUNNER_TEMP/combo-preview-acceptance-${REVISION}.tar.gz" \
             "$RUNNER_TEMP/preview-promotion.json" \
@@ -2095,7 +1637,6 @@ jobs:
           fi
           if ! rm -rf -- \
             "$RUNNER_TEMP/combo-release" \
-            "$RUNNER_TEMP/test-evidence" \
             "$RUNNER_TEMP/preview-remote-evidence"; then
             cleanup_rc=1
           fi

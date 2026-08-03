@@ -1,24 +1,16 @@
 name: Test deployment
 run-name: >-
-  ${{ github.event_name == 'workflow_run'
-    && format('Test deployment for CI {0} attempt {1}',
-      github.event.workflow_run.id,
-      github.event.workflow_run.run_attempt)
-    || format('Test branch deployment request {0}', github.run_id) }}
+  Test PR #${{ inputs.pull_request_number }} deployment request ${{ github.run_id }}
 
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
-      source_branch:
-        description: 要部署到 Test 的仓库分支名称。
+      pull_request_number:
+        description: 要部署到 Test 的同仓库、以 main 为 base 的开放 PR 编号。
         required: true
         type: string
       revision:
-        description: 该分支当前 tip 的完整提交 SHA。
+        description: 该 PR 当前 head 的完整 40 位小写提交 SHA。
         required: true
         type: string
 
@@ -29,15 +21,13 @@ permissions:
 jobs:
   select:
     name: authorize the immutable Test source
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     outputs:
       controller_sha: ${{ steps.source.outputs.controller_sha }}
+      pull_request_number: ${{ steps.source.outputs.pull_request_number }}
       revision: ${{ steps.source.outputs.revision }}
       source_branch: ${{ steps.source.outputs.source_branch }}
       source_ci_run_attempt: ${{ steps.source.outputs.source_ci_run_attempt }}
@@ -47,7 +37,6 @@ jobs:
       source_workflow: ${{ steps.source.outputs.source_workflow }}
     steps:
       - name: Authorize a trusted repository actor for a manual branch deployment
-        if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           ACTOR: ${{ github.actor }}
@@ -71,22 +60,13 @@ jobs:
             esac
           done
 
-      - name: Resolve an exact main or branch source
+      - name: Resolve an exact pull request source
         id: source
         env:
           GH_TOKEN: ${{ github.token }}
           CONTROLLER_SHA: ${{ github.sha }}
-          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PULL_REQUEST_NUMBER: ${{ inputs.pull_request_number }}
           INPUT_REVISION: ${{ inputs.revision }}
-          INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
-          MAIN_CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          MAIN_CI_EVENT: ${{ github.event.workflow_run.event }}
-          MAIN_CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
-          MAIN_CI_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
-          MAIN_CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-          MAIN_CI_PATH: ${{ github.event.workflow_run.path }}
-          MAIN_CI_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-          MAIN_CI_RUN_ID: ${{ github.event.workflow_run.id }}
           WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
@@ -103,66 +83,71 @@ jobs:
             exit 1
           }
 
-          case "$EVENT_NAME" in
-            workflow_run)
-              [[ "$MAIN_CI_CONCLUSION" == success ]]
-              [[ "$MAIN_CI_EVENT" == push ]]
-              [[ "$MAIN_CI_HEAD_BRANCH" == main ]]
-              [[ "$MAIN_CI_HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
-              [[ "$MAIN_CI_PATH" == .github/workflows/ci.yml ]]
-              [[ "$MAIN_CI_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-              [[ "$MAIN_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-              [[ "$MAIN_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-              [[ "$CONTROLLER_SHA" == "$MAIN_CI_HEAD_SHA" ]] || {
-                echo 'A newer main superseded this automatic Test candidate.' >&2
-                exit 1
-              }
-              revision=$MAIN_CI_HEAD_SHA
-              source_branch=main
-              source_ci_run_id=$MAIN_CI_RUN_ID
-              source_ci_run_attempt=$MAIN_CI_RUN_ATTEMPT
-              source_event=push
-              source_mode=main-ci
-              source_workflow=.github/workflows/ci.yml
-              ;;
-            workflow_dispatch)
-              [[ "$INPUT_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
-                echo 'The Test revision must be a complete lowercase commit SHA.' >&2
-                exit 1
-              }
-              git check-ref-format "refs/heads/$INPUT_SOURCE_BRANCH" >/dev/null || {
-                echo 'The Test source branch is invalid.' >&2
-                exit 1
-              }
-              [[ "$INPUT_SOURCE_BRANCH" != HEAD ]]
-              encoded_branch=$(jq -rn \
-                --arg branch "$INPUT_SOURCE_BRANCH" \
-                '$branch | @uri')
-              branch_sha=$(gh api \
-                "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
-                --jq '.object.sha')
-              [[ "$branch_sha" == "$INPUT_REVISION" ]] || {
-                echo 'The Test revision must equal the selected branch tip.' >&2
-                exit 1
-              }
-              gh api "repos/${GITHUB_REPOSITORY}/git/commits/${INPUT_REVISION}" \
-                --jq '.sha' | grep -Fx "$INPUT_REVISION" >/dev/null
-              revision=$INPUT_REVISION
-              source_branch=$INPUT_SOURCE_BRANCH
-              source_ci_run_id=$GITHUB_RUN_ID
-              source_ci_run_attempt=$GITHUB_RUN_ATTEMPT
-              source_event=workflow_dispatch
-              source_mode=branch-build
-              source_workflow=.github/workflows/combo-dev.yml
-              ;;
-            *)
-              echo 'Unsupported Test deployment event.' >&2
-              exit 1
-              ;;
-          esac
+          [[ "$INPUT_PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+            echo 'The Test pull request number must be a positive integer.' >&2
+            exit 1
+          }
+          [[ "$INPUT_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+            echo 'The Test revision must be a complete lowercase commit SHA.' >&2
+            exit 1
+          }
+          repository=$(gh api "repos/${GITHUB_REPOSITORY}")
+          repository_id=$(jq -er '.id' <<<"$repository")
+          [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
+          pull_request=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${INPUT_PULL_REQUEST_NUMBER}")
+          jq -e \
+            --arg controller "$CONTROLLER_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$INPUT_REVISION" \
+            --argjson number "$INPUT_PULL_REQUEST_NUMBER" \
+            --argjson repositoryId "$repository_id" '
+              .number == $number
+              and .state == "open"
+              and .base.ref == "main"
+              and .base.sha == $controller
+              and .base.repo.id == $repositoryId
+              and .base.repo.full_name == $repository
+              and .head.repo != null
+              and .head.repo.id == $repositoryId
+              and .head.repo.full_name == $repository
+              and .head.sha == $revision
+            ' <<<"$pull_request" >/dev/null
+          source_branch=$(jq -er '.head.ref' <<<"$pull_request")
+          git check-ref-format "refs/heads/$source_branch" >/dev/null || {
+            echo 'The Test pull request head branch is invalid.' >&2
+            exit 1
+          }
+          [[ "$source_branch" != HEAD ]]
+          encoded_branch=$(jq -rn --arg branch "$source_branch" '$branch | @uri')
+          branch_sha=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
+            --jq '.object.sha')
+          [[ "$branch_sha" == "$INPUT_REVISION" ]] || {
+            echo 'The Test revision must equal the pull request head branch tip.' >&2
+            exit 1
+          }
+          comparison=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${INPUT_REVISION}")
+          jq -e --arg controller "$CONTROLLER_SHA" '
+            .merge_base_commit.sha == $controller
+            and (.status == "ahead" or .status == "identical")
+          ' <<<"$comparison" >/dev/null || {
+            echo 'The Test pull request must contain the current main commit.' >&2
+            exit 1
+          }
+          gh api "repos/${GITHUB_REPOSITORY}/git/commits/${INPUT_REVISION}" \
+            --jq '.sha' | grep -Fx "$INPUT_REVISION" >/dev/null
+          revision=$INPUT_REVISION
+          source_ci_run_id=$GITHUB_RUN_ID
+          source_ci_run_attempt=$GITHUB_RUN_ATTEMPT
+          source_event=workflow_dispatch
+          source_mode=branch-build
+          source_workflow=.github/workflows/combo-dev.yml
 
           {
             printf 'controller_sha=%s\n' "$CONTROLLER_SHA"
+            printf 'pull_request_number=%s\n' "$INPUT_PULL_REQUEST_NUMBER"
             printf 'revision=%s\n' "$revision"
             printf 'source_branch=%s\n' "$source_branch"
             printf 'source_ci_run_attempt=%s\n' "$source_ci_run_attempt"
@@ -175,7 +160,6 @@ jobs:
   build_branch_release:
     name: build the exact branch Test artifact
     needs: select
-    if: needs.select.outputs.source_mode == 'branch-build'
     permissions:
       actions: read
       contents: read
@@ -191,14 +175,14 @@ jobs:
     if: >-
       always() &&
       needs.select.result == 'success' &&
-      (needs.select.outputs.source_mode == 'main-ci' ||
-        needs.build_branch_release.result == 'success')
+      needs.build_branch_release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
     outputs:
       controller_sha: ${{ needs.select.outputs.controller_sha }}
+      pull_request_number: ${{ needs.select.outputs.pull_request_number }}
       revision: ${{ needs.select.outputs.revision }}
       source_branch: ${{ needs.select.outputs.source_branch }}
       source_ci_run_id: ${{ needs.select.outputs.source_ci_run_id }}
@@ -222,6 +206,7 @@ jobs:
         env:
           CONTROLLER_SHA: ${{ needs.select.outputs.controller_sha }}
           GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ needs.select.outputs.pull_request_number }}
           REVISION: ${{ needs.select.outputs.revision }}
           SOURCE_BRANCH: ${{ needs.select.outputs.source_branch }}
           SOURCE_CI_RUN_ATTEMPT: ${{ needs.select.outputs.source_ci_run_attempt }}
@@ -235,94 +220,81 @@ jobs:
           git diff --quiet
           git diff --cached --quiet
 
+          [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$SOURCE_MODE" == branch-build ]]
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
+            echo 'main advanced before the pull request Test artifact was authorized.' >&2
+            exit 1
+          }
+          repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.id')
+          [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
+          pull_request=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")
+          jq -e \
+            --arg controller "$CONTROLLER_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" \
+            --arg sourceBranch "$SOURCE_BRANCH" \
+            --argjson number "$PULL_REQUEST_NUMBER" \
+            --argjson repositoryId "$repository_id" '
+              .number == $number
+              and .state == "open"
+              and .base.ref == "main"
+              and .base.sha == $controller
+              and .base.repo.id == $repositoryId
+              and .base.repo.full_name == $repository
+              and .head.repo != null
+              and .head.repo.id == $repositoryId
+              and .head.repo.full_name == $repository
+              and .head.ref == $sourceBranch
+              and .head.sha == $revision
+            ' <<<"$pull_request" >/dev/null
           encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
-          case "$SOURCE_MODE" in
-            main-ci)
-              [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-                --jq '.object.sha')" == "$CONTROLLER_SHA" ]]
-              [[ "$SOURCE_BRANCH" == main && "$REVISION" == "$CONTROLLER_SHA" ]]
-              ;;
-            branch-build)
-              [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-                --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
-                echo 'main advanced before the branch Test artifact was authorized.' >&2
-                exit 1
-              }
-              branch_status=$(gh api \
-                "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...${encoded_branch}" \
-                --jq '.status')
-              [[ "$branch_status" == ahead || "$branch_status" == identical ]] || {
-                echo 'The selected Test revision is no longer reachable from its branch.' >&2
-                exit 1
-              }
-              ;;
-            *)
-              echo 'Invalid Test source mode.' >&2
-              exit 1
-              ;;
-          esac
+          [[ "$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
+            --jq '.object.sha')" == "$REVISION" ]] || {
+            echo 'The pull request head branch advanced before artifact authorization.' >&2
+            exit 1
+          }
+          comparison=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${REVISION}")
+          jq -e --arg controller "$CONTROLLER_SHA" '
+            .merge_base_commit.sha == $controller
+            and (.status == "ahead" or .status == "identical")
+          ' <<<"$comparison" >/dev/null
 
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
           gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}" \
             > "$work/source-run.json"
-          case "$SOURCE_MODE" in
-            main-ci)
-              jq -e \
-                --arg repository "$GITHUB_REPOSITORY" \
-                --arg revision "$REVISION" \
-                --argjson runId "$SOURCE_CI_RUN_ID" \
-                --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-                  .id == $runId
-                  and .run_attempt == $runAttempt
-                  and .name == "CI"
-                  and .path == ".github/workflows/ci.yml"
-                  and .event == "push"
-                  and .head_branch == "main"
-                  and .head_sha == $revision
-                  and .status == "completed"
-                  and .conclusion == "success"
-                  and .repository.full_name == $repository
-                  and .head_repository.full_name == $repository
-                ' "$work/source-run.json" >/dev/null
-              artifact_head_sha=$REVISION
-              artifact_release_job='assemble immutable release artifact'
-              image_job_prefix=
-              ;;
-            branch-build)
-              [[ "$SOURCE_CI_RUN_ID" == "$GITHUB_RUN_ID" ]]
-              [[ "$SOURCE_CI_RUN_ATTEMPT" == "$GITHUB_RUN_ATTEMPT" ]] || {
-                echo 'Branch Test reruns must use Re-run all jobs to rebuild the exact artifact.' >&2
-                exit 1
-              }
-              jq -e \
-                --arg controller "$CONTROLLER_SHA" \
-                --arg repository "$GITHUB_REPOSITORY" \
-                --arg title "Test branch deployment request ${SOURCE_CI_RUN_ID}" \
-                --argjson runId "$SOURCE_CI_RUN_ID" \
-                --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-                  .id == $runId
-                  and .run_attempt == $runAttempt
-                  and .name == $title
-                  and .display_title == $title
-                  and .path == ".github/workflows/combo-dev.yml"
-                  and .event == "workflow_dispatch"
-                  and .head_branch == "main"
-                  and .head_sha == $controller
-                  and .status == "in_progress"
-                  and .conclusion == null
-                  and .repository.full_name == $repository
-                  and .head_repository.full_name == $repository
-                ' "$work/source-run.json" >/dev/null
-              artifact_head_sha=$CONTROLLER_SHA
-              artifact_release_job='build the exact branch Test artifact / assemble immutable release artifact'
-              image_job_prefix='build the exact branch Test artifact / '
-              ;;
-            *)
-              echo 'Invalid Test source mode.' >&2
-              exit 1
-              ;;
-          esac
+          [[ "$SOURCE_CI_RUN_ID" == "$GITHUB_RUN_ID" ]]
+          [[ "$SOURCE_CI_RUN_ATTEMPT" == "$GITHUB_RUN_ATTEMPT" ]] || {
+            echo 'Pull request Test reruns must use Re-run all jobs to rebuild the exact artifact.' >&2
+            exit 1
+          }
+          jq -e \
+            --arg controller "$CONTROLLER_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg title "Test PR #${PULL_REQUEST_NUMBER} deployment request ${SOURCE_CI_RUN_ID}" \
+            --argjson runId "$SOURCE_CI_RUN_ID" \
+            --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
+              .id == $runId
+              and .run_attempt == $runAttempt
+              and .name == $title
+              and .display_title == $title
+              and .path == ".github/workflows/combo-dev.yml"
+              and .event == "workflow_dispatch"
+              and .head_branch == "main"
+              and .head_sha == $controller
+              and .status == "in_progress"
+              and .conclusion == null
+              and .repository.full_name == $repository
+              and .head_repository.full_name == $repository
+            ' "$work/source-run.json" >/dev/null
+          artifact_head_sha=$CONTROLLER_SHA
+          artifact_release_job='build the exact branch Test artifact / assemble immutable release artifact'
+          image_job_prefix='build the exact branch Test artifact / '
 
           repository_id=$(jq -er '.repository.id' "$work/source-run.json")
           [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
@@ -755,11 +727,55 @@ jobs:
             fi
           done
 
-      - name: Prepare bounded Test host capacity before mutation
+      - name: Revalidate the pull request and prepare bounded Test host capacity
         env:
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
+          CONTROLLER_SHA: ${{ needs.authorize.outputs.controller_sha }}
+          GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ needs.authorize.outputs.pull_request_number }}
+          REVISION: ${{ needs.authorize.outputs.revision }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.source_branch }}
         run: |
           set -euo pipefail
+          [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+            --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
+            echo 'main advanced before Test host capacity preparation.' >&2
+            exit 1
+          }
+          repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.id')
+          [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
+          pull_request=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")
+          jq -e \
+            --arg controller "$CONTROLLER_SHA" \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg revision "$REVISION" \
+            --arg sourceBranch "$SOURCE_BRANCH" \
+            --argjson number "$PULL_REQUEST_NUMBER" \
+            --argjson repositoryId "$repository_id" '
+              .number == $number
+              and .state == "open"
+              and .base.ref == "main"
+              and .base.sha == $controller
+              and .base.repo.id == $repositoryId
+              and .base.repo.full_name == $repository
+              and .head.repo != null
+              and .head.repo.id == $repositoryId
+              and .head.repo.full_name == $repository
+              and .head.ref == $sourceBranch
+              and .head.sha == $revision
+            ' <<<"$pull_request" >/dev/null
+          encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
+          [[ "$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
+            --jq '.object.sha')" == "$REVISION" ]]
+          comparison=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${REVISION}")
+          jq -e --arg controller "$CONTROLLER_SHA" '
+            .merge_base_commit.sha == $controller
+            and (.status == "ahead" or .status == "identical")
+          ' <<<"$comparison" >/dev/null
           archive_bytes=$(stat -c '%s' "$ARCHIVE")
           [[ "$archive_bytes" =~ ^[1-9][0-9]*$ ]]
           (( archive_bytes <= 512 * 1024 * 1024 ))
@@ -773,6 +789,7 @@ jobs:
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
           CONTROLLER_SHA: ${{ needs.authorize.outputs.controller_sha }}
           GH_TOKEN: ${{ github.token }}
+          PULL_REQUEST_NUMBER: ${{ needs.authorize.outputs.pull_request_number }}
           RELEASE_ARTIFACT_DIGEST: ${{ needs.authorize.outputs.release_artifact_digest }}
           RELEASE_ARTIFACT_ID: ${{ needs.authorize.outputs.release_artifact_id }}
           RELEASE_ARTIFACT_NAME: ${{ needs.authorize.outputs.release_artifact_name }}
@@ -787,92 +804,81 @@ jobs:
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || exit 1
           revalidate_test_authority() {
-            local artifact_head_sha branch_status encoded_branch
+            local artifact_head_sha comparison encoded_branch pull_request repository_id
             local release_artifact release_job source_jobs source_run
 
+            [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
+            [[ "$SOURCE_MODE" == branch-build ]]
+            [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
+              --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
+              echo 'main advanced while the pull request Test waited for its deployment gate.' >&2
+              return 1
+            }
+            repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.id')
+            [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
+            pull_request=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")
+            jq -e \
+              --arg controller "$CONTROLLER_SHA" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg revision "$REVISION" \
+              --arg sourceBranch "$SOURCE_BRANCH" \
+              --argjson number "$PULL_REQUEST_NUMBER" \
+              --argjson repositoryId "$repository_id" '
+                .number == $number
+                and .state == "open"
+                and .base.ref == "main"
+                and .base.sha == $controller
+                and .base.repo.id == $repositoryId
+                and .base.repo.full_name == $repository
+                and .head.repo != null
+                and .head.repo.id == $repositoryId
+                and .head.repo.full_name == $repository
+                and .head.ref == $sourceBranch
+                and .head.sha == $revision
+              ' <<<"$pull_request" >/dev/null
             encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
-            case "$SOURCE_MODE" in
-              main-ci)
-                [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-                  --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
-                  echo 'main advanced while Test waited for its deployment gate.' >&2
-                  return 1
-                }
-                [[ "$SOURCE_BRANCH" == main && "$REVISION" == "$CONTROLLER_SHA" ]]
-                ;;
-              branch-build)
-                [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-                  --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
-                  echo 'main advanced while branch Test waited for its deployment gate.' >&2
-                  return 1
-                }
-                branch_status=$(gh api \
-                  "repos/${GITHUB_REPOSITORY}/compare/${REVISION}...${encoded_branch}" \
-                  --jq '.status')
-                [[ "$branch_status" == ahead || "$branch_status" == identical ]] || {
-                  echo 'The selected Test revision is no longer reachable from its branch.' >&2
-                  return 1
-                }
-                ;;
-              *)
-                echo 'Invalid Test source mode.' >&2
-                return 1
-                ;;
-            esac
+            [[ "$(gh api \
+              "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
+              --jq '.object.sha')" == "$REVISION" ]] || {
+              echo 'The pull request head advanced before Test deployment.' >&2
+              return 1
+            }
+            comparison=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${REVISION}")
+            jq -e --arg controller "$CONTROLLER_SHA" '
+              .merge_base_commit.sha == $controller
+              and (.status == "ahead" or .status == "identical")
+            ' <<<"$comparison" >/dev/null
 
             source_run=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}")
-            case "$SOURCE_MODE" in
-              main-ci)
-                jq -e \
-                  --arg repository "$GITHUB_REPOSITORY" \
-                  --arg revision "$REVISION" \
-                  --argjson runId "$SOURCE_CI_RUN_ID" \
-                  --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-                    .id == $runId
-                    and .run_attempt == $runAttempt
-                    and .path == ".github/workflows/ci.yml"
-                    and .event == "push"
-                    and .head_branch == "main"
-                    and .head_sha == $revision
-                    and .status == "completed"
-                    and .conclusion == "success"
-                    and .repository.full_name == $repository
-                    and .head_repository.full_name == $repository
-                  ' <<<"$source_run" >/dev/null
-                artifact_head_sha=$REVISION
-                release_job='assemble immutable release artifact'
-                ;;
-              branch-build)
-                [[ "$SOURCE_CI_RUN_ID" == "$RUN_ID" ]]
-                [[ "$SOURCE_CI_RUN_ATTEMPT" == "$RUN_ATTEMPT" ]] || {
-                  echo 'Branch Test reruns must use Re-run all jobs to rebuild the exact artifact.' >&2
-                  return 1
-                }
-                jq -e \
-                  --arg controller "$CONTROLLER_SHA" \
-                  --arg repository "$GITHUB_REPOSITORY" \
-                  --argjson runId "$SOURCE_CI_RUN_ID" \
-                  --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
-                    .id == $runId
-                    and .run_attempt == $runAttempt
-                    and .path == ".github/workflows/combo-dev.yml"
-                    and .event == "workflow_dispatch"
-                    and .head_branch == "main"
-                    and .head_sha == $controller
-                    and .status == "in_progress"
-                    and .conclusion == null
-                    and .repository.full_name == $repository
-                    and .head_repository.full_name == $repository
-                  ' <<<"$source_run" >/dev/null
-                artifact_head_sha=$CONTROLLER_SHA
-                release_job='build the exact branch Test artifact / assemble immutable release artifact'
-                ;;
-              *)
-                echo 'Invalid Test source mode.' >&2
-                return 1
-                ;;
-            esac
+            [[ "$SOURCE_CI_RUN_ID" == "$RUN_ID" ]]
+            [[ "$SOURCE_CI_RUN_ATTEMPT" == "$RUN_ATTEMPT" ]] || {
+              echo 'Pull request Test reruns must use Re-run all jobs to rebuild the exact artifact.' >&2
+              return 1
+            }
+            jq -e \
+              --arg controller "$CONTROLLER_SHA" \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg title "Test PR #${PULL_REQUEST_NUMBER} deployment request ${SOURCE_CI_RUN_ID}" \
+              --argjson runId "$SOURCE_CI_RUN_ID" \
+              --argjson runAttempt "$SOURCE_CI_RUN_ATTEMPT" '
+                .id == $runId
+                and .run_attempt == $runAttempt
+                and .name == $title
+                and .display_title == $title
+                and .path == ".github/workflows/combo-dev.yml"
+                and .event == "workflow_dispatch"
+                and .head_branch == "main"
+                and .head_sha == $controller
+                and .status == "in_progress"
+                and .conclusion == null
+                and .repository.full_name == $repository
+                and .head_repository.full_name == $repository
+              ' <<<"$source_run" >/dev/null
+            artifact_head_sha=$CONTROLLER_SHA
+            release_job='build the exact branch Test artifact / assemble immutable release artifact'
 
             source_jobs=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}/attempts/${SOURCE_CI_RUN_ATTEMPT}/jobs?per_page=100")
@@ -1372,26 +1378,12 @@ jobs:
           [[ "$CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$SOURCE_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          [[ "$SOURCE_EVENT" == push || "$SOURCE_EVENT" == workflow_dispatch ]]
-          [[ "$SOURCE_MODE" == main-ci || "$SOURCE_MODE" == branch-build ]]
-          [[ "$SOURCE_WORKFLOW" == .github/workflows/ci.yml ||
-            "$SOURCE_WORKFLOW" == .github/workflows/combo-dev.yml ]]
+          [[ "$SOURCE_EVENT" == workflow_dispatch ]]
+          [[ "$SOURCE_MODE" == branch-build ]]
+          [[ "$SOURCE_WORKFLOW" == .github/workflows/combo-dev.yml ]]
           git check-ref-format "refs/heads/$SOURCE_BRANCH" >/dev/null
-          case "$SOURCE_MODE" in
-            main-ci)
-              [[ "$CONTROLLER_SHA" == "$REVISION" ]]
-              [[ "$SOURCE_WORKFLOW" == .github/workflows/ci.yml ]]
-              [[ "$SOURCE_EVENT" == push && "$SOURCE_BRANCH" == main ]]
-              source_conclusion=success
-              evidence_artifact_name="combo-test-evidence-${REVISION}-${RUN_ATTEMPT}"
-              ;;
-            branch-build)
-              [[ "$SOURCE_WORKFLOW" == .github/workflows/combo-dev.yml ]]
-              [[ "$SOURCE_EVENT" == workflow_dispatch ]]
-              source_conclusion=release-job-success
-              evidence_artifact_name="combo-branch-test-evidence-${REVISION}-${RUN_ATTEMPT}"
-              ;;
-          esac
+          source_conclusion=release-job-success
+          evidence_artifact_name="combo-branch-test-evidence-${REVISION}-${RUN_ATTEMPT}"
           [[ "$RELEASE_ARTIFACT_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$RELEASE_ARTIFACT_NAME" == \
             "combo-release-${REVISION}-${SOURCE_CI_RUN_ATTEMPT}" ]]

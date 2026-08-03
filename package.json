@@ -18,6 +18,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "test:fast": "pnpm -r --workspace-concurrency=1 --filter '!@cb/scripts' run test && node --test scripts/promotion-evidence.test.mjs scripts/combo-dev-control-plane.test.mjs",
     "test": "pnpm -r --workspace-concurrency=1 run test && node --test scripts/combo-dev-control-plane.test.mjs",
     "test:combo-dev": "node --test scripts/combo-dev-control-plane.test.mjs",
     "e2e:resend-auth": "bash scripts/integration/resend-auth-e2e.sh",
