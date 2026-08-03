@@ -473,7 +473,7 @@ DATA_ANCHOR_CHECK=/bin/true
 CONTROL_STATE_SENTINEL=${JSON.stringify(join(state, '.combo-dev-control-state'))}
 CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
 CONTROL_STATE_BYTES=4294967296
-CONTROL_STATE_LABEL='combo-dev-control-state'
+CONTROL_STATE_LABEL='combo-dev-state'
 CONTROL_STATE_MIN_BYTES=$((3584 * 1024 * 1024))
 CONTROL_STATE_MAX_BYTES=$((4 * 1024 * 1024 * 1024))
 DATA_MOUNT=${JSON.stringify(dataMount)}
@@ -4462,6 +4462,28 @@ test('control-state capacity reads GNU df inode totals through the supported ito
   const probe = spawnSync('df', ['--output=itotal', '/'], { encoding: 'utf8' });
   assert.equal(probe.status, 0, `${probe.stdout}${probe.stderr}`);
   assert.match(probe.stdout.trim().split(/\r?\n/).at(-1)?.trim() ?? '', /^\d+$/);
+});
+
+test('control-state uses one ext4-compatible filesystem label across every host control', () => {
+  const prepare = text('infra/host/combo-dev/combo-dev-prepare-control-state.sh');
+  const controls = [
+    'scripts/combo-dev-bootstrap.sh',
+    'scripts/combo-dev-deploy.sh',
+    'scripts/combo-dev-reset.sh',
+    'scripts/combo-dev-storage-guard.sh',
+  ].map((path) => text(path));
+  const expectedLabel = 'combo-dev-state';
+
+  assert.match(expectedLabel, /^[\x20-\x7e]+$/);
+  assert.ok(expectedLabel.length <= 16);
+  assert.match(prepare, /readonly FILESYSTEM_LABEL='combo-dev-state'/);
+  assert.match(prepare, /mkfs\.ext4[^\n]+-L "\$FILESYSTEM_LABEL"/);
+  assert.equal(prepare.match(/blkid -s LABEL -o value[^\n]+"\$FILESYSTEM_LABEL"/g)?.length, 2);
+  assert.doesNotMatch(prepare, /-L combo-dev-control-state/);
+  for (const source of controls) {
+    assert.match(source, /readonly CONTROL_STATE_LABEL='combo-dev-state'/);
+    assert.doesNotMatch(source, /readonly CONTROL_STATE_LABEL='combo-dev-control-state'/);
+  }
 });
 
 test('control-state migration stays owner-gated and excludes unrelated host-runtime work', () => {

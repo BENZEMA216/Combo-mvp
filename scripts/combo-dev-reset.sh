@@ -17,7 +17,7 @@ readonly DATA_ANCHOR_CHECK='/opt/combo-dev/bin/combo-host-data-mount-check'
 readonly CONTROL_STATE_SENTINEL='/opt/combo-dev/state/.combo-dev-control-state'
 readonly CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
 readonly CONTROL_STATE_BYTES=4294967296
-readonly CONTROL_STATE_LABEL='combo-dev-control-state'
+readonly CONTROL_STATE_LABEL='combo-dev-state'
 readonly CONTROL_INCOMING='/opt/combo-dev/state/incoming'
 readonly CONTROL_RELEASES='/opt/combo-dev/state/releases'
 readonly CONTROL_STAGING='/opt/combo-dev/state/releases/.staging'
