@@ -18,8 +18,9 @@ mount_has_option() {
 }
 
 main() {
-  local expected_uuid actual_uuid root_device data_device target options fsroot
+  local expected_uuid actual_uuid root_device data_device target vfs_options fs_options fsroot
   local data_source anchor_source source_identity anchor_identity
+  (($# == 0)) || fail '参数不合法。'
   [[ $EUID -eq 0 ]] || fail 'checker 必须以 root 运行。'
   for command in findmnt readlink stat; do
     command -v "$command" >/dev/null 2>&1 || fail "缺少命令：$command"
@@ -33,12 +34,18 @@ main() {
     fail '父数据盘身份文件格式不合法。'
   expected_uuid=${BASH_REMATCH[1]}
 
-  target=$(findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || fail '父数据盘不是独立挂载。'
+  # consumer 可能运行在 ProtectHome 生成的私有 mount namespace 中，父路径会被呈现为只读。
+  # 固定读取 PID 1 的宿主 mount namespace，并继续对宿主 rw 状态 fail closed。
+  target=$(findmnt --task 1 -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || fail '父数据盘不是独立挂载。'
   [[ "$target" == "$DATA_MOUNT" ]] || fail '父数据盘 mount target 漂移。'
-  actual_uuid=$(findmnt -rn -M "$DATA_MOUNT" -o UUID 2>/dev/null) || fail '父数据盘 UUID 不可读。'
+  actual_uuid=$(findmnt --task 1 -rn -M "$DATA_MOUNT" -o UUID 2>/dev/null) || fail '父数据盘 UUID 不可读。'
   [[ "$actual_uuid" == "$expected_uuid" ]] || fail '父数据盘 UUID 与批准身份不一致。'
-  options=$(findmnt -rn -M "$DATA_MOUNT" -o OPTIONS 2>/dev/null) || fail '父数据盘挂载选项不可读。'
-  mount_has_option "$options" rw || fail '父数据盘不是 rw。'
+  vfs_options=$(findmnt --task 1 -rn -M "$DATA_MOUNT" -o VFS-OPTIONS 2>/dev/null) ||
+    fail '父数据盘 VFS 挂载选项不可读。'
+  fs_options=$(findmnt --task 1 -rn -M "$DATA_MOUNT" -o FS-OPTIONS 2>/dev/null) ||
+    fail '父数据盘文件系统挂载选项不可读。'
+  mount_has_option "$vfs_options" rw || fail '父数据盘 VFS 不是 rw。'
+  mount_has_option "$fs_options" rw || fail '父数据盘文件系统不是 rw。'
   root_device=$(stat -c '%d' / 2>/dev/null) || fail '根盘设备不可读。'
   data_device=$(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) || fail '父数据盘设备不可读。'
   [[ "$data_device" != "$root_device" ]] || fail '父数据盘回退到了根盘。'
@@ -52,16 +59,20 @@ main() {
     $(readlink -f -- "$ANCHOR_ROOT" 2>/dev/null) == "$ANCHOR_ROOT" &&
     $(stat -c '%u:%g:%a' "$ANCHOR_ROOT" 2>/dev/null) == '0:0:700' ]] ||
     fail 'root-owned canonical anchor 身份或权限漂移。'
-  target=$(findmnt -rn -M "$ANCHOR_ROOT" -o TARGET 2>/dev/null) || fail 'canonical anchor 未挂载。'
+  target=$(findmnt --task 1 -rn -M "$ANCHOR_ROOT" -o TARGET 2>/dev/null) || fail 'canonical anchor 未挂载。'
   [[ "$target" == "$ANCHOR_ROOT" ]] || fail 'canonical anchor mount target 漂移。'
-  fsroot=$(findmnt -rn -M "$ANCHOR_ROOT" -o FSROOT 2>/dev/null) || fail 'canonical anchor FSROOT 不可读。'
+  fsroot=$(findmnt --task 1 -rn -M "$ANCHOR_ROOT" -o FSROOT 2>/dev/null) || fail 'canonical anchor FSROOT 不可读。'
   [[ "$fsroot" == '/combo-host' ]] || fail 'canonical anchor 没有绑定精确 source root。'
-  data_source=$(findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || fail '父数据盘 source 不可读。'
-  anchor_source=$(findmnt -rn -M "$ANCHOR_ROOT" -o SOURCE 2>/dev/null) || fail 'canonical anchor source 不可读。'
+  data_source=$(findmnt --task 1 -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || fail '父数据盘 source 不可读。'
+  anchor_source=$(findmnt --task 1 -rn -M "$ANCHOR_ROOT" -o SOURCE 2>/dev/null) || fail 'canonical anchor source 不可读。'
   [[ "$anchor_source" == "$data_source" || "$anchor_source" == "$data_source"'[/combo-host]' ]] ||
     fail 'canonical anchor 不是批准父数据盘的 bind。'
-  options=$(findmnt -rn -M "$ANCHOR_ROOT" -o OPTIONS 2>/dev/null) || fail 'canonical anchor 选项不可读。'
-  mount_has_option "$options" rw || fail 'canonical anchor 不是 rw。'
+  vfs_options=$(findmnt --task 1 -rn -M "$ANCHOR_ROOT" -o VFS-OPTIONS 2>/dev/null) ||
+    fail 'canonical anchor VFS 挂载选项不可读。'
+  fs_options=$(findmnt --task 1 -rn -M "$ANCHOR_ROOT" -o FS-OPTIONS 2>/dev/null) ||
+    fail 'canonical anchor 文件系统挂载选项不可读。'
+  mount_has_option "$vfs_options" rw || fail 'canonical anchor VFS 不是 rw。'
+  mount_has_option "$fs_options" rw || fail 'canonical anchor 文件系统不是 rw。'
   source_identity=$(stat -c '%d:%i' "$SOURCE_ROOT" 2>/dev/null) || fail 'source root inode 不可读。'
   anchor_identity=$(stat -c '%d:%i' "$ANCHOR_ROOT" 2>/dev/null) || fail 'anchor inode 不可读。'
   [[ "$source_identity" == "$anchor_identity" &&
