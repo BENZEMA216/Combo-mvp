@@ -3346,17 +3346,50 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     webContract,
     /infra\/k8s\/release\/overlays\/preview\/apps\/review-nginx\.conf,dst=\/etc\/nginx\/templates\/default\.conf\.template,readonly/,
   );
-  assert.match(
-    webContract,
-    /preview_token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/,
+  const previewContractStart = webContract.indexOf(
+    'container="combo-web-preview-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
   );
-  assert.match(webContract, /--env REVIEW_ACCESS_TOKEN="\$preview_token"/);
-  assert.match(webContract, /docker exec "\$container" nginx -t/);
-  assert.match(webContract, /docker run -d --name "\$container"/);
-  assert.match(webContract, /http:\/\/127\.0\.0\.1\/try\//);
-  assert.match(webContract, /try\/sessions\/combo-runtime-route-contract/);
-  assert.match(webContract, /runtime_asset=.*sed -n/s);
-  assert.match(webContract, /http:\/\/127\.0\.0\.1\/try\/assets\/combo-missing-deadbeef\.js/);
+  assert.ok(previewContractStart >= 0, 'Preview Web runtime contract must be present');
+  const previewContract = webContract.slice(previewContractStart);
+  assert.match(
+    previewContract,
+    /cp infra\/k8s\/release\/overlays\/preview\/apps\/review-entry-redirect\.html[\s\\\n]*"\$review_pages\/entry-redirect\.html"/,
+  );
+  assert.match(
+    previewContract,
+    /src=\$review_pages,dst=\/usr\/share\/nginx\/html\/__review,readonly/,
+  );
+  assert.match(previewContract, /--read-only/);
+  assert.match(previewContract, /--user 101:101/);
+  assert.match(previewContract, /--cap-drop ALL/);
+  for (const path of ['/etc/nginx/conf.d', '/var/cache/nginx', '/var/run', '/tmp']) {
+    assert.match(previewContract, new RegExp(`--tmpfs ${path.replaceAll('/', '\\/')}:`));
+  }
+  assert.doesNotMatch(
+    previewContract,
+    /preview_token|--env REVIEW_ACCESS_TOKEN|Cookie: combo_review_access/,
+  );
+  assert.match(
+    previewContract,
+    /GET \/capabilities HTTP\/1\.1[\s\S]*preview-app-page\.http[\s\S]*HTTP\/1\.1 200 OK/,
+  );
+  assert.match(
+    previewContract,
+    /GET \/version\.json HTTP\/1\.1[\s\S]*preview-version\.http[\s\S]*HTTP\/1\.1 200 OK/,
+  );
+  assert.match(
+    previewContract,
+    /GET \/__review\/enter\?returnTo=%2Fcapabilities[\s\S]*正在进入邮箱验证/,
+  );
+  assert.match(previewContract, /docker exec "\$container" nginx -t/);
+  assert.match(previewContract, /docker exec "\$container" sh -c 'command -v nc >\/dev\/null'/);
+  assert.match(previewContract, /timeout 10 docker exec -i "\$container" nc 127\.0\.0\.1 80/);
+  assert.match(previewContract, /\^X-Combo-Review-Gate:/);
+  assert.match(previewContract, /\^Set-Cookie:\.\*combo_review_access/);
+  assert.match(previewContract, /http:\/\/127\.0\.0\.1\/try\//);
+  assert.match(previewContract, /try\/sessions\/combo-runtime-route-contract/);
+  assert.match(previewContract, /runtime_asset=.*sed -n/s);
+  assert.match(previewContract, /http:\/\/127\.0\.0\.1\/try\/assets\/combo-missing-deadbeef\.js/);
   assert.match(workflow, /combo-release-mutation\.lock/);
   assert.match(workflow, /flock -n 9/);
   assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);

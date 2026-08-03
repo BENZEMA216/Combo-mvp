@@ -497,7 +497,7 @@ function inventory(expectedIdentity = identity) {
         'release-minio-init-script',
         'release-redis-hot-config',
         'release-redis-queue-config',
-        ...(expectedIdentity.environment === 'preview' ? [`${prefix}review-gate`] : []),
+        ...(expectedIdentity.environment === 'preview' ? [`${prefix}preview-routing`] : []),
       ].sort(),
     },
   };
@@ -1506,7 +1506,6 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(production, /--arg name "\$SOURCE_ARTIFACT_NAME"/);
 
   for (const contract of [
-    'CLOUD_REVIEW_ACCESS_TOKEN',
     'validate-live-browser',
     'validate-live-runtime',
     'validate-inventory',
@@ -1518,6 +1517,10 @@ test('release workflows bundle and consume only the controlled admission impleme
   ]) {
     assert.match(preview, new RegExp(contract.replaceAll('$', '\\$')));
   }
+  assert.doesNotMatch(
+    preview,
+    /CLOUD_REVIEW_ACCESS_TOKEN|COMBO_REVIEW_ACCESS_TOKEN|REVIEW_ACCESS_TOKEN/,
+  );
   assert.doesNotMatch(preview, /actions\/download-artifact/);
   assert.match(preview, /sha256sum "\$archive"/);
   assert.match(

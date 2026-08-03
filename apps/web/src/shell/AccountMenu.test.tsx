@@ -85,7 +85,7 @@ describe('AccountMenu', () => {
     expect(requestLogout).toHaveBeenCalledTimes(2);
   });
 
-  it('Preview 退出后回到访问闸并保留任务上下文', async () => {
+  it('Preview 退出后回到邮箱登录并保留任务上下文', async () => {
     window.history.replaceState({}, '', '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history');
     const requestLogout = vi.fn(async () => ({ loggedOut: true as const }));
     const navigateAfterLogout = vi.fn<(url: string) => void>();
@@ -103,7 +103,7 @@ describe('AccountMenu', () => {
 
     await waitFor(() =>
       expect(navigateAfterLogout).toHaveBeenCalledWith(
-        `/__review/enter?returnTo=${encodeURIComponent(
+        `/login?returnTo=${encodeURIComponent(
           '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history',
         )}`,
       ),

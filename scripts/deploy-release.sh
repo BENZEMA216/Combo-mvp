@@ -265,6 +265,7 @@ runtime_image=''
 web_image=''
 PREFIX=''
 metadata_name=''
+routing_name=''
 INIT_JOB=''
 work=''
 release_directory=''
@@ -1131,6 +1132,9 @@ validate_inputs() {
   [[ "$release_id" == "release-$source_sha" ]] || fail 'manifest release identity is invalid'
   PREFIX="release-${source_sha:0:12}-"
   metadata_name="combo-release-meta-${source_sha:0:12}"
+  if [[ "$ENVIRONMENT" == preview ]]; then
+    routing_name="${PREFIX}preview-routing"
+  fi
   INIT_JOB="${PREFIX}minio-init"
 
   verified_web_digest=$(node "$SCRIPT_DIR/web-asset-manifest.mjs" verify \
@@ -1174,10 +1178,6 @@ validate_secret_keys() {
   done
   secret_has_nonempty_key "$PULL_SECRET" .dockerconfigjson ||
     fail "$PULL_SECRET is missing its registry key"
-  if [[ "$ENVIRONMENT" == preview ]]; then
-    secret_has_nonempty_key combo-preview-bootstrap REVIEW_ACCESS_TOKEN ||
-      fail 'combo-preview-bootstrap is missing REVIEW_ACCESS_TOKEN'
-  fi
 }
 
 validate_rendered_phase() {
@@ -1327,7 +1327,7 @@ validate_completed_production_traffic_seal() {
 }
 
 reuse_completed_release() {
-  local name expected desired ready public_version public_headers public_status
+  local name expected desired ready public_version public_status
   local evidence_file workload actual_migrations internal_version formal_config formal_rewrite
   local cleanup_digest
   REUSE_COMPLETED=0
@@ -1524,14 +1524,12 @@ reuse_completed_release() {
   metadata_matches "$internal_version" || return 0
 
   if [[ "$ENVIRONMENT" == preview ]]; then
-    curl --fail --silent --show-error --max-time 15 \
-      "$PUBLIC_ORIGIN/__review/healthz" >/dev/null 2>&1 || return 0
-    public_headers="$work/reuse-public-gate.headers"
+    public_version="$work/reuse-public-version.json"
     public_status=$(curl --silent --show-error --max-time 15 \
-      --dump-header "$public_headers" --output /dev/null --write-out '%{http_code}' \
+      --output "$public_version" --write-out '%{http_code}' \
       "$PUBLIC_ORIGIN/version.json" 2>/dev/null) || return 0
-    [[ "$public_status" == 401 ]] || return 0
-    grep -Eqi '^X-Combo-Review-Gate:[[:space:]]*required' "$public_headers" || return 0
+    [[ "$public_status" == 200 ]] || return 0
+    metadata_matches "$public_version" || return 0
   else
     public_version="$work/reuse-public-version.json"
     curl --fail --silent --show-error --max-time 15 \
@@ -1820,9 +1818,12 @@ validate_captured_release_ownership() {
         and .data.COMBO_RELEASE_ID == ("release-" + $sha)
         and (.data.COMBO_RELEASE_MANIFEST_DIGEST | test("^sha256:[0-9a-f]{64}$"))
         and .metadata.labels["combo.build/release-metadata"] == "true")
-    and all(.items[] | select(.metadata.name | test("^release-[0-9a-f]{12}-review-gate$"));
+    and all(.items[]
+      | select(.metadata.name
+        | test("^release-[0-9a-f]{12}-(preview-routing|review-gate)$"));
         .metadata.name as $name
-        | ($name | capture("^release-(?<short>[0-9a-f]{12})-review-gate$")) as $parts
+        | ($name
+          | capture("^release-(?<short>[0-9a-f]{12})-(preview-routing|review-gate)$")) as $parts
         | .metadata.labels["combo.build/release-track"] == "release-v1"
         and any($root.items[];
           .metadata.name == ("combo-release-meta-" + $parts.short)
@@ -2412,6 +2413,7 @@ fresh_reset_release_data() {
 
   while IFS= read -r name; do
     [[ "$name" =~ ^combo-release-meta-[0-9a-f]{12}$ ||
+      "$name" =~ ^release-[0-9a-f]{12}-preview-routing$ ||
       "$name" =~ ^release-[0-9a-f]{12}-review-gate$ ]] || continue
     delete_captured_resource configmap "$inventory_configmaps" "$name" 120s
   done < <(jq -r '.items[].metadata.name' "$inventory_configmaps")
@@ -2594,16 +2596,8 @@ expected_image() {
 
 web_fetch() {
   local url=$1
-  if [[ "$ENVIRONMENT" == preview ]]; then
-    # The token expands only inside the Web container and is never returned.
-    # shellcheck disable=SC2016
-    "${K[@]}" -n "$NAMESPACE" exec "deployment/${PREFIX}web" -- \
-      sh -euc 'exec wget --header="Cookie: combo_review_access=$REVIEW_ACCESS_TOKEN" -qO- "$1"' \
-      sh "$url"
-  else
-    "${K[@]}" -n "$NAMESPACE" exec "deployment/${PREFIX}web" -- \
-      wget -qO- "$url"
-  fi
+  "${K[@]}" -n "$NAMESPACE" exec "deployment/${PREFIX}web" -- \
+    wget -qO- "$url"
 }
 
 apply_apps() {
@@ -4092,7 +4086,9 @@ build_rollback_cleanup_plan() {
     append_cleanup_plan_target service "$inventory_services" "${PREFIX}${name}"
   done
   append_cleanup_plan_target configmap "$inventory_configmaps" "$metadata_name"
-  append_cleanup_plan_target configmap "$inventory_configmaps" "${PREFIX}review-gate"
+  if [[ -n "$routing_name" ]]; then
+    append_cleanup_plan_target configmap "$inventory_configmaps" "$routing_name"
+  fi
   if ((FOUNDATION_CREATED_THIS_RELEASE == 1)); then
     append_cleanup_plan_target deployment "$inventory_deployments" release-redis-hot
     for name in "${RELEASE_STATEFULSETS[@]}"; do
@@ -4220,6 +4216,7 @@ validate_rollback_cleanup_plan() {
     --arg manifestDigest "$MANIFEST_DIGEST" \
     --arg prefix "$PREFIX" \
     --arg metadata "$metadata_name" \
+    --arg routing "$routing_name" \
     --arg init "$INIT_JOB" '
       . as $plan
       | keys == [
@@ -4279,7 +4276,7 @@ validate_rollback_cleanup_plan() {
           (.kind == "configmap"
             and (
               .name == $metadata
-              or .name == ($prefix + "review-gate")
+              or .name == $routing
               or
               ($plan.foundationCreated
                 and (.name
@@ -4330,10 +4327,12 @@ verify_rollback_candidate_absent() {
     ! "${K[@]}" -n "$NAMESPACE" get "job/$name" >/dev/null 2>&1 ||
       fail "rolled-back candidate Job $name reappeared"
   done
-  for name in "$metadata_name" "${PREFIX}review-gate"; do
-    ! "${K[@]}" -n "$NAMESPACE" get "configmap/$name" >/dev/null 2>&1 ||
-      fail "rolled-back candidate ConfigMap $name reappeared"
-  done
+  ! "${K[@]}" -n "$NAMESPACE" get "configmap/$metadata_name" >/dev/null 2>&1 ||
+    fail "rolled-back candidate ConfigMap $metadata_name reappeared"
+  if [[ -n "$routing_name" ]]; then
+    ! "${K[@]}" -n "$NAMESPACE" get "configmap/$routing_name" >/dev/null 2>&1 ||
+      fail "rolled-back candidate ConfigMap $routing_name reappeared"
+  fi
 
   foundation_created=$(jq -er '.foundationCreated' "$rollback_cleanup_plan")
   [[ "$foundation_created" == true || "$foundation_created" == false ]] ||
@@ -4493,8 +4492,9 @@ cleanup_pending_candidate_after_rollback() {
     delete_captured_resource service "$inventory_services" "${PREFIX}${name}" 120s
   done
   delete_captured_resource configmap "$inventory_configmaps" "$metadata_name" 120s
-  delete_captured_resource configmap "$inventory_configmaps" \
-    "${PREFIX}review-gate" 120s
+  if [[ -n "$routing_name" ]]; then
+    delete_captured_resource configmap "$inventory_configmaps" "$routing_name" 120s
+  fi
 
   if ((FOUNDATION_CREATED_THIS_RELEASE == 1)); then
     delete_captured_resource deployment "$inventory_deployments" \
@@ -4715,9 +4715,10 @@ build_cleanup_plan() {
   done < <(jq -r '.items[].metadata.name' "$inventory_services")
   while IFS= read -r name; do
     [[ "$name" =~ ^combo-release-meta-[0-9a-f]{12}$ ||
+      "$name" =~ ^release-[0-9a-f]{12}-preview-routing$ ||
       "$name" =~ ^release-[0-9a-f]{12}-review-gate$ ]] || continue
     [[ "$name" == "$metadata_name" ||
-      "$name" == "${PREFIX}review-gate" ]] && continue
+      "$name" == "$routing_name" ]] && continue
     append_cleanup_plan_target configmap "$inventory_configmaps" "$name"
   done < <(jq -r '.items[].metadata.name' "$inventory_configmaps")
 
@@ -4777,6 +4778,7 @@ validate_cleanup_plan() {
     --arg manifestDigest "$MANIFEST_DIGEST" \
     --arg prefix "$PREFIX" \
     --arg metadata "$metadata_name" \
+    --arg routing "$routing_name" \
     --arg init "$INIT_JOB" '
       . as $plan
       | keys == [
@@ -4841,9 +4843,9 @@ validate_cleanup_plan() {
           or
           (
             .kind == "configmap"
-            and (.name | test("^(redis-queue-config|redis-hot-config|minio-init-script|combo-release-meta-[0-9a-f]{12}|release-[0-9a-f]{12}-review-gate)$"))
+            and (.name | test("^(redis-queue-config|redis-hot-config|minio-init-script|combo-release-meta-[0-9a-f]{12}|release-[0-9a-f]{12}-(preview-routing|review-gate))$"))
             and .name != $metadata
-            and .name != ($prefix + "review-gate")
+            and .name != $routing
           )
           or
           (
@@ -5018,11 +5020,12 @@ verify_cleanup_plan_absent() {
       | length == 0
     ' >/dev/null || fail 'a superseded release Job reappeared'
   "${K[@]}" -n "$NAMESPACE" get configmaps -o json |
-    jq -e --arg metadata "$metadata_name" --arg gate "${PREFIX}review-gate" '
+    jq -e --arg metadata "$metadata_name" --arg routing "$routing_name" '
       [.items[].metadata.name
         | select(test("^combo-release-meta-[0-9a-f]{12}$")
+          or test("^release-[0-9a-f]{12}-preview-routing$")
           or test("^release-[0-9a-f]{12}-review-gate$"))
-        | select(. != $metadata and . != $gate)]
+        | select(. != $metadata and . != $routing)]
       | length == 0
     ' >/dev/null || fail 'a superseded release ConfigMap reappeared'
 }
@@ -5116,9 +5119,10 @@ cleanup_legacy() {
   done < <(jq -r '.items[].metadata.name' "$inventory_services")
   while IFS= read -r name; do
     [[ "$name" =~ ^combo-release-meta-[0-9a-f]{12}$ ||
+      "$name" =~ ^release-[0-9a-f]{12}-preview-routing$ ||
       "$name" =~ ^release-[0-9a-f]{12}-review-gate$ ]] || continue
     [[ "$name" == "$metadata_name" ||
-      "$name" == "${PREFIX}review-gate" ]] && continue
+      "$name" == "$routing_name" ]] && continue
     delete_captured_resource configmap "$inventory_configmaps" "$name" 120s
   done < <(jq -r '.items[].metadata.name' "$inventory_configmaps")
 
@@ -5169,11 +5173,12 @@ cleanup_legacy() {
       | length == 0
     ' >/dev/null || fail 'a previous release Job remains after cleanup'
   "${K[@]}" -n "$NAMESPACE" get configmaps -o json |
-    jq -e --arg metadata "$metadata_name" --arg gate "${PREFIX}review-gate" '
+    jq -e --arg metadata "$metadata_name" --arg routing "$routing_name" '
       [.items[].metadata.name
         | select(test("^combo-release-meta-[0-9a-f]{12}$")
+          or test("^release-[0-9a-f]{12}-preview-routing$")
           or test("^release-[0-9a-f]{12}-review-gate$"))
-        | select(. != $metadata and . != $gate)]
+        | select(. != $metadata and . != $routing)]
       | length == 0
     ' >/dev/null || fail 'a previous release ConfigMap remains after cleanup'
 

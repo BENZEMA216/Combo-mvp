@@ -5,14 +5,13 @@ namePrefix: release-
 resources:
   - ../../../base/apps
 patches:
-  - path: review-gate.patch.yaml
+  - path: review-routing.patch.yaml
   - path: ../../app-selector-isolation.patch.yaml
 configMapGenerator:
-  - name: review-gate
+  - name: preview-routing
     files:
       - default.conf.template=review-nginx.conf
-      - bootstrap.html=review-bootstrap.html
-      - enter.html=review-access.html
+      - entry-redirect.html=review-entry-redirect.html
 generatorOptions:
   disableNameSuffixHash: true
   immutable: true

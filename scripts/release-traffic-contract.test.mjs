@@ -108,16 +108,22 @@ function sha256(contents) {
   return `sha256:${createHash('sha256').update(contents).digest('hex')}`;
 }
 
-test('Preview traffic proves the access gate without reading or sending its token', () => {
+test('Preview traffic requires public release metadata without a gate token', () => {
   const source = readFileSync(SWITCH_TRAFFIC, 'utf8');
-  const gateStart = source.indexOf('preview_gate_ready() {');
-  const gateEnd = source.indexOf('\n}\n', gateStart);
-  assert.ok(gateStart >= 0 && gateEnd > gateStart);
-  const gate = source.slice(gateStart, gateEnd);
-  assert.match(gate, /__review\/healthz/);
-  assert.match(gate, /status_code.*401/s);
-  assert.match(gate, /X-Combo-Review-Gate:\[\[:space:\]\]\*required/);
-  assert.doesNotMatch(gate, /Cookie:|REVIEW_ACCESS_TOKEN|secret/i);
+  const readinessStart = source.indexOf('preview_release_ready() {');
+  const readinessEnd = source.indexOf('\n}\n', readinessStart);
+  assert.ok(readinessStart >= 0 && readinessEnd > readinessStart);
+  const readiness = source.slice(readinessStart, readinessEnd);
+  assert.match(readiness, /--output "\$output" --write-out '%\{http_code\}'/);
+  assert.match(readiness, /\[\[ "\$status_code" == 200 \]\]/);
+  assert.match(readiness, /"\$origin\/version\.json"/);
+  assert.match(readiness, /metadata_matches "\$output"/);
+  assert.doesNotMatch(
+    readiness,
+    /__review|Cookie:|REVIEW_ACCESS_TOKEN|X-Combo-Review-Gate|secret/i,
+  );
+  assert.match(source, /preview_release_ready "\$loopback_origin" "\$candidate_version"/);
+  assert.match(source, /preview_release_ready "\$PUBLIC_ORIGIN" "\$public_version"/);
 });
 
 test('first formal cutover imports the prior release and rollback verifies its canary', () => {

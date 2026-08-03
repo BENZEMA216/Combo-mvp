@@ -16,7 +16,7 @@ const ENVIRONMENTS = Object.freeze({
   preview: {
     namespace: 'combo-review',
     environmentCredentialName: 'combo-preview-env',
-    additionalCredentialNames: ['combo-preview-bootstrap'],
+    additionalCredentialNames: [],
     pullCredentialName: 'combo-preview-ghcr-pull',
     foundationTrack: 'preview-v1',
     postgresHost: 'release-postgres',
@@ -48,14 +48,8 @@ const CONFIG_MAP_DATA_DIGESTS = Object.freeze({
   'release-redis-queue-config': '8d2af3979e00c83bf940f53cc61c4d281bade324f8b7cae46c6575f07f31cd0f',
   'release-minio-init-script': 'd0a07211a19b1e6e09eedf28e6e24487f58c3da74bfbe1520aad6f79f288f5c6',
 });
-const REVIEW_GATE_DATA_DIGEST = '44e4dc960c8358b783c7c6e343be25a37379f0d1d7b061e6df14bfe98044a1f8';
-const REVIEW_GATE_COMMAND = Object.freeze(['/bin/sh', '-euc']);
-const REVIEW_GATE_SCRIPT =
-  'case "$REVIEW_ACCESS_TOKEN" in\n' +
-  "  (*[!0-9a-f]*|'') exit 1 ;;\n" +
-  'esac\n' +
-  '[ "${#REVIEW_ACCESS_TOKEN}" -eq 64 ] || exit 1\n' +
-  "exec /docker-entrypoint.sh nginx -g 'daemon off;'\n";
+const PREVIEW_ROUTING_DATA_DIGEST =
+  '119595c3b00ad825865d3e1444b7293b3abda419f16db05c96a1c40d15741d04';
 
 function fail(message) {
   throw new Error(`Rendered release verification failed: ${message}`);
@@ -260,7 +254,7 @@ function validateApps(resources, options, manifest, manifestDigest) {
     return `${kind}/${prefix}${name}`;
   });
   if (options.environment === 'preview') {
-    expectedIdentities.push(`ConfigMap/${prefix}review-gate`);
+    expectedIdentities.push(`ConfigMap/${prefix}preview-routing`);
   }
   exactIdentities(resources, expectedIdentities, 'apps');
   const byIdentity = new Map(resources.map((resource) => [resourceIdentity(resource), resource]));
@@ -315,11 +309,7 @@ function validateApps(resources, options, manifest, manifestDigest) {
         fail(`${resourceIdentity(resource)} has an incorrect browser auth origin`);
       }
     }
-    if (options.environment === 'preview' && name === 'web') {
-      assertCommand(containers(resource)[0], REVIEW_GATE_COMMAND, [REVIEW_GATE_SCRIPT]);
-    } else {
-      assertCommand(containers(resource)[0], undefined);
-    }
+    assertCommand(containers(resource)[0], undefined);
     validateReleaseWorkload(resource, manifest, manifestDigest);
     const labels = workloadTemplate(resource)?.metadata?.labels ?? {};
     const expectedSelector = {
@@ -353,51 +343,45 @@ function validateApps(resources, options, manifest, manifestDigest) {
     .filter(Boolean);
   const reviewMounts = webContainer.volumeMounts ?? [];
   if (options.environment === 'preview') {
-    const gateName = `${prefix}review-gate`;
-    const gate = byIdentity.get(`ConfigMap/${gateName}`);
-    const gateKeys = Object.keys(gate?.data ?? {}).sort();
-    const gateDigest = createHash('sha256').update(JSON.stringify(gate?.data)).digest('hex');
+    const routingName = `${prefix}preview-routing`;
+    const routing = byIdentity.get(`ConfigMap/${routingName}`);
+    const routingKeys = Object.keys(routing?.data ?? {}).sort();
+    const routingDigest = createHash('sha256').update(JSON.stringify(routing?.data)).digest('hex');
     const expectedMounts = [
       {
         mountPath: '/etc/nginx/templates/default.conf.template',
-        name: 'review-nginx',
+        name: 'preview-nginx',
         readOnly: true,
         subPath: 'default.conf.template',
       },
       {
-        mountPath: '/usr/share/nginx/html/__review/bootstrap.html',
-        name: 'review-bootstrap-page',
+        mountPath: '/usr/share/nginx/html/__review/entry-redirect.html',
+        name: 'review-entry-redirect',
         readOnly: true,
-        subPath: 'bootstrap.html',
-      },
-      {
-        mountPath: '/usr/share/nginx/html/__review/enter.html',
-        name: 'review-access-page',
-        readOnly: true,
-        subPath: 'enter.html',
+        subPath: 'entry-redirect.html',
       },
     ];
     if (
-      reviewToken.length !== 1 ||
-      reviewToken[0].valueFrom?.secretKeyRef?.name !== 'combo-preview-bootstrap' ||
-      reviewToken[0].valueFrom?.secretKeyRef?.key !== 'REVIEW_ACCESS_TOKEN' ||
+      reviewToken.length !== 0 ||
       webContainer.readinessProbe?.httpGet?.path !== '/__review/healthz' ||
-      reviewConfigMaps.length !== 3 ||
-      !reviewConfigMaps.every((name) => name === gateName) ||
+      reviewConfigMaps.length !== 2 ||
+      !reviewConfigMaps.every((name) => name === routingName) ||
       JSON.stringify(reviewMounts) !== JSON.stringify(expectedMounts) ||
-      gate?.immutable !== true ||
-      JSON.stringify(gateKeys) !==
-        JSON.stringify(['bootstrap.html', 'default.conf.template', 'enter.html']) ||
-      gateDigest !== REVIEW_GATE_DATA_DIGEST
+      routing?.immutable !== true ||
+      JSON.stringify(routingKeys) !==
+        JSON.stringify(['default.conf.template', 'entry-redirect.html']) ||
+      routingDigest !== PREVIEW_ROUTING_DATA_DIGEST
     ) {
-      fail(`${resourceIdentity(web)} does not preserve the Preview access gate`);
+      fail(`${resourceIdentity(web)} does not preserve the Preview routing contract`);
     }
   } else if (
     reviewToken.length !== 0 ||
     reviewConfigMaps.length !== 0 ||
-    reviewMounts.some((mount) => mount.name?.startsWith('review-'))
+    reviewMounts.some(
+      (mount) => mount.name?.startsWith('review-') || mount.name?.startsWith('preview-'),
+    )
   ) {
-    fail(`${resourceIdentity(web)} unexpectedly contains the Preview access gate`);
+    fail(`${resourceIdentity(web)} unexpectedly contains Preview-only routing`);
   }
 }
 

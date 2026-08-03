@@ -178,14 +178,30 @@ test('active Web route binds exact Service ports and live forwarder identity', (
   assert.match(source, /systemctl is-enabled --quiet "\$WEB_FORWARD_UNIT"/);
   assert.match(source, /systemctl is-active --quiet "\$WEB_FORWARD_UNIT"/);
   assert.match(source, /PUBLIC_ORIGIN=https:\/\/review\.43-160-242-46\.sslip\.io/);
-  assert.match(source, /preview_gate_is_closed/);
-  assert.match(source, /\[\[ "\$health_status" == 200 \]\]/);
-  assert.match(source, /\[\[ "\$version_status" == 401 \]\]/);
-  assert.match(source, /\^X-Combo-Review-Gate:\[\[:space:\]\]\*required\[\[:space:\]\]\*\$/);
-  assert.match(source, /"http:\/\/127\.0\.0\.1:\$\{WEB_FORWARD_PORT\}" loopback/);
-  assert.match(source, /preview_gate_is_closed "\$PUBLIC_ORIGIN" public/);
-  assert.match(source, /exec "deployment\/\$name" -c web --/);
-  assert.match(source, /Cookie: combo_review_access=\$REVIEW_ACCESS_TOKEN/);
+  const previewCaptureStart = source.indexOf('capture_preview_route_version()');
+  const previewCaptureEnd = source.indexOf('\n}\n', previewCaptureStart);
+  assert.ok(previewCaptureStart > 0 && previewCaptureEnd > previewCaptureStart);
+  const previewCapture = source.slice(previewCaptureStart, previewCaptureEnd);
+  assert.match(
+    previewCapture,
+    /--dump-header "\$loopback_headers" --output "\$loopback_version"[\s\S]*--write-out '%\{http_code\}'[\s\S]*127\.0\.0\.1:\$\{WEB_FORWARD_PORT\}\/version\.json/,
+  );
+  assert.match(
+    previewCapture,
+    /--dump-header "\$public_headers" --output "\$output"[\s\S]*--write-out '%\{http_code\}'[\s\S]*\$PUBLIC_ORIGIN\/version\.json/,
+  );
+  assert.match(previewCapture, /"\$loopback_status" == 200 && "\$public_status" == 200/);
+  assert.match(previewCapture, /\. == \$loopback\[0\]/);
+  assert.match(previewCapture, /"\$loopback_status" == 401 && "\$public_status" == 401/);
+  assert.match(previewCapture, /x-combo-review-gate:/);
+  assert.match(previewCapture, /\$2 != "required"/);
+  assert.match(previewCapture, /127\.0\.0\.1:\$\{WEB_FORWARD_PORT\}\/__review\/healthz/);
+  assert.match(previewCapture, /\$PUBLIC_ORIGIN\/__review\/healthz/);
+  assert.match(
+    previewCapture,
+    /exec "deployment\/\$name" -c web --[\s\S]*cat \/var\/run\/combo-web\/version\.json/,
+  );
+  assert.doesNotMatch(previewCapture, /Cookie:|REVIEW_ACCESS_TOKEN|get secret/i);
   assert.match(source, /capture_preview_route_version "\$name" "\$route_version"/);
   assert.doesNotMatch(source, /get secret/);
   assert.match(source, /routeVersionDigest/);
@@ -1167,13 +1183,6 @@ const command = args.shift();
 if (process.env.FAKE_KUBE_COMMAND_LOG) {
   fs.appendFileSync(process.env.FAKE_KUBE_COMMAND_LOG, [command, ...args].join(' ') + '\\n');
 }
-if (command === 'exec') {
-  if (process.env.FAKE_AUTHENTICATED_ROUTE_FAILURE) fail();
-  if (!/^deployment\\/release-[0-9a-f]{12}-web$/.test(args[0]) ||
-      args[1] !== '-c' || args[2] !== 'web' || args[3] !== '--') fail();
-  process.stdout.write(fs.readFileSync(process.env.FAKE_VERSION_JSON));
-  process.exit(0);
-}
 if (command === 'create') {
   process.stdout.write([
     'configmap/release-redis-hot-config',
@@ -1234,6 +1243,18 @@ if (command === 'get') {
     fail();
   }
   process.stdout.write(JSON.stringify(value));
+  process.exit(0);
+}
+if (command === 'exec') {
+  const target = args.shift();
+  const expected = 'deployment/' + process.env.FAKE_ACTIVE_WEB;
+  if (target !== expected ||
+      !state.resources[target] ||
+      !args.includes('-c') ||
+      !args.includes('web') ||
+      args.at(-2) !== 'cat' ||
+      args.at(-1) !== '/var/run/combo-web/version.json') fail();
+  process.stdout.write(fs.readFileSync(process.env.FAKE_VERSION_JSON, 'utf8'));
   process.exit(0);
 }
 if (command === 'patch') {
@@ -1401,28 +1422,48 @@ esac
 set -euo pipefail
 url=\${!#}
 if [[ "$url" == */__review/healthz ]]; then
-  printf '%s' "\${FAKE_HEALTH_STATUS:-200}"
+  if [[ "$url" == http://127.0.0.1:* ]]; then
+    [[ -z "\${FAKE_LOOPBACK_HEALTH_FAILURE:-}" ]] || exit 22
+    status=\${FAKE_LOOPBACK_HEALTH_STATUS:-200}
+  else
+    [[ -z "\${FAKE_PUBLIC_HEALTH_FAILURE:-}" ]] || exit 22
+    status=\${FAKE_PUBLIC_HEALTH_STATUS:-200}
+  fi
+  printf '%s' "$status"
   exit 0
 fi
 if [[ "$url" == */version.json ]]; then
-  header_file=''
-  while (($# > 0)); do
-    if [[ "$1" == --dump-header ]]; then
-      header_file=$2
-      break
-    fi
-    shift
-  done
-  if [[ -n "$header_file" ]]; then
-    {
-      printf 'HTTP/1.1 %s Test\\r\\n' "\${FAKE_GATE_STATUS:-401}"
-      if [[ -n "\${FAKE_GATE_HEADER-X-Combo-Review-Gate: required}" ]]; then
-        printf '%s\\r\\n' "\${FAKE_GATE_HEADER-X-Combo-Review-Gate: required}"
-      fi
-      printf '\\r\\n'
-    } >"$header_file"
+  if [[ "$url" == http://127.0.0.1:* ]]; then
+    [[ -z "\${FAKE_LOOPBACK_ROUTE_FAILURE:-}" ]] || exit 22
+    version_file=$FAKE_VERSION_JSON
+    status=\${FAKE_LOOPBACK_STATUS:-200}
+  else
+    [[ -z "\${FAKE_PUBLIC_ROUTE_FAILURE:-}" ]] || exit 22
+    version_file=\${FAKE_PUBLIC_VERSION_JSON:-$FAKE_VERSION_JSON}
+    status=\${FAKE_PUBLIC_STATUS:-200}
   fi
-  printf '%s' "\${FAKE_GATE_STATUS:-401}"
+  output=''
+  headers=''
+  while (($# > 0)); do
+    case "$1" in
+      --output) output=$2; shift 2 ;;
+      --dump-header) headers=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ -n "$headers" ]]; then
+    printf 'HTTP/1.1 %s Test\r\n' "$status" >"$headers"
+    if [[ -n "\${FAKE_LEGACY_GATE:-}" ]]; then
+      printf 'X-Combo-Review-Gate: required\r\n' >>"$headers"
+    fi
+    printf '\r\n' >>"$headers"
+  fi
+  if [[ -n "$output" ]]; then
+    cat "$version_file" >"$output"
+  else
+    cat "$version_file"
+  fi
+  printf '%s' "$status"
   exit 0
 fi
 exit 1
@@ -1475,6 +1516,7 @@ fi
       FAKE_BUMP_DELETE_RV_ONCE: bumpDeleteRvOnce,
       FAKE_FAIL_OPTIONAL_GET_ONCE: failOptionalGetOnce,
       FAKE_VERSION_JSON: routeVersion,
+      FAKE_ACTIVE_WEB: activeWeb,
       FAKE_KUBE_COMMAND_LOG: kubectlCommandLog,
       KUBECONFIG: join(directory, 'kubeconfig'),
       COMBO_RELEASE_EVIDENCE_ROOT: evidenceRoot,
@@ -1486,6 +1528,14 @@ fi
       COMBO_RELEASE_FORMAL_NGINX_CONFIG: '',
       COMBO_K3S_STORAGE_ROOT: storage,
       COMBO_FOUNDATION_RESET_WAIT_SECONDS: '2',
+    };
+    const legacyGateEnv = {
+      ...env,
+      FAKE_LOOPBACK_STATUS: '401',
+      FAKE_PUBLIC_STATUS: '401',
+      FAKE_LOOPBACK_HEALTH_STATUS: '200',
+      FAKE_PUBLIC_HEALTH_STATUS: '200',
+      FAKE_LEGACY_GATE: '1',
     };
     const pristineState = readFileSync(stateFile, 'utf8');
     const cleanReuseArgs = [...args];
@@ -1531,21 +1581,28 @@ fi
         'combo.build/release-track'
       ];
     }, /unowned or unexpected workload writer surface/);
-    rejectSurface(() => {}, /active Preview Web forward gate is not healthy and closed/, {
+    rejectSurface(() => {}, /active Preview Web forward route is not readable/, {
       ...env,
-      FAKE_GATE_STATUS: '200',
+      FAKE_LOOPBACK_ROUTE_FAILURE: '1',
     });
-    rejectSurface(() => {}, /active Preview Web forward gate is not healthy and closed/, {
+    rejectSurface(() => {}, /neither anonymously readable nor an exact legacy gate/, {
       ...env,
-      FAKE_HEALTH_STATUS: '503',
+      FAKE_LOOPBACK_STATUS: '401',
     });
-    rejectSurface(() => {}, /active Preview Web forward gate is not healthy and closed/, {
+    rejectSurface(() => {}, /active public Preview Web route is not readable/, {
       ...env,
-      FAKE_GATE_HEADER: '',
+      FAKE_PUBLIC_ROUTE_FAILURE: '1',
     });
-    rejectSurface(() => {}, /active authenticated Preview Web route is not readable/, {
+    rejectSurface(() => {}, /neither anonymously readable nor an exact legacy gate/, {
       ...env,
-      FAKE_AUTHENTICATED_ROUTE_FAILURE: '1',
+      FAKE_PUBLIC_STATUS: '503',
+    });
+    rejectSurface(() => {}, /legacy active Preview Web gate health did not return HTTP 200/, {
+      ...env,
+      FAKE_LOOPBACK_STATUS: '401',
+      FAKE_PUBLIC_STATUS: '401',
+      FAKE_LEGACY_GATE: '1',
+      FAKE_PUBLIC_HEALTH_STATUS: '503',
     });
     const wrongRouteVersion = join(directory, 'wrong-route-version.json');
     writeFileSync(
@@ -1555,6 +1612,10 @@ fi
         sourceSha: 'f'.repeat(40),
       })}\n`,
     );
+    rejectSurface(() => {}, /active public and loopback Preview release identity disagree/, {
+      ...env,
+      FAKE_PUBLIC_VERSION_JSON: wrongRouteVersion,
+    });
     rejectSurface(() => {}, /active release Web forward route has the wrong release identity/, {
       ...env,
       FAKE_VERSION_JSON: wrongRouteVersion,
@@ -1678,7 +1739,7 @@ fi
     const planOnlyCrash = spawnSync('bash', [script, ...args], {
       cwd: scriptDirectory,
       encoding: 'utf8',
-      env,
+      env: legacyGateEnv,
     });
     assert.equal(planOnlyCrash.status, 86, planOnlyCrash.stderr);
     assert.equal(existsSync(failAfterPlanOnce), false);
@@ -1689,6 +1750,17 @@ fi
     assert.doesNotMatch(
       readFileSync(kubectlCommandLog, 'utf8'),
       /^(?:delete|patch)(?: |$)|^apply (?!.*--dry-run=server)/m,
+    );
+    assert.match(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      new RegExp(
+        `^exec deployment/${activeWeb} -c web -- cat /var/run/combo-web/version\\.json$`,
+        'm',
+      ),
+    );
+    assert.doesNotMatch(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      /REVIEW_ACCESS_TOKEN|combo_review_access|Cookie:/,
     );
 
     const driftedPlanOnlyState = JSON.parse(pristineState);
