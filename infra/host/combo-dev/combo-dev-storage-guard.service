@@ -16,5 +16,5 @@ ProtectSystem=strict
 ProtectHome=read-only
 StateDirectory=combo-dev
 StateDirectoryMode=0711
-# Failure convergence must still run when every data-backed mount is missing.
-ReadWritePaths=/run /var/lib/combo-dev -/home/xingzheng/data/combo-dev -/opt/combo-dev/state -/opt/combo-dev/incoming -/opt/combo-dev/releases -/var/lib/combo-dev/evidence
+# 故障收敛只写运行目录和持久 marker；数据盘身份固定读取 PID 1 的宿主 mount 视图。
+ReadWritePaths=/run /var/lib/combo-dev

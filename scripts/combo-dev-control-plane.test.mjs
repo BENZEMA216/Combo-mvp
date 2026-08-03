@@ -536,6 +536,7 @@ losetup() { printf '%s\\n' "$CONTROL_STATE_IMAGE"; }
 blockdev() { [[ "$FAKE_MODE" == wrong-size ]] && printf '%s\\n' 1 || printf '%s\\n' "$CONTROL_STATE_BYTES"; }
 blkid() { [[ "$FAKE_MODE" == wrong-label ]] && printf '%s\\n' wrong || printf '%s\\n' "$CONTROL_STATE_LABEL"; }
 df() { printf '%s\\n%s\\n' size "$CONTROL_STATE_BYTES"; }
+host_findmnt() { findmnt --task 1 "$@"; }
 ${verify}
 verify_control_state
 `;
@@ -2747,12 +2748,18 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
   assert.match(unit, /^ProtectHome=read-only$/m);
   assert.match(unit, /^RuntimeDirectory=combo-dev-storage-guard$/m);
   assert.match(unit, /^RuntimeDirectoryMode=0700$/m);
-  assert.match(
+  assert.match(unit, /^ReadWritePaths=\/run \/var\/lib\/combo-dev$/m);
+  assert.doesNotMatch(
     unit,
-    /^ReadWritePaths=\/run \/var\/lib\/combo-dev -\/home\/xingzheng\/data\/combo-dev -\/opt\/combo-dev\/state -\/opt\/combo-dev\/incoming -\/opt\/combo-dev\/releases -\/var\/lib\/combo-dev\/evidence$/m,
+    /ReadWritePaths=.*(?:\/home\/xingzheng\/data|\/opt\/combo-dev|\/var\/lib\/combo-dev\/evidence)/m,
   );
-  assert.doesNotMatch(unit, /ReadWritePaths=.* \/home\/xingzheng\/data(?:\s|$)/m);
   assert.match(guard, /readonly GUARD_RUNTIME='\/run\/combo-dev-storage-guard'/);
+  assert.match(guard, /host_findmnt\(\) \{ findmnt --task 1 "\$@"; \}/);
+  const hostFindmntCalls = [...guard.matchAll(/\$\(host_findmnt ([^\n]+)/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(hostFindmntCalls.length >= 18);
+  assert.doesNotMatch(guard, /\$\(findmnt /);
   assert.match(guard, /--cache-dir="\$GUARD_RUNTIME\/kubectl-cache"/);
   assert.match(guard, /mktemp -d "\$GUARD_RUNTIME\/guard-credential\.XXXXXX"/);
   assert.doesNotMatch(

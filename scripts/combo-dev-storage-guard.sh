@@ -76,6 +76,7 @@ declare -ar DK=(kubectl --cache-dir="$GUARD_RUNTIME/kubectl-cache" --request-tim
 status() { printf '[combo-dev-storage-guard] %s\n' "$1"; }
 fail() { printf '[combo-dev-storage-guard] FAIL: %s\n' "$1" >&2; exit 1; }
 require_command() { command -v "$1" >/dev/null 2>&1 || fail "缺少主机工具：$1"; }
+host_findmnt() { findmnt --task 1 "$@"; }
 
 root_owned_not_writable() {
   local mode owner
@@ -117,15 +118,15 @@ verify_control_state() {
     $(stat -c '%u:%g:%a' "$CONTROL_STATE_IMAGE" 2>/dev/null) == '0:0:600' ]] || return 1
   [[ $(readlink -f -- "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_IMAGE" ]] || return 1
   [[ $(stat -c '%s' "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
-  data_target=$(findmnt -rn -T "$CONTROL_STATE_IMAGE" -o TARGET 2>/dev/null) || return 1
+  data_target=$(host_findmnt -rn -T "$CONTROL_STATE_IMAGE" -o TARGET 2>/dev/null) || return 1
   [[ "$data_target" == "$CONTROL_STATE_PARENT" ]] || return 1
   [[ $(stat -c '%d' "$CONTROL_STATE_IMAGE" 2>/dev/null) == $(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) ]] || return 1
-  target=$(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) || return 1
+  target=$(host_findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) || return 1
   [[ "$target" == "$CONTROL_STATE" ]] || return 1
-  source=$(findmnt -rn -M "$CONTROL_STATE" -o SOURCE 2>/dev/null) || return 1
-  root_source=$(findmnt -rn -M / -o SOURCE 2>/dev/null) || return 1
-  data_source=$(findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || return 1
-  data_target=$(findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || return 1
+  source=$(host_findmnt -rn -M "$CONTROL_STATE" -o SOURCE 2>/dev/null) || return 1
+  root_source=$(host_findmnt -rn -M / -o SOURCE 2>/dev/null) || return 1
+  data_source=$(host_findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || return 1
+  data_target=$(host_findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || return 1
   [[ "$data_target" == "$DATA_MOUNT" ]] || return 1
   root_device=$(stat -c '%d' / 2>/dev/null) || return 1
   data_device=$(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) || return 1
@@ -135,17 +136,17 @@ verify_control_state() {
   backing=$(losetup -n -O BACK-FILE -- "$source" 2>/dev/null | awk '{$1=$1; print}') || return 1
   [[ "$backing" == "$CONTROL_STATE_IMAGE" ]] || return 1
   [[ $(blockdev --getsize64 "$source" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
-  fstype=$(findmnt -rn -M "$CONTROL_STATE" -o FSTYPE 2>/dev/null) || return 1
+  fstype=$(host_findmnt -rn -M "$CONTROL_STATE" -o FSTYPE 2>/dev/null) || return 1
   [[ "$fstype" == ext4 ]] || return 1
   [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == "$CONTROL_STATE_LABEL" ]] || return 1
-  options=$(findmnt -rn -M "$CONTROL_STATE" -o OPTIONS 2>/dev/null) || return 1
+  options=$(host_findmnt -rn -M "$CONTROL_STATE" -o OPTIONS 2>/dev/null) || return 1
   [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
   total=$(df -B1 --output=size "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   [[ "$total" =~ ^[0-9]+$ ]] || return 1
   (( total >= CONTROL_STATE_MIN_BYTES && total <= CONTROL_STATE_MAX_BYTES )) || return 1
   for path in incoming releases releases/.staging work evidence; do
     [[ -d "$CONTROL_STATE/$path" && ! -L "$CONTROL_STATE/$path" ]] || return 1
-    [[ $(findmnt -rn -T "$CONTROL_STATE/$path" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] || return 1
+    [[ $(host_findmnt -rn -T "$CONTROL_STATE/$path" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] || return 1
   done
   [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/incoming" 2>/dev/null) == '0:0:1733' ]] || return 1
   [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/releases" 2>/dev/null) == '0:0:755' ]] || return 1
@@ -153,15 +154,15 @@ verify_control_state() {
   [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/work" 2>/dev/null) == '0:0:700' ]] || return 1
   [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/evidence" 2>/dev/null) == '0:0:755' ]] || return 1
   for path in /opt/combo-dev/incoming /opt/combo-dev/releases /var/lib/combo-dev/evidence; do
-    [[ -d "$path" && ! -L "$path" && $(findmnt -rn -M "$path" -o TARGET 2>/dev/null) == "$path" ]] || return 1
-    options=$(findmnt -rn -M "$path" -o OPTIONS 2>/dev/null) || return 1
+    [[ -d "$path" && ! -L "$path" && $(host_findmnt -rn -M "$path" -o TARGET 2>/dev/null) == "$path" ]] || return 1
+    options=$(host_findmnt -rn -M "$path" -o OPTIONS 2>/dev/null) || return 1
     [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
   done
-  fsroot=$(findmnt -rn -M /opt/combo-dev/incoming -o FSROOT 2>/dev/null) || return 1
+  fsroot=$(host_findmnt -rn -M /opt/combo-dev/incoming -o FSROOT 2>/dev/null) || return 1
   [[ "$fsroot" == '/incoming' ]] || return 1
-  fsroot=$(findmnt -rn -M /opt/combo-dev/releases -o FSROOT 2>/dev/null) || return 1
+  fsroot=$(host_findmnt -rn -M /opt/combo-dev/releases -o FSROOT 2>/dev/null) || return 1
   [[ "$fsroot" == '/releases' ]] || return 1
-  fsroot=$(findmnt -rn -M /var/lib/combo-dev/evidence -o FSROOT 2>/dev/null) || return 1
+  fsroot=$(host_findmnt -rn -M /var/lib/combo-dev/evidence -o FSROOT 2>/dev/null) || return 1
   [[ "$fsroot" == '/evidence' ]] || return 1
   [[ $(stat -c '%d:%i' /opt/combo-dev/incoming) == $(stat -c '%d:%i' "$CONTROL_STATE/incoming") ]] || return 1
   [[ $(stat -c '%d:%i' /opt/combo-dev/releases) == $(stat -c '%d:%i' "$CONTROL_STATE/releases") ]] || return 1
@@ -208,12 +209,12 @@ verify_bounded_pool() {
   [[ -f "$STORAGE_SENTINEL" && ! -L "$STORAGE_SENTINEL" ]] || return 1
   root_owned_not_writable "$STORAGE_SENTINEL" || return 1
   [[ $(cat "$STORAGE_SENTINEL" 2>/dev/null || true) == "$STORAGE_SENTINEL_STATE" ]] || return 1
-  target=$(findmnt -rn -M "$STORAGE_POOL" -o TARGET 2>/dev/null) || return 1
+  target=$(host_findmnt -rn -M "$STORAGE_POOL" -o TARGET 2>/dev/null) || return 1
   [[ "$target" == "$STORAGE_POOL" ]] || return 1
-  source=$(findmnt -rn -M "$STORAGE_POOL" -o SOURCE 2>/dev/null) || return 1
-  parent_source=$(findmnt -rn -T "$(dirname "$STORAGE_POOL")" -o SOURCE 2>/dev/null) || return 1
+  source=$(host_findmnt -rn -M "$STORAGE_POOL" -o SOURCE 2>/dev/null) || return 1
+  parent_source=$(host_findmnt -rn -T "$(dirname "$STORAGE_POOL")" -o SOURCE 2>/dev/null) || return 1
   [[ -n "$source" && "$source" != "$parent_source" ]] || return 1
-  options=$(findmnt -rn -M "$STORAGE_POOL" -o OPTIONS 2>/dev/null) || return 1
+  options=$(host_findmnt -rn -M "$STORAGE_POOL" -o OPTIONS 2>/dev/null) || return 1
   [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* ]] || return 1
   total=$(df -B1 --output=size "$STORAGE_POOL" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
   [[ "$total" =~ ^[0-9]+$ ]] || return 1
@@ -243,7 +244,7 @@ verify_static_paths() {
     [[ "$metadata" == "$uid:$gid:700" ]] || return 1
     canonical=$(readlink -f -- "$path" 2>/dev/null) || return 1
     [[ "$canonical" == "$path" ]] || return 1
-    target=$(findmnt -rn -T "$path" -o TARGET 2>/dev/null) || return 1
+    target=$(host_findmnt -rn -T "$path" -o TARGET 2>/dev/null) || return 1
     [[ "$target" == "$STORAGE_POOL" ]] || return 1
     [[ -f "$marker" && ! -L "$marker" && $(stat -c '%u:%g:%a' "$marker" 2>/dev/null) == '0:0:444' ]] || return 1
     [[ $(cat "$marker" 2>/dev/null || true) == "$marker_state" ]] || return 1
