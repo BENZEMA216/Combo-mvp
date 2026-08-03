@@ -4256,6 +4256,9 @@ test('host-data canonical anchor pins a UUID-authenticated data-disk inode below
   assert.match(service, /^Before=local-fs\.target opt-combo\\x2ddev-state\.mount$/m);
   assert.match(service, /^Conflicts=umount\.target$/m);
   assert.doesNotMatch(service, /^PrivateTmp=/m);
+  assert.match(service, /^ProtectSystem=strict$/m);
+  assert.match(service, /^ProtectHome=read-only$/m);
+  assert.match(service, /^ReadWritePaths=\/home\/xingzheng\/data \/var\/lib\/combo-host-data$/m);
   assert.match(checker, /actual_uuid.*expected_uuid/);
   assert.match(checker, /fsroot.*'\/combo-host'/s);
   assert.match(checker, /source_identity.*anchor_identity/s);
