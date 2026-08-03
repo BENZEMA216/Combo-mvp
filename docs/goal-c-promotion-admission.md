@@ -99,12 +99,12 @@ run attempt；重跑只生成新的不可变 artifact，不覆盖上一 attempt�
 同一 Turn 的 `RUN_ERROR`，随后服务端详情中不得出现该 Turn 的 artifact，current UI
 也不得前进。Preview 还会在 Web 与 Runtime 两个 bundle 中展开身份 badge，核对完整
 SHA、releaseId 和 Web asset digest，并通过真实 Clipboard API 检查脱敏验收上下文。
-访问闸检查会保留 gate Cookie、移除应用会话 Cookie，经页面上的“恢复预览会话”
-按钮进入 bootstrap 并返回原路径；协议相对和多重编码外链必须落到同源兜底。
+Preview 不再叠加共享访问码：页面、静态资源和发布元数据可直接访问，API 未登录时
+仍返回原生 401。历史 `/__review/enter` 与 `/__review/bootstrap` 入口只负责把合法的
+同源 `returnTo` 带到产品邮箱登录页；协议相对和多重编码外链必须落到同源兜底。
 
-Preview 访问 token 只能来自受保护的 `cloud-review` Environment Secret
-`CLOUD_REVIEW_ACCESS_TOKEN`，通过标准输入短暂传给远端进程。Test、Preview 与
-Production 分别从对应 GitHub Environment 的 `ACCEPTANCE_RESEND_API_KEY` 读取独立
+Test、Preview 与 Production 分别从对应 GitHub Environment 的
+`ACCEPTANCE_RESEND_API_KEY` 读取独立
 验收权限，并为每次 workflow attempt 生成两个唯一的 `delivered+…@resend.dev`
 收件地址。runner 按精确收件人、主题、发件身份和挑战时间从 Resend sent-email API
 在内存中提取验证码，完成两次首次注册、Session 持久化、退出撤销和 owner 隔离。

@@ -213,7 +213,7 @@ function validateResources(resources, options, manifest, manifestDigest) {
       .sort();
     const expectedConfigMaps =
       options.environment === 'preview'
-        ? [expectedName(options.environment, 'review-gate', manifest, options.phase)]
+        ? [expectedName(options.environment, 'preview-routing', manifest, options.phase)]
         : [];
     assertNames(deployments, expectedDeployments, 'Deployment');
     assertNames(services, expectedServices, 'Service');

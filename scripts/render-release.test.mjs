@@ -235,140 +235,87 @@ test('Nginx contract rejects missing hashed assets and defines cache policy', ()
   );
 });
 
-test('Preview release carries a SHA-scoped access gate without Secret material', () => {
+test('Preview release uses first-party email auth with isolated routing', () => {
   const resources = render('preview', 'apps');
-  const gateName = `${RELEASE_PREFIX}review-gate`;
-  const gate = resources.find(
-    (resource) => resource.kind === 'ConfigMap' && resource.metadata.name === gateName,
+  const routingName = `${RELEASE_PREFIX}preview-routing`;
+  const routing = resources.find(
+    (resource) => resource.kind === 'ConfigMap' && resource.metadata.name === routingName,
   );
-  assert.equal(gate.immutable, true);
-  assert.deepEqual(Object.keys(gate.data).sort(), [
-    'bootstrap.html',
+  assert.equal(routing.immutable, true);
+  assert.deepEqual(Object.keys(routing.data).sort(), [
     'default.conf.template',
-    'enter.html',
+    'entry-redirect.html',
   ]);
-  assert.match(gate.data['default.conf.template'], /\$\{REVIEW_ACCESS_TOKEN\}/);
+  const nginx = routing.data['default.conf.template'];
+  const redirect = routing.data['entry-redirect.html'];
+
+  assert.doesNotMatch(
+    nginx,
+    /REVIEW_ACCESS_TOKEN|combo_review_access|X-Combo-Review-Gate|\/__review\/access/,
+  );
   assert.match(
-    gate.data['default.conf.template'],
+    nginx,
     /location = \/runtime-config\.json[\s\S]*?alias \/var\/run\/combo-web\/runtime-config\.json;[\s\S]*?no-store/,
   );
   assert.match(
-    gate.data['default.conf.template'],
-    /location = \/version\.json[\s\S]*?alias \/var\/run\/combo-web\/version\.json;[\s\S]*?add_header X-Combo-Review-Gate \$combo_review_gate_header always;[\s\S]*?no-store/,
+    nginx,
+    /location = \/version\.json[\s\S]*?alias \/var\/run\/combo-web\/version\.json;[\s\S]*?no-store/,
   );
   assert.match(
-    gate.data['default.conf.template'],
-    /location = \/try\/runtime-config\.json[\s\S]*?alias \/var\/run\/combo-web\/try-runtime-config\.json;[\s\S]*?add_header X-Combo-Review-Gate \$combo_review_gate_header always;[\s\S]*?no-store/,
+    nginx,
+    /location = \/try\/runtime-config\.json[\s\S]*?alias \/var\/run\/combo-web\/try-runtime-config\.json;[\s\S]*?no-store/,
   );
+  assert.match(nginx, /location \^~ \/assets\/[\s\S]*?try_files \$uri =404;/);
+  assert.match(nginx, /location \^~ \/try\/assets\/[\s\S]*?try_files \$uri =404;/);
   assert.match(
-    gate.data['default.conf.template'],
-    /location \^~ \/assets\/[\s\S]*?try_files \$uri =404;/,
+    nginx,
+    /location ~ \^\/__review\/\(\?:enter\|bootstrap\)\$[\s\S]*?Cache-Control "no-store, private" always;[\s\S]*?X-Frame-Options "DENY" always;[\s\S]*?entry-redirect\.html/,
   );
-  assert.match(
-    gate.data['default.conf.template'],
-    /location \^~ \/try\/assets\/[\s\S]*?try_files \$uri =404;/,
-  );
-  assert.match(
-    gate.data['default.conf.template'],
-    /map "\$combo_review_request_allowed:\$combo_review_get_request:\$combo_review_top_document:\$combo_review_accepts_html:\$combo_review_page_path" \$combo_review_show_enter \{[\s\S]*?"0:1:1:1:1" 1;/,
-  );
-  assert.match(
-    gate.data['default.conf.template'],
-    /error_page 418 =401 \/__review\/enter;[\s\S]*?if \(\$combo_review_show_enter = 1\) \{[\s\S]*?return 418;/,
-  );
-  assert.match(
-    gate.data['default.conf.template'],
-    /location = \/__review\/enter \{[\s\S]*?Cache-Control "no-store, private" always;[\s\S]*?X-Frame-Options "DENY" always;[\s\S]*?Content-Security-Policy/,
-  );
-  assert.match(
-    gate.data['enter.html'],
-    /const directEntry = location\.pathname === '\/__review\/enter';/,
-  );
-  assert.match(
-    gate.data['enter.html'],
-    /const requestedReturnTo = directEntry[\s\S]*?params\.get\('returnTo'\)[\s\S]*?`\$\{location\.pathname\}\$\{location\.search\}`;/,
-  );
-  assert.match(
-    gate.data['enter.html'],
-    /const tokenFromInvite = directEntry \? location\.hash\.slice\(1\) : '';/,
-  );
-  assert.match(
-    gate.data['enter.html'],
-    /fetch\('\/version\.json',[\s\S]*?credentials: 'include',[\s\S]*?cache: 'no-store',[\s\S]*?Accept: 'application\/json'/,
-  );
-  assert.match(
-    gate.data['default.conf.template'],
-    /location = \/try\/index\.html[\s\S]*?try_files \$uri =404;/,
-  );
-  assert.match(
-    gate.data['default.conf.template'],
-    /location \^~ \/try\/[\s\S]*?try_files \$uri \$uri\/ \/try\/index\.html;/,
-  );
+  assert.match(nginx, /location = \/try\/index\.html[\s\S]*?try_files \$uri =404;/);
+  assert.match(nginx, /location \^~ \/try\/[\s\S]*?try_files \$uri \$uri\/ \/try\/index\.html;/);
   assert.doesNotMatch(
-    gate.data['default.conf.template'],
+    nginx,
     /alias \/usr\/share\/nginx\/html\/try(?:\/assets\/|\/index\.html|\/);/,
   );
   assert.match(
-    gate.data['bootstrap.html'],
+    redirect,
     /location\.replace\(`\/login\?returnTo=\$\{encodeURIComponent\(returnTo\)\}`\)/,
   );
-  assert.doesNotMatch(gate.data['bootstrap.html'], /\/api\/v1\/auth\/dev-login/);
-  for (const page of [gate.data['enter.html'], gate.data['bootstrap.html']]) {
-    assert.match(page, /decodeURIComponent\(decoded\)/);
-    assert.match(page, /decoded\.startsWith\('\/\/'\)/);
-    assert.match(page, /decoded\.includes\('\\\\'\)/);
-    assert.doesNotMatch(page, /target\.hash/);
-  }
-  assert.doesNotMatch(gate.data['default.conf.template'], /rt_uid/);
+  assert.doesNotMatch(redirect, /\/api\/v1\/auth\/dev-login|access-form|访问码/);
+  assert.match(redirect, /decodeURIComponent\(decoded\)/);
+  assert.match(redirect, /decoded\.startsWith\('\/\/'\)/);
+  assert.match(redirect, /decoded\.includes\('\\\\'\)/);
+  assert.doesNotMatch(redirect, /target\.hash/);
+  assert.doesNotMatch(nginx, /rt_uid/);
   assert.equal(
-    gate.data['default.conf.template']
+    nginx
       .split('\n')
       .find((line) => line.includes('__Host-cb_session=(?<combo_review_session_token>')),
     '  "~(?:^|;\\s*)__Host-cb_session=(?<combo_review_session_token>s1\\.[A-Za-z0-9_-]{43})(?:;|$)" "__Host-cb_session=$combo_review_session_token";',
   );
   assert.match(
-    gate.data['default.conf.template'],
+    nginx,
     /map \$http_cookie \$combo_review_upstream_cookie \{[\s\S]*?default "";[\s\S]*?__Host-cb_session=\(\?<combo_review_session_token>s1\\\.\[A-Za-z0-9_-\]\{43\}\)[\s\S]*?"__Host-cb_session=\$combo_review_session_token";/,
   );
-  assert.doesNotMatch(
-    gate.data['default.conf.template'],
-    /proxy_set_header Cookie[^\n]*combo_review_access/,
-  );
-  assert.doesNotMatch(gate.data['default.conf.template'], /\/api\/v1\/import\/connect/);
-  assert.match(
-    gate.data['default.conf.template'],
-    /map \$upstream_status \$combo_review_logout_cookie \{[\s\S]*?default "";[\s\S]*?~\^2\[0-9\]\[0-9\]\$ "combo_review_access=;[\s\S]*?Max-Age=0/,
-  );
-  assert.match(
-    gate.data['default.conf.template'],
-    /location = \/api\/v1\/auth\/logout[\s\S]*?add_header Set-Cookie \$combo_review_logout_cookie always;/,
-  );
+  assert.doesNotMatch(nginx, /\/api\/v1\/import\/connect/);
 
   const web = resources.find(
     (resource) =>
       resource.kind === 'Deployment' && resource.metadata.name === `${RELEASE_PREFIX}web`,
   );
   const container = web.spec.template.spec.containers[0];
-  assert.deepEqual(
-    container.env.find((entry) => entry.name === 'REVIEW_ACCESS_TOKEN'),
-    {
-      name: 'REVIEW_ACCESS_TOKEN',
-      valueFrom: {
-        secretKeyRef: {
-          key: 'REVIEW_ACCESS_TOKEN',
-          name: 'combo-preview-bootstrap',
-        },
-      },
-    },
+  assert.equal(
+    (container.env ?? []).some((entry) => entry.name === 'REVIEW_ACCESS_TOKEN'),
+    false,
   );
   assert.deepEqual(
     web.spec.template.spec.volumes.map((volume) => volume.configMap.name),
-    [gateName, gateName, gateName],
+    [routingName, routingName],
   );
   assert.equal(JSON.stringify(resources).includes('kind":"Secret"'), false);
 });
 
-test('Production release contains no Preview access gate', () => {
+test('Production release contains no Preview-only routing', () => {
   const resources = render('production', 'apps');
   assert.equal(
     resources.some((resource) => resource.kind === 'ConfigMap'),
@@ -522,14 +469,15 @@ test('deployment-side allowlist rejects mutable foundation commands', () => {
   assert.match(changedScript.stderr, /script differs/);
 });
 
-test('deployment-side allowlist rejects Preview access gate content drift', () => {
+test('deployment-side allowlist rejects Preview routing content drift', () => {
   const apps = render('preview', 'apps');
-  const gate = apps.find(
+  const routing = apps.find(
     (resource) =>
-      resource.kind === 'ConfigMap' && resource.metadata.name === `${RELEASE_PREFIX}review-gate`,
+      resource.kind === 'ConfigMap' &&
+      resource.metadata.name === `${RELEASE_PREFIX}preview-routing`,
   );
-  gate.data['default.conf.template'] += '\n# unapproved drift\n';
-  const changedGate = verifyRendered(apps, 'preview', 'apps');
-  assert.notEqual(changedGate.status, 0);
-  assert.match(changedGate.stderr, /does not preserve the Preview access gate/);
+  routing.data['default.conf.template'] += '\n# unapproved drift\n';
+  const changedRouting = verifyRendered(apps, 'preview', 'apps');
+  assert.notEqual(changedRouting.status, 0);
+  assert.match(changedRouting.stderr, /does not preserve the Preview routing contract/);
 });

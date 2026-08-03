@@ -1370,25 +1370,12 @@ metadata_matches() {
     ' "$file" >/dev/null 2>&1
 }
 
-preview_gate_ready() {
-  local origin=$1 label=$2
-  local headers="$work/$label-gate.headers" status_code
-  curl --fail --silent --show-error --output /dev/null --max-time 15 \
-    "$origin/__review/healthz" 2>/dev/null || return 1
-  status_code=$(curl --silent --show-error --output /dev/null --dump-header "$headers" \
-    --write-out '%{http_code}' --max-time 15 "$origin/version.json" 2>/dev/null) ||
-    return 1
-  [[ "$status_code" == 401 ]] || return 1
-  grep -Eqi '^X-Combo-Review-Gate:[[:space:]]*required' "$headers"
-}
-
-preview_authenticated_metadata() {
-  local origin=$1 output=$2
-  # The gate token expands only inside the candidate Web container.
-  # shellcheck disable=SC2016
-  "${K[@]}" -n "$NAMESPACE" exec "deployment/${release_prefix}web" -- \
-    sh -euc 'exec wget --header="Cookie: combo_review_access=$REVIEW_ACCESS_TOKEN" -qO- "$1/version.json"' \
-    sh "$origin" >"$output"
+preview_release_ready() {
+  local origin=$1 output=$2 status_code
+  status_code=$(curl --silent --show-error --max-time 15 \
+    --output "$output" --write-out '%{http_code}' \
+    "$origin/version.json" 2>/dev/null) || return 1
+  [[ "$status_code" == 200 ]] || return 1
   metadata_matches "$output"
 }
 
@@ -1516,11 +1503,9 @@ validate_formal_public() {
 
 loopback_origin="http://127.0.0.1:${PORTS[0]}"
 if [[ "$ENVIRONMENT" == preview ]]; then
-  preview_gate_ready "$loopback_origin" loopback ||
-    fail 'loopback Preview Web gate is not healthy and closed'
   candidate_version="$work/candidate-version.json"
-  preview_authenticated_metadata http://127.0.0.1 "$candidate_version" ||
-    fail 'candidate Preview Web does not identify the release'
+  preview_release_ready "$loopback_origin" "$candidate_version" ||
+    fail 'loopback Preview Web does not identify the release'
 else
   loopback_version="$work/loopback-version.json"
   curl --fail --silent --show-error --max-time 15 \
@@ -1549,7 +1534,7 @@ public_version="$work/public-version.json"
 public_ok=0
 for _ in $(seq 1 20); do
   if [[ "$ENVIRONMENT" == preview ]]; then
-    if preview_gate_ready "$PUBLIC_ORIGIN" public; then
+    if preview_release_ready "$PUBLIC_ORIGIN" "$public_version"; then
       public_ok=1
       break
     fi
@@ -1564,11 +1549,6 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 ((public_ok == 1)) || fail 'public Web did not converge to the release'
-if [[ "$ENVIRONMENT" == preview ]]; then
-  public_version="$work/public-version.json"
-  preview_authenticated_metadata "$PUBLIC_ORIGIN" "$public_version" ||
-    fail 'authenticated public Preview does not identify the release'
-fi
 if [[ -n "$S3_ORIGIN" ]]; then
   s3_ok=0
   for _ in $(seq 1 20); do

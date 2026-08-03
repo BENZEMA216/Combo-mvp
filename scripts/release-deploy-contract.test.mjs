@@ -90,6 +90,9 @@ function runCleanupPlanValidator(filter, plan, identity) {
       'metadata',
       identity.metadata,
       '--arg',
+      'routing',
+      identity.routing,
+      '--arg',
       'init',
       identity.init,
       filter,
@@ -530,6 +533,34 @@ test('existing post-cut recovery is Preview-only and commits only a live complet
   });
   assert.notEqual(evidenceSchemaDrift.status, 0);
   assert.equal(evidenceSchemaDrift.stdout, 'current\nload\ncapture\ntraffic\nreuse\n');
+});
+
+test('Preview deployment uses public release metadata and retains legacy gate cleanup only', () => {
+  const secrets = functionBody('validate_secret_keys');
+  const reuse = functionBody('reuse_completed_release');
+  const webFetch = functionBody('web_fetch');
+
+  assert.doesNotMatch(secrets, /REVIEW_ACCESS_TOKEN|combo-preview-bootstrap/);
+  assert.match(
+    reuse,
+    /--output "\$public_version" --write-out '%\{http_code\}'[\s\S]*\$PUBLIC_ORIGIN\/version\.json/,
+  );
+  assert.match(reuse, /\[\[ "\$public_status" == 200 \]\]/);
+  assert.match(reuse, /metadata_matches "\$public_version"/);
+  assert.match(webFetch, /wget -qO- "\$url"/);
+  assert.doesNotMatch(
+    webFetch,
+    /REVIEW_ACCESS_TOKEN|combo_review_access|Cookie:|__review|X-Combo-Review-Gate/,
+  );
+
+  assert.match(
+    DEPLOY,
+    /if \[\[ "\$ENVIRONMENT" == preview \]\]; then\s+routing_name="\$\{PREFIX\}preview-routing"\s+fi/,
+  );
+  assert.doesNotMatch(DEPLOY, /\$\{PREFIX\}review-gate/);
+  assert.match(DEPLOY, /test\("\^release-\[0-9a-f\]\{12\}-\(preview-routing\|review-gate\)\$"\)/);
+  assert.match(DEPLOY, /\^release-\[0-9a-f\]\{12\}-review-gate\$/);
+  assert.match(DEPLOY, /delete_captured_resource configmap "\$inventory_configmaps" "\$name" 120s/);
 });
 
 test('existing post-cut recovery binds auxiliary pending evidence before commit', () => {
@@ -1864,6 +1895,7 @@ test('cleanup plan jq validators compile and bind every PVC UID to captured stor
     manifestDigest: `sha256:${'b'.repeat(64)}`,
     prefix: `release-${sourceSha.slice(0, 12)}-`,
     metadata: `combo-release-meta-${sourceSha.slice(0, 12)}`,
+    routing: `release-${sourceSha.slice(0, 12)}-preview-routing`,
     init: 'release-minio-init',
   };
   const plans = [
@@ -1922,7 +1954,11 @@ test('cleanup plan jq validators compile and bind every PVC UID to captured stor
 
   for (const { functionName, inputVariable, plan } of plans) {
     const filter = cleanupPlanValidator(functionName, inputVariable);
-    const accepted = runCleanupPlanValidator(filter, plan, identity);
+    const validatorIdentity =
+      functionName === 'validate_rollback_cleanup_plan'
+        ? { ...identity, environment: 'production', namespace: 'combo', routing: '' }
+        : identity;
+    const accepted = runCleanupPlanValidator(filter, plan, validatorIdentity);
     assert.equal(
       accepted.status,
       0,
@@ -1936,14 +1972,14 @@ test('cleanup plan jq validators compile and bind every PVC UID to captured stor
         claimUid: 'different-uid',
       })),
     };
-    const rejected = runCleanupPlanValidator(filter, mismatched, identity);
+    const rejected = runCleanupPlanValidator(filter, mismatched, validatorIdentity);
     assert.equal(rejected.status, 1, `${functionName} must reject a mismatched PVC UID`);
 
     for (const invalidContainer of [
       { ...plan, targets: null, targetCount: 0, capturedStorage: null },
       { ...plan, targets: {}, targetCount: 0, capturedStorage: {} },
     ]) {
-      const invalid = runCleanupPlanValidator(filter, invalidContainer, identity);
+      const invalid = runCleanupPlanValidator(filter, invalidContainer, validatorIdentity);
       assert.equal(invalid.status, 1, `${functionName} must reject non-array cleanup containers`);
     }
   }

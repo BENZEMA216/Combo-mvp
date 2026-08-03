@@ -1175,7 +1175,7 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
     'runtime_current_ui_consume',
     'studio_trial_return',
     'task_trial_return',
-    'preview_gate_login_and_return_to',
+    'preview_auth_entry_and_return_to',
     'owner_isolation',
     'session_persistence',
     'logout_revokes_session',
@@ -1208,13 +1208,11 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /artifactForTurn\(detail, interruptedTurnId\)[\s\S]*TURN_TIMEOUT_MS/);
   assert.match(source, /finally \{[\s\S]*settleOwnedAcceptanceTurn/);
   assert.match(source, /pairingCode = replay\.data\?\.pairingCode/);
-  assert.match(source, /unauthenticated\.status\(\) === 401/);
-  assert.match(source, /rejected\.status\(\) === 403/);
-  assert.match(source, /gate\.status\(\) === 204/);
-  assert.match(source, /gateCookie\?\.httpOnly === true/);
-  assert.match(source, /gateCookie\.secure === true/);
-  assert.match(source, /gateCookie\.sameSite === 'Strict'/);
-  assert.match(source, /previewGateCookie = \{ \.\.\.gateCookie \}/);
+  assert.match(source, /unauthenticatedVersion\.status\(\) === 200/);
+  assert.match(source, /unauthenticatedPage\.status\(\) === 200/);
+  assert.match(source, /unauthenticatedApi\.status\(\) === 401/);
+  assert.doesNotMatch(source, /COMBO_REVIEW_ACCESS_TOKEN|REVIEW_ACCESS_TOKEN/);
+  assert.doesNotMatch(source, /__review\/(?:access|bootstrap|enter)/);
   assert.match(
     source,
     /const navigation = await page\.goto\(path,[\s\S]*navigation\?\.status\(\) !== 200[\s\S]*fail\(activeCheck, 'http_status', navigation\?\.status\(\)\)/,
@@ -1238,8 +1236,10 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /RUN_STARTED/);
   assert.match(source, /RUN_FINISHED/);
   assert.match(source, /RUN_ERROR/);
-  assert.match(source, /__review\/bootstrap\?returnTo=/);
-  assert.match(source, /evil\.example/);
+  assert.match(
+    source,
+    /await checked\('preview_auth_entry_and_return_to',[\s\S]*recoveryPage\.goto\(recoveryPath[\s\S]*name: '去登录'[\s\S]*pathname: '\/login'[\s\S]*name: '使用邮箱登录'[\s\S]*name: '邮箱'/,
+  );
   assert.match(source, /选择能力「\$\{capability\.name\}」/);
   assert.match(source, /一键发布到市集 · 1 项/);
   assert.match(source, /\/api\/v1\/auth\/email\/challenges/);

@@ -53,20 +53,18 @@ describe('completeLogout', () => {
     completeLogout({ loggedOut: true }, navigate);
     expect(navigate).toHaveBeenCalledWith('/login');
   });
-  it('Preview 登出回访问闸并保留安全任务上下文', () => {
+  it('Preview 登出回邮箱登录并保留安全任务上下文', () => {
     const navigate = vi.fn<(url: string) => void>();
     const returnTo = '/tasks/01982e62-6d6e-7f4d-8fe8-b55f62720b5b?tab=history';
 
     completeLogout({ loggedOut: true }, navigate, 'preview', returnTo);
 
-    expect(navigate).toHaveBeenCalledWith(
-      `/__review/enter?returnTo=${encodeURIComponent(returnTo)}`,
-    );
+    expect(navigate).toHaveBeenCalledWith(`/login?returnTo=${encodeURIComponent(returnTo)}`);
   });
 
   it('Preview 登出丢弃多重编码外链 returnTo', () => {
     expect(logoutDestination({ loggedOut: true }, 'preview', '/%252f%252fevil.example/phish')).toBe(
-      '/__review/enter',
+      '/login',
     );
   });
 });

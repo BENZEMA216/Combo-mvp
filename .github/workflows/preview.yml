@@ -512,16 +512,6 @@ jobs:
     timeout-minutes: 120
     environment: cloud-review
     steps:
-      - name: Validate protected Preview acceptance inputs before mutation
-        env:
-          REVIEW_ACCESS_TOKEN: ${{ secrets.CLOUD_REVIEW_ACCESS_TOKEN }}
-        run: |
-          set -euo pipefail
-          [[ "$REVIEW_ACCESS_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
-            echo 'The protected cloud-review Environment lacks a valid CLOUD_REVIEW_ACCESS_TOKEN.' >&2
-            exit 1
-          }
-
       - name: Use Node.js 24 for immutable release validators
         uses: actions/setup-node@v4
         with:
@@ -1611,17 +1601,12 @@ jobs:
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
           IDENTITY: ${{ runner.temp }}/preview-identity.json
-          REVIEW_ACCESS_TOKEN: ${{ secrets.CLOUD_REVIEW_ACCESS_TOKEN }}
           ACCEPTANCE_RESEND_API_KEY: ${{ secrets.ACCEPTANCE_RESEND_API_KEY }}
         run: |
           set -euo pipefail
           set +x
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          [[ "$REVIEW_ACCESS_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
-            echo 'The protected cloud-review Environment lacks a valid REVIEW_ACCESS_TOKEN.' >&2
-            exit 1
-          }
           [[ "$ACCEPTANCE_RESEND_API_KEY" =~ ^re_[A-Za-z0-9_-]{16,252}$ ]] || {
             echo 'The cloud-review Environment lacks a valid full-access acceptance Resend key.' >&2
             exit 1
@@ -1639,7 +1624,6 @@ jobs:
           ssh release-target mv -fT -- "$temporary" "$remote"
           set +e
           {
-            printf '%s\n' "$REVIEW_ACCESS_TOKEN"
             printf '%s\n' "$ACCEPTANCE_RESEND_API_KEY"
             cat <<'REMOTE'
           set -euo pipefail
@@ -1657,7 +1641,7 @@ jobs:
           output_dir="$HOME/data/combo-acceptance/preview"
           output="$output_dir/${revision}.${run_id}.${run_attempt}.json"
           cleanup() {
-            unset COMBO_REVIEW_ACCESS_TOKEN ACCEPTANCE_RESEND_API_KEY
+            unset ACCEPTANCE_RESEND_API_KEY
             rm -f -- "$archive"
             rm -rf -- "$work"
           }
@@ -1696,7 +1680,7 @@ jobs:
           exit "$runner_rc"
           REMOTE
           } | ssh release-target \
-            "IFS= read -r review_access; IFS= read -r acceptance_resend_api_key; export COMBO_REVIEW_ACCESS_TOKEN=\"\$review_access\" ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset review_access acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
+            "IFS= read -r acceptance_resend_api_key; export ACCEPTANCE_RESEND_API_KEY=\"\$acceptance_resend_api_key\"; unset acceptance_resend_api_key; exec bash -s -- '$remote' '$REVISION' '$RUN_ID' '$RUN_ATTEMPT'"
           runner_rc=$?
           set -e
           [[ "$runner_rc" == 0 || "$runner_rc" == 1 ]] || exit "$runner_rc"

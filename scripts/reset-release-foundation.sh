@@ -985,24 +985,6 @@ captured_resource() {
   printf '%s\n' "$value"
 }
 
-preview_gate_is_closed() {
-  local origin=$1 label=$2 headers health_status version_status
-  headers="$work/active-route-$label-gate.headers"
-  health_status=$(curl --silent --show-error --output /dev/null \
-    --write-out '%{http_code}' --max-time 10 --max-filesize 1048576 \
-    "$origin/__review/healthz") ||
-    return 1
-  [[ "$health_status" == 200 ]] || return 1
-  version_status=$(curl --silent --show-error --output /dev/null \
-    --dump-header "$headers" --write-out '%{http_code}' --max-time 10 \
-    --max-filesize 1048576 "$origin/version.json") ||
-    return 1
-  [[ "$version_status" == 401 ]] || return 1
-  grep -Eqi \
-    '^X-Combo-Review-Gate:[[:space:]]*required[[:space:]]*$' \
-    "$headers"
-}
-
 capture_legacy_production_authority() {
   local forward_service=$1 canary_digest=$2 formal_digest=$3
   local legacy_current pending checkpoint_root checkpoint_entry
@@ -1285,18 +1267,65 @@ EOF
 
 capture_preview_route_version() {
   local name=$1 output=$2
-  preview_gate_is_closed \
-    "http://127.0.0.1:${WEB_FORWARD_PORT}" loopback ||
-    fail 'active Preview Web forward gate is not healthy and closed'
-  preview_gate_is_closed "$PUBLIC_ORIGIN" public ||
-    fail 'active public Preview Web gate is not healthy and closed'
-  # The gate token expands only inside the exact active Web container.
-  # shellcheck disable=SC2016
-  "${K[@]}" -n "$NAMESPACE" exec "deployment/$name" -c web -- \
-    sh -euc \
-      'test -n "${REVIEW_ACCESS_TOKEN:-}" && exec wget --header="Cookie: combo_review_access=$REVIEW_ACCESS_TOKEN" -qO- "$1/version.json"' \
-      sh "$PUBLIC_ORIGIN" >"$output" ||
-    fail 'active authenticated Preview Web route is not readable'
+  local loopback_version loopback_headers loopback_status loopback_health_status
+  local public_headers public_status public_health_status
+  loopback_version="$work/active-preview-loopback-version.json"
+  loopback_headers="$work/active-preview-loopback-headers.txt"
+  public_headers="$work/active-preview-public-headers.txt"
+  loopback_status=$(curl --silent --show-error --max-time 10 --max-filesize 1048576 \
+    --dump-header "$loopback_headers" --output "$loopback_version" \
+    --write-out '%{http_code}' \
+    "http://127.0.0.1:${WEB_FORWARD_PORT}/version.json") ||
+    fail 'active Preview Web forward route is not readable'
+  public_status=$(curl --silent --show-error --max-time 10 --max-filesize 1048576 \
+    --dump-header "$public_headers" --output "$output" \
+    --write-out '%{http_code}' \
+    "$PUBLIC_ORIGIN/version.json") ||
+    fail 'active public Preview Web route is not readable'
+
+  if [[ "$loopback_status" == 200 && "$public_status" == 200 ]]; then
+    jq -e --slurpfile loopback "$loopback_version" \
+      '. == $loopback[0]' "$output" >/dev/null ||
+      fail 'active public and loopback Preview release identity disagree'
+    return
+  fi
+
+  # One migration release may still encounter the exact legacy Review gate on
+  # the already-active route. Do not retrieve its token. Only after both route
+  # surfaces prove the old closed-gate contract may we read the immutable
+  # version file from the already identity-validated active Web deployment.
+  if [[ "$loopback_status" == 401 && "$public_status" == 401 ]] &&
+    [[ "$(tr -d '\r' <"$loopback_headers" | awk '
+      tolower($1) == "x-combo-review-gate:" {
+        seen += 1
+        if (NF != 2 || $2 != "required") invalid = 1
+      }
+      END { if (seen == 1 && invalid != 1) print "required" }
+    ')" == required ]] &&
+    [[ "$(tr -d '\r' <"$public_headers" | awk '
+      tolower($1) == "x-combo-review-gate:" {
+        seen += 1
+        if (NF != 2 || $2 != "required") invalid = 1
+      }
+      END { if (seen == 1 && invalid != 1) print "required" }
+    ')" == required ]]; then
+    loopback_health_status=$(curl --silent --show-error --max-time 10 \
+      --max-filesize 1048576 --output /dev/null --write-out '%{http_code}' \
+      "http://127.0.0.1:${WEB_FORWARD_PORT}/__review/healthz") ||
+      fail 'legacy active Preview Web forward gate health is not readable'
+    public_health_status=$(curl --silent --show-error --max-time 10 \
+      --max-filesize 1048576 --output /dev/null --write-out '%{http_code}' \
+      "$PUBLIC_ORIGIN/__review/healthz") ||
+      fail 'legacy active public Preview Web gate health is not readable'
+    [[ "$loopback_health_status" == 200 && "$public_health_status" == 200 ]] ||
+      fail 'legacy active Preview Web gate health did not return HTTP 200'
+    "${K[@]}" -n "$NAMESPACE" exec "deployment/$name" -c web -- \
+      cat /var/run/combo-web/version.json >"$output" ||
+      fail 'legacy active Preview Web deployment identity is not readable'
+    return
+  fi
+
+  fail 'active Preview Web route is neither anonymously readable nor an exact legacy gate'
 }
 
 capture_active_route_web() {

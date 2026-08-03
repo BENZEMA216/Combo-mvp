@@ -178,7 +178,7 @@ export const LIVE_BROWSER_CHECKS = Object.freeze([
   'runtime_current_ui_consume',
   'studio_trial_return',
   'task_trial_return',
-  'preview_gate_login_and_return_to',
+  'preview_auth_entry_and_return_to',
   'owner_isolation',
   'session_persistence',
   'logout_revokes_session',
@@ -277,7 +277,7 @@ export const PREVIEW_SIX_AREA_COVERAGE = Object.freeze({
     'hashed_asset_404',
     'email_otp_login',
     'preview_identity_badge_and_copy',
-    'preview_gate_login_and_return_to',
+    'preview_auth_entry_and_return_to',
     'session_persistence',
     'logout_revokes_session',
   ]),
@@ -1492,7 +1492,7 @@ function expectedInventoryNames(identity) {
       'release-minio-init-script',
       'release-redis-hot-config',
       'release-redis-queue-config',
-      ...(identity.environment === 'preview' ? [`${prefix}review-gate`] : []),
+      ...(identity.environment === 'preview' ? [`${prefix}preview-routing`] : []),
     ],
   };
   return Object.fromEntries(

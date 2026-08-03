@@ -46,7 +46,7 @@ export const GOAL_B_ACCEPTANCE_CHECKS = Object.freeze([
   'runtime_current_ui_consume',
   'studio_trial_return',
   'task_trial_return',
-  'preview_gate_login_and_return_to',
+  'preview_auth_entry_and_return_to',
   'owner_isolation',
   'session_persistence',
   'logout_revokes_session',
@@ -1050,7 +1050,6 @@ async function runAcceptance(options) {
   let resendApiKey;
   let authenticatedIdentity;
   let authenticationCookieValue;
-  let previewGateCookie;
   const checked = async (id, operation) => {
     activeCheck = id;
     const started = Date.now();
@@ -1073,125 +1072,37 @@ async function runAcceptance(options) {
       await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
         origin: options.webOrigin,
       });
-      let reviewAccess = process.env.COMBO_REVIEW_ACCESS_TOKEN;
-      delete process.env.COMBO_REVIEW_ACCESS_TOKEN;
-      ensure(/^[0-9a-f]{64}$/.test(reviewAccess ?? ''), activeCheck, 'unsafe_input');
-      const unauthenticated = await context.request.get(`${options.webOrigin}/version.json`, {
-        failOnStatusCode: false,
-        maxRedirects: 0,
-      });
-      ensure(unauthenticated.status() === 401, activeCheck, 'http_status');
-      ensure(
-        !(await unauthenticated.text()).includes('id="access-form"'),
-        activeCheck,
-        'invalid_response',
-      );
-      const pageHeaders = { Accept: 'text/html', 'Sec-Fetch-Dest': 'document' };
-      const unauthenticatedPage = await context.request.get(
-        `${options.webOrigin}/capabilities?review-entry=1`,
+      const unauthenticatedVersion = await context.request.get(
+        `${options.webOrigin}/version.json`,
         {
-          headers: pageHeaders,
           failOnStatusCode: false,
           maxRedirects: 0,
         },
       );
-      ensure(unauthenticatedPage.status() === 401, activeCheck, 'http_status');
-      const unauthenticatedPageHeaders = unauthenticatedPage.headers();
+      ensure(unauthenticatedVersion.status() === 200, activeCheck, 'http_status');
+      const unauthenticatedPage = await context.request.get(`${options.webOrigin}/capabilities`, {
+        headers: { Accept: 'text/html', 'Sec-Fetch-Dest': 'document' },
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(unauthenticatedPage.status() === 200, activeCheck, 'http_status');
       ensure(
-        unauthenticatedPageHeaders['cache-control'] === 'no-store, private' &&
-          unauthenticatedPageHeaders['x-combo-review-gate'] === 'required' &&
-          unauthenticatedPageHeaders['x-frame-options'] === 'DENY' &&
-          unauthenticatedPageHeaders['content-security-policy']?.includes(
-            "frame-ancestors 'none'",
-          ) &&
-          unauthenticatedPageHeaders.location === undefined,
-        activeCheck,
-        'invalid_response',
-      );
-      ensure(
-        (await unauthenticatedPage.text()).includes('id="access-form"'),
+        unauthenticatedPage.headers()['content-type']?.includes('text/html') === true &&
+          (await unauthenticatedPage.text()).includes('id="root"'),
         activeCheck,
         'invalid_response',
       );
       const unauthenticatedApi = await context.request.get(`${options.webOrigin}/api/v1/me`, {
-        headers: pageHeaders,
         failOnStatusCode: false,
         maxRedirects: 0,
       });
       ensure(unauthenticatedApi.status() === 401, activeCheck, 'http_status');
       ensure(
-        !(await unauthenticatedApi.text()).includes('id="access-form"'),
-        activeCheck,
-        'invalid_response',
-      );
-      const unauthenticatedAsset = await context.request.get(
-        `${options.webOrigin}/assets/review-entry-probe.js`,
-        {
-          headers: pageHeaders,
-          failOnStatusCode: false,
-          maxRedirects: 0,
-        },
-      );
-      ensure(unauthenticatedAsset.status() === 401, activeCheck, 'http_status');
-      ensure(
-        !(await unauthenticatedAsset.text()).includes('id="access-form"'),
-        activeCheck,
-        'invalid_response',
-      );
-      const unauthenticatedWrite = await context.request.post(`${options.webOrigin}/capabilities`, {
-        headers: pageHeaders,
-        failOnStatusCode: false,
-        maxRedirects: 0,
-      });
-      ensure(unauthenticatedWrite.status() === 401, activeCheck, 'http_status');
-      ensure(
-        !(await unauthenticatedWrite.text()).includes('id="access-form"'),
-        activeCheck,
-        'invalid_response',
-      );
-      const unauthenticatedFrame = await context.request.get(`${options.webOrigin}/capabilities`, {
-        headers: { Accept: 'text/html', 'Sec-Fetch-Dest': 'iframe' },
-        failOnStatusCode: false,
-        maxRedirects: 0,
-      });
-      ensure(unauthenticatedFrame.status() === 401, activeCheck, 'http_status');
-      ensure(
-        !(await unauthenticatedFrame.text()).includes('id="access-form"'),
-        activeCheck,
-        'invalid_response',
-      );
-      const unauthenticatedFetch = await context.request.get(`${options.webOrigin}/capabilities`, {
-        headers: { Accept: 'text/html', 'Sec-Fetch-Dest': 'empty' },
-        failOnStatusCode: false,
-        maxRedirects: 0,
-      });
-      ensure(unauthenticatedFetch.status() === 401, activeCheck, 'http_status');
-      ensure(
-        !(await unauthenticatedFetch.text()).includes('id="access-form"'),
-        activeCheck,
-        'invalid_response',
-      );
-      const rejected = await context.request.post(`${options.webOrigin}/__review/access`, {
-        headers: { 'X-Review-Token': '0'.repeat(64) },
-        failOnStatusCode: false,
-        maxRedirects: 0,
-      });
-      ensure(rejected.status() === 403, activeCheck, 'http_status');
-      const gate = await context.request.post(`${options.webOrigin}/__review/access`, {
-        headers: { 'X-Review-Token': reviewAccess },
-      });
-      reviewAccess = undefined;
-      ensure(gate.status() === 204, activeCheck, 'http_status');
-      const gateCookie = (await context.cookies(options.webOrigin)).find(
-        (cookie) => cookie.name === 'combo_review_access',
-      );
-      ensure(
-        gateCookie?.httpOnly === true &&
-          gateCookie.secure === true &&
-          gateCookie.sameSite === 'Strict',
+        !(await context.cookies(options.webOrigin)).some(
+          (cookie) => cookie.name === 'combo_review_access',
+        ),
         activeCheck,
       );
-      previewGateCookie = { ...gateCookie };
     }
     await context.route('**/*', async (route) => {
       if (isAllowedAcceptanceRequest(route.request().url(), options.webOrigin)) {
@@ -2246,49 +2157,41 @@ async function runAcceptance(options) {
         .waitFor({ state: 'visible', timeout: 30_000 });
     });
 
-    await checked('preview_gate_login_and_return_to', async () => {
+    await checked('preview_auth_entry_and_return_to', async () => {
       if (options.environment !== 'preview') {
-        const names = (await context.cookies(options.webOrigin)).map((cookie) => cookie.name);
-        ensure(!names.includes('combo_review_access'), activeCheck);
         return;
       }
-      const gateCookie = (await context.cookies(options.webOrigin)).find(
-        (cookie) => cookie.name === 'combo_review_access',
-      );
-      ensure(
-        gateCookie?.httpOnly === true &&
-          gateCookie.secure === true &&
-          gateCookie.sameSite === 'Strict',
-        activeCheck,
-      );
       const unauthenticated = await browser.newContext({
         baseURL: options.webOrigin,
         acceptDownloads: false,
         serviceWorkers: 'block',
       });
       try {
-        await unauthenticated.addCookies([gateCookie]);
         const recoveryPage = await unauthenticated.newPage();
         const recoveryPath = `/tasks/${task.id}?acceptance=recovered`;
-        await recoveryPage.goto(
-          `/__review/bootstrap?returnTo=${encodeURIComponent(recoveryPath)}`,
-          { waitUntil: 'domcontentloaded' },
-        );
+        const navigation = await recoveryPage.goto(recoveryPath, {
+          waitUntil: 'domcontentloaded',
+        });
+        ensure(navigation?.status() === 200, activeCheck, 'http_status');
+        const anonymousMe = await unauthenticated.request.get(`${options.webOrigin}/api/v1/me`, {
+          failOnStatusCode: false,
+          maxRedirects: 0,
+        });
+        ensure(anonymousMe.status() === 401, activeCheck, 'http_status');
+        const loginButton = recoveryPage.getByRole('button', { name: '去登录' });
+        await loginButton.waitFor({ state: 'visible', timeout: 30_000 });
+        await loginButton.click();
         await waitForAcceptanceUrl(recoveryPage, {
           origin: options.webOrigin,
           pathname: '/login',
           searchParams: { returnTo: recoveryPath },
         });
-        for (const hostile of ['//evil.example/phish', '/%252f%252fevil.example/phish']) {
-          await recoveryPage.goto(`/__review/bootstrap?returnTo=${encodeURIComponent(hostile)}`, {
-            waitUntil: 'domcontentloaded',
-          });
-          await waitForAcceptanceUrl(recoveryPage, {
-            origin: options.webOrigin,
-            pathname: '/login',
-            searchParams: { returnTo: '/tasks' },
-          });
-        }
+        await recoveryPage
+          .getByRole('heading', { name: '使用邮箱登录' })
+          .waitFor({ state: 'visible', timeout: 30_000 });
+        await recoveryPage
+          .getByRole('textbox', { name: '邮箱' })
+          .waitFor({ state: 'visible', timeout: 30_000 });
       } finally {
         await unauthenticated.close();
       }
@@ -2301,13 +2204,6 @@ async function runAcceptance(options) {
         serviceWorkers: 'block',
       });
       try {
-        if (options.environment === 'preview') {
-          const gateCookie = (await context.cookies(options.webOrigin)).find(
-            (cookie) => cookie.name === 'combo_review_access',
-          );
-          ensure(gateCookie !== undefined, activeCheck);
-          await isolated.addCookies([gateCookie]);
-        }
         await isolated.route('**/*', async (route) => {
           if (isAllowedAcceptanceRequest(route.request().url(), options.webOrigin)) {
             await route.continue();
@@ -2388,8 +2284,7 @@ async function runAcceptance(options) {
           !remainingCookieNames.includes('__Host-cb_session') &&
           !remainingCookieNames.includes('cb_refresh') &&
           !remainingCookieNames.includes('cb_auth_tx') &&
-          (options.environment !== 'preview' ||
-            !remainingCookieNames.includes('combo_review_access')),
+          !remainingCookieNames.includes('combo_review_access'),
         activeCheck,
       );
       const replay = await browser.newContext({
@@ -2403,10 +2298,6 @@ async function runAcceptance(options) {
             /^s1\.[A-Za-z0-9_-]{43}$/u.test(authenticationCookieValue),
           activeCheck,
         );
-        if (options.environment === 'preview') {
-          ensure(previewGateCookie !== undefined, activeCheck);
-          await replay.addCookies([previewGateCookie]);
-        }
         const expectedCookieName =
           options.environment === 'test' ? 'cb_session' : '__Host-cb_session';
         await replay.addCookies([
@@ -2426,20 +2317,11 @@ async function runAcceptance(options) {
         await replay.close();
       }
       authenticationCookieValue = undefined;
-      if (options.environment === 'preview') {
-        const gated = await api.raw('/version.json');
-        ensure(gated.status() === 401, activeCheck, 'http_status');
-        await page.goto(`/__review/enter?returnTo=${encodeURIComponent(`/tasks/${task.id}`)}`, {
-          waitUntil: 'domcontentloaded',
-        });
-        await waitForAcceptanceUrl(page, { pathname: '/__review/enter' });
-      } else {
-        await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
-        await page.getByRole('button', { name: '去登录' }).waitFor({
-          state: 'visible',
-          timeout: 30_000,
-        });
-      }
+      await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
+      await page.getByRole('button', { name: '去登录' }).waitFor({
+        state: 'visible',
+        timeout: 30_000,
+      });
     });
 
     ensure(
