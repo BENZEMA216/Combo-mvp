@@ -914,7 +914,6 @@ jobs:
           }
 
           revalidate_test_authority
-          printf 'mutation_started=true\n' >> "$GITHUB_OUTPUT"
           remote="/opt/combo-dev/incoming/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           temporary="/opt/combo-dev/incoming/.${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.upload"
           cleanup_upload() {
@@ -955,6 +954,9 @@ jobs:
             --workflow-run-id "$workflow_run_id" \
             --workflow-run-attempt "$workflow_run_attempt"
           REMOTE
+          # reset/deploy own their failure traps. Arm the workflow-level fence
+          # only for failures that happen after a successful deployment.
+          printf 'deployment_completed=true\n' >> "$GITHUB_OUTPUT"
 
       - name: Prove development ports remain private
         env:
@@ -1753,7 +1755,7 @@ jobs:
             --complete-acceptance "$REVISION" "$RUN_ID" "$RUN_ATTEMPT"
 
       - name: Fence Test after post-deploy acceptance failure
-        if: ${{ always() && steps.deploy_test.outputs.mutation_started == 'true' && steps.accept_test.outcome != 'success' }}
+        if: ${{ always() && steps.deploy_test.outputs.deployment_completed == 'true' && steps.accept_test.outcome != 'success' }}
         timeout-minutes: 15
         env:
           REVISION: ${{ needs.authorize.outputs.revision }}

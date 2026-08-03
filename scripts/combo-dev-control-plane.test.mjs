@@ -5,6 +5,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -1154,7 +1155,12 @@ test('Test host gate remains credential-free and leaves product acceptance to tr
     /logs_only == 1[\s\S]*verify_pending_acceptance_identity[\s\S]*check_logs_fail_closed "\$since" product/,
   );
   assert.match(dispatcherStep, /id: deploy_test/);
-  assert.match(dispatcherStep, /mutation_started=true/);
+  assert.match(dispatcherStep, /deployment_completed=true/);
+  assert.ok(
+    dispatcherStep.indexOf('sudo /opt/combo-dev/bin/combo-dev-deploy') <
+      dispatcherStep.indexOf("printf 'deployment_completed=true"),
+  );
+  assert.doesNotMatch(dispatcherStep, /mutation_started/);
   assert.doesNotMatch(dispatcherStep, /ACCEPTANCE_RESEND_API_KEY|resend-sent-email/);
 });
 
@@ -1342,7 +1348,7 @@ test('Test runs and validates the exact release artifact six-area browser accept
   const fenceStep = workflow.slice(fence, cleanup);
   assert.match(
     fenceStep,
-    /always\(\) && steps\.deploy_test\.outputs\.mutation_started == 'true' && steps\.accept_test\.outcome != 'success'/,
+    /always\(\) && steps\.deploy_test\.outputs\.deployment_completed == 'true' && steps\.accept_test\.outcome != 'success'/,
   );
   assert.match(fenceStep, /timeout-minutes: 15/);
   assert.match(
@@ -1539,10 +1545,12 @@ test('Test evidence inventories every relevant namespaced kind without reading S
   assert.equal(secretRules.length, 0);
   for (const rule of [
     "resources: ['serviceaccounts', 'resourcequotas', 'limitranges']\n    verbs: ['get', 'list', 'watch']",
-    "resources: ['daemonsets']\n    verbs: ['get', 'list', 'watch']",
-    "resources: ['cronjobs']\n    verbs: ['get', 'list', 'watch']",
+    "resources: ['daemonsets']\n    verbs: ['get', 'list', 'watch', 'delete']",
+    "resources: ['replicasets']\n    verbs: ['get', 'list', 'watch', 'delete']",
+    "resources: ['replicationcontrollers']\n    verbs: ['get', 'list', 'watch', 'delete']",
+    "resources: ['cronjobs']\n    verbs: ['get', 'list', 'watch', 'delete']",
     "resources: ['ingresses']\n    verbs: ['get', 'list', 'watch']",
-    "resources: ['horizontalpodautoscalers']\n    verbs: ['get', 'list', 'watch']",
+    "resources: ['horizontalpodautoscalers']\n    verbs: ['get', 'list', 'watch', 'delete']",
   ]) {
     assert.ok(rbac.includes(rule), rule);
   }
@@ -2549,6 +2557,80 @@ test('bootstrap failure injection at every apply and credential boundary leaves 
   for (const script of [deploy, reset, bootstrap, guard]) {
     assert.match(script, /\/var\/lib\/combo-dev\/writers-fenced/);
   }
+  for (const [name, script] of [
+    ['deploy', deploy],
+    ['reset', reset],
+  ]) {
+    const cleanup = script.slice(
+      script.indexOf('cleanup() {'),
+      script.indexOf('trap cleanup EXIT'),
+    );
+    const marker = cleanup.indexOf('mark_failure_fence');
+    const forwarders = cleanup.indexOf(
+      name === 'deploy' ? 'stop_forwarders_for_failure' : 'stop_forwarders',
+    );
+    const writers = cleanup.indexOf(
+      name === 'deploy' ? 'fence_all_writers_cleanup' : 'fence_all_writers',
+    );
+    const inventory = cleanup.indexOf('verify_complete_writer_inventory_zero');
+    const capability = cleanup.indexOf('record_failed_attempt_capability');
+    assert.ok(marker >= 0 && marker < forwarders, name);
+    assert.ok(forwarders < writers && writers < inventory, name);
+    assert.ok(inventory < capability, name);
+  }
+  for (const [name, script] of [
+    ['deploy', deploy],
+    ['reset', reset],
+  ]) {
+    const cleanup = script.slice(
+      script.indexOf('cleanup() {'),
+      script.indexOf('trap cleanup EXIT'),
+    );
+    const work = mkdtempSync(join(tmpdir(), `combo-dev-${name}-cleanup-`));
+    const calls = join(work, 'calls');
+    const stopFunction = name === 'deploy' ? 'stop_forwarders_for_failure' : 'stop_forwarders';
+    const fenceFunction = name === 'deploy' ? 'fence_all_writers_cleanup' : 'fence_all_writers';
+    try {
+      const result = spawnSync(
+        'bash',
+        [
+          '-c',
+          `
+set -u
+INCOMING_BUNDLE=''
+RESET_PROOF_IN_USE=''
+CANDIDATE_RELEASE=''
+RELEASE_DIR=''
+RELEASE_CREATED=0
+WORK=''
+MUTATING=1
+SUCCESS=0
+mark_failure_fence() { :; }
+remove_consumed_reset_proof() { return 0; }
+remove_current_attempt_reset_proofs() { return 0; }
+remove_all_reset_proofs() { return 0; }
+stop_forwarders_for_failure() { printf 'stop\\n' >>"$CALLS"; return 1; }
+stop_forwarders() { printf 'stop\\n' >>"$CALLS"; return 1; }
+fence_all_writers_cleanup() { printf 'fence\\n' >>"$CALLS"; return 0; }
+fence_all_writers() { printf 'fence\\n' >>"$CALLS"; return 0; }
+verify_complete_writer_inventory_zero() { printf 'inventory\\n' >>"$CALLS"; return 0; }
+record_failed_attempt_capability() { printf 'capability\\n' >>"$CALLS"; return 0; }
+status() { :; }
+${cleanup}
+false
+cleanup
+`,
+        ],
+        { encoding: 'utf8', env: { ...process.env, CALLS: calls } },
+      );
+      assert.equal(result.status, 1, `${name}: ${result.stderr}`);
+      assert.equal(readFileSync(calls, 'utf8'), 'stop\nfence\ninventory\n', name);
+      assert.ok(cleanup.includes(`${stopFunction} >/dev/null 2>&1 || convergence_ok=0`));
+      assert.ok(cleanup.includes(`${fenceFunction} >/dev/null 2>&1 || convergence_ok=0`));
+    } finally {
+      rmSync(work, { recursive: true, force: true });
+    }
+  }
   for (const script of [deploy, reset, guard]) {
     assert.match(script, /redis-hot/);
     assert.match(
@@ -2562,7 +2644,16 @@ test('bootstrap failure injection at every apply and credential boundary leaves 
   );
   assert.match(bootstrapFence, /get deployments\.apps,statefulsets\.apps -o name/);
   assert.match(bootstrapFence, /scale "\$controller" --replicas=0/);
-  assert.match(bootstrapFence, /for resource in jobs\.batch cronjobs\.batch daemonsets\.apps/);
+  for (const resource of [
+    'horizontalpodautoscalers.autoscaling',
+    'cronjobs.batch',
+    'daemonsets.apps',
+    'jobs.batch',
+    'replicationcontrollers',
+    'replicasets.apps',
+  ]) {
+    assert.ok(bootstrapFence.includes(resource), resource);
+  }
   assert.match(bootstrapFence, /delete pods --all/);
   assert.doesNotMatch(bootstrapFence, /APP_NAMES|FOUNDATION_STATEFUL/);
 
@@ -2709,6 +2800,962 @@ test('first bootstrap tolerates absent forwarder units and serializes the persis
   );
 });
 
+test('safe-idle capability is exact, atomic, and fail-closed in every control path', () => {
+  const safe = 'combo-dev-writers=safe-idle-v1';
+  const generic = 'combo-dev-writers=fenced';
+  const owner = `${process.getuid()}:${process.getgid()}:600`;
+
+  function functionRegion(path, start, end) {
+    const source = text(path);
+    const startAt = source.indexOf(start);
+    const endAt = source.indexOf(end, startAt);
+    assert.ok(startAt >= 0, `${path}: missing region start ${start}`);
+    assert.ok(endAt > startAt, `${path}: missing region end ${end}`);
+    return source.slice(startAt, endAt);
+  }
+
+  function sandboxSource(source) {
+    return source
+      .replaceAll('/var/lib/combo-dev', '${STATE_DIR}')
+      .replaceAll('install -d -o root -g root -m 0711', 'install -d -m 0711')
+      .replaceAll('chown root:root "$candidate"', 'true')
+      .replaceAll('0:0:600', owner);
+  }
+
+  function markerSnapshot(path) {
+    try {
+      const metadata = lstatSync(path);
+      if (metadata.isSymbolicLink()) return { kind: 'symlink', mode: metadata.mode & 0o777 };
+      return {
+        kind: metadata.isFile() ? 'file' : 'other',
+        mode: metadata.mode & 0o777,
+        value: metadata.isFile() ? readFileSync(path, 'utf8').trimEnd() : undefined,
+      };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { kind: 'absent' };
+      throw error;
+    }
+  }
+
+  function installMarker(state, marker, victim) {
+    switch (state) {
+      case 'absent':
+        break;
+      case 'safe':
+        writeFileSync(marker, `${safe}\n`, { mode: 0o600 });
+        break;
+      case 'generic':
+        writeFileSync(marker, `${generic}\n`, { mode: 0o600 });
+        break;
+      case 'unknown':
+        writeFileSync(marker, 'combo-dev-writers=unknown\n', { mode: 0o600 });
+        break;
+      case 'wrong-mode':
+        writeFileSync(marker, `${safe}\n`, { mode: 0o600 });
+        chmodSync(marker, 0o644);
+        break;
+      case 'symlink':
+        writeFileSync(victim, `${safe}\n`, { mode: 0o600 });
+        symlinkSync(victim, marker);
+        break;
+      default:
+        assert.fail(`unsupported marker state: ${state}`);
+    }
+  }
+
+  function runHarness({ source, markerState, body, externalSymlink = false, environment = {} }) {
+    const root = mkdtempSync(join(tmpdir(), 'combo-dev-safe-idle-'));
+    const stateDir = join(root, 'state');
+    const marker = join(stateDir, 'writers-fenced');
+    const external = join(stateDir, 'external-fence');
+    const pending = join(stateDir, 'acceptance-pending');
+    const victim = join(root, 'victim');
+    const outcome = join(root, 'outcome');
+    mkdirSync(stateDir, { mode: 0o711 });
+    installMarker(markerState, marker, victim);
+    if (externalSymlink) {
+      writeFileSync(victim, 'victim-must-not-change\n', { mode: 0o600 });
+      symlinkSync(victim, external);
+    }
+    const harness = `
+set -Eeuo pipefail
+umask 077
+FAILURE_FENCE_MARKER="$STATE_DIR/writers-fenced"
+EXTERNAL_FENCE_MARKER="$STATE_DIR/external-fence"
+ACCEPTANCE_PENDING_MARKER="$STATE_DIR/acceptance-pending"
+FENCE_LOCK_FILE="$STATE_DIR/fence.lock"
+OPERATION_LOCK_FILE="$STATE_DIR/operation.lock"
+FAILURE_FENCE_VALUE='${generic}'
+SAFE_IDLE_FENCE_VALUE='${safe}'
+ACCEPTANCE_PENDING_SECONDS=7200
+MUTATING=0
+ATTEMPT_REVISION=''
+ATTEMPT_RUN_ID=''
+ATTEMPT_RUN_ATTEMPT=''
+verify_control_state() { return 0; }
+${sandboxSource(source)}
+${body}
+`;
+    try {
+      const result = spawnSync('bash', ['-c', harness], {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          STATE_DIR: stateDir,
+          OUTCOME: outcome,
+          ...environment,
+        },
+      });
+      return {
+        result,
+        outcome: existsSync(outcome) ? readFileSync(outcome, 'utf8').trimEnd() : '',
+        marker: markerSnapshot(marker),
+        external: markerSnapshot(external),
+        pending: markerSnapshot(pending),
+        victim: existsSync(victim) ? readFileSync(victim, 'utf8').trimEnd() : undefined,
+      };
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  const guardFunctions = functionRegion(
+    'scripts/combo-dev-storage-guard.sh',
+    'write_writers_fence() {',
+    'mark_maintenance_fence_complete() {',
+  );
+  const guard = text('scripts/combo-dev-storage-guard.sh');
+  const guardStart = guard.indexOf(
+    'if [[ -e "$FAILURE_FENCE_MARKER" || -L "$FAILURE_FENCE_MARKER" ]]',
+  );
+  const guardEnd = guard.indexOf(
+    'if [[ -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]',
+    guardStart,
+  );
+  assert.ok(guardStart >= 0 && guardEnd > guardStart);
+  const guardBranch = guard.slice(guardStart, guardEnd);
+  const guardBody = `
+forwarders_stopped() { [[ "\${FORWARDER_ACTIVE:-0}" == 0 ]]; }
+verify_writers_fenced() { [[ "\${WRITER_ACTIVE:-0}" == 0 ]]; }
+verify_complete_writer_inventory_zero() { [[ "\${INVENTORY_ACTIVE:-0}" == 0 ]]; }
+status() { printf '%s\\n' safe >"$OUTCOME"; }
+fence_now() { printf '%s\\n' fenced >"$OUTCOME"; }
+exercise_guard_marker() {
+${guardBranch}
+  printf '%s\\n' continue >"$OUTCOME"
+}
+exercise_guard_marker
+`;
+  for (const [markerState, expected] of [
+    ['absent', 'continue'],
+    ['safe', 'safe'],
+    ['generic', 'fenced'],
+    ['unknown', 'fenced'],
+    ['wrong-mode', 'fenced'],
+    ['symlink', 'fenced'],
+  ]) {
+    const observed = runHarness({ source: guardFunctions, markerState, body: guardBody });
+    assert.equal(observed.result.status, 0, `${markerState}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, expected, markerState);
+  }
+  for (const environment of [
+    { WRITER_ACTIVE: '1' },
+    { FORWARDER_ACTIVE: '1' },
+    { INVENTORY_ACTIVE: '1' },
+  ]) {
+    const observed = runHarness({
+      source: guardFunctions,
+      markerState: 'safe',
+      body: guardBody,
+      environment,
+    });
+    assert.equal(observed.result.status, 0, observed.result.stderr);
+    assert.equal(observed.outcome, 'fenced');
+  }
+  for (const [name, setup, externalSymlink] of [
+    ['system-alone', `printf 'system\\n' >"$EXTERNAL_FENCE_MARKER"`, false],
+    ['unknown-alone', `printf 'unknown\\n' >"$EXTERNAL_FENCE_MARKER"`, false],
+    ['symlink-alone', '', true],
+  ]) {
+    const observed = runHarness({
+      source: guardFunctions,
+      markerState: 'absent',
+      externalSymlink,
+      body: `
+${setup}
+${guardBody}
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, 'fenced', name);
+  }
+
+  const forwarderFenceCheck = functionRegion(
+    'scripts/combo-dev-forwarder-lease.sh',
+    'failure_fences_absent() {',
+    'process_start() {',
+  );
+  for (const [name, markerState, setup, externalSymlink, expected] of [
+    ['clear', 'absent', '', false, 'allowed'],
+    ['writers', 'generic', '', false, 'blocked'],
+    ['external', 'absent', `printf 'system\\n' >"$EXTERNAL_FENCE_MARKER"`, false, 'blocked'],
+    ['external-symlink', 'absent', '', true, 'blocked'],
+  ]) {
+    const observed = runHarness({
+      source: forwarderFenceCheck,
+      markerState,
+      externalSymlink,
+      body: `
+${setup}
+if failure_fences_absent; then
+  printf 'allowed\\n' >"$OUTCOME"
+else
+  printf 'blocked\\n' >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, expected, name);
+  }
+
+  const persistFences = guard.slice(
+    guard.indexOf('persist_fences_and_stop_forwarders() {'),
+    guard.indexOf('fence_now_locked() {'),
+  );
+  const genericFence = persistFences.indexOf('mark_failure_fence');
+  const externalFence = persistFences.indexOf('mark_external_fence');
+  const stopForwarders = persistFences.indexOf('systemctl stop');
+  const unlockForwarders = persistFences.indexOf('flock -u 7');
+  assert.ok(genericFence >= 0 && genericFence < externalFence);
+  assert.ok(externalFence < stopForwarders && stopForwarders < unlockForwarders);
+
+  const externalReplacement = runHarness({
+    source: guardFunctions,
+    markerState: 'generic',
+    externalSymlink: true,
+    body: `
+if mark_external_fence system; then
+  printf '%s\\n' success >"$OUTCOME"
+else
+  printf '%s\\n' rejected >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(externalReplacement.result.status, 0, externalReplacement.result.stderr);
+  assert.equal(externalReplacement.outcome, 'success');
+  assert.deepEqual(externalReplacement.external, { kind: 'file', mode: 0o600, value: 'system' });
+  assert.equal(externalReplacement.victim, 'victim-must-not-change');
+
+  const requestedAttempt = 'attempt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2';
+  const differentAttempt = 'attempt bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 11 3';
+  for (const [name, setup, externalSymlink, expected] of [
+    ['absent', '', false, requestedAttempt],
+    [
+      'same-attempt',
+      `printf '${requestedAttempt}\\n' >"$EXTERNAL_FENCE_MARKER"`,
+      false,
+      requestedAttempt,
+    ],
+    [
+      'system-wrong-mode',
+      `printf 'system\\n' >"$EXTERNAL_FENCE_MARKER"\nchmod 0644 "$EXTERNAL_FENCE_MARKER"`,
+      false,
+      'system',
+    ],
+    ['unknown', `printf 'unknown\\n' >"$EXTERNAL_FENCE_MARKER"`, false, 'system'],
+    [
+      'different-attempt',
+      `printf '${differentAttempt}\\n' >"$EXTERNAL_FENCE_MARKER"`,
+      false,
+      'system',
+    ],
+    ['symlink', '', true, 'system'],
+  ]) {
+    const observed = runHarness({
+      source: guardFunctions,
+      markerState: 'generic',
+      externalSymlink,
+      body: `
+${setup}
+mark_external_fence '${requestedAttempt}'
+printf '%s\\n' "$(<"$EXTERNAL_FENCE_MARKER")" >"$OUTCOME"
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, expected, name);
+    assert.deepEqual(observed.external, { kind: 'file', mode: 0o600, value: expected }, name);
+    if (externalSymlink) assert.equal(observed.victim, 'victim-must-not-change', name);
+  }
+
+  const systemProvenance = runHarness({
+    source: guardFunctions,
+    markerState: 'generic',
+    body: `
+printf 'system\\n' >"$EXTERNAL_FENCE_MARKER"
+chmod 0600 "$EXTERNAL_FENCE_MARKER"
+mark_external_fence 'attempt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2'
+printf '%s\\n' "$(<"$EXTERNAL_FENCE_MARKER")" >"$OUTCOME"
+`,
+  });
+  assert.equal(systemProvenance.result.status, 0, systemProvenance.result.stderr);
+  assert.equal(systemProvenance.outcome, 'system');
+  assert.deepEqual(systemProvenance.external, { kind: 'file', mode: 0o600, value: 'system' });
+
+  const guardRecoveryFunctions = `${guardFunctions}\n${functionRegion(
+    'scripts/combo-dev-storage-guard.sh',
+    'recoverable_attempt_fence_identity() {',
+    'forwarders_stopped() {',
+  )}`;
+  for (const [name, setup, expected] of [
+    [
+      'exact-pair',
+      `printf '${requestedAttempt}\\n' >"$EXTERNAL_FENCE_MARKER"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+      requestedAttempt,
+    ],
+    ['missing-pending', `printf '${requestedAttempt}\\n' >"$EXTERNAL_FENCE_MARKER"`, 'rejected'],
+    [
+      'mismatched-pending',
+      `printf '${requestedAttempt}\\n' >"$EXTERNAL_FENCE_MARKER"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 3 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+      'rejected',
+    ],
+    [
+      'extra-newline',
+      `printf '${requestedAttempt}\\n' >"$EXTERNAL_FENCE_MARKER"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2 9999999999\\n\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+      'rejected',
+    ],
+  ]) {
+    const observed = runHarness({
+      source: guardRecoveryFunctions,
+      markerState: 'generic',
+      body: `
+${setup}
+if identity=$(recoverable_attempt_fence_identity); then
+  printf '%s\\n' "$identity" >"$OUTCOME"
+else
+  printf 'rejected\\n' >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, expected, name);
+  }
+
+  const deployFunctions = functionRegion(
+    'scripts/combo-dev-deploy.sh',
+    'write_writers_fence() {',
+    'apply_foundation_replicas() {',
+  );
+  for (const markerState of ['absent', 'safe', 'generic', 'unknown', 'wrong-mode', 'symlink']) {
+    const observed = runHarness({
+      source: deployFunctions,
+      markerState,
+      body: `
+if claim_safe_idle_fence; then
+  printf '%s\\n' success >"$OUTCOME"
+else
+  printf '%s\\n' rejected >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${markerState}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, markerState === 'safe' ? 'success' : 'rejected', markerState);
+    if (markerState === 'safe') {
+      assert.deepEqual(observed.marker, { kind: 'file', mode: 0o600, value: generic });
+    }
+  }
+  const interruptedClaim = runHarness({
+    source: deployFunctions,
+    markerState: 'safe',
+    body: `
+mark_failure_fence() { kill -TERM "$$"; }
+trap 'printf "%s\\n" "$MUTATING" >"$OUTCOME"; exit 143' TERM
+claim_safe_idle_fence
+`,
+  });
+  assert.equal(interruptedClaim.result.status, 143);
+  assert.equal(interruptedClaim.outcome, '1');
+  assert.deepEqual(interruptedClaim.marker, { kind: 'file', mode: 0o600, value: safe });
+
+  const failedDeployCapability = runHarness({
+    source: deployFunctions,
+    markerState: 'generic',
+    body: `
+ATTEMPT_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ATTEMPT_RUN_ID=10
+ATTEMPT_RUN_ATTEMPT=2
+record_failed_attempt_capability
+printf '%s\\n' "$(<"$EXTERNAL_FENCE_MARKER")" >"$OUTCOME"
+`,
+  });
+  assert.equal(failedDeployCapability.result.status, 0, failedDeployCapability.result.stderr);
+  assert.equal(
+    failedDeployCapability.outcome,
+    'attempt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2',
+  );
+  assert.deepEqual(failedDeployCapability.external, {
+    kind: 'file',
+    mode: 0o600,
+    value: 'attempt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2',
+  });
+  assert.equal(failedDeployCapability.pending.kind, 'file');
+  assert.equal(failedDeployCapability.pending.mode, 0o600);
+  assert.match(
+    failedDeployCapability.pending.value,
+    /^aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 10 2 [1-9][0-9]*$/,
+  );
+
+  const consumedProofCleanup = runHarness({
+    source: deployFunctions,
+    markerState: 'generic',
+    body: `
+ATTEMPT_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ATTEMPT_RUN_ID=10
+ATTEMPT_RUN_ATTEMPT=2
+RESET_PROOF_IN_USE="$STATE_DIR/reset-proof.$ATTEMPT_REVISION.$ATTEMPT_RUN_ID.$ATTEMPT_RUN_ATTEMPT.consumed.json"
+printf '{}\\n' >"$RESET_PROOF_IN_USE"
+if remove_consumed_reset_proof; then
+  printf 'deleted\\n' >"$OUTCOME"
+else
+  printf 'retained\\n' >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(consumedProofCleanup.result.status, 0, consumedProofCleanup.result.stderr);
+  assert.equal(consumedProofCleanup.outcome, 'deleted');
+
+  const deployCleanup = sandboxSource(
+    text('scripts/combo-dev-deploy.sh').slice(
+      text('scripts/combo-dev-deploy.sh').indexOf('cleanup() {'),
+      text('scripts/combo-dev-deploy.sh').indexOf('trap cleanup EXIT'),
+    ),
+  );
+  for (const [name, proofSetup, expectedOutcome] of [
+    ['unconsumed-proof-is-removed', `printf '{}\\n' >"$RESET_PROOF"`, 'capability'],
+    ['unremovable-proof-blocks-capability', `mkdir "$RESET_PROOF"`, ''],
+  ]) {
+    const observed = runHarness({
+      source: `${deployFunctions}\n${deployCleanup}`,
+      markerState: 'generic',
+      body: `
+ATTEMPT_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ATTEMPT_RUN_ID=10
+ATTEMPT_RUN_ATTEMPT=2
+RESET_PROOF="$STATE_DIR/reset-proof.$ATTEMPT_REVISION.$ATTEMPT_RUN_ID.$ATTEMPT_RUN_ATTEMPT.json"
+CONSUMED_RESET_PROOF="$STATE_DIR/reset-proof.$ATTEMPT_REVISION.$ATTEMPT_RUN_ID.$ATTEMPT_RUN_ATTEMPT.consumed.json"
+RESET_PROOF_IN_USE=''
+INCOMING_BUNDLE=''
+CANDIDATE_RELEASE=''
+RELEASE_DIR=''
+RELEASE_CREATED=0
+WORK=''
+MUTATING=1
+SUCCESS=0
+${proofSetup}
+stop_forwarders_for_failure() { return 0; }
+fence_all_writers_cleanup() { return 0; }
+verify_complete_writer_inventory_zero() { return 0; }
+record_failed_attempt_capability() { printf 'capability\\n' >"$OUTCOME"; return 0; }
+status() { :; }
+cleanup
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, expectedOutcome, name);
+  }
+
+  for (const [path, end, action, stubs] of [
+    ['scripts/combo-dev-bootstrap.sh', 'fence_all_writers_admin() {', 'mark_safe_idle_fence', ''],
+    [
+      'scripts/combo-dev-reset.sh',
+      'apply_foundation_replicas() {',
+      'finish_reset_safe_idle_fence',
+      'forwarders_stopped() { return 0; }\nverify_all_writers_zero() { return 0; }\nverify_complete_writer_inventory_zero() { return 0; }',
+    ],
+  ]) {
+    const functions = functionRegion(path, 'write_writers_fence() {', end);
+    for (const markerState of ['absent', 'safe', 'generic', 'unknown', 'wrong-mode', 'symlink']) {
+      const observed = runHarness({
+        source: functions,
+        markerState,
+        body: `
+${stubs}
+if ${action}; then
+  printf '%s\\n' success >"$OUTCOME"
+else
+  printf '%s\\n' rejected >"$OUTCOME"
+fi
+`,
+      });
+      assert.equal(observed.result.status, 0, `${path}/${markerState}: ${observed.result.stderr}`);
+      assert.equal(observed.outcome, markerState === 'generic' ? 'success' : 'rejected');
+      if (markerState === 'generic') {
+        assert.deepEqual(observed.marker, { kind: 'file', mode: 0o600, value: safe });
+      }
+    }
+  }
+
+  const incompleteResetInventory = runHarness({
+    source: functionRegion(
+      'scripts/combo-dev-reset.sh',
+      'write_writers_fence() {',
+      'apply_foundation_replicas() {',
+    ),
+    markerState: 'generic',
+    body: `
+forwarders_stopped() { return 0; }
+verify_all_writers_zero() { return 0; }
+verify_complete_writer_inventory_zero() { return 1; }
+if finish_reset_safe_idle_fence; then
+  printf 'accepted\\n' >"$OUTCOME"
+else
+  printf 'rejected\\n' >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(incompleteResetInventory.result.status, 0, incompleteResetInventory.result.stderr);
+  assert.equal(incompleteResetInventory.outcome, 'rejected');
+  assert.deepEqual(incompleteResetInventory.marker, {
+    kind: 'file',
+    mode: 0o600,
+    value: generic,
+  });
+
+  const resetFunctions = functionRegion(
+    'scripts/combo-dev-reset.sh',
+    'write_writers_fence() {',
+    'apply_foundation_replicas() {',
+  );
+  const resetProofCleanup = runHarness({
+    source: resetFunctions,
+    markerState: 'generic',
+    body: `
+RESET_PROOF_ROOT="$STATE_DIR"
+WORK="$STATE_DIR/work"
+mkdir "$WORK"
+printf '{}\\n' >"$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.20.3.json"
+printf '{}\\n' >"$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.20.3.consumed.json"
+if remove_all_reset_proofs; then
+  printf 'deleted\\n' >"$OUTCOME"
+else
+  printf 'retained\\n' >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(resetProofCleanup.result.status, 0, resetProofCleanup.result.stderr);
+  assert.equal(resetProofCleanup.outcome, 'deleted');
+
+  const resetProofEpochReplacement = runHarness({
+    source: resetFunctions,
+    markerState: 'generic',
+    body: `
+RESET_PROOF_ROOT="$STATE_DIR"
+WORK="$STATE_DIR/work"
+mkdir "$WORK"
+old_proof="$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.json"
+old_consumed="$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.consumed.json"
+new_proof="$STATE_DIR/reset-proof.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.20.2.json"
+printf '{}\\n' >"$old_proof"
+printf '{}\\n' >"$old_consumed"
+if remove_all_reset_proofs; then
+  printf '{}\\n' >"$new_proof"
+fi
+if [[ ! -e "$old_proof" && ! -L "$old_proof" &&
+  ! -e "$old_consumed" && ! -L "$old_consumed" && -f "$new_proof" ]]; then
+  printf 'replaced\\n' >"$OUTCOME"
+else
+  printf 'replayable\\n' >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(
+    resetProofEpochReplacement.result.status,
+    0,
+    resetProofEpochReplacement.result.stderr,
+  );
+  assert.equal(resetProofEpochReplacement.outcome, 'replaced');
+
+  for (const [name, setup] of [
+    [
+      'symlink',
+      `printf '{}\\n' >"$STATE_DIR/proof-target"\nln -s "$STATE_DIR/proof-target" "$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.json"`,
+    ],
+    [
+      'directory',
+      `mkdir "$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.json"`,
+    ],
+    ['invalid-name', `printf '{}\\n' >"$STATE_DIR/reset-proof.invalid.json"`],
+    [
+      'wrong-mode',
+      `printf '{}\\n' >"$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.json"\nchmod 0644 "$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.json"`,
+    ],
+  ]) {
+    const observed = runHarness({
+      source: resetFunctions,
+      markerState: 'generic',
+      body: `
+RESET_PROOF_ROOT="$STATE_DIR"
+WORK="$STATE_DIR/work"
+mkdir "$WORK"
+${setup}
+if remove_all_reset_proofs; then
+  printf 'accepted\\n' >"$OUTCOME"
+else
+  printf 'rejected\\n' >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, 'rejected', name);
+  }
+
+  const resetCleanup = sandboxSource(
+    text('scripts/combo-dev-reset.sh').slice(
+      text('scripts/combo-dev-reset.sh').indexOf('cleanup() {'),
+      text('scripts/combo-dev-reset.sh').indexOf('trap cleanup EXIT'),
+    ),
+  );
+  const invalidProofBlocksRecovery = runHarness({
+    source: `${resetFunctions}\n${resetCleanup}`,
+    markerState: 'generic',
+    body: `
+RESET_PROOF_ROOT="$STATE_DIR"
+WORK="$STATE_DIR/work"
+mkdir "$WORK"
+mkdir "$STATE_DIR/reset-proof.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.10.1.json"
+MUTATING=1
+SUCCESS=0
+stop_forwarders() { return 0; }
+fence_all_writers() { return 0; }
+verify_complete_writer_inventory_zero() { return 0; }
+record_failed_attempt_capability() { printf 'capability\\n' >"$OUTCOME"; return 0; }
+status() { :; }
+cleanup
+`,
+  });
+  assert.equal(
+    invalidProofBlocksRecovery.result.status,
+    0,
+    invalidProofBlocksRecovery.result.stderr,
+  );
+  assert.equal(invalidProofBlocksRecovery.outcome, '');
+
+  const bootstrapProofCleanup = functionRegion(
+    'scripts/combo-dev-bootstrap.sh',
+    'remove_all_reset_proofs() {',
+    'fence_all_writers_admin() {',
+  ).trim();
+  const resetProofCleanupFunction = functionRegion(
+    'scripts/combo-dev-reset.sh',
+    'remove_all_reset_proofs() {',
+    'write_private_attempt_marker() {',
+  ).trim();
+  assert.equal(bootstrapProofCleanup, resetProofCleanupFunction);
+  const bootstrapSource = text('scripts/combo-dev-bootstrap.sh');
+  const bootstrapMain = bootstrapSource.slice(bootstrapSource.indexOf('main() {'));
+  assert.ok(
+    bootstrapMain.indexOf('remove_all_reset_proofs') <
+      bootstrapMain.indexOf('mark_safe_idle_fence'),
+  );
+  const resetSource = text('scripts/combo-dev-reset.sh');
+  const resetMain = resetSource.slice(resetSource.indexOf('main() {'));
+  const beginMutation = resetMain.indexOf('begin_reset_mutation_fence');
+  const firstProofPurge = resetMain.indexOf('remove_all_reset_proofs', beginMutation);
+  const secondProofPurge = resetMain.indexOf('remove_all_reset_proofs', firstProofPurge + 1);
+  const writeProof = resetMain.indexOf('write_reset_proof', secondProofPurge);
+  assert.ok(beginMutation < firstProofPurge && firstProofPurge < secondProofPurge);
+  assert.ok(secondProofPurge < writeProof);
+
+  const rejectedResetPreservesProof = runHarness({
+    source: resetFunctions,
+    markerState: 'generic',
+    body: `
+ATTEMPT_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ATTEMPT_RUN_ID=20
+ATTEMPT_RUN_ATTEMPT=3
+RESET_PROOF="$STATE_DIR/reset-proof.$ATTEMPT_REVISION.$ATTEMPT_RUN_ID.$ATTEMPT_RUN_ATTEMPT.json"
+CONSUMED_RESET_PROOF="$STATE_DIR/reset-proof.$ATTEMPT_REVISION.$ATTEMPT_RUN_ID.$ATTEMPT_RUN_ATTEMPT.consumed.json"
+printf '{}\\n' >"$RESET_PROOF"
+printf 'system\\n' >"$EXTERNAL_FENCE_MARKER"
+if begin_reset_mutation_fence "$ATTEMPT_REVISION" "$ATTEMPT_RUN_ID" "$ATTEMPT_RUN_ATTEMPT"; then
+  printf 'accepted\\n' >"$OUTCOME"
+elif [[ -f "$RESET_PROOF" && "$MUTATING" == 0 ]]; then
+  printf 'preserved\\n' >"$OUTCOME"
+else
+  printf 'lost\\n' >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(
+    rejectedResetPreservesProof.result.status,
+    0,
+    rejectedResetPreservesProof.result.stderr,
+  );
+  assert.equal(rejectedResetPreservesProof.outcome, 'preserved');
+
+  const zeroController = (kind) => ({
+    kind,
+    spec: { replicas: 0 },
+    status: { replicas: 0, readyReplicas: 0, availableReplicas: 0 },
+  });
+  for (const [name, items, expected] of [
+    ['empty', [], 'zero'],
+    [
+      'scaled-zero-controllers',
+      [
+        zeroController('Deployment'),
+        zeroController('StatefulSet'),
+        zeroController('ReplicaSet'),
+        zeroController('ReplicationController'),
+        { kind: 'Pod', status: { phase: 'Succeeded', containerStatuses: [] } },
+      ],
+      'zero',
+    ],
+    ['active-replicaset', [{ ...zeroController('ReplicaSet'), spec: { replicas: 1 } }], 'active'],
+    [
+      'active-replication-controller',
+      [{ ...zeroController('ReplicationController'), status: { replicas: 1 } }],
+      'active',
+    ],
+    ['hpa', [{ kind: 'HorizontalPodAutoscaler' }], 'active'],
+    ['daemonset', [{ kind: 'DaemonSet' }], 'active'],
+    ['job', [{ kind: 'Job' }], 'active'],
+    [
+      'running-pod',
+      [
+        {
+          kind: 'Pod',
+          status: { phase: 'Running', containerStatuses: [{ state: { running: {} } }] },
+        },
+      ],
+      'active',
+    ],
+  ]) {
+    const observed = runHarness({
+      source: resetFunctions,
+      markerState: 'generic',
+      environment: { INVENTORY_JSON: JSON.stringify({ apiVersion: 'v1', kind: 'List', items }) },
+      body: `
+fake_kubectl() { printf '%s\\n' "$INVENTORY_JSON"; }
+timeout() { shift; "$@"; }
+K=(fake_kubectl)
+NAMESPACE=combo-preview
+WORK=$(dirname "$STATE_DIR")
+if verify_complete_writer_inventory_zero; then
+  printf 'zero\\n' >"$OUTCOME"
+else
+  printf 'active\\n' >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, expected, name);
+  }
+  for (const markerState of ['absent', 'safe', 'generic', 'unknown', 'wrong-mode', 'symlink']) {
+    const observed = runHarness({
+      source: resetFunctions,
+      markerState,
+      body: `
+if begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3; then
+  printf 'success:%s\\n' "$MUTATING" >"$OUTCOME"
+else
+  printf 'rejected:%s\\n' "$MUTATING" >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${markerState}: ${observed.result.stderr}`);
+    const accepted = markerState === 'absent' || markerState === 'safe';
+    assert.equal(observed.outcome, accepted ? 'success:1' : 'rejected:0');
+    if (accepted) {
+      assert.deepEqual(observed.marker, { kind: 'file', mode: 0o600, value: generic });
+    }
+  }
+
+  const oldRevision = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const exactRecovery = runHarness({
+    source: resetFunctions,
+    markerState: 'generic',
+    body: `
+forwarders_stopped() { return 0; }
+verify_complete_writer_inventory_zero() { return 0; }
+printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"
+chmod 0600 "$EXTERNAL_FENCE_MARKER" "$ACCEPTANCE_PENDING_MARKER"
+if begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3; then
+  printf 'success:%s:%s\\n' "$MUTATING" "$RECOVERED_FROM_ATTEMPT" >"$OUTCOME"
+else
+  printf 'rejected:%s\\n' "$MUTATING" >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(exactRecovery.result.status, 0, exactRecovery.result.stderr);
+  assert.equal(exactRecovery.outcome, `success:1:${oldRevision} 10 2`);
+  assert.deepEqual(exactRecovery.marker, { kind: 'file', mode: 0o600, value: generic });
+  assert.deepEqual(exactRecovery.external, { kind: 'absent' });
+  assert.deepEqual(exactRecovery.pending, { kind: 'absent' });
+
+  const repeatedFailureRecovery = runHarness({
+    source: resetFunctions,
+    markerState: 'generic',
+    body: `
+forwarders_stopped() { return 0; }
+verify_complete_writer_inventory_zero() { return 0; }
+ATTEMPT_REVISION=${oldRevision}
+ATTEMPT_RUN_ID=10
+ATTEMPT_RUN_ATTEMPT=2
+record_failed_attempt_capability
+MUTATING=0
+begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3
+first_recovery=$RECOVERED_FROM_ATTEMPT
+ATTEMPT_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+ATTEMPT_RUN_ID=20
+ATTEMPT_RUN_ATTEMPT=3
+record_failed_attempt_capability
+MUTATING=0
+begin_reset_mutation_fence cccccccccccccccccccccccccccccccccccccccc 30 4
+printf '%s|%s\\n' "$first_recovery" "$RECOVERED_FROM_ATTEMPT" >"$OUTCOME"
+`,
+  });
+  assert.equal(repeatedFailureRecovery.result.status, 0, repeatedFailureRecovery.result.stderr);
+  assert.equal(
+    repeatedFailureRecovery.outcome,
+    `${oldRevision} 10 2|aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3`,
+  );
+  assert.deepEqual(repeatedFailureRecovery.external, { kind: 'absent' });
+  assert.deepEqual(repeatedFailureRecovery.pending, { kind: 'absent' });
+
+  for (const [name, setup] of [
+    [
+      'same-current-attempt',
+      `printf 'attempt aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3\\n' >"$EXTERNAL_FENCE_MARKER"
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+    ],
+    [
+      'system',
+      `printf 'system\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+    ],
+    [
+      'identity-mismatch',
+      `printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 3 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+    ],
+    ['missing-pending', `printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"`],
+    [
+      'wrong-mode',
+      `printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"
+chmod 0644 "$EXTERNAL_FENCE_MARKER"`,
+    ],
+    [
+      'external-extra-newline',
+      `printf 'attempt ${oldRevision} 10 2\\n\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+    ],
+    [
+      'pending-extra-newline',
+      `printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 2 9999999999\\n\\n' >"$ACCEPTANCE_PENDING_MARKER"`,
+    ],
+  ]) {
+    const observed = runHarness({
+      source: resetFunctions,
+      markerState: 'generic',
+      body: `
+forwarders_stopped() { return 0; }
+verify_complete_writer_inventory_zero() { return 0; }
+${setup}
+if begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3; then
+  printf 'success:%s\\n' "$MUTATING" >"$OUTCOME"
+else
+  printf 'rejected:%s\\n' "$MUTATING" >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, `${name}: ${observed.result.stderr}`);
+    assert.equal(observed.outcome, 'rejected:0', name);
+    assert.deepEqual(observed.marker, { kind: 'file', mode: 0o600, value: generic });
+    assert.notDeepEqual(observed.external, { kind: 'absent' }, name);
+  }
+
+  for (const environment of [{ WRITER_ACTIVE: '1' }, { FORWARDER_ACTIVE: '1' }]) {
+    const observed = runHarness({
+      source: resetFunctions,
+      markerState: 'generic',
+      environment,
+      body: `
+forwarders_stopped() { [[ "\${FORWARDER_ACTIVE:-0}" == 0 ]]; }
+verify_complete_writer_inventory_zero() { [[ "\${WRITER_ACTIVE:-0}" == 0 ]]; }
+printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"
+printf '${oldRevision} 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"
+chmod 0600 "$EXTERNAL_FENCE_MARKER" "$ACCEPTANCE_PENDING_MARKER"
+if begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3; then
+  printf 'success:%s\\n' "$MUTATING" >"$OUTCOME"
+else
+  printf 'rejected:%s\\n' "$MUTATING" >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, observed.result.stderr);
+    assert.equal(observed.outcome, 'rejected:0');
+    assert.deepEqual(observed.marker, { kind: 'file', mode: 0o600, value: generic });
+    assert.notDeepEqual(observed.external, { kind: 'absent' });
+    assert.notDeepEqual(observed.pending, { kind: 'absent' });
+  }
+
+  const blockedByExternal = runHarness({
+    source: resetFunctions,
+    markerState: 'safe',
+    externalSymlink: true,
+    body: `
+if begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3; then
+  printf 'success:%s\\n' "$MUTATING" >"$OUTCOME"
+else
+  printf 'rejected:%s\\n' "$MUTATING" >"$OUTCOME"
+fi
+`,
+  });
+  assert.equal(blockedByExternal.result.status, 0, blockedByExternal.result.stderr);
+  assert.equal(blockedByExternal.outcome, 'rejected:0');
+  assert.deepEqual(blockedByExternal.marker, { kind: 'file', mode: 0o600, value: safe });
+  assert.equal(blockedByExternal.victim, 'victim-must-not-change');
+
+  const interruptedReset = runHarness({
+    source: resetFunctions,
+    markerState: 'safe',
+    body: `
+mark_failure_fence() { kill -TERM "$$"; }
+trap 'printf "%s\\n" "$MUTATING" >"$OUTCOME"; exit 143' TERM
+begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3
+`,
+  });
+  assert.equal(interruptedReset.result.status, 143);
+  assert.equal(interruptedReset.outcome, '1');
+  assert.deepEqual(interruptedReset.marker, { kind: 'file', mode: 0o600, value: safe });
+
+  for (const environment of [{ WRITER_ACTIVE: '1' }, { FORWARDER_ACTIVE: '1' }]) {
+    const observed = runHarness({
+      source: resetFunctions,
+      markerState: 'generic',
+      environment,
+      body: `
+forwarders_stopped() { [[ "\${FORWARDER_ACTIVE:-0}" == 0 ]]; }
+verify_all_writers_zero() { [[ "\${WRITER_ACTIVE:-0}" == 0 ]]; }
+if finish_reset_safe_idle_fence; then
+  printf '%s\\n' success >"$OUTCOME"
+else
+  printf '%s\\n' rejected >"$OUTCOME"
+fi
+`,
+    });
+    assert.equal(observed.result.status, 0, observed.result.stderr);
+    assert.equal(observed.outcome, 'rejected');
+    assert.deepEqual(observed.marker, { kind: 'file', mode: 0o600, value: generic });
+  }
+});
+
 test('post-deploy acceptance is TTL-bound and failure fencing cannot mint a replay proof', () => {
   const workflow = text('.github/workflows/combo-dev.yml');
   const deploy = text('scripts/combo-dev-deploy.sh');
@@ -2716,20 +3763,19 @@ test('post-deploy acceptance is TTL-bound and failure fencing cannot mint a repl
   const guard = text('scripts/combo-dev-storage-guard.sh');
 
   assert.match(deploy, /ACCEPTANCE_PENDING_SECONDS=7200/);
-  assert.match(
-    deploy,
-    /consume_reset_proof[\s\S]*clear_stale_acceptance_state "\$revision" "\$workflow_run_id" "\$workflow_run_attempt"/,
+  assert.match(deploy, /claim_safe_idle_fence[\s\S]*consume_reset_proof/);
+  const proofConsumption = deploy.slice(
+    deploy.indexOf('consume_reset_proof() {'),
+    deploy.indexOf('validate_cluster_platform_live() {'),
   );
-  const staleState = deploy.slice(
-    deploy.indexOf('clear_stale_acceptance_state() {'),
-    deploy.indexOf('apply_foundation_replicas() {'),
+  assert.ok(
+    proofConsumption.indexOf('writers_fence_has_value "$FAILURE_FENCE_VALUE"') <
+      proofConsumption.indexOf('mv -T -- "$RESET_PROOF"'),
   );
-  assert.match(staleState, /flock -w 300 8/);
-  assert.match(
-    staleState,
-    /"attempt \$revision \$workflow_run_id \$workflow_run_attempt"[\s\S]*return 2/,
+  assert.ok(
+    proofConsumption.indexOf('! -e "$EXTERNAL_FENCE_MARKER"') <
+      proofConsumption.indexOf('mv -T -- "$RESET_PROOF"'),
   );
-  assert.match(staleState, /\^attempt\\ \[0-9a-f\]\{40\}/);
   assert.match(
     deploy,
     /flock -w 300 8[\s\S]*\[\[ ! -e "\$EXTERNAL_FENCE_MARKER" && ! -L "\$EXTERNAL_FENCE_MARKER" \]\][\s\S]*write_acceptance_pending[\s\S]*rm -f -- "\$FAILURE_FENCE_MARKER"/,
@@ -2737,10 +3783,13 @@ test('post-deploy acceptance is TTL-bound and failure fencing cannot mint a repl
   assert.match(guard, /--fence-attempt\)/);
   assert.match(guard, /fence_now '受控 Test 后置验收未完成' 0 0/);
   assert.match(guard, /mark_failure_fence[\s\S]*mark_external_fence/);
-  assert.match(guard, /existing_attempt_fence_identity\(\)[\s\S]*\^attempt\\ \[0-9a-f\]\{40\}/);
   assert.match(
     guard,
-    /fence_now\(\)[\s\S]*flock -w 300 8[\s\S]*identity" == preserve-attempt[\s\S]*existing_attempt_fence_identity/,
+    /recoverable_attempt_fence_identity\(\)[\s\S]*\^attempt\\ \[0-9a-f\]\{40\}[\s\S]*ACCEPTANCE_PENDING_MARKER/,
+  );
+  assert.match(
+    guard,
+    /fence_now\(\)[\s\S]*flock -w 300 8[\s\S]*identity" == preserve-attempt[\s\S]*recoverable_attempt_fence_identity/,
   );
   assert.match(
     guard,
@@ -2755,7 +3804,8 @@ test('post-deploy acceptance is TTL-bound and failure fencing cannot mint a repl
     /complete_acceptance[\s\S]*marker_run_id[\s\S]*marker_run_attempt[\s\S]*rm -f -- "\$ACCEPTANCE_PENDING_MARKER"/,
   );
   assert.doesNotMatch(guard, /reset-proof|RESET_PROOF|wipe_static_volume_data/);
-  assert.doesNotMatch(reset, /EXTERNAL_FENCE_MARKER|ACCEPTANCE_PENDING_MARKER/);
+  assert.match(reset, /begin_reset_mutation_fence/);
+  assert.match(reset, /finish_reset_safe_idle_fence/);
   const failureFence = workflow.slice(
     workflow.indexOf('Fence Test after post-deploy acceptance failure'),
     workflow.indexOf('Remove transient runner and upload files'),
@@ -2882,15 +3932,61 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
     guard.indexOf('fence_now_locked() {'),
     guard.indexOf('fence_now() {'),
   );
-  assert.ok(fenceBody.indexOf('stop_forwarders') < fenceBody.indexOf('mark_failure_fence'));
+  const persistenceBody = guard.slice(
+    guard.indexOf('persist_fences_and_stop_forwarders() {'),
+    guard.indexOf('fencer_resource_exists() {'),
+  );
   assert.ok(
-    fenceBody.indexOf('mark_failure_fence') <
+    persistenceBody.indexOf('mark_failure_fence') < persistenceBody.indexOf('mark_external_fence'),
+  );
+  assert.ok(
+    persistenceBody.indexOf('mark_external_fence') < persistenceBody.indexOf('systemctl stop'),
+  );
+  assert.ok(
+    fenceBody.indexOf('persist_fences_and_stop_forwarders "$identity" || failed=1') <
       fenceBody.indexOf('credential_certificate_valid_for "$FENCER_KUBECONFIG"'),
   );
   assert.ok(
     fenceBody.indexOf('credential_certificate_valid_for "$FENCER_KUBECONFIG"') <
       fenceBody.indexOf('fence_writers_with_minimal_credential'),
   );
+  assert.ok(
+    fenceBody.indexOf('fence_writers_with_minimal_credential') <
+      fenceBody.indexOf('verify_complete_writer_inventory_zero'),
+  );
+
+  for (const [name, persistResult, inventoryResult] of [
+    ['host-side-failure-still-fences-kubernetes', '1', '0'],
+    ['unexpected-writer-prevents-pass', '0', '1'],
+  ]) {
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `
+set -u
+FENCER_KUBECONFIG=/unused
+FENCER_OPERATION_MIN_SECONDS=1
+LOW_MARKER=/unused
+persist_fences_and_stop_forwarders() { printf 'persist\\n'; return "$PERSIST_RESULT"; }
+credential_certificate_valid_for() { return 0; }
+fencer_access_valid() { return 0; }
+fence_writers_with_minimal_credential() { printf 'fencer\\n'; return 0; }
+verify_complete_writer_inventory_zero() { printf 'inventory\\n'; return "$INVENTORY_RESULT"; }
+fail() { printf 'fail\\n'; exit 97; }
+status() { printf 'pass\\n'; }
+${fenceBody}
+fence_now_locked reason 0 0 system
+`,
+      ],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PERSIST_RESULT: persistResult, INVENTORY_RESULT: inventoryResult },
+      },
+    );
+    assert.equal(result.status, 97, `${name}: ${result.stderr}`);
+    assert.equal(result.stdout, 'persist\nfencer\ninventory\nfail\n', name);
+  }
   for (const message of ['调度凭据缺失、损坏或进入预到期窗口', '调度凭据已失效或权限发生漂移']) {
     assert.ok(guard.includes(message));
   }
@@ -3309,7 +4405,7 @@ test('Test prunes only stale Web and release metadata after proving every live r
   assert.ok(prune.indexOf('live_refs=$(') < prune.indexOf('listed=$('));
   assert.ok(prune.indexOf('stale_json=$(') < prune.indexOf('delete "configmap/$name"'));
 
-  const flow = deploy.slice(deploy.indexOf('  MUTATING=1'));
+  const flow = deploy.slice(deploy.indexOf('\nmain() {'));
   assert.ok(flow.indexOf('wait_apps ') < flow.indexOf('prune_stale_configs'));
   assert.ok(
     flow.indexOf('prune_stale_configs') <
@@ -3564,9 +4660,12 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     workflow,
     /git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
   );
-  const firstMutation = workflow.indexOf("printf 'mutation_started=true");
-  const finalControllerCheck = workflow.lastIndexOf('git/ref/heads/main', firstMutation);
+  const deploymentCompleted = workflow.indexOf("printf 'deployment_completed=true");
+  const finalControllerCheck = workflow.lastIndexOf('git/ref/heads/main', deploymentCompleted);
   assert.ok(finalControllerCheck > workflow.indexOf('Upload the fixed bundle'));
+  assert.ok(finalControllerCheck < workflow.indexOf('sudo /opt/combo-dev/bin/combo-dev-reset'));
+  assert.ok(workflow.indexOf('sudo /opt/combo-dev/bin/combo-dev-deploy') < deploymentCompleted);
+  assert.doesNotMatch(workflow, /mutation_started/);
   assert.match(workflow, /\.run_attempt == \$runAttempt/);
   assert.match(workflow, /\.digest == \$digest/);
   assert.match(
@@ -3645,7 +4744,7 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.doesNotMatch(workflow, /flock -w [0-9]+ 9/);
   assert.match(
     workflow,
-    /revalidate_test_authority[\s\S]*printf 'mutation_started=true[\s\S]*mv -fT -- "\$temporary" "\$remote"[\s\S]*revalidate_test_authority[\s\S]*flock -n 9/,
+    /revalidate_test_authority[\s\S]*mv -fT -- "\$temporary" "\$remote"[\s\S]*revalidate_test_authority[\s\S]*flock -n 9[\s\S]*combo-dev-reset[\s\S]*combo-dev-deploy[\s\S]*printf 'deployment_completed=true/,
   );
   assert.match(
     workflow,
@@ -4055,21 +5154,24 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   const uploadStep = workflow.indexOf(
     'Upload the fixed bundle and invoke the root-owned dispatcher',
   );
-  const mutationMarker = workflow.indexOf("printf 'mutation_started=true");
+  const deploymentCompleted = workflow.indexOf("printf 'deployment_completed=true");
   const destructiveReset = workflow.indexOf('--confirm=DESTROY-COMBO-PREVIEW-DATA');
+  const deployCall = workflow.indexOf('sudo /opt/combo-dev/bin/combo-dev-deploy');
   const capacityCall = workflow.indexOf('--prepare-capacity', prepareStep);
   assert.ok(
     prepareStep > 0 &&
       capacityCall > prepareStep &&
       uploadStep > capacityCall &&
-      mutationMarker > uploadStep,
+      destructiveReset > uploadStep &&
+      deployCall > destructiveReset &&
+      deploymentCompleted > deployCall,
   );
-  assert.ok(destructiveReset > mutationMarker);
   assert.match(
     workflow.slice(prepareStep, uploadStep),
     /archive_bytes=\$\(stat -c '%s' "\$ARCHIVE"\)[\s\S]*archive_bytes <= 512 \* 1024 \* 1024[\s\S]*combo-dev-reset[\s\\\n]*--prepare-capacity[\s\\\n]*--incoming-bytes "\$archive_bytes"/,
   );
-  assert.doesNotMatch(workflow.slice(prepareStep, uploadStep), /mutation_started|scp|rm -rf/);
+  assert.doesNotMatch(workflow.slice(prepareStep, uploadStep), /deployment_completed|scp|rm -rf/);
+  assert.doesNotMatch(workflow, /mutation_started/);
 
   const cleanup = reset.slice(
     reset.indexOf('plan_stale_test_cleanup() {'),
@@ -4135,7 +5237,12 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   assert.ok(
     capacityRecheck < mainBody.lastIndexOf('WORK=$(mktemp -d "$CONTROL_WORK/reset.XXXXXX")'),
   );
-  assert.ok(capacityRecheck < mainBody.indexOf('MUTATING=1'));
+  assert.ok(capacityRecheck < mainBody.indexOf('begin_reset_mutation_fence'));
+  const resetAdmission = reset.slice(
+    reset.indexOf('begin_reset_mutation_fence() {'),
+    reset.indexOf('finish_reset_safe_idle_fence() {'),
+  );
+  assert.ok(resetAdmission.indexOf('MUTATING=1') < resetAdmission.indexOf('mark_failure_fence'));
 
   for (const control of [bootstrap, deploy])
     assert.match(control, /infra\/host\/combo-dev\/combo-host-syslog/);
