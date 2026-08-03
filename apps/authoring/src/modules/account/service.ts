@@ -31,11 +31,18 @@ export interface AccountAuthDependencies {
   randomId?: () => string;
 }
 
+export type ChallengeDependencyStage =
+  | 'auth_configuration'
+  | 'redis_rate_limit'
+  | 'challenge_insert'
+  | 'resend_delivery'
+  | 'challenge_finalize';
+
 export type ChallengeServiceResult =
   | { kind: 'accepted' }
   | { kind: 'invalid_input' }
   | { kind: 'rate_limited'; retryAfterSeconds: number }
-  | { kind: 'dependency_unavailable' };
+  | { kind: 'dependency_unavailable'; dependencyStage: ChallengeDependencyStage };
 
 function dependenciesReady(deps: AccountAuthDependencies): boolean {
   return deps.hmacSecret.length >= 32;
@@ -48,7 +55,9 @@ export async function requestEmailChallenge(
 ): Promise<ChallengeServiceResult> {
   const email = normalizeEmailAddress(input.email);
   if (!email) return { kind: 'invalid_input' };
-  if (!dependenciesReady(deps)) return { kind: 'dependency_unavailable' };
+  if (!dependenciesReady(deps)) {
+    return { kind: 'dependency_unavailable', dependencyStage: 'auth_configuration' };
+  }
 
   const targetDigest = digestEmailTarget(deps.hmacSecret, email);
   const clientDigest = digestClientAddress(deps.hmacSecret, input.clientAddress);
@@ -63,7 +72,7 @@ export async function requestEmailChallenge(
     }
   } catch {
     // 新 challenge 在 Redis 软窗口不可用时失败关闭，避免按轮换目标绕过客户端限流。
-    return { kind: 'dependency_unavailable' };
+    return { kind: 'dependency_unavailable', dependencyStage: 'redis_rate_limit' };
   }
 
   const code = generateEmailOtp(deps.randomInteger ?? randomInt);
@@ -78,7 +87,7 @@ export async function requestEmailChallenge(
     });
     if (inserted.kind === 'rate_limited') return inserted;
   } catch {
-    return { kind: 'dependency_unavailable' };
+    return { kind: 'dependency_unavailable', dependencyStage: 'challenge_insert' };
   }
 
   let delivery: ResendDeliveryResult;
@@ -95,13 +104,13 @@ export async function requestEmailChallenge(
       traceId: input.traceId,
     });
   } catch {
-    return { kind: 'dependency_unavailable' };
+    return { kind: 'dependency_unavailable', dependencyStage: 'challenge_finalize' };
   }
 
   if (delivery === 'accepted' || delivery === 'permanent_rejection') {
     return { kind: 'accepted' };
   }
-  return { kind: 'dependency_unavailable' };
+  return { kind: 'dependency_unavailable', dependencyStage: 'resend_delivery' };
 }
 
 export type VerificationServiceResult =

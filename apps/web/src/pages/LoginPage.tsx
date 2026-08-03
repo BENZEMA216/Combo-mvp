@@ -96,6 +96,7 @@ export function LoginPage({
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [challengeError, setChallengeError] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [liveMessage, setLiveMessage] = useState('正在确认登录状态。');
   const [sendingMode, setSendingMode] = useState<ChallengeMode>('initial');
@@ -225,6 +226,7 @@ export function LoginPage({
   const sendChallenge = async (mode: ChallengeMode): Promise<void> => {
     const parsedEmail = EmailAddressInputSchema.safeParse(email);
     if (!parsedEmail.success) {
+      setChallengeError(null);
       setEmailError('请输入完整邮箱地址，且不要包含空格。');
       setLiveMessage('邮箱格式需要修改。');
       setState('email');
@@ -235,6 +237,7 @@ export function LoginPage({
     const operationGeneration = ++operationGenerationRef.current;
     setSendingMode(mode);
     setEmailError(null);
+    setChallengeError(null);
     setCodeError(null);
     setLiveMessage(mode === 'resend' ? '正在重新发送验证码。' : '正在发送验证码。');
     setState('sending');
@@ -264,6 +267,14 @@ export function LoginPage({
       }
       if (error.status === 429) {
         enterRateWait(error.retryAfterSeconds, resumeStep);
+        return;
+      }
+      // 首次 challenge 的依赖故障不是“登录失效”：保留邮箱表单和输入，
+      // 让用户既可原地重试，也可直接修改邮箱后重新发送。
+      if (mode === 'initial' && error.status !== 403) {
+        setChallengeError(error.message);
+        setLiveMessage(error.message);
+        setState('email');
         return;
       }
       showDependencyError(
@@ -329,6 +340,7 @@ export function LoginPage({
     setCode('');
     setCodeError(null);
     setEmailError(null);
+    setChallengeError(null);
     setDependencyError(null);
     setResendDeadline(0);
     setLiveMessage('请输入邮箱获取新的登录验证码。');
@@ -351,6 +363,7 @@ export function LoginPage({
     setCode('');
     setCodeError(null);
     setEmailError(null);
+    setChallengeError(null);
     setDependencyError(null);
     setResendDeadline(0);
     setLiveMessage('当前登录已清除，请输入其他邮箱。');
@@ -394,10 +407,17 @@ export function LoginPage({
           required
           disabled={emailPending}
           aria-invalid={emailError ? true : undefined}
-          aria-describedby={emailError ? 'login-email-error' : 'login-email-hint'}
+          aria-describedby={
+            emailError
+              ? 'login-email-error'
+              : challengeError
+                ? 'login-email-hint login-challenge-error'
+                : 'login-email-hint'
+          }
           onChange={(event) => {
             setEmail(event.target.value);
             setEmailError(null);
+            setChallengeError(null);
           }}
         />
         {emailError ? (
@@ -409,6 +429,11 @@ export function LoginPage({
             我们会向这个地址发送一枚六位验证码。
           </p>
         )}
+        {challengeError ? (
+          <p id="login-challenge-error" className="cb-login__field-error" role="alert">
+            {challengeError}
+          </p>
+        ) : null}
       </div>
       <button
         type="submit"
@@ -416,7 +441,7 @@ export function LoginPage({
         disabled={emailPending}
         aria-busy={emailPending}
       >
-        {emailPending ? '正在发送…' : '发送验证码'}
+        {emailPending ? '正在发送…' : challengeError ? '重试发送' : '发送验证码'}
       </button>
       <p className="cb-login__privacy">邮箱仅用于建号、登录和必要的账号通知。</p>
     </form>

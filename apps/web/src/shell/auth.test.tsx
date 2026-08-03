@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { MeView } from '@cb/shared';
 import { installFetchMock, type FetchMock } from '../test/mockFetch.js';
 import {
@@ -153,18 +153,25 @@ function ProtectedProbe(): ReactElement {
   );
 }
 
-function renderGuard(): QueryClient {
+function LocationProbe(): ReactElement {
+  const location = useLocation();
+  return <output data-testid="route-location">{location.pathname + location.search}</output>;
+}
+
+function renderGuard(initialEntry = '/tasks'): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
   render(
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <MemoryRouter initialEntries={['/tasks']}>
+        <MemoryRouter initialEntries={[initialEntry]}>
           <Routes>
             <Route element={<RequireAuth />}>
-              <Route path="*" element={<ProtectedProbe />} />
+              <Route path="/tasks" element={<ProtectedProbe />} />
+              <Route path="/capabilities" element={<ProtectedProbe />} />
             </Route>
+            <Route path="/login" element={<LocationProbe />} />
           </Routes>
         </MemoryRouter>
       </AuthProvider>
@@ -174,12 +181,24 @@ function renderGuard(): QueryClient {
 }
 
 describe('RequireAuth', () => {
-  it('shows the login gate only for an explicit 401', async () => {
+  it('replaces an explicit 401 with the login route and preserves the protected path', async () => {
     fetchMock = installFetchMock({ status: 401, json: {} });
     renderGuard();
 
-    expect(await screen.findByText('请先登录后进入创作者中心。')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '去登录' })).toBeInTheDocument();
+    expect(await screen.findByTestId('route-location')).toHaveTextContent(
+      `/login?returnTo=${encodeURIComponent('/tasks')}`,
+    );
+    expect(screen.queryByText('受保护内容')).toBeNull();
+    expect(fetchMock.calls).toHaveLength(1);
+  });
+
+  it('preserves an allowed protected query string in returnTo', async () => {
+    fetchMock = installFetchMock({ status: 401, json: {} });
+    renderGuard('/capabilities?filter=draft&sort=updated');
+
+    expect(await screen.findByTestId('route-location')).toHaveTextContent(
+      `/login?returnTo=${encodeURIComponent('/capabilities?filter=draft&sort=updated')}`,
+    );
     expect(fetchMock.calls).toHaveLength(1);
   });
 
@@ -192,6 +211,7 @@ describe('RequireAuth', () => {
     ).toBeInTheDocument();
     expect(screen.queryByText('受保护内容')).toBeNull();
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
+    expect(screen.queryByTestId('route-location')).toBeNull();
   });
 
   it('shows a manual retry for dependency failure, not a login redirect', async () => {
@@ -203,6 +223,7 @@ describe('RequireAuth', () => {
 
     expect(await screen.findByText('暂时无法确认登录状态，请稍后重试。')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '去登录' })).toBeNull();
+    expect(screen.queryByTestId('route-location')).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: '重试' }));
     expect(await screen.findByText('受保护内容')).toBeInTheDocument();
   });
