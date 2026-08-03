@@ -2,8 +2,8 @@
 Description=Continuously check combo-dev bounded storage headroom
 
 [Timer]
-OnBootSec=1min
-OnUnitActiveSec=1min
+OnActiveSec=1min
+OnUnitInactiveSec=1min
 AccuracySec=10s
 Persistent=true
 Unit=combo-dev-storage-guard.service

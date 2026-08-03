@@ -129,6 +129,14 @@ fail() { printf '[combo-dev] FAIL: %s\n' "$1" >&2; exit 1; }
 blocked() { printf '[combo-dev] BLOCKED: %s\n' "$1" >&2; exit 2; }
 require_command() { command -v "$1" >/dev/null 2>&1 || blocked "缺少主机工具：$1"; }
 
+storage_guard_timer_ready() {
+  local next
+  [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || return 1
+  [[ $(timeout 10 systemctl is-active combo-dev-storage-guard.timer 2>/dev/null || true) == active ]] || return 1
+  next=$(timeout 10 systemctl show combo-dev-storage-guard.timer -p NextElapseUSecMonotonic --value 2>/dev/null) || return 1
+  [[ -n "$next" && "$next" != 0 && "$next" != infinity ]]
+}
+
 cleanup() {
   local rc=$?
   set +e
@@ -416,8 +424,8 @@ host_preflight() {
   verify_k3s_mount_dependencies || blocked 'k3s 必须只依赖生产父数据盘，不能依赖开发挂载或其任何子路径。'
   dispatcher_certificate_valid_for "$DISPATCHER_OPERATION_MIN_SECONDS" || blocked '调度证书不足以覆盖最长部署操作。'
   dispatcher_certificate_valid_for "$DISPATCHER_FENCE_BEFORE_SECONDS" || blocked '调度证书已进入预到期失败收敛窗口，必须重新 bootstrap。'
-  [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || blocked '持续存储守卫未启用。'
   timeout 180 systemctl start combo-dev-storage-guard.service >/dev/null 2>&1 || blocked '持续守卫无法证明两套凭据与失败收敛路径健康。'
+  storage_guard_timer_ready || blocked '持续存储守卫未启用、未激活或没有下一次检查。'
   assert_storage_headroom
   assert_control_state_headroom
   assert_host_capacity
