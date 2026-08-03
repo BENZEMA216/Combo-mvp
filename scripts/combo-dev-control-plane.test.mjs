@@ -4463,6 +4463,46 @@ test('Test releases commit inside canonical staging and pruning never crosses pr
   assert.doesNotMatch(resetCleanup, /rm[^\n]*(?:\.staging|\/work|\/evidence)/);
 });
 
+test('control-state source-root verification succeeds when no nested mounts exist', () => {
+  const source = text('infra/host/combo-dev/combo-dev-prepare-control-state.sh');
+  const functionStart = source.indexOf('verify_source_roots() {');
+  const functionEnd = source.indexOf('\n}\n\nassert_no_open_incoming()', functionStart);
+  assert.ok(functionStart >= 0 && functionEnd > functionStart);
+  const verifySourceRoots = source.slice(functionStart, functionEnd + 2);
+  const result = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set -Eeuo pipefail
+INCOMING_ROOT=/opt/combo-dev/incoming
+RELEASES_ROOT=/opt/combo-dev/releases
+EVIDENCE_ROOT=/var/lib/combo-dev/evidence
+fail() { printf '%s\\n' "$1" >&2; exit 1; }
+stat() {
+  case "\${*: -1}" in
+    "$INCOMING_ROOT") printf '0:0:1733:directory\\n' ;;
+    "$RELEASES_ROOT"|"$EVIDENCE_ROOT") printf '0:0:755:directory\\n' ;;
+    *) return 1 ;;
+  esac
+}
+findmnt() {
+  if [[ "$*" == '-rn -o TARGET' ]]; then
+    printf '/\\n/home/xingzheng/data\\n'
+    return 0
+  fi
+  return 1
+}
+${verifySourceRoots}
+verify_source_roots
+printf 'verified\\n'
+`,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'verified\n');
+});
+
 test('control-state migration stays owner-gated and excludes unrelated host-runtime work', () => {
   const bootstrap = text('scripts/combo-dev-bootstrap.sh');
   const deploy = text('scripts/combo-dev-deploy.sh');
