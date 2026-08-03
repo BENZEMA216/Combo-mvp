@@ -9,6 +9,7 @@ readonly CONTROL_PARENT='/var/lib/combo-host-data'
 readonly BACKING_FILE='/var/lib/combo-host-data/control-state.img'
 readonly DATA_ANCHOR_CHECK='/opt/combo-dev/bin/combo-host-data-mount-check'
 readonly BACKING_BYTES=4294967296
+readonly FILESYSTEM_LABEL='combo-dev-state'
 readonly DATA_CRITICAL_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
 readonly STATE_MIN_FREE_BYTES=$((1024 * 1024 * 1024))
 readonly STATE_MIN_FREE_INODES=4096
@@ -284,7 +285,7 @@ verify_control_state_mount() {
   [[ $(blockdev --getsize64 "$source") == "$BACKING_BYTES" ]] || fail 'control-state 容量不是精确 4 GiB。'
   fstype=$(findmnt -rn -o FSTYPE --mountpoint "$STATE_ROOT") || fail '无法读取 control-state 文件系统类型。'
   [[ "$fstype" == ext4 ]] || fail 'control-state 不是 ext4。'
-  [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == combo-dev-control-state ]] ||
+  [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == "$FILESYSTEM_LABEL" ]] ||
     fail 'control-state filesystem label 漂移。'
   options=$(findmnt -rn -o OPTIONS --mountpoint "$STATE_ROOT") || fail '无法读取 control-state 挂载选项。'
   for option in rw nodev nosuid noexec; do
@@ -358,14 +359,14 @@ main() {
     fallocate -l "$BACKING_BYTES" "$BACKING_FILE"
     chown root:root "$BACKING_FILE"
     chmod 0600 "$BACKING_FILE"
-    mkfs.ext4 -q -F -m 0 -L combo-dev-control-state "$BACKING_FILE"
+    mkfs.ext4 -q -F -m 0 -L "$FILESYSTEM_LABEL" "$BACKING_FILE"
     image_created=1
   fi
   [[ -f "$BACKING_FILE" && ! -L "$BACKING_FILE" ]] || fail 'control-state backing 不是普通文件。'
   [[ $(stat -c '%u:%g:%a:%s' "$BACKING_FILE") == "0:0:600:$BACKING_BYTES" ]] ||
     fail 'control-state backing 所有者、权限或容量漂移。'
   [[ $(blkid -s TYPE -o value "$BACKING_FILE" 2>/dev/null) == ext4 ]] || fail 'control-state backing 不是 ext4。'
-  [[ $(blkid -s LABEL -o value "$BACKING_FILE" 2>/dev/null) == combo-dev-control-state ]] ||
+  [[ $(blkid -s LABEL -o value "$BACKING_FILE" 2>/dev/null) == "$FILESYSTEM_LABEL" ]] ||
     fail 'control-state filesystem label 漂移。'
   [[ $(findmnt -rn -T "$BACKING_FILE" -o TARGET) == "$CONTROL_PARENT" &&
     $(stat -c '%d' "$BACKING_FILE") == "$data_device" ]] ||
