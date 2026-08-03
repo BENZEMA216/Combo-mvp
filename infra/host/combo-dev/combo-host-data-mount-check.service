@@ -16,7 +16,6 @@ UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/xingzheng/data /var/lib/combo-host-data
 
 [Install]
 WantedBy=multi-user.target
