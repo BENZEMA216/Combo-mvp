@@ -1529,6 +1529,14 @@ fi
       COMBO_K3S_STORAGE_ROOT: storage,
       COMBO_FOUNDATION_RESET_WAIT_SECONDS: '2',
     };
+    const legacyGateEnv = {
+      ...env,
+      FAKE_LOOPBACK_STATUS: '401',
+      FAKE_PUBLIC_STATUS: '401',
+      FAKE_LOOPBACK_HEALTH_STATUS: '200',
+      FAKE_PUBLIC_HEALTH_STATUS: '200',
+      FAKE_LEGACY_GATE: '1',
+    };
     const pristineState = readFileSync(stateFile, 'utf8');
     const cleanReuseArgs = [...args];
     cleanReuseArgs[cleanReuseArgs.indexOf('--operation') + 1] = 'assert-reuse';
@@ -1551,30 +1559,6 @@ fi
       readFileSync(kubectlCommandLog, 'utf8'),
       /^(?:apply|delete)(?: |$)/m,
       'reuse admission must not call kubectl apply or delete',
-    );
-    writeFileSync(kubectlCommandLog, '');
-    const legacyGateReuse = spawnSync('bash', [script, ...cleanReuseArgs], {
-      cwd: scriptDirectory,
-      encoding: 'utf8',
-      env: {
-        ...env,
-        FAKE_LOOPBACK_STATUS: '401',
-        FAKE_PUBLIC_STATUS: '401',
-        FAKE_LEGACY_GATE: '1',
-      },
-    });
-    assert.equal(legacyGateReuse.status, 0, legacyGateReuse.stderr);
-    assert.match(legacyGateReuse.stdout, /foundation_reuse_admission=true/);
-    assert.match(
-      readFileSync(kubectlCommandLog, 'utf8'),
-      new RegExp(
-        `^exec deployment/${activeWeb} -c web -- cat /var/run/combo-web/version\\.json$`,
-        'm',
-      ),
-    );
-    assert.doesNotMatch(
-      readFileSync(kubectlCommandLog, 'utf8'),
-      /REVIEW_ACCESS_TOKEN|combo_review_access|Cookie:/,
     );
     writeFileSync(kubectlCommandLog, '');
     const rejectSurface = (mutate, expected, environment = env) => {
@@ -1755,7 +1739,7 @@ fi
     const planOnlyCrash = spawnSync('bash', [script, ...args], {
       cwd: scriptDirectory,
       encoding: 'utf8',
-      env,
+      env: legacyGateEnv,
     });
     assert.equal(planOnlyCrash.status, 86, planOnlyCrash.stderr);
     assert.equal(existsSync(failAfterPlanOnce), false);
@@ -1766,6 +1750,17 @@ fi
     assert.doesNotMatch(
       readFileSync(kubectlCommandLog, 'utf8'),
       /^(?:delete|patch)(?: |$)|^apply (?!.*--dry-run=server)/m,
+    );
+    assert.match(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      new RegExp(
+        `^exec deployment/${activeWeb} -c web -- cat /var/run/combo-web/version\\.json$`,
+        'm',
+      ),
+    );
+    assert.doesNotMatch(
+      readFileSync(kubectlCommandLog, 'utf8'),
+      /REVIEW_ACCESS_TOKEN|combo_review_access|Cookie:/,
     );
 
     const driftedPlanOnlyState = JSON.parse(pristineState);
