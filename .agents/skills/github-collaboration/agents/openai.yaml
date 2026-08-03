@@ -1,0 +1,7 @@
+interface:
+  display_name: 'GitHub 开源协作'
+  short_description: '执行工作树、拉取请求、评审、合并与交付证据绑定流程'
+  default_prompt: '使用 $github-collaboration，在独立工作树中完成这项贡献，并以绑定提交 SHA 的 GitHub 拉取请求交付。'
+
+policy:
+  allow_implicit_invocation: true
