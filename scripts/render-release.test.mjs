@@ -270,6 +270,34 @@ test('Preview release carries a SHA-scoped access gate without Secret material',
   );
   assert.match(
     gate.data['default.conf.template'],
+    /map "\$combo_review_request_allowed:\$combo_review_get_request:\$combo_review_top_document:\$combo_review_accepts_html:\$combo_review_page_path" \$combo_review_show_enter \{[\s\S]*?"0:1:1:1:1" 1;/,
+  );
+  assert.match(
+    gate.data['default.conf.template'],
+    /error_page 418 =401 \/__review\/enter;[\s\S]*?if \(\$combo_review_show_enter = 1\) \{[\s\S]*?return 418;/,
+  );
+  assert.match(
+    gate.data['default.conf.template'],
+    /location = \/__review\/enter \{[\s\S]*?Cache-Control "no-store, private" always;[\s\S]*?X-Frame-Options "DENY" always;[\s\S]*?Content-Security-Policy/,
+  );
+  assert.match(
+    gate.data['enter.html'],
+    /const directEntry = location\.pathname === '\/__review\/enter';/,
+  );
+  assert.match(
+    gate.data['enter.html'],
+    /const requestedReturnTo = directEntry[\s\S]*?params\.get\('returnTo'\)[\s\S]*?`\$\{location\.pathname\}\$\{location\.search\}`;/,
+  );
+  assert.match(
+    gate.data['enter.html'],
+    /const tokenFromInvite = directEntry \? location\.hash\.slice\(1\) : '';/,
+  );
+  assert.match(
+    gate.data['enter.html'],
+    /fetch\('\/version\.json',[\s\S]*?credentials: 'include',[\s\S]*?cache: 'no-store',[\s\S]*?Accept: 'application\/json'/,
+  );
+  assert.match(
+    gate.data['default.conf.template'],
     /location = \/try\/index\.html[\s\S]*?try_files \$uri =404;/,
   );
   assert.match(

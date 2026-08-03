@@ -145,6 +145,7 @@
       const button = document.querySelector('#enter');
       const status = document.querySelector('#status');
       const params = new URLSearchParams(location.search);
+      const directEntry = location.pathname === '/__review/enter';
       function safeReturnTo(raw) {
         if (
           typeof raw !== 'string' ||
@@ -190,7 +191,10 @@
         }
         return '/';
       }
-      const returnTo = safeReturnTo(params.get('returnTo'));
+      const requestedReturnTo = directEntry
+        ? params.get('returnTo')
+        : `${location.pathname}${location.search}`;
+      const returnTo = safeReturnTo(requestedReturnTo);
 
       async function enterReview(token) {
         button.disabled = true;
@@ -205,6 +209,17 @@
           });
           if (!response.ok) {
             throw new Error(response.status === 403 ? '访问码不正确' : `HTTP ${response.status}`);
+          }
+          const probe = await fetch('/version.json', {
+            credentials: 'include',
+            cache: 'no-store',
+            headers: { Accept: 'application/json' },
+          });
+          if (probe.status === 401) {
+            throw new Error('浏览器没有保存 Review 权限');
+          }
+          if (!probe.ok) {
+            throw new Error(`Review 环境暂时不可用（HTTP ${probe.status}）`);
           }
           input.value = '';
           status.textContent = '验证通过，正在准备预览身份…';
@@ -223,7 +238,7 @@
         void enterReview(input.value.trim());
       });
 
-      const tokenFromInvite = location.hash.slice(1);
+      const tokenFromInvite = directEntry ? location.hash.slice(1) : '';
       if (tokenFromInvite) {
         history.replaceState(null, '', `/__review/enter?returnTo=${encodeURIComponent(returnTo)}`);
         void enterReview(tokenFromInvite);

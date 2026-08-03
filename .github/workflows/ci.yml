@@ -405,6 +405,12 @@ jobs:
           cleanup
           container="combo-web-preview-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           preview_token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          review_pages="$RUNNER_TEMP/combo-review-pages-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$review_pages"
+          cp infra/k8s/release/overlays/preview/apps/review-access.html \
+            "$review_pages/enter.html"
+          cp infra/k8s/release/overlays/preview/apps/review-bootstrap.html \
+            "$review_pages/bootstrap.html"
           docker run -d --name "$container" \
             --read-only \
             --user 101:101 \
@@ -414,6 +420,7 @@ jobs:
             --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
             --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
             --mount "type=bind,src=$PWD/infra/k8s/release/overlays/preview/apps/review-nginx.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
+            --mount "type=bind,src=$review_pages,dst=/usr/share/nginx/html/__review,readonly" \
             --env NGINX_RESOLVER=127.0.0.11 \
             --env API_UPSTREAM_HOST=api.invalid \
             --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
@@ -430,6 +437,78 @@ jobs:
           done
           [[ "$ready" == 1 ]]
           docker exec "$container" nginx -t
+
+          preview_probe() {
+            local request=$1
+            local output=$2
+            printf '%b' "$request" | docker exec -i "$container" nc 127.0.0.1 80 >"$output"
+          }
+          preview_probe \
+            'GET /capabilities?review-entry=1 HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-page.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-page.http"
+          grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-page.http"
+          grep -qi '^Cache-Control: no-store, private' "$RUNNER_TEMP/preview-entry-page.http"
+          grep -qi '^X-Frame-Options: DENY' "$RUNNER_TEMP/preview-entry-page.http"
+          if grep -qi '^Location:' "$RUNNER_TEMP/preview-entry-page.http"; then
+            echo 'Preview entry unexpectedly redirected an anonymous page navigation.' >&2
+            exit 1
+          fi
+
+          preview_probe \
+            'GET /api/v1/me HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-api.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-api.http"
+          if grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-api.http"; then
+            echo 'Preview rendered the human entry page for an API request.' >&2
+            exit 1
+          fi
+
+          preview_probe \
+            'GET /assets/review-entry-probe.js HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-asset.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-asset.http"
+          if grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-asset.http"; then
+            echo 'Preview rendered the human entry page for an asset request.' >&2
+            exit 1
+          fi
+
+          preview_probe \
+            'POST /capabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: document\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-write.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-write.http"
+          if grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-write.http"; then
+            echo 'Preview rendered the human entry page for a write request.' >&2
+            exit 1
+          fi
+
+          preview_probe \
+            'GET /capabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: iframe\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-frame.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-frame.http"
+          if grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-frame.http"; then
+            echo 'Preview rendered the human entry page inside an iframe.' >&2
+            exit 1
+          fi
+
+          preview_probe \
+            'GET /capabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: empty\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-fetch.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-fetch.http"
+          if grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-fetch.http"; then
+            echo 'Preview rendered the human entry page for a fetch request.' >&2
+            exit 1
+          fi
+
+          preview_probe \
+            'GET /version.json HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nSec-Fetch-Dest: document\r\nConnection: close\r\n\r\n' \
+            "$RUNNER_TEMP/preview-entry-version.http"
+          grep -q '^HTTP/1.1 401 Unauthorized' "$RUNNER_TEMP/preview-entry-version.http"
+          if grep -q 'id="access-form"' "$RUNNER_TEMP/preview-entry-version.http"; then
+            echo 'Preview rendered the human entry page for release metadata.' >&2
+            exit 1
+          fi
+
           cookie_header="Cookie: combo_review_access=$preview_token"
           docker exec "$container" \
             wget --header="$cookie_header" -qO- http://127.0.0.1/try/ \
