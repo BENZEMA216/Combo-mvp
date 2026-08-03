@@ -31,10 +31,32 @@ readonly CONFIG_FILE='/etc/combo-dev/combo-dev.env'
 readonly REGISTRY_FILE='/etc/combo-dev/registry.json'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
+readonly INSTALL_ROOT='/opt/combo-dev'
+readonly CONTROL_STATE='/opt/combo-dev/state'
+readonly CONTROL_STATE_PARENT='/var/lib/combo-host-data'
+readonly CONTROL_STATE_IMAGE='/var/lib/combo-host-data/control-state.img'
+readonly DATA_ANCHOR_CHECK='/opt/combo-dev/bin/combo-host-data-mount-check'
+readonly CONTROL_STATE_SENTINEL='/opt/combo-dev/state/.combo-dev-control-state'
+readonly CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
+readonly CONTROL_STATE_BYTES=4294967296
+readonly CONTROL_STATE_LABEL='combo-dev-control-state'
+readonly CONTROL_INCOMING='/opt/combo-dev/state/incoming'
+readonly CONTROL_RELEASES='/opt/combo-dev/state/releases'
+readonly CONTROL_STAGING='/opt/combo-dev/state/releases/.staging'
+readonly CONTROL_WORK='/opt/combo-dev/state/work'
+readonly CONTROL_EVIDENCE='/opt/combo-dev/state/evidence'
+readonly CONTROL_STATE_MIN_BYTES=$((3584 * 1024 * 1024))
+readonly CONTROL_STATE_MAX_BYTES=$((4 * 1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_BYTES=$((1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_INODES=4096
+readonly ROOT_WARNING_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
+readonly ROOT_CRITICAL_MIN_BYTES=$((10 * 1024 * 1024 * 1024))
+readonly DATA_WARNING_MIN_BYTES=$((30 * 1024 * 1024 * 1024))
+readonly DATA_CRITICAL_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
-readonly BEFORE_FREE_BYTES=$((45 * 1024 * 1024 * 1024))
+readonly ROOT_CRITICAL_MARKER='/var/lib/combo-dev/root-capacity-critical'
 readonly DISPATCHER_RENEW_BEFORE_SECONDS=$((30 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
 readonly FENCER_RENEW_BEFORE_SECONDS=$((90 * 24 * 60 * 60))
@@ -47,10 +69,19 @@ readonly CONTROL_FILES=(
   scripts/combo-dev-forwarder-lease.sh
   scripts/combo-dev-storage-guard.sh
   scripts/combo-dev-production-safety.py
+  infra/host/combo-dev/combo-dev-prepare-control-state.sh
+  infra/host/combo-dev/combo-host-prepare-data-anchor.sh
+  infra/host/combo-dev/combo-host-data-mount-check.sh
   infra/host/combo-dev/combo-dev-web-forward.service
   infra/host/combo-dev/combo-dev-s3-forward.service
   infra/host/combo-dev/combo-dev-storage-guard.service
   infra/host/combo-dev/combo-dev-storage-guard.timer
+  'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount'
+  infra/host/combo-dev/combo-host-data-mount-check.service
+  'infra/host/combo-dev/opt-combo\x2ddev-state.mount'
+  'infra/host/combo-dev/opt-combo\x2ddev-incoming.mount'
+  'infra/host/combo-dev/opt-combo\x2ddev-releases.mount'
+  'infra/host/combo-dev/var-lib-combo\x2ddev-evidence.mount'
   infra/host/combo-dev/combo-host-syslog
   infra/k8s/overlays/combo-dev/kustomization.yaml
   infra/k8s/overlays/combo-dev/platform/kustomization.yaml
@@ -116,7 +147,7 @@ cleanup() {
       status '失败收敛无法验证；阻断标记已保留并需要主机所有者介入。'
     fi
   fi
-  [[ -z "$WORK" ]] || rm -rf -- "$WORK"
+  [[ -z "$WORK" ]] || rm -rf --one-file-system -- "$WORK"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -147,6 +178,132 @@ root_owned_not_writable() {
 }
 
 free_bytes() { df -PB1 "$1" 2>/dev/null | awk 'NR==2 {print $4}'; }
+
+free_inodes() { df -Pi "$1" 2>/dev/null | awk 'NR==2 {print $4}'; }
+total_bytes() { df -PB1 "$1" 2>/dev/null | awk 'NR==2 {print $2}'; }
+total_inodes() { df -Pi "$1" 2>/dev/null | awk 'NR==2 {print $2}'; }
+
+max_threshold() {
+  local total=$1 absolute=$2 percent=$3 proportional
+  proportional=$((total * percent / 100))
+  if (( proportional > absolute )); then printf '%s\n' "$proportional"; else printf '%s\n' "$absolute"; fi
+}
+
+verify_control_state() {
+  local canonical target source root_source data_source options total backing path fsroot fstype data_target root_device data_device
+  [[ -x "$DATA_ANCHOR_CHECK" && ! -L "$DATA_ANCHOR_CHECK" &&
+    $(stat -c '%u:%g:%a' "$DATA_ANCHOR_CHECK" 2>/dev/null) == '0:0:755' ]] || return 1
+  "$DATA_ANCHOR_CHECK" >/dev/null 2>&1 || return 1
+  [[ -d "$CONTROL_STATE" && ! -L "$CONTROL_STATE" ]] || return 1
+  canonical=$(readlink -f -- "$CONTROL_STATE" 2>/dev/null) || return 1
+  [[ "$canonical" == "$CONTROL_STATE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ -f "$CONTROL_STATE_SENTINEL" && ! -L "$CONTROL_STATE_SENTINEL" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_SENTINEL" 2>/dev/null) == '0:0:400' ]] || return 1
+  [[ $(cat "$CONTROL_STATE_SENTINEL" 2>/dev/null || true) == "$CONTROL_STATE_SENTINEL_VALUE" ]] || return 1
+  [[ -d "$CONTROL_STATE_PARENT" && ! -L "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_PARENT" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_PARENT" 2>/dev/null) == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ -f "$CONTROL_STATE_IMAGE" && ! -L "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_IMAGE" 2>/dev/null) == '0:0:600' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%s' "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  data_target=$(findmnt -rn -T "$CONTROL_STATE_IMAGE" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%d' "$CONTROL_STATE_IMAGE" 2>/dev/null) == $(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) ]] || return 1
+  target=$(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) || return 1
+  [[ "$target" == "$CONTROL_STATE" ]] || return 1
+  source=$(findmnt -rn -M "$CONTROL_STATE" -o SOURCE 2>/dev/null) || return 1
+  root_source=$(findmnt -rn -M / -o SOURCE 2>/dev/null) || return 1
+  data_source=$(findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || return 1
+  data_target=$(findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$DATA_MOUNT" ]] || return 1
+  root_device=$(stat -c '%d' / 2>/dev/null) || return 1
+  data_device=$(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) || return 1
+  [[ "$data_device" != "$root_device" ]] || return 1
+  [[ "$data_source" != "$root_source" ]] || return 1
+  [[ "$source" =~ ^/dev/loop[0-9]+$ && "$source" != "$root_source" && "$source" != "$data_source" ]] || return 1
+  backing=$(losetup -n -O BACK-FILE -- "$source" 2>/dev/null | awk '{$1=$1; print}') || return 1
+  [[ "$backing" == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(blockdev --getsize64 "$source" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  fstype=$(findmnt -rn -M "$CONTROL_STATE" -o FSTYPE 2>/dev/null) || return 1
+  [[ "$fstype" == ext4 ]] || return 1
+  [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == "$CONTROL_STATE_LABEL" ]] || return 1
+  options=$(findmnt -rn -M "$CONTROL_STATE" -o OPTIONS 2>/dev/null) || return 1
+  [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  total=$(df -B1 --output=size "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  (( total >= CONTROL_STATE_MIN_BYTES && total <= CONTROL_STATE_MAX_BYTES )) || return 1
+  for path in "$CONTROL_INCOMING" "$CONTROL_RELEASES" "$CONTROL_STAGING" "$CONTROL_WORK" "$CONTROL_EVIDENCE"; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    [[ $(findmnt -rn -T "$path" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] || return 1
+  done
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_INCOMING" 2>/dev/null) == '0:0:1733' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_RELEASES" 2>/dev/null) == '0:0:755' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_EVIDENCE" 2>/dev/null) == '0:0:755' ]] || return 1
+  for path in "$CONTROL_STAGING" "$CONTROL_WORK"; do
+    [[ $(stat -c '%u:%g:%a' "$path" 2>/dev/null) == '0:0:700' ]] || return 1
+  done
+  for path in "$INSTALL_ROOT/incoming" "$INSTALL_ROOT/releases" /var/lib/combo-dev/evidence; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    [[ $(findmnt -rn -M "$path" -o TARGET 2>/dev/null) == "$path" ]] || return 1
+    options=$(findmnt -rn -M "$path" -o OPTIONS 2>/dev/null) || return 1
+    [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  done
+  fsroot=$(findmnt -rn -M "$INSTALL_ROOT/incoming" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/incoming' ]] || return 1
+  fsroot=$(findmnt -rn -M "$INSTALL_ROOT/releases" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/releases' ]] || return 1
+  fsroot=$(findmnt -rn -M /var/lib/combo-dev/evidence -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/evidence' ]] || return 1
+  [[ $(stat -c '%d:%i' "$INSTALL_ROOT/incoming" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_INCOMING" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%d:%i' "$INSTALL_ROOT/releases" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_RELEASES" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%d:%i' /var/lib/combo-dev/evidence 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_EVIDENCE" 2>/dev/null) ]] || return 1
+}
+
+assert_control_state_headroom() {
+  local free inodes
+  verify_control_state || blocked 'control-state 挂载、backing file、目录或兼容 bind 契约失效。'
+  free=$(free_bytes "$CONTROL_STATE") || blocked 'control-state 可用容量不可读。'
+  inodes=$(free_inodes "$CONTROL_STATE") || blocked 'control-state inode 不可读。'
+  [[ "$free" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ ]] || blocked 'control-state 容量指标格式不合法。'
+  (( free >= CONTROL_STATE_MIN_FREE_BYTES && inodes >= CONTROL_STATE_MIN_FREE_INODES )) ||
+    blocked 'control-state 低于字节或 inode 安全水位。'
+}
+
+assert_host_capacity() {
+  local root_free root_total root_iavail root_itotal root_warn root_critical root_iwarn root_icritical
+  local data_free data_total data_iavail data_itotal data_warn data_critical data_iwarn data_icritical
+  root_free=$(free_bytes /) || blocked '根盘可用容量不可读。'
+  root_total=$(total_bytes /) || blocked '根盘总容量不可读。'
+  root_iavail=$(free_inodes /) || blocked '根盘可用 inode 不可读。'
+  root_itotal=$(total_inodes /) || blocked '根盘总 inode 不可读。'
+  data_free=$(free_bytes "$DATA_MOUNT") || blocked '父数据盘可用容量不可读。'
+  data_total=$(total_bytes "$DATA_MOUNT") || blocked '父数据盘总容量不可读。'
+  data_iavail=$(free_inodes "$DATA_MOUNT") || blocked '父数据盘可用 inode 不可读。'
+  data_itotal=$(total_inodes "$DATA_MOUNT") || blocked '父数据盘总 inode 不可读。'
+  [[ "$root_free" =~ ^[0-9]+$ && "$root_total" =~ ^[0-9]+$ &&
+    "$root_iavail" =~ ^[0-9]+$ && "$root_itotal" =~ ^[0-9]+$ &&
+    "$data_free" =~ ^[0-9]+$ && "$data_total" =~ ^[0-9]+$ &&
+    "$data_iavail" =~ ^[0-9]+$ && "$data_itotal" =~ ^[0-9]+$ ]] ||
+    blocked '主机容量指标格式不合法。'
+  root_warn=$(max_threshold "$root_total" "$ROOT_WARNING_MIN_BYTES" 15)
+  root_critical=$(max_threshold "$root_total" "$ROOT_CRITICAL_MIN_BYTES" 10)
+  root_iwarn=$((root_itotal * 15 / 100)); root_icritical=$((root_itotal * 10 / 100))
+  data_warn=$(max_threshold "$data_total" "$DATA_WARNING_MIN_BYTES" 15)
+  data_critical=$(max_threshold "$data_total" "$DATA_CRITICAL_MIN_BYTES" 10)
+  data_iwarn=$((data_itotal * 15 / 100)); data_icritical=$((data_itotal * 10 / 100))
+  (( root_free >= root_critical && root_iavail >= root_icritical )) ||
+    blocked '主机根盘低于 OS critical 安全水位；这不是部署容量门槛。'
+  (( data_free >= data_critical && data_iavail >= data_icritical )) ||
+    blocked '父数据盘低于 critical 字节或 inode 安全水位。'
+  if (( root_free < root_warn || root_iavail < root_iwarn )); then
+    status "WARN root-os-headroom bytes=$root_free inodes=$root_iavail"
+  fi
+  if (( data_free < data_warn || data_iavail < data_iwarn )); then
+    status "WARN parent-data-headroom bytes=$data_free inodes=$data_iavail"
+  fi
+}
 
 verify_bounded_storage_pool() {
   local canonical target source parent_source total options
@@ -273,8 +430,8 @@ PY
 
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'bootstrap 必须由主机所有者以 root 手工执行。'
-  local cmd free canonical
-  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep rm logrotate; do require_command "$cmd"; done
+  local cmd canonical
+  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep rm logrotate losetup blockdev blkid; do require_command "$cmd"; done
   trusted_source_tree || blocked 'bootstrap 源目录不是 root-owned 只读快照。'
   private_directory /etc/combo-dev || blocked '开发配置目录不是 root-owned 私有目录。'
   if [[ -e /etc/logrotate.d ]] && ! root_owned_not_writable /etc/logrotate.d; then
@@ -300,12 +457,13 @@ host_preflight() {
   fi
   timeout 30 "$HOST_BOUNDARY_CHECK" --check >/dev/null 2>&1 || blocked '主机级 Pod 到节点隔离未生效。'
   findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '固定数据盘尚未挂载。'
+  verify_control_state || blocked 'control-state 没有使用固定数据盘 backing 的独立 3.5–4 GiB 挂载与兼容 bind。'
   verify_bounded_storage_pool || blocked 'combo-dev 没有使用独立且硬限制为 18 GiB 以内的挂载。'
   verify_k3s_mount_dependencies || blocked 'k3s 必须只依赖生产父数据盘，不能依赖开发挂载或其任何子路径。'
-  free=$(free_bytes /) || blocked '根盘容量不可读。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then blocked '根盘可用空间不足 45 GiB。'; fi
-  free=$(free_bytes "$DATA_MOUNT") || blocked '数据盘容量不可读。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then blocked '数据盘可用空间不足 45 GiB。'; fi
+  assert_control_state_headroom
+  assert_host_capacity
+  [[ ! -e "$ROOT_CRITICAL_MARKER" && ! -L "$ROOT_CRITICAL_MARKER" ]] ||
+    blocked '根盘 OS critical 健康标记仍在 15 分钟恢复观察期。'
 }
 
 validate_config_names_only() {
@@ -671,7 +829,7 @@ sanitize_preview_namespace() {
 
 mark_failure_fence() {
   install -d -o root -g root -m 0711 /var/lib/combo-dev
-  install -d -o root -g root -m 0755 /var/lib/combo-dev/evidence
+  verify_control_state || return 1
   printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
   chmod 0600 "$FAILURE_FENCE_MARKER"
 }
@@ -878,11 +1036,11 @@ control_tree_digest() {
 
 install_control_files() {
   [[ -f "$WORK/cluster-platform.canonical.json" ]] || blocked '缺少规范化集群平台契约。'
-  install -d -o root -g root -m 0755 /opt/combo-dev /opt/combo-dev/bin /opt/combo-dev/releases
+  verify_control_state || blocked '安装控制文件前 control-state 或兼容 bind 契约失效。'
+  install -d -o root -g root -m 0755 /opt/combo-dev /opt/combo-dev/bin /opt/combo-dev/share
   install -d -o root -g root -m 0755 /etc/logrotate.d
   install -d -o root -g root -m 0711 /var/lib/combo-dev
   install -o root -g root -m 0600 "$WORK/cluster-platform.canonical.json" "$CLUSTER_PLATFORM_CONTRACT"
-  install -d -o root -g root -m 1733 /opt/combo-dev/incoming
   rm -rf /opt/combo-dev/bootstrap-overlay.next /opt/combo-dev/bootstrap-foundation.next /opt/combo-dev/bootstrap-platform.next
   cp -R --no-preserve=all "$ROOT/infra/k8s/overlays/combo-dev" /opt/combo-dev/bootstrap-overlay.next
   cp -R --no-preserve=all /opt/combo-dev/bootstrap-overlay.next/foundation /opt/combo-dev/bootstrap-foundation.next
@@ -904,10 +1062,19 @@ install_control_files() {
   install -m 0755 "$ROOT/scripts/combo-dev-forwarder-lease.sh" /opt/combo-dev/bin/combo-dev-forwarder-lease
   install -m 0755 "$ROOT/scripts/combo-dev-storage-guard.sh" /opt/combo-dev/bin/combo-dev-storage-guard
   install -m 0755 "$ROOT/scripts/combo-dev-production-safety.py" /opt/combo-dev/bin/combo-dev-production-safety
+  install -m 0755 "$ROOT/infra/host/combo-dev/combo-dev-prepare-control-state.sh" /opt/combo-dev/bin/combo-dev-prepare-control-state
+  install -m 0755 "$ROOT/infra/host/combo-dev/combo-host-prepare-data-anchor.sh" /opt/combo-dev/bin/combo-host-prepare-data-anchor
+  install -m 0755 "$ROOT/infra/host/combo-dev/combo-host-data-mount-check.sh" /opt/combo-dev/bin/combo-host-data-mount-check
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-web-forward.service" /etc/systemd/system/combo-dev-web-forward.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-s3-forward.service" /etc/systemd/system/combo-dev-s3-forward.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-storage-guard.service" /etc/systemd/system/combo-dev-storage-guard.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-storage-guard.timer" /etc/systemd/system/combo-dev-storage-guard.timer
+  install -m 0644 "$ROOT/infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount" '/etc/systemd/system/var-lib-combo\x2dhost\x2ddata.mount'
+  install -m 0644 "$ROOT/infra/host/combo-dev/combo-host-data-mount-check.service" /etc/systemd/system/combo-host-data-mount-check.service
+  install -m 0644 "$ROOT/infra/host/combo-dev/opt-combo\x2ddev-state.mount" '/etc/systemd/system/opt-combo\x2ddev-state.mount'
+  install -m 0644 "$ROOT/infra/host/combo-dev/opt-combo\x2ddev-incoming.mount" '/etc/systemd/system/opt-combo\x2ddev-incoming.mount'
+  install -m 0644 "$ROOT/infra/host/combo-dev/opt-combo\x2ddev-releases.mount" '/etc/systemd/system/opt-combo\x2ddev-releases.mount'
+  install -m 0644 "$ROOT/infra/host/combo-dev/var-lib-combo\x2ddev-evidence.mount" '/etc/systemd/system/var-lib-combo\x2ddev-evidence.mount'
   install -o root -g root -m 0644 "$ROOT/infra/host/combo-dev/combo-host-syslog" /etc/logrotate.d/combo-host-syslog
   local digest installed_digest tmp file
   local installed_files=(
@@ -919,10 +1086,19 @@ install_control_files() {
     /opt/combo-dev/bin/combo-dev-forwarder-lease
     /opt/combo-dev/bin/combo-dev-storage-guard
     /opt/combo-dev/bin/combo-dev-production-safety
+    /opt/combo-dev/bin/combo-dev-prepare-control-state
+    /opt/combo-dev/bin/combo-host-prepare-data-anchor
+    /opt/combo-dev/bin/combo-host-data-mount-check
     /etc/systemd/system/combo-dev-web-forward.service
     /etc/systemd/system/combo-dev-s3-forward.service
     /etc/systemd/system/combo-dev-storage-guard.service
     /etc/systemd/system/combo-dev-storage-guard.timer
+    '/etc/systemd/system/var-lib-combo\x2dhost\x2ddata.mount'
+    /etc/systemd/system/combo-host-data-mount-check.service
+    '/etc/systemd/system/opt-combo\x2ddev-state.mount'
+    '/etc/systemd/system/opt-combo\x2ddev-incoming.mount'
+    '/etc/systemd/system/opt-combo\x2ddev-releases.mount'
+    '/etc/systemd/system/var-lib-combo\x2ddev-evidence.mount'
     /etc/logrotate.d/combo-host-syslog
     /opt/combo-dev/bootstrap-overlay/kustomization.yaml
     /opt/combo-dev/bootstrap-overlay/platform/kustomization.yaml
@@ -1052,7 +1228,8 @@ main() {
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   host_preflight
-  WORK=$(mktemp -d)
+  WORK=$(mktemp -d "$CONTROL_WORK/bootstrap.XXXXXX") ||
+    blocked '无法在 control-state 创建 bootstrap 工作区。'
   validate_config_names_only
   verify_observer_boundary
   local before after
@@ -1070,7 +1247,7 @@ main() {
   rm -f -- "$EXTERNAL_FENCE_MARKER" "$ACCEPTANCE_PENDING_MARKER" ||
     blocked 'bootstrap 无法清理旧验收状态。'
 
-  rm -rf -- "$WORK"
+  rm -rf --one-file-system -- "$WORK"
   WORK=''
   SUCCESS=1
   status 'PASS namespace=combo-preview forwarders=inactive writers=fenced'

@@ -12,6 +12,10 @@ readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.js
 readonly HOST_BOUNDARY_APPROVAL='/etc/combo-dev/host-network-boundary.approved'
 readonly HOST_BOUNDARY_CHECK='/opt/combo-dev/host-boundary/check'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly CONTROL_STATE='/opt/combo-dev/state'
+readonly CONTROL_WORK='/opt/combo-dev/state/work'
+readonly CONTROL_OPERATION_MIN_FREE_BYTES=$((1600 * 1024 * 1024))
+readonly CONTROL_OPERATION_MIN_FREE_INODES=4096
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly TIME_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$'
 readonly CANARY_IMAGE='python@sha256:37b14db89f587f9eaa890e4a442a3fe55db452b69cca1403cc730bd0fbdc8aaf'
@@ -29,15 +33,39 @@ cleanup() {
   if (( CANARY_CREATED == 1 )); then
     "${K[@]}" -n "$NAMESPACE" delete job/combo-dev-network-canary --ignore-not-found --wait=false >/dev/null 2>&1 || true
   fi
-  [[ -z "$WORK" ]] || rm -rf -- "$WORK"
+  [[ -z "$WORK" ]] || rm -rf --one-file-system -- "$WORK"
 }
 trap cleanup EXIT
 
 require_tools() {
   local cmd
-  for cmd in kubectl curl jq python3 openssl ss timeout stat findmnt readlink df dirname awk systemctl date; do
+  for cmd in kubectl curl jq python3 openssl ss timeout stat findmnt readlink df dirname awk systemctl date mktemp; do
     command -v "$cmd" >/dev/null 2>&1 || blocked "缺少验收工具：$cmd"
   done
+}
+
+prepare_work() {
+  local free inodes
+  [[ -d "$CONTROL_STATE" && ! -L "$CONTROL_STATE" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_STATE" 2>/dev/null) == '0:0:700' ]] ||
+    blocked 'control-state 根目录边界失效。'
+  [[ -d "$CONTROL_WORK" && ! -L "$CONTROL_WORK" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_WORK" 2>/dev/null) == '0:0:700' ]] ||
+    blocked 'control-state 工作目录边界失效。'
+  [[ $(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) == "$CONTROL_STATE" &&
+    $(findmnt -rn -T "$CONTROL_WORK" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] ||
+    blocked 'control-state 工作目录没有位于独立挂载。'
+  /opt/combo-dev/bin/combo-dev-storage-guard --check-only >/dev/null 2>&1 ||
+    blocked '创建验收工作区前存储与主机容量门禁未通过。'
+  free=$(df -B1 --output=avail "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') ||
+    blocked '验收工作区可用容量不可读。'
+  inodes=$(df --output=iavail "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') ||
+    blocked '验收工作区 inode 不可读。'
+  [[ "$free" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ ]] || blocked '验收工作区容量格式不合法。'
+  (( free >= CONTROL_OPERATION_MIN_FREE_BYTES && inodes >= CONTROL_OPERATION_MIN_FREE_INODES )) ||
+    blocked 'control-state 未保留 1 GiB 基础水位、512 MiB 日志上限和 64 MiB 验收开销。'
+  WORK=$(mktemp -d "$CONTROL_WORK/smoke.XXXXXX") ||
+    blocked '无法在 control-state 创建验收工作区。'
 }
 
 verify_pending_acceptance_identity() {
@@ -386,14 +414,14 @@ EOF
 main() {
   if [[ $# == 1 && $1 == '--storage-only' ]]; then
     require_tools
-    WORK=$(mktemp -d)
+    prepare_work
     check_live_limits_and_access storage-only
     status 'PASS storage=bounded-and-bound'
     return
   fi
   if [[ $# == 1 && $1 == '--network-canary-only' ]]; then
     require_tools
-    WORK=$(mktemp -d)
+    prepare_work
     run_network_canary
     status 'PASS network-canary=isolated'
     return
@@ -413,7 +441,7 @@ main() {
   [[ "$revision" =~ $SHA_RE ]] || blocked 'revision 不是完整提交 SHA。'
   [[ "$since" =~ $TIME_RE ]] || blocked '验收起始时间不合法。'
   require_tools
-  WORK=$(mktemp -d)
+  prepare_work
   if (( logs_only == 1 )); then
     [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ &&
       "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]] ||

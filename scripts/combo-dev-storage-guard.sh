@@ -17,11 +17,33 @@ readonly STORAGE_MIN_BYTES=$((16 * 1024 * 1024 * 1024))
 readonly STORAGE_MAX_BYTES=$((18 * 1024 * 1024 * 1024))
 readonly MIN_FREE_BYTES=$((1024 * 1024 * 1024))
 readonly MIN_FREE_INODES=4096
+readonly CONTROL_STATE='/opt/combo-dev/state'
+readonly CONTROL_STATE_PARENT='/var/lib/combo-host-data'
+readonly CONTROL_STATE_IMAGE='/var/lib/combo-host-data/control-state.img'
+readonly DATA_ANCHOR_CHECK='/opt/combo-dev/bin/combo-host-data-mount-check'
+readonly CONTROL_STATE_SENTINEL='/opt/combo-dev/state/.combo-dev-control-state'
+readonly CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
+readonly CONTROL_STATE_BYTES=4294967296
+readonly CONTROL_STATE_LABEL='combo-dev-control-state'
+readonly CONTROL_STATE_MIN_BYTES=$((3584 * 1024 * 1024))
+readonly CONTROL_STATE_MAX_BYTES=$((4 * 1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_BYTES=$((1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_INODES=4096
+readonly GUARD_RUNTIME='/run/combo-dev-storage-guard'
+readonly ROOT_WARNING_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
+readonly ROOT_CRITICAL_MIN_BYTES=$((10 * 1024 * 1024 * 1024))
+readonly DATA_WARNING_MIN_BYTES=$((30 * 1024 * 1024 * 1024))
+readonly DATA_CRITICAL_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
+readonly ROOT_CRITICAL_MARKER='/var/lib/combo-dev/root-capacity-critical'
+readonly ROOT_RECOVERY_MARKER='/var/lib/combo-dev/root-capacity-recovery-since'
+readonly ROOT_RECOVERY_SECONDS=900
 readonly DISPATCHER_KUBECONFIG='/etc/combo-dev/dispatcher.kubeconfig'
 readonly FENCER_KUBECONFIG='/etc/combo-dev/fencer.kubeconfig'
 readonly LOW_MARKER='/run/combo-dev-storage-low'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
+readonly MAINTENANCE_FENCE_MARKER='/var/lib/combo-dev/storage-maintenance-fenced'
+readonly MAINTENANCE_FENCE_VALUE='combo-dev-storage-maintenance=fenced-v1'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
 readonly OPERATION_LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
@@ -34,6 +56,10 @@ readonly APPS=(api worker runtime web)
 readonly FOUNDATION_STATEFUL=(postgres redis-queue minio)
 readonly JOBS=(minio-init migrate combo-dev-network-canary)
 readonly FORWARDER_UNITS=(combo-dev-web-forward.service combo-dev-s3-forward.service)
+ROOT_CAPACITY_WARNING=0
+ROOT_CAPACITY_CRITICAL=0
+DATA_CAPACITY_WARNING=0
+DATA_CAPACITY_CRITICAL=0
 PENDING_REVISION=''
 PENDING_RUN_ID=''
 PENDING_RUN_ATTEMPT=''
@@ -44,8 +70,8 @@ if [[ -f "$SCRIPT_DIR/combo-dev-production-safety" ]]; then
 else
   readonly SAFETY_TOOL="$SCRIPT_DIR/combo-dev-production-safety.py"
 fi
-declare -ar FK=(kubectl --cache-dir=/tmp/kubectl-cache --request-timeout=30s --kubeconfig "$FENCER_KUBECONFIG")
-declare -ar DK=(kubectl --cache-dir=/tmp/kubectl-cache --request-timeout=30s --kubeconfig "$DISPATCHER_KUBECONFIG")
+declare -ar FK=(kubectl --cache-dir="$GUARD_RUNTIME/kubectl-cache" --request-timeout=30s --kubeconfig "$FENCER_KUBECONFIG")
+declare -ar DK=(kubectl --cache-dir="$GUARD_RUNTIME/kubectl-cache" --request-timeout=30s --kubeconfig "$DISPATCHER_KUBECONFIG")
 
 status() { printf '[combo-dev-storage-guard] %s\n' "$1"; }
 fail() { printf '[combo-dev-storage-guard] FAIL: %s\n' "$1" >&2; exit 1; }
@@ -65,6 +91,113 @@ private_file() {
   mode=$(stat -c '%a' "$1" 2>/dev/null) || return 1
   owner=$(stat -c '%u' "$1" 2>/dev/null) || return 1
   [[ "$owner" == 0 && ( "$mode" == 600 || "$mode" == 400 ) ]]
+}
+
+max_threshold() {
+  local total=$1 absolute=$2 percent=$3 proportional
+  proportional=$((total * percent / 100))
+  if (( proportional > absolute )); then printf '%s\n' "$proportional"; else printf '%s\n' "$absolute"; fi
+}
+
+verify_control_state() {
+  local target source root_source data_source options total backing path fsroot fstype data_target root_device data_device
+  [[ -x "$DATA_ANCHOR_CHECK" && ! -L "$DATA_ANCHOR_CHECK" &&
+    $(stat -c '%u:%g:%a' "$DATA_ANCHOR_CHECK" 2>/dev/null) == '0:0:755' ]] || return 1
+  "$DATA_ANCHOR_CHECK" >/dev/null 2>&1 || return 1
+  [[ -d "$CONTROL_STATE" && ! -L "$CONTROL_STATE" &&
+    $(readlink -f -- "$CONTROL_STATE" 2>/dev/null) == "$CONTROL_STATE" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_STATE" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ -f "$CONTROL_STATE_SENTINEL" && ! -L "$CONTROL_STATE_SENTINEL" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_STATE_SENTINEL" 2>/dev/null) == '0:0:400' &&
+    $(cat "$CONTROL_STATE_SENTINEL" 2>/dev/null || true) == "$CONTROL_STATE_SENTINEL_VALUE" ]] || return 1
+  [[ -d "$CONTROL_STATE_PARENT" && ! -L "$CONTROL_STATE_PARENT" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_STATE_PARENT" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_PARENT" 2>/dev/null) == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ -f "$CONTROL_STATE_IMAGE" && ! -L "$CONTROL_STATE_IMAGE" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_STATE_IMAGE" 2>/dev/null) == '0:0:600' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%s' "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  data_target=$(findmnt -rn -T "$CONTROL_STATE_IMAGE" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%d' "$CONTROL_STATE_IMAGE" 2>/dev/null) == $(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) ]] || return 1
+  target=$(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) || return 1
+  [[ "$target" == "$CONTROL_STATE" ]] || return 1
+  source=$(findmnt -rn -M "$CONTROL_STATE" -o SOURCE 2>/dev/null) || return 1
+  root_source=$(findmnt -rn -M / -o SOURCE 2>/dev/null) || return 1
+  data_source=$(findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || return 1
+  data_target=$(findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$DATA_MOUNT" ]] || return 1
+  root_device=$(stat -c '%d' / 2>/dev/null) || return 1
+  data_device=$(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) || return 1
+  [[ "$data_device" != "$root_device" ]] || return 1
+  [[ "$data_source" != "$root_source" ]] || return 1
+  [[ "$source" =~ ^/dev/loop[0-9]+$ && "$source" != "$root_source" && "$source" != "$data_source" ]] || return 1
+  backing=$(losetup -n -O BACK-FILE -- "$source" 2>/dev/null | awk '{$1=$1; print}') || return 1
+  [[ "$backing" == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(blockdev --getsize64 "$source" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  fstype=$(findmnt -rn -M "$CONTROL_STATE" -o FSTYPE 2>/dev/null) || return 1
+  [[ "$fstype" == ext4 ]] || return 1
+  [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == "$CONTROL_STATE_LABEL" ]] || return 1
+  options=$(findmnt -rn -M "$CONTROL_STATE" -o OPTIONS 2>/dev/null) || return 1
+  [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  total=$(df -B1 --output=size "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  (( total >= CONTROL_STATE_MIN_BYTES && total <= CONTROL_STATE_MAX_BYTES )) || return 1
+  for path in incoming releases releases/.staging work evidence; do
+    [[ -d "$CONTROL_STATE/$path" && ! -L "$CONTROL_STATE/$path" ]] || return 1
+    [[ $(findmnt -rn -T "$CONTROL_STATE/$path" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] || return 1
+  done
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/incoming" 2>/dev/null) == '0:0:1733' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/releases" 2>/dev/null) == '0:0:755' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/releases/.staging" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/work" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE/evidence" 2>/dev/null) == '0:0:755' ]] || return 1
+  for path in /opt/combo-dev/incoming /opt/combo-dev/releases /var/lib/combo-dev/evidence; do
+    [[ -d "$path" && ! -L "$path" && $(findmnt -rn -M "$path" -o TARGET 2>/dev/null) == "$path" ]] || return 1
+    options=$(findmnt -rn -M "$path" -o OPTIONS 2>/dev/null) || return 1
+    [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  done
+  fsroot=$(findmnt -rn -M /opt/combo-dev/incoming -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/incoming' ]] || return 1
+  fsroot=$(findmnt -rn -M /opt/combo-dev/releases -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/releases' ]] || return 1
+  fsroot=$(findmnt -rn -M /var/lib/combo-dev/evidence -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/evidence' ]] || return 1
+  [[ $(stat -c '%d:%i' /opt/combo-dev/incoming) == $(stat -c '%d:%i' "$CONTROL_STATE/incoming") ]] || return 1
+  [[ $(stat -c '%d:%i' /opt/combo-dev/releases) == $(stat -c '%d:%i' "$CONTROL_STATE/releases") ]] || return 1
+  [[ $(stat -c '%d:%i' /var/lib/combo-dev/evidence) == $(stat -c '%d:%i' "$CONTROL_STATE/evidence") ]] || return 1
+}
+
+control_headroom_ok() {
+  local free inodes
+  free=$(df -B1 --output=avail "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  inodes=$(df --output=iavail "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  [[ "$free" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ ]] || return 1
+  (( free >= CONTROL_STATE_MIN_FREE_BYTES && inodes >= CONTROL_STATE_MIN_FREE_INODES ))
+}
+
+classify_host_capacity() {
+  local rf rt ri rit dfree dt di dit rw rc riw ric dw dc diw dic
+  rf=$(df -B1 --output=avail / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  rt=$(df -B1 --output=size / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  ri=$(df --output=iavail / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  rit=$(df --output=inodes / 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  dfree=$(df -B1 --output=avail "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  dt=$(df -B1 --output=size "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  di=$(df --output=iavail "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  dit=$(df --output=inodes "$DATA_MOUNT" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  [[ "$rf" =~ ^[0-9]+$ && "$rt" =~ ^[0-9]+$ && "$ri" =~ ^[0-9]+$ && "$rit" =~ ^[0-9]+$ &&
+    "$dfree" =~ ^[0-9]+$ && "$dt" =~ ^[0-9]+$ && "$di" =~ ^[0-9]+$ && "$dit" =~ ^[0-9]+$ ]] || return 1
+  rw=$(max_threshold "$rt" "$ROOT_WARNING_MIN_BYTES" 15); rc=$(max_threshold "$rt" "$ROOT_CRITICAL_MIN_BYTES" 10)
+  riw=$((rit * 15 / 100)); ric=$((rit * 10 / 100))
+  dw=$(max_threshold "$dt" "$DATA_WARNING_MIN_BYTES" 15); dc=$(max_threshold "$dt" "$DATA_CRITICAL_MIN_BYTES" 10)
+  diw=$((dit * 15 / 100)); dic=$((dit * 10 / 100))
+  ROOT_CAPACITY_CRITICAL=0; ROOT_CAPACITY_WARNING=0; DATA_CAPACITY_CRITICAL=0; DATA_CAPACITY_WARNING=0
+  (( rf < rc || ri < ric )) && ROOT_CAPACITY_CRITICAL=1
+  (( rf < rw || ri < riw )) && ROOT_CAPACITY_WARNING=1
+  (( dfree < dc || di < dic )) && DATA_CAPACITY_CRITICAL=1
+  (( dfree < dw || di < diw )) && DATA_CAPACITY_WARNING=1
+  return 0
 }
 
 verify_bounded_pool() {
@@ -136,7 +269,7 @@ headroom_ok() {
 credential_certificate_valid_for() {
   local kubeconfig=$1 username=$2 minimum_seconds=$3 work config certificate subject rc
   private_file "$kubeconfig" || return 1
-  work=$(mktemp -d) || return 1
+  work=$(mktemp -d "$GUARD_RUNTIME/guard-credential.XXXXXX") || return 1
   config="$work/config.json"
   certificate="$work/client.crt"
   if ! kubectl --kubeconfig "$kubeconfig" config view --raw --flatten --minify -o json >"$config" 2>/dev/null; then
@@ -231,6 +364,19 @@ mark_external_fence() {
     printf '%s\n' "$identity" >"$EXTERNAL_FENCE_MARKER"
   fi
   chmod 0600 "$EXTERNAL_FENCE_MARKER"
+}
+
+mark_maintenance_fence_complete() {
+  local candidate
+  [[ ! -e "$MAINTENANCE_FENCE_MARKER" && ! -L "$MAINTENANCE_FENCE_MARKER" ]] ||
+    fail '主机存储维护完成标记已存在；必须先审计并完成或撤销上一轮维护。'
+  candidate=$(mktemp "$GUARD_RUNTIME/storage-maintenance-fenced.XXXXXX") ||
+    fail '无法创建主机存储维护完成标记。'
+  printf '%s\n' "$MAINTENANCE_FENCE_VALUE" >"$candidate"
+  chmod 0600 "$candidate"
+  install -o root -g root -m 0600 "$candidate" "$MAINTENANCE_FENCE_MARKER" ||
+    fail '无法持久化主机存储维护完成标记。'
+  rm -f -- "$candidate"
 }
 
 existing_attempt_fence_identity() {
@@ -408,8 +554,37 @@ complete_acceptance() {
   status 'PASS acceptance=complete'
 }
 
+manage_root_health_recovery() {
+  local now since
+  if (( ROOT_CAPACITY_CRITICAL == 1 )); then
+    install -o root -g root -m 0600 /dev/null "$ROOT_CRITICAL_MARKER" || return 2
+    rm -f -- "$ROOT_RECOVERY_MARKER" || return 2
+    return 1
+  fi
+  [[ -e "$ROOT_CRITICAL_MARKER" || -L "$ROOT_CRITICAL_MARKER" ]] || return 0
+  [[ -f "$ROOT_CRITICAL_MARKER" && ! -L "$ROOT_CRITICAL_MARKER" &&
+    $(stat -c '%u:%g:%a' "$ROOT_CRITICAL_MARKER" 2>/dev/null) == '0:0:600' ]] || return 2
+  if (( ROOT_CAPACITY_WARNING == 1 )); then
+    rm -f -- "$ROOT_RECOVERY_MARKER" || return 2
+    return 1
+  fi
+  now=$(date +%s 2>/dev/null) || return 2
+  [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 2
+  if [[ ! -e "$ROOT_RECOVERY_MARKER" && ! -L "$ROOT_RECOVERY_MARKER" ]]; then
+    printf '%s\n' "$now" >"$ROOT_RECOVERY_MARKER" || return 2
+    chmod 0600 "$ROOT_RECOVERY_MARKER" || return 2
+    return 1
+  fi
+  private_file "$ROOT_RECOVERY_MARKER" || return 2
+  since=$(<"$ROOT_RECOVERY_MARKER")
+  [[ "$since" =~ ^[1-9][0-9]*$ && "$since" -le "$now" ]] || return 2
+  if (( now - since < ROOT_RECOVERY_SECONDS )); then return 1; fi
+  rm -f -- "$ROOT_CRITICAL_MARKER" "$ROOT_RECOVERY_MARKER" || return 2
+  status 'root OS 容量已连续 15 分钟高于 warning 水位；仅解除健康标记，不自动恢复工作负载。'
+}
+
 main() {
-  local check_only=0 fence_only=0 complete_only=0
+  local check_only=0 fence_only=0 maintenance_fence=0 complete_only=0
   local fence_identity='system'
   local complete_revision='' complete_run_id='' complete_run_attempt='' cmd pending_rc
   case $# in
@@ -418,6 +593,7 @@ main() {
       case $1 in
         --check-only) check_only=1 ;;
         --fence-only) fence_only=1 ;;
+        --fence-host-maintenance) fence_only=1; maintenance_fence=1 ;;
         *) fail '参数不合法。' ;;
       esac
       ;;
@@ -441,14 +617,24 @@ main() {
       ;;
     *) fail '参数不合法。' ;;
   esac
-  for cmd in findmnt readlink df awk dirname stat systemctl timeout python3; do require_command "$cmd"; done
+  for cmd in findmnt readlink df awk dirname stat systemctl timeout python3 losetup blockdev blkid; do require_command "$cmd"; done
   [[ -f "$SAFETY_TOOL" ]] || fail '共享安全检查器不存在。'
   if (( check_only == 0 )); then
     [[ $(id -u) -eq 0 ]] || fail '存储收敛必须由 root 执行。'
     for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm date; do require_command "$cmd"; done
+    install -d -o root -g root -m 0700 "$GUARD_RUNTIME"
+    [[ -d "$GUARD_RUNTIME" && ! -L "$GUARD_RUNTIME" &&
+      $(stat -c '%u:%g:%a' "$GUARD_RUNTIME") == '0:0:700' ]] ||
+      fail '独立 storage guard 运行目录不可信。'
   fi
   if (( fence_only == 1 )); then
-    fence_now '受控 Test 后置验收未完成' 0 0 "$fence_identity"
+    if (( maintenance_fence == 1 )); then
+      fence_now '受控 Test 主机存储维护' 0 0 system
+      mark_maintenance_fence_complete
+      status 'PASS storage-maintenance-fence=verified'
+    else
+      fence_now '受控 Test 后置验收未完成' 0 0 "$fence_identity"
+    fi
     return
   fi
   if (( complete_only == 1 )); then
@@ -456,16 +642,48 @@ main() {
     return
   fi
 
-  if ! verify_static_paths || ! verify_k3s_mount_dependencies; then
-    (( check_only == 1 )) && fail '独立挂载、静态卷路径、身份或 k3s 依赖不符合固定契约。'
-    fence_now '独立挂载、静态卷路径或 k3s 依赖失效' 1
+  if ! verify_control_state || ! verify_static_paths || ! verify_k3s_mount_dependencies; then
+    (( check_only == 1 )) && fail 'control-state、业务存储、静态卷身份或 k3s 依赖不符合固定契约。'
+    fence_now 'control-state、业务存储或 k3s 依赖失效' 1
+  fi
+  if ! control_headroom_ok; then
+    (( check_only == 1 )) && fail 'control-state 低于字节或 inode 安全水位。'
+    fence_now 'control-state 低于字节或 inode 安全水位' 1
   fi
   if ! headroom_ok; then
     (( check_only == 1 )) && fail '独立存储池低于字节或 inode 安全水位。'
     fence_now '独立存储池低于字节或 inode 安全水位' 1
   fi
+  if ! classify_host_capacity; then
+    (( check_only == 1 )) && fail '主机容量指标不可读。'
+    fence_now '主机容量指标不可读'
+  fi
+  if (( DATA_CAPACITY_CRITICAL == 1 )); then
+    (( check_only == 1 )) && fail '父数据盘低于 critical 字节或 inode 水位。'
+    fence_now '父数据盘低于 critical 字节或 inode 水位' 1
+  fi
+  if (( ROOT_CAPACITY_CRITICAL == 1 )); then
+    (( check_only == 1 )) && fail '根盘低于 OS critical 字节或 inode 水位。'
+    manage_root_health_recovery >/dev/null 2>&1 || true
+    fence_now '根盘低于 OS critical 字节或 inode 水位'
+  fi
+  if (( ROOT_CAPACITY_WARNING == 1 )); then status 'WARN root-os-headroom'; fi
+  if (( DATA_CAPACITY_WARNING == 1 )); then status 'WARN parent-data-headroom'; fi
   if (( check_only == 1 )); then
-    status 'PASS storage=static-local headroom=available mount-dependency=canonical'
+    [[ ! -e "$ROOT_CRITICAL_MARKER" && ! -L "$ROOT_CRITICAL_MARKER" ]] ||
+      fail '根盘 OS critical 健康标记仍在 15 分钟恢复观察期。'
+    status 'PASS storage=data-backed headroom=available mount-dependency=canonical root-os=healthy-or-warning'
+    return
+  fi
+
+  local root_recovery_rc
+  set +e
+  manage_root_health_recovery
+  root_recovery_rc=$?
+  set -e
+  (( root_recovery_rc != 2 )) || fence_now '根盘 OS 健康恢复标记损坏'
+  if (( root_recovery_rc == 1 )); then
+    fence_now '根盘 OS 健康标记仍在 15 分钟恢复观察期' 0 0 preserve-attempt
     return
   fi
 

@@ -4,6 +4,8 @@ After=k3s.service
 
 [Service]
 Type=oneshot
+RuntimeDirectory=combo-dev-storage-guard
+RuntimeDirectoryMode=0700
 ExecStart=/opt/combo-dev/bin/combo-dev-storage-guard
 User=root
 Group=root
@@ -14,6 +16,5 @@ ProtectSystem=strict
 ProtectHome=read-only
 StateDirectory=combo-dev
 StateDirectoryMode=0711
-# ProtectHome makes /home read-only in this unit's mount namespace. Re-expose only the bounded
-# combo-dev filesystem as writable so findmnt can verify the host's real rw/nodev/nosuid contract.
-ReadWritePaths=/run /var/lib/combo-dev /home/xingzheng/data/combo-dev
+# Failure convergence must still run when every data-backed mount is missing.
+ReadWritePaths=/run /var/lib/combo-dev -/home/xingzheng/data/combo-dev -/opt/combo-dev/state -/opt/combo-dev/incoming -/opt/combo-dev/releases -/var/lib/combo-dev/evidence

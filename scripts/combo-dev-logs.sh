@@ -11,6 +11,10 @@ readonly ACTIVITY_ATTEMPTS=15
 readonly ACTIVITY_RETRY_SECONDS=2
 readonly AUDIT_MAX_SECONDS=90
 readonly LOG_CAPTURE_BYTES=8388609
+readonly CONTROL_STATE='/opt/combo-dev/state'
+readonly CONTROL_WORK='/opt/combo-dev/state/work'
+readonly CONTROL_OPERATION_MIN_FREE_BYTES=$((1536 * 1024 * 1024))
+readonly CONTROL_OPERATION_MIN_FREE_INODES=4096
 K=(kubectl --request-timeout=30s --kubeconfig "$KUBECONFIG_PATH")
 WORK=''
 LAST_REASON='unclassified'
@@ -21,9 +25,33 @@ fail() { printf '[combo-dev-logs] FAIL: %s\n' "$1" >&2; exit 1; }
 blocked() { printf '[combo-dev-logs] BLOCKED: %s\n' "$1" >&2; exit 2; }
 cleanup() {
   set +e
-  [[ -z "$WORK" ]] || rm -rf -- "$WORK"
+  [[ -z "$WORK" ]] || rm -rf --one-file-system -- "$WORK"
 }
 trap cleanup EXIT
+
+prepare_work() {
+  local cmd free inodes
+  for cmd in df findmnt stat mktemp awk; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少日志审计工具：$cmd"; done
+  [[ -d "$CONTROL_STATE" && ! -L "$CONTROL_STATE" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_STATE" 2>/dev/null) == '0:0:700' ]] ||
+    blocked 'control-state 根目录边界失效。'
+  [[ -d "$CONTROL_WORK" && ! -L "$CONTROL_WORK" &&
+    $(stat -c '%u:%g:%a' "$CONTROL_WORK" 2>/dev/null) == '0:0:700' ]] ||
+    blocked 'control-state 工作目录边界失效。'
+  [[ $(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) == "$CONTROL_STATE" &&
+    $(findmnt -rn -T "$CONTROL_WORK" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] ||
+    blocked 'control-state 工作目录没有位于独立挂载。'
+  /opt/combo-dev/bin/combo-dev-storage-guard --check-only >/dev/null 2>&1 ||
+    blocked '创建日志工作区前存储与主机容量门禁未通过。'
+  free=$(df -B1 --output=avail "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') ||
+    blocked '日志工作区可用容量不可读。'
+  inodes=$(df --output=iavail "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') ||
+    blocked '日志工作区 inode 不可读。'
+  [[ "$free" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ ]] || blocked '日志工作区容量格式不合法。'
+  (( free >= CONTROL_OPERATION_MIN_FREE_BYTES && inodes >= CONTROL_OPERATION_MIN_FREE_INODES )) ||
+    blocked 'control-state 未保留 1 GiB 基础水位和 512 MiB 日志工作上限。'
+  WORK=$(mktemp -d "$CONTROL_WORK/logs.XXXXXX") || blocked '日志审计 control-state 工作区不可用。'
+}
 
 pod_for_app() {
   local app=$1 container=$2 json count name uid restart_count
@@ -312,7 +340,7 @@ main() {
   marker=$(cat "$marker_file") || blocked '无法读取合成标记。'
   [[ "$marker" =~ ^[A-Za-z0-9._-]{20,128}$ ]] || blocked '合成标记格式不合法。'
 
-  WORK=$(mktemp -d) || blocked '日志审计临时目录不可用。'
+  prepare_work
   now=$(date +%s 2>/dev/null) || blocked '日志审计时钟不可用。'
   [[ "$now" =~ ^[0-9]+$ ]] || blocked '日志审计时钟不合法。'
   AUDIT_DEADLINE_EPOCH=$((now + AUDIT_MAX_SECONDS))

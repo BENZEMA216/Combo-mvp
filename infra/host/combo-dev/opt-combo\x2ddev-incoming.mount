@@ -1,0 +1,15 @@
+[Unit]
+Description=Compatibility bind for Combo Test incoming artifacts
+Documentation=file:/opt/combo-dev/current/infra/host/combo-dev/README.md
+BindsTo=opt-combo\x2ddev-state.mount
+After=opt-combo\x2ddev-state.mount
+
+[Mount]
+What=/opt/combo-dev/state/incoming
+Where=/opt/combo-dev/incoming
+Type=none
+Options=bind,rw,nodev,nosuid,noexec
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target

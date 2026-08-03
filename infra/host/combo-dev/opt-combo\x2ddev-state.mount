@@ -1,0 +1,16 @@
+[Unit]
+Description=Bounded Combo Test deployment control-state filesystem
+Documentation=file:/opt/combo-dev/current/infra/host/combo-dev/README.md
+Requires=combo-host-data-mount-check.service
+After=combo-host-data-mount-check.service
+Before=opt-combo\x2ddev-incoming.mount opt-combo\x2ddev-releases.mount var-lib-combo\x2ddev-evidence.mount
+
+[Mount]
+What=/var/lib/combo-host-data/control-state.img
+Where=/opt/combo-dev/state
+Type=ext4
+Options=loop,rw,nodev,nosuid,noexec
+TimeoutSec=60
+
+[Install]
+WantedBy=multi-user.target
