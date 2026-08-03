@@ -1236,10 +1236,25 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /RUN_STARTED/);
   assert.match(source, /RUN_FINISHED/);
   assert.match(source, /RUN_ERROR/);
+  const authEntryStart = source.indexOf("await checked('preview_auth_entry_and_return_to'");
+  const authEntryEnd = source.indexOf("await checked('owner_isolation'", authEntryStart);
+  assert.ok(authEntryStart >= 0 && authEntryEnd > authEntryStart);
+  const authEntryFlow = source.slice(authEntryStart, authEntryEnd);
   assert.match(
-    source,
-    /await checked\('preview_auth_entry_and_return_to',[\s\S]*recoveryPage\.goto\(recoveryPath[\s\S]*name: '去登录'[\s\S]*pathname: '\/login'[\s\S]*name: '使用邮箱登录'[\s\S]*name: '邮箱'/,
+    authEntryFlow,
+    /recoveryPage\.goto\(recoveryPath[\s\S]*anonymousMe\.status\(\) === 401[\s\S]*waitForAcceptanceUrl\(recoveryPage,[\s\S]*pathname: '\/login'[\s\S]*searchParams: \{ returnTo: recoveryPath \}[\s\S]*name: '使用邮箱登录'[\s\S]*name: '邮箱'/,
   );
+  assert.doesNotMatch(authEntryFlow, /name: '去登录'|loginButton/);
+  const logoutStart = source.indexOf("await checked('logout_revokes_session'");
+  const logoutEnd = source.indexOf('\n    ensure(\n      GOAL_B_ACCEPTANCE_CHECKS', logoutStart);
+  assert.ok(logoutStart >= 0 && logoutEnd > logoutStart);
+  const logoutFlow = source.slice(logoutStart, logoutEnd);
+  assert.match(
+    logoutFlow,
+    /const loggedOutReturnTo = `\/tasks\/\$\{task\.id\}`[\s\S]*page\.goto\(loggedOutReturnTo[\s\S]*waitForAcceptanceUrl\(page,[\s\S]*pathname: '\/login'[\s\S]*searchParams: \{ returnTo: loggedOutReturnTo \}[\s\S]*name: '使用邮箱登录'/,
+  );
+  assert.doesNotMatch(logoutFlow, /name: '去登录'|loginButton/);
+  assert.doesNotMatch(source, /name: '去登录'/);
   assert.match(source, /选择能力「\$\{capability\.name\}」/);
   assert.match(source, /一键发布到市集 · 1 项/);
   assert.match(source, /\/api\/v1\/auth\/email\/challenges/);

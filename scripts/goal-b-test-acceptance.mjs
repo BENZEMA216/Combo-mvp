@@ -2178,9 +2178,8 @@ async function runAcceptance(options) {
           maxRedirects: 0,
         });
         ensure(anonymousMe.status() === 401, activeCheck, 'http_status');
-        const loginButton = recoveryPage.getByRole('button', { name: '去登录' });
-        await loginButton.waitFor({ state: 'visible', timeout: 30_000 });
-        await loginButton.click();
+        // RequireAuth 对匿名深链直接 replace 到公开登录页；这里验证当前路由契约，
+        // 不再兼容已经删除的中间登录门板和“去登录”按钮。
         await waitForAcceptanceUrl(recoveryPage, {
           origin: options.webOrigin,
           pathname: '/login',
@@ -2317,11 +2316,16 @@ async function runAcceptance(options) {
         await replay.close();
       }
       authenticationCookieValue = undefined;
-      await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
-      await page.getByRole('button', { name: '去登录' }).waitFor({
-        state: 'visible',
-        timeout: 30_000,
+      const loggedOutReturnTo = `/tasks/${task.id}`;
+      await page.goto(loggedOutReturnTo, { waitUntil: 'domcontentloaded' });
+      await waitForAcceptanceUrl(page, {
+        origin: options.webOrigin,
+        pathname: '/login',
+        searchParams: { returnTo: loggedOutReturnTo },
       });
+      await page
+        .getByRole('heading', { name: '使用邮箱登录' })
+        .waitFor({ state: 'visible', timeout: 30_000 });
     });
 
     ensure(
