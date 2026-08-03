@@ -4463,6 +4463,54 @@ test('Test releases commit inside canonical staging and pruning never crosses pr
   assert.doesNotMatch(resetCleanup, /rm[^\n]*(?:\.staging|\/work|\/evidence)/);
 });
 
+test('control-state source-root verification succeeds when no nested mounts exist', () => {
+  const source = text('infra/host/combo-dev/combo-dev-prepare-control-state.sh');
+  const functionStart = source.indexOf('verify_source_roots() {');
+  const functionEnd = source.indexOf('\n}\n\nassert_no_open_incoming()', functionStart);
+  const verifySourceRoots = source.slice(functionStart, functionEnd + 2);
+  assert.ok(functionStart > 0 && functionEnd > functionStart);
+
+  const runVerification = (mountTargets) =>
+    spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -Eeuo pipefail
+INCOMING_ROOT=/opt/combo-dev/incoming
+RELEASES_ROOT=/opt/combo-dev/releases
+EVIDENCE_ROOT=/var/lib/combo-dev/evidence
+fail() { printf 'unexpected failure: %s\\n' "$1" >&2; exit 1; }
+stat() {
+  case "$*" in
+    *"$INCOMING_ROOT") printf '0:0:1733:directory\\n' ;;
+    *) printf '0:0:755:directory\\n' ;;
+  esac
+}
+findmnt() {
+  if [[ "$*" == '-rn -o TARGET' ]]; then
+    for target in ${mountTargets.map((target) => JSON.stringify(target)).join(' ')}; do
+      printf '%s\\n' "$target"
+    done
+    return 0
+  fi
+  return 1
+}
+${verifySourceRoots}
+verify_source_roots
+printf 'PASS\\n'`,
+      ],
+      { encoding: 'utf8' },
+    );
+
+  const healthy = runVerification(['/', '/home/xingzheng/data', '/var/lib/combo-host-data']);
+  assert.equal(healthy.status, 0, `${healthy.stdout}${healthy.stderr}`);
+  assert.equal(healthy.stdout, 'PASS\n');
+
+  const nested = runVerification(['/', '/opt/combo-dev/incoming/nested']);
+  assert.notEqual(nested.status, 0, `${nested.stdout}${nested.stderr}`);
+  assert.match(nested.stderr, /存在嵌套挂载/);
+});
+
 test('control-state migration stays owner-gated and excludes unrelated host-runtime work', () => {
   const bootstrap = text('scripts/combo-dev-bootstrap.sh');
   const deploy = text('scripts/combo-dev-deploy.sh');
