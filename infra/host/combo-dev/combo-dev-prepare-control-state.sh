@@ -226,6 +226,7 @@ verify_source_roots() {
       [[ "$target" == "$path"/* ]] && fail "$path 内存在嵌套挂载；拒绝迁移。"
     done <<<"$mounts"
   done
+  return 0
 }
 
 assert_no_open_incoming() {
