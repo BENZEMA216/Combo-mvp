@@ -142,7 +142,7 @@ assert_parent_capacity() {
   free=$(df -B1 --output=avail "$DATA_ROOT" | awk 'NR==2 {print $1}') || fail '无法读取父数据盘可用空间。'
   total=$(df -B1 --output=size "$DATA_ROOT" | awk 'NR==2 {print $1}') || fail '无法读取父数据盘总量。'
   inodes=$(df --output=iavail "$DATA_ROOT" | awk 'NR==2 {print $1}') || fail '无法读取父数据盘可用 inode。'
-  inode_total=$(df --output=inodes "$DATA_ROOT" | awk 'NR==2 {print $1}') || fail '无法读取父数据盘 inode 总量。'
+  inode_total=$(df --output=itotal "$DATA_ROOT" | awk 'NR==2 {print $1}') || fail '无法读取父数据盘 inode 总量。'
   [[ "$free" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ && "$inode_total" =~ ^[0-9]+$ ]] ||
     fail '父数据盘容量指标格式不合法。'
   critical=$(max_threshold "$total" "$DATA_CRITICAL_MIN_BYTES" 10)
