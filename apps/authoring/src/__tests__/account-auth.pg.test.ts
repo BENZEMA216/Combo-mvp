@@ -340,7 +340,10 @@ pgDescribe('first-party auth PostgreSQL invariants', () => {
         clientAddress: '192.0.2.10',
         traceId: 'trace-pg-activation-rollback',
       }),
-    ).resolves.toEqual({ kind: 'dependency_unavailable' });
+    ).resolves.toEqual({
+      kind: 'dependency_unavailable',
+      dependencyStage: 'challenge_finalize',
+    });
     const deliveredButInactive = mailer.latest();
 
     const rows = await pool.query<{

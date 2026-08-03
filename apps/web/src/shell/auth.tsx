@@ -1,6 +1,6 @@
 // 会话身份与登录守卫。浏览器只携带 HttpOnly 会话 Cookie，身份事实始终来自 GET /api/v1/me。
 import { createContext, useContext, type ReactElement, type ReactNode } from 'react';
-import { Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { sanitizeAuthReturnTo, type MeView } from '@cb/shared';
 import { probeAuthSession } from '../api/auth.js';
@@ -22,10 +22,6 @@ export function goToLogin(
   navigate: (url: string) => void = (url) => window.location.assign(url),
 ): void {
   navigate(loginUrl(returnTo));
-}
-
-function currentReturnTo(): string {
-  return sanitizeAuthReturnTo(window.location.pathname + window.location.search);
 }
 
 export type MeProbe =
@@ -132,37 +128,6 @@ function AuthLoading(): ReactElement {
   );
 }
 
-function AuthLoginGate(): ReactElement {
-  return (
-    <GatePanel role="alert" variant="login" labelledBy="creator-login-title">
-      <p className="cb-auth-gate__msg cb-auth-gate__msg--login">请先登录后进入创作者中心。</p>
-      <h1 id="creator-login-title" className="cb-auth-gate__title">
-        继续创建你的能力
-      </h1>
-      <p className="cb-auth-gate__intro">上传真实会话，提取可复用的能力项，并继续未完成的任务。</p>
-      <ol className="cb-auth-gate__flow" aria-label="创作者中心流程">
-        <li>上传会话</li>
-        <li>提取能力</li>
-        <li>确认发布</li>
-      </ol>
-      <p className="cb-auth-gate__trust">
-        <strong>公开边界</strong>
-        <span>只有你确认发布的能力会出现在试用页，原始会话不会进入试用页。</span>
-      </p>
-      <div className="cb-auth-gate__actions cb-auth-gate__actions--login">
-        <button
-          type="button"
-          className="cb-auth-gate__action"
-          onClick={() => goToLogin(currentReturnTo())}
-        >
-          去登录
-        </button>
-        <p className="cb-auth-gate__return-note">登录完成后，将回到你刚才访问的页面。</p>
-      </div>
-    </GatePanel>
-  );
-}
-
 function AuthDisabledGate(): ReactElement {
   return (
     <GatePanel role="alert">
@@ -186,8 +151,11 @@ function AuthErrorGate({ onRetry }: { onRetry: () => void }): ReactElement {
 
 export function RequireAuth(): ReactElement {
   const { status, refetch } = useAuth();
+  const location = useLocation();
   if (status === 'loading') return <AuthLoading />;
-  if (status === 'anon') return <AuthLoginGate />;
+  if (status === 'anon') {
+    return <Navigate to={loginUrl(location.pathname + location.search)} replace />;
+  }
   if (status === 'disabled') return <AuthDisabledGate />;
   if (status === 'error') return <AuthErrorGate onRetry={refetch} />;
   return <Outlet />;

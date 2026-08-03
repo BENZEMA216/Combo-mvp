@@ -21,7 +21,12 @@ import { sendAuthError } from '../../platform/http/_helpers.js';
 import { asTxPool } from '../../platform/infra/db-tx.js';
 import { authSessionDigest } from '../../platform/infra/auth-session.js';
 import { readMe, revokeSession } from './repo.js';
-import { requestEmailChallenge, verifyEmail, type AccountAuthDependencies } from './service.js';
+import {
+  requestEmailChallenge,
+  verifyEmail,
+  type AccountAuthDependencies,
+  type ChallengeDependencyStage,
+} from './service.js';
 
 const NO_STORE = 'no-store';
 
@@ -60,9 +65,18 @@ function clearSessionCookie(req: FastifyRequest, reply: FastifyReply): void {
   reply.clearCookie(requestSessionCookieName(req), sessionCookieOptions(req));
 }
 
-function logDependencyFailure(req: FastifyRequest, operation: string): void {
+function logDependencyFailure(
+  req: FastifyRequest,
+  operation: string,
+  dependencyStage?: ChallengeDependencyStage,
+): void {
   req.log.warn(
-    { code: ErrorCode.DEPENDENCY_UNAVAILABLE, traceId: req.id, operation },
+    {
+      code: ErrorCode.DEPENDENCY_UNAVAILABLE,
+      traceId: req.id,
+      operation,
+      ...(dependencyStage === undefined ? {} : { dependencyStage }),
+    },
     'authentication dependency unavailable',
   );
 }
@@ -86,7 +100,7 @@ export function emailChallengeHandler(): RouteHandlerMethod {
       return sendAuthError(req, reply, ErrorCode.RATE_LIMITED);
     }
     if (result.kind === 'dependency_unavailable') {
-      logDependencyFailure(req, 'email_challenge');
+      logDependencyFailure(req, 'email_challenge', result.dependencyStage);
       return sendAuthError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
     }
 

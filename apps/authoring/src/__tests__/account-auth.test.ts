@@ -129,6 +129,35 @@ describe('first-party account handlers', () => {
     expect(reply.header).toHaveBeenCalledWith('cache-control', 'no-store');
   });
 
+  it('logs only the safe dependency stage when challenge creation returns 503', async () => {
+    serviceMocks.requestEmailChallenge.mockResolvedValue({
+      kind: 'dependency_unavailable',
+      dependencyStage: 'resend_delivery',
+    });
+    const req = requestDouble({ body: { email: 'Alice@example.com' } });
+    const reply = replyDouble();
+
+    await run(emailChallengeHandler, req, reply);
+
+    expect(req.log.warn).toHaveBeenCalledWith(
+      {
+        code: 'DEPENDENCY_UNAVAILABLE',
+        traceId: 'trace-account-test',
+        operation: 'email_challenge',
+        dependencyStage: 'resend_delivery',
+      },
+      'authentication dependency unavailable',
+    );
+    expect(reply.code).toHaveBeenCalledWith(503);
+    const payload = (reply.send as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      error?: Record<string, unknown>;
+    };
+    expect(payload.error).not.toHaveProperty('dependencyStage');
+    expect(JSON.stringify((req.log.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+      'Alice@example.com',
+    );
+  });
+
   it('preserves a leading-zero code and sets the explicit HTTPS session cookie', async () => {
     const req = requestDouble({
       body: { email: 'Alice@example.com', code: '004271', returnTo: '/tasks' },

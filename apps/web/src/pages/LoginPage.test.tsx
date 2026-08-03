@@ -148,6 +148,34 @@ describe('LoginPage two-step email OTP flow', () => {
     expect(storageSpy).not.toHaveBeenCalled();
   });
 
+  it('returns a completed email login to the protected capabilities page', async () => {
+    fetchMock = installFetchMock([
+      { status: 401, json: {} },
+      challengeAccepted,
+      {
+        status: 200,
+        json: {
+          data: { user: USER, returnTo: '/capabilities' },
+          meta: { traceId: 'trace-capabilities-return' },
+        },
+      },
+    ]);
+    const navigate = renderLogin(undefined, '/login?returnTo=%2Fcapabilities');
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByRole('textbox', { name: '邮箱' }), 'Alice@example.com');
+    await user.click(screen.getByRole('button', { name: '发送验证码' }));
+    await user.type(await screen.findByRole('textbox', { name: '六位验证码' }), '123456');
+    await user.click(screen.getByRole('button', { name: '验证并登录' }));
+
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith('/capabilities'));
+    expect(fetchMock.calls[2]?.body).toEqual({
+      email: 'Alice@example.com',
+      code: '123456',
+      returnTo: '/capabilities',
+    });
+  });
+
   it('moves focus to the first invalid field and does not send malformed input', async () => {
     fetchMock = installFetchMock({ status: 401, json: {} });
     renderLogin();
@@ -361,7 +389,7 @@ describe('LoginPage two-step email OTP flow', () => {
     expect(fetchMock.calls).toHaveLength(2);
   });
 
-  it('shows a manual dependency retry and retains the entered email', async () => {
+  it('keeps the email form editable and offers an inline retry when challenge dependencies fail', async () => {
     fetchMock = installFetchMock([
       { status: 401, json: {} },
       {
@@ -383,13 +411,21 @@ describe('LoginPage two-step email OTP flow', () => {
     await user.type(await screen.findByRole('textbox', { name: '邮箱' }), 'Alice@example.com');
     await user.click(screen.getByRole('button', { name: '发送验证码' }));
 
-    const errors = await screen.findAllByText('邮件服务暂时不可用，请稍后重试。');
-    const errorSummary = errors.find((node) => node.closest('[tabindex="-1"]'));
-    expect(errorSummary?.closest('[tabindex="-1"]')).toHaveFocus();
-    await user.click(screen.getByRole('button', { name: '重新发送验证码' }));
+    const emailInput = await screen.findByRole('textbox', { name: '邮箱' });
+    expect(emailInput).toHaveValue('Alice@example.com');
+    expect(emailInput).toBeEnabled();
+    expect(emailInput).toHaveFocus();
+    expect(screen.getByRole('alert')).toHaveTextContent('邮件服务暂时不可用，请稍后重试。');
+    expect(screen.getByRole('heading', { name: '使用邮箱登录' })).toBeInTheDocument();
+    expect(screen.queryByText(/登录态失效/)).toBeNull();
+    expect(screen.getByRole('button', { name: '重试发送' })).toBeInTheDocument();
+
+    await user.clear(emailInput);
+    await user.type(emailInput, 'Bob@example.com');
+    await user.click(screen.getByRole('button', { name: '发送验证码' }));
 
     expect(await screen.findByRole('textbox', { name: '六位验证码' })).toHaveFocus();
-    expect(fetchMock.calls[2]?.body).toEqual({ email: 'Alice@example.com' });
+    expect(fetchMock.calls[2]?.body).toEqual({ email: 'Bob@example.com' });
   });
 
   it('sanitizes an unsafe query returnTo before verification', async () => {

@@ -88,7 +88,10 @@ describe('account auth service orchestration', () => {
         clientAddress: '192.0.2.4',
         traceId: 'trace-finalize-failure',
       }),
-    ).resolves.toEqual({ kind: 'dependency_unavailable' });
+    ).resolves.toEqual({
+      kind: 'dependency_unavailable',
+      dependencyStage: 'challenge_finalize',
+    });
     expect(deps.mailer.sendLoginCode).toHaveBeenCalledTimes(1);
     expect(repoMocks.finalizeEmailChallenge).toHaveBeenCalledWith(
       deps.db,
@@ -125,7 +128,7 @@ describe('account auth service orchestration', () => {
           clientAddress: '192.0.2.4',
           traceId: 'trace-service',
         }),
-      ).resolves.toEqual({ kind: 'dependency_unavailable' });
+      ).resolves.toEqual({ kind: 'dependency_unavailable', dependencyStage: 'resend_delivery' });
       expect(repoMocks.finalizeEmailChallenge).toHaveBeenCalledWith(
         deps.db,
         expect.objectContaining({ delivery }),
@@ -143,7 +146,7 @@ describe('account auth service orchestration', () => {
         clientAddress: '192.0.2.4',
         traceId: 'trace-service',
       }),
-    ).resolves.toEqual({ kind: 'dependency_unavailable' });
+    ).resolves.toEqual({ kind: 'dependency_unavailable', dependencyStage: 'resend_delivery' });
     expect(repoMocks.finalizeEmailChallenge).toHaveBeenCalledWith(
       deps.db,
       expect.objectContaining({ delivery: 'transient_failure' }),
@@ -160,9 +163,40 @@ describe('account auth service orchestration', () => {
         clientAddress: '192.0.2.4',
         traceId: 'trace-service',
       }),
-    ).resolves.toEqual({ kind: 'dependency_unavailable' });
+    ).resolves.toEqual({ kind: 'dependency_unavailable', dependencyStage: 'redis_rate_limit' });
     expect(repoMocks.insertPendingEmailChallenge).not.toHaveBeenCalled();
     expect(deps.mailer.sendLoginCode).not.toHaveBeenCalled();
+  });
+
+  it('identifies the pending challenge transaction as the unavailable dependency stage', async () => {
+    const deps = dependencies();
+    repoMocks.insertPendingEmailChallenge.mockRejectedValueOnce(new Error('database unavailable'));
+
+    await expect(
+      requestEmailChallenge(deps, {
+        email: 'Alice@example.com',
+        clientAddress: '192.0.2.4',
+        traceId: 'trace-service',
+      }),
+    ).resolves.toEqual({ kind: 'dependency_unavailable', dependencyStage: 'challenge_insert' });
+    expect(deps.mailer.sendLoginCode).not.toHaveBeenCalled();
+  });
+
+  it('identifies invalid authentication configuration without exposing secret material', async () => {
+    const deps = dependencies();
+    deps.hmacSecret = 'too-short';
+
+    await expect(
+      requestEmailChallenge(deps, {
+        email: 'Alice@example.com',
+        clientAddress: '192.0.2.4',
+        traceId: 'trace-service',
+      }),
+    ).resolves.toEqual({
+      kind: 'dependency_unavailable',
+      dependencyStage: 'auth_configuration',
+    });
+    expect(deps.rateLimiter.consumeChallenge).not.toHaveBeenCalled();
   });
 
   it('does not send when the PostgreSQL target budget returns Retry-After', async () => {
