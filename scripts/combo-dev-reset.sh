@@ -41,22 +41,34 @@ readonly KUBECONFIG_PATH='/etc/combo-dev/dispatcher.kubeconfig'
 readonly PRODUCTION_KUBECONFIG='/etc/combo-dev/production-observer.kubeconfig'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
+readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
+readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
+readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
+readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly RESET_PROOF_ROOT='/var/lib/combo-dev'
+readonly ACCEPTANCE_PENDING_SECONDS=7200
 readonly HOST_SYSLOG_POLICY='/etc/logrotate.d/combo-host-syslog'
 readonly HOST_SYSLOG_POLICY_SHA256='aad4fc3b67504ff6dbec2a05b7230c8c78bb57e3465d5d6b75a3ef8e3d6eae94'
 RESET_PROOF=''
-CONSUMED_RESET_PROOF=''
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly BOOTSTRAP_FOUNDATION='/opt/combo-dev/bootstrap-overlay/foundation'
 readonly APPS=(api worker runtime web)
 readonly FOUNDATION_STATEFUL=(postgres redis-queue minio)
-readonly CONTROLLERS=(statefulset/postgres statefulset/redis-queue statefulset/minio deployment/redis-hot)
 K=(kubectl --request-timeout=30s --kubeconfig "$KUBECONFIG_PATH")
 PK=(kubectl --request-timeout=30s --kubeconfig "$PRODUCTION_KUBECONFIG")
 WORK=''
 FOUNDATION=''
 MUTATING=0
 SUCCESS=0
+RECOVERED_FROM_ATTEMPT=''
+RECOVERY_REVISION=''
+RECOVERY_RUN_ID=''
+RECOVERY_RUN_ATTEMPT=''
+ATTEMPT_REVISION=''
+ATTEMPT_RUN_ID=''
+ATTEMPT_RUN_ATTEMPT=''
 
 status() { printf '[combo-dev-reset] %s\n' "$1"; }
 fail() { printf '[combo-dev-reset] FAIL: %s\n' "$1" >&2; exit 1; }
@@ -70,14 +82,22 @@ storage_guard_timer_ready() {
   [[ -n "$next" && "$next" != 0 && "$next" != infinity ]]
 }
 cleanup() {
-  local rc=$?
+  local rc=$? proof_cleanup_ok=1 convergence_ok=1
   set +e
   if (( MUTATING == 1 && SUCCESS == 0 )); then
     mark_failure_fence >/dev/null 2>&1 || true
-    timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || true
-    timeout 30 systemctl stop combo-dev-s3-forward.service >/dev/null 2>&1 || true
-    if fence_all_writers >/dev/null 2>&1; then
-      status '失败收敛已验证；全部写入者、任务与转发器保持关闭。'
+    remove_all_reset_proofs >/dev/null 2>&1 || proof_cleanup_ok=0
+    stop_forwarders >/dev/null 2>&1 || convergence_ok=0
+    fence_all_writers >/dev/null 2>&1 || convergence_ok=0
+    verify_complete_writer_inventory_zero >/dev/null 2>&1 || convergence_ok=0
+    if (( convergence_ok == 1 )); then
+      if (( proof_cleanup_ok == 0 )); then
+        status '失败收敛已验证，但 reset proof inventory 无法清空；需要主机所有者介入。'
+      elif record_failed_attempt_capability >/dev/null 2>&1; then
+        status '失败收敛已验证；当前 attempt 已记录，下一次手工 Test 部署可从 reset 安全重试。'
+      else
+        status '失败收敛已验证，但 attempt 恢复能力无法安全提交；需要主机所有者介入。'
+      fi
     else
       status '失败收敛无法验证；阻断标记已保留并需要主机所有者介入。'
     fi
@@ -452,10 +472,277 @@ spec:
 EOF
 }
 
-mark_failure_fence() {
+write_writers_fence() {
+  local value=$1 candidate
   install -d -o root -g root -m 0711 /var/lib/combo-dev
-  printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
-  chmod 0600 "$FAILURE_FENCE_MARKER"
+  candidate=$(mktemp /var/lib/combo-dev/.writers-fenced.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$FAILURE_FENCE_MARKER"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+mark_failure_fence() {
+  write_writers_fence "$FAILURE_FENCE_VALUE"
+}
+
+writers_fence_has_value() {
+  local expected=$1 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" ]] || return 1
+  [[ $(stat -c '%u:%g:%a:%s' "$FAILURE_FENCE_MARKER" 2>/dev/null) == \
+    "0:0:600:$expected_bytes" ]] || return 1
+  [[ $(<"$FAILURE_FENCE_MARKER") == "$expected" ]]
+}
+
+mark_safe_idle_fence() {
+  writers_fence_has_value "$FAILURE_FENCE_VALUE" || return 1
+  write_writers_fence "$SAFE_IDLE_FENCE_VALUE"
+}
+
+forwarders_stopped() {
+  local unit active
+  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+    active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
+    [[ "$active" == inactive || "$active" == failed ]] || return 1
+  done
+}
+
+stop_forwarders() {
+  rm -rf -- /run/combo-dev-forwarders
+  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
+  forwarders_stopped
+}
+
+exact_private_marker() {
+  [[ -f "$1" && ! -L "$1" && $(stat -c '%u:%g:%a' "$1" 2>/dev/null) == '0:0:600' ]]
+}
+
+exact_private_marker_value() {
+  local path=$1 expected=$2 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$path" && ! -L "$path" &&
+    $(stat -c '%u:%g:%a:%s' "$path" 2>/dev/null) == "0:0:600:$expected_bytes" &&
+    $(<"$path") == "$expected" ]]
+}
+
+remove_all_reset_proofs() {
+  local inventory remaining path name invalid=0 failed=0
+  [[ -n "$WORK" && -d "$WORK" && ! -L "$WORK" ]] || return 1
+  inventory=$(mktemp "$WORK/reset-proof-inventory.XXXXXX") || return 1
+  remaining=$(mktemp "$WORK/reset-proof-remaining.XXXXXX") || {
+    rm -f -- "$inventory"
+    return 1
+  }
+  chmod 0600 "$inventory" "$remaining" || {
+    rm -f -- "$inventory" "$remaining"
+    return 1
+  }
+  if ! find "$RESET_PROOF_ROOT" -mindepth 1 -maxdepth 1 -name 'reset-proof*' -print0 >"$inventory"; then
+    rm -f -- "$inventory" "$remaining"
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    name=${path##*/}
+    [[ "${path%/*}" == "$RESET_PROOF_ROOT" ]] || invalid=1
+    [[ "$name" =~ ^reset-proof\.[0-9a-f]{40}\.[1-9][0-9]*\.[1-9][0-9]*(\.consumed)?\.json$ ]] || invalid=1
+    [[ -f "$path" && ! -L "$path" ]] || invalid=1
+    [[ $(stat -c '%u:%g:%a:%h' "$path" 2>/dev/null) == '0:0:600:1' ]] || invalid=1
+  done <"$inventory"
+  if (( invalid != 0 )); then
+    rm -f -- "$inventory" "$remaining"
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    rm -f -- "$path" || failed=1
+  done <"$inventory"
+  find "$RESET_PROOF_ROOT" -mindepth 1 -maxdepth 1 -name 'reset-proof*' -print0 >"$remaining" || failed=1
+  [[ ! -s "$remaining" ]] || failed=1
+  rm -f -- "$inventory" "$remaining" || failed=1
+  return "$failed"
+}
+
+write_private_attempt_marker() {
+  local path=$1 value=$2 candidate
+  [[ "$path" == "$EXTERNAL_FENCE_MARKER" || "$path" == "$ACCEPTANCE_PENDING_MARKER" ]] ||
+    return 1
+  candidate=$(mktemp /var/lib/combo-dev/.attempt-marker.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$path"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+pending_marker_matches_attempt() {
+  local revision=$1 run_id=$2 run_attempt=$3 value deadline
+  [[ -f "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || return 1
+  value=$(<"$ACCEPTANCE_PENDING_MARKER") || return 1
+  exact_private_marker_value "$ACCEPTANCE_PENDING_MARKER" "$value" || return 1
+  [[ "$value" =~ ^([0-9a-f]{40})\ ([1-9][0-9]*)\ ([1-9][0-9]*)\ ([1-9][0-9]*)$ ]] ||
+    return 1
+  [[ ${BASH_REMATCH[1]} == "$revision" && ${BASH_REMATCH[2]} == "$run_id" &&
+    ${BASH_REMATCH[3]} == "$run_attempt" ]] || return 1
+  deadline=${BASH_REMATCH[4]}
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]]
+}
+
+record_failed_attempt_capability() {
+  local identity now deadline pending rc=0
+  [[ "$ATTEMPT_REVISION" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$ATTEMPT_RUN_ID" =~ ^[1-9][0-9]*$ &&
+    "$ATTEMPT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || return 1
+  identity="attempt $ATTEMPT_REVISION $ATTEMPT_RUN_ID $ATTEMPT_RUN_ATTEMPT"
+  now=$(date +%s 2>/dev/null) || return 1
+  [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 1
+  deadline=$((now + ACCEPTANCE_PENDING_SECONDS))
+  pending="$ATTEMPT_REVISION $ATTEMPT_RUN_ID $ATTEMPT_RUN_ATTEMPT $deadline"
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || rc=1
+  if (( rc == 0 )); then
+    writers_fence_has_value "$FAILURE_FENCE_VALUE" || rc=1
+  fi
+  if (( rc == 0 )) &&
+    [[ -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    pending_marker_matches_attempt \
+      "$ATTEMPT_REVISION" "$ATTEMPT_RUN_ID" "$ATTEMPT_RUN_ATTEMPT" || rc=1
+  elif (( rc == 0 )); then
+    write_private_attempt_marker "$ACCEPTANCE_PENDING_MARKER" "$pending" || rc=1
+  fi
+  if (( rc == 0 )) &&
+    [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ]]; then
+    exact_private_marker_value "$EXTERNAL_FENCE_MARKER" "$identity" || rc=1
+  elif (( rc == 0 )); then
+    write_private_attempt_marker "$EXTERNAL_FENCE_MARKER" "$identity" || rc=1
+  fi
+  flock -u 8 >/dev/null 2>&1 || rc=1
+  exec 8>&-
+  return "$rc"
+}
+
+recoverable_attempt_fence() {
+  local current_revision=$1 current_run_id=$2 current_run_attempt=$3
+  local external pending old_revision old_run_id old_run_attempt deadline
+  exact_private_marker "$EXTERNAL_FENCE_MARKER" || return 1
+  exact_private_marker "$ACCEPTANCE_PENDING_MARKER" || return 1
+  external=$(<"$EXTERNAL_FENCE_MARKER") || return 1
+  pending=$(<"$ACCEPTANCE_PENDING_MARKER") || return 1
+  exact_private_marker_value "$EXTERNAL_FENCE_MARKER" "$external" || return 1
+  exact_private_marker_value "$ACCEPTANCE_PENDING_MARKER" "$pending" || return 1
+  [[ "$external" =~ ^attempt\ ([0-9a-f]{40})\ ([1-9][0-9]*)\ ([1-9][0-9]*)$ ]] || return 1
+  old_revision=${BASH_REMATCH[1]}
+  old_run_id=${BASH_REMATCH[2]}
+  old_run_attempt=${BASH_REMATCH[3]}
+  [[ "$pending" =~ ^([0-9a-f]{40})\ ([1-9][0-9]*)\ ([1-9][0-9]*)\ ([1-9][0-9]*)$ ]] || return 1
+  [[ ${BASH_REMATCH[1]} == "$old_revision" && ${BASH_REMATCH[2]} == "$old_run_id" &&
+    ${BASH_REMATCH[3]} == "$old_run_attempt" ]] || return 1
+  deadline=${BASH_REMATCH[4]}
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$old_revision $old_run_id $old_run_attempt" != \
+    "$current_revision $current_run_id $current_run_attempt" ]] || return 1
+  RECOVERY_REVISION=$old_revision
+  RECOVERY_RUN_ID=$old_run_id
+  RECOVERY_RUN_ATTEMPT=$old_run_attempt
+}
+
+verify_complete_writer_inventory_zero() {
+  local snapshot="$WORK/writer-inventory.$RANDOM.json" rc=0
+  if ! timeout 20 "${K[@]}" -n "$NAMESPACE" get \
+    deployments.apps,statefulsets.apps,daemonsets.apps,replicasets.apps,replicationcontrollers,horizontalpodautoscalers.autoscaling,jobs.batch,cronjobs.batch,pods \
+    -o json >"$snapshot" 2>/dev/null; then
+    rm -f -- "$snapshot"
+    return 1
+  fi
+  chmod 0600 "$snapshot" || { rm -f -- "$snapshot"; return 1; }
+  jq -e '
+    all(.items[];
+      if .kind == "Deployment" or .kind == "StatefulSet"
+          or .kind == "ReplicaSet" or .kind == "ReplicationController" then
+        (.spec.replicas // 1) == 0
+        and (.status.replicas // 0) == 0
+        and (.status.readyReplicas // 0) == 0
+        and (.status.availableReplicas // 0) == 0
+      elif .kind == "Pod" then
+        (.status.phase == "Succeeded" or .status.phase == "Failed")
+        and all((.status.containerStatuses // [])[]; .state.running == null)
+      else
+        false
+      end
+    )
+  ' "$snapshot" >/dev/null 2>&1 || rc=1
+  rm -f -- "$snapshot"
+  return "$rc"
+}
+
+begin_reset_mutation_fence() {
+  local current_revision=$1 current_run_id=$2 current_run_attempt=$3
+  local rc=0 recovery=0
+  RECOVERED_FROM_ATTEMPT=''
+  RECOVERY_REVISION=''
+  RECOVERY_RUN_ID=''
+  RECOVERY_RUN_ATTEMPT=''
+  if [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ||
+    -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    writers_fence_has_value "$FAILURE_FENCE_VALUE" || return 1
+    recoverable_attempt_fence "$current_revision" "$current_run_id" "$current_run_attempt" || return 1
+    forwarders_stopped || return 1
+    verify_complete_writer_inventory_zero || return 1
+    recovery=1
+  fi
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || rc=1
+  if (( rc == 0 )); then
+    if (( recovery == 1 )); then
+      writers_fence_has_value "$FAILURE_FENCE_VALUE" || rc=1
+      recoverable_attempt_fence "$current_revision" "$current_run_id" "$current_run_attempt" || rc=1
+      forwarders_stopped || rc=1
+      verify_complete_writer_inventory_zero || rc=1
+    else
+      if [[ -e "$FAILURE_FENCE_MARKER" || -L "$FAILURE_FENCE_MARKER" ]]; then
+        writers_fence_has_value "$SAFE_IDLE_FENCE_VALUE" || rc=1
+      fi
+      [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+        ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || rc=1
+    fi
+  fi
+  if (( rc == 0 )); then
+    # Make the EXIT/TERM trap responsible before replacing an absent or safe
+    # capability. An interruption from here cannot escape failure fencing.
+    MUTATING=1
+    mark_failure_fence || rc=1
+  fi
+  if (( rc == 0 && recovery == 1 )); then
+    RECOVERED_FROM_ATTEMPT="$RECOVERY_REVISION $RECOVERY_RUN_ID $RECOVERY_RUN_ATTEMPT"
+    rm -f -- "$EXTERNAL_FENCE_MARKER" || rc=1
+    rm -f -- "$ACCEPTANCE_PENDING_MARKER" || rc=1
+  fi
+  flock -u 8 >/dev/null 2>&1 || rc=1
+  exec 8>&-
+  return "$rc"
+}
+
+finish_reset_safe_idle_fence() {
+  local rc=0
+  # The operation lock is still held and the generic marker prevents every
+  # forwarder lease, so these potentially slow Kubernetes checks are stable
+  # without holding the short failure-fence lock.
+  forwarders_stopped || return 1
+  verify_all_writers_zero || return 1
+  verify_complete_writer_inventory_zero || return 1
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || rc=1
+  if (( rc == 0 )); then
+    writers_fence_has_value "$FAILURE_FENCE_VALUE" || rc=1
+    [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || rc=1
+  fi
+  if (( rc == 0 )); then mark_safe_idle_fence || rc=1; fi
+  flock -u 8 >/dev/null 2>&1 || rc=1
+  exec 8>&-
+  return "$rc"
 }
 
 apply_foundation_replicas() {
@@ -482,6 +769,17 @@ controller_scaled_zero() {
   else
     rc=$?; (( rc == 1 ))
   fi
+}
+
+verify_all_writers_zero() {
+  local name rc pods
+  for name in "${APPS[@]}" redis-hot; do controller_scaled_zero deployment "$name" || return 1; done
+  for name in "${FOUNDATION_STATEFUL[@]}"; do controller_scaled_zero statefulset "$name" || return 1; done
+  for name in minio-init migrate combo-dev-network-canary; do
+    if resource_exists job "$name"; then return 1; else rc=$?; (( rc == 1 )) || return 1; fi
+    pods=$("${K[@]}" -n "$NAMESPACE" get pods -l "job-name=$name" -o name 2>/dev/null) || return 1
+    [[ -z "$pods" ]] || return 1
+  done
 }
 
 fence_all_writers() {
@@ -532,7 +830,7 @@ production_fingerprint() {
 preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'reset 必须由受限 sudo 规则以 root 启动。'
   local cmd
-  for cmd in kubectl jq python3 openssl base64 sha256sum flock findmnt systemctl timeout stat dirname readlink df awk install find chown chmod rm date losetup blockdev blkid; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少主机工具：$cmd"; done
+  for cmd in kubectl jq python3 openssl base64 sha256sum flock findmnt systemctl timeout stat dirname readlink df awk install find chown chmod rm mv mktemp date losetup blockdev blkid; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少主机工具：$cmd"; done
   root_owned_not_writable /opt/combo-dev/bin || blocked '调度器目录可被非 root 修改。'
   if ! root_owned_not_writable /opt/combo-dev/bin/combo-dev-production-safety || [[ ! -x /opt/combo-dev/bin/combo-dev-production-safety ]]; then
     blocked '共享生产安全检查器不可用。'
@@ -556,6 +854,20 @@ preflight() {
   can_i_exact yes list namespaces
   can_i_exact yes list roles.rbac.authorization.k8s.io "$NAMESPACE"
   can_i_exact yes list rolebindings.rbac.authorization.k8s.io "$NAMESPACE"
+  can_i_exact yes list deployments.apps "$NAMESPACE"
+  can_i_exact yes list statefulsets.apps "$NAMESPACE"
+  can_i_exact yes list daemonsets.apps "$NAMESPACE"
+  can_i_exact yes list replicasets.apps "$NAMESPACE"
+  can_i_exact yes list replicationcontrollers "$NAMESPACE"
+  can_i_exact yes list jobs.batch "$NAMESPACE"
+  can_i_exact yes list cronjobs.batch "$NAMESPACE"
+  can_i_exact yes list horizontalpodautoscalers.autoscaling "$NAMESPACE"
+  can_i_exact yes delete daemonsets.apps "$NAMESPACE"
+  can_i_exact yes delete replicasets.apps "$NAMESPACE"
+  can_i_exact yes delete replicationcontrollers "$NAMESPACE"
+  can_i_exact yes delete cronjobs.batch "$NAMESPACE"
+  can_i_exact yes delete horizontalpodautoscalers.autoscaling "$NAMESPACE"
+  can_i_exact yes list pods "$NAMESPACE"
   can_i_exact yes list clusterroles.rbac.authorization.k8s.io
   can_i_exact yes list clusterrolebindings.rbac.authorization.k8s.io
   can_i_exact no delete persistentvolumeclaims/data-postgres-0 "$NAMESPACE"
@@ -617,30 +929,18 @@ validate_static_storage_live() {
 }
 
 stop_and_delete_inventory() {
-  local failed=0 item kind name rc
+  local failed=0 resource
   timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || failed=1
   timeout 30 systemctl stop combo-dev-s3-forward.service >/dev/null 2>&1 || failed=1
   fence_all_writers || failed=1
-  for name in minio-init migrate combo-dev-network-canary; do
-    if resource_exists job "$name"; then
-      "${K[@]}" -n "$NAMESPACE" delete "job/$name" --wait=true --timeout=90s >/dev/null 2>&1 || failed=1
-    else
-      rc=$?; (( rc == 1 )) || failed=1
-    fi
-  done
-  for item in "${CONTROLLERS[@]}"; do
-    kind=${item%%/*}; name=${item##*/}
-    if resource_exists "$kind" "$name"; then
-      "${K[@]}" -n "$NAMESPACE" delete "$item" --wait=true --timeout=180s >/dev/null 2>&1 || failed=1
-    else
-      rc=$?; (( rc == 1 )) || failed=1
-    fi
+  for resource in \
+    horizontalpodautoscalers.autoscaling cronjobs.batch daemonsets.apps jobs.batch \
+    deployments.apps statefulsets.apps replicationcontrollers replicasets.apps pods; do
+    "${K[@]}" -n "$NAMESPACE" delete "$resource" --all --ignore-not-found \
+      --wait=true --timeout=180s >/dev/null 2>&1 || failed=1
   done
   (( failed == 0 )) || return 1
-  for item in "${CONTROLLERS[@]}"; do
-    kind=${item%%/*}; name=${item##*/}
-    if resource_exists "$kind" "$name"; then return 1; else rc=$?; (( rc == 1 )) || return 1; fi
-  done
+  verify_complete_writer_inventory_zero
 }
 
 wipe_static_volume_data() {
@@ -842,20 +1142,25 @@ main() {
   [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked 'reset workflow run ID 不合法。'
   [[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]] ||
     blocked 'reset workflow run attempt 不合法。'
+  ATTEMPT_REVISION=$revision
+  ATTEMPT_RUN_ID=$workflow_run_id
+  ATTEMPT_RUN_ATTEMPT=$workflow_run_attempt
   RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
-  CONSUMED_RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.consumed.json"
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   assert_capacity_ready
   WORK=$(mktemp -d "$CONTROL_WORK/reset.XXXXXX") || blocked '无法在 control-state 创建 reset 工作区。'
-  rm -f -- "$RESET_PROOF" "$CONSUMED_RESET_PROOF"
   preflight
   local before after reset_started storage_cleared_at foundation_proof="$WORK/reset-foundation.json"
   reset_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   before=$(production_fingerprint)
-  MUTATING=1
-  mark_failure_fence || blocked '无法写入持久失败收敛标记。'
-  rm -rf -- /run/combo-dev-forwarders
+  begin_reset_mutation_fence "$revision" "$workflow_run_id" "$workflow_run_attempt" ||
+    blocked 'Test 不是可安全重置的已部署、安全空闲或精确旧 attempt 阻断状态。'
+  if [[ -n "$RECOVERED_FROM_ATTEMPT" ]]; then
+    status "recoveredFromAttempt=$RECOVERED_FROM_ATTEMPT"
+  fi
+  remove_all_reset_proofs || blocked 'reset 无法清理旧 reset proof inventory。'
+  stop_forwarders || blocked 'reset 前无法关闭并验证回环转发器。'
   stop_and_delete_inventory || blocked '固定工作负载未能全部停止并删除。'
   wipe_static_volume_data
   assert_static_volume_data_empty || blocked '三个 Test 数据目录未能证明在重建前为空。'
@@ -868,12 +1173,15 @@ main() {
   fence_all_writers || blocked '重置后全部写入者未保持关闭。'
   after=$(production_fingerprint)
   [[ "$before" == "$after" ]] || fail '重置期间生产指纹发生变化。'
+  remove_all_reset_proofs || blocked '写入新 reset proof 前 inventory 无法保持为空。'
   write_reset_proof \
     "$revision" "$workflow_run_id" "$workflow_run_attempt" \
     "$reset_started" "$storage_cleared_at" "$foundation_proof" ||
     blocked '无法保存本次空数据重建证据。'
+  forwarders_stopped || blocked 'reset 后回环转发器没有保持关闭。'
+  finish_reset_safe_idle_fence || blocked 'reset 无法提交安全空闲写入阻断状态。'
   SUCCESS=1
-  status 'PASS namespace=combo-preview pvc=retained data=cleared writers=fenced'
+  status 'PASS namespace=combo-preview pvc=retained data=cleared writers=safe-idle'
 }
 
 main "$@"

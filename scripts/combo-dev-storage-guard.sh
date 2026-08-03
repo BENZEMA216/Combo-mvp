@@ -41,6 +41,8 @@ readonly DISPATCHER_KUBECONFIG='/etc/combo-dev/dispatcher.kubeconfig'
 readonly FENCER_KUBECONFIG='/etc/combo-dev/fencer.kubeconfig'
 readonly LOW_MARKER='/run/combo-dev-storage-low'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
+readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly MAINTENANCE_FENCE_MARKER='/var/lib/combo-dev/storage-maintenance-fenced'
 readonly MAINTENANCE_FENCE_VALUE='combo-dev-storage-maintenance=fenced-v1'
@@ -324,6 +326,10 @@ can_i() {
 dispatcher_access_valid() {
   can_i DK yes patch deployments.apps/api "$NAMESPACE" || return 1
   can_i DK yes delete jobs.batch/migrate "$NAMESPACE" || return 1
+  can_i DK yes list replicasets.apps "$NAMESPACE" || return 1
+  can_i DK yes list replicationcontrollers "$NAMESPACE" || return 1
+  can_i DK yes delete replicasets.apps "$NAMESPACE" || return 1
+  can_i DK yes delete replicationcontrollers "$NAMESPACE" || return 1
   can_i DK no get secrets "$NAMESPACE" || return 1
   can_i DK no patch deployments.apps "$PRODUCTION_NAMESPACE" || return 1
 }
@@ -349,22 +355,70 @@ fencer_access_valid() {
   can_i FK no patch deployments.apps/api "$PRODUCTION_NAMESPACE" scale || return 1
 }
 
-mark_failure_fence() {
+write_writers_fence() {
+  local value=$1 candidate
   install -d -o root -g root -m 0711 /var/lib/combo-dev
-  printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
-  chmod 0600 "$FAILURE_FENCE_MARKER"
+  candidate=$(mktemp /var/lib/combo-dev/.writers-fenced.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$FAILURE_FENCE_MARKER"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+mark_failure_fence() {
+  write_writers_fence "$FAILURE_FENCE_VALUE"
+}
+
+writers_fence_has_value() {
+  local expected=$1 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
+    $(stat -c '%u:%g:%a:%s' "$FAILURE_FENCE_MARKER" 2>/dev/null) == \
+      "0:0:600:$expected_bytes" &&
+    $(<"$FAILURE_FENCE_MARKER") == "$expected" ]]
+}
+
+safe_idle_fence_valid() {
+  writers_fence_has_value "$SAFE_IDLE_FENCE_VALUE"
+}
+
+private_marker_has_value() {
+  local path=$1 expected=$2 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$path" && ! -L "$path" &&
+    $(stat -c '%u:%g:%a:%s' "$path" 2>/dev/null) == \
+      "0:0:600:$expected_bytes" &&
+    $(<"$path") == "$expected" ]]
+}
+
+external_fence_has_value() {
+  private_marker_has_value "$EXTERNAL_FENCE_MARKER" "$1"
 }
 
 mark_external_fence() {
-  local identity=$1
-  if [[ "$identity" == system ]]; then
-    printf '%s\n' 'system' >"$EXTERNAL_FENCE_MARKER"
-  else
-    [[ "$identity" =~ ^attempt\ [0-9a-f]{40}\ [1-9][0-9]*\ [1-9][0-9]*$ ]] ||
-      return 1
-    printf '%s\n' "$identity" >"$EXTERNAL_FENCE_MARKER"
+  local identity=$1 final_identity candidate
+  [[ "$identity" == system ||
+    "$identity" =~ ^attempt\ [0-9a-f]{40}\ [1-9][0-9]*\ [1-9][0-9]*$ ]] || return 1
+  final_identity=$identity
+  if [[ "$identity" != system &&
+    (-e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER") ]]; then
+    # A workflow attempt may only create an absent marker or preserve its own
+    # exact marker. Any other existing state has stronger/unknown provenance
+    # and is repaired to the unrecoverable system fence, never downgraded.
+    external_fence_has_value "$identity" && return 0
+    external_fence_has_value system && return 0
+    final_identity=system
   fi
-  chmod 0600 "$EXTERNAL_FENCE_MARKER"
+  install -d -o root -g root -m 0711 /var/lib/combo-dev
+  candidate=$(mktemp /var/lib/combo-dev/.external-fence.XXXXXX) || return 1
+  if ! printf '%s\n' "$final_identity" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$EXTERNAL_FENCE_MARKER"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
 }
 
 mark_maintenance_fence_complete() {
@@ -380,25 +434,57 @@ mark_maintenance_fence_complete() {
   rm -f -- "$candidate"
 }
 
-existing_attempt_fence_identity() {
-  local identity
-  private_file "$EXTERNAL_FENCE_MARKER" || return 1
+recoverable_attempt_fence_identity() {
+  local identity pending revision run_id run_attempt deadline
+  [[ -f "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" ]] || return 1
   identity=$(<"$EXTERNAL_FENCE_MARKER")
   [[ "$identity" =~ ^attempt\ [0-9a-f]{40}\ [1-9][0-9]*\ [1-9][0-9]*$ ]] || return 1
+  external_fence_has_value "$identity" || return 1
+  read -r _ revision run_id run_attempt <<<"$identity" || return 1
+  [[ -f "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || return 1
+  pending=$(<"$ACCEPTANCE_PENDING_MARKER") || return 1
+  [[ "$pending" =~ ^([0-9a-f]{40})\ ([1-9][0-9]*)\ ([1-9][0-9]*)\ ([1-9][0-9]*)$ ]] ||
+    return 1
+  [[ ${BASH_REMATCH[1]} == "$revision" && ${BASH_REMATCH[2]} == "$run_id" &&
+    ${BASH_REMATCH[3]} == "$run_attempt" ]] || return 1
+  deadline=${BASH_REMATCH[4]}
+  private_marker_has_value "$ACCEPTANCE_PENDING_MARKER" "$pending" || return 1
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]]
   printf '%s\n' "$identity"
 }
 
+forwarders_stopped() {
+  local unit active
+  for unit in "${FORWARDER_UNITS[@]}"; do
+    active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
+    [[ "$active" == inactive || "$active" == failed ]] || return 1
+  done
+}
+
 stop_forwarders() {
-  local failed=0 unit active
+  local failed=0
   exec 7>"$FORWARDER_LOCK_FILE"
   flock -w 30 7 || failed=1
   rm -rf -- "$FORWARDER_LEASE_DIR" || failed=1
   timeout 30 systemctl stop "${FORWARDER_UNITS[@]}" >/dev/null 2>&1 || failed=1
-  for unit in "${FORWARDER_UNITS[@]}"; do
-    active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
-    [[ "$active" == inactive || "$active" == failed ]] || failed=1
-  done
+  forwarders_stopped || failed=1
   flock -u 7 >/dev/null 2>&1 || true
+  return "$failed"
+}
+
+persist_fences_and_stop_forwarders() {
+  local identity=$1 failed=0
+  exec 7>"$FORWARDER_LOCK_FILE"
+  flock -w 30 7 || failed=1
+  # Hold the forwarder state lock while publishing both fences. Once the
+  # generic marker is visible, no new lease can pass either admission check.
+  mark_failure_fence || failed=1
+  mark_external_fence "$identity" || failed=1
+  rm -rf -- "$FORWARDER_LEASE_DIR" || failed=1
+  timeout 30 systemctl stop "${FORWARDER_UNITS[@]}" >/dev/null 2>&1 || failed=1
+  forwarders_stopped || failed=1
+  flock -u 7 >/dev/null 2>&1 || failed=1
+  exec 7>&-
   return "$failed"
 }
 
@@ -464,6 +550,35 @@ verify_writers_fenced() {
   jobs_and_pods_absent
 }
 
+verify_complete_writer_inventory_zero() {
+  local snapshot="$GUARD_RUNTIME/writer-inventory.$RANDOM.json" rc=0
+  if ! timeout 20 "${DK[@]}" -n "$NAMESPACE" get \
+    deployments.apps,statefulsets.apps,daemonsets.apps,replicasets.apps,replicationcontrollers,horizontalpodautoscalers.autoscaling,jobs.batch,cronjobs.batch,pods \
+    -o json >"$snapshot" 2>/dev/null; then
+    rm -f -- "$snapshot"
+    return 1
+  fi
+  chmod 0600 "$snapshot" || { rm -f -- "$snapshot"; return 1; }
+  jq -e '
+    all(.items[];
+      if .kind == "Deployment" or .kind == "StatefulSet"
+          or .kind == "ReplicaSet" or .kind == "ReplicationController" then
+        (.spec.replicas // 1) == 0
+        and (.status.replicas // 0) == 0
+        and (.status.readyReplicas // 0) == 0
+        and (.status.availableReplicas // 0) == 0
+      elif .kind == "Pod" then
+        (.status.phase == "Succeeded" or .status.phase == "Failed")
+        and all((.status.containerStatuses // [])[]; .state.running == null)
+      else
+        false
+      end
+    )
+  ' "$snapshot" >/dev/null 2>&1 || rc=1
+  rm -f -- "$snapshot"
+  return "$rc"
+}
+
 fence_writers_with_minimal_credential() {
   local failed=0 name
   delete_jobs_and_pods || failed=1
@@ -478,10 +593,9 @@ fence_writers_with_minimal_credential() {
 
 fence_now_locked() {
   local reason=$1 low=${2:-0} terminal=${3:-1} identity=${4:-system} failed=0
-  # 这两步不读取任何 Kubernetes 凭据，必须先于所有集群收敛动作。
-  stop_forwarders || failed=1
-  mark_failure_fence || fail "$reason，且持久阻断标记无法写入。"
-  mark_external_fence "$identity" || fail "$reason，且外部阻断标记无法写入。"
+  # 这一步不读取任何 Kubernetes 凭据，并在同一转发器锁内先发布阻断再停止服务。
+  # 即使主机侧阻断或转发器停止失败，也必须继续尝试独立的 Kubernetes 收敛。
+  persist_fences_and_stop_forwarders "$identity" || failed=1
   if (( low == 1 )); then install -o root -g root -m 0600 /dev/null "$LOW_MARKER" || failed=1; fi
 
   if ! credential_certificate_valid_for "$FENCER_KUBECONFIG" combo-dev-fencer "$FENCER_OPERATION_MIN_SECONDS"; then
@@ -491,9 +605,11 @@ fence_now_locked() {
   elif ! fence_writers_with_minimal_credential; then
     failed=1
   fi
+  # 最小 fencer 只处理固定名称；只有完整动态 inventory 也归零才可宣称收敛完成。
+  verify_complete_writer_inventory_zero || failed=1
 
   if (( failed != 0 )); then
-    fail "$reason；回环入口已关闭且持久阻断已写入，但最小失败收敛无法完整验证。"
+    fail "$reason；持久阻断、回环入口或完整写入者 inventory 无法完整收敛。"
   fi
   if (( terminal == 1 )); then
     fail "$reason；回环入口与全部写入者已关闭，必须由主机所有者修复后重新 bootstrap。"
@@ -507,7 +623,7 @@ fence_now() {
   flock -w 300 8 || fail "$reason，且无法取得失败收敛锁。"
   if [[ "$identity" == preserve-attempt ]]; then
     identity=system
-    if existing_identity=$(existing_attempt_fence_identity); then
+    if existing_identity=$(recoverable_attempt_fence_identity); then
       identity=$existing_identity
     fi
   fi
@@ -522,6 +638,8 @@ pending_acceptance_state() {
   [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ ]] || return 2
   [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 2
   [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || return 2
+  private_marker_has_value "$ACCEPTANCE_PENDING_MARKER" \
+    "$revision $run_id $run_attempt $deadline" || return 2
   now=$(date +%s 2>/dev/null) || return 2
   [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 2
   PENDING_REVISION=$revision
@@ -546,6 +664,9 @@ complete_acceptance() {
   [[ "$marker_run_id" == "$run_id" && "$marker_run_attempt" == "$run_attempt" ]] ||
     fail '待验收标记 workflow identity 不匹配。'
   [[ "$deadline" =~ ^[1-9][0-9]*$ ]] || fail '待验收标记期限不合法。'
+  private_marker_has_value "$ACCEPTANCE_PENDING_MARKER" \
+    "$marker_revision $marker_run_id $marker_run_attempt $deadline" ||
+    fail '待验收标记格式或权限不精确。'
   now=$(date +%s 2>/dev/null) || fail '验收完成时钟不可读。'
   (( now <= deadline )) || fail '待验收标记已经过期。'
   [[ ! -e "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
@@ -622,7 +743,7 @@ main() {
   [[ -f "$SAFETY_TOOL" ]] || fail '共享安全检查器不存在。'
   if (( check_only == 0 )); then
     [[ $(id -u) -eq 0 ]] || fail '存储收敛必须由 root 执行。'
-    for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm date; do require_command "$cmd"; done
+    for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm mv chown chmod date; do require_command "$cmd"; done
     install -d -o root -g root -m 0700 "$GUARD_RUNTIME"
     [[ -d "$GUARD_RUNTIME" && ! -L "$GUARD_RUNTIME" &&
       $(stat -c '%u:%g:%a' "$GUARD_RUNTIME") == '0:0:700' ]] ||
@@ -699,13 +820,24 @@ main() {
   dispatcher_access_valid || fence_now '调度凭据已失效或权限发生漂移'
   rm -f -- "$LOW_MARKER"
 
-  if [[ -e "$FAILURE_FENCE_MARKER" ]]; then
+  if [[ -e "$FAILURE_FENCE_MARKER" || -L "$FAILURE_FENCE_MARKER" ]]; then
     exec 9>"$OPERATION_LOCK_FILE"
     if flock -n 9; then
+      if safe_idle_fence_valid &&
+        [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+          ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] &&
+        forwarders_stopped && verify_writers_fenced && verify_complete_writer_inventory_zero; then
+        status 'PASS storage=bounded credentials=healthy writers=safe-idle'
+        return
+      fi
       fence_now '持久失败阻断标记仍然存在' 0 0 preserve-attempt
       return
     fi
     status 'PASS storage=bounded credentials=healthy operation=active'
+    return
+  fi
+  if [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ]]; then
+    fence_now '外部失败阻断存在但持久 writers 阻断缺失' 0 0 preserve-attempt
     return
   fi
   if [[ -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then

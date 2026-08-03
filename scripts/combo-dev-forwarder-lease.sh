@@ -8,11 +8,17 @@ readonly OPERATION_LOCK='/run/lock/combo-dev.lock'
 readonly STATE_LOCK='/run/lock/combo-dev-forwarders.lock'
 readonly LEASE_DIR='/run/combo-dev-forwarders'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly UNITS=(combo-dev-web-forward.service combo-dev-s3-forward.service)
 LEASE=''
 
 status() { printf '[combo-dev-forwarder-lease] %s\n' "$1"; }
 fail() { printf '[combo-dev-forwarder-lease] BLOCKED: %s\n' "$1" >&2; exit 2; }
+
+failure_fences_absent() {
+  [[ ! -e "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
+    ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" ]]
+}
 
 process_start() {
   local pid=$1
@@ -63,11 +69,11 @@ main() {
   done
   exec 9>"$OPERATION_LOCK"
   flock -s -n 9 || fail '部署、重置或 bootstrap 正在持有排他锁。'
-  [[ ! -e "$FAILURE_FENCE_MARKER" ]] || fail '持久失败阻断仍然存在，不能启动回环转发器。'
+  failure_fences_absent || fail '持久或外部失败阻断仍然存在，不能启动回环转发器。'
   install -d -o root -g root -m 0700 "$LEASE_DIR"
   exec 8>"$STATE_LOCK"
   flock 8
-  [[ ! -e "$FAILURE_FENCE_MARKER" ]] || fail '持久失败阻断仍然存在，不能建立转发租约。'
+  failure_fences_absent || fail '持久或外部失败阻断仍然存在，不能建立转发租约。'
   purge_stale_leases
   start=$(process_start $$) || fail '无法建立进程身份。'
   LEASE="$LEASE_DIR/$$"

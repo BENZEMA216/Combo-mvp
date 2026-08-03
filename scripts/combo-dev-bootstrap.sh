@@ -54,8 +54,11 @@ readonly ROOT_CRITICAL_MIN_BYTES=$((10 * 1024 * 1024 * 1024))
 readonly DATA_WARNING_MIN_BYTES=$((30 * 1024 * 1024 * 1024))
 readonly DATA_CRITICAL_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
+readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly RESET_PROOF_ROOT='/var/lib/combo-dev'
 readonly ROOT_CRITICAL_MARKER='/var/lib/combo-dev/root-capacity-critical'
 readonly DISPATCHER_RENEW_BEFORE_SECONDS=$((30 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
@@ -439,7 +442,7 @@ PY
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'bootstrap 必须由主机所有者以 root 手工执行。'
   local cmd canonical
-  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep rm logrotate losetup blockdev blkid; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep find rm mv mktemp logrotate losetup blockdev blkid; do require_command "$cmd"; done
   trusted_source_tree || blocked 'bootstrap 源目录不是 root-owned 只读快照。'
   private_directory /etc/combo-dev || blocked '开发配置目录不是 root-owned 私有目录。'
   if [[ -e /etc/logrotate.d ]] && ! root_owned_not_writable /etc/logrotate.d; then
@@ -826,7 +829,7 @@ sanitize_preview_namespace() {
     done <<<"$listed"
   done
   for resource in \
-    deployments.apps statefulsets.apps daemonsets.apps horizontalpodautoscalers.autoscaling jobs.batch cronjobs.batch pods services \
+    deployments.apps statefulsets.apps daemonsets.apps replicasets.apps replicationcontrollers horizontalpodautoscalers.autoscaling jobs.batch cronjobs.batch pods services \
     ingresses.networking.k8s.io networkpolicies.networking.k8s.io configmaps serviceaccounts \
     roles.rbac.authorization.k8s.io rolebindings.rbac.authorization.k8s.io resourcequotas limitranges \
     leases.coordination.k8s.io; do
@@ -835,11 +838,71 @@ sanitize_preview_namespace() {
   (( failed == 0 )) || return 1
 }
 
-mark_failure_fence() {
+write_writers_fence() {
+  local value=$1 candidate
   install -d -o root -g root -m 0711 /var/lib/combo-dev
   verify_control_state || return 1
-  printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
-  chmod 0600 "$FAILURE_FENCE_MARKER"
+  candidate=$(mktemp /var/lib/combo-dev/.writers-fenced.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$FAILURE_FENCE_MARKER"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+mark_failure_fence() {
+  write_writers_fence "$FAILURE_FENCE_VALUE"
+}
+
+writers_fence_has_value() {
+  local expected=$1 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" ]] || return 1
+  [[ $(stat -c '%u:%g:%a:%s' "$FAILURE_FENCE_MARKER" 2>/dev/null) == \
+    "0:0:600:$expected_bytes" ]] || return 1
+  [[ $(<"$FAILURE_FENCE_MARKER") == "$expected" ]]
+}
+
+mark_safe_idle_fence() {
+  writers_fence_has_value "$FAILURE_FENCE_VALUE" || return 1
+  write_writers_fence "$SAFE_IDLE_FENCE_VALUE"
+}
+
+remove_all_reset_proofs() {
+  local inventory remaining path name invalid=0 failed=0
+  [[ -n "$WORK" && -d "$WORK" && ! -L "$WORK" ]] || return 1
+  inventory=$(mktemp "$WORK/reset-proof-inventory.XXXXXX") || return 1
+  remaining=$(mktemp "$WORK/reset-proof-remaining.XXXXXX") || {
+    rm -f -- "$inventory"
+    return 1
+  }
+  chmod 0600 "$inventory" "$remaining" || {
+    rm -f -- "$inventory" "$remaining"
+    return 1
+  }
+  if ! find "$RESET_PROOF_ROOT" -mindepth 1 -maxdepth 1 -name 'reset-proof*' -print0 >"$inventory"; then
+    rm -f -- "$inventory" "$remaining"
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    name=${path##*/}
+    [[ "${path%/*}" == "$RESET_PROOF_ROOT" ]] || invalid=1
+    [[ "$name" =~ ^reset-proof\.[0-9a-f]{40}\.[1-9][0-9]*\.[1-9][0-9]*(\.consumed)?\.json$ ]] || invalid=1
+    [[ -f "$path" && ! -L "$path" ]] || invalid=1
+    [[ $(stat -c '%u:%g:%a:%h' "$path" 2>/dev/null) == '0:0:600:1' ]] || invalid=1
+  done <"$inventory"
+  if (( invalid != 0 )); then
+    rm -f -- "$inventory" "$remaining"
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    rm -f -- "$path" || failed=1
+  done <"$inventory"
+  find "$RESET_PROOF_ROOT" -mindepth 1 -maxdepth 1 -name 'reset-proof*' -print0 >"$remaining" || failed=1
+  [[ ! -s "$remaining" ]] || failed=1
+  rm -f -- "$inventory" "$remaining" || failed=1
+  return "$failed"
 }
 
 fence_all_writers_admin() {
@@ -858,7 +921,9 @@ fence_all_writers_admin() {
     [[ "$controller" =~ ^(deployment|statefulset)\.apps/[a-z0-9]([-a-z0-9.]*[a-z0-9])?$ ]] || return 1
     "${AK[@]}" -n "$NAMESPACE" scale "$controller" --replicas=0 >/dev/null 2>&1 || failed=1
   done <<<"$listed"
-  for resource in jobs.batch cronjobs.batch daemonsets.apps; do
+  for resource in \
+    horizontalpodautoscalers.autoscaling cronjobs.batch daemonsets.apps jobs.batch \
+    replicationcontrollers replicasets.apps; do
     "${AK[@]}" -n "$NAMESPACE" delete "$resource" --all --ignore-not-found \
       --wait=true --timeout=180s >/dev/null 2>&1 || failed=1
   done
@@ -909,9 +974,16 @@ dispatcher_credential_valid() {
   can_i_dispatcher yes list roles.rbac.authorization.k8s.io "$NAMESPACE" || return 1
   can_i_dispatcher yes list rolebindings.rbac.authorization.k8s.io "$NAMESPACE" || return 1
   can_i_dispatcher yes list daemonsets.apps "$NAMESPACE" || return 1
+  can_i_dispatcher yes list replicasets.apps "$NAMESPACE" || return 1
+  can_i_dispatcher yes list replicationcontrollers "$NAMESPACE" || return 1
   can_i_dispatcher yes list cronjobs.batch "$NAMESPACE" || return 1
   can_i_dispatcher yes list ingresses.networking.k8s.io "$NAMESPACE" || return 1
   can_i_dispatcher yes list horizontalpodautoscalers.autoscaling "$NAMESPACE" || return 1
+  can_i_dispatcher yes delete daemonsets.apps "$NAMESPACE" || return 1
+  can_i_dispatcher yes delete replicasets.apps "$NAMESPACE" || return 1
+  can_i_dispatcher yes delete replicationcontrollers "$NAMESPACE" || return 1
+  can_i_dispatcher yes delete cronjobs.batch "$NAMESPACE" || return 1
+  can_i_dispatcher yes delete horizontalpodautoscalers.autoscaling "$NAMESPACE" || return 1
   can_i_dispatcher yes list serviceaccounts "$NAMESPACE" || return 1
   can_i_dispatcher yes list resourcequotas "$NAMESPACE" || return 1
   can_i_dispatcher yes list limitranges "$NAMESPACE" || return 1
@@ -1254,11 +1326,13 @@ main() {
   flock -w 300 8 || blocked 'bootstrap 无法取得失败收敛锁。'
   rm -f -- "$EXTERNAL_FENCE_MARKER" "$ACCEPTANCE_PENDING_MARKER" ||
     blocked 'bootstrap 无法清理旧验收状态。'
+  remove_all_reset_proofs || blocked 'bootstrap 无法清理旧 reset proof inventory。'
+  mark_safe_idle_fence || blocked 'bootstrap 无法提交安全空闲写入阻断状态。'
 
   rm -rf --one-file-system -- "$WORK"
   WORK=''
   SUCCESS=1
-  status 'PASS namespace=combo-preview forwarders=inactive writers=fenced'
+  status 'PASS namespace=combo-preview forwarders=inactive writers=safe-idle'
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

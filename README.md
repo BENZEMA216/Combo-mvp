@@ -153,21 +153,19 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 ---
 
-## CI（持续集成）
+## CI 与 CD
 
-CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓库根**，故 GitHub Actions 直接识别并运行（无需再复制/软链或加 `working-directory` 前缀）。
+合并前 CI 位于 `.github/workflows/pr-ci.yml`，只由 `pull_request` 触发。它在仓库根完成依赖安装、shared 构建、format、lint、typecheck、无容器快速测试和 ShellCheck；不会构建或发布 Docker 镜像，也不会读取任何部署 Environment Secret。
 
-三个 job：
+`.github/workflows/ci.yml` 是 Main CD。`main` 更新后它才执行完整 build、集成测试、容器契约与镜像构建，并发布绑定精确提交 SHA 的不可变 release artifact。所有路径都相对仓库根；Docker build context 也是仓库根。
 
-- `gate` —— install / lint（含分层依赖规则）/ typecheck / build / test / OpenAPI 生成自查 / compose 配置自查（结构校验，不 up）。无外部依赖，必过才允许合并。
-- `integration` —— 起 PG / Redis 双实例 / MinIO 临时 service 容器，跑 db 迁移集成 + redis 双实例分工断言（O-05 / O-07）。
-- `image` —— 分别构建 API、Runtime 与 Web 镜像，并校验 Dockerfile 与仓库根 build context 自洽。
+Test、Preview、Production 的发布入口彼此独立：
 
-所有步骤直接以仓库根（= monorepo 根）为工作目录；`cache-dependency-path: pnpm-lock.yaml`、`docker build -f infra/Dockerfile.* .`（context `.` = 仓库根）等路径均相对仓库根。
+- Test 只由 `.github/workflows/combo-dev.yml` 的手工 `workflow_dispatch` 启动。具有仓库 write、maintain 或 admin 权限的成员必须指定一个仍开放、以当前 `main` 为 base、来自同一仓库的 PR 编号及其精确 tip SHA。受信任的 `main` 控制器构建并部署候选；PR 分支代码接触不到 Test Secret。Test 不由 PR 或 `main` 自动部署，其证据也不能晋级 Preview 或 Production。
+- Preview 由成功的 Main CD 自动触发，直接消费该 `main` 提交的 release artifact，不依赖 Test 证据。仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE=paused` 时只记录策略并跳过实际 Preview 部署。
+- Production 不自动跟随 `main`、Test 或 Preview；只能在 GitHub `production` Environment 人工批准后消费精确成功的 Preview artifact。
 
-发布环境按 Test、Preview、Production 逐级隔离。成功的 `main` CI 会自动触发同一提交的 Test 部署；具有仓库写入权限的成员也可以从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意同仓库分支及其精确 tip SHA，为该提交构建不可变、摘要固定的 artifact 并部署到 Test。`combo-dev` GitHub Environment 的分支策略仍只允许 `main`，因为读取 SSH 和验收 Secret 的是受信任控制器；这项策略不限制 Test 候选源码所在的分支，分支自身的 workflow 也不会接触环境 Secret。
-
-只有 `main` 的自动 Test 成功证据可以进入 Preview。仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE` 为 `enabled` 时，Preview 自动消费该 `main` 候选的同一 artifact；为 `paused` 时只记录策略并跳过 Preview 部署。Production 不自动跟随 `main` 或任意 Test，只能在 GitHub `production` Environment 人工批准后，消费精确成功的 Preview artifact。
+三个部署环境共用 `cd-tecent2` 并发组以串行化主机变更，但使用不同 Kubernetes namespace、入口和数据；这种隔离是逻辑隔离，不是三台独立主机。
 
 ---
 
@@ -183,7 +181,7 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 ├── db/                # @cb/db   PostgreSQL 迁移 + 幂等 runner
 ├── infra/             # @cb/infra 编排、发布拓扑、Nginx 与基础设施配置
 ├── scripts/           # @cb/scripts start / migrate / smoke / openapi-dump / 集成脚本
-└── .github/workflows/ # CI（ci.yml）。本 monorepo 即仓库根，GitHub Actions 直接识别并运行
+└── .github/workflows/ # PR CI、Main CD 与三个独立环境发布入口
 ```
 
 更细的各包职责与设计决策，见文首「文档真源」指向的飞书文档。
@@ -194,4 +192,4 @@ CI workflow 位于仓库根 `.github/workflows/ci.yml`。本 monorepo **即仓�
 
 源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0009`、再次幂等执行、应用角色权限和异常账本拒绝。
 
-Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；两类候选都要核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。分支 Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通测试也不启动 Docker 或 Docker Compose。
+Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护的 `main` 控制器只接受手工指定的开放同仓库 PR 及其精确 tip SHA；候选必须包含当前 `main`，并核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通快速测试也不启动 Docker 或 Docker Compose。

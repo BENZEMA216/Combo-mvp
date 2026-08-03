@@ -57,6 +57,8 @@ readonly DIGEST_RE='^sha256:[0-9a-f]{64}$'
 readonly JOB_PREFLIGHT_IMAGE='busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028'
 readonly STORAGE_LOW_MARKER='/run/combo-dev-storage-low'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
+readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
+readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
 readonly ACCEPTANCE_PENDING_SECONDS=7200
@@ -123,6 +125,9 @@ CANDIDATE_RELEASE=''
 RELEASE_CREATED=0
 MUTATING=0
 SUCCESS=0
+ATTEMPT_REVISION=''
+ATTEMPT_RUN_ID=''
+ATTEMPT_RUN_ATTEMPT=''
 
 status() { printf '[combo-dev] %s\n' "$1"; }
 fail() { printf '[combo-dev] FAIL: %s\n' "$1" >&2; exit 1; }
@@ -138,16 +143,27 @@ storage_guard_timer_ready() {
 }
 
 cleanup() {
-  local rc=$?
+  local rc=$? proof_cleanup_ok=1 convergence_ok=1
   set +e
   [[ -z "$INCOMING_BUNDLE" ]] || rm -f -- "$INCOMING_BUNDLE"
-  [[ -z "$RESET_PROOF_IN_USE" ]] || rm -f -- "$RESET_PROOF_IN_USE"
+  if (( MUTATING == 1 && SUCCESS == 0 )); then
+    remove_current_attempt_reset_proofs >/dev/null 2>&1 || proof_cleanup_ok=0
+  elif [[ -n "$RESET_PROOF_IN_USE" ]]; then
+    remove_consumed_reset_proof >/dev/null 2>&1 || proof_cleanup_ok=0
+  fi
   if (( MUTATING == 1 && SUCCESS == 0 )); then
     mark_failure_fence >/dev/null 2>&1 || true
-    timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || true
-    timeout 30 systemctl stop combo-dev-s3-forward.service >/dev/null 2>&1 || true
-    if fence_all_writers_cleanup >/dev/null 2>&1; then
-      status '失败收敛已验证；全部写入者、任务与转发器保持关闭。'
+    stop_forwarders_for_failure >/dev/null 2>&1 || convergence_ok=0
+    fence_all_writers_cleanup >/dev/null 2>&1 || convergence_ok=0
+    verify_complete_writer_inventory_zero >/dev/null 2>&1 || convergence_ok=0
+    if (( convergence_ok == 1 )); then
+      if (( proof_cleanup_ok == 0 )); then
+        status '失败收敛已验证，但已消费 reset proof 无法删除；需要主机所有者介入。'
+      elif record_failed_attempt_capability >/dev/null 2>&1; then
+        status '失败收敛已验证；当前 attempt 已记录，下一次手工 Test 部署可从 reset 安全重试。'
+      else
+        status '失败收敛已验证，但 attempt 恢复能力无法安全提交；需要主机所有者介入。'
+      fi
     else
       status '失败收敛无法验证；阻断标记已保留并需要主机所有者介入。'
     fi
@@ -381,6 +397,18 @@ dispatcher_certificate_valid_for() {
   return "$rc"
 }
 
+stop_forwarders_for_failure() {
+  local unit active failed=0
+  rm -rf -- /run/combo-dev-forwarders || failed=1
+  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service \
+    >/dev/null 2>&1 || failed=1
+  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+    active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
+    [[ "$active" == inactive || "$active" == failed ]] || failed=1
+  done
+  return "$failed"
+}
+
 claim_forwarders_for_deploy() {
   local unit active
   rm -rf -- /run/combo-dev-forwarders
@@ -393,7 +421,7 @@ claim_forwarders_for_deploy() {
 
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked '调度器必须由受限 sudo 规则以 root 启动。'
-  for cmd in kubectl python3 jq curl sha256sum flock findmnt df systemctl ss timeout readlink install diff mv stat dirname openssl base64 date losetup blockdev blkid; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq curl sha256sum flock findmnt df systemctl ss timeout readlink install diff mv mktemp stat dirname openssl base64 date chown chmod rm losetup blockdev blkid; do require_command "$cmd"; done
   root_owned_not_writable /etc/combo-dev || blocked '开发配置目录可被非 root 修改。'
   root_owned_not_writable "$INSTALL_ROOT" || blocked '安装根目录可被非 root 修改。'
   root_owned_not_writable "$INSTALL_ROOT/bin" || blocked '调度器目录可被非 root 修改。'
@@ -461,9 +489,16 @@ rbac_preflight() {
   can_i_exact yes list roles.rbac.authorization.k8s.io "$NAMESPACE"
   can_i_exact yes list rolebindings.rbac.authorization.k8s.io "$NAMESPACE"
   can_i_exact yes list daemonsets.apps "$NAMESPACE"
+  can_i_exact yes list replicasets.apps "$NAMESPACE"
+  can_i_exact yes list replicationcontrollers "$NAMESPACE"
   can_i_exact yes list cronjobs.batch "$NAMESPACE"
   can_i_exact yes list ingresses.networking.k8s.io "$NAMESPACE"
   can_i_exact yes list horizontalpodautoscalers.autoscaling "$NAMESPACE"
+  can_i_exact yes delete daemonsets.apps "$NAMESPACE"
+  can_i_exact yes delete replicasets.apps "$NAMESPACE"
+  can_i_exact yes delete replicationcontrollers "$NAMESPACE"
+  can_i_exact yes delete cronjobs.batch "$NAMESPACE"
+  can_i_exact yes delete horizontalpodautoscalers.autoscaling "$NAMESPACE"
   can_i_exact yes list serviceaccounts "$NAMESPACE"
   can_i_exact yes list resourcequotas "$NAMESPACE"
   can_i_exact yes list limitranges "$NAMESPACE"
@@ -489,6 +524,13 @@ rbac_preflight() {
 
 consume_reset_proof() {
   local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || blocked '消费 reset proof 前无法取得失败收敛锁。'
+  writers_fence_has_value "$FAILURE_FENCE_VALUE" ||
+    blocked '部署认领状态在消费 reset proof 前发生变化。'
+  [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+    ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] ||
+    blocked '外部失败收敛或旧验收状态已阻止 reset proof 消费。'
   [[ -z "$RESET_PROOF_IN_USE" ]] || blocked 'reset proof 已在本次部署中消费。'
   file_mode_is_private "$RESET_PROOF" || blocked '缺少 owner-only 的单次 reset proof。'
   [[ ! -e "$CONSUMED_RESET_PROOF" && ! -L "$CONSUMED_RESET_PROOF" ]] ||
@@ -596,6 +638,8 @@ for item in foundation:
     if not (started <= created_at <= started_at <= completed):
         raise SystemExit(2)
 PY
+  flock -u 8 || blocked '消费 reset proof 后无法释放失败收敛锁。'
+  exec 8>&-
 }
 
 validate_cluster_platform_live() {
@@ -672,42 +716,182 @@ spec:
 EOF
 }
 
-mark_failure_fence() {
+write_writers_fence() {
+  local value=$1 candidate
   install -d -o root -g root -m 0711 /var/lib/combo-dev
-  printf '%s\n' 'combo-dev-writers=fenced' >"$FAILURE_FENCE_MARKER"
-  chmod 0600 "$FAILURE_FENCE_MARKER"
+  candidate=$(mktemp /var/lib/combo-dev/.writers-fenced.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$FAILURE_FENCE_MARKER"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+mark_failure_fence() {
+  write_writers_fence "$FAILURE_FENCE_VALUE"
+}
+
+writers_fence_has_value() {
+  local expected=$1 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" ]] || return 1
+  [[ $(stat -c '%u:%g:%a:%s' "$FAILURE_FENCE_MARKER" 2>/dev/null) == \
+    "0:0:600:$expected_bytes" ]] || return 1
+  [[ $(<"$FAILURE_FENCE_MARKER") == "$expected" ]]
+}
+
+exact_private_marker_value() {
+  local path=$1 expected=$2 expected_bytes
+  expected_bytes=$((${#expected} + 1))
+  [[ -f "$path" && ! -L "$path" &&
+    $(stat -c '%u:%g:%a:%s' "$path" 2>/dev/null) == "0:0:600:$expected_bytes" &&
+    $(<"$path") == "$expected" ]]
+}
+
+remove_consumed_reset_proof() {
+  local expected
+  [[ "$ATTEMPT_REVISION" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$ATTEMPT_RUN_ID" =~ ^[1-9][0-9]*$ &&
+    "$ATTEMPT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || return 1
+  expected="/var/lib/combo-dev/reset-proof.${ATTEMPT_REVISION}.${ATTEMPT_RUN_ID}.${ATTEMPT_RUN_ATTEMPT}.consumed.json"
+  [[ "$RESET_PROOF_IN_USE" == "$expected" ]] || return 1
+  rm -f -- "$RESET_PROOF_IN_USE" || return 1
+  [[ ! -e "$RESET_PROOF_IN_USE" && ! -L "$RESET_PROOF_IN_USE" ]]
+}
+
+remove_current_attempt_reset_proofs() {
+  local expected_reset expected_consumed
+  [[ "$ATTEMPT_REVISION" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$ATTEMPT_RUN_ID" =~ ^[1-9][0-9]*$ &&
+    "$ATTEMPT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || return 1
+  expected_reset="/var/lib/combo-dev/reset-proof.${ATTEMPT_REVISION}.${ATTEMPT_RUN_ID}.${ATTEMPT_RUN_ATTEMPT}.json"
+  expected_consumed="/var/lib/combo-dev/reset-proof.${ATTEMPT_REVISION}.${ATTEMPT_RUN_ID}.${ATTEMPT_RUN_ATTEMPT}.consumed.json"
+  [[ "$RESET_PROOF" == "$expected_reset" &&
+    "$CONSUMED_RESET_PROOF" == "$expected_consumed" ]] || return 1
+  [[ -z "$RESET_PROOF_IN_USE" || "$RESET_PROOF_IN_USE" == "$expected_consumed" ]] || return 1
+  rm -f -- "$expected_reset" "$expected_consumed" || return 1
+  [[ ! -e "$expected_reset" && ! -L "$expected_reset" &&
+    ! -e "$expected_consumed" && ! -L "$expected_consumed" ]] || return 1
+  RESET_PROOF_IN_USE=''
+}
+
+write_private_attempt_marker() {
+  local path=$1 value=$2 candidate
+  [[ "$path" == "$EXTERNAL_FENCE_MARKER" || "$path" == "$ACCEPTANCE_PENDING_MARKER" ]] ||
+    return 1
+  candidate=$(mktemp /var/lib/combo-dev/.attempt-marker.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$path"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+pending_marker_matches_attempt() {
+  local revision=$1 run_id=$2 run_attempt=$3 value deadline
+  [[ -f "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || return 1
+  value=$(<"$ACCEPTANCE_PENDING_MARKER") || return 1
+  exact_private_marker_value "$ACCEPTANCE_PENDING_MARKER" "$value" || return 1
+  [[ "$value" =~ ^([0-9a-f]{40})\ ([1-9][0-9]*)\ ([1-9][0-9]*)\ ([1-9][0-9]*)$ ]] ||
+    return 1
+  [[ ${BASH_REMATCH[1]} == "$revision" && ${BASH_REMATCH[2]} == "$run_id" &&
+    ${BASH_REMATCH[3]} == "$run_attempt" ]] || return 1
+  deadline=${BASH_REMATCH[4]}
+  [[ "$deadline" =~ ^[1-9][0-9]*$ ]]
+}
+
+record_failed_attempt_capability() {
+  local identity now deadline pending rc=0
+  [[ "$ATTEMPT_REVISION" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$ATTEMPT_RUN_ID" =~ ^[1-9][0-9]*$ &&
+    "$ATTEMPT_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || return 1
+  identity="attempt $ATTEMPT_REVISION $ATTEMPT_RUN_ID $ATTEMPT_RUN_ATTEMPT"
+  now=$(date +%s 2>/dev/null) || return 1
+  [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 1
+  deadline=$((now + ACCEPTANCE_PENDING_SECONDS))
+  pending="$ATTEMPT_REVISION $ATTEMPT_RUN_ID $ATTEMPT_RUN_ATTEMPT $deadline"
+  exec 8>"$FENCE_LOCK_FILE"
+  flock -w 300 8 || rc=1
+  if (( rc == 0 )); then
+    writers_fence_has_value "$FAILURE_FENCE_VALUE" || rc=1
+  fi
+  if (( rc == 0 )) &&
+    [[ -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    pending_marker_matches_attempt \
+      "$ATTEMPT_REVISION" "$ATTEMPT_RUN_ID" "$ATTEMPT_RUN_ATTEMPT" || rc=1
+  elif (( rc == 0 )); then
+    write_private_attempt_marker "$ACCEPTANCE_PENDING_MARKER" "$pending" || rc=1
+  fi
+  if (( rc == 0 )) &&
+    [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ]]; then
+    exact_private_marker_value "$EXTERNAL_FENCE_MARKER" "$identity" || rc=1
+  elif (( rc == 0 )); then
+    write_private_attempt_marker "$EXTERNAL_FENCE_MARKER" "$identity" || rc=1
+  fi
+  flock -u 8 >/dev/null 2>&1 || rc=1
+  exec 8>&-
+  return "$rc"
+}
+
+verify_complete_writer_inventory_zero() {
+  local snapshot="$WORK/writer-inventory.$RANDOM.json" rc=0
+  if ! timeout 20 "${K[@]}" -n "$NAMESPACE" get \
+    deployments.apps,statefulsets.apps,daemonsets.apps,replicasets.apps,replicationcontrollers,horizontalpodautoscalers.autoscaling,jobs.batch,cronjobs.batch,pods \
+    -o json >"$snapshot" 2>/dev/null; then
+    rm -f -- "$snapshot"
+    return 1
+  fi
+  chmod 0600 "$snapshot" || { rm -f -- "$snapshot"; return 1; }
+  jq -e '
+    all(.items[];
+      if .kind == "Deployment" or .kind == "StatefulSet"
+          or .kind == "ReplicaSet" or .kind == "ReplicationController" then
+        (.spec.replicas // 1) == 0
+        and (.status.replicas // 0) == 0
+        and (.status.readyReplicas // 0) == 0
+        and (.status.availableReplicas // 0) == 0
+      elif .kind == "Pod" then
+        (.status.phase == "Succeeded" or .status.phase == "Failed")
+        and all((.status.containerStatuses // [])[]; .state.running == null)
+      else
+        false
+      end
+    )
+  ' "$snapshot" >/dev/null 2>&1 || rc=1
+  rm -f -- "$snapshot"
+  return "$rc"
 }
 
 write_acceptance_pending() {
   local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3
-  local now deadline candidate="$WORK/acceptance-pending"
+  local now deadline value
   now=$(date +%s 2>/dev/null) || return 1
   [[ "$now" =~ ^[1-9][0-9]*$ ]] || return 1
   deadline=$((now + ACCEPTANCE_PENDING_SECONDS))
-  printf '%s %s %s %s\n' \
-    "$revision" "$workflow_run_id" "$workflow_run_attempt" "$deadline" >"$candidate" ||
-    return 1
-  chmod 0600 "$candidate" || return 1
-  install -o root -g root -m 0600 "$candidate" "$ACCEPTANCE_PENDING_MARKER"
+  value="$revision $workflow_run_id $workflow_run_attempt $deadline"
+  write_private_attempt_marker "$ACCEPTANCE_PENDING_MARKER" "$value"
 }
 
-clear_stale_acceptance_state() {
-  local revision=$1 workflow_run_id=$2 workflow_run_attempt=$3 marker=''
+claim_safe_idle_fence() {
+  local rc=0
   exec 8>"$FENCE_LOCK_FILE"
-  flock -w 300 8 || return 1
-  if [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ]]; then
-    file_mode_is_private "$EXTERNAL_FENCE_MARKER" || return 1
-    marker=$(<"$EXTERNAL_FENCE_MARKER") || return 1
-    if [[ "$marker" == "attempt $revision $workflow_run_id $workflow_run_attempt" ]]; then
-      return 2
-    fi
-    [[ "$marker" =~ ^attempt\ [0-9a-f]{40}\ [1-9][0-9]*\ [1-9][0-9]*$ ]] ||
-      return 1
-    rm -f -- "$EXTERNAL_FENCE_MARKER" || return 1
+  flock -w 300 8 || rc=1
+  if (( rc == 0 )); then
+    writers_fence_has_value "$SAFE_IDLE_FENCE_VALUE" || rc=1
+    [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || rc=1
   fi
-  rm -f -- "$ACCEPTANCE_PENDING_MARKER" || return 1
-  flock -u 8 || return 1
+  if (( rc == 0 )); then
+    # The global flag must become visible to EXIT/TERM cleanup before the
+    # deployable capability is atomically replaced.
+    MUTATING=1
+    mark_failure_fence || rc=1
+  fi
+  flock -u 8 >/dev/null 2>&1 || rc=1
   exec 8>&-
+  return "$rc"
 }
 
 apply_foundation_replicas() {
@@ -2583,6 +2767,9 @@ main() {
   [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked '部署 workflow run ID 不合法。'
   [[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]] ||
     blocked '部署 workflow run attempt 不合法。'
+  ATTEMPT_REVISION=$revision
+  ATTEMPT_RUN_ID=$workflow_run_id
+  ATTEMPT_RUN_ATTEMPT=$workflow_run_attempt
   [[ $(readlink -f "$bundle" 2>/dev/null || true) == \
     "$INSTALL_ROOT/incoming/${revision}.${workflow_run_id}.${workflow_run_attempt}.tar.gz" ]] ||
     blocked '部署包不在固定 attempt-scoped incoming 路径。'
@@ -2600,19 +2787,14 @@ main() {
   host_preflight
   assert_release_tree_unmounted
   rbac_preflight
+  claim_safe_idle_fence || blocked 'Test 不是 bootstrap 或 reset 证明的安全空闲阻断状态。'
+  claim_forwarders_for_deploy
+  fence_all_writers || fail '部署认领安全空闲状态后，无法重新证明全部写入者已关闭。'
+  verify_complete_writer_inventory_zero ||
+    fail '部署认领安全空闲状态后，命名空间仍存在未收敛的写入控制器或 Pod。'
   consume_reset_proof "$revision" "$workflow_run_id" "$workflow_run_attempt"
-  set +e
-  clear_stale_acceptance_state "$revision" "$workflow_run_id" "$workflow_run_attempt"
-  rc=$?
-  set -e
-  (( rc == 0 )) || {
-    (( rc == 2 )) && blocked '本次 workflow attempt 已被外部失败收敛。'
-    blocked '外部失败收敛状态不是可安全替换的旧 attempt。'
-  }
   rm -f -- \
     "$LEGACY_EVIDENCE/${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
-  claim_forwarders_for_deploy
-
   local trusted_bundle="$WORK/bundle.tar.gz"
   install -m 0600 "$bundle" "$trusted_bundle" || blocked '部署包无法复制到 root-owned 临时目录。'
   rm -f -- "$bundle" || blocked 'incoming 部署包无法在受信复制后删除。'
@@ -2677,9 +2859,6 @@ main() {
   before=$(production_fingerprint)
   start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
-  MUTATING=1
-  mark_failure_fence || fail '持久失败收敛标记无法写入。'
-  fence_all_writers || fail '全部持久与临时写入者未能关闭。'
   apply_and_wait_foundation "$WORK/prepared/render"
   run_pre_app_storage
   run_pre_app_isolation
