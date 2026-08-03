@@ -547,6 +547,41 @@ verify_control_state
   }
 }
 
+function runStorageGuardTimerReadyFixture({
+  enabled = 'enabled',
+  active = 'active',
+  next = '123456789',
+} = {}) {
+  const source = text('scripts/combo-dev-bootstrap.sh');
+  const start = source.indexOf('storage_guard_timer_ready() {');
+  const end = source.indexOf('\n}\n', start);
+  assert.ok(start > 0 && end > start);
+  const readiness = source.slice(start, end + 2);
+  const harness = `
+set -Eeuo pipefail
+timeout() { shift; "$@"; }
+systemctl() {
+  case "$1" in
+    is-enabled) printf '%s\\n' "$FAKE_ENABLED" ;;
+    is-active) printf '%s\\n' "$FAKE_ACTIVE" ;;
+    show) printf '%s\\n' "$FAKE_NEXT" ;;
+    *) return 2 ;;
+  esac
+}
+${readiness}
+storage_guard_timer_ready
+`;
+  return spawnSync('bash', ['-c', harness], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      FAKE_ENABLED: enabled,
+      FAKE_ACTIVE: active,
+      FAKE_NEXT: next,
+    },
+  });
+}
+
 function expectRenderFailure(root, marker) {
   const output = join(root, 'out.yaml');
   const releaseArgs = writeReleaseFixture(root);
@@ -2735,6 +2770,7 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
   const reset = text('scripts/combo-dev-reset.sh');
   const guard = text('scripts/combo-dev-storage-guard.sh');
   const unit = text('infra/host/combo-dev/combo-dev-storage-guard.service');
+  const timer = text('infra/host/combo-dev/combo-dev-storage-guard.timer');
   const rbac = text('infra/k8s/overlays/combo-dev/platform/rbac.yaml');
   const lease = text('scripts/combo-dev-forwarder-lease.sh');
   assert.match(bootstrap, /issue_client_credential combo-dev-dispatcher 90/);
@@ -2760,6 +2796,27 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
   );
   assert.ok(hostFindmntCalls.length >= 18);
   assert.doesNotMatch(guard, /\$\(findmnt /);
+  assert.match(timer, /^OnActiveSec=1min$/m);
+  assert.match(timer, /^OnUnitInactiveSec=1min$/m);
+  assert.doesNotMatch(timer, /^OnUnitActiveSec=/m);
+  for (const script of [bootstrap, deploy, reset]) {
+    assert.match(script, /storage_guard_timer_ready\(\)/);
+    assert.match(script, /systemctl is-active combo-dev-storage-guard\.timer/);
+    assert.match(script, /NextElapseUSecMonotonic/);
+    assert.match(script, /"\$next" != 0/);
+    assert.match(script, /"\$next" != infinity/);
+    assert.match(script, /storage_guard_timer_ready \|\| blocked/);
+  }
+  for (const script of [deploy, reset]) {
+    const preflightStart = script.indexOf(
+      script === deploy ? 'host_preflight() {' : 'preflight() {',
+    );
+    const preflight = script.slice(preflightStart, script.indexOf('\n}\n', preflightStart) + 2);
+    assert.ok(
+      preflight.indexOf('systemctl start combo-dev-storage-guard.service') <
+        preflight.indexOf('storage_guard_timer_ready || blocked'),
+    );
+  }
   assert.match(guard, /--cache-dir="\$GUARD_RUNTIME\/kubectl-cache"/);
   assert.match(guard, /mktemp -d "\$GUARD_RUNTIME\/guard-credential\.XXXXXX"/);
   assert.doesNotMatch(
@@ -2918,6 +2975,20 @@ credential_certificate_valid_for ${JSON.stringify(path)} combo-dev-dispatcher $(
     assert.notEqual(unauthorized.status, 0);
   } finally {
     rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('the recurring storage guard timer rejects disabled, inactive, zero, and unscheduled states', () => {
+  assert.equal(runStorageGuardTimerReadyFixture().status, 0);
+  for (const fixture of [
+    { enabled: 'disabled' },
+    { active: 'inactive' },
+    { next: '' },
+    { next: '0' },
+    { next: 'infinity' },
+  ]) {
+    const result = runStorageGuardTimerReadyFixture(fixture);
+    assert.notEqual(result.status, 0, JSON.stringify(fixture));
   }
 });
 

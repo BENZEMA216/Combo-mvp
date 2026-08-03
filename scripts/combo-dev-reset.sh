@@ -61,6 +61,14 @@ SUCCESS=0
 status() { printf '[combo-dev-reset] %s\n' "$1"; }
 fail() { printf '[combo-dev-reset] FAIL: %s\n' "$1" >&2; exit 1; }
 blocked() { printf '[combo-dev-reset] BLOCKED: %s\n' "$1" >&2; exit 2; }
+
+storage_guard_timer_ready() {
+  local next
+  [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || return 1
+  [[ $(timeout 10 systemctl is-active combo-dev-storage-guard.timer 2>/dev/null || true) == active ]] || return 1
+  next=$(timeout 10 systemctl show combo-dev-storage-guard.timer -p NextElapseUSecMonotonic --value 2>/dev/null) || return 1
+  [[ -n "$next" && "$next" != 0 && "$next" != infinity ]]
+}
 cleanup() {
   local rc=$?
   set +e
@@ -540,8 +548,8 @@ preflight() {
   findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '固定数据盘没有挂载。'
   verify_k3s_mount_dependencies || blocked 'k3s 必须只依赖生产父数据盘，不能依赖开发挂载或其任何子路径。'
   /opt/combo-dev/bin/combo-dev-storage-guard --check-only >/dev/null 2>&1 || blocked '独立挂载、静态卷路径、标记、所有权或安全水位不符合固定契约。'
-  [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || blocked '持续存储守卫未启用。'
   timeout 180 systemctl start combo-dev-storage-guard.service >/dev/null 2>&1 || blocked '持续守卫无法证明两套凭据与失败收敛路径健康。'
+  storage_guard_timer_ready || blocked '持续存储守卫未启用、未激活或没有下一次检查。'
   can_i_exact yes get persistentvolumes/combo-dev-postgres
   can_i_exact yes get persistentvolumes/combo-dev-redis-queue
   can_i_exact yes get persistentvolumes/combo-dev-minio

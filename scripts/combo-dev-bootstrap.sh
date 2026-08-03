@@ -118,6 +118,14 @@ status() { printf '[combo-dev-bootstrap] %s\n' "$1"; }
 fail() { printf '[combo-dev-bootstrap] FAIL: %s\n' "$1" >&2; exit 1; }
 blocked() { printf '[combo-dev-bootstrap] BLOCKED: %s\n' "$1" >&2; exit 2; }
 require_command() { command -v "$1" >/dev/null 2>&1 || blocked "缺少主机工具：$1"; }
+
+storage_guard_timer_ready() {
+  local next
+  [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || return 1
+  [[ $(timeout 10 systemctl is-active combo-dev-storage-guard.timer 2>/dev/null || true) == active ]] || return 1
+  next=$(timeout 10 systemctl show combo-dev-storage-guard.timer -p NextElapseUSecMonotonic --value 2>/dev/null) || return 1
+  [[ -n "$next" && "$next" != 0 && "$next" != infinity ]]
+}
 bootstrap_boundary() { local _boundary=$1; shift; "$@"; }
 
 forwarders_stopped() {
@@ -1132,7 +1140,7 @@ install_control_files() {
   timeout 30 systemctl daemon-reload >/dev/null 2>&1 || blocked 'systemd 配置刷新失败。'
   timeout 30 systemctl disable combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
   timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
-  # Persistent timer 在首次安装时可能立即补跑。先停用计时器并串行完成首次检查，避免两个 guard 并发收敛同一批凭据和写入者。
+  # 先停用计时器并串行完成首次检查，再启动一分钟周期，避免两个 guard 并发收敛同一批凭据和写入者。
   timeout 30 systemctl disable --now combo-dev-storage-guard.timer >/dev/null 2>&1 || true
   timeout 30 systemctl reset-failed combo-dev-storage-guard.service >/dev/null 2>&1 || true
   timeout 30 systemctl start combo-dev-storage-guard.service >/dev/null 2>&1 || blocked '存储低水位守卫首次检查失败。'
@@ -1144,7 +1152,7 @@ install_control_files() {
     active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
     [[ "$active" == inactive || "$active" == failed ]] || blocked 'bootstrap 后回环转发器仍在运行。'
   done
-  [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || blocked '存储守卫计时器没有开机启用。'
+  storage_guard_timer_ready || blocked '存储守卫计时器没有启用、激活或安排下一次检查。'
 }
 
 production_fingerprint() {
