@@ -25,10 +25,33 @@ readonly HOST_BOUNDARY_CHECK='/opt/combo-dev/host-boundary/check'
 readonly CONTROL_DIGEST='/etc/combo-dev/control-files.sha256'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly INSTALL_ROOT='/opt/combo-dev'
+readonly CONTROL_STATE='/opt/combo-dev/state'
+readonly CONTROL_STATE_PARENT='/var/lib/combo-host-data'
+readonly CONTROL_STATE_IMAGE='/var/lib/combo-host-data/control-state.img'
+readonly DATA_ANCHOR_CHECK='/opt/combo-dev/bin/combo-host-data-mount-check'
+readonly CONTROL_STATE_SENTINEL='/opt/combo-dev/state/.combo-dev-control-state'
+readonly CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
+readonly CONTROL_STATE_BYTES=4294967296
+readonly CONTROL_STATE_LABEL='combo-dev-control-state'
+readonly CONTROL_INCOMING='/opt/combo-dev/state/incoming'
+readonly CONTROL_RELEASES='/opt/combo-dev/state/releases'
+readonly CONTROL_STAGING='/opt/combo-dev/state/releases/.staging'
+readonly CONTROL_WORK='/opt/combo-dev/state/work'
+readonly CONTROL_EVIDENCE='/opt/combo-dev/state/evidence'
+readonly LEGACY_EVIDENCE='/var/lib/combo-dev/evidence'
+readonly CONTROL_STATE_MIN_BYTES=$((3584 * 1024 * 1024))
+readonly CONTROL_STATE_MAX_BYTES=$((4 * 1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_BYTES=$((1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_INODES=4096
+# 512 MiB log capture budget plus 128 MiB for extraction, smoke metadata, and work files.
+readonly CONTROL_WORK_MARGIN_BYTES=$((640 * 1024 * 1024))
+readonly ARCHIVE_MAX_BYTES=$((512 * 1024 * 1024))
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
-readonly BEFORE_FREE_BYTES=$((45 * 1024 * 1024 * 1024))
-readonly AFTER_FREE_BYTES=$((40 * 1024 * 1024 * 1024))
+readonly ROOT_WARNING_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
+readonly ROOT_CRITICAL_MIN_BYTES=$((10 * 1024 * 1024 * 1024))
+readonly DATA_WARNING_MIN_BYTES=$((30 * 1024 * 1024 * 1024))
+readonly DATA_CRITICAL_MIN_BYTES=$((20 * 1024 * 1024 * 1024))
 readonly SHA_RE='^[0-9a-f]{40}$'
 readonly DIGEST_RE='^sha256:[0-9a-f]{64}$'
 readonly JOB_PREFLIGHT_IMAGE='busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028'
@@ -54,10 +77,19 @@ readonly CONTROL_FILES=(
   scripts/combo-dev-forwarder-lease.sh
   scripts/combo-dev-storage-guard.sh
   scripts/combo-dev-production-safety.py
+  infra/host/combo-dev/combo-dev-prepare-control-state.sh
+  infra/host/combo-dev/combo-host-prepare-data-anchor.sh
+  infra/host/combo-dev/combo-host-data-mount-check.sh
   infra/host/combo-dev/combo-dev-web-forward.service
   infra/host/combo-dev/combo-dev-s3-forward.service
   infra/host/combo-dev/combo-dev-storage-guard.service
   infra/host/combo-dev/combo-dev-storage-guard.timer
+  'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount'
+  infra/host/combo-dev/combo-host-data-mount-check.service
+  'infra/host/combo-dev/opt-combo\x2ddev-state.mount'
+  'infra/host/combo-dev/opt-combo\x2ddev-incoming.mount'
+  'infra/host/combo-dev/opt-combo\x2ddev-releases.mount'
+  'infra/host/combo-dev/var-lib-combo\x2ddev-evidence.mount'
   infra/host/combo-dev/combo-host-syslog
   infra/k8s/overlays/combo-dev/kustomization.yaml
   infra/k8s/overlays/combo-dev/platform/kustomization.yaml
@@ -87,6 +119,7 @@ WORK=''
 RELEASE_DIR=''
 INCOMING_BUNDLE=''
 RESET_PROOF_IN_USE=''
+CANDIDATE_RELEASE=''
 RELEASE_CREATED=0
 MUTATING=0
 SUCCESS=0
@@ -111,8 +144,15 @@ cleanup() {
       status '失败收敛无法验证；阻断标记已保留并需要主机所有者介入。'
     fi
   fi
-  [[ -z "$WORK" ]] || rm -rf -- "$WORK"
-  if (( SUCCESS == 0 && RELEASE_CREATED == 1 )) && [[ -n "$RELEASE_DIR" ]]; then rm -rf -- "$RELEASE_DIR"; fi
+  if [[ -n "$CANDIDATE_RELEASE" && "$CANDIDATE_RELEASE" =~ ^/opt/combo-dev/state/releases/\.staging/[0-9a-f]{40}\.[1-9][0-9]*\.[1-9][0-9]*\.[A-Za-z0-9]+$ &&
+    -d "$CANDIDATE_RELEASE" && ! -L "$CANDIDATE_RELEASE" ]]; then
+    rm -rf --one-file-system -- "$CANDIDATE_RELEASE"
+  fi
+  [[ -z "$WORK" ]] || rm -rf --one-file-system -- "$WORK"
+  if (( SUCCESS == 0 && RELEASE_CREATED == 1 )) &&
+    [[ "$RELEASE_DIR" =~ ^/opt/combo-dev/releases/[0-9a-f]{40}$ && -d "$RELEASE_DIR" && ! -L "$RELEASE_DIR" ]]; then
+    rm -rf --one-file-system -- "$RELEASE_DIR"
+  fi
   exit "$rc"
 }
 trap cleanup EXIT
@@ -136,6 +176,150 @@ file_mode_is_private() {
 
 free_bytes() {
   df -PB1 "$1" 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+free_inodes() {
+  df -Pi "$1" 2>/dev/null | awk 'NR==2 {print $4}'
+}
+
+total_bytes() {
+  df -PB1 "$1" 2>/dev/null | awk 'NR==2 {print $2}'
+}
+
+total_inodes() {
+  df -Pi "$1" 2>/dev/null | awk 'NR==2 {print $2}'
+}
+
+max_threshold() {
+  local total=$1 absolute=$2 percent=$3 proportional
+  proportional=$((total * percent / 100))
+  if (( proportional > absolute )); then printf '%s\n' "$proportional"; else printf '%s\n' "$absolute"; fi
+}
+
+verify_control_state() {
+  local canonical target source root_source data_source options total backing path fsroot fstype data_target root_device data_device
+  [[ -x "$DATA_ANCHOR_CHECK" && ! -L "$DATA_ANCHOR_CHECK" &&
+    $(stat -c '%u:%g:%a' "$DATA_ANCHOR_CHECK" 2>/dev/null) == '0:0:755' ]] || return 1
+  "$DATA_ANCHOR_CHECK" >/dev/null 2>&1 || return 1
+  [[ -d "$CONTROL_STATE" && ! -L "$CONTROL_STATE" ]] || return 1
+  canonical=$(readlink -f -- "$CONTROL_STATE" 2>/dev/null) || return 1
+  [[ "$canonical" == "$CONTROL_STATE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ -f "$CONTROL_STATE_SENTINEL" && ! -L "$CONTROL_STATE_SENTINEL" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_SENTINEL" 2>/dev/null) == '0:0:400' ]] || return 1
+  [[ $(cat "$CONTROL_STATE_SENTINEL" 2>/dev/null || true) == "$CONTROL_STATE_SENTINEL_VALUE" ]] || return 1
+  [[ -d "$CONTROL_STATE_PARENT" && ! -L "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_PARENT" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_PARENT" 2>/dev/null) == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ -f "$CONTROL_STATE_IMAGE" && ! -L "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_IMAGE" 2>/dev/null) == '0:0:600' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%s' "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  data_target=$(findmnt -rn -T "$CONTROL_STATE_IMAGE" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%d' "$CONTROL_STATE_IMAGE" 2>/dev/null) == $(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) ]] || return 1
+  target=$(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) || return 1
+  [[ "$target" == "$CONTROL_STATE" ]] || return 1
+  source=$(findmnt -rn -M "$CONTROL_STATE" -o SOURCE 2>/dev/null) || return 1
+  root_source=$(findmnt -rn -M / -o SOURCE 2>/dev/null) || return 1
+  data_source=$(findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || return 1
+  data_target=$(findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$DATA_MOUNT" ]] || return 1
+  root_device=$(stat -c '%d' / 2>/dev/null) || return 1
+  data_device=$(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) || return 1
+  [[ "$data_device" != "$root_device" ]] || return 1
+  [[ "$data_source" != "$root_source" ]] || return 1
+  [[ "$source" =~ ^/dev/loop[0-9]+$ && "$source" != "$root_source" && "$source" != "$data_source" ]] || return 1
+  backing=$(losetup -n -O BACK-FILE -- "$source" 2>/dev/null | awk '{$1=$1; print}') || return 1
+  [[ "$backing" == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(blockdev --getsize64 "$source" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  fstype=$(findmnt -rn -M "$CONTROL_STATE" -o FSTYPE 2>/dev/null) || return 1
+  [[ "$fstype" == ext4 ]] || return 1
+  [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == "$CONTROL_STATE_LABEL" ]] || return 1
+  options=$(findmnt -rn -M "$CONTROL_STATE" -o OPTIONS 2>/dev/null) || return 1
+  [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  total=$(df -B1 --output=size "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  (( total >= CONTROL_STATE_MIN_BYTES && total <= CONTROL_STATE_MAX_BYTES )) || return 1
+
+  for path in "$CONTROL_INCOMING" "$CONTROL_RELEASES" "$CONTROL_STAGING" "$CONTROL_WORK" "$CONTROL_EVIDENCE"; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    [[ $(findmnt -rn -T "$path" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] || return 1
+  done
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_INCOMING" 2>/dev/null) == '0:0:1733' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_RELEASES" 2>/dev/null) == '0:0:755' ]] || return 1
+  for path in "$CONTROL_STAGING" "$CONTROL_WORK"; do
+    [[ $(stat -c '%u:%g:%a' "$path" 2>/dev/null) == '0:0:700' ]] || return 1
+  done
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_EVIDENCE" 2>/dev/null) == '0:0:755' ]] || return 1
+
+  for path in "$INSTALL_ROOT/incoming" "$INSTALL_ROOT/releases" "$LEGACY_EVIDENCE"; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    [[ $(findmnt -rn -M "$path" -o TARGET 2>/dev/null) == "$path" ]] || return 1
+    options=$(findmnt -rn -M "$path" -o OPTIONS 2>/dev/null) || return 1
+    [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  done
+  fsroot=$(findmnt -rn -M "$INSTALL_ROOT/incoming" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/incoming' ]] || return 1
+  fsroot=$(findmnt -rn -M "$INSTALL_ROOT/releases" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/releases' ]] || return 1
+  fsroot=$(findmnt -rn -M "$LEGACY_EVIDENCE" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/evidence' ]] || return 1
+  [[ $(stat -c '%d:%i' "$INSTALL_ROOT/incoming" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_INCOMING" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%d:%i' "$INSTALL_ROOT/releases" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_RELEASES" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%d:%i' "$LEGACY_EVIDENCE" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_EVIDENCE" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$INSTALL_ROOT/incoming" 2>/dev/null) == '0:0:1733' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$INSTALL_ROOT/releases" 2>/dev/null) == '0:0:755' ]] || return 1
+}
+
+assert_control_state_headroom() {
+  local required_extra=${1:-0} free inodes required
+  [[ "$required_extra" =~ ^[0-9]+$ ]] || blocked 'control-state 额外容量参数不合法。'
+  verify_control_state || blocked 'control-state 挂载、backing file、目录或兼容 bind 契约失效。'
+  free=$(free_bytes "$CONTROL_STATE") || blocked 'control-state 可用容量不可读。'
+  inodes=$(free_inodes "$CONTROL_STATE") || blocked 'control-state inode 不可读。'
+  [[ "$free" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ ]] || blocked 'control-state 容量指标格式不合法。'
+  required=$((CONTROL_STATE_MIN_FREE_BYTES + required_extra + CONTROL_WORK_MARGIN_BYTES))
+  (( free >= required && inodes >= CONTROL_STATE_MIN_FREE_INODES )) ||
+    blocked 'control-state 低于部署所需字节或 inode 安全水位。'
+}
+
+assert_host_capacity() {
+  local root_free root_total root_iavail root_itotal root_warn root_critical root_iwarn root_icritical
+  local data_free data_total data_iavail data_itotal data_warn data_critical data_iwarn data_icritical
+  root_free=$(free_bytes /) || blocked '根盘可用容量不可读。'
+  root_total=$(total_bytes /) || blocked '根盘总容量不可读。'
+  root_iavail=$(free_inodes /) || blocked '根盘可用 inode 不可读。'
+  root_itotal=$(total_inodes /) || blocked '根盘总 inode 不可读。'
+  data_free=$(free_bytes "$DATA_MOUNT") || blocked '父数据盘可用容量不可读。'
+  data_total=$(total_bytes "$DATA_MOUNT") || blocked '父数据盘总容量不可读。'
+  data_iavail=$(free_inodes "$DATA_MOUNT") || blocked '父数据盘可用 inode 不可读。'
+  data_itotal=$(total_inodes "$DATA_MOUNT") || blocked '父数据盘总 inode 不可读。'
+  [[ "$root_free" =~ ^[0-9]+$ && "$root_total" =~ ^[0-9]+$ &&
+    "$root_iavail" =~ ^[0-9]+$ && "$root_itotal" =~ ^[0-9]+$ &&
+    "$data_free" =~ ^[0-9]+$ && "$data_total" =~ ^[0-9]+$ &&
+    "$data_iavail" =~ ^[0-9]+$ && "$data_itotal" =~ ^[0-9]+$ ]] ||
+    blocked '主机容量指标格式不合法。'
+  root_warn=$(max_threshold "$root_total" "$ROOT_WARNING_MIN_BYTES" 15)
+  root_critical=$(max_threshold "$root_total" "$ROOT_CRITICAL_MIN_BYTES" 10)
+  root_iwarn=$((root_itotal * 15 / 100))
+  root_icritical=$((root_itotal * 10 / 100))
+  data_warn=$(max_threshold "$data_total" "$DATA_WARNING_MIN_BYTES" 15)
+  data_critical=$(max_threshold "$data_total" "$DATA_CRITICAL_MIN_BYTES" 10)
+  data_iwarn=$((data_itotal * 15 / 100))
+  data_icritical=$((data_itotal * 10 / 100))
+  if (( root_free < root_critical || root_iavail < root_icritical )); then
+    blocked '主机根盘低于 OS critical 安全水位；这不是部署容量门槛。'
+  fi
+  if (( data_free < data_critical || data_iavail < data_icritical )); then
+    blocked '父数据盘低于 critical 字节或 inode 安全水位。'
+  fi
+  if (( root_free < root_warn || root_iavail < root_iwarn )); then
+    status "WARN root-os-headroom bytes=$root_free inodes=$root_iavail"
+  fi
+  if (( data_free < data_warn || data_iavail < data_iwarn )); then
+    status "WARN parent-data-headroom bytes=$data_free inodes=$data_iavail"
+  fi
 }
 
 verify_bounded_storage_pool() {
@@ -201,7 +385,7 @@ claim_forwarders_for_deploy() {
 
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked '调度器必须由受限 sudo 规则以 root 启动。'
-  for cmd in kubectl python3 jq curl sha256sum flock findmnt df systemctl ss timeout readlink install diff mv stat dirname openssl base64 date; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq curl sha256sum flock findmnt df systemctl ss timeout readlink install diff mv stat dirname openssl base64 date losetup blockdev blkid; do require_command "$cmd"; done
   root_owned_not_writable /etc/combo-dev || blocked '开发配置目录可被非 root 修改。'
   root_owned_not_writable "$INSTALL_ROOT" || blocked '安装根目录可被非 root 修改。'
   root_owned_not_writable "$INSTALL_ROOT/bin" || blocked '调度器目录可被非 root 修改。'
@@ -227,6 +411,7 @@ host_preflight() {
   fi
   timeout 30 "$HOST_BOUNDARY_CHECK" --check >/dev/null 2>&1 || blocked '主机级 Pod 到节点隔离未生效。'
   findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '数据盘没有挂载在固定路径。'
+  verify_control_state || blocked 'control-state 没有使用固定数据盘 backing 的独立 3.5–4 GiB 挂载与兼容 bind。'
   verify_bounded_storage_pool || blocked 'combo-dev 没有使用独立且硬限制为 18 GiB 以内的挂载。'
   verify_k3s_mount_dependencies || blocked 'k3s 必须只依赖生产父数据盘，不能依赖开发挂载或其任何子路径。'
   dispatcher_certificate_valid_for "$DISPATCHER_OPERATION_MIN_SECONDS" || blocked '调度证书不足以覆盖最长部署操作。'
@@ -234,11 +419,8 @@ host_preflight() {
   [[ $(timeout 10 systemctl is-enabled combo-dev-storage-guard.timer 2>/dev/null || true) == enabled ]] || blocked '持续存储守卫未启用。'
   timeout 180 systemctl start combo-dev-storage-guard.service >/dev/null 2>&1 || blocked '持续守卫无法证明两套凭据与失败收敛路径健康。'
   assert_storage_headroom
-  local free
-  free=$(free_bytes /) || blocked '无法读取根盘容量。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then blocked '部署前根盘可用空间不足 45 GiB。'; fi
-  free=$(free_bytes "$DATA_MOUNT") || blocked '无法读取数据盘容量。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then blocked '部署前数据盘可用空间不足 45 GiB。'; fi
+  assert_control_state_headroom
+  assert_host_capacity
 }
 
 can_i_exact() {
@@ -650,7 +832,7 @@ production_fingerprint() {
 validate_bundle() {
   local archive=$1 destination=$2
   python3 - "$archive" "$destination" <<'PY'
-import os, pathlib, sys, tarfile
+import os, pathlib, stat, sys, tarfile
 archive, destination = sys.argv[1:]
 allowed_files = {
     'metadata/revision', 'metadata/image-digests.txt',
@@ -661,10 +843,19 @@ allowed_files = {
     'scripts/combo-dev-forwarder-lease.sh', 'scripts/combo-dev-storage-guard.sh',
     'scripts/combo-dev-production-safety.py',
     'infra/host/combo-dev/README.md',
+    'infra/host/combo-dev/combo-dev-prepare-control-state.sh',
+    'infra/host/combo-dev/combo-host-prepare-data-anchor.sh',
+    'infra/host/combo-dev/combo-host-data-mount-check.sh',
     'infra/host/combo-dev/combo-dev-web-forward.service',
     'infra/host/combo-dev/combo-dev-s3-forward.service',
     'infra/host/combo-dev/combo-dev-storage-guard.service',
     'infra/host/combo-dev/combo-dev-storage-guard.timer',
+    r'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount',
+    'infra/host/combo-dev/combo-host-data-mount-check.service',
+    r'infra/host/combo-dev/opt-combo\x2ddev-state.mount',
+    r'infra/host/combo-dev/opt-combo\x2ddev-incoming.mount',
+    r'infra/host/combo-dev/opt-combo\x2ddev-releases.mount',
+    r'infra/host/combo-dev/var-lib-combo\x2ddev-evidence.mount',
     'infra/host/combo-dev/combo-host-syslog',
     'infra/k8s/overlays/combo-dev/kustomization.yaml',
     'infra/k8s/overlays/combo-dev/platform/kustomization.yaml',
@@ -710,7 +901,11 @@ with tarfile.open(archive, 'r:gz') as tf:
         total += m.size
     if total > 20 * 1024 * 1024 or seen != allowed_files:
         raise SystemExit(2)
-    os.makedirs(destination, mode=0o700, exist_ok=False)
+    value = os.lstat(destination)
+    if (not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode)
+            or value.st_uid != 0 or value.st_gid != 0
+            or stat.S_IMODE(value.st_mode) != 0o700 or os.listdir(destination)):
+        raise SystemExit(2)
     tf.extractall(destination)
 for root, dirs, files in os.walk(destination):
     os.chown(root, 0, 0)
@@ -719,7 +914,8 @@ for root, dirs, files in os.walk(destination):
         path=os.path.join(root,name)
         os.chown(path, 0, 0)
         relative=os.path.relpath(path,destination)
-        if relative.startswith('scripts/combo-dev-') and relative.endswith('.sh'):
+        if ((relative.startswith('scripts/combo-dev-') or
+             relative.startswith('infra/host/combo-dev/')) and relative.endswith('.sh')):
             os.chmod(path,0o755)
         elif relative.startswith('metadata/'):
             os.chmod(path,0o600)
@@ -739,10 +935,19 @@ installed_control_digest() {
     "$INSTALL_ROOT/bin/combo-dev-forwarder-lease"
     "$INSTALL_ROOT/bin/combo-dev-storage-guard"
     "$INSTALL_ROOT/bin/combo-dev-production-safety"
+    "$INSTALL_ROOT/bin/combo-dev-prepare-control-state"
+    "$INSTALL_ROOT/bin/combo-host-prepare-data-anchor"
+    "$INSTALL_ROOT/bin/combo-host-data-mount-check"
     /etc/systemd/system/combo-dev-web-forward.service
     /etc/systemd/system/combo-dev-s3-forward.service
     /etc/systemd/system/combo-dev-storage-guard.service
     /etc/systemd/system/combo-dev-storage-guard.timer
+    '/etc/systemd/system/var-lib-combo\x2dhost\x2ddata.mount'
+    /etc/systemd/system/combo-host-data-mount-check.service
+    '/etc/systemd/system/opt-combo\x2ddev-state.mount'
+    '/etc/systemd/system/opt-combo\x2ddev-incoming.mount'
+    '/etc/systemd/system/opt-combo\x2ddev-releases.mount'
+    '/etc/systemd/system/var-lib-combo\x2ddev-evidence.mount'
     /etc/logrotate.d/combo-host-syslog
     "$INSTALL_ROOT/bootstrap-overlay/kustomization.yaml"
     "$INSTALL_ROOT/bootstrap-overlay/platform/kustomization.yaml"
@@ -775,13 +980,24 @@ verify_release_tree() {
   python3 - "$1" <<'PY'
 import os, stat, sys
 root=sys.argv[1]
+root_device=os.lstat(root).st_dev
 for current, dirs, files in os.walk(root, followlinks=False):
     entries=[current]+[os.path.join(current,x) for x in dirs+files]
     for path in entries:
         s=os.lstat(path)
-        if s.st_uid != 0 or stat.S_ISLNK(s.st_mode) or (s.st_mode & 0o022):
+        if s.st_dev != root_device or s.st_uid != 0 or stat.S_ISLNK(s.st_mode) or (s.st_mode & 0o022):
             raise SystemExit(2)
 PY
+}
+
+assert_release_tree_unmounted() {
+  local mounts target
+  mounts=$(findmnt -rn -o TARGET) || blocked '无法读取挂载表；拒绝读取 release。'
+  while IFS= read -r target; do
+    [[ "$target" == "$INSTALL_ROOT/releases" || "$target" == "$CONTROL_STATE" ]] && continue
+    [[ "$target" == "$INSTALL_ROOT/releases"/* || "$target" == "$CONTROL_RELEASES"/* ]] || continue
+    blocked 'release 树内存在非固定挂载点；拒绝读取或清理。'
+  done <<<"$mounts"
 }
 
 read_metadata_value() {
@@ -2081,7 +2297,8 @@ with open(output_path, 'w', encoding='utf-8') as handle:
     handle.write('\n')
 PY
 
-  install -d -o root -g root -m 0755 "$evidence_dir"
+  [[ $(stat -c '%u:%g:%a' "$evidence_dir" 2>/dev/null) == '0:0:755' ]] ||
+    blocked 'Test evidence 目录不符合 control-state 固定权限。'
   rm -f -- "$output"
   install -o root -g root -m 0644 "$candidate" "$output" ||
     blocked 'Test evidence 无法写入受保护目录。'
@@ -2184,19 +2401,119 @@ wait_loopback_listeners() {
 }
 
 post_capacity() {
-  local free
   assert_storage_headroom
-  free=$(free_bytes /) || blocked '无法读取部署后根盘容量。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < AFTER_FREE_BYTES )); then fail '部署后根盘可用空间不足 40 GiB。'; fi
-  free=$(free_bytes "$DATA_MOUNT") || blocked '无法读取部署后数据盘容量。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < AFTER_FREE_BYTES )); then fail '部署后数据盘可用空间不足 40 GiB。'; fi
+  assert_control_state_headroom
+  assert_host_capacity
 }
 
 prune_releases() {
-  local keep
-  mapfile -t keep < <(find "$INSTALL_ROOT/releases" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | awk 'NR>3 {print $2}')
-  ((${#keep[@]} == 0)) || rm -rf -- "${keep[@]}"
-  find "$INSTALL_ROOT/incoming" -maxdepth 1 -type f -mtime +2 -delete
+  local release_plan="$WORK/prune-releases.nul" incoming_plan="$WORK/prune-incoming.nul"
+  local path mounts target
+  local -a stale_releases=() stale_incoming=()
+  mounts=$(findmnt -rn -o TARGET) || blocked '无法读取挂载表；拒绝清理 release。'
+  while IFS= read -r target; do
+    [[ "$target" == "$INSTALL_ROOT/releases" || "$target" == "$CONTROL_STATE" ]] && continue
+    [[ "$target" == "$INSTALL_ROOT/releases"/* || "$target" == "$CONTROL_RELEASES"/* ]] || continue
+    blocked 'release 树内存在非固定挂载点；拒绝清理。'
+  done <<<"$mounts"
+  python3 - "$INSTALL_ROOT/releases" "$INSTALL_ROOT/incoming" "$INSTALL_ROOT/current" \
+    "$release_plan" "$incoming_plan" <<'PY' || blocked 'release 或 incoming 包含不受信任的条目；未执行清理。'
+import os
+import re
+import stat
+import sys
+import time
+
+releases_dir, incoming_dir, current_link, release_plan, incoming_plan = sys.argv[1:]
+sha = re.compile(r'^[0-9a-f]{40}$')
+
+def safe_dir(path, mode=None):
+    value = os.lstat(path)
+    if not stat.S_ISDIR(value.st_mode) or stat.S_ISLNK(value.st_mode):
+        raise SystemExit(2)
+    if value.st_uid != 0 or value.st_gid != 0 or value.st_mode & 0o022:
+        raise SystemExit(2)
+    if mode is not None and stat.S_IMODE(value.st_mode) != mode:
+        raise SystemExit(2)
+
+def safe_tree(path, expected_device):
+    for current, dirs, files in os.walk(path, followlinks=False):
+        for entry in [current] + [os.path.join(current, name) for name in dirs + files]:
+            value = os.lstat(entry)
+            if (value.st_dev != expected_device or value.st_uid != 0
+                    or value.st_mode & 0o022 or stat.S_ISLNK(value.st_mode)):
+                raise SystemExit(2)
+            if not (stat.S_ISDIR(value.st_mode) or stat.S_ISREG(value.st_mode)):
+                raise SystemExit(2)
+
+safe_dir(releases_dir, 0o755)
+safe_dir(os.path.join(releases_dir, '.staging'), 0o700)
+device = os.lstat(releases_dir).st_dev
+current = None
+if os.path.lexists(current_link):
+    if not os.path.islink(current_link):
+        raise SystemExit(2)
+    current = os.path.realpath(current_link)
+    if os.path.dirname(current) != os.path.realpath(releases_dir) or not sha.fullmatch(os.path.basename(current)):
+        raise SystemExit(2)
+    safe_dir(current)
+    safe_tree(current, device)
+
+releases = []
+for name in os.listdir(releases_dir):
+    if name == '.staging':
+        continue
+    if not sha.fullmatch(name):
+        raise SystemExit(2)
+    path = os.path.join(releases_dir, name)
+    safe_dir(path)
+    safe_tree(path, device)
+    releases.append((os.lstat(path).st_mtime_ns, name, path))
+releases.sort(key=lambda item: (-item[0], item[1]))
+keep = {current} if current is not None else set()
+for _, _, path in releases:
+    if len(keep) >= 3:
+        break
+    keep.add(path)
+with open(release_plan, 'wb') as output:
+    for _, _, path in releases:
+        if path not in keep:
+            output.write(os.fsencode(path) + b'\0')
+
+incoming = os.lstat(incoming_dir)
+if (not stat.S_ISDIR(incoming.st_mode) or stat.S_ISLNK(incoming.st_mode)
+        or incoming.st_uid != 0 or incoming.st_gid != 0
+        or stat.S_IMODE(incoming.st_mode) != 0o1733):
+    raise SystemExit(2)
+allowed = re.compile(
+    r'^(?:[0-9a-f]{40}(?:\.acceptance)?\.[1-9][0-9]*\.[1-9][0-9]*\.tar\.gz|'
+    r'\.[0-9a-f]{40}(?:\.acceptance)?\.[1-9][0-9]*\.[1-9][0-9]*\.upload)$'
+)
+cutoff = time.time() - (2 * 24 * 60 * 60)
+with open(incoming_plan, 'wb') as output:
+    for name in os.listdir(incoming_dir):
+        path = os.path.join(incoming_dir, name)
+        value = os.lstat(path)
+        if (not allowed.fullmatch(name) or not stat.S_ISREG(value.st_mode)
+                or stat.S_ISLNK(value.st_mode)):
+            raise SystemExit(2)
+        if value.st_mtime < cutoff:
+            output.write(os.fsencode(path) + b'\0')
+PY
+  mapfile -d '' -t stale_releases <"$release_plan"
+  mapfile -d '' -t stale_incoming <"$incoming_plan"
+  for path in "${stale_releases[@]}"; do
+    [[ "$path" =~ ^/opt/combo-dev/releases/[0-9a-f]{40}$ ]] ||
+      blocked 'release 清理计划越过固定目录。'
+    rm -rf --one-file-system -- "$path" || blocked '旧 release 无法安全删除。'
+    [[ ! -e "$path" && ! -L "$path" ]] || blocked '旧 release 删除后仍然存在。'
+  done
+  for path in "${stale_incoming[@]}"; do
+    [[ "$path" == "$INSTALL_ROOT/incoming"/* && "$path" != "$INSTALL_ROOT/incoming"/*/* ]] ||
+      blocked 'incoming 清理计划越过固定目录。'
+    rm -f -- "$path" || blocked '旧 incoming 文件无法安全删除。'
+    [[ ! -e "$path" && ! -L "$path" ]] || blocked '旧 incoming 文件删除后仍然存在。'
+  done
 }
 
 render_only() {
@@ -2242,7 +2559,7 @@ render_only() {
 
 main() {
   if [[ ${1:-} == '--render-only' ]]; then shift; render_only "$@"; return; fi
-  local bundle='' revision='' workflow_run_id='' workflow_run_attempt='' arg rc
+  local bundle='' revision='' workflow_run_id='' workflow_run_attempt='' arg rc bundle_bytes
   while (($#)); do
     arg=$1; shift
     case "$arg" in
@@ -2261,14 +2578,19 @@ main() {
   [[ $(readlink -f "$bundle" 2>/dev/null || true) == \
     "$INSTALL_ROOT/incoming/${revision}.${workflow_run_id}.${workflow_run_attempt}.tar.gz" ]] ||
     blocked '部署包不在固定 attempt-scoped incoming 路径。'
+  bundle_bytes=$(stat -c '%s' "$bundle" 2>/dev/null) || blocked '部署包大小不可读。'
+  [[ "$bundle_bytes" =~ ^[1-9][0-9]*$ ]] || blocked '部署包大小不合法。'
+  (( bundle_bytes <= ARCHIVE_MAX_BYTES )) || blocked '部署包超过 512 MiB 上传上限。'
   RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
   CONSUMED_RESET_PROOF="/var/lib/combo-dev/reset-proof.${revision}.${workflow_run_id}.${workflow_run_attempt}.consumed.json"
   INCOMING_BUNDLE=$bundle
 
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
-  WORK=$(mktemp -d)
+  assert_control_state_headroom "$bundle_bytes"
+  WORK=$(mktemp -d "$CONTROL_WORK/deploy.XXXXXX") || blocked '无法在 control-state 创建部署工作区。'
   host_preflight
+  assert_release_tree_unmounted
   rbac_preflight
   consume_reset_proof "$revision" "$workflow_run_id" "$workflow_run_attempt"
   set +e
@@ -2280,21 +2602,29 @@ main() {
     blocked '外部失败收敛状态不是可安全替换的旧 attempt。'
   }
   rm -f -- \
-    "/var/lib/combo-dev/evidence/${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
+    "$LEGACY_EVIDENCE/${revision}.${workflow_run_id}.${workflow_run_attempt}.json"
   claim_forwarders_for_deploy
 
   local trusted_bundle="$WORK/bundle.tar.gz"
   install -m 0600 "$bundle" "$trusted_bundle" || blocked '部署包无法复制到 root-owned 临时目录。'
   rm -f -- "$bundle" || blocked 'incoming 部署包无法在受信复制后删除。'
   INCOMING_BUNDLE=''
-  local candidate_release="$INSTALL_ROOT/releases/$revision" candidate_extract="$WORK/candidate"
+  local canonical_release="$CONTROL_RELEASES/$revision"
+  local candidate_release="$INSTALL_ROOT/releases/$revision" candidate_extract
+  candidate_extract=$(mktemp -d \
+    "$CONTROL_STAGING/${revision}.${workflow_run_id}.${workflow_run_attempt}.XXXXXXXX") ||
+    blocked '无法在 release staging 创建候选目录。'
+  CANDIDATE_RELEASE=$candidate_extract
   validate_bundle "$trusted_bundle" "$candidate_extract" || blocked '部署包不在固定白名单内。'
-  if [[ -e "$candidate_release" ]]; then
-    [[ -d "$candidate_release" && ! -L "$candidate_release" ]] || blocked '既有 revision 路径不是 root-owned 发布目录。'
-    diff -qr "$candidate_extract" "$candidate_release" >/dev/null 2>&1 || blocked '同一 revision 的既有发布内容不一致。'
-    rm -rf -- "$candidate_extract"
+  if [[ -e "$canonical_release" ]]; then
+    [[ -d "$canonical_release" && ! -L "$canonical_release" ]] || blocked '既有 revision 路径不是 root-owned 发布目录。'
+    diff -qr "$candidate_extract" "$canonical_release" >/dev/null 2>&1 || blocked '同一 revision 的既有发布内容不一致。'
+    rm -rf --one-file-system -- "$candidate_extract"
+    CANDIDATE_RELEASE=''
   else
-    mv "$candidate_extract" "$candidate_release"
+    mv -T "$candidate_extract" "$canonical_release" ||
+      blocked '候选 release 无法在 control-state 内原子提交。'
+    CANDIDATE_RELEASE=''
     RELEASE_CREATED=1
   fi
   RELEASE_DIR=$candidate_release
@@ -2378,6 +2708,10 @@ main() {
     fail '外部失败收敛已阻断本次部署。'
   post_capacity
   verify_writers_restored || fail '解除持久阻断前无法证明全部写入者已恢复单副本就绪。'
+  # From this point the immutable release is intentionally retained. Setting
+  # this before the two-link switch closes the TERM/INT window where cleanup
+  # could otherwise delete the new target after current had moved to it.
+  RELEASE_CREATED=0
   ln -sfn "$RELEASE_DIR" "$INSTALL_ROOT/current.next"
   mv -Tf "$INSTALL_ROOT/current.next" "$INSTALL_ROOT/current"
   prune_releases

@@ -11,6 +11,8 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -116,8 +118,13 @@ function runLogsAuditFixture(mode, activityMode = 'product') {
   const state = join(root, 'state');
   const getState = join(root, 'get-state');
   const invocations = join(root, 'invocations');
+  const controlState = join(root, 'control-state');
+  const controlWork = join(controlState, 'work');
   const markerValue = 'SYNTHETIC_MARKER_1234567890';
   mkdirSync(bin);
+  mkdirSync(controlWork, { recursive: true, mode: 0o700 });
+  chmodSync(controlState, 0o700);
+  chmodSync(controlWork, 0o700);
   writeFileSync(marker, `${markerValue}\n`, { mode: 0o600 });
   writeFileSync(state, '0\n', { mode: 0o600 });
   writeFileSync(getState, '0\n', { mode: 0o600 });
@@ -131,11 +138,45 @@ function runLogsAuditFixture(mode, activityMode = 'product') {
     ['readonly ACTIVITY_ATTEMPTS=15', 'readonly ACTIVITY_ATTEMPTS=3'],
     ['readonly ACTIVITY_RETRY_SECONDS=2', 'readonly ACTIVITY_RETRY_SECONDS=0'],
     ['readonly LOG_CAPTURE_BYTES=8388609', 'readonly LOG_CAPTURE_BYTES=64'],
+    ["readonly CONTROL_STATE='/opt/combo-dev/state'", `readonly CONTROL_STATE='${controlState}'`],
+    ["readonly CONTROL_WORK='/opt/combo-dev/state/work'", `readonly CONTROL_WORK='${controlWork}'`],
+    ['/opt/combo-dev/bin/combo-dev-storage-guard', join(bin, 'combo-dev-storage-guard')],
   ]) {
     assert.ok(source.includes(expected), `fixture replacement missing: ${expected}`);
     source = source.replace(expected, replacement);
   }
   writeFileSync(audit, source, { mode: 0o700 });
+  writeFileSync(
+    join(bin, 'stat'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+last=\${!#}
+if [[ "$last" == "$FAKE_CONTROL_STATE" || "$last" == "$FAKE_CONTROL_WORK" ]]; then
+  [[ "$1" == -c && "$2" == '%u:%g:%a' ]] || exit 2
+  printf '%s\n' '0:0:700'
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+`,
+    { mode: 0o700 },
+  );
+  writeFileSync(
+    join(bin, 'findmnt'),
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [[ " $* " == *" $FAKE_CONTROL_STATE "* || " $* " == *" $FAKE_CONTROL_WORK "* ]]; then
+  printf '%s\n' "$FAKE_CONTROL_STATE"
+  exit 0
+fi
+exit 2
+`,
+    { mode: 0o700 },
+  );
+  writeFileSync(
+    join(bin, 'combo-dev-storage-guard'),
+    '#!/usr/bin/env bash\n[[ "$*" == "--check-only" ]]\n',
+    { mode: 0o700 },
+  );
   writeFileSync(
     join(bin, 'kubectl'),
     `#!/usr/bin/env bash
@@ -275,6 +316,8 @@ exec /usr/bin/grep "$@"
           FAKE_STATE: state,
           FAKE_GET_STATE: getState,
           FAKE_INVOCATIONS: invocations,
+          FAKE_CONTROL_STATE: controlState,
+          FAKE_CONTROL_WORK: controlWork,
         },
       },
     );
@@ -321,6 +364,183 @@ function runSmokeLogProbeFixture(mode) {
       timeout: 10_000,
       env: { ...process.env, FAKE_CURL_MODE: mode },
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function runStorageCapacityFixture({
+  rootFree,
+  rootInodes = 900_000,
+  dataFree,
+  dataInodes = 900_000,
+  stateFree = 2 * 1024 ** 3,
+  stateInodes = 10_000,
+}) {
+  const guard = join(repo, 'scripts/combo-dev-storage-guard.sh');
+  const harness = `
+source ${JSON.stringify(guard)}
+df() {
+  local target=\${!#} metric=''
+  case " $* " in
+    *" --output=avail "*) metric=avail ;;
+    *" --output=size "*) metric=size ;;
+    *" --output=iavail "*) metric=iavail ;;
+    *" --output=inodes "*) metric=inodes ;;
+    *) return 2 ;;
+  esac
+  printf '%s\n' header
+  case "$target:$metric" in
+    /:avail) printf '%s\n' "$FAKE_ROOT_FREE" ;;
+    /:size) printf '%s\n' "$FAKE_ROOT_TOTAL" ;;
+    /:iavail) printf '%s\n' "$FAKE_ROOT_INODES" ;;
+    /:inodes) printf '%s\n' "$FAKE_TOTAL_INODES" ;;
+    "$DATA_MOUNT":avail) printf '%s\n' "$FAKE_DATA_FREE" ;;
+    "$DATA_MOUNT":size) printf '%s\n' "$FAKE_DATA_TOTAL" ;;
+    "$DATA_MOUNT":iavail) printf '%s\n' "$FAKE_DATA_INODES" ;;
+    "$DATA_MOUNT":inodes) printf '%s\n' "$FAKE_TOTAL_INODES" ;;
+    "$CONTROL_STATE":avail) printf '%s\n' "$FAKE_STATE_FREE" ;;
+    "$CONTROL_STATE":iavail) printf '%s\n' "$FAKE_STATE_INODES" ;;
+    *) return 2 ;;
+  esac
+}
+classify_host_capacity
+if control_headroom_ok; then control=ok; else control=low; fi
+printf 'rootWarning=%s rootCritical=%s dataWarning=%s dataCritical=%s control=%s\n' \
+  "$ROOT_CAPACITY_WARNING" "$ROOT_CAPACITY_CRITICAL" \
+  "$DATA_CAPACITY_WARNING" "$DATA_CAPACITY_CRITICAL" "$control"
+`;
+  return spawnSync('bash', ['-c', harness], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      FAKE_ROOT_FREE: String(rootFree),
+      FAKE_ROOT_TOTAL: String(180 * 1024 ** 3),
+      FAKE_ROOT_INODES: String(rootInodes),
+      FAKE_DATA_FREE: String(dataFree),
+      FAKE_DATA_TOTAL: String(206.5 * 1024 ** 3),
+      FAKE_DATA_INODES: String(dataInodes),
+      FAKE_TOTAL_INODES: '1000000',
+      FAKE_STATE_FREE: String(stateFree),
+      FAKE_STATE_INODES: String(stateInodes),
+    },
+  });
+}
+
+function runControlStateIdentityFixture(mode) {
+  const root = mkdtempSync(join(tmpdir(), 'combo-dev-control-state-'));
+  const dataMount = join(root, 'data');
+  const parent = join(dataMount, 'combo-host');
+  const image = join(parent, 'control-state.img');
+  const state = join(root, 'state');
+  const stateReal = mode === 'state-symlink' ? join(root, 'state-real') : state;
+  const legacyIncoming = join(root, 'compat/incoming');
+  const legacyReleases = join(root, 'compat/releases');
+  const legacyEvidence = join(root, 'compat/evidence');
+  for (const path of [
+    parent,
+    join(stateReal, 'incoming'),
+    join(stateReal, 'releases/.staging'),
+    join(stateReal, 'work'),
+    join(stateReal, 'evidence'),
+    legacyIncoming,
+    legacyReleases,
+    legacyEvidence,
+  ]) {
+    mkdirSync(path, { recursive: true });
+  }
+  if (mode === 'state-symlink') symlinkSync(stateReal, state);
+  writeFileSync(image, 'fixture');
+  if (mode !== 'missing-sentinel') {
+    writeFileSync(join(stateReal, '.combo-dev-control-state'), 'combo-dev-control-state=v1\n');
+  }
+
+  const guard = text('scripts/combo-dev-storage-guard.sh');
+  const start = guard.indexOf('verify_control_state() {');
+  const end = guard.indexOf('\n}\n\ncontrol_headroom_ok() {', start);
+  assert.ok(start > 0 && end > start);
+  const verify = guard
+    .slice(start, end + 2)
+    .replaceAll('/opt/combo-dev/incoming', legacyIncoming)
+    .replaceAll('/opt/combo-dev/releases', legacyReleases)
+    .replaceAll('/var/lib/combo-dev/evidence', legacyEvidence);
+  const harness = `
+set -u
+CONTROL_STATE=${JSON.stringify(state)}
+CONTROL_STATE_PARENT=${JSON.stringify(parent)}
+CONTROL_STATE_IMAGE=${JSON.stringify(image)}
+DATA_ANCHOR_CHECK=/bin/true
+CONTROL_STATE_SENTINEL=${JSON.stringify(join(state, '.combo-dev-control-state'))}
+CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
+CONTROL_STATE_BYTES=4294967296
+CONTROL_STATE_LABEL='combo-dev-control-state'
+CONTROL_STATE_MIN_BYTES=$((3584 * 1024 * 1024))
+CONTROL_STATE_MAX_BYTES=$((4 * 1024 * 1024 * 1024))
+DATA_MOUNT=${JSON.stringify(dataMount)}
+FAKE_MODE=${JSON.stringify(mode)}
+stat() {
+  local format='' path=\${!#}
+  [[ \${1:-} == -c ]] && format=$2
+  case "$format:$path" in
+    '%u:%g:%a':"$CONTROL_STATE") printf '%s\\n' '0:0:700' ;;
+    '%u:%g:%a':"$CONTROL_STATE_PARENT")
+      [[ "$FAKE_MODE" == bad-permissions ]] && printf '%s\\n' '0:0:755' || printf '%s\\n' '0:0:700' ;;
+    '%u:%g:%a':"$CONTROL_STATE_SENTINEL") printf '%s\\n' '0:0:400' ;;
+    '%u:%g:%a':"$CONTROL_STATE_IMAGE") printf '%s\\n' '0:0:600' ;;
+    '%u:%g:%a':*/incoming) printf '%s\\n' '0:0:1733' ;;
+    '%u:%g:%a':*/releases) printf '%s\\n' '0:0:755' ;;
+    '%u:%g:%a':*/releases/.staging|'%u:%g:%a':*/work) printf '%s\\n' '0:0:700' ;;
+    '%u:%g:%a':*/evidence) printf '%s\\n' '0:0:755' ;;
+    '%s':"$CONTROL_STATE_IMAGE") printf '%s\\n' '4294967296' ;;
+    '%d':"$CONTROL_STATE_IMAGE"|'%d':"$DATA_MOUNT") printf '%s\\n' '200' ;;
+    '%d':/) [[ "$FAKE_MODE" == same-device-bind ]] && printf '%s\\n' '200' || printf '%s\\n' '100' ;;
+    '%d:%i':*/incoming) printf '%s\\n' '200:11' ;;
+    '%d:%i':*/releases) printf '%s\\n' '200:12' ;;
+    '%d:%i':*/evidence) printf '%s\\n' '200:13' ;;
+    *) /usr/bin/stat "$@" ;;
+  esac
+}
+findmnt() {
+  local selector='' column=''
+  while (($#)); do
+    case "$1" in
+      -M|-T) selector=$2; shift 2 ;;
+      -o) column=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  case "$selector:$column" in
+    "$CONTROL_STATE_IMAGE":TARGET)
+      [[ "$FAKE_MODE" == wrong-mount ]] && printf '%s\\n' / || printf '%s\\n' "$CONTROL_STATE_PARENT" ;;
+    "$CONTROL_STATE":TARGET) printf '%s\\n' "$CONTROL_STATE" ;;
+    "$CONTROL_STATE":SOURCE) printf '%s\\n' /dev/loop7 ;;
+    "$CONTROL_STATE":OPTIONS) printf '%s\\n' rw,nodev,nosuid,noexec ;;
+    "$CONTROL_STATE":FSTYPE) printf '%s\\n' ext4 ;;
+    /:SOURCE) printf '%s\\n' /dev/root ;;
+    "$DATA_MOUNT":SOURCE) printf '%s\\n' /dev/data ;;
+    "$DATA_MOUNT":TARGET) printf '%s\\n' "$DATA_MOUNT" ;;
+    */incoming:TARGET|*/releases:TARGET|*/releases/.staging:TARGET|*/work:TARGET|*/evidence:TARGET)
+      case "$selector" in
+        ${JSON.stringify(legacyIncoming)}|${JSON.stringify(legacyReleases)}|${JSON.stringify(legacyEvidence)}) printf '%s\\n' "$selector" ;;
+        *) printf '%s\\n' "$CONTROL_STATE" ;;
+      esac ;;
+    ${JSON.stringify(legacyIncoming)}:OPTIONS|${JSON.stringify(legacyReleases)}:OPTIONS|${JSON.stringify(legacyEvidence)}:OPTIONS)
+      printf '%s\\n' rw,nodev,nosuid,noexec ;;
+    ${JSON.stringify(legacyIncoming)}:FSROOT) printf '%s\\n' /incoming ;;
+    ${JSON.stringify(legacyReleases)}:FSROOT) printf '%s\\n' /releases ;;
+    ${JSON.stringify(legacyEvidence)}:FSROOT) printf '%s\\n' /evidence ;;
+    *) return 2 ;;
+  esac
+}
+losetup() { printf '%s\\n' "$CONTROL_STATE_IMAGE"; }
+blockdev() { [[ "$FAKE_MODE" == wrong-size ]] && printf '%s\\n' 1 || printf '%s\\n' "$CONTROL_STATE_BYTES"; }
+blkid() { [[ "$FAKE_MODE" == wrong-label ]] && printf '%s\\n' wrong || printf '%s\\n' "$CONTROL_STATE_LABEL"; }
+df() { printf '%s\\n%s\\n' size "$CONTROL_STATE_BYTES"; }
+${verify}
+verify_control_state
+`;
+  try {
+    return spawnSync('bash', ['-c', harness], { encoding: 'utf8' });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -842,11 +1062,13 @@ test('Test workflow publishes sanitized live release evidence before SSH cleanup
     assert.doesNotMatch(control, /install -d -o root -g root -m 0700 \/var\/lib\/combo-dev/);
     assert.match(control, /install -d -o root -g root -m 0711 \/var\/lib\/combo-dev/);
   }
-  assert.match(bootstrap, /install -d -o root -g root -m 0755 \/var\/lib\/combo-dev\/evidence/);
+  assert.doesNotMatch(bootstrap, /install -d[^\n]*\/var\/lib\/combo-dev\/evidence/);
+  assert.match(bootstrap, /verify_control_state \|\| return 1/);
+  assert.match(bootstrap, /FSROOT[\s\S]*'\/evidence'/);
   assert.match(storageGuardUnit, /^StateDirectory=combo-dev$/m);
   assert.match(storageGuardUnit, /^StateDirectoryMode=0711$/m);
   assert.doesNotMatch(storageGuardUnit, /^StateDirectoryMode=0700$/m);
-  assert.match(deploy, /install -d -o root -g root -m 0755 "\$evidence_dir"/);
+  assert.match(deploy, /stat -c '%u:%g:%a' "\$evidence_dir"[\s\S]*'0:0:755'/);
   assert.match(deploy, /install -o root -g root -m 0644 "\$candidate" "\$output"/);
   assert.match(deploy, /mv -T -- "\$RESET_PROOF" "\$CONSUMED_RESET_PROOF"/);
   assert.match(deploy, /RESET_PROOF_MAX_AGE_SECONDS=900/);
@@ -2597,11 +2819,23 @@ test('the always-on host guard uses an independent minimal fencer for missing, m
   }
   assert.doesNotMatch(unit, /ConditionPathExists/);
   assert.match(unit, /^ProtectHome=read-only$/m);
+  assert.match(unit, /^RuntimeDirectory=combo-dev-storage-guard$/m);
+  assert.match(unit, /^RuntimeDirectoryMode=0700$/m);
   assert.match(
     unit,
-    /^ReadWritePaths=\/run \/var\/lib\/combo-dev \/home\/xingzheng\/data\/combo-dev$/m,
+    /^ReadWritePaths=\/run \/var\/lib\/combo-dev -\/home\/xingzheng\/data\/combo-dev -\/opt\/combo-dev\/state -\/opt\/combo-dev\/incoming -\/opt\/combo-dev\/releases -\/var\/lib\/combo-dev\/evidence$/m,
   );
   assert.doesNotMatch(unit, /ReadWritePaths=.* \/home\/xingzheng\/data(?:\s|$)/m);
+  assert.match(guard, /readonly GUARD_RUNTIME='\/run\/combo-dev-storage-guard'/);
+  assert.match(guard, /--cache-dir="\$GUARD_RUNTIME\/kubectl-cache"/);
+  assert.match(guard, /mktemp -d "\$GUARD_RUNTIME\/guard-credential\.XXXXXX"/);
+  assert.doesNotMatch(
+    guard,
+    /--cache-dir="\$CONTROL_WORK|mktemp -d "\$CONTROL_WORK\/guard-credential/,
+  );
+  assert.match(guard, /--fence-host-maintenance\) fence_only=1; maintenance_fence=1/);
+  assert.match(guard, /fence_now '受控 Test 主机存储维护' 0 0 system/);
+  assert.match(guard, /mark_maintenance_fence_complete/);
   const fencerRoleStart = rbac.indexOf('kind: Role\nmetadata:\n  name: combo-dev-fencer');
   const fencerRoleEnd = rbac.indexOf('\n---', fencerRoleStart);
   assert.ok(fencerRoleStart >= 0);
@@ -3789,11 +4023,13 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   );
   assert.match(policy, /^ {4}size 256M$/m);
   assert.match(policy, /^ {4}rotate 7$/m);
+  assert.doesNotMatch(policy, /^ {4}maxage /m);
   assert.match(policy, /^ {4}compress$/m);
   assert.match(policy, /^ {4}create 0600 root root$/m);
   assert.doesNotMatch(policy, /^ {4}delaycompress$/m);
   assert.match(policy, /^ {8}\/bin\/systemctl kill -s HUP rsyslog\.service >\/dev\/null 2>&1$/m);
   assert.match(reset, new RegExp(`HOST_SYSLOG_POLICY_SHA256='${policyDigest}'`));
+  assert.match(reset, /HOST_SYSLOG_POLICY='\/etc\/logrotate\.d\/combo-host-syslog'/);
   assert.match(reset, /stat -c '%u:%g:%a' \/etc\/logrotate\.d[\s\S]*'0:0:755'/);
   assert.match(reset, /stat -c '%u:%g:%a' "\$HOST_SYSLOG_POLICY"[\s\S]*'0:0:644'/);
 
@@ -3807,7 +4043,7 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   assert.ok(destructiveReset > mutationMarker);
   assert.match(
     workflow.slice(prepareStep, uploadStep),
-    /ssh combo-dev-target sudo -n \/opt\/combo-dev\/bin\/combo-dev-reset --prepare-capacity/,
+    /archive_bytes=\$\(stat -c '%s' "\$ARCHIVE"\)[\s\S]*archive_bytes <= 512 \* 1024 \* 1024[\s\S]*combo-dev-reset[\s\\\n]*--prepare-capacity[\s\\\n]*--incoming-bytes "\$archive_bytes"/,
   );
   assert.doesNotMatch(workflow.slice(prepareStep, uploadStep), /mutation_started|scp|rm -rf/);
 
@@ -3819,6 +4055,14 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   assert.match(reset, /readonly INCOMING_DIR='\/opt\/combo-dev\/incoming'/);
   assert.match(reset, /--prepare-capacity\) prepare=\$\(\(prepare \+ 1\)\)/);
   assert.match(reset, /容量准备参数只能出现一次/);
+  assert.match(
+    reset,
+    /required=\$\(\(CONTROL_STATE_MIN_FREE_BYTES \+ 2 \* incoming_bytes \+ CONTROL_WORK_MARGIN_BYTES\)\)/,
+  );
+  assert.match(
+    deploy,
+    /required=\$\(\(CONTROL_STATE_MIN_FREE_BYTES \+ required_extra \+ CONTROL_WORK_MARGIN_BYTES\)\)/,
+  );
   assert.match(reset, /MUTATING=0/);
   assert.match(cleanup, /safe_release_tree/);
   assert.match(cleanup, /value\.st_dev != expected_device/);
@@ -3851,7 +4095,7 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   assert.match(prepareBody, /systemctl is-active rsyslog\.service/);
   assert.match(prepareBody, /systemctl is-active systemd-tmpfiles-clean\.timer/g);
   assert.match(prepareBody, /timeout 600 systemctl start systemd-tmpfiles-clean\.service/);
-  assert.match(prepareBody, /WORK=\$\(mktemp -d \/run\/combo-dev-capacity\.XXXXXX\)/);
+  assert.match(prepareBody, /WORK=\$\(mktemp -d "\$CONTROL_WORK\/capacity\.XXXXXX"\)/);
   assert.match(prepareBody, /timeout 900 logrotate "\$HOST_SYSLOG_POLICY"/);
   assert.match(
     prepareBody,
@@ -3864,13 +4108,13 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   const mainBody = reset.slice(reset.lastIndexOf('\nmain() {'));
   const capacityRecheck = mainBody.lastIndexOf('assert_capacity_ready');
   assert.ok(capacityRecheck > mainBody.indexOf('flock -w 300 9'));
-  assert.ok(capacityRecheck < mainBody.lastIndexOf('WORK=$(mktemp -d)'));
+  assert.ok(
+    capacityRecheck < mainBody.lastIndexOf('WORK=$(mktemp -d "$CONTROL_WORK/reset.XXXXXX")'),
+  );
   assert.ok(capacityRecheck < mainBody.indexOf('MUTATING=1'));
 
-  for (const control of [bootstrap, deploy]) {
+  for (const control of [bootstrap, deploy])
     assert.match(control, /infra\/host\/combo-dev\/combo-host-syslog/);
-    assert.match(control, /\/etc\/logrotate\.d\/combo-host-syslog/);
-  }
   assert.match(
     bootstrap,
     /install -o root -g root -m 0644 "\$ROOT\/infra\/host\/combo-dev\/combo-host-syslog" \/etc\/logrotate\.d\/combo-host-syslog/,
@@ -3880,6 +4124,387 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
     workflow,
     /infra\/host\/combo-dev\/combo-host-syslog "\$root\/infra\/host\/combo-dev\/"/,
   );
+});
+
+test('Test capacity admission separates deployment data headroom from root OS health', () => {
+  const gib = 1024 ** 3;
+  const healthy = runStorageCapacityFixture({
+    rootFree: Math.floor(44.79 * gib),
+    dataFree: 100 * gib,
+  });
+  assert.equal(healthy.status, 0, healthy.stderr);
+  assert.equal(
+    healthy.stdout,
+    'rootWarning=0 rootCritical=0 dataWarning=0 dataCritical=0 control=ok\n',
+  );
+
+  const rootWarning = runStorageCapacityFixture({ rootFree: 25 * gib, dataFree: 100 * gib });
+  assert.equal(rootWarning.status, 0, rootWarning.stderr);
+  assert.match(rootWarning.stdout, /rootWarning=1 rootCritical=0/);
+
+  const rootCritical = runStorageCapacityFixture({ rootFree: 17 * gib, dataFree: 100 * gib });
+  assert.equal(rootCritical.status, 0, rootCritical.stderr);
+  assert.match(rootCritical.stdout, /rootWarning=1 rootCritical=1/);
+
+  const dataCritical = runStorageCapacityFixture({ rootFree: 50 * gib, dataFree: 20 * gib });
+  assert.equal(dataCritical.status, 0, dataCritical.stderr);
+  assert.match(dataCritical.stdout, /dataWarning=1 dataCritical=1/);
+
+  for (const state of [
+    { stateFree: gib - 1, stateInodes: 10_000 },
+    { stateFree: 2 * gib, stateInodes: 4095 },
+  ]) {
+    const result = runStorageCapacityFixture({
+      rootFree: 50 * gib,
+      dataFree: 100 * gib,
+      ...state,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /control=low/);
+  }
+
+  const guard = text('scripts/combo-dev-storage-guard.sh');
+  assert.match(
+    guard,
+    /if \(\( ROOT_CAPACITY_WARNING == 1 \)\); then status 'WARN root-os-headroom'; fi/,
+  );
+  assert.match(
+    guard,
+    /if \(\( ROOT_CAPACITY_CRITICAL == 1 \)\); then[\s\S]*check_only == 1[\s\S]*fence_now '根盘低于 OS critical 字节或 inode 水位'/,
+  );
+  assert.match(
+    guard,
+    /if \(\( DATA_CAPACITY_CRITICAL == 1 \)\); then[\s\S]*check_only == 1[\s\S]*fence_now '父数据盘低于 critical 字节或 inode 水位' 1/,
+  );
+  assert.match(
+    guard,
+    /if ! control_headroom_ok; then[\s\S]*check_only == 1[\s\S]*fence_now 'control-state 低于字节或 inode 安全水位' 1/,
+  );
+  assert.match(
+    guard,
+    /if \(\( root_recovery_rc == 1 \)\); then\s+fence_now '根盘 OS 健康标记仍在 15 分钟恢复观察期' 0 0 preserve-attempt\s+return/,
+  );
+
+  for (const path of [
+    'scripts/combo-dev-bootstrap.sh',
+    'scripts/combo-dev-deploy.sh',
+    'scripts/combo-dev-reset.sh',
+    'scripts/combo-dev-storage-guard.sh',
+  ]) {
+    const source = text(path);
+    assert.doesNotMatch(source, /(?:45|40) \* 1024 \* 1024 \* 1024/);
+    assert.doesNotMatch(source, /(?:不足|低于) ?(?:45|40) GiB/);
+    assert.match(source, /CONTROL_STATE_IMAGE='\/var\/lib\/combo-host-data\/control-state\.img'/);
+    assert.match(source, /blockdev --getsize64/);
+    assert.match(source, /blkid -s LABEL -o value/);
+    assert.match(source, /findmnt -rn -T "\$CONTROL_STATE_IMAGE" -o TARGET/);
+  }
+});
+
+test('deployment admission retains bounded extraction, smoke, and nested log headroom at the exact edge', () => {
+  const mib = 1024 ** 2;
+  const gib = 1024 ** 3;
+  const archive = 512 * mib;
+  const admissionMargin = 640 * mib;
+  const maximumExtractedBundle = 20 * mib;
+  const smokeOverhead = 64 * mib;
+  const nestedLogBudget = 512 * mib;
+  const admittedFree = gib + 2 * archive + admissionMargin;
+
+  // Upload and the trusted copy coexist before incoming is removed. After
+  // extraction, smoke can allocate its bounded overhead and still invoke the
+  // nested log audit without crossing the 1 GiB retained floor.
+  const atMaximumCopyPeak = admittedFree - 2 * archive;
+  const afterIncomingRemoval = atMaximumCopyPeak + archive;
+  const nestedLogHeadroom =
+    afterIncomingRemoval - maximumExtractedBundle - smokeOverhead - archive - gib;
+  assert.equal(atMaximumCopyPeak, gib + admissionMargin);
+  assert.ok(nestedLogHeadroom >= nestedLogBudget);
+
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const reset = text('scripts/combo-dev-reset.sh');
+  const smoke = text('scripts/combo-dev-smoke.sh');
+  const logs = text('scripts/combo-dev-logs.sh');
+  assert.match(deploy, /CONTROL_WORK_MARGIN_BYTES=\$\(\(640 \* 1024 \* 1024\)\)/);
+  assert.match(reset, /CONTROL_WORK_MARGIN_BYTES=\$\(\(640 \* 1024 \* 1024\)\)/);
+  assert.match(smoke, /CONTROL_OPERATION_MIN_FREE_BYTES=\$\(\(1600 \* 1024 \* 1024\)\)/);
+  assert.match(logs, /CONTROL_OPERATION_MIN_FREE_BYTES=\$\(\(1536 \* 1024 \* 1024\)\)/);
+});
+
+test('host-data canonical anchor pins a UUID-authenticated data-disk inode below root-owned ancestry', () => {
+  const prepare = text('infra/host/combo-dev/combo-host-prepare-data-anchor.sh');
+  const checker = text('infra/host/combo-dev/combo-host-data-mount-check.sh');
+  const service = text('infra/host/combo-dev/combo-host-data-mount-check.service');
+  const mount = text('infra/host/combo-dev/var-lib-combo\\x2dhost\\x2ddata.mount');
+  const stateMount = text('infra/host/combo-dev/opt-combo\\x2ddev-state.mount');
+
+  assert.match(prepare, /--confirm=PREPARE-COMBO-HOST-DATA-ANCHOR/);
+  assert.match(prepare, /data-mount\.identity/);
+  assert.match(prepare, /trusted_asset_ancestry/);
+  assert.match(prepare, /\$\(stat -c '%u' "\$path"\) == 0/);
+  assert.match(prepare, /8#\$mode & 8#022/);
+  assert.match(prepare, /"\$SELF_ASSET" "\$CHECKER_ASSET"/);
+  assert.match(prepare, /findmnt -rn -M "\$DATA_MOUNT" -o UUID/);
+  assert.match(prepare, /before_identity=\$\(stat -c '%d:%i' "\$SOURCE_ROOT"\)/);
+  assert.match(prepare, /"\$before_identity" == "\$after_identity"/);
+  assert.doesNotMatch(prepare, /rm -rf|find[^\n]+-delete|docker|kubectl|helm/);
+
+  assert.match(mount, /^What=\/home\/xingzheng\/data\/combo-host$/m);
+  assert.match(mount, /^Where=\/var\/lib\/combo-host-data$/m);
+  assert.match(service, /^DefaultDependencies=no$/m);
+  assert.match(service, /^Requires=var-lib-combo\\x2dhost\\x2ddata\.mount$/m);
+  assert.match(service, /^Before=local-fs\.target opt-combo\\x2ddev-state\.mount$/m);
+  assert.match(service, /^Conflicts=umount\.target$/m);
+  assert.doesNotMatch(service, /^PrivateTmp=/m);
+  assert.match(checker, /actual_uuid.*expected_uuid/);
+  assert.match(checker, /fsroot.*'\/combo-host'/s);
+  assert.match(checker, /source_identity.*anchor_identity/s);
+  assert.match(checker, /父数据盘回退到了根盘/);
+  assert.match(checker, /combo-host-data-root=v1/);
+  assert.match(stateMount, /^Requires=combo-host-data-mount-check\.service$/m);
+  assert.match(stateMount, /^After=combo-host-data-mount-check\.service$/m);
+  assert.match(stateMount, /^What=\/var\/lib\/combo-host-data\/control-state\.img$/m);
+});
+
+test('control-state preparation pre-arms rollback across command and signal boundaries', () => {
+  const source = text('infra/host/combo-dev/combo-dev-prepare-control-state.sh');
+  const cleanupStart = source.indexOf('cleanup() {');
+  const cleanupEnd = source.indexOf('\n}\n\nrequire_command()', cleanupStart);
+  const cleanup = source.slice(cleanupStart, cleanupEnd + 2);
+  const main = source.slice(source.indexOf('\nmain() {'));
+  assert.ok(cleanupStart > 0 && cleanupEnd > cleanupStart);
+  assert.ok(main.indexOf('trap cleanup EXIT') < main.indexOf('chmod 0000 "$INCOMING_ROOT"'));
+  assert.ok(main.indexOf("trap 'exit 130' INT TERM") < main.indexOf('chmod 0000 "$INCOMING_ROOT"'));
+  assert.ok(main.indexOf('INCOMING_FROZEN=1') < main.indexOf('chmod 0000 "$INCOMING_ROOT"'));
+  assert.ok(
+    main.indexOf('MOUNTED_BY_SCRIPT=1') <
+      main.indexOf('mount -o loop,rw,nodev,nosuid,noexec -- "$BACKING_FILE" "$STATE_ROOT"'),
+  );
+  for (const [flag, command] of [
+    ['INCOMING_MOVED=1', 'mv -T -- "$INCOMING_ROOT" "$backup/incoming"'],
+    ['RELEASES_MOVED=1', 'mv -T -- "$RELEASES_ROOT" "$backup/releases"'],
+    ['EVIDENCE_MOVED=1', 'mv -T -- "$EVIDENCE_ROOT" "$backup/evidence"'],
+  ]) {
+    assert.ok(main.indexOf(flag) < main.indexOf(command));
+  }
+  assert.match(cleanup, /findmnt -rn --mountpoint "\$STATE_ROOT"[\s\S]*! umount "\$STATE_ROOT"/);
+  assert.match(
+    cleanup,
+    /if \[\[ -d "\$backup"[\s\S]*elif \[\[ ! -e "\$backup"[\s\S]*-d "\$target"/,
+  );
+  const copyLoop = main.indexOf('for path in incoming releases evidence; do');
+  const destinationMode = main.indexOf('chmod 1733 "$STATE_ROOT/incoming"', copyLoop);
+  const finalIncomingManifest = main.indexOf(
+    'tree_manifest "$INCOMING_ROOT" "$work/incoming.final.json"',
+  );
+  assert.ok(copyLoop > 0 && copyLoop < destinationMode && destinationMode < finalIncomingManifest);
+
+  const root = mkdtempSync(join(tmpdir(), 'combo-dev-freeze-rollback-'));
+  const incoming = join(root, 'incoming');
+  mkdirSync(incoming);
+  chmodSync(incoming, 0o000);
+  const result = spawnSync(
+    'bash',
+    [
+      '-c',
+      `set +e
+MOUNTED_BY_SCRIPT=0
+CUTOVER_BACKUP=''
+CUTOVER_COMPLETE=0
+INCOMING_MOVED=0
+RELEASES_MOVED=0
+EVIDENCE_MOVED=0
+INCOMING_FROZEN=1
+ROLLBACK_MANIFEST_DIR=''
+STATE_ROOT=${JSON.stringify(join(root, 'state'))}
+INCOMING_ROOT=${JSON.stringify(incoming)}
+RELEASES_ROOT=${JSON.stringify(join(root, 'releases'))}
+EVIDENCE_ROOT=${JSON.stringify(join(root, 'evidence'))}
+STATE_UNIT=state.mount
+INCOMING_UNIT=incoming.mount
+RELEASES_UNIT=releases.mount
+EVIDENCE_UNIT=evidence.mount
+${cleanup}
+false
+cleanup`,
+    ],
+    { encoding: 'utf8' },
+  );
+  try {
+    assert.equal(result.status, 1, `${result.stdout}${result.stderr}`);
+    assert.equal(statSync(incoming).mode & 0o7777, 0o1733);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+
+  for (const moveCommitted of [false, true]) {
+    const moveRoot = mkdtempSync(join(tmpdir(), 'combo-dev-move-rollback-'));
+    const target = join(moveRoot, 'incoming');
+    const backupRoot = join(moveRoot, 'backup');
+    const backup = join(backupRoot, 'incoming');
+    const manifests = join(moveRoot, 'manifests');
+    mkdirSync(join(backupRoot, '.manifests'), { recursive: true });
+    mkdirSync(manifests);
+    mkdirSync(moveCommitted ? backup : target);
+    writeFileSync(join(moveCommitted ? backup : target, 'marker'), 'preserved\n');
+    writeFileSync(join(manifests, 'incoming.json'), 'stable\n');
+    const moveResult = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set +e
+systemctl() {
+  case "$1" in
+    is-active) printf 'inactive\\n' ;;
+    is-enabled) printf 'disabled\\n' ;;
+    *) return 0 ;;
+  esac
+}
+findmnt() { return 1; }
+tree_manifest() { printf 'stable\\n' >"$2"; }
+MOUNTED_BY_SCRIPT=0
+CUTOVER_BACKUP=${JSON.stringify(backupRoot)}
+CUTOVER_COMPLETE=0
+INCOMING_MOVED=1
+RELEASES_MOVED=0
+EVIDENCE_MOVED=0
+INCOMING_FROZEN=0
+ROLLBACK_MANIFEST_DIR=${JSON.stringify(manifests)}
+STATE_ROOT=${JSON.stringify(join(moveRoot, 'state'))}
+INCOMING_ROOT=${JSON.stringify(target)}
+RELEASES_ROOT=${JSON.stringify(join(moveRoot, 'releases'))}
+EVIDENCE_ROOT=${JSON.stringify(join(moveRoot, 'evidence'))}
+STATE_UNIT=state.mount
+INCOMING_UNIT=incoming.mount
+RELEASES_UNIT=releases.mount
+EVIDENCE_UNIT=evidence.mount
+${cleanup}
+false
+cleanup`,
+      ],
+      { encoding: 'utf8' },
+    );
+    try {
+      assert.equal(moveResult.status, 1, `${moveResult.stdout}${moveResult.stderr}`);
+      assert.equal(readFileSync(join(target, 'marker'), 'utf8'), 'preserved\n');
+      assert.equal(existsSync(backupRoot), false);
+    } finally {
+      rmSync(moveRoot, { recursive: true, force: true });
+    }
+  }
+});
+
+test('control-state identity rejects root fallback, missing identity, links, permissions, and size drift', () => {
+  const valid = runControlStateIdentityFixture('valid');
+  assert.equal(valid.status, 0, `${valid.stdout}${valid.stderr}`);
+  for (const mode of [
+    'wrong-mount',
+    'missing-sentinel',
+    'state-symlink',
+    'bad-permissions',
+    'wrong-size',
+    'wrong-label',
+    'same-device-bind',
+  ]) {
+    const result = runControlStateIdentityFixture(mode);
+    assert.notEqual(result.status, 0, `${mode} unexpectedly passed`);
+  }
+});
+
+test('Test releases commit inside canonical staging and pruning never crosses protected state', () => {
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const reset = text('scripts/combo-dev-reset.sh');
+  const main = deploy.slice(deploy.lastIndexOf('\nmain() {'));
+  const prune = deploy.slice(
+    deploy.indexOf('prune_releases() {'),
+    deploy.indexOf('render_only() {'),
+  );
+  const resetCleanup = reset.slice(
+    reset.indexOf('plan_stale_test_cleanup() {'),
+    reset.indexOf('prepare_capacity() {'),
+  );
+
+  assert.match(
+    main,
+    /candidate_extract=\$\(mktemp -d[\s\\\n]*"\$CONTROL_STAGING\/\$\{revision\}\.\$\{workflow_run_id\}\.\$\{workflow_run_attempt\}\.XXXXXXXX"\)/,
+  );
+  assert.match(main, /local canonical_release="\$CONTROL_RELEASES\/\$revision"/);
+  assert.match(main, /mv -T "\$candidate_extract" "\$canonical_release"/);
+  assert.doesNotMatch(main, /mv -T "\$candidate_extract" "\$candidate_release"/);
+  assert.ok(
+    main.indexOf('validate_bundle "$trusted_bundle" "$candidate_extract"') <
+      main.indexOf('mv -T "$candidate_extract" "$canonical_release"'),
+  );
+  assert.doesNotMatch(main, /candidate_extract="\$WORK\/candidate"/);
+  const retainBeforeSwitch = main.lastIndexOf('RELEASE_CREATED=0');
+  const prepareCurrent = main.lastIndexOf('ln -sfn "$RELEASE_DIR" "$INSTALL_ROOT/current.next"');
+  const commitCurrent = main.lastIndexOf(
+    'mv -Tf "$INSTALL_ROOT/current.next" "$INSTALL_ROOT/current"',
+  );
+  assert.ok(
+    retainBeforeSwitch > 0 && retainBeforeSwitch < prepareCurrent && prepareCurrent < commitCurrent,
+  );
+
+  assert.match(prune, /sha = re\.compile\(r'\^\[0-9a-f\]\{40\}\$'\)/);
+  assert.match(prune, /if name == '\.staging':\n\s+continue/);
+  assert.match(prune, /\^\/opt\/combo-dev\/releases\/\[0-9a-f\]\{40\}\$/);
+  assert.match(prune, /rm -rf --one-file-system -- "\$path"/);
+  assert.doesNotMatch(
+    prune,
+    /CONTROL_STAGING|CONTROL_WORK|CONTROL_EVIDENCE|state\/work|state\/evidence/,
+  );
+  assert.doesNotMatch(prune, /rm[^\n]*(?:\.staging|\/work|\/evidence)/);
+
+  assert.match(resetCleanup, /if name == '\.staging':\n\s+continue/);
+  assert.match(resetCleanup, /\^\/opt\/combo-dev\/releases\/\[0-9a-f\]\{40\}\$/);
+  assert.doesNotMatch(resetCleanup, /rm[^\n]*(?:\.staging|\/work|\/evidence)/);
+});
+
+test('control-state migration stays owner-gated and excludes unrelated host-runtime work', () => {
+  const bootstrap = text('scripts/combo-dev-bootstrap.sh');
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const workflow = text('.github/workflows/combo-dev.yml');
+  const prepareState = text('infra/host/combo-dev/combo-dev-prepare-control-state.sh');
+
+  for (const path of [
+    'combo-dev-prepare-control-state.sh',
+    'combo-host-prepare-data-anchor.sh',
+    'combo-host-data-mount-check.sh',
+    'combo-host-data-mount-check.service',
+    'var-lib-combo\\x2dhost\\x2ddata.mount',
+    'opt-combo\\x2ddev-state.mount',
+    'opt-combo\\x2ddev-incoming.mount',
+    'opt-combo\\x2ddev-releases.mount',
+    'var-lib-combo\\x2ddev-evidence.mount',
+  ]) {
+    assert.match(workflow, new RegExp(regexEscape(`infra/host/combo-dev/${path}`)));
+    assert.match(deploy, new RegExp(regexEscape(`infra/host/combo-dev/${path}`)));
+  }
+
+  assert.match(prepareState, /readonly OPERATION_LOCK='\/run\/lock\/combo-dev\.lock'/);
+  assert.match(prepareState, /readonly FENCE_LOCK='\/run\/lock\/combo-dev-fence\.lock'/);
+  assert.match(prepareState, /--confirm=PREPARE-COMBO-DEV-CONTROL-STATE/);
+  assert.match(prepareState, /consume_verified_maintenance_fence/);
+  assert.match(prepareState, /combo-dev-storage-maintenance=fenced-v1/);
+  assert.match(prepareState, /readonly CONTROL_PARENT='\/var\/lib\/combo-host-data'/);
+  assert.match(prepareState, /assert_parent_capacity "\$BACKING_BYTES" 1/);
+  assert.match(
+    prepareState,
+    /critical=\$\(max_threshold "\$total" "\$DATA_CRITICAL_MIN_BYTES" 10\)/,
+  );
+  assert.match(
+    prepareState,
+    /state_free >= STATE_MIN_FREE_BYTES && state_inodes >= STATE_MIN_FREE_INODES/,
+  );
+  assert.match(prepareState, /tree_manifest[\s\S]*cmp -s[\s\S]*CUTOVER_BACKUP/);
+  assert.doesNotMatch(prepareState, /rm[^\n]*(?:root-backup-control-state|BACKING_FILE)/);
+
+  for (const source of [bootstrap, deploy, workflow]) {
+    assert.doesNotMatch(
+      source,
+      /runtime-storage|standalone-containerd|combo-host-happy|prepare-happy|host-logs\/happy/,
+    );
+  }
 });
 
 test('control digest authenticates every consumed kustomization and resource file', () => {
@@ -3907,6 +4532,15 @@ test('control digest authenticates every consumed kustomization and resource fil
     'infra/k8s/overlays/combo-dev/migrate/resources.yaml',
     'infra/k8s/overlays/combo-dev/apps/kustomization.yaml',
     'infra/k8s/overlays/combo-dev/apps/resources.yaml',
+    'infra/host/combo-dev/combo-dev-prepare-control-state.sh',
+    'infra/host/combo-dev/combo-host-prepare-data-anchor.sh',
+    'infra/host/combo-dev/combo-host-data-mount-check.sh',
+    'infra/host/combo-dev/combo-host-data-mount-check.service',
+    'infra/host/combo-dev/var-lib-combo\\x2dhost\\x2ddata.mount',
+    'infra/host/combo-dev/opt-combo\\x2ddev-state.mount',
+    'infra/host/combo-dev/opt-combo\\x2ddev-incoming.mount',
+    'infra/host/combo-dev/opt-combo\\x2ddev-releases.mount',
+    'infra/host/combo-dev/var-lib-combo\\x2ddev-evidence.mount',
     'infra/host/combo-dev/combo-host-syslog',
   ]) {
     assert.ok(bootstrapControls.includes(required));

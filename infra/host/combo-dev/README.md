@@ -6,13 +6,19 @@ combo-dev 只复用 `combo-preview` 命名空间。主机所有者必须确认�
 
 共享 k3s 只能依赖生产需要的父数据盘 `/home/xingzheng/data`，其 systemd 单元必须声明 `RequiresMountsFor=/home/xingzheng/data`。该单元不得依赖开发专用挂载 `/home/xingzheng/data/combo-dev`，也不得依赖这个路径下的任何子路径。主机所有者必须通过受控重启证明父数据盘缺失时 k3s 不启动，并证明只有开发挂载缺失时 k3s 仍能启动生产命名空间。验证完成后，owner-only 文件 `/etc/combo-dev/data-mount-reboot.approved` 必须写成固定状态 `controlled-reboot=parent-data-mount-pass`。
 
-combo-dev 的持久数据只能写入 `/home/xingzheng/data/combo-dev`。该路径必须是单独挂载的读写文件系统，挂载源必须不同于父数据盘，挂载选项必须包含 `nodev` 和 `nosuid`，总容量不得小于 16 GiB 或大于 18 GiB。这个固定大小的文件系统是硬容量边界，不能用普通目录或 PVC 请求容量代替。主机所有者必须在确认挂载真实生效后创建 root-owned 且非 root 不可写的 `/home/xingzheng/data/combo-dev/.combo-dev-mounted`，文件内容必须是 `combo-dev-storage-mount=v1`。bootstrap 会在这个挂载内创建 PostgreSQL、队列 Redis 和 MinIO 的固定数据目录及独立标记，并在暴露任何 PV 前设置精确所有权。主机准备阶段不得在未挂载状态下预建这三个卷根目录。静态本地 PV 只接受预先存在的路径，不会创建根盘回退目录；所有 Pod 只挂载 PVC，不挂载主机哨兵。`/etc/combo-dev/storage-pool.approved` 必须写成固定状态 `combo-dev-storage=dedicated-hard-18GiB-max`。
+combo-dev 的业务持久数据只能写入 `/home/xingzheng/data/combo-dev`。该路径必须是单独挂载的读写文件系统，挂载源必须不同于父数据盘，挂载选项必须包含 `nodev` 和 `nosuid`，总容量不得小于 16 GiB 或大于 18 GiB。这个固定大小的文件系统是硬容量边界，不能用普通目录或 PVC 请求容量代替。主机所有者必须在确认挂载真实生效后创建 root-owned 且非 root 不可写的 `/home/xingzheng/data/combo-dev/.combo-dev-mounted`，文件内容必须是 `combo-dev-storage-mount=v1`。bootstrap 会在这个挂载内创建 PostgreSQL、队列 Redis 和 MinIO 的固定数据目录及独立标记，并在暴露任何 PV 前设置精确所有权。主机准备阶段不得在未挂载状态下预建这三个卷根目录。静态本地 PV 只接受预先存在的路径，不会创建父数据盘或根盘回退目录；所有 Pod 只挂载 PVC，不挂载主机哨兵。`/etc/combo-dev/storage-pool.approved` 必须写成固定状态 `combo-dev-storage=dedicated-hard-18GiB-max`。
+
+`/home/xingzheng/data` 的直接父目录不是 root 独占边界，因此 Combo 不把它下面的普通路径直接作为运行时可信路径。主机所有者先把数据盘 UUID 固定到 root-only `/etc/combo-dev/data-mount.identity`，再把数据盘上的 root-owned `/home/xingzheng/data/combo-host` bind 到 root-owned canonical anchor `/var/lib/combo-host-data`。`combo-host-data-mount-check` 每次验证 UUID、独立设备、精确 FSROOT、source/anchor inode、权限和 sentinel；任何消费者都必须依赖该 checker。即使普通用户改名或替换 `/home/xingzheng/data` 下的路径，已经固定的 anchor 不会跟随替换，checker 也会在下一次操作时 fail closed。
+
+部署包、release、部署工作区等可增长的控制面数据使用另一块 4 GiB 有界文件系统。它的 backing file 通过 canonical path `/var/lib/combo-host-data/control-state.img` 使用，物理文件位于数据盘 `/home/xingzheng/data/combo-host/control-state.img`，规范挂载点为 `/opt/combo-dev/state`，并使用 `nodev`、`nosuid` 和 `noexec`。挂载内固定包含 `incoming`、`releases`、`releases/.staging`、`work` 和 `evidence`；旧的 `/opt/combo-dev/incoming` 与 `/opt/combo-dev/releases` 只是兼容 bind mount，物理数据不再落在根盘。主挂载、两个 bind mount、backing file、哨兵、目录身份或容量任何一项不符时，bootstrap、reset、deploy 和持续守卫都会 fail closed，不能在根盘自动创建同名回退目录。`/opt/combo-dev/bin`、`/etc/combo-dev`、`/run` 锁和 `/var/lib/combo-dev` 中少量失败标记继续留在根盘。
 
 主机必须有独立审核的 Pod 到节点边界。该边界可以由 CNI 主机端点策略或 nftables 实现，但必须实际阻断 `combo-preview` Pod 到节点管理端口、Kubernetes 控制面和生产 NodePort 的流量，不能把同节点 NetworkPolicy 当作证明。主机所有者必须把只读检查器安装到 `/opt/combo-dev/host-boundary/check`。该文件必须归 root 所有、不可被非 root 修改，并在执行 `--check` 时只用退出码表示边界是否生效。通过后，owner-only 文件 `/etc/combo-dev/host-network-boundary.approved` 必须写成固定状态 `combo-dev-host-boundary=audited-and-active`。bootstrap、部署和网络 canary 都会再次验证这项控制。
 
 k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data-dir`。内容是数据盘内的绝对规范路径，不是 TLS 子目录。bootstrap 只从该目录下的 `server/tls/client-ca.crt` 和 `client-ca.key` 签发客户端证书；API 服务端信任根从展平后的管理 kubeconfig 读取。这样不会把客户端 CA 错当成服务端 CA，也不依赖标准安装路径。
 
-主机必须用原生 journald 或 syslog 配置限制日志占用，不能用 Docker 清理代替根盘治理。bootstrap 会把受控策略 `infra/host/combo-dev/combo-host-syslog` 安装为 `/etc/logrotate.d/combo-host-syslog`：只管理 `/var/log/messages`、`secure`、`cron`、`maillog` 和 `spooler`，单文件达到 256 MiB 时轮转，保留 7 份并压缩，轮转后向 `rsyslog.service` 发送 HUP。验证完成后，owner-only 文件 `/etc/combo-dev/journal-retention.approved` 必须写成固定状态 `journald=native-retention-bounded`。部署前根盘和父数据盘都必须至少有 45 GiB 可用空间，验收后都必须至少有 40 GiB。只允许清理主机所有者批准的内容。
+主机必须用原生 journald 或 syslog 配置限制日志占用，不能用 Docker 清理代替根盘治理。bootstrap 继续把既有受控策略 `infra/host/combo-dev/combo-host-syslog` 安装为 `/etc/logrotate.d/combo-host-syslog`：只管理 `/var/log/messages`、`secure`、`cron`、`maillog` 和 `spooler`，单文件达到 256 MiB 时轮转，保留 7 份并压缩，轮转后向 `rsyslog.service` 发送 HUP。验证完成后，owner-only 文件 `/etc/combo-dev/journal-retention.approved` 必须写成固定状态 `journald=native-retention-bounded`。本 PR 不改变现有日志保留策略，也不执行首次日志治理。
+
+部署容量只由父数据盘、4 GiB 控制状态盘和 18 GiB 业务存储池决定。控制状态盘必须保留至少 1 GiB 和 4096 inode，业务存储池继续保留至少 1 GiB 和 4096 inode。父数据盘低于 `max(30 GiB, 15%)` 时只告警，低于 `max(20 GiB, 10%)` 时阻断 Test 写入。根盘不再使用 45/40 GiB 部署阈值，而是作为独立 OS 健康边界：低于 `max(20 GiB, 15%)` 时只告警，低于 `max(10 GiB, 10%)` 时关闭并阻断 `combo-preview` 写入者。根盘和父数据盘的 inode 使用相同比例。健康恢复到告警水位以上持续十五分钟后只清除容量低水位状态，不自动恢复工作负载；下一次受信任部署才能解除持久写入阻断。
 
 所有受限 sudo 入口必须使用包含 `/usr/local/bin` 的固定 `secure_path`。仓库内的 root 脚本也会主动把 `PATH` 固定为 `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`，不会继承调用者路径。
 
@@ -29,12 +35,16 @@ k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data
 每次受保护 Test 在上传 bundle、设置 workflow 的 `mutation_started` 输出以及执行破坏性 reset 之前，都会先运行：
 
 ```sh
-sudo -n /opt/combo-dev/bin/combo-dev-reset --prepare-capacity
+sudo -n /opt/combo-dev/bin/combo-dev-reset \
+  --prepare-capacity \
+  --incoming-bytes "$ARCHIVE_BYTES"
 ```
 
-这个模式持有与 reset/deploy 相同的主机排他锁，但始终保持应用数据面和写入者不变。它只调用原生 `systemd-tmpfiles-clean.service`（并在调用前后证明 `systemd-tmpfiles-clean.timer` 为 active），删除 `/opt/combo-dev/releases` 中当前版本和最近回滚版本之外的旧 Test release，删除 `/opt/combo-dev/incoming` 中超过两天且名称精确匹配 Test workflow attempt 的普通文件，并执行上述受控 syslog 轮转。它不会直接通配删除 `/tmp`，也不会清理 Kubernetes volume、Docker/containerd 镜像、容器或任何生产目录。原生 tmpfiles 清理超时、release 树内出现 symlink/嵌套挂载/非 root 可写内容、incoming 出现陌生条目、logrotate 策略漂移、rsyslog 不可 HUP 或轮转失败都会 fail closed。清理后根盘或父数据盘不足 45 GiB 时，workflow 会在任何 reset/mutation 之前停止；破坏性 reset 在取得锁后还会再次检查同一容量和策略条件，防止两个步骤之间发生容量漂移。
+这个模式持有与 reset/deploy 相同的主机排他锁，但始终保持应用数据面和写入者不变。workflow 会把本次 archive 的精确字节数传入，远端同时验证 archive 不超过 512 MiB，并在任何 Test 变更前为 incoming 与受信 work 两份 archive、512 MiB 日志上限、128 MiB 解压与验收开销和最终至少 1 GiB 水位预留空间。容量准备继续调用既有 `systemd-tmpfiles-clean.service` 与受控 syslog 轮转，并只删除控制状态盘中当前版本和最近回滚版本之外的旧 Test release，以及超过两天且名称精确匹配 Test workflow attempt 的普通 incoming 文件。它不会直接通配删除 `/tmp`，也不会清理 Kubernetes volume、Docker/containerd 镜像、容器或任何生产目录。挂载契约、原生 tmpfiles、release 树、incoming、日志策略或实际数据盘水位异常都会在 upload 和破坏性 reset 之前 fail closed。
 
-首次合入这项控制时不能直接运行新版 workflow。主机所有者必须先用一次性人工安全清理把根盘恢复到 45 GiB 以上，再从 root-owned、非 root 不可写的审核快照重新执行 bootstrap，安装新版 `/opt/combo-dev/bin/combo-dev-reset` 和 `/etc/logrotate.d/combo-host-syslog`。旧 controller 不认识 `--prepare-capacity`，若跳过这个 owner bootstrap，新 Test 会按设计在 mutation 前失败。
+首次启用控制状态盘时不能直接运行新版 workflow；合并后的第一次自动 Test 会在主机迁移完成前按设计 fail closed，不能作为部署证据。主机所有者必须先排空 `cd-tecent2`，从 root-owned、完整祖先均不可被非 root 写入且对应精确 `main` 的审核快照，先安装新版 `combo-dev-storage-guard`（以及同快照的 production safety helper），然后执行 `sudo /opt/combo-dev/bin/combo-dev-storage-guard --fence-host-maintenance`。该固定模式不读取 control-state，会停止两个转发器、写入 owner-only fence，并使用最小 fencer 凭据把 Test 固定写入者缩到零且验证终态；命令没有 PASS 时不得继续。随后还必须验证 `/var/lib/combo-dev/writers-fenced` 为 `root:root 0600` 且两个 forwarder 均为 inactive。
+
+在上述 fence 已被证明后，主机所有者先从同一审核快照运行 `combo-host-prepare-data-anchor.sh --confirm=PREPARE-COMBO-HOST-DATA-ANCHOR`。该命令只建立 UUID 身份、root-owned source、canonical bind、checker 与两个 systemd unit；不会改动 Test 数据或启动应用。它没有输出 PASS 时不得继续。随后把 `combo-dev-prepare-control-state.sh` 安装为 `/opt/combo-dev/bin/combo-dev-prepare-control-state`，再把 `opt-combo\x2ddev-state.mount`、`opt-combo\x2ddev-incoming.mount`、`opt-combo\x2ddev-releases.mount` 与 `var-lib-combo\x2ddev-evidence.mount` 原样安装到 `/etc/systemd/system/`。这些 state unit 此时只安装，不能手工启动。持有固定确认串运行准备脚本；它会再次验证 canonical anchor，取得与 deploy/reset 相同的锁，先证明分配精确 4 GiB 后父数据盘仍高于 Critical 水位，再逐树校验旧 incoming、releases 和 evidence，建立主挂载及兼容 bind mount，并把旧根盘目录改名保留为回滚副本。任何失败都会先验证所有新挂载确已停止，才尝试用持久摘要恢复旧树；无法证明时会保留旧树、副本和摘要供人工恢复。任何旧副本都不得在同一窗口删除。准备成功后，再从同一审核快照执行 bootstrap，安装新版 controller 和主机日志策略。旧 controller 的工作目录在根盘，不能在状态盘切换后继续执行新部署。
 
 首次准备和控制文件升级时，主机所有者必须先把相关脚本、主机文件和 combo-dev 覆盖层复制到 root-owned 且非 root 不可写的审核快照中，再从该快照执行：
 
@@ -52,7 +62,7 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 `combo-dev-bounded` StorageClass 使用 Kubernetes 内置的静态本地卷模式。三个 PV 分别固定到 `/home/xingzheng/data/combo-dev/postgres`、`/home/xingzheng/data/combo-dev/redis-queue` 和 `/home/xingzheng/data/combo-dev/minio`，回收策略为 `Retain`。每个 PV 根目录归 root 所有，并包含只读卷标记和 `data` 子目录。PostgreSQL 的 `data` 目录必须保持 `70:70` 和 `0700`，队列 Redis 的 `data` 目录必须保持 `999:1000` 和 `0700`，MinIO 的 `data` 目录必须保持 `1000:1000` 和 `0700`。数据容器只通过 PVC 挂载 `data` 子目录，并在启动业务进程前读取同一 PVC 中的固定标记。
 
-部署和 smoke 会验证静态 StorageClass、固定 PV 名称、PVC 预绑定、本地规范路径、节点亲和性和主机挂载。`combo-dev-storage-guard.service` 不带凭据文件存在条件，因此定时器每次都会真正执行。检查内容包括独立挂载、三个卷标记、目录身份、k3s 挂载依赖、可用字节、inode、持久失败标记、普通调度凭据和独立失败收敛凭据。
+部署和 smoke 会验证静态 StorageClass、固定 PV 名称、PVC 预绑定、本地规范路径、节点亲和性和主机挂载。`combo-dev-storage-guard.service` 不带凭据文件存在条件，因此定时器每次都会真正执行。检查内容包括业务存储池、控制状态盘及其兼容 bind mount、三个卷标记、目录身份、k3s 挂载依赖、根盘与父数据盘健康水位、可用字节、inode、持久失败标记、普通调度凭据和独立失败收敛凭据。
 
 普通调度凭据缺失、格式错误、过期或权限漂移时，守卫会先停止并验证两个回环转发器，再写入 `/var/lib/combo-dev/writers-fenced`，最后使用独立最小凭据删除固定任务、缩容固定控制器并验证终态。存储与挂载失败也使用同一路径。转发租约在阻断标记存在时不能启动服务。只有完整部署成功才会删除阻断标记。MinIO 的四个开发桶各有 1 GiB 配额，队列 Redis 也有内存上限；这些服务级限制不能替代独立文件系统硬边界。
 

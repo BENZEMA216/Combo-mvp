@@ -672,10 +672,19 @@ jobs:
               "$root/infra/k8s/overlays/combo-dev/$relative"
           done
           cp infra/host/combo-dev/README.md \
+             infra/host/combo-dev/combo-dev-prepare-control-state.sh \
+             infra/host/combo-dev/combo-host-prepare-data-anchor.sh \
+             infra/host/combo-dev/combo-host-data-mount-check.sh \
              infra/host/combo-dev/combo-dev-web-forward.service \
              infra/host/combo-dev/combo-dev-s3-forward.service \
              infra/host/combo-dev/combo-dev-storage-guard.service \
              infra/host/combo-dev/combo-dev-storage-guard.timer \
+             'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount' \
+             infra/host/combo-dev/combo-host-data-mount-check.service \
+             'infra/host/combo-dev/opt-combo\x2ddev-state.mount' \
+             'infra/host/combo-dev/opt-combo\x2ddev-incoming.mount' \
+             'infra/host/combo-dev/opt-combo\x2ddev-releases.mount' \
+             'infra/host/combo-dev/var-lib-combo\x2ddev-evidence.mount' \
              infra/host/combo-dev/combo-host-syslog "$root/infra/host/combo-dev/"
           cp scripts/combo-dev-bootstrap.sh scripts/combo-dev-deploy.sh scripts/combo-dev-smoke.sh \
              scripts/combo-dev-connect.sh scripts/combo-dev-logs.sh scripts/combo-dev-reset.sh \
@@ -747,9 +756,16 @@ jobs:
           done
 
       - name: Prepare bounded Test host capacity before mutation
+        env:
+          ARCHIVE: ${{ steps.bundle.outputs.archive }}
         run: |
           set -euo pipefail
-          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-reset --prepare-capacity
+          archive_bytes=$(stat -c '%s' "$ARCHIVE")
+          [[ "$archive_bytes" =~ ^[1-9][0-9]*$ ]]
+          (( archive_bytes <= 512 * 1024 * 1024 ))
+          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-reset \
+            --prepare-capacity \
+            --incoming-bytes "$archive_bytes"
 
       - name: Upload the fixed bundle and invoke the root-owned dispatcher
         id: deploy_test
@@ -1147,6 +1163,12 @@ jobs:
             acceptance/playwright-core.tgz \
             acceptance/resend-sent-email.mjs
           chmod 600 "$archive"
+          archive_bytes=$(stat -c '%s' "$archive")
+          [[ "$archive_bytes" =~ ^[1-9][0-9]*$ ]]
+          (( archive_bytes <= 512 * 1024 * 1024 ))
+          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-reset \
+            --prepare-capacity \
+            --incoming-bytes "$archive_bytes"
           remote="/opt/combo-dev/incoming/${REVISION}.acceptance.${RUN_ID}.${RUN_ATTEMPT}.tar.gz"
           temporary="/opt/combo-dev/incoming/.${REVISION}.acceptance.${RUN_ID}.${RUN_ATTEMPT}.upload"
           remote_output="data/combo-acceptance/test/${REVISION}.${RUN_ID}.${RUN_ATTEMPT}.json"

@@ -10,6 +10,26 @@ readonly CONFIRMATION='DESTROY-COMBO-PREVIEW-DATA'
 readonly INSTALL_ROOT='/opt/combo-dev'
 readonly RELEASES_DIR='/opt/combo-dev/releases'
 readonly INCOMING_DIR='/opt/combo-dev/incoming'
+readonly CONTROL_STATE='/opt/combo-dev/state'
+readonly CONTROL_STATE_PARENT='/var/lib/combo-host-data'
+readonly CONTROL_STATE_IMAGE='/var/lib/combo-host-data/control-state.img'
+readonly DATA_ANCHOR_CHECK='/opt/combo-dev/bin/combo-host-data-mount-check'
+readonly CONTROL_STATE_SENTINEL='/opt/combo-dev/state/.combo-dev-control-state'
+readonly CONTROL_STATE_SENTINEL_VALUE='combo-dev-control-state=v1'
+readonly CONTROL_STATE_BYTES=4294967296
+readonly CONTROL_STATE_LABEL='combo-dev-control-state'
+readonly CONTROL_INCOMING='/opt/combo-dev/state/incoming'
+readonly CONTROL_RELEASES='/opt/combo-dev/state/releases'
+readonly CONTROL_STAGING='/opt/combo-dev/state/releases/.staging'
+readonly CONTROL_WORK='/opt/combo-dev/state/work'
+readonly CONTROL_EVIDENCE='/opt/combo-dev/state/evidence'
+readonly CONTROL_STATE_MIN_BYTES=$((3584 * 1024 * 1024))
+readonly CONTROL_STATE_MAX_BYTES=$((4 * 1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_BYTES=$((1024 * 1024 * 1024))
+readonly CONTROL_STATE_MIN_FREE_INODES=4096
+# 512 MiB log capture budget plus 128 MiB for extraction, smoke metadata, and work files.
+readonly CONTROL_WORK_MARGIN_BYTES=$((640 * 1024 * 1024))
+readonly ARCHIVE_MAX_BYTES=$((512 * 1024 * 1024))
 readonly DATA_MOUNT='/home/xingzheng/data'
 readonly STORAGE_POOL='/home/xingzheng/data/combo-dev'
 readonly STORAGE_CLASS='combo-dev-bounded'
@@ -24,7 +44,6 @@ readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 readonly HOST_SYSLOG_POLICY='/etc/logrotate.d/combo-host-syslog'
 readonly HOST_SYSLOG_POLICY_SHA256='aad4fc3b67504ff6dbec2a05b7230c8c78bb57e3465d5d6b75a3ef8e3d6eae94'
-readonly BEFORE_FREE_BYTES=$((45 * 1024 * 1024 * 1024))
 RESET_PROOF=''
 CONSUMED_RESET_PROOF=''
 readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
@@ -55,7 +74,7 @@ cleanup() {
       status '失败收敛无法验证；阻断标记已保留并需要主机所有者介入。'
     fi
   fi
-  [[ -z "$WORK" ]] || rm -rf -- "$WORK"
+  [[ -z "$WORK" ]] || rm -rf --one-file-system -- "$WORK"
   exit "$rc"
 }
 trap cleanup EXIT
@@ -91,6 +110,82 @@ free_bytes() {
   df -PB1 -- "$1" | awk 'NR == 2 {print $4}'
 }
 
+free_inodes() {
+  df -Pi -- "$1" | awk 'NR == 2 {print $4}'
+}
+
+verify_control_state() {
+  local canonical target source root_source data_source options total backing path fsroot fstype data_target root_device data_device
+  [[ -x "$DATA_ANCHOR_CHECK" && ! -L "$DATA_ANCHOR_CHECK" &&
+    $(stat -c '%u:%g:%a' "$DATA_ANCHOR_CHECK" 2>/dev/null) == '0:0:755' ]] || return 1
+  "$DATA_ANCHOR_CHECK" >/dev/null 2>&1 || return 1
+  [[ -d "$CONTROL_STATE" && ! -L "$CONTROL_STATE" ]] || return 1
+  canonical=$(readlink -f -- "$CONTROL_STATE" 2>/dev/null) || return 1
+  [[ "$canonical" == "$CONTROL_STATE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ -f "$CONTROL_STATE_SENTINEL" && ! -L "$CONTROL_STATE_SENTINEL" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_SENTINEL" 2>/dev/null) == '0:0:400' ]] || return 1
+  [[ $(cat "$CONTROL_STATE_SENTINEL" 2>/dev/null || true) == "$CONTROL_STATE_SENTINEL_VALUE" ]] || return 1
+  [[ -d "$CONTROL_STATE_PARENT" && ! -L "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_PARENT" 2>/dev/null) == '0:0:700' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_PARENT" 2>/dev/null) == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ -f "$CONTROL_STATE_IMAGE" && ! -L "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_STATE_IMAGE" 2>/dev/null) == '0:0:600' ]] || return 1
+  [[ $(readlink -f -- "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(stat -c '%s' "$CONTROL_STATE_IMAGE" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  data_target=$(findmnt -rn -T "$CONTROL_STATE_IMAGE" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$CONTROL_STATE_PARENT" ]] || return 1
+  [[ $(stat -c '%d' "$CONTROL_STATE_IMAGE" 2>/dev/null) == $(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) ]] || return 1
+  target=$(findmnt -rn -M "$CONTROL_STATE" -o TARGET 2>/dev/null) || return 1
+  [[ "$target" == "$CONTROL_STATE" ]] || return 1
+  source=$(findmnt -rn -M "$CONTROL_STATE" -o SOURCE 2>/dev/null) || return 1
+  root_source=$(findmnt -rn -M / -o SOURCE 2>/dev/null) || return 1
+  data_source=$(findmnt -rn -M "$DATA_MOUNT" -o SOURCE 2>/dev/null) || return 1
+  data_target=$(findmnt -rn -M "$DATA_MOUNT" -o TARGET 2>/dev/null) || return 1
+  [[ "$data_target" == "$DATA_MOUNT" ]] || return 1
+  root_device=$(stat -c '%d' / 2>/dev/null) || return 1
+  data_device=$(stat -c '%d' "$DATA_MOUNT" 2>/dev/null) || return 1
+  [[ "$data_device" != "$root_device" ]] || return 1
+  [[ "$data_source" != "$root_source" ]] || return 1
+  [[ "$source" =~ ^/dev/loop[0-9]+$ && "$source" != "$root_source" && "$source" != "$data_source" ]] || return 1
+  backing=$(losetup -n -O BACK-FILE -- "$source" 2>/dev/null | awk '{$1=$1; print}') || return 1
+  [[ "$backing" == "$CONTROL_STATE_IMAGE" ]] || return 1
+  [[ $(blockdev --getsize64 "$source" 2>/dev/null) == "$CONTROL_STATE_BYTES" ]] || return 1
+  fstype=$(findmnt -rn -M "$CONTROL_STATE" -o FSTYPE 2>/dev/null) || return 1
+  [[ "$fstype" == ext4 ]] || return 1
+  [[ $(blkid -s LABEL -o value "$source" 2>/dev/null) == "$CONTROL_STATE_LABEL" ]] || return 1
+  options=$(findmnt -rn -M "$CONTROL_STATE" -o OPTIONS 2>/dev/null) || return 1
+  [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  total=$(df -B1 --output=size "$CONTROL_STATE" 2>/dev/null | awk 'NR==2 {print $1}') || return 1
+  [[ "$total" =~ ^[0-9]+$ ]] || return 1
+  (( total >= CONTROL_STATE_MIN_BYTES && total <= CONTROL_STATE_MAX_BYTES )) || return 1
+  for path in "$CONTROL_INCOMING" "$CONTROL_RELEASES" "$CONTROL_STAGING" "$CONTROL_WORK" "$CONTROL_EVIDENCE"; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    [[ $(findmnt -rn -T "$path" -o TARGET 2>/dev/null) == "$CONTROL_STATE" ]] || return 1
+  done
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_INCOMING" 2>/dev/null) == '0:0:1733' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_RELEASES" 2>/dev/null) == '0:0:755' ]] || return 1
+  [[ $(stat -c '%u:%g:%a' "$CONTROL_EVIDENCE" 2>/dev/null) == '0:0:755' ]] || return 1
+  for path in "$CONTROL_STAGING" "$CONTROL_WORK"; do
+    [[ $(stat -c '%u:%g:%a' "$path" 2>/dev/null) == '0:0:700' ]] || return 1
+  done
+  for path in "$INCOMING_DIR" "$RELEASES_DIR" /var/lib/combo-dev/evidence; do
+    [[ -d "$path" && ! -L "$path" ]] || return 1
+    [[ $(findmnt -rn -M "$path" -o TARGET 2>/dev/null) == "$path" ]] || return 1
+    options=$(findmnt -rn -M "$path" -o OPTIONS 2>/dev/null) || return 1
+    [[ ",$options," == *,rw,* && ",$options," == *,nodev,* && ",$options," == *,nosuid,* && ",$options," == *,noexec,* ]] || return 1
+  done
+  fsroot=$(findmnt -rn -M "$INCOMING_DIR" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/incoming' ]] || return 1
+  fsroot=$(findmnt -rn -M "$RELEASES_DIR" -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/releases' ]] || return 1
+  fsroot=$(findmnt -rn -M /var/lib/combo-dev/evidence -o FSROOT 2>/dev/null) || return 1
+  [[ "$fsroot" == '/evidence' ]] || return 1
+  [[ $(stat -c '%d:%i' "$INCOMING_DIR" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_INCOMING" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%d:%i' "$RELEASES_DIR" 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_RELEASES" 2>/dev/null) ]] || return 1
+  [[ $(stat -c '%d:%i' /var/lib/combo-dev/evidence 2>/dev/null) == $(stat -c '%d:%i' "$CONTROL_EVIDENCE" 2>/dev/null) ]] || return 1
+}
+
 host_syslog_policy_valid() {
   local digest
   [[ $(stat -c '%u:%g:%a' /etc/logrotate.d 2>/dev/null || true) == '0:0:755' ]] || return 1
@@ -102,24 +197,31 @@ host_syslog_policy_valid() {
 }
 
 assert_capacity_ready() {
-  local free
+  local incoming_bytes=${1:-0} free inodes required
   host_syslog_policy_valid || blocked '受控主机 syslog 轮转策略缺失、可写或内容漂移；必须重新 bootstrap。'
   findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '固定数据盘没有挂载。'
-  free=$(free_bytes /) || blocked '无法读取根盘容量。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then
-    blocked 'Test 主机根盘准备后仍不足 45 GiB；破坏性重置未开始。'
-  fi
-  free=$(free_bytes "$DATA_MOUNT") || blocked '无法读取数据盘容量。'
-  if [[ ! "$free" =~ ^[0-9]+$ ]] || (( free < BEFORE_FREE_BYTES )); then
-    blocked 'Test 主机数据盘准备后仍不足 45 GiB；破坏性重置未开始。'
-  fi
+  [[ "$incoming_bytes" =~ ^[0-9]+$ ]] || blocked 'incoming 容量参数不合法。'
+  (( incoming_bytes <= ARCHIVE_MAX_BYTES )) || blocked 'incoming 容量参数超过 512 MiB。'
+  verify_control_state || blocked 'control-state 挂载、backing file、目录或兼容 bind 契约失效。'
+  free=$(free_bytes "$CONTROL_STATE") || blocked '无法读取 control-state 容量。'
+  inodes=$(free_inodes "$CONTROL_STATE") || blocked '无法读取 control-state inode。'
+  [[ "$free" =~ ^[0-9]+$ && "$inodes" =~ ^[0-9]+$ ]] || blocked 'control-state 容量指标格式不合法。'
+  # The workflow uploads one copy into incoming, then deploy copies it into
+  # the private work tree. Reserve both copies plus bounded logging,
+  # extraction, and smoke work before any Test mutation.
+  required=$((CONTROL_STATE_MIN_FREE_BYTES + 2 * incoming_bytes + CONTROL_WORK_MARGIN_BYTES))
+  (( free >= required && inodes >= CONTROL_STATE_MIN_FREE_INODES )) ||
+    blocked 'control-state 不足以保留基础水位和本次上传包。'
+  "$INSTALL_ROOT/bin/combo-dev-storage-guard" --check-only >/dev/null 2>&1 ||
+    blocked '业务存储池、父数据盘或根盘 OS 健康检查未通过。'
 }
 
 assert_release_tree_unmounted() {
   local mounts target
   mounts=$(findmnt -rn -o TARGET) || blocked '无法读取主机挂载表；拒绝清理旧 Test release。'
   while IFS= read -r target; do
-    [[ "$target" == "$RELEASES_DIR" || "$target" == "$RELEASES_DIR"/* ]] || continue
+    [[ "$target" == "$RELEASES_DIR" || "$target" == "$CONTROL_STATE" ]] && continue
+    [[ "$target" == "$RELEASES_DIR"/* || "$target" == "$CONTROL_RELEASES"/* ]] || continue
     blocked 'Test release 树内存在挂载点；拒绝越过挂载边界执行容量清理。'
   done <<<"$mounts"
 }
@@ -158,6 +260,10 @@ def safe_release_tree(path, expected_device):
 for path in (install_root, releases_dir):
     safe_root_directory(path)
 releases_device = os.lstat(releases_dir).st_dev
+staging = os.path.join(releases_dir, '.staging')
+safe_root_directory(staging)
+if stat.S_IMODE(os.lstat(staging).st_mode) != 0o700:
+    raise SystemExit(2)
 
 incoming = os.lstat(incoming_dir)
 if not stat.S_ISDIR(incoming.st_mode) or stat.S_ISLNK(incoming.st_mode):
@@ -179,6 +285,8 @@ if os.path.lexists(current_link):
 
 releases = []
 for name in os.listdir(releases_dir):
+    if name == '.staging':
+        continue
     path = os.path.join(releases_dir, name)
     if not sha.fullmatch(name):
         raise SystemExit(2)
@@ -245,9 +353,10 @@ clean_stale_test_artifacts() {
 }
 
 prepare_capacity() {
+  local incoming_bytes=$1
   [[ $(id -u) -eq 0 ]] || blocked '容量准备必须由受限 sudo 规则以 root 启动。'
-  local cmd active timer_active root_before root_after data_before data_after
-  for cmd in python3 sha256sum flock findmnt df systemctl timeout stat rm logrotate awk mktemp; do
+  local cmd active timer_active root_before root_after data_before data_after state_before state_after
+  for cmd in python3 sha256sum flock findmnt df systemctl timeout stat rm logrotate awk mktemp losetup blockdev blkid; do
     command -v "$cmd" >/dev/null 2>&1 || blocked "缺少容量准备工具：$cmd"
   done
   root_owned_not_writable "${BASH_SOURCE[0]}" || blocked '当前 reset 调度器可被非 root 修改。'
@@ -259,12 +368,13 @@ prepare_capacity() {
   timeout 30 logrotate --debug "$HOST_SYSLOG_POLICY" >/dev/null 2>&1 ||
     blocked '主机 syslog 轮转策略未通过 logrotate 校验。'
   findmnt -rn -M "$DATA_MOUNT" >/dev/null 2>&1 || blocked '固定数据盘没有挂载。'
+  verify_control_state || blocked '容量准备前 control-state 固定契约失效。'
   root_before=$(free_bytes /) || blocked '无法读取容量准备前根盘容量。'
   data_before=$(free_bytes "$DATA_MOUNT") || blocked '无法读取容量准备前数据盘容量。'
-  [[ "$root_before" =~ ^[0-9]+$ && "$data_before" =~ ^[0-9]+$ ]] ||
+  state_before=$(free_bytes "$CONTROL_STATE") || blocked '无法读取容量准备前 control-state 容量。'
+  [[ "$root_before" =~ ^[0-9]+$ && "$data_before" =~ ^[0-9]+$ && "$state_before" =~ ^[0-9]+$ ]] ||
     blocked '容量准备前磁盘指标格式不合法。'
-  root_owned_not_writable /run || blocked '容量准备临时目录边界不安全。'
-  WORK=$(mktemp -d /run/combo-dev-capacity.XXXXXX) || blocked '无法在内存运行目录创建容量准备工作区。'
+  WORK=$(mktemp -d "$CONTROL_WORK/capacity.XXXXXX") || blocked '无法在 control-state 创建容量准备工作区。'
   timeout 600 systemctl start systemd-tmpfiles-clean.service >/dev/null 2>&1 ||
     blocked '原生 systemd-tmpfiles-clean.service 清理失败或超时；未直接删除 /tmp。'
   timer_active=$(timeout 10 systemctl is-active systemd-tmpfiles-clean.timer 2>/dev/null || true)
@@ -274,11 +384,12 @@ prepare_capacity() {
     blocked '主机 syslog 轮转失败；破坏性重置未开始。'
   root_after=$(free_bytes /) || blocked '无法读取容量准备后根盘容量。'
   data_after=$(free_bytes "$DATA_MOUNT") || blocked '无法读取容量准备后数据盘容量。'
-  [[ "$root_after" =~ ^[0-9]+$ && "$data_after" =~ ^[0-9]+$ ]] ||
+  state_after=$(free_bytes "$CONTROL_STATE") || blocked '无法读取容量准备后 control-state 容量。'
+  [[ "$root_after" =~ ^[0-9]+$ && "$data_after" =~ ^[0-9]+$ && "$state_after" =~ ^[0-9]+$ ]] ||
     blocked '容量准备后磁盘指标格式不合法。'
-  status "capacity bytes root_before=$root_before root_after=$root_after data_before=$data_before data_after=$data_after"
-  assert_capacity_ready
-  status 'PASS prepare-capacity root>=45GiB data>=45GiB scope=tmpfiles,test-releases,incoming,host-syslog'
+  status "capacity bytes root_before=$root_before root_after=$root_after data_before=$data_before data_after=$data_after state_before=$state_before state_after=$state_after incoming=$incoming_bytes"
+  assert_capacity_ready "$incoming_bytes"
+  status 'PASS prepare-capacity control-state=ready workload-pool=ready parent-data=healthy root-os=healthy-or-warning'
 }
 
 verify_k3s_mount_dependencies() {
@@ -413,7 +524,7 @@ production_fingerprint() {
 preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'reset 必须由受限 sudo 规则以 root 启动。'
   local cmd
-  for cmd in kubectl jq python3 openssl base64 sha256sum flock findmnt systemctl timeout stat dirname readlink df awk install find chown chmod rm date; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少主机工具：$cmd"; done
+  for cmd in kubectl jq python3 openssl base64 sha256sum flock findmnt systemctl timeout stat dirname readlink df awk install find chown chmod rm date losetup blockdev blkid; do command -v "$cmd" >/dev/null 2>&1 || blocked "缺少主机工具：$cmd"; done
   root_owned_not_writable /opt/combo-dev/bin || blocked '调度器目录可被非 root 修改。'
   if ! root_owned_not_writable /opt/combo-dev/bin/combo-dev-production-safety || [[ ! -x /opt/combo-dev/bin/combo-dev-production-safety ]]; then
     blocked '共享生产安全检查器不可用。'
@@ -689,12 +800,13 @@ PY
 }
 
 main() {
-  local revision='' workflow_run_id='' workflow_run_attempt='' confirmed=0 prepare=0 arg
+  local revision='' workflow_run_id='' workflow_run_attempt='' incoming_bytes='' confirmed=0 prepare=0 arg
   while (($#)); do
     arg=$1
     shift
     case "$arg" in
       --prepare-capacity) prepare=$((prepare + 1)) ;;
+      --incoming-bytes) incoming_bytes=${1:?}; shift ;;
       "--confirm=$CONFIRMATION") confirmed=1 ;;
       --revision) revision=${1:?}; shift ;;
       --workflow-run-id) workflow_run_id=${1:?}; shift ;;
@@ -708,12 +820,15 @@ main() {
       [[ -n "$revision" || -n "$workflow_run_id" || -n "$workflow_run_attempt" ]]; then
       blocked '容量准备模式不能与破坏性 reset 参数组合。'
     fi
+    [[ "$incoming_bytes" =~ ^[1-9][0-9]*$ ]] || blocked '容量准备必须提供正整数 --incoming-bytes。'
+    (( incoming_bytes <= ARCHIVE_MAX_BYTES )) || blocked '容量准备的 incoming 包不能超过 512 MiB。'
     exec 9>"$LOCK_FILE"
     flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
-    prepare_capacity
+    prepare_capacity "$incoming_bytes"
     SUCCESS=1
     return
   fi
+  [[ -z "$incoming_bytes" ]] || blocked '--incoming-bytes 只能与 --prepare-capacity 一起使用。'
   (( confirmed == 1 )) || blocked '必须提供完全匹配的破坏性确认串。'
   [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || blocked 'reset revision 不是完整提交 SHA。'
   [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]] || blocked 'reset workflow run ID 不合法。'
@@ -724,7 +839,7 @@ main() {
   exec 9>"$LOCK_FILE"
   flock -w 300 9 || blocked '另一个 combo-dev 操作长时间持有主机锁。'
   assert_capacity_ready
-  WORK=$(mktemp -d)
+  WORK=$(mktemp -d "$CONTROL_WORK/reset.XXXXXX") || blocked '无法在 control-state 创建 reset 工作区。'
   rm -f -- "$RESET_PROOF" "$CONSUMED_RESET_PROOF"
   preflight
   local before after reset_started storage_cleared_at foundation_proof="$WORK/reset-foundation.json"
