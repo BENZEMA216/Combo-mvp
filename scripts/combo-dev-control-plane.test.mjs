@@ -3382,7 +3382,7 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /GET \/__review\/enter\?returnTo=%2Fcapabilities[\s\S]*正在进入邮箱验证/,
   );
   assert.match(previewContract, /docker exec "\$container" nginx -t/);
-  assert.match(previewContract, /docker exec "\$container" command -v nc/);
+  assert.match(previewContract, /docker exec "\$container" sh -c 'command -v nc >\/dev\/null'/);
   assert.match(previewContract, /timeout 10 docker exec -i "\$container" nc 127\.0\.0\.1 80/);
   assert.match(previewContract, /\^X-Combo-Review-Gate:/);
   assert.match(previewContract, /\^Set-Cookie:\.\*combo_review_access/);

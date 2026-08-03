@@ -433,7 +433,7 @@ jobs:
           done
           [[ "$ready" == 1 ]]
           docker exec "$container" nginx -t
-          docker exec "$container" command -v nc >/dev/null
+          docker exec "$container" sh -c 'command -v nc >/dev/null'
 
           preview_probe() {
             local request=$1
