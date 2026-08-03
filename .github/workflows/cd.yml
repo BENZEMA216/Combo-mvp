@@ -257,18 +257,9 @@ jobs:
                 "sourceCiRunAttempt",
                 "sourceCiRunId",
                 "sourceSha",
-                "status",
-                "testBrowserAcceptanceDigest",
-                "testDeploymentEvidenceDigest",
-                "testEvidenceArtifactDigest",
-                "testEvidenceArtifactId",
-                "testEvidenceArtifactName",
-                "testIdentityDigest",
-                "testRunAttempt",
-                "testRunId",
-                "testSourceReleaseDigest"
+                "status"
               ] | sort)
-              and .schemaVersion == 4
+              and .schemaVersion == 5
               and .status == "passed"
               and .environment == "preview"
               and .namespace == "combo-review"
@@ -282,19 +273,7 @@ jobs:
               and (.sourceCiRunId | type == "number" and . > 0 and floor == .)
               and (.sourceCiRunAttempt | type == "number" and . > 0 and floor == .)
               and (.sourceArtifactId | type == "number" and . > 0 and floor == .)
-              and (.testRunId | type == "number" and . > 0 and floor == .)
-              and (.testRunAttempt | type == "number" and . > 0 and floor == .)
-              and (.testEvidenceArtifactId | type == "number" and . > 0 and floor == .)
-              and .testEvidenceArtifactName == (
-                "combo-test-evidence-" + $revision
-                + "-" + (.testRunAttempt | tostring)
-              )
               and (.sourceArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
-              and (.testEvidenceArtifactDigest | test("^sha256:[0-9a-f]{64}$"))
-              and (.testIdentityDigest | test("^sha256:[0-9a-f]{64}$"))
-              and (.testBrowserAcceptanceDigest | test("^sha256:[0-9a-f]{64}$"))
-              and (.testSourceReleaseDigest | test("^sha256:[0-9a-f]{64}$"))
-              and (.testDeploymentEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
               and (.releaseManifestDigest | test("^sha256:[0-9a-f]{64}$"))
               and (.artifactFileSetDigest | test("^sha256:[0-9a-f]{64}$"))
               and (.remoteDeployEvidenceDigest | test("^sha256:[0-9a-f]{64}$"))
@@ -367,6 +346,7 @@ jobs:
             --argjson runAttempt "$source_ci_run_attempt" '
               .id == $runId
               and .run_attempt == $runAttempt
+              and .name == "Main CD"
               and .path == ".github/workflows/ci.yml"
               and .event == "push"
               and .head_branch == "main"
@@ -2149,21 +2129,6 @@ jobs:
             --argjson previewRunAttempt "$PREVIEW_RUN_ATTEMPT" \
             --argjson previewEvidenceArtifactId "$PREVIEW_EVIDENCE_ARTIFACT_ID" \
             --arg previewEvidenceArtifactDigest "$PREVIEW_EVIDENCE_ARTIFACT_DIGEST" \
-            --argjson testRunId "$(jq -er '.testRunId' "$PREVIEW_EVIDENCE")" \
-            --argjson testRunAttempt "$(jq -er '.testRunAttempt' "$PREVIEW_EVIDENCE")" \
-            --argjson testEvidenceArtifactId \
-              "$(jq -er '.testEvidenceArtifactId' "$PREVIEW_EVIDENCE")" \
-            --arg testEvidenceArtifactName \
-              "$(jq -er '.testEvidenceArtifactName' "$PREVIEW_EVIDENCE")" \
-            --arg testEvidenceArtifactDigest \
-              "$(jq -er '.testEvidenceArtifactDigest' "$PREVIEW_EVIDENCE")" \
-            --arg testIdentityDigest "$(jq -er '.testIdentityDigest' "$PREVIEW_EVIDENCE")" \
-            --arg testBrowserAcceptanceDigest \
-              "$(jq -er '.testBrowserAcceptanceDigest' "$PREVIEW_EVIDENCE")" \
-            --arg testSourceReleaseDigest \
-              "$(jq -er '.testSourceReleaseDigest' "$PREVIEW_EVIDENCE")" \
-            --arg testDeploymentEvidenceDigest \
-              "$(jq -er '.testDeploymentEvidenceDigest' "$PREVIEW_EVIDENCE")" \
             --argjson productionRunId "$PRODUCTION_RUN_ID" \
             --argjson productionRunAttempt "$PRODUCTION_RUN_ATTEMPT" \
             --arg releaseManifestDigest "$manifest_digest" \
@@ -2184,7 +2149,7 @@ jobs:
             --arg resetRollForwardEvidenceDigest "$roll_forward_digest" \
             --arg deployedAt "$deployed_at" '
               {
-                schemaVersion: 4,
+                schemaVersion: 5,
                 status: "passed",
                 environment: "production",
                 namespace: "combo",
@@ -2197,15 +2162,6 @@ jobs:
                 previewRunAttempt: $previewRunAttempt,
                 previewEvidenceArtifactId: $previewEvidenceArtifactId,
                 previewEvidenceArtifactDigest: $previewEvidenceArtifactDigest,
-                testRunId: $testRunId,
-                testRunAttempt: $testRunAttempt,
-                testEvidenceArtifactId: $testEvidenceArtifactId,
-                testEvidenceArtifactName: $testEvidenceArtifactName,
-                testEvidenceArtifactDigest: $testEvidenceArtifactDigest,
-                testIdentityDigest: $testIdentityDigest,
-                testBrowserAcceptanceDigest: $testBrowserAcceptanceDigest,
-                testSourceReleaseDigest: $testSourceReleaseDigest,
-                testDeploymentEvidenceDigest: $testDeploymentEvidenceDigest,
                 productionRunId: $productionRunId,
                 productionRunAttempt: $productionRunAttempt,
                 releaseManifestDigest: $releaseManifestDigest,

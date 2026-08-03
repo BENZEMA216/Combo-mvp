@@ -4,7 +4,7 @@
 
 `release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。清单把一个完整源码 SHA 唯一映射到 API、Runtime、Web 三个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。Preview 和 Production 只接受 `main` 的发布清单；其他同仓库分支的清单只用于 Test。
 
-`web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。正式 CI 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。
+`web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。Main CD 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。
 
 Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 `combo`。Preview 与 Production 从同一个已经构建并验证的 release artifact 渲染；Production 不重新构建镜像。
 
@@ -12,7 +12,7 @@ Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 
 
 Test 的重置命令必须同时接收完整源码 SHA、GitHub workflow run ID 和 run attempt。它在证明 PostgreSQL、Redis Queue、MinIO 三个固定目录均已清空后重建四个基础工作负载，把三元身份、实际 Pod UID 和时间写入 attempt-scoped 的 `0600` 回执。部署命令只接受同一 SHA、同一 run ID、同一 run attempt、完成时间不超过十五分钟的回执，并通过同目录原子改名只消费一次。
 
-Test 的迁移任务固定校验 `0009_billing.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0009` 各应用一次，且两遍均到达 `0009`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；Test workflow 会复验 SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再按自动 `main` 或手工分支来源上传相互隔离的 attempt-scoped Test evidence。
+Test 的迁移任务固定校验 `0009_billing.sql`，并在数据重置后的同一 PostgreSQL 中连续扫描两遍迁移目录。任务完成后，调度器立即采集实际 Job、Pod、镜像 ID 和日志摘要；日志必须精确证明 `0000`–`0009` 各应用一次，且两遍均到达 `0009`。迁移 Job 保留两小时，覆盖最长 6900 秒部署与真实浏览器验收窗口。最终证据直接嵌入重置与迁移回执，并严格枚举不含 Secret 的 Test 资源；PR Test workflow 会复验 PR 编号、SHA、run ID、run attempt、嵌套对象 exact schema、回执和资源集合，同时拒绝裸 GitHub/AWS 凭据形态，再上传独立、attempt-scoped 的分支 Test evidence。该 evidence 不参与 Preview 或 Production 晋级。
 
 `combo-dev-logs.sh` 在真实验收完成后读取八个唯一就绪日志源，要求 API、Runtime 和 Worker 都留下当前窗口活动，并扫描合成标记及固定凭据模式。依赖恢复导致容器重启时，它只接受至多一次可审计重启，并同时检查该 Pod 的 current 与 previous 日志；日志流尚未追平时会短时重试。失败时只能输出固定 reason code，不能回显日志正文、请求内容或合成标记。
 
@@ -24,9 +24,9 @@ Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行
 
 `goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Studio 验收按服务端接受的精确 Turn ID 等待；若 Turn 已进入失败、中断或“完成但无 Artifact”状态，会立即记录固定白名单诊断码，不保存原始错误或继续空等。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
 
-成功的 `main` CI 会自动触发 Test，并直接消费 attempt-scoped 的不可变 `combo-release-<SHA>-<source-CI-attempt>` artifact。具有仓库写入权限的成员也可以从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意同仓库分支及其精确 tip SHA；控制器调用 `main` 定义的可复用 CI 为该提交构建同样不可变的 artifact，随后仍使用 `main` 固定的部署、校验和浏览器验收程序。`combo-dev` Environment 只允许 `main` 是为了阻止分支修改过的 workflow 读取 SSH 和 Resend Secret，不是对候选源码分支的限制。
+`PR CI` 由 `pull_request` 触发，只运行格式、lint、类型、快速应用单测、关键 workflow 契约测试和 ShellCheck；它跳过 container contracts 与耗时的发布状态机模拟，不使用 Docker，不构建镜像或 release artifact。真实 Test 是独立的 `workflow_dispatch`：具有仓库写入权限的成员从当前 `main` 上受信任的控制器选择一个以当前 `main` 为 base、同仓库且仍开放的 PR，并提交其精确 head SHA。控制器复验 PR 状态、base、分支 tip 和 SHA 可达性后，调用 `main` 定义的可复用 Main CD 构建 attempt-scoped 的不可变 `combo-release-<SHA>-<source-CI-attempt>` artifact，随后仍使用 `main` 固定的部署、校验和浏览器验收程序。`combo-dev` Environment 只允许 `main` 是为了阻止分支修改过的 workflow 读取 SSH 和 Resend Secret，不是对候选源码分支的限制。
 
-自动 `main` Test 的成功结果与 Test promotion identity 一并放入 `combo-test-evidence-<SHA>-<Test-attempt>`；手工分支 Test 使用独立的 `combo-branch-test-evidence-<SHA>-<Test-attempt>`，不能作为 Preview 准入。只有前一种证据链允许 Preview 和 Production 复用同一 `main` artifact。CI、Test、Preview 和 Production 的成功证据 artifact 名都包含实际 producer attempt，rerun 不会覆盖或混入前一次 attempt。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含可用于晋级的 `source-release.json`。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Test 使用受信任 `main` 控制器中的 helper，Production 则在任何环境变更前使用已通过 Preview 的同一 `main` release artifact 内 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
+PR Test 的成功结果与 Test promotion identity 一并放入 `combo-branch-test-evidence-<SHA>-<Test-attempt>`，只用于所选 PR 的非晋级验证。Preview 不查询或下载这份证据；`main` push 的 Main CD 成功后会直接触发 Preview，Preview 与 Production 只复用该 Main CD 生成的同一 artifact 和 digest 链。Preview promotion 与 Production evidence 都使用无 Test 字段的 schema v5。Main CD、PR Test、Preview 和 Production 的成功证据 artifact 名都包含实际 producer attempt，rerun 不会覆盖或混入前一次 attempt。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含可用于晋级的 `source-release.json`。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Test 使用受信任 `main` 控制器中的 helper，Production 则在任何环境变更前使用已通过 Preview 的同一 Main CD release artifact 内 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
 
 在 Test Web 已通过本机 loopback 转发后，从仓库根目录运行：
 
@@ -42,16 +42,17 @@ pnpm --filter @cb/scripts acceptance:goal-b -- \
 
 晋级工作流通过受保护的 `vars` 准入快照和 Preview policy 输出读取该模式，不使用
 内置 `GITHUB_TOKEN` 无权访问的 Repository Variables REST endpoint。模式只控制
-`main` 候选是否在 Test 成功后继续进入 Preview，不阻止 `main` 或其他同仓库分支
-部署 Test。Preview 会等待并精确匹配触发它的 `main` CI 所对应的自动 Test run、
-attempt 和成功证据；手工分支 Test 不参与匹配。共享 `cd-tecent2` concurrency
-group 保证 Preview 与 Test 不会并发变更环境。
+成功 Main CD 候选是否直接进入 Preview，不控制独立 PR Test。Preview 会精确匹配触发
+它的成功 Main CD run、attempt、`main` SHA 和唯一 release artifact，并在任何远端
+mutation 前再次验证当前 `main`、artifact ID 及 GitHub digest；它不等待或读取 Test
+run/evidence。共享 `cd-tecent2` concurrency group 只保证 Test、Preview 和 Production
+不会并发变更主机环境，不构成晋级依赖。
 
 `verify-rendered-release.mjs` 在任何集群写入前复验 Kubernetes 服务端 dry-run 的原始对象：资源集合、namespace、镜像、命令、Secret 引用和 ClusterIP 边界必须精确符合环境契约。
 
 `deploy-release.sh` 把 Preview 与 Production 的数据视为可丢弃测试数据，在共享主机锁内执行精确盘点和停写。首次切换先建立空的 PostgreSQL、Redis 和 MinIO，再完成 bucket 初始化与单对象冒烟，然后执行 `0000` 至 `0009` 迁移并启动 API、Worker、Runtime 和 Web。消费 clean-slate reset evidence 时，它会在任何部署 mutation 前重新核对 evidence 摘要、强制精确十项，并把十个 foundation 资源的 UID 和 ownership 与 live 对象逐项重绑；基础验证阶段还会继续绑定三份 PVC/PV 身份。Preview 在公网检查后完成单次提交。Production 必须先使用 `--defer-cleanup` 激活候选并保留上一份 release，再由受保护的邮箱 OTP 六区验收产生 attestation，最后使用 `--finalize` 只读复验候选、清理旧对象并封存回滚点。复用既有基础时，进入 `finalizing` 前的验收失败、工作流失败或取消使用 `--rollback`；进入 `finalizing` 后只能以同一份 attestation 幂等续跑 `--finalize`。明确执行 `established-clean-slate-v1` 后，旧应用与新空数据基础不再构成有效回滚组合，因此从基础重建开始只能幂等续跑同一候选或前滚到更新的 main 候选。Secret、TLS、namespace 和无关资源始终不在删除范围。
 
-`recover-preview-post-cut.sh` 只处理 Preview 中属于旧候选、已经完成切流和清理但尚未提交 `current.json` 的 `post-cut` 检查点。它先验证检查点、发布目录、摘要集合、清理证据和当前流量身份，再使用本次不可变 artifact 内的 `deploy-release.sh` 对旧候选做完整实时复验并完成原子提交。Preview workflow 在独立的受保护 job 中执行该恢复；恢复完成后，新部署 job 必须重新取得晋级变量快照并复验 main、CI run 与 artifact，之后才能开始候选重建或部署。脚本不会直接删除检查点、改写流量或接受 Production 状态。
+`recover-preview-post-cut.sh` 只处理 Preview 中属于旧候选、已经完成切流和清理但尚未提交 `current.json` 的 `post-cut` 检查点。它先验证检查点、发布目录、摘要集合、清理证据和当前流量身份，再使用本次不可变 artifact 内的 `deploy-release.sh` 对旧候选做完整实时复验并完成原子提交。Preview workflow 在独立的受保护 job 中执行该恢复；恢复完成后，新部署 job 必须重新取得晋级变量快照并复验 main、Main CD run 与 artifact，之后才能开始候选重建或部署。脚本不会直接删除检查点、改写流量或接受 Production 状态。
 
 `reset-release-foundation.sh` 只接受 `established-clean-slate-v1` 策略，用于在受保护晋级明确授权后重建已有 Preview 或 Production 的可丢弃 PostgreSQL、Redis 和 MinIO 基础数据。它保留当前 Web Deployment 与 Service，先按 UID 和 resourceVersion 停止所有 API、Runtime、Worker 和发布 Job，再用 UID 前置条件删除固定基础资源及三份 `data-release-*` PVC。首次把旧 Goal A Production 接入新版流量状态时，只有在新版 `current.json` 真正不存在且没有 pending 或流量检查点的情况下，脚本才会只读校验旧 checkpoint、完整摘要集合、release manifest、deploy/traffic evidence、两个 forwarder、Nginx 初始 allowlist 和实际 Web 身份，并在私有临时目录生成不落盘的活动流量 authority；后续切流仍由 `switch-release-traffic.sh` 原子建立正式 `current.json`。脚本把不可变删除计划和阶段检查点持久化，能够从 `planned`、`storage-removed` 或 `foundation-ready` 继续执行；如果进程恰好在 plan 提交后、planned checkpoint 提交前中断，只允许同一确定性请求在重新核对 Web/traffic、完整 workload surface、writer、基础对象和 PVC/PV authority 后补写 checkpoint。原子写入 staging 位于 journal 目录之外的受限目录，双锁下只清理严格形态且元数据安全的残留临时文件，其他对象仍 fail closed。成功证据同时证明旧 PV UID 与专属路径消失、新 PVC/PV 身份不同以及 Web 身份未变。已完成 reset 的 Production 重试由 workflow 使用 `foundation-reset-journal.mjs` 对原 evidence 做只读准入，然后直接交给 `deploy-release.sh` 和流量 checkpoint 恢复，不会再次执行首次 reset。Preview 的新显式重建只能在三份存储身份、十个基础对象 UID 和完整活动 Web 路由都与直接前序证据一致时形成线性接续；Production 不接受这种接续，仍使用受保护的 reset roll-forward。脚本不读取 Secret，输出只包含公开发布身份、资源 UID 和专属存储身份。
 

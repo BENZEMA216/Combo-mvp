@@ -1,0 +1,91 @@
+name: PR CI
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: CI / quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      MERGE_SHA: ${{ github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out the exact pull request merge source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the checked-out merge identity
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == pull_request ]]
+          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$MERGE_SHA" ]]
+          [[ "$(git rev-parse HEAD^1)" == "$BASE_SHA" ]]
+          [[ "$(git rev-parse HEAD^2)" == "$HEAD_SHA" ]]
+          git diff --quiet
+          git diff --cached --quiet
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/sandboxd/go.mod
+          cache-dependency-path: apps/sandboxd/go.sum
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared first
+        run: pnpm -F @cb/shared build
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Typecheck tests
+        run: pnpm typecheck:test
+
+      - name: Fast unit and workflow contract tests
+        env:
+          COMBO_RUN_CONTAINER_CONTRACTS: '0'
+        run: pnpm test:fast
+
+      - name: ShellCheck scripts
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck \
+            scripts/*.sh \
+            scripts/integration/*.sh \
+            infra/entrypoint.sh \
+            infra/minio/init-buckets.sh \
+            infra/k8s/overlays/sandbox-tools/maintenance/*.sh

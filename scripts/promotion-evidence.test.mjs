@@ -1380,6 +1380,7 @@ test('release workflows bundle and consume only the controlled admission impleme
     assert.match(admission, /actions\/runs\/\$\{SOURCE_RUN_ID\}/);
     assert.match(admission, /actions\/artifacts\/\$\{SOURCE_ARTIFACT_ID\}/);
     assert.match(admission, /\.run_attempt == \$runAttempt/);
+    assert.match(admission, /\.name == "Main CD"/);
     assert.match(admission, /\.path == "\.github\/workflows\/ci\.yml"/);
     assert.match(admission, /\.event == "push"/);
     assert.match(admission, /\.head_branch == "main"/);
@@ -1461,11 +1462,32 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(ci, /name=combo-release-%s-%s[\s\S]*"\$SOURCE_SHA" "\$GITHUB_RUN_ATTEMPT"/);
   assert.match(
     testDeployment,
+    /^on:\n {2}workflow_dispatch:\n {4}inputs:\n {6}pull_request_number:/m,
+  );
+  assert.doesNotMatch(testDeployment, /^ {2}workflow_run:/m);
+  assert.match(
+    testDeployment,
+    /Test PR #\$\{\{ inputs\.pull_request_number \}\} deployment request/,
+  );
+  assert.match(
+    testDeployment,
+    /INPUT_PULL_REQUEST_NUMBER: \$\{\{ inputs\.pull_request_number \}\}/,
+  );
+  assert.match(
+    testDeployment,
+    /\.state == "open"[\s\S]*\.base\.ref == "main"[\s\S]*\.base\.sha == \$controller[\s\S]*\.head\.repo\.id == \$repositoryId[\s\S]*\.head\.sha == \$revision/,
+  );
+  assert.match(
+    testDeployment,
+    /\.merge_base_commit\.sha == \$controller[\s\S]*\.status == "ahead" or \.status == "identical"/,
+  );
+  assert.match(
+    testDeployment,
     /artifact_name="combo-release-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}"/,
   );
   assert.match(
     testDeployment,
-    /main-ci\)[\s\S]*evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"[\s\S]*branch-build\)[\s\S]*evidence_artifact_name="combo-branch-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"/,
+    /evidence_artifact_name="combo-branch-test-evidence-\$\{REVISION\}-\$\{RUN_ATTEMPT\}"/,
   );
   assert.match(testDeployment, /name: \$\{\{ steps\.evidence\.outputs\.artifact_name \}\}/);
   assert.match(testDeployment, /sourceWorkflow: \$sourceWorkflow/);
@@ -1474,20 +1496,18 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(testDeployment, /sourceConclusion: \$sourceConclusion/);
   assert.match(testDeployment, /controllerSha: \$controllerSha/);
   assert.match(testDeployment, /sourceMode: \$sourceMode/);
-  assert.match(
-    testDeployment,
-    /main-ci\)[\s\S]*source_conclusion=success[\s\S]*branch-build\)[\s\S]*source_conclusion=release-job-success/,
-  );
+  assert.match(testDeployment, /source_conclusion=release-job-success/);
   assert.match(testDeployment, /\.sourceConclusion == \$sourceConclusion/);
   assert.match(testDeployment, /\.controllerSha == \$controllerSha/);
   assert.match(testDeployment, /\.sourceMode == \$sourceMode/);
   assert.match(
     testDeployment,
-    /main-ci\)[\s\S]*\[\[ "\$CONTROLLER_SHA" == "\$REVISION" \]\][\s\S]*branch-build\)[\s\S]*\[\[ "\$SOURCE_EVENT" == workflow_dispatch \]\]/,
+    /\[\[ "\$SOURCE_EVENT" == workflow_dispatch \]\][\s\S]*\[\[ "\$SOURCE_MODE" == branch-build \]\][\s\S]*\[\[ "\$SOURCE_WORKFLOW" == \.github\/workflows\/combo-dev\.yml \]\]/,
   );
+  assert.doesNotMatch(testDeployment, /main-ci/);
   assert.match(
     testDeployment,
-    /branch-build\)[\s\S]*git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
+    /git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
   );
   assert.match(
     testDeployment,
@@ -1532,23 +1552,34 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(preview, /\$artifactCreatedAt <= \$releaseJobs\[0\]\.completed_at/);
   assert.match(
     preview,
-    /test_evidence_artifact_name="combo-test-evidence-\$\{REVISION\}-\$\{test_run_attempt\}"/,
+    /^ {2}workflow_run:\n {4}workflows: \[Main CD\]\n {4}types: \[completed\]\n {4}branches: \[main\]/m,
+  );
+  assert.match(preview, /if: github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(preview, /artifact_name="combo-release-\$\{REVISION\}-\$\{SOURCE_RUN_ATTEMPT\}"/);
+  assert.match(
+    preview,
+    /Download the exact release artifact and verify its GitHub digest[\s\S]*actions\/artifacts\/\$\{SOURCE_ARTIFACT_ID\}\/zip[\s\S]*== "\$SOURCE_ARTIFACT_DIGEST"/,
   );
   assert.match(
     preview,
-    /expected_test_title="Test deployment for CI \$\{SOURCE_RUN_ID\} attempt \$\{SOURCE_RUN_ATTEMPT\}"/,
+    /\.name == "Main CD"[\s\S]*\.event == "push"[\s\S]*\.head_branch == "main"/,
   );
-  assert.match(
+  assert.doesNotMatch(
     preview,
-    /actions\/workflows\/combo-dev\.yml\/runs\?event=workflow_run&branch=main&head_sha=\$\{REVISION\}&per_page=100/,
+    /combo-dev\.yml|test_admission|combo-test-evidence|\bTEST_(?:RUN|EVIDENCE|IDENTITY|BROWSER|SOURCE|DEPLOYMENT)|\btest(?:Run|Evidence|Identity|Browser|Source|Deployment)/,
   );
-  assert.match(preview, /\.display_title == \$title/);
-  assert.match(preview, /\.event == "workflow_run"/);
-  assert.match(preview, /\.sourceWorkflow == "\.github\/workflows\/ci\.yml"/);
-  assert.match(preview, /\.sourceEvent == "push"/);
-  assert.match(preview, /\.sourceBranch == "main"/);
-  assert.match(preview, /\.controllerSha == \$controllerSha/);
-  assert.match(preview, /\.sourceMode == "main-ci"/);
+  const previewEvidenceRecordStart = preview.indexOf('- name: Create Preview promotion evidence');
+  const previewEvidenceRecordEnd = preview.indexOf(
+    '\n      - name:',
+    previewEvidenceRecordStart + 1,
+  );
+  const previewEvidenceRecord = preview.slice(previewEvidenceRecordStart, previewEvidenceRecordEnd);
+  assert.ok(
+    previewEvidenceRecordStart >= 0 && previewEvidenceRecordEnd > previewEvidenceRecordStart,
+  );
+  assert.match(previewEvidenceRecord, /schemaVersion: 5/);
+  assert.match(previewEvidenceRecord, /sourceArtifactDigest: \$sourceArtifactDigest/);
+  assert.doesNotMatch(previewEvidenceRecord, /\btest[A-Z][A-Za-z0-9_]*/);
   const previewCompletedReleaseCheck = preview.indexOf(
     'release_directory="$HOME/data/combo-releases/goal-a/preview/release-${revision}"',
   );
@@ -1614,6 +1645,49 @@ test('release workflows bundle and consume only the controlled admission impleme
   assert.match(production, /\.name == "deploy the main release artifact to Preview"/);
   assert.match(production, /\$uploadJobs\[0\]\.started_at <= \$artifactCreatedAt/);
   assert.match(production, /\$artifactCreatedAt <= \$uploadJobs\[0\]\.completed_at/);
+  const productionReleaseDownloadStart = production.indexOf(
+    '- name: Download the exact release artifact that passed Preview',
+  );
+  const productionReleaseProofStart = production.indexOf(
+    '- name: Prove artifact and digest equality with Preview',
+  );
+  const productionReleaseProofEnd = production.indexOf(
+    '\n      - name:',
+    productionReleaseProofStart + 1,
+  );
+  assert.ok(
+    productionReleaseDownloadStart >= 0 &&
+      productionReleaseProofStart > productionReleaseDownloadStart &&
+      productionReleaseProofEnd > productionReleaseProofStart,
+  );
+  const productionReleaseDownload = production.slice(
+    productionReleaseDownloadStart,
+    productionReleaseProofStart,
+  );
+  const productionReleaseProof = production.slice(
+    productionReleaseProofStart,
+    productionReleaseProofEnd,
+  );
+  assert.match(
+    production,
+    /printf 'source_artifact_digest=%s\\n'[\s\S]*jq -er '\.sourceArtifactDigest' "\$EVIDENCE"/,
+  );
+  assert.match(
+    productionReleaseDownload,
+    /SOURCE_ARTIFACT_DIGEST: \$\{\{ steps\.evidence\.outputs\.source_artifact_digest \}\}/,
+  );
+  assert.match(productionReleaseDownload, /\.digest == \$digest/);
+  assert.match(
+    productionReleaseDownload,
+    /sha256sum "\$archive"[\s\S]*== "\$SOURCE_ARTIFACT_DIGEST"/,
+  );
+  assert.match(productionReleaseProof, /\.releaseManifestDigest[\s\S]*\.artifactFileSetDigest/);
+  assert.match(production, /\.schemaVersion == 5/);
+  assert.match(production, /schemaVersion: 5/);
+  assert.doesNotMatch(
+    production,
+    /\bTEST_(?:RUN|EVIDENCE|IDENTITY|BROWSER|SOURCE|DEPLOYMENT)|\btest(?:Run|Evidence|Identity|Browser|Source|Deployment)/,
+  );
   const productionCompletedReleaseCheck = production.indexOf(
     'release_directory="$HOME/data/combo-releases/goal-a/production/release-${revision}"',
   );

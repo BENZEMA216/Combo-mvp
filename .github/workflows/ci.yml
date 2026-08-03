@@ -1,9 +1,8 @@
-name: CI
+name: Main CD
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_call:
     inputs:
       revision:
@@ -19,8 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ (github.event_name == 'pull_request' && github.ref) || inputs.revision || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: main-cd-${{ inputs.revision || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   SOURCE_SHA: ${{ inputs.revision || github.sha }}
