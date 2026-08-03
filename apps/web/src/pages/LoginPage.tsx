@@ -168,11 +168,18 @@ export function LoginPage({
         return;
       }
 
-      showDependencyError(
-        probe.error.message,
-        reason === 'verification' ? 'confirm-verification' : 'confirm-initial',
-        reason === 'verification' ? 'code' : 'email',
-      );
+      // 进入登录页时的 /me 只是在探测已有会话。代理切换或网络抖动不应把
+      // 尚未开始登录的用户挡在终态错误页；保留邮箱表单，让用户仍可开始登录。
+      // 验证码已经提交后的确认探测不能这样降级，因为结果可能已经写入，
+      // 此时必须继续显式确认会话，避免误导用户重复提交一次性验证码。
+      if (reason === 'initial') {
+        setChallengeError(probe.error.message);
+        setLiveMessage(probe.error.message);
+        setState('email');
+        return;
+      }
+
+      showDependencyError(probe.error.message, 'confirm-verification', 'code');
     },
     [finishLogin, returnTo, showDependencyError],
   );
