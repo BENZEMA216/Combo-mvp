@@ -48,7 +48,7 @@ const CONFIG_MAP_DATA_DIGESTS = Object.freeze({
   'release-redis-queue-config': '8d2af3979e00c83bf940f53cc61c4d281bade324f8b7cae46c6575f07f31cd0f',
   'release-minio-init-script': 'd0a07211a19b1e6e09eedf28e6e24487f58c3da74bfbe1520aad6f79f288f5c6',
 });
-const REVIEW_GATE_DATA_DIGEST = '855eaa9d29e43adf631a19f46bd2098a71fa9b1bbbde1fabaa0fc69723c55634';
+const REVIEW_GATE_DATA_DIGEST = '44e4dc960c8358b783c7c6e343be25a37379f0d1d7b061e6df14bfe98044a1f8';
 const REVIEW_GATE_COMMAND = Object.freeze(['/bin/sh', '-euc']);
 const REVIEW_GATE_SCRIPT =
   'case "$REVIEW_ACCESS_TOKEN" in\n' +

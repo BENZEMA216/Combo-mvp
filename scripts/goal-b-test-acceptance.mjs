@@ -1081,6 +1081,96 @@ async function runAcceptance(options) {
         maxRedirects: 0,
       });
       ensure(unauthenticated.status() === 401, activeCheck, 'http_status');
+      ensure(
+        !(await unauthenticated.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
+      const pageHeaders = { Accept: 'text/html', 'Sec-Fetch-Dest': 'document' };
+      const unauthenticatedPage = await context.request.get(
+        `${options.webOrigin}/capabilities?review-entry=1`,
+        {
+          headers: pageHeaders,
+          failOnStatusCode: false,
+          maxRedirects: 0,
+        },
+      );
+      ensure(unauthenticatedPage.status() === 401, activeCheck, 'http_status');
+      const unauthenticatedPageHeaders = unauthenticatedPage.headers();
+      ensure(
+        unauthenticatedPageHeaders['cache-control'] === 'no-store, private' &&
+          unauthenticatedPageHeaders['x-combo-review-gate'] === 'required' &&
+          unauthenticatedPageHeaders['x-frame-options'] === 'DENY' &&
+          unauthenticatedPageHeaders['content-security-policy']?.includes(
+            "frame-ancestors 'none'",
+          ) &&
+          unauthenticatedPageHeaders.location === undefined,
+        activeCheck,
+        'invalid_response',
+      );
+      ensure(
+        (await unauthenticatedPage.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
+      const unauthenticatedApi = await context.request.get(`${options.webOrigin}/api/v1/me`, {
+        headers: pageHeaders,
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(unauthenticatedApi.status() === 401, activeCheck, 'http_status');
+      ensure(
+        !(await unauthenticatedApi.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
+      const unauthenticatedAsset = await context.request.get(
+        `${options.webOrigin}/assets/review-entry-probe.js`,
+        {
+          headers: pageHeaders,
+          failOnStatusCode: false,
+          maxRedirects: 0,
+        },
+      );
+      ensure(unauthenticatedAsset.status() === 401, activeCheck, 'http_status');
+      ensure(
+        !(await unauthenticatedAsset.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
+      const unauthenticatedWrite = await context.request.post(`${options.webOrigin}/capabilities`, {
+        headers: pageHeaders,
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(unauthenticatedWrite.status() === 401, activeCheck, 'http_status');
+      ensure(
+        !(await unauthenticatedWrite.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
+      const unauthenticatedFrame = await context.request.get(`${options.webOrigin}/capabilities`, {
+        headers: { Accept: 'text/html', 'Sec-Fetch-Dest': 'iframe' },
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(unauthenticatedFrame.status() === 401, activeCheck, 'http_status');
+      ensure(
+        !(await unauthenticatedFrame.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
+      const unauthenticatedFetch = await context.request.get(`${options.webOrigin}/capabilities`, {
+        headers: { Accept: 'text/html', 'Sec-Fetch-Dest': 'empty' },
+        failOnStatusCode: false,
+        maxRedirects: 0,
+      });
+      ensure(unauthenticatedFetch.status() === 401, activeCheck, 'http_status');
+      ensure(
+        !(await unauthenticatedFetch.text()).includes('id="access-form"'),
+        activeCheck,
+        'invalid_response',
+      );
       const rejected = await context.request.post(`${options.webOrigin}/__review/access`, {
         headers: { 'X-Review-Token': '0'.repeat(64) },
         failOnStatusCode: false,
