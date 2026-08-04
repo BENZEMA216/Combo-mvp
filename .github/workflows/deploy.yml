@@ -1,9 +1,10 @@
 name: Deploy
 
-# 三环境统一部署 workflow（替换旧 combo-dev.yml / preview.yml / cd.yml）。
-# - main CI 成功后自动部署 Test。
-# - workflow_dispatch 可手工部署到 test（任意同仓库分支或 main）/ preview / production（main 修订）。
-# - 每环境一把 GitHub concurrency 锁（combo-deploy-<env>），三环境应用 rollout 互不阻塞；
+# 三环境晋级链部署 workflow。
+# - test：任意同仓库分支或 main 都可部署（分支验证沙箱）。
+# - preview：只接受 main 修订；Main CD 成功时自动部署。
+# - production：只有该修订已运行在 preview（preview 验证通过）且人工显式确认后才可部署。
+# - 每环境一把 GitHub concurrency 锁（combo-deploy-<env>），应用 rollout 互不阻塞；
 #   Preview/Production 共享 foundation 的迁移由主机侧 per-foundation flock 串行。
 on:
   workflow_run:
@@ -25,6 +26,11 @@ on:
         description: 分支名（仅 test 任意分支部署时填写；preview/production 必须来自 main）
         required: false
         type: string
+      confirm_production:
+        description: 确认部署到 Production（必须为 true，且该修订已运行在 Preview）
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -32,9 +38,10 @@ permissions:
 
 jobs:
   select:
-    name: authorize and resolve the exact revision
+    name: authorize and resolve the promotion gate
     runs-on: ubuntu-latest
     outputs:
+      trigger: ${{ steps.resolve.outputs.trigger }}
       environment: ${{ steps.resolve.outputs.environment }}
       revision: ${{ steps.resolve.outputs.revision }}
       source_mode: ${{ steps.resolve.outputs.source_mode }}
@@ -67,7 +74,7 @@ jobs:
             esac
           done
 
-      - name: Resolve the exact environment and revision
+      - name: Resolve the promotion gate and exact revision
         id: resolve
         env:
           GH_TOKEN: ${{ github.token }}
@@ -76,6 +83,7 @@ jobs:
           INPUT_ENVIRONMENT: ${{ inputs.environment }}
           INPUT_REVISION: ${{ inputs.revision }}
           INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
+          INPUT_CONFIRM_PRODUCTION: ${{ inputs.confirm_production }}
           MAIN_CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           MAIN_CI_EVENT: ${{ github.event.workflow_run.event }}
           MAIN_CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -100,6 +108,7 @@ jobs:
               [[ "$MAIN_CI_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
               [[ "$MAIN_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
               [[ "$MAIN_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              trigger=auto
               environment=test
               revision=$MAIN_CI_HEAD_SHA
               source_mode=main-ci
@@ -108,6 +117,7 @@ jobs:
               ci_run_attempt=$MAIN_CI_RUN_ATTEMPT
               ;;
             workflow_dispatch)
+              trigger=dispatch
               case "$INPUT_ENVIRONMENT" in
                 test) environment=test ;;
                 preview) environment=preview ;;
@@ -121,6 +131,7 @@ jobs:
               gh api "repos/${GITHUB_REPOSITORY}/git/commits/${INPUT_REVISION}" \
                 --jq '.sha' | grep -Fx "$INPUT_REVISION" >/dev/null
               if [[ "$environment" == test && -n "$INPUT_SOURCE_BRANCH" ]]; then
+                # test：任意同仓库分支部署
                 git check-ref-format "refs/heads/$INPUT_SOURCE_BRANCH" >/dev/null || exit 1
                 [[ "$INPUT_SOURCE_BRANCH" != HEAD ]]
                 encoded=$(jq -rn --arg b "$INPUT_SOURCE_BRANCH" '$b | @uri')
@@ -134,10 +145,10 @@ jobs:
                 source_mode=branch-build
                 source_branch=$INPUT_SOURCE_BRANCH
                 revision=$INPUT_REVISION
-                # 分支构建 artifact 由 build_branch job 在本 run 内生成。
                 ci_run_id=$GITHUB_RUN_ID
                 ci_run_attempt=$GITHUB_RUN_ATTEMPT
               else
+                # preview/production 或 test(main 修订)：只接受可达 main 的提交
                 [[ -z "$INPUT_SOURCE_BRANCH" ]] || {
                   echo 'source_branch is only allowed for test branch deploys.' >&2
                   exit 1
@@ -149,10 +160,23 @@ jobs:
                   echo 'preview/production revision must be reachable from main.' >&2
                   exit 1
                 }
+                if [[ "$environment" == production ]]; then
+                  # production：必须 preview 已运行该修订（preview 验证通过）+ 人工确认
+                  [[ "$INPUT_CONFIRM_PRODUCTION" == true ]] || {
+                    echo 'Production deployment requires explicit confirm_production=true.' >&2
+                    exit 1
+                  }
+                  preview_sha=$(curl -sk --max-time 15 \
+                    https://review.43-160-242-46.sslip.io/version.json \
+                    | jq -er '.sourceSha' 2>/dev/null || true)
+                  [[ "$preview_sha" == "$INPUT_REVISION" ]] || {
+                    echo "Revision $INPUT_REVISION is not the current Preview deployment (Preview runs $preview_sha)." >&2
+                    exit 1
+                  }
+                fi
                 source_mode=main-ci
                 source_branch=main
                 revision=$INPUT_REVISION
-                # 找到该 revision 最近一次成功的 main CI push run。
                 runs=$(mktemp)
                 gh api \
                   "repos/${GITHUB_REPOSITORY}/actions/runs?event=push&branch=main&head_sha=${revision}&per_page=20" \
@@ -174,6 +198,7 @@ jobs:
             *) echo 'Unsupported event.' >&2; exit 1 ;;
           esac
           {
+            printf 'trigger=%s\n' "$trigger"
             printf 'environment=%s\n' "$environment"
             printf 'revision=%s\n' "$revision"
             printf 'source_mode=%s\n' "$source_mode"
@@ -196,17 +221,26 @@ jobs:
       publish_release: true
 
   deploy:
-    name: deploy ${{ needs.select.outputs.environment }}
+    name: deploy ${{ matrix.environment }}
     needs: [select, build_branch]
     if: >-
       always() &&
       needs.select.result == 'success' &&
+      (
+        (needs.select.outputs.trigger == 'auto' && matrix.environment != 'production') ||
+        (needs.select.outputs.trigger == 'dispatch' &&
+          matrix.environment == needs.select.outputs.environment)
+      ) &&
       (needs.select.outputs.source_mode == 'main-ci' ||
         needs.build_branch.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [test, preview, production]
     concurrency:
-      group: combo-deploy-${{ needs.select.outputs.environment }}
+      group: combo-deploy-${{ matrix.environment }}
       cancel-in-progress: false
     steps:
       - name: Use Node.js 24
@@ -308,7 +342,7 @@ jobs:
           REVISION: ${{ needs.select.outputs.revision }}
         run: |
           set -euo pipefail
-          ENV="${{ needs.select.outputs.environment }}"
+          ENV="${{ matrix.environment }}"
           MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
           render() {
             local phase=$1
@@ -330,7 +364,7 @@ jobs:
           REVISION: ${{ needs.select.outputs.revision }}
         run: |
           set -euo pipefail
-          ENV="${{ needs.select.outputs.environment }}"
+          ENV="${{ matrix.environment }}"
           REMOTE_DIR="data/combo-deploy-incoming/${REVISION}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-deploy-incoming" "$HOME/combo-deploy/bin"'
@@ -368,7 +402,7 @@ jobs:
           REVISION: ${{ needs.select.outputs.revision }}
         run: |
           set -euo pipefail
-          case "${{ needs.select.outputs.environment }}" in
+          case "${{ matrix.environment }}" in
             test) origin=https://test.43-160-242-46.sslip.io ;;
             preview) origin=https://review.43-160-242-46.sslip.io ;;
             production) origin=https://agora.43-160-242-46.sslip.io ;;
