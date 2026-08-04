@@ -1320,7 +1320,7 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   );
   assert.match(
     source,
-    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回发布流程',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'Agent 已准备好，先选一个真实试用',[\s\S]*exact: true/,
+    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回提取结果',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'Agent 已准备好，先选一个真实试用',[\s\S]*exact: true/,
   );
   assert.doesNotMatch(source, /recordVideo|tracing\.start|page\.screenshot/);
 });
