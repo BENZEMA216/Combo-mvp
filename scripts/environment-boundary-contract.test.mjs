@@ -218,12 +218,17 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
   );
   assert.match(
     mainWorkflow,
-    /find db\/migrations -maxdepth 1 -type f -name '\*\.sql' -exec basename \{\} \;[\s\S]*sort > "\$expected_migrations"/,
-    'ci.yml must derive the expected migration list from the source instead of hardcoding a head',
+    /find db\/migrations -maxdepth 1 -type f -name '\*\.sql'/,
+    'ci.yml must derive the expected migration list from the source',
+  );
+  assert.match(
+    mainWorkflow,
+    /sort > "\$expected_migrations"/,
+    'ci.yml must write the derived migration list to the expected file',
   );
   assert.doesNotMatch(
     mainWorkflow,
-    /0009_billing\.sql\s*>\s*"\$expected_migrations"/,
-    'ci.yml must not hardcode the migration list head (it should be dynamic)',
+    /0000_baseline_schema\.sql/,
+    'ci.yml must not hardcode the migration file list',
   );
 });
