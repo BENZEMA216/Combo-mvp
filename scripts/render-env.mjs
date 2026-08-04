@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // render-env.mjs — 按环境渲染 k8s 清单（apps / migrate / foundation）。
-// 三环境共用同一套应用 overlay（in-place 命名，无 SHA 前缀），Preview/Production 应用
-// 通过跨 namespace 主机名连接共享 foundation（combo-foundation），Test 连接自己的 foundation。
+// 三环境共用同一套应用 overlay（in-place 命名，无 SHA 前缀），每个环境连接自己
+// 独立的 foundation，禁止 Preview 迁移或消费 Production 的数据库、队列和对象存储。
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { parseAllDocuments, stringify } from 'yaml';
 import { readReleaseManifest, releaseManifestDigest } from './release-manifest.mjs';
 
@@ -29,12 +30,12 @@ const ENVIRONMENTS = Object.freeze({
   },
   preview: {
     namespace: 'combo-preview',
-    foundationOverlay: 'shared-foundation',
-    foundationLock: 'shared',
-    postgresHost: 'postgres.combo-foundation.svc.cluster.local',
-    redisQueueHost: 'redis-queue.combo-foundation.svc.cluster.local',
-    redisHotHost: 'redis-hot.combo-foundation.svc.cluster.local',
-    minioHost: 'minio.combo-foundation.svc.cluster.local',
+    foundationOverlay: 'preview-foundation',
+    foundationLock: 'preview',
+    postgresHost: 'postgres.combo-preview-foundation.svc.cluster.local',
+    redisQueueHost: 'redis-queue.combo-preview-foundation.svc.cluster.local',
+    redisHotHost: 'redis-hot.combo-preview-foundation.svc.cluster.local',
+    minioHost: 'minio.combo-preview-foundation.svc.cluster.local',
     publicAppOrigin: 'https://review.43-160-242-46.sslip.io',
     sessionCookieSecure: 'true',
   },
@@ -55,6 +56,7 @@ const ENVIRONMENTS = Object.freeze({
 // foundation overlay 到它所在 namespace 的映射。
 const FOUNDATION_NAMESPACES = Object.freeze({
   'test-foundation': 'combo-test',
+  'preview-foundation': 'combo-preview-foundation',
   'shared-foundation': 'combo-foundation',
 });
 
@@ -85,10 +87,10 @@ function parseOptions(argv) {
     if (!options[name]) fail(`missing --${name}`);
   }
   if (!Object.hasOwn(ENVIRONMENTS, options.environment)) fail('unknown environment');
-  if (!['apps', 'migrate', 'foundation'].includes(options.phase)) {
-    fail('phase must be apps, migrate, or foundation');
+  if (!['apps', 'migrate', 'foundation', 'boundary'].includes(options.phase)) {
+    fail('phase must be apps, migrate, foundation, or boundary');
   }
-  if (options.phase !== 'foundation') {
+  if (!['foundation', 'boundary'].includes(options.phase)) {
     if (!options.manifest) fail('missing --manifest');
     if (!options['manifest-digest']) fail('missing --manifest-digest');
   }
@@ -219,7 +221,7 @@ function validateApps(resources, environment, manifest) {
   assertNames(services, expectedServices, 'Service');
   assertNames(configMaps, expectedConfigMaps, 'ConfigMap');
   if (resources.length !== deployments.length + services.length + configMaps.length) {
-    fail('apps phase may contain only Service, Deployment');
+    fail('apps phase may contain only Service, Deployment, and ConfigMap');
   }
   const deployment = (name) => deployments.find((item) => item.metadata?.name === name);
   if (containerImage(deployment('api'), 'api') !== manifest.images.api) fail('API image mismatch');
@@ -273,6 +275,138 @@ function validateFoundation(resources, namespace) {
   validateServices(resources);
 }
 
+function validateBoundary(resources, environment) {
+  if (environment !== 'preview') fail('boundary phase is Preview-only');
+  const expected = [
+    ['NetworkPolicy', 'combo-preview', 'preview-egress-boundary'],
+    ['NetworkPolicy', 'combo-preview-foundation', 'preview-foundation-ingress-boundary'],
+  ]
+    .map(([kind, namespace, name]) => `${kind}/${namespace}/${name}`)
+    .sort();
+  const actual = resources
+    .map(
+      (resource) => `${resource.kind}/${resource.metadata?.namespace}/${resource.metadata?.name}`,
+    )
+    .sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    fail(`boundary set mismatch: ${actual.join(', ')}`);
+  }
+  const byName = (name) => resources.find((resource) => resource.metadata?.name === name);
+  const expectedSpecs = {
+    'preview-egress-boundary': {
+      podSelector: {},
+      policyTypes: ['Egress'],
+      egress: [
+        { to: [{ podSelector: {} }] },
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': 'combo-preview-foundation' },
+              },
+            },
+          ],
+          ports: [
+            { protocol: 'TCP', port: 5432 },
+            { protocol: 'TCP', port: 6379 },
+            { protocol: 'TCP', port: 9000 },
+          ],
+        },
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' },
+              },
+              podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+            },
+          ],
+          ports: [
+            { protocol: 'UDP', port: 53 },
+            { protocol: 'TCP', port: 53 },
+          ],
+        },
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': 'observability' },
+              },
+              podSelector: {
+                matchLabels: {
+                  'app.kubernetes.io/name': 'opentelemetry-collector',
+                  'app.kubernetes.io/instance': 'otel-collector',
+                },
+              },
+            },
+          ],
+          ports: [{ protocol: 'TCP', port: 4318 }],
+        },
+        {
+          to: [
+            {
+              ipBlock: {
+                cidr: '0.0.0.0/0',
+                except: [
+                  '10.0.0.0/8',
+                  '100.64.0.0/10',
+                  '172.16.0.0/12',
+                  '192.168.0.0/16',
+                  '169.254.0.0/16',
+                  '43.160.242.46/32',
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    },
+    'preview-foundation-ingress-boundary': {
+      podSelector: {},
+      policyTypes: ['Ingress', 'Egress'],
+      ingress: [
+        { from: [{ podSelector: {} }] },
+        {
+          from: [
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': 'combo-preview' },
+              },
+            },
+          ],
+          ports: [
+            { protocol: 'TCP', port: 5432 },
+            { protocol: 'TCP', port: 6379 },
+            { protocol: 'TCP', port: 9000 },
+          ],
+        },
+      ],
+      egress: [
+        { to: [{ podSelector: {} }] },
+        {
+          to: [
+            {
+              namespaceSelector: {
+                matchLabels: { 'kubernetes.io/metadata.name': 'kube-system' },
+              },
+              podSelector: { matchLabels: { 'k8s-app': 'kube-dns' } },
+            },
+          ],
+          ports: [
+            { protocol: 'UDP', port: 53 },
+            { protocol: 'TCP', port: 53 },
+          ],
+        },
+      ],
+    },
+  };
+  for (const [name, expectedSpec] of Object.entries(expectedSpecs)) {
+    if (!isDeepStrictEqual(byName(name)?.spec, expectedSpec)) {
+      fail(`boundary policy ${name} does not match the sealed specification`);
+    }
+  }
+}
+
 function kubectl(args) {
   const result = spawnSync('kubectl', args, { encoding: 'utf8' });
   if (result.error) fail(`cannot execute kubectl: ${result.error.message}`);
@@ -302,6 +436,14 @@ function run(argv) {
         rendered.push(doc.toJS());
       }
       validateFoundation(rendered, foundationNamespace);
+    } else if (options.phase === 'boundary') {
+      const overlay = join(copiedRoot, 'release', 'overlays', options.environment, 'boundary');
+      const raw = kustomize(overlay);
+      for (const doc of parseAllDocuments(raw)) {
+        if (doc.errors.length > 0) fail(`invalid rendered YAML: ${doc.errors[0].message}`);
+        rendered.push(doc.toJS());
+      }
+      validateBoundary(rendered, options.environment);
     } else {
       const manifest = readReleaseManifest(options.manifest);
       if (releaseManifestDigest(manifest) !== options['manifest-digest']) {

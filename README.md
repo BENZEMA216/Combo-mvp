@@ -166,7 +166,7 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 - **test**：任意同仓库分支可部署（分支验证沙箱）。具有仓库写入权限的成员通过 `workflow_dispatch` 选择分支及其精确 tip SHA，回调 main 定义的 `ci.yml` 为该分支构建不可变 artifact 并部署到 Test。
 - **preview**：只接受 main 修订。`Release build` 成功后自动部署同一 main 提交；也可手工 dispatch（仅接受可达 main 的修订）。
 - **production**：只有该修订已运行在 preview（preview 验证通过）且人工显式确认（`confirm_production`）后才可部署。
-- 三个环境的应用 rollout 各持一把并发锁互不阻塞；Preview/Production 共享 foundation（`combo-foundation`），对共享基建的迁移由主机侧 per-foundation 锁串行。Test 每次只更新应用，基础实例常驻、数据保留。
+- 三个环境的应用 rollout 各持一把并发锁互不阻塞；Test、Preview、Production 分别使用 `combo-test`、`combo-preview-foundation`、`combo-foundation` 三套独立 foundation，基建变更和数据库迁移由各自的主机侧 per-foundation 锁串行。应用发布不会重建基础实例，三套环境的数据均常驻保留。
 
 ---
 

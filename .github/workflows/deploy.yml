@@ -5,7 +5,7 @@ name: Deploy
 # - preview：只接受 main 修订；Release build 成功时自动部署。
 # - production：只有该修订已运行在 preview（preview 验证通过）且人工显式确认后才可部署。
 # - 每环境一把 GitHub concurrency 锁（combo-deploy-<env>），应用 rollout 互不阻塞；
-#   Preview/Production 共享 foundation 的迁移由主机侧 per-foundation flock 串行。
+#   三套独立 foundation 的迁移由主机侧 per-foundation flock 分别串行。
 on:
   workflow_run:
     workflows: [Release build]
@@ -347,6 +347,11 @@ jobs:
           }
           mkdir -p "$RUNNER_TEMP/rendered"
           render foundation
+          if [[ "$ENV" == preview ]]; then
+            render boundary
+          else
+            printf 'apiVersion: v1\nkind: List\nitems: []\n' >"$RUNNER_TEMP/rendered/boundary.yaml"
+          fi
           render migrate
           render apps
 
@@ -360,22 +365,97 @@ jobs:
           MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-deploy-incoming" "$HOME/combo-deploy/bin"'
           ssh release-target "rm -rf \"\$HOME/$REMOTE_DIR\"; install -d -m 0700 \"\$HOME/$REMOTE_DIR\""
-          scp -q \
-            scripts/deploy-env.sh \
+          scp -q scripts/deploy-env.sh \
             "release-target:combo-deploy/bin/deploy-env.sh"
+          scp -q scripts/bootstrap-preview-foundation.sh \
+            "release-target:combo-deploy/bin/bootstrap-preview-foundation.sh"
+          scp -q scripts/verify-preview-boundary.sh \
+            "release-target:combo-deploy/bin/verify-preview-boundary.sh"
           scp -q \
             "$RUNNER_TEMP/rendered/foundation.yaml" \
+            "$RUNNER_TEMP/rendered/boundary.yaml" \
             "$RUNNER_TEMP/rendered/migrate.yaml" \
             "$RUNNER_TEMP/rendered/apps.yaml" \
             "$RUNNER_TEMP/combo-build/metadata/release.json" \
+            infra/host/release/combo-preview-web-forward.service \
+            infra/host/release/combo-preview-minio-forward.service \
             "release-target:$REMOTE_DIR/"
-          ssh release-target 'chmod 0755 "$HOME/combo-deploy/bin/deploy-env.sh"'
+          ssh release-target \
+            'chmod 0755 "$HOME/combo-deploy/bin/deploy-env.sh" "$HOME/combo-deploy/bin/bootstrap-preview-foundation.sh" "$HOME/combo-deploy/bin/verify-preview-boundary.sh"'
           ssh release-target bash -s -- \
             "$REMOTE_DIR" "$ENV" "$MANIFEST_DIGEST" <<'REMOTE'
           set -euo pipefail
           remote_dir=$1
           environment=$2
           manifest_digest=$3
+          if [[ "$environment" == preview ]]; then
+            command -v systemctl >/dev/null
+            command -v systemd-analyze >/dev/null
+            command -v ss >/dev/null
+            sudo -n true
+            available_kib=$(df -Pk "$HOME/data" | awk 'NR == 2 {print $4}')
+            [[ "$available_kib" =~ ^[0-9]+$ ]]
+            (( available_kib >= 40 * 1024 * 1024 )) || {
+              echo 'Preview isolation requires at least 40 GiB available on the data volume.' >&2
+              exit 1
+            }
+            kubectl -n combo-preview get secret combo-env >/dev/null
+            kubectl -n combo-preview get secret ghcr-pull >/dev/null
+            grep -F -- '--namespace=combo-preview-foundation' \
+              "$HOME/$remote_dir/combo-preview-minio-forward.service" >/dev/null
+            grep -F -- '--namespace=combo-preview' \
+              "$HOME/$remote_dir/combo-preview-web-forward.service" >/dev/null
+            systemd-analyze verify \
+              "$HOME/$remote_dir/combo-preview-web-forward.service" \
+              "$HOME/$remote_dir/combo-preview-minio-forward.service" >/dev/null
+            for unit_port in \
+              combo-preview-web-forward.service:18081 \
+              combo-preview-minio-forward.service:19001; do
+              unit=${unit_port%:*}
+              port=${unit_port##*:}
+              if ss -ltnH "sport = :$port" | grep -q . && \
+                ! systemctl is-active --quiet "$unit"; then
+                echo "Preview port $port is owned outside $unit." >&2
+                exit 1
+              fi
+            done
+            bash "$HOME/combo-deploy/bin/bootstrap-preview-foundation.sh" --bootstrap
+            kubectl get namespace combo-preview-foundation >/dev/null
+            kubectl -n combo-preview-foundation get secret combo-env >/dev/null
+            bash "$HOME/combo-deploy/bin/bootstrap-preview-foundation.sh" --verify
+            preview_cutover_required=0
+            if kubectl -n combo-preview get deployment -o yaml \
+              | grep -Fq 'combo-foundation.svc.cluster.local'; then
+              preview_cutover_required=1
+            fi
+            if systemctl cat combo-preview-minio-forward.service 2>/dev/null \
+              | grep -Fq -- '--namespace=combo-foundation'; then
+              preview_cutover_required=1
+            fi
+            if (( preview_cutover_required == 1 )); then
+              echo 'Preview still targets the Production foundation; entering fail-closed cutover.'
+              for unit in \
+                combo-preview-web-forward.service \
+                combo-preview-minio-forward.service; do
+                if systemctl cat "$unit" >/dev/null 2>&1; then
+                  sudo systemctl stop "$unit"
+                fi
+              done
+              for port in 18081 19001; do
+                if ss -ltnH "sport = :$port" | grep -q .; then
+                  echo "Preview fail-closed cutover could not close port $port." >&2
+                  exit 1
+                fi
+              done
+              for deployment in api worker runtime web; do
+                if kubectl -n combo-preview get "deployment/$deployment" >/dev/null 2>&1; then
+                  kubectl -n combo-preview scale "deployment/$deployment" --replicas=0
+                  kubectl -n combo-preview rollout status \
+                    "deployment/$deployment" --timeout=300s
+                fi
+              done
+            fi
+          fi
           deploy() {
             bash "$HOME/combo-deploy/bin/deploy-env.sh" "$1" \
               --environment "$environment" \
@@ -383,9 +463,52 @@ jobs:
               --manifest-digest "$manifest_digest" \
               --render-dir "$HOME/$remote_dir"
           }
+          if [[ "$environment" == preview ]]; then
+            deploy boundary
+            bash "$HOME/combo-deploy/bin/verify-preview-boundary.sh" --negative-production
+          fi
           deploy foundation
+          if [[ "$environment" == preview ]]; then
+            bash "$HOME/combo-deploy/bin/verify-preview-boundary.sh" --positive-preview
+          fi
           deploy migrate
           deploy apps
+          if [[ "$environment" == preview ]]; then
+            changed_units=()
+            for unit in \
+              combo-preview-web-forward.service \
+              combo-preview-minio-forward.service; do
+              if ! sudo cmp -s "$HOME/$remote_dir/$unit" "/etc/systemd/system/$unit"; then
+                sudo install -o root -g root -m 0644 \
+                  "$HOME/$remote_dir/$unit" "/etc/systemd/system/$unit"
+                changed_units+=("$unit")
+              fi
+            done
+            if (( ${#changed_units[@]} > 0 )); then
+              sudo systemctl daemon-reload
+            fi
+            sudo systemctl enable --now \
+              combo-preview-web-forward.service \
+              combo-preview-minio-forward.service
+            if (( ${#changed_units[@]} > 0 )); then
+              sudo systemctl restart "${changed_units[@]}"
+            fi
+            systemctl is-active --quiet combo-preview-web-forward.service
+            systemctl is-active --quiet combo-preview-minio-forward.service
+            minio_ready=0
+            for _ in $(seq 1 30); do
+              if curl -fsS --max-time 5 \
+                http://127.0.0.1:19001/minio/health/ready >/dev/null 2>&1; then
+                minio_ready=1
+                break
+              fi
+              sleep 2
+            done
+            (( minio_ready == 1 )) || {
+              echo 'Preview MinIO forwarder did not become ready.' >&2
+              exit 1
+            }
+          fi
           REMOTE
 
       - name: Verify the environment domain

@@ -64,6 +64,98 @@ test('Deploy grants its reusable Main CI caller the complete permission ceiling'
   assert.match(buildBranch, /\n {4}uses: \.\/\.github\/workflows\/ci\.yml\n/);
 });
 
+test('Preview deployment fails closed around its isolated foundation and public forwarders', () => {
+  const workflow = text('.github/workflows/deploy.yml');
+  const deploy = text('scripts/deploy-env.sh');
+  const bootstrap = text('scripts/bootstrap-preview-foundation.sh');
+  const boundaryProbe = text('scripts/verify-preview-boundary.sh');
+  const authSecrets = text('scripts/configure-first-party-auth-secrets.sh');
+
+  assert.ok(workflow.includes('kubectl get namespace combo-preview-foundation'));
+  assert.ok(workflow.includes('kubectl -n combo-preview-foundation get secret combo-env'));
+  assert.ok(workflow.includes('kubectl -n combo-preview get secret ghcr-pull'));
+  assert.ok(workflow.includes('available_kib >= 40 * 1024 * 1024'));
+  assert.ok(workflow.includes('combo-foundation.svc.cluster.local'));
+  assert.ok(workflow.includes('entering fail-closed cutover'));
+  assert.ok(workflow.includes('for deployment in api worker runtime web'));
+  assert.ok(workflow.includes('systemctl cat combo-preview-minio-forward.service'));
+  assert.ok(workflow.includes('sudo systemctl stop "$unit"'));
+  assert.ok(workflow.includes('Preview fail-closed cutover could not close port $port'));
+  assert.ok(!workflow.includes('combo-preview-minio-forward.service || true'));
+  assert.ok(
+    workflow.includes('bash "$HOME/combo-deploy/bin/bootstrap-preview-foundation.sh" --bootstrap'),
+  );
+  assert.ok(
+    workflow.includes('bash "$HOME/combo-deploy/bin/bootstrap-preview-foundation.sh" --verify'),
+  );
+  assert.ok(
+    workflow.indexOf('bootstrap-preview-foundation.sh" --bootstrap') <
+      workflow.indexOf('bootstrap-preview-foundation.sh" --verify'),
+  );
+  assert.ok(workflow.indexOf('deploy boundary') < workflow.indexOf('deploy foundation'));
+  assert.ok(workflow.indexOf('deploy foundation') < workflow.indexOf('deploy migrate'));
+  assert.ok(workflow.indexOf('deploy migrate') < workflow.indexOf('deploy apps'));
+  assert.ok(workflow.includes('release-target:combo-deploy/bin/'));
+  assert.ok(!workflow.includes('release-target:$HOME/combo-deploy/bin'));
+  assert.ok(workflow.includes('sudo -n true'));
+  assert.ok(workflow.includes('systemd-analyze verify'));
+  assert.ok(workflow.includes('Preview port $port is owned outside $unit'));
+  assert.ok(workflow.includes('changed_units=()'));
+  assert.ok(workflow.includes('http://127.0.0.1:19001/minio/health/ready'));
+  assert.ok(workflow.includes('Preview MinIO forwarder did not become ready'));
+  assert.ok(
+    workflow.includes(
+      'bash "$HOME/combo-deploy/bin/verify-preview-boundary.sh" --negative-production',
+    ),
+  );
+  assert.ok(
+    workflow.includes(
+      'bash "$HOME/combo-deploy/bin/verify-preview-boundary.sh" --positive-preview',
+    ),
+  );
+  assert.ok(
+    workflow.indexOf('verify-preview-boundary.sh" --negative-production') <
+      workflow.indexOf('deploy foundation'),
+  );
+  assert.ok(
+    workflow.indexOf('deploy foundation') <
+      workflow.indexOf('verify-preview-boundary.sh" --positive-preview'),
+  );
+  assert.ok(
+    workflow.indexOf('verify-preview-boundary.sh" --positive-preview') <
+      workflow.indexOf('deploy migrate'),
+  );
+  assert.ok(workflow.includes('systemctl enable --now'));
+  assert.ok(workflow.includes('combo-preview-web-forward.service'));
+  assert.ok(workflow.includes('combo-preview-minio-forward.service'));
+  assert.ok(deploy.includes('require_secret "$NAMESPACE" ghcr-pull'));
+  assert.ok(deploy.includes('require_preview_boundary'));
+  assert.ok(deploy.includes('Preview egress boundary is missing'));
+  assert.ok(deploy.includes('Preview foundation ingress boundary is missing'));
+  assert.ok(bootstrap.includes('production_keys_distinct=true'));
+  assert.ok(bootstrap.includes('Preview and Production foundation share'));
+  assert.ok(bootstrap.includes('Preview and Production app share'));
+  assert.ok(bootstrap.includes('https://review-s3.43-160-242-46.sslip.io'));
+  assert.ok(bootstrap.includes('production_s3_denied=true'));
+  assert.ok(bootstrap.includes('Preview foundation has persistent resources but no combo-env'));
+  assert.doesNotMatch(bootstrap, /--from-literal/);
+  assert.match(boundaryProbe, /busybox@sha256:[a-f0-9]{64}/);
+  assert.doesNotMatch(boundaryProbe, /--image=busybox:/);
+  assert.ok(boundaryProbe.includes('spec["automountServiceAccountToken"] = False'));
+  assert.ok(boundaryProbe.includes('"runAsNonRoot": True'));
+  assert.ok(boundaryProbe.includes('"readOnlyRootFilesystem": True'));
+  assert.ok(boundaryProbe.includes('"allowPrivilegeEscalation": False'));
+  assert.ok(boundaryProbe.includes('"seccompProfile": {"type": "RuntimeDefault"}'));
+  assert.ok(boundaryProbe.includes('"capabilities": {"drop": ["ALL"]}'));
+  assert.match(authSecrets, /test\)\n\s+printf '%s %s\\n' combo-test combo-env/);
+  assert.match(authSecrets, /preview\)\n\s+printf '%s %s\\n' combo-preview combo-env/);
+  assert.match(authSecrets, /production\)\n\s+printf '%s %s\\n' combo-prod combo-env/);
+  assert.doesNotMatch(
+    text('infra/host/release/combo-preview-minio-forward.service'),
+    /--namespace=combo-foundation(?: |$)/,
+  );
+});
+
 test('three environments keep explicit app, foundation, listener, and public-domain ownership', () => {
   const deploy = text('scripts/deploy-env.sh');
   const workflow = text('.github/workflows/deploy.yml');
@@ -81,8 +173,8 @@ test('three environments keep explicit app, foundation, listener, and public-dom
     },
     preview: {
       namespace: 'combo-preview',
-      foundationSet: 'shared',
-      foundationNamespace: 'combo-foundation',
+      foundationSet: 'preview',
+      foundationNamespace: 'combo-preview-foundation',
     },
     production: {
       namespace: 'combo-prod',
@@ -93,16 +185,10 @@ test('three environments keep explicit app, foundation, listener, and public-dom
 
   const appNamespaces = new Set(Object.values(environments).map(({ namespace }) => namespace));
   assert.equal(appNamespaces.size, 3, 'application namespaces must be environment-owned');
-  assert.notEqual(
-    environments.test.foundationNamespace,
-    environments.preview.foundationNamespace,
-    'Test must not share the Preview/Production foundation',
+  const foundationNamespaces = new Set(
+    Object.values(environments).map(({ foundationNamespace }) => foundationNamespace),
   );
-  assert.equal(
-    environments.preview.foundationNamespace,
-    environments.production.foundationNamespace,
-    'Preview and Production intentionally share the declared foundation',
-  );
+  assert.equal(foundationNamespaces.size, 3, 'foundation namespaces must be environment-owned');
 
   const services = {
     test: [
@@ -131,7 +217,7 @@ test('three environments keep explicit app, foundation, listener, and public-dom
       },
       {
         name: 'combo-preview-minio-forward.service',
-        namespace: 'combo-foundation',
+        namespace: 'combo-preview-foundation',
         port: '19001',
       },
     ],

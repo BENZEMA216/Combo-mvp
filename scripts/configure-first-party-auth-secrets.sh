@@ -88,13 +88,13 @@ resolve_kubernetes_target() {
   local environment=$1
   case "$environment" in
     test)
-      printf '%s %s\n' combo-preview combo-dev-env
+      printf '%s %s\n' combo-test combo-env
       ;;
     preview)
-      printf '%s %s\n' combo-review combo-preview-env
+      printf '%s %s\n' combo-preview combo-env
       ;;
     production)
-      printf '%s %s\n' combo combo-env
+      printf '%s %s\n' combo-prod combo-env
       ;;
     *)
       usage

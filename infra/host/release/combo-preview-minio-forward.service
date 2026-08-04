@@ -1,5 +1,5 @@
 [Unit]
-Description=Combo Preview MinIO loopback forward (shared foundation)
+Description=Combo Preview MinIO loopback forward (isolated foundation)
 After=k3s.service
 Requires=k3s.service
 ConditionPathExists=/home/xingzheng/.kube/config
@@ -10,7 +10,7 @@ StartLimitBurst=10
 Type=simple
 User=xingzheng
 Group=xingzheng
-ExecStart=/usr/local/bin/kubectl --cache-dir=/tmp/kubectl-cache --kubeconfig=/home/xingzheng/.kube/config --namespace=combo-foundation port-forward --address=127.0.0.1 service/minio 19001:9000
+ExecStart=/usr/local/bin/kubectl --cache-dir=/tmp/kubectl-cache --kubeconfig=/home/xingzheng/.kube/config --namespace=combo-preview-foundation port-forward --address=127.0.0.1 service/minio 19001:9000
 Restart=always
 RestartSec=2
 UMask=0077

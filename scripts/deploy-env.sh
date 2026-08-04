@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# deploy-env.sh — 在 tecent2 主机上部署指定环境（foundation / migrate / apps 三个阶段）。
-# 三环境共用一套应用 overlay（in-place 命名），Preview/Production 应用连接共享 foundation（combo-foundation）。
-# foundation 与 migrate 持 per-foundation 锁（Test 一套、共享一套）；apps rollout 不持共享锁，按环境并行。
+# deploy-env.sh — 在 tecent2 主机上部署指定环境（boundary / foundation / migrate / apps）。
+# 三环境共用一套应用 overlay（in-place 命名），并连接各自独立的 foundation。
+# foundation 与 migrate 持 per-foundation 锁；apps rollout 不持共享锁，按环境并行。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   cat >&2 <<'EOF'
-usage: deploy-env.sh <foundation|migrate|apps> --environment test|preview|production
+usage: deploy-env.sh <boundary|foundation|migrate|apps> --environment test|preview|production
        [--manifest FILE --manifest-digest DIGEST] [--kubeconfig PATH] [--render-dir DIR] [--wait]
 EOF
   exit 2
@@ -38,7 +38,7 @@ done
 
 [[ -n "$ENVIRONMENT" ]] || usage
 case "$COMMAND" in
-  foundation|migrate|apps) ;;
+  boundary|foundation|migrate|apps) ;;
   *) usage ;;
 esac
 
@@ -46,7 +46,7 @@ K=(kubectl --kubeconfig "$KUBECONFIG")
 
 case "$ENVIRONMENT" in
   test) NAMESPACE=combo-test; FOUNDATION_SET='test'; FOUNDATION_NS=combo-test ;;
-  preview) NAMESPACE=combo-preview; FOUNDATION_SET='shared'; FOUNDATION_NS=combo-foundation ;;
+  preview) NAMESPACE=combo-preview; FOUNDATION_SET='preview'; FOUNDATION_NS=combo-preview-foundation ;;
   production) NAMESPACE=combo-prod; FOUNDATION_SET='shared'; FOUNDATION_NS=combo-foundation ;;
   *) usage ;;
 esac
@@ -67,12 +67,21 @@ render_phase() {
     return
   fi
   local args=(--environment "$ENVIRONMENT" --phase "$phase" --output "$WORK/$phase.yaml")
-  if [[ "$phase" != foundation ]]; then
+  if [[ "$phase" != foundation && "$phase" != boundary ]]; then
     [[ -f "$MANIFEST" ]] || fatal '--manifest is required for migrate/apps'
     [[ -n "$MANIFEST_DIGEST" ]] || fatal '--manifest-digest is required for migrate/apps'
     args+=(--manifest "$MANIFEST" --manifest-digest "$MANIFEST_DIGEST")
   fi
   node "$SCRIPT_DIR/render-env.mjs" "${args[@]}"
+}
+
+require_preview_boundary() {
+  [[ "$ENVIRONMENT" != preview ]] && return 0
+  "${K[@]}" -n combo-preview get networkpolicy preview-egress-boundary >/dev/null ||
+    fatal 'Preview egress boundary is missing'
+  "${K[@]}" -n combo-preview-foundation get networkpolicy \
+    preview-foundation-ingress-boundary >/dev/null ||
+    fatal 'Preview foundation ingress boundary is missing'
 }
 
 ensure_namespace() {
@@ -100,10 +109,18 @@ wait_ready() {
   local phase=$1
   case "$phase" in
     foundation)
-      "${K[@]}" -n "$FOUNDATION_NS" rollout status statefulset/postgres --timeout=300s || true
-      "${K[@]}" -n "$FOUNDATION_NS" rollout status statefulset/minio --timeout=300s || true
-      "${K[@]}" -n "$FOUNDATION_NS" rollout status statefulset/redis-queue --timeout=300s || true
-      "${K[@]}" -n "$FOUNDATION_NS" rollout status deployment/redis-hot --timeout=300s || true
+      local resource
+      for resource in statefulset/postgres statefulset/minio statefulset/redis-queue deployment/redis-hot; do
+        "${K[@]}" -n "$FOUNDATION_NS" rollout status "$resource" --timeout=300s || {
+          "${K[@]}" -n "$FOUNDATION_NS" describe "$resource" >&2 || true
+          fatal "rollout of $resource failed"
+        }
+      done
+      "${K[@]}" -n "$FOUNDATION_NS" wait \
+        --for=condition=complete job/minio-init --timeout=300s || {
+        "${K[@]}" -n "$FOUNDATION_NS" logs job/minio-init --tail=100 >&2 || true
+        fatal 'minio-init job failed'
+      }
       ;;
     migrate)
       local job
@@ -127,6 +144,14 @@ wait_ready() {
 }
 
 case "$COMMAND" in
+  boundary)
+    [[ "$ENVIRONMENT" == preview ]] || fatal 'boundary phase is Preview-only'
+    ensure_namespace "$NAMESPACE"
+    ensure_namespace "$FOUNDATION_NS"
+    render_phase boundary
+    "${K[@]}" apply -f "$WORK/boundary.yaml"
+    require_preview_boundary
+    ;;
   foundation)
     foundation_lock
     ensure_namespace "$FOUNDATION_NS"
@@ -136,17 +161,21 @@ case "$COMMAND" in
     [[ "$WAIT" == 1 ]] && wait_ready foundation
     ;;
   migrate)
+    require_preview_boundary
     foundation_lock
     ensure_namespace "$NAMESPACE"
     require_secret "$NAMESPACE" combo-env
+    require_secret "$NAMESPACE" ghcr-pull
     render_phase migrate
     "${K[@]}" -n "$NAMESPACE" delete job migrate --ignore-not-found --wait=false >/dev/null 2>&1 || true
     "${K[@]}" apply -f "$WORK/migrate.yaml"
     [[ "$WAIT" == 1 ]] && wait_ready migrate
     ;;
   apps)
+    require_preview_boundary
     ensure_namespace "$NAMESPACE"
     require_secret "$NAMESPACE" combo-env
+    require_secret "$NAMESPACE" ghcr-pull
     render_phase apps
     "${K[@]}" apply -f "$WORK/apps.yaml"
     [[ "$WAIT" == 1 ]] && wait_ready apps
