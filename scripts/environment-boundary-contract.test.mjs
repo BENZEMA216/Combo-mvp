@@ -171,7 +171,7 @@ test('three environments keep explicit app, foundation, listener, and public-dom
   assert.deepEqual(domains, {
     test: 'test.43-160-242-46.sslip.io',
     preview: 'review.43-160-242-46.sslip.io',
-    production: 'agora.43-160-242-46.sslip.io',
+    production: 'buildwithcombo.com',
   });
   assert.equal(new Set(Object.values(domains)).size, 3, 'public domains must be environment-owned');
 });
