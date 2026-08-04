@@ -4518,6 +4518,7 @@ test('public Test publication keeps exact identity, isolated listeners, TLS host
   const webUnit = text('infra/host/combo-dev/combo-dev-public-web-forward.service');
   const s3Unit = text('infra/host/combo-dev/combo-dev-public-s3-forward.service');
   const nginx = text('infra/host/combo-dev/combo-dev-public-nginx.conf');
+  const acmeNginx = text('infra/host/combo-dev/combo-dev-public-acme-nginx.conf');
   const prepare = text('infra/host/combo-dev/combo-dev-prepare-public-domain.sh');
   const hostReadme = text('infra/host/combo-dev/README.md');
 
@@ -4540,6 +4541,10 @@ test('public Test publication keeps exact identity, isolated listeners, TLS host
   assert.match(nginx, /proxy_pass http:\/\/127\.0\.0\.1:19003/);
   assert.match(nginx, /access_log off;/);
   assert.match(nginx, /error_page 502 504 = @test_unavailable/);
+  for (const source of [nginx, acmeNginx, prepare]) {
+    assert.match(source, /\/var\/www\/certbot/);
+    assert.doesNotMatch(source, /\/var\/lib\/letsencrypt/);
+  }
 
   for (const source of [bootstrap, deploy, reset, guard]) {
     assert.match(source, /PUBLICATION_MARKER='\/var\/lib\/combo-dev\/publication'/);
