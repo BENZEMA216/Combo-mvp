@@ -1,7 +1,8 @@
 // 任务详情测试：SSE 实时进度（快照点亮 + progress + item-appended + done 终态刷新）与失败重试。
-import { describe, it, expect, afterEach } from 'vitest';
-import { act, screen } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient } from '@tanstack/react-query';
 import { installFetchMock, type FetchMock } from '../../test/mockFetch.js';
 import { MockFetchEventSource } from '../../test/mockFetchEventSource.js';
 import { __setFetchEventSourceForTests } from '../../api/index.js';
@@ -16,6 +17,7 @@ afterEach(() => {
   fm = undefined;
   restoreSse?.();
   restoreSse = undefined;
+  vi.restoreAllMocks();
 });
 
 const RUNNING = makeTask({
@@ -117,14 +119,15 @@ describe('TaskDetailPage — SSE 实时进度', () => {
     expect(screen.getByText('已分析 6 / 10 段会话')).toBeInTheDocument();
     expect(screen.getByText('切分会话段落')).toBeInTheDocument();
 
-    // item-appended：触发能力列表重拉，新 Agent 就地浮现，可试用或继续完善。
+    // item-appended：触发能力列表重拉，新 Agent 就地浮现，可试用、调整 UI 或直接定价。
     act(() => conn.emit('item-appended', { item: cap1 }, { id: '3-1' }));
     act(() => conn.emit('item-appended', { item: cap2 }, { id: '3-2' }));
     expect(await screen.findByText('周报整理')).toBeInTheDocument();
     expect(await screen.findByText('代码评审')).toBeInTheDocument();
     // 非规范测试 id 不跨 bundle 传播；生产 UUID 会由专门的 returnTo 契约覆盖。
     expect(screen.getAllByRole('link', { name: '先试用' })[0]).toHaveAttribute('href', '/try/c/c1');
-    expect(screen.getAllByRole('link', { name: /继续完善/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /调整「.*」UI/ })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: /直接定价与发布/ })).toHaveLength(2);
     expect(screen.queryByRole('checkbox')).toBeNull();
 
     // done 帧 → 重拉任务定格终态 → 整页切换成成果形态（大标题 + 挑选发布区）。
@@ -140,7 +143,7 @@ describe('TaskDetailPage — SSE 实时进度', () => {
       'href',
       '/capabilities',
     );
-    expect(screen.getAllByRole('link', { name: /继续完善/ })[0]).toHaveAttribute(
+    expect(screen.getAllByRole('link', { name: /直接定价与发布/ })[0]).toHaveAttribute(
       'href',
       '/capabilities/c1/release/pricing',
     );
@@ -164,7 +167,8 @@ describe('TaskDetailPage — 结果到发布链路', () => {
     ).toBeInTheDocument();
     expect(await screen.findByLabelText('优先级 1')).toHaveTextContent('01');
     expect(screen.getByLabelText('优先级 2')).toHaveTextContent('02');
-    expect(screen.getAllByRole('link', { name: /继续完善/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /调整「.*」UI/ })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: /直接定价与发布/ })).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /一键发布/ })).toBeNull();
     expect(fm.calls.every((call) => call.method === 'GET')).toBe(true);
   });
@@ -172,6 +176,7 @@ describe('TaskDetailPage — 结果到发布链路', () => {
 
 describe('TaskDetailPage — 失败与重试', () => {
   it('失败任务显示 lastError 人话 + 重试按钮；重试 POST 后回到跑态', async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
     restoreSse = __setFetchEventSourceForTests(MockFetchEventSource.impl);
     const failed = makeTask({
       ...RUNNING,
@@ -203,6 +208,11 @@ describe('TaskDetailPage — 失败与重试', () => {
     // 重试成功 → 任务回 running（badge 变提取中），重新建流。
     expect(await screen.findByText('提取中')).toBeInTheDocument();
     expect(MockFetchEventSource.connections.length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ['tasks'],
+      }),
+    );
   });
 
   it('过期上传任务显示失败原因与重新上传出口，不把旧配对码原地重试回 running', async () => {

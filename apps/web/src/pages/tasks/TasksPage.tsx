@@ -1,7 +1,7 @@
 // 任务页（默认页）：「新建上传任务」+ 任务列表（游标分页）。
 // 建任务成功 → PairingCard 展示配对码（明文仅此一次）+ 助手连接命令；行点入任务详情看实时进度。
 import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateTaskResult, TaskView } from '@cb/shared';
 import { createTask, getTask, listTasks } from '../../api/index.js';
@@ -17,12 +17,14 @@ import {
 } from './taskPresent.js';
 
 export function TasksPage(): ReactElement {
-  useDocumentTitle('上传任务 · Combo');
+  useDocumentTitle('创作进度 · Combo');
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [created, setCreated] = useState<CreateTaskResult | null>(null);
   const [pairingVisible, setPairingVisible] = useState(false);
   const createResultRef = useRef<HTMLDivElement>(null);
+  const handledCreateIntentRef = useRef(false);
 
   const tasksQuery = useInfiniteQuery({
     queryKey: ['tasks'],
@@ -39,6 +41,21 @@ export function TasksPage(): ReactElement {
       void qc.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
+
+  // Shell 的全局“创建 Agent”入口带一次性 intent。进入任务页后立即复用现有真实建任务/
+  // 配对流程，并先清掉 intent，避免刷新、返回或 React 重放 effect 时意外再建一条任务。
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') {
+      handledCreateIntentRef.current = false;
+      return;
+    }
+    if (handledCreateIntentRef.current) return;
+    handledCreateIntentRef.current = true;
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+    createMutation.mutate();
+  }, [createMutation, searchParams, setSearchParams]);
 
   // 新建后持续观察这个任务：配对卡给“等待助手连接”的明确反馈；第一片一落地就自动进入
   // 任务详情，让用户连续看到上传进度与随后自动出现的提取进度，无需刷新或手动点“查看进度”。
@@ -146,10 +163,10 @@ export function TasksPage(): ReactElement {
       <div className="cb-page__head cb-page__head--split">
         <div>
           <h2 className="cb-page__title" id="cb-tasks-title">
-            上传任务
+            创作进度
           </h2>
           <p className="cb-page__lead">
-            新建任务拿到配对码，在本机跑一条命令上传对话历史；云端自动提取成能力项。
+            从上传、提取到结果验收，每一步都会保留。离开后也可以随时回来继续。
           </p>
         </div>
         <button
@@ -179,8 +196,8 @@ export function TasksPage(): ReactElement {
       <div className="cb-tasks-panel">
         <div className="cb-tasks-panel__header">
           <div>
-            <p className="cb-section-kicker">任务列表</p>
-            <h3 className="cb-tasks-panel__title">上传与提取队列</h3>
+            <p className="cb-section-kicker">创建记录</p>
+            <h3 className="cb-tasks-panel__title">Agent 创作任务</h3>
             <p className="cb-tasks-panel__hint">
               每个任务都会保留上传进度、提取状态和生成的能力数量。
             </p>

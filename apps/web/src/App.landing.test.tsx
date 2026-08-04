@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { installFetchMock, type FetchMock } from './test/mockFetch.js';
+import { envelopeBody, paginatedBody } from './test/fixtures.js';
 import { App } from './App.js';
 
 let fetchMock: FetchMock | undefined;
@@ -57,5 +58,29 @@ describe('App landing route', () => {
     );
     expect(screen.queryByText('继续创建你的能力')).toBeNull();
     await waitFor(() => expect(fetchMock?.calls).toHaveLength(2));
+  });
+
+  it('keeps /creation/tasks as a stable alias for the real creation progress page', async () => {
+    fetchMock = installFetchMock([
+      {
+        match: '/me',
+        status: 200,
+        json: envelopeBody({
+          id: '11111111-1111-4111-8111-111111111111',
+          account: 'creator-routetst',
+          email: 'creator@example.com',
+          roles: ['creator'],
+          createdAt: '2026-01-01T00:00:00.000Z',
+          lastLoginAt: null,
+        }),
+      },
+      { match: '/tasks', status: 200, json: paginatedBody([]) },
+    ]);
+    window.history.replaceState({}, '', '/creation/tasks');
+
+    renderApp();
+
+    expect(await screen.findByRole('heading', { level: 2, name: '创作进度' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/tasks');
   });
 });

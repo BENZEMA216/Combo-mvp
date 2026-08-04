@@ -16,6 +16,6 @@ export interface NavItem {
 
 /** 侧栏主导航。顺序即展示顺序。 */
 export const CREATOR_NAV: NavItem[] = [
-  { path: '/tasks', label: '上传任务', icon: IconTasks },
+  { path: '/tasks', label: '创作进度', icon: IconTasks },
   { path: '/capabilities', label: '我的 Agent', icon: IconCapabilities },
 ];

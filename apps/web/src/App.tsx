@@ -38,6 +38,8 @@ export function App(): ReactElement {
             <Route element={<ProtectedLayout />}>
               {/* 旧 IA 别名：/creator 是重构前的工作台路径，旧书签/外链落过来不该 404。 */}
               <Route path="/creator" element={<Navigate to="/tasks" replace />} />
+              {/* 新 IA 使用“创作进度”命名；/tasks 继续作为稳定真路由，避免旧链接失效。 */}
+              <Route path="/creation/tasks" element={<Navigate to="/tasks" replace />} />
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
               <Route path="/capabilities" element={<CapabilitiesPage />} />

@@ -78,6 +78,9 @@ export function TaskDetailPage(): ReactElement {
     mutationFn: () => retryTask(taskId),
     onSuccess: (view) => {
       qc.setQueryData(['task', taskId], view); // 立即回 running，重新建流。
+      // prefix invalidation 同时覆盖任务列表 ['tasks'] 与 Shell 恢复查询
+      // ['tasks', 'creation-resume']，让“当前创作”胶囊无需刷新立即回到运行态。
+      void qc.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
 

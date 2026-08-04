@@ -2,7 +2,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { installFetchMock, type FetchMock } from '../../test/mockFetch.js';
 import { makeTask, paginatedBody, envelopeBody } from '../../test/fixtures.js';
 import { renderPage } from '../../test/renderWithProviders.js';
@@ -12,7 +12,18 @@ function TasksWithPathProbe() {
   const location = useLocation();
   return (
     <>
-      <span data-testid="path">{location.pathname}</span>
+      <span data-testid="path">{location.pathname + location.search}</span>
+      <TasksPage />
+    </>
+  );
+}
+
+function TasksWithCreateIntentProbe() {
+  const location = useLocation();
+  return (
+    <>
+      <Link to="/tasks?create=1">模拟全局创建入口</Link>
+      <span data-testid="path">{location.pathname + location.search}</span>
       <TasksPage />
     </>
   );
@@ -126,6 +137,7 @@ describe('TasksPage — 列表状态渲染', () => {
   it('空列表 → 空态引导（不裸空表）', async () => {
     fm = installFetchMock({ status: 200, json: paginatedBody([]) });
     renderPage(<TasksPage />);
+    expect(await screen.findByRole('heading', { level: 2, name: '创作进度' })).toBeInTheDocument();
     expect(await screen.findByText('还没有上传任务')).toBeInTheDocument();
   });
 
@@ -166,6 +178,25 @@ describe('TasksPage — 列表状态渲染', () => {
 });
 
 describe('TasksPage — 新建上传任务', () => {
+  it('消费 Shell 的一次性 create intent，直接进入真实配对流程且刷新不会重复创建', async () => {
+    const created = makeTask({ id: 'task-intent' });
+    fm = installFetchMock([
+      { status: 200, json: paginatedBody([]) },
+      { status: 201, json: envelopeBody({ task: created, pairingCode: 'PAIR-INTENT-1' }) },
+      { status: 200, json: paginatedBody([created]) },
+      { match: '/tasks/task-intent', status: 200, json: envelopeBody(created) },
+    ]);
+
+    renderPage(<TasksWithCreateIntentProbe />, { route: '/tasks' });
+    await screen.findByText('还没有上传任务');
+    await userEvent.click(screen.getByRole('link', { name: '模拟全局创建入口' }));
+
+    expect(await screen.findByText('PAIR-INTENT-1')).toBeInTheDocument();
+    expect(screen.getByTestId('path')).toHaveTextContent('/tasks');
+    expect(screen.getByTestId('path')).not.toHaveTextContent('create=1');
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  });
+
   it('POST /tasks 带幂等键；配对码明文 + 连接命令展示（仅此一次提示）', async () => {
     const created = makeTask({ id: 'task-new' });
     fm = installFetchMock([

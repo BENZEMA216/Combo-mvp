@@ -1,24 +1,56 @@
 // 提取结果：按优先级给每个 Agent 一条明确路径——真实试用，或继续 UI / 定价 / 发布。
 // 这里不再绕过产品链路直接批量 publish；发布只在 Agent release 中完成最终确认。
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { Link } from 'react-router-dom';
+import { useMutation } from '@tanstack/react-query';
 import type { CapabilityView, TaskView } from '@cb/shared';
-import { trialUrl } from '../../api/index.js';
+import { createStudioSession, trialUrl } from '../../api/index.js';
 import { CopyButton } from '../../components/CopyButton.js';
 import { releasePath } from '../release/releaseDraft.js';
+
+export interface CapabilityPickerProps {
+  taskId: string;
+  task: TaskView;
+  items: CapabilityView[];
+  extracting: boolean;
+  /** 测试注入点；生产使用整页导航进入 runtime-web Studio。 */
+  navigateToStudio?: (url: string) => void;
+}
+
+function defaultNavigateToStudio(url: string): void {
+  window.location.assign(url);
+}
+
+function studioUrl(sessionId: string, capabilityId: string): string {
+  return `/try/session/${encodeURIComponent(sessionId)}?mode=studio&returnTo=${encodeURIComponent(releasePath(capabilityId, 'pricing'))}`;
+}
 
 export function CapabilityPicker({
   taskId,
   task,
   items,
   extracting,
-}: {
-  taskId: string;
-  task: TaskView;
-  items: CapabilityView[];
-  extracting: boolean;
-}): ReactElement {
+  navigateToStudio = defaultNavigateToStudio,
+}: CapabilityPickerProps): ReactElement {
   const taskReturnTo = `/tasks/${encodeURIComponent(taskId)}`;
+  const [studioError, setStudioError] = useState<{
+    capabilityId: string;
+    message: string;
+  } | null>(null);
+  const studioMutation = useMutation({
+    mutationFn: (capabilityId: string) => createStudioSession(capabilityId),
+    onMutate: () => setStudioError(null),
+    onSuccess: ({ session }, capabilityId) => {
+      navigateToStudio(studioUrl(session.id, capabilityId));
+    },
+    onError: (error, capabilityId) => {
+      setStudioError({
+        capabilityId,
+        message: error instanceof Error ? error.message : '暂时没能打开设计空间，请稍后重试。',
+      });
+    },
+  });
+
   return (
     <>
       <div className="cb-capabilities__toolbar">
@@ -60,8 +92,19 @@ export function CapabilityPicker({
               <a className="cb-cap-card__trial" href={trialUrl(capability.id, taskReturnTo)}>
                 先试用
               </a>
-              <Link className="cb-cap-card__continue" to={releasePath(capability.id, 'pricing')}>
-                {capability.published ? '管理发布' : '继续完善'} →
+              <button
+                type="button"
+                className="cb-cap-card__studio"
+                onClick={() => studioMutation.mutate(capability.id)}
+                disabled={studioMutation.isPending}
+                aria-label={`调整「${capability.name}」UI`}
+              >
+                {studioMutation.isPending && studioMutation.variables === capability.id
+                  ? '正在打开…'
+                  : '调整 UI'}
+              </button>
+              <Link className="cb-cap-card__release" to={releasePath(capability.id, 'pricing')}>
+                {capability.published ? '管理发布' : '直接定价与发布'} →
               </Link>
               {capability.published && (
                 <CopyButton
@@ -71,15 +114,18 @@ export function CapabilityPicker({
                   className="cb-cap-card__copy"
                 />
               )}
+              {studioError?.capabilityId === capability.id && (
+                <span className="cb-cap-card__error" role="alert">
+                  调整 UI 未打开：{studioError.message}
+                </span>
+              )}
             </div>
           </li>
         ))}
       </ol>
 
       <footer className="cb-capabilities__foot cb-capabilities__foot--journey">
-        <p>
-          不需要一次发布全部结果。先选最值得验证的 Agent，反复调整 UI 和效果，满意后再定价发布。
-        </p>
+        <p>不需要一次发布全部结果。先选最值得验证的 Agent 试用和调整；满意后再进入定价发布。</p>
         <Link className="cb-btn" to="/capabilities">
           查看全部 Agent
         </Link>

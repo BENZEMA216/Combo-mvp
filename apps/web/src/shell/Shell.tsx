@@ -11,8 +11,14 @@ import { ComboMark, ComboWordmark } from './brand.js';
 import { IconChevrons } from './icons.js';
 import { AccountMenu } from './AccountMenu.js';
 import { useReleaseMetadata } from './releaseIdentity.js';
+import type { CreationResumeSummary } from './creationResume.js';
 
-export function Shell(): ReactElement {
+export interface ShellProps {
+  /** 最近一项可继续的创作；数据由受保护布局读取，Shell 只负责稳定展示。 */
+  creationResume?: CreationResumeSummary;
+}
+
+export function Shell({ creationResume }: ShellProps = {}): ReactElement {
   const { collapsed, toggle: toggleCollapse } = useCollapse();
   const account = useAccount();
   const releaseMetadata = useReleaseMetadata();
@@ -41,6 +47,17 @@ export function Shell(): ReactElement {
           </button>
         </div>
 
+        <Link
+          to="/tasks?create=1"
+          className="cb-shell__create-agent"
+          title={collapsed ? '创建 Agent' : undefined}
+        >
+          <span className="cb-shell__create-agent-icon" aria-hidden="true">
+            ＋
+          </span>
+          <span className="cb-shell__create-agent-label">创建 Agent</span>
+        </Link>
+
         <nav className="cb-shell__nav" aria-label="主导航">
           <ul className="cb-shell__navlist">
             {CREATOR_NAV.map((n) => (
@@ -48,6 +65,41 @@ export function Shell(): ReactElement {
             ))}
           </ul>
         </nav>
+
+        {creationResume && (
+          <section className="cb-shell__resume" aria-label="当前创作">
+            <Link
+              to={creationResume.href}
+              className="cb-shell__resume-primary"
+              aria-label={`继续创作：${creationResume.title}，${creationResume.stage}`}
+              title={
+                collapsed
+                  ? `${creationResume.title} · ${creationResume.stage} · 继续创作`
+                  : undefined
+              }
+            >
+              <span className="cb-shell__resume-signal" aria-hidden="true">
+                <span />
+                {creationResume.total > 1 && (
+                  <span className="cb-shell__resume-badge">{creationResume.total}</span>
+                )}
+              </span>
+              <span className="cb-shell__resume-copy">
+                <span className="cb-shell__resume-eyebrow">当前创作</span>
+                <strong className="cb-shell__resume-title">{creationResume.title}</strong>
+                <span className="cb-shell__resume-stage">{creationResume.stage}</span>
+              </span>
+              <span className="cb-shell__resume-action" aria-hidden="true">
+                继续 →
+              </span>
+            </Link>
+            {creationResume.total > 1 && (
+              <Link to="/creation/tasks" className="cb-shell__resume-summary">
+                另有 {creationResume.total - 1} 个创作
+              </Link>
+            )}
+          </section>
+        )}
 
         {/* 侧栏底部：当前账号常驻区；点击整行（收起态为头像）打开账号菜单。 */}
         <AccountMenu account={account} environment={releaseMetadata.environment} />
