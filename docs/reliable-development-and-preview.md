@@ -66,17 +66,17 @@ pnpm typecheck:test
 pnpm test:local
 ```
 
-`test:local` 会运行应用测试、Preview 身份验证器测试和工作树守卫测试，但不运行依赖 Linux/GNU 主机语义的控制面契约；该部分必须由 GitHub Actions 在 Linux 上执行 `pnpm test:fast`。Main CD 的 `pnpm test` 也覆盖新增的守卫和验证器。不得为了让 macOS 通过而放宽生产部署脚本。
+`test:local` 会运行应用测试、Preview 身份验证器测试和工作树守卫测试，但不运行依赖 Linux/GNU 主机语义的控制面契约；该部分必须由 GitHub Actions 在 Linux 上执行 `pnpm test:fast`。Release build 的 `pnpm test` 也覆盖新增的守卫和验证器。不得为了让 macOS 通过而放宽生产部署脚本。
 
 之后运行 `worktree_guard.py check-pr-ready`。工作树不干净、落后 `origin/main`、提交未推送或分支没有正确上游时，不创建 PR。
 
 ## 4. PR、main 与 Preview
 
 1. 只提交本任务文件，推送任务分支并创建 PR。
-2. 等待 PR CI 全部通过，解决未完成 review，再合入 `main`。
+2. 等待 PR checks 全部通过，解决未完成 review，再合入 `main`。
 3. 记录 PR 的 merge SHA；分支 SHA 和 merge SHA 不能混用。
-4. 等待 Main CD 成功并产出该 merge SHA 的不可变 release artifact。
-5. 等待 Preview promotion 成功。
+4. 等待 Release build 成功并产出该 merge SHA 的不可变 `combo-build-<SHA>` 构建清单。
+5. 等待 Deploy 将同一 SHA 自动部署到 Preview 成功。
 6. 复验线上发布身份：
 
 ```sh
@@ -85,4 +85,4 @@ pnpm release:verify:preview -- --expected-sha <main-merge-sha>
 
 7. 在云端浏览器从真实入口完成本次用户链路，至少覆盖刷新、返回、重新进入和错误恢复。
 
-最终交付必须同时给出：PR、merge SHA、Main CD run、Preview promotion run、`version.json` 对齐结果和浏览器验收结果。任一项缺失时，状态只能写“未完成”或“被阻塞”。
+最终交付必须同时给出：PR、merge SHA、Release build run、Deploy run、`version.json` 对齐结果和浏览器验收结果。任一项缺失时，状态只能写“未完成”或“被阻塞”。

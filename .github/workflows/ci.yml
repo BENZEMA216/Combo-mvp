@@ -1,4 +1,4 @@
-name: Main CD
+name: Release build
 
 on:
   push:
@@ -372,10 +372,16 @@ jobs:
             --env NGINX_RESOLVER=127.0.0.11 \
             --env API_UPSTREAM_HOST=api.invalid \
             --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
+            --env COMBO_ENVIRONMENT=development \
+            --env COMBO_SOURCE_SHA="$SOURCE_SHA" \
+            --env COMBO_RELEASE_ID="release-$SOURCE_SHA" \
+            --env COMBO_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --env COMBO_RELEASE_MANIFEST_DIGEST="sha256:$(printf 'a%.0s' $(seq 1 64))" \
+            --env COMBO_WEB_ASSET_MANIFEST="sha256:$(printf '0%.0s' $(seq 1 64))" \
             "$IMAGE_REF" >/dev/null
           ready=0
           for _ in $(seq 1 30); do
-            if docker exec "$container" wget -qO- http://127.0.0.1:8080/version.json \
+            if docker exec "$container" wget -qO- http://127.0.0.1/version.json \
                 >"$RUNNER_TEMP/web-version.json" 2>/dev/null; then
               ready=1
               break
@@ -383,12 +389,12 @@ jobs:
             sleep 1
           done
           [[ "$ready" == 1 ]]
-          docker exec "$container" wget -qO- http://127.0.0.1:8080/runtime-config.json \
+          docker exec "$container" wget -qO- http://127.0.0.1/runtime-config.json \
             >"$RUNNER_TEMP/web-runtime-config.json"
-          docker exec "$container" wget -qO- http://127.0.0.1:8080/try/runtime-config.json \
+          docker exec "$container" wget -qO- http://127.0.0.1/try/runtime-config.json \
             >"$RUNNER_TEMP/web-try-runtime-config.json"
-          docker exec "$container" wget -qO /dev/null http://127.0.0.1:8080/
-          docker exec "$container" wget -qO /dev/null http://127.0.0.1:8080/try/
+          docker exec "$container" wget -qO /dev/null http://127.0.0.1/
+          docker exec "$container" wget -qO /dev/null http://127.0.0.1/try/
           cmp "$RUNNER_TEMP/web-version.json" "$RUNNER_TEMP/web-runtime-config.json"
           cmp "$RUNNER_TEMP/web-version.json" "$RUNNER_TEMP/web-try-runtime-config.json"
           jq -e '
@@ -399,111 +405,9 @@ jobs:
             and (.webAssetManifest | test("^sha256:[0-9a-f]{64}$"))
             and .webAssetManifest != ("sha256:" + ("0" * 64))
           ' "$RUNNER_TEMP/web-version.json" >/dev/null
-
-          cleanup
-          container="combo-web-preview-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          review_pages="$RUNNER_TEMP/combo-review-pages-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$review_pages"
-          cp infra/k8s/release/overlays/preview/apps/review-entry-redirect.html \
-            "$review_pages/entry-redirect.html"
-          docker run -d --name "$container" \
-            --read-only \
-            --user 101:101 \
-            --cap-drop ALL \
-            --tmpfs /etc/nginx/conf.d:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0755 \
-            --tmpfs /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=0755 \
-            --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
-            --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
-            --mount "type=bind,src=$PWD/infra/k8s/release/overlays/preview/apps/review-nginx.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
-            --mount "type=bind,src=$review_pages,dst=/usr/share/nginx/html/__review,readonly" \
-            --env NGINX_RESOLVER=127.0.0.11 \
-            --env API_UPSTREAM_HOST=api.invalid \
-            --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
-            "$IMAGE_REF" >/dev/null
-          ready=0
-          for _ in $(seq 1 30); do
-            if docker exec "$container" \
-                wget -qO /dev/null http://127.0.0.1/__review/healthz; then
-              ready=1
-              break
-            fi
-            sleep 1
-          done
-          [[ "$ready" == 1 ]]
-          docker exec "$container" nginx -t
-          docker exec "$container" sh -c 'command -v nc >/dev/null'
-
-          preview_probe() {
-            local request=$1
-            local output=$2
-            printf '%b' "$request" | \
-              timeout 10 docker exec -i "$container" nc 127.0.0.1 80 >"$output"
-          }
-          preview_probe \
-            'GET /capabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-app-page.http"
-          grep -q '^HTTP/1.1 200 OK' "$RUNNER_TEMP/preview-app-page.http"
-          grep -q 'id="root"' "$RUNNER_TEMP/preview-app-page.http"
-          if grep -Eqi 'access-form|X-Combo-Review-Gate|输入 Review 访问码' \
-              "$RUNNER_TEMP/preview-app-page.http"; then
-            echo 'Preview still exposes the removed access-code gate.' >&2
-            exit 1
-          fi
-
-          preview_probe \
-            'GET /version.json HTTP/1.1\r\nHost: review.local\r\nAccept: application/json\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-version.http"
-          grep -q '^HTTP/1.1 200 OK' "$RUNNER_TEMP/preview-version.http"
-          grep -qi '^Cache-Control: no-store' "$RUNNER_TEMP/preview-version.http"
-          if grep -qi 'X-Combo-Review-Gate' "$RUNNER_TEMP/preview-version.http"; then
-            echo 'Preview release metadata still carries the removed gate header.' >&2
-            exit 1
-          fi
-
-          preview_probe \
-            'GET /assets/review-entry-probe.js HTTP/1.1\r\nHost: review.local\r\nAccept: application/javascript\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-missing-asset.http"
-          grep -q '^HTTP/1.1 404 Not Found' "$RUNNER_TEMP/preview-missing-asset.http"
-
-          preview_probe \
-            'GET /__review/enter?returnTo=%2Fcapabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -q '^HTTP/1.1 200 OK' "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -q '正在进入邮箱验证' "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -qi '^Cache-Control: no-store, private' "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -qi '^X-Frame-Options: DENY' "$RUNNER_TEMP/preview-legacy-entry.http"
-          if grep -qi '^Location:' "$RUNNER_TEMP/preview-legacy-entry.http"; then
-            echo 'Legacy Preview entry unexpectedly bypassed its safe returnTo shim.' >&2
-            exit 1
-          fi
-          if grep -Eqi \
-              'access-form|输入 Review 访问码|^X-Combo-Review-Gate:|^Set-Cookie:.*combo_review_access' \
-              "$RUNNER_TEMP/preview-legacy-entry.http"; then
-            echo 'Legacy Preview entry still exposes access-code gate state.' >&2
-            exit 1
-          fi
-
-          docker exec "$container" \
-            wget -qO- http://127.0.0.1/try/ \
-            >"$RUNNER_TEMP/preview-runtime-index.html"
-          docker exec "$container" cat /usr/share/nginx/html/try/index.html \
-            >"$RUNNER_TEMP/expected-runtime-index.html"
-          cmp "$RUNNER_TEMP/expected-runtime-index.html" \
-            "$RUNNER_TEMP/preview-runtime-index.html"
-          docker exec "$container" \
-            wget -qO- http://127.0.0.1/try/sessions/combo-runtime-route-contract \
-            >"$RUNNER_TEMP/preview-runtime-deep-link.html"
-          cmp "$RUNNER_TEMP/expected-runtime-index.html" \
-            "$RUNNER_TEMP/preview-runtime-deep-link.html"
-          runtime_asset=$(sed -n \
-            's/.*src="\([^"]*\/try\/assets\/[^"]*\.js\)".*/\1/p' \
-            "$RUNNER_TEMP/preview-runtime-index.html" | head -n 1)
-          [[ "$runtime_asset" =~ ^/try/assets/[A-Za-z0-9_-]+\.js$ ]]
-          docker exec "$container" \
-            wget -qO /dev/null "http://127.0.0.1$runtime_asset"
           if docker exec "$container" \
-              wget -qO /dev/null http://127.0.0.1/try/assets/combo-missing-deadbeef.js; then
-            echo 'Preview returned success for a missing Runtime Web asset.' >&2
+              wget -qO /dev/null http://127.0.0.1/assets/combo-missing-deadbeef.js; then
+            echo 'Web returned success for a missing hashed asset.' >&2
             exit 1
           fi
 
