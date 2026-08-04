@@ -155,6 +155,8 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 ## CI 与 CD
 
+> 部署拓扑、命名空间、基础资源归属与发布规范见 [`docs/deployment-topology.md`](docs/deployment-topology.md)，它是仓库内部署系统的权威说明。
+
 三个 workflow 对应「检查 / 构建 / 部署」三个阶段：
 
 - `.github/workflows/pr-ci.yml`（PR checks）：合并前质量门禁，只由 `pull_request` 触发。完成依赖安装、shared 构建、format、lint、typecheck、无容器快速测试和 ShellCheck；不构建或发布镜像，也不读取部署 Secret。
