@@ -4547,6 +4547,10 @@ test('public Test publication keeps exact identity, isolated listeners, TLS host
   }
   const prepareMain = prepare.slice(prepare.indexOf('main() {'));
   assert.match(prepare, /root_owned_traversable_dir/);
+  assert.ok(
+    prepareMain.indexOf('[[ ! -e "$path" && ! -L "$path" ]]') <
+      prepareMain.indexOf('install -d -o root -g root -m 0755'),
+  );
   assert.match(prepare, /curl --noproxy '\*' --fail --silent --show-error/);
   assert.match(prepare, /--resolve "\$host:80:127\.0\.0\.1"/);
   assert.match(prepare, /rm -f -- "\$PROBE_PATH"/);

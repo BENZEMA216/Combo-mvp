@@ -194,9 +194,17 @@ main() {
     HAD_HOOK=1
   fi
   ROLLBACK_ARMED=1
+  for path in /var /var/www; do
+    root_owned_traversable_dir "$path" || blocked 'ACME webroot 路径不允许 Nginx 安全穿越。'
+  done
+  for path in "$ACME_ROOT" "$ACME_ROOT/.well-known" \
+    "$ACME_ROOT/.well-known/acme-challenge"; do
+    [[ ! -e "$path" && ! -L "$path" ]] ||
+      root_owned_traversable_dir "$path" || blocked '既有 ACME webroot 路径不可信。'
+  done
   install -d -o root -g root -m 0755 \
     "$ACME_ROOT" "$ACME_ROOT/.well-known" "$ACME_ROOT/.well-known/acme-challenge"
-  for path in /var /var/www "$ACME_ROOT" "$ACME_ROOT/.well-known" \
+  for path in "$ACME_ROOT" "$ACME_ROOT/.well-known" \
     "$ACME_ROOT/.well-known/acme-challenge"; do
     root_owned_traversable_dir "$path" || blocked 'ACME webroot 路径不允许 Nginx 安全穿越。'
   done
