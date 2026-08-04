@@ -118,13 +118,19 @@ dns_matches() {
 }
 
 acme_vhost_readable() {
-  local host=$1 output="$WORK/acme-probe-response"
-  curl --noproxy '*' --fail --silent --show-error \
-    --connect-timeout 5 --max-time 10 \
-    --resolve "$host:80:127.0.0.1" \
-    --output "$output" \
-    "http://$host/.well-known/acme-challenge/${PROBE_PATH##*/}" >/dev/null 2>&1 || return 1
-  cmp -s "$PROBE_PATH" "$output"
+  local host=$1 output="$WORK/acme-probe-response" attempt
+  for (( attempt = 1; attempt <= 20; attempt++ )); do
+    if curl --noproxy '*' --fail --silent --show-error \
+      --connect-timeout 1 --max-time 1 \
+      --resolve "$host:80:127.0.0.1" \
+      --output "$output" \
+      "http://$host/.well-known/acme-challenge/${PROBE_PATH##*/}" >/dev/null 2>&1 &&
+      cmp -s "$PROBE_PATH" "$output"; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  return 1
 }
 
 managed_target_valid() {
@@ -153,7 +159,7 @@ main() {
     blocked '必须提供固定确认参数。'
   [[ $(id -u) -eq 0 ]] || blocked '域名准备必须由主机所有者以 root 执行。'
   local cmd target_digest
-  for cmd in certbot curl getent awk sort nginx systemctl install sha256sum stat mktemp rm dirname cmp openssl; do require_command "$cmd"; done
+  for cmd in certbot curl getent awk sort nginx systemctl install sha256sum stat mktemp rm dirname cmp openssl sleep; do require_command "$cmd"; done
   ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
   source_tree_trusted || blocked '域名配置不是 root-owned 只读审核快照。'
   if ! dns_matches "$WEB_HOST" || ! dns_matches "$S3_HOST"; then

@@ -4553,6 +4553,8 @@ test('public Test publication keeps exact identity, isolated listeners, TLS host
   );
   assert.match(prepare, /curl --noproxy '\*' --fail --silent --show-error/);
   assert.match(prepare, /--resolve "\$host:80:127\.0\.0\.1"/);
+  assert.match(prepare, /for \(\( attempt = 1; attempt <= 20; attempt\+\+ \)\)/);
+  assert.match(prepare, /sleep 0\.25/);
   assert.match(prepare, /rm -f -- "\$PROBE_PATH"/);
   assert.ok(
     prepareMain.indexOf('systemctl reload nginx.service') <
