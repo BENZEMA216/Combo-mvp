@@ -5,6 +5,10 @@ const RETURN_TO_ORIGIN = 'https://combo.invalid';
 const MAX_DECODE_PASSES = 5;
 const UUID_PATH_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const TASK_DETAIL_RETURN_PATH = new RegExp(`^/tasks/${UUID_PATH_SEGMENT}(?:[?#].*)?$`, 'i');
+const CAPABILITY_RELEASE_RETURN_PATH = new RegExp(
+  `^/capabilities/${UUID_PATH_SEGMENT}/release(?:/(?:pricing|identity|review|success))?(?:[?#].*)?$`,
+  'i',
+);
 const STUDIO_SESSION_RETURN_PATH = new RegExp(
   `^/try/session/${UUID_PATH_SEGMENT}(?:[?#].*)?$`,
   'i',
@@ -91,6 +95,18 @@ export function safeTaskRuntimeReturnTo(value: string | null | undefined): strin
   return safe && TASK_DETAIL_RETURN_PATH.test(safe) ? safe : null;
 }
 
+export function safeCapabilityReleaseRuntimeReturnTo(
+  value: string | null | undefined,
+): string | null {
+  const safe = safeRuntimeReturnTo(value);
+  return safe && CAPABILITY_RELEASE_RETURN_PATH.test(safe) ? safe : null;
+}
+
+/** Creator-side return targets accepted when a trial deep link creates a Runtime session. */
+export function safeCreatorRuntimeReturnTo(value: string | null | undefined): string | null {
+  return safeTaskRuntimeReturnTo(value) ?? safeCapabilityReleaseRuntimeReturnTo(value);
+}
+
 export function rememberRuntimeReturnTo(
   sessionId: string | undefined,
   returnTo: string | null | undefined,
@@ -126,8 +142,12 @@ export function appendRuntimeReturnTo(path: string, returnTo: string | null | un
 
 export function runtimeBackLabel(returnTo: string | null | undefined): string {
   const safe = safeRuntimeReturnTo(returnTo);
-  if (!safe) return '← 返回我的能力';
-  return STUDIO_SESSION_RETURN_PATH.test(safe) ? '← 返回 UI 设计' : '← 返回发布页';
+  if (!safe) return '← 返回我的 Agent';
+  if (STUDIO_SESSION_RETURN_PATH.test(safe)) return '← 返回 UI 设计';
+  if (CAPABILITY_RELEASE_RETURN_PATH.test(safe)) return '← 返回定价与发布';
+  if (TASK_DETAIL_RETURN_PATH.test(safe)) return '← 返回提取结果';
+  if (safe === CREATOR_CAPABILITIES_PATH) return '← 返回我的 Agent';
+  return '← 返回上一页';
 }
 
 export function runtimeBackTarget(returnTo: string | null | undefined): string {

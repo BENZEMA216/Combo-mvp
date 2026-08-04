@@ -5,11 +5,14 @@ import { installFetchMock, type FetchMock } from '../../test/mockFetch.js';
 import { envelopeBody, makeCapability, paginatedBody } from '../../test/fixtures.js';
 import { renderPage } from '../../test/renderWithProviders.js';
 import { CapabilitiesPage } from './CapabilitiesPage.js';
+import { emptyReleaseDraft, saveReleaseDraft } from '../release/releaseDraft.js';
 
 let fm: FetchMock | undefined;
 afterEach(() => {
   fm?.restore();
   fm = undefined;
+  vi.restoreAllMocks();
+  window.localStorage.clear();
 });
 
 const DRAFT = makeCapability({
@@ -48,7 +51,9 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     expect(
       within(draftRow).getByRole('button', { name: '编辑「周报整理」UI' }),
     ).toBeInTheDocument();
-    expect(within(draftRow).getByRole('button', { name: '发布「周报整理」' })).toBeInTheDocument();
+    expect(
+      within(draftRow).getByRole('link', { name: '设置「周报整理」定价与发布' }),
+    ).toHaveAttribute('href', '/capabilities/cap-a/release/pricing');
     expect(within(draftRow).getByRole('link', { name: '试用「周报整理」' })).toHaveAttribute(
       'href',
       '/try/c/cap-a',
@@ -59,7 +64,10 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     expect(within(publishedRow).getByText('已上架')).toBeInTheDocument();
     expect(within(publishedRow).getByText('2026/07/04')).toBeInTheDocument();
     expect(
-      within(publishedRow).getByRole('button', { name: '下架「Code Review」' }),
+      within(publishedRow).getByRole('link', { name: '管理「Code Review」发布设置' }),
+    ).toHaveAttribute('href', '/capabilities/cap-b/release/pricing');
+    expect(
+      within(publishedRow).getByRole('button', { name: '停止「Code Review」公开试用' }),
     ).toBeInTheDocument();
     expect(
       within(publishedRow).getByRole('button', { name: '复制「Code Review」试用链接' }),
@@ -92,7 +100,7 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     expect(screen.queryByRole('button', { name: 'Alpha·审核中' })).toBeNull();
   });
 
-  it('编辑 UI 创建 studio session 并整页进入会话，保留返回我的 Agent', async () => {
+  it('编辑 UI 创建 studio session 并整页进入会话，完成后继续定价发布', async () => {
     const navigateToStudio = vi.fn();
     fm = installFetchMock([
       { status: 200, json: paginatedBody([DRAFT]), match: '/capabilities' },
@@ -114,7 +122,7 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     expect(request?.url).toBe('/api/v1/runtime/studio/sessions');
     expect(request?.body).toEqual({ capabilityId: 'cap-a' });
     expect(navigateToStudio).toHaveBeenCalledWith(
-      '/try/session/studio-session-1?mode=studio&returnTo=%2Fcapabilities',
+      '/try/session/studio-session-1?mode=studio&returnTo=%2Fcapabilities%2Fcap-a%2Frelease%2Fpricing',
     );
   });
 
@@ -142,69 +150,141 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     ).toBeInTheDocument();
   });
 
-  it('发布与下架使用真实端点并就地合并状态', async () => {
-    fm = installFetchMock([
-      { status: 200, json: paginatedBody([DRAFT]), match: '/capabilities' },
-      {
-        status: 200,
-        json: envelopeBody({
-          id: 'cap-a',
-          published: true,
-          publishedAt: '2026-07-23T08:00:00.000Z',
-          shareToken: 'share-cap-a',
-        }),
-        match: '/capabilities/cap-a/publish',
-      },
-      {
-        status: 200,
-        json: envelopeBody({ id: 'cap-a', published: false, shareToken: 'share-cap-a' }),
-        match: '/capabilities/cap-a/unpublish',
-      },
-    ]);
+  it('列表不再绕过定价与命名直接调用发布接口', async () => {
+    fm = installFetchMock({ status: 200, json: paginatedBody([DRAFT]) });
     renderPage(<CapabilitiesPage />, { route: '/capabilities' });
     const row = (await screen.findByText('周报整理')).closest('tr')!;
 
-    await userEvent.click(within(row).getByRole('button', { name: '发布「周报整理」' }));
-    expect(await within(row).findByText('已上架')).toBeInTheDocument();
-    expect(fm.calls.find((call) => call.url.endsWith('/capabilities/cap-a/publish'))?.method).toBe(
-      'POST',
+    expect(within(row).queryByRole('button', { name: '发布「周报整理」' })).toBeNull();
+    expect(within(row).getByRole('link', { name: '设置「周报整理」定价与发布' })).toHaveAttribute(
+      'href',
+      '/capabilities/cap-a/release/pricing',
     );
-    expect(
-      within(row).getByRole('button', { name: '复制「周报整理」试用链接' }),
-    ).toBeInTheDocument();
+    expect(fm.calls.every((call) => call.method === 'GET')).toBe(true);
+  });
 
-    await userEvent.click(within(row).getByRole('button', { name: '下架「周报整理」' }));
+  it('有本机发布草稿时从记录的步骤继续，不让用户从定价重来', async () => {
+    saveReleaseDraft({
+      ...emptyReleaseDraft(DRAFT.id, DRAFT.name),
+      pricingModel: 'per-use',
+      priceYuan: 19.9,
+      handle: 'weekly-review',
+      currentStep: 'review',
+    });
+    fm = installFetchMock({ status: 200, json: paginatedBody([DRAFT]) });
+    renderPage(<CapabilitiesPage />, { route: '/capabilities' });
+
+    const row = (await screen.findByText('周报整理')).closest('tr')!;
+    expect(within(row).getByRole('link', { name: '继续「周报整理」发布设置' })).toHaveAttribute(
+      'href',
+      '/capabilities/cap-a/release/review',
+    );
+    expect(within(row).getByText('继续发布')).toBeInTheDocument();
+  });
+
+  it('已完成发布的 Agent 显示管理设置，不冒充未完成进度', async () => {
+    saveReleaseDraft({
+      ...emptyReleaseDraft(PUBLISHED.id, PUBLISHED.name),
+      pricingModel: 'per-use',
+      priceYuan: 19.9,
+      handle: 'code-review',
+      currentStep: 'success',
+      confirmed: true,
+    });
+    fm = installFetchMock({ status: 200, json: paginatedBody([PUBLISHED]) });
+    renderPage(<CapabilitiesPage />, { route: '/capabilities' });
+
+    const row = (await screen.findByText('Code Review')).closest('tr')!;
+    expect(within(row).getByRole('link', { name: '查看「Code Review」发布结果' })).toHaveAttribute(
+      'href',
+      '/capabilities/cap-b/release/success',
+    );
+    expect(within(row).getByText('查看发布结果')).toBeInTheDocument();
+    expect(within(row).queryByText('继续发布')).toBeNull();
+  });
+
+  it('兼容没有 currentStep 的旧草稿：已定价进入命名，已命名进入确认', async () => {
+    saveReleaseDraft({
+      ...emptyReleaseDraft(DRAFT.id, DRAFT.name),
+      pricingModel: 'time-pass',
+      priceYuan: 29,
+      durationDays: 30,
+    });
+    saveReleaseDraft({
+      ...emptyReleaseDraft(PUBLISHED.id, PUBLISHED.name),
+      handle: 'code-review',
+    });
+    fm = installFetchMock({ status: 200, json: paginatedBody([DRAFT, PUBLISHED]) });
+    renderPage(<CapabilitiesPage />, { route: '/capabilities' });
+
+    const draftRow = (await screen.findByText('周报整理')).closest('tr')!;
+    expect(
+      within(draftRow).getByRole('link', { name: '继续「周报整理」发布设置' }),
+    ).toHaveAttribute('href', '/capabilities/cap-a/release/identity');
+
+    const publishedRow = screen.getByText('Code Review').closest('tr')!;
+    expect(
+      within(publishedRow).getByRole('link', { name: '管理「Code Review」发布设置' }),
+    ).toHaveAttribute('href', '/capabilities/cap-b/release/review');
+    expect(within(publishedRow).getByText('发布设置')).toBeInTheDocument();
+    expect(within(publishedRow).queryByText('继续发布')).toBeNull();
+  });
+
+  it('停止公开试用前明确确认，确认后调用现有下架端点并就地更新状态', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    fm = installFetchMock([
+      { status: 200, json: paginatedBody([PUBLISHED]), match: '/capabilities' },
+      {
+        status: 200,
+        json: envelopeBody({ id: PUBLISHED.id, published: false }),
+        match: `/capabilities/${PUBLISHED.id}/unpublish`,
+      },
+    ]);
+    renderPage(<CapabilitiesPage />, { route: '/capabilities' });
+    const row = (await screen.findByText('Code Review')).closest('tr')!;
+    const stop = within(row).getByRole('button', { name: '停止「Code Review」公开试用' });
+
+    await userEvent.click(stop);
+    expect(confirm).toHaveBeenCalledWith(
+      '停止「Code Review」的公开试用？定价和页面设置会保留，之后可以再次开放。',
+    );
+    expect(fm.calls.every((call) => call.method === 'GET')).toBe(true);
+
+    confirm.mockReturnValue(true);
+    await userEvent.click(stop);
     expect(await within(row).findByText('草稿')).toBeInTheDocument();
     expect(
-      fm.calls.find((call) => call.url.endsWith('/capabilities/cap-a/unpublish'))?.method,
+      fm.calls.find((call) => call.url.endsWith(`/capabilities/${PUBLISHED.id}/unpublish`))?.method,
     ).toBe('POST');
+    expect(within(row).queryByRole('button', { name: /停止.*公开试用/ })).toBeNull();
     expect(within(row).queryByRole('button', { name: /复制.*试用链接/ })).toBeNull();
   });
 
-  it('发布失败只在对应 Agent 行给出可理解错误', async () => {
+  it('停止公开试用失败时只在对应 Agent 行说明错误并保留当前公开状态', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     fm = installFetchMock([
-      { status: 200, json: paginatedBody([DRAFT]), match: '/capabilities' },
+      { status: 200, json: paginatedBody([PUBLISHED]), match: '/capabilities' },
       {
         status: 503,
         json: {
           error: {
-            userMessage: '发布服务暂时繁忙，请稍后重试。',
+            userMessage: '公开状态暂时无法更新，请稍后重试。',
             retriable: true,
             action: 'retry',
-            traceId: 'publish-busy',
+            traceId: 'unpublish-down',
           },
         },
-        match: '/capabilities/cap-a/publish',
+        match: `/capabilities/${PUBLISHED.id}/unpublish`,
       },
     ]);
     renderPage(<CapabilitiesPage />, { route: '/capabilities' });
-    const row = (await screen.findByText('周报整理')).closest('tr')!;
+    const row = (await screen.findByText('Code Review')).closest('tr')!;
 
-    await userEvent.click(within(row).getByRole('button', { name: '发布「周报整理」' }));
+    await userEvent.click(within(row).getByRole('button', { name: '停止「Code Review」公开试用' }));
     expect(await within(row).findByRole('alert')).toHaveTextContent(
-      '发布未完成：发布服务暂时繁忙，请稍后重试。',
+      '停止公开试用未完成：公开状态暂时无法更新，请稍后重试。',
     );
-    expect(screen.queryByText(/503|publish-busy/)).toBeNull();
+    expect(within(row).getByText('已上架')).toBeInTheDocument();
   });
 
   it('空列表只给创建 Agent，不渲染空表', async () => {

@@ -2135,6 +2135,25 @@ body {
   color: var(--cb-muted);
 }
 
+.cb-public-capability__preview-note {
+  display: grid;
+  gap: 5px;
+  width: min(100%, 760px);
+  margin-top: 20px;
+  border: 1px solid color-mix(in srgb, var(--cb-warn) 26%, var(--cb-border));
+  border-radius: var(--cb-radius-card);
+  padding: 13px 15px;
+  background: var(--cb-warn-soft);
+  color: var(--cb-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.cb-public-capability__preview-note strong {
+  color: var(--cb-fg);
+  font-size: 13px;
+}
+
 .cb-public-capability__actions {
   display: flex;
   flex-wrap: wrap;

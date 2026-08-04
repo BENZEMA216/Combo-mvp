@@ -6,6 +6,8 @@ import {
   rememberRuntimeReturnTo,
   runtimeBackLabel,
   runtimeBackTarget,
+  safeCapabilityReleaseRuntimeReturnTo,
+  safeCreatorRuntimeReturnTo,
   safeRuntimeReturnTo,
   safeTaskRuntimeReturnTo,
 } from './runtimeReturn.js';
@@ -51,6 +53,22 @@ describe('runtime return navigation', () => {
     expect(safeTaskRuntimeReturnTo(`${taskPath}\\evil`)).toBeNull();
     expect(safeTaskRuntimeReturnTo('/javascript:alert(1)')).toBeNull();
     expect(safeTaskRuntimeReturnTo(`${taskPath}${String.fromCharCode(0)}`)).toBeNull();
+  });
+
+  it('accepts strict release routes at the creator trial boundary', () => {
+    const releasePath = '/capabilities/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43/release/review';
+
+    expect(safeCapabilityReleaseRuntimeReturnTo(releasePath)).toBe(releasePath);
+    expect(safeCreatorRuntimeReturnTo(releasePath)).toBe(releasePath);
+    expect(safeCreatorRuntimeReturnTo('/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43')).toBe(
+      '/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43',
+    );
+    expect(safeCapabilityReleaseRuntimeReturnTo('/capabilities')).toBeNull();
+    expect(
+      safeCapabilityReleaseRuntimeReturnTo(
+        '/capabilities/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43/release/delete',
+      ),
+    ).toBeNull();
   });
 
   it('rejects browser normalization and encoded path-segment bypasses', () => {
@@ -104,12 +122,15 @@ describe('runtime return navigation', () => {
     );
   });
 
-  it('uses publish page wording and fallback creator target', () => {
+  it('names task, release, Studio, and fallback destinations precisely', () => {
     const returnTo = '/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial';
 
-    expect(runtimeBackLabel(returnTo)).toBe('← 返回发布页');
+    expect(runtimeBackLabel(returnTo)).toBe('← 返回提取结果');
     expect(runtimeBackTarget(returnTo)).toBe(returnTo);
-    expect(runtimeBackLabel(null)).toBe('← 返回我的能力');
+    expect(
+      runtimeBackLabel('/capabilities/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43/release/review'),
+    ).toBe('← 返回定价与发布');
+    expect(runtimeBackLabel(null)).toBe('← 返回我的 Agent');
     expect(runtimeBackTarget(null)).toBe(CREATOR_CAPABILITIES_PATH);
   });
 

@@ -80,6 +80,10 @@ describe('认证 returnTo 白名单', () => {
     ['/tasks', '/tasks'],
     ['/tasks/task-1?tab=events', '/tasks/task-1?tab=events'],
     ['/capabilities', '/capabilities'],
+    [
+      '/capabilities/01982e62-6d6e-7f4d-8fe8-b55f62720b5b/release/review?from=studio',
+      '/capabilities/01982e62-6d6e-7f4d-8fe8-b55f62720b5b/release/review?from=studio',
+    ],
     ['/try', '/try'],
     ['/try/capability-1#preview', '/try/capability-1#preview'],
   ])('保留允许的站内目标 %s', (input, expected) => {
@@ -100,6 +104,8 @@ describe('认证 returnTo 白名单', () => {
     '/tasks/%2e%2e/admin',
     '/admin',
     '/capabilities/private',
+    '/capabilities/not-an-id/release/pricing',
+    '/capabilities/01982e62-6d6e-7f4d-8fe8-b55f62720b5b/release/admin',
     `/tasks/${'a'.repeat(512)}`,
     '/tasks\nnext',
   ])('把不可信目标统一回落到 /tasks', (input) => {

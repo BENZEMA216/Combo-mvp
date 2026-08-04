@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { trialUrl } from './api/endpoints.js';
-import { sanitizeReturnTo, sanitizeTaskReturnTo } from './safeReturnTo.js';
+import { sanitizeReturnTo, sanitizeTaskReturnTo, sanitizeTrialReturnTo } from './safeReturnTo.js';
 
 describe('sanitizeReturnTo', () => {
   it('keeps canonical same-origin paths, queries, and task UUID returns', () => {
@@ -46,5 +46,16 @@ describe('sanitizeReturnTo', () => {
       `/try/c/capability-1?returnTo=${encodeURIComponent(`/tasks/${taskId}`)}`,
     );
     expect(trialUrl('capability-1', '/capabilities')).toBe('/try/c/capability-1');
+  });
+
+  it('allows a real trial to return to the strict Agent release flow', () => {
+    const capabilityId = '01982e62-6d6e-7f4d-8fe8-b55f62720b5b';
+    const release = `/capabilities/${capabilityId}/release/review`;
+    expect(sanitizeTrialReturnTo(release)).toBe(release);
+    expect(trialUrl(capabilityId, release)).toBe(
+      `/try/c/${capabilityId}?returnTo=${encodeURIComponent(release)}`,
+    );
+    expect(sanitizeTrialReturnTo('/capabilities/not-an-id/release/review')).toBeNull();
+    expect(sanitizeTrialReturnTo(`/capabilities/${capabilityId}/release/admin`)).toBeNull();
   });
 });

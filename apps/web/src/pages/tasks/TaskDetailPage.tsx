@@ -87,7 +87,7 @@ export function TaskDetailPage(): ReactElement {
   }
   if (!task) return <ErrorState error={undefined} />;
 
-  // —— 提取完成：整页成果形态（eyebrow + 大标题 + 引导 + 挑选发布区）——
+  // —— 提取完成：结果排序后进入试用、UI 调整、定价与发布，而不是绕过验收直接发布。——
   if (task.status === 'succeeded') {
     return (
       <section className="cb-page cb-capabilities" aria-labelledby="cb-task-detail-title">
@@ -97,12 +97,12 @@ export function TaskDetailPage(): ReactElement {
         <header className="cb-capabilities__header">
           <p className="cb-capabilities__eyebrow">提取完成 · 能力</p>
           <h2 className="cb-capabilities__title" id="cb-task-detail-title">
-            你的能力，挑选后一键发布
+            Agent 已准备好，先选一个真实试用
           </h2>
           <p className="cb-capabilities__lead">
-            这次上传共提取出 {task.capabilityCount}{' '}
-            个能力项。点任意一项可直接打开「试用」跑一遍，确认后勾选、一键发布到市集；历史全部能力项在{' '}
-            <Link to="/capabilities">能力页</Link>。
+            这次上传共提取出 {task.capabilityCount} 个
+            Agent，并按复用价值排序。你可以先跑一个真实任务，再进入 UI
+            调整、定价与发布；全部结果会持续保存在 <Link to="/capabilities">我的 Agent</Link>。
           </p>
         </header>
         <TaskCapabilitiesArea taskId={taskId} task={task} query={capsQuery} extracting={false} />

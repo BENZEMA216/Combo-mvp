@@ -36,6 +36,12 @@ export const EMAIL_OTP_RESEND_AFTER_SECONDS = 60;
 
 export const AUTH_DEFAULT_RETURN_TO = '/tasks';
 export const AUTH_RETURN_TO_MAX_LENGTH = 512;
+const AUTH_ID_PATH_SEGMENT =
+  '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const CAPABILITY_RELEASE_RETURN_PATH = new RegExp(
+  `^/capabilities/${AUTH_ID_PATH_SEGMENT}/release(?:/(?:pricing|identity|review|success))?$`,
+  'i',
+);
 
 export const AuthSessionCookieValueSchema = z
   .string()
@@ -102,6 +108,7 @@ export function sanitizeAuthReturnTo(value: unknown): string {
       path === '/tasks' ||
       path.startsWith('/tasks/') ||
       path === '/capabilities' ||
+      CAPABILITY_RELEASE_RETURN_PATH.test(path) ||
       path === '/try' ||
       path.startsWith('/try/');
 

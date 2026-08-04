@@ -28,6 +28,7 @@ import {
   readRuntimeReturnTo,
   rememberRuntimeReturnTo,
   runtimeBackLabel,
+  safeCapabilityReleaseRuntimeReturnTo,
   safeRuntimeReturnTo,
 } from '../navigation/runtimeReturn.js';
 import {
@@ -117,7 +118,7 @@ export function ChatPage() {
   const operationInFlightRef = useRef(false);
   const [trialStartError, setTrialStartError] = useState<string | null>(null);
 
-  // 普通试用记住创作流程 returnTo；Studio 恒定回「我的 Agent」。
+  // 普通试用和 Studio 都记住严格校验后的 returnTo，保证反复修改后能继续定价发布。
   const queryReturnTo = safeRuntimeReturnTo(searchParams.get('returnTo'));
   const returnTo = queryReturnTo ?? readRuntimeReturnTo(sessionId);
   useEffect(() => {
@@ -127,7 +128,8 @@ export function ChatPage() {
   const capability = detail?.capability;
   const experience = resolveSessionExperience(detail, searchParams.get('mode'));
   const studioMode = experience === 'studio';
-  const contextualReturnTo = studioMode ? '/capabilities' : returnTo;
+  const contextualReturnTo = studioMode ? (returnTo ?? '/capabilities') : returnTo;
+  const releaseReturnTo = safeCapabilityReleaseRuntimeReturnTo(contextualReturnTo);
   useDocumentTitle(
     capability ? `${capability.name} · ${studioMode ? 'UI 设计' : 'Combo 试用'}` : undefined,
   );
@@ -245,12 +247,15 @@ export function ChatPage() {
     setTrialStartError(null);
     try {
       const trial = await createTrial.mutateAsync(capability.id);
-      const studioReturnTo = `/try/session/${sessionId}`;
+      const studioReturnTo = appendRuntimeReturnTo(
+        `/try/session/${sessionId}?mode=studio`,
+        contextualReturnTo,
+      );
       navigate(appendRuntimeReturnTo(`/session/${trial.id}`, studioReturnTo));
     } catch {
       setTrialStartError('试用会话没有创建成功，请重试。');
     }
-  }, [capability, createTrial, navigate, sessionId, studioMode]);
+  }, [capability, contextualReturnTo, createTrial, navigate, sessionId, studioMode]);
 
   return (
     <div className={`rt-app rt-trial-app${studioMode ? ' rt-trial-app--studio' : ''}`}>
@@ -324,6 +329,16 @@ export function ChatPage() {
                         {createTrial.isPending ? '正在创建试用…' : '试用当前 UI'}
                       </button>
                     )}
+                    {releaseReturnTo && (
+                      <button
+                        type="button"
+                        className="rt-toolbar-pill rt-toolbar-pill--accent"
+                        disabled={stream.running}
+                        onClick={() => window.location.assign(releaseReturnTo)}
+                      >
+                        下一步：定价与发布
+                      </button>
+                    )}
                     <a className="rt-toolbar-pill" href="/capabilities">
                       返回我的 Agent
                     </a>
@@ -334,9 +349,7 @@ export function ChatPage() {
                     className="rt-toolbar-pill"
                     onClick={() => window.location.assign(returnTo)}
                   >
-                    {runtimeBackLabel(returnTo) === '← 返回 UI 设计'
-                      ? '返回 UI 设计'
-                      : '返回发布流程'}
+                    {runtimeBackLabel(returnTo).replace(/^←\s*/, '')}
                   </button>
                 ) : (
                   <a className="rt-toolbar-pill" href="/capabilities">
