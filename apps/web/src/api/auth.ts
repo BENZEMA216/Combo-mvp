@@ -17,6 +17,7 @@ export const AUTH_ME_PATH = `${API_PREFIX}/me`;
 export const AUTH_REQUEST_TIMEOUT_MS = 10_000;
 
 type AuthRequestFailureKind = 'http' | 'network' | 'protocol';
+type AuthRequestStage = 'challenge' | 'verification' | 'session';
 
 /**
  * 认证表单使用的低敏错误。状态码只参与页面状态机，不渲染；响应正文只保留安全错误信封中的人话。
@@ -48,9 +49,13 @@ function retryAfterSeconds(response: Response): number | undefined {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-function fallbackMessage(status: number): string {
+function fallbackMessage(status: number, stage: AuthRequestStage): string {
   if (status === 400) return '输入有点问题，请检查后再试。';
-  if (status === 401) return '验证码无效或已过期，请重新获取。';
+  if (status === 401) {
+    return stage === 'verification'
+      ? '验证码无效或已过期，请重新获取。'
+      : '登录服务暂时不可用，请稍后重试。';
+  }
   if (status === 403) return '当前请求无法完成，请联系支持。';
   if (status === 429) return '操作太频繁了，请稍后再试。';
   if (status === 503) return '登录服务暂时不可用，请稍后重试。';
@@ -59,12 +64,17 @@ function fallbackMessage(status: number): string {
 
 async function errorFromResponse(
   response: Response,
+  stage: AuthRequestStage,
   outcomeUncertain = false,
 ): Promise<AuthRequestError> {
-  let userMessage = fallbackMessage(response.status);
+  let userMessage = fallbackMessage(response.status, stage);
   try {
     const parsed = ErrorEnvelopeSchema.safeParse((await response.json()) as unknown);
-    if (parsed.success) userMessage = parsed.data.error.userMessage;
+    // 401 只在验证码提交阶段表示 OTP 无效。发送验证码若被网关或错误路由返回 401，
+    // 即使响应体沿用了 AUTH_OTP_INVALID 的公开文案，也不能把用户误导到“验证码过期”。
+    if (parsed.success && !(response.status === 401 && stage !== 'verification')) {
+      userMessage = parsed.data.error.userMessage;
+    }
   } catch {
     // 非 JSON 错误体只使用固定人话，不把代理或供应商正文带到页面。
   }
@@ -120,7 +130,7 @@ export async function requestEmailChallenge(
   body: EmailChallengeBody,
 ): Promise<EmailChallengeResult> {
   const response = await authFetch(EMAIL_CHALLENGE_PATH, { method: 'POST', body });
-  if (!response.ok) throw await errorFromResponse(response);
+  if (!response.ok) throw await errorFromResponse(response, 'challenge');
 
   try {
     return EmailChallengeResponseSchema.parse((await response.json()) as unknown).data;
@@ -141,7 +151,11 @@ export async function verifyEmail(body: EmailVerificationBody): Promise<EmailVer
   });
   if (!response.ok) {
     // 代理或上游 5xx 可能发生在一次性验证码已经提交之后，必须先探测会话而不是重放。
-    throw await errorFromResponse(response, response.status >= 500 && response.status <= 599);
+    throw await errorFromResponse(
+      response,
+      'verification',
+      response.status >= 500 && response.status <= 599,
+    );
   }
 
   try {
@@ -176,9 +190,11 @@ export async function probeAuthSession(signal?: AbortSignal): Promise<AuthSessio
 
   if (response.status === 401) return { status: 'anon' };
   if (response.status === 403) {
-    return { status: 'disabled', error: await errorFromResponse(response) };
+    return { status: 'disabled', error: await errorFromResponse(response, 'session') };
   }
-  if (!response.ok) return { status: 'error', error: await errorFromResponse(response) };
+  if (!response.ok) {
+    return { status: 'error', error: await errorFromResponse(response, 'session') };
+  }
 
   try {
     const parsed = MeResponseSchema.parse((await response.json()) as unknown);
