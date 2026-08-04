@@ -6,7 +6,7 @@ Runtime 是 Capability 试用与 Studio 编辑的独立后端。它管理普通�
 
 Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring 源码。它只读 `users`、`auth_sessions` 和 Capability 定义，读写 `sessions`、`turns`、`messages`、`artifacts`、用量计费表与钱包扣费流水，并且只能更新 `capabilities.ui_artifact_id`。浏览器认证只接受 authoring 签发的不透明会话 Cookie：`SESSION_COOKIE_SECURE=true` 时读取 `__Host-cb_session`，为 false 时读取 `cb_session`。Runtime 只计算 Cookie 摘要并查询 PostgreSQL，不签发会话、不创建用户，也不接受 Bearer 或查询参数令牌。
 
-所有浏览器写请求必须来自 `PUBLIC_APP_ORIGINS` 的严格白名单。凭据型 CORS 也只反射其中的精确 origin。Preview 与 Production 必须使用 Secure Cookie；以 production 模式运行的 Test 可以显式使用非 Secure Cookie。模型、模型凭据、Pi 会话和流式事件都留在 Runtime 内。
+所有浏览器写请求必须来自 `PUBLIC_APP_ORIGINS` 的严格白名单。凭据型 CORS 也只反射其中的精确 origin。Test、Preview 与 Production 的 production 构建都必须使用 Secure Cookie 和 HTTPS origin；只有非 production 的本地开发可以显式使用非 Secure Cookie。模型、模型凭据、Pi 会话和流式事件都留在 Runtime 内。
 
 ## 源码结构
 

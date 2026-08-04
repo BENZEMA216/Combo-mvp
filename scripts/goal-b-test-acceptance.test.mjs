@@ -27,7 +27,7 @@ import {
 } from './goal-b-test-acceptance.mjs';
 
 const REVISION = 'a'.repeat(40);
-const ORIGIN = 'http://127.0.0.1:18080';
+const ORIGIN = 'https://test.43-160-242-46.sslip.io';
 const RUN_ID = '30123456789';
 const RUN_ATTEMPT = '2';
 const WORKFLOW_RUN = {
@@ -157,7 +157,7 @@ test('live browser retries only idempotent GET transport failures once', async (
     },
   };
   assert.equal(
-    await fetchAcceptanceRequest(getContext, 'http://127.0.0.1:18080/detail', {
+    await fetchAcceptanceRequest(getContext, `${ORIGIN}/detail`, {
       method: 'GET',
     }),
     response,
@@ -175,7 +175,7 @@ test('live browser retries only idempotent GET transport failures once', async (
           },
         },
       },
-      'http://127.0.0.1:18080/messages',
+      `${ORIGIN}/messages`,
       { method: 'POST' },
     ),
     (error) => error === transient,
@@ -506,7 +506,7 @@ test('browser URL waits poll same-document location without a lifecycle wait', a
   }
 });
 
-test('accepts only the exact SHA, loopback origin, and fresh output arguments', () => {
+test('accepts only the exact SHA, public Test origin, and fresh output arguments', () => {
   const output = join(mkdtempSync(join(tmpdir(), 'goal-b-browser-args-')), 'result.json');
   assert.deepEqual(
     parseAcceptanceArgs([
@@ -656,6 +656,20 @@ test('accepts only the exact SHA, loopback origin, and fresh output arguments', 
     ],
     [
       '--environment',
+      'test',
+      '--revision',
+      REVISION,
+      '--run-id',
+      RUN_ID,
+      '--run-attempt',
+      RUN_ATTEMPT,
+      '--web-origin',
+      'http://127.0.0.1:18080',
+      '--output',
+      output,
+    ],
+    [
+      '--environment',
       'production',
       '--revision',
       REVISION,
@@ -686,34 +700,37 @@ test('accepts only the exact SHA, loopback origin, and fresh output arguments', 
   for (const argv of rejected) assert.throws(() => parseAcceptanceArgs(argv));
 });
 
-test('acceptance browser allows only WebSockets on the exact loopback forward', () => {
-  assert.equal(isAllowedAcceptanceWebSocket('ws://127.0.0.1:18080/events', ORIGIN), true);
+test('acceptance browser allows only WebSockets on the exact public Test origin', () => {
+  assert.equal(
+    isAllowedAcceptanceWebSocket('wss://test.43-160-242-46.sslip.io/events', ORIGIN),
+    true,
+  );
   for (const value of [
-    'wss://127.0.0.1:18080/events',
-    'ws://localhost:18080/events',
-    'ws://127.0.0.1:18081/events',
+    'ws://test.43-160-242-46.sslip.io/events',
+    'wss://localhost/events',
+    'wss://test.43-160-242-46.sslip.io:444/events',
     'ws://example.com/events',
-    'ws://user:pass@127.0.0.1:18080/events',
+    'wss://user:pass@test.43-160-242-46.sslip.io/events',
     'not-a-url',
   ]) {
     assert.equal(isAllowedAcceptanceWebSocket(value, ORIGIN), false, value);
   }
 });
 
-test('browser network gate only permits the exact loopback HTTP origin and non-network URLs', () => {
+test('browser network gate only permits the exact public HTTPS origin and non-network URLs', () => {
   for (const value of [
     `${ORIGIN}/tasks`,
     `${ORIGIN}/try/assets/app.js`,
     'about:blank',
-    'blob:http://127.0.0.1:18080/01982e62-6d6e-7f4d-8fe8-b55f62720b5b',
+    `blob:${ORIGIN}/01982e62-6d6e-7f4d-8fe8-b55f62720b5b`,
     'data:text/plain,local',
   ]) {
     assert.equal(isAllowedAcceptanceRequest(value, ORIGIN), true, value);
   }
   for (const value of [
-    'http://127.0.0.1:18081/tasks',
-    'http://localhost:18080/tasks',
-    'https://127.0.0.1:18080/tasks',
+    'http://test.43-160-242-46.sslip.io/tasks',
+    'https://localhost/tasks',
+    'https://test.43-160-242-46.sslip.io:444/tasks',
     'http://169.254.169.254/latest/meta-data',
     'https://example.com/',
     'file:///etc/passwd',
@@ -727,14 +744,9 @@ test('browser network gate only permits the exact loopback HTTP origin and non-n
   );
 });
 
-test('Test origin, Nginx allowlist, and page interception preserve one loopback boundary', () => {
-  const nginx = readFileSync(
-    new URL('../infra/k8s/overlays/combo-dev/apps/nginx-dev.conf', import.meta.url),
-    'utf8',
-  );
+test('page message interception stays scoped to the exact web origin', () => {
   const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
 
-  assert.match(nginx, /"http:\/\/127\.0\.0\.1:18080" 1;/);
   assert.match(source, /const messageUrl = `\$\{options\.webOrigin\}\$\{messagePath\}`/);
   assert.match(source, /page\.route\(\s*messageUrl/);
   assert.match(source, /page\.waitForRequest\([\s\S]*request\.url\(\) === messageUrl/);
@@ -1279,12 +1291,48 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   assert.match(source, /RUN_STARTED/);
   assert.match(source, /RUN_FINISHED/);
   assert.match(source, /RUN_ERROR/);
+  const authEntryStart = source.indexOf("await checked('preview_auth_entry_and_return_to'");
+  const authEntryEnd = source.indexOf("await checked('owner_isolation'", authEntryStart);
+  assert.ok(authEntryStart >= 0 && authEntryEnd > authEntryStart);
+  const authEntryFlow = source.slice(authEntryStart, authEntryEnd);
   assert.match(
-    source,
-    /await checked\('preview_auth_entry_and_return_to',[\s\S]*recoveryPage\.goto\(recoveryPath[\s\S]*name: '去登录'[\s\S]*pathname: '\/login'[\s\S]*name: '使用邮箱登录'[\s\S]*name: '邮箱'/,
+    authEntryFlow,
+    /recoveryPage\.goto\(recoveryPath[\s\S]*anonymousMe\.status\(\) === 401[\s\S]*waitForAcceptanceUrl\(recoveryPage,[\s\S]*pathname: '\/login'[\s\S]*searchParams: \{ returnTo: recoveryPath \}[\s\S]*name: '使用邮箱登录'[\s\S]*name: '邮箱'/,
   );
-  assert.match(source, /选择能力「\$\{capability\.name\}」/);
-  assert.match(source, /一键发布到市集 · 1 项/);
+  assert.doesNotMatch(authEntryFlow, /name: '去登录'|loginButton/);
+  const logoutStart = source.indexOf("await checked('logout_revokes_session'");
+  const logoutEnd = source.indexOf('\n    ensure(\n      GOAL_B_ACCEPTANCE_CHECKS', logoutStart);
+  assert.ok(logoutStart >= 0 && logoutEnd > logoutStart);
+  const logoutFlow = source.slice(logoutStart, logoutEnd);
+  assert.match(
+    logoutFlow,
+    /const loggedOutReturnTo = `\/tasks\/\$\{task\.id\}`[\s\S]*page\.goto\(loggedOutReturnTo[\s\S]*waitForAcceptanceUrl\(page,[\s\S]*pathname: '\/login'[\s\S]*searchParams: \{ returnTo: loggedOutReturnTo \}[\s\S]*name: '使用邮箱登录'/,
+  );
+  assert.doesNotMatch(logoutFlow, /name: '去登录'|loginButton/);
+  assert.doesNotMatch(source, /name: '去登录'/);
+  const selectionStart = source.indexOf("await checked('creation_capability_selection'");
+  const publishStart = source.indexOf("await checked('creation_publish_and_retry_fence'");
+  const studioStart = source.indexOf("await checked('studio_entry'", publishStart);
+  assert.ok(selectionStart >= 0 && publishStart > selectionStart && studioStart > publishStart);
+  const selectionFlow = source.slice(selectionStart, publishStart);
+  assert.match(selectionFlow, /Agent 已准备好，先选一个真实试用/);
+  assert.match(selectionFlow, /name: 'Agent 提取结果'/);
+  assert.match(selectionFlow, /continueLink\.waitFor\(\{ state: 'visible', timeout: 30_000 \}\)/);
+  assert.match(selectionFlow, /a\[href=.+releasePricingPath/);
+  assert.match(selectionFlow, /includes\('继续完善'\)/);
+  assert.match(selectionFlow, /release\/pricing/);
+  assert.doesNotMatch(selectionFlow, /一键发布|选择能力|publishResponse/);
+  const publishFlow = source.slice(publishStart, studioStart);
+  assert.match(publishFlow, /name: \/单次定价\//);
+  assert.match(publishFlow, /name: '每次使用价格'/);
+  assert.match(publishFlow, /name: \/下一步：命名\//);
+  assert.match(publishFlow, /name: '自定义子域名'/);
+  assert.match(publishFlow, /name: \/下一步：确认发布\//);
+  assert.match(publishFlow, /name: \/定价与域名仍只是本机草稿\//);
+  assert.match(publishFlow, /name: '开放试用并保存草稿 →'/);
+  assert.match(publishFlow, /Agent 已开放试用，可以继续迭代/);
+  assert.match(publishFlow, /published\.data\?\.published === true/);
+  assert.match(publishFlow, /\/tasks\/\$\{task\.id\}\/retry/);
   assert.match(source, /\/api\/v1\/auth\/email\/challenges/);
   assert.match(source, /\/api\/v1\/auth\/email\/verifications/);
   assert.match(source, /waitForDeliveredAcceptanceOtp/);
@@ -1300,11 +1348,11 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   );
   assert.match(
     source,
-    /await checked\('studio_trial_return',[\s\S]*name: '返回 UI 设计',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'UI 设计对话'/,
+    /await checked\('studio_trial_return',[\s\S]*studioReturnTo = `\/try\/session\/\$\{studioSession\.id\}\?mode=studio&returnTo=\$\{encodeURIComponent\('\/capabilities'\)\}`[\s\S]*searchParams: \{ returnTo: studioReturnTo \}[\s\S]*name: '返回 UI 设计',[\s\S]*exact: true[\s\S]*searchParams: \{ mode: 'studio', returnTo: '\/capabilities' \}[\s\S]*name: 'UI 设计对话'/,
   );
   assert.match(
     source,
-    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回发布流程',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '你的能力，挑选后一键发布',[\s\S]*exact: true/,
+    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回提取结果',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'Agent 已准备好，先选一个真实试用',[\s\S]*exact: true/,
   );
   assert.doesNotMatch(source, /recordVideo|tracing\.start|page\.screenshot/);
 });

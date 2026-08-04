@@ -63,6 +63,52 @@ describe('LoginPage two-step email OTP flow', () => {
     expect(screen.queryByRole('textbox', { name: '邮箱' })).toBeNull();
   });
 
+  it('keeps email login available when the initial session probe has a transient outage', async () => {
+    fetchMock = installFetchMock([
+      {
+        status: 503,
+        json: {
+          error: {
+            userMessage: '登录依赖正在恢复，请稍后重试。',
+            retriable: true,
+            action: 'retry',
+            traceId: 'trace-initial-probe-503',
+          },
+        },
+      },
+      challengeAccepted,
+      {
+        status: 200,
+        json: {
+          data: { user: USER, returnTo: '/tasks/task-1?acceptance=recovered' },
+          meta: { traceId: 'trace-recovered-login' },
+        },
+      },
+    ]);
+    const navigate = renderLogin(
+      undefined,
+      '/login?returnTo=%2Ftasks%2Ftask-1%3Facceptance%3Drecovered',
+    );
+    const user = userEvent.setup();
+
+    const emailInput = await screen.findByRole('textbox', { name: '邮箱' });
+    expect(screen.getByRole('heading', { name: '使用邮箱登录' })).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('登录依赖正在恢复，请稍后重试。');
+    expect(emailInput).toBeEnabled();
+    expect(emailInput).toHaveFocus();
+    expect(screen.queryByRole('heading', { name: '登录暂时无法完成' })).toBeNull();
+
+    await user.type(emailInput, 'Alice@example.com');
+    await user.click(screen.getByRole('button', { name: '发送验证码' }));
+    expect(await screen.findByRole('textbox', { name: '六位验证码' })).toHaveFocus();
+    await user.type(screen.getByRole('textbox', { name: '六位验证码' }), '123456');
+    await user.click(screen.getByRole('button', { name: '验证并登录' }));
+
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith('/tasks/task-1?acceptance=recovered'),
+    );
+  });
+
   it('shows a terminal disabled state and switches accounts only through idempotent logout', async () => {
     fetchMock = installFetchMock([
       {
@@ -360,6 +406,42 @@ describe('LoginPage two-step email OTP flow', () => {
     expect(
       fetchMock.calls.filter(({ url }) => url === '/api/v1/auth/email/verifications'),
     ).toHaveLength(1);
+  });
+
+  it('keeps a verification confirmation outage in the strict retry state', async () => {
+    fetchMock = installFetchMock([
+      { status: 401, json: {} },
+      challengeAccepted,
+      { networkError: true },
+      {
+        status: 503,
+        json: {
+          error: {
+            userMessage: '登录依赖正在恢复，请稍后重试。',
+            retriable: true,
+            action: 'retry',
+            traceId: 'trace-verification-probe-503',
+          },
+        },
+      },
+    ]);
+    renderLogin();
+    const user = userEvent.setup();
+
+    await user.type(await screen.findByRole('textbox', { name: '邮箱' }), 'Alice@example.com');
+    await user.click(screen.getByRole('button', { name: '发送验证码' }));
+    await user.type(await screen.findByRole('textbox', { name: '六位验证码' }), '123456');
+    await user.click(screen.getByRole('button', { name: '验证并登录' }));
+
+    expect(await screen.findByRole('heading', { name: '登录暂时无法完成' })).toBeInTheDocument();
+    expect(screen.getAllByText('登录依赖正在恢复，请稍后重试。')).not.toHaveLength(0);
+    expect(screen.getByRole('button', { name: '再次确认登录' })).toBeInTheDocument();
+    expect(fetchMock.calls.map(({ url }) => url)).toEqual([
+      '/api/v1/me',
+      '/api/v1/auth/email/challenges',
+      '/api/v1/auth/email/verifications',
+      '/api/v1/me',
+    ]);
   });
 
   it('honors Retry-After with a visible wait state and no automatic resend', async () => {

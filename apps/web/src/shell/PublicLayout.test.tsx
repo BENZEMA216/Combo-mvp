@@ -16,11 +16,11 @@ function renderAt(pathname: string): void {
 }
 
 describe('PublicLayout', () => {
-  it('公开页面提供返回 Agent 工作区的唯一入口', () => {
+  it('公开页面提供进入 Combo 的唯一入口', () => {
     renderAt('/');
 
     expect(screen.getByRole('link', { name: 'Combo 首页' })).toHaveAttribute('href', '/');
-    expect(screen.getByRole('link', { name: '查看我的 Agent' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: '进入 Combo' })).toHaveAttribute(
       'href',
       '/capabilities',
     );
@@ -31,6 +31,6 @@ describe('PublicLayout', () => {
   it('登录页隐藏返回入口，避免重复登录路径', () => {
     renderAt('/login');
 
-    expect(screen.queryByRole('link', { name: '查看我的 Agent' })).toBeNull();
+    expect(screen.queryByRole('link', { name: '进入 Combo' })).toBeNull();
   });
 });

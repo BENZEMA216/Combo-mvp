@@ -1,4 +1,4 @@
-name: Main CD
+name: Release build
 
 on:
   push:
@@ -383,14 +383,19 @@ jobs:
             --tmpfs /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=0755 \
             --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
             --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
-            --mount "type=bind,src=$PWD/infra/k8s/overlays/combo-dev/apps/nginx-dev.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
             --env NGINX_RESOLVER=127.0.0.11 \
             --env API_UPSTREAM_HOST=api.invalid \
             --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
+            --env COMBO_ENVIRONMENT=development \
+            --env COMBO_SOURCE_SHA="$SOURCE_SHA" \
+            --env COMBO_RELEASE_ID="release-$SOURCE_SHA" \
+            --env COMBO_BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --env COMBO_RELEASE_MANIFEST_DIGEST="sha256:$(printf 'a%.0s' $(seq 1 64))" \
+            --env COMBO_WEB_ASSET_MANIFEST="sha256:$(printf '0%.0s' $(seq 1 64))" \
             "$IMAGE_REF" >/dev/null
           ready=0
           for _ in $(seq 1 30); do
-            if docker exec "$container" wget -qO- http://127.0.0.1:8080/version.json \
+            if docker exec "$container" wget -qO- http://127.0.0.1/version.json \
                 >"$RUNNER_TEMP/web-version.json" 2>/dev/null; then
               ready=1
               break
@@ -398,12 +403,12 @@ jobs:
             sleep 1
           done
           [[ "$ready" == 1 ]]
-          docker exec "$container" wget -qO- http://127.0.0.1:8080/runtime-config.json \
+          docker exec "$container" wget -qO- http://127.0.0.1/runtime-config.json \
             >"$RUNNER_TEMP/web-runtime-config.json"
-          docker exec "$container" wget -qO- http://127.0.0.1:8080/try/runtime-config.json \
+          docker exec "$container" wget -qO- http://127.0.0.1/try/runtime-config.json \
             >"$RUNNER_TEMP/web-try-runtime-config.json"
-          docker exec "$container" wget -qO /dev/null http://127.0.0.1:8080/
-          docker exec "$container" wget -qO /dev/null http://127.0.0.1:8080/try/
+          docker exec "$container" wget -qO /dev/null http://127.0.0.1/
+          docker exec "$container" wget -qO /dev/null http://127.0.0.1/try/
           cmp "$RUNNER_TEMP/web-version.json" "$RUNNER_TEMP/web-runtime-config.json"
           cmp "$RUNNER_TEMP/web-version.json" "$RUNNER_TEMP/web-try-runtime-config.json"
           jq -e '
@@ -414,111 +419,9 @@ jobs:
             and (.webAssetManifest | test("^sha256:[0-9a-f]{64}$"))
             and .webAssetManifest != ("sha256:" + ("0" * 64))
           ' "$RUNNER_TEMP/web-version.json" >/dev/null
-
-          cleanup
-          container="combo-web-preview-contract-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          review_pages="$RUNNER_TEMP/combo-review-pages-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$review_pages"
-          cp infra/k8s/release/overlays/preview/apps/review-entry-redirect.html \
-            "$review_pages/entry-redirect.html"
-          docker run -d --name "$container" \
-            --read-only \
-            --user 101:101 \
-            --cap-drop ALL \
-            --tmpfs /etc/nginx/conf.d:rw,noexec,nosuid,size=16m,uid=101,gid=101,mode=0755 \
-            --tmpfs /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=0755 \
-            --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
-            --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
-            --mount "type=bind,src=$PWD/infra/k8s/release/overlays/preview/apps/review-nginx.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
-            --mount "type=bind,src=$review_pages,dst=/usr/share/nginx/html/__review,readonly" \
-            --env NGINX_RESOLVER=127.0.0.11 \
-            --env API_UPSTREAM_HOST=api.invalid \
-            --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
-            "$IMAGE_REF" >/dev/null
-          ready=0
-          for _ in $(seq 1 30); do
-            if docker exec "$container" \
-                wget -qO /dev/null http://127.0.0.1/__review/healthz; then
-              ready=1
-              break
-            fi
-            sleep 1
-          done
-          [[ "$ready" == 1 ]]
-          docker exec "$container" nginx -t
-          docker exec "$container" sh -c 'command -v nc >/dev/null'
-
-          preview_probe() {
-            local request=$1
-            local output=$2
-            printf '%b' "$request" | \
-              timeout 10 docker exec -i "$container" nc 127.0.0.1 80 >"$output"
-          }
-          preview_probe \
-            'GET /capabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-app-page.http"
-          grep -q '^HTTP/1.1 200 OK' "$RUNNER_TEMP/preview-app-page.http"
-          grep -q 'id="root"' "$RUNNER_TEMP/preview-app-page.http"
-          if grep -Eqi 'access-form|X-Combo-Review-Gate|输入 Review 访问码' \
-              "$RUNNER_TEMP/preview-app-page.http"; then
-            echo 'Preview still exposes the removed access-code gate.' >&2
-            exit 1
-          fi
-
-          preview_probe \
-            'GET /version.json HTTP/1.1\r\nHost: review.local\r\nAccept: application/json\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-version.http"
-          grep -q '^HTTP/1.1 200 OK' "$RUNNER_TEMP/preview-version.http"
-          grep -qi '^Cache-Control: no-store' "$RUNNER_TEMP/preview-version.http"
-          if grep -qi 'X-Combo-Review-Gate' "$RUNNER_TEMP/preview-version.http"; then
-            echo 'Preview release metadata still carries the removed gate header.' >&2
-            exit 1
-          fi
-
-          preview_probe \
-            'GET /assets/review-entry-probe.js HTTP/1.1\r\nHost: review.local\r\nAccept: application/javascript\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-missing-asset.http"
-          grep -q '^HTTP/1.1 404 Not Found' "$RUNNER_TEMP/preview-missing-asset.http"
-
-          preview_probe \
-            'GET /__review/enter?returnTo=%2Fcapabilities HTTP/1.1\r\nHost: review.local\r\nAccept: text/html\r\nConnection: close\r\n\r\n' \
-            "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -q '^HTTP/1.1 200 OK' "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -q '正在进入邮箱验证' "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -qi '^Cache-Control: no-store, private' "$RUNNER_TEMP/preview-legacy-entry.http"
-          grep -qi '^X-Frame-Options: DENY' "$RUNNER_TEMP/preview-legacy-entry.http"
-          if grep -qi '^Location:' "$RUNNER_TEMP/preview-legacy-entry.http"; then
-            echo 'Legacy Preview entry unexpectedly bypassed its safe returnTo shim.' >&2
-            exit 1
-          fi
-          if grep -Eqi \
-              'access-form|输入 Review 访问码|^X-Combo-Review-Gate:|^Set-Cookie:.*combo_review_access' \
-              "$RUNNER_TEMP/preview-legacy-entry.http"; then
-            echo 'Legacy Preview entry still exposes access-code gate state.' >&2
-            exit 1
-          fi
-
-          docker exec "$container" \
-            wget -qO- http://127.0.0.1/try/ \
-            >"$RUNNER_TEMP/preview-runtime-index.html"
-          docker exec "$container" cat /usr/share/nginx/html/try/index.html \
-            >"$RUNNER_TEMP/expected-runtime-index.html"
-          cmp "$RUNNER_TEMP/expected-runtime-index.html" \
-            "$RUNNER_TEMP/preview-runtime-index.html"
-          docker exec "$container" \
-            wget -qO- http://127.0.0.1/try/sessions/combo-runtime-route-contract \
-            >"$RUNNER_TEMP/preview-runtime-deep-link.html"
-          cmp "$RUNNER_TEMP/expected-runtime-index.html" \
-            "$RUNNER_TEMP/preview-runtime-deep-link.html"
-          runtime_asset=$(sed -n \
-            's/.*src="\([^"]*\/try\/assets\/[^"]*\.js\)".*/\1/p' \
-            "$RUNNER_TEMP/preview-runtime-index.html" | head -n 1)
-          [[ "$runtime_asset" =~ ^/try/assets/[A-Za-z0-9_-]+\.js$ ]]
-          docker exec "$container" \
-            wget -qO /dev/null "http://127.0.0.1$runtime_asset"
           if docker exec "$container" \
-              wget -qO /dev/null http://127.0.0.1/try/assets/combo-missing-deadbeef.js; then
-            echo 'Preview returned success for a missing Runtime Web asset.' >&2
+              wget -qO /dev/null http://127.0.0.1/assets/combo-missing-deadbeef.js; then
+            echo 'Web returned success for a missing hashed asset.' >&2
             exit 1
           fi
 
@@ -547,7 +450,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: assemble immutable release artifact
+    name: assemble immutable build metadata
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       inputs.publish_release == true
@@ -574,10 +477,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - uses: azure/setup-kubectl@v4
-        with:
-          version: v1.31.0
-
       - name: Install the release tooling dependencies
         run: pnpm install --frozen-lockfile
 
@@ -595,8 +494,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Create and verify the release bundle
-        id: bundle
+      - name: Create and verify the build manifest
+        id: build
         run: |
           set -euo pipefail
           umask 077
@@ -604,15 +503,8 @@ jobs:
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
 
-          bundle=$(mktemp -d "$RUNNER_TEMP/combo-release-${SOURCE_SHA}.XXXXXX")
-          mkdir -p \
-            "$bundle/metadata" \
-            "$bundle/rendered/test" \
-            "$bundle/rendered/preview" \
-            "$bundle/rendered/production" \
-            "$bundle/scripts" \
-            "$bundle/acceptance" \
-            "$bundle/infra/host/release"
+          bundle=$(mktemp -d "$RUNNER_TEMP/combo-build-${SOURCE_SHA}.XXXXXX")
+          mkdir -p "$bundle/metadata"
 
           api_image=$(<"$RUNNER_TEMP/image-digests/api.image")
           runtime_image=$(<"$RUNNER_TEMP/image-digests/runtime.image")
@@ -669,93 +561,31 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --digest "$manifest_digest" >/dev/null
 
-          for phase in migrate apps; do
-            node scripts/render-release.mjs \
-              --manifest "$bundle/metadata/release.json" \
-              --manifest-digest "$manifest_digest" \
-              --environment test \
-              --phase "$phase" \
-              --output "$bundle/rendered/test/$phase.yaml"
-          done
-          for environment in preview production; do
-            for phase in foundation init migrate apps; do
-              node scripts/render-release.mjs \
-                --manifest "$bundle/metadata/release.json" \
-                --manifest-digest "$manifest_digest" \
-                --environment "$environment" \
-                --phase "$phase" \
-                --output "$bundle/rendered/$environment/$phase.yaml"
-            done
-          done
-
-          install -m 0755 \
-            scripts/collect-live-runtime-evidence.sh \
-            scripts/collect-release-inventory.sh \
-            scripts/deploy-release.sh \
-            scripts/foundation-reset-journal.mjs \
-            scripts/prepare-reset-roll-forward.sh \
-            scripts/recover-preview-post-cut.sh \
-            scripts/reset-roll-forward-journal.mjs \
-            scripts/reset-release-foundation.sh \
-            scripts/rollback-release-traffic.sh \
-            scripts/seal-release-traffic.sh \
-            scripts/switch-release-traffic.sh \
-            "$bundle/scripts/"
-          install -m 0644 \
-            scripts/release-manifest.mjs \
-            scripts/promotion-evidence.mjs \
-            scripts/release-nginx-route.mjs \
-            scripts/verify-release-schema.mjs \
-            scripts/web-asset-manifest.mjs \
-            scripts/verify-rendered-release.mjs \
-            "$bundle/scripts/"
-          install -m 0644 \
-            scripts/goal-b-test-acceptance.mjs \
-            "$bundle/acceptance/live-browser-acceptance.mjs"
-          install -m 0644 scripts/resend-sent-email.mjs \
-            "$bundle/acceptance/resend-sent-email.mjs"
-          tar -C "$(dirname "$(realpath scripts/node_modules/playwright-core)")" \
-            -czf "$bundle/acceptance/playwright-core.tgz" playwright-core
-          install -m 0644 infra/host/release/*.service "$bundle/infra/host/release/"
-
           if find "$bundle" -type l -print -quit | grep -q .; then
-            echo 'Release bundle contains a symbolic link.' >&2
+            echo 'Build bundle contains a symbolic link.' >&2
             exit 1
           fi
-          if grep -RIEq -- \
-            '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}' \
-            "$bundle"; then
-            echo 'Release bundle failed credential-pattern scanning.' >&2
-            exit 1
-          fi
-          (
-            cd "$bundle"
-            find . -type f ! -path './metadata/artifact-files.sha256' -print0 \
-              | LC_ALL=C sort -z \
-              | xargs -0 sha256sum > metadata/artifact-files.sha256
-            sha256sum -c metadata/artifact-files.sha256 >/dev/null
-          )
 
           printf 'path=%s\n' "$bundle" >> "$GITHUB_OUTPUT"
-          printf 'name=combo-release-%s-%s\n' \
+          printf 'name=combo-build-%s-%s\n' \
             "$SOURCE_SHA" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the only promotable release artifact
-        id: release-artifact
+      - name: Upload the build metadata artifact
+        id: build-artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.bundle.outputs.name }}
-          path: ${{ steps.bundle.outputs.path }}
+          name: ${{ steps.build.outputs.name }}
+          path: ${{ steps.build.outputs.path }}
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Publish the release identity
+      - name: Publish the build identity
         env:
-          ARTIFACT_DIGEST: ${{ steps.release-artifact.outputs.artifact-digest }}
-          ARTIFACT_NAME: ${{ steps.bundle.outputs.name }}
+          ARTIFACT_DIGEST: ${{ steps.build-artifact.outputs.artifact-digest }}
+          ARTIFACT_NAME: ${{ steps.build.outputs.name }}
         run: |
           set -euo pipefail
           [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          printf 'Release artifact: %s\n' "$ARTIFACT_NAME"
+          printf 'Build artifact: %s\n' "$ARTIFACT_NAME"
           printf 'GitHub artifact digest: sha256:%s\n' "$ARTIFACT_DIGEST"

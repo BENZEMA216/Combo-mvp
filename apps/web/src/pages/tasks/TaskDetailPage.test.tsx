@@ -117,34 +117,38 @@ describe('TaskDetailPage — SSE 实时进度', () => {
     expect(screen.getByText('已分析 6 / 10 段会话')).toBeInTheDocument();
     expect(screen.getByText('切分会话段落')).toBeInTheDocument();
 
-    // item-appended：触发能力列表重拉，新能力项就地浮现（勾选行卡 + 试用入口，默认全选）。
+    // item-appended：触发能力列表重拉，新 Agent 就地浮现，可试用或继续完善。
     act(() => conn.emit('item-appended', { item: cap1 }, { id: '3-1' }));
     act(() => conn.emit('item-appended', { item: cap2 }, { id: '3-2' }));
     expect(await screen.findByText('周报整理')).toBeInTheDocument();
     expect(await screen.findByText('代码评审')).toBeInTheDocument();
     // 非规范测试 id 不跨 bundle 传播；生产 UUID 会由专门的 returnTo 契约覆盖。
-    expect(screen.getAllByRole('link', { name: '试用 →' })[0]).toHaveAttribute('href', '/try/c/c1');
-    expect(screen.getAllByRole('checkbox')).toHaveLength(2);
-    expect(screen.getAllByRole('checkbox').every((el) => (el as HTMLInputElement).checked)).toBe(
-      true,
-    );
+    expect(screen.getAllByRole('link', { name: '先试用' })[0]).toHaveAttribute('href', '/try/c/c1');
+    expect(screen.getAllByRole('link', { name: /继续完善/ })).toHaveLength(2);
+    expect(screen.queryByRole('checkbox')).toBeNull();
 
     // done 帧 → 重拉任务定格终态 → 整页切换成成果形态（大标题 + 挑选发布区）。
     act(() =>
       conn.emit('done', { status: 'succeeded', result: { capabilityCount: 2 } }, { id: '4-1' }),
     );
     expect(
-      await screen.findByRole('heading', { name: '你的能力，挑选后一键发布' }),
+      await screen.findByRole('heading', { name: 'Agent 已准备好，先选一个真实试用' }),
     ).toBeInTheDocument();
     expect(screen.getByText(/这次上传共提取出 2/)).toBeInTheDocument();
     expect(screen.getByText('周报整理')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '能力页' })).toHaveAttribute('href', '/capabilities');
-    expect(screen.getByRole('button', { name: '一键发布到市集 · 2 项' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '我的 Agent' })).toHaveAttribute(
+      'href',
+      '/capabilities',
+    );
+    expect(screen.getAllByRole('link', { name: /继续完善/ })[0]).toHaveAttribute(
+      'href',
+      '/capabilities/c1/release/pricing',
+    );
   });
 });
 
-describe('TaskDetailPage — 挑选与一键发布', () => {
-  it('默认全选，一键发布逐项 POST，状态槽变已发布并显示分享令牌', async () => {
+describe('TaskDetailPage — 结果到发布链路', () => {
+  it('按优先级展示 Agent，并且不会从结果页绕过验收直接发布', async () => {
     restoreSse = __setFetchEventSourceForTests(MockFetchEventSource.impl);
     const succeeded = makeTask({ ...RUNNING, status: 'succeeded', capabilityCount: 2 });
     const cap1 = makeCapability({ id: 'c1', name: '周报整理' });
@@ -152,40 +156,17 @@ describe('TaskDetailPage — 挑选与一键发布', () => {
     fm = installFetchMock([
       { status: 200, json: envelopeBody(succeeded) },
       { match: '/capabilities?', status: 200, json: envelopeBody([cap1, cap2]) },
-      {
-        match: '/capabilities/c1/publish',
-        status: 200,
-        json: envelopeBody({ id: 'c1', published: true, shareToken: 'tok-1' }),
-      },
-      {
-        match: '/capabilities/c2/publish',
-        status: 200,
-        json: envelopeBody({ id: 'c2', published: true, shareToken: 'tok-2' }),
-      },
     ]);
     renderDetail();
 
-    // 成果形态：工具条默认全选。
     expect(
-      await screen.findByRole('heading', { name: '你的能力，挑选后一键发布' }),
+      await screen.findByRole('heading', { name: 'Agent 已准备好，先选一个真实试用' }),
     ).toBeInTheDocument();
-    expect(await screen.findAllByRole('checkbox')).toHaveLength(2);
-
-    // 取消一项再选回来：计数跟着变。
-    await userEvent.click(screen.getAllByRole('checkbox')[0]!);
-    expect(screen.getByRole('button', { name: '一键发布到市集 · 1 项' })).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: '全选' }));
-
-    // 一键发布：逐项 POST，两张卡状态槽都变已发布 + 分享令牌。
-    await userEvent.click(screen.getByRole('button', { name: '一键发布到市集 · 2 项' }));
-    expect(await screen.findAllByText('已发布')).toHaveLength(2);
-    // 状态槽展示的是完整试用链接（裸 shareToken 无路由可消费）。
-    expect(screen.getByText(`${window.location.origin}/try/c/c1`)).toBeInTheDocument();
-    expect(screen.getByText(`${window.location.origin}/try/c/c2`)).toBeInTheDocument();
-    expect(screen.getByText(/已发布 2 \/ 2 个能力/)).toBeInTheDocument();
-
-    const posts = fm.calls.filter((c) => c.method === 'POST').map((c) => c.url);
-    expect(posts).toEqual(['/api/v1/capabilities/c1/publish', '/api/v1/capabilities/c2/publish']);
+    expect(await screen.findByLabelText('优先级 1')).toHaveTextContent('01');
+    expect(screen.getByLabelText('优先级 2')).toHaveTextContent('02');
+    expect(screen.getAllByRole('link', { name: /继续完善/ })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /一键发布/ })).toBeNull();
+    expect(fm.calls.every((call) => call.method === 'GET')).toBe(true);
   });
 });
 

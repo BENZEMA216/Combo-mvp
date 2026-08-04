@@ -160,7 +160,7 @@ describe('authoring authentication environment boundary', () => {
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('test-resend-key-value'));
   });
 
-  it('allows a production-built Test process to use an explicit loopback HTTP cookie', async () => {
+  it('requires a production-built Test process to use its public HTTPS cookie', async () => {
     stub({
       ...COMMON,
       NODE_ENV: 'production',
@@ -173,11 +173,7 @@ describe('authoring authentication environment boundary', () => {
     });
     const loadEnv = await freshLoadEnv();
 
-    expect(loadEnv()).toMatchObject({
-      NODE_ENV: 'production',
-      COMBO_ENVIRONMENT: 'test',
-      SESSION_COOKIE_SECURE: false,
-    });
+    expect(loadEnv).toThrowError(/SESSION_COOKIE_SECURE/);
   });
 
   it('requires Preview and Production to use an HTTPS host cookie', async () => {

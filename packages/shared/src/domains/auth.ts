@@ -19,8 +19,8 @@ export const AUTH_SESSION_COOKIE_SAME_SITE = 'lax' as const;
 export const AUTH_SESSION_COOKIE_VALUE_PATTERN = /^s1\.[A-Za-z0-9_-]{43}$/;
 
 /**
- * HTTPS 入口使用主机限定前缀；显式的本地 HTTP 验收入口使用不带前缀的同语义 Cookie。
- * 这里刻意不读取 NODE_ENV：Test 可以运行 production 构建，却通过 loopback HTTP 验收。
+ * HTTPS 入口使用主机限定前缀；显式的本地 HTTP 开发入口使用不带前缀的同语义 Cookie。
+ * 这里刻意不读取 NODE_ENV：具体发布环境是否允许 HTTP 由应用启动配置单独约束。
  */
 export function authSessionCookieName(secure: boolean): string {
   return secure ? AUTH_SESSION_COOKIE_PRODUCTION_NAME : AUTH_SESSION_COOKIE_NAME;
@@ -36,6 +36,12 @@ export const EMAIL_OTP_RESEND_AFTER_SECONDS = 60;
 
 export const AUTH_DEFAULT_RETURN_TO = '/tasks';
 export const AUTH_RETURN_TO_MAX_LENGTH = 512;
+const AUTH_ID_PATH_SEGMENT =
+  '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const CAPABILITY_RELEASE_RETURN_PATH = new RegExp(
+  `^/capabilities/${AUTH_ID_PATH_SEGMENT}/release(?:/(?:pricing|identity|review|success))?$`,
+  'i',
+);
 
 export const AuthSessionCookieValueSchema = z
   .string()
@@ -102,6 +108,7 @@ export function sanitizeAuthReturnTo(value: unknown): string {
       path === '/tasks' ||
       path.startsWith('/tasks/') ||
       path === '/capabilities' ||
+      CAPABILITY_RELEASE_RETURN_PATH.test(path) ||
       path === '/try' ||
       path.startsWith('/try/');
 

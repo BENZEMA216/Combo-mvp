@@ -3,6 +3,7 @@ import type { ReactElement } from 'react';
 import type { CapabilityView } from '@cb/shared';
 import { trialUrl } from '../../api/index.js';
 import { CopyButton } from '../../components/CopyButton.js';
+import { readReleaseDraft, releasePath } from '../release/releaseDraft.js';
 
 function shareUrl(capabilityId: string): string {
   return `${window.location.origin}${trialUrl(capabilityId)}`;
@@ -39,20 +40,42 @@ export function CapabilityRow({
   editing,
   actionsBusy,
   editError,
-  publishing,
-  publishError,
+  unpublishing,
+  unpublishError,
   onEdit,
-  onTogglePublished,
+  onUnpublish,
 }: {
   cap: CapabilityView;
   editing: boolean;
   actionsBusy: boolean;
   editError?: string | null;
-  publishing: boolean;
-  publishError?: string | null;
+  unpublishing: boolean;
+  unpublishError?: string | null;
   onEdit: (capabilityId: string) => void;
-  onTogglePublished: (capabilityId: string, publish: boolean) => void;
+  onUnpublish: (capabilityId: string) => void;
 }): ReactElement {
+  const releaseDraft = readReleaseDraft(cap.id, cap.name);
+  const releaseComplete = releaseDraft.currentStep === 'success' && cap.published;
+  const hasReleaseProgress = Boolean(
+    !cap.published &&
+    (releaseDraft.currentStep || releaseDraft.pricingModel || releaseDraft.handle?.trim()),
+  );
+  const releaseStep = releaseComplete
+    ? 'success'
+    : (releaseDraft.currentStep ??
+      (releaseDraft.handle?.trim()
+        ? 'review'
+        : releaseDraft.pricingModel
+          ? 'identity'
+          : 'pricing'));
+  const releaseActionLabel = releaseComplete
+    ? '查看发布结果'
+    : cap.published
+      ? '发布设置'
+      : hasReleaseProgress
+        ? '继续发布'
+        : '定价与发布';
+
   return (
     <tr className="cb-cap-row" data-capability={cap.id}>
       <td className="cb-cap-row__name">
@@ -93,17 +116,21 @@ export function CapabilityRow({
           >
             {editing ? '正在打开…' : '编辑 UI'}
           </button>
-          <button
-            type="button"
-            className="cb-cap-action cb-cap-action--toggle"
-            data-published={cap.published ? 'true' : 'false'}
-            onClick={() => onTogglePublished(cap.id, !cap.published)}
-            disabled={publishing}
-            aria-label={`${cap.published ? '下架' : '发布'}「${cap.name}」`}
-            aria-busy={publishing || undefined}
+          <a
+            className="cb-cap-action cb-cap-action--release"
+            href={releasePath(cap.id, releaseStep)}
+            aria-label={
+              releaseComplete
+                ? `查看「${cap.name}」发布结果`
+                : cap.published
+                  ? `管理「${cap.name}」发布设置`
+                  : hasReleaseProgress
+                    ? `继续「${cap.name}」发布设置`
+                    : `设置「${cap.name}」定价与发布`
+            }
           >
-            {publishing ? '处理中…' : cap.published ? '下架' : '发布'}
-          </button>
+            {releaseActionLabel}
+          </a>
           {cap.published && (
             <CopyButton
               text={shareUrl(cap.id)}
@@ -112,15 +139,36 @@ export function CapabilityRow({
               className="cb-cap-action cb-cap-action--copy"
             />
           )}
+          {cap.published && (
+            <button
+              type="button"
+              className="cb-cap-action cb-cap-action--toggle"
+              data-published="true"
+              onClick={() => {
+                if (
+                  window.confirm(
+                    `停止「${cap.name}」的公开试用？定价和页面设置会保留，之后可以再次开放。`,
+                  )
+                ) {
+                  onUnpublish(cap.id);
+                }
+              }}
+              disabled={unpublishing}
+              aria-label={`停止「${cap.name}」公开试用`}
+              aria-busy={unpublishing || undefined}
+            >
+              {unpublishing ? '正在停止…' : '停止公开试用'}
+            </button>
+          )}
         </span>
         {editError && (
           <span className="cb-cap-row__action-error" role="alert">
             编辑 UI 未打开：{editError}
           </span>
         )}
-        {publishError && (
+        {unpublishError && (
           <span className="cb-cap-row__action-error" role="alert">
-            {cap.published ? '下架' : '发布'}未完成：{publishError}
+            停止公开试用未完成：{unpublishError}
           </span>
         )}
       </td>

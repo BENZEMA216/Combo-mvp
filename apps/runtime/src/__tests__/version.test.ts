@@ -73,8 +73,8 @@ describe('runtime release version', () => {
         S3_ACCESS_KEY: 'test-access',
         S3_SECRET_KEY: 'test-secret',
         PUBLIC_APP_ORIGINS:
-          environment === 'test' ? 'http://combo-test.internal' : 'https://combo.example',
-        SESSION_COOKIE_SECURE: environment === 'test' ? 'false' : 'true',
+          environment === 'test' ? 'https://test.43-160-242-46.sslip.io' : 'https://combo.example',
+        SESSION_COOKIE_SECURE: 'true',
         RUNTIME_BILLING_FREE_USES: '3',
         RUNTIME_BILLING_UNIT_PRICE_CENTS: '100',
         ...releaseEnvironment,

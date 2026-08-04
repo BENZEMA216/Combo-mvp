@@ -11,13 +11,13 @@ import type { CapabilityView, PublishResult } from '@cb/shared';
 import {
   createStudioSession,
   listCapabilities,
-  publishCapability,
   unpublishCapability,
   type Page,
 } from '../../api/index.js';
 import { ErrorState, Skeleton } from '../../components/index.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { CapabilityRow } from './CapabilityRow.js';
+import { releasePath } from '../release/releaseDraft.js';
 
 type CapabilityFilter = 'all' | 'published' | 'draft';
 type CapabilityPages = InfiniteData<Page<CapabilityView>>;
@@ -28,7 +28,7 @@ const CAPABILITY_FILTERS: ReadonlyArray<{ key: CapabilityFilter; label: string }
   { key: 'draft', label: '草稿' },
 ];
 
-/** 发布结果只改变对应 Agent；保留已加载页和游标，避免发布后整表跳动。 */
+/** 公开状态只改变对应 Agent；保留已加载页和游标，避免操作后整表跳动。 */
 export function mergePublishResult(
   data: CapabilityPages | undefined,
   result: PublishResult,
@@ -38,16 +38,20 @@ export function mergePublishResult(
     ...data,
     pages: data.pages.map((page) => ({
       ...page,
-      items: page.items.map((item) =>
-        item.id === result.id
-          ? {
-              ...item,
-              published: result.published,
-              ...(result.publishedAt !== undefined ? { publishedAt: result.publishedAt } : {}),
-              ...(result.shareToken !== undefined ? { shareToken: result.shareToken } : {}),
-            }
-          : item,
-      ),
+      items: page.items.map((item) => {
+        if (item.id !== result.id) return item;
+        const next: CapabilityView = {
+          ...item,
+          published: result.published,
+          ...(result.publishedAt !== undefined ? { publishedAt: result.publishedAt } : {}),
+          ...(result.shareToken !== undefined ? { shareToken: result.shareToken } : {}),
+        };
+        if (!result.published) {
+          delete next.publishedAt;
+          delete next.shareToken;
+        }
+        return next;
+      }),
     })),
   };
 }
@@ -61,8 +65,8 @@ function defaultNavigateToStudio(url: string): void {
   window.location.assign(url);
 }
 
-function studioUrl(sessionId: string): string {
-  return `/try/session/${encodeURIComponent(sessionId)}?mode=studio&returnTo=${encodeURIComponent('/capabilities')}`;
+function studioUrl(sessionId: string, capabilityId: string): string {
+  return `/try/session/${encodeURIComponent(sessionId)}?mode=studio&returnTo=${encodeURIComponent(releasePath(capabilityId, 'pricing'))}`;
 }
 
 export function CapabilitiesPage({
@@ -74,7 +78,7 @@ export function CapabilitiesPage({
   const [editError, setEditError] = useState<{ capabilityId: string; message: string } | null>(
     null,
   );
-  const [publishError, setPublishError] = useState<{
+  const [unpublishError, setUnpublishError] = useState<{
     capabilityId: string;
     message: string;
   } | null>(null);
@@ -95,7 +99,7 @@ export function CapabilitiesPage({
   const studioMutation = useMutation({
     mutationFn: (capabilityId: string) => createStudioSession(capabilityId),
     onMutate: () => setEditError(null),
-    onSuccess: ({ session }) => navigateToStudio(studioUrl(session.id)),
+    onSuccess: ({ session }, capabilityId) => navigateToStudio(studioUrl(session.id, capabilityId)),
     onError: (error, capabilityId) => {
       setEditError({
         capabilityId,
@@ -104,22 +108,18 @@ export function CapabilitiesPage({
     },
   });
 
-  const publishMutation = useMutation({
-    mutationFn: ({ capabilityId, publish }: { capabilityId: string; publish: boolean }) =>
-      publish ? publishCapability(capabilityId) : unpublishCapability(capabilityId),
-    onMutate: () => setPublishError(null),
+  const unpublishMutation = useMutation({
+    mutationFn: (capabilityId: string) => unpublishCapability(capabilityId),
+    onMutate: () => setUnpublishError(null),
     onSuccess: (result) => {
       queryClient.setQueriesData<CapabilityPages>({ queryKey: ['capabilities'] }, (data) =>
         mergePublishResult(data, result),
       );
     },
-    onError: (error, { capabilityId, publish }) => {
-      const fallback = publish
-        ? '暂时没能发布这个 Agent，请稍后重试。'
-        : '暂时没能下架这个 Agent，请稍后重试。';
-      setPublishError({
+    onError: (error, capabilityId) => {
+      setUnpublishError({
         capabilityId,
-        message: error instanceof Error ? error.message : fallback,
+        message: error instanceof Error ? error.message : '暂时没能停止公开试用，请稍后重试。',
       });
     },
   });
@@ -163,9 +163,9 @@ export function CapabilitiesPage({
         </span>
         <div className="cb-empty__copy">
           <p className="cb-empty__title">还没有 Agent</p>
-          <p className="cb-empty__hint">上传一段真实工作记录，生成你的第一个 Agent。</p>
+          <p className="cb-empty__hint">先上传一段真实会话，系统会从中提取你的第一个 Agent。</p>
           <Link className="cb-empty__action cb-empty__action--primary" to="/tasks">
-            创建 Agent
+            上传会话
           </Link>
         </div>
       </div>
@@ -176,7 +176,7 @@ export function CapabilitiesPage({
         <div className="cb-capabilities__list-toolbar">
           <Link className="cb-btn cb-btn--primary cb-capabilities__create" to="/tasks">
             <span aria-hidden="true">＋</span>
-            创建 Agent
+            上传会话
           </Link>
           <div className="cb-capabilities__filters" role="group" aria-label="按状态筛选">
             {CAPABILITY_FILTERS.map((item) => (
@@ -241,19 +241,16 @@ export function CapabilitiesPage({
                         ? editError.message
                         : undefined
                     }
-                    publishing={
-                      publishMutation.isPending &&
-                      publishMutation.variables?.capabilityId === capability.id
+                    unpublishing={
+                      unpublishMutation.isPending && unpublishMutation.variables === capability.id
                     }
-                    publishError={
-                      publishError && publishError.capabilityId === capability.id
-                        ? publishError.message
+                    unpublishError={
+                      unpublishError && unpublishError.capabilityId === capability.id
+                        ? unpublishError.message
                         : undefined
                     }
                     onEdit={(capabilityId) => studioMutation.mutate(capabilityId)}
-                    onTogglePublished={(capabilityId, publish) =>
-                      publishMutation.mutate({ capabilityId, publish })
-                    }
+                    onUnpublish={(capabilityId) => unpublishMutation.mutate(capabilityId)}
                   />
                 ))}
               </tbody>

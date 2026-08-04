@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { ArtifactView, SessionDetail } from '@cb/shared';
 import { ChatPage } from './ChatPage.js';
 
@@ -114,11 +114,24 @@ function sessionDetail(mode?: 'consume' | 'studio'): SessionDetail {
   } as SessionDetail;
 }
 
+function LocationProbe() {
+  const location = useLocation();
+  return <output data-testid="location-probe">{`${location.pathname}${location.search}`}</output>;
+}
+
 function renderPage(url: string): ReturnType<typeof render> {
   return render(
     <MemoryRouter initialEntries={[url]}>
       <Routes>
-        <Route path="/session/:sessionId" element={<ChatPage />} />
+        <Route
+          path="/session/:sessionId"
+          element={
+            <>
+              <ChatPage />
+              <LocationProbe />
+            </>
+          }
+        />
       </Routes>
     </MemoryRouter>,
   );
@@ -195,7 +208,29 @@ describe('ChatPage studio experience', () => {
     expect(screen.queryByRole('region', { name: '本次试用输入' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('session-sidebar')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '会话管理' })).not.toBeInTheDocument();
-    expect(screen.queryByText('返回发布流程')).not.toBeInTheDocument();
+    expect(screen.queryByText('返回定价与发布')).not.toBeInTheDocument();
+  });
+
+  it('keeps the Studio revision loop connected to Agent pricing and publishing', () => {
+    const release = '/capabilities/22222222-2222-4222-8222-222222222222/release/pricing';
+    renderPage(
+      `/session/11111111-1111-4111-8111-111111111111?returnTo=${encodeURIComponent(release)}`,
+    );
+
+    expect(screen.getByRole('button', { name: '下一步：定价与发布' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '返回我的 Agent' })).toHaveAttribute(
+      'href',
+      '/capabilities',
+    );
+  });
+
+  it('does not show the pricing CTA for a non-release return target', () => {
+    const task = '/tasks/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43?from=trial';
+    renderPage(
+      `/session/11111111-1111-4111-8111-111111111111?returnTo=${encodeURIComponent(task)}`,
+    );
+
+    expect(screen.queryByRole('button', { name: '下一步：定价与发布' })).toBeNull();
   });
 
   it('keeps the first-generation state truthful and studio-specific', () => {
@@ -329,6 +364,7 @@ describe('ChatPage studio experience', () => {
   });
 
   it('shows ordered revisions, marks current UI, and creates a consume trial', async () => {
+    const releaseReturnTo = '/capabilities/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43/release/review';
     const first: ArtifactView = {
       id: '33333333-3333-4333-8333-333333333333',
       kind: 'html',
@@ -351,7 +387,9 @@ describe('ChatPage studio experience', () => {
       currentUiArtifactId: current.id,
     };
 
-    renderPage('/session/11111111-1111-4111-8111-111111111111');
+    renderPage(
+      `/session/11111111-1111-4111-8111-111111111111?returnTo=${encodeURIComponent(releaseReturnTo)}`,
+    );
 
     expect(screen.getByLabelText('UI 版本历史')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /版本 1/ })).toBeInTheDocument();
@@ -359,6 +397,12 @@ describe('ChatPage studio experience', () => {
     fireEvent.click(screen.getByRole('button', { name: '试用当前 UI' }));
     await waitFor(() =>
       expect(mocks.createTrial).toHaveBeenCalledWith('22222222-2222-4222-8222-222222222222'),
+    );
+    const studioReturnTo = `/try/session/11111111-1111-4111-8111-111111111111?mode=studio&returnTo=${encodeURIComponent(releaseReturnTo)}`;
+    await waitFor(() =>
+      expect(screen.getByTestId('location-probe')).toHaveTextContent(
+        `/session/88888888-8888-4888-8888-888888888888?returnTo=${encodeURIComponent(studioReturnTo)}`,
+      ),
     );
   });
 
@@ -459,17 +503,18 @@ describe('ChatPage consume Miniapp bridge', () => {
     const first = renderPage(`${sessionPath}?returnTo=${encodeURIComponent(taskReturnTo)}`);
 
     expect(screen.getByTestId('session-sidebar')).toHaveAttribute('data-return-to', taskReturnTo);
-    expect(screen.getByRole('button', { name: '返回发布流程' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回提取结果' })).toBeInTheDocument();
 
     first.unmount();
     renderPage(sessionPath);
 
     expect(screen.getByTestId('session-sidebar')).toHaveAttribute('data-return-to', taskReturnTo);
-    expect(screen.getByRole('button', { name: '返回发布流程' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '返回提取结果' })).toBeInTheDocument();
   });
 
   it('labels a trial return to its originating Studio session', () => {
-    const studioReturn = '/try/session/11111111-1111-4111-8111-111111111111';
+    const releaseReturn = '/capabilities/018f47ea-bc32-7a3d-8f6e-2f90c7b01d43/release/review';
+    const studioReturn = `/try/session/11111111-1111-4111-8111-111111111111?mode=studio&returnTo=${encodeURIComponent(releaseReturn)}`;
     renderPage(
       `/session/99999999-9999-4999-8999-999999999999?returnTo=${encodeURIComponent(studioReturn)}`,
     );

@@ -80,6 +80,28 @@ describe('first-party auth API', () => {
     expect((error as AuthRequestError).message).toBe('操作太频繁了，歇一会儿再试。');
   });
 
+  it('does not describe an email challenge gateway 401 as an invalid verification code', async () => {
+    fetchMock = installFetchMock({
+      status: 401,
+      json: {
+        error: {
+          userMessage: '验证码无效或已过期，请重新获取。',
+          retriable: false,
+          action: 'change_input',
+          traceId: 'trace-misrouted-challenge',
+        },
+      },
+    });
+
+    const error = await requestEmailChallenge({ email: 'Alice@example.com' }).catch(
+      (cause: unknown) => cause,
+    );
+
+    expect(error).toBeInstanceOf(AuthRequestError);
+    expect(error).toMatchObject({ kind: 'http', status: 401, outcomeUncertain: false });
+    expect((error as AuthRequestError).message).toBe('登录服务暂时不可用，请稍后重试。');
+  });
+
   it('never retries verification and marks a network result as uncertain', async () => {
     fetchMock = installFetchMock({ networkError: true });
 
@@ -125,13 +147,14 @@ describe('first-party auth API', () => {
   });
 
   it('keeps verification 4xx outcomes certain', async () => {
-    fetchMock = installFetchMock({ status: 401, json: {} });
+    fetchMock = installFetchMock({ status: 401, notJson: true });
     const error = await verifyEmail({
       email: 'Alice@example.com',
       code: '004271',
       returnTo: '/tasks',
     }).catch((cause: unknown) => cause);
     expect(error).toMatchObject({ status: 401, outcomeUncertain: false });
+    expect((error as AuthRequestError).message).toBe('验证码无效或已过期，请重新获取。');
   });
 
   it('parses verification success without exposing the session token to JavaScript', async () => {
