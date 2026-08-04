@@ -155,14 +155,17 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 ## CI 与 CD
 
-合并前 CI 位于 `.github/workflows/pr-ci.yml`，只由 `pull_request` 触发。它在仓库根完成依赖安装、shared 构建、format、lint、typecheck、无容器快速测试和 ShellCheck；不会构建或发布 Docker 镜像，也不会读取任何部署 Environment Secret。
+三个 workflow 对应「检查 / 构建 / 部署」三个阶段：
 
-`.github/workflows/ci.yml` 是 Main CD。`main` 更新后它才执行完整 build、集成测试、容器契约与镜像构建，并发布绑定精确提交 SHA 的不可变 release artifact。所有路径都相对仓库根；Docker build context 也是仓库根。
+- `.github/workflows/pr-ci.yml`（PR checks）：合并前质量门禁，只由 `pull_request` 触发。完成依赖安装、shared 构建、format、lint、typecheck、无容器快速测试和 ShellCheck；不构建或发布镜像，也不读取部署 Secret。
+- `.github/workflows/ci.yml`（Release build）：`main` 更新后执行完整 build、集成测试、容器契约与镜像构建，并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>` 构建清单。它也是分支构建的可复用入口（`workflow_call`）。
+- `.github/workflows/deploy.yml`（Deploy）：统一部署三个环境，按晋级链执行。
 
-Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s 上，命名空间分别为 `combo-test`、`combo-preview`、`combo-prod`，部署由 `.github/workflows/deploy.yml` 统一处理：
+Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s 上，命名空间分别为 `combo-test`、`combo-preview`、`combo-prod`：
 
-- 成功的 `main` Main CD 会自动触发同一提交的 Test 部署；具有仓库写入权限的成员也可以从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意同仓库分支及其精确 tip SHA，回调 main 定义的 `ci.yml` 为该提交构建不可变 artifact 并部署到 Test。
-- Preview 与 Production 通过手工 `workflow_dispatch` 触发，只接受可达 main 的修订。
+- **test**：任意同仓库分支可部署（分支验证沙箱）。具有仓库写入权限的成员通过 `workflow_dispatch` 选择分支及其精确 tip SHA，回调 main 定义的 `ci.yml` 为该分支构建不可变 artifact 并部署到 Test。
+- **preview**：只接受 main 修订。`Release build` 成功后自动部署同一 main 提交；也可手工 dispatch（仅接受可达 main 的修订）。
+- **production**：只有该修订已运行在 preview（preview 验证通过）且人工显式确认（`confirm_production`）后才可部署。
 - 三个环境的应用 rollout 各持一把并发锁互不阻塞；Preview/Production 共享 foundation（`combo-foundation`），对共享基建的迁移由主机侧 per-foundation 锁串行。Test 每次只更新应用，基础实例常驻、数据保留。
 
 ---
@@ -179,7 +182,7 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 ├── db/                # @cb/db   PostgreSQL 迁移 + 幂等 runner
 ├── infra/             # @cb/infra 编排、发布拓扑、k8s 清单、Nginx 与基础设施配置
 ├── scripts/           # @cb/scripts 发布渲染 / 部署 / 验收 / 集成脚本
-└── .github/workflows/ # PR CI（pr-ci.yml）、Main CD（ci.yml）与部署（deploy.yml）
+└── .github/workflows/ # PR checks（pr-ci.yml）、Release build（ci.yml）与部署（deploy.yml）
 ```
 
 更细的各包职责与设计决策，见文首「文档真源」指向的飞书文档。
