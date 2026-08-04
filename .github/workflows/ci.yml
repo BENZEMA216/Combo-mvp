@@ -1,4 +1,4 @@
-name: Main CD
+name: Release build
 
 on:
   push:

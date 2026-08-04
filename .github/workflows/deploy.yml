@@ -1,14 +1,14 @@
 name: Deploy
 
 # 三环境晋级链部署 workflow。
-# - test：任意同仓库分支或 main 都可部署（分支验证沙箱）。
-# - preview：只接受 main 修订；Main CD 成功时自动部署。
+# - test：任意同仓库分支可部署（分支验证沙箱），手工 dispatch。
+# - preview：只接受 main 修订；Release build 成功时自动部署。
 # - production：只有该修订已运行在 preview（preview 验证通过）且人工显式确认后才可部署。
 # - 每环境一把 GitHub concurrency 锁（combo-deploy-<env>），应用 rollout 互不阻塞；
 #   Preview/Production 共享 foundation 的迁移由主机侧 per-foundation flock 串行。
 on:
   workflow_run:
-    workflows: [Main CD]
+    workflows: [Release build]
     types: [completed]
     branches: [main]
   workflow_dispatch:
@@ -227,7 +227,7 @@ jobs:
       always() &&
       needs.select.result == 'success' &&
       (
-        (needs.select.outputs.trigger == 'auto' && matrix.environment != 'production') ||
+        (needs.select.outputs.trigger == 'auto' && matrix.environment == 'preview') ||
         (needs.select.outputs.trigger == 'dispatch' &&
           matrix.environment == needs.select.outputs.environment)
       ) &&

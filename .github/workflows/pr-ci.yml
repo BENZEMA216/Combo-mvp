@@ -1,4 +1,4 @@
-name: PR CI
+name: PR checks
 
 on:
   pull_request:
