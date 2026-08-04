@@ -47,6 +47,23 @@ function assertDisjoint(left, right, label) {
   }
 }
 
+test('Deploy grants its reusable Main CI caller the complete permission ceiling', () => {
+  const deployWorkflow = text('.github/workflows/deploy.yml');
+  const mainWorkflow = text('.github/workflows/ci.yml');
+  const buildBranch = capture(
+    deployWorkflow,
+    /\n {2}build_branch:\n([\s\S]*?)\n {2}deploy:\n/,
+    'Deploy branch-build job',
+  );
+  const releaseJob = capture(mainWorkflow, /\n {2}release:\n([\s\S]*)$/, 'Main CI release job');
+
+  assert.match(releaseJob, /\n {4}permissions:\n(?: {6}[^\n]+\n)* {6}actions: read\n/);
+  assert.match(buildBranch, /\n {4}permissions:\n(?: {6}[^\n]+\n)* {6}actions: read\n/);
+  assert.match(buildBranch, /\n {6}contents: read\n/);
+  assert.match(buildBranch, /\n {6}packages: write\n/);
+  assert.match(buildBranch, /\n {4}uses: \.\/\.github\/workflows\/ci\.yml\n/);
+});
+
 test('three environments keep explicit app, foundation, listener, and public-domain ownership', () => {
   const deploy = text('scripts/deploy-env.sh');
   const workflow = text('.github/workflows/deploy.yml');
