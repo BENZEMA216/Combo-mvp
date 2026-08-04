@@ -362,7 +362,7 @@ jobs:
           ssh release-target "rm -rf \"\$HOME/$REMOTE_DIR\"; install -d -m 0700 \"\$HOME/$REMOTE_DIR\""
           scp -q \
             scripts/deploy-env.sh \
-            "release-target:$HOME/combo-deploy/bin/deploy-env.sh"
+            "release-target:combo-deploy/bin/deploy-env.sh"
           scp -q \
             "$RUNNER_TEMP/rendered/foundation.yaml" \
             "$RUNNER_TEMP/rendered/migrate.yaml" \
