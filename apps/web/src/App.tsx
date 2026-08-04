@@ -13,6 +13,7 @@ import { LoginPage, NotFoundPage } from './pages/index.js';
 import { TasksPage } from './pages/tasks/TasksPage.js';
 import { TaskDetailPage } from './pages/tasks/TaskDetailPage.js';
 import { CapabilitiesPage } from './pages/capabilities/CapabilitiesPage.js';
+import { ReleasePage } from './pages/release/ReleasePage.js';
 import { PublicCapabilityPage } from './pages/public/PublicCapabilityPage.js';
 import { PublicCreatorPage } from './pages/public/PublicCreatorPage.js';
 import { LandingPage } from './pages/landing/LandingPage.js';
@@ -40,6 +41,8 @@ export function App(): ReactElement {
               <Route path="/tasks" element={<TasksPage />} />
               <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
               <Route path="/capabilities" element={<CapabilitiesPage />} />
+              <Route path="/capabilities/:capabilityId/release" element={<ReleasePage />} />
+              <Route path="/capabilities/:capabilityId/release/:step" element={<ReleasePage />} />
             </Route>
           </Route>
         </Route>

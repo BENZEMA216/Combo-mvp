@@ -2,6 +2,13 @@
 // 数据层面 mock：函数签名按真实接口的形状写（异步 + 未命中抛错），后端补上后
 // 只需把实现换成 fetch，页面组件不用动。数据是写死的演示 fixture，不发任何请求。
 
+import {
+  isPricingComplete,
+  isValidReleaseHandle,
+  pricingLabel,
+  readReleaseDraft,
+} from '../release/releaseDraft.js';
+
 /** 公开能力视图（对外只读：无 instructions 等创作者私有字段）。 */
 export interface PublicCapabilityView {
   slug: string;
@@ -11,6 +18,11 @@ export interface PublicCapabilityView {
   inputs: { fields: PublicInputField[] };
   starterPrompts: string[];
   boundaries: { redLines: string[] };
+  /** 当前设备上的发布页草稿预览，不是服务端公开页。 */
+  localPreview?: {
+    capabilityId: string;
+    pricing: string;
+  };
 }
 
 export interface PublicInputField {
@@ -147,6 +159,52 @@ export async function fetchPublicCapability(slug: string): Promise<PublicCapabil
   const hit = MOCK_CAPABILITIES.find((c) => c.slug === slug);
   if (!hit) throw new Error(`公开能力不存在：${slug}`);
   return hit;
+}
+
+/**
+ * 把完整的本机发布草稿投影成一张可视化公开页。
+ * 这个分支不会注册域名，也不会将草稿暴露给其他设备。
+ */
+export async function fetchLocalReleasePreview(
+  slug: string,
+  capabilityId: string,
+): Promise<PublicCapabilityView> {
+  await delay(120);
+  const draft = readReleaseDraft(capabilityId);
+  if (draft.handle !== slug || !isValidReleaseHandle(draft.handle) || !isPricingComplete(draft)) {
+    throw new Error('这台设备上没有找到完整的发布草稿。');
+  }
+
+  return {
+    slug,
+    name: draft.agentName,
+    tagline: '把你反复做的工作，变成别人可以直接使用的 Agent。',
+    description:
+      draft.agentSummary ?? '这是从真实工作上下文中提取，并在 Combo Studio 中调整过的 Agent。',
+    inputs: {
+      fields: [
+        { key: 'goal', label: '这次想完成的任务', type: 'text', required: true },
+        { key: 'context', label: '必要的背景或材料', type: 'text', required: false },
+        { key: 'expectation', label: '对结果的要求', type: 'text', required: false },
+      ],
+    },
+    starterPrompts: [
+      `帮我用「${draft.agentName}」完成一个真实任务。`,
+      '先问我必要的背景，再给出可直接使用的结果。',
+      '根据我的反馈继续修改，直到结果可用。',
+    ],
+    boundaries: {
+      redLines: [
+        '当前页面只是这台设备上的发布效果预览。',
+        '定价尚未连接计费系统，预览不会产生费用。',
+        '计划公开地址尚未注册，不能在其他设备上访问。',
+      ],
+    },
+    localPreview: {
+      capabilityId,
+      pricing: pricingLabel(draft),
+    },
+  };
 }
 
 export async function fetchPublicCreator(slug: string): Promise<PublicCreatorProfile> {

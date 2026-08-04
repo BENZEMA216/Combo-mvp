@@ -2,6 +2,10 @@ const RETURN_TO_ORIGIN = 'https://combo.invalid';
 const MAX_DECODE_PASSES = 5;
 const UUID_PATH_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
 const TASK_DETAIL_RETURN_PATH = new RegExp(`^/tasks/${UUID_PATH_SEGMENT}(?:\\?.*)?$`, 'i');
+const CAPABILITY_RELEASE_RETURN_PATH = new RegExp(
+  `^/capabilities/${UUID_PATH_SEGMENT}/release(?:/(?:pricing|identity|review|success))?(?:\\?.*)?$`,
+  'i',
+);
 
 function hasControlCharacter(value: string): boolean {
   return [...value].some((character) => {
@@ -69,4 +73,12 @@ export function sanitizeReturnTo(value: string | null | undefined): string | nul
 export function sanitizeTaskReturnTo(value: string | null | undefined): string | null {
   const safe = sanitizeReturnTo(value);
   return safe && TASK_DETAIL_RETURN_PATH.test(safe) ? safe : null;
+}
+
+/** 真实试用只允许回到创建结果或同一 Agent 的发布中心，不接受任意站内页面。 */
+export function sanitizeTrialReturnTo(value: string | null | undefined): string | null {
+  const safe = sanitizeReturnTo(value);
+  return safe && (TASK_DETAIL_RETURN_PATH.test(safe) || CAPABILITY_RELEASE_RETURN_PATH.test(safe))
+    ? safe
+    : null;
 }

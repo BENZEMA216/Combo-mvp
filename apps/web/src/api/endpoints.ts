@@ -9,7 +9,7 @@ import {
   type PublishResult,
   type TaskView,
 } from '@cb/shared';
-import { sanitizeTaskReturnTo } from '../safeReturnTo.js';
+import { sanitizeTrialReturnTo } from '../safeReturnTo.js';
 import { apiGet, apiGetEnvelope, apiPost } from './client.js';
 
 /** 游标分页的一页（meta.page 缺失时按「单页到底」兜底，不崩列表）。 */
@@ -87,6 +87,11 @@ export function listCapabilities(query: ListCapabilitiesQuery = {}): Promise<Pag
   });
 }
 
+/** 单个 Agent：定价发布中心与深链恢复使用稳定 capabilityId 读取。 */
+export function getCapability(capabilityId: string): Promise<CapabilityView> {
+  return apiGet<CapabilityView>(`/capabilities/${encodeURIComponent(capabilityId)}`);
+}
+
 export function publishCapability(capabilityId: string): Promise<PublishResult> {
   return apiPost<PublishResult>(`/capabilities/${encodeURIComponent(capabilityId)}/publish`);
 }
@@ -116,6 +121,6 @@ export function createStudioSession(capabilityId: string): Promise<StudioSession
  */
 export function trialUrl(capabilityId: string, returnTo?: string): string {
   const path = `/try/c/${encodeURIComponent(capabilityId)}`;
-  const safeReturnTo = sanitizeTaskReturnTo(returnTo);
+  const safeReturnTo = sanitizeTrialReturnTo(returnTo);
   return safeReturnTo ? `${path}?returnTo=${encodeURIComponent(safeReturnTo)}` : path;
 }

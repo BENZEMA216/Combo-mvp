@@ -3,16 +3,23 @@
 // （需要你提供 / 可以这样开始 / 使用边界）。数据来自前端 mock 层 publicApi。
 import type { ReactElement } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { useParams } from 'react-router-dom';
+import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { trialUrl } from '../../api/index.js';
 import { ErrorState, Skeleton } from '../../components/index.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
-import { fetchPublicCapability } from './publicApi.js';
+import { releasePath } from '../release/releaseDraft.js';
+import { fetchLocalReleasePreview, fetchPublicCapability } from './publicApi.js';
 
 export function PublicCapabilityPage(): ReactElement {
   const { slug = '' } = useParams<{ slug?: string }>();
+  const [searchParams] = useSearchParams();
+  const previewCapabilityId = searchParams.get('preview');
   const query = useQuery({
-    queryKey: ['public-capability', slug],
-    queryFn: () => fetchPublicCapability(slug),
+    queryKey: ['public-capability', slug, previewCapabilityId],
+    queryFn: () =>
+      previewCapabilityId
+        ? fetchLocalReleasePreview(slug, previewCapabilityId)
+        : fetchPublicCapability(slug),
     enabled: slug.length > 0,
     retry: false,
   });
@@ -42,16 +49,47 @@ export function PublicCapabilityPage(): ReactElement {
       aria-labelledby="cb-public-capability-title"
     >
       <header className="cb-public-capability__hero">
-        <p className="cb-public-capability__eyebrow">公开能力</p>
+        <p className="cb-public-capability__eyebrow">
+          {capability.localPreview ? '本机发布预览' : '公开能力'}
+        </p>
         <h1 className="cb-public-capability__title" id="cb-public-capability-title">
           {capability.name}
         </h1>
         <p className="cb-public-capability__tagline">{capability.tagline}</p>
         <p className="cb-public-capability__description">{capability.description}</p>
+        {capability.localPreview && (
+          <div className="cb-public-capability__preview-note" role="note">
+            <strong>这是这台设备上的效果预览</strong>
+            <span>
+              草稿定价：{capability.localPreview.pricing}
+              。域名和计费尚未上线，这个地址不会分享给其他人。
+            </span>
+          </div>
+        )}
         <div className="cb-public-capability__actions">
-          <a className="cb-public__action" href="/capabilities">
-            返回我的 Agent
-          </a>
+          {capability.localPreview ? (
+            <>
+              <a
+                className="cb-public__action"
+                href={trialUrl(
+                  capability.localPreview.capabilityId,
+                  releasePath(capability.localPreview.capabilityId, 'success'),
+                )}
+              >
+                登录后真实试用
+              </a>
+              <Link
+                className="cb-public__action cb-public__action--ghost"
+                to={`/capabilities/${encodeURIComponent(capability.localPreview.capabilityId)}/release/success`}
+              >
+                返回发布结果
+              </Link>
+            </>
+          ) : (
+            <a className="cb-public__action" href="/capabilities">
+              返回我的 Agent
+            </a>
+          )}
         </div>
       </header>
 
