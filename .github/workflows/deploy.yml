@@ -369,7 +369,7 @@ jobs:
             "$RUNNER_TEMP/rendered/apps.yaml" \
             "$RUNNER_TEMP/combo-build/metadata/release.json" \
             "release-target:$REMOTE_DIR/"
-          ssh release-target chmod 0755 "$HOME/combo-deploy/bin/deploy-env.sh"
+          ssh release-target 'chmod 0755 "$HOME/combo-deploy/bin/deploy-env.sh"'
           ssh release-target bash -s -- \
             "$REMOTE_DIR" "$ENV" "$MANIFEST_DIGEST" <<'REMOTE'
           set -euo pipefail
