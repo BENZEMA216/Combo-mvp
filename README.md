@@ -192,4 +192,4 @@ Test、Preview、Production 的发布入口彼此独立：
 
 源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0009`、再次幂等执行、应用角色权限和异常账本拒绝。
 
-Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`。受保护的 `main` 控制器只接受手工指定的开放同仓库 PR 及其精确 tip SHA；候选必须包含当前 `main`，并核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通快速测试也不启动 Docker 或 Docker Compose。
+Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`，并使用独立公网入口 `https://test.43-160-242-46.sslip.io`（Web）和 `https://test-s3.43-160-242-46.sslip.io`（对象存储）。受保护的 `main` 控制器只接受手工指定的开放同仓库 PR 及其精确 tip SHA；候选必须包含当前 `main`，并核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通快速测试也不启动 Docker 或 Docker Compose。

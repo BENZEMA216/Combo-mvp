@@ -19,8 +19,9 @@ const ENVIRONMENTS = Object.freeze({
     redisQueueHost: 'redis-queue',
     redisHotHost: 'redis-hot',
     minioHost: 'minio',
-    publicAppOrigin: 'http://127.0.0.1:18080',
-    sessionCookieSecure: 'false',
+    publicAppOrigin: 'https://test.43-160-242-46.sslip.io',
+    publicS3Endpoint: 'https://test-s3.43-160-242-46.sslip.io',
+    sessionCookieSecure: 'true',
   },
   preview: {
     namespace: 'combo-review',
@@ -148,6 +149,16 @@ function mapScalars(value, environment, manifest) {
     return value.map((item) => mapScalars(item, environment, manifest));
   }
   if (value && typeof value === 'object') {
+    if (
+      environment === 'test' &&
+      value.name === 'S3_PUBLIC_ENDPOINT' &&
+      Object.hasOwn(value, 'valueFrom')
+    ) {
+      return {
+        name: 'S3_PUBLIC_ENDPOINT',
+        value: ENVIRONMENTS.test.publicS3Endpoint,
+      };
+    }
     return Object.fromEntries(
       Object.entries(value).map(([key, child]) => [key, mapScalars(child, environment, manifest)]),
     );

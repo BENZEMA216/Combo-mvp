@@ -64,7 +64,7 @@ describe('runtime authentication configuration', () => {
     );
   });
 
-  it('requires secure Cookies and HTTPS origins for Preview and Production', async () => {
+  it('requires secure Cookies and HTTPS origins for every deployed environment', async () => {
     setProductionInfrastructure();
     process.env.PUBLIC_APP_ORIGINS = 'http://combo.example';
     process.env.SESSION_COOKIE_SECURE = 'false';
@@ -74,7 +74,7 @@ describe('runtime authentication configuration', () => {
     expect(() => loadEnv()).toThrowError('SESSION_COOKIE_SECURE');
   });
 
-  it('allows a production-mode Test process to use an explicit non-secure Cookie', async () => {
+  it('rejects a production-mode Test process with a non-secure Cookie', async () => {
     setProductionInfrastructure();
     process.env.COMBO_ENVIRONMENT = 'test';
     process.env.PUBLIC_APP_ORIGINS = 'http://combo-test.internal';
@@ -82,9 +82,7 @@ describe('runtime authentication configuration', () => {
     vi.resetModules();
 
     const { loadEnv } = await import('../platform/config/env.js');
-    const env = loadEnv();
-    expect(env.SESSION_COOKIE_SECURE).toBe(false);
-    expect(env.PUBLIC_APP_ORIGINS).toBe('http://combo-test.internal');
+    expect(() => loadEnv()).toThrowError('SESSION_COOKIE_SECURE');
   });
 
   it('rejects malformed or ambiguously normalized origin lists', async () => {

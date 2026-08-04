@@ -8,7 +8,7 @@
 
 Test 使用 `combo-preview`，Preview 使用 `combo-review`，Production 使用 `combo`。Preview 与 Production 从同一个已经构建并验证的 release artifact 渲染；Production 不重新构建镜像。
 
-浏览器认证 origin 由发布渲染固定：Test 只允许 `http://127.0.0.1:18080`，Preview 只允许 `https://review.43-160-242-46.sslip.io`，Production 同时允许验收入口 `https://agora.43-160-242-46.sslip.io`、正式入口 `https://buildwithcombo.com` 和别名 `https://www.buildwithcombo.com`。
+浏览器认证 origin 由发布渲染固定：Test 只允许 `https://test.43-160-242-46.sslip.io`，Preview 只允许 `https://review.43-160-242-46.sslip.io`，Production 同时允许验收入口 `https://agora.43-160-242-46.sslip.io`、正式入口 `https://buildwithcombo.com` 和别名 `https://www.buildwithcombo.com`。Test 的 `18080` 与 `19000` 只用于受控基础设施传输，不再作为浏览器身份。
 
 Test 的重置命令必须同时接收完整源码 SHA、GitHub workflow run ID 和 run attempt。它在证明 PostgreSQL、Redis Queue、MinIO 三个固定目录均已清空后重建四个基础工作负载，把三元身份、实际 Pod UID 和时间写入 attempt-scoped 的 `0600` 回执。部署命令只接受同一 SHA、同一 run ID、同一 run attempt、完成时间不超过十五分钟的回执，并通过同目录原子改名只消费一次。
 
@@ -18,23 +18,25 @@ Test 的迁移任务固定校验 `0009_billing.sql`，并在数据重置后的�
 
 Test 的 root-owned dispatcher 和 `combo-dev-smoke.sh` 只判定迁移、运行态、存储、网络、健康、日志与发布身份等基础设施事实，不再调用旧的 `/opt/combo-dev/acceptance/run` 或声明产品验收通过。部署基线允许空数据 Worker 暂无 pipeline，邮箱 OTP、双身份隔离和六区产品流程只由受信任的 `main` 控制器固定的浏览器 runner 判定；候选分支不能替换这套验收程序。浏览器完成后再执行要求 Worker 活动的八来源日志泄漏审计。dispatcher 会写入两小时有界的待验收标记；端口、浏览器、日志、evidence、artifact 上传或完成确认失败时，受保护 workflow 使用独立最小 fencer 关闭 Test 写入面，不清数据、不生成新的 reset proof，硬取消时由持久 guard 在期限后收敛。
 
+`combo-dev-public-s3-smoke.py` 只从 owner-only 主机配置取得应用对象存储身份，使用固定 Test S3 HTTPS 主机执行最多 64 字节的短时 SigV4 PUT、GET 和 DELETE。它禁用环境代理，只输出固定 PASS/BLOCKED 状态，不输出凭据、对象键、签名、完整 URL 或服务端响应。
+
 `combo-dev-control-plane.test.mjs` 的容器镜像探针只有在 `COMBO_RUN_CONTAINER_CONTRACTS=1` 时才会调用 Docker。GitHub Actions 的受控 Test 步骤显式启用该变量；tecent2 上的普通源码检查不会探测或启动 Docker。
 
 `goal-b-frozen-audit.test.mjs` 将固定冻结提交相对共同基线的 256 个路径，与 `docs/goal-b-frozen-preview-audit.md` 逐项比对，并强制旧迁移与旧 Cloud Review 拓扑保持明确废弃。
 
-`goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定 loopback、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Studio 验收按服务端接受的精确 Turn ID 等待；若 Turn 已进入失败、中断或“完成但无 Artifact”状态，会立即记录固定白名单诊断码，不保存原始错误或继续空等。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
+`goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用 tecent2 已安装的 Chrome，在 Test 固定公网 HTTPS 入口、Preview 固定 Review 入口或 Production 正式域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。Studio 验收按服务端接受的精确 Turn ID 等待；若 Turn 已进入失败、中断或“完成但无 Artifact”状态，会立即记录固定白名单诊断码，不保存原始错误或继续空等。Preview 还验证 Web 与 Runtime badge 的完整发布身份和真实剪贴板内容，并通过页面 bootstrap 恢复 gate 内会话及拒绝恶意 returnTo。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。
 
 `PR CI` 由 `pull_request` 触发，只运行格式、lint、类型、快速应用单测、关键 workflow 契约测试和 ShellCheck；它跳过 container contracts 与耗时的发布状态机模拟，不使用 Docker，不构建镜像或 release artifact。真实 Test 是独立的 `workflow_dispatch`：具有仓库写入权限的成员从当前 `main` 上受信任的控制器选择一个以当前 `main` 为 base、同仓库且仍开放的 PR，并提交其精确 head SHA。控制器复验 PR 状态、base、分支 tip 和 SHA 可达性后，调用 `main` 定义的可复用 Main CD 构建 attempt-scoped 的不可变 `combo-release-<SHA>-<source-CI-attempt>` artifact，随后仍使用 `main` 固定的部署、校验和浏览器验收程序。`combo-dev` Environment 只允许 `main` 是为了阻止分支修改过的 workflow 读取 SSH 和 Resend Secret，不是对候选源码分支的限制。
 
 PR Test 的成功结果与 Test promotion identity 一并放入 `combo-branch-test-evidence-<SHA>-<Test-attempt>`，只用于所选 PR 的非晋级验证。Preview 不查询或下载这份证据；`main` push 的 Main CD 成功后会直接触发 Preview，Preview 与 Production 只复用该 Main CD 生成的同一 artifact 和 digest 链。Preview promotion 与 Production evidence 都使用无 Test 字段的 schema v5。Main CD、PR Test、Preview 和 Production 的成功证据 artifact 名都包含实际 producer attempt，rerun 不会覆盖或混入前一次 attempt。失败结果经过独立的 exact-schema 校验后只上传到 run/attempt 唯一的 `combo-test-failure-evidence-<SHA>-<run>-<attempt>`，它不包含可用于晋级的 `source-release.json`。`ACCEPTANCE_RESEND_API_KEY` 必须是对应 GitHub Environment 中可读取 sent-email API 的受保护 Secret；Test 使用受信任 `main` 控制器中的 helper，Production 则在任何环境变更前使用已通过 Preview 的同一 Main CD release artifact 内 helper 验证该权限。浏览器网络只允许对应应用 origin，Resend 读取由 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
 
-在 Test Web 已通过本机 loopback 转发后，从仓库根目录运行：
+在 Test Web 已按精确部署 attempt 发布到公网 HTTPS 入口后，从仓库根目录运行：
 
 ```sh
 test_evidence_dir=$(mktemp -d)
 pnpm --filter @cb/scripts acceptance:goal-b -- \
   --revision 0123456789abcdef0123456789abcdef01234567 \
-  --web-origin http://127.0.0.1:18080 \
+  --web-origin https://test.43-160-242-46.sslip.io \
   --output "$test_evidence_dir/goal-b-browser.json"
 ```
 

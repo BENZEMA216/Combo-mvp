@@ -215,7 +215,7 @@ function validateProductionAuthConfig(env: Env): void {
 
   const releaseEnvironment = releaseMetadataFromEnv(env).environment;
   if (
-    (releaseEnvironment === 'preview' || releaseEnvironment === 'production') &&
+    ['test', 'preview', 'production'].includes(releaseEnvironment) &&
     !env.SESSION_COOKIE_SECURE
   ) {
     invalidKeys.push('SESSION_COOKIE_SECURE');

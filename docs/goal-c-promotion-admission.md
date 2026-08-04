@@ -76,11 +76,11 @@ Test、Preview 和 Production 各自使用严格的 promotion identity 字段；
 只有 Preview 与 Production 形成晋级证据链。环境到 namespace 和部署 workflow 的映射
 固定如下：
 
-| 环境       | Namespace       | 部署 workflow                     |
-| ---------- | --------------- | --------------------------------- |
-| Test       | `combo-preview` | `.github/workflows/combo-dev.yml` |
-| Preview    | `combo-review`  | `.github/workflows/preview.yml`   |
-| Production | `combo`         | `.github/workflows/cd.yml`        |
+| 环境       | Namespace       | Web 入口                                | 部署 workflow                     |
+| ---------- | --------------- | --------------------------------------- | --------------------------------- |
+| Test       | `combo-preview` | `https://test.43-160-242-46.sslip.io`   | `.github/workflows/combo-dev.yml` |
+| Preview    | `combo-review`  | `https://review.43-160-242-46.sslip.io` | `.github/workflows/preview.yml`   |
+| Production | `combo`         | `https://buildwithcombo.com`            | `.github/workflows/cd.yml`        |
 
 六区通用结果使用 `combo-six-area-live` schema。它要求 Creation Journey、Studio、
 Authoring、Runtime、访问与发布身份、运维与发布六区中的每个固定检查按固定顺序
@@ -91,8 +91,8 @@ JSON 获得通过状态。
 
 三个环境都从各自被固定 SHA 和 digest 锁定的 release artifact 取出
 `acceptance/live-browser-acceptance.mjs` 与一同校验的 `playwright-core.tgz`，在 tecent2
-已安装的 Chrome 中运行。PR Test 使用其 PR head artifact 和固定 loopback Web
-forward；Preview 与 Production 复用同一个 Main CD artifact，分别使用固定公网 Review
+已安装的 Chrome 中运行。PR Test 使用其 PR head artifact 和固定公网 HTTPS Test
+入口；Preview 与 Production 复用同一个 Main CD artifact，分别使用固定公网 Review
 入口和 `https://buildwithcombo.com`。PR Test 会把受校验的浏览器结果和 promotion
 identity 纳入 `combo-branch-test-evidence-<SHA>-<Test-attempt>`，该 artifact 不参与
 Preview 准入。Main CD、PR Test、Preview 和 Production 的 artifact 名均包含实际

@@ -12,6 +12,9 @@ const ENVIRONMENTS = Object.freeze({
     additionalCredentialNames: [],
     pullCredentialName: 'combo-dev-registry',
     postgresHost: 'postgres',
+    publicAppOrigin: 'https://test.43-160-242-46.sslip.io',
+    publicS3Endpoint: 'https://test-s3.43-160-242-46.sslip.io',
+    sessionCookieSecure: 'true',
   },
   preview: {
     namespace: 'combo-review',
@@ -20,6 +23,8 @@ const ENVIRONMENTS = Object.freeze({
     pullCredentialName: 'combo-preview-ghcr-pull',
     foundationTrack: 'preview-v1',
     postgresHost: 'release-postgres',
+    publicAppOrigin: 'https://review.43-160-242-46.sslip.io',
+    sessionCookieSecure: 'true',
   },
   production: {
     namespace: 'combo',
@@ -28,6 +33,9 @@ const ENVIRONMENTS = Object.freeze({
     pullCredentialName: 'ghcr-pull',
     foundationTrack: 'production-v1',
     postgresHost: 'release-postgres',
+    publicAppOrigin:
+      'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
+    sessionCookieSecure: 'true',
   },
 });
 
@@ -294,19 +302,21 @@ function validateApps(resources, options, manifest, manifestDigest) {
       ) {
         fail(`${resourceIdentity(resource)} does not use its fixed database role`);
       }
-      const expectedOrigin = {
-        test: 'http://127.0.0.1:18080',
-        preview: 'https://review.43-160-242-46.sslip.io',
-        production:
-          'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
-      }[options.environment];
+      const expectedOrigin = ENVIRONMENTS[options.environment].publicAppOrigin;
       if (
         name !== 'worker' &&
         (env.get('PUBLIC_APP_ORIGINS')?.value !== expectedOrigin ||
           env.get('SESSION_COOKIE_SECURE')?.value !==
-            (options.environment === 'test' ? 'false' : 'true'))
+            ENVIRONMENTS[options.environment].sessionCookieSecure)
       ) {
         fail(`${resourceIdentity(resource)} has an incorrect browser auth origin`);
+      }
+      if (
+        name === 'api' &&
+        options.environment === 'test' &&
+        env.get('S3_PUBLIC_ENDPOINT')?.value !== ENVIRONMENTS.test.publicS3Endpoint
+      ) {
+        fail(`${resourceIdentity(resource)} has an incorrect public object-store endpoint`);
       }
     }
     assertCommand(containers(resource)[0], undefined);

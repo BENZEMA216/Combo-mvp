@@ -84,7 +84,7 @@ spec:
             - name: S3_ENDPOINT
               value: http://minio:9000
             - name: S3_PUBLIC_ENDPOINT
-              value: http://127.0.0.1:19000
+              value: https://test-s3.43-160-242-46.sslip.io
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -96,9 +96,9 @@ spec:
                   key: S3_SECRET_KEY
                   name: combo-dev-env
             - name: PUBLIC_APP_ORIGINS
-              value: http://127.0.0.1:18080
+              value: https://test.43-160-242-46.sslip.io
             - name: SESSION_COOKIE_SECURE
-              value: 'false'
+              value: 'true'
             - name: RESEND_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -315,9 +315,9 @@ spec:
             - name: LOG_LEVEL
               value: warn
             - name: PUBLIC_APP_ORIGINS
-              value: http://127.0.0.1:18080
+              value: https://test.43-160-242-46.sslip.io
             - name: SESSION_COOKIE_SECURE
-              value: 'false'
+              value: 'true'
             - name: RUNTIME_BILLING_FREE_USES
               value: '3'
             - name: RUNTIME_BILLING_UNIT_PRICE_CENTS

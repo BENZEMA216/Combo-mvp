@@ -71,8 +71,8 @@ describe('runtime release version', () => {
         S3_ACCESS_KEY: 'test-access',
         S3_SECRET_KEY: 'test-secret',
         PUBLIC_APP_ORIGINS:
-          environment === 'test' ? 'http://combo-test.internal' : 'https://combo.example',
-        SESSION_COOKIE_SECURE: environment === 'test' ? 'false' : 'true',
+          environment === 'test' ? 'https://test.43-160-242-46.sslip.io' : 'https://combo.example',
+        SESSION_COOKIE_SECURE: 'true',
         ...releaseEnvironment,
         COMBO_ENVIRONMENT: environment,
       };

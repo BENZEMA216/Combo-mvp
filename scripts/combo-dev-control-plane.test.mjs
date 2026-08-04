@@ -1232,7 +1232,9 @@ test('Test runs and validates the exact release artifact six-area browser accept
   );
   assert.doesNotMatch(liveStep, /\$RELEASE_ROOT\/(?:acceptance|scripts)\//);
   assert.match(liveStep, /--environment test/);
-  assert.match(liveStep, /--web-origin http:\/\/127\.0\.0\.1:18080/);
+  assert.match(liveStep, /test_web_origin=https:\/\/test\.43-160-242-46\.sslip\.io/);
+  assert.match(liveStep, /test_s3_origin=https:\/\/test-s3\.43-160-242-46\.sslip\.io/);
+  assert.match(liveStep, /--web-origin https:\/\/test\.43-160-242-46\.sslip\.io/);
   assert.match(liveStep, /--output "\$output"/);
   assert.match(liveStep, /acceptance\/resend-sent-email\.mjs/);
   assert.match(
@@ -1269,17 +1271,14 @@ test('Test runs and validates the exact release artifact six-area browser accept
   assert.match(liveStep, /releaseArtifactDigest: \$releaseArtifactDigest/);
   assert.match(
     liveStep,
-    /ssh -T combo-dev-target[\s\\\n]*'sudo -- \/opt\/combo-dev\/bin\/combo-dev-forwarder-lease'/,
+    /combo-dev-publication[\s\\\n]*--open-pending "\$REVISION" "\$RUN_ID" "\$RUN_ATTEMPT"/,
   );
-  assert.match(liveStep, /trap release_forwarder_lease EXIT/);
-  assert.match(liveStep, /forwarders_are inactive/);
-  assert.match(liveStep, /grep -Fq 'PASS lease=active'[\s\S]*forwarders_are active/);
-  assert.match(liveStep, /exec 7>&-/);
-  assert.match(
-    liveStep,
-    /for _ in \$\(seq 1 45\); do[\s\S]*forwarders_are inactive[\s\S]*stopped=1/,
-  );
-  assert.ok(liveStep.indexOf('lease_ready == 1') < liveStep.indexOf('node "$runner"'));
+  assert.match(liveStep, /public_ready == 1/);
+  assert.match(liveStep, /"\$test_web_origin\/version\.json"/);
+  assert.match(liveStep, /"\$test_s3_origin\/minio\/health\/ready"/);
+  assert.match(liveStep, /access-control-allow-origin: \$test_web_origin/);
+  assert.doesNotMatch(liveStep, /combo-dev-forwarder-lease|release_forwarder_lease/);
+  assert.ok(liveStep.indexOf('public_ready == 1') < liveStep.indexOf('node "$runner"'));
   assert.match(
     liveStep,
     /combo-dev-smoke[\s\\\n]*--logs-only[\s\\\n]*--revision "\$revision"[\s\\\n]*--since-time "\$product_started_at"[\s\\\n]*--workflow-run-id "\$workflow_run_id"[\s\\\n]*--workflow-run-attempt "\$workflow_run_attempt"/,
@@ -2780,7 +2779,7 @@ test('first bootstrap tolerates absent forwarder units and serializes the persis
   );
   assert.match(
     stopBody,
-    /systemctl stop combo-dev-web-forward\.service combo-dev-s3-forward\.service[^\n]*\|\| true/,
+    /systemctl stop combo-dev-web-forward\.service combo-dev-s3-forward\.service[\s\\\n]*combo-dev-public-web-forward\.service combo-dev-public-s3-forward\.service[^\n]*\|\| true/,
   );
   assert.ok(stopBody.indexOf('systemctl stop') < stopBody.indexOf('forwarders_stopped'));
 
@@ -2883,7 +2882,9 @@ umask 077
 FAILURE_FENCE_MARKER="$STATE_DIR/writers-fenced"
 EXTERNAL_FENCE_MARKER="$STATE_DIR/external-fence"
 ACCEPTANCE_PENDING_MARKER="$STATE_DIR/acceptance-pending"
+PUBLICATION_MARKER="$STATE_DIR/publication"
 FENCE_LOCK_FILE="$STATE_DIR/fence.lock"
+FORWARDER_LOCK_FILE="$STATE_DIR/forwarders.lock"
 OPERATION_LOCK_FILE="$STATE_DIR/operation.lock"
 FAILURE_FENCE_VALUE='${generic}'
 SAFE_IDLE_FENCE_VALUE='${safe}'
@@ -3558,6 +3559,7 @@ fi
       source: resetFunctions,
       markerState,
       body: `
+stop_forwarders() { return 0; }
 if begin_reset_mutation_fence aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 20 3; then
   printf 'success:%s\\n' "$MUTATING" >"$OUTCOME"
 else
@@ -3579,6 +3581,7 @@ fi
     markerState: 'generic',
     body: `
 forwarders_stopped() { return 0; }
+stop_forwarders() { return 0; }
 verify_complete_writer_inventory_zero() { return 0; }
 printf 'attempt ${oldRevision} 10 2\\n' >"$EXTERNAL_FENCE_MARKER"
 printf '${oldRevision} 10 2 9999999999\\n' >"$ACCEPTANCE_PENDING_MARKER"
@@ -3601,6 +3604,7 @@ fi
     markerState: 'generic',
     body: `
 forwarders_stopped() { return 0; }
+stop_forwarders() { return 0; }
 verify_complete_writer_inventory_zero() { return 0; }
 ATTEMPT_REVISION=${oldRevision}
 ATTEMPT_RUN_ID=10
@@ -3778,7 +3782,7 @@ test('post-deploy acceptance is TTL-bound and failure fencing cannot mint a repl
   );
   assert.match(
     deploy,
-    /flock -w 300 8[\s\S]*\[\[ ! -e "\$EXTERNAL_FENCE_MARKER" && ! -L "\$EXTERNAL_FENCE_MARKER" \]\][\s\S]*write_acceptance_pending[\s\S]*rm -f -- "\$FAILURE_FENCE_MARKER"/,
+    /flock -w 300 8[\s\S]*! -e "\$EXTERNAL_FENCE_MARKER" && ! -L "\$EXTERNAL_FENCE_MARKER"[\s\S]*! -e "\$PUBLICATION_MARKER" && ! -L "\$PUBLICATION_MARKER"[\s\S]*write_acceptance_pending[\s\S]*rm -f -- "\$FAILURE_FENCE_MARKER"/,
   );
   assert.match(guard, /--fence-attempt\)/);
   assert.match(guard, /fence_now '受控 Test 后置验收未完成' 0 0/);
@@ -4299,6 +4303,302 @@ test('listener validation rejects every additional IPv4 or IPv6 address and wron
   }
 });
 
+test('public live validator binds release images, Services, Pods, and EndpointSlices', () => {
+  const work = mkdtempSync(join(tmpdir(), 'combo-dev-public-live-'));
+  const apiImage = imageArgs[1];
+  const runtimeImage = imageArgs[3];
+  const webImage = imageArgs[5];
+  const images = {
+    api: apiImage,
+    worker: apiImage,
+    runtime: runtimeImage,
+    web: webImage,
+    minio: MINIO_IMAGE,
+  };
+  const servicePorts = {
+    api: ['http', 3000, 3000],
+    runtime: ['http', 3100, 3100],
+    web: ['http', 80, 8080],
+    minio: ['api', 9000, 9000],
+  };
+  const paths = Object.fromEntries(
+    ['images', 'metadata', 'deployments', 'statefulset', 'services', 'pods', 'slices'].map(
+      (name) => [name, join(work, `${name}.json`)],
+    ),
+  );
+  const deployment = (name) => ({
+    metadata: { name, namespace: 'combo-preview', generation: 1 },
+    spec: {
+      replicas: 1,
+      selector: { matchLabels: { app: name } },
+      template: {
+        metadata: { labels: { app: name, 'combo.dev/environment': 'combo-dev' } },
+        spec: {
+          containers: [
+            {
+              name,
+              image: images[name],
+              envFrom: [
+                { configMapRef: { name: `combo-release-meta-${RELEASE_SHA.slice(0, 12)}` } },
+              ],
+            },
+          ],
+        },
+      },
+    },
+    status: {
+      observedGeneration: 1,
+      replicas: 1,
+      updatedReplicas: 1,
+      readyReplicas: 1,
+      availableReplicas: 1,
+    },
+  });
+  const pod = (name, index) => ({
+    metadata: {
+      name: name === 'minio' ? 'minio-0' : `${name}-fixture`,
+      namespace: 'combo-preview',
+      uid: `uid-${name}`,
+      labels: { app: name, 'combo.dev/environment': 'combo-dev' },
+    },
+    spec: { containers: [{ name, image: images[name] }] },
+    status: {
+      phase: 'Running',
+      podIP: `10.42.0.${index + 10}`,
+      conditions: [{ type: 'Ready', status: 'True' }],
+      containerStatuses: [
+        {
+          name,
+          ready: true,
+          image: images[name],
+          imageID: `containerd://${images[name].split('@')[1]}`,
+        },
+      ],
+    },
+  });
+  const payload = {
+    metadata: {
+      metadata: {
+        name: `combo-release-meta-${RELEASE_SHA.slice(0, 12)}`,
+        namespace: 'combo-preview',
+      },
+      immutable: true,
+      data: {
+        COMBO_ENVIRONMENT: 'test',
+        COMBO_SOURCE_SHA: RELEASE_SHA,
+        COMBO_RELEASE_ID: `release-${RELEASE_SHA}`,
+      },
+    },
+    deployments: { kind: 'List', items: ['api', 'worker', 'runtime', 'web'].map(deployment) },
+    statefulset: {
+      metadata: { name: 'minio', namespace: 'combo-preview', generation: 1 },
+      spec: {
+        replicas: 1,
+        selector: { matchLabels: { app: 'minio' } },
+        template: {
+          metadata: { labels: { app: 'minio', 'combo.dev/environment': 'combo-dev' } },
+          spec: { containers: [{ name: 'minio', image: MINIO_IMAGE }] },
+        },
+      },
+      status: {
+        observedGeneration: 1,
+        replicas: 1,
+        currentReplicas: 1,
+        updatedReplicas: 1,
+        readyReplicas: 1,
+        currentRevision: 'minio-revision',
+        updateRevision: 'minio-revision',
+      },
+    },
+    services: {
+      kind: 'List',
+      items: Object.entries(servicePorts).map(([name, [portName, port, targetPort]], index) => ({
+        metadata: { name, namespace: 'combo-preview' },
+        spec: {
+          type: 'ClusterIP',
+          clusterIP: `10.43.0.${index + 10}`,
+          selector: { app: name },
+          ports: [{ name: portName, port, protocol: 'TCP', targetPort }],
+        },
+      })),
+    },
+  };
+  payload.pods = {
+    kind: 'List',
+    items: Object.keys(images).map((name, index) => pod(name, index)),
+  };
+  payload.slices = {
+    kind: 'EndpointSliceList',
+    items: Object.entries(servicePorts).map(([name, [portName, , targetPort]]) => {
+      const selected = payload.pods.items.find((item) => item.metadata.labels.app === name);
+      return {
+        metadata: {
+          name: `${name}-slice`,
+          namespace: 'combo-preview',
+          labels: { 'kubernetes.io/service-name': name },
+        },
+        ports: [{ name: portName, port: targetPort, protocol: 'TCP' }],
+        endpoints: [
+          {
+            addresses: [selected.status.podIP],
+            conditions: { ready: true },
+            targetRef: {
+              kind: 'Pod',
+              namespace: 'combo-preview',
+              name: selected.metadata.name,
+              uid: selected.metadata.uid,
+            },
+          },
+        ],
+      };
+    }),
+  };
+  const run = (overrides = {}) => {
+    const candidate = structuredClone(payload);
+    for (const [key, mutate] of Object.entries(overrides)) mutate(candidate[key]);
+    writeFileSync(
+      paths.images,
+      `API_IMAGE=${apiImage}\nRUNTIME_IMAGE=${runtimeImage}\nWEB_IMAGE=${webImage}\n`,
+    );
+    for (const key of ['metadata', 'deployments', 'statefulset', 'services', 'pods', 'slices']) {
+      writeFileSync(paths[key], `${JSON.stringify(candidate[key])}\n`);
+    }
+    return spawnSync(
+      'python3',
+      [
+        join(repo, 'scripts/combo-dev-production-safety.py'),
+        'validate-public-live',
+        '--revision',
+        RELEASE_SHA,
+        '--image-metadata',
+        paths.images,
+        '--release-metadata',
+        paths.metadata,
+        '--deployments',
+        paths.deployments,
+        '--statefulset',
+        paths.statefulset,
+        '--services',
+        paths.services,
+        '--pods',
+        paths.pods,
+        '--endpoint-slices',
+        paths.slices,
+      ],
+      { stdio: 'ignore' },
+    ).status;
+  };
+  try {
+    assert.equal(run(), 0);
+    assert.notEqual(
+      run({ services: (value) => (value.items[0].spec.selector = { app: 'web' }) }),
+      0,
+    );
+    assert.notEqual(run({ pods: (value) => value.items.push(structuredClone(value.items[3])) }), 0);
+    assert.notEqual(
+      run({ pods: (value) => (value.items[3].status.containerStatuses[0].imageID = 'bad') }),
+      0,
+    );
+    assert.notEqual(
+      run({ slices: (value) => (value.items[0].endpoints[0].targetRef.uid = 'wrong') }),
+      0,
+    );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+});
+
+test('public Test publication keeps exact identity, isolated listeners, TLS hosts, and fail-closed cleanup', () => {
+  const publication = text('scripts/combo-dev-publication.sh');
+  const safety = text('scripts/combo-dev-production-safety.py');
+  const bootstrap = text('scripts/combo-dev-bootstrap.sh');
+  const deploy = text('scripts/combo-dev-deploy.sh');
+  const reset = text('scripts/combo-dev-reset.sh');
+  const guard = text('scripts/combo-dev-storage-guard.sh');
+  const webUnit = text('infra/host/combo-dev/combo-dev-public-web-forward.service');
+  const s3Unit = text('infra/host/combo-dev/combo-dev-public-s3-forward.service');
+  const nginx = text('infra/host/combo-dev/combo-dev-public-nginx.conf');
+  const prepare = text('infra/host/combo-dev/combo-dev-prepare-public-domain.sh');
+  const hostReadme = text('infra/host/combo-dev/README.md');
+
+  assert.match(publication, /--open-pending/);
+  assert.match(publication, /pending_matches "\$revision" "\$run_id" "\$run_attempt"/);
+  assert.match(publication, /live_revision_matches "\$revision"/);
+  assert.ok(publication.indexOf('flock -s -w 300 9') < publication.indexOf('flock -w 300 8'));
+  assert.ok(publication.indexOf('flock -w 300 8') < publication.indexOf('flock -w 30 7'));
+  assert.match(publication, /validate-public-listeners/);
+  assert.match(publication, /validate-public-live/);
+  assert.match(safety, /validate-public-listeners/);
+  assert.match(safety, /validate-public-live/);
+  assert.match(webUnit, /--address=127\.0\.0\.1 service\/web 18083:80/);
+  assert.match(s3Unit, /--address=127\.0\.0\.1 service\/minio 19003:9000/);
+  assert.doesNotMatch(`${webUnit}\n${s3Unit}`, /^\[Install\]$/m);
+
+  assert.match(nginx, /server_name test\.43-160-242-46\.sslip\.io;/);
+  assert.match(nginx, /server_name test-s3\.43-160-242-46\.sslip\.io;/);
+  assert.match(nginx, /proxy_pass http:\/\/127\.0\.0\.1:18083/);
+  assert.match(nginx, /proxy_pass http:\/\/127\.0\.0\.1:19003/);
+  assert.match(nginx, /access_log off;/);
+  assert.match(nginx, /error_page 502 504 = @test_unavailable/);
+
+  for (const source of [bootstrap, deploy, reset, guard]) {
+    assert.match(source, /PUBLICATION_MARKER='\/var\/lib\/combo-dev\/publication'/);
+    assert.match(source, /combo-dev-public-web-forward\.service/);
+    assert.match(source, /combo-dev-public-s3-forward\.service/);
+  }
+  assert.match(reset, /validate-public-live/);
+  assert.match(guard, /validate-public-live/);
+  assert.match(bootstrap, /strict_remove_publication_marker \|\| failed=1/);
+  assert.doesNotMatch(
+    bootstrap,
+    /rm -f -- "\$EXTERNAL_FENCE_MARKER" "\$ACCEPTANCE_PENDING_MARKER" "\$PUBLICATION_MARKER"/,
+  );
+  assert.match(guard, /acceptance=pending/);
+  assert.match(guard, /publication=active/);
+  assert.match(guard, /writers=safe-idle/);
+  assert.match(prepare, /systemctl enable --now certbot-renew\.timer/);
+  assert.match(prepare, /TIMER_ROLLBACK_ARMED=1/);
+  assert.match(prepare, /-checkhost "\$WEB_HOST"/);
+  assert.match(prepare, /-checkhost "\$S3_HOST"/);
+  assert.match(prepare, /-checkend 604800/);
+  assert.ok(
+    hostReadme.indexOf('combo-dev-prepare-public-domain.sh --confirm=') <
+      hostReadme.indexOf('sudo bash scripts/combo-dev-bootstrap.sh'),
+  );
+  assert.ok(
+    prepare.indexOf('rm -f -- "$ACME_TARGET"') <
+      prepare.indexOf('nginx -t >/dev/null 2>&1 && systemctl reload nginx.service'),
+  );
+});
+
+test('public S3 smoke uses a fixed SigV4 vector and never emits credentials or signed URLs', () => {
+  const smokePath = join(repo, 'scripts/combo-dev-public-s3-smoke.py');
+  const source = readFileSync(smokePath, 'utf8');
+  const result = spawnSync(
+    'python3',
+    [
+      '-c',
+      [
+        'import datetime as dt,runpy,sys,urllib.parse',
+        'm=runpy.run_path(sys.argv[1])',
+        "u=m['presigned_url']('PUT','.combo-public-smoke/test.bin','testaccess','testsecret',dt.datetime(2026,8,4,12,0,0,tzinfo=dt.timezone.utc))",
+        "print(urllib.parse.parse_qs(urllib.parse.urlsplit(u).query)['X-Amz-Signature'][0])",
+      ].join(';'),
+      smokePath,
+    ],
+    { encoding: 'utf8' },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout.trim(),
+    '3da91ba3e6d0abc1653c6921294cf4ae795af92eb494cc8acb59e20603c53f69',
+  );
+  assert.match(source, /ProxyHandler\(\{\}\)/);
+  assert.match(source, /hmac\.compare_digest\(received, body\)/);
+  assert.match(source, /print\("\[combo-dev-public-s3-smoke] PASS operation=put-get-delete"\)/);
+  assert.doesNotMatch(source, /print\([^\n]*(?:access_key|secret_key|presigned_url|url)/);
+});
+
 test('network canary uses a pinned deterministic TCP probe and proves its positive control before denied targets', () => {
   const smoke = text('scripts/combo-dev-smoke.sh');
   assert.match(
@@ -4661,10 +4961,15 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
   );
   const deploymentCompleted = workflow.indexOf("printf 'deployment_completed=true");
+  const uploadStep = workflow.indexOf('Upload the fixed bundle');
   const finalControllerCheck = workflow.lastIndexOf('git/ref/heads/main', deploymentCompleted);
-  assert.ok(finalControllerCheck > workflow.indexOf('Upload the fixed bundle'));
-  assert.ok(finalControllerCheck < workflow.indexOf('sudo /opt/combo-dev/bin/combo-dev-reset'));
-  assert.ok(workflow.indexOf('sudo /opt/combo-dev/bin/combo-dev-deploy') < deploymentCompleted);
+  const destructiveReset = workflow.indexOf(
+    'sudo -n /opt/combo-dev/bin/combo-dev-reset',
+    uploadStep,
+  );
+  assert.ok(finalControllerCheck > uploadStep);
+  assert.ok(finalControllerCheck < destructiveReset);
+  assert.ok(workflow.indexOf('sudo -n /opt/combo-dev/bin/combo-dev-deploy') < deploymentCompleted);
   assert.doesNotMatch(workflow, /mutation_started/);
   assert.match(workflow, /\.run_attempt == \$runAttempt/);
   assert.match(workflow, /\.digest == \$digest/);
@@ -5156,7 +5461,7 @@ test('Test capacity preparation is bounded, authenticated, and precedes every de
   );
   const deploymentCompleted = workflow.indexOf("printf 'deployment_completed=true");
   const destructiveReset = workflow.indexOf('--confirm=DESTROY-COMBO-PREVIEW-DATA');
-  const deployCall = workflow.indexOf('sudo /opt/combo-dev/bin/combo-dev-deploy');
+  const deployCall = workflow.indexOf('sudo -n /opt/combo-dev/bin/combo-dev-deploy');
   const capacityCall = workflow.indexOf('--prepare-capacity', prepareStep);
   assert.ok(
     prepareStep > 0 &&
@@ -5828,10 +6133,9 @@ test('existing deployment invariants remain fail-closed', () => {
     smoke,
     /curl_json\(\) \{[\s\S]*for \(\(attempt = 1; attempt <= 60; attempt\+\+\)\)[\s\S]*mv -fT "\$candidate" "\$output"[\s\S]*恢复窗口内不可读：\$path/,
   );
-  assert.ok(
-    smoke.includes(
-      `tr -d '\\015' <"$headers" | grep -Fxci 'access-control-allow-origin: http://127.0.0.1:18080'`,
-    ),
+  assert.match(
+    smoke,
+    /tr -d '\\015' <"\$headers" \| grep -Fxci "access-control-allow-origin: \$PUBLIC_WEB_ORIGIN"/,
   );
   assert.doesNotMatch(smoke, /access-control-allow-origin:[^\n]*\\r/);
   for (const script of [bootstrap, deploy, reset]) {

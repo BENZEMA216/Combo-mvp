@@ -321,10 +321,14 @@ main() {
   flock -n 8 || fail '独立失败收敛仍在运行。'
   trap cleanup EXIT
   trap 'exit 130' INT TERM
-  [[ $(systemctl is-active combo-dev-web-forward.service 2>/dev/null || true) == inactive ]] ||
-    fail 'Web 转发器仍在运行。'
-  [[ $(systemctl is-active combo-dev-s3-forward.service 2>/dev/null || true) == inactive ]] ||
-    fail 'S3 转发器仍在运行。'
+  local forwarder state
+  for forwarder in combo-dev-web-forward.service combo-dev-s3-forward.service \
+    combo-dev-public-web-forward.service combo-dev-public-s3-forward.service; do
+    state=$(systemctl is-active "$forwarder" 2>/dev/null || true)
+    [[ "$state" == inactive || "$state" == failed ]] || fail "$forwarder 仍在运行。"
+  done
+  [[ ! -e /var/lib/combo-dev/publication && ! -L /var/lib/combo-dev/publication ]] ||
+    fail 'Test 公网发布标记仍然存在。'
 
   data_target=$(findmnt -rn -o TARGET --mountpoint "$DATA_ROOT" 2>/dev/null) ||
     fail '父数据盘不是独立挂载。'

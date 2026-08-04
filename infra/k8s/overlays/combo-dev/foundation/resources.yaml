@@ -210,7 +210,7 @@ spec:
                   key: MINIO_ROOT_PASSWORD
                   name: combo-dev-env
             - name: MINIO_API_CORS_ALLOW_ORIGIN
-              value: http://127.0.0.1:18080
+              value: https://test.43-160-242-46.sslip.io
           image: minio/minio@sha256:d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0
           name: minio
           ports:

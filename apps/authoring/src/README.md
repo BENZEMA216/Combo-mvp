@@ -20,6 +20,6 @@
 
 1. React 向 `POST /api/v1/auth/email/challenges` 请求邮箱验证码，再向 verification 端点提交六位码。
 2. account 模块在 PostgreSQL 中一次消费验证码，首次登录时创建用户和邮箱身份，并签发只保存摘要的七天会话。
-3. 浏览器只持有一枚 HttpOnly Cookie。HTTPS 入口显式配置根路径、Secure 且主机限定的 `__Host-cb_session`，loopback HTTP 验收显式配置根路径 `cb_session`，选择不依赖 `NODE_ENV`。authoring 的受保护路由只按当前安全策略对应的 Cookie 查询本地会话，不接受 Bearer 或 refresh 凭据。
+3. 浏览器只持有一枚 HttpOnly Cookie。HTTPS 发布入口显式配置根路径、Secure 且主机限定的 `__Host-cb_session`，本地 HTTP 开发入口显式配置根路径 `cb_session`，选择不依赖 `NODE_ENV`。authoring 的受保护路由只按当前安全策略对应的 Cookie 查询本地会话，不接受 Bearer 或 refresh 凭据。
 4. 创作者创建任务后，本机助手凭配对码上传分片。worker 消费任务，读取原文、解析、脱敏、调用大模型并写入能力项。
 5. 浏览器通过任务事件流读取进度，终态仍以 PostgreSQL 中的任务状态为准。
