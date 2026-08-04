@@ -2160,9 +2160,10 @@ async function runAcceptance(options) {
       const trialButton = page.getByRole('button', { name: '试用当前 UI' });
       await trialButton.waitFor({ state: 'visible', timeout: 30_000 });
       await trialButton.click();
+      const studioReturnTo = `/try/session/${studioSession.id}?mode=studio&returnTo=${encodeURIComponent('/capabilities')}`;
       await waitForAcceptanceUrl(page, {
         pathnamePattern: '^/try/session/[0-9a-f-]+$',
-        searchParams: { returnTo: `/try/session/${studioSession.id}` },
+        searchParams: { returnTo: studioReturnTo },
       });
       const studioReturnButton = page.getByRole('button', {
         name: '返回 UI 设计',
@@ -2170,7 +2171,10 @@ async function runAcceptance(options) {
       });
       await studioReturnButton.waitFor({ state: 'visible', timeout: 30_000 });
       await studioReturnButton.click();
-      await waitForAcceptanceUrl(page, { pathname: `/try/session/${studioSession.id}` });
+      await waitForAcceptanceUrl(page, {
+        pathname: `/try/session/${studioSession.id}`,
+        searchParams: { mode: 'studio', returnTo: '/capabilities' },
+      });
       await page
         .getByRole('complementary', { name: 'UI 设计对话' })
         .waitFor({ state: 'visible', timeout: 30_000 });
