@@ -1477,11 +1477,17 @@ test('release workflows bundle and consume only the controlled admission impleme
   );
   assert.match(
     testDeployment,
-    /\.state == "open"[\s\S]*\.base\.ref == "main"[\s\S]*\.base\.sha == \$controller[\s\S]*\.head\.repo\.id == \$repositoryId[\s\S]*\.head\.sha == \$revision/,
+    /\.state == "open"[\s\S]*\.base\.repo\.id == \$repositoryId[\s\S]*\.head\.repo\.id == \$repositoryId[\s\S]*\.head\.sha == \$revision/,
   );
+  assert.doesNotMatch(testDeployment, /\.base\.ref == "main"|\.base\.sha == \$controller/);
+  assert.doesNotMatch(
+    testDeployment,
+    /compare\/\$\{CONTROLLER_SHA\}|\.merge_base_commit\.sha == \$controller/,
+  );
+  assert.equal((testDeployment.match(/\.head\.sha == \$revision/g) ?? []).length, 1);
   assert.match(
     testDeployment,
-    /\.merge_base_commit\.sha == \$controller[\s\S]*\.status == "ahead" or \.status == "identical"/,
+    /The PR head changed after Test snapshot selection; continuing with frozen revision/,
   );
   assert.match(
     testDeployment,
@@ -1507,10 +1513,8 @@ test('release workflows bundle and consume only the controlled admission impleme
     /\[\[ "\$SOURCE_EVENT" == workflow_dispatch \]\][\s\S]*\[\[ "\$SOURCE_MODE" == branch-build \]\][\s\S]*\[\[ "\$SOURCE_WORKFLOW" == \.github\/workflows\/combo-dev\.yml \]\]/,
   );
   assert.doesNotMatch(testDeployment, /main-ci/);
-  assert.match(
-    testDeployment,
-    /git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
-  );
+  assert.match(testDeployment, /\[\[ "\$WORKFLOW_REF" == refs\/heads\/main \]\]/);
+  assert.doesNotMatch(testDeployment, /git\/ref\/heads\/main|\$remote_main/);
   assert.match(
     testDeployment,
     /build_branch_release:[\s\S]*uses: \.\/\.github\/workflows\/ci\.yml[\s\S]*publish_release: true/,

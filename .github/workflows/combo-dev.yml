@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       pull_request_number:
-        description: 要部署到 Test 的同仓库、以 main 为 base 的开放 PR 编号。
+        description: 要部署到 Test 的同仓库开放 PR 编号。
         required: true
         type: string
       revision:
@@ -75,13 +75,6 @@ jobs:
             exit 1
           }
           [[ "$CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]]
-          remote_main=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-            --jq '.object.sha')
-          [[ "$remote_main" == "$CONTROLLER_SHA" ]] || {
-            echo 'main advanced before the Test source was authorized.' >&2
-            exit 1
-          }
 
           [[ "$INPUT_PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
             echo 'The Test pull request number must be a positive integer.' >&2
@@ -97,15 +90,12 @@ jobs:
           pull_request=$(gh api \
             "repos/${GITHUB_REPOSITORY}/pulls/${INPUT_PULL_REQUEST_NUMBER}")
           jq -e \
-            --arg controller "$CONTROLLER_SHA" \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg revision "$INPUT_REVISION" \
             --argjson number "$INPUT_PULL_REQUEST_NUMBER" \
             --argjson repositoryId "$repository_id" '
               .number == $number
               and .state == "open"
-              and .base.ref == "main"
-              and .base.sha == $controller
               and .base.repo.id == $repositoryId
               and .base.repo.full_name == $repository
               and .head.repo != null
@@ -125,15 +115,6 @@ jobs:
             --jq '.object.sha')
           [[ "$branch_sha" == "$INPUT_REVISION" ]] || {
             echo 'The Test revision must equal the pull request head branch tip.' >&2
-            exit 1
-          }
-          comparison=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${INPUT_REVISION}")
-          jq -e --arg controller "$CONTROLLER_SHA" '
-            .merge_base_commit.sha == $controller
-            and (.status == "ahead" or .status == "identical")
-          ' <<<"$comparison" >/dev/null || {
-            echo 'The Test pull request must contain the current main commit.' >&2
             exit 1
           }
           gh api "repos/${GITHUB_REPOSITORY}/git/commits/${INPUT_REVISION}" \
@@ -222,47 +203,28 @@ jobs:
 
           [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
           [[ "$SOURCE_MODE" == branch-build ]]
-          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-            --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
-            echo 'main advanced before the pull request Test artifact was authorized.' >&2
-            exit 1
-          }
           repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.id')
           [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
           pull_request=$(gh api \
             "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")
           jq -e \
-            --arg controller "$CONTROLLER_SHA" \
             --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" \
-            --arg sourceBranch "$SOURCE_BRANCH" \
             --argjson number "$PULL_REQUEST_NUMBER" \
             --argjson repositoryId "$repository_id" '
               .number == $number
               and .state == "open"
-              and .base.ref == "main"
-              and .base.sha == $controller
               and .base.repo.id == $repositoryId
               and .base.repo.full_name == $repository
               and .head.repo != null
               and .head.repo.id == $repositoryId
               and .head.repo.full_name == $repository
-              and .head.ref == $sourceBranch
-              and .head.sha == $revision
             ' <<<"$pull_request" >/dev/null
-          encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
-          [[ "$(gh api \
-            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
-            --jq '.object.sha')" == "$REVISION" ]] || {
-            echo 'The pull request head branch advanced before artifact authorization.' >&2
-            exit 1
-          }
-          comparison=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${REVISION}")
-          jq -e --arg controller "$CONTROLLER_SHA" '
-            .merge_base_commit.sha == $controller
-            and (.status == "ahead" or .status == "identical")
-          ' <<<"$comparison" >/dev/null
+          current_source_branch=$(jq -er '.head.ref' <<<"$pull_request")
+          current_head_sha=$(jq -er '.head.sha' <<<"$pull_request")
+          if [[ "$current_source_branch" != "$SOURCE_BRANCH" ||
+            "$current_head_sha" != "$REVISION" ]]; then
+            echo "::warning::The PR head changed after Test snapshot selection; continuing with frozen revision ${REVISION}."
+          fi
 
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
@@ -737,7 +699,6 @@ jobs:
       - name: Revalidate the pull request and prepare bounded Test host capacity
         env:
           ARCHIVE: ${{ steps.bundle.outputs.archive }}
-          CONTROLLER_SHA: ${{ needs.authorize.outputs.controller_sha }}
           GH_TOKEN: ${{ github.token }}
           PULL_REQUEST_NUMBER: ${{ needs.authorize.outputs.pull_request_number }}
           REVISION: ${{ needs.authorize.outputs.revision }}
@@ -745,44 +706,28 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
-          [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-            --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
-            echo 'main advanced before Test host capacity preparation.' >&2
-            exit 1
-          }
           repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.id')
           [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
           pull_request=$(gh api \
             "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")
           jq -e \
-            --arg controller "$CONTROLLER_SHA" \
             --arg repository "$GITHUB_REPOSITORY" \
-            --arg revision "$REVISION" \
-            --arg sourceBranch "$SOURCE_BRANCH" \
             --argjson number "$PULL_REQUEST_NUMBER" \
             --argjson repositoryId "$repository_id" '
               .number == $number
               and .state == "open"
-              and .base.ref == "main"
-              and .base.sha == $controller
               and .base.repo.id == $repositoryId
               and .base.repo.full_name == $repository
               and .head.repo != null
               and .head.repo.id == $repositoryId
               and .head.repo.full_name == $repository
-              and .head.ref == $sourceBranch
-              and .head.sha == $revision
             ' <<<"$pull_request" >/dev/null
-          encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
-          [[ "$(gh api \
-            "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
-            --jq '.object.sha')" == "$REVISION" ]]
-          comparison=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${REVISION}")
-          jq -e --arg controller "$CONTROLLER_SHA" '
-            .merge_base_commit.sha == $controller
-            and (.status == "ahead" or .status == "identical")
-          ' <<<"$comparison" >/dev/null
+          current_source_branch=$(jq -er '.head.ref' <<<"$pull_request")
+          current_head_sha=$(jq -er '.head.sha' <<<"$pull_request")
+          if [[ "$current_source_branch" != "$SOURCE_BRANCH" ||
+            "$current_head_sha" != "$REVISION" ]]; then
+            echo "::warning::The PR head changed after Test snapshot selection; continuing with frozen revision ${REVISION}."
+          fi
           archive_bytes=$(stat -c '%s' "$ARCHIVE")
           [[ "$archive_bytes" =~ ^[1-9][0-9]*$ ]]
           (( archive_bytes <= 512 * 1024 * 1024 ))
@@ -811,52 +756,33 @@ jobs:
           set -euo pipefail
           [[ "$RUN_ID" =~ ^[0-9]+$ && "$RUN_ATTEMPT" =~ ^[0-9]+$ ]] || exit 1
           revalidate_test_authority() {
-            local artifact_head_sha comparison encoded_branch pull_request repository_id
+            local artifact_head_sha current_head_sha current_source_branch pull_request repository_id
             local release_artifact release_job source_jobs source_run
 
             [[ "$PULL_REQUEST_NUMBER" =~ ^[1-9][0-9]*$ ]]
             [[ "$SOURCE_MODE" == branch-build ]]
-            [[ "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" \
-              --jq '.object.sha')" == "$CONTROLLER_SHA" ]] || {
-              echo 'main advanced while the pull request Test waited for its deployment gate.' >&2
-              return 1
-            }
             repository_id=$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.id')
             [[ "$repository_id" =~ ^[1-9][0-9]*$ ]]
             pull_request=$(gh api \
               "repos/${GITHUB_REPOSITORY}/pulls/${PULL_REQUEST_NUMBER}")
             jq -e \
-              --arg controller "$CONTROLLER_SHA" \
               --arg repository "$GITHUB_REPOSITORY" \
-              --arg revision "$REVISION" \
-              --arg sourceBranch "$SOURCE_BRANCH" \
               --argjson number "$PULL_REQUEST_NUMBER" \
               --argjson repositoryId "$repository_id" '
                 .number == $number
                 and .state == "open"
-                and .base.ref == "main"
-                and .base.sha == $controller
                 and .base.repo.id == $repositoryId
                 and .base.repo.full_name == $repository
                 and .head.repo != null
                 and .head.repo.id == $repositoryId
                 and .head.repo.full_name == $repository
-                and .head.ref == $sourceBranch
-                and .head.sha == $revision
               ' <<<"$pull_request" >/dev/null
-            encoded_branch=$(jq -rn --arg branch "$SOURCE_BRANCH" '$branch | @uri')
-            [[ "$(gh api \
-              "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded_branch}" \
-              --jq '.object.sha')" == "$REVISION" ]] || {
-              echo 'The pull request head advanced before Test deployment.' >&2
-              return 1
-            }
-            comparison=$(gh api \
-              "repos/${GITHUB_REPOSITORY}/compare/${CONTROLLER_SHA}...${REVISION}")
-            jq -e --arg controller "$CONTROLLER_SHA" '
-              .merge_base_commit.sha == $controller
-              and (.status == "ahead" or .status == "identical")
-            ' <<<"$comparison" >/dev/null
+            current_source_branch=$(jq -er '.head.ref' <<<"$pull_request")
+            current_head_sha=$(jq -er '.head.sha' <<<"$pull_request")
+            if [[ "$current_source_branch" != "$SOURCE_BRANCH" ||
+              "$current_head_sha" != "$REVISION" ]]; then
+              echo "::warning::The PR head changed after Test snapshot selection; continuing with frozen revision ${REVISION}."
+            fi
 
             source_run=$(gh api \
               "repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_CI_RUN_ID}")

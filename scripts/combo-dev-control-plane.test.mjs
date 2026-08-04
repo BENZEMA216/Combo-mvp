@@ -1428,7 +1428,7 @@ test('Preview consumes Main CD directly while Test remains an independent manual
   assert.doesNotMatch(testTriggers, /workflow_run|push:|pull_request:/);
   assert.match(testWorkflow, /pull_request_number:[\s\S]*revision:/);
   assert.match(testWorkflow, /\.state == "open"/);
-  assert.match(testWorkflow, /\.base\.ref == "main"/);
+  assert.doesNotMatch(testWorkflow, /\.base\.ref == "main"|\.base\.sha == \$controller/);
   assert.match(testWorkflow, /\.head\.sha == \$revision/);
   assert.match(testWorkflow, /\.head\.repo\.full_name == \$repository/);
   assert.match(testWorkflow, /evidence_artifact_name="combo-branch-test-evidence-/);
@@ -4797,11 +4797,19 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
   assert.match(workflow, /\[\[ "\$INPUT_REVISION" =~ \^\[0-9a-f\]\{40\}\$ \]\]/);
   assert.match(workflow, /repos\/\$\{GITHUB_REPOSITORY\}\/pulls\/\$\{INPUT_PULL_REQUEST_NUMBER\}/);
   assert.match(workflow, /\.state == "open"/);
-  assert.match(workflow, /\.base\.ref == "main"/);
-  assert.match(workflow, /\.base\.sha == \$controller/);
+  assert.match(workflow, /\.base\.repo\.full_name == \$repository/);
   assert.match(workflow, /\.head\.repo\.full_name == \$repository/);
   assert.match(workflow, /\.head\.sha == \$revision/);
-  assert.match(workflow, /\.merge_base_commit\.sha == \$controller/);
+  assert.doesNotMatch(workflow, /\.base\.ref == "main"|\.base\.sha == \$controller/);
+  assert.doesNotMatch(
+    workflow,
+    /compare\/\$\{CONTROLLER_SHA\}|\.merge_base_commit\.sha == \$controller/,
+  );
+  assert.equal((workflow.match(/\.head\.sha == \$revision/g) ?? []).length, 1);
+  assert.match(
+    workflow,
+    /The PR head changed after Test snapshot selection; continuing with frozen revision/,
+  );
   assert.match(
     workflow,
     /git\/ref\/heads\/\$\{encoded_branch\}[\s\S]*\[\[ "\$branch_sha" == "\$INPUT_REVISION" \]\]/,
@@ -4843,7 +4851,7 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /workflow_call:[\s\S]*revision:[\s\S]*required: true[\s\S]*publish_release:[\s\S]*required: true/,
   );
   assert.match(workflow, /\[\[ "\$WORKFLOW_REF" == refs\/heads\/main \]\]/);
-  assert.match(workflow, /\[\[ "\$remote_main" == "\$CONTROLLER_SHA" \]\]/);
+  assert.doesNotMatch(workflow, /\$remote_main|git\/ref\/heads\/main/);
   assert.match(
     workflow,
     /Check out the trusted main Test controller[\s\S]*ref: \$\{\{ needs\.authorize\.outputs\.controller_sha \}\}/,
@@ -4975,23 +4983,17 @@ test('Test, Preview, and Production serialize only deploy jobs and preserve prom
     /actions\/variables\/COMBO_PREVIEW_AUTO_PROMOTION_MODE/,
     'Preview must use the policy output and protected job-admission vars context',
   );
-  assert.match(
-    workflow,
-    /main advanced while the pull request Test waited for its deployment gate/,
-  );
-  assert.match(
-    workflow,
-    /git\/ref\/heads\/main"[\s\\\n]*--jq '\.object\.sha'\)" == "\$CONTROLLER_SHA"/,
+  assert.doesNotMatch(
+    privilegedDeploy,
+    /main advanced|git\/ref\/heads\/main|\.base\.sha == \$controller/,
   );
   const deploymentCompleted = workflow.indexOf("printf 'deployment_completed=true");
   const uploadStep = workflow.indexOf('Upload the fixed bundle');
-  const finalControllerCheck = workflow.lastIndexOf('git/ref/heads/main', deploymentCompleted);
   const destructiveReset = workflow.indexOf(
     'sudo -n /opt/combo-dev/bin/combo-dev-reset',
     uploadStep,
   );
-  assert.ok(finalControllerCheck > uploadStep);
-  assert.ok(finalControllerCheck < destructiveReset);
+  assert.ok(workflow.indexOf('revalidate_test_authority', uploadStep) < destructiveReset);
   assert.ok(workflow.indexOf('sudo -n /opt/combo-dev/bin/combo-dev-deploy') < deploymentCompleted);
   assert.doesNotMatch(workflow, /mutation_started/);
   assert.match(workflow, /\.run_attempt == \$runAttempt/);

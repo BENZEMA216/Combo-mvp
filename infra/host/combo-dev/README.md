@@ -28,9 +28,9 @@ k3s 的真实数据目录必须写入 owner-only 文件 `/etc/combo-dev/k3s-data
 
 `/etc/combo-dev/registry.json` 必须归 root 所有且权限为 `0600`，只包含 `ghcr.io` 的开发只读拉取身份。`/etc/combo-dev/production-observer.kubeconfig` 必须使用单一嵌入式客户端证书，并与本机审核凭据使用完全相同的 API 服务端和证书颁发机构。该身份只能在生产命名空间对 Deployment、StatefulSet、Service、PVC 和 Pod 执行 `get`、`list` 与 `watch`。bootstrap、部署和重置会解析全部命名空间的有效规则与关联绑定，拒绝通配符、Secret 读取、任何持久变更权限、生产命名空间之外的资源权限和额外集群资源权限。Kubernetes 为已认证身份提供的不落盘自省请求与只读发现端点是唯一例外。
 
-部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` Environment 必须只允许 `main`，不得配置部署审核人；开发 SSH 和 Resend 验收材料只能保存在该 Environment 中。这项分支策略保护的是读取 Secret 的受信任控制器，不是 Test 候选源码：Test 不由 PR 或 `main` 自动触发，具有仓库写入权限的成员只能从 `main` 上的 `workflow_dispatch` 控制器选择一个仍开放、以当前 `main` 为 base 的同仓库 PR 及其精确 tip SHA。
+部署 SSH 用户不得持有 Kubernetes 凭据。它只能向带粘滞位且不可列目录的 `/opt/combo-dev/incoming` 投递文件，并通过受限 sudo 规则调用固定的 root-owned 调度器。GitHub 的 `combo-dev` Environment 必须只允许 `main`，不得配置部署审核人；开发 SSH 和 Resend 验收材料只能保存在该 Environment 中。这项分支策略保护的是读取 Secret 的受信任控制器，不是 Test 候选源码：Test 不由 PR 或 `main` 自动触发，具有仓库写入权限的成员只能从 `main` 上的 `workflow_dispatch` 控制器选择一个仍开放的同仓库 PR 及其当时的精确 tip SHA。PR 的 base 分支、base SHA 及候选与控制器的祖先关系都不构成 Test 授权条件。
 
-手工 PR 路径会同时验证触发者和重新运行者权限、当前 `main` 控制器、PR base、分支 tip 与完整 SHA，然后调用 `main` 定义的可复用 Main CD 为该 SHA 构建不可变 artifact；候选分支的 workflow、部署脚本和验收脚本不会在受保护 Environment 中执行。它还会复验 release manifest、Web asset manifest、迁移头、三个镜像摘要和完整文件集。远端 bundle、reset proof、migration proof 和环境证据均绑定 Test workflow 的完整 SHA、run ID 与 run attempt；只有同一三元组才能被原子消费。上传的 `combo-branch-test-evidence-*` 只用于该 PR 的 Test 验证，不能进入 Preview 或 Production。Test、Preview 与 Production 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
+手工 PR 路径会在启动时验证触发者和重新运行者权限、受信任控制器、PR 开放状态、同仓库归属、分支 tip 与完整 SHA，然后调用已冻结控制器定义的可复用 Main CD 为候选 SHA 构建不可变 artifact；候选分支的 workflow、部署脚本和验收脚本不会在受保护 Environment 中执行。后续步骤会继续复验 PR 开放状态和同仓库归属，并锁定启动时的 controller SHA、候选 SHA、workflow run、run attempt 和 artifact 身份。`main` 或 PR 分支在构建期间前进不会改变这次快照；PR head 变化只会生成告警，已冻结的完整 SHA 仍会继续部署。它还会复验 release manifest、Web asset manifest、迁移头、三个镜像摘要和完整文件集。远端 bundle、reset proof、migration proof 和环境证据均绑定 Test workflow 的完整 SHA、run ID 与 run attempt；只有同一三元组才能被原子消费。上传的 `combo-branch-test-evidence-*` 只用于该 PR 的 Test 验证，不能进入 Preview 或 Production。Test、Preview 与 Production 共用 `cd-tecent2` 并发组，后触发的部署必须排队。
 
 每次受保护 Test 在上传 bundle 和执行破坏性 reset 之前，都会先运行：
 
