@@ -109,7 +109,7 @@ jobs:
               [[ "$MAIN_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
               [[ "$MAIN_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
               trigger=auto
-              environment=test
+              environment=preview
               revision=$MAIN_CI_HEAD_SHA
               source_mode=main-ci
               source_branch=main
@@ -221,26 +221,17 @@ jobs:
       publish_release: true
 
   deploy:
-    name: deploy ${{ matrix.environment }}
+    name: deploy ${{ needs.select.outputs.environment }}
     needs: [select, build_branch]
     if: >-
       always() &&
       needs.select.result == 'success' &&
-      (
-        (needs.select.outputs.trigger == 'auto' && matrix.environment == 'preview') ||
-        (needs.select.outputs.trigger == 'dispatch' &&
-          matrix.environment == needs.select.outputs.environment)
-      ) &&
       (needs.select.outputs.source_mode == 'main-ci' ||
         needs.build_branch.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        environment: [test, preview, production]
     concurrency:
-      group: combo-deploy-${{ matrix.environment }}
+      group: combo-deploy-${{ needs.select.outputs.environment }}
       cancel-in-progress: false
     steps:
       - name: Use Node.js 24
@@ -342,7 +333,7 @@ jobs:
           REVISION: ${{ needs.select.outputs.revision }}
         run: |
           set -euo pipefail
-          ENV="${{ matrix.environment }}"
+          ENV="${{ needs.select.outputs.environment }}"
           MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
           render() {
             local phase=$1
@@ -364,7 +355,7 @@ jobs:
           REVISION: ${{ needs.select.outputs.revision }}
         run: |
           set -euo pipefail
-          ENV="${{ matrix.environment }}"
+          ENV="${{ needs.select.outputs.environment }}"
           REMOTE_DIR="data/combo-deploy-incoming/${REVISION}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
           MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
           ssh release-target 'install -d -m 0700 "$HOME/data/combo-deploy-incoming" "$HOME/combo-deploy/bin"'
@@ -402,7 +393,7 @@ jobs:
           REVISION: ${{ needs.select.outputs.revision }}
         run: |
           set -euo pipefail
-          case "${{ matrix.environment }}" in
+          case "${{ needs.select.outputs.environment }}" in
             test) origin=https://test.43-160-242-46.sslip.io ;;
             preview) origin=https://review.43-160-242-46.sslip.io ;;
             production) origin=https://agora.43-160-242-46.sslip.io ;;
