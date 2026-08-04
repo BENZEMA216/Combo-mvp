@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: runtime-sandbox-manager
-  namespace: combo
+  namespace: combo-prod
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -31,7 +31,7 @@ metadata:
 subjects:
   - kind: ServiceAccount
     name: runtime-sandbox-manager
-    namespace: combo
+    namespace: combo-prod
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
