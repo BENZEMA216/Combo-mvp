@@ -186,10 +186,11 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-3)).toEqual([
+    expect(list.slice(-4)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
+      '0010_recharge_qr_channel.sql',
     ]);
   });
 

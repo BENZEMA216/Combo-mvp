@@ -25,30 +25,14 @@ import {
   type RechargeOrder,
 } from './types.js';
 
-const CreateRechargeOrderSchema = z
+export const CreateRechargeOrderSchema = z
   .object({
     rechargeIntentId: z.string().uuid(),
     packageId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/u),
-    channel: z.enum(['h5', 'aggregate_qr']),
-    payType: z.enum(['wechat', 'alipay']).optional(),
+    channel: z.enum(['h5', 'qr']),
+    payType: z.enum(['wechat', 'alipay']),
   })
-  .strict()
-  .superRefine((value, context) => {
-    if (value.channel === 'h5' && value.payType === undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['payType'],
-        message: 'h5 requires payType',
-      });
-    }
-    if (value.channel === 'aggregate_qr' && value.payType !== undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['payType'],
-        message: 'aggregate_qr does not accept payType',
-      });
-    }
-  });
+  .strict();
 
 const RechargeOrderParamsSchema = z.object({ orderId: z.string().uuid() }).strict();
 const RechargeIntentParamsSchema = z.object({ rechargeIntentId: z.string().uuid() }).strict();
@@ -59,6 +43,7 @@ interface RechargeOrderView {
   packageId: string;
   amountCents: string;
   channel: RechargeOrder['paymentMethod'];
+  payType?: RechargeOrder['payType'];
   status: RechargeOrder['paymentStatus'] | 'credited';
   reconciliationActive: boolean;
   paymentAction?: {
@@ -78,6 +63,7 @@ function toRechargeOrderView(order: RechargeOrder): RechargeOrderView {
     packageId: order.packageId,
     amountCents: order.amountCents.toString(),
     channel: order.paymentMethod,
+    ...(order.payType ? { payType: order.payType } : {}),
     status,
     reconciliationActive: order.reconciliationActive,
     ...(mayUseAction && order.action

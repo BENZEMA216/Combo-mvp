@@ -25,6 +25,7 @@ interface RechargeOrderRow {
   package_id: string;
   amount_cents: string | number | bigint;
   payment_method: RechargeOrder['paymentMethod'];
+  pay_type: RechargeOrder['payType'] | null;
   gateway_environment: RechargeOrder['gatewayEnvironment'];
   institution_no: string;
   merchant_no: string;
@@ -54,7 +55,8 @@ const MAX_RECONCILIATION_AGE_MS = 24 * 60 * 60 * 1_000;
 
 const ORDER_SELECT = `
   SELECT ro.id, ro.order_no, ro.owner_user_id, ro.client_idempotency_key,
-         ro.package_id, ro.amount_cents, ro.payment_method, ro.gateway_environment,
+         ro.package_id, ro.amount_cents, ro.payment_method, ro.pay_type,
+         ro.gateway_environment,
          ro.institution_no, ro.merchant_no, ro.pay_trace_no, ro.pay_time,
          ro.payment_status, ro.credit_status, ro.platform_trade_no,
          pa.attempt_no, pa.request_fingerprint, pa.action_kind, pa.action_value,
@@ -84,6 +86,7 @@ function toRechargeOrder(row: RechargeOrderRow, now = new Date()): RechargeOrder
     packageId: row.package_id,
     amountCents: BigInt(row.amount_cents),
     paymentMethod: row.payment_method,
+    payType: row.pay_type ?? undefined,
     gatewayEnvironment: row.gateway_environment,
     institutionNo: row.institution_no,
     merchantNo: row.merchant_no,
@@ -390,12 +393,12 @@ export class PgBillingRepository implements BillingRepository {
       const inserted = await tx.query<{ id: string }>(
         `INSERT INTO recharge_orders (
            order_no, owner_user_id, client_idempotency_key, package_id, amount_cents,
-           payment_method, gateway_environment, institution_no, merchant_no,
+           payment_method, pay_type, gateway_environment, institution_no, merchant_no,
            pay_trace_no, pay_time, payment_status, credit_status, next_query_at
          )
          VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-           'created', 'uncredited', now() + ($12 * interval '1 millisecond')
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+           'created', 'uncredited', now() + ($13 * interval '1 millisecond')
          )
          ON CONFLICT (owner_user_id, client_idempotency_key) DO NOTHING
          RETURNING id`,
@@ -406,6 +409,7 @@ export class PgBillingRepository implements BillingRepository {
           input.packageId,
           input.amountCents.toString(),
           input.paymentMethod,
+          input.payType,
           input.gatewayEnvironment,
           input.institutionNo,
           input.merchantNo,

@@ -10,7 +10,7 @@ const ORDER: LeasedRechargeOrder = {
   clientIdempotencyKey: '00000000-0000-4000-8000-000000000003',
   packageId: 'starter',
   amountCents: 300n,
-  paymentMethod: 'aggregate_qr',
+  paymentMethod: 'qr',
   gatewayEnvironment: 'test',
   institutionNo: 'INST0001',
   merchantNo: 'MCH_TEST_001',

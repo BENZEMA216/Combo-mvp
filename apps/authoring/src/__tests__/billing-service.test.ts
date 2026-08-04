@@ -18,6 +18,7 @@ import {
 } from '../modules/billing/service.js';
 import {
   BillingIdempotencyConflictError,
+  BillingValidationError,
   type BillingRepository,
   type LeasedRechargeOrder,
   type PrepareRechargeInput,
@@ -273,7 +274,7 @@ function fakeGateway(input?: {
 }
 
 describe('billing recharge service', () => {
-  it('creates H5 and aggregate QR actions from configured packages only', async () => {
+  it('creates H5 and QR actions from configured packages only', async () => {
     const h5Repository = new MemoryBillingRepository();
     const h5Gateway = fakeGateway();
     const h5 = await createRechargeOrder(
@@ -305,15 +306,32 @@ describe('billing recharge service', () => {
         ownerUserId: OWNER_ID,
         rechargeIntentId: '00000000-0000-4000-8000-000000000004',
         packageId: 'starter',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       },
       CLOCK,
     );
     expect(qr.order).toMatchObject({
       amountCents: 300n,
-      paymentMethod: 'aggregate_qr',
+      paymentMethod: 'qr',
       action: { kind: 'code_url' },
     });
+  });
+
+  it('rejects a QR order without a payment brand', async () => {
+    const repository = new MemoryBillingRepository();
+    const gateway = fakeGateway();
+    const missingPayType = {
+      ownerUserId: OWNER_ID,
+      rechargeIntentId: INTENT_ID,
+      packageId: 'starter',
+      channel: 'qr' as const,
+      // 运行时校验必须拦截缺 payType 的输入（类型层强制，这里显式绕过编译期检查）。
+    } as unknown as Parameters<typeof createRechargeOrder>[3];
+    await expect(
+      createRechargeOrder(repository, gateway, CONFIGURATION, missingPayType, CLOCK),
+    ).rejects.toBeInstanceOf(BillingValidationError);
+    expect(gateway.createPayment).not.toHaveBeenCalled();
   });
 
   it('never repeats a gateway POST for the same non-terminal intent', async () => {
@@ -323,7 +341,8 @@ describe('billing recharge service', () => {
       ownerUserId: OWNER_ID,
       rechargeIntentId: INTENT_ID,
       packageId: 'starter',
-      channel: 'aggregate_qr' as const,
+      channel: 'qr' as const,
+      payType: 'alipay' as const,
     };
     await createRechargeOrder(repository, gateway, CONFIGURATION, input, CLOCK);
     await createRechargeOrder(repository, gateway, CONFIGURATION, input, CLOCK);
@@ -352,7 +371,8 @@ describe('billing recharge service', () => {
       ownerUserId: OWNER_ID,
       rechargeIntentId: INTENT_ID,
       packageId: 'starter',
-      channel: 'aggregate_qr' as const,
+      channel: 'qr' as const,
+      payType: 'alipay' as const,
     };
 
     const first = createRechargeOrder(repository, gateway, CONFIGURATION, input, CLOCK);
@@ -379,7 +399,8 @@ describe('billing recharge service', () => {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
         packageId: 'starter',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       },
       CLOCK,
     );
@@ -417,7 +438,8 @@ describe('billing recharge service', () => {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
         packageId: 'starter',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       },
       CLOCK,
     );
@@ -449,7 +471,8 @@ describe('billing recharge service', () => {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
         packageId: 'starter',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       },
       CLOCK,
     );
@@ -478,7 +501,8 @@ describe('billing recharge service', () => {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
         packageId: 'starter',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       },
       CLOCK,
     );
@@ -577,7 +601,8 @@ describe('billing recharge service', () => {
       clientIdempotencyKey: INTENT_ID,
       packageId: 'starter',
       amountCents: 300n,
-      paymentMethod: 'aggregate_qr',
+      paymentMethod: 'qr',
+      payType: 'alipay',
       gatewayEnvironment: 'test',
       institutionNo: gateway.institutionNo,
       merchantNo: gateway.merchantNo,
@@ -624,7 +649,8 @@ describe('billing recharge service', () => {
       clientIdempotencyKey: INTENT_ID,
       packageId: 'starter',
       amountCents: 300n,
-      paymentMethod: 'aggregate_qr',
+      paymentMethod: 'qr',
+      payType: 'alipay',
       gatewayEnvironment: 'test',
       institutionNo: gateway.institutionNo,
       merchantNo: gateway.merchantNo,
@@ -670,7 +696,8 @@ describe('billing recharge service', () => {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
         packageId: 'starter',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       },
       CLOCK,
     );

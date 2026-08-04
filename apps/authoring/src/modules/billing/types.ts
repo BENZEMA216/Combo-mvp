@@ -1,4 +1,5 @@
 import type {
+  PayType,
   PaymentChannel,
   PaymentGatewayEnvironment,
   PaymentQueryResult,
@@ -28,6 +29,8 @@ export interface RechargeOrder {
   packageId: string;
   amountCents: bigint;
   paymentMethod: PaymentChannel;
+  /** 充值支付品牌（微信/支付宝）；历史订单可能没有该列，恢复视图可据此提示扫码应用。 */
+  payType?: PayType;
   gatewayEnvironment: PaymentGatewayEnvironment;
   institutionNo: string;
   merchantNo: string;
@@ -58,6 +61,7 @@ export interface PrepareRechargeInput {
   packageId: string;
   amountCents: bigint;
   paymentMethod: PaymentChannel;
+  payType: PayType;
   gatewayEnvironment: PaymentGatewayEnvironment;
   institutionNo: string;
   merchantNo: string;

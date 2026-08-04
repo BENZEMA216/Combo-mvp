@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from './client.js';
 
-export type RechargeChannel = 'h5' | 'aggregate_qr';
+export type RechargeChannel = 'h5' | 'qr';
 export type RechargePayType = 'wechat' | 'alipay';
 export type RechargeOrderStatus =
   | 'created'
@@ -36,6 +36,7 @@ export interface RechargeOrderView {
   packageId: string;
   amountCents: string;
   channel: RechargeChannel;
+  payType?: RechargePayType;
   status: RechargeOrderStatus;
   reconciliationActive?: boolean;
   paymentAction?: PaymentAction;
@@ -45,7 +46,7 @@ export interface CreateRechargeOrderInput {
   rechargeIntentId: string;
   packageId: string;
   channel: RechargeChannel;
-  payType?: RechargePayType;
+  payType: RechargePayType;
 }
 
 export function useWallet(enabled = true) {

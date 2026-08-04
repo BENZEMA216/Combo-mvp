@@ -78,7 +78,7 @@ describe('Leshouying payment gateway', () => {
     expect(fetchPort).toHaveBeenCalledTimes(1);
   });
 
-  it('accepts length-bounded opaque aggregate QR content but rejects unsafe H5 URLs', async () => {
+  it('accepts length-bounded opaque QR content but rejects unsafe H5 URLs', async () => {
     const qrGateway = new LeshouyingPaymentGateway(
       CONFIG,
       vi.fn(async () =>
@@ -86,11 +86,12 @@ describe('Leshouying payment gateway', () => {
           return_code: 'SUCCESS',
           result_code: 'PAY_SUCCESS',
           return_msg: '预支付成功',
+          pay_type: '400',
           mch_no: 'MCH_TEST_001',
           pay_trace_no: 'TRACE-QR',
           pay_time: '20260728120000',
           total_amount: '100',
-          code_url: 'weixin://wxpay/bizpayurl?pr=opaque',
+          qrcode: 'weixin://wxpay/bizpayurl?pr=opaque',
         }),
       ),
     );
@@ -100,7 +101,8 @@ describe('Leshouying payment gateway', () => {
         payTraceNo: 'TRACE-QR',
         payTime: '20260728120000',
         amountCents: 100n,
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'wechat',
       }),
     ).resolves.toMatchObject({
       action: {
@@ -138,6 +140,86 @@ describe('Leshouying payment gateway', () => {
     ).rejects.toBeInstanceOf(PaymentGatewayUncertainError);
   });
 
+  it('creates a signed C2B prepay request without front_url and returns the qrcode action', async () => {
+    const fetchPort = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://test.gdyfsk.com/yfpay/v3/prepay');
+      const request = JSON.parse(String(init.body)) as Record<string, string>;
+      expect(request).toMatchObject({
+        inst_no: 'INST0001',
+        mch_no: 'MCH_TEST_001',
+        pay_type: '300',
+        total_amount: '100',
+        time_expire: '15',
+        notify_url: CONFIG.notifyUrl,
+      });
+      expect(request).not.toHaveProperty('front_url');
+      expect(verifyPaymentSignature(request, KEY)).toBe(true);
+      return signedResponse({
+        return_code: 'SUCCESS',
+        result_code: 'PAY_SUCCESS',
+        return_msg: '预支付成功',
+        pay_type: '300',
+        mch_no: 'MCH_TEST_001',
+        pay_trace_no: 'TRACE-PREPAY',
+        pay_time: '20260728120000',
+        total_amount: '100',
+        trade_no: 'TRADE-PREPAY',
+        qrcode: 'https://qr.alipay.com/baxopaque',
+      });
+    });
+    const gateway = new LeshouyingPaymentGateway(CONFIG, fetchPort);
+
+    await expect(
+      gateway.createPayment({
+        orderNo: 'CBR-PREPAY',
+        payTraceNo: 'TRACE-PREPAY',
+        payTime: '20260728120000',
+        amountCents: 100n,
+        channel: 'qr',
+        payType: 'alipay',
+      }),
+    ).resolves.toEqual({
+      status: 'pending',
+      gatewayResultCode: 'PAY_SUCCESS',
+      platformTradeNo: 'TRADE-PREPAY',
+      action: {
+        kind: 'code_url',
+        value: 'https://qr.alipay.com/baxopaque',
+        expiresAt: expect.any(Date),
+      },
+    });
+    expect(fetchPort).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a mismatched prepay pay_type echo as uncertain', async () => {
+    const gateway = new LeshouyingPaymentGateway(
+      CONFIG,
+      vi.fn(async () =>
+        signedResponse({
+          return_code: 'SUCCESS',
+          result_code: 'PAY_SUCCESS',
+          return_msg: '预支付成功',
+          pay_type: '400',
+          mch_no: 'MCH_TEST_001',
+          pay_trace_no: 'TRACE-PREPAY-ECHO',
+          pay_time: '20260728120000',
+          total_amount: '100',
+          qrcode: 'https://qr.alipay.com/baxopaque',
+        }),
+      ),
+    );
+    await expect(
+      gateway.createPayment({
+        orderNo: 'CBR-PREPAY-ECHO',
+        payTraceNo: 'TRACE-PREPAY-ECHO',
+        payTime: '20260728120000',
+        amountCents: 100n,
+        channel: 'qr',
+        payType: 'alipay',
+      }),
+    ).rejects.toBeInstanceOf(PaymentGatewayUncertainError);
+  });
+
   it('does not retry a timed-out POST and treats an invalid response signature as uncertain', async () => {
     const failedFetch = vi.fn(async () => {
       throw new Error('test transport failure');
@@ -149,7 +231,8 @@ describe('Leshouying payment gateway', () => {
         payTraceNo: 'TRACE-2',
         payTime: '20260728120000',
         amountCents: 100n,
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       }),
     ).rejects.toBeInstanceOf(PaymentGatewayUncertainError);
     expect(failedFetch).toHaveBeenCalledTimes(1);
@@ -178,7 +261,8 @@ describe('Leshouying payment gateway', () => {
         payTraceNo: 'TRACE-3',
         payTime: '20260728120000',
         amountCents: 100n,
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       }),
     ).rejects.toBeInstanceOf(PaymentGatewayUncertainError);
   });
@@ -209,7 +293,8 @@ describe('Leshouying payment gateway', () => {
         payTraceNo: 'TRACE-CHUNKED-LIMIT',
         payTime: '20260728120000',
         amountCents: 100n,
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       }),
     ).rejects.toBeInstanceOf(PaymentGatewayUncertainError);
     expect(cancelled).toBe(true);

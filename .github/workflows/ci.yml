@@ -526,7 +526,8 @@ jobs:
             0006_one_running_turn_per_session.sql \
             0007_first_party_email_auth.sql \
             0008_application_database_roles.sql \
-            0009_billing.sql > "$expected_migrations"
+            0009_billing.sql \
+            0010_recharge_qr_channel.sql > "$expected_migrations"
           cmp -s "$expected_migrations" "$bundle/metadata/migration-files.txt"
           migration_head=$(tail -n 1 "$bundle/metadata/migration-files.txt")
 

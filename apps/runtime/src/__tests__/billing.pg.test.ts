@@ -150,7 +150,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
          )
          VALUES (
            $1, $2, $3, 'runtime-pg-test', 100,
-           'aggregate_qr', 'test', 'INST0001', 'MCH_TEST_001',
+           'qr', 'test', 'INST0001', 'MCH_TEST_001',
            $4, '20260728120000', 'succeeded', 'credited', $5, now(), now()
          )
          RETURNING id`,

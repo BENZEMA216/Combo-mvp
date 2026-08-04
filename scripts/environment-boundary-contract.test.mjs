@@ -217,4 +217,9 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
     1,
   );
   assert.match(mainWorkflow, /0009_billing\.sql/);
+  assert.match(
+    mainWorkflow,
+    /0010_recharge_qr_channel\.sql\s*>\s*"\$expected_migrations"/,
+    'ci.yml expected migration list must end with the 0010 migration head',
+  );
 });

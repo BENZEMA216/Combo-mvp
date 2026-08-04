@@ -547,7 +547,7 @@ pgDescribe('application database roles on PostgreSQL', () => {
            payment_method, gateway_environment, institution_no, merchant_no,
            pay_trace_no, pay_time, platform_trade_no
          )
-         VALUES ($1, $2, $3, 'test-100', 100, 'aggregate_qr', 'test', 'inst-a', $4,
+         VALUES ($1, $2, $3, 'test-100', 100, 'qr', 'test', 'inst-a', $4,
                  $5, '20260801120000', $6)`,
         [`order-${trace}`, ownerUserId, `intent-${trace}`, merchant, trace, `shared-${suffix}`],
       );

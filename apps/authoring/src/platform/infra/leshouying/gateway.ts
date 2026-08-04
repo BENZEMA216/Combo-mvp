@@ -146,7 +146,7 @@ function safeQrContent(value: string): string {
   return value;
 }
 
-function h5PayType(payType: CreatePaymentCommand['payType']): string {
+function gatewayPayType(payType: CreatePaymentCommand['payType']): string {
   if (payType === 'wechat') return '400';
   if (payType === 'alipay') return '300';
   throw new PaymentGatewayUncertainError();
@@ -201,7 +201,7 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
     this.merchantNo = config.merchantNo;
   }
 
-  async #post(path: '/v3/h5pay' | '/v3/qrpay' | '/v3/queryorder', body: SigningParameters) {
+  async #post(path: '/v3/h5pay' | '/v3/prepay' | '/v3/queryorder', body: SigningParameters) {
     const signed = {
       ...body,
       sign: signPaymentParameters(body, this.#config.institutionKey),
@@ -244,6 +244,8 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
   }
 
   async createPayment(command: CreatePaymentCommand): Promise<PaymentSubmission> {
+    // front_url 只属于 H5 收银台跳转；C扫B 二维码（/v3/prepay）的契约没有该字段，
+    // 不能混进公共参数，否则可能被网关当作未知参数拒绝。
     const common: Record<string, string> = {
       inst_no: this.institutionNo,
       mch_no: this.merchantNo,
@@ -253,19 +255,19 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
       order_body: 'Combo余额充值',
       attach: command.orderNo,
       notify_url: this.#config.notifyUrl,
-      ...(this.#config.frontUrl ? { front_url: this.#config.frontUrl } : {}),
     };
-    const path = command.channel === 'h5' ? '/v3/h5pay' : '/v3/qrpay';
+    const path = command.channel === 'h5' ? '/v3/h5pay' : '/v3/prepay';
     const request =
       command.channel === 'h5'
-        ? { ...common, pay_type: h5PayType(command.payType) }
-        : { ...common, time_expire: '15' };
+        ? {
+            ...common,
+            pay_type: gatewayPayType(command.payType),
+            ...(this.#config.frontUrl ? { front_url: this.#config.frontUrl } : {}),
+          }
+        : { ...common, pay_type: gatewayPayType(command.payType), time_expire: '15' };
     const response = await this.#post(path, request);
     this.#assertResponseOwnership(response, command);
-    if (
-      command.channel === 'h5' &&
-      requiredString(response, 'pay_type') !== h5PayType(command.payType)
-    ) {
+    if (requiredString(response, 'pay_type') !== gatewayPayType(command.payType)) {
       throw new PaymentGatewayUncertainError();
     }
     const returnCode = requiredString(response, 'return_code');
@@ -276,7 +278,10 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
     if (resultCode !== 'PAY_SUCCESS') {
       return { status: 'unknown', ...(resultCode ? { gatewayResultCode: resultCode } : {}) };
     }
-    const rawAction = requiredString(response, 'code_url');
+    const rawAction =
+      command.channel === 'h5'
+        ? requiredString(response, 'code_url')
+        : requiredString(response, 'qrcode');
     const codeUrl = command.channel === 'h5' ? safePaymentUrl(rawAction) : safeQrContent(rawAction);
     const tradeNo = optionalString(response, 'trade_no');
     return {

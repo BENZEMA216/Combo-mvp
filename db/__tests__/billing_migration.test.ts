@@ -152,3 +152,32 @@ describe('0009 shared Agent billing', () => {
     );
   });
 });
+
+describe('0010 recharge QR channel rename', () => {
+  const sql0010 = readFileSync(
+    resolve(directory, '..', 'migrations', '0010_recharge_qr_channel.sql'),
+    'utf8',
+  );
+
+  it('drops the old CHECK constraint before renaming the channel value', () => {
+    expect(sql0010).toContain('DROP CONSTRAINT ck_recharge_payment_method');
+    expect(sql0010).toContain(
+      "UPDATE recharge_orders\n   SET payment_method = 'qr'\n WHERE payment_method = 'aggregate_qr'",
+    );
+  });
+
+  it('re-adds the CHECK constraint to accept only h5 and qr', () => {
+    expect(sql0010).toContain('ADD CONSTRAINT ck_recharge_payment_method');
+    expect(sql0010).toContain("payment_method IN ('h5', 'qr')");
+    const addConstraint = sql0010.match(
+      /ADD CONSTRAINT ck_recharge_payment_method CHECK \([\s\S]*?\);?/,
+    )?.[0];
+    expect(addConstraint).not.toContain('aggregate_qr');
+  });
+
+  it('adds a nullable pay_type column with a wechat/alipay constraint', () => {
+    expect(sql0010).toContain('ADD COLUMN pay_type text');
+    expect(sql0010).toContain('ADD CONSTRAINT ck_recharge_pay_type');
+    expect(sql0010).toContain("pay_type IS NULL OR pay_type IN ('wechat', 'alipay')");
+  });
+});

@@ -75,7 +75,8 @@ pgDescribe('billing PostgreSQL concurrency invariants', () => {
       clientIdempotencyKey: `intent-${suffix}`,
       packageId: 'starter',
       amountCents: 300n,
-      paymentMethod: 'aggregate_qr',
+      paymentMethod: 'qr',
+      payType: 'alipay',
       gatewayEnvironment: 'test',
       institutionNo: 'INST0001',
       merchantNo: 'MCH_TEST_001',
@@ -437,5 +438,57 @@ pgDescribe('billing PostgreSQL concurrency invariants', () => {
       [ownerId],
     );
     expect(count.rows[0]).toEqual({ balance: '300', ledger_count: 1 });
+  });
+
+  it('0010 upgrade converts stored aggregate_qr rows and tightens the channel constraint', async () => {
+    const client = await pool.connect();
+    try {
+      // 复刻 0010 的约束演进：旧 CHECK 只允许 h5/aggregate_qr → 迁移存量行 → 收紧为 h5/qr。
+      await client.query(`
+        CREATE TEMP TABLE recharge_orders_upgrade_test (
+          id uuid PRIMARY KEY,
+          payment_method text NOT NULL,
+          CONSTRAINT ck_test_payment_method
+            CHECK (payment_method IN ('h5', 'aggregate_qr'))
+        )
+      `);
+      const legacyId = randomUUID();
+      await client.query(
+        `INSERT INTO recharge_orders_upgrade_test (id, payment_method)
+         VALUES ($1, 'aggregate_qr')`,
+        [legacyId],
+      );
+      await client.query(
+        'ALTER TABLE recharge_orders_upgrade_test DROP CONSTRAINT ck_test_payment_method',
+      );
+      await client.query(
+        `UPDATE recharge_orders_upgrade_test
+            SET payment_method = 'qr'
+          WHERE payment_method = 'aggregate_qr'`,
+      );
+      await client.query(
+        `ALTER TABLE recharge_orders_upgrade_test
+          ADD CONSTRAINT ck_test_payment_method CHECK (payment_method IN ('h5', 'qr'))`,
+      );
+
+      const converted = await client.query<{ payment_method: string }>(
+        `SELECT payment_method FROM recharge_orders_upgrade_test WHERE id = $1`,
+        [legacyId],
+      );
+      expect(converted.rows[0]?.payment_method).toBe('qr');
+
+      await expect(
+        client.query(
+          `INSERT INTO recharge_orders_upgrade_test (id, payment_method) VALUES ($1, 'aggregate_qr')`,
+          [randomUUID()],
+        ),
+      ).rejects.toThrow();
+      await client.query(
+        `INSERT INTO recharge_orders_upgrade_test (id, payment_method) VALUES ($1, 'qr')`,
+        [randomUUID()],
+      );
+    } finally {
+      client.release();
+    }
   });
 });

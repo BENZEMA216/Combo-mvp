@@ -5,7 +5,7 @@ import {
   PaymentGatewayUnavailableError,
   asSigningParameters,
   fingerprintPaymentParameters,
-  type H5PayType,
+  type PayType,
   type PaymentChannel,
   type PaymentGateway,
 } from '../../platform/infra/leshouying/index.js';
@@ -24,7 +24,7 @@ export interface CreateRechargeOrderInput {
   rechargeIntentId: string;
   packageId: string;
   channel: PaymentChannel;
-  payType?: H5PayType;
+  payType: PayType;
 }
 
 export interface CreateRechargeOrderResult {
@@ -67,7 +67,7 @@ function requestFingerprint(input: CreateRechargeOrderInput, amountCents: bigint
     packageId: input.packageId,
     amountCents: amountCents.toString(),
     channel: input.channel,
-    payType: input.payType ?? null,
+    payType: input.payType,
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
@@ -87,10 +87,7 @@ function untrustedEventFingerprint(input: unknown): string {
 }
 
 function validatePaymentSelection(input: CreateRechargeOrderInput): void {
-  if (
-    (input.channel === 'h5' && input.payType !== 'wechat' && input.payType !== 'alipay') ||
-    (input.channel === 'aggregate_qr' && input.payType !== undefined)
-  ) {
+  if (input.payType !== 'wechat' && input.payType !== 'alipay') {
     throw new BillingValidationError();
   }
 }
@@ -124,6 +121,7 @@ export async function createRechargeOrder(
     packageId: selectedPackage.id,
     amountCents: selectedPackage.amountCents,
     paymentMethod: normalizedInput.channel,
+    payType: normalizedInput.payType,
     gatewayEnvironment: gateway.environment,
     institutionNo: gateway.institutionNo,
     merchantNo: gateway.merchantNo,
@@ -144,7 +142,7 @@ export async function createRechargeOrder(
       payTime: prepared.order.payTime,
       amountCents: prepared.order.amountCents,
       channel: prepared.order.paymentMethod,
-      ...(normalizedInput.payType ? { payType: normalizedInput.payType } : {}),
+      payType: normalizedInput.payType,
     });
   } catch {
     submission = { status: 'unknown' as const };

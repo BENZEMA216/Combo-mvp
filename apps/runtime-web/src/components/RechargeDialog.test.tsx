@@ -97,7 +97,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'pending',
       paymentAction: { kind: 'qr_code', url: 'weixin://wxpay/recovered' },
     };
@@ -107,6 +107,24 @@ describe('RechargeDialog', () => {
     expect(await screen.findByRole('img', { name: '乐收赢充值付款二维码' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '创建充值订单' })).not.toBeInTheDocument();
     expect(mocks.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('shows the persisted brand for a recovered QR order', async () => {
+    mocks.recoveredOrder = {
+      id: '29292929-2929-4292-8292-292929292929',
+      rechargeIntentId: requirement.rechargeIntentId,
+      packageId: 'sandbox-300',
+      amountCents: '300',
+      channel: 'qr',
+      payType: 'wechat',
+      status: 'pending',
+      paymentAction: { kind: 'qr_code', url: 'weixin://wxpay/recovered' },
+    };
+
+    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
+
+    expect(await screen.findByText('请使用微信扫码')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '创建充值订单' })).not.toBeInTheDocument();
   });
 
   it('fails closed with an explicit message when no recharge package is configured', async () => {
@@ -139,13 +157,13 @@ describe('RechargeDialog', () => {
     expect(mocks.createOrder).not.toHaveBeenCalled();
   });
 
-  it('creates an aggregate QR order from a configured package and renders only a QR image', async () => {
+  it('creates a QR order from a configured package and renders only a QR image', async () => {
     mocks.createOrder.mockResolvedValue({
       id: '22222222-2222-4222-8222-222222222222',
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'pending',
       paymentAction: { kind: 'qr_code', url: 'https://cashier.test/opaque' },
     } satisfies RechargeOrderView);
@@ -158,7 +176,8 @@ describe('RechargeDialog', () => {
       expect(mocks.createOrder).toHaveBeenCalledWith({
         rechargeIntentId: requirement.rechargeIntentId,
         packageId: 'sandbox-300',
-        channel: 'aggregate_qr',
+        channel: 'qr',
+        payType: 'alipay',
       }),
     );
     expect(await screen.findByRole('img', { name: '乐收赢充值付款二维码' })).toHaveAttribute(
@@ -167,6 +186,72 @@ describe('RechargeDialog', () => {
     );
     expect(screen.getByText('本笔充值 ¥3.00')).toBeInTheDocument();
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('switches the QR brand to WeChat and sends payType wechat', async () => {
+    mocks.createOrder.mockResolvedValue({
+      id: '22222222-2222-4222-8222-222222222222',
+      rechargeIntentId: requirement.rechargeIntentId,
+      packageId: 'sandbox-300',
+      amountCents: '300',
+      channel: 'qr',
+      status: 'pending',
+      paymentAction: { kind: 'qr_code', url: 'https://cashier.test/wechat' },
+    } satisfies RechargeOrderView);
+
+    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
+    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
+    fireEvent.click(screen.getByRole('radio', { name: '微信支付' }));
+    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+
+    await waitFor(() =>
+      expect(mocks.createOrder).toHaveBeenCalledWith({
+        rechargeIntentId: requirement.rechargeIntentId,
+        packageId: 'sandbox-300',
+        channel: 'qr',
+        payType: 'wechat',
+      }),
+    );
+  });
+
+  it('defaults to H5 with Alipay on a narrow viewport', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+      matches: true,
+      media: query,
+      onchange: null,
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    })) as unknown as typeof window.matchMedia;
+    try {
+      mocks.createOrder.mockResolvedValue({
+        id: '44444444-4444-4444-8444-444444444444',
+        rechargeIntentId: requirement.rechargeIntentId,
+        packageId: 'sandbox-300',
+        amountCents: '300',
+        channel: 'h5',
+        status: 'pending',
+        paymentAction: { kind: 'redirect', url: 'https://cashier.test/h5' },
+      } satisfies RechargeOrderView);
+
+      render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
+      await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
+      fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+
+      await waitFor(() =>
+        expect(mocks.createOrder).toHaveBeenCalledWith({
+          rechargeIntentId: requirement.rechargeIntentId,
+          packageId: 'sandbox-300',
+          channel: 'h5',
+          payType: 'alipay',
+        }),
+      );
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
   });
 
   it('requires a constrained payment brand for H5 and never treats the redirect as success', async () => {
@@ -222,7 +307,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'pending',
       paymentAction: { kind: 'qr_code', url: 'weixin://wxpay/opaque' },
     } satisfies RechargeOrderView);
@@ -243,7 +328,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'pending',
       paymentAction: { kind: 'qr_code', url: 'https://cashier.test/opaque' },
     } satisfies RechargeOrderView;
@@ -273,7 +358,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'pending',
       paymentAction: { kind: 'qr_code', url: 'weixin://wxpay/opaque' },
     } satisfies RechargeOrderView;
@@ -302,7 +387,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'unknown',
     };
     const onAbandon = vi.fn();
@@ -333,7 +418,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'unknown',
       reconciliationActive: false,
     };
@@ -352,7 +437,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'unknown',
       reconciliationActive: false,
     } satisfies RechargeOrderView;
@@ -376,7 +461,7 @@ describe('RechargeDialog', () => {
       rechargeIntentId: requirement.rechargeIntentId,
       packageId: 'sandbox-300',
       amountCents: '300',
-      channel: 'aggregate_qr',
+      channel: 'qr',
       status: 'failed',
     } satisfies RechargeOrderView;
     mocks.createOrder.mockResolvedValueOnce(failed).mockResolvedValueOnce({

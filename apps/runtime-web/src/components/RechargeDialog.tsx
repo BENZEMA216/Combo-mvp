@@ -26,7 +26,7 @@ function yuan(cents: string): string {
 }
 
 function defaultChannel(): RechargeChannel {
-  return window.matchMedia?.('(max-width: 720px)').matches ? 'h5' : 'aggregate_qr';
+  return window.matchMedia?.('(max-width: 720px)').matches ? 'h5' : 'qr';
 }
 
 export function RechargeDialog({
@@ -40,7 +40,7 @@ export function RechargeDialog({
   const refreshWallet = useRefreshWallet();
   const [packageId, setPackageId] = useState<string>('');
   const [channel, setChannel] = useState<RechargeChannel>(defaultChannel);
-  const [payType, setPayType] = useState<RechargePayType>('wechat');
+  const [payType, setPayType] = useState<RechargePayType>('alipay');
   const [rechargeIntentId, setRechargeIntentId] = useState(requirement.rechargeIntentId);
   const [createdOrder, setCreatedOrder] = useState<RechargeOrderView | null>(null);
   const recoveredOrderQ = useRechargeOrderByIntent(rechargeIntentId);
@@ -121,7 +121,7 @@ export function RechargeDialog({
         rechargeIntentId,
         packageId,
         channel,
-        ...(channel === 'h5' ? { payType } : {}),
+        payType,
       });
       setCreatedOrder(next);
     } catch (cause) {
@@ -233,10 +233,10 @@ export function RechargeDialog({
                   <input
                     type="radio"
                     name="recharge-channel"
-                    checked={channel === 'aggregate_qr'}
-                    onChange={() => setChannel('aggregate_qr')}
+                    checked={channel === 'qr'}
+                    onChange={() => setChannel('qr')}
                   />
-                  微信或支付宝扫码
+                  扫码支付
                 </label>
                 <label>
                   <input
@@ -248,28 +248,26 @@ export function RechargeDialog({
                   手机收银台
                 </label>
               </div>
-              {channel === 'h5' && (
-                <div className="rt-recharge-pay-types" aria-label="手机收银台支付品牌">
-                  <label>
-                    <input
-                      type="radio"
-                      name="recharge-pay-type"
-                      checked={payType === 'wechat'}
-                      onChange={() => setPayType('wechat')}
-                    />
-                    微信支付
-                  </label>
-                  <label>
-                    <input
-                      type="radio"
-                      name="recharge-pay-type"
-                      checked={payType === 'alipay'}
-                      onChange={() => setPayType('alipay')}
-                    />
-                    支付宝
-                  </label>
-                </div>
-              )}
+              <div className="rt-recharge-pay-types" aria-label="支付品牌">
+                <label>
+                  <input
+                    type="radio"
+                    name="recharge-pay-type"
+                    checked={payType === 'wechat'}
+                    onChange={() => setPayType('wechat')}
+                  />
+                  微信支付
+                </label>
+                <label>
+                  <input
+                    type="radio"
+                    name="recharge-pay-type"
+                    checked={payType === 'alipay'}
+                    onChange={() => setPayType('alipay')}
+                  />
+                  支付宝
+                </label>
+              </div>
             </fieldset>
 
             {packagesQ.isError && (
@@ -422,7 +420,13 @@ function RechargeOrderProgress({
       {amount}
       {action?.kind === 'qr_code' ? (
         <>
-          <strong>请使用微信或支付宝扫码</strong>
+          <strong>
+            {order.payType === 'wechat'
+              ? '请使用微信扫码'
+              : order.payType === 'alipay'
+                ? '请使用支付宝扫码'
+                : '请使用所选支付应用扫码'}
+          </strong>
           {qrDataUrl ? (
             <img src={qrDataUrl} width={240} height={240} alt="乐收赢充值付款二维码" />
           ) : (

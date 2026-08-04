@@ -1,6 +1,6 @@
 export type PaymentGatewayEnvironment = 'test' | 'production';
-export type PaymentChannel = 'h5' | 'aggregate_qr';
-export type H5PayType = 'wechat' | 'alipay';
+export type PaymentChannel = 'h5' | 'qr';
+export type PayType = 'wechat' | 'alipay';
 
 export interface PaymentAction {
   kind: 'redirect_url' | 'code_url';
@@ -14,7 +14,7 @@ export interface CreatePaymentCommand {
   payTime: string;
   amountCents: bigint;
   channel: PaymentChannel;
-  payType?: H5PayType;
+  payType: PayType;
 }
 
 export interface PaymentSubmission {
