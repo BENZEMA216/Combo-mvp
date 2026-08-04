@@ -45,9 +45,9 @@ esac
 K=(kubectl --kubeconfig "$KUBECONFIG")
 
 case "$ENVIRONMENT" in
-  test) NAMESPACE=combo-test; FOUNDATION_SET=test; FOUNDATION_NS=combo-test ;;
-  preview) NAMESPACE=combo-preview; FOUNDATION_SET=shared; FOUNDATION_NS=combo-foundation ;;
-  production) NAMESPACE=combo-prod; FOUNDATION_SET=shared; FOUNDATION_NS=combo-foundation ;;
+  test) NAMESPACE=combo-test; FOUNDATION_SET='test'; FOUNDATION_NS=combo-test ;;
+  preview) NAMESPACE=combo-preview; FOUNDATION_SET='shared'; FOUNDATION_NS=combo-foundation ;;
+  production) NAMESPACE=combo-prod; FOUNDATION_SET='shared'; FOUNDATION_NS=combo-foundation ;;
   *) usage ;;
 esac
 
