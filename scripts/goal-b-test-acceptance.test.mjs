@@ -1316,7 +1316,7 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   );
   assert.match(
     source,
-    /await checked\('studio_trial_return',[\s\S]*name: '返回 UI 设计',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'UI 设计对话'/,
+    /await checked\('studio_trial_return',[\s\S]*studioReturnTo = `\/try\/session\/\$\{studioSession\.id\}\?mode=studio&returnTo=\$\{encodeURIComponent\('\/capabilities'\)\}`[\s\S]*searchParams: \{ returnTo: studioReturnTo \}[\s\S]*name: '返回 UI 设计',[\s\S]*exact: true[\s\S]*searchParams: \{ mode: 'studio', returnTo: '\/capabilities' \}[\s\S]*name: 'UI 设计对话'/,
   );
   assert.match(
     source,
