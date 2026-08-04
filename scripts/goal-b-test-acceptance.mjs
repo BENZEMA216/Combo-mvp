@@ -2190,7 +2190,7 @@ async function runAcceptance(options) {
         searchParams: { returnTo },
       });
       const taskReturnButton = page.getByRole('button', {
-        name: '返回发布流程',
+        name: '返回提取结果',
         exact: true,
       });
       await taskReturnButton.waitFor({ state: 'visible', timeout: 30_000 });
