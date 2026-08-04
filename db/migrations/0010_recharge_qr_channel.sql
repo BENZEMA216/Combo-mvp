@@ -12,6 +12,10 @@ UPDATE recharge_orders
    SET payment_method = 'qr'
  WHERE payment_method = 'aggregate_qr';
 
+-- UPDATE 使 0009 定义的延迟约束触发器挂起；必须先立即触发，
+-- 同一事务内才能继续 ALTER TABLE（PostgreSQL 限制）。
+SET CONSTRAINTS ALL IMMEDIATE;
+
 ALTER TABLE recharge_orders
   ADD CONSTRAINT ck_recharge_payment_method CHECK (
     payment_method IN ('h5', 'qr')
