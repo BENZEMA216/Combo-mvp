@@ -1,0 +1,386 @@
+name: Deploy
+
+# 三环境统一部署 workflow（替换旧 combo-dev.yml / preview.yml / cd.yml）。
+# - main CI 成功后自动部署 Test。
+# - workflow_dispatch 可手工部署到 test（任意同仓库分支或 main）/ preview / production（main 修订）。
+# - 每环境一把 GitHub concurrency 锁（combo-deploy-<env>），三环境应用 rollout 互不阻塞；
+#   Preview/Production 共享 foundation 的迁移由主机侧 per-foundation flock 串行。
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 目标环境
+        required: true
+        type: choice
+        options: [test, preview, production]
+      revision:
+        description: 完整提交 SHA
+        required: true
+        type: string
+      source_branch:
+        description: 分支名（仅 test 任意分支部署时填写；preview/production 必须来自 main）
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  select:
+    name: authorize and resolve the exact revision
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.resolve.outputs.environment }}
+      revision: ${{ steps.resolve.outputs.revision }}
+      source_mode: ${{ steps.resolve.outputs.source_mode }}
+      source_branch: ${{ steps.resolve.outputs.source_branch }}
+      ci_run_id: ${{ steps.resolve.outputs.ci_run_id }}
+      ci_run_attempt: ${{ steps.resolve.outputs.ci_run_attempt }}
+    steps:
+      - name: Authorize a trusted repository actor for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          for candidate in "$ACTOR" "$TRIGGERING_ACTOR"; do
+            [[ "$candidate" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$ ]]
+            permission=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/collaborators/${candidate}/permission" \
+              --jq '.permission')
+            role=$(gh api \
+              "repos/${GITHUB_REPOSITORY}/collaborators/${candidate}/permission" \
+              --jq '.role_name // ""')
+            case "$permission:$role" in
+              admin:*|write:*|*:maintain) ;;
+              *)
+                echo 'Deployment requires repository write, maintain, or admin permission.' >&2
+                exit 1
+                ;;
+            esac
+          done
+
+      - name: Resolve the exact environment and revision
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_REF: ${{ github.ref }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_REVISION: ${{ inputs.revision }}
+          INPUT_SOURCE_BRANCH: ${{ inputs.source_branch }}
+          MAIN_CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          MAIN_CI_EVENT: ${{ github.event.workflow_run.event }}
+          MAIN_CI_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          MAIN_CI_HEAD_REPOSITORY: ${{ github.event.workflow_run.head_repository.full_name }}
+          MAIN_CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          MAIN_CI_PATH: ${{ github.event.workflow_run.path }}
+          MAIN_CI_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          MAIN_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          [[ "$WORKFLOW_REF" == refs/heads/main ]] || {
+            echo 'The deploy controller must run from main.' >&2
+            exit 1
+          }
+          case "$EVENT_NAME" in
+            workflow_run)
+              [[ "$MAIN_CI_CONCLUSION" == success ]]
+              [[ "$MAIN_CI_EVENT" == push ]]
+              [[ "$MAIN_CI_HEAD_BRANCH" == main ]]
+              [[ "$MAIN_CI_HEAD_REPOSITORY" == "$GITHUB_REPOSITORY" ]]
+              [[ "$MAIN_CI_PATH" == .github/workflows/ci.yml ]]
+              [[ "$MAIN_CI_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$MAIN_CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+              [[ "$MAIN_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              environment=test
+              revision=$MAIN_CI_HEAD_SHA
+              source_mode=main-ci
+              source_branch=main
+              ci_run_id=$MAIN_CI_RUN_ID
+              ci_run_attempt=$MAIN_CI_RUN_ATTEMPT
+              ;;
+            workflow_dispatch)
+              case "$INPUT_ENVIRONMENT" in
+                test) environment=test ;;
+                preview) environment=preview ;;
+                production) environment=production ;;
+                *) echo 'Invalid environment.' >&2; exit 1 ;;
+              esac
+              [[ "$INPUT_REVISION" =~ ^[0-9a-f]{40}$ ]] || {
+                echo 'revision must be a complete lowercase commit SHA.' >&2
+                exit 1
+              }
+              gh api "repos/${GITHUB_REPOSITORY}/git/commits/${INPUT_REVISION}" \
+                --jq '.sha' | grep -Fx "$INPUT_REVISION" >/dev/null
+              if [[ "$environment" == test && -n "$INPUT_SOURCE_BRANCH" ]]; then
+                git check-ref-format "refs/heads/$INPUT_SOURCE_BRANCH" >/dev/null || exit 1
+                [[ "$INPUT_SOURCE_BRANCH" != HEAD ]]
+                encoded=$(jq -rn --arg b "$INPUT_SOURCE_BRANCH" '$b | @uri')
+                branch_sha=$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded}" \
+                  --jq '.object.sha')
+                [[ "$branch_sha" == "$INPUT_REVISION" ]] || {
+                  echo 'Test revision must equal the selected branch tip.' >&2
+                  exit 1
+                }
+                source_mode=branch-build
+                source_branch=$INPUT_SOURCE_BRANCH
+                revision=$INPUT_REVISION
+                # 分支构建 artifact 由 build_branch job 在本 run 内生成。
+                ci_run_id=$GITHUB_RUN_ID
+                ci_run_attempt=$GITHUB_RUN_ATTEMPT
+              else
+                [[ -z "$INPUT_SOURCE_BRANCH" ]] || {
+                  echo 'source_branch is only allowed for test branch deploys.' >&2
+                  exit 1
+                }
+                on_main=$(gh api \
+                  "repos/${GITHUB_REPOSITORY}/compare/${INPUT_REVISION}...main" \
+                  --jq '.status')
+                [[ "$on_main" == ahead || "$on_main" == identical ]] || {
+                  echo 'preview/production revision must be reachable from main.' >&2
+                  exit 1
+                }
+                source_mode=main-ci
+                source_branch=main
+                revision=$INPUT_REVISION
+                # 找到该 revision 最近一次成功的 main CI push run。
+                runs=$(mktemp)
+                gh api \
+                  "repos/${GITHUB_REPOSITORY}/actions/runs?event=push&branch=main&head_sha=${revision}&per_page=20" \
+                  >"$runs"
+                jq -e '
+                  [.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success")] as $m
+                  | ($m | length) >= 1
+                ' "$runs" >/dev/null
+                ci_run_id=$(jq -er \
+                  '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success")][0].id' \
+                  "$runs")
+                ci_run_attempt=$(jq -er \
+                  '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml" and .conclusion == "success")][0].run_attempt' \
+                  "$runs")
+                [[ "$ci_run_id" =~ ^[1-9][0-9]*$ ]]
+                [[ "$ci_run_attempt" =~ ^[1-9][0-9]*$ ]]
+              fi
+              ;;
+            *) echo 'Unsupported event.' >&2; exit 1 ;;
+          esac
+          {
+            printf 'environment=%s\n' "$environment"
+            printf 'revision=%s\n' "$revision"
+            printf 'source_mode=%s\n' "$source_mode"
+            printf 'source_branch=%s\n' "$source_branch"
+            printf 'ci_run_id=%s\n' "$ci_run_id"
+            printf 'ci_run_attempt=%s\n' "$ci_run_attempt"
+          } >>"$GITHUB_OUTPUT"
+
+  build_branch:
+    name: build the exact branch Test artifact
+    needs: select
+    if: needs.select.outputs.source_mode == 'branch-build'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      revision: ${{ needs.select.outputs.revision }}
+      publish_release: true
+
+  deploy:
+    name: deploy ${{ needs.select.outputs.environment }}
+    needs: [select, build_branch]
+    if: >-
+      always() &&
+      needs.select.result == 'success' &&
+      (needs.select.outputs.source_mode == 'main-ci' ||
+        needs.build_branch.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    concurrency:
+      group: combo-deploy-${{ needs.select.outputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.0
+
+      - name: Check out the exact revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.select.outputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install the render tooling dependencies
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "${{ needs.select.outputs.revision }}" ]]
+          npm install --no-save yaml@2.9.0
+
+      - name: Download the exact build manifest
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVISION: ${{ needs.select.outputs.revision }}
+          CI_RUN_ID: ${{ needs.select.outputs.ci_run_id }}
+          CI_RUN_ATTEMPT: ${{ needs.select.outputs.ci_run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+          artifact_name="combo-build-${REVISION}-${CI_RUN_ATTEMPT}"
+          artifacts=$(mktemp)
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/artifacts?per_page=100&name=${artifact_name}" \
+            >"$artifacts"
+          jq -e \
+            --arg name "$artifact_name" \
+            --argjson runId "$CI_RUN_ID" '
+              [.artifacts[] | select(.name == $name)] as $matches
+              | ($matches | length) == 1
+                and $matches[0].expired == false
+                and $matches[0].workflow_run.id == $runId
+                and ($matches[0].id | type == "number" and . > 0 and floor == .)
+                and ($matches[0].digest | test("^sha256:[0-9a-f]{64}$"))
+            ' "$artifacts" >/dev/null
+          artifact_id=$(jq -er \
+            --arg name "$artifact_name" '.artifacts[] | select(.name == $name) | .id' "$artifacts")
+          artifact_digest=$(jq -er \
+            --arg name "$artifact_name" '.artifacts[] | select(.name == $name) | .digest' "$artifacts")
+          archive="$RUNNER_TEMP/combo-build.zip"
+          gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}/zip" >"$archive"
+          [[ "$(sha256sum "$archive" | awk '{print "sha256:" $1}')" == "$artifact_digest" ]]
+          unzip -q "$archive" -d "$RUNNER_TEMP/combo-build"
+          node scripts/release-manifest.mjs verify \
+            --manifest "$RUNNER_TEMP/combo-build/metadata/release.json" \
+            --source-sha "$REVISION" \
+            --digest "$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")" >/dev/null
+
+      - name: Configure the deployment SSH identity
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEPLOY_HOST" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$DEPLOY_USER" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]
+          [[ -n "$DEPLOY_SSH_KEY" && -n "$DEPLOY_SSH_KNOWN_HOSTS" ]]
+          install -d -m 0700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/deploy_key"
+          printf '%s\n' "$DEPLOY_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 0600 "$HOME/.ssh/deploy_key" "$HOME/.ssh/known_hosts"
+          {
+            echo 'Host release-target'
+            echo "  HostName $DEPLOY_HOST"
+            echo "  User $DEPLOY_USER"
+            echo '  IdentityFile ~/.ssh/deploy_key'
+            echo '  UserKnownHostsFile ~/.ssh/known_hosts'
+            echo '  IdentitiesOnly yes'
+            echo '  StrictHostKeyChecking yes'
+            echo '  BatchMode yes'
+            echo '  ServerAliveInterval 30'
+            echo '  ServerAliveCountMax 20'
+            echo '  TCPKeepAlive yes'
+            echo '  LogLevel ERROR'
+          } > "$HOME/.ssh/config"
+          chmod 0600 "$HOME/.ssh/config"
+
+      - name: Render the environment manifests
+        env:
+          REVISION: ${{ needs.select.outputs.revision }}
+        run: |
+          set -euo pipefail
+          ENV="${{ needs.select.outputs.environment }}"
+          MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
+          render() {
+            local phase=$1
+            local args=(--environment "$ENV" --phase "$phase" \
+              --output "$RUNNER_TEMP/rendered/$phase.yaml")
+            if [[ "$phase" != foundation ]]; then
+              args+=(--manifest "$RUNNER_TEMP/combo-build/metadata/release.json" \
+                --manifest-digest "$MANIFEST_DIGEST")
+            fi
+            node scripts/render-env.mjs "${args[@]}"
+          }
+          mkdir -p "$RUNNER_TEMP/rendered"
+          render foundation
+          render migrate
+          render apps
+
+      - name: Upload the rendered manifests and apply on the host
+        env:
+          REVISION: ${{ needs.select.outputs.revision }}
+        run: |
+          set -euo pipefail
+          ENV="${{ needs.select.outputs.environment }}"
+          REMOTE_DIR="data/combo-deploy-incoming/${REVISION}.${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}"
+          MANIFEST_DIGEST="$(<"$RUNNER_TEMP/combo-build/metadata/release-manifest-digest.txt")"
+          ssh release-target 'install -d -m 0700 "$HOME/data/combo-deploy-incoming" "$HOME/combo-deploy/bin"'
+          ssh release-target "rm -rf \"\$HOME/$REMOTE_DIR\"; install -d -m 0700 \"\$HOME/$REMOTE_DIR\""
+          scp -q \
+            scripts/deploy-env.sh \
+            "release-target:$HOME/combo-deploy/bin/deploy-env.sh"
+          scp -q \
+            "$RUNNER_TEMP/rendered/foundation.yaml" \
+            "$RUNNER_TEMP/rendered/migrate.yaml" \
+            "$RUNNER_TEMP/rendered/apps.yaml" \
+            "$RUNNER_TEMP/combo-build/metadata/release.json" \
+            "release-target:$REMOTE_DIR/"
+          ssh release-target chmod 0755 "$HOME/combo-deploy/bin/deploy-env.sh"
+          ssh release-target bash -s -- \
+            "$REMOTE_DIR" "$ENV" "$MANIFEST_DIGEST" <<'REMOTE'
+          set -euo pipefail
+          remote_dir=$1
+          environment=$2
+          manifest_digest=$3
+          deploy() {
+            bash "$HOME/combo-deploy/bin/deploy-env.sh" "$1" \
+              --environment "$environment" \
+              --manifest "$HOME/$remote_dir/release.json" \
+              --manifest-digest "$manifest_digest" \
+              --render-dir "$HOME/$remote_dir"
+          }
+          deploy foundation
+          deploy migrate
+          deploy apps
+          REMOTE
+
+      - name: Verify the environment domain
+        env:
+          REVISION: ${{ needs.select.outputs.revision }}
+        run: |
+          set -euo pipefail
+          case "${{ needs.select.outputs.environment }}" in
+            test) origin=https://test.43-160-242-46.sslip.io ;;
+            preview) origin=https://review.43-160-242-46.sslip.io ;;
+            production) origin=https://agora.43-160-242-46.sslip.io ;;
+          esac
+          for _ in $(seq 1 60); do
+            body=$(curl -sk --max-time 5 "$origin/version.json" 2>/dev/null || true)
+            if [[ -n "$body" ]] && jq -e --arg rev "$REVISION" \
+              '.environment != null and .sourceSha == $rev' <<<"$body" >/dev/null 2>&1; then
+              echo "deployed: $origin"
+              jq -r '"environment=\(.environment) sourceSha=\(.sourceSha)"' <<<"$body"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "environment $origin did not serve the deployed revision in time" >&2
+          exit 1

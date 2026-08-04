@@ -84,29 +84,19 @@ test('the sandbox overlay remains opt-in and keeps RuntimeClass installation sep
     resolve(overlayDirectory, 'kustomization.yaml'),
     'utf8',
   );
-  const productionDeploy = readFileSync(resolve(repositoryRoot, 'scripts/deploy-k8s.sh'), 'utf8');
-  const continuousDeployment = readFileSync(
-    resolve(repositoryRoot, '.github/workflows/cd.yml'),
-    'utf8',
-  );
-  const continuousIntegration = readFileSync(
-    resolve(repositoryRoot, '.github/workflows/ci.yml'),
+  const deployScript = readFileSync(resolve(repositoryRoot, 'scripts/deploy-env.sh'), 'utf8');
+  const renderer = readFileSync(resolve(repositoryRoot, 'scripts/render-env.mjs'), 'utf8');
+  const deploymentWorkflow = readFileSync(
+    resolve(repositoryRoot, '.github/workflows/deploy.yml'),
     'utf8',
   );
 
   assert.doesNotMatch(rootKustomization, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
-  assert.doesNotMatch(productionDeploy, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
-  assert.doesNotMatch(continuousDeployment, /\brsync\b|sandbox-tools|Dockerfile\.sandboxd/);
-  assert.match(continuousDeployment, /combo-release-\$\{REVISION\}-\$\{SOURCE_CI_RUN_ATTEMPT\}/);
-  assert.match(continuousDeployment, /scripts\/deploy-release\.sh/);
-  assert.match(continuousIntegration, /"\$bundle\/rendered\/production"/);
-  assert.match(continuousIntegration, /"\$bundle\/infra\/host\/release"/);
-  assert.doesNotMatch(
-    continuousIntegration.slice(
-      continuousIntegration.indexOf('Create and verify the release bundle'),
-    ),
-    /\$bundle\/.*(?:sandbox-tools|Dockerfile\.sandboxd)/,
-  );
+  assert.doesNotMatch(deployScript, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
+  assert.doesNotMatch(renderer, /overlays\/sandbox-tools|Dockerfile\.sandboxd/i);
+  assert.doesNotMatch(deploymentWorkflow, /\brsync\b|sandbox-tools|Dockerfile\.sandboxd/);
+  assert.match(deploymentWorkflow, /deploy-env\.sh/);
+  assert.match(deploymentWorkflow, /render-env\.mjs/);
   assert.doesNotMatch(overlayKustomization, /maintenance|runtimeclass-gvisor/i);
   assert.equal(
     resources.some(({ kind }) => kind === 'RuntimeClass'),
@@ -142,7 +132,7 @@ test('the opt-in Runtime snapshot stays identical to production except for expli
   const overlayRuntime = resourcesFromFile(resolve(overlayDirectory, 'runtime-base.yaml'));
   const namespacedProduction = productionRuntime.map((item) => ({
     ...item,
-    metadata: { ...item.metadata, namespace: 'combo' },
+    metadata: { ...item.metadata, namespace: 'combo-prod' },
   }));
   assert.deepEqual(overlayRuntime, namespacedProduction);
 });
@@ -177,7 +167,7 @@ test('the rendered namespace, quota and Runtime RBAC gate exactly four slots', (
     },
   ]);
 
-  resource('ServiceAccount', 'runtime-sandbox-manager', 'combo');
+  resource('ServiceAccount', 'runtime-sandbox-manager', 'combo-prod');
   const role = resource('Role', 'sandbox-pod-manager', 'combo-sandbox');
   assert.deepEqual(role.rules, [
     {
@@ -200,7 +190,7 @@ test('the rendered namespace, quota and Runtime RBAC gate exactly four slots', (
   ]);
   const binding = resource('RoleBinding', 'runtime-sandbox-manager', 'combo-sandbox');
   assert.deepEqual(binding.subjects, [
-    { kind: 'ServiceAccount', name: 'runtime-sandbox-manager', namespace: 'combo' },
+    { kind: 'ServiceAccount', name: 'runtime-sandbox-manager', namespace: 'combo-prod' },
   ]);
   assert.deepEqual(binding.roleRef, {
     apiGroup: 'rbac.authorization.k8s.io',
@@ -291,7 +281,7 @@ test('the rendered policies deny both directions and permit only Runtime ingress
         from: [
           {
             namespaceSelector: {
-              matchLabels: { 'kubernetes.io/metadata.name': 'combo' },
+              matchLabels: { 'kubernetes.io/metadata.name': 'combo-prod' },
             },
             podSelector: { matchLabels: { app: 'runtime' } },
           },
@@ -304,7 +294,7 @@ test('the rendered policies deny both directions and permit only Runtime ingress
 });
 
 test('the Runtime patch enables the fixed backend and references gVisor without rendering it', () => {
-  const deployment = resource('Deployment', 'runtime', 'combo');
+  const deployment = resource('Deployment', 'runtime', 'combo-prod');
   assert.equal(deployment.spec.replicas, 2);
   assert.equal(deployment.spec.template.spec.serviceAccountName, 'runtime-sandbox-manager');
   const environment = envByName(deployment);
@@ -348,7 +338,7 @@ test('the fifth slot exists only in a separately gated maintenance overlay', () 
   assert.equal(quota.spec.hard['count/pods'], '5');
   assert.equal(quota.spec.hard['count/persistentvolumeclaims'], '5');
   assert.equal(quota.spec.hard['requests.storage'], '5Gi');
-  const deployment = resourceFrom(fifthResources, 'Deployment', 'runtime', 'combo');
+  const deployment = resourceFrom(fifthResources, 'Deployment', 'runtime', 'combo-prod');
   const environment = envByName(deployment);
   assert.equal(environment.SANDBOX_CONFIGURATION_REVISION.value, '4');
   assert.equal(environment.SANDBOX_CAPACITY.value, '5');

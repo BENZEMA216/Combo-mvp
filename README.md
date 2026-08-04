@@ -159,13 +159,11 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 `.github/workflows/ci.yml` 是 Main CD。`main` 更新后它才执行完整 build、集成测试、容器契约与镜像构建，并发布绑定精确提交 SHA 的不可变 release artifact。所有路径都相对仓库根；Docker build context 也是仓库根。
 
-Test、Preview、Production 的发布入口彼此独立：
+Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s 上，命名空间分别为 `combo-test`、`combo-preview`、`combo-prod`，部署由 `.github/workflows/deploy.yml` 统一处理：
 
-- Test 只由 `.github/workflows/combo-dev.yml` 的手工 `workflow_dispatch` 启动。具有仓库 write、maintain 或 admin 权限的成员必须指定一个仍开放、来自同一仓库的 PR 编号及其启动时的精确 head SHA。受信任的 `main` 控制器构建并部署已冻结候选；PR 的 base、祖先关系及构建期间的分支前进不会阻断该快照。候选分支的 workflow 和控制脚本接触不到 GitHub `combo-dev` Environment 的 SSH 或 Resend Secret。Test 不由 PR 或 `main` 自动部署，其证据也不能晋级 Preview 或 Production。
-- Preview 由成功的 Main CD 自动触发，直接消费该 `main` 提交的 release artifact，不依赖 Test 证据。仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE=paused` 时只记录策略并跳过实际 Preview 部署。
-- Production 不自动跟随 `main`、Test 或 Preview；只能在 GitHub `production` Environment 人工批准后消费精确成功的 Preview artifact。
-
-三个部署环境共用 `cd-tecent2` 并发组以串行化主机变更，但使用不同 Kubernetes namespace、入口和数据；这种隔离是逻辑隔离，不是三台独立主机。
+- 成功的 `main` Main CD 会自动触发同一提交的 Test 部署；具有仓库写入权限的成员也可以从 `main` 上受信任的 `workflow_dispatch` 控制器选择任意同仓库分支及其精确 tip SHA，回调 main 定义的 `ci.yml` 为该提交构建不可变 artifact 并部署到 Test。
+- Preview 与 Production 通过手工 `workflow_dispatch` 触发，只接受可达 main 的修订。
+- 三个环境的应用 rollout 各持一把并发锁互不阻塞；Preview/Production 共享 foundation（`combo-foundation`），对共享基建的迁移由主机侧 per-foundation 锁串行。Test 每次只更新应用，基础实例常驻、数据保留。
 
 ---
 
@@ -179,9 +177,9 @@ Test、Preview、Production 的发布入口彼此独立：
 ├── apps/web/          # @cb/web  创作端 React/Vite 应用
 ├── apps/runtime-web/  # @cb/runtime-web  试用与 Studio React/Vite 应用
 ├── db/                # @cb/db   PostgreSQL 迁移 + 幂等 runner
-├── infra/             # @cb/infra 编排、发布拓扑、Nginx 与基础设施配置
-├── scripts/           # @cb/scripts start / migrate / smoke / openapi-dump / 集成脚本
-└── .github/workflows/ # PR CI、Main CD 与三个独立环境发布入口
+├── infra/             # @cb/infra 编排、发布拓扑、k8s 清单、Nginx 与基础设施配置
+├── scripts/           # @cb/scripts 发布渲染 / 部署 / 验收 / 集成脚本
+└── .github/workflows/ # PR CI（pr-ci.yml）、Main CD（ci.yml）与部署（deploy.yml）
 ```
 
 更细的各包职责与设计决策，见文首「文档真源」指向的飞书文档。
@@ -192,4 +190,4 @@ Test、Preview、Production 的发布入口彼此独立：
 
 源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0009`、再次幂等执行、应用角色权限和异常账本拒绝。
 
-Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`，并使用独立公网入口 `https://test.43-160-242-46.sslip.io`（Web）和 `https://test-s3.43-160-242-46.sslip.io`（对象存储）。受保护的 `main` 控制器只接受手工指定的开放同仓库 PR 及其启动时的精确 head SHA，并核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。候选无需包含当前 `main`；它只需满足已冻结控制器的 Test 发布契约。Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通快速测试也不启动 Docker 或 Docker Compose。
+Test、Preview 与 Production 的环境证据来自 tecent2 K3s 的 `combo-test`、`combo-preview` 与 `combo-prod` namespace。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；每次部署都核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要并验证环境域名返回对应 SHA。源码目录中的普通测试不启动 Docker 或 Docker Compose。

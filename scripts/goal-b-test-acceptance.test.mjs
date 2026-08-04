@@ -701,20 +701,9 @@ test('browser network gate only permits the exact public HTTPS origin and non-ne
   );
 });
 
-test('Test origin, Nginx allowlist, and page interception preserve one public boundary', () => {
-  const nginx = readFileSync(
-    new URL('../infra/k8s/overlays/combo-dev/apps/nginx-dev.conf', import.meta.url),
-    'utf8',
-  );
+test('page message interception stays scoped to the exact web origin', () => {
   const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
 
-  assert.match(nginx, /"https:\/\/test\.43-160-242-46\.sslip\.io" 1;/);
-  assert.doesNotMatch(nginx, /"http:\/\/127\.0\.0\.1:18080" 1;/);
-  assert.equal(
-    nginx.match(/proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;/g)?.length,
-    4,
-  );
-  assert.doesNotMatch(nginx, /proxy_set_header X-Forwarded-Proto \$scheme;/);
   assert.match(source, /const messageUrl = `\$\{options\.webOrigin\}\$\{messagePath\}`/);
   assert.match(source, /page\.route\(\s*messageUrl/);
   assert.match(source, /page\.waitForRequest\([\s\S]*request\.url\(\) === messageUrl/);

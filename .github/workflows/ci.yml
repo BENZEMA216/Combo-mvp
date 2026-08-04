@@ -369,7 +369,6 @@ jobs:
             --tmpfs /var/cache/nginx:rw,noexec,nosuid,size=64m,uid=101,gid=101,mode=0755 \
             --tmpfs /var/run:rw,noexec,nosuid,size=8m,uid=101,gid=101,mode=0755 \
             --tmpfs /tmp:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=1777 \
-            --mount "type=bind,src=$PWD/infra/k8s/overlays/combo-dev/apps/nginx-dev.conf,dst=/etc/nginx/templates/default.conf.template,readonly" \
             --env NGINX_RESOLVER=127.0.0.11 \
             --env API_UPSTREAM_HOST=api.invalid \
             --env RUNTIME_UPSTREAM_HOST=runtime.invalid \
@@ -533,7 +532,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: assemble immutable release artifact
+    name: assemble immutable build metadata
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
       inputs.publish_release == true
@@ -560,10 +559,6 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
 
-      - uses: azure/setup-kubectl@v4
-        with:
-          version: v1.31.0
-
       - name: Install the release tooling dependencies
         run: pnpm install --frozen-lockfile
 
@@ -581,8 +576,8 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Create and verify the release bundle
-        id: bundle
+      - name: Create and verify the build manifest
+        id: build
         run: |
           set -euo pipefail
           umask 077
@@ -590,15 +585,8 @@ jobs:
           [[ "$GITHUB_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           [[ "$(git rev-parse HEAD)" == "$SOURCE_SHA" ]]
 
-          bundle=$(mktemp -d "$RUNNER_TEMP/combo-release-${SOURCE_SHA}.XXXXXX")
-          mkdir -p \
-            "$bundle/metadata" \
-            "$bundle/rendered/test" \
-            "$bundle/rendered/preview" \
-            "$bundle/rendered/production" \
-            "$bundle/scripts" \
-            "$bundle/acceptance" \
-            "$bundle/infra/host/release"
+          bundle=$(mktemp -d "$RUNNER_TEMP/combo-build-${SOURCE_SHA}.XXXXXX")
+          mkdir -p "$bundle/metadata"
 
           api_image=$(<"$RUNNER_TEMP/image-digests/api.image")
           runtime_image=$(<"$RUNNER_TEMP/image-digests/runtime.image")
@@ -655,93 +643,31 @@ jobs:
             --source-sha "$SOURCE_SHA" \
             --digest "$manifest_digest" >/dev/null
 
-          for phase in migrate apps; do
-            node scripts/render-release.mjs \
-              --manifest "$bundle/metadata/release.json" \
-              --manifest-digest "$manifest_digest" \
-              --environment test \
-              --phase "$phase" \
-              --output "$bundle/rendered/test/$phase.yaml"
-          done
-          for environment in preview production; do
-            for phase in foundation init migrate apps; do
-              node scripts/render-release.mjs \
-                --manifest "$bundle/metadata/release.json" \
-                --manifest-digest "$manifest_digest" \
-                --environment "$environment" \
-                --phase "$phase" \
-                --output "$bundle/rendered/$environment/$phase.yaml"
-            done
-          done
-
-          install -m 0755 \
-            scripts/collect-live-runtime-evidence.sh \
-            scripts/collect-release-inventory.sh \
-            scripts/deploy-release.sh \
-            scripts/foundation-reset-journal.mjs \
-            scripts/prepare-reset-roll-forward.sh \
-            scripts/recover-preview-post-cut.sh \
-            scripts/reset-roll-forward-journal.mjs \
-            scripts/reset-release-foundation.sh \
-            scripts/rollback-release-traffic.sh \
-            scripts/seal-release-traffic.sh \
-            scripts/switch-release-traffic.sh \
-            "$bundle/scripts/"
-          install -m 0644 \
-            scripts/release-manifest.mjs \
-            scripts/promotion-evidence.mjs \
-            scripts/release-nginx-route.mjs \
-            scripts/verify-release-schema.mjs \
-            scripts/web-asset-manifest.mjs \
-            scripts/verify-rendered-release.mjs \
-            "$bundle/scripts/"
-          install -m 0644 \
-            scripts/goal-b-test-acceptance.mjs \
-            "$bundle/acceptance/live-browser-acceptance.mjs"
-          install -m 0644 scripts/resend-sent-email.mjs \
-            "$bundle/acceptance/resend-sent-email.mjs"
-          tar -C "$(dirname "$(realpath scripts/node_modules/playwright-core)")" \
-            -czf "$bundle/acceptance/playwright-core.tgz" playwright-core
-          install -m 0644 infra/host/release/*.service "$bundle/infra/host/release/"
-
           if find "$bundle" -type l -print -quit | grep -q .; then
-            echo 'Release bundle contains a symbolic link.' >&2
+            echo 'Build bundle contains a symbolic link.' >&2
             exit 1
           fi
-          if grep -RIEq -- \
-            '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----|gh[pousr]_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}' \
-            "$bundle"; then
-            echo 'Release bundle failed credential-pattern scanning.' >&2
-            exit 1
-          fi
-          (
-            cd "$bundle"
-            find . -type f ! -path './metadata/artifact-files.sha256' -print0 \
-              | LC_ALL=C sort -z \
-              | xargs -0 sha256sum > metadata/artifact-files.sha256
-            sha256sum -c metadata/artifact-files.sha256 >/dev/null
-          )
 
           printf 'path=%s\n' "$bundle" >> "$GITHUB_OUTPUT"
-          printf 'name=combo-release-%s-%s\n' \
+          printf 'name=combo-build-%s-%s\n' \
             "$SOURCE_SHA" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
 
-      - name: Upload the only promotable release artifact
-        id: release-artifact
+      - name: Upload the build metadata artifact
+        id: build-artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.bundle.outputs.name }}
-          path: ${{ steps.bundle.outputs.path }}
+          name: ${{ steps.build.outputs.name }}
+          path: ${{ steps.build.outputs.path }}
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
 
-      - name: Publish the release identity
+      - name: Publish the build identity
         env:
-          ARTIFACT_DIGEST: ${{ steps.release-artifact.outputs.artifact-digest }}
-          ARTIFACT_NAME: ${{ steps.bundle.outputs.name }}
+          ARTIFACT_DIGEST: ${{ steps.build-artifact.outputs.artifact-digest }}
+          ARTIFACT_NAME: ${{ steps.build.outputs.name }}
         run: |
           set -euo pipefail
           [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
-          printf 'Release artifact: %s\n' "$ARTIFACT_NAME"
+          printf 'Build artifact: %s\n' "$ARTIFACT_NAME"
           printf 'GitHub artifact digest: sha256:%s\n' "$ARTIFACT_DIGEST"
