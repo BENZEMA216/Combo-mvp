@@ -21,7 +21,7 @@ export function PublicLayout(): ReactElement {
         </Link>
         {showAgentEntry && (
           <Link to="/capabilities" className="cb-public-shell__agent-entry">
-            查看我的 Agent
+            进入 Combo
             <span aria-hidden="true">→</span>
           </Link>
         )}

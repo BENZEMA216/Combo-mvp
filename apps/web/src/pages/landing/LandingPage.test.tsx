@@ -141,7 +141,7 @@ describe('LandingPage', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('Combo 资料仅写入 sessionStorage，并明确登录绑定账号后才上传', async () => {
+  it('Combo 资料仅写入 sessionStorage，并明确托管创建尚未开放', async () => {
     const { fetchMock } = renderPageWithoutFetch();
 
     await userEvent.click(getComboTrigger());
@@ -153,7 +153,7 @@ describe('LandingPage', () => {
     await userEvent.click(screen.getByRole('button', { name: '准备这份资料' }));
 
     expect(await screen.findByText('资料已准备好')).toBeInTheDocument();
-    expect(screen.getByText(/现在仍只保存在这个浏览器会话中/)).toBeInTheDocument();
+    expect(screen.getByText(/尚未提交或上传/)).toBeInTheDocument();
     const cached = JSON.parse(sessionStorage.getItem(CREATION_INTAKE_STORAGE_KEY) ?? '{}') as {
       profileUrl?: string;
       mode?: string;
@@ -162,7 +162,7 @@ describe('LandingPage', () => {
       profileUrl: 'https://example.com/creator',
       mode: 'kol_profile',
     });
-    expect(screen.getByRole('link', { name: '登录并继续创建' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('button', { name: '托管创建即将开放' })).toBeDisabled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -216,7 +216,7 @@ describe('LandingPage', () => {
     expect(screen.getByText('资料已准备好')).toBeInTheDocument();
     expect(screen.getByText('https://example.com/creator')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '准备这份资料' })).toBeNull();
-    expect(screen.getByRole('link', { name: '登录并继续创建' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '托管创建即将开放' })).toBeDisabled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 

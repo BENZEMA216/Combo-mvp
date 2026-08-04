@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -230,6 +231,155 @@ class GitHubCollaborationWorktreeGuardTest(unittest.TestCase):
         self.assertEqual(data["ahead_base"], 1)
         self.assertEqual(data["behind_base"], 0)
         self.assertEqual(data["ahead_upstream"], 0)
+
+    def test_check_dev_ready_accepts_clean_local_task_worktree(self) -> None:
+        worktree, _ = self.fixture.add_task_worktree()
+
+        result, data = self.guard(
+            "check-dev-ready",
+            "--worktree",
+            str(worktree),
+            "--base",
+            "origin/main",
+            "--expected-repository",
+            "fixture/Combo",
+            "--minimum-free-gib",
+            "0",
+            "--recommended-free-gib",
+            "0",
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("预期 GitHub 仓库", "\n".join(data["blocking_reasons"]))
+        self.assertEqual(data["git_integrity"], "ok")
+        self.assertFalse(data["cloud_managed_path"])
+
+        git(worktree, "remote", "set-url", "origin", "https://github.com/fixture/Combo.git")
+        accepted_result, accepted_data = self.guard(
+            "check-dev-ready",
+            "--worktree",
+            str(worktree),
+            "--base",
+            "origin/main",
+            "--expected-repository",
+            "fixture/Combo",
+            "--minimum-free-gib",
+            "0",
+            "--recommended-free-gib",
+            "0",
+        )
+        self.assertEqual(accepted_result.returncode, 0, accepted_result.stdout)
+        self.assertTrue(accepted_data["ready"])
+        self.assertEqual(accepted_data["repository"], "fixture/Combo")
+
+    def test_check_dev_ready_rejects_primary_checkout(self) -> None:
+        result, data = self.guard(
+            "check-dev-ready",
+            "--worktree",
+            str(self.fixture.primary),
+            "--base",
+            "origin/main",
+            "--expected-repository",
+            "fixture/Combo",
+            "--minimum-free-gib",
+            "0",
+            "--recommended-free-gib",
+            "0",
+        )
+
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            "当前目录是主控制检出；开发必须在独立任务工作树中进行",
+            data["blocking_reasons"],
+        )
+
+    def test_git_timeout_returns_actionable_error(self) -> None:
+        helper = self.fixture.root / "slow-git"
+        helper.write_text("#!/bin/sh\nsleep 2\n", encoding="utf-8")
+        helper.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{self.fixture.root}:{env['PATH']}"
+        helper.rename(self.fixture.root / "git")
+
+        result = subprocess.run(
+            (
+                sys.executable,
+                str(SCRIPT),
+                "inspect",
+                "--worktree",
+                str(self.fixture.primary),
+                "--format",
+                "json",
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env={**env, "COMBO_GIT_TIMEOUT_SECONDS": "1"},
+        )
+        data = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("超过 1 秒仍未完成", data["error"])
+
+    def test_invalid_git_timeout_returns_controlled_error(self) -> None:
+        result = subprocess.run(
+            (
+                sys.executable,
+                str(SCRIPT),
+                "inspect",
+                "--worktree",
+                str(self.fixture.primary),
+                "--format",
+                "json",
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env={**os.environ, "COMBO_GIT_TIMEOUT_SECONDS": "not-a-number"},
+        )
+        data = json.loads(result.stdout)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("必须是正整数", data["error"])
+
+    def test_fsck_timeout_stays_capped_when_git_timeout_is_larger(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("timeout=GIT_FSCK_TIMEOUT_SECONDS", source)
+        self.assertNotIn(
+            "timeout=max(git_timeout_seconds(), GIT_FSCK_TIMEOUT_SECONDS)",
+            source,
+        )
+
+    def test_check_dev_ready_redacts_remote_credentials(self) -> None:
+        worktree, _ = self.fixture.add_task_worktree("remote-redaction")
+        secret = "super-secret-token"
+        git(
+            worktree,
+            "remote",
+            "set-url",
+            "origin",
+            f"https://fixture:{secret}@github.com/other/Repository.git",
+        )
+
+        result, data = self.guard(
+            "check-dev-ready",
+            "--worktree",
+            str(worktree),
+            "--base",
+            "origin/main",
+            "--expected-repository",
+            "fixture/Combo",
+            "--minimum-free-gib",
+            "0",
+            "--recommended-free-gib",
+            "0",
+        )
+
+        serialized = json.dumps(data, ensure_ascii=False)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertNotIn(secret, serialized)
+        self.assertIn("https://github.com/other/Repository.git", serialized)
 
     def test_check_pr_ready_reports_dirty_unpushed_and_behind_states(self) -> None:
         worktree, _ = self.fixture.add_task_worktree()

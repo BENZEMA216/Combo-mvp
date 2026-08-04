@@ -1,5 +1,4 @@
 import { useState, type KeyboardEvent, type ReactElement } from 'react';
-import { Link } from 'react-router-dom';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import {
   clearLandingDraft,
@@ -18,8 +17,6 @@ export const CODING_AGENT_CREATION_TASK = `请帮我用 Combo 创建一个 KOL A
 - 上传结束后停止，并提醒我回到 Combo，在同一个项目里查看、试用和验收 Agent。
 
 如果还没有一次性连接指令，请先停下并提醒我在 Combo 中打开连接页。`;
-
-const CREATOR_WORKSPACE_PATH = '/tasks';
 
 type CreationMethod = 'coding-agent' | 'combo';
 type DemoAgentId = 'style' | 'content' | 'reflection';
@@ -128,13 +125,18 @@ function PreparedSource({
       </div>
       <div className="cb-landing-prepared__copy">
         <strong>资料已准备好</strong>
-        <p>登录并绑定账号后才会上传并开始生成；现在仍只保存在这个浏览器会话中。</p>
+        <p>尚未提交或上传。托管创建正在内测，资料只保存在当前浏览器会话中。</p>
         <span title={draft.profileUrl}>{draft.profileUrl}</span>
       </div>
       <div className="cb-landing-prepared__actions">
-        <Link className="cb-landing-action cb-landing-action--primary" to={CREATOR_WORKSPACE_PATH}>
-          登录并继续创建
-        </Link>
+        <button
+          type="button"
+          className="cb-landing-action cb-landing-action--primary"
+          disabled
+          title="托管创建服务开放后才可提交"
+        >
+          托管创建即将开放
+        </button>
         <button
           type="button"
           className="cb-landing-action cb-landing-action--quiet"
@@ -373,8 +375,8 @@ export function LandingPage(): ReactElement {
               <p className="cb-landing-eyebrow">COMBO · CREATE</p>
               <h1 id="cb-landing-title">把你的内容，变成一个可以工作的 Agent。</h1>
               <p>
-                可以交给你的 Coding Agent，也可以把公开主页交给
-                Combo。先看懂结果形态，再登录承接生成。
+                现在可以交给你的 Coding Agent
+                完成创建，也可以先准备公开主页资料。先看懂结果形态，再进入工作区承接生成。
               </p>
               <div className="cb-landing-builder__promise" aria-label="创建承诺">
                 <span>浏览无需登录</span>
@@ -417,7 +419,7 @@ export function LandingPage(): ReactElement {
                   <span aria-hidden="true">↳</span>
                   <p>
                     <strong>选择一种方式开始</strong>
-                    两条路径只负责准备 Context，最后都会进入同一个 Agent Studio。
+                    Coding Agent 创建现在可用；公开主页托管创建正在内测。
                   </p>
                 </div>
               )}
@@ -488,9 +490,9 @@ export function LandingPage(): ReactElement {
                   <div className="cb-landing-method-panel__head">
                     <div>
                       <h2>粘贴你的公开主页</h2>
-                      <p>现在只在浏览器中准备资料，登录并绑定账号后才会真正上传。</p>
+                      <p>先在浏览器中准备资料，不会提交或上传；托管创建开放后再由你确认。</p>
                     </div>
-                    <span>云端托管</span>
+                    <span>内测准备</span>
                   </div>
 
                   {prepared ? (
@@ -616,7 +618,7 @@ export function LandingPage(): ReactElement {
             <span>01</span>
             <div>
               <strong>创建 Agent</strong>
-              <p>公开主页或真实工作历史，最终都进入同一个 Agent 项目。</p>
+              <p>真实工作历史现在可进入 Agent 项目；公开主页托管链路开放后也会汇入这里。</p>
             </div>
           </li>
           <li>

@@ -75,12 +75,12 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     expect(screen.queryByText('没有更多了')).toBeNull();
   });
 
-  it('创建 Agent 入口位于列表顶部并直接进入既有创作链第一步', async () => {
+  it('上传会话入口位于列表顶部并进入真实上传链路', async () => {
     fm = installFetchMock({ status: 200, json: paginatedBody([DRAFT]) });
     renderPage(<CapabilitiesPage />, { route: '/capabilities' });
     await screen.findByText('周报整理');
 
-    const create = screen.getByRole('link', { name: '创建 Agent' });
+    const create = screen.getByRole('link', { name: '上传会话' });
     expect(create).toHaveAttribute('href', '/tasks');
     expect(create.closest('.cb-capabilities__list-toolbar')).not.toBeNull();
   });
@@ -291,7 +291,7 @@ describe('CapabilitiesPage — Agent 项目列表', () => {
     fm = installFetchMock({ status: 200, json: paginatedBody([]) });
     renderPage(<CapabilitiesPage />, { route: '/capabilities' });
     expect(await screen.findByText('还没有 Agent')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '创建 Agent' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('link', { name: '上传会话' })).toHaveAttribute('href', '/tasks');
     expect(screen.queryByRole('table')).toBeNull();
   });
 

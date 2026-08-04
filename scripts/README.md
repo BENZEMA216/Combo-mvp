@@ -2,6 +2,12 @@
 
 本目录保存仓库级验证、部署和运维脚本。发布脚本不得输出、落盘、复制或提交任何环境 Secret 值；部署前只允许核对 Secret 名称与键名。需要凭据的步骤只能在对应的受保护 GitHub Environment 中运行。
 
+安装依赖前从独立任务工作树运行 `bash scripts/dev-preflight.sh`。这个入口不依赖 `node_modules`，避免包管理器在磁盘检查前自动安装依赖。它会以只读方式拒绝主控制检出、macOS 云盘托管路径、错误 GitHub 仓库、低于 20 GiB 的可用磁盘、落后基线、脏工作树、冲突和损坏的 Git 对象库；20–30 GiB 会给出警告。普通 Git 子命令有 20 秒硬超时，完整对象库检查最多 120 秒，避免损坏仓库或 FileProvider 让自动化无限挂起。完整操作顺序见 `docs/reliable-development-and-preview.md`。
+
+macOS 开发机使用 `pnpm test:local` 跑应用、共享包、数据库迁移和发布证据契约。Linux/GNU 专属的主机控制面契约仍由 PR CI 的 `pnpm test:fast` 执行；不要为了让 macOS 通过而放宽生产部署脚本的固定 PATH、GNU 工具或主机安全约束。
+
+Preview 发布完成后运行 `pnpm release:verify:preview -- --expected-sha <main-merge-sha>`。`verify-preview-release.mjs` 只访问固定的 Preview `version.json`，要求 `sourceSha`、`releaseId`、release manifest 摘要、Web asset 摘要和构建时间全部有效且与传入的预期 merge SHA 一致。merge SHA 属于远端 `main`、Main CD 成功和 Preview promotion 成功仍需由 GitHub 证据链分别确认；URL 可访问不构成发布成功证据。
+
 `release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。清单把一个完整源码 SHA 唯一映射到 API、Runtime、Web 三个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。Preview 和 Production 只接受 `main` 的发布清单；其他同仓库分支的清单只用于 Test。
 
 `web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。Main CD 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。

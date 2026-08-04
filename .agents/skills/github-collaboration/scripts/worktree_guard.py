@@ -8,10 +8,12 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 
 ALLOWED_TYPES = (
@@ -29,6 +31,9 @@ SLUG_PATTERN = re.compile(r"(?:[0-9]+-)?[a-z0-9]+(?:-[a-z0-9]+)*\Z")
 PR_EVIDENCE_PATTERN = re.compile(
     r"(?:[0-9]+|https://github\.com/[^/]+/[^/]+/pull/[0-9]+)\Z"
 )
+GIB = 1024**3
+DEFAULT_GIT_TIMEOUT_SECONDS = 20
+GIT_FSCK_TIMEOUT_SECONDS = 120
 TEXT_LABELS = {
     "operation": "操作",
     "mutates_repository": "是否修改仓库",
@@ -57,6 +62,13 @@ TEXT_LABELS = {
     "merge_method": "合并方式",
     "external_verification_required": "外部验证要求",
     "remote_branch_action": "远端分支操作",
+    "repository": "GitHub 仓库",
+    "free_disk_gib": "可用磁盘 GiB",
+    "minimum_free_disk_gib": "最低磁盘 GiB",
+    "recommended_free_disk_gib": "建议磁盘 GiB",
+    "git_integrity": "Git 对象库",
+    "cloud_managed_path": "云盘托管路径",
+    "warnings": "警告",
     "error": "错误",
 }
 TEXT_VALUES = {
@@ -64,6 +76,7 @@ TEXT_VALUES = {
     "inspect": "检查状态",
     "check-pr-ready": "检查拉取请求就绪状态",
     "plan-cleanup": "规划清理",
+    "check-dev-ready": "检查开发环境就绪状态",
     "merge": "合并提交",
     "squash": "压缩合并",
     "rebase": "变基合并",
@@ -73,6 +86,17 @@ TEXT_VALUES = {
 
 class GuardError(RuntimeError):
     """确定性的流程前置条件未满足。"""
+
+
+def git_timeout_seconds() -> int:
+    raw = os.environ.get("COMBO_GIT_TIMEOUT_SECONDS", str(DEFAULT_GIT_TIMEOUT_SECONDS))
+    try:
+        timeout = int(raw)
+    except ValueError as error:
+        raise GuardError("COMBO_GIT_TIMEOUT_SECONDS 必须是正整数秒数") from error
+    if timeout <= 0:
+        raise GuardError("COMBO_GIT_TIMEOUT_SECONDS 必须是正整数秒数")
+    return timeout
 
 
 class ChineseArgumentParser(argparse.ArgumentParser):
@@ -105,24 +129,40 @@ class ChineseArgumentParser(argparse.ArgumentParser):
 
 
 def run_command(
-    command: Sequence[str], cwd: Path | None = None, check: bool = True
+    command: Sequence[str],
+    cwd: Path | None = None,
+    check: bool = True,
+    timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        list(command),
-        cwd=cwd,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
-    )
+    effective_timeout = timeout if timeout is not None else git_timeout_seconds()
+    try:
+        result = subprocess.run(
+            list(command),
+            cwd=cwd,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=effective_timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise GuardError(
+            f"{shlex.join(command)}: 超过 {effective_timeout} 秒仍未完成；"
+            "请检查云盘托管、磁盘余量或 Git 对象库损坏"
+        ) from error
     if check and result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "命令执行失败"
         raise GuardError(f"{shlex.join(command)}: {detail}")
     return result
 
 
-def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return run_command(("git", "-C", str(repo), *args), check=check)
+def git(
+    repo: Path,
+    *args: str,
+    check: bool = True,
+    timeout: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return run_command(("git", "-C", str(repo), *args), check=check, timeout=timeout)
 
 
 def repository_root(path: str | Path) -> Path:
@@ -257,6 +297,60 @@ def relative_to(path: Path, parent: Path) -> bool:
         return os.path.commonpath((str(path), str(parent))) == str(parent)
     except ValueError:
         return False
+
+
+def github_repository(remote_url: str) -> str | None:
+    """从常见 GitHub remote 语法中提取 owner/repo，不返回 userinfo。"""
+    raw = remote_url.strip()
+    path: str | None = None
+    if raw.startswith("git@github.com:"):
+        path = raw.removeprefix("git@github.com:")
+    else:
+        parsed = urlsplit(raw)
+        if parsed.hostname and parsed.hostname.lower() == "github.com":
+            path = parsed.path.lstrip("/")
+    if path is None:
+        return None
+    path = path.removesuffix(".git")
+    parts = path.split("/")
+    if len(parts) != 2 or not all(parts):
+        return None
+    return "/".join(parts)
+
+
+def sanitized_remote_url(remote_url: str) -> str:
+    """输出远端地址前移除 URL userinfo，避免 token 进入终端或 CI 日志。"""
+    raw = remote_url.strip()
+    parsed = urlsplit(raw)
+    if parsed.scheme and parsed.hostname:
+        host = parsed.hostname
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is not None:
+            host = f"{host}:{port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+    if raw.startswith("git@github.com:"):
+        return raw
+    return "<无法识别的远端地址>"
+
+
+def cloud_managed_path(path: Path, platform: str | None = None) -> bool:
+    if (platform or sys.platform) != "darwin":
+        return False
+    home = Path.home().resolve()
+    candidates = (
+        home / "Documents",
+        home / "Desktop",
+        home / "Library" / "CloudStorage",
+        home / "Library" / "Mobile Documents",
+    )
+    return any(relative_to(path, candidate.resolve()) for candidate in candidates)
+
+
+def disk_space_gib(path: Path) -> float:
+    return shutil.disk_usage(path).free / GIB
 
 
 def rev_counts(repo: Path, left: str, right: str) -> tuple[int, int]:
@@ -474,6 +568,84 @@ def check_pr_ready(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     return data, 0 if not reasons else 1
 
 
+def check_dev_ready(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
+    data = inspect_state(
+        args.worktree, args.base, args.base_remote, args.push_remote
+    )
+    root = Path(data["worktree"]).resolve()
+    primary = Path(data["primary_worktree"]).resolve()
+    reasons: list[str] = []
+    warnings: list[str] = []
+
+    remote_url = git(root, "remote", "get-url", data["base_remote"]).stdout.strip()
+    repository = github_repository(remote_url)
+    if repository is None or repository.lower() != args.expected_repository.lower():
+        reasons.append(
+            f"基准远端指向 {sanitized_remote_url(remote_url)}，"
+            f"预期 GitHub 仓库为 {args.expected_repository}"
+        )
+    if root == primary:
+        reasons.append("当前目录是主控制检出；开发必须在独立任务工作树中进行")
+
+    is_cloud_managed = cloud_managed_path(root)
+    if is_cloud_managed and not args.allow_cloud_worktree:
+        reasons.append(
+            "工作树位于 macOS 云盘托管目录；请迁移到 ~/Developer 等本地目录"
+        )
+
+    free_gib = disk_space_gib(root)
+    if free_gib < args.minimum_free_gib:
+        reasons.append(
+            f"可用磁盘仅 {free_gib:.1f} GiB，低于最低要求 {args.minimum_free_gib:.1f} GiB"
+        )
+    elif free_gib < args.recommended_free_gib:
+        warnings.append(
+            f"可用磁盘为 {free_gib:.1f} GiB，建议在完整测试前提升到 "
+            f"{args.recommended_free_gib:.1f} GiB"
+        )
+
+    base_branch = data["base"].rsplit("/", 1)[-1]
+    if data["branch"] is None:
+        reasons.append("HEAD 处于分离状态")
+    elif data["branch"] == base_branch:
+        reasons.append("当前检出的是默认分支或基线分支")
+    if data["status_lines"]:
+        reasons.append("工作树存在已修改、已暂存或未跟踪文件")
+    if data["conflict_files"]:
+        reasons.append("工作树存在未解决冲突")
+    if data["behind_base"] != 0:
+        reasons.append("任务分支落后于已经获取的基线")
+
+    integrity = git(
+        root,
+        "fsck",
+        "--full",
+        "--no-dangling",
+        check=False,
+        timeout=GIT_FSCK_TIMEOUT_SECONDS,
+    )
+    if integrity.returncode != 0:
+        detail = integrity.stderr.strip() or integrity.stdout.strip() or "未知错误"
+        reasons.append(f"Git 对象库完整性检查失败：{detail}")
+
+    data.update(
+        {
+            "operation": "check-dev-ready",
+            "mutates_repository": False,
+            "repository": repository,
+            "free_disk_gib": round(free_gib, 1),
+            "minimum_free_disk_gib": args.minimum_free_gib,
+            "recommended_free_disk_gib": args.recommended_free_gib,
+            "git_integrity": "ok" if integrity.returncode == 0 else "failed",
+            "cloud_managed_path": is_cloud_managed,
+            "warnings": warnings,
+            "ready": not reasons,
+            "blocking_reasons": reasons,
+        }
+    )
+    return data, 0 if not reasons else 1
+
+
 def plan_cleanup(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     if not PR_EVIDENCE_PATTERN.fullmatch(args.merged_pr):
         raise GuardError("--merged-pr 必须是拉取请求编号或规范 GitHub 拉取请求地址")
@@ -604,6 +776,24 @@ def build_parser() -> argparse.ArgumentParser:
     ready_parser.add_argument("--push-remote")
     ready_parser.add_argument("--format", choices=("text", "json"), default="text")
     ready_parser.set_defaults(handler=check_pr_ready)
+
+    dev_ready_parser = subparsers.add_parser(
+        "check-dev-ready", help="验证任务工作树、远端、磁盘和 Git 对象库"
+    )
+    dev_ready_parser.add_argument("--worktree", default=".")
+    dev_ready_parser.add_argument("--base")
+    dev_ready_parser.add_argument("--base-remote")
+    dev_ready_parser.add_argument("--push-remote")
+    dev_ready_parser.add_argument(
+        "--expected-repository", default="dangdang-tech/Combo"
+    )
+    dev_ready_parser.add_argument("--minimum-free-gib", type=float, default=20.0)
+    dev_ready_parser.add_argument("--recommended-free-gib", type=float, default=30.0)
+    dev_ready_parser.add_argument("--allow-cloud-worktree", action="store_true")
+    dev_ready_parser.add_argument(
+        "--format", choices=("text", "json"), default="text"
+    )
+    dev_ready_parser.set_defaults(handler=check_dev_ready)
 
     cleanup_parser = subparsers.add_parser(
         "plan-cleanup", help="验证并输出不执行实际操作的清理计划"
