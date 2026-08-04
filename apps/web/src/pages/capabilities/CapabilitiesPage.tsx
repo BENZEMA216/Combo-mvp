@@ -164,8 +164,8 @@ export function CapabilitiesPage({
         <div className="cb-empty__copy">
           <p className="cb-empty__title">还没有 Agent</p>
           <p className="cb-empty__hint">先上传一段真实会话，系统会从中提取你的第一个 Agent。</p>
-          <Link className="cb-empty__action cb-empty__action--primary" to="/tasks">
-            上传会话
+          <Link className="cb-empty__action cb-empty__action--primary" to="/tasks?create=1">
+            创建 Agent
           </Link>
         </div>
       </div>
@@ -174,9 +174,9 @@ export function CapabilitiesPage({
     body = (
       <>
         <div className="cb-capabilities__list-toolbar">
-          <Link className="cb-btn cb-btn--primary cb-capabilities__create" to="/tasks">
+          <Link className="cb-btn cb-btn--primary cb-capabilities__create" to="/tasks?create=1">
             <span aria-hidden="true">＋</span>
-            上传会话
+            创建 Agent
           </Link>
           <div className="cb-capabilities__filters" role="group" aria-label="按状态筛选">
             {CAPABILITY_FILTERS.map((item) => (

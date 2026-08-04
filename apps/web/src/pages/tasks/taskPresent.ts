@@ -5,7 +5,10 @@ import type { TaskView } from '@cb/shared';
 export function taskStatusLabel(task: TaskView): string {
   if (task.status === 'failed') return '失败';
   if (task.status === 'succeeded') return '提取完成';
-  return task.currentStep === 'upload' ? '上传中' : '提取中';
+  if (task.currentStep === 'extract') return '提取中';
+  return task.upload.partsExpected === null && task.upload.partsLanded === 0
+    ? '等待开始'
+    : '上传中';
 }
 
 /** 状态徽章色调变体（cb-status-badge is-*）。 */
@@ -25,7 +28,7 @@ export function uploadProgressLabel(task: TaskView): string {
   if (status === 'processed') return '上传完成';
   if (partsExpected !== null) return `已收 ${partsLanded} / ${partsExpected} 片`;
   if (partsLanded > 0) return `已收 ${partsLanded} 片`;
-  return '等待助手连接';
+  return '等待开始';
 }
 
 /** 任务展示名：描述优先，否则短 ID 兜底。 */

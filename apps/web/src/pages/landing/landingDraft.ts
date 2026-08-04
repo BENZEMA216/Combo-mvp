@@ -4,6 +4,7 @@ export interface LandingDraft {
   version: 1;
   mode: 'kol_profile';
   profileUrl: string;
+  contactEmail?: string;
   consent: true;
   sampleText?: string;
   preparedAt: string;
@@ -11,6 +12,7 @@ export interface LandingDraft {
 
 export interface LandingDraftInput {
   profileUrl: string;
+  contactEmail?: string;
   consent: true;
   sampleText?: string;
 }
@@ -47,12 +49,20 @@ export function normalizePublicProfileUrl(raw: string): string | null {
   }
 }
 
+export function normalizeContactEmail(raw: string): string | null {
+  const value = raw.trim().toLowerCase();
+  if (!value || value.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return null;
+  return value;
+}
+
 function parseLandingDraft(value: unknown): LandingDraft | null {
   if (!value || typeof value !== 'object') return null;
   const draft = value as Partial<LandingDraft>;
   const profileUrl =
     typeof draft.profileUrl === 'string' ? normalizePublicProfileUrl(draft.profileUrl) : null;
   const sampleText = typeof draft.sampleText === 'string' ? draft.sampleText.trim() : undefined;
+  const contactEmail =
+    typeof draft.contactEmail === 'string' ? normalizeContactEmail(draft.contactEmail) : undefined;
   const preparedAt =
     typeof draft.preparedAt === 'string' && !Number.isNaN(Date.parse(draft.preparedAt))
       ? draft.preparedAt
@@ -64,6 +74,7 @@ function parseLandingDraft(value: unknown): LandingDraft | null {
     draft.consent !== true ||
     !profileUrl ||
     !preparedAt ||
+    (typeof draft.contactEmail === 'string' && !contactEmail) ||
     (sampleText !== undefined && (sampleText.length < 20 || sampleText.length > 20_000))
   ) {
     return null;
@@ -73,6 +84,7 @@ function parseLandingDraft(value: unknown): LandingDraft | null {
     version: 1,
     mode: 'kol_profile',
     profileUrl,
+    ...(contactEmail ? { contactEmail } : {}),
     consent: true,
     ...(sampleText ? { sampleText } : {}),
     preparedAt,
@@ -84,9 +96,13 @@ export function saveLandingDraft(
   storage: StorageWriter | null = browserSessionStorage(),
 ): SaveLandingDraftResult {
   const profileUrl = normalizePublicProfileUrl(input.profileUrl);
+  const contactEmail = input.contactEmail?.trim()
+    ? normalizeContactEmail(input.contactEmail)
+    : undefined;
   const sampleText = input.sampleText?.trim();
   if (
     !profileUrl ||
+    (input.contactEmail?.trim() ? !contactEmail : false) ||
     input.consent !== true ||
     (sampleText !== undefined &&
       sampleText !== '' &&
@@ -99,6 +115,7 @@ export function saveLandingDraft(
     version: 1,
     mode: 'kol_profile',
     profileUrl,
+    ...(contactEmail ? { contactEmail } : {}),
     consent: true,
     ...(sampleText ? { sampleText } : {}),
     preparedAt: new Date().toISOString(),

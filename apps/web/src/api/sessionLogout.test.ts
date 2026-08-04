@@ -13,10 +13,13 @@ afterEach(() => {
   fetchMock?.restore();
   fetchMock = undefined;
   vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 describe('logoutSession', () => {
   it('posts the strict empty JSON contract with the HttpOnly session cookie', async () => {
+    sessionStorage.setItem('combo:task-pairing-receipts:v1', 'sensitive');
+    sessionStorage.setItem('combo:creation-intake:v1', 'draft');
     fetchMock = installFetchMock({
       status: 200,
       json: {
@@ -35,6 +38,7 @@ describe('logoutSession', () => {
         credentials: 'include',
       },
     ]);
+    expect(sessionStorage.length).toBe(0);
   });
 
   it.each([
@@ -42,8 +46,10 @@ describe('logoutSession', () => {
     { name: '网络错误', response: { networkError: true } },
     { name: '畸形响应', response: { status: 200, json: { data: { loggedOut: false } } } },
   ])('$name returns null so the menu can offer a manual retry', async ({ response }) => {
+    sessionStorage.setItem('combo:task-pairing-receipts:v1', 'keep-until-real-logout');
     fetchMock = installFetchMock(response);
     await expect(logoutSession()).resolves.toBeNull();
+    expect(sessionStorage.getItem('combo:task-pairing-receipts:v1')).toBe('keep-until-real-logout');
   });
 });
 

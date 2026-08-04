@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CREATION_INTAKE_STORAGE_KEY,
   clearLandingDraft,
+  normalizeContactEmail,
   normalizePublicProfileUrl,
   readLandingDraft,
   saveLandingDraft,
@@ -33,11 +34,17 @@ describe('landingDraft', () => {
     expect(normalizePublicProfileUrl('https://example.com:444/creator')).toBeNull();
   });
 
+  it('联系邮箱做轻量规范化，并拒绝明显无效值', () => {
+    expect(normalizeContactEmail(' Creator@Example.COM ')).toBe('creator@example.com');
+    expect(normalizeContactEmail('not-an-email')).toBeNull();
+  });
+
   it('把经过校验的主页资料写入会话存储，并可按版本安全读回', () => {
     const storage = new MemoryStorage();
     const saved = saveLandingDraft(
       {
         profileUrl: 'https://example.com/creator',
+        contactEmail: 'creator@example.com',
         consent: true,
         sampleText: '这是一段足够长的代表内容，用来帮助系统理解我的工作方式。',
       },
@@ -50,6 +57,7 @@ describe('landingDraft', () => {
       version: 1,
       mode: 'kol_profile',
       profileUrl: 'https://example.com/creator',
+      contactEmail: 'creator@example.com',
       consent: true,
       sampleText: '这是一段足够长的代表内容，用来帮助系统理解我的工作方式。',
     });
