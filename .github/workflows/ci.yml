@@ -515,19 +515,11 @@ jobs:
 
           find db/migrations -maxdepth 1 -type f -name '*.sql' -exec basename {} \; \
             | LC_ALL=C sort > "$bundle/metadata/migration-files.txt"
+          # 期望迁移列表以源码为准动态生成，不硬编码迁移头：分支引入新迁移时，
+          # main 控制器无需同步更新 ci.yml 即可构建分支（迁移头由源码推导）。
           expected_migrations=$(mktemp)
-          printf '%s\n' \
-            0000_baseline_schema.sql \
-            0001_expired_upload_reconciliation.sql \
-            0002_drop_stream_events.sql \
-            0003_turns.sql \
-            0004_studio_sessions.sql \
-            0005_capability_current_ui.sql \
-            0006_one_running_turn_per_session.sql \
-            0007_first_party_email_auth.sql \
-            0008_application_database_roles.sql \
-            0009_billing.sql \
-            0010_recharge_qr_channel.sql > "$expected_migrations"
+          find db/migrations -maxdepth 1 -type f -name '*.sql' -exec basename {} \; \
+            | LC_ALL=C sort > "$expected_migrations"
           cmp -s "$expected_migrations" "$bundle/metadata/migration-files.txt"
           migration_head=$(tail -n 1 "$bundle/metadata/migration-files.txt")
 

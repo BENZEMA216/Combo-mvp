@@ -216,10 +216,14 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
     ).length,
     1,
   );
-  assert.match(mainWorkflow, /0009_billing\.sql/);
   assert.match(
     mainWorkflow,
-    /0010_recharge_qr_channel\.sql\s*>\s*"\$expected_migrations"/,
-    'ci.yml expected migration list must end with the 0010 migration head',
+    /find db\/migrations -maxdepth 1 -type f -name '\*\.sql' -exec basename \{\} \;[\s\S]*sort > "\$expected_migrations"/,
+    'ci.yml must derive the expected migration list from the source instead of hardcoding a head',
+  );
+  assert.doesNotMatch(
+    mainWorkflow,
+    /0009_billing\.sql\s*>\s*"\$expected_migrations"/,
+    'ci.yml must not hardcode the migration list head (it should be dynamic)',
   );
 });
