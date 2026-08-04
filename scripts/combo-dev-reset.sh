@@ -42,11 +42,13 @@ readonly PRODUCTION_KUBECONFIG='/etc/combo-dev/production-observer.kubeconfig'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
+readonly FORWARDER_LOCK_FILE='/run/lock/combo-dev-forwarders.lock'
 readonly FAILURE_FENCE_MARKER='/var/lib/combo-dev/writers-fenced'
 readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
 readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly PUBLICATION_MARKER='/var/lib/combo-dev/publication'
 readonly RESET_PROOF_ROOT='/var/lib/combo-dev'
 readonly ACCEPTANCE_PENDING_SECONDS=7200
 readonly HOST_SYSLOG_POLICY='/etc/logrotate.d/combo-host-syslog'
@@ -56,6 +58,10 @@ readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly BOOTSTRAP_FOUNDATION='/opt/combo-dev/bootstrap-overlay/foundation'
 readonly APPS=(api worker runtime web)
 readonly FOUNDATION_STATEFUL=(postgres redis-queue minio)
+readonly ALL_FORWARDER_UNITS=(
+  combo-dev-web-forward.service combo-dev-s3-forward.service
+  combo-dev-public-web-forward.service combo-dev-public-s3-forward.service
+)
 K=(kubectl --request-timeout=30s --kubeconfig "$KUBECONFIG_PATH")
 PK=(kubectl --request-timeout=30s --kubeconfig "$PRODUCTION_KUBECONFIG")
 WORK=''
@@ -69,6 +75,7 @@ RECOVERY_RUN_ATTEMPT=''
 ATTEMPT_REVISION=''
 ATTEMPT_RUN_ID=''
 ATTEMPT_RUN_ATTEMPT=''
+PUBLISHED_REVISION=''
 
 status() { printf '[combo-dev-reset] %s\n' "$1"; }
 fail() { printf '[combo-dev-reset] FAIL: %s\n' "$1" >&2; exit 1; }
@@ -504,16 +511,23 @@ mark_safe_idle_fence() {
 
 forwarders_stopped() {
   local unit active
-  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+  for unit in "${ALL_FORWARDER_UNITS[@]}"; do
     active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
     [[ "$active" == inactive || "$active" == failed ]] || return 1
   done
 }
 
 stop_forwarders() {
+  local rc=0
+  exec 7>"$FORWARDER_LOCK_FILE"
+  flock -w 30 7 || rc=1
   rm -rf -- /run/combo-dev-forwarders
-  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
-  forwarders_stopped
+  strict_remove_publication_marker || rc=1
+  timeout 30 systemctl stop "${ALL_FORWARDER_UNITS[@]}" >/dev/null 2>&1 || rc=1
+  forwarders_stopped || rc=1
+  flock -u 7 >/dev/null 2>&1 || rc=1
+  exec 7>&-
+  return "$rc"
 }
 
 exact_private_marker() {
@@ -526,6 +540,69 @@ exact_private_marker_value() {
   [[ -f "$path" && ! -L "$path" &&
     $(stat -c '%u:%g:%a:%s' "$path" 2>/dev/null) == "0:0:600:$expected_bytes" &&
     $(<"$path") == "$expected" ]]
+}
+
+publication_marker_matches() {
+  local revision=$1 run_id=$2 run_attempt=$3
+  local value="$revision $run_id $run_attempt"
+  local expected_bytes=$((${#value} + 1))
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" &&
+    $(stat -c '%u:%g:%a:%h:%s' "$PUBLICATION_MARKER" 2>/dev/null) == \
+      "0:0:600:1:$expected_bytes" &&
+    $(<"$PUBLICATION_MARKER") == "$value" ]]
+}
+
+read_publication_marker() {
+  local revision run_id run_attempt extra
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || return 1
+  IFS=' ' read -r revision run_id run_attempt extra <"$PUBLICATION_MARKER" || return 1
+  [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ &&
+    "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  publication_marker_matches "$revision" "$run_id" "$run_attempt" || return 1
+  PUBLISHED_REVISION=$revision
+}
+
+strict_remove_publication_marker() {
+  [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]] || return 0
+  read_publication_marker || return 1
+  rm -f -- "$PUBLICATION_MARKER" || return 1
+  [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]]
+}
+
+published_live_identity_valid() {
+  local expected_ref current metadata="$WORK/published-metadata.$RANDOM.json"
+  local deployments="$WORK/published-deployments.$RANDOM.json"
+  local statefulset="$WORK/published-minio-statefulset.$RANDOM.json"
+  local services="$WORK/published-services.$RANDOM.json"
+  local pods="$WORK/published-pods.$RANDOM.json"
+  local endpoint_slices="$WORK/published-endpoint-slices.$RANDOM.json" rc=0
+  read_publication_marker || return 1
+  expected_ref="combo-release-meta-${PUBLISHED_REVISION:0:12}"
+  [[ -L /opt/combo-dev/current ]] || return 1
+  current=$(readlink -f -- /opt/combo-dev/current 2>/dev/null) || return 1
+  [[ "$current" == "/opt/combo-dev/releases/$PUBLISHED_REVISION" && -d "$current" && ! -L "$current" ]] || return 1
+  [[ $(cat "$current/metadata/revision" 2>/dev/null || true) == "$PUBLISHED_REVISION" ]] || return 1
+  "${K[@]}" -n "$NAMESPACE" get "configmap/$expected_ref" -o json >"$metadata" 2>/dev/null || rc=1
+  "${K[@]}" -n "$NAMESPACE" get deployment api worker runtime web -o json >"$deployments" 2>/dev/null || rc=1
+  if (( rc == 0 )); then
+    "${K[@]}" -n "$NAMESPACE" get statefulset minio -o json >"$statefulset" 2>/dev/null || rc=1
+    "${K[@]}" -n "$NAMESPACE" get service api runtime web minio -o json >"$services" 2>/dev/null || rc=1
+    "${K[@]}" -n "$NAMESPACE" get pods -l combo.dev/environment=combo-dev -o json >"$pods" 2>/dev/null || rc=1
+    "${K[@]}" -n "$NAMESPACE" get endpointslices.discovery.k8s.io -o json >"$endpoint_slices" 2>/dev/null || rc=1
+  fi
+  if (( rc == 0 )); then
+    /opt/combo-dev/bin/combo-dev-production-safety validate-public-live \
+      --revision "$PUBLISHED_REVISION" \
+      --image-metadata "$current/metadata/image-digests.txt" \
+      --release-metadata "$metadata" \
+      --deployments "$deployments" \
+      --statefulset "$statefulset" \
+      --services "$services" \
+      --pods "$pods" \
+      --endpoint-slices "$endpoint_slices" >/dev/null 2>&1 || rc=1
+  fi
+  rm -f -- "$metadata" "$deployments" "$statefulset" "$services" "$pods" "$endpoint_slices"
+  return "$rc"
 }
 
 remove_all_reset_proofs() {
@@ -686,11 +763,14 @@ begin_reset_mutation_fence() {
   RECOVERY_RUN_ATTEMPT=''
   if [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ||
     -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || return 1
     writers_fence_has_value "$FAILURE_FENCE_VALUE" || return 1
     recoverable_attempt_fence "$current_revision" "$current_run_id" "$current_run_attempt" || return 1
     forwarders_stopped || return 1
     verify_complete_writer_inventory_zero || return 1
     recovery=1
+  elif [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+    published_live_identity_valid || return 1
   fi
   exec 8>"$FENCE_LOCK_FILE"
   flock -w 300 8 || rc=1
@@ -703,6 +783,9 @@ begin_reset_mutation_fence() {
     else
       if [[ -e "$FAILURE_FENCE_MARKER" || -L "$FAILURE_FENCE_MARKER" ]]; then
         writers_fence_has_value "$SAFE_IDLE_FENCE_VALUE" || rc=1
+        [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || rc=1
+      elif [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+        published_live_identity_valid || rc=1
       fi
       [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
         ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || rc=1
@@ -713,6 +796,7 @@ begin_reset_mutation_fence() {
     # capability. An interruption from here cannot escape failure fencing.
     MUTATING=1
     mark_failure_fence || rc=1
+    stop_forwarders || rc=1
   fi
   if (( rc == 0 && recovery == 1 )); then
     RECOVERED_FROM_ATTEMPT="$RECOVERY_REVISION $RECOVERY_RUN_ID $RECOVERY_RUN_ATTEMPT"
@@ -737,7 +821,8 @@ finish_reset_safe_idle_fence() {
   if (( rc == 0 )); then
     writers_fence_has_value "$FAILURE_FENCE_VALUE" || rc=1
     [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
-      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || rc=1
+      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" &&
+      ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || rc=1
   fi
   if (( rc == 0 )); then mark_safe_idle_fence || rc=1; fi
   flock -u 8 >/dev/null 2>&1 || rc=1
@@ -862,6 +947,7 @@ preflight() {
   can_i_exact yes list jobs.batch "$NAMESPACE"
   can_i_exact yes list cronjobs.batch "$NAMESPACE"
   can_i_exact yes list horizontalpodautoscalers.autoscaling "$NAMESPACE"
+  can_i_exact yes list endpointslices.discovery.k8s.io "$NAMESPACE"
   can_i_exact yes delete daemonsets.apps "$NAMESPACE"
   can_i_exact yes delete replicasets.apps "$NAMESPACE"
   can_i_exact yes delete replicationcontrollers "$NAMESPACE"
@@ -930,8 +1016,7 @@ validate_static_storage_live() {
 
 stop_and_delete_inventory() {
   local failed=0 resource
-  timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || failed=1
-  timeout 30 systemctl stop combo-dev-s3-forward.service >/dev/null 2>&1 || failed=1
+  timeout 30 systemctl stop "${ALL_FORWARDER_UNITS[@]}" >/dev/null 2>&1 || failed=1
   fence_all_writers || failed=1
   for resource in \
     horizontalpodautoscalers.autoscaling cronjobs.batch daemonsets.apps jobs.batch \

@@ -6,7 +6,9 @@ export PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 readonly NAMESPACE='combo-preview'
 readonly KUBECONFIG_PATH='/etc/combo-dev/dispatcher.kubeconfig'
+# 基础设施探针继续走短租回环转发；浏览器身份只接受规范公网 HTTPS Origin。
 readonly WEB_ORIGIN='http://127.0.0.1:18080'
+readonly PUBLIC_WEB_ORIGIN='https://test.43-160-242-46.sslip.io'
 readonly STORAGE_CLASS='combo-dev-bounded'
 readonly CLUSTER_PLATFORM_CONTRACT='/etc/combo-dev/cluster-platform.canonical.json'
 readonly HOST_BOUNDARY_APPROVAL='/etc/combo-dev/host-network-boundary.approved'
@@ -231,9 +233,9 @@ check_health_and_origin() {
     jq -e '.data.ready == true and .data.status == "ok" and ([.data.dependencies[] | select(.status != "ok")] | length == 0) and ([.data.dependencies[] | select(.name == "llm" and .status == "ok")] | length == 1)' "$body" >/dev/null 2>&1 || fail 'readiness 没有证明全部依赖与 LLM 可用。'
   done
 
-  code=$(curl --silent --max-time 15 --max-filesize 1048576 --output "$body" --dump-header "$headers" -H 'Origin: http://127.0.0.1:18080' --write-out '%{http_code}' "$WEB_ORIGIN/ready" 2>/dev/null) || blocked '精确来源探针不可读。'
-  [[ "$code" == 200 ]] || fail '精确开发来源被拒绝。'
-  [[ $(tr -d '\015' <"$headers" | grep -Fxci 'access-control-allow-origin: http://127.0.0.1:18080') == 1 ]] || fail '精确来源 CORS 响应不唯一。'
+  code=$(curl --silent --max-time 15 --max-filesize 1048576 --output "$body" --dump-header "$headers" -H "Origin: $PUBLIC_WEB_ORIGIN" --write-out '%{http_code}' "$WEB_ORIGIN/ready" 2>/dev/null) || blocked '精确来源探针不可读。'
+  [[ "$code" == 200 ]] || fail '精确 Test 公网来源被拒绝。'
+  [[ $(tr -d '\015' <"$headers" | grep -Fxci "access-control-allow-origin: $PUBLIC_WEB_ORIGIN") == 1 ]] || fail '精确来源 CORS 响应不唯一。'
   code=$(curl --silent --max-time 15 --max-filesize 1048576 --output "$body" -H 'Origin: http://127.0.0.1:18081' --write-out '%{http_code}' "$WEB_ORIGIN/ready" 2>/dev/null) || blocked '敌对来源探针不可读。'
   [[ "$code" == 403 ]] || fail '非固定浏览器来源没有被 Web 边界拒绝。'
 }

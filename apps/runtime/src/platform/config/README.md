@@ -4,7 +4,7 @@
 
 浏览器认证只读取 PostgreSQL 中的共享不透明会话，不配置远端身份提供商、JWT 用户验签、开发登录或会话签名密钥。发布身份来自 `COMBO_ENVIRONMENT`、`COMBO_SOURCE_SHA`、`COMBO_RELEASE_ID`、`COMBO_BUILT_AT`、`COMBO_RELEASE_MANIFEST_DIGEST` 和 `COMBO_WEB_ASSET_MANIFEST`。
 
-`SESSION_COOKIE_SECURE` 独立于 `NODE_ENV`。Preview 与 Production 发布身份必须选择 Secure Cookie 和 HTTPS origin；production 模式的 Test 可以显式选择非 Secure Cookie和 HTTP origin。Runtime 与 authoring 对这两个配置使用相同语义。
+`SESSION_COOKIE_SECURE` 独立于 `NODE_ENV`。Test、Preview 与 Production 发布身份都必须选择 Secure Cookie 和 HTTPS origin；非 production 的本地开发仍可显式选择非 Secure Cookie 和 HTTP origin。Runtime 与 authoring 对这两个配置使用相同语义。
 
 可选沙箱默认关闭。开启时，镜像必须使用不可变 SHA-256 摘要，签名私钥必须存在，RuntimeClass 固定为 `gvisor`。配置修订号用于滚动发布期间阻止旧副本替换较新的 Pod。普通容量是四个槽位；第五槽还要求显式记录真实集群验证。
 

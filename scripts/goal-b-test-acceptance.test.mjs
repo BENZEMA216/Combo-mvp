@@ -27,7 +27,7 @@ import {
 } from './goal-b-test-acceptance.mjs';
 
 const REVISION = 'a'.repeat(40);
-const ORIGIN = 'http://127.0.0.1:18080';
+const ORIGIN = 'https://test.43-160-242-46.sslip.io';
 const RUN_ID = '30123456789';
 const RUN_ATTEMPT = '2';
 const WORKFLOW_RUN = {
@@ -157,7 +157,7 @@ test('live browser retries only idempotent GET transport failures once', async (
     },
   };
   assert.equal(
-    await fetchAcceptanceRequest(getContext, 'http://127.0.0.1:18080/detail', {
+    await fetchAcceptanceRequest(getContext, `${ORIGIN}/detail`, {
       method: 'GET',
     }),
     response,
@@ -175,7 +175,7 @@ test('live browser retries only idempotent GET transport failures once', async (
           },
         },
       },
-      'http://127.0.0.1:18080/messages',
+      `${ORIGIN}/messages`,
       { method: 'POST' },
     ),
     (error) => error === transient,
@@ -463,7 +463,7 @@ test('browser URL waits poll same-document location without a lifecycle wait', a
   }
 });
 
-test('accepts only the exact SHA, loopback origin, and fresh output arguments', () => {
+test('accepts only the exact SHA, public Test origin, and fresh output arguments', () => {
   const output = join(mkdtempSync(join(tmpdir(), 'goal-b-browser-args-')), 'result.json');
   assert.deepEqual(
     parseAcceptanceArgs([
@@ -613,6 +613,20 @@ test('accepts only the exact SHA, loopback origin, and fresh output arguments', 
     ],
     [
       '--environment',
+      'test',
+      '--revision',
+      REVISION,
+      '--run-id',
+      RUN_ID,
+      '--run-attempt',
+      RUN_ATTEMPT,
+      '--web-origin',
+      'http://127.0.0.1:18080',
+      '--output',
+      output,
+    ],
+    [
+      '--environment',
       'production',
       '--revision',
       REVISION,
@@ -643,34 +657,37 @@ test('accepts only the exact SHA, loopback origin, and fresh output arguments', 
   for (const argv of rejected) assert.throws(() => parseAcceptanceArgs(argv));
 });
 
-test('acceptance browser allows only WebSockets on the exact loopback forward', () => {
-  assert.equal(isAllowedAcceptanceWebSocket('ws://127.0.0.1:18080/events', ORIGIN), true);
+test('acceptance browser allows only WebSockets on the exact public Test origin', () => {
+  assert.equal(
+    isAllowedAcceptanceWebSocket('wss://test.43-160-242-46.sslip.io/events', ORIGIN),
+    true,
+  );
   for (const value of [
-    'wss://127.0.0.1:18080/events',
-    'ws://localhost:18080/events',
-    'ws://127.0.0.1:18081/events',
+    'ws://test.43-160-242-46.sslip.io/events',
+    'wss://localhost/events',
+    'wss://test.43-160-242-46.sslip.io:444/events',
     'ws://example.com/events',
-    'ws://user:pass@127.0.0.1:18080/events',
+    'wss://user:pass@test.43-160-242-46.sslip.io/events',
     'not-a-url',
   ]) {
     assert.equal(isAllowedAcceptanceWebSocket(value, ORIGIN), false, value);
   }
 });
 
-test('browser network gate only permits the exact loopback HTTP origin and non-network URLs', () => {
+test('browser network gate only permits the exact public HTTPS origin and non-network URLs', () => {
   for (const value of [
     `${ORIGIN}/tasks`,
     `${ORIGIN}/try/assets/app.js`,
     'about:blank',
-    'blob:http://127.0.0.1:18080/01982e62-6d6e-7f4d-8fe8-b55f62720b5b',
+    `blob:${ORIGIN}/01982e62-6d6e-7f4d-8fe8-b55f62720b5b`,
     'data:text/plain,local',
   ]) {
     assert.equal(isAllowedAcceptanceRequest(value, ORIGIN), true, value);
   }
   for (const value of [
-    'http://127.0.0.1:18081/tasks',
-    'http://localhost:18080/tasks',
-    'https://127.0.0.1:18080/tasks',
+    'http://test.43-160-242-46.sslip.io/tasks',
+    'https://localhost/tasks',
+    'https://test.43-160-242-46.sslip.io:444/tasks',
     'http://169.254.169.254/latest/meta-data',
     'https://example.com/',
     'file:///etc/passwd',
@@ -684,14 +701,20 @@ test('browser network gate only permits the exact loopback HTTP origin and non-n
   );
 });
 
-test('Test origin, Nginx allowlist, and page interception preserve one loopback boundary', () => {
+test('Test origin, Nginx allowlist, and page interception preserve one public boundary', () => {
   const nginx = readFileSync(
     new URL('../infra/k8s/overlays/combo-dev/apps/nginx-dev.conf', import.meta.url),
     'utf8',
   );
   const source = readFileSync(new URL('./goal-b-test-acceptance.mjs', import.meta.url), 'utf8');
 
-  assert.match(nginx, /"http:\/\/127\.0\.0\.1:18080" 1;/);
+  assert.match(nginx, /"https:\/\/test\.43-160-242-46\.sslip\.io" 1;/);
+  assert.doesNotMatch(nginx, /"http:\/\/127\.0\.0\.1:18080" 1;/);
+  assert.equal(
+    nginx.match(/proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;/g)?.length,
+    4,
+  );
+  assert.doesNotMatch(nginx, /proxy_set_header X-Forwarded-Proto \$scheme;/);
   assert.match(source, /const messageUrl = `\$\{options\.webOrigin\}\$\{messagePath\}`/);
   assert.match(source, /page\.route\(\s*messageUrl/);
   assert.match(source, /page\.waitForRequest\([\s\S]*request\.url\(\) === messageUrl/);

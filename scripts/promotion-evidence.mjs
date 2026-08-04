@@ -186,7 +186,7 @@ export const LIVE_BROWSER_CHECKS = Object.freeze([
 export const PREVIEW_BROWSER_CHECKS = LIVE_BROWSER_CHECKS;
 
 const LIVE_BROWSER_ORIGINS = Object.freeze({
-  test: 'http://127.0.0.1:18080',
+  test: 'https://test.43-160-242-46.sslip.io',
   preview: 'https://review.43-160-242-46.sslip.io',
   production: 'https://buildwithcombo.com',
 });
@@ -1006,8 +1006,8 @@ function validOrigin(value, environment) {
     fail('origin must contain only scheme, host, and optional port');
   }
   if (environment === 'test') {
-    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.port !== '18080') {
-      fail('Test origin must be exactly http://127.0.0.1:18080');
+    if (parsed.origin !== LIVE_BROWSER_ORIGINS.test) {
+      fail('Test origin must use the exact public HTTPS hostname');
     }
   } else if (parsed.protocol !== 'https:' || !parsed.hostname || parsed.port) {
     fail('Preview and Production origins must use HTTPS without an explicit port');

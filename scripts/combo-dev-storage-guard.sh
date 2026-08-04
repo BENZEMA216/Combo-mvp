@@ -47,6 +47,7 @@ readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly MAINTENANCE_FENCE_MARKER='/var/lib/combo-dev/storage-maintenance-fenced'
 readonly MAINTENANCE_FENCE_VALUE='combo-dev-storage-maintenance=fenced-v1'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly PUBLICATION_MARKER='/var/lib/combo-dev/publication'
 readonly OPERATION_LOCK_FILE='/run/lock/combo-dev.lock'
 readonly FENCE_LOCK_FILE='/run/lock/combo-dev-fence.lock'
 readonly FORWARDER_LOCK_FILE='/run/lock/combo-dev-forwarders.lock'
@@ -57,7 +58,9 @@ readonly FENCER_OPERATION_MIN_SECONDS=$((10 * 60))
 readonly APPS=(api worker runtime web)
 readonly FOUNDATION_STATEFUL=(postgres redis-queue minio)
 readonly JOBS=(minio-init migrate combo-dev-network-canary)
-readonly FORWARDER_UNITS=(combo-dev-web-forward.service combo-dev-s3-forward.service)
+readonly LOCAL_FORWARDER_UNITS=(combo-dev-web-forward.service combo-dev-s3-forward.service)
+readonly PUBLIC_FORWARDER_UNITS=(combo-dev-public-web-forward.service combo-dev-public-s3-forward.service)
+readonly FORWARDER_UNITS=("${LOCAL_FORWARDER_UNITS[@]}" "${PUBLIC_FORWARDER_UNITS[@]}")
 ROOT_CAPACITY_WARNING=0
 ROOT_CAPACITY_CRITICAL=0
 DATA_CAPACITY_WARNING=0
@@ -65,6 +68,7 @@ DATA_CAPACITY_CRITICAL=0
 PENDING_REVISION=''
 PENDING_RUN_ID=''
 PENDING_RUN_ATTEMPT=''
+PUBLISHED_REVISION=''
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 if [[ -f "$SCRIPT_DIR/combo-dev-production-safety" ]]; then
@@ -328,6 +332,7 @@ dispatcher_access_valid() {
   can_i DK yes delete jobs.batch/migrate "$NAMESPACE" || return 1
   can_i DK yes list replicasets.apps "$NAMESPACE" || return 1
   can_i DK yes list replicationcontrollers "$NAMESPACE" || return 1
+  can_i DK yes list endpointslices.discovery.k8s.io "$NAMESPACE" || return 1
   can_i DK yes delete replicasets.apps "$NAMESPACE" || return 1
   can_i DK yes delete replicationcontrollers "$NAMESPACE" || return 1
   can_i DK no get secrets "$NAMESPACE" || return 1
@@ -481,6 +486,7 @@ persist_fences_and_stop_forwarders() {
   mark_failure_fence || failed=1
   mark_external_fence "$identity" || failed=1
   rm -rf -- "$FORWARDER_LEASE_DIR" || failed=1
+  strict_remove_publication_marker || failed=1
   timeout 30 systemctl stop "${FORWARDER_UNITS[@]}" >/dev/null 2>&1 || failed=1
   forwarders_stopped || failed=1
   flock -u 7 >/dev/null 2>&1 || failed=1
@@ -648,14 +654,200 @@ pending_acceptance_state() {
   (( now <= deadline ))
 }
 
+publication_marker_matches() {
+  local revision=$1 run_id=$2 run_attempt=$3
+  local value="$revision $run_id $run_attempt"
+  local expected_bytes=$((${#value} + 1))
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" &&
+    $(stat -c '%u:%g:%a:%h:%s' "$PUBLICATION_MARKER" 2>/dev/null) == \
+      "0:0:600:1:$expected_bytes" &&
+    $(<"$PUBLICATION_MARKER") == "$value" ]]
+}
+
+strict_remove_publication_marker() {
+  local revision run_id run_attempt extra
+  [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]] || return 0
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || return 1
+  IFS=' ' read -r revision run_id run_attempt extra <"$PUBLICATION_MARKER" || return 1
+  [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ &&
+    "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  publication_marker_matches "$revision" "$run_id" "$run_attempt" || return 1
+  rm -f -- "$PUBLICATION_MARKER" || return 1
+  [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]]
+}
+
+read_publication_marker() {
+  local value revision run_id run_attempt extra
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || return 1
+  IFS=' ' read -r revision run_id run_attempt extra <"$PUBLICATION_MARKER" || return 1
+  [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ &&
+    "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  publication_marker_matches "$revision" "$run_id" "$run_attempt" || return 1
+  PUBLISHED_REVISION=$revision
+}
+
+write_publication_marker() {
+  local revision=$1 run_id=$2 run_attempt=$3 value candidate
+  value="$revision $run_id $run_attempt"
+  if [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+    publication_marker_matches "$revision" "$run_id" "$run_attempt"
+    return
+  fi
+  candidate=$(mktemp /var/lib/combo-dev/.publication.XXXXXX) || return 1
+  if ! printf '%s\n' "$value" >"$candidate" ||
+    ! chown root:root "$candidate" || ! chmod 0600 "$candidate" ||
+    ! mv -Tf -- "$candidate" "$PUBLICATION_MARKER"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+  publication_marker_matches "$revision" "$run_id" "$run_attempt"
+}
+
+live_revision_matches() {
+  local revision=$1
+  local expected_ref="combo-release-meta-${revision:0:12}"
+  local current metadata="$GUARD_RUNTIME/release-metadata.$RANDOM.json"
+  local deployments="$GUARD_RUNTIME/deployments.$RANDOM.json"
+  local statefulset="$GUARD_RUNTIME/minio-statefulset.$RANDOM.json"
+  local services="$GUARD_RUNTIME/public-services.$RANDOM.json"
+  local pods="$GUARD_RUNTIME/public-pods.$RANDOM.json"
+  local endpoint_slices="$GUARD_RUNTIME/public-endpoint-slices.$RANDOM.json" rc=0
+  [[ -L /opt/combo-dev/current ]] || return 1
+  current=$(readlink -f -- /opt/combo-dev/current 2>/dev/null) || return 1
+  [[ "$current" == "/opt/combo-dev/releases/$revision" && -d "$current" && ! -L "$current" ]] || return 1
+  [[ $(cat "$current/metadata/revision" 2>/dev/null || true) == "$revision" ]] || return 1
+  "${DK[@]}" -n "$NAMESPACE" get "configmap/$expected_ref" -o json >"$metadata" 2>/dev/null || rc=1
+  "${DK[@]}" -n "$NAMESPACE" get deployment api worker runtime web -o json >"$deployments" 2>/dev/null || rc=1
+  if (( rc == 0 )); then
+    "${DK[@]}" -n "$NAMESPACE" get statefulset minio -o json >"$statefulset" 2>/dev/null || rc=1
+    "${DK[@]}" -n "$NAMESPACE" get service api runtime web minio -o json >"$services" 2>/dev/null || rc=1
+    "${DK[@]}" -n "$NAMESPACE" get pods -l combo.dev/environment=combo-dev -o json >"$pods" 2>/dev/null || rc=1
+    "${DK[@]}" -n "$NAMESPACE" get endpointslices.discovery.k8s.io -o json >"$endpoint_slices" 2>/dev/null || rc=1
+  fi
+  if (( rc == 0 )); then
+    "$SAFETY_TOOL" validate-public-live \
+      --revision "$revision" \
+      --image-metadata "$current/metadata/image-digests.txt" \
+      --release-metadata "$metadata" \
+      --deployments "$deployments" \
+      --statefulset "$statefulset" \
+      --services "$services" \
+      --pods "$pods" \
+      --endpoint-slices "$endpoint_slices" >/dev/null 2>&1 || rc=1
+  fi
+  rm -f -- "$metadata" "$deployments" "$statefulset" "$services" "$pods" "$endpoint_slices"
+  return "$rc"
+}
+
+public_forwarder_state() {
+  local unit state active=0 inactive=0
+  for unit in "${PUBLIC_FORWARDER_UNITS[@]}"; do
+    state=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
+    if [[ "$state" == active ]]; then
+      active=$((active + 1))
+    elif [[ "$state" == inactive || "$state" == failed ]]; then
+      inactive=$((inactive + 1))
+    else
+      return 2
+    fi
+  done
+  (( active == 2 )) && return 0
+  (( inactive == 2 )) && return 1
+  return 2
+}
+
+public_listener_contract() {
+  local sockets="$GUARD_RUNTIME/public-listeners.$RANDOM.txt" web_pid s3_pid rc=0
+  ss -H -ltnp >"$sockets" 2>/dev/null || return 1
+  web_pid=$(timeout 10 systemctl show combo-dev-public-web-forward.service -p MainPID --value 2>/dev/null) || rc=1
+  s3_pid=$(timeout 10 systemctl show combo-dev-public-s3-forward.service -p MainPID --value 2>/dev/null) || rc=1
+  [[ "$web_pid" =~ ^[1-9][0-9]*$ && "$s3_pid" =~ ^[1-9][0-9]*$ ]] || rc=1
+  if (( rc == 0 )); then
+    "$SAFETY_TOOL" validate-public-listeners --input "$sockets" \
+      --web-pid "$web_pid" --s3-pid "$s3_pid" >/dev/null 2>&1 || rc=1
+  fi
+  rm -f -- "$sockets"
+  return "$rc"
+}
+
+public_https_contract() {
+  curl --silent --show-error --fail --max-time 10 --output /dev/null \
+    --resolve test.43-160-242-46.sslip.io:443:127.0.0.1 \
+    https://test.43-160-242-46.sslip.io/version.json 2>/dev/null &&
+    curl --silent --show-error --fail --max-time 10 --output /dev/null \
+      --resolve test-s3.43-160-242-46.sslip.io:443:127.0.0.1 \
+      https://test-s3.43-160-242-46.sslip.io/minio/health/ready 2>/dev/null
+}
+
+ensure_public_forwarders() {
+  local attempt
+  exec 7>"$FORWARDER_LOCK_FILE"
+  flock -w 30 7 || return 1
+  timeout 30 systemctl start "${PUBLIC_FORWARDER_UNITS[@]}" >/dev/null 2>&1 || {
+    flock -u 7 >/dev/null 2>&1 || true
+    return 1
+  }
+  for ((attempt = 1; attempt <= 30; attempt++)); do
+    if public_forwarder_state && public_listener_contract && public_https_contract; then
+      flock -u 7 >/dev/null 2>&1 || return 1
+      exec 7>&-
+      return 0
+    fi
+    sleep 1
+  done
+  flock -u 7 >/dev/null 2>&1 || true
+  exec 7>&-
+  return 1
+}
+
+publication_shape_valid() {
+  local state_rc pending_rc
+  local has_publication=0 has_pending=0
+  if [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+    read_publication_marker || return 1
+    has_publication=1
+  fi
+  if [[ -e "$ACCEPTANCE_PENDING_MARKER" || -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    pending_acceptance_state
+    pending_rc=$?
+    (( pending_rc == 0 )) || return 1
+    has_pending=1
+  fi
+  if (( has_publication == 1 && has_pending == 1 )); then
+    publication_marker_matches "$PENDING_REVISION" "$PENDING_RUN_ID" "$PENDING_RUN_ATTEMPT" ||
+      return 1
+  fi
+  if public_forwarder_state; then
+    (( has_publication == 1 || has_pending == 1 )) || return 1
+  else
+    state_rc=$?
+    (( state_rc == 1 )) || return 1
+  fi
+}
+
 complete_acceptance() {
   local revision=$1 run_id=$2 run_attempt=$3
   local marker_revision marker_run_id marker_run_attempt deadline extra now
   [[ "$revision" =~ ^[0-9a-f]{40}$ ]] || fail '验收完成 revision 不合法。'
   [[ "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] ||
     fail '验收完成 workflow identity 不合法。'
+  exec 9>"$OPERATION_LOCK_FILE"
+  flock -s -w 300 9 || fail '无法取得验收完成操作锁。'
   exec 8>"$FENCE_LOCK_FILE"
   flock -w 300 8 || fail '无法取得验收完成锁。'
+  if [[ ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
+    publication_marker_matches "$revision" "$run_id" "$run_attempt" ||
+      fail '不存在匹配的待验收或已发布标记。'
+    [[ ! -e "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
+      ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" ]] ||
+      fail 'Test 已处于失败阻断状态。'
+    live_revision_matches "$revision" || fail '已发布 Test live release identity 漂移。'
+    if ! public_forwarder_state || ! public_listener_contract || ! public_https_contract; then
+      fail '已发布公网转发器不符合精确监听契约。'
+    fi
+    status 'PASS acceptance=complete publication=already-committed'
+    return
+  fi
   private_file "$ACCEPTANCE_PENDING_MARKER" || fail '不存在 owner-only 的待验收标记。'
   IFS=' ' read -r marker_revision marker_run_id marker_run_attempt deadline extra \
     <"$ACCEPTANCE_PENDING_MARKER" || fail '待验收标记不可读。'
@@ -672,8 +864,18 @@ complete_acceptance() {
   [[ ! -e "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
     ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" ]] ||
     fail 'Test 已处于失败阻断状态。'
-  rm -f -- "$ACCEPTANCE_PENDING_MARKER" || fail '无法原子完成 Test 验收。'
-  status 'PASS acceptance=complete'
+  if [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+    publication_marker_matches "$revision" "$run_id" "$run_attempt" ||
+      fail '崩溃恢复窗口内的公网发布标记与待验收 identity 不一致。'
+  fi
+  live_revision_matches "$revision" || fail 'Test live release 与待验收 revision 不一致。'
+  if ! public_forwarder_state || ! public_listener_contract || ! public_https_contract; then
+    fail '公网转发器没有保持精确活动监听。'
+  fi
+  write_publication_marker "$revision" "$run_id" "$run_attempt" ||
+    fail '无法原子提交 Test 公网发布标记。'
+  rm -f -- "$ACCEPTANCE_PENDING_MARKER" || fail '无法完成 Test 验收状态切换。'
+  status 'PASS acceptance=complete publication=active'
 }
 
 manage_root_health_recovery() {
@@ -743,7 +945,7 @@ main() {
   [[ -f "$SAFETY_TOOL" ]] || fail '共享安全检查器不存在。'
   if (( check_only == 0 )); then
     [[ $(id -u) -eq 0 ]] || fail '存储收敛必须由 root 执行。'
-    for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm mv chown chmod date; do require_command "$cmd"; done
+    for cmd in kubectl install openssl base64 mktemp flock jq seq sleep rm mv chown chmod date ss curl; do require_command "$cmd"; done
     install -d -o root -g root -m 0700 "$GUARD_RUNTIME"
     [[ -d "$GUARD_RUNTIME" && ! -L "$GUARD_RUNTIME" &&
       $(stat -c '%u:%g:%a' "$GUARD_RUNTIME") == '0:0:700' ]] ||
@@ -794,6 +996,7 @@ main() {
   if (( check_only == 1 )); then
     [[ ! -e "$ROOT_CRITICAL_MARKER" && ! -L "$ROOT_CRITICAL_MARKER" ]] ||
       fail '根盘 OS critical 健康标记仍在 15 分钟恢复观察期。'
+    publication_shape_valid || fail '公网发布标记、待验收 identity 或转发器组合状态损坏。'
     status 'PASS storage=data-backed headroom=available mount-dependency=canonical root-os=healthy-or-warning'
     return
   fi
@@ -820,20 +1023,23 @@ main() {
   dispatcher_access_valid || fence_now '调度凭据已失效或权限发生漂移'
   rm -f -- "$LOW_MARKER"
 
+  # Publication reconciliation must never race an exclusive reset/deploy/bootstrap.
+  exec 6>"$OPERATION_LOCK_FILE"
+  if ! flock -s -n 6; then
+    status 'PASS storage=bounded credentials=healthy operation=active'
+    return
+  fi
+
   if [[ -e "$FAILURE_FENCE_MARKER" || -L "$FAILURE_FENCE_MARKER" ]]; then
-    exec 9>"$OPERATION_LOCK_FILE"
-    if flock -n 9; then
-      if safe_idle_fence_valid &&
-        [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
-          ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] &&
-        forwarders_stopped && verify_writers_fenced && verify_complete_writer_inventory_zero; then
-        status 'PASS storage=bounded credentials=healthy writers=safe-idle'
-        return
-      fi
-      fence_now '持久失败阻断标记仍然存在' 0 0 preserve-attempt
+    if safe_idle_fence_valid &&
+      [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+        ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" &&
+        ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] &&
+      forwarders_stopped && verify_writers_fenced && verify_complete_writer_inventory_zero; then
+      status 'PASS storage=bounded credentials=healthy writers=safe-idle'
       return
     fi
-    status 'PASS storage=bounded credentials=healthy operation=active'
+    fence_now '持久失败阻断标记仍然存在' 0 0 preserve-attempt
     return
   fi
   if [[ -e "$EXTERNAL_FENCE_MARKER" || -L "$EXTERNAL_FENCE_MARKER" ]]; then
@@ -844,23 +1050,70 @@ main() {
     exec 8>"$FENCE_LOCK_FILE"
     flock -w 300 8 || fail '无法取得待验收期限判定锁。'
     if [[ ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]]; then
-      status 'PASS storage=static-local headroom=available credentials=healthy'
-      return
-    fi
-    if pending_acceptance_state; then
+      :
+    elif pending_acceptance_state; then
+      if [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+        publication_marker_matches "$PENDING_REVISION" "$PENDING_RUN_ID" "$PENDING_RUN_ATTEMPT" ||
+          fence_now_locked 'Test 待验收与公网发布标记 identity 不一致'
+      fi
+      if public_forwarder_state; then
+        if ! live_revision_matches "$PENDING_REVISION" || ! public_listener_contract ||
+          ! public_https_contract; then
+          fence_now_locked 'Test 待验收公网入口或 live release identity 漂移'
+        fi
+      else
+        pending_rc=$?
+        if (( pending_rc == 1 )); then
+          [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] ||
+            fence_now_locked 'Test 验收提交崩溃窗口失去公网转发器'
+        else
+          fence_now_locked 'Test 待验收公网转发器处于部分或不可读状态'
+        fi
+      fi
       status 'PASS storage=bounded credentials=healthy acceptance=pending'
       return
     else
       pending_rc=$?
-    fi
-    if (( pending_rc == 1 )); then
-      fence_now_locked 'Test 后置验收超过固定期限' 0 1 \
-        "attempt $PENDING_REVISION $PENDING_RUN_ID $PENDING_RUN_ATTEMPT"
-    else
-      fence_now_locked 'Test 待验收标记损坏'
+      if (( pending_rc == 1 )); then
+        fence_now_locked 'Test 后置验收超过固定期限' 0 1 \
+          "attempt $PENDING_REVISION $PENDING_RUN_ID $PENDING_RUN_ATTEMPT"
+      else
+        fence_now_locked 'Test 待验收标记损坏'
+      fi
     fi
   fi
-  status 'PASS storage=static-local headroom=available credentials=healthy'
+  if [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]]; then
+    exec 8>"$FENCE_LOCK_FILE"
+    flock -w 300 8 || fail '无法取得公网发布恢复锁。'
+    [[ ! -e "$FAILURE_FENCE_MARKER" && ! -L "$FAILURE_FENCE_MARKER" &&
+      ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] ||
+      fence_now_locked '公网发布状态与失败或待验收标记冲突'
+    read_publication_marker || fence_now_locked 'Test 公网发布标记损坏'
+    live_revision_matches "$PUBLISHED_REVISION" ||
+      fence_now_locked 'Test 公网发布 revision 与 live release identity 不一致'
+    if public_forwarder_state; then
+      if ! public_listener_contract || ! public_https_contract; then
+        fence_now_locked 'Test 公网发布监听、TLS 或上游健康发生漂移'
+      fi
+    else
+      pending_rc=$?
+      if (( pending_rc == 1 )); then
+        ensure_public_forwarders || fence_now_locked 'Test 公网发布转发器无法从完整停止状态恢复'
+      else
+        fence_now_locked 'Test 公网发布转发器处于部分或不可读状态'
+      fi
+    fi
+    status "PASS storage=bounded credentials=healthy publication=$PUBLISHED_REVISION"
+    return
+  fi
+  if public_forwarder_state; then
+    fence_now '公网转发器运行但不存在受信发布标记'
+  else
+    pending_rc=$?
+    (( pending_rc == 1 )) || fence_now '公网转发器处于部分或不可读状态'
+  fi
+  fence_now 'Test live 状态缺少待验收或公网发布 provenance'
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

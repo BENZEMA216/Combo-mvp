@@ -65,6 +65,7 @@ const OTP_VALUE_PATTERN = /^[0-9]{6}$/;
 const CHROME_EXECUTABLE = '/usr/bin/google-chrome';
 // Runtime 的 index route 会整页返回创作端；不存在的 Session 是稳定、只读且不写业务数据的探针。
 const RUNTIME_BADGE_PROBE_PAGE = '/try/session/00000000-0000-4000-8000-000000000000';
+const TEST_ORIGIN = 'https://test.43-160-242-46.sslip.io';
 const PRODUCTION_ORIGIN = 'https://buildwithcombo.com';
 const TASK_TIMEOUT_MS = 15 * 60_000;
 const TURN_TIMEOUT_MS = 12 * 60_000;
@@ -208,12 +209,12 @@ function validateWebOrigin(raw, environment) {
     parsed.hash
   ) {
     throw new Error(
-      '--web-origin must be exactly http://127.0.0.1:<port> with no path, query, or credentials',
+      '--web-origin must contain only the approved scheme and host with no path, query, or credentials',
     );
   }
   if (environment === 'test') {
-    if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || parsed.port !== '18080') {
-      throw new Error('--web-origin must use the exact Test loopback origin');
+    if (parsed.origin !== TEST_ORIGIN) {
+      throw new Error('--web-origin must use the exact Test public origin');
     }
   } else if (
     environment === 'preview' &&
@@ -1031,6 +1032,7 @@ async function authenticateWithEmailOtp({
 }
 
 async function runAcceptance(options) {
+  const secureCookie = new URL(options.webOrigin).protocol === 'https:';
   const state = {
     environment: options.environment,
     revision: options.revision,
@@ -1115,7 +1117,7 @@ async function runAcceptance(options) {
       if (isAllowedAcceptanceWebSocket(socket.url(), options.webOrigin)) {
         socket.connectToServer();
       } else {
-        await socket.close({ code: 1008, reason: 'loopback-only acceptance' });
+        await socket.close({ code: 1008, reason: 'acceptance origin boundary' });
       }
     });
     const page = await context.newPage();
@@ -1170,7 +1172,7 @@ async function runAcceptance(options) {
         ),
         returnTo: '/tasks',
         resendApiKey,
-        secureCookie: options.environment !== 'test',
+        secureCookie,
         check: activeCheck,
       });
       authenticatedIdentity = authenticated.identity;
@@ -2230,7 +2232,7 @@ async function runAcceptance(options) {
           ),
           returnTo: '/tasks',
           resendApiKey,
-          secureCookie: options.environment !== 'test',
+          secureCookie,
           check: activeCheck,
         });
         ensure(secondary.identity.id !== authenticatedIdentity.id, activeCheck);
@@ -2258,8 +2260,7 @@ async function runAcceptance(options) {
           JSON.stringify(me.data?.roles) === '["creator"]',
         activeCheck,
       );
-      const expectedCookieName =
-        options.environment === 'test' ? 'cb_session' : '__Host-cb_session';
+      const expectedCookieName = secureCookie ? '__Host-cb_session' : 'cb_session';
       const cookies = await context.cookies();
       const persisted = cookies.find((cookie) => cookie.name === expectedCookieName);
       ensure(
@@ -2297,15 +2298,14 @@ async function runAcceptance(options) {
             /^s1\.[A-Za-z0-9_-]{43}$/u.test(authenticationCookieValue),
           activeCheck,
         );
-        const expectedCookieName =
-          options.environment === 'test' ? 'cb_session' : '__Host-cb_session';
+        const expectedCookieName = secureCookie ? '__Host-cb_session' : 'cb_session';
         await replay.addCookies([
           {
             name: expectedCookieName,
             value: authenticationCookieValue,
             url: options.webOrigin,
             httpOnly: true,
-            secure: options.environment !== 'test',
+            secure: secureCookie,
             sameSite: 'Lax',
           },
         ]);

@@ -19,8 +19,8 @@ export const AUTH_SESSION_COOKIE_SAME_SITE = 'lax' as const;
 export const AUTH_SESSION_COOKIE_VALUE_PATTERN = /^s1\.[A-Za-z0-9_-]{43}$/;
 
 /**
- * HTTPS 入口使用主机限定前缀；显式的本地 HTTP 验收入口使用不带前缀的同语义 Cookie。
- * 这里刻意不读取 NODE_ENV：Test 可以运行 production 构建，却通过 loopback HTTP 验收。
+ * HTTPS 入口使用主机限定前缀；显式的本地 HTTP 开发入口使用不带前缀的同语义 Cookie。
+ * 这里刻意不读取 NODE_ENV：具体发布环境是否允许 HTTP 由应用启动配置单独约束。
  */
 export function authSessionCookieName(secure: boolean): string {
   return secure ? AUTH_SESSION_COOKIE_PRODUCTION_NAME : AUTH_SESSION_COOKIE_NAME;

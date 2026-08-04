@@ -58,6 +58,12 @@ readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
 readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly PUBLICATION_MARKER='/var/lib/combo-dev/publication'
+readonly PUBLIC_DOMAIN_APPROVAL='/etc/combo-dev/public-domain.approved'
+readonly PUBLIC_DOMAIN_APPROVAL_VALUE='combo-dev-public-domain=v1'
+readonly PUBLIC_NGINX_TARGET='/etc/nginx/conf.d/combo-dev-test.conf'
+readonly PUBLIC_NGINX_DIGEST='/etc/combo-dev/public-domain-nginx.sha256'
+readonly CERTBOT_DEPLOY_HOOK='/etc/letsencrypt/renewal-hooks/deploy/combo-dev-nginx-reload'
 readonly RESET_PROOF_ROOT='/var/lib/combo-dev'
 readonly ROOT_CRITICAL_MARKER='/var/lib/combo-dev/root-capacity-critical'
 readonly DISPATCHER_RENEW_BEFORE_SECONDS=$((30 * 24 * 60 * 60))
@@ -70,13 +76,21 @@ readonly CONTROL_FILES=(
   scripts/combo-dev-logs.sh
   scripts/combo-dev-reset.sh
   scripts/combo-dev-forwarder-lease.sh
+  scripts/combo-dev-publication.sh
+  scripts/combo-dev-public-s3-smoke.py
   scripts/combo-dev-storage-guard.sh
   scripts/combo-dev-production-safety.py
   infra/host/combo-dev/combo-dev-prepare-control-state.sh
   infra/host/combo-dev/combo-host-prepare-data-anchor.sh
   infra/host/combo-dev/combo-host-data-mount-check.sh
+  infra/host/combo-dev/combo-dev-prepare-public-domain.sh
+  infra/host/combo-dev/combo-dev-certbot-deploy-hook.sh
+  infra/host/combo-dev/combo-dev-public-nginx.conf
+  infra/host/combo-dev/combo-dev-public-acme-nginx.conf
   infra/host/combo-dev/combo-dev-web-forward.service
   infra/host/combo-dev/combo-dev-s3-forward.service
+  infra/host/combo-dev/combo-dev-public-web-forward.service
+  infra/host/combo-dev/combo-dev-public-s3-forward.service
   infra/host/combo-dev/combo-dev-storage-guard.service
   infra/host/combo-dev/combo-dev-storage-guard.timer
   'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount'
@@ -133,17 +147,41 @@ bootstrap_boundary() { local _boundary=$1; shift; "$@"; }
 
 forwarders_stopped() {
   local unit active
-  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service \
+    combo-dev-public-web-forward.service combo-dev-public-s3-forward.service; do
     active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
     [[ "$active" == inactive || "$active" == failed ]] || return 1
   done
 }
 
+publication_marker_is_strict() {
+  local revision run_id run_attempt extra value expected_bytes
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || return 1
+  IFS=' ' read -r revision run_id run_attempt extra <"$PUBLICATION_MARKER" || return 1
+  [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ &&
+    "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  value="$revision $run_id $run_attempt"
+  expected_bytes=$((${#value} + 1))
+  [[ $(stat -c '%u:%g:%a:%h:%s' "$PUBLICATION_MARKER" 2>/dev/null) == \
+    "0:0:600:1:$expected_bytes" && $(<"$PUBLICATION_MARKER") == "$value" ]]
+}
+
+strict_remove_publication_marker() {
+  [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]] || return 0
+  publication_marker_is_strict || return 1
+  rm -f -- "$PUBLICATION_MARKER" || return 1
+  [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]]
+}
+
 stop_forwarders() {
+  local failed=0
   rm -rf -- /run/combo-dev-forwarders
+  strict_remove_publication_marker || failed=1
   # 首次 bootstrap 时这两个单元尚未安装；stop 的 not-found 可以忽略，但随后仍须验证没有活动监听者。
-  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
-  forwarders_stopped
+  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service \
+    combo-dev-public-web-forward.service combo-dev-public-s3-forward.service >/dev/null 2>&1 || true
+  forwarders_stopped || failed=1
+  (( failed == 0 ))
 }
 
 cleanup() {
@@ -424,7 +462,8 @@ paths=[os.path.join(root,'infra/k8s/overlays/combo-dev'),os.path.join(root,'infr
 paths += [os.path.join(root,'scripts',name) for name in (
  'combo-dev-bootstrap.sh','combo-dev-deploy.sh','combo-dev-smoke.sh',
  'combo-dev-connect.sh','combo-dev-logs.sh','combo-dev-reset.sh',
- 'combo-dev-forwarder-lease.sh','combo-dev-storage-guard.sh',
+ 'combo-dev-forwarder-lease.sh','combo-dev-publication.sh','combo-dev-public-s3-smoke.py',
+ 'combo-dev-storage-guard.sh',
  'combo-dev-production-safety.py')]
 for base in paths:
     if not os.path.exists(base): raise SystemExit(2)
@@ -439,10 +478,37 @@ for base in paths:
 PY
 }
 
+verify_public_domain_host() {
+  local expected actual next
+  [[ $(cat "$PUBLIC_DOMAIN_APPROVAL" 2>/dev/null || true) == "$PUBLIC_DOMAIN_APPROVAL_VALUE" ]] || return 1
+  [[ -f "$PUBLIC_NGINX_TARGET" && ! -L "$PUBLIC_NGINX_TARGET" &&
+    $(stat -c '%u:%g:%a:%h' "$PUBLIC_NGINX_TARGET" 2>/dev/null) == '0:0:644:1' ]] || return 1
+  [[ -f "$PUBLIC_NGINX_DIGEST" && ! -L "$PUBLIC_NGINX_DIGEST" &&
+    $(stat -c '%u:%g:%a:%h' "$PUBLIC_NGINX_DIGEST" 2>/dev/null) == '0:0:600:1' ]] || return 1
+  expected=$(<"$PUBLIC_NGINX_DIGEST") || return 1
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]] || return 1
+  actual=$(sha256sum "$PUBLIC_NGINX_TARGET" | awk '{print $1}') || return 1
+  [[ "$actual" == "$expected" ]] || return 1
+  next=$(sha256sum "$ROOT/infra/host/combo-dev/combo-dev-public-nginx.conf" | awk '{print $1}') || return 1
+  [[ "$actual" == "$next" ]] || return 1
+  [[ -f "$CERTBOT_DEPLOY_HOOK" && ! -L "$CERTBOT_DEPLOY_HOOK" &&
+    $(stat -c '%u:%g:%a:%h' "$CERTBOT_DEPLOY_HOOK" 2>/dev/null) == '0:0:755:1' ]] || return 1
+  cmp -s "$ROOT/infra/host/combo-dev/combo-dev-certbot-deploy-hook.sh" "$CERTBOT_DEPLOY_HOOK" || return 1
+  [[ $(timeout 10 systemctl is-enabled certbot-renew.timer 2>/dev/null || true) == enabled ]] || return 1
+  [[ $(timeout 10 systemctl is-active certbot-renew.timer 2>/dev/null || true) == active ]] || return 1
+  timeout 30 nginx -t >/dev/null 2>&1 || return 1
+  curl --silent --show-error --max-time 10 --output /dev/null \
+    --resolve test.43-160-242-46.sslip.io:443:127.0.0.1 \
+    https://test.43-160-242-46.sslip.io/ 2>/dev/null &&
+    curl --silent --show-error --max-time 10 --output /dev/null \
+      --resolve test-s3.43-160-242-46.sslip.io:443:127.0.0.1 \
+      https://test-s3.43-160-242-46.sslip.io/ 2>/dev/null
+}
+
 host_preflight() {
   [[ $(id -u) -eq 0 ]] || blocked 'bootstrap 必须由主机所有者以 root 手工执行。'
   local cmd canonical
-  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep find rm mv mktemp logrotate losetup blockdev blkid; do require_command "$cmd"; done
+  for cmd in kubectl python3 jq openssl sha256sum flock findmnt df systemctl install stat base64 timeout chown chmod readlink dirname seq sleep find rm mv mktemp logrotate losetup blockdev blkid nginx cmp curl; do require_command "$cmd"; done
   trusted_source_tree || blocked 'bootstrap 源目录不是 root-owned 只读快照。'
   private_directory /etc/combo-dev || blocked '开发配置目录不是 root-owned 私有目录。'
   if [[ -e /etc/logrotate.d ]] && ! root_owned_not_writable /etc/logrotate.d; then
@@ -461,6 +527,7 @@ host_preflight() {
   [[ $(cat /etc/combo-dev/journal-retention.approved 2>/dev/null || true) == 'journald=native-retention-bounded' ]] || blocked '缺少原生日志保留上限证据。'
   timeout 30 logrotate --debug "$ROOT/infra/host/combo-dev/combo-host-syslog" >/dev/null 2>&1 ||
     blocked '受控主机 syslog 轮转策略无效。'
+  verify_public_domain_host || blocked 'Test 公网域名、Nginx 安全日志、TLS 续期或受控配置没有准备完成。'
   [[ $(cat "$STORAGE_APPROVAL" 2>/dev/null || true) == 'combo-dev-storage=dedicated-hard-18GiB-max' ]] || blocked '缺少独立有界存储池批准。'
   [[ $(cat "$HOST_BOUNDARY_APPROVAL" 2>/dev/null || true) == 'combo-dev-host-boundary=audited-and-active' ]] || blocked '缺少 Pod 到节点的主机级隔离批准。'
   if ! root_owned_not_writable "$HOST_BOUNDARY_CHECK" || [[ ! -x "$HOST_BOUNDARY_CHECK" ]]; then
@@ -978,6 +1045,7 @@ dispatcher_credential_valid() {
   can_i_dispatcher yes list replicationcontrollers "$NAMESPACE" || return 1
   can_i_dispatcher yes list cronjobs.batch "$NAMESPACE" || return 1
   can_i_dispatcher yes list ingresses.networking.k8s.io "$NAMESPACE" || return 1
+  can_i_dispatcher yes list endpointslices.discovery.k8s.io "$NAMESPACE" || return 1
   can_i_dispatcher yes list horizontalpodautoscalers.autoscaling "$NAMESPACE" || return 1
   can_i_dispatcher yes delete daemonsets.apps "$NAMESPACE" || return 1
   can_i_dispatcher yes delete replicasets.apps "$NAMESPACE" || return 1
@@ -1140,13 +1208,19 @@ install_control_files() {
   install -m 0755 "$ROOT/scripts/combo-dev-logs.sh" /opt/combo-dev/bin/combo-dev-logs
   install -m 0755 "$ROOT/scripts/combo-dev-reset.sh" /opt/combo-dev/bin/combo-dev-reset
   install -m 0755 "$ROOT/scripts/combo-dev-forwarder-lease.sh" /opt/combo-dev/bin/combo-dev-forwarder-lease
+  install -m 0755 "$ROOT/scripts/combo-dev-publication.sh" /opt/combo-dev/bin/combo-dev-publication
+  install -m 0755 "$ROOT/scripts/combo-dev-public-s3-smoke.py" /opt/combo-dev/bin/combo-dev-public-s3-smoke
   install -m 0755 "$ROOT/scripts/combo-dev-storage-guard.sh" /opt/combo-dev/bin/combo-dev-storage-guard
   install -m 0755 "$ROOT/scripts/combo-dev-production-safety.py" /opt/combo-dev/bin/combo-dev-production-safety
   install -m 0755 "$ROOT/infra/host/combo-dev/combo-dev-prepare-control-state.sh" /opt/combo-dev/bin/combo-dev-prepare-control-state
   install -m 0755 "$ROOT/infra/host/combo-dev/combo-host-prepare-data-anchor.sh" /opt/combo-dev/bin/combo-host-prepare-data-anchor
   install -m 0755 "$ROOT/infra/host/combo-dev/combo-host-data-mount-check.sh" /opt/combo-dev/bin/combo-host-data-mount-check
+  install -m 0755 "$ROOT/infra/host/combo-dev/combo-dev-prepare-public-domain.sh" /opt/combo-dev/bin/combo-dev-prepare-public-domain
+  install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-public-acme-nginx.conf" /opt/combo-dev/share/combo-dev-public-acme-nginx.conf
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-web-forward.service" /etc/systemd/system/combo-dev-web-forward.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-s3-forward.service" /etc/systemd/system/combo-dev-s3-forward.service
+  install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-public-web-forward.service" /etc/systemd/system/combo-dev-public-web-forward.service
+  install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-public-s3-forward.service" /etc/systemd/system/combo-dev-public-s3-forward.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-storage-guard.service" /etc/systemd/system/combo-dev-storage-guard.service
   install -m 0644 "$ROOT/infra/host/combo-dev/combo-dev-storage-guard.timer" /etc/systemd/system/combo-dev-storage-guard.timer
   install -m 0644 "$ROOT/infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount" '/etc/systemd/system/var-lib-combo\x2dhost\x2ddata.mount'
@@ -1164,13 +1238,21 @@ install_control_files() {
     /opt/combo-dev/bin/combo-dev-logs
     /opt/combo-dev/bin/combo-dev-reset
     /opt/combo-dev/bin/combo-dev-forwarder-lease
+    /opt/combo-dev/bin/combo-dev-publication
+    /opt/combo-dev/bin/combo-dev-public-s3-smoke
     /opt/combo-dev/bin/combo-dev-storage-guard
     /opt/combo-dev/bin/combo-dev-production-safety
     /opt/combo-dev/bin/combo-dev-prepare-control-state
     /opt/combo-dev/bin/combo-host-prepare-data-anchor
     /opt/combo-dev/bin/combo-host-data-mount-check
+    /opt/combo-dev/bin/combo-dev-prepare-public-domain
+    "$CERTBOT_DEPLOY_HOOK"
+    "$PUBLIC_NGINX_TARGET"
+    /opt/combo-dev/share/combo-dev-public-acme-nginx.conf
     /etc/systemd/system/combo-dev-web-forward.service
     /etc/systemd/system/combo-dev-s3-forward.service
+    /etc/systemd/system/combo-dev-public-web-forward.service
+    /etc/systemd/system/combo-dev-public-s3-forward.service
     /etc/systemd/system/combo-dev-storage-guard.service
     /etc/systemd/system/combo-dev-storage-guard.timer
     '/etc/systemd/system/var-lib-combo\x2dhost\x2ddata.mount'
@@ -1210,15 +1292,18 @@ install_control_files() {
   chmod 600 "$tmp"
   install -m 0600 "$tmp" /etc/combo-dev/control-files.sha256
   timeout 30 systemctl daemon-reload >/dev/null 2>&1 || blocked 'systemd 配置刷新失败。'
-  timeout 30 systemctl disable combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
-  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || true
+  timeout 30 systemctl disable combo-dev-web-forward.service combo-dev-s3-forward.service \
+    combo-dev-public-web-forward.service combo-dev-public-s3-forward.service >/dev/null 2>&1 || true
+  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service \
+    combo-dev-public-web-forward.service combo-dev-public-s3-forward.service >/dev/null 2>&1 || true
   # 先停用计时器并串行完成首次检查，再启动一分钟周期，避免两个 guard 并发收敛同一批凭据和写入者。
   timeout 30 systemctl disable --now combo-dev-storage-guard.timer >/dev/null 2>&1 || true
   timeout 30 systemctl reset-failed combo-dev-storage-guard.service >/dev/null 2>&1 || true
   timeout 30 systemctl start combo-dev-storage-guard.service >/dev/null 2>&1 || blocked '存储低水位守卫首次检查失败。'
   timeout 30 systemctl enable --now combo-dev-storage-guard.timer >/dev/null 2>&1 || blocked '持续存储低水位守卫无法启用。'
   local enabled active
-  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service \
+    combo-dev-public-web-forward.service combo-dev-public-s3-forward.service; do
     enabled=$(timeout 10 systemctl is-enabled "$unit" 2>/dev/null || true)
     [[ "$enabled" == disabled || "$enabled" == static ]] || blocked '回环转发器被配置为开机启动。'
     active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
@@ -1324,6 +1409,8 @@ main() {
   [[ "$before" == "$after" ]] || fail 'bootstrap 期间生产指纹发生变化。'
   exec 8>"$FENCE_LOCK_FILE"
   flock -w 300 8 || blocked 'bootstrap 无法取得失败收敛锁。'
+  [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] ||
+    blocked 'bootstrap 拒绝清理损坏或未经验证的公网发布标记。'
   rm -f -- "$EXTERNAL_FENCE_MARKER" "$ACCEPTANCE_PENDING_MARKER" ||
     blocked 'bootstrap 无法清理旧验收状态。'
   remove_all_reset_proofs || blocked 'bootstrap 无法清理旧 reset proof inventory。'
@@ -1332,7 +1419,7 @@ main() {
   rm -rf --one-file-system -- "$WORK"
   WORK=''
   SUCCESS=1
-  status 'PASS namespace=combo-preview forwarders=inactive writers=safe-idle'
+  status 'PASS namespace=combo-preview local-forwarders=inactive public-forwarders=inactive writers=safe-idle'
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

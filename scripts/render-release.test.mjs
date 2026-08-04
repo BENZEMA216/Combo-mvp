@@ -147,7 +147,7 @@ for (const [environment, namespace, prefix] of [
       assert.equal(releaseReference.configMapRef.name, `combo-release-meta-${SHA.slice(0, 12)}`);
     }
     const expectedOrigins = {
-      test: 'http://127.0.0.1:18080',
+      test: 'https://test.43-160-242-46.sslip.io',
       preview: 'https://review.43-160-242-46.sslip.io',
       production:
         'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
@@ -174,6 +174,23 @@ for (const [environment, namespace, prefix] of [
       assert.equal(
         environmentEntries.find((entry) => entry.name === 'PUBLIC_APP_ORIGINS').value,
         expectedOrigins,
+      );
+      assert.equal(
+        environmentEntries.find((entry) => entry.name === 'SESSION_COOKIE_SECURE').value,
+        'true',
+      );
+    }
+    if (environment === 'test') {
+      const api = resources.find(
+        (resource) => resource.kind === 'Deployment' && resource.metadata.name === 'api',
+      );
+      const environmentEntries = api.spec.template.spec.containers[0].env;
+      assert.deepEqual(
+        environmentEntries.find((entry) => entry.name === 'S3_PUBLIC_ENDPOINT'),
+        {
+          name: 'S3_PUBLIC_ENDPOINT',
+          value: 'https://test-s3.43-160-242-46.sslip.io',
+        },
       );
     }
     for (const service of resources.filter((resource) => resource.kind === 'Service')) {
@@ -214,6 +231,55 @@ for (const [environment, namespace, prefix] of [
     assert.equal(verification.status, 0, verification.stderr);
   });
 }
+
+test('Test deployment fixes public HTTPS auth, object storage, and bucket CORS', () => {
+  const parseResources = (relative) =>
+    parseAllDocuments(readFileSync(join(ROOT, relative), 'utf8')).map((document) =>
+      document.toJS(),
+    );
+  const apps = parseResources('infra/k8s/overlays/combo-dev/apps/resources.yaml');
+  const deploymentEnv = (name) =>
+    new Map(
+      apps
+        .find((resource) => resource.kind === 'Deployment' && resource.metadata.name === name)
+        .spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+    );
+  const apiEnv = deploymentEnv('api');
+  const runtimeEnv = deploymentEnv('runtime');
+  for (const env of [apiEnv, runtimeEnv]) {
+    assert.equal(env.get('PUBLIC_APP_ORIGINS').value, 'https://test.43-160-242-46.sslip.io');
+    assert.equal(env.get('SESSION_COOKIE_SECURE').value, 'true');
+  }
+  assert.equal(apiEnv.get('S3_PUBLIC_ENDPOINT').value, 'https://test-s3.43-160-242-46.sslip.io');
+
+  const foundation = parseResources('infra/k8s/overlays/combo-dev/foundation/resources.yaml');
+  const minio = foundation.find(
+    (resource) => resource.kind === 'StatefulSet' && resource.metadata.name === 'minio',
+  );
+  assert.equal(
+    minio.spec.template.spec.containers[0].env.find(
+      (entry) => entry.name === 'MINIO_API_CORS_ALLOW_ORIGIN',
+    ).value,
+    'https://test.43-160-242-46.sslip.io',
+  );
+
+  const init = parseResources('infra/k8s/overlays/combo-dev/init/resources.yaml');
+  const config = init.find(
+    (resource) => resource.kind === 'ConfigMap' && resource.metadata.name === 'minio-init-script',
+  );
+  assert.match(
+    config.data['cors.xml'],
+    /<AllowedOrigin>https:\/\/test\.43-160-242-46\.sslip\.io<\/AllowedOrigin>/,
+  );
+  assert.doesNotMatch(config.data['cors.xml'], /<AllowedOrigin>\*<\/AllowedOrigin>/);
+  for (const method of ['GET', 'PUT', 'POST', 'DELETE', 'HEAD']) {
+    assert.match(config.data['cors.xml'], new RegExp(`<AllowedMethod>${method}</AllowedMethod>`));
+  }
+  assert.match(
+    config.data['init-buckets.sh'],
+    /mc cors set "local\/\$bucket" \/scripts\/cors\.xml/,
+  );
+});
 
 test('Nginx contract rejects missing hashed assets and defines cache policy', () => {
   const nginx = readFileSync(join(ROOT, 'infra/nginx.conf'), 'utf8');
@@ -449,6 +515,17 @@ test('deployment-side allowlist rejects extra resources and image drift before a
   const wrongAppEndpoint = verifyRendered(wrongAppHost, 'preview', 'apps');
   assert.notEqual(wrongAppEndpoint.status, 0);
   assert.match(wrongAppEndpoint.stderr, /fixed database role/);
+
+  const wrongTestS3 = render('test', 'apps');
+  const testApi = wrongTestS3.find(
+    (resource) => resource.kind === 'Deployment' && resource.metadata.name === 'api',
+  );
+  testApi.spec.template.spec.containers[0].env.find(
+    (entry) => entry.name === 'S3_PUBLIC_ENDPOINT',
+  ).value = 'http://127.0.0.1:19000';
+  const wrongTestS3Endpoint = verifyRendered(wrongTestS3, 'test', 'apps');
+  assert.notEqual(wrongTestS3Endpoint.status, 0);
+  assert.match(wrongTestS3Endpoint.stderr, /incorrect public object-store endpoint/);
 });
 
 test('deployment-side allowlist rejects mutable foundation commands', () => {

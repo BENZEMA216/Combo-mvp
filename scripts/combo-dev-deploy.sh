@@ -61,6 +61,9 @@ readonly FAILURE_FENCE_VALUE='combo-dev-writers=fenced'
 readonly SAFE_IDLE_FENCE_VALUE='combo-dev-writers=safe-idle-v1'
 readonly EXTERNAL_FENCE_MARKER='/var/lib/combo-dev/external-fence'
 readonly ACCEPTANCE_PENDING_MARKER='/var/lib/combo-dev/acceptance-pending'
+readonly PUBLICATION_MARKER='/var/lib/combo-dev/publication'
+readonly PUBLIC_NGINX_TARGET='/etc/nginx/conf.d/combo-dev-test.conf'
+readonly CERTBOT_DEPLOY_HOOK='/etc/letsencrypt/renewal-hooks/deploy/combo-dev-nginx-reload'
 readonly ACCEPTANCE_PENDING_SECONDS=7200
 RESET_PROOF=''
 CONSUMED_RESET_PROOF=''
@@ -70,6 +73,9 @@ readonly DISPATCHER_FENCE_BEFORE_SECONDS=$((7 * 24 * 60 * 60))
 readonly DISPATCHER_OPERATION_MIN_SECONDS=$((4 * 60 * 60))
 readonly APP_NAMES=(api worker runtime web)
 readonly FOUNDATION_NAMES=(postgres redis-queue minio)
+readonly LOCAL_FORWARDER_UNITS=(combo-dev-web-forward.service combo-dev-s3-forward.service)
+readonly PUBLIC_FORWARDER_UNITS=(combo-dev-public-web-forward.service combo-dev-public-s3-forward.service)
+readonly ALL_FORWARDER_UNITS=("${LOCAL_FORWARDER_UNITS[@]}" "${PUBLIC_FORWARDER_UNITS[@]}")
 readonly CONTROL_FILES=(
   scripts/combo-dev-bootstrap.sh
   scripts/combo-dev-deploy.sh
@@ -77,13 +83,21 @@ readonly CONTROL_FILES=(
   scripts/combo-dev-logs.sh
   scripts/combo-dev-reset.sh
   scripts/combo-dev-forwarder-lease.sh
+  scripts/combo-dev-publication.sh
+  scripts/combo-dev-public-s3-smoke.py
   scripts/combo-dev-storage-guard.sh
   scripts/combo-dev-production-safety.py
   infra/host/combo-dev/combo-dev-prepare-control-state.sh
   infra/host/combo-dev/combo-host-prepare-data-anchor.sh
   infra/host/combo-dev/combo-host-data-mount-check.sh
+  infra/host/combo-dev/combo-dev-prepare-public-domain.sh
+  infra/host/combo-dev/combo-dev-certbot-deploy-hook.sh
+  infra/host/combo-dev/combo-dev-public-nginx.conf
+  infra/host/combo-dev/combo-dev-public-acme-nginx.conf
   infra/host/combo-dev/combo-dev-web-forward.service
   infra/host/combo-dev/combo-dev-s3-forward.service
+  infra/host/combo-dev/combo-dev-public-web-forward.service
+  infra/host/combo-dev/combo-dev-public-s3-forward.service
   infra/host/combo-dev/combo-dev-storage-guard.service
   infra/host/combo-dev/combo-dev-storage-guard.timer
   'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount'
@@ -196,6 +210,25 @@ file_mode_is_private() {
   mode=$(stat -c '%a' "$1" 2>/dev/null) || return 1
   owner=$(stat -c '%u' "$1" 2>/dev/null) || return 1
   [[ "$owner" == 0 && ( "$mode" == '600' || "$mode" == '400' ) ]]
+}
+
+publication_marker_is_strict() {
+  local revision run_id run_attempt extra value expected_bytes
+  [[ -f "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || return 1
+  IFS=' ' read -r revision run_id run_attempt extra <"$PUBLICATION_MARKER" || return 1
+  [[ -z "$extra" && "$revision" =~ ^[0-9a-f]{40}$ &&
+    "$run_id" =~ ^[1-9][0-9]*$ && "$run_attempt" =~ ^[1-9][0-9]*$ ]] || return 1
+  value="$revision $run_id $run_attempt"
+  expected_bytes=$((${#value} + 1))
+  [[ $(stat -c '%u:%g:%a:%h:%s' "$PUBLICATION_MARKER" 2>/dev/null) == \
+    "0:0:600:1:$expected_bytes" && $(<"$PUBLICATION_MARKER") == "$value" ]]
+}
+
+strict_remove_publication_marker() {
+  [[ -e "$PUBLICATION_MARKER" || -L "$PUBLICATION_MARKER" ]] || return 0
+  publication_marker_is_strict || return 1
+  rm -f -- "$PUBLICATION_MARKER" || return 1
+  [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]]
 }
 
 free_bytes() {
@@ -400,9 +433,9 @@ dispatcher_certificate_valid_for() {
 stop_forwarders_for_failure() {
   local unit active failed=0
   rm -rf -- /run/combo-dev-forwarders || failed=1
-  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service \
-    >/dev/null 2>&1 || failed=1
-  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+  strict_remove_publication_marker || failed=1
+  timeout 30 systemctl stop "${ALL_FORWARDER_UNITS[@]}" >/dev/null 2>&1 || failed=1
+  for unit in "${ALL_FORWARDER_UNITS[@]}"; do
     active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
     [[ "$active" == inactive || "$active" == failed ]] || failed=1
   done
@@ -412,8 +445,10 @@ stop_forwarders_for_failure() {
 claim_forwarders_for_deploy() {
   local unit active
   rm -rf -- /run/combo-dev-forwarders
-  timeout 30 systemctl stop combo-dev-web-forward.service combo-dev-s3-forward.service >/dev/null 2>&1 || blocked '无法取得回环转发器排他所有权。'
-  for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
+  [[ ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] ||
+    blocked '安全空闲状态仍带有公网发布标记。'
+  timeout 30 systemctl stop "${ALL_FORWARDER_UNITS[@]}" >/dev/null 2>&1 || blocked '无法取得转发器排他所有权。'
+  for unit in "${ALL_FORWARDER_UNITS[@]}"; do
     active=$(timeout 10 systemctl is-active "$unit" 2>/dev/null || true)
     [[ "$active" == inactive || "$active" == failed ]] || blocked '回环转发器仍由其他会话持有。'
   done
@@ -493,6 +528,7 @@ rbac_preflight() {
   can_i_exact yes list replicationcontrollers "$NAMESPACE"
   can_i_exact yes list cronjobs.batch "$NAMESPACE"
   can_i_exact yes list ingresses.networking.k8s.io "$NAMESPACE"
+  can_i_exact yes list endpointslices.discovery.k8s.io "$NAMESPACE"
   can_i_exact yes list horizontalpodautoscalers.autoscaling "$NAMESPACE"
   can_i_exact yes delete daemonsets.apps "$NAMESPACE"
   can_i_exact yes delete replicasets.apps "$NAMESPACE"
@@ -881,7 +917,8 @@ claim_safe_idle_fence() {
   if (( rc == 0 )); then
     writers_fence_has_value "$SAFE_IDLE_FENCE_VALUE" || rc=1
     [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
-      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" ]] || rc=1
+      ! -e "$ACCEPTANCE_PENDING_MARKER" && ! -L "$ACCEPTANCE_PENDING_MARKER" &&
+      ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] || rc=1
   fi
   if (( rc == 0 )); then
     # The global flag must become visible to EXIT/TERM cleanup before the
@@ -1032,14 +1069,22 @@ allowed_files = {
     'scripts/combo-dev-bootstrap.sh', 'scripts/combo-dev-deploy.sh',
     'scripts/combo-dev-smoke.sh', 'scripts/combo-dev-connect.sh',
     'scripts/combo-dev-logs.sh', 'scripts/combo-dev-reset.sh',
-    'scripts/combo-dev-forwarder-lease.sh', 'scripts/combo-dev-storage-guard.sh',
+    'scripts/combo-dev-forwarder-lease.sh', 'scripts/combo-dev-publication.sh',
+    'scripts/combo-dev-public-s3-smoke.py',
+    'scripts/combo-dev-storage-guard.sh',
     'scripts/combo-dev-production-safety.py',
     'infra/host/combo-dev/README.md',
     'infra/host/combo-dev/combo-dev-prepare-control-state.sh',
     'infra/host/combo-dev/combo-host-prepare-data-anchor.sh',
     'infra/host/combo-dev/combo-host-data-mount-check.sh',
+    'infra/host/combo-dev/combo-dev-prepare-public-domain.sh',
+    'infra/host/combo-dev/combo-dev-certbot-deploy-hook.sh',
+    'infra/host/combo-dev/combo-dev-public-nginx.conf',
+    'infra/host/combo-dev/combo-dev-public-acme-nginx.conf',
     'infra/host/combo-dev/combo-dev-web-forward.service',
     'infra/host/combo-dev/combo-dev-s3-forward.service',
+    'infra/host/combo-dev/combo-dev-public-web-forward.service',
+    'infra/host/combo-dev/combo-dev-public-s3-forward.service',
     'infra/host/combo-dev/combo-dev-storage-guard.service',
     'infra/host/combo-dev/combo-dev-storage-guard.timer',
     r'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount',
@@ -1125,13 +1170,21 @@ installed_control_digest() {
     "$INSTALL_ROOT/bin/combo-dev-logs"
     "$INSTALL_ROOT/bin/combo-dev-reset"
     "$INSTALL_ROOT/bin/combo-dev-forwarder-lease"
+    "$INSTALL_ROOT/bin/combo-dev-publication"
+    "$INSTALL_ROOT/bin/combo-dev-public-s3-smoke"
     "$INSTALL_ROOT/bin/combo-dev-storage-guard"
     "$INSTALL_ROOT/bin/combo-dev-production-safety"
     "$INSTALL_ROOT/bin/combo-dev-prepare-control-state"
     "$INSTALL_ROOT/bin/combo-host-prepare-data-anchor"
     "$INSTALL_ROOT/bin/combo-host-data-mount-check"
+    "$INSTALL_ROOT/bin/combo-dev-prepare-public-domain"
+    "$CERTBOT_DEPLOY_HOOK"
+    "$PUBLIC_NGINX_TARGET"
+    "$INSTALL_ROOT/share/combo-dev-public-acme-nginx.conf"
     /etc/systemd/system/combo-dev-web-forward.service
     /etc/systemd/system/combo-dev-s3-forward.service
+    /etc/systemd/system/combo-dev-public-web-forward.service
+    /etc/systemd/system/combo-dev-public-s3-forward.service
     /etc/systemd/system/combo-dev-storage-guard.service
     /etc/systemd/system/combo-dev-storage-guard.timer
     '/etc/systemd/system/var-lib-combo\x2dhost\x2ddata.mount'
@@ -1679,7 +1732,7 @@ for config_name,workload_name in (('redis-hot-config','redis-hot'),('redis-queue
         else: break
     digest=hashlib.sha256(('\n'.join(body)+'\n').encode()).hexdigest()
     if f'combo.dev/config-sha256: {digest}' not in workload_doc: raise SystemExit('guard:redis-config-checksum')
-if 'http://127.0.0.1:18080' not in text or 'http://127.0.0.1:19000' not in text: raise SystemExit('guard:origins')
+if 'https://test.43-160-242-46.sslip.io' not in text or 'https://test-s3.43-160-242-46.sslip.io' not in text: raise SystemExit('guard:origins')
 if 'access_log off;' not in text or 'OTEL_SDK_DISABLED' not in text: raise SystemExit('guard:logging')
 for endpoint,file in (
  ('/runtime-config.json','runtime-config.json'),
@@ -2886,12 +2939,19 @@ main() {
 
   timeout 30 systemctl stop combo-dev-web-forward.service >/dev/null 2>&1 || fail 'Web 临时转发器无法停止。'
   timeout 30 systemctl stop combo-dev-s3-forward.service >/dev/null 2>&1 || fail 'S3 临时转发器无法停止。'
+  local public_unit public_state
+  for public_unit in "${PUBLIC_FORWARDER_UNITS[@]}"; do
+    public_state=$(timeout 10 systemctl is-active "$public_unit" 2>/dev/null || true)
+    [[ "$public_state" == inactive || "$public_state" == failed ]] ||
+      fail '公网转发器在 Test 待验收提交前意外运行。'
+  done
   after=$(production_fingerprint)
   [[ "$before" == "$after" ]] || fail '生产资源指纹在验收窗口内发生变化。'
 
   exec 8>"$FENCE_LOCK_FILE"
   flock -w 300 8 || fail '无法取得最终失败收敛锁。'
-  [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" ]] ||
+  [[ ! -e "$EXTERNAL_FENCE_MARKER" && ! -L "$EXTERNAL_FENCE_MARKER" &&
+    ! -e "$PUBLICATION_MARKER" && ! -L "$PUBLICATION_MARKER" ]] ||
     fail '外部失败收敛已阻断本次部署。'
   post_capacity
   verify_writers_restored || fail '解除持久阻断前无法证明全部写入者已恢复单副本就绪。'

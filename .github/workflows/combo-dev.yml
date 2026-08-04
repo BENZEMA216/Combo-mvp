@@ -645,10 +645,16 @@ jobs:
           done
           cp infra/host/combo-dev/README.md \
              infra/host/combo-dev/combo-dev-prepare-control-state.sh \
+             infra/host/combo-dev/combo-dev-prepare-public-domain.sh \
+             infra/host/combo-dev/combo-dev-certbot-deploy-hook.sh \
+             infra/host/combo-dev/combo-dev-public-nginx.conf \
+             infra/host/combo-dev/combo-dev-public-acme-nginx.conf \
              infra/host/combo-dev/combo-host-prepare-data-anchor.sh \
              infra/host/combo-dev/combo-host-data-mount-check.sh \
              infra/host/combo-dev/combo-dev-web-forward.service \
              infra/host/combo-dev/combo-dev-s3-forward.service \
+             infra/host/combo-dev/combo-dev-public-web-forward.service \
+             infra/host/combo-dev/combo-dev-public-s3-forward.service \
              infra/host/combo-dev/combo-dev-storage-guard.service \
              infra/host/combo-dev/combo-dev-storage-guard.timer \
              'infra/host/combo-dev/var-lib-combo\x2dhost\x2ddata.mount' \
@@ -660,7 +666,8 @@ jobs:
              infra/host/combo-dev/combo-host-syslog "$root/infra/host/combo-dev/"
           cp scripts/combo-dev-bootstrap.sh scripts/combo-dev-deploy.sh scripts/combo-dev-smoke.sh \
              scripts/combo-dev-connect.sh scripts/combo-dev-logs.sh scripts/combo-dev-reset.sh \
-             scripts/combo-dev-forwarder-lease.sh scripts/combo-dev-storage-guard.sh \
+             scripts/combo-dev-forwarder-lease.sh scripts/combo-dev-publication.sh \
+             scripts/combo-dev-public-s3-smoke.py scripts/combo-dev-storage-guard.sh \
              scripts/combo-dev-production-safety.py "$root/scripts/"
           printf '%s\n' "$REVISION" > "$root/metadata/revision"
           printf 'API_IMAGE=%s\nRUNTIME_IMAGE=%s\nWEB_IMAGE=%s\n' \
@@ -720,7 +727,7 @@ jobs:
           SSH_HOST: ${{ secrets.COMBO_DEV_SSH_HOST }}
         run: |
           set -euo pipefail
-          for port in 18080 19000; do
+          for port in 18080 19000 18083 19003; do
             if timeout 4 bash -c "</dev/tcp/${SSH_HOST}/${port}" 2>/dev/null; then
               echo 'A development port is remotely reachable.' >&2
               exit 1
@@ -943,12 +950,12 @@ jobs:
             echo 'another environment mutation is running; rerun Test after it completes' >&2
             exit 1
           }
-          sudo /opt/combo-dev/bin/combo-dev-reset \
+          sudo -n /opt/combo-dev/bin/combo-dev-reset \
             --confirm=DESTROY-COMBO-PREVIEW-DATA \
             --revision "$revision" \
             --workflow-run-id "$workflow_run_id" \
             --workflow-run-attempt "$workflow_run_attempt"
-          sudo /opt/combo-dev/bin/combo-dev-deploy \
+          sudo -n /opt/combo-dev/bin/combo-dev-deploy \
             --bundle "$bundle" \
             --revision "$revision" \
             --workflow-run-id "$workflow_run_id" \
@@ -963,7 +970,7 @@ jobs:
           SSH_HOST: ${{ secrets.COMBO_DEV_SSH_HOST }}
         run: |
           set -euo pipefail
-          for port in 18080 19000; do
+          for port in 18080 19000 18083 19003; do
             if timeout 4 bash -c "</dev/tcp/${SSH_HOST}/${port}" 2>/dev/null; then
               echo 'A development port is remotely reachable.' >&2
               exit 1
@@ -1028,86 +1035,59 @@ jobs:
           [[ "$playwright_real" == \
             "$GITHUB_WORKSPACE/node_modules/.pnpm/playwright-core@1.62.0/node_modules/playwright-core" ]]
 
-          forwarders_are() {
-            local expected=$1
-            ssh combo-dev-target bash -s -- "$expected" <<'REMOTE'
-          set -euo pipefail
-          expected=$1
-          for unit in combo-dev-web-forward.service combo-dev-s3-forward.service; do
-            state=$(systemctl is-active "$unit" 2>/dev/null || true)
-            [[ "$state" == "$expected" ]]
-          done
-          REMOTE
-          }
-          forwarders_are inactive
-          lease_root=$(mktemp -d "$RUNNER_TEMP/combo-dev-forwarder-lease.XXXXXX")
-          lease_fifo="$lease_root/stdin"
-          lease_log="$lease_root/output.log"
-          mkfifo -m 0600 "$lease_fifo"
-          : >"$lease_log"
-          chmod 0600 "$lease_log"
-          lease_pid=
-          lease_fd_open=0
-          release_forwarder_lease() {
-            local rc=$? cleanup_rc=0 stopped=0
-            trap - EXIT INT TERM
-            set +e
-            if ((lease_fd_open == 1)); then
-              exec 7>&-
-              lease_fd_open=0
-            elif [[ -n "$lease_pid" ]]; then
-              kill -TERM "$lease_pid" >/dev/null 2>&1 || true
-            fi
-            if [[ -n "$lease_pid" ]]; then
-              for _ in $(seq 1 45); do
-                kill -0 "$lease_pid" >/dev/null 2>&1 || break
-                sleep 1
-              done
-              if kill -0 "$lease_pid" >/dev/null 2>&1; then
-                kill -TERM "$lease_pid" >/dev/null 2>&1 || true
-                cleanup_rc=1
-              fi
-              wait "$lease_pid" || cleanup_rc=1
-            fi
-            for _ in $(seq 1 45); do
-              if forwarders_are inactive; then
-                stopped=1
-                break
-              fi
-              sleep 1
-            done
-            ((stopped == 1)) || cleanup_rc=1
-            rm -rf -- "$lease_root" || cleanup_rc=1
-            if ((rc != 0)); then
-              exit "$rc"
-            fi
-            if ((cleanup_rc != 0)); then
-              echo 'Test browser forwarder lease was not cleanly released.' >&2
-            fi
-            exit "$cleanup_rc"
-          }
-          trap release_forwarder_lease EXIT
-          trap 'exit 130' INT
-          trap 'exit 143' TERM
-          ssh -T combo-dev-target \
-            'sudo -- /opt/combo-dev/bin/combo-dev-forwarder-lease' \
-            <"$lease_fifo" >"$lease_log" 2>&1 &
-          lease_pid=$!
-          exec 7>"$lease_fifo"
-          lease_fd_open=1
-          lease_ready=0
+          test_web_origin=https://test.43-160-242-46.sslip.io
+          test_s3_origin=https://test-s3.43-160-242-46.sslip.io
+          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-publication \
+            --open-pending "$REVISION" "$RUN_ID" "$RUN_ATTEMPT"
+
+          public_ready=0
           for _ in $(seq 1 60); do
-            if grep -Fq 'PASS lease=active' "$lease_log" && forwarders_are active; then
-              lease_ready=1
+            if curl --fail --silent --show-error --max-time 10 \
+                --output /dev/null "$test_web_origin/version.json" \
+              && curl --fail --silent --show-error --max-time 10 \
+                --output /dev/null "$test_s3_origin/minio/health/ready"; then
+              public_ready=1
               break
             fi
-            kill -0 "$lease_pid" >/dev/null 2>&1 || break
             sleep 1
           done
-          ((lease_ready == 1)) || {
-            echo 'Test browser forwarder lease did not become active.' >&2
+          ((public_ready == 1)) || {
+            echo 'The exact Test public HTTPS entry did not become ready.' >&2
             exit 1
           }
+
+          redirect_headers="$RUNNER_TEMP/combo-test-http-redirect-${REVISION}.headers"
+          redirect_status=$(curl --silent --show-error --max-time 10 \
+            --head --dump-header "$redirect_headers" --output /dev/null \
+            --write-out '%{http_code}' \
+            http://test.43-160-242-46.sslip.io/)
+          [[ "$redirect_status" == 308 ]]
+          tr -d '\r' <"$redirect_headers" | \
+            grep -Fxiq 'location: https://test.43-160-242-46.sslip.io/'
+          rm -f -- "$redirect_headers"
+
+          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-public-s3-smoke \
+            --revision "$REVISION" \
+            --workflow-run-id "$RUN_ID" \
+            --workflow-run-attempt "$RUN_ATTEMPT"
+
+          cors_headers="$RUNNER_TEMP/combo-test-s3-cors-${REVISION}.headers"
+          cors_status=$(curl --silent --show-error --max-time 10 \
+            --request OPTIONS \
+            --header "Origin: $test_web_origin" \
+            --header 'Access-Control-Request-Method: PUT' \
+            --header 'Access-Control-Request-Headers: content-type,x-amz-content-sha256' \
+            --dump-header "$cors_headers" \
+            --output /dev/null \
+            --write-out '%{http_code}' \
+            "$test_s3_origin/combo-raw/.combo-cors-probe")
+          [[ "$cors_status" == 200 || "$cors_status" == 204 ]]
+          tr -d '\r' <"$cors_headers" >"${cors_headers}.normalized"
+          grep -Fxiq "access-control-allow-origin: $test_web_origin" \
+            "${cors_headers}.normalized"
+          grep -Eiq '^access-control-allow-methods:.*(^|[,[:space:]])PUT([,[:space:]]|$)' \
+            "${cors_headers}.normalized"
+          rm -f -- "$cors_headers" "${cors_headers}.normalized"
           product_started_at=$(ssh combo-dev-target date -u +%Y-%m-%dT%H:%M:%SZ)
           [[ "$product_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
 
@@ -1238,7 +1218,7 @@ jobs:
             --revision "$revision" \
             --run-id "$run_id" \
             --run-attempt "$run_attempt" \
-            --web-origin http://127.0.0.1:18080 \
+            --web-origin https://test.43-160-242-46.sslip.io \
             --output "$output"
           runner_rc=$?
           set -e
@@ -1314,7 +1294,7 @@ jobs:
           [[ "$workflow_run_id" =~ ^[1-9][0-9]*$ ]]
           [[ "$workflow_run_attempt" =~ ^[1-9][0-9]*$ ]]
           [[ "$product_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
-          sudo /opt/combo-dev/bin/combo-dev-smoke \
+          sudo -n /opt/combo-dev/bin/combo-dev-smoke \
             --logs-only \
             --revision "$revision" \
             --since-time "$product_started_at" \
@@ -1751,7 +1731,7 @@ jobs:
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          ssh combo-dev-target sudo /opt/combo-dev/bin/combo-dev-storage-guard \
+          ssh combo-dev-target sudo -n /opt/combo-dev/bin/combo-dev-storage-guard \
             --complete-acceptance "$REVISION" "$RUN_ID" "$RUN_ATTEMPT"
 
       - name: Fence Test after post-deploy acceptance failure
@@ -1766,7 +1746,7 @@ jobs:
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$RUN_ID" =~ ^[1-9][0-9]*$ && "$RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
           ssh combo-dev-target timeout 840 \
-            sudo /opt/combo-dev/bin/combo-dev-storage-guard \
+            sudo -n /opt/combo-dev/bin/combo-dev-storage-guard \
               --fence-attempt "$REVISION" "$RUN_ID" "$RUN_ATTEMPT"
 
       - name: Remove transient runner and upload files

@@ -86,7 +86,19 @@ PLATFORM_IGNORED_IDENTITIES = {
     ("PersistentVolumeClaim", "combo-preview", "data-redis-queue-0"),
     ("PersistentVolumeClaim", "combo-preview", "data-minio-0"),
 }
-LISTENER_PORTS = {18080: "web", 19000: "s3"}
+LOCAL_LISTENER_PORTS = (18080, 19000)
+PUBLIC_LISTENER_PORTS = (18083, 19003)
+PUBLIC_RELEASE_APPS = ("api", "worker", "runtime", "web")
+PUBLIC_SERVICE_PORTS = {
+    "api": ("http", 3000, 3000),
+    "runtime": ("http", 3100, 3100),
+    "web": ("http", 80, 8080),
+    "minio": ("api", 9000, 9000),
+}
+MINIO_IMAGE = (
+    "minio/minio@sha256:"
+    "d249d1fb6966de4d8ad26c04754b545205ff15a62e4fd19ebd0f26fa5baacbc0"
+)
 
 
 class SafetyError(RuntimeError):
@@ -309,7 +321,8 @@ def canonicalize_production(input_path: Path, output_path: Path) -> None:
 def payload_items(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(payload, dict):
         raise SafetyError("Kubernetes inventory is malformed")
-    if payload.get("kind") == "List":
+    kind = payload.get("kind")
+    if isinstance(kind, str) and kind.endswith("List"):
         items = payload.get("items")
     else:
         items = [payload]
@@ -531,11 +544,16 @@ def parse_listener_endpoint(endpoint: str) -> tuple[str, int]:
     return address, int(port)
 
 
-def validate_listeners(input_path: Path, web_pid: int, s3_pid: int) -> None:
-    expected_pids = {18080: web_pid, 19000: s3_pid}
+def validate_listener_contract(
+    input_path: Path,
+    web_pid: int,
+    s3_pid: int,
+    ports: tuple[int, int],
+) -> None:
+    expected_pids = {ports[0]: web_pid, ports[1]: s3_pid}
     if any(pid <= 0 for pid in expected_pids.values()):
         raise SafetyError("forwarder process identity is missing")
-    found: dict[int, list[tuple[str, set[int]]]] = {port: [] for port in LISTENER_PORTS}
+    found: dict[int, list[tuple[str, set[int]]]] = {port: [] for port in ports}
     try:
         lines = input_path.read_text(encoding="utf-8").splitlines()
     except Exception as error:
@@ -552,6 +570,287 @@ def validate_listeners(input_path: Path, web_pid: int, s3_pid: int) -> None:
     for port, listeners in found.items():
         if listeners != [("127.0.0.1", {expected_pids[port]})]:
             raise SafetyError("development listener set is not the exact loopback contract")
+
+
+def validate_listeners(input_path: Path, web_pid: int, s3_pid: int) -> None:
+    validate_listener_contract(input_path, web_pid, s3_pid, LOCAL_LISTENER_PORTS)
+
+
+def validate_public_listeners(input_path: Path, web_pid: int, s3_pid: int) -> None:
+    validate_listener_contract(input_path, web_pid, s3_pid, PUBLIC_LISTENER_PORTS)
+
+
+def exact_named_items(payload: Any, expected_names: set[str]) -> dict[str, dict[str, Any]]:
+    items = payload_items(payload)
+    result: dict[str, dict[str, Any]] = {}
+    for item in items:
+        metadata = item.get("metadata")
+        name = metadata.get("name") if isinstance(metadata, dict) else None
+        if not isinstance(name, str) or name in result:
+            raise SafetyError("live inventory identity is malformed")
+        result[name] = item
+    if set(result) != expected_names:
+        raise SafetyError("live inventory is not exact")
+    return result
+
+
+def read_release_images(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception as error:
+        raise SafetyError("release image metadata is unreadable") from error
+    result: dict[str, str] = {}
+    for line in lines:
+        if "=" not in line:
+            raise SafetyError("release image metadata is malformed")
+        key, value = line.split("=", 1)
+        if key in result or key not in {"API_IMAGE", "RUNTIME_IMAGE", "WEB_IMAGE"}:
+            raise SafetyError("release image metadata is malformed")
+        result[key] = value
+    if set(result) != {"API_IMAGE", "RUNTIME_IMAGE", "WEB_IMAGE"}:
+        raise SafetyError("release image metadata is incomplete")
+    expected_repositories = {
+        "API_IMAGE": "ghcr.io/dangdang-tech/combo-api",
+        "RUNTIME_IMAGE": "ghcr.io/dangdang-tech/combo-runtime",
+        "WEB_IMAGE": "ghcr.io/dangdang-tech/combo-web",
+    }
+    for key, repository in expected_repositories.items():
+        if not re.fullmatch(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}", result[key]):
+            raise SafetyError("release image reference is not immutable")
+    return result
+
+
+def image_id_matches(image_id: Any, expected_image: str) -> bool:
+    if not isinstance(image_id, str):
+        return False
+    expected_digest = expected_image.rsplit("@", 1)[-1]
+    return image_id.endswith(expected_digest) and re.search(
+        rf"(^|[@:/]){re.escape(expected_digest)}$", image_id
+    ) is not None
+
+
+def ready_condition(status: Any) -> bool:
+    if not isinstance(status, dict):
+        return False
+    conditions = status.get("conditions")
+    return isinstance(conditions, list) and sum(
+        1
+        for condition in conditions
+        if isinstance(condition, dict)
+        and condition.get("type") == "Ready"
+        and condition.get("status") == "True"
+    ) == 1
+
+
+def validate_public_live(
+    revision: str,
+    image_metadata_path: Path,
+    release_metadata_path: Path,
+    deployments_path: Path,
+    statefulset_path: Path,
+    services_path: Path,
+    pods_path: Path,
+    endpoint_slices_path: Path,
+) -> None:
+    if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+        raise SafetyError("release revision is malformed")
+    release_images = read_release_images(image_metadata_path)
+    expected_images = {
+        "api": release_images["API_IMAGE"],
+        "worker": release_images["API_IMAGE"],
+        "runtime": release_images["RUNTIME_IMAGE"],
+        "web": release_images["WEB_IMAGE"],
+        "minio": MINIO_IMAGE,
+    }
+    expected_ref = f"combo-release-meta-{revision[:12]}"
+
+    release_metadata = load_json(release_metadata_path)
+    metadata = release_metadata.get("metadata") if isinstance(release_metadata, dict) else None
+    data = release_metadata.get("data") if isinstance(release_metadata, dict) else None
+    if not (
+        isinstance(metadata, dict)
+        and metadata.get("name") == expected_ref
+        and metadata.get("namespace") == "combo-preview"
+        and metadata.get("deletionTimestamp") is None
+        and release_metadata.get("immutable") is True
+        and isinstance(data, dict)
+        and data.get("COMBO_ENVIRONMENT") == "test"
+        and data.get("COMBO_SOURCE_SHA") == revision
+        and data.get("COMBO_RELEASE_ID") == f"release-{revision}"
+    ):
+        raise SafetyError("release metadata identity drifted")
+
+    deployments = exact_named_items(
+        load_json(deployments_path), set(PUBLIC_RELEASE_APPS)
+    )
+    for name, deployment in deployments.items():
+        metadata = deployment.get("metadata")
+        spec = deployment.get("spec")
+        status = deployment.get("status")
+        template = spec.get("template") if isinstance(spec, dict) else None
+        pod_spec = template.get("spec") if isinstance(template, dict) else None
+        containers = pod_spec.get("containers") if isinstance(pod_spec, dict) else None
+        env_from = containers[0].get("envFrom") if isinstance(containers, list) and len(containers) == 1 else None
+        if not (
+            isinstance(metadata, dict)
+            and metadata.get("namespace") == "combo-preview"
+            and metadata.get("deletionTimestamp") is None
+            and isinstance(spec, dict)
+            and spec.get("replicas") == 1
+            and spec.get("selector") == {"matchLabels": {"app": name}}
+            and isinstance(template, dict)
+            and template.get("metadata", {}).get("labels", {}).get("app") == name
+            and template.get("metadata", {}).get("labels", {}).get("combo.dev/environment")
+            == "combo-dev"
+            and isinstance(containers, list)
+            and len(containers) == 1
+            and containers[0].get("name") == name
+            and containers[0].get("image") == expected_images[name]
+            and env_from == [{"configMapRef": {"name": expected_ref}}]
+            and isinstance(status, dict)
+            and status.get("observedGeneration") == metadata.get("generation")
+            and status.get("replicas") == 1
+            and status.get("updatedReplicas") == 1
+            and status.get("readyReplicas") == 1
+            and status.get("availableReplicas") == 1
+            and not status.get("unavailableReplicas")
+        ):
+            raise SafetyError("release deployment identity drifted")
+
+    minio = exact_named_items(load_json(statefulset_path), {"minio"})["minio"]
+    metadata = minio.get("metadata")
+    spec = minio.get("spec")
+    status = minio.get("status")
+    template = spec.get("template") if isinstance(spec, dict) else None
+    pod_spec = template.get("spec") if isinstance(template, dict) else None
+    containers = pod_spec.get("containers") if isinstance(pod_spec, dict) else None
+    if not (
+        isinstance(metadata, dict)
+        and metadata.get("namespace") == "combo-preview"
+        and metadata.get("deletionTimestamp") is None
+        and isinstance(spec, dict)
+        and spec.get("replicas") == 1
+        and spec.get("selector") == {"matchLabels": {"app": "minio"}}
+        and isinstance(template, dict)
+        and template.get("metadata", {}).get("labels", {}).get("app") == "minio"
+        and template.get("metadata", {}).get("labels", {}).get("combo.dev/environment")
+        == "combo-dev"
+        and isinstance(containers, list)
+        and len(containers) == 1
+        and containers[0].get("name") == "minio"
+        and containers[0].get("image") == expected_images["minio"]
+        and isinstance(status, dict)
+        and status.get("observedGeneration") == metadata.get("generation")
+        and status.get("replicas") == 1
+        and status.get("currentReplicas") == 1
+        and status.get("updatedReplicas") == 1
+        and status.get("readyReplicas") == 1
+        and status.get("currentRevision") == status.get("updateRevision")
+        and isinstance(status.get("currentRevision"), str)
+    ):
+        raise SafetyError("MinIO workload identity drifted")
+
+    services = exact_named_items(load_json(services_path), set(PUBLIC_SERVICE_PORTS))
+    for name, service in services.items():
+        metadata = service.get("metadata")
+        spec = service.get("spec")
+        port_name, port, target_port = PUBLIC_SERVICE_PORTS[name]
+        if not (
+            isinstance(metadata, dict)
+            and metadata.get("namespace") == "combo-preview"
+            and metadata.get("deletionTimestamp") is None
+            and isinstance(spec, dict)
+            and spec.get("type", "ClusterIP") == "ClusterIP"
+            and isinstance(spec.get("clusterIP"), str)
+            and spec.get("clusterIP") not in {"", "None"}
+            and spec.get("selector") == {"app": name}
+            and spec.get("ports")
+            == [
+                {
+                    "name": port_name,
+                    "port": port,
+                    "protocol": "TCP",
+                    "targetPort": target_port,
+                }
+            ]
+        ):
+            raise SafetyError("public service identity drifted")
+
+    all_pods = payload_items(load_json(pods_path))
+    pods: dict[str, dict[str, Any]] = {}
+    for name in expected_images:
+        matching = [
+            pod
+            for pod in all_pods
+            if isinstance(pod.get("metadata"), dict)
+            and pod["metadata"].get("labels", {}).get("app") == name
+        ]
+        if len(matching) != 1:
+            raise SafetyError("public workload pod inventory is not exact")
+        pods[name] = matching[0]
+    for name, pod in pods.items():
+        metadata = pod.get("metadata")
+        spec = pod.get("spec")
+        status = pod.get("status")
+        containers = spec.get("containers") if isinstance(spec, dict) else None
+        statuses = status.get("containerStatuses") if isinstance(status, dict) else None
+        if not (
+            isinstance(metadata, dict)
+            and metadata.get("namespace") == "combo-preview"
+            and metadata.get("deletionTimestamp") is None
+            and metadata.get("labels", {}).get("combo.dev/environment") == "combo-dev"
+            and isinstance(spec, dict)
+            and isinstance(containers, list)
+            and len(containers) == 1
+            and containers[0].get("name") == name
+            and containers[0].get("image") == expected_images[name]
+            and isinstance(status, dict)
+            and status.get("phase") == "Running"
+            and isinstance(status.get("podIP"), str)
+            and status.get("podIP")
+            and ready_condition(status)
+            and isinstance(statuses, list)
+            and len(statuses) == 1
+            and statuses[0].get("name") == name
+            and statuses[0].get("ready") is True
+            and statuses[0].get("image") == expected_images[name]
+            and image_id_matches(statuses[0].get("imageID"), expected_images[name])
+        ):
+            raise SafetyError("public workload pod identity drifted")
+
+    slices = payload_items(load_json(endpoint_slices_path))
+    for name, (port_name, _, target_port) in PUBLIC_SERVICE_PORTS.items():
+        matching = [
+            item
+            for item in slices
+            if isinstance(item.get("metadata"), dict)
+            and item["metadata"].get("labels", {}).get("kubernetes.io/service-name") == name
+        ]
+        if len(matching) != 1:
+            raise SafetyError("public EndpointSlice inventory is not exact")
+        endpoint_slice = matching[0]
+        metadata = endpoint_slice.get("metadata")
+        endpoints = endpoint_slice.get("endpoints")
+        ports = endpoint_slice.get("ports")
+        pod = pods[name]
+        pod_metadata = pod["metadata"]
+        pod_status = pod["status"]
+        if not (
+            isinstance(metadata, dict)
+            and metadata.get("namespace") == "combo-preview"
+            and metadata.get("deletionTimestamp") is None
+            and ports
+            == [{"name": port_name, "port": target_port, "protocol": "TCP"}]
+            and isinstance(endpoints, list)
+            and len(endpoints) == 1
+            and endpoints[0].get("addresses") == [pod_status["podIP"]]
+            and endpoints[0].get("conditions", {}).get("ready") is True
+            and endpoints[0].get("targetRef", {}).get("kind") == "Pod"
+            and endpoints[0].get("targetRef", {}).get("namespace") == "combo-preview"
+            and endpoints[0].get("targetRef", {}).get("name") == pod_metadata.get("name")
+            and endpoints[0].get("targetRef", {}).get("uid") == pod_metadata.get("uid")
+        ):
+            raise SafetyError("public EndpointSlice identity drifted")
 
 
 def run_json(command: list[str], output: Path, *, stdin: Path | None = None) -> Any:
@@ -1011,6 +1310,19 @@ def build_parser() -> argparse.ArgumentParser:
     listeners.add_argument("--input", required=True, type=Path)
     listeners.add_argument("--web-pid", required=True, type=int)
     listeners.add_argument("--s3-pid", required=True, type=int)
+    public_listeners = subparsers.add_parser("validate-public-listeners", add_help=False)
+    public_listeners.add_argument("--input", required=True, type=Path)
+    public_listeners.add_argument("--web-pid", required=True, type=int)
+    public_listeners.add_argument("--s3-pid", required=True, type=int)
+    public_live = subparsers.add_parser("validate-public-live", add_help=False)
+    public_live.add_argument("--revision", required=True)
+    public_live.add_argument("--image-metadata", required=True, type=Path)
+    public_live.add_argument("--release-metadata", required=True, type=Path)
+    public_live.add_argument("--deployments", required=True, type=Path)
+    public_live.add_argument("--statefulset", required=True, type=Path)
+    public_live.add_argument("--services", required=True, type=Path)
+    public_live.add_argument("--pods", required=True, type=Path)
+    public_live.add_argument("--endpoint-slices", required=True, type=Path)
     observer = subparsers.add_parser("verify-observer", add_help=False)
     observer.add_argument("--audit-kubeconfig", required=True, type=Path)
     observer.add_argument("--observer-kubeconfig", required=True, type=Path)
@@ -1032,6 +1344,19 @@ def main() -> int:
             validate_mount_dependencies(args.input, args.data_mount, args.storage_pool)
         elif args.command == "validate-listeners":
             validate_listeners(args.input, args.web_pid, args.s3_pid)
+        elif args.command == "validate-public-listeners":
+            validate_public_listeners(args.input, args.web_pid, args.s3_pid)
+        elif args.command == "validate-public-live":
+            validate_public_live(
+                args.revision,
+                args.image_metadata,
+                args.release_metadata,
+                args.deployments,
+                args.statefulset,
+                args.services,
+                args.pods,
+                args.endpoint_slices,
+            )
         elif args.command == "verify-observer":
             verify_observer(
                 args.audit_kubeconfig,

@@ -295,7 +295,9 @@ function browserEvidence(environment = 'preview') {
     webOrigin:
       environment === 'production'
         ? 'https://buildwithcombo.com'
-        : 'https://review.43-160-242-46.sslip.io',
+        : environment === 'test'
+          ? 'https://test.43-160-242-46.sslip.io'
+          : 'https://review.43-160-242-46.sslip.io',
     startedAt: '2026-07-25T00:00:00.000Z',
     completedAt: '2026-07-25T00:10:00.000Z',
     status: 'passed',
@@ -327,7 +329,7 @@ function browserFailureEvidence(prefixLength = 2, failure = undefined, environme
         : productionIdentity;
   const webOrigin =
     environment === 'test'
-      ? 'http://127.0.0.1:18080'
+      ? 'https://test.43-160-242-46.sslip.io'
       : environment === 'preview'
         ? 'https://review.43-160-242-46.sslip.io'
         : 'https://buildwithcombo.com';
