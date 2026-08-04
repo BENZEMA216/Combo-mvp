@@ -396,7 +396,7 @@ jobs:
           case "${{ needs.select.outputs.environment }}" in
             test) origin=https://test.43-160-242-46.sslip.io ;;
             preview) origin=https://review.43-160-242-46.sslip.io ;;
-            production) origin=https://agora.43-160-242-46.sslip.io ;;
+            production) origin=https://buildwithcombo.com ;;
           esac
           for _ in $(seq 1 60); do
             body=$(curl -sk --max-time 5 "$origin/version.json" 2>/dev/null || true)
