@@ -1278,8 +1278,29 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   );
   assert.doesNotMatch(logoutFlow, /name: '去登录'|loginButton/);
   assert.doesNotMatch(source, /name: '去登录'/);
-  assert.match(source, /选择能力「\$\{capability\.name\}」/);
-  assert.match(source, /一键发布到市集 · 1 项/);
+  const selectionStart = source.indexOf("await checked('creation_capability_selection'");
+  const publishStart = source.indexOf("await checked('creation_publish_and_retry_fence'");
+  const studioStart = source.indexOf("await checked('studio_entry'", publishStart);
+  assert.ok(selectionStart >= 0 && publishStart > selectionStart && studioStart > publishStart);
+  const selectionFlow = source.slice(selectionStart, publishStart);
+  assert.match(selectionFlow, /Agent 已准备好，先选一个真实试用/);
+  assert.match(selectionFlow, /name: 'Agent 提取结果'/);
+  assert.match(selectionFlow, /continueLink\.waitFor\(\{ state: 'visible', timeout: 30_000 \}\)/);
+  assert.match(selectionFlow, /a\[href=.+releasePricingPath/);
+  assert.match(selectionFlow, /includes\('继续完善'\)/);
+  assert.match(selectionFlow, /release\/pricing/);
+  assert.doesNotMatch(selectionFlow, /一键发布|选择能力|publishResponse/);
+  const publishFlow = source.slice(publishStart, studioStart);
+  assert.match(publishFlow, /name: \/单次定价\//);
+  assert.match(publishFlow, /name: '每次使用价格'/);
+  assert.match(publishFlow, /name: \/下一步：命名\//);
+  assert.match(publishFlow, /name: '自定义子域名'/);
+  assert.match(publishFlow, /name: \/下一步：确认发布\//);
+  assert.match(publishFlow, /name: \/定价与域名仍只是本机草稿\//);
+  assert.match(publishFlow, /name: '开放试用并保存草稿 →'/);
+  assert.match(publishFlow, /Agent 已开放试用，可以继续迭代/);
+  assert.match(publishFlow, /published\.data\?\.published === true/);
+  assert.match(publishFlow, /\/tasks\/\$\{task\.id\}\/retry/);
   assert.match(source, /\/api\/v1\/auth\/email\/challenges/);
   assert.match(source, /\/api\/v1\/auth\/email\/verifications/);
   assert.match(source, /waitForDeliveredAcceptanceOtp/);
@@ -1299,7 +1320,7 @@ test('flow contract covers Creation, Authoring, Runtime, Studio, and both return
   );
   assert.match(
     source,
-    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回发布流程',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '你的能力，挑选后一键发布',[\s\S]*exact: true/,
+    /await checked\('task_trial_return',[\s\S]*waitForAcceptanceUrl\([\s\S]*name: '返回发布流程',[\s\S]*exact: true[\s\S]*waitForAcceptanceUrl\([\s\S]*name: 'Agent 已准备好，先选一个真实试用',[\s\S]*exact: true/,
   );
   assert.doesNotMatch(source, /recordVideo|tracing\.start|page\.screenshot/);
 });

@@ -1388,24 +1388,62 @@ async function runAcceptance(options) {
 
     await checked('creation_capability_selection', async () => {
       await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
-      await page.getByRole('heading', { name: '你的能力，挑选后一键发布' }).waitFor({
-        state: 'visible',
-        timeout: 30_000,
+      await page
+        .getByRole('heading', { name: 'Agent 已准备好，先选一个真实试用', exact: true })
+        .waitFor({
+          state: 'visible',
+          timeout: 30_000,
+        });
+      const list = page.getByRole('list', { name: 'Agent 提取结果' });
+      const releasePricingPath = `/capabilities/${encodeURIComponent(capability.id)}/release/pricing`;
+      const continueLink = page.locator(`a[href="${releasePricingPath}"]`);
+      await continueLink.waitFor({ state: 'visible', timeout: 30_000 });
+      ensure((await continueLink.count()) === 1, activeCheck);
+      const row = list.locator('li.cb-cap-card').filter({ has: continueLink });
+      await row.waitFor({ state: 'visible', timeout: 30_000 });
+      ensure(
+        (await row.count()) === 1 &&
+          (await row.getAttribute('data-status')) === 'ready' &&
+          (await row.getByText(capability.name, { exact: true }).count()) === 1 &&
+          ((await continueLink.textContent()) ?? '').includes('继续完善') &&
+          (await row.getByRole('checkbox').count()) === 0,
+        activeCheck,
+      );
+      await continueLink.click();
+      await waitForAcceptanceUrl(page, {
+        pathname: `/capabilities/${capability.id}/release/pricing`,
       });
-      const list = page.getByRole('list', { name: '能力卡列表' });
-      const checkbox = list.getByRole('checkbox', {
-        name: `选择能力「${capability.name}」`,
-        exact: true,
+      await page
+        .getByRole('heading', { name: '这个 Agent 如何收费？', exact: true })
+        .waitFor({ state: 'visible', timeout: 30_000 });
+    });
+
+    await checked('creation_publish_and_retry_fence', async () => {
+      const releaseHandle = `goal-b-${capability.id.replaceAll('-', '').slice(0, 12)}`;
+      ensure(
+        releaseHandle.length <= 32 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(releaseHandle),
+        activeCheck,
+        'unsafe_input',
+      );
+
+      await page.getByRole('radio', { name: /单次定价/ }).check();
+      await page.getByRole('spinbutton', { name: '每次使用价格' }).fill('9.9');
+      await page.getByRole('button', { name: /下一步：命名/ }).click();
+      await waitForAcceptanceUrl(page, {
+        pathname: `/capabilities/${capability.id}/release/identity`,
       });
-      await checkbox.waitFor({ state: 'visible', timeout: 30_000 });
-      ensure(await checkbox.isChecked(), activeCheck);
-      await page.getByRole('button', { name: '取消全选' }).click();
-      ensure(!(await checkbox.isChecked()), activeCheck);
-      await checkbox.click();
-      ensure(await checkbox.isChecked(), activeCheck);
-      const selected = page.locator('.cb-capabilities__selected');
-      ensure(((await selected.textContent()) ?? '').includes('已选 1 /'), activeCheck);
-      const publishButton = page.getByRole('button', { name: '一键发布到市集 · 1 项' });
+      await page
+        .getByRole('heading', { name: '给 Agent 一个容易分享的名字', exact: true })
+        .waitFor({ state: 'visible', timeout: 30_000 });
+      await page.getByRole('textbox', { name: '自定义子域名' }).fill(releaseHandle);
+      await page.getByRole('button', { name: /下一步：确认发布/ }).click();
+      await waitForAcceptanceUrl(page, {
+        pathname: `/capabilities/${capability.id}/release/review`,
+      });
+      await page
+        .getByRole('heading', { name: '确认后开放 Agent 试用', exact: true })
+        .waitFor({ state: 'visible', timeout: 30_000 });
+      await page.getByRole('checkbox', { name: /定价与域名仍只是本机草稿/ }).check();
       const publishResponse = page.waitForResponse(
         (response) =>
           response.url() ===
@@ -1413,7 +1451,7 @@ async function runAcceptance(options) {
           response.request().method() === 'POST',
         { timeout: 30_000 },
       );
-      await publishButton.click();
+      await page.getByRole('button', { name: '开放试用并保存草稿 →', exact: true }).click();
       const response = await publishResponse;
       ensure(response.status() === 200, activeCheck, 'http_status');
       let body;
@@ -1427,12 +1465,16 @@ async function runAcceptance(options) {
           responseData(body, activeCheck)?.published === true,
         activeCheck,
       );
-      const row = page.locator('li.cb-cap-card').filter({ hasText: capability.name }).first();
-      await row.locator('[data-state="published"]').waitFor({ state: 'visible', timeout: 30_000 });
-      ensure((await row.getAttribute('data-status')) === 'published', activeCheck);
-    });
+      await waitForAcceptanceUrl(page, {
+        pathname: `/capabilities/${capability.id}/release/success`,
+      });
+      await page
+        .getByRole('heading', {
+          name: 'Agent 已开放试用，可以继续迭代',
+          exact: true,
+        })
+        .waitFor({ state: 'visible', timeout: 30_000 });
 
-    await checked('creation_publish_and_retry_fence', async () => {
       const published = await api.json(activeCheck, `/api/v1/capabilities/${capability.id}`);
       ensure(
         published.data?.id === capability.id && published.data?.published === true,
@@ -1503,13 +1545,9 @@ async function runAcceptance(options) {
       ensure(secondFailure.currentStep === 'extract', activeCheck);
 
       await page.goto(`/tasks/${task.id}`, { waitUntil: 'domcontentloaded' });
-      await page.waitForFunction(
-        ({ id }) =>
-          window.location.pathname === `/tasks/${id}` &&
-          document.body.innerText.includes('你的能力'),
-        { id: task.id },
-        { timeout: 30_000 },
-      );
+      await page
+        .getByRole('heading', { name: 'Agent 已准备好，先选一个真实试用', exact: true })
+        .waitFor({ state: 'visible', timeout: 30_000 });
     });
 
     let studioSession;
@@ -2155,7 +2193,10 @@ async function runAcceptance(options) {
       await taskReturnButton.click();
       await waitForAcceptanceUrl(page, { pathname: returnTo });
       await page
-        .getByRole('heading', { name: '你的能力，挑选后一键发布', exact: true })
+        .getByRole('heading', {
+          name: 'Agent 已准备好，先选一个真实试用',
+          exact: true,
+        })
         .waitFor({ state: 'visible', timeout: 30_000 });
     });
 
