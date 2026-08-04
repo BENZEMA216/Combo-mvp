@@ -80,7 +80,7 @@ bootstrap 会先完成主机、配置、生产观察身份、生产指纹、节�
 
 部署 SSH 身份必须在主机策略中被显式授权以非交互方式运行 root-owned `combo-dev-reset`、`combo-dev-deploy`、`combo-dev-publication --open-pending`、`combo-dev-public-s3-smoke`、`combo-dev-storage-guard --fence-only` 和 `--complete-acceptance`。如果主机使用 sudo 命令白名单，必须在启用新 workflow 前将新的 publication 与 S3 smoke 命令形状加入白名单；不得授权执行候选 PR 携带的任意脚本。workflow 全部使用 `sudo -n`，权限缺失会在公网入口开放前 fail closed。
 
-Host Nginx 只反代两个公网回环端口，上游关闭时返回固定 503。S3 vhost 关闭 access log 和 request URI 日志，Web 只记录不含路径与查询串的安全字段。ACME HTTP-01 challenge 固定使用 Nginx worker 可穿越的专用 `/var/www/combo-dev-acme`，证书状态继续由 Certbot 保存在 `/etc/letsencrypt`。准备脚本会先通过两个固定域名在回环地址取回一次随机路径的精确预检内容，再允许 Certbot 发起签发。主机所有者从精确 root-owned 审核快照运行 `combo-dev-prepare-public-domain.sh --confirm=PREPARE-COMBO-DEV-PUBLIC-DOMAIN`，以受控 CAS 方式安装 vhost、申请包含两个域名的 `combo-dev-test` 证书并安装 Certbot deploy hook。续期由现有 `certbot-renew.timer` 驱动，hook 只在 `nginx -t` 成功后 reload。
+Host Nginx 只反代两个公网回环端口，上游关闭时返回固定 503。S3 vhost 关闭 access log 和 request URI 日志，Web 只记录不含路径与查询串的安全字段。ACME HTTP-01 challenge 固定使用 Nginx worker 可穿越的专用 `/var/www/combo-dev-acme`，证书状态继续由 Certbot 保存在 `/etc/letsencrypt`。准备脚本会在 Nginx reload 后进行有界重试，确认两个固定域名都能从回环地址取回随机路径的精确预检内容，再允许 Certbot 发起签发。主机所有者从精确 root-owned 审核快照运行 `combo-dev-prepare-public-domain.sh --confirm=PREPARE-COMBO-DEV-PUBLIC-DOMAIN`，以受控 CAS 方式安装 vhost、申请包含两个域名的 `combo-dev-test` 证书并安装 Certbot deploy hook。续期由现有 `certbot-renew.timer` 驱动，hook 只在 `nginx -t` 成功后 reload。
 
 ## 基础设施与六区验收
 
