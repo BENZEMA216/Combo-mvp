@@ -8,7 +8,7 @@ readonly WEB_HOST='test.43-160-242-46.sslip.io'
 readonly S3_HOST='test-s3.43-160-242-46.sslip.io'
 readonly EXPECTED_IPV4='43.160.242.46'
 readonly CERT_NAME='combo-dev-test'
-readonly ACME_ROOT='/var/www/certbot'
+readonly ACME_ROOT='/var/www/combo-dev-acme'
 readonly TARGET='/etc/nginx/conf.d/combo-dev-test.conf'
 readonly ACME_TARGET='/etc/nginx/conf.d/combo-dev-test-acme.conf'
 readonly MANAGED_DIGEST='/etc/combo-dev/public-domain-nginx.sha256'
@@ -28,6 +28,7 @@ PREVIOUS_HOOK=''
 HAD_HOOK=0
 ROLLBACK_ARMED=0
 ACME_INSTALLED=0
+PROBE_PATH=''
 TIMER_ROLLBACK_ARMED=0
 TIMER_WAS_ENABLED=0
 TIMER_WAS_ACTIVE=0
@@ -40,6 +41,10 @@ require_command() { command -v "$1" >/dev/null 2>&1 || blocked "缺少主机工�
 cleanup() {
   local rc=$?
   set +e
+  if [[ -n "$PROBE_PATH" ]]; then
+    rm -f -- "$PROBE_PATH"
+    PROBE_PATH=''
+  fi
   if (( COMMITTED == 0 && ROLLBACK_ARMED == 1 )); then
     # Remove a temporary ACME-only vhost before reloading the previous Nginx
     # state. Otherwise a failed first-time prepare could leave that vhost
@@ -83,6 +88,13 @@ root_owned_not_writable() {
   (( (8#$(stat -c '%a' "$path" 2>/dev/null) & 8#022) == 0 ))
 }
 
+root_owned_traversable_dir() {
+  local path=$1 mode
+  [[ -d "$path" && ! -L "$path" && $(stat -c '%u' "$path" 2>/dev/null) == 0 ]] || return 1
+  mode=$(stat -c '%a' "$path" 2>/dev/null) || return 1
+  (( (8#$mode & 8#022) == 0 && (8#$mode & 8#001) != 0 ))
+}
+
 source_tree_trusted() {
   local path ancestor
   ancestor=$ROOT
@@ -103,6 +115,16 @@ dns_matches() {
   local host=$1 addresses
   addresses=$(getent ahostsv4 "$host" 2>/dev/null | awk '{print $1}' | sort -u) || return 1
   [[ "$addresses" == "$EXPECTED_IPV4" ]]
+}
+
+acme_vhost_readable() {
+  local host=$1 output="$WORK/acme-probe-response"
+  curl --noproxy '*' --fail --silent --show-error \
+    --connect-timeout 5 --max-time 10 \
+    --resolve "$host:80:127.0.0.1" \
+    --output "$output" \
+    "http://$host/.well-known/acme-challenge/${PROBE_PATH##*/}" >/dev/null 2>&1 || return 1
+  cmp -s "$PROBE_PATH" "$output"
 }
 
 managed_target_valid() {
@@ -131,7 +153,7 @@ main() {
     blocked '必须提供固定确认参数。'
   [[ $(id -u) -eq 0 ]] || blocked '域名准备必须由主机所有者以 root 执行。'
   local cmd target_digest
-  for cmd in certbot getent awk sort nginx systemctl install sha256sum stat mktemp rm dirname cmp openssl; do require_command "$cmd"; done
+  for cmd in certbot curl getent awk sort nginx systemctl install sha256sum stat mktemp rm dirname cmp openssl; do require_command "$cmd"; done
   ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P)
   source_tree_trusted || blocked '域名配置不是 root-owned 只读审核快照。'
   if ! dns_matches "$WEB_HOST" || ! dns_matches "$S3_HOST"; then
@@ -172,14 +194,33 @@ main() {
     HAD_HOOK=1
   fi
   ROLLBACK_ARMED=1
-  install -d -o root -g root -m 0755 "$ACME_ROOT/.well-known/acme-challenge"
+  install -d -o root -g root -m 0755 \
+    "$ACME_ROOT" "$ACME_ROOT/.well-known" "$ACME_ROOT/.well-known/acme-challenge"
+  for path in /var /var/www "$ACME_ROOT" "$ACME_ROOT/.well-known" \
+    "$ACME_ROOT/.well-known/acme-challenge"; do
+    root_owned_traversable_dir "$path" || blocked 'ACME webroot 路径不允许 Nginx 安全穿越。'
+  done
   if (( HAD_TARGET == 0 )); then
     install -o root -g root -m 0644 \
       "$ROOT/infra/host/combo-dev/combo-dev-public-acme-nginx.conf" "$ACME_TARGET"
     ACME_INSTALLED=1
     nginx -t >/dev/null 2>&1 || blocked '临时 ACME vhost 未通过 Nginx 校验。'
     systemctl reload nginx.service >/dev/null 2>&1 || blocked '临时 ACME vhost 无法加载。'
+  else
+    install -o root -g root -m 0644 \
+      "$ROOT/infra/host/combo-dev/combo-dev-public-nginx.conf" "$TARGET"
+    nginx -t >/dev/null 2>&1 || blocked '更新后的 Test vhost 未通过 Nginx 校验。'
+    systemctl reload nginx.service >/dev/null 2>&1 || blocked '更新后的 Test vhost 无法加载。'
   fi
+  PROBE_PATH=$(mktemp "$ACME_ROOT/.well-known/acme-challenge/combo-dev-preflight.XXXXXX") ||
+    blocked '无法创建 ACME webroot 预检文件。'
+  printf '%s\n' "${PROBE_PATH##*/}" >"$PROBE_PATH"
+  chmod 0644 "$PROBE_PATH"
+  for host in "$WEB_HOST" "$S3_HOST"; do
+    acme_vhost_readable "$host" || blocked 'Nginx 无法通过固定 Test 域名读取 ACME 预检文件。'
+  done
+  rm -f -- "$PROBE_PATH"
+  PROBE_PATH=''
   certbot certonly --non-interactive --webroot --webroot-path "$ACME_ROOT" \
     --cert-name "$CERT_NAME" --keep-until-expiring --expand \
     --domain "$WEB_HOST" --domain "$S3_HOST" >/dev/null 2>&1 ||

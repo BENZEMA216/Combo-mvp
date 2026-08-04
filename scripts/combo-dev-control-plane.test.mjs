@@ -4542,9 +4542,21 @@ test('public Test publication keeps exact identity, isolated listeners, TLS host
   assert.match(nginx, /access_log off;/);
   assert.match(nginx, /error_page 502 504 = @test_unavailable/);
   for (const source of [nginx, acmeNginx, prepare]) {
-    assert.match(source, /\/var\/www\/certbot/);
+    assert.match(source, /\/var\/www\/combo-dev-acme/);
     assert.doesNotMatch(source, /\/var\/lib\/letsencrypt/);
   }
+  const prepareMain = prepare.slice(prepare.indexOf('main() {'));
+  assert.match(prepare, /root_owned_traversable_dir/);
+  assert.match(prepare, /curl --noproxy '\*' --fail --silent --show-error/);
+  assert.match(prepare, /--resolve "\$host:80:127\.0\.0\.1"/);
+  assert.match(prepare, /rm -f -- "\$PROBE_PATH"/);
+  assert.ok(
+    prepareMain.indexOf('systemctl reload nginx.service') <
+      prepareMain.indexOf('acme_vhost_readable "$host"'),
+  );
+  assert.ok(
+    prepareMain.indexOf('acme_vhost_readable "$host"') < prepareMain.indexOf('certbot certonly'),
+  );
 
   for (const source of [bootstrap, deploy, reset, guard]) {
     assert.match(source, /PUBLICATION_MARKER='\/var\/lib\/combo-dev\/publication'/);
