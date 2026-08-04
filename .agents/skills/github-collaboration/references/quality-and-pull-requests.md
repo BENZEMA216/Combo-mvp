@@ -10,7 +10,7 @@
 
 准备拉取请求前，读取 `.github/workflows`、包管理脚本和贡献文档，复现所有可以在本地安全执行的必需检查。不要因为改动“小”而跳过格式、代码检查、类型检查或快速测试。
 
-Combo 当前拉取请求持续集成的本地等价检查为：
+Combo 当前 macOS 本地门禁为：
 
 ```bash
 pnpm install --frozen-lockfile
@@ -19,8 +19,10 @@ pnpm format:check
 pnpm lint
 pnpm typecheck
 pnpm typecheck:test
-COMBO_RUN_CONTAINER_CONTRACTS=0 pnpm test:fast
+pnpm test:local
 ```
+
+PR CI 在 Linux 上继续执行 `COMBO_RUN_CONTAINER_CONTRACTS=0 pnpm test:fast`，其中包含 GNU/Linux 主机控制面契约；不要为了让 macOS 本地执行这组契约而放宽生产部署脚本的固定 PATH 或主机安全约束。`test:local` 与 `test:fast` 都必须覆盖 Preview 身份验证器和工作树守卫测试。
 
 修改 shell 脚本时，还要对拉取请求持续集成中列出的脚本运行 ShellCheck。不得用 Docker 或 Docker Compose 替代测试证据；本流程也不授权部署环境验证。
 
