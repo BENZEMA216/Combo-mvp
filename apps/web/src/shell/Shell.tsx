@@ -50,6 +50,7 @@ export function Shell({ creationResume }: ShellProps = {}): ReactElement {
         <Link
           to="/tasks?create=1"
           className="cb-shell__create-agent"
+          aria-label="创建 Agent"
           title={collapsed ? '创建 Agent' : undefined}
         >
           <span className="cb-shell__create-agent-icon" aria-hidden="true">

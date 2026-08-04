@@ -50,6 +50,11 @@ export function listTasks(query: ListQuery = {}): Promise<Page<TaskView>> {
   return getPage<TaskView>('/tasks', { cursor: query.cursor, limit: query.limit });
 }
 
+/** Shell 恢复入口：服务端已筛成有界的可操作任务集（无可操作项时回退最近结果）。 */
+export function listCreationResumeTasks(): Promise<TaskView[]> {
+  return apiGet<TaskView[]>('/tasks/resume');
+}
+
 export function getTask(taskId: string): Promise<TaskView> {
   return apiGet<TaskView>(`/tasks/${encodeURIComponent(taskId)}`);
 }

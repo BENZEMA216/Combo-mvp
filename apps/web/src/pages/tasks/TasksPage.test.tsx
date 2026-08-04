@@ -3,7 +3,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { Link, useLocation } from 'react-router-dom';
-import { installFetchMock, type FetchMock } from '../../test/mockFetch.js';
+import { installFetchMock, type FetchMock, type MockResponseSpec } from '../../test/mockFetch.js';
 import { makeTask, paginatedBody, envelopeBody } from '../../test/fixtures.js';
 import { renderPage } from '../../test/renderWithProviders.js';
 import { TasksPage } from './TasksPage.js';
@@ -194,6 +194,36 @@ describe('TasksPage — 新建上传任务', () => {
     expect(await screen.findByText('PAIR-INTENT-1')).toBeInTheDocument();
     expect(screen.getByTestId('path')).toHaveTextContent('/tasks');
     expect(screen.getByTestId('path')).not.toHaveTextContent('create=1');
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  });
+
+  it('全局创建入口在首个请求完成前被重复点击也只创建一个任务', async () => {
+    const created = makeTask({ id: 'task-single-flight' });
+    let resolveCreate!: (value: MockResponseSpec) => void;
+    const pendingCreate = new Promise<MockResponseSpec>((resolve) => {
+      resolveCreate = resolve;
+    });
+    fm = installFetchMock([
+      { status: 200, json: paginatedBody([]) },
+      { deferred: pendingCreate },
+      { status: 200, json: paginatedBody([created]) },
+      { match: '/tasks/task-single-flight', status: 200, json: envelopeBody(created) },
+    ]);
+
+    renderPage(<TasksWithCreateIntentProbe />, { route: '/tasks' });
+    await screen.findByText('还没有上传任务');
+    const globalCreate = screen.getByRole('link', { name: '模拟全局创建入口' });
+
+    await userEvent.click(globalCreate);
+    await waitFor(() => expect(fm!.calls.filter((call) => call.method === 'POST')).toHaveLength(1));
+    await userEvent.click(globalCreate);
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+
+    resolveCreate({
+      status: 201,
+      json: envelopeBody({ task: created, pairingCode: 'PAIR-SINGLE-FLIGHT' }),
+    });
+    expect(await screen.findByText('PAIR-SINGLE-FLIGHT')).toBeInTheDocument();
     expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
   });
 

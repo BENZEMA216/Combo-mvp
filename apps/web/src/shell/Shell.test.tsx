@@ -22,10 +22,9 @@ describe('Shell navigation', () => {
       'href',
       '/capabilities',
     );
-    expect(screen.getByRole('link', { name: '创建 Agent' })).toHaveAttribute(
-      'href',
-      '/tasks?create=1',
-    );
+    const createAgent = screen.getByRole('link', { name: '创建 Agent' });
+    expect(createAgent).toHaveAttribute('href', '/tasks?create=1');
+    expect(createAgent).toHaveAttribute('aria-label', '创建 Agent');
     expect(screen.getByRole('link', { name: '创作进度' })).toHaveAttribute('href', '/tasks');
 
     await userEvent.click(screen.getByRole('button', { name: '收起侧栏' }));

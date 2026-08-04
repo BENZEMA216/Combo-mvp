@@ -183,6 +183,46 @@ export async function listTaskViews(
 }
 
 /**
+ * Shell 恢复入口的有界任务集。
+ *
+ * 优先返回仍在运行，或失败后仍有明确用户动作（重试 / 修改输入 / 升级处理）的任务；
+ * 若没有任何可恢复任务，才回退到最近一条终态，供异步离开的用户回来验收结果。
+ * 这里不复用通用分页列表，避免 Shell 为找一个旧任务逐页扫描完整历史。
+ */
+export async function listCreationResumeTaskViews(
+  db: Queryable,
+  input: { ownerUserId: string; limit: number },
+): Promise<TaskView[]> {
+  const actionable = await db.query<TaskViewRow>(
+    `${TASK_VIEW_SELECT}
+   WHERE t.owner_user_id = $1
+     AND (
+       t.status = 'running'
+       OR (
+         t.status = 'failed'
+         AND (
+           t.last_error->>'action' = ANY($2::text[])
+           OR (t.current_step = 'upload' AND u.status = 'expired')
+         )
+       )
+     )
+   ORDER BY t.updated_at DESC, t.id DESC
+   LIMIT $3`,
+    [input.ownerUserId, ['retry', 'change_input', 'escalate'], input.limit],
+  );
+  if (actionable.rows.length > 0) return actionable.rows.map(toTaskView);
+
+  const fallback = await db.query<TaskViewRow>(
+    `${TASK_VIEW_SELECT}
+   WHERE t.owner_user_id = $1
+   ORDER BY t.updated_at DESC, t.id DESC
+   LIMIT 1`,
+    [input.ownerUserId],
+  );
+  return fallback.rows.map(toTaskView);
+}
+
+/**
  * parts 清单是否已经完整的 SQL 判定。
  *
  * 与 partsState 保持同一语义：total 为正整数、landed 键数恰等于 total，且 0..total-1

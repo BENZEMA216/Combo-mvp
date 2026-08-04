@@ -1,6 +1,6 @@
 // 任务页（默认页）：「新建上传任务」+ 任务列表（游标分页）。
 // 建任务成功 → PairingCard 展示配对码（明文仅此一次）+ 助手连接命令；行点入任务详情看实时进度。
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateTaskResult, TaskView } from '@cb/shared';
@@ -24,7 +24,9 @@ export function TasksPage(): ReactElement {
   const [created, setCreated] = useState<CreateTaskResult | null>(null);
   const [pairingVisible, setPairingVisible] = useState(false);
   const createResultRef = useRef<HTMLDivElement>(null);
-  const handledCreateIntentRef = useRef(false);
+  // Link 跳转不会天然继承页面按钮的 disabled 状态。用同步 ref 把所有创建入口收口成
+  // 同一个在途锁，覆盖 React 状态更新前的双击、重复导航和 StrictMode effect 重放。
+  const createInFlightRef = useRef(false);
 
   const tasksQuery = useInfiniteQuery({
     queryKey: ['tasks'],
@@ -40,22 +42,26 @@ export function TasksPage(): ReactElement {
       setPairingVisible(true);
       void qc.invalidateQueries({ queryKey: ['tasks'] });
     },
+    onSettled: () => {
+      createInFlightRef.current = false;
+    },
   });
+  const mutateCreate = createMutation.mutate;
+  const requestCreateTask = useCallback(() => {
+    if (createInFlightRef.current) return;
+    createInFlightRef.current = true;
+    mutateCreate();
+  }, [mutateCreate]);
 
   // Shell 的全局“创建 Agent”入口带一次性 intent。进入任务页后立即复用现有真实建任务/
   // 配对流程，并先清掉 intent，避免刷新、返回或 React 重放 effect 时意外再建一条任务。
   useEffect(() => {
-    if (searchParams.get('create') !== '1') {
-      handledCreateIntentRef.current = false;
-      return;
-    }
-    if (handledCreateIntentRef.current) return;
-    handledCreateIntentRef.current = true;
+    if (searchParams.get('create') !== '1') return;
     const next = new URLSearchParams(searchParams);
     next.delete('create');
     setSearchParams(next, { replace: true });
-    createMutation.mutate();
-  }, [createMutation, searchParams, setSearchParams]);
+    requestCreateTask();
+  }, [requestCreateTask, searchParams, setSearchParams]);
 
   // 新建后持续观察这个任务：配对卡给“等待助手连接”的明确反馈；第一片一落地就自动进入
   // 任务详情，让用户连续看到上传进度与随后自动出现的提取进度，无需刷新或手动点“查看进度”。
@@ -109,7 +115,7 @@ export function TasksPage(): ReactElement {
         <button
           type="button"
           className="cb-empty__action"
-          onClick={() => createMutation.mutate()}
+          onClick={requestCreateTask}
           disabled={createMutation.isPending}
         >
           新建第一个任务
@@ -135,7 +141,7 @@ export function TasksPage(): ReactElement {
                 key={t.id}
                 task={t}
                 createPending={createMutation.isPending}
-                onCreateUpload={() => createMutation.mutate()}
+                onCreateUpload={requestCreateTask}
               />
             ))}
           </tbody>
@@ -172,7 +178,7 @@ export function TasksPage(): ReactElement {
         <button
           type="button"
           className="cb-primary-btn"
-          onClick={() => createMutation.mutate()}
+          onClick={requestCreateTask}
           disabled={createMutation.isPending}
         >
           {createMutation.isPending ? '正在创建…' : '新建上传任务'}
@@ -181,7 +187,7 @@ export function TasksPage(): ReactElement {
 
       <div ref={createResultRef} tabIndex={-1} className="cb-create-result">
         {createMutation.isError && (
-          <ErrorState error={createMutation.error} onRetry={() => createMutation.mutate()} />
+          <ErrorState error={createMutation.error} onRetry={requestCreateTask} />
         )}
         {created && pairingVisible && (
           <PairingCard

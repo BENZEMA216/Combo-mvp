@@ -1,4 +1,4 @@
-import type { TaskView } from '@cb/shared';
+import { DISPLAYABLE_ACTIONS, type TaskView } from '@cb/shared';
 
 /** Shell 只消费轻量恢复摘要，不把任务查询与完整 TaskView 下放给导航组件。 */
 export interface CreationResumeSummary {
@@ -31,7 +31,11 @@ export function creationResumeFromTasks(
 ): CreationResumeSummary | undefined {
   const sorted = [...tasks].sort((a, b) => taskTime(b) - taskTime(a));
   const actionable = sorted.filter(
-    (task) => task.status === 'running' || task.lastError?.action === 'retry',
+    (task) =>
+      task.status === 'running' ||
+      (task.status === 'failed' &&
+        (DISPLAYABLE_ACTIONS.some((action) => action === task.lastError?.action) ||
+          (task.currentStep === 'upload' && task.upload.status === 'expired'))),
   );
   const candidates = actionable.length > 0 ? actionable : sorted.slice(0, 1);
   const latest = candidates[0];

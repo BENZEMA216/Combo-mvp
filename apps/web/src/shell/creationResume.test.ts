@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeTask } from '../test/fixtures.js';
 import { creationResumeFromTasks } from './creationResume.js';
-import { listAllCreationTasks } from './useCreationResume.js';
 
 describe('creationResumeFromTasks', () => {
   it('prioritizes unfinished work over a newer succeeded result', () => {
@@ -112,6 +111,50 @@ describe('creationResumeFromTasks', () => {
     });
   });
 
+  it('keeps expired uploads and other change-input failures in the resumable count', () => {
+    const resume = creationResumeFromTasks([
+      makeTask({
+        id: 'task-ready',
+        status: 'succeeded',
+        description: '较新的完成结果',
+        updatedAt: '2026-07-29T12:00:00.000Z',
+      }),
+      makeTask({
+        id: 'task-expired',
+        status: 'failed',
+        currentStep: 'upload',
+        description: '上传已过期',
+        upload: {
+          status: 'expired',
+          partsExpected: 100,
+          partsLanded: 28,
+          pairingExpiresAt: '2026-07-27T12:00:00.000Z',
+        },
+        updatedAt: '2026-07-27T12:00:00.000Z',
+      }),
+      makeTask({
+        id: 'task-change-input',
+        status: 'failed',
+        currentStep: 'extract',
+        description: '需要补充资料',
+        lastError: {
+          userMessage: '请补充更多上下文。',
+          retriable: false,
+          action: 'change_input',
+          traceId: 'trace-input',
+        },
+        updatedAt: '2026-07-26T12:00:00.000Z',
+      }),
+    ]);
+
+    expect(resume).toEqual({
+      title: '上传已过期',
+      stage: '上传需要处理',
+      href: '/tasks/task-expired',
+      total: 2,
+    });
+  });
+
   it('keeps the latest successful result available for asynchronous acceptance', () => {
     const resume = creationResumeFromTasks([
       makeTask({
@@ -132,53 +175,5 @@ describe('creationResumeFromTasks', () => {
 
   it('returns no shell entry when there are no tasks', () => {
     expect(creationResumeFromTasks([])).toBeUndefined();
-  });
-
-  it('reads every task page so an older running task cannot disappear behind the first 20', async () => {
-    const newestDone = makeTask({
-      id: 'task-newest-done',
-      status: 'succeeded',
-      updatedAt: '2026-07-29T12:00:00.000Z',
-    });
-    const olderRunning = makeTask({
-      id: 'task-older-running',
-      status: 'running',
-      currentStep: 'extract',
-      description: '深页运行中的 Agent',
-      updatedAt: '2026-07-20T12:00:00.000Z',
-    });
-    const calls: Array<{ cursor?: string; limit?: number }> = [];
-    const fetchPage = async (query: { cursor?: string; limit?: number }) => {
-      calls.push(query);
-      if (!query.cursor) {
-        return {
-          items: [newestDone],
-          page: { nextCursor: 'cursor-2', hasMore: true, limit: 100, order: 'desc' as const },
-        };
-      }
-      if (query.cursor === 'cursor-2') {
-        return {
-          items: [makeTask({ id: 'task-middle', status: 'succeeded' })],
-          page: { nextCursor: 'cursor-3', hasMore: true, limit: 100, order: 'desc' as const },
-        };
-      }
-      return {
-        items: [olderRunning],
-        page: { nextCursor: null, hasMore: false, limit: 100, order: 'desc' as const },
-      };
-    };
-
-    const tasks = await listAllCreationTasks(fetchPage);
-
-    expect(calls).toEqual([
-      { limit: 100 },
-      { cursor: 'cursor-2', limit: 100 },
-      { cursor: 'cursor-3', limit: 100 },
-    ]);
-    expect(tasks).toHaveLength(3);
-    expect(creationResumeFromTasks(tasks)).toMatchObject({
-      href: '/tasks/task-older-running',
-      stage: '正在提取 Agent',
-    });
   });
 });
