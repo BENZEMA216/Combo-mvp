@@ -161,7 +161,7 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 Test、Preview、Production 的发布入口彼此独立：
 
-- Test 只由 `.github/workflows/combo-dev.yml` 的手工 `workflow_dispatch` 启动。具有仓库 write、maintain 或 admin 权限的成员必须指定一个仍开放、以当前 `main` 为 base、来自同一仓库的 PR 编号及其精确 tip SHA。受信任的 `main` 控制器构建并部署候选；PR 分支代码接触不到 Test Secret。Test 不由 PR 或 `main` 自动部署，其证据也不能晋级 Preview 或 Production。
+- Test 只由 `.github/workflows/combo-dev.yml` 的手工 `workflow_dispatch` 启动。具有仓库 write、maintain 或 admin 权限的成员必须指定一个仍开放、来自同一仓库的 PR 编号及其启动时的精确 head SHA。受信任的 `main` 控制器构建并部署已冻结候选；PR 的 base、祖先关系及构建期间的分支前进不会阻断该快照。候选分支的 workflow 和控制脚本接触不到 GitHub `combo-dev` Environment 的 SSH 或 Resend Secret。Test 不由 PR 或 `main` 自动部署，其证据也不能晋级 Preview 或 Production。
 - Preview 由成功的 Main CD 自动触发，直接消费该 `main` 提交的 release artifact，不依赖 Test 证据。仓库变量 `COMBO_PREVIEW_AUTO_PROMOTION_MODE=paused` 时只记录策略并跳过实际 Preview 部署。
 - Production 不自动跟随 `main`、Test 或 Preview；只能在 GitHub `production` Environment 人工批准后消费精确成功的 Preview artifact。
 
@@ -192,4 +192,4 @@ Test、Preview、Production 的发布入口彼此独立：
 
 源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0009`、再次幂等执行、应用角色权限和异常账本拒绝。
 
-Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`，并使用独立公网入口 `https://test.43-160-242-46.sslip.io`（Web）和 `https://test-s3.43-160-242-46.sslip.io`（对象存储）。受保护的 `main` 控制器只接受手工指定的开放同仓库 PR 及其精确 tip SHA；候选必须包含当前 `main`，并核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通快速测试也不启动 Docker 或 Docker Compose。
+Test 的环境级证据只来自 tecent2 K3s 的 `combo-preview`，并使用独立公网入口 `https://test.43-160-242-46.sslip.io`（Web）和 `https://test-s3.43-160-242-46.sslip.io`（对象存储）。受保护的 `main` 控制器只接受手工指定的开放同仓库 PR 及其启动时的精确 head SHA，并核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要、缺失哈希资源响应和旧拓扑缺失。候选无需包含当前 `main`；它只需满足已冻结控制器的 Test 发布契约。Test 证据不能作为 Preview 或 Production 准入，源码目录中的普通快速测试也不启动 Docker 或 Docker Compose。

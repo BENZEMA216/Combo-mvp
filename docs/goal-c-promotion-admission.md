@@ -12,10 +12,11 @@ PR Test 生成的分支 release 和 Test 证据是独立验证输入，不构成
 单测和关键 workflow 契约测试；它跳过 container contracts 与耗时的发布状态机模拟，不
 调用 Docker、不构建或发布镜像，也不产生 release artifact。需要真实环境验证时，具有
 仓库写入权限的成员从 `main` 上受信任的
-`workflow_dispatch` 控制器选择一个以当前 `main` 为 base、同仓库且仍开放的 PR，并
-同时提交该 PR 当前 head 的完整 SHA。PR Test 会再次核对 PR、base、分支 tip、提交
-可达性和固定 SHA，再调用 `main` 定义的可复用 `Main CD` 构建不可变 artifact，最后
-使用 `main` 固定的部署和验收程序部署到 `combo-preview`。候选分支的 workflow、控制
+`workflow_dispatch` 控制器选择一个同仓库且仍开放的 PR，并同时提交该 PR 当时
+head 的完整 SHA。PR Test 会核对 PR 开放状态、仓库归属、启动时分支 tip、提交可达性和固定
+SHA，再调用已冻结控制器定义的可复用 `Main CD` 构建不可变 artifact，最后使用同一控制器固定的
+部署和验收程序部署到 `combo-preview`。PR 的 base 和祖先关系不参与 Test 授权，构建期间 `main` 或 PR
+分支前进也不会改变已冻结快照。候选分支的 workflow、控制
 脚本和验收脚本不会在受保护 Environment 中执行。
 
 GitHub `combo-dev` Environment 的分支策略仍然只允许 `main`。该策略约束的是可以读取
