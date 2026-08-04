@@ -7,7 +7,7 @@ name: Deploy
 #   Preview/Production 共享 foundation 的迁移由主机侧 per-foundation flock 串行。
 on:
   workflow_run:
-    workflows: [CI]
+    workflows: [Main CD]
     types: [completed]
     branches: [main]
   workflow_dispatch:
