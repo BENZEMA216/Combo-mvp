@@ -74,6 +74,10 @@ test('renders apps for all three environments into their namespaces', () => {
     assert.ok(apps.includes(origin), `${environment} public origin`);
     assert.ok(apps.includes(redisQueue), `${environment} redis queue host`);
     assert.ok(apps.includes(`ghcr.io/dangdang-tech/combo-api@sha256:${'1'.repeat(64)}`));
+    assert.ok(
+      apps.includes('combo.build/source-sha'),
+      `${environment} pod template stamps source SHA`,
+    );
     const migrate = render(environment, 'migrate', path, digest);
     assert.match(migrate, new RegExp(`namespace: ${namespace}`));
     assert.match(migrate, /kind: Job/);
