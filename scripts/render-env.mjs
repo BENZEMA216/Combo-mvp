@@ -324,7 +324,9 @@ function run(argv) {
             };
           }
         }
-        rendered.push(
+        // combo-release ConfigMap 先于 Deployment 输出，kubectl apply 时先建
+        // ConfigMap，新 Pod 启动才可能读到本次修订的 COMBO_SOURCE_SHA。
+        rendered.unshift(
           releaseConfigMap(options.environment, manifest, releaseManifestDigest(manifest)),
         );
       } else {
