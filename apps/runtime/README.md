@@ -15,6 +15,7 @@ Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring
 - `src/modules/session/` 负责普通与 Studio Session、Message、详情快照和 HTTP 处理。
 - `src/modules/agent/` 负责 Turn 生命周期、Pi Agent、Redis 事件流、Studio 模式和模型工具。
 - `src/modules/artifact/` 负责 Artifact 索引、对象正文、Studio HTML 契约、UI revision 和 `upsert_artifact`。
+- `src/modules/demo/` 负责 Test 环境固定 Combo Miniapp 的幂等 Studio 与 UI 种子；其他环境不会注册其 HTTP 入口。
 - `src/bootstrap/` 组装 Fastify、基础设施、TurnRunner 和路由。
 - `src/processes/api.ts` 是唯一 HTTP 进程入口，默认监听 3100。
 
@@ -44,3 +45,5 @@ pnpm -F @cb/runtime test
 ```
 
 需要 PostgreSQL 或 Redis 的集成测试只有在显式提供专用测试连接时运行，不能指向生产资源。
+
+Test 环境可通过 `POST /api/v1/runtime/test/demo-agents/combo-miniapp` 为带完整 `{source:'test-demo', fixture:'combo-miniapp', fixtureVersion:1}` marker 且属于当前用户的 Capability 补齐可体验的 Studio 与 Miniapp。请求必须携带正常登录 Cookie 和可信浏览器来源；重复请求返回同一 Studio，不会覆盖用户已经晋升的 UI。该端点在 Preview、Production 与 development 均为 404。

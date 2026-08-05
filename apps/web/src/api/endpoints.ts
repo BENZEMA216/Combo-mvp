@@ -63,6 +63,47 @@ export function retryTask(taskId: string): Promise<TaskView> {
   return apiPost<TaskView>(`/tasks/${encodeURIComponent(taskId)}/retry`);
 }
 
+interface TestDemoAgentAuthoringResult {
+  taskId: string;
+  capabilityId: string;
+  reused: boolean;
+}
+
+interface TestDemoAgentRuntimeResult {
+  studioSessionId: string;
+  reused: boolean;
+}
+
+export interface TestDemoAgentResult {
+  taskId: string;
+  capabilityId: string;
+  studioSessionId: string;
+  /** 只有任务、Agent 和设计会话均来自既有演示数据时才为 true。 */
+  reused: boolean;
+}
+
+/**
+ * Test 环境验收捷径：先准备一份固定的 Combo Miniapp Agent，再为它创建或恢复 UI Studio。
+ * 两个端点都由服务端保证幂等；Web 仍严格串行，避免 Runtime 看见尚未落库的 capability。
+ */
+export async function createTestComboMiniappDemoAgent(): Promise<TestDemoAgentResult> {
+  const authoring = await apiPost<TestDemoAgentAuthoringResult>(
+    '/test/demo-agents/combo-miniapp',
+    {},
+  );
+  const runtime = await apiPost<TestDemoAgentRuntimeResult>(
+    '/runtime/test/demo-agents/combo-miniapp',
+    { capabilityId: authoring.capabilityId },
+  );
+
+  return {
+    taskId: authoring.taskId,
+    capabilityId: authoring.capabilityId,
+    studioSessionId: runtime.studioSessionId,
+    reused: authoring.reused && runtime.reused,
+  };
+}
+
 /** 任务进度 SSE 端点（相对路径，同源 Cookie 鉴权）。 */
 export function taskEventsUrl(taskId: string): string {
   return SSE_ROUTES.taskEvents(taskId);

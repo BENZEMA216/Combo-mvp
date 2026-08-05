@@ -156,8 +156,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // 公开发布身份（无密钥、no-store），供部署验收核对 API 与同一 release manifest。
   await registerVersionRoute(app, env);
 
-  // 业务路由（account / task / capability）。
-  await registerBusinessRoutes(app);
+  // 业务路由（account / task / capability；Test 额外挂受控 demo seed）。
+  await registerBusinessRoutes(app, env);
 
   // 进程退出时关闭基础设施连接。
   app.addHook('onClose', async () => {

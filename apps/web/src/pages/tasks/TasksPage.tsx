@@ -9,6 +9,7 @@ import { ErrorState, Skeleton } from '../../components/index.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { PairingCard } from './PairingCard.js';
 import { CreationMethodPicker } from './CreationMethodPicker.js';
+import { TestDemoAgentEntry } from './TestDemoAgentEntry.js';
 import { saveTaskPairingReceipt } from './taskPairingReceipt.js';
 import {
   formatTime,
@@ -230,6 +231,8 @@ export function TasksPage(): ReactElement {
           />
         )}
       </div>
+
+      <TestDemoAgentEntry placement="tasks" />
 
       <div className="cb-tasks-panel">
         <div className="cb-tasks-panel__header">

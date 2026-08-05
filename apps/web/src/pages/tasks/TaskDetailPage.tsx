@@ -29,6 +29,7 @@ import { goToLogin } from '../../shell/auth.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { CapabilityPicker } from './CapabilityPicker.js';
 import { CopyButton } from '../../components/CopyButton.js';
+import { TestDemoAgentEntry } from './TestDemoAgentEntry.js';
 import {
   clearTaskPairingReceipt,
   readTaskPairingReceipt,
@@ -117,6 +118,8 @@ export function TaskDetailPage(): ReactElement {
   }
   if (!task) return <ErrorState error={undefined} />;
 
+  const uploadBlocked = task.currentStep === 'upload' && task.upload.status !== 'processed';
+
   // —— 提取完成：结果排序后进入试用、UI 调整、定价与发布，而不是绕过验收直接发布。——
   if (task.status === 'succeeded') {
     return (
@@ -162,6 +165,7 @@ export function TaskDetailPage(): ReactElement {
         task={task}
         pairingReceipt={pairingReceipt?.taskId === task.id ? pairingReceipt : null}
       />
+      {uploadBlocked && <TestDemoAgentEntry placement="blocked-task" />}
       {extracting && (
         <ExtractCard sse={sse} onReconnect={() => setSseReconnectKey((value) => value + 1)} />
       )}

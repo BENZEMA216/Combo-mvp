@@ -4,6 +4,7 @@ import { API_PREFIX } from '@cb/shared';
 import { CAPABILITY_ENDPOINTS, registerCapabilityRoutes } from '../modules/capability/routes.js';
 import { SESSION_ENDPOINTS, registerSessionRoutes } from '../modules/session/routes.js';
 import { ARTIFACT_ENDPOINTS, registerArtifactRoutes } from '../modules/artifact/routes.js';
+import { registerDemoRoutes } from '../modules/demo/routes.js';
 import { registerClientEventRoutes } from '../platform/http/client-events.js';
 import type { EndpointDecl } from '../platform/http/_helpers.js';
 
@@ -21,6 +22,7 @@ export async function registerBusinessRoutes(app: FastifyInstance): Promise<void
       await registerCapabilityRoutes(scoped);
       await registerSessionRoutes(scoped);
       await registerArtifactRoutes(scoped);
+      await registerDemoRoutes(scoped, scoped.infra.env.COMBO_ENVIRONMENT);
       await registerClientEventRoutes(scoped); // 浏览器侧错误/调试事件（只落结构化日志）
     },
     { prefix: API_PREFIX },

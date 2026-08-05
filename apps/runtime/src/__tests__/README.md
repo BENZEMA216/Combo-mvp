@@ -10,6 +10,7 @@
 - `version.test.ts` 验证发布元数据和 `/version.json`。
 - `health.test.ts`、`http-logging.test.ts` 与 `observability-redaction.test.ts` 验证依赖状态、低敏日志和追踪脱敏。
 - `routes.test.ts` 验证端点声明、鉴权与来源守卫、owner 隔离、普通与 Studio Session、UI 恢复和 Artifact 读取。
+- `demo.test.ts` 验证 Test-only Combo Miniapp 路由的环境门禁、完整 fixture marker、owner 隔离、幂等 Studio/Artifact 和可运行 HTML 契约。
 - `artifact.test.ts`、`session-detail.test.ts`、`session-repo.test.ts` 和 `session-consistency.integration.test.ts` 验证 Artifact 来源、详情快照、会话仓储、UI 晋升和事务约束。
 - `build-agent.test.ts`、`run-turn.test.ts`、`stream-events.test.ts`、`turn-control.test.ts`、`turn-repo.test.ts` 和 `terminal-fence.integration.test.ts` 验证 Pi Agent、Turn 生命周期、Redis 补发与终态栅栏。
 - `sandbox-backend.test.ts`、`sandbox-capability.test.ts`、`sandbox-client.test.ts`、`sandbox-config.test.ts` 和 `sandbox-tools.test.ts` 验证 Kubernetes 后端、内部能力令牌、远程协议、配置门禁和四个模型工具。

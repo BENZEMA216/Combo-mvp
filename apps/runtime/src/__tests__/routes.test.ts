@@ -14,6 +14,7 @@ import {
 } from '../modules/session/handlers.js';
 import { CAPABILITY_BUCKET } from '../modules/capability/loader.js';
 import { artifactContentHandler } from '../modules/artifact/handlers.js';
+import { demoEndpointsForEnvironment, TEST_DEMO_ENDPOINTS } from '../modules/demo/routes.js';
 import { createArtifactTool } from '../modules/artifact/tool.js';
 import {
   ARTIFACT_BUCKET,
@@ -92,6 +93,19 @@ describe('route registry self-check', () => {
         expect(guards, `${String(ep.method)} ${ep.url} 缺浏览器来源守卫`).toBeGreaterThanOrEqual(2);
       }
     }
+  });
+
+  it('Test 演示端点只在 Test 注册，且同时带来源与登录守卫', () => {
+    expect(demoEndpointsForEnvironment('test')).toBe(TEST_DEMO_ENDPOINTS);
+    expect(demoEndpointsForEnvironment('preview')).toEqual([]);
+    expect(demoEndpointsForEnvironment('production')).toEqual([]);
+    expect(demoEndpointsForEnvironment('development')).toEqual([]);
+    expect(TEST_DEMO_ENDPOINTS).toHaveLength(1);
+    expect(TEST_DEMO_ENDPOINTS[0]).toMatchObject({
+      method: 'POST',
+      url: '/runtime/test/demo-agents/combo-miniapp',
+    });
+    expect(TEST_DEMO_ENDPOINTS[0]!.preHandlers).toHaveLength(2);
   });
 });
 
