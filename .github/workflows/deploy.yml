@@ -166,11 +166,14 @@ jobs:
                     echo 'Production deployment requires explicit confirm_production=true.' >&2
                     exit 1
                   }
-                  preview_sha=$(curl -sk --max-time 15 \
-                    https://review.43-160-242-46.sslip.io/version.json \
-                    | jq -er '.sourceSha' 2>/dev/null || true)
-                  [[ "$preview_sha" == "$INPUT_REVISION" ]] || {
-                    echo "Revision $INPUT_REVISION is not the current Preview deployment (Preview runs $preview_sha)." >&2
+                  preview_body=$(curl -sk --max-time 15 \
+                    https://review.43-160-242-46.sslip.io/version.json 2>/dev/null || true)
+                  jq -e --arg rev "$INPUT_REVISION" '
+                    .schemaVersion == 1 and .environment == "preview"
+                    and .sourceSha == $rev and .releaseId == ("release-" + $rev)
+                    and (.releaseManifestDigest | test("^sha256:[0-9a-f]{64}$"))
+                  ' <<<"$preview_body" >/dev/null 2>&1 || {
+                    echo "Revision $INPUT_REVISION is not the verified current Preview deployment (Preview version.json fails the release-identity check)." >&2
                     exit 1
                   }
                 fi
@@ -400,10 +403,14 @@ jobs:
           esac
           for _ in $(seq 1 60); do
             body=$(curl -sk --max-time 5 "$origin/version.json" 2>/dev/null || true)
-            if [[ -n "$body" ]] && jq -e --arg rev "$REVISION" \
-              '.environment != null and .sourceSha == $rev' <<<"$body" >/dev/null 2>&1; then
+            echo "poll $origin: ${body:-<empty>}"
+            if [[ -n "$body" ]] && jq -e --arg rev "$REVISION" '
+              .schemaVersion == 1 and .environment != null and .sourceSha == $rev
+              and .releaseId == ("release-" + $rev)
+              and (.releaseManifestDigest | test("^sha256:[0-9a-f]{64}$"))
+            ' <<<"$body" >/dev/null 2>&1; then
               echo "deployed: $origin"
-              jq -r '"environment=\(.environment) sourceSha=\(.sourceSha)"' <<<"$body"
+              jq -r '"environment=\(.environment) sourceSha=\(.sourceSha) releaseId=\(.releaseId)"' <<<"$body"
               exit 0
             fi
             sleep 5

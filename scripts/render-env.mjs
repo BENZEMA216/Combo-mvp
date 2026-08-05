@@ -19,7 +19,6 @@ const ENVIRONMENTS = Object.freeze({
   test: {
     namespace: 'combo-test',
     foundationOverlay: 'test-foundation',
-    foundationLock: 'test',
     postgresHost: 'postgres',
     redisQueueHost: 'redis-queue',
     redisHotHost: 'redis-hot',
@@ -30,7 +29,6 @@ const ENVIRONMENTS = Object.freeze({
   preview: {
     namespace: 'combo-preview',
     foundationOverlay: 'shared-foundation',
-    foundationLock: 'shared',
     postgresHost: 'postgres.combo-foundation.svc.cluster.local',
     redisQueueHost: 'redis-queue.combo-foundation.svc.cluster.local',
     redisHotHost: 'redis-hot.combo-foundation.svc.cluster.local',
@@ -41,7 +39,6 @@ const ENVIRONMENTS = Object.freeze({
   production: {
     namespace: 'combo-prod',
     foundationOverlay: 'shared-foundation',
-    foundationLock: 'shared',
     postgresHost: 'postgres.combo-foundation.svc.cluster.local',
     redisQueueHost: 'redis-queue.combo-foundation.svc.cluster.local',
     redisHotHost: 'redis-hot.combo-foundation.svc.cluster.local',
