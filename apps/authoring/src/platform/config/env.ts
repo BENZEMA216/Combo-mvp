@@ -56,6 +56,8 @@ const EnvSchema = z.object({
 
   // 逗号分隔的严格 origin 列表。Cookie 是否 Secure 独立于 NODE_ENV 显式配置。
   PUBLIC_APP_ORIGINS: z.string().default('http://localhost'),
+  EXTERNAL_MCP_PUBLIC_ORIGIN: z.string().default('http://localhost:3000'),
+  MCP_RUNTIME_INTERNAL_BASE_URL: z.string().default('http://localhost:3100'),
   SESSION_COOKIE_SECURE: booleanFromString,
 
   // 只有 API 进程消费认证密钥。Resend base URL 只允许 dev/test 覆盖到本地 mock。
@@ -133,6 +135,44 @@ export function parsePublicAppOrigins(value: string): readonly string[] {
   return origins;
 }
 
+/** 远程 MCP 的资源标识与 OAuth issuer 使用一个稳定规范 origin，不能从 Host 头推导。 */
+export function externalMcpPublicOrigin(env: Pick<Env, 'EXTERNAL_MCP_PUBLIC_ORIGIN'>): string {
+  let url: URL;
+  try {
+    url = new URL(env.EXTERNAL_MCP_PUBLIC_ORIGIN);
+  } catch {
+    throw new Error('[env] EXTERNAL_MCP_PUBLIC_ORIGIN 配置不合法');
+  }
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username ||
+    url.password ||
+    url.origin !== env.EXTERNAL_MCP_PUBLIC_ORIGIN
+  ) {
+    throw new Error('[env] EXTERNAL_MCP_PUBLIC_ORIGIN 配置不合法');
+  }
+  return url.origin;
+}
+
+/** Authoring 只经固定集群内 Runtime origin 委托 Studio/Test，不接受动态路径。 */
+export function mcpRuntimeInternalBaseUrl(env: Pick<Env, 'MCP_RUNTIME_INTERNAL_BASE_URL'>): string {
+  let url: URL;
+  try {
+    url = new URL(env.MCP_RUNTIME_INTERNAL_BASE_URL);
+  } catch {
+    throw new Error('[env] MCP_RUNTIME_INTERNAL_BASE_URL 配置不合法');
+  }
+  if (
+    (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+    url.username ||
+    url.password ||
+    url.origin !== env.MCP_RUNTIME_INTERNAL_BASE_URL
+  ) {
+    throw new Error('[env] MCP_RUNTIME_INTERNAL_BASE_URL 配置不合法');
+  }
+  return url.origin;
+}
+
 function assertReleaseMetadata(env: Env): void {
   try {
     const metadata = releaseMetadataFromEnv(env);
@@ -151,6 +191,8 @@ const COMMON_REQUIRED = ['DATABASE_URL', ...RELEASE_METADATA_ENV_KEYS] as const;
 const S3_REQUIRED = ['S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY'] as const;
 const AUTH_API_REQUIRED = [
   'PUBLIC_APP_ORIGINS',
+  'EXTERNAL_MCP_PUBLIC_ORIGIN',
+  'MCP_RUNTIME_INTERNAL_BASE_URL',
   'SESSION_COOKIE_SECURE',
   'RESEND_API_KEY',
   'RESEND_FROM_EMAIL',
@@ -295,6 +337,24 @@ function validateProductionAuthConfig(env: Env): void {
     invalidKeys.push('PUBLIC_APP_ORIGINS', 'SESSION_COOKIE_SECURE');
   }
 
+  let mcpOrigin: string | null = null;
+  try {
+    mcpOrigin = externalMcpPublicOrigin(env);
+  } catch {
+    invalidKeys.push('EXTERNAL_MCP_PUBLIC_ORIGIN');
+  }
+  if (
+    mcpOrigin !== null &&
+    (!origins.includes(mcpOrigin) || new URL(mcpOrigin).protocol !== 'https:')
+  ) {
+    invalidKeys.push('EXTERNAL_MCP_PUBLIC_ORIGIN', 'PUBLIC_APP_ORIGINS');
+  }
+  try {
+    mcpRuntimeInternalBaseUrl(env);
+  } catch {
+    invalidKeys.push('MCP_RUNTIME_INTERNAL_BASE_URL');
+  }
+
   const releaseEnvironment = releaseMetadataFromEnv(env).environment;
   if (
     ['test', 'preview', 'production'].includes(releaseEnvironment) &&
@@ -347,6 +407,8 @@ export function loadEnv(): Env {
     } catch {
       throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
     }
+    externalMcpPublicOrigin(cached);
+    mcpRuntimeInternalBaseUrl(cached);
     if (
       cached.RESEND_FROM_EMAIL.length > 0 &&
       !isValidResendFromAddress(cached.RESEND_FROM_EMAIL)

@@ -27,6 +27,7 @@ import { createTurnRunner } from '../modules/agent/run-turn.js';
 import { TURN_SWEEP_INTERVAL_MS } from '../modules/agent/turn-repo.js';
 import { createPiTurnAgentFactory } from '../modules/agent/build-agent.js';
 import { registerBusinessRoutes } from './routes.js';
+import { registerInternalMcpRuntimeRoutes } from './internal-mcp-routes.js';
 // 副作用导入：注册 Fastify 类型增强（req.auth / app.infra / app.turns）。
 import '../platform/http/fastify.js';
 
@@ -156,6 +157,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
   // 业务路由（capability / session / artifact）。
   await registerBusinessRoutes(app);
+
+  // 集群内 MCP 委托路由不挂公开 API 前缀；公网 Nginx 不转发 `/internal/`。
+  await registerInternalMcpRuntimeRoutes(app);
 
   // 进程退出时关闭基础设施连接。
   app.addHook('onClose', async () => {

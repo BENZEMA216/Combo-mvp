@@ -9,7 +9,7 @@
     "compose:up": "docker compose --env-file ../.env -f docker-compose.yml up -d",
     "compose:down": "docker compose --env-file ../.env -f docker-compose.yml down",
     "typecheck": "echo 'no ts in infra' && exit 0",
-    "test": "node --test k8s/overlays/sandbox-tools/render.test.mjs"
+    "test": "node --test nginx-contract.test.mjs k8s/overlays/sandbox-tools/render.test.mjs"
   },
   "devDependencies": {
     "yaml": "2.9.0"

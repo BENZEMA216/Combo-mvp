@@ -43,6 +43,7 @@ export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraCont
 
 export * from './db.js';
 export * from './auth-session.js';
+export * from './mcp-access-token.js';
 export * from './object-store.js';
 export * from './event-bus.js';
 export * from './llm.js';

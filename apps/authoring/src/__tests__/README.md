@@ -36,4 +36,4 @@
 
 ## 上下游
 
-测试直接读取 `modules/` 与 `platform/` 的公开函数。`account-auth.pg.test.ts` 只在 `AUTH_PG_TEST=1` 且提供 `DATABASE_URL` 时运行，并只删除本轮创建且尚未关联业务数据的认证主体。测试数据只使用保留域名、文档地址和测试密钥。
+测试直接读取 `modules/` 与 `platform/` 的公开函数。`account-auth.pg.test.ts` 只在 `AUTH_PG_TEST=1` 且提供 `DATABASE_URL` 时运行，并只删除本轮创建且尚未关联业务数据的认证主体。`external-mcp-refresh.pg.test.ts` 与 `external-mcp-dcr.pg.test.ts` 在 `MCP_OAUTH_PG_TEST=1` 下验证真实 PostgreSQL 的 refresh family 串行、动态注册去重、生命周期、硬容量和并发边界；后者还需要最小权限 API 连接 `MCP_OAUTH_API_DATABASE_URL`。`external-mcp-rate-limit.integration.test.ts` 在提供 `MCP_RATE_LIMIT_REDIS_URL` 时用两个 Fastify 实例验证共享 Redis 计数与故障关闭。测试数据只使用保留域名、文档地址和测试密钥。

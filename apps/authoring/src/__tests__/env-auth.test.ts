@@ -8,6 +8,8 @@ const COMMON = {
   S3_ENDPOINT: 'https://objects.example.test',
   S3_ACCESS_KEY: 'test-access-value',
   S3_SECRET_KEY: 'test-secret-value',
+  EXTERNAL_MCP_PUBLIC_ORIGIN: 'https://combo.example',
+  MCP_RUNTIME_INTERNAL_BASE_URL: 'http://runtime.internal:3100',
   COMBO_ENVIRONMENT: 'test',
   COMBO_SOURCE_SHA: 'a'.repeat(40),
   COMBO_RELEASE_ID: `release-${'a'.repeat(40)}`,
@@ -32,6 +34,23 @@ afterEach(() => {
 });
 
 describe('authoring authentication environment boundary', () => {
+  it('requires the shared hot Redis store for production API rate limiting', async () => {
+    stub({
+      ...COMMON,
+      NODE_ENV: 'production',
+      PROCESS: 'api',
+      REDIS_HOT_URL: '',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      SESSION_COOKIE_SECURE: 'true',
+      RESEND_API_KEY: 'test-resend-key-value',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
+      OTP_HMAC_SECRET: 'h'.repeat(32),
+    });
+    const loadEnv = await freshLoadEnv();
+
+    expect(loadEnv).toThrowError(/REDIS_HOT_URL/);
+  });
+
   it('fails production API startup on missing auth keys without printing values', async () => {
     stub({
       ...COMMON,
@@ -158,6 +177,22 @@ describe('authoring authentication environment boundary', () => {
 
     expect(loadEnv().RESEND_API_BASE_URL).toBe('http://127.0.0.1:45678');
     expect(warn).not.toHaveBeenCalledWith(expect.stringContaining('test-resend-key-value'));
+  });
+
+  it('rejects a malformed production Runtime delegation origin', async () => {
+    stub({
+      ...COMMON,
+      NODE_ENV: 'production',
+      PROCESS: 'api',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      MCP_RUNTIME_INTERNAL_BASE_URL: 'http://user:secret@runtime.internal:3100/path',
+      SESSION_COOKIE_SECURE: 'true',
+      RESEND_API_KEY: 'test-resend-key-value',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
+      OTP_HMAC_SECRET: 'h'.repeat(32),
+    });
+    const loadEnv = await freshLoadEnv();
+    expect(loadEnv).toThrowError(/MCP_RUNTIME_INTERNAL_BASE_URL/);
   });
 
   it('requires a production-built Test process to use its public HTTPS cookie', async () => {

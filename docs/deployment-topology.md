@@ -17,6 +17,8 @@
 - `combo-test` namespace 内一套，仅 Test 应用使用。
 - `combo-foundation` namespace 内一套，**Preview 与 Production 应用共同使用**（跨 namespace 连接）。Preview 不建立独立的基础资源。
 
+Authoring API 每个环境固定运行两个 replica。路由级限流必须由两副本共同使用该环境解析到的 `redis-hot`，不能退化为进程内计数；Preview 与 Production 虽共享物理 Redis hot，key 必须按 `COMBO_ENVIRONMENT` 命名空间隔离。Redis 限流命令失败时受限请求失败关闭，readiness 同时报告依赖不可用。
+
 这是有意设计：Preview 是 Production 的预发布验证，共享同一套数据与存储可以验证「真实生产数据上的行为」，并且避免维护两套同构基础资源。**不得为 Preview 单独隔离一套 foundation。**
 
 ## 2. 三环境角色与晋级链
@@ -46,6 +48,8 @@
 | Test       | `https://test.43-160-242-46.sslip.io`                                                                                              |
 | Preview    | `https://review.43-160-242-46.sslip.io`                                                                                            |
 | Production | `https://buildwithcombo.com`（正式）、`https://www.buildwithcombo.com`（别名）、`https://agora.43-160-242-46.sslip.io`（验收入口） |
+
+远程 MCP 的 OAuth issuer 与 resource 必须使用每个环境的单一规范 origin：Test 使用 `https://test.43-160-242-46.sslip.io`，Preview 使用 `https://review.43-160-242-46.sslip.io`，Production 使用 `https://buildwithcombo.com`。该值通过 `EXTERNAL_MCP_PUBLIC_ORIGIN` 注入，不能从请求 `Host` 头或多 origin 白名单的顺序推导。
 
 系统 Nginx 将域名反代到主机回环端口（由 systemd forwarder 维护），Kubernetes Service 保持 ClusterIP，公网不暴露 NodePort。部署验证以环境正式域名为准：Production 验证 `buildwithcombo.com`。
 

@@ -40,6 +40,18 @@ async function privilege(
   return result.rows[0]?.allowed === true;
 }
 
+async function functionPrivilege(
+  client: Client,
+  functionSignature: string,
+  privilegeName: string,
+): Promise<boolean> {
+  const result = await client.query<{ allowed: boolean }>(
+    `SELECT has_function_privilege(current_user, $1, $2) AS allowed`,
+    [functionSignature, privilegeName],
+  );
+  return result.rows[0]?.allowed === true;
+}
+
 pgDescribe('application database roles on PostgreSQL', () => {
   const clients = new Map<ApplicationRole, Client>();
   const owner = new Client({ connectionString: databaseUrl });
@@ -88,6 +100,133 @@ pgDescribe('application database roles on PostgreSQL', () => {
     expect(await privilege(runtime, 'has_table_privilege', 'public.auth_sessions', 'INSERT')).toBe(
       false,
     );
+  });
+
+  it('keeps OAuth tables and bounded cleanup at their exact application-role boundary', async () => {
+    const api = clients.get('combo_api')!;
+    const worker = clients.get('combo_worker')!;
+    const runtime = clients.get('combo_runtime')!;
+    const oauthTables = [
+      'oauth_clients',
+      'oauth_authorization_requests',
+      'oauth_authorization_codes',
+      'oauth_access_tokens',
+      'oauth_refresh_tokens',
+    ];
+
+    for (const table of oauthTables) {
+      expect(await privilege(api, 'has_table_privilege', `public.${table}`, 'SELECT')).toBe(true);
+      expect(await privilege(api, 'has_table_privilege', `public.${table}`, 'INSERT')).toBe(
+        table !== 'oauth_clients',
+      );
+      expect(await privilege(api, 'has_table_privilege', `public.${table}`, 'DELETE')).toBe(false);
+      for (const action of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+        expect(await privilege(worker, 'has_table_privilege', `public.${table}`, action)).toBe(
+          false,
+        );
+      }
+    }
+
+    expect(await privilege(api, 'has_table_privilege', 'public.oauth_clients', 'UPDATE')).toBe(
+      false,
+    );
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.oauth_clients',
+        'UPDATE',
+        'last_used_at',
+      ),
+    ).toBe(true);
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.oauth_clients',
+        'UPDATE',
+        'registration_digest',
+      ),
+    ).toBe(false);
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.oauth_authorization_requests',
+        'UPDATE',
+        'consumed_at',
+      ),
+    ).toBe(true);
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.oauth_authorization_codes',
+        'UPDATE',
+        'used_at',
+      ),
+    ).toBe(true);
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.oauth_access_tokens',
+        'UPDATE',
+        'revoked_at',
+      ),
+    ).toBe(true);
+    for (const column of ['used_at', 'revoked_at']) {
+      expect(
+        await privilege(
+          api,
+          'has_column_privilege',
+          'public.oauth_refresh_tokens',
+          'UPDATE',
+          column,
+        ),
+      ).toBe(true);
+    }
+    expect(
+      await privilege(
+        api,
+        'has_column_privilege',
+        'public.oauth_refresh_tokens',
+        'UPDATE',
+        'family_id',
+      ),
+    ).toBe(false);
+
+    expect(
+      await privilege(runtime, 'has_table_privilege', 'public.oauth_access_tokens', 'SELECT'),
+    ).toBe(true);
+    for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
+      expect(
+        await privilege(runtime, 'has_table_privilege', 'public.oauth_access_tokens', action),
+      ).toBe(false);
+    }
+    for (const table of oauthTables.filter((table) => table !== 'oauth_access_tokens')) {
+      for (const action of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+        expect(await privilege(runtime, 'has_table_privilege', `public.${table}`, action)).toBe(
+          false,
+        );
+      }
+    }
+
+    const cleanupSignature = 'public.cleanup_expired_oauth_artifacts(integer)';
+    const registrationSignature =
+      'public.register_oauth_client(text,bytea,text,text[],text[],text[],text)';
+    expect(await functionPrivilege(api, cleanupSignature, 'EXECUTE')).toBe(true);
+    expect(await functionPrivilege(api, registrationSignature, 'EXECUTE')).toBe(true);
+    expect(await functionPrivilege(runtime, cleanupSignature, 'EXECUTE')).toBe(false);
+    expect(await functionPrivilege(worker, cleanupSignature, 'EXECUTE')).toBe(false);
+    expect(await functionPrivilege(runtime, registrationSignature, 'EXECUTE')).toBe(false);
+    expect(await functionPrivilege(worker, registrationSignature, 'EXECUTE')).toBe(false);
+    await expect(
+      api.query(`SELECT * FROM cleanup_expired_oauth_artifacts(1)`),
+    ).resolves.toMatchObject({ rowCount: 1 });
+    await expect(
+      runtime.query(`SELECT * FROM cleanup_expired_oauth_artifacts(1)`),
+    ).rejects.toMatchObject({ code: '42501' });
   });
 
   it('gives Runtime its Session model and only the current UI Capability update', async () => {

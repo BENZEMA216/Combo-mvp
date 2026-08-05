@@ -28,22 +28,13 @@ if grep -Eq \
   exit 1
 fi
 
-legacy_auth_pattern='log'"to|dev"'-login|cb_'"refresh|cb_auth_"'tx|api/v1/'"auth/(login|callback|refresh)|session"'Refresh|refresh'"Token"
-legacy_auth_hits=$(
-  rg -n -i \
-    "$legacy_auth_pattern" \
-    apps packages infra scripts .github .env.* \
-    --glob '!**/README.md' \
-    --glob '!**/*.test.*' \
-    --glob '!scripts/integration/db-migrate.sh' \
-    --glob '!scripts/check-production-artifacts.sh' \
-    | grep -Ev \
-      -e '^scripts/start\.sh:[0-9]+:(# Logto 容器；不触碰卷、数据服务或其他 Compose 项目。|OBSOLETE_SERVICES=\(logto logto_db_seed logto_alteration\)|log .*废弃 Logto 容器.*)$' \
-    || true
-)
-if [[ -n "$legacy_auth_hits" ]]; then
-  echo 'Active source or configuration still references the removed authentication stack:' >&2
-  echo "$legacy_auth_hits" >&2
+set +e
+auth_scan_hits="$(node scripts/production-auth-scan.mjs apps packages infra scripts .github .env.compose.example .env.local.example)"
+auth_scan_status=$?
+set -e
+if [[ "$auth_scan_status" -ne 0 ]]; then
+  echo 'Production source contains a removed auth reference or credential-shaped value:' >&2
+  echo "$auth_scan_hits" >&2
   exit 1
 fi
 

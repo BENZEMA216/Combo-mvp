@@ -1,6 +1,7 @@
 // 认证域：邮箱六位验证码与 PostgreSQL 不透明浏览器会话。
 import { z } from 'zod';
 import { IdSchema, IsoDateTimeSchema, TraceIdSchema } from '../core/ids.js';
+import { MCP_AUTHORIZATION_REQUEST_PATTERN, OAUTH_AUTHORIZE_PATH } from './mcp-oauth.js';
 
 /** 角色。当前只有 creator；权限模型扩展时加值。 */
 export const RoleSchema = z.enum(['creator']);
@@ -104,13 +105,21 @@ export function sanitizeAuthReturnTo(value: unknown): string {
     const base = 'https://auth-return.invalid';
     const parsed = new URL(value, base);
     const path = parsed.pathname;
+    const oauthRequestToken = parsed.searchParams.get('request');
+    const oauthAuthorizationResume =
+      path === OAUTH_AUTHORIZE_PATH &&
+      parsed.hash === '' &&
+      [...parsed.searchParams.keys()].length === 1 &&
+      typeof oauthRequestToken === 'string' &&
+      MCP_AUTHORIZATION_REQUEST_PATTERN.test(oauthRequestToken);
     const allowed =
       path === '/tasks' ||
       path.startsWith('/tasks/') ||
       path === '/capabilities' ||
       CAPABILITY_RELEASE_RETURN_PATH.test(path) ||
       path === '/try' ||
-      path.startsWith('/try/');
+      path.startsWith('/try/') ||
+      oauthAuthorizationResume;
 
     if (parsed.origin !== base || parsed.username || parsed.password || !allowed) {
       return AUTH_DEFAULT_RETURN_TO;

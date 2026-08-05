@@ -58,6 +58,7 @@ const EnvSchema = z
     // 逗号分隔的严格 origin 列表。Cookie 是否 Secure 独立于 NODE_ENV 显式配置。
     // Runtime 只读取 authoring 写入的 PostgreSQL 不透明会话，不持有身份提供商配置。
     PUBLIC_APP_ORIGINS: z.string().default('http://localhost'),
+    EXTERNAL_MCP_PUBLIC_ORIGIN: z.string().default('http://localhost:3000'),
     SESSION_COOKIE_SECURE: booleanFromString,
 
     // LLM（pi 执行层）。provider 留空按 key 自动判定；缺 key → 对话轮次报「未配置模型密钥」。
@@ -231,6 +232,7 @@ const PRODUCTION_REQUIRED = [
   'S3_ACCESS_KEY',
   'S3_SECRET_KEY',
   'PUBLIC_APP_ORIGINS',
+  'EXTERNAL_MCP_PUBLIC_ORIGIN',
   'SESSION_COOKIE_SECURE',
   'RUNTIME_BILLING_FREE_USES',
   'RUNTIME_BILLING_UNIT_PRICE_CENTS',
@@ -287,6 +289,21 @@ export function loadEnv(): Env {
     throw new Error('[env] PUBLIC_APP_ORIGINS 配置不合法');
   }
 
+  let externalMcpOrigin: URL;
+  try {
+    externalMcpOrigin = new URL(env.EXTERNAL_MCP_PUBLIC_ORIGIN);
+  } catch {
+    throw new Error('[env] EXTERNAL_MCP_PUBLIC_ORIGIN 配置不合法');
+  }
+  if (
+    externalMcpOrigin.origin !== env.EXTERNAL_MCP_PUBLIC_ORIGIN ||
+    externalMcpOrigin.username ||
+    externalMcpOrigin.password ||
+    (externalMcpOrigin.protocol !== 'http:' && externalMcpOrigin.protocol !== 'https:')
+  ) {
+    throw new Error('[env] EXTERNAL_MCP_PUBLIC_ORIGIN 配置不合法');
+  }
+
   if (isProduction) {
     const invalidKeys: string[] = [];
     if (
@@ -295,6 +312,12 @@ export function loadEnv(): Env {
       )
     ) {
       invalidKeys.push('PUBLIC_APP_ORIGINS', 'SESSION_COOKIE_SECURE');
+    }
+    if (
+      !publicOrigins.includes(externalMcpOrigin.origin) ||
+      externalMcpOrigin.protocol !== 'https:'
+    ) {
+      invalidKeys.push('EXTERNAL_MCP_PUBLIC_ORIGIN', 'PUBLIC_APP_ORIGINS');
     }
     const releaseEnvironment = releaseMetadataFromEnv(env).environment;
     if (

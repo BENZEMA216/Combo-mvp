@@ -24,6 +24,7 @@ const ENVIRONMENTS = Object.freeze({
     redisHotHost: 'redis-hot',
     minioHost: 'minio',
     publicAppOrigin: 'https://test.43-160-242-46.sslip.io',
+    externalMcpPublicOrigin: 'https://test.43-160-242-46.sslip.io',
     sessionCookieSecure: 'true',
   },
   preview: {
@@ -34,6 +35,7 @@ const ENVIRONMENTS = Object.freeze({
     redisHotHost: 'redis-hot.combo-foundation.svc.cluster.local',
     minioHost: 'minio.combo-foundation.svc.cluster.local',
     publicAppOrigin: 'https://review.43-160-242-46.sslip.io',
+    externalMcpPublicOrigin: 'https://review.43-160-242-46.sslip.io',
     sessionCookieSecure: 'true',
   },
   production: {
@@ -45,6 +47,7 @@ const ENVIRONMENTS = Object.freeze({
     minioHost: 'minio.combo-foundation.svc.cluster.local',
     publicAppOrigin:
       'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
+    externalMcpPublicOrigin: 'https://buildwithcombo.com',
     sessionCookieSecure: 'true',
   },
 });
@@ -125,6 +128,7 @@ function replaceScalars(value, environment) {
   if (value === 'ghcr-pull') return 'ghcr-pull';
   if (value === 'combo-postgres-host') return config.postgresHost;
   if (value === 'combo-public-app-origin') return config.publicAppOrigin;
+  if (value === 'combo-external-mcp-public-origin') return config.externalMcpPublicOrigin;
   if (value === 'combo-session-cookie-secure') return config.sessionCookieSecure;
   return value
     .replaceAll('api.combo.svc.cluster.local', `api.${config.namespace}.svc.cluster.local`)

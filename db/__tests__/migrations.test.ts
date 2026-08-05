@@ -103,6 +103,11 @@ describe('migrations', () => {
         'agent_revisions',
         'agent_tests',
         'agent_releases',
+        'oauth_clients',
+        'oauth_authorization_requests',
+        'oauth_authorization_codes',
+        'oauth_access_tokens',
+        'oauth_refresh_tokens',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -190,14 +195,68 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, billing, and Agent Builder after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-6)).toEqual([
+    expect(list.slice(-7)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
       '0012_agent_builder_v1.sql',
+      '0013_external_mcp_oauth.sql',
     ]);
+  });
+
+  it('0013 stores only OAuth secret digests, bounds cleanup and minimizes app grants', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0013_external_mcp_oauth.sql'), 'utf-8');
+    for (const table of [
+      'oauth_clients',
+      'oauth_authorization_requests',
+      'oauth_authorization_codes',
+      'oauth_access_tokens',
+      'oauth_refresh_tokens',
+    ]) {
+      expect(sql).toContain(`CREATE TABLE ${table} (`);
+    }
+    expect(sql).not.toMatch(/access_token\s+text|refresh_token\s+text|authorization_code\s+text/i);
+    expect(sql).toContain("grant_types = ARRAY['authorization_code', 'refresh_token']::text[]");
+    expect(sql).toContain('CREATE FUNCTION cleanup_expired_oauth_artifacts(batch_size integer)');
+    expect(sql).toContain('CREATE FUNCTION register_oauth_client(');
+    expect(sql).toContain('registration_digest        bytea       NOT NULL UNIQUE');
+    expect(sql).toContain(
+      "pg_advisory_xact_lock(hashtextextended('combo.oauth.dcr.capacity.v1', 0))",
+    );
+    expect(sql).toContain('IF client_count >= 4096 THEN');
+    expect(sql).toContain("candidate.last_used_at <= now() - interval '10 minutes'");
+    expect(sql).toContain('FOR UPDATE OF candidate SKIP LOCKED');
+    expect(sql).toContain("target.last_used_at <= now() - interval '10 minutes'");
+    expect(sql).toContain("client.last_used_at <= now() - interval '30 days'");
+    for (const index of [
+      'idx_oauth_authorization_requests_client',
+      'idx_oauth_authorization_codes_client',
+      'idx_oauth_access_tokens_client',
+      'idx_oauth_refresh_tokens_client',
+    ]) {
+      expect(sql).toContain(`CREATE INDEX ${index}`);
+    }
+    expect(sql).toMatch(/LEAST\(GREATEST\(COALESCE\(batch_size, 1\), 1\), 100\)/);
+    expect(sql.match(/LIMIT bounded_limit/g)).toHaveLength(5);
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION cleanup_expired_oauth_artifacts(integer) TO combo_api',
+    );
+    expect(sql).toContain('GRANT SELECT ON oauth_clients TO combo_api');
+    expect(sql).toContain('GRANT UPDATE (last_used_at) ON oauth_clients TO combo_api');
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION register_oauth_client(text, bytea, text, text[], text[], text[], text)',
+    );
+    expect(sql).not.toContain('GRANT SELECT, INSERT ON oauth_clients TO combo_api');
+    expect(sql).not.toMatch(/GRANT[^;]*DELETE[^;]*oauth_[^;]*TO combo_api/is);
+    expect(sql).toContain(
+      'GRANT UPDATE (used_at, revoked_at) ON oauth_refresh_tokens TO combo_api',
+    );
+    expect(sql).toContain('GRANT SELECT ON oauth_access_tokens TO combo_runtime');
+    expect(sql).not.toMatch(
+      /GRANT (?:INSERT|UPDATE|DELETE)[^;]*oauth_access_tokens TO combo_runtime/i,
+    );
   });
 
   it('0012 freezes Revision and Release while pinning Test and Session to exact hashes', () => {

@@ -86,6 +86,10 @@ describe('认证 returnTo 白名单', () => {
     ],
     ['/try', '/try'],
     ['/try/capability-1#preview', '/try/capability-1#preview'],
+    [
+      `/api/external-mcp/oauth/authorize?request=mar1.${'a'.repeat(43)}`,
+      `/api/external-mcp/oauth/authorize?request=mar1.${'a'.repeat(43)}`,
+    ],
   ])('保留允许的站内目标 %s', (input, expected) => {
     expect(sanitizeAuthReturnTo(input)).toBe(expected);
   });
@@ -103,6 +107,9 @@ describe('认证 returnTo 白名单', () => {
     '/tasks/%00evil',
     '/tasks/%2e%2e/admin',
     '/admin',
+    '/api/external-mcp/oauth/authorize',
+    `/api/external-mcp/oauth/authorize?request=mar1.${'a'.repeat(42)}`,
+    `/api/external-mcp/oauth/authorize?request=mar1.${'a'.repeat(43)}&next=/admin`,
     '/capabilities/private',
     '/capabilities/not-an-id/release/pricing',
     '/capabilities/01982e62-6d6e-7f4d-8fe8-b55f62720b5b/release/admin',

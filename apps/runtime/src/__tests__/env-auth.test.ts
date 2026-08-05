@@ -8,6 +8,7 @@ const MANAGED_KEYS = [
   'S3_ACCESS_KEY',
   'S3_SECRET_KEY',
   'PUBLIC_APP_ORIGINS',
+  'EXTERNAL_MCP_PUBLIC_ORIGIN',
   'SESSION_COOKIE_SECURE',
   'RUNTIME_BILLING_FREE_USES',
   'RUNTIME_BILLING_UNIT_PRICE_CENTS',
@@ -43,6 +44,7 @@ function setProductionInfrastructure(): void {
   process.env.S3_ACCESS_KEY = 'test-placeholder';
   process.env.S3_SECRET_KEY = 'test-placeholder';
   process.env.PUBLIC_APP_ORIGINS = 'https://combo.example,https://review.combo.example';
+  process.env.EXTERNAL_MCP_PUBLIC_ORIGIN = 'https://combo.example';
   process.env.SESSION_COOKIE_SECURE = 'true';
   process.env.RUNTIME_BILLING_FREE_USES = '3';
   process.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = '1';
@@ -107,6 +109,7 @@ describe('runtime authentication configuration', () => {
       'S3_ACCESS_KEY',
       'S3_SECRET_KEY',
       'PUBLIC_APP_ORIGINS',
+      'EXTERNAL_MCP_PUBLIC_ORIGIN',
       'SESSION_COOKIE_SECURE',
       'RUNTIME_BILLING_FREE_USES',
       'RUNTIME_BILLING_UNIT_PRICE_CENTS',
@@ -127,6 +130,7 @@ describe('runtime authentication configuration', () => {
     expect(message).toContain('REDIS_URL');
     expect(message).toContain('S3_ENDPOINT');
     expect(message).toContain('PUBLIC_APP_ORIGINS');
+    expect(message).toContain('EXTERNAL_MCP_PUBLIC_ORIGIN');
     expect(message).toContain('SESSION_COOKIE_SECURE');
     expect(message).toContain('RUNTIME_BILLING_FREE_USES');
     expect(message).toContain('RUNTIME_BILLING_UNIT_PRICE_CENTS');

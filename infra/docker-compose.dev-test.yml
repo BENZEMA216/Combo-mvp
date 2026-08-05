@@ -49,6 +49,8 @@ services:
     environment:
       NODE_ENV: development
       PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 仅测试时必填}
+      EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:-http://localhost}
+      MCP_RUNTIME_INTERNAL_BASE_URL: http://runtime:3100
       SESSION_COOKIE_SECURE: 'false'
       RESEND_API_KEY: ${RESEND_MOCK_API_KEY:?RESEND_MOCK_API_KEY 仅测试时必填}
       RESEND_FROM_EMAIL: ${RESEND_MOCK_FROM_EMAIL:-login@example.test}
@@ -62,6 +64,7 @@ services:
     environment:
       NODE_ENV: development
       PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 仅测试时必填}
+      EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:-http://localhost}
       SESSION_COOKIE_SECURE: 'false'
       REDIS_URL: redis://redis_queue:6379
       OTEL_SDK_DISABLED: 'true'

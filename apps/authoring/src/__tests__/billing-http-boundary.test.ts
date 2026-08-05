@@ -9,6 +9,7 @@ const FAIL_BODY = { return_code: 'FAIL', return_msg: '处理失败' };
 
 beforeAll(async () => {
   app = await buildApp({
+    httpRateLimitStore: 'memory',
     env: {
       ...loadEnv(),
       NODE_ENV: 'test',

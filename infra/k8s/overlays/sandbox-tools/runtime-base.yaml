@@ -49,6 +49,8 @@ spec:
               value: '3100'
             - name: PUBLIC_APP_ORIGINS
               value: combo-public-app-origin
+            - name: EXTERNAL_MCP_PUBLIC_ORIGIN
+              value: combo-external-mcp-public-origin
             - name: SESSION_COOKIE_SECURE
               value: combo-session-cookie-secure
             # 固定按成功 Turn 收费；这是部署配置而非业务代码常量。后续环境可通过

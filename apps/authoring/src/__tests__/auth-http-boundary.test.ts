@@ -7,6 +7,7 @@ let app: FastifyInstance;
 
 beforeAll(async () => {
   app = await buildApp({
+    httpRateLimitStore: 'memory',
     env: {
       ...loadEnv(),
       NODE_ENV: 'test',

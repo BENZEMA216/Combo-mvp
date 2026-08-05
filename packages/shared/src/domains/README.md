@@ -9,13 +9,14 @@
 - `capability.ts` 定义能力项域：库内轻量索引视图 `CapabilityView`、存在 MinIO 里的完整可运行定义 `CapabilityDefinition`（提取流水线写入、试用端读出注入 agent，是两个服务之间唯一的契约缝，除系统提示词外还带试用开场表单字段 `inputs` 与开场提示语 `starterPrompts`）、供 Codex 发布前审阅的 `CapabilityDetail`，以及发布动作的结果。
 - `agent.ts` 定义 Agent Builder V1：单循环 AgentDefinition、恰好一个入口 Capability 的绑定规则、严格 UUID 资源边界、保留历史编译器版本的 Runtime Bundle、Project、不可变 Revision、幂等真实 Test、Project 最近 Test 恢复列表、Release，以及 Codex 直接保存 Miniapp HTML 的请求与响应契约。Revision、Test 和 Release 都显式携带 Runtime Bundle 与 UI 的 SHA-256 摘要；恢复列表独立覆盖尚未绑定 Session/Turn 的 `starting` claim，默认 20 条、最多 50 条。
 - `agent-ui.ts` 定义 Authoring 与 Runtime 共用的 Miniapp HTML 最小运行校验，要求自包含文档和真实 `combo:run` Bridge，并拒绝定时器、随机数和 mock 结果。
+- `mcp-oauth.ts` 定义远程 MCP 的稳定路径、OAuth 2.1 scope、RFC 9728 资源发现、RFC 8414 授权服务器发现、动态客户端注册、短期访问令牌与轮换刷新令牌响应契约。它不包含浏览器 Session Cookie，也不允许把 Cookie 当作 Bearer Token。
 - `trial.ts` 定义试用域：会话、消息、产物和 Turn 的视图，以及建会话、带 `usageId` 发消息和余额不足响应的契约；`usageId` 在校验 UUID 后统一输出小写规范形，Agent Builder 会话可携带固定的 Project、Revision 与 Release。Artifact 会带可选来源 Turn 和创建时间，会话详情能从 PostgreSQL 恢复 active Turn，并只用严格白名单码描述最近终态 Turn，绝不承载原始错误文本。`currentUiArtifactId` 标识 Studio 当前 UI 或普通会话创建时冻结的 UI 副本。会话详情里的能力摘要带开场表单字段与提示语（来自普通能力定义或固定 Revision Bundle，定义读不出时为空数组）。消息内容是 agent 原生分块格式，共享层只约束到「是数组」，严格校验在 runtime 侧。
 - `redaction.ts` 是去敏规则引擎，纯函数、无任何 IO：`redact` 与 `redactBatch` 按带版本号的规则集抹掉手机号、邮箱、密钥、证件号、银行卡号、IP 等隐私信息，产出只含类别与计数的聚合报告，且对已去敏文本重跑结果不变。
 - `index.ts` 汇总转出以上全部文件。
 
 ## 认证契约边界
 
-认证域只定义邮箱六位验证码、`GET /me`、`POST logout` 和一枚按显式传入的 HTTPS 策略命名的不透明 Cookie 所需契约。请求邮箱只执行保守结构校验，不裁剪地址；authoring 使用同一规范化结果完成投递、摘要和身份写入。`sanitizeAuthReturnTo` 最多接受五百一十二字符，并只保留 `/tasks`、`/tasks/` 子路径、`/capabilities`、`/try` 与 `/try/` 子路径。绝对地址、双斜杠、反斜杠、控制字符、编码斜杠和其他路径统一回落到 `/tasks`。
+认证域只定义邮箱六位验证码、`GET /me`、`POST logout` 和一枚按显式传入的 HTTPS 策略命名的不透明 Cookie 所需契约。请求邮箱只执行保守结构校验，不裁剪地址；authoring 使用同一规范化结果完成投递、摘要和身份写入。`sanitizeAuthReturnTo` 最多接受五百一十二字符，并只保留既有业务路径，以及只含一个格式正确 `mar1` 不透明请求句柄的 OAuth 授权恢复路径。绝对地址、原始 OAuth 查询、附加参数、双斜杠、反斜杠、控制字符、编码斜杠和其他路径统一回落到 `/tasks`。
 
 ## 上下游
 

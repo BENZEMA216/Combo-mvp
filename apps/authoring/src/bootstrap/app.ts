@@ -5,6 +5,7 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import type { Redis } from 'ioredis';
 import {
   ErrorCode,
   errorBodyFor,
@@ -31,6 +32,7 @@ import {
 import '../platform/http/fastify.js';
 import { PgBillingRepository } from '../modules/billing/repo.js';
 import { startBillingReconciler } from '../modules/billing/reconcile.js';
+import { registerExternalMcpRoutes } from '../modules/external-mcp/routes.js';
 
 /** 生成/继承请求 traceId。 */
 function resolveRequestTraceId(
@@ -43,10 +45,29 @@ function resolveRequestTraceId(
 export interface BuildAppOptions {
   /** 覆盖 env（测试用）。 */
   env?: Env;
+  /** 仅 NODE_ENV=test 可显式使用进程内计数；所有其他运行模式强制共享 redis_hot。 */
+  httpRateLimitStore?: 'shared-redis' | 'memory';
+}
+
+export function sharedHttpRateLimitOptions(env: Pick<Env, 'COMBO_ENVIRONMENT'>, redis: Redis) {
+  return {
+    global: false as const,
+    max: 100,
+    timeWindow: '1 minute',
+    redis,
+    // Test / Preview / Production 可能共享 Redis 实例，key 空间必须按发布环境隔离。
+    nameSpace: `combo:${encodeURIComponent(env.COMBO_ENVIRONMENT)}:http-rate-limit:`,
+    // Redis 故障时拒绝受限请求；不能静默退化到各副本的本地计数。
+    skipOnError: false,
+  };
 }
 
 export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? loadEnv();
+  const httpRateLimitStore = opts.httpRateLimitStore ?? 'shared-redis';
+  if (httpRateLimitStore === 'memory' && env.NODE_ENV !== 'test') {
+    throw new Error('in-memory HTTP rate limiting is only allowed in NODE_ENV=test');
+  }
   const app = Fastify({
     // 请求体上限：助手分片上传是 JSON 体（单片 2MB 文本 + JSON 转义开销），8MB 足够且不失守。
     bodyLimit: 32 * 1024 * 1024, // 与 nginx client_max_body_size 32m 对齐；分片 2MB 文本 JSON 转义后仍有充分余量
@@ -78,11 +99,17 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     credentials: true,
   });
   await app.register(cookie);
-  await app.register(rateLimit, {
-    global: false, // 默认不全局限流
-    max: 100,
-    timeWindow: '1 minute',
-  });
+  await app.register(
+    rateLimit,
+    httpRateLimitStore === 'memory'
+      ? {
+          global: false, // inject 单测显式使用进程内计数
+          max: 100,
+          timeWindow: '1 minute',
+          skipOnError: false,
+        }
+      : sharedHttpRateLimitOptions(env, infra.redisHot),
+  );
 
   // 把每请求 traceId 暴露在 reply 头（前端「反馈代码」用）+ 进日志上下文。
   app.addHook('onRequest', async (req, reply) => {
@@ -122,7 +149,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       route.endsWith('/auth/email/challenges') ||
       route.endsWith('/auth/email/verifications') ||
       route.endsWith('/auth/logout') ||
-      route.endsWith('/me');
+      route.endsWith('/me') ||
+      route.includes('/external-mcp/') ||
+      route.includes('/.well-known/oauth-') ||
+      route.endsWith('/codex-plugin');
     const oversizedMessage = authRoute
       ? '认证请求内容过大，请检查后重试。'
       : '这一片内容太大，重跑助手命令即可（新版脚本会切成更小的分片）。';
@@ -159,6 +189,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
 
   // 公开发布身份（无密钥、no-store），供部署验收核对 API 与同一 release manifest。
   await registerVersionRoute(app, env);
+
+  // OAuth 发现、授权、Streamable HTTP MCP 与公开安装页使用根级规范路径。
+  await registerExternalMcpRoutes(app);
 
   // 业务路由（account / task / capability / agent-project / billing）。
   await registerBusinessRoutes(app);

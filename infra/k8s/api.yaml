@@ -58,6 +58,7 @@ spec:
               value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
             - name: REDIS_QUEUE_URL
               value: redis://redis-queue:6379/0
+            # 两个 API replica 共用 redis-hot 路由限流；插件按 COMBO_ENVIRONMENT 隔离 key。
             - name: REDIS_HOT_URL
               value: redis://redis-hot:6379/0
             - name: S3_ENDPOINT
@@ -76,6 +77,10 @@ spec:
             # 第一方认证写入只在 authoring API。生产基址固定为官方 HTTPS 地址。
             - name: PUBLIC_APP_ORIGINS
               value: combo-public-app-origin
+            - name: EXTERNAL_MCP_PUBLIC_ORIGIN
+              value: combo-external-mcp-public-origin
+            - name: MCP_RUNTIME_INTERNAL_BASE_URL
+              value: http://runtime:3100
             - name: SESSION_COOKIE_SECURE
               value: combo-session-cookie-secure
             - name: RESEND_API_KEY

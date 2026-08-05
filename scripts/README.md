@@ -44,5 +44,5 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 ## 其他脚本
 
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
-- `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
+- `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施、已废弃认证栈或真实 Cookie/OAuth 凭据形状。它调用 `production-auth-scan.mjs`；通用 `refreshToken` 实现标识符是安全源码，命中凭据时只向 CI 输出文件、行号和类别，绝不回显值。
 - `scripts/integration/`：CI 集成测试脚本。

@@ -7,6 +7,7 @@
 - `index.ts` 组装数据库、对象存储、Redis 事件设施和 SandboxBackend。
 - `db.ts` 封装 PostgreSQL 连接池、可取消事务、事务级锁等待和语句超时、就绪探针与关闭逻辑。
 - `auth-session.ts` 校验不透明 Cookie 格式，计算 SHA-256 摘要并只读联查 `auth_sessions` 与 `users`。未知、过期和撤销会话收口为无效状态，停用账号单独返回。
+- `mcp-access-token.ts` 只为集群内 Runtime 委托路由校验 OAuth access token 摘要、固定 resource、有效期、scope 与账号状态。Runtime 不读取 OAuth 客户端、授权码或 refresh token。
 - `redis.ts`、`redis-interrupt-bus.ts`、`redis-event-log.ts` 和 `event-bus.ts` 负责 Redis 连接、跨实例打断、事件日志、终态栅栏和实时直播。
 - `object-store.ts` 封装 MinIO 或 S3 对象读写，并把中止信号传给 S3 客户端。
 - `llm.ts` 负责模型来源、模型编号和 Runtime 内凭据选择。

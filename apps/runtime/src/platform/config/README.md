@@ -1,8 +1,8 @@
 # platform/config 环境配置
 
-`env.ts` 使用 Zod 解析 Runtime 配置。生产缺少数据库、Redis、对象存储、`PUBLIC_APP_ORIGINS`、`SESSION_COOKIE_SECURE` 或完整发布元数据时拒绝启动。公开站点使用最多八项的严格逗号列表，不接受空白、重复项、路径、凭据或隐式规范化。
+`env.ts` 使用 Zod 解析 Runtime 配置。生产缺少数据库、Redis、对象存储、`PUBLIC_APP_ORIGINS`、`EXTERNAL_MCP_PUBLIC_ORIGIN`、`SESSION_COOKIE_SECURE` 或完整发布元数据时拒绝启动。公开站点使用最多八项的严格逗号列表，不接受空白、重复项、路径、凭据或隐式规范化；远程 MCP 规范 origin 必须是其中一个 HTTPS origin，不能从请求 Host 推导。
 
-浏览器认证只读取 PostgreSQL 中的共享不透明会话，不配置远端身份提供商、JWT 用户验签、开发登录或会话签名密钥。发布身份来自 `COMBO_ENVIRONMENT`、`COMBO_SOURCE_SHA`、`COMBO_RELEASE_ID`、`COMBO_BUILT_AT`、`COMBO_RELEASE_MANIFEST_DIGEST` 和 `COMBO_WEB_ASSET_MANIFEST`。
+浏览器认证只读取 PostgreSQL 中的共享不透明会话，不配置远端身份提供商、JWT 用户验签、开发登录或会话签名密钥。集群内 MCP 委托只按 `EXTERNAL_MCP_PUBLIC_ORIGIN` 组成的精确 resource 校验 access-token 摘要。发布身份来自 `COMBO_ENVIRONMENT`、`COMBO_SOURCE_SHA`、`COMBO_RELEASE_ID`、`COMBO_BUILT_AT`、`COMBO_RELEASE_MANIFEST_DIGEST` 和 `COMBO_WEB_ASSET_MANIFEST`。
 
 `SESSION_COOKIE_SECURE` 独立于 `NODE_ENV`。Test、Preview 与 Production 发布身份都必须选择 Secure Cookie 和 HTTPS origin；非 production 的本地开发仍可显式选择非 Secure Cookie 和 HTTP origin。Runtime 与 authoring 对这两个配置使用相同语义。
 
