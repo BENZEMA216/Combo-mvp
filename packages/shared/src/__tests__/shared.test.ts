@@ -21,6 +21,13 @@ import {
   SESSION_TITLE_MAX_LENGTH,
   SendMessageBodySchema,
   UpdateSessionBodySchema,
+  AgentDefinitionSchema,
+  AgentTestListItemSchema,
+  AgentTestListSchema,
+  CommitAgentRevisionBodySchema,
+  ListAgentProjectTestsQuerySchema,
+  SaveAgentUiRevisionBodySchema,
+  canonicalJson,
 } from '../index.js';
 import { z } from 'zod';
 
@@ -307,5 +314,115 @@ describe('响应包络', () => {
   it('envelope factory 包 data', () => {
     const schema = envelopeSchema(z.object({ ok: z.boolean() }));
     expect(schema.safeParse({ data: { ok: true } }).success).toBe(true);
+  });
+});
+
+describe('Agent Builder V1 契约', () => {
+  const capabilityId = '11111111-1111-4111-8111-111111111111';
+  const otherCapabilityId = '22222222-2222-4222-8222-222222222222';
+  const artifactId = '33333333-3333-4333-8333-333333333333';
+  const definition = {
+    schemaVersion: 'combo.agent/1',
+    identity: { name: '访谈洞察', summary: '提炼访谈中的结构化洞察' },
+    interface: {
+      inputs: [{ key: 'transcript', label: '访谈记录', type: 'text', required: true }],
+      output: { type: 'structured', schema: { type: 'object' } },
+      starterPrompts: ['分析这份访谈'],
+    },
+    behavior: {
+      instructions: '仅根据用户提供的访谈材料提炼洞察，并标记证据不足之处。',
+      capabilities: [{ capabilityId, role: 'entry' }],
+    },
+    ui: { kind: 'miniapp-html', artifactId, bridgeVersion: 1 },
+    runtime: { mode: 'single-loop' },
+  };
+
+  it('只接受一个 entry Capability，并拒绝重复绑定', () => {
+    expect(AgentDefinitionSchema.safeParse(definition).success).toBe(true);
+    expect(
+      AgentDefinitionSchema.safeParse({
+        ...definition,
+        behavior: {
+          ...definition.behavior,
+          capabilities: [
+            { capabilityId, role: 'entry' },
+            { capabilityId: otherCapabilityId, role: 'entry' },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      AgentDefinitionSchema.safeParse({
+        ...definition,
+        behavior: {
+          ...definition.behavior,
+          capabilities: [
+            { capabilityId, role: 'entry' },
+            { capabilityId, role: 'support' },
+          ],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('保存 Revision 必须显式给 expectedHeadRevisionId 与 mutationId', () => {
+    expect(
+      CommitAgentRevisionBodySchema.safeParse({
+        expectedHeadRevisionId: null,
+        mutationId: 'mutation-first-revision',
+        changeSummary: '创建第一版',
+        definition,
+      }).success,
+    ).toBe(true);
+    expect(
+      CommitAgentRevisionBodySchema.safeParse({
+        mutationId: 'mutation-first-revision',
+        changeSummary: '创建第一版',
+        definition,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('保存 Agent UI 必须携带可稳定重放的幂等键', () => {
+    expect(
+      SaveAgentUiRevisionBodySchema.safeParse({
+        html: '<!doctype html><html></html>',
+        idempotencyKey: 'ui-save-0001',
+      }).success,
+    ).toBe(true);
+    expect(
+      SaveAgentUiRevisionBodySchema.safeParse({ html: '<!doctype html><html></html>' }).success,
+    ).toBe(false);
+  });
+
+  it('Project Test 恢复合同接受 starting claim，并把列表上限固定为 50', () => {
+    const starting = {
+      id: '44444444-4444-4444-8444-444444444444',
+      projectId: '55555555-5555-4555-8555-555555555555',
+      agentRevisionId: '66666666-6666-4666-8666-666666666666',
+      requestKey: 'agent-test-request-1',
+      sessionId: null,
+      turnId: null,
+      status: 'starting',
+      errorCode: null,
+      createdAt: '2026-08-05T12:00:00.000Z',
+      completedAt: null,
+    };
+    expect(AgentTestListItemSchema.safeParse(starting).success).toBe(true);
+    expect(AgentTestListItemSchema.safeParse({ ...starting, status: 'queued' }).success).toBe(
+      false,
+    );
+    expect(ListAgentProjectTestsQuerySchema.parse({})).toEqual({ limit: 20 });
+    expect(ListAgentProjectTestsQuerySchema.parse({ limit: '50' })).toEqual({ limit: 50 });
+    expect(ListAgentProjectTestsQuerySchema.safeParse({ limit: '51' }).success).toBe(false);
+    expect(AgentTestListSchema.safeParse(Array.from({ length: 51 }, () => starting)).success).toBe(
+      false,
+    );
+  });
+
+  it('稳定 JSON 编码不受对象键插入顺序影响', () => {
+    expect(canonicalJson({ b: 2, a: { y: 2, x: 1 } })).toBe(
+      canonicalJson({ a: { x: 1, y: 2 }, b: 2 }),
+    );
   });
 });

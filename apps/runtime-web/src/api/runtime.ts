@@ -28,9 +28,14 @@ export function useCapabilities() {
   });
 }
 
-export function sessionsPath(capabilityId?: string, mode?: SessionMode): string {
+export function sessionsPath(
+  capabilityId?: string,
+  mode?: SessionMode,
+  agentProjectId?: string,
+): string {
   const params = new URLSearchParams();
   if (capabilityId) params.set('capabilityId', capabilityId);
+  if (agentProjectId) params.set('agentProjectId', agentProjectId);
   if (mode) params.set('mode', mode);
   const query = params.toString();
   return `/runtime/sessions${query ? `?${query}` : ''}`;
@@ -39,11 +44,17 @@ export function sessionsPath(capabilityId?: string, mode?: SessionMode): string 
 /** 我的会话列表；给 capabilityId 时只取该能力下的会话（对话页侧栏按能力隔离）。 */
 export function useSessions(
   capabilityId?: string,
-  options?: { enabled?: boolean; mode?: SessionMode },
+  options?: { enabled?: boolean; mode?: SessionMode; agentProjectId?: string },
 ) {
   return useQuery({
-    queryKey: ['sessions', capabilityId ?? null, options?.mode ?? null],
-    queryFn: () => apiGet<SessionView[]>(sessionsPath(capabilityId, options?.mode)),
+    queryKey: [
+      'sessions',
+      capabilityId ?? null,
+      options?.mode ?? null,
+      options?.agentProjectId ?? null,
+    ],
+    queryFn: () =>
+      apiGet<SessionView[]>(sessionsPath(capabilityId, options?.mode, options?.agentProjectId)),
     enabled: options?.enabled ?? true,
   });
 }
@@ -61,6 +72,18 @@ export function useCreateSession() {
   return useMutation({
     mutationFn: (capabilityId: string) =>
       apiPost<SessionView>('/runtime/sessions', { capabilityId }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
+    },
+  });
+}
+
+/** 从 Project 当前不可变 Release 创建会话；服务端会把 Revision/Release 固定进 Session。 */
+export function useCreateReleasedAgentSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (projectId: string) =>
+      apiPost<SessionView>(`/runtime/agents/${projectId}/sessions`, {}),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['sessions'] });
     },

@@ -6,6 +6,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { SESSION_TITLE_MAX_LENGTH, type Role, type SessionView } from '@cb/shared';
 import {
   useArchiveSession,
+  useCreateReleasedAgentSession,
   useCreateSession,
   useSessions,
   useUpdateSessionTitle,
@@ -52,6 +53,7 @@ export function isRuntimeNavigationTarget(target: string): boolean {
 export function SessionSidebar({
   activeSessionId,
   capabilityId,
+  agentProjectId,
   capabilityName,
   returnTo,
   runningSessionId,
@@ -62,6 +64,8 @@ export function SessionSidebar({
   activeSessionId?: string;
   /** 当前能力：会话列表与「新会话」都限定在它下面；缺省（加载中）时列表为空态。 */
   capabilityId?: string;
+  /** Released Agent 会话按 Project 隔离，并继续从同一个当前 Release 新建。 */
+  agentProjectId?: string;
   capabilityName?: string;
   returnTo?: string | null;
   /** 当前正在生成的会话不能归档；服务端仍会做最终并发校验。 */
@@ -78,33 +82,38 @@ export function SessionSidebar({
   const accountName = me?.account ?? '当前账号';
   const role = me?.roles[0];
   const accountTitle = role ? (ROLE_LABEL[role] ?? DEFAULT_ROLE_LABEL) : DEFAULT_ROLE_LABEL;
-  const hasCapability = Boolean(capabilityId);
-  const sessions = useSessions(capabilityId, {
-    enabled: hasCapability,
+  const hasSessionScope = Boolean(capabilityId || agentProjectId);
+  const sessions = useSessions(agentProjectId ? undefined : capabilityId, {
+    enabled: hasSessionScope,
     mode: studioMode ? 'studio' : 'consume',
+    ...(agentProjectId ? { agentProjectId } : {}),
   });
   const createSession = useCreateSession();
+  const createReleasedAgentSession = useCreateReleasedAgentSession();
   const updateSession = useUpdateSessionTitle();
   const archiveSession = useArchiveSession();
   const [createError, setCreateError] = useState(false);
   const ordered = useMemo(
     () =>
-      [...(hasCapability ? (sessions.data ?? []) : [])].sort(
+      [...(hasSessionScope ? (sessions.data ?? []) : [])].sort(
         (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
       ),
-    [hasCapability, sessions.data],
+    [hasSessionScope, sessions.data],
   );
+  const createPending = createSession.isPending || createReleasedAgentSession.isPending;
 
   const startNewSession = () => {
-    if (!capabilityId || createSession.isPending) return;
+    if ((!capabilityId && !agentProjectId) || createPending) return;
     setCreateError(false);
-    createSession.mutate(capabilityId, {
-      onSuccess: (session) => {
+    const callbacks = {
+      onSuccess: (session: SessionView) => {
         onNavigate?.();
         navigate(appendRuntimeReturnTo(`/session/${session.id}`, safeReturnTo));
       },
       onError: () => setCreateError(true),
-    });
+    };
+    if (agentProjectId) createReleasedAgentSession.mutate(agentProjectId, callbacks);
+    else if (capabilityId) createSession.mutate(capabilityId, callbacks);
   };
 
   const renameSession = async (sessionId: string, title: string) => {
@@ -149,20 +158,22 @@ export function SessionSidebar({
         {studioMode ? `${capabilityName ?? 'Agent'} · UI 设计` : (capabilityName ?? '会话')}
       </div>
       <div className="rt-sidebar__list">
-        {capabilityId && !studioMode && (
+        {hasSessionScope && !studioMode && (
           <button
             type="button"
             className="rt-sidebar__item rt-sidebar__item--action"
-            disabled={createSession.isPending}
+            disabled={createPending}
             onClick={startNewSession}
           >
             <span className="rt-sidebar__avatar">＋</span>
             <span className="rt-sidebar__item-copy">
-              <span className="rt-sidebar__item-title">
-                {createSession.isPending ? '创建中…' : '新会话'}
-              </span>
+              <span className="rt-sidebar__item-title">{createPending ? '创建中…' : '新会话'}</span>
               <span className="rt-sidebar__item-cap">
-                {createError ? '没建成，点击重试' : '用这个能力再开一次'}
+                {createError
+                  ? '没建成，点击重试'
+                  : agentProjectId
+                    ? '从当前发布版本再开一次'
+                    : '用这个能力再开一次'}
               </span>
             </span>
           </button>
@@ -181,7 +192,7 @@ export function SessionSidebar({
             onNavigate={onNavigate}
           />
         ))}
-        {hasCapability && sessions.data && ordered.length === 0 && (
+        {hasSessionScope && sessions.data && ordered.length === 0 && (
           <div className="rt-sidebar__empty">
             {studioMode ? '还没有设计记录' : '这个能力下还没有会话'}
           </div>

@@ -1,10 +1,10 @@
 // artifacts 表 SQL。模型工具使用不可变正文对象，并在 running Turn 守卫下更新可见索引。
-import { randomUUID } from 'node:crypto';
-import type { ArtifactView, SessionMode } from '@cb/shared';
+import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJson, type ArtifactView, type SessionMode } from '@cb/shared';
 import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
 import type { RuntimeObjectStore } from '../../platform/infra/object-store.js';
 import { toIso } from '../session/repo.js';
-import { validateStudioHtml } from './studio-contract.js';
+import { StudioArtifactValidationError, validateStudioHtml } from './studio-contract.js';
 
 /** 产物内容所在桶。 */
 export const ARTIFACT_BUCKET = 'combo-artifacts' as const;
@@ -232,6 +232,14 @@ export async function readCapabilityUiArtifact(
 export async function bindCapabilityUiArtifact(
   db: Queryable,
   input: { capabilityId: string; artifactId: string; studioSessionId: string; turnId: string },
+): Promise<boolean> {
+  return bindCapabilityUiArtifactWithGuard(db, input, false);
+}
+
+/** Codex 直接保存的 Studio HTML 没有来源 Turn，但仍必须来自同 owner/capability 的 active Studio。 */
+export async function bindDirectStudioUiArtifact(
+  db: Queryable,
+  input: { capabilityId: string; artifactId: string; studioSessionId: string },
 ): Promise<boolean> {
   return bindCapabilityUiArtifactWithGuard(db, input, false);
 }
@@ -464,6 +472,193 @@ export async function seedCapabilityUiArtifact(
     return upsertArtifact(tx, {
       ...candidate,
       sessionId: input.targetSessionId,
+    });
+  });
+}
+
+export class DirectUiSessionBusyError extends Error {
+  constructor() {
+    super('Studio session has a running Turn');
+    this.name = 'DirectUiSessionBusyError';
+  }
+}
+
+export class DirectUiIdempotencyConflictError extends Error {
+  constructor() {
+    super('Agent UI idempotency key was reused with a different request');
+    this.name = 'DirectUiIdempotencyConflictError';
+  }
+}
+
+function directUiArtifactId(sessionId: string, idempotencyKey: string): string {
+  const hex = createHash('sha256')
+    .update(`combo-agent-ui\0${sessionId}\0${idempotencyKey}`)
+    .digest('hex')
+    .slice(0, 32);
+  const variant = ((Number.parseInt(hex[16] ?? '0', 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-${variant}${hex.slice(17, 20)}-${hex.slice(20)}`;
+}
+
+async function readDirectStudioUiRequest(
+  db: Queryable,
+  sessionId: string,
+  idempotencyKey: string,
+): Promise<ArtifactDbRow | null> {
+  const result = await db.query<ArtifactDbRow>(
+    `SELECT id, session_id, turn_id, kind, title, storage_key, meta, created_at, updated_at
+       FROM artifacts
+      WHERE session_id = $1
+        AND turn_id IS NULL
+        AND kind = 'html'
+        AND meta ->> 'authoringSurface' = 'codex'
+        AND meta ->> 'idempotencyKey' = $2
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1`,
+    [sessionId, idempotencyKey],
+  );
+  return result.rows[0] ?? null;
+}
+
+function replayDirectStudioUiRequest(
+  row: ArtifactDbRow,
+  requestSha256: string,
+  htmlSha256: string,
+): { artifact: ArtifactView; sha256: string; created: false } {
+  if (row.meta?.idempotencySha256 !== requestSha256 || row.meta?.sha256 !== htmlSha256) {
+    throw new DirectUiIdempotencyConflictError();
+  }
+  return { artifact: toView(row), sha256: htmlSha256, created: false };
+}
+
+/** Codex 在不启动模型 Turn 的情况下保存一份合规 HTML revision，并原子设为 Capability 当前 UI。 */
+export async function saveDirectStudioUiRevision(
+  db: RuntimeDb,
+  objectStore: RuntimeObjectStore,
+  input: {
+    sessionId: string;
+    capabilityId: string;
+    ownerUserId: string;
+    title: string;
+    html: string;
+    idempotencyKey: string;
+  },
+): Promise<{ artifact: ArtifactView; sha256: string; created: boolean }> {
+  const validation = validateStudioHtml(input.html);
+  if (!validation.ok) throw new StudioArtifactValidationError(validation.errors);
+  const sha256 = createHash('sha256').update(input.html).digest('hex');
+  const requestSha256 = createHash('sha256')
+    .update(canonicalJson({ html: input.html, title: input.title }))
+    .digest('hex');
+  const replay = await readDirectStudioUiRequest(db, input.sessionId, input.idempotencyKey);
+  if (replay) return replayDirectStudioUiRequest(replay, requestSha256, sha256);
+
+  const id = directUiArtifactId(input.sessionId, input.idempotencyKey);
+  const storageKey = artifactVersionStorageKey(input.sessionId, id, requestSha256);
+  await objectStore.putObject(ARTIFACT_BUCKET, storageKey, new TextEncoder().encode(input.html), {
+    contentType: contentTypeFor('html'),
+  });
+  const artifact = await withTransaction(db, async (tx) => {
+    const target = await tx.query<{ id: string }>(
+      `SELECT id
+         FROM sessions
+        WHERE id = $1
+          AND capability_id = $2
+          AND owner_user_id = $3
+          AND mode = 'studio'
+          AND status = 'active'
+        FOR UPDATE`,
+      [input.sessionId, input.capabilityId, input.ownerUserId],
+    );
+    if (!target.rows[0]) throw new Error('saveDirectStudioUiRevision: session identity mismatch');
+    const running = await tx.query<{ exists: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM turns WHERE session_id = $1 AND status = 'running'
+       ) AS exists`,
+      [input.sessionId],
+    );
+    if (running.rows[0]?.exists) throw new DirectUiSessionBusyError();
+    const concurrent = await readDirectStudioUiRequest(tx, input.sessionId, input.idempotencyKey);
+    if (concurrent) return replayDirectStudioUiRequest(concurrent, requestSha256, sha256);
+    const view = await upsertArtifact(tx, {
+      id,
+      sessionId: input.sessionId,
+      kind: 'html',
+      title: input.title,
+      storageKey,
+      meta: {
+        authoringSurface: 'codex',
+        sha256,
+        idempotencyKey: input.idempotencyKey,
+        idempotencySha256: requestSha256,
+      },
+    });
+    const bound = await bindDirectStudioUiArtifact(tx, {
+      capabilityId: input.capabilityId,
+      artifactId: id,
+      studioSessionId: input.sessionId,
+    });
+    if (!bound) throw new Error('saveDirectStudioUiRevision: capability UI bind failed');
+    return { artifact: view, sha256, created: true as const };
+  });
+  return artifact;
+}
+
+/** 给 Revision-pinned Session 复制冻结 UI；不读取 Capability 的可变 current UI。 */
+export async function seedAgentRevisionUiArtifact(
+  db: RuntimeDb,
+  objectStore: RuntimeObjectStore,
+  input: {
+    revisionId: string;
+    sourceArtifactId: string;
+    sourceStorageKey: string;
+    sourceUiSha256: string;
+    capabilityId: string;
+    targetSessionId: string;
+    targetOwnerUserId: string;
+  },
+): Promise<ArtifactView> {
+  const preliminary = await readLatestHtmlArtifactInSession(db, input.targetSessionId);
+  if (preliminary) return toView(existingToDbRow(preliminary));
+  const content = await objectStore.getObject(ARTIFACT_BUCKET, input.sourceStorageKey);
+  const actualSha = createHash('sha256').update(content).digest('hex');
+  if (actualSha !== input.sourceUiSha256) {
+    throw new Error('seedAgentRevisionUiArtifact: UI digest mismatch');
+  }
+  const html = new TextDecoder().decode(content);
+  const validation = validateStudioHtml(html);
+  if (!validation.ok) throw new StudioArtifactValidationError(validation.errors);
+  const id = randomUUID();
+  const storageKey = artifactStorageKey(input.targetSessionId, id);
+  await objectStore.putObject(ARTIFACT_BUCKET, storageKey, content, {
+    contentType: contentTypeFor('html'),
+  });
+  return withTransaction(db, async (tx) => {
+    const target = await tx.query<{ id: string }>(
+      `SELECT id
+         FROM sessions
+        WHERE id = $1
+          AND capability_id = $2
+          AND owner_user_id = $3
+          AND mode = 'consume'
+          AND status = 'active'
+          AND agent_revision_id = $4
+        FOR UPDATE`,
+      [input.targetSessionId, input.capabilityId, input.targetOwnerUserId, input.revisionId],
+    );
+    if (!target.rows[0]) throw new Error('seedAgentRevisionUiArtifact: session identity mismatch');
+    const existing = await readLatestHtmlArtifactInSession(tx, input.targetSessionId);
+    if (existing) return toView(existingToDbRow(existing));
+    return upsertArtifact(tx, {
+      id,
+      sessionId: input.targetSessionId,
+      kind: 'html',
+      title: 'Agent UI',
+      storageKey,
+      meta: {
+        sourceArtifactId: input.sourceArtifactId,
+        agentRevisionId: input.revisionId,
+        uiSha256: input.sourceUiSha256,
+      },
     });
   });
 }

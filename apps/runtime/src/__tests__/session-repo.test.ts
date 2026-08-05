@@ -3,6 +3,7 @@ import {
   appendTurnMessage,
   archiveSession,
   createSession,
+  getOrCreateAgentTestSession,
   getOrCreateStudioSession,
   getMessages,
   getSession,
@@ -75,6 +76,27 @@ describe('按轮消息仓库', () => {
 });
 
 describe('会话管理仓库', () => {
+  it('用 Test id 幂等复用同一条 active Revision-pinned Session', async () => {
+    const db = new FakeDb();
+    const cap = db.seedCapability({ owner_user_id: 'me' });
+    const input = {
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      capabilityId: cap.id,
+      ownerUserId: 'me',
+      agentProjectId: 'project-1',
+      agentRevisionId: 'revision-1',
+    };
+
+    const first = await getOrCreateAgentTestSession(db, input);
+    const replayed = await getOrCreateAgentTestSession(db, input);
+
+    expect(replayed).toEqual(first);
+    expect([...db.sessions.values()].filter((row) => row.id === input.sessionId)).toHaveLength(1);
+    await expect(
+      getOrCreateAgentTestSession(db, { ...input, agentRevisionId: 'revision-2' }),
+    ).rejects.toThrow('identity mismatch');
+  });
+
   it('普通运行与 Studio 分流；同一 owner + capability 原子复用 active Studio 会话', async () => {
     const { db, session: consume } = await setup();
     expect(consume.mode).toBe('consume');
@@ -97,6 +119,24 @@ describe('会话管理仓库', () => {
     expect(
       (await listSessions(db, 'me', consume.capabilityId, 'studio')).map((row) => row.id),
     ).toEqual([studioA.id]);
+  });
+
+  it('拒绝只带 Project 或只带 Revision 的畸形 Agent Session 身份', async () => {
+    const { db, session } = await setup();
+    await expect(
+      createSession(db, {
+        capabilityId: session.capabilityId,
+        ownerUserId: 'me',
+        agentProjectId: 'project-only',
+      }),
+    ).rejects.toThrow('Project and Revision pins together');
+    await expect(
+      createSession(db, {
+        capabilityId: session.capabilityId,
+        ownerUserId: 'me',
+        agentRevisionId: 'revision-only',
+      }),
+    ).rejects.toThrow('Project and Revision pins together');
   });
 
   it('Studio 会话归档后可以为同一 Agent 建立新的 active 会话', async () => {
@@ -139,6 +179,34 @@ describe('会话管理仓库', () => {
 
     const listed = await listSessions(db, 'me', session.capabilityId);
     expect(listed.map((item) => item.id)).toEqual([second.id]);
+  });
+
+  it('Capability 与 Released Agent 会话互相隔离，且 Project 列表排除 Test Session', async () => {
+    const { db, session: capabilitySession } = await setup();
+    const projectId = 'project-1';
+    const testSession = await createSession(db, {
+      capabilityId: capabilitySession.capabilityId,
+      ownerUserId: 'me',
+      agentProjectId: projectId,
+      agentRevisionId: 'revision-test',
+    });
+    const releasedSession = await createSession(db, {
+      capabilityId: capabilitySession.capabilityId,
+      ownerUserId: 'me',
+      agentProjectId: projectId,
+      agentRevisionId: 'revision-release',
+      agentReleaseId: 'release-1',
+    });
+
+    expect(
+      (await listSessions(db, 'me', capabilitySession.capabilityId)).map((row) => row.id),
+    ).toEqual([capabilitySession.id]);
+    expect(
+      (await listSessions(db, 'me', capabilitySession.capabilityId, 'consume', projectId)).map(
+        (row) => row.id,
+      ),
+    ).toEqual([releasedSession.id]);
+    expect(testSession.agentReleaseId).toBeNull();
   });
 
   it('运行中会话不能归档，轮次结束后才能原子转为 closed', async () => {

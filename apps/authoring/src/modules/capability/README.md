@@ -1,13 +1,13 @@
 # modules/capability — 能力项
 
-这个模块负责能力项的查询与发布。能力项是提取流水线从对话历史里归纳出的可复用工作流，capabilities 表只存名称、摘要等轻量索引，完整可运行定义存在 MinIO 里（表里记对象键 storage_key）。
+这个模块负责能力项的查询、完整定义审阅与发布。能力项是提取流水线从对话历史里归纳出的可复用工作流，capabilities 表只存名称、摘要等轻量索引，完整可运行定义存在 MinIO 里（表里记对象键 storage_key）。
 
 ## 文件
 
-- `routes.ts` 声明四个端点。两个 GET 查询要求登录；发布与取消发布先校验精确浏览器来源，再校验 Cookie 会话。
-- `handlers.ts` 是薄壳：校验分页游标和参数，调 repo，包统一响应信封；publish 时生成加密随机的 URL 安全分享令牌（share_token）传给 repo。
+- `routes.ts` 声明五个端点。三个 GET 查询要求登录；发布与取消发布先校验精确浏览器来源，再校验 Cookie 会话。
+- `handlers.ts` 是薄壳：校验分页游标和参数，调 repo，包统一响应信封；完整定义端点从对象存储读回并计算稳定摘要，publish 时生成加密随机的 URL 安全分享令牌（share_token）传给 repo。
 - `index.ts` 是本域对外出口：业务域之间只能经它互引（当前只导出 insertCapability，供 task 域流水线落库）。
-- `repo.ts` 收拢 capabilities 表 SQL：insertCapability（供流水线落库）、readCapabilityView、listCapabilityViews（按 id 倒序的游标分页）、publishCapability（置 published 并在没有 share_token 时补上，已有则保留旧值让分享链接稳定）、unpublishCapability（取消发布但保留 share_token）。所有查询都把 owner_user_id 写进 WHERE 条件，非本人和不存在同样返回 0 行，不暴露资源存在性。
+- `repo.ts` 收拢 capabilities 表 SQL：insertCapability（供流水线落库）、轻量视图与完整定义对象键读取、按 id 倒序的游标分页、publishCapability（置 published 并在没有 share_token 时补上，已有则保留旧值让分享链接稳定）、unpublishCapability（取消发布但保留 share_token）。所有查询都把 owner_user_id 写进 WHERE 条件，非本人和不存在同样返回 0 行，不暴露资源存在性。
 
 ## 上下游
 

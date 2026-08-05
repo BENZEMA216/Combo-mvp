@@ -2,7 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { EventType } from '@ag-ui/core';
 import type { CapabilityDefinition, SessionMode } from '@cb/shared';
-import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
+import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
 import type { RuntimeObjectStore } from '../../platform/infra/object-store.js';
 import type { PublishedStreamEvent, SessionEventBus } from '../../platform/infra/event-bus.js';
 import type { InterruptBus } from '../../platform/infra/redis-interrupt-bus.js';
@@ -94,6 +94,10 @@ export interface TurnRunner {
     definition: CapabilityDefinition;
     text: string;
     log: TurnLogger;
+    /** 允许上层预先固定 Turn identity，用于把外部幂等记录与 Turn 原子绑定。 */
+    turnId?: string;
+    /** 与 Turn/User Message 同一事务提交；抛错会回滚，模型不会开始执行。 */
+    beforeCommit?: (db: Queryable, turnId: string) => Promise<void>;
   }): Promise<StartTurnResult>;
   interrupt(sessionId: string): Promise<boolean>;
   dispose(signal?: AbortSignal): Promise<void>;
@@ -798,7 +802,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     async startTurn(input) {
       if (disposing) throw new Error('turn runner is shutting down');
       const sessionId = input.session.id;
-      const runId = randomUUID();
+      const runId = input.turnId ?? randomUUID();
       const controller = new AbortController();
       const transactionController = new AbortController();
       const running: ActiveTurn = {
@@ -848,6 +852,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               content: [{ type: 'text', text: input.text }],
               status: 'completed',
             });
+            await input.beforeCommit?.(tx, runId);
             // Publish the local handle before COMMIT. A concurrent interrupt waits on
             // the Session row, then can verify this exact runId instead of falling
             // through the post-commit/pre-handle gap.

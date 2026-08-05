@@ -8,3 +8,4 @@ export * from './sse.js';
 export * from './health.js';
 export * from './trace.js';
 export * from './release.js';
+export * from './canonical-json.js';

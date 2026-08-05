@@ -43,6 +43,15 @@ describe('runtime 会话管理 API', () => {
     expect(sessionsPath()).toBe('/runtime/sessions');
   });
 
+  it('Agent Project 会话列表使用独立参数并安全编码', () => {
+    expect(sessionsPath(undefined, 'consume', 'project id/with?query')).toBe(
+      '/runtime/sessions?agentProjectId=project+id%2Fwith%3Fquery&mode=consume',
+    );
+    expect(sessionsPath('capability-1', 'consume', 'project-1')).toBe(
+      '/runtime/sessions?capabilityId=capability-1&agentProjectId=project-1&mode=consume',
+    );
+  });
+
   it('改名使用 PATCH 并只提交 title', async () => {
     const fetchMock = vi.fn(async () => ok(session()));
     globalThis.fetch = fetchMock;

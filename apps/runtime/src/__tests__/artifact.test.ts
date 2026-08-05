@@ -6,7 +6,9 @@ import {
   ARTIFACT_BUCKET,
   artifactStorageKey,
   bindCapabilityUiArtifact,
+  DirectUiIdempotencyConflictError,
   readCapabilityUiArtifact,
+  saveDirectStudioUiRevision,
   seedCapabilityUiArtifact,
 } from '../modules/artifact/repo.js';
 import type { QueryResultLike } from '../platform/infra/db.js';
@@ -36,6 +38,9 @@ function setup(store: FakeObjectStore = new FakeObjectStore()) {
     id: SESSION,
     capability_id: 'cap-1',
     owner_user_id: 'owner-1',
+    agent_project_id: null,
+    agent_revision_id: null,
+    agent_release_id: null,
     mode: 'consume',
     title: null,
     status: 'active',
@@ -530,5 +535,41 @@ describe('capability 当前 UI 会话快照', () => {
         turnId,
       }),
     ).resolves.toBe(false);
+  });
+});
+
+describe('Codex direct Agent UI revision', () => {
+  it('replays one committed Artifact for the same key and rejects a different request', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: 'creator' });
+    const studio = await getOrCreateStudioSession(db, {
+      capabilityId: cap.id,
+      ownerUserId: 'creator',
+    });
+    const input = {
+      sessionId: studio.id,
+      capabilityId: cap.id,
+      ownerUserId: 'creator',
+      title: 'Agent Miniapp',
+      html: studioHtml('运行'),
+      idempotencyKey: 'ui-save-0001',
+    };
+
+    const created = await saveDirectStudioUiRevision(db, store, input);
+    const replayed = await saveDirectStudioUiRevision(db, store, input);
+
+    expect(created.created).toBe(true);
+    expect(replayed).toMatchObject({
+      created: false,
+      artifact: { id: created.artifact.id },
+      sha256: created.sha256,
+    });
+    expect(db.artifacts.size).toBe(1);
+    expect(store.objects.size).toBe(1);
+    await expect(
+      saveDirectStudioUiRevision(db, store, { ...input, html: studioHtml('另一版本') }),
+    ).rejects.toBeInstanceOf(DirectUiIdempotencyConflictError);
+    expect(db.artifacts.size).toBe(1);
   });
 });

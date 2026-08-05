@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
+import { listAgentProjectTestsHandler } from '../modules/agent-project/handlers.js';
 import {
   archiveSessionHandler,
   createSessionHandler,
@@ -31,6 +32,7 @@ import { createTurnRunner } from '../modules/agent/run-turn.js';
 import { createSessionEventBus } from '../platform/infra/event-bus.js';
 import { createInterruptBus } from '../platform/infra/redis-interrupt-bus.js';
 import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
+import type { QueryResultLike } from '../platform/infra/db.js';
 import {
   FakeDb,
   FakeObjectStore,
@@ -71,8 +73,16 @@ async function createDirectArtifactTool(input: {
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 11 endpoints (capability 1 + session 9 + artifact 1)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(11);
+  it('registers exactly 16 endpoints (capability 1 + session 9 + artifact 2 + agent-project 4)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(16);
+    expect(ALL_ENDPOINTS).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          method: 'GET',
+          url: '/runtime/agent-projects/:projectId/tests',
+        }),
+      ]),
+    );
   });
 
   it('no duplicate (method,url) pairs', () => {
@@ -166,6 +176,137 @@ async function call(handler: RouteHandlerMethod, req: FastifyRequest): Promise<C
   );
   return reply as unknown as Captured;
 }
+
+const AGENT_TEST_PROJECT_ID = '11111111-1111-4111-8111-111111111111';
+const OTHER_AGENT_PROJECT_ID = '22222222-2222-4222-8222-222222222222';
+
+class AgentProjectTestsRouteDb extends FakeDb {
+  testListReads = 0;
+
+  constructor(
+    private readonly projectOwnerUserId: string,
+    private readonly testRows: Record<string, unknown>[],
+  ) {
+    super();
+  }
+
+  override async query<R = Record<string, unknown>>(
+    sql: string,
+    params: unknown[] = [],
+  ): Promise<QueryResultLike<R>> {
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    if (normalized.startsWith('SELECT id FROM agent_projects')) {
+      const owned = params[0] === AGENT_TEST_PROJECT_ID && params[1] === this.projectOwnerUserId;
+      return {
+        rows: (owned ? [{ id: AGENT_TEST_PROJECT_ID }] : []) as R[],
+        rowCount: owned ? 1 : 0,
+      };
+    }
+    if (normalized.includes('FROM agent_tests t JOIN agent_projects p')) {
+      this.testListReads += 1;
+      const limit = params[2] as number;
+      const rows = [...this.testRows]
+        .sort(
+          (a, b) =>
+            String(b.created_at).localeCompare(String(a.created_at)) ||
+            String(b.id).localeCompare(String(a.id)),
+        )
+        .slice(0, limit);
+      return { rows: rows as R[], rowCount: rows.length };
+    }
+    return super.query<R>(sql, params);
+  }
+}
+
+describe('GET /runtime/agent-projects/:projectId/tests 恢复最近 Test', () => {
+  it('只返回本人 Project，并按查询上限包含 starting claim', async () => {
+    const db = new AgentProjectTestsRouteDb(ME, [
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        project_id: AGENT_TEST_PROJECT_ID,
+        agent_revision_id: '33333333-3333-4333-8333-333333333333',
+        request_key: 'agent-test-request-1',
+        session_id: null,
+        turn_id: null,
+        status: 'starting',
+        error_code: null,
+        created_at: '2026-08-05T12:00:00.000Z',
+        completed_at: null,
+      },
+    ]);
+
+    const mine = await call(
+      listAgentProjectTestsHandler(),
+      makeReq({
+        db,
+        userId: ME,
+        params: { projectId: AGENT_TEST_PROJECT_ID },
+        query: { limit: '1' },
+      }),
+    );
+
+    expect(mine.statusCode).toBe(200);
+    expect((mine.body as { data: unknown[] }).data).toEqual([
+      expect.objectContaining({
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        agentRevisionId: '33333333-3333-4333-8333-333333333333',
+        requestKey: 'agent-test-request-1',
+        status: 'starting',
+        sessionId: null,
+        turnId: null,
+      }),
+    ]);
+    expect(db.testListReads).toBe(1);
+  });
+
+  it('他人 Project 与不存在 Project 同样返回 404，且不读取 Test', async () => {
+    const foreignDb = new AgentProjectTestsRouteDb(ME, []);
+    const foreign = await call(
+      listAgentProjectTestsHandler(),
+      makeReq({
+        db: foreignDb,
+        userId: OTHER,
+        params: { projectId: AGENT_TEST_PROJECT_ID },
+      }),
+    );
+    const missingDb = new AgentProjectTestsRouteDb(ME, []);
+    const missing = await call(
+      listAgentProjectTestsHandler(),
+      makeReq({
+        db: missingDb,
+        userId: ME,
+        params: { projectId: OTHER_AGENT_PROJECT_ID },
+      }),
+    );
+
+    expect(foreign.statusCode).toBe(404);
+    expect(missing.statusCode).toBe(404);
+    expect(foreign.body).toEqual(missing.body);
+    expect(foreignDb.testListReads).toBe(0);
+    expect(missingDb.testListReads).toBe(0);
+  });
+
+  it('本人无 Test 返回空列表，非法 limit 返回 400', async () => {
+    const db = new AgentProjectTestsRouteDb(ME, []);
+    const empty = await call(
+      listAgentProjectTestsHandler(),
+      makeReq({ db, userId: ME, params: { projectId: AGENT_TEST_PROJECT_ID } }),
+    );
+    const invalid = await call(
+      listAgentProjectTestsHandler(),
+      makeReq({
+        db,
+        userId: ME,
+        params: { projectId: AGENT_TEST_PROJECT_ID },
+        query: { limit: '51' },
+      }),
+    );
+
+    expect(empty.statusCode).toBe(200);
+    expect((empty.body as { data: unknown[] }).data).toEqual([]);
+    expect(invalid.statusCode).toBe(400);
+  });
+});
 
 async function seedOwnedSession(db: FakeDb, owner: string): Promise<string> {
   const cap = db.seedCapability({ owner_user_id: owner });

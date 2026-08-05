@@ -1,6 +1,6 @@
 # core — 契约地基
 
-这个目录定义与具体业务无关的基础契约：ID 与时间格式、响应包络、分页、错误、进度、流式帧、健康检查、发布身份和链路追踪。domains 与两个服务都建立在它之上，依赖方向单向（core 不引用 domains）。
+这个目录定义与具体业务无关的基础契约：ID 与时间格式、响应包络、分页、错误、进度、流式帧、健康检查、发布身份、稳定 JSON 编码和链路追踪。domains 与两个服务都建立在它之上，依赖方向单向（core 不引用 domains）。
 
 ## 文件
 
@@ -13,6 +13,7 @@
 - `health.ts` 定义 `/health` 与 `/ready` 两个探针的响应契约。数据库、两个 Redis 连接和 MinIO 计入就绪，模型服务只影响降级状态；外部邮件供应商不计入就绪。
 - `trace.ts` 提供 traceId 工具：UUID 与 W3C traceparent 请求头格式互转、从请求头或 URL 参数提取 traceId、生成新的 traceId 和 spanId。
 - `release.ts` 定义运行时发布身份 schema、环境变量映射和无缓存加载函数。加载函数校验完整 source SHA、确定性 releaseId、构建时间及两个摘要，并把网络、HTTP 和畸形响应收敛成稳定失败分类。
+- `canonical-json.ts` 对已经通过边界校验的 JSON 值做稳定编码。对象键按字典序排列，数组保持原顺序，Agent Compiler 用其生成跨进程一致的内容摘要。
 - `index.ts` 汇总转出以上全部文件。
 
 ## 上下游

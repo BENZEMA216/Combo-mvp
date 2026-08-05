@@ -53,6 +53,16 @@ export const CapabilityDefinitionSchema = z.object({
 });
 export type CapabilityDefinition = z.infer<typeof CapabilityDefinitionSchema>;
 
+/** 创作者审阅能力时读取的完整不可变定义与摘要，Codex 组装 Agent 前使用。 */
+export const CapabilityDetailSchema = z
+  .object({
+    capability: CapabilityViewSchema,
+    definition: CapabilityDefinitionSchema,
+    definitionSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export type CapabilityDetail = z.infer<typeof CapabilityDetailSchema>;
+
 // ---------- 发布 ----------
 export const PublishResultSchema = z.object({
   id: IdSchema,

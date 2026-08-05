@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0009`，已经发布的 `0000` 至 `0006` 保持原样；第一方邮箱认证、应用数据库角色和共享 Agent 计费只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0010`，已经发布的 `0000` 至 `0006` 保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费和 Agent Builder 聚合层只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
 
 ## 迁移文件
 
@@ -14,8 +14,9 @@
 - `0007_first_party_email_auth.sql` 只允许空用户库切换到第一方邮箱验证码，删除旧外部身份列，并创建身份、挑战、不透明会话和低敏认证审计表。
 - `0008_application_database_roles.sql` 创建 API、worker 与 runtime 三个无登录角色，撤销默认权限并按当前业务职责授予最小权限。
 - `0009_billing.sql` 创建全局钱包、按用户与 Agent 隔离的免费额度、使用预留、充值订单、支付尝试、低敏回调事件和不可变资金流水，并补充计费最小权限。
+- `0010_agent_builder_v1.sql` 创建 Agent Project、不可变 Revision、真实 Runtime Test 和不可变 Release，给 Session 增加 Revision/Release 固定指针，并用复合外键、带过期租约的 Test 启动状态机和发布 Trigger 保证测试与发布引用同一份 Runtime Bundle 和 UI。它还为 Codex 直接 UI 保存建立 Session 内幂等唯一索引。Test 的 Turn、首条 Message 与 `starting → running` 在同一个事务提交，崩溃遗留的纯启动 claim 可安全接管，不会重复执行模型。
 
-`users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。
+`users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`agent_projects` 只保存创作 Head 与当前 Release 两个可变指针，`agent_revisions`、`agent_tests` 与 `agent_releases` 冻结 Runtime Bundle、UI 摘要和验证关系；Test 还冻结输出契约与幂等请求摘要。`sessions` 用 Project/Revision/Release 三个不可变指针区分共享同一 entry Capability 的 Agent，`turns`、`messages` 与 `artifacts` 保存运行和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。
 
 ## 认证与权限
 
@@ -33,7 +34,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0009_billing.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0010_agent_builder_v1.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test

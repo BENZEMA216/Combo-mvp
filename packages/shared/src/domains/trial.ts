@@ -44,6 +44,12 @@ export type SendMessageBody = z.infer<typeof SendMessageBodySchema>;
 export const SessionViewSchema = z.object({
   id: IdSchema,
   capabilityId: IdSchema,
+  /** Agent Builder 会话所属 Project；普通 Capability 会话没有。 */
+  agentProjectId: IdSchema.optional(),
+  /** Agent Builder 会话固定的不可变 Revision；旧 Capability 会话没有。 */
+  agentRevisionId: IdSchema.optional(),
+  /** 正式消费会话固定的 Release；创作者 Test 只有 Revision。 */
+  agentReleaseId: IdSchema.optional(),
   /** 旧客户端可不传；runtime 返回的新响应始终包含。 */
   mode: SessionModeSchema.optional(),
   title: z.string().optional(),
@@ -113,6 +119,7 @@ export const TerminalTurnErrorCodeSchema = z.enum([
   'TURN_INTERRUPTED',
   'TURN_SHUTDOWN',
   'TURN_STUDIO_ARTIFACT_MISSING',
+  'AGENT_OUTPUT_INVALID',
   'TURN_FAILED',
 ]);
 export type TerminalTurnErrorCode = z.infer<typeof TerminalTurnErrorCodeSchema>;
