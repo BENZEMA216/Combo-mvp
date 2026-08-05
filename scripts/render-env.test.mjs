@@ -105,7 +105,6 @@ test('renders the billing payment wiring into api and the fixed policy into runt
   const digest = releaseManifestDigest(manifest);
   const apps = render('test', 'apps', path, digest);
   const paymentEnvironmentNames = [
-    'BILLING_RECHARGE_PACKAGES_JSON',
     'LESHOUYING_ENABLED',
     'LESHOUYING_ENVIRONMENT',
     'LESHOUYING_PRODUCTION_ENABLED',
@@ -113,7 +112,6 @@ test('renders the billing payment wiring into api and the fixed policy into runt
     'LESHOUYING_MERCHANT_NO',
     'LESHOUYING_INSTITUTION_KEY',
     'LESHOUYING_NOTIFY_URL',
-    'LESHOUYING_FRONT_URL',
   ];
   for (const name of paymentEnvironmentNames) {
     assert.match(
@@ -125,6 +123,6 @@ test('renders the billing payment wiring into api and the fixed policy into runt
     );
   }
   assert.match(apps, /name: RUNTIME_BILLING_FREE_USES\s*\n\s+value: "3"/);
-  assert.match(apps, /name: RUNTIME_BILLING_UNIT_PRICE_CENTS\s*\n\s+value: "100"/);
+  assert.match(apps, /name: RUNTIME_BILLING_UNIT_PRICE_CENTS\s*\n\s+value: "1"/);
   rmSync(dirname(path), { recursive: true, force: true });
 });

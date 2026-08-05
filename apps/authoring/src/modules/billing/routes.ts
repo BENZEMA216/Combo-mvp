@@ -8,7 +8,6 @@ import {
   getRechargeOrderByIntentHandler,
   getRechargeOrderHandler,
   paymentNotificationHandler,
-  rechargePackagesHandler,
   requireBillingJson,
   requirePaymentCallbackJson,
   walletHandler,
@@ -31,12 +30,6 @@ export const BILLING_ENDPOINTS: EndpointDecl[] = [
     url: '/billing/wallet',
     preHandlers: [billingNoStore(), requireAuth()],
     handler: walletHandler(),
-  },
-  {
-    method: 'GET',
-    url: '/billing/recharge-packages',
-    preHandlers: [billingNoStore(), requireAuth()],
-    handler: rechargePackagesHandler(),
   },
   {
     method: 'POST',

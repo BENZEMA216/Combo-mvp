@@ -149,7 +149,7 @@ pgDescribe('Agent billing PostgreSQL concurrency', () => {
            platform_trade_no, paid_at, credited_at
          )
          VALUES (
-           $1, $2, $3, 'runtime-pg-test', 100,
+           $1, $2, $3, 'manual', 100,
            'qr', 'test', 'INST0001', 'MCH_TEST_001',
            $4, '20260728120000', 'succeeded', 'credited', $5, now(), now()
          )

@@ -8,7 +8,7 @@ const ORDER: LeasedRechargeOrder = {
   orderNo: 'CBR-RECONCILE',
   ownerUserId: '00000000-0000-4000-8000-000000000002',
   clientIdempotencyKey: '00000000-0000-4000-8000-000000000003',
-  packageId: 'starter',
+  packageId: 'manual',
   amountCents: 300n,
   paymentMethod: 'qr',
   gatewayEnvironment: 'test',

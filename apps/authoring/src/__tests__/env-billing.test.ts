@@ -38,7 +38,6 @@ describe('billing environment boundary', () => {
     const { billingConfigurationFromEnv, loadEnv } = await freshConfig();
     const env = loadEnv();
     expect(billingConfigurationFromEnv(env)).toEqual({
-      packages: [],
       gatewayEnabled: false,
       submissionRecoveryMs: 10_000,
     });
@@ -46,14 +45,11 @@ describe('billing environment boundary', () => {
     expect(env.LESHOUYING_ENVIRONMENT).toBe('TEST');
   });
 
-  it('accepts explicit test packages and a fixed HTTPS callback', async () => {
+  it('accepts a fixed HTTPS callback when the test gateway is enabled', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     stub({
       ...COMMON,
       LESHOUYING_ENABLED: 'true',
-      BILLING_RECHARGE_PACKAGES_JSON: JSON.stringify([
-        { id: 'starter', amountCents: '300', label: '体验充值' },
-      ]),
       LESHOUYING_INSTITUTION_NO: 'INST0001',
       LESHOUYING_MERCHANT_NO: 'MCH_TEST_001',
       LESHOUYING_INSTITUTION_KEY: 'test-only-private-value',
@@ -61,7 +57,6 @@ describe('billing environment boundary', () => {
     });
     const { billingConfigurationFromEnv, loadEnv } = await freshConfig();
     expect(billingConfigurationFromEnv(loadEnv())).toEqual({
-      packages: [{ id: 'starter', amountCents: 300n, label: '体验充值' }],
       gatewayEnabled: true,
       submissionRecoveryMs: 10_000,
     });
@@ -73,12 +68,11 @@ describe('billing environment boundary', () => {
     stub({
       ...COMMON,
       LESHOUYING_ENABLED: 'true',
-      BILLING_RECHARGE_PACKAGES_JSON: '[]',
       LESHOUYING_INSTITUTION_KEY: privateValue,
       LESHOUYING_NOTIFY_URL: 'http://unsafe.example.test/callback',
     });
     const { loadEnv } = await freshConfig();
-    expect(loadEnv).toThrowError(/BILLING_RECHARGE_PACKAGES_JSON/);
+    expect(loadEnv).toThrowError(/LESHOUYING_NOTIFY_URL/);
     try {
       loadEnv();
     } catch (error) {
@@ -94,9 +88,6 @@ describe('billing environment boundary', () => {
       LESHOUYING_ENABLED: 'true',
       LESHOUYING_ENVIRONMENT: 'PRODUCTION',
       LESHOUYING_PRODUCTION_ENABLED: 'false',
-      BILLING_RECHARGE_PACKAGES_JSON: JSON.stringify([
-        { id: 'starter', amountCents: 300, label: '体验充值' },
-      ]),
       LESHOUYING_INSTITUTION_NO: 'INST0001',
       LESHOUYING_MERCHANT_NO: 'MCH_TEST_001',
       LESHOUYING_INSTITUTION_KEY: 'test-only-private-value',

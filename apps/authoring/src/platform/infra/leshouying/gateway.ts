@@ -34,7 +34,6 @@ interface LeshouyingGatewayConfig {
   merchantNo: string;
   institutionKey: string;
   notifyUrl: string;
-  frontUrl?: string;
   timeoutMs: number;
 }
 
@@ -123,22 +122,6 @@ function parseGatewayDate(value: string | undefined): Date | undefined {
   return parsed;
 }
 
-function safePaymentUrl(value: string): string {
-  if (value.length < 1 || value.length > 4_096 || containsControlCharacter(value)) {
-    throw new PaymentGatewayUncertainError();
-  }
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new PaymentGatewayUncertainError();
-  }
-  if (url.protocol !== 'https:' || url.username || url.password) {
-    throw new PaymentGatewayUncertainError();
-  }
-  return url.toString();
-}
-
 function safeQrContent(value: string): string {
   if (value.length < 1 || value.length > 2_048 || containsControlCharacter(value)) {
     throw new PaymentGatewayUncertainError();
@@ -201,7 +184,7 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
     this.merchantNo = config.merchantNo;
   }
 
-  async #post(path: '/v3/h5pay' | '/v3/prepay' | '/v3/queryorder', body: SigningParameters) {
+  async #post(path: '/v3/prepay' | '/v3/queryorder', body: SigningParameters) {
     const signed = {
       ...body,
       sign: signPaymentParameters(body, this.#config.institutionKey),
@@ -244,8 +227,8 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
   }
 
   async createPayment(command: CreatePaymentCommand): Promise<PaymentSubmission> {
-    // front_url 只属于 H5 收银台跳转；C扫B 二维码（/v3/prepay）的契约没有该字段，
-    // 不能混进公共参数，否则可能被网关当作未知参数拒绝。
+    // 只保留 C扫B 二维码（/v3/prepay）：H5 收银台已移除。prepay 契约没有
+    // front_url 字段，请求体只带公共参数 + pay_type + time_expire。
     const common: Record<string, string> = {
       inst_no: this.institutionNo,
       mch_no: this.merchantNo,
@@ -256,16 +239,8 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
       attach: command.orderNo,
       notify_url: this.#config.notifyUrl,
     };
-    const path = command.channel === 'h5' ? '/v3/h5pay' : '/v3/prepay';
-    const request =
-      command.channel === 'h5'
-        ? {
-            ...common,
-            pay_type: gatewayPayType(command.payType),
-            ...(this.#config.frontUrl ? { front_url: this.#config.frontUrl } : {}),
-          }
-        : { ...common, pay_type: gatewayPayType(command.payType), time_expire: '15' };
-    const response = await this.#post(path, request);
+    const request = { ...common, pay_type: gatewayPayType(command.payType), time_expire: '15' };
+    const response = await this.#post('/v3/prepay', request);
     this.#assertResponseOwnership(response, command);
     if (requiredString(response, 'pay_type') !== gatewayPayType(command.payType)) {
       throw new PaymentGatewayUncertainError();
@@ -278,21 +253,17 @@ export class LeshouyingPaymentGateway implements PaymentGateway {
     if (resultCode !== 'PAY_SUCCESS') {
       return { status: 'unknown', ...(resultCode ? { gatewayResultCode: resultCode } : {}) };
     }
-    const rawAction =
-      command.channel === 'h5'
-        ? requiredString(response, 'code_url')
-        : requiredString(response, 'qrcode');
-    const codeUrl = command.channel === 'h5' ? safePaymentUrl(rawAction) : safeQrContent(rawAction);
+    const codeUrl = safeQrContent(requiredString(response, 'qrcode'));
     const tradeNo = optionalString(response, 'trade_no');
     return {
       status: 'pending',
       gatewayResultCode: resultCode,
       ...(tradeNo ? { platformTradeNo: tradeNo } : {}),
       action: {
-        kind: command.channel === 'h5' ? 'redirect_url' : 'code_url',
+        kind: 'code_url',
         value: codeUrl,
-        // Both gateway actions are bearer-like, short-lived values. Even when the
-        // provider omits an H5 expiry, Combo stops returning it after this bound.
+        // The gateway action is bearer-like, short-lived. Combo stops returning it
+        // after this bound even if the provider keeps the code valid.
         expiresAt: new Date(Date.now() + PAYMENT_ACTION_TTL_MS),
       },
     };
@@ -475,7 +446,6 @@ export function createLeshouyingGateway(env: Env, fetchPort?: FetchPort): Paymen
       merchantNo: env.LESHOUYING_MERCHANT_NO,
       institutionKey: env.LESHOUYING_INSTITUTION_KEY,
       notifyUrl: env.LESHOUYING_NOTIFY_URL,
-      ...(env.LESHOUYING_FRONT_URL ? { frontUrl: env.LESHOUYING_FRONT_URL } : {}),
       timeoutMs: env.LESHOUYING_TIMEOUT_MS,
     },
     fetchPort,

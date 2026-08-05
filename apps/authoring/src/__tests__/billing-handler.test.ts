@@ -7,13 +7,22 @@ import {
 describe('CreateRechargeOrderSchema boundary', () => {
   const base = {
     rechargeIntentId: '00000000-0000-4000-8000-000000000002',
-    packageId: 'starter',
+    amountCents: 100,
   };
 
   it('rejects the legacy aggregate_qr channel', () => {
     const parsed = CreateRechargeOrderSchema.safeParse({
       ...base,
       channel: 'aggregate_qr',
+      payType: 'wechat',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects the removed H5 channel', () => {
+    const parsed = CreateRechargeOrderSchema.safeParse({
+      ...base,
+      channel: 'h5',
       payType: 'wechat',
     });
     expect(parsed.success).toBe(false);
@@ -27,20 +36,30 @@ describe('CreateRechargeOrderSchema boundary', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('rejects an order without an explicit amount', () => {
+    const parsed = CreateRechargeOrderSchema.safeParse({
+      rechargeIntentId: base.rechargeIntentId,
+      channel: 'qr',
+      payType: 'wechat',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects an amount outside the allowed range', () => {
+    const parsed = CreateRechargeOrderSchema.safeParse({
+      ...base,
+      amountCents: 100_000_000,
+      channel: 'qr',
+      payType: 'wechat',
+    });
+    expect(parsed.success).toBe(false);
+  });
+
   it.each(['wechat', 'alipay'] as const)('accepts a QR order with payType %s', (payType) => {
     const parsed = CreateRechargeOrderSchema.safeParse({
       ...base,
       channel: 'qr',
       payType,
-    });
-    expect(parsed.success).toBe(true);
-  });
-
-  it('accepts an H5 order with a payment brand', () => {
-    const parsed = CreateRechargeOrderSchema.safeParse({
-      ...base,
-      channel: 'h5',
-      payType: 'alipay',
     });
     expect(parsed.success).toBe(true);
   });

@@ -22,7 +22,7 @@ import {
 export interface CreateRechargeOrderInput {
   ownerUserId: string;
   rechargeIntentId: string;
-  packageId: string;
+  amountCents: bigint;
   channel: PaymentChannel;
   payType: PayType;
 }
@@ -64,7 +64,6 @@ function requestFingerprint(input: CreateRechargeOrderInput, amountCents: bigint
   const canonical = JSON.stringify({
     ownerUserId: input.ownerUserId,
     rechargeIntentId: input.rechargeIntentId,
-    packageId: input.packageId,
     amountCents: amountCents.toString(),
     channel: input.channel,
     payType: input.payType,
@@ -107,10 +106,8 @@ export async function createRechargeOrder(
   if (!gateway.configured || !configuration.gatewayEnabled) {
     throw new BillingUnavailableError();
   }
-  const selectedPackage = configuration.packages.find(
-    (item) => item.id === normalizedInput.packageId,
-  );
-  if (!selectedPackage) throw new BillingValidationError();
+  const amountCents = normalizedInput.amountCents;
+  if (amountCents <= 0n || amountCents > 99_999_999n) throw new BillingValidationError();
 
   const now = clock.now();
   const payTime = formatLeshouyingTime(now);
@@ -118,8 +115,9 @@ export async function createRechargeOrder(
     orderNo: `CBR${payTime}${clock.randomHex(8)}`,
     ownerUserId: input.ownerUserId,
     clientIdempotencyKey: normalizedInput.rechargeIntentId,
-    packageId: selectedPackage.id,
-    amountCents: selectedPackage.amountCents,
+    // 套餐体系已移除：package_id 保留为哨兵，金额由调用方直接提交。
+    packageId: 'manual',
+    amountCents,
     paymentMethod: normalizedInput.channel,
     payType: normalizedInput.payType,
     gatewayEnvironment: gateway.environment,
@@ -127,7 +125,7 @@ export async function createRechargeOrder(
     merchantNo: gateway.merchantNo,
     payTraceNo: `CB${payTime}${clock.randomHex(8)}`,
     payTime,
-    requestFingerprint: requestFingerprint(normalizedInput, selectedPackage.amountCents),
+    requestFingerprint: requestFingerprint(normalizedInput, amountCents),
     submissionRecoveryMs: configuration.submissionRecoveryMs,
   });
   if (!prepared.shouldSubmit) {

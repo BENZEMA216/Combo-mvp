@@ -90,10 +90,6 @@ spec:
                 secretKeyRef: { name: combo-env, key: OTP_HMAC_SECRET }
             # 钱包充值只在 Authoring API 中启用。支付配置逐键读取，绝不通过 envFrom
             # 扩散到 worker；缺省时网关保持关闭，启用后任一缺项都会由应用拒绝启动。
-            - name: BILLING_RECHARGE_PACKAGES_JSON
-              valueFrom:
-                secretKeyRef:
-                  { name: combo-env, key: BILLING_RECHARGE_PACKAGES_JSON, optional: true }
             - name: LESHOUYING_ENABLED
               valueFrom:
                 secretKeyRef: { name: combo-env, key: LESHOUYING_ENABLED, optional: true }
@@ -116,9 +112,6 @@ spec:
             - name: LESHOUYING_NOTIFY_URL
               valueFrom:
                 secretKeyRef: { name: combo-env, key: LESHOUYING_NOTIFY_URL, optional: true }
-            - name: LESHOUYING_FRONT_URL
-              valueFrom:
-                secretKeyRef: { name: combo-env, key: LESHOUYING_FRONT_URL, optional: true }
             - name: LESHOUYING_TIMEOUT_MS
               value: '5000'
             - name: BILLING_RECONCILE_INTERVAL_MS

@@ -5,9 +5,7 @@ import {
   useCreateRechargeOrder,
   useRechargeOrder,
   useRechargeOrderByIntent,
-  useRechargePackages,
   useRefreshWallet,
-  type RechargeChannel,
   type RechargeOrderView,
   type RechargePayType,
 } from '../api/billing.js';
@@ -25,9 +23,15 @@ function yuan(cents: string): string {
   return `¥${amount / 100n}.${(amount % 100n).toString().padStart(2, '0')}`;
 }
 
-function defaultChannel(): RechargeChannel {
-  return window.matchMedia?.('(max-width: 720px)').matches ? 'h5' : 'qr';
+/** 把「元」输入（最多两位小数）转成分；非法或越界返回 null。 */
+function yuanToCents(value: string): number | null {
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(trimmed)) return null;
+  const cents = Math.round(Number.parseFloat(trimmed) * 100);
+  return cents >= 1 && cents <= 99_999_999 ? cents : null;
 }
+
+const QUICK_AMOUNTS_YUAN = [1, 5, 10];
 
 export function RechargeDialog({
   requirement,
@@ -35,11 +39,9 @@ export function RechargeDialog({
   onCredited,
   onAbandon,
 }: RechargeDialogProps) {
-  const packagesQ = useRechargePackages();
   const createOrder = useCreateRechargeOrder();
   const refreshWallet = useRefreshWallet();
-  const [packageId, setPackageId] = useState<string>('');
-  const [channel, setChannel] = useState<RechargeChannel>(defaultChannel);
+  const [amountYuan, setAmountYuan] = useState<string>('');
   const [payType, setPayType] = useState<RechargePayType>('alipay');
   const [rechargeIntentId, setRechargeIntentId] = useState(requirement.rechargeIntentId);
   const [createdOrder, setCreatedOrder] = useState<RechargeOrderView | null>(null);
@@ -51,21 +53,15 @@ export function RechargeDialog({
   const [localSubmitError, setLocalSubmitError] = useState<string | null>(null);
   const [replacementCheckPending, setReplacementCheckPending] = useState(false);
   const creditedReportedRef = useRef(false);
-  const rechargeUnavailable =
-    !packagesQ.isPending && !packagesQ.isError && packagesQ.data?.length === 0;
   const recoveryUnavailable = recoveredOrderQ.isError;
   const recoveryInProgress = recoveredOrderQ.isPending;
+  const amountCents = yuanToCents(amountYuan);
 
   useEffect(() => {
     setRechargeIntentId(requirement.rechargeIntentId);
     setCreatedOrder(null);
     creditedReportedRef.current = false;
   }, [requirement.rechargeIntentId]);
-
-  useEffect(() => {
-    const first = packagesQ.data?.[0];
-    if (!packageId && first) setPackageId(first.id);
-  }, [packageId, packagesQ.data]);
 
   // 轮询结果是内部订单真源。服务端会在支付动作过期后刻意省略它，不能用初次
   // 下单响应把已经撤销的二维码或跳转地址“补回来”。
@@ -106,7 +102,7 @@ export function RechargeDialog({
 
   const submit = async (): Promise<void> => {
     if (
-      !packageId ||
+      amountCents === null ||
       createOrder.isPending ||
       createdOrder ||
       recoveredOrder ||
@@ -119,8 +115,8 @@ export function RechargeDialog({
     try {
       const next = await createOrder.mutateAsync({
         rechargeIntentId,
-        packageId,
-        channel,
+        amountCents: amountCents.toString(),
+        channel: 'qr',
         payType,
       });
       setCreatedOrder(next);
@@ -192,62 +188,36 @@ export function RechargeDialog({
 
         {!order ? (
           <>
-            <fieldset
-              disabled={
-                packagesQ.isPending ||
-                createOrder.isPending ||
-                rechargeUnavailable ||
-                recoveryInProgress ||
-                recoveryUnavailable
-              }
-            >
-              <legend>选择充值金额</legend>
-              <div className="rt-recharge-options">
-                {packagesQ.data?.map((item) => (
-                  <label key={item.id} className={packageId === item.id ? 'is-selected' : ''}>
-                    <input
-                      type="radio"
-                      name="recharge-package"
-                      value={item.id}
-                      checked={packageId === item.id}
-                      onChange={() => setPackageId(item.id)}
-                    />
-                    <strong>{item.label}</strong>
-                    <span>{yuan(item.amountCents)}</span>
-                  </label>
-                ))}
+            <fieldset disabled={createOrder.isPending || recoveryInProgress || recoveryUnavailable}>
+              <legend>充值金额</legend>
+              <div className="rt-recharge-amount">
+                <label className="rt-recharge-amount__field">
+                  <span>金额（元）</span>
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    placeholder="如 1 或 0.01"
+                    value={amountYuan}
+                    onChange={(event) => setAmountYuan(event.target.value)}
+                  />
+                </label>
+                <div className="rt-recharge-amount__quick">
+                  {QUICK_AMOUNTS_YUAN.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setAmountYuan(value.toFixed(2))}
+                    >
+                      {value} 元
+                    </button>
+                  ))}
+                </div>
               </div>
             </fieldset>
 
-            <fieldset
-              disabled={
-                createOrder.isPending ||
-                rechargeUnavailable ||
-                recoveryInProgress ||
-                recoveryUnavailable
-              }
-            >
+            <fieldset disabled={createOrder.isPending || recoveryInProgress || recoveryUnavailable}>
               <legend>支付方式</legend>
-              <div className="rt-recharge-methods">
-                <label>
-                  <input
-                    type="radio"
-                    name="recharge-channel"
-                    checked={channel === 'qr'}
-                    onChange={() => setChannel('qr')}
-                  />
-                  扫码支付
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="recharge-channel"
-                    checked={channel === 'h5'}
-                    onChange={() => setChannel('h5')}
-                  />
-                  手机收银台
-                </label>
-              </div>
               <div className="rt-recharge-pay-types" aria-label="支付品牌">
                 <label>
                   <input
@@ -268,18 +238,9 @@ export function RechargeDialog({
                   支付宝
                 </label>
               </div>
+              <p className="rt-recharge-dialog__notice">下单后请用所选应用扫二维码完成付款。</p>
             </fieldset>
 
-            {packagesQ.isError && (
-              <p className="rt-recharge-dialog__error" role="alert">
-                充值套餐暂时加载失败，请稍后重试。
-              </p>
-            )}
-            {rechargeUnavailable && (
-              <p className="rt-recharge-dialog__error" role="alert">
-                充值服务暂未开放，请稍后再试或联系支持。
-              </p>
-            )}
             {recoveryInProgress && (
               <p className="rt-recharge-dialog__notice" role="status">
                 正在检查是否已有未完成的充值订单…
@@ -294,11 +255,9 @@ export function RechargeDialog({
               type="button"
               className="rt-recharge-dialog__primary"
               disabled={
-                !packageId ||
-                rechargeUnavailable ||
+                amountCents === null ||
                 recoveryInProgress ||
                 recoveryUnavailable ||
-                packagesQ.isPending ||
                 createOrder.isPending
               }
               onClick={() => void submit()}
@@ -432,18 +391,6 @@ function RechargeOrderProgress({
           ) : (
             <div className="rt-recharge-qr-placeholder">正在生成二维码…</div>
           )}
-        </>
-      ) : action?.kind === 'redirect' ? (
-        <>
-          <strong>充值订单已创建</strong>
-          <a
-            className="rt-recharge-dialog__primary"
-            href={action.url}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            在新页面打开安全收银台
-          </a>
         </>
       ) : (
         <strong>正在获取支付入口…</strong>

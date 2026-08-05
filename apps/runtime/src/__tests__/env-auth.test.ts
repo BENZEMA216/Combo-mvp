@@ -45,7 +45,7 @@ function setProductionInfrastructure(): void {
   process.env.PUBLIC_APP_ORIGINS = 'https://combo.example,https://review.combo.example';
   process.env.SESSION_COOKIE_SECURE = 'true';
   process.env.RUNTIME_BILLING_FREE_USES = '3';
-  process.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = '100';
+  process.env.RUNTIME_BILLING_UNIT_PRICE_CENTS = '1';
   process.env.COMBO_ENVIRONMENT = 'production';
   process.env.COMBO_SOURCE_SHA = 'a'.repeat(40);
   process.env.COMBO_RELEASE_ID = `release-${'a'.repeat(40)}`;

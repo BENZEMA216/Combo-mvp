@@ -25,9 +25,9 @@
 - `extract.test.ts` 验证大模型输出修复、候选过滤和确定性降级。
 - `capability-repo.test.ts` 验证能力项读取、发布和归属过滤。
 - `leshouying-signer.test.ts` 使用固定假参数验证 null、空串、ASCII 排序、UTF-8 和回调重签的签名 golden vectors。
-- `leshouying-gateway.test.ts` 通过注入的假 fetch 验证 H5、二维码支付（C扫B `/v3/prepay`）、支付查单、响应验签、字段归属、超时不重试、无长度响应的流式上限、非法回调参数名和支付动作安全边界。
+- `leshouying-gateway.test.ts` 通过注入的假 fetch 验证二维码支付（C扫B `/v3/prepay`）、支付查单、响应验签、字段归属、超时不重试、无长度响应的流式上限、非法回调参数名和支付动作安全边界。
 - `env-billing.test.ts` 验证支付默认关闭、测试配置、缺失配置失败关闭和正式网关二次开关。
-- `billing-service.test.ts` 使用内存仓储和假支付网关验证配置套餐、充值幂等、在途预下单不重复提交或提前查单、超时查原单、通知幂等、未验签通知不持久化、金额不符和成功状态单调性。
+- `billing-service.test.ts` 使用内存仓储和假支付网关验证手动金额下单、充值幂等、在途预下单不重复提交或提前查单、超时查原单、通知幂等、未验签通知不持久化、金额不符和成功状态单调性。
 - `billing-reconcile.test.ts` 验证后台清理到期支付动作和查单启动即运行、进程内不重叠、关闭等待、测试配置不联网，以及网关开关关闭时只清理而不查单。
 - `billing-repo.test.ts` 验证预下单结果保存先锁充值订单，并且不会把先到的成功通知降级。
 - `billing-http-boundary.test.ts` 验证支付通知不要求 Cookie 或 Origin，并且错误内容类型、畸形 JSON、请求体上限和限流始终返回固定网关响应。

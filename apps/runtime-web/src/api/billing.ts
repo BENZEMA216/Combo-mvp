@@ -2,7 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from './client.js';
 
-export type RechargeChannel = 'h5' | 'qr';
+export type RechargeChannel = 'qr';
 export type RechargePayType = 'wechat' | 'alipay';
 export type RechargeOrderStatus =
   | 'created'
@@ -19,12 +19,6 @@ export interface WalletView {
   currency: 'CNY';
 }
 
-export interface RechargePackageView {
-  id: string;
-  amountCents: string;
-  label: string;
-}
-
 export interface PaymentAction {
   kind: 'redirect' | 'qr_code';
   url: string;
@@ -33,7 +27,6 @@ export interface PaymentAction {
 export interface RechargeOrderView {
   id: string;
   rechargeIntentId: string;
-  packageId: string;
   amountCents: string;
   channel: RechargeChannel;
   payType?: RechargePayType;
@@ -44,7 +37,7 @@ export interface RechargeOrderView {
 
 export interface CreateRechargeOrderInput {
   rechargeIntentId: string;
-  packageId: string;
+  amountCents: string;
   channel: RechargeChannel;
   payType: RechargePayType;
 }
@@ -54,15 +47,6 @@ export function useWallet(enabled = true) {
     queryKey: ['billing', 'wallet'],
     queryFn: () => apiGet<WalletView>('/billing/wallet'),
     enabled,
-  });
-}
-
-export function useRechargePackages(enabled = true) {
-  return useQuery({
-    queryKey: ['billing', 'recharge-packages'],
-    queryFn: () => apiGet<RechargePackageView[]>('/billing/recharge-packages'),
-    enabled,
-    staleTime: 5 * 60_000,
   });
 }
 

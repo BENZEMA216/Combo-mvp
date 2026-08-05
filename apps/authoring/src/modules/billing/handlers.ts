@@ -28,8 +28,8 @@ import {
 export const CreateRechargeOrderSchema = z
   .object({
     rechargeIntentId: z.string().uuid(),
-    packageId: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/u),
-    channel: z.enum(['h5', 'qr']),
+    amountCents: z.number().int().positive().max(99_999_999),
+    channel: z.literal('qr'),
     payType: z.enum(['wechat', 'alipay']),
   })
   .strict();
@@ -40,7 +40,6 @@ const RechargeIntentParamsSchema = z.object({ rechargeIntentId: z.string().uuid(
 interface RechargeOrderView {
   id: string;
   rechargeIntentId: string;
-  packageId: string;
   amountCents: string;
   channel: RechargeOrder['paymentMethod'];
   payType?: RechargeOrder['payType'];
@@ -60,7 +59,6 @@ function toRechargeOrderView(order: RechargeOrder): RechargeOrderView {
   return {
     id: order.id,
     rechargeIntentId: order.clientIdempotencyKey,
-    packageId: order.packageId,
     amountCents: order.amountCents.toString(),
     channel: order.paymentMethod,
     ...(order.payType ? { payType: order.payType } : {}),
@@ -162,24 +160,6 @@ export function walletHandler(): RouteHandlerMethod {
   };
 }
 
-export function rechargePackagesHandler(): RouteHandlerMethod {
-  return async (req, reply) => {
-    if (!req.auth?.userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
-    const body: Envelope<
-      Array<{ id: string; amountCents: string; label: string; currency: 'CNY' }>
-    > = {
-      data: req.server.infra.billing.packages.map((item) => ({
-        id: item.id,
-        amountCents: item.amountCents.toString(),
-        label: item.label,
-        currency: 'CNY',
-      })),
-      meta: { traceId: req.id },
-    };
-    return reply.code(200).send(body);
-  };
-}
-
 export function createRechargeOrderHandler(): RouteHandlerMethod {
   return async (req, reply) => {
     const ownerUserId = req.auth?.userId;
@@ -191,7 +171,7 @@ export function createRechargeOrderHandler(): RouteHandlerMethod {
         billingRepository(req),
         req.server.infra.paymentGateway,
         req.server.infra.billing,
-        { ownerUserId, ...parsed.data },
+        { ownerUserId, ...parsed.data, amountCents: BigInt(parsed.data.amountCents) },
       );
       const body: Envelope<RechargeOrderView> = {
         data: toRechargeOrderView(result.order),

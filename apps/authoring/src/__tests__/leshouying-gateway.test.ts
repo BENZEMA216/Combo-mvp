@@ -14,7 +14,6 @@ const CONFIG = {
   merchantNo: 'MCH_TEST_001',
   institutionKey: KEY,
   notifyUrl: 'https://api.example.test/api/v1/billing/leshouying/payment-notify',
-  frontUrl: 'https://app.example.test/billing',
   timeoutMs: 1_000,
 };
 
@@ -27,58 +26,7 @@ function signedResponse(fields: Record<string, string | null>): Response {
 }
 
 describe('Leshouying payment gateway', () => {
-  it('creates a signed H5 request and only returns a safe HTTPS redirect', async () => {
-    const fetchPort = vi.fn(async (url: string, init: RequestInit) => {
-      expect(url).toBe('https://test.gdyfsk.com/yfpay/v3/h5pay');
-      expect(init.redirect).toBe('error');
-      const request = JSON.parse(String(init.body)) as Record<string, string>;
-      expect(request).toMatchObject({
-        inst_no: 'INST0001',
-        mch_no: 'MCH_TEST_001',
-        pay_type: '400',
-        total_amount: '300',
-        attach: 'CBR-1',
-        notify_url: CONFIG.notifyUrl,
-      });
-      expect(verifyPaymentSignature(request, KEY)).toBe(true);
-      return signedResponse({
-        return_code: 'SUCCESS',
-        result_code: 'PAY_SUCCESS',
-        return_msg: '下单成功',
-        pay_type: '400',
-        mch_no: 'MCH_TEST_001',
-        pay_trace_no: 'TRACE-1',
-        pay_time: '20260728120000',
-        total_amount: '300',
-        trade_no: 'TRADE-1',
-        code_url: 'https://cashier.example.test/pay?id=opaque',
-      });
-    });
-    const gateway = new LeshouyingPaymentGateway(CONFIG, fetchPort);
-
-    await expect(
-      gateway.createPayment({
-        orderNo: 'CBR-1',
-        payTraceNo: 'TRACE-1',
-        payTime: '20260728120000',
-        amountCents: 300n,
-        channel: 'h5',
-        payType: 'wechat',
-      }),
-    ).resolves.toEqual({
-      status: 'pending',
-      gatewayResultCode: 'PAY_SUCCESS',
-      platformTradeNo: 'TRADE-1',
-      action: {
-        kind: 'redirect_url',
-        value: 'https://cashier.example.test/pay?id=opaque',
-        expiresAt: expect.any(Date),
-      },
-    });
-    expect(fetchPort).toHaveBeenCalledTimes(1);
-  });
-
-  it('accepts length-bounded opaque QR content but rejects unsafe H5 URLs', async () => {
+  it('accepts length-bounded opaque QR content from prepay', async () => {
     const qrGateway = new LeshouyingPaymentGateway(
       CONFIG,
       vi.fn(async () =>
@@ -111,8 +59,10 @@ describe('Leshouying payment gateway', () => {
         expiresAt: expect.any(Date),
       },
     });
+  });
 
-    const h5Gateway = new LeshouyingPaymentGateway(
+  it('rejects prepay responses without a qrcode field', async () => {
+    const gateway = new LeshouyingPaymentGateway(
       CONFIG,
       vi.fn(async () =>
         signedResponse({
@@ -121,20 +71,20 @@ describe('Leshouying payment gateway', () => {
           return_msg: '下单成功',
           pay_type: '300',
           mch_no: 'MCH_TEST_001',
-          pay_trace_no: 'TRACE-H5',
+          pay_trace_no: 'TRACE-NO-QR',
           pay_time: '20260728120000',
           total_amount: '100',
-          code_url: 'javascript:alert(1)',
+          code_url: 'https://cashier.example.test/pay',
         }),
       ),
     );
     await expect(
-      h5Gateway.createPayment({
-        orderNo: 'CBR-H5',
-        payTraceNo: 'TRACE-H5',
+      gateway.createPayment({
+        orderNo: 'CBR-NO-QR',
+        payTraceNo: 'TRACE-NO-QR',
         payTime: '20260728120000',
         amountCents: 100n,
-        channel: 'h5',
+        channel: 'qr',
         payType: 'alipay',
       }),
     ).rejects.toBeInstanceOf(PaymentGatewayUncertainError);

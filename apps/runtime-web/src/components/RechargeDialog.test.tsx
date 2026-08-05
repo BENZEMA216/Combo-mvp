@@ -5,7 +5,6 @@ import { RechargeDialog } from './RechargeDialog.js';
 
 const mocks = vi.hoisted(() => ({
   createOrder: vi.fn(),
-  packages: [{ id: 'sandbox-300', amountCents: '300', label: '测试充值' }],
   recoveredOrder: null as RechargeOrderView | null,
   recoveryPending: false,
   recoveryError: false,
@@ -21,11 +20,6 @@ vi.mock('qrcode', () => ({
 }));
 
 vi.mock('../api/billing.js', () => ({
-  useRechargePackages: () => ({
-    data: mocks.packages,
-    isPending: false,
-    isError: false,
-  }),
   useCreateRechargeOrder: () => ({
     mutateAsync: mocks.createOrder,
     isPending: false,
@@ -55,8 +49,13 @@ const requirement = {
   requiredCents: '100',
 } as const;
 
+function enterAmount(value: string): void {
+  fireEvent.change(screen.getByPlaceholderText('如 1 或 0.01'), { target: { value } });
+}
+
+const createButton = () => screen.getByRole('button', { name: '创建充值订单' });
+
 beforeEach(() => {
-  mocks.packages = [{ id: 'sandbox-300', amountCents: '300', label: '测试充值' }];
   mocks.polledOrder = null;
   mocks.recoveredOrder = null;
   mocks.recoveryPending = false;
@@ -91,11 +90,39 @@ describe('RechargeDialog', () => {
     expect(mocks.createOrder).not.toHaveBeenCalled();
   });
 
+  it('requires a valid manual amount before allowing order creation', async () => {
+    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
+
+    expect(createButton()).toBeDisabled();
+    enterAmount('0');
+    expect(createButton()).toBeDisabled();
+    enterAmount('3');
+    expect(createButton()).toBeEnabled();
+    expect(mocks.createOrder).not.toHaveBeenCalled();
+  });
+
+  it('fills the amount from a quick amount button', async () => {
+    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '5 元' }));
+    const input = screen.getByPlaceholderText('如 1 或 0.01') as HTMLInputElement;
+    expect(input.value).toBe('5.00');
+    expect(createButton()).toBeEnabled();
+  });
+
+  it('rejects an out-of-range manual amount', async () => {
+    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
+
+    enterAmount('1000000');
+    expect(createButton()).toBeDisabled();
+    enterAmount('not-a-number');
+    expect(createButton()).toBeDisabled();
+  });
+
   it('recovers an existing order by intent before allowing another gateway POST', async () => {
     mocks.recoveredOrder = {
       id: '29292929-2929-4292-8292-292929292929',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'pending',
@@ -113,7 +140,6 @@ describe('RechargeDialog', () => {
     mocks.recoveredOrder = {
       id: '29292929-2929-4292-8292-292929292929',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       payType: 'wechat',
@@ -125,15 +151,6 @@ describe('RechargeDialog', () => {
 
     expect(await screen.findByText('请使用微信扫码')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '创建充值订单' })).not.toBeInTheDocument();
-  });
-
-  it('fails closed with an explicit message when no recharge package is configured', async () => {
-    mocks.packages = [];
-    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-
-    expect(await screen.findByText('充值服务暂未开放，请稍后再试或联系支持。')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '创建充值订单' })).toBeDisabled();
-    expect(mocks.createOrder).not.toHaveBeenCalled();
   });
 
   it('fails closed but still lets the user abandon the task when intent recovery fails', async () => {
@@ -150,18 +167,17 @@ describe('RechargeDialog', () => {
     );
 
     expect(await screen.findByText('充值状态暂时无法确认，请稍后重试查询。')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '创建充值订单' })).toBeDisabled();
+    expect(createButton()).toBeDisabled();
     fireEvent.click(screen.getByRole('button', { name: '放弃本次任务' }));
     expect(onAbandon).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
     expect(mocks.createOrder).not.toHaveBeenCalled();
   });
 
-  it('creates a QR order from a configured package and renders only a QR image', async () => {
+  it('creates a QR order from a manually entered amount and renders only a QR image', async () => {
     mocks.createOrder.mockResolvedValue({
       id: '22222222-2222-4222-8222-222222222222',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'pending',
@@ -169,13 +185,13 @@ describe('RechargeDialog', () => {
     } satisfies RechargeOrderView);
 
     render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    enterAmount('3');
+    fireEvent.click(createButton());
 
     await waitFor(() =>
       expect(mocks.createOrder).toHaveBeenCalledWith({
         rechargeIntentId: requirement.rechargeIntentId,
-        packageId: 'sandbox-300',
+        amountCents: '300',
         channel: 'qr',
         payType: 'alipay',
       }),
@@ -192,7 +208,6 @@ describe('RechargeDialog', () => {
     mocks.createOrder.mockResolvedValue({
       id: '22222222-2222-4222-8222-222222222222',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'pending',
@@ -200,91 +215,18 @@ describe('RechargeDialog', () => {
     } satisfies RechargeOrderView);
 
     render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
+    enterAmount('3');
     fireEvent.click(screen.getByRole('radio', { name: '微信支付' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    fireEvent.click(createButton());
 
     await waitFor(() =>
       expect(mocks.createOrder).toHaveBeenCalledWith({
         rechargeIntentId: requirement.rechargeIntentId,
-        packageId: 'sandbox-300',
+        amountCents: '300',
         channel: 'qr',
         payType: 'wechat',
       }),
     );
-  });
-
-  it('defaults to H5 with Alipay on a narrow viewport', async () => {
-    const originalMatchMedia = window.matchMedia;
-    window.matchMedia = vi.fn().mockImplementation((query: string) => ({
-      matches: true,
-      media: query,
-      onchange: null,
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    })) as unknown as typeof window.matchMedia;
-    try {
-      mocks.createOrder.mockResolvedValue({
-        id: '44444444-4444-4444-8444-444444444444',
-        rechargeIntentId: requirement.rechargeIntentId,
-        packageId: 'sandbox-300',
-        amountCents: '300',
-        channel: 'h5',
-        status: 'pending',
-        paymentAction: { kind: 'redirect', url: 'https://cashier.test/h5' },
-      } satisfies RechargeOrderView);
-
-      render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-      await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-      fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
-
-      await waitFor(() =>
-        expect(mocks.createOrder).toHaveBeenCalledWith({
-          rechargeIntentId: requirement.rechargeIntentId,
-          packageId: 'sandbox-300',
-          channel: 'h5',
-          payType: 'alipay',
-        }),
-      );
-    } finally {
-      window.matchMedia = originalMatchMedia;
-    }
-  });
-
-  it('requires a constrained payment brand for H5 and never treats the redirect as success', async () => {
-    mocks.createOrder.mockResolvedValue({
-      id: '33333333-3333-4333-8333-333333333333',
-      rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
-      amountCents: '300',
-      channel: 'h5',
-      status: 'pending',
-      paymentAction: { kind: 'redirect', url: 'https://cashier.test/h5' },
-    } satisfies RechargeOrderView);
-
-    const onCredited = vi.fn();
-    render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={onCredited} />);
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('radio', { name: '手机收银台' }));
-    fireEvent.click(screen.getByRole('radio', { name: '支付宝' }));
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
-
-    await waitFor(() =>
-      expect(mocks.createOrder).toHaveBeenCalledWith({
-        rechargeIntentId: requirement.rechargeIntentId,
-        packageId: 'sandbox-300',
-        channel: 'h5',
-        payType: 'alipay',
-      }),
-    );
-    expect(await screen.findByRole('link', { name: '在新页面打开安全收银台' })).toHaveAttribute(
-      'href',
-      'https://cashier.test/h5',
-    );
-    expect(onCredited).not.toHaveBeenCalled();
   });
 
   it('shows a safe failure when order creation rejects without leaking an unhandled promise', async () => {
@@ -293,8 +235,8 @@ describe('RechargeDialog', () => {
     );
 
     render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    enterAmount('3');
+    fireEvent.click(createButton());
 
     expect(await screen.findByText('充值订单创建失败，请稍后重试。')).toBeInTheDocument();
     expect(screen.queryByText(/test-only provider response/u)).not.toBeInTheDocument();
@@ -305,7 +247,6 @@ describe('RechargeDialog', () => {
     mocks.createOrder.mockResolvedValue({
       id: '38383838-3838-4383-8383-383838383838',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'pending',
@@ -313,8 +254,8 @@ describe('RechargeDialog', () => {
     } satisfies RechargeOrderView);
 
     render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    enterAmount('3');
+    fireEvent.click(createButton());
 
     expect(
       await screen.findByText('付款二维码生成失败，请关闭窗口后重新打开订单。'),
@@ -326,7 +267,6 @@ describe('RechargeDialog', () => {
     const pending = {
       id: '44444444-4444-4444-8444-444444444444',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'pending',
@@ -337,8 +277,8 @@ describe('RechargeDialog', () => {
     const view = render(
       <RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={onCredited} />,
     );
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    enterAmount('3');
+    fireEvent.click(createButton());
     await screen.findByRole('img', { name: '乐收赢充值付款二维码' });
     expect(onCredited).not.toHaveBeenCalled();
 
@@ -356,7 +296,6 @@ describe('RechargeDialog', () => {
     const pending = {
       id: '48484848-4848-4484-8484-484848484848',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'pending',
@@ -366,8 +305,8 @@ describe('RechargeDialog', () => {
     const view = render(
       <RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />,
     );
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    enterAmount('3');
+    fireEvent.click(createButton());
     expect(await screen.findByRole('img', { name: '乐收赢充值付款二维码' })).toBeInTheDocument();
 
     mocks.polledOrder = { ...pending, paymentAction: undefined };
@@ -385,7 +324,6 @@ describe('RechargeDialog', () => {
     mocks.recoveredOrder = {
       id: '58585858-5858-4585-8585-585858585858',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'unknown',
@@ -416,7 +354,6 @@ describe('RechargeDialog', () => {
     mocks.recoveredOrder = {
       id: '59595959-5959-4595-8595-595959595959',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'unknown',
@@ -435,7 +372,6 @@ describe('RechargeDialog', () => {
     const retired = {
       id: '60606060-6060-4606-8606-606060606060',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'unknown',
@@ -459,7 +395,6 @@ describe('RechargeDialog', () => {
     const failed = {
       id: '55555555-5555-4555-8555-555555555555',
       rechargeIntentId: requirement.rechargeIntentId,
-      packageId: 'sandbox-300',
       amountCents: '300',
       channel: 'qr',
       status: 'failed',
@@ -472,10 +407,12 @@ describe('RechargeDialog', () => {
     } satisfies RechargeOrderView);
 
     render(<RechargeDialog requirement={requirement} onClose={vi.fn()} onCredited={vi.fn()} />);
-    await waitFor(() => expect(screen.getByRole('radio', { name: /测试充值/ })).toBeChecked());
-    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
+    enterAmount('3');
+    fireEvent.click(createButton());
     fireEvent.click(await screen.findByRole('button', { name: '新建一笔充值' }));
-    fireEvent.click(await screen.findByRole('button', { name: '创建充值订单' }));
+    const freshInput = await screen.findByPlaceholderText('如 1 或 0.01');
+    fireEvent.change(freshInput, { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: '创建充值订单' }));
 
     await waitFor(() => expect(mocks.createOrder).toHaveBeenCalledTimes(2));
     const firstIntent = (

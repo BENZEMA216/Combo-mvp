@@ -181,3 +181,26 @@ describe('0010 recharge QR channel rename', () => {
     expect(sql0010).toContain("pay_type IS NULL OR pay_type IN ('wechat', 'alipay')");
   });
 });
+
+describe('0011 recharge QR-only channel', () => {
+  const sql0011 = readFileSync(
+    resolve(directory, '..', 'migrations', '0011_recharge_qr_only.sql'),
+    'utf8',
+  );
+
+  it('migrates every non-qr payment method to qr first', () => {
+    expect(sql0011).toContain("SET payment_method = 'qr'");
+    expect(sql0011).toContain("WHERE payment_method <> 'qr'");
+  });
+
+  it('replaces the constraint so only qr remains accepted', () => {
+    expect(sql0011).toContain('DROP CONSTRAINT ck_recharge_payment_method');
+    expect(sql0011).toContain('ADD CONSTRAINT ck_recharge_payment_method');
+    const addConstraint = sql0011.match(
+      /ADD CONSTRAINT ck_recharge_payment_method CHECK \([\s\S]*?\);?/,
+    )?.[0];
+    expect(addConstraint).toContain("payment_method IN ('qr')");
+    expect(addConstraint).not.toContain("'h5'");
+    expect(addConstraint).not.toContain('aggregate_qr');
+  });
+});

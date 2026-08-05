@@ -36,7 +36,6 @@ const CLOCK: BillingServiceClock = {
 };
 const CONFIGURATION: BillingConfiguration = {
   gatewayEnabled: true,
-  packages: [{ id: 'starter', amountCents: 300n, label: '体验充值' }],
   submissionRecoveryMs: 10_000,
 };
 
@@ -245,19 +244,20 @@ function fakeGateway(input?: {
   create?: PaymentSubmission | Error;
   query?: PaymentQueryResult | Error;
 }): PaymentGateway {
-  const createPayment = vi.fn(async (command: CreatePaymentCommand): Promise<PaymentSubmission> => {
-    if (input?.create instanceof Error) throw input.create;
-    if (input?.create) return input.create;
-    return {
-      status: 'pending',
-      action: {
-        kind: command.channel === 'h5' ? 'redirect_url' : 'code_url',
-        value:
-          command.channel === 'h5' ? 'https://cashier.example.test/pay' : 'weixin://wxpay/opaque',
-        expiresAt: new Date(CLOCK.now().getTime() + 15 * 60 * 1_000),
-      },
-    };
-  });
+  const createPayment = vi.fn(
+    async (_command: CreatePaymentCommand): Promise<PaymentSubmission> => {
+      if (input?.create instanceof Error) throw input.create;
+      if (input?.create) return input.create;
+      return {
+        status: 'pending',
+        action: {
+          kind: 'code_url',
+          value: 'weixin://wxpay/opaque',
+          expiresAt: new Date(CLOCK.now().getTime() + 15 * 60 * 1_000),
+        },
+      };
+    },
+  );
   const queryPayment = vi.fn(async (): Promise<PaymentQueryResult> => {
     if (input?.query instanceof Error) throw input.query;
     return input?.query ?? { status: 'pending' };
@@ -274,48 +274,31 @@ function fakeGateway(input?: {
 }
 
 describe('billing recharge service', () => {
-  it('creates H5 and QR actions from configured packages only', async () => {
-    const h5Repository = new MemoryBillingRepository();
-    const h5Gateway = fakeGateway();
-    const h5 = await createRechargeOrder(
-      h5Repository,
-      h5Gateway,
+  it('creates QR actions from the submitted amount only', async () => {
+    const repository = new MemoryBillingRepository();
+    const gateway = fakeGateway();
+    const result = await createRechargeOrder(
+      repository,
+      gateway,
       CONFIGURATION,
       {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
-        packageId: 'starter',
-        channel: 'h5',
-        payType: 'wechat',
-      },
-      CLOCK,
-    );
-    expect(h5.order).toMatchObject({
-      amountCents: 300n,
-      paymentMethod: 'h5',
-      action: { kind: 'redirect_url' },
-    });
-
-    const qrRepository = new MemoryBillingRepository();
-    const qrGateway = fakeGateway();
-    const qr = await createRechargeOrder(
-      qrRepository,
-      qrGateway,
-      CONFIGURATION,
-      {
-        ownerUserId: OWNER_ID,
-        rechargeIntentId: '00000000-0000-4000-8000-000000000004',
-        packageId: 'starter',
+        amountCents: 300n,
         channel: 'qr',
         payType: 'alipay',
       },
       CLOCK,
     );
-    expect(qr.order).toMatchObject({
+    expect(result.order).toMatchObject({
+      packageId: 'manual',
       amountCents: 300n,
       paymentMethod: 'qr',
       action: { kind: 'code_url' },
     });
+    expect(gateway.createPayment).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 300n, channel: 'qr', payType: 'alipay' }),
+    );
   });
 
   it('rejects a QR order without a payment brand', async () => {
@@ -324,7 +307,7 @@ describe('billing recharge service', () => {
     const missingPayType = {
       ownerUserId: OWNER_ID,
       rechargeIntentId: INTENT_ID,
-      packageId: 'starter',
+      amountCents: 100n,
       channel: 'qr' as const,
       // 运行时校验必须拦截缺 payType 的输入（类型层强制，这里显式绕过编译期检查）。
     } as unknown as Parameters<typeof createRechargeOrder>[3];
@@ -340,7 +323,7 @@ describe('billing recharge service', () => {
     const input = {
       ownerUserId: OWNER_ID,
       rechargeIntentId: INTENT_ID,
-      packageId: 'starter',
+      amountCents: 100n,
       channel: 'qr' as const,
       payType: 'alipay' as const,
     };
@@ -370,7 +353,7 @@ describe('billing recharge service', () => {
     const input = {
       ownerUserId: OWNER_ID,
       rechargeIntentId: INTENT_ID,
-      packageId: 'starter',
+      amountCents: 100n,
       channel: 'qr' as const,
       payType: 'alipay' as const,
     };
@@ -398,7 +381,7 @@ describe('billing recharge service', () => {
       {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
-        packageId: 'starter',
+        amountCents: 100n,
         channel: 'qr',
         payType: 'alipay',
       },
@@ -437,7 +420,7 @@ describe('billing recharge service', () => {
       {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
-        packageId: 'starter',
+        amountCents: 300n,
         channel: 'qr',
         payType: 'alipay',
       },
@@ -470,7 +453,7 @@ describe('billing recharge service', () => {
       {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
-        packageId: 'starter',
+        amountCents: 100n,
         channel: 'qr',
         payType: 'alipay',
       },
@@ -500,7 +483,7 @@ describe('billing recharge service', () => {
       {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
-        packageId: 'starter',
+        amountCents: 300n,
         channel: 'qr',
         payType: 'alipay',
       },
@@ -599,7 +582,7 @@ describe('billing recharge service', () => {
       orderNo: 'CBR-RACE',
       ownerUserId: OWNER_ID,
       clientIdempotencyKey: INTENT_ID,
-      packageId: 'starter',
+      packageId: 'manual',
       amountCents: 300n,
       paymentMethod: 'qr',
       payType: 'alipay',
@@ -647,7 +630,7 @@ describe('billing recharge service', () => {
       orderNo: 'CBR-PENDING-PRECEDENCE',
       ownerUserId: OWNER_ID,
       clientIdempotencyKey: INTENT_ID,
-      packageId: 'starter',
+      packageId: 'manual',
       amountCents: 300n,
       paymentMethod: 'qr',
       payType: 'alipay',
@@ -695,7 +678,7 @@ describe('billing recharge service', () => {
       {
         ownerUserId: OWNER_ID,
         rechargeIntentId: INTENT_ID,
-        packageId: 'starter',
+        amountCents: 300n,
         channel: 'qr',
         payType: 'alipay',
       },
