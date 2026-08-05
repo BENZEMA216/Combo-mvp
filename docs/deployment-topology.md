@@ -37,6 +37,8 @@
 
 `deploy.yml` 的 `workflow_run` 触发器必须引用 `Release build` 显示名；重命名 ci.yml 时需要同步。
 
+`ci.yml` 的并发组名是 `main-cd-*`（main push 时 `main-cd-main`，分支构建时 `main-cd-<revision>`），与 `combo-deploy-<env>` 部署锁互不相交。自动部署只作用于 Preview（main 的 `Release build` 成功后触发）；Test 没有自动触发路径，只接受手工 `workflow_dispatch`。
+
 ## 4. 域名
 
 | 环境       | 域名                                                                                                                               |
