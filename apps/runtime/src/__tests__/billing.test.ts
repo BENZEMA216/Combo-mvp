@@ -152,6 +152,42 @@ describe('Agent 使用计费', () => {
     await runner.dispose();
   });
 
+  it('V1 以 entry Capability 为计费主体，复用它的 Agent Project 共享免费额度', async () => {
+    const { db, capability, handle, runner } = await fixture(undefined, { freeUses: 1 });
+    const firstProjectSession = await createSession(db, {
+      capabilityId: capability.id,
+      ownerUserId: CONSUMER,
+      agentProjectId: '00000000-0000-4000-8000-000000000201',
+      agentRevisionId: '00000000-0000-4000-8000-000000000211',
+    });
+    const secondProjectSession = await createSession(db, {
+      capabilityId: capability.id,
+      ownerUserId: CONSUMER,
+      agentProjectId: '00000000-0000-4000-8000-000000000202',
+      agentRevisionId: '00000000-0000-4000-8000-000000000212',
+    });
+    const start = (session: typeof firstProjectSession, sequence: number) =>
+      runner.startTurn({
+        session,
+        definition: DEFINITION,
+        text: `Project 任务 ${sequence}`,
+        usageId: usageId(sequence),
+        capabilityOwnerUserId: CREATOR,
+        log: silentLog,
+      });
+
+    expect((await start(firstProjectSession, 201)).status).toBe('started');
+    await waitForTerminalCount(db, 1);
+    await expect(start(secondProjectSession, 202)).resolves.toEqual({
+      status: 'recharge_required',
+      balanceCents: 0n,
+      requiredCents: 100n,
+    });
+    expect(handle.calls).toHaveLength(1);
+    expect(db.billingFreeAllowances.size).toBe(1);
+    await runner.dispose();
+  });
+
   it('Capability owner 不消耗免费额度或钱包', async () => {
     const { db, runner, start } = await fixture(undefined, { ownerUserId: CREATOR });
     for (let index = 1; index <= 5; index += 1) {

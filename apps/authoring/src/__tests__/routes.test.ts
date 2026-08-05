@@ -1,9 +1,38 @@
+import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
+import { getCapabilityDefinitionHandler } from '../modules/capability/handlers.js';
+
+interface CapturedReply {
+  statusCode: number;
+  body: unknown;
+}
+
+function makeReply(): FastifyReply {
+  const reply = {
+    statusCode: 0,
+    body: undefined as unknown,
+    code(statusCode: number) {
+      this.statusCode = statusCode;
+      return this;
+    },
+    send(body: unknown) {
+      this.body = body;
+      return this;
+    },
+  };
+  return reply as unknown as FastifyReply;
+}
+
+async function call(handler: RouteHandlerMethod, req: FastifyRequest): Promise<CapturedReply> {
+  const reply = makeReply();
+  await handler.call(req.server, req, reply);
+  return reply as unknown as CapturedReply;
+}
 
 describe('route registry self-check', () => {
-  it('registers exactly 21 endpoints (account 4 + task 8 + capability 4 + billing 5)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(21);
+  it('registers exactly 28 endpoints (account 4 + task 8 + capability 5 + agent-project 6 + billing 5)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(28);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -90,5 +119,32 @@ describe('route registry self-check', () => {
     const connect = ALL_ENDPOINTS.filter((endpoint) => endpoint.url.startsWith('/connect/'));
     expect(connect.length).toBeGreaterThanOrEqual(2);
     for (const endpoint of connect) expect(endpoint.preHandlers ?? []).toHaveLength(0);
+  });
+});
+
+describe('GET /capabilities/:capabilityId/definition', () => {
+  it('rejects a malformed capability id before querying PostgreSQL', async () => {
+    let queryCount = 0;
+    const req = {
+      id: 'trace-test',
+      auth: { userId: 'user-test', account: 'tester', roles: ['creator'] },
+      params: { capabilityId: 'not-a-uuid' },
+      log: { error: () => undefined },
+      server: {
+        infra: {
+          db: {
+            query: async () => {
+              queryCount += 1;
+              throw new Error('database must not be queried');
+            },
+          },
+        },
+      },
+    } as unknown as FastifyRequest;
+
+    const reply = await call(getCapabilityDefinitionHandler(), req);
+
+    expect(reply.statusCode).toBe(400);
+    expect(queryCount).toBe(0);
   });
 });

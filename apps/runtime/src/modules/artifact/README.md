@@ -4,10 +4,10 @@
 
 ## 文件
 
-- `routes.ts` 声明本模块唯一的端点：GET /runtime/artifacts/:id/content，挂 requireAuth 鉴权守卫。
-- `handlers.ts` 实现内容回读处理器：先按当前用户做归属校验查出产物行，再从对象存储读回正文，按产物种类设置正确的 Content-Type 返回。
-- `repo.ts` 封装 `artifacts` 表和 Capability 当前 UI 指针的 SQL。它负责把工具产物关联到来源 Turn、按 Turn 终态恢复 Studio revision 历史、插入或原地更新索引行、复制 UI 隔离副本、采用同一创作者既有的合规 consume UI，并通过 `sessions` 表校验内容读取归属。数据库复合外键同时保证 Artifact 与来源 Turn 属于同一 Session。它还定义桶名、不可变正文对象键和内容类型映射。模型工具提交索引前会按固定锁序确认绑定 Turn 仍为 `running`。UI 副本写入先在事务外保存不可变候选对象，再锁定并校验目标 Session 的 capability、owner、mode 和 active 状态，并在锁内复查已有 HTML；并发进入只落一条 seed 索引，失败或竞争落败最多留下可离线清理的孤儿对象。
-- `studio-contract.ts` 校验 Studio HTML 是完整自包含文档，包含真实 `combo:run` bridge，并拒绝定时器、随机数和模拟结果。
+- `routes.ts` 声明内容回读与 Codex 直接保存 Studio HTML 两个端点；写端点同时要求可信来源和登录会话。
+- `handlers.ts` 实现内容回读和 HTML 保存处理器。保存前要求 active Studio 归属一致，并把运行契约失败、幂等冲突和并发 Turn 映射为稳定错误；首次写入返回 201，响应丢失后的同请求重放返回 200 和同一个 Artifact。
+- `repo.ts` 封装 `artifacts` 表和 Capability 当前 UI 指针的 SQL。它负责把工具产物关联到来源 Turn、按 Turn 终态恢复 Studio revision 历史、插入或原地更新索引行、直接保存 Codex HTML、复制 Capability 或 Agent Revision 的 UI 隔离副本，并通过 `sessions` 表校验内容读取归属。Codex 直接保存把 idempotency key 与请求摘要写入 Artifact metadata；同 Session 行锁内复查保证并发重试只提交一个稳定 Artifact，同 key 不同 HTML/title 失败关闭。数据库复合外键同时保证 Artifact 与来源 Turn 属于同一 Session。模型工具提交索引前会按固定锁序确认绑定 Turn 仍为 `running`。UI 副本写入先在事务外保存不可变候选对象，再锁定并校验目标 Session 的 capability、owner、mode、Revision 和 active 状态。
+- `studio-contract.ts` 保留 Runtime 内校验入口并复用共享 Miniapp 契约，要求完整自包含文档、真实 `combo:run` bridge，并拒绝定时器、随机数和模拟结果。
 - `tool.ts` 定义暴露给模型的 `upsert_artifact` 工具。工具先用中止信号写入不可变暂存对象，再调用仓储条件提交带来源 Turn 的索引。Turn 已终态或请求已经中止时，暂存对象不会变成可见 Artifact，也不会触发产物更新事件。普通 Session 只在产物编号属于本会话时更新索引；Studio 每次都创建新的合规 HTML revision。
 
 ## 上下游

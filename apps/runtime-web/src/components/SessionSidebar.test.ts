@@ -1,13 +1,18 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionView } from '@cb/shared';
 import {
   archivedSessionTarget,
   isRuntimeNavigationTarget,
+  SessionSidebar,
   SessionListItem,
 } from './SessionSidebar.js';
+
+const originalFetch = globalThis.fetch;
 
 const CURRENT: SessionView = {
   id: 'session-current',
@@ -23,6 +28,17 @@ const OTHER: SessionView = {
   id: 'session-other',
   title: '另一个会话',
 };
+
+function ok(data: unknown): Response {
+  return new Response(JSON.stringify({ data, meta: { traceId: 'trace-sidebar' } }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 describe('SessionSidebar 会话操作', () => {
   it('会话链接与改名/归档按钮是并列元素，没有 Link 内嵌 button', () => {
@@ -97,5 +113,66 @@ describe('SessionSidebar 会话操作', () => {
 
     expect(markup).toContain('aria-label="重命名“项目复盘”"');
     expect(markup).not.toContain('归档“项目复盘”');
+  });
+
+  it('Released Agent 从同一个 Project Release 新建会话，不退化为 Capability 会话', async () => {
+    const projectId = '33333333-3333-4333-8333-333333333333';
+    const releasedSession: SessionView = {
+      ...CURRENT,
+      id: '44444444-4444-4444-8444-444444444444',
+      agentProjectId: projectId,
+      agentRevisionId: '55555555-5555-4555-8555-555555555555',
+      agentReleaseId: '66666666-6666-4666-8666-666666666666',
+    };
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === 'GET' && url.startsWith('/api/v1/runtime/sessions?')) return ok([]);
+      if (init?.method === 'POST' && url === `/api/v1/runtime/agents/${projectId}/sessions`) {
+        return ok(releasedSession);
+      }
+      throw new Error(`unexpected request: ${init?.method ?? 'GET'} ${url}`);
+    });
+    globalThis.fetch = fetchMock;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ['/session/session-current'] },
+          createElement(SessionSidebar, {
+            activeSessionId: CURRENT.id,
+            capabilityId: CURRENT.capabilityId,
+            agentProjectId: projectId,
+            capabilityName: '发布态 Agent',
+          }),
+        ),
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /新会话/ }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        `/api/v1/runtime/agents/${projectId}/sessions`,
+        expect.objectContaining({ method: 'POST', credentials: 'include', body: '{}' }),
+      );
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/runtime/sessions?agentProjectId=${projectId}&mode=consume`,
+      expect.objectContaining({ method: 'GET', credentials: 'include' }),
+    );
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) =>
+          String(url) === '/api/v1/runtime/sessions' &&
+          (init as RequestInit | undefined)?.method === 'POST',
+      ),
+    ).toBe(false);
+    queryClient.clear();
   });
 });

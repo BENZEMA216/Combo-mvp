@@ -2,6 +2,8 @@
 
 这个目录管理共享 Agent 的免费额度、全局钱包预留和按次结算。乐收赢只负责向钱包充值，不参与每轮 Agent 调用。
 
+V1 的计费主体明确固定为 Runtime 使用的 entry Capability，不是 Agent Project、Revision 或 Release。Project/Revision/Release 是创作、版本与发布身份，并由不可变 Session 指针保留可追溯归因；两个 Project 如果复用同一个 entry Capability，会共享该 Capability 的免费额度。这一兼容边界保留 `0009` 已发布账本的主键、延迟约束和历史记录语义；若后续产品要求每个 Project 独立定价与免费额度，必须通过新的追加迁移引入独立计费主体，不能改写 `0009`。
+
 ## 文件
 
 - `service.ts` 计算请求指纹，按用户与 Capability 判断 owner 免计费、免费额度或钱包来源，并提供成功结算和失败释放。

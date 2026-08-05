@@ -40,6 +40,9 @@ export interface SessionRowF {
   id: string;
   capability_id: string;
   owner_user_id: string;
+  agent_project_id: string | null;
+  agent_revision_id: string | null;
+  agent_release_id: string | null;
   mode: 'consume' | 'studio';
   title: string | null;
   status: 'active' | 'closed';
@@ -328,7 +331,6 @@ export class FakeDb implements Queryable, TxPool {
     if (s.startsWith("SELECT set_config('lock_timeout'")) {
       return { rows: [{}] as R[], rowCount: 1 };
     }
-
     // ---------- usage billing ----------
     if (s.startsWith('SELECT pg_advisory_xact_lock')) {
       return { rows: [{}] as R[], rowCount: 1 };
@@ -664,6 +666,45 @@ export class FakeDb implements Queryable, TxPool {
     }
 
     // ---------- sessions ----------
+    if (s.startsWith('INSERT INTO sessions (id, capability_id, owner_user_id, mode')) {
+      const [id, capabilityId, ownerUserId, agentProjectId, agentRevisionId] = params as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ];
+      const existing = this.sessions.get(id);
+      if (existing) {
+        const reusable =
+          existing.capability_id === capabilityId &&
+          existing.owner_user_id === ownerUserId &&
+          existing.agent_project_id === agentProjectId &&
+          existing.agent_revision_id === agentRevisionId &&
+          existing.agent_release_id === null &&
+          existing.mode === 'consume' &&
+          existing.status === 'active';
+        return reusable
+          ? { rows: [{ ...existing }] as R[], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
+      }
+      const timestamp = nowIso();
+      const row: SessionRowF = {
+        id,
+        capability_id: capabilityId,
+        owner_user_id: ownerUserId,
+        agent_project_id: agentProjectId,
+        agent_revision_id: agentRevisionId,
+        agent_release_id: null,
+        mode: 'consume',
+        title: null,
+        status: 'active',
+        created_at: timestamp,
+        updated_at: timestamp,
+      };
+      this.sessions.set(id, row);
+      return { rows: [{ ...row }] as R[], rowCount: 1 };
+    }
     if (s.startsWith('INSERT INTO sessions')) {
       const [capabilityId, ownerUserId] = params as [string, string];
       const mode: SessionRowF['mode'] = s.includes("'studio'") ? 'studio' : 'consume';
@@ -682,6 +723,9 @@ export class FakeDb implements Queryable, TxPool {
         id: nextId('sess'),
         capability_id: capabilityId,
         owner_user_id: ownerUserId,
+        agent_project_id: mode === 'consume' ? ((params[2] as string | null) ?? null) : null,
+        agent_revision_id: mode === 'consume' ? ((params[3] as string | null) ?? null) : null,
+        agent_release_id: mode === 'consume' ? ((params[4] as string | null) ?? null) : null,
         mode,
         title: null,
         status: 'active',
@@ -692,18 +736,25 @@ export class FakeDb implements Queryable, TxPool {
       return { rows: [{ ...row }] as R[], rowCount: 1 };
     }
     if (
-      s.includes('FROM sessions WHERE owner_user_id = $1') &&
-      s.includes('ORDER BY updated_at DESC')
+      s.includes('FROM sessions s') &&
+      s.includes('s.owner_user_id = $1') &&
+      s.includes('ORDER BY s.updated_at DESC')
     ) {
       // 对齐真 SQL：$2 为 null 不过滤，否则只留该能力下的会话。
       const owner = params[0] as string;
       const capabilityId = (params[1] ?? null) as string | null;
       const mode = (params[2] ?? 'consume') as SessionRowF['mode'];
+      const agentProjectId = (params[3] ?? null) as string | null;
       const rows = [...this.sessions.values()]
         .filter((x) => x.owner_user_id === owner)
         .filter((x) => x.status === 'active')
         .filter((x) => capabilityId === null || x.capability_id === capabilityId)
         .filter((x) => x.mode === mode)
+        .filter((x) =>
+          agentProjectId === null
+            ? x.agent_project_id === null
+            : x.agent_project_id === agentProjectId && x.agent_release_id !== null,
+        )
         .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
         .slice(0, 100)
         .map((x) => ({ ...x }));
@@ -712,16 +763,19 @@ export class FakeDb implements Queryable, TxPool {
     if (
       s.startsWith('SELECT id FROM sessions WHERE id = $1 AND capability_id = $2') &&
       s.includes('owner_user_id = $3') &&
-      s.includes('mode = $4') &&
+      (s.includes('mode = $4') || s.includes("mode = 'studio'")) &&
       s.includes("status = 'active'") &&
       s.endsWith('FOR UPDATE')
     ) {
-      const [id, capabilityId, ownerUserId, mode] = params as [
+      const [id, capabilityId, ownerUserId, parameterMode] = params as [
         string,
         string,
         string,
-        SessionRowF['mode'],
+        SessionRowF['mode'] | undefined,
       ];
+      const mode: SessionRowF['mode'] = s.includes("mode = 'studio'")
+        ? 'studio'
+        : (parameterMode ?? 'consume');
       const session = this.sessions.get(id);
       if (
         !session ||
@@ -878,7 +932,7 @@ export class FakeDb implements Queryable, TxPool {
         ? { rows: [{ ...row }] as R[], rowCount: 1 }
         : { rows: [], rowCount: 0 };
     }
-    if (s.startsWith('SELECT EXISTS (SELECT 1 FROM turns')) {
+    if (s.startsWith('SELECT EXISTS (') && s.includes('SELECT 1 FROM turns')) {
       const exists = [...this.turns.values()].some(
         (row) => row.session_id === params[0] && row.status === 'running',
       );
@@ -1112,6 +1166,23 @@ export class FakeDb implements Queryable, TxPool {
         ] as R[],
         rowCount: 1,
       };
+    }
+    if (
+      s.includes('FROM artifacts') &&
+      s.includes("meta ->> 'authoringSurface' = 'codex'") &&
+      s.includes("meta ->> 'idempotencyKey' = $2")
+    ) {
+      const row = [...this.artifacts.values()]
+        .filter(
+          (artifact) =>
+            artifact.session_id === params[0] &&
+            artifact.turn_id == null &&
+            artifact.kind === 'html' &&
+            artifact.meta.authoringSurface === 'codex' &&
+            artifact.meta.idempotencyKey === params[1],
+        )
+        .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id))[0];
+      return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
     }
     if (s.includes('SELECT id FROM artifacts WHERE id = $1 AND session_id = $2')) {
       const a = this.artifacts.get(params[0] as string);

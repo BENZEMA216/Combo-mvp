@@ -147,6 +147,29 @@ async function runToIdle(
 }
 
 describe('run-turn 成功路径', () => {
+  it('uses a caller-fixed Turn id and runs the transactional hook before execution', async () => {
+    const { db, runner, session, handle } = await setup({
+      finalMessages: [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }],
+    });
+    const beforeCommit = vi.fn(async () => undefined);
+    const turnId = '11111111-1111-4111-8111-111111111111';
+
+    await runner.startTurn({
+      session,
+      definition: DEFINITION,
+      text: 'test fixed identity',
+      ...billingIdentity(session),
+      log: silentLog,
+      turnId,
+      beforeCommit,
+    });
+    await waitFor(() => db.turns.get(turnId)?.status !== 'running');
+
+    expect(beforeCommit).toHaveBeenCalledWith(expect.anything(), turnId);
+    expect(db.turns.get(turnId)).toBeDefined();
+    expect(handle.calls).toHaveLength(1);
+  });
+
   it('事件双写（表+总线同 id 同序）、整轮消息落 completed', async () => {
     const { db, eventLog, runner, session, published, handle } = await setup({
       deltas: ['我来', '整理'],

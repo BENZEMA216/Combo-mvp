@@ -99,6 +99,10 @@ describe('migrations', () => {
         'payment_attempts',
         'payment_callback_events',
         'wallet_ledger',
+        'agent_projects',
+        'agent_revisions',
+        'agent_tests',
+        'agent_releases',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -184,15 +188,51 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
+  it('keeps authentication, roles, billing, and Agent Builder after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-5)).toEqual([
+    expect(list.slice(-6)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
+      '0012_agent_builder_v1.sql',
     ]);
+  });
+
+  it('0012 freezes Revision and Release while pinning Test and Session to exact hashes', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0012_agent_builder_v1.sql'), 'utf-8');
+    for (const table of ['agent_projects', 'agent_revisions', 'agent_tests', 'agent_releases']) {
+      expect(sql).toContain(`CREATE TABLE ${table} (`);
+    }
+    expect(sql).toContain('trg_agent_revisions_immutable');
+    expect(sql).toContain('trg_agent_releases_immutable');
+    expect(sql).toContain('trg_agent_tests_transition');
+    expect(sql).toContain('trg_agent_release_requires_passed_test');
+    expect(sql).toContain('ADD COLUMN agent_project_id uuid');
+    expect(sql).toContain('ADD COLUMN agent_revision_id uuid');
+    expect(sql).toContain('ADD COLUMN agent_release_id uuid');
+    expect(sql).toContain('REFERENCES agent_revisions (id, entry_capability_id)');
+    expect(sql).toContain('trg_sessions_agent_pins_immutable');
+    expect(sql).toContain('ck_sessions_agent_project_revision_pair');
+    expect(sql).toContain('uq_artifacts_direct_agent_ui_request');
+    expect(sql).toContain('output_contract       jsonb');
+    expect(sql).toContain('request_key           text');
+    expect(sql).toContain('lease_token           uuid');
+    expect(sql).toContain('lease_expires_at      timestamptz');
+    expect(sql).toContain("status = 'starting' AND session_id IS NULL AND turn_id IS NULL");
+    expect(sql).toContain('lease_token IS NOT NULL AND lease_expires_at IS NOT NULL');
+    expect(sql).toContain('uq_agent_tests_project_request');
+    expect(sql).toContain('idx_agent_tests_project_created');
+    expect(sql).toContain('ON agent_tests (project_id, created_at DESC, id DESC)');
+    expect(sql).toContain('FOREIGN KEY (session_id, agent_revision_id)');
+    expect(sql).toContain(
+      'FOREIGN KEY (project_id, agent_revision_id, runtime_bundle_sha256, ui_sha256)',
+    );
+    expect(sql).toContain(
+      'FOREIGN KEY (qualifying_test_id, project_id, agent_revision_id, runtime_bundle_sha256, ui_sha256)',
+    );
+    expect(sql).toContain('GRANT SELECT, INSERT, UPDATE, DELETE ON agent_tests TO combo_runtime');
   });
 
   it('0002 rejects a PostgreSQL event ledger instead of bridging or deleting it', () => {

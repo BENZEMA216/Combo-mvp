@@ -7,6 +7,7 @@
 - `turn-repo.ts` 封装 Turn 创建、运行态查询、最近持久终态读取、Session 与 Turn 行锁、条件收尾和超时清扫。它只把 `uq_turns_session_running` 的 PostgreSQL 唯一冲突映射为 `SessionBusyError`。
 - `run-turn.ts` 在 Session 行锁事务中预留用量、创建 Turn 和用户消息，并异步执行模型。它统一让 PostgreSQL 终态与计费处理先提交、Redis 终态后追加，并在开下一轮前按数据库事实修复最近终态事件。它跟踪活动 Turn 和尚未提交的开轮事务，在人工打断、空闲超时、清扫和关闭时同时停止 Pi 与远程命令并释放预留。Studio 成功终态会在同一数据库事务中提升本轮最后一个合规 UI revision。
 - `build-agent.ts` 把 CapabilityDefinition、Session 模式、本轮用户要求、已完成历史、平台约束和工具交给 Pi Agent。Studio 使用单独的 Miniapp 设计协议和视觉规则，模型凭据始终由 Runtime 提供。
+- `revision-loader.ts` 校验不可变 Runtime Bundle 的对象摘要和 Project、Revision、Capability、UI 身份。创作者 Test 按 owner 读取，正式新会话只解析一次当前 Release，既有会话始终按自身固定指针读取。
 - `design-studio-prompt.ts` 定义适配当前不可变 Artifact revision 的 Studio 设计规则、视觉连续性、运行桥和确定性页面质量检查。
 - `design-visual-profile.ts` 根据冻结的 Capability 元数据为首版页面选择有界视觉合同，并判断后续请求是否明确要求整体换视觉方向。
 - `sandbox-tools.ts` 定义 `read`、`write`、`edit` 和 `bash`。四个工具都按串行模式执行，把所属 Turn 的中止信号与 Pi 单次调用信号绑定后再调用 SandboxBackend，并把底层错误收口为稳定文案。命令后代清理无法确认时，工具还会立即中止所属 Turn。

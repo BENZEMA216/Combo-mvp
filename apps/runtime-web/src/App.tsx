@@ -4,6 +4,7 @@ import { AppShell } from './shell/AppShell.js';
 import { AuthGate } from './shell/AuthGate.js';
 import { ChatPage } from './pages/ChatPage.js';
 import { CapabilityDeepLink } from './pages/CapabilityDeepLink.js';
+import { AgentProjectDeepLink } from './pages/AgentProjectDeepLink.js';
 import { ReleaseIdentityBadge } from './shell/releaseIdentity.js';
 
 export const CLOSED_MARKET_TARGET = '/capabilities';
@@ -44,6 +45,8 @@ export function App() {
           <Route path="session/:sessionId" element={<ChatPage />} />
           {/* 创作端「去试用」深链：为该能力建会话并转入对话页 */}
           <Route path="c/:capabilityId" element={<CapabilityDeepLink />} />
+          {/* Agent Release 深链：创建固定 Revision/Release 会话。 */}
+          <Route path="a/:projectId" element={<AgentProjectDeepLink />} />
         </Route>
         <Route path="*" element={<ClosedMarketRedirect />} />
       </Routes>

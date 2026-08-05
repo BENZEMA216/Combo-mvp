@@ -288,6 +288,7 @@ export function ChatPage() {
           <SessionSidebar
             activeSessionId={sessionId}
             capabilityId={sidebarCapability?.id}
+            agentProjectId={detail?.session.agentProjectId}
             capabilityName={sidebarCapability?.name}
             returnTo={contextualReturnTo}
             runningSessionId={stream.running ? sessionId : undefined}
@@ -562,6 +563,7 @@ export function ChatPage() {
               <SessionSidebar
                 activeSessionId={sessionId}
                 capabilityId={sidebarCapability?.id}
+                agentProjectId={detail?.session.agentProjectId}
                 capabilityName={sidebarCapability?.name}
                 returnTo={contextualReturnTo}
                 runningSessionId={stream.running ? sessionId : undefined}

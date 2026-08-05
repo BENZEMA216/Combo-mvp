@@ -13,6 +13,23 @@ interface CapabilityRow {
   published_at: string | Date | null;
   share_token: string | null;
   created_at: string | Date;
+  storage_key?: string;
+}
+
+/** 读完整定义所需的 owner-scoped 索引与对象键。 */
+export async function readCapabilityDefinitionRef(
+  db: Queryable,
+  capabilityId: string,
+  ownerUserId: string,
+): Promise<{ view: CapabilityView; storageKey: string } | null> {
+  const res = await db.query<CapabilityRow>(
+    `SELECT ${VIEW_COLUMNS}, storage_key
+       FROM capabilities
+      WHERE id = $1 AND owner_user_id = $2`,
+    [capabilityId, ownerUserId],
+  );
+  const row = res.rows[0];
+  return row?.storage_key ? { view: toView(row), storageKey: row.storage_key } : null;
 }
 
 const VIEW_COLUMNS = `id, task_id, name, summary, kind, published, published_at, share_token, created_at`;

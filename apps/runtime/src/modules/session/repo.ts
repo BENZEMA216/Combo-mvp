@@ -15,6 +15,9 @@ interface SessionDbRow {
   id: string;
   capability_id: string;
   owner_user_id: string;
+  agent_project_id?: string | null;
+  agent_revision_id: string | null;
+  agent_release_id: string | null;
   mode: SessionMode;
   title: string | null;
   status: 'active' | 'closed';
@@ -27,6 +30,9 @@ export interface SessionRow {
   id: string;
   capabilityId: string;
   ownerUserId: string;
+  agentProjectId: string | null;
+  agentRevisionId: string | null;
+  agentReleaseId: string | null;
   mode: SessionMode;
   title: string | null;
   status: 'active' | 'closed';
@@ -34,13 +40,17 @@ export interface SessionRow {
   updatedAt: string;
 }
 
-const SESSION_COLUMNS = `id, capability_id, owner_user_id, mode, title, status, created_at, updated_at`;
+const SESSION_COLUMNS = `id, capability_id, owner_user_id, agent_project_id,
+  agent_revision_id, agent_release_id, mode, title, status, created_at, updated_at`;
 
 function toSessionRow(r: SessionDbRow): SessionRow {
   return {
     id: r.id,
     capabilityId: r.capability_id,
     ownerUserId: r.owner_user_id,
+    agentProjectId: r.agent_project_id ?? null,
+    agentRevisionId: r.agent_revision_id,
+    agentReleaseId: r.agent_release_id,
     mode: r.mode,
     title: r.title,
     status: r.status,
@@ -53,6 +63,9 @@ export function toSessionView(row: SessionRow): SessionView {
   return {
     id: row.id,
     capabilityId: row.capabilityId,
+    ...(row.agentProjectId ? { agentProjectId: row.agentProjectId } : {}),
+    ...(row.agentRevisionId ? { agentRevisionId: row.agentRevisionId } : {}),
+    ...(row.agentReleaseId ? { agentReleaseId: row.agentReleaseId } : {}),
     mode: row.mode,
     ...(row.title ? { title: row.title } : {}),
     status: row.status,
@@ -91,16 +104,76 @@ export class SessionBusyError extends Error {
 /** 建会话（loader 校验通过后调用）。 */
 export async function createSession(
   db: Queryable,
-  input: { capabilityId: string; ownerUserId: string },
+  input: {
+    capabilityId: string;
+    ownerUserId: string;
+    agentProjectId?: string;
+    agentRevisionId?: string;
+    agentReleaseId?: string;
+  },
 ): Promise<SessionRow> {
+  if (Boolean(input.agentProjectId) !== Boolean(input.agentRevisionId)) {
+    throw new TypeError('Agent Session requires Project and Revision pins together');
+  }
+  if (input.agentReleaseId && !input.agentRevisionId) {
+    throw new TypeError('Agent Release pin requires an Agent Revision pin');
+  }
   const res = await db.query<SessionDbRow>(
-    `INSERT INTO sessions (capability_id, owner_user_id, mode)
-     VALUES ($1, $2, 'consume')
+    `INSERT INTO sessions
+       (capability_id, owner_user_id, mode, agent_project_id, agent_revision_id, agent_release_id)
+     VALUES ($1, $2, 'consume', $3, $4, $5)
      RETURNING ${SESSION_COLUMNS}`,
-    [input.capabilityId, input.ownerUserId],
+    [
+      input.capabilityId,
+      input.ownerUserId,
+      input.agentProjectId ?? null,
+      input.agentRevisionId ?? null,
+      input.agentReleaseId ?? null,
+    ],
   );
   const row = res.rows[0];
   if (!row) throw new Error('createSession: insert returned no row');
+  return toSessionRow(row);
+}
+
+/**
+ * Agent Test 用 Test id 固定 Session id。租约 owner 在 Turn 事务前崩溃时，接管者复用同一
+ * Session 与已 seed UI；身份不完全一致或 Session 已关闭时拒绝复用。
+ */
+export async function getOrCreateAgentTestSession(
+  db: Queryable,
+  input: {
+    sessionId: string;
+    capabilityId: string;
+    ownerUserId: string;
+    agentProjectId: string;
+    agentRevisionId: string;
+  },
+): Promise<SessionRow> {
+  const res = await db.query<SessionDbRow>(
+    `INSERT INTO sessions
+       (id, capability_id, owner_user_id, mode, agent_project_id, agent_revision_id)
+     VALUES ($1, $2, $3, 'consume', $4, $5)
+     ON CONFLICT (id)
+     DO UPDATE SET updated_at = sessions.updated_at
+       WHERE sessions.capability_id = EXCLUDED.capability_id
+         AND sessions.owner_user_id = EXCLUDED.owner_user_id
+         AND sessions.agent_project_id = EXCLUDED.agent_project_id
+         AND sessions.agent_revision_id = EXCLUDED.agent_revision_id
+         AND sessions.agent_release_id IS NULL
+         AND sessions.mode = 'consume'
+         AND sessions.status = 'active'
+     RETURNING ${SESSION_COLUMNS}`,
+    [
+      input.sessionId,
+      input.capabilityId,
+      input.ownerUserId,
+      input.agentProjectId,
+      input.agentRevisionId,
+    ],
+  );
+  const row = res.rows[0];
+  if (!row) throw new Error('getOrCreateAgentTestSession: identity mismatch');
   return toSessionRow(row);
 }
 
@@ -127,24 +200,31 @@ export async function getOrCreateStudioSession(
 }
 
 /**
- * 我的会话列表，按 updated_at 降序；默认只列普通运行会话，避免 Studio 修改历史混进试用侧栏。
+ * 我的会话列表，按 updated_at 降序。无 Project scope 时只列普通 Capability Session；
+ * 有 Project scope 时只列带 Release 的正式 Agent Session。Test 与并发清理中的草稿 Session 永不进侧栏。
  */
 export async function listSessions(
   db: Queryable,
   ownerUserId: string,
   capabilityId?: string,
   mode: SessionMode = 'consume',
+  agentProjectId?: string,
 ): Promise<SessionRow[]> {
   const res = await db.query<SessionDbRow>(
     `SELECT ${SESSION_COLUMNS}
-      FROM sessions
-      WHERE owner_user_id = $1
-        AND status = 'active'
-        AND ($2::uuid IS NULL OR capability_id = $2)
-        AND mode = $3
-      ORDER BY updated_at DESC
+      FROM sessions s
+      WHERE s.owner_user_id = $1
+        AND s.status = 'active'
+        AND ($2::uuid IS NULL OR s.capability_id = $2)
+        AND s.mode = $3
+        AND (
+          ($4::uuid IS NULL AND s.agent_project_id IS NULL)
+          OR ($4::uuid IS NOT NULL AND s.agent_project_id = $4 AND s.agent_release_id IS NOT NULL)
+        )
+        AND NOT EXISTS (SELECT 1 FROM agent_tests at WHERE at.session_id = s.id)
+      ORDER BY s.updated_at DESC
       LIMIT 100`,
-    [ownerUserId, capabilityId ?? null, mode],
+    [ownerUserId, capabilityId ?? null, mode, agentProjectId ?? null],
   );
   return res.rows.map(toSessionRow);
 }

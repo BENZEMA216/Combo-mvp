@@ -10,6 +10,7 @@ import {
   SendMessageBodySchema,
   UpdateSessionBodySchema,
   type CapabilityInputField,
+  type CapabilityDefinition,
   type Envelope,
   type MessageView,
   type RechargeRequiredBody,
@@ -37,6 +38,7 @@ import {
   updateSessionTitle,
 } from './repo.js';
 import { readSessionDetailDbSnapshot } from './detail.js';
+import { loadPinnedSessionAgentRevision } from '../agent/revision-loader.js';
 
 /** owner-scoped 取会话，失败即回信封；成功返回行。 */
 async function requireOwnedSession(
@@ -177,11 +179,19 @@ export function listSessionsHandler(): RouteHandlerMethod {
     const userId = req.auth?.userId;
     if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
     // 可选按能力过滤（侧栏只列当前能力下的会话）；非 UUID 直接拒（防 SQL uuid cast 报 500）。
-    const { capabilityId, mode: rawMode } = req.query as {
+    const {
+      capabilityId,
+      agentProjectId,
+      mode: rawMode,
+    } = req.query as {
       capabilityId?: string;
+      agentProjectId?: string;
       mode?: string;
     };
     if (capabilityId !== undefined && !z.string().uuid().safeParse(capabilityId).success) {
+      return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
+    }
+    if (agentProjectId !== undefined && !z.string().uuid().safeParse(agentProjectId).success) {
       return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
     }
     let mode: SessionMode = 'consume';
@@ -193,7 +203,13 @@ export function listSessionsHandler(): RouteHandlerMethod {
 
     let sessions: SessionRow[];
     try {
-      sessions = await listSessions(req.server.infra.db, userId, capabilityId, mode);
+      sessions = await listSessions(
+        req.server.infra.db,
+        userId,
+        capabilityId,
+        mode,
+        agentProjectId,
+      );
     } catch (err) {
       req.log.error({ err, traceId: req.id }, 'list sessions failed');
       return sendError(req, reply, ErrorCode.INTERNAL);
@@ -328,23 +344,42 @@ export function getSessionDetailHandler(): RouteHandlerMethod {
       // 开场表单字段与提示语在 MinIO 定义里；定义读不出不阻塞详情（退化为空数组，自由输入仍可用）。
       let inputs: CapabilityInputField[] = [];
       let starterPrompts: string[] = [];
+      let displayCapability = capability;
       try {
-        const loaded = await loadCapability(
-          db,
-          objectStore,
-          session.capabilityId,
-          session.ownerUserId,
-        );
-        if (loaded.kind === 'ok') {
-          inputs = loaded.definition.inputs;
-          starterPrompts = loaded.definition.starterPrompts;
+        if (session.agentRevisionId) {
+          const loaded = await loadPinnedSessionAgentRevision(db, objectStore, {
+            revisionId: session.agentRevisionId,
+            releaseId: session.agentReleaseId,
+            sessionOwnerUserId: session.ownerUserId,
+          });
+          if (loaded.kind === 'ok') {
+            inputs = loaded.revision.bundle.definition.inputs;
+            starterPrompts = loaded.revision.bundle.definition.starterPrompts;
+            displayCapability = {
+              id: capability.id,
+              name: loaded.revision.bundle.definition.name,
+              summary: loaded.revision.bundle.definition.summary,
+              kind: 'agent',
+            };
+          }
+        } else {
+          const loaded = await loadCapability(
+            db,
+            objectStore,
+            session.capabilityId,
+            session.ownerUserId,
+          );
+          if (loaded.kind === 'ok') {
+            inputs = loaded.definition.inputs;
+            starterPrompts = loaded.definition.starterPrompts;
+          }
         }
       } catch (err) {
         req.log.warn({ err, traceId: req.id }, 'load definition for detail failed, degrading');
       }
       const detail: SessionDetail = {
         session: toSessionView(session),
-        capability: { ...capability, inputs, starterPrompts },
+        capability: { ...displayCapability, inputs, starterPrompts },
         messages: messages.map((m) => ({
           id: m.id,
           seq: m.seq,
@@ -379,24 +414,44 @@ export function sendMessageHandler(): RouteHandlerMethod {
     if (!parsed.success) return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
 
     const { db, objectStore } = req.server.infra;
-    // 每轮重新加载定义（发布态/定义可能已变；owner 校验对会话主人重新走一遍权限闸）。
-    let loaded;
-    try {
-      loaded = await loadCapability(db, objectStore, session.capabilityId, session.ownerUserId);
-    } catch (err) {
-      req.log.error({ err, traceId: req.id }, 'load capability failed');
-      return sendError(req, reply, ErrorCode.INTERNAL);
+    let definition: CapabilityDefinition;
+    let capabilityOwnerUserId: string;
+    if (session.agentRevisionId) {
+      try {
+        const loaded = await loadPinnedSessionAgentRevision(db, objectStore, {
+          revisionId: session.agentRevisionId,
+          releaseId: session.agentReleaseId,
+          sessionOwnerUserId: session.ownerUserId,
+        });
+        if (loaded.kind === 'not_found') return sendError(req, reply, ErrorCode.NOT_FOUND);
+        if (loaded.kind === 'invalid_bundle') return sendError(req, reply, ErrorCode.INTERNAL);
+        definition = loaded.revision.bundle.definition;
+        capabilityOwnerUserId = loaded.revision.capabilityOwnerUserId;
+      } catch (err) {
+        req.log.error({ err, traceId: req.id }, 'load pinned Agent Revision failed');
+        return sendError(req, reply, ErrorCode.INTERNAL);
+      }
+    } else {
+      let loaded;
+      try {
+        loaded = await loadCapability(db, objectStore, session.capabilityId, session.ownerUserId);
+      } catch (err) {
+        req.log.error({ err, traceId: req.id }, 'load capability failed');
+        return sendError(req, reply, ErrorCode.INTERNAL);
+      }
+      if (loaded.kind !== 'ok') return sendLoadFailure(req, reply, loaded);
+      definition = loaded.definition;
+      capabilityOwnerUserId = loaded.capability.ownerUserId;
     }
-    if (loaded.kind !== 'ok') return sendLoadFailure(req, reply, loaded);
 
     let result;
     try {
       result = await req.server.turns.startTurn({
         session,
-        definition: loaded.definition,
+        definition,
         text: parsed.data.text,
         usageId: parsed.data.usageId,
-        capabilityOwnerUserId: loaded.capability.ownerUserId,
+        capabilityOwnerUserId,
         log: req.log,
       });
     } catch (err) {
