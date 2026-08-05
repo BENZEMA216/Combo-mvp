@@ -6,7 +6,6 @@ set +x
 
 usage() {
   printf 'usage:\n' >&2
-  printf '  %s github <all|combo-dev|cloud-review|production>\n' "${0##*/}" >&2
   printf '  %s kubernetes <all|test|preview|production>\n' "${0##*/}" >&2
   exit 2
 }
@@ -30,71 +29,17 @@ prompt_hidden() {
   printf -v "$destination" '%s' "$value"
 }
 
-validate_acceptance_resend_key() {
-  command -v node >/dev/null 2>&1 || {
-    printf 'node is required\n' >&2
-    exit 1
-  }
-  if ! ACCEPTANCE_RESEND_API_KEY="$resend_key" \
-    node "$script_dir/resend-sent-email.mjs" --validate-key >/dev/null 2>&1; then
-    printf 'Resend sent-email permission validation failed; GitHub was not changed\n' >&2
-    exit 1
-  fi
-}
-
-configure_github() {
-  local target=$1 environment
-  local -a environments
-  case "$target" in
-    all) environments=(combo-dev cloud-review production) ;;
-    combo-dev | cloud-review | production) environments=("$target") ;;
-    *) usage ;;
-  esac
-  command -v gh >/dev/null 2>&1 || {
-    printf 'gh is required\n' >&2
-    exit 1
-  }
-
-  # Prove every destination exists before accepting or writing a credential.
-  for environment in "${environments[@]}"; do
-    if ! gh api --silent \
-      "repos/dangdang-tech/Combo/environments/$environment" >/dev/null 2>&1; then
-      printf 'GitHub Environment preflight failed: %s\n' "$environment" >&2
-      exit 1
-    fi
-  done
-
-  prompt_hidden resend_key 'Full-access Resend API key (hidden): '
-  [[ "$resend_key" =~ ^re_[A-Za-z0-9_-]{16,252}$ ]] || {
-    printf 'invalid Resend API key shape\n' >&2
-    exit 1
-  }
-  validate_acceptance_resend_key
-
-  for environment in "${environments[@]}"; do
-    if ! printf '%s' "$resend_key" |
-      gh secret set --repo dangdang-tech/Combo --env "$environment" \
-        ACCEPTANCE_RESEND_API_KEY >/dev/null; then
-      printf 'GitHub Environment Secret update failed: %s\n' "$environment" >&2
-      exit 1
-    fi
-    printf 'github_environment_secret_updated environment=%s name=ACCEPTANCE_RESEND_API_KEY\n' \
-      "$environment"
-  done
-  resend_key=''
-}
-
 resolve_kubernetes_target() {
   local environment=$1
   case "$environment" in
     test)
-      printf '%s %s\n' combo-preview combo-dev-env
+      printf '%s %s\n' combo-test combo-env
       ;;
     preview)
-      printf '%s %s\n' combo-review combo-preview-env
+      printf '%s %s\n' combo-preview combo-env
       ;;
     production)
-      printf '%s %s\n' combo combo-env
+      printf '%s %s\n' combo-prod combo-env
       ;;
     *)
       usage
@@ -211,10 +156,8 @@ configure_kubernetes() {
   resend_key=''
 }
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 (($# == 2)) || usage
 case "$1" in
-  github) configure_github "$2" ;;
   kubernetes) configure_kubernetes "$2" ;;
   *) usage ;;
 esac
