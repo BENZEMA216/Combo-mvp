@@ -19,7 +19,7 @@ function fixtureManifest() {
       runtime: 'ghcr.io/dangdang-tech/combo-runtime@sha256:' + '2'.repeat(64),
       web: 'ghcr.io/dangdang-tech/combo-web@sha256:' + '3'.repeat(64),
     },
-    migrationHead: '0008_application_database_roles.sql',
+    migrationHead: '0009_billing.sql',
     builtAt: '2026-01-01T00:00:00.000Z',
     webAssetManifest: 'sha256:' + '4'.repeat(64),
   };
@@ -62,7 +62,7 @@ test('renders apps for all three environments into their namespaces', () => {
     [
       'production',
       'combo-prod',
-      'https://agora.43-160-242-46.sslip.io',
+      'https://agora.43-160-242-46.sslip.io,https://buildwithcombo.com,https://www.buildwithcombo.com',
       'redis://redis-queue.combo-foundation.svc.cluster.local:6379/0',
     ],
   ];
