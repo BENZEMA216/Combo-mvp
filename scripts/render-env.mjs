@@ -313,6 +313,17 @@ function run(argv) {
       }
       if (options.phase === 'apps') {
         validateApps(rendered, options.environment, manifest);
+        // 把 source SHA 刻进每个 Deployment 的 pod template 注解：即便镜像 digest
+        // 未变（纯配置/文档改动导致镜像内容相同），每次部署也会因模板 hash 变化
+        // 触发 rollout，确保 web 等 Pod 重建后从 combo-release ConfigMap 读到新版本。
+        for (const resource of rendered) {
+          if (resource.kind === 'Deployment' && resource.spec?.template?.metadata) {
+            resource.spec.template.metadata.annotations = {
+              ...(resource.spec.template.metadata.annotations ?? {}),
+              'combo.build/source-sha': manifest.sourceSha,
+            };
+          }
+        }
         rendered.push(
           releaseConfigMap(options.environment, manifest, releaseManifestDigest(manifest)),
         );
