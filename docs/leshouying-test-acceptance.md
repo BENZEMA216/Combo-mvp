@@ -5,7 +5,9 @@
 
 ## 当前结论
 
-源码已经形成“每个用户对每个共享 Agent 免费成功使用 3 次，之后从用户全局钱包按成功 Turn 固定扣费；乐收赢只负责钱包充值”的闭环。离线、假网关和进程级自动化验证通过，并已在 Test 环境完成**真实支付闭环**：二维码（C扫B `/v3/prepay`）下单返回真实支付码，用户扫码支付 1 分后乐收赢真实回调到达，验签通过（`signature_valid=true`）、订单 `succeeded→credited`、钱包只加一次、账本只记一条、回调事件 `processed`。
+源码已经形成“每个用户对每个共享 Agent 免费成功使用 3 次，之后从用户全局钱包按成功 Turn 固定扣费；乐收赢只负责钱包充值”的闭环。离线、假网关和进程级自动化验证通过，并已在 Test 环境完成**真实支付闭环**：二维码（C扫B `/v3/prepay`）下单返回真实支付码，支付宝与微信各扫码支付 1 分，乐收赢真实回调到达、验签通过（`signature_valid=true`）、订单 `succeeded→credited`、钱包只加一次、账本只记一条、回调事件 `processed`。
+
+**免费 3 次 + 402 已端到端验证**：播种共享 Agent（MinIO 定义 + 真实 LLM）后，用户 B 成功使用 3 次（每次 turn `completed`，`billing_free_allowances.free_used_count=3`），第 4 次返回 HTTP 402 `rechargeRequired`，且不创建 Turn/Message、不调用模型、钱包与免费额度不变。付费 Turn 扣费由 CI 的 `billing.pg.test.ts` 覆盖。
 
 **乐收赢测试商户的支付通道限制**（已实测确认，非代码问题）：聚合码 `/v3/qrpay` 返回的 `code_url` 是坏链接（微信扫码 10003 OAuth 未授权、支付宝跳错误页）；H5 渠道微信/支付宝在测试商户均不可用（网关 FAIL）。因此二维码充值改为 C扫B `/v3/prepay`（单渠道，需 `pay_type`），渠道值 `aggregate_qr` 更名为 `qr`（迁移 `0010`，含 `pay_type` 持久化列）。**支付宝与微信两条 prepay 渠道均用真实付款验证通过**（各自 1 分，回调验签通过、订单 credited、钱包只加一次、账本只记一条）。
 
