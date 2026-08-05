@@ -19,7 +19,6 @@ const ENVIRONMENTS = Object.freeze({
   test: {
     namespace: 'combo-test',
     foundationOverlay: 'test-foundation',
-    foundationLock: 'test',
     postgresHost: 'postgres',
     redisQueueHost: 'redis-queue',
     redisHotHost: 'redis-hot',
@@ -30,7 +29,6 @@ const ENVIRONMENTS = Object.freeze({
   preview: {
     namespace: 'combo-preview',
     foundationOverlay: 'shared-foundation',
-    foundationLock: 'shared',
     postgresHost: 'postgres.combo-foundation.svc.cluster.local',
     redisQueueHost: 'redis-queue.combo-foundation.svc.cluster.local',
     redisHotHost: 'redis-hot.combo-foundation.svc.cluster.local',
@@ -41,7 +39,6 @@ const ENVIRONMENTS = Object.freeze({
   production: {
     namespace: 'combo-prod',
     foundationOverlay: 'shared-foundation',
-    foundationLock: 'shared',
     postgresHost: 'postgres.combo-foundation.svc.cluster.local',
     redisQueueHost: 'redis-queue.combo-foundation.svc.cluster.local',
     redisHotHost: 'redis-hot.combo-foundation.svc.cluster.local',
@@ -316,7 +313,20 @@ function run(argv) {
       }
       if (options.phase === 'apps') {
         validateApps(rendered, options.environment, manifest);
-        rendered.push(
+        // 把 source SHA 刻进每个 Deployment 的 pod template 注解：即便镜像 digest
+        // 未变（纯配置/文档改动导致镜像内容相同），每次部署也会因模板 hash 变化
+        // 触发 rollout，确保 web 等 Pod 重建后从 combo-release ConfigMap 读到新版本。
+        for (const resource of rendered) {
+          if (resource.kind === 'Deployment' && resource.spec?.template?.metadata) {
+            resource.spec.template.metadata.annotations = {
+              ...(resource.spec.template.metadata.annotations ?? {}),
+              'combo.build/source-sha': manifest.sourceSha,
+            };
+          }
+        }
+        // combo-release ConfigMap 先于 Deployment 输出，kubectl apply 时先建
+        // ConfigMap，新 Pod 启动才可能读到本次修订的 COMBO_SOURCE_SHA。
+        rendered.unshift(
           releaseConfigMap(options.environment, manifest, releaseManifestDigest(manifest)),
         );
       } else {

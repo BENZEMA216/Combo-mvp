@@ -160,7 +160,7 @@ pnpm -F @cb/infra compose:down  # 拆栈
 三个 workflow 对应「检查 / 构建 / 部署」三个阶段：
 
 - `.github/workflows/pr-ci.yml`（PR checks）：合并前质量门禁，只由 `pull_request` 触发。完成依赖安装、shared 构建、format、lint、typecheck、无容器快速测试和 ShellCheck；不构建或发布镜像，也不读取部署 Secret。
-- `.github/workflows/ci.yml`（Release build）：`main` 更新后执行完整 build、集成测试、容器契约与镜像构建，并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>` 构建清单。它也是分支构建的可复用入口（`workflow_call`）。
+- `.github/workflows/ci.yml`（Release build）：`main` 更新后执行完整 build、集成测试、容器契约与镜像构建，并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>-<attempt>` 构建清单。它也是分支构建的可复用入口（`workflow_call`）。
 - `.github/workflows/deploy.yml`（Deploy）：统一部署三个环境，按晋级链执行。
 
 Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s 上，命名空间分别为 `combo-test`、`combo-preview`、`combo-prod`：

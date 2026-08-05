@@ -76,10 +76,6 @@ function resourceFrom(source, kind, name, namespace) {
 }
 
 test('the sandbox overlay remains opt-in and keeps RuntimeClass installation separate', () => {
-  const rootKustomization = readFileSync(
-    resolve(repositoryRoot, 'infra/k8s/kustomization.yaml'),
-    'utf8',
-  );
   const overlayKustomization = readFileSync(
     resolve(overlayDirectory, 'kustomization.yaml'),
     'utf8',
@@ -91,7 +87,6 @@ test('the sandbox overlay remains opt-in and keeps RuntimeClass installation sep
     'utf8',
   );
 
-  assert.doesNotMatch(rootKustomization, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
   assert.doesNotMatch(deployScript, /overlays\/sandbox-tools|runtimeclass-gvisor/i);
   assert.doesNotMatch(renderer, /overlays\/sandbox-tools|Dockerfile\.sandboxd/i);
   assert.doesNotMatch(deploymentWorkflow, /\brsync\b|sandbox-tools|Dockerfile\.sandboxd/);

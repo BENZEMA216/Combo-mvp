@@ -1,6 +1,6 @@
 # 发布与运维脚本
 
-本目录保存仓库级验证、部署和运维脚本。发布脚本不得输出、落盘、复制或提交任何环境 Secret 值；部署前只允许核对 Secret 名称与键名。需要凭据的步骤只能在对应的受保护 GitHub Environment 中运行。
+本目录保存仓库级验证、部署和运维脚本。发布脚本不得输出、落盘、复制或提交任何环境 Secret 值；部署前只允许核对 Secret 名称与键名。需要凭据的部署步骤只运行在受信任的 `main` 控制器（`deploy.yml`）上，通过仓库级 Secret（`DEPLOY_SSH_KEY`、`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KNOWN_HOSTS`）SSH 到 tecent2 执行；主机侧应用凭证以 k8s `combo-env` 与 `ghcr-pull` Secret 就位。
 
 ## 环境拓扑
 
@@ -30,24 +30,19 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 `web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。正式 CI 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。
 
-## 浏览器验收
-
-`goal-b-test-acceptance.mjs` 是 Test、Preview 和 Production 共用的受控真实浏览器 runner。它使用主机已安装的 Chrome，在对应环境域名上完成任务幂等创建、合法 Claude JSONL 上传与断点恢复、能力勾选和 UI 发布、Studio 多轮与元素选择、Runtime SSE 断线重连和终态 replay、中断 Turn 的服务端失败产物隔离、当前 UI 隔离副本试用以及返回原任务。三个环境都使用 run-scoped Resend 测试别名完成两组独立邮箱 OTP 登录和 owner 隔离。浏览器网络只允许对应应用 origin，Resend 读取由 `resend-sent-email.mjs` 的 Node helper 完成。输出以 `0600` 创建，只保留公开发布身份、资源 UUID、检查状态与计数，不保存邮箱、OTP、Cookie、配对码、分享令牌、凭据或响应正文。
-
 ## 部署 workflow
 
 `.github/workflows/deploy.yml` 统一处理三环境部署：
 
-- `workflow_run`：main CI 成功后自动部署 Test。
+- `workflow_run`：main CI 成功后自动部署 Preview。
 - `workflow_dispatch`：手工部署到 test（任意同仓库分支或 main）/ preview / production（main 修订）。
 
 `select` job 校验触发源、分支 tip、main 可达性并解析该 SHA 的 `combo-build-<SHA>-<attempt>` 构建清单 artifact；`deploy` job 按环境并发（`combo-deploy-<env>`），在 runner 上渲染 YAML、scp 到主机，再由主机上的 `deploy-env.sh` 依次执行 foundation、migrate、apps，最后验证环境域名返回该 SHA 的版本元数据。分支 Test 通过 `build_branch` job 回调 main 定义的 `ci.yml` 构建不可变 artifact；候选分支的 workflow 与脚本不会在受保护 Environment 中执行。
 
-`deploy.yml` 需要仓库级 Secret：`DEPLOY_SSH_KEY`、`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KNOWN_HOSTS`（SSH 到 tecent2 执行部署），以及可选的 `REVIEW_ACCESS_TOKEN`（Preview 域名校验）。这些 Secret 只被运行在 `main` 上的受信任控制器读取。主机上各 namespace 的 `combo-env`（Postgres/S3/Resend/OTP/LLM 凭证）与 `ghcr-pull`（镜像拉取）Secret 需要预先就位，`deploy-env.sh` 在缺失时直接失败。
+`deploy.yml` 需要仓库级 Secret：`DEPLOY_SSH_KEY`、`DEPLOY_HOST`、`DEPLOY_USER`、`DEPLOY_SSH_KNOWN_HOSTS`（SSH 到 tecent2 执行部署）。这些 Secret 只被运行在 `main` 上的受信任控制器读取。主机上各 namespace 的 `combo-env`（Postgres/S3/Resend/OTP/LLM 凭证）与 `ghcr-pull`（镜像拉取）Secret 需要预先就位，`deploy-env.sh` 在缺失时直接失败。
 
 ## 其他脚本
 
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
-- `retire-legacy-auth-secrets.sh`：清理已废弃的 Logto 认证 Secret（历史清理工具）。
 - `scripts/integration/`：CI 集成测试脚本。
