@@ -313,6 +313,42 @@ export class FakeDb implements TxPool {
         }
         return { rows: [shape(t)] as R[], rowCount: 1 };
       }
+      // Shell 恢复任务集：只取 running / 可操作失败，按更新时间倒序且有界。
+      if (s.includes("t.last_error->>'action' = ANY($2::text[])")) {
+        const [owner, actions, limit] = params as [string, string[], number];
+        const rows = [...this.tasks.values()]
+          .filter(
+            (t) =>
+              t.owner_user_id === owner &&
+              (t.status === 'running' ||
+                (t.status === 'failed' &&
+                  (actions.includes(
+                    (t.last_error as { action?: string } | null | undefined)?.action ?? '',
+                  ) ||
+                    (t.current_step === 'upload' &&
+                      this.uploads.get(t.id)?.status === 'expired')))),
+          )
+          .sort((a, b) => {
+            const byUpdated = new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+            return byUpdated !== 0 ? byUpdated : a.id < b.id ? 1 : -1;
+          })
+          .slice(0, limit)
+          .map(shape);
+        return { rows: rows as R[], rowCount: rows.length };
+      }
+      // Shell 恢复任务集无 actionable 时的最近结果回退。
+      if (s.includes('ORDER BY t.updated_at DESC, t.id DESC LIMIT 1')) {
+        const owner = params[0] as string;
+        const rows = [...this.tasks.values()]
+          .filter((t) => t.owner_user_id === owner)
+          .sort((a, b) => {
+            const byUpdated = new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+            return byUpdated !== 0 ? byUpdated : a.id < b.id ? 1 : -1;
+          })
+          .slice(0, 1)
+          .map(shape);
+        return { rows: rows as R[], rowCount: rows.length };
+      }
       // 列表：owner + 可选 cursor（id < $2）+ LIMIT $3，id 降序。
       const [owner, cursor, limit] = params as [string, string | null, number];
       const rows = [...this.tasks.values()]

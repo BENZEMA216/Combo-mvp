@@ -4,14 +4,16 @@ import type { ReactElement } from 'react';
 import { Shell } from './Shell.js';
 import { AccountProvider, accountFromMe } from './account.js';
 import { useAuth } from './auth.js';
+import { useCreationResume } from './useCreationResume.js';
 
 export function ProtectedLayout(): ReactElement {
   const { me } = useAuth();
+  const creationResume = useCreationResume();
   // me 必非空：本布局只在 RequireAuth 判定 authed 后渲染。兜底取默认账号，绝不裸崩。
   const account = me ? accountFromMe(me) : undefined;
   return (
     <AccountProvider {...(account ? { account } : {})}>
-      <Shell />
+      <Shell creationResume={creationResume} />
     </AccountProvider>
   );
 }

@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CapabilityView, TaskView } from '@cb/shared';
 import {
   getTask,
+  connectCommand,
   listCapabilities,
   retryTask,
   taskEventsUrl,
@@ -27,6 +28,13 @@ import {
 import { goToLogin } from '../../shell/auth.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { CapabilityPicker } from './CapabilityPicker.js';
+import { CopyButton } from '../../components/CopyButton.js';
+import { TestDemoAgentEntry } from './TestDemoAgentEntry.js';
+import {
+  clearTaskPairingReceipt,
+  readTaskPairingReceipt,
+  type TaskPairingReceipt,
+} from './taskPairingReceipt.js';
 import {
   formatTime,
   taskStatusLabel,
@@ -40,6 +48,13 @@ export function TaskDetailPage(): ReactElement {
   const { taskId = '' } = useParams();
   const qc = useQueryClient();
   const [sseReconnectKey, setSseReconnectKey] = useState(0);
+  const [pairingReceipt, setPairingReceipt] = useState<TaskPairingReceipt | null>(() =>
+    readTaskPairingReceipt(taskId),
+  );
+
+  useEffect(() => {
+    setPairingReceipt(readTaskPairingReceipt(taskId));
+  }, [taskId]);
 
   const taskQuery = useQuery({
     queryKey: ['task', taskId],
@@ -49,6 +64,19 @@ export function TaskDetailPage(): ReactElement {
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 3000 : false),
   });
   const task = taskQuery.data;
+
+  useEffect(() => {
+    if (!task) return;
+    const uploadCanResume =
+      task.status === 'running' &&
+      task.currentStep === 'upload' &&
+      task.upload.status !== 'processed' &&
+      task.upload.status !== 'expired';
+    if (!uploadCanResume && pairingReceipt) {
+      clearTaskPairingReceipt(task.id);
+      setPairingReceipt(null);
+    }
+  }, [pairingReceipt, task]);
 
   // 只有在跑的任务才建流；SSE 定终态后重拉任务（capabilityCount / lastError 定格）。
   const sse = useTaskEvents(task ? taskEventsUrl(task.id) : null, {
@@ -78,6 +106,9 @@ export function TaskDetailPage(): ReactElement {
     mutationFn: () => retryTask(taskId),
     onSuccess: (view) => {
       qc.setQueryData(['task', taskId], view); // 立即回 running，重新建流。
+      // prefix invalidation 同时覆盖任务列表 ['tasks'] 与 Shell 恢复查询
+      // ['tasks', 'creation-resume']，让“当前创作”胶囊无需刷新立即回到运行态。
+      void qc.invalidateQueries({ queryKey: ['tasks'] });
     },
   });
 
@@ -86,6 +117,8 @@ export function TaskDetailPage(): ReactElement {
     return <ErrorState error={taskQuery.error} onRetry={() => void taskQuery.refetch()} />;
   }
   if (!task) return <ErrorState error={undefined} />;
+
+  const uploadBlocked = task.currentStep === 'upload' && task.upload.status !== 'processed';
 
   // —— 提取完成：结果排序后进入试用、UI 调整、定价与发布，而不是绕过验收直接发布。——
   if (task.status === 'succeeded') {
@@ -128,7 +161,11 @@ export function TaskDetailPage(): ReactElement {
         </p>
       </div>
 
-      <UploadCard task={task} />
+      <UploadCard
+        task={task}
+        pairingReceipt={pairingReceipt?.taskId === task.id ? pairingReceipt : null}
+      />
+      {uploadBlocked && <TestDemoAgentEntry placement="blocked-task" />}
       {extracting && (
         <ExtractCard sse={sse} onReconnect={() => setSseReconnectKey((value) => value + 1)} />
       )}
@@ -148,7 +185,13 @@ export function TaskDetailPage(): ReactElement {
 }
 
 /** 上传阶段卡：分片进度 + 配对提示。 */
-function UploadCard({ task }: { task: TaskView }): ReactElement {
+function UploadCard({
+  task,
+  pairingReceipt,
+}: {
+  task: TaskView;
+  pairingReceipt: TaskPairingReceipt | null;
+}): ReactElement {
   const waiting =
     task.currentStep === 'upload' && task.status === 'running' && task.upload.status === 'pending';
   const expired = task.upload.status === 'expired';
@@ -159,15 +202,22 @@ function UploadCard({ task }: { task: TaskView }): ReactElement {
   const detailLine = uploadDetailLine(task);
   const statusLine = expired
     ? '上传已超时，任务已停止'
-    : waiting && !hasProgress
-      ? '等待本机助手连接'
-      : '正在接收对话历史';
+    : task.upload.status === 'processed'
+      ? 'Context 已上传'
+      : waiting && !hasProgress
+        ? '任务已保存，等待开始上传'
+        : '正在接收对话历史';
+  const command = pairingReceipt ? connectCommand(pairingReceipt.pairingCode) : null;
   return (
     <div
       className={`cb-card cb-upload-card${waiting ? ' cb-upload-card--waiting' : ''}`}
       aria-label={`上传状态：${statusLine}`}
     >
       <div className="cb-upload-card__top">
+        <div className="cb-upload-card__heading">
+          <p className="cb-section-kicker">上传 Context</p>
+          <h3>{statusLine}</h3>
+        </div>
         <span className={`cb-status-badge is-${taskStatusVariant(task)}`}>
           {uploadProgressLabel(task)}
         </span>
@@ -186,15 +236,37 @@ function UploadCard({ task }: { task: TaskView }): ReactElement {
       <p className="cb-card__line">{detailLine}</p>
       {waiting && (
         <>
+          <p className="cb-upload-card__continuity">
+            任务和上传进度会自动保存。你可以离开此页，稍后从「创作进度」或左下角「当前创作」继续。
+          </p>
+          {command ? (
+            <div className="cb-upload-card__receipt" aria-label="已恢复的本机助手连接命令">
+              <div>
+                <p className="cb-upload-card__receipt-title">在这台电脑的终端运行</p>
+                <p className="cb-card__hint">
+                  当前标签页临时保留了创建时的命令；中断后重跑同一条即可续传。
+                </p>
+              </div>
+              <div className="cb-cmdbox__command">
+                <code className="cb-cmdbox__command-text">{command}</code>
+                <CopyButton text={command} label="复制命令" className="cb-cmdbox__copy" />
+              </div>
+            </div>
+          ) : (
+            <div className="cb-upload-card__missing-command" role="note">
+              <p>当前标签页没有保留这项任务的连接命令。</p>
+              <span>如果终端里仍有旧命令，可以直接重跑；否则请获取一条新命令。</span>
+              <Link to="/tasks?create=1">选择创建方式</Link>
+            </div>
+          )}
           <div className="cb-upload-card__steps" aria-label="上传步骤">
             <span className="is-active">连接助手</span>
             <span>上传分片</span>
             <span>进入提取</span>
           </div>
           <p className="cb-card__hint">
-            在本机运行建任务时给出的连接命令即可开始上传（配对码有效期至{' '}
-            {formatTime(task.upload.pairingExpiresAt)}
-            ）；配对码过期或丢失时，回任务列表重新建一个任务。
+            连接命令有效期至 {formatTime(task.upload.pairingExpiresAt)}
+            。过期后旧任务会保留为记录，但需要从创建方式中获取新命令。
           </p>
         </>
       )}
@@ -217,7 +289,7 @@ function uploadDetailLine(task: TaskView): string {
   }
   if (partsExpected != null) return `本机助手正在上传 ${partsLanded} / ${partsExpected} 片`;
   if (partsLanded > 0) return `本机助手已上传 ${partsLanded} 片`;
-  return '运行连接命令后，这里会显示实时分片进度';
+  return '还没有收到分片；运行连接命令后，这里会自动显示实时进度';
 }
 
 /** 提取阶段卡：错误优先于旧进度；401 去自定义登录，依赖错误由用户显式重连。 */
@@ -324,7 +396,7 @@ function FailedCard({
       )}
       {task.retryCount > 0 && <p className="cb-card__hint">已重试 {task.retryCount} 次。</p>}
       {uploadExpired ? (
-        <Link className="cb-primary-btn" to="/tasks">
+        <Link className="cb-primary-btn" to="/tasks?create=1">
           重新上传
         </Link>
       ) : (

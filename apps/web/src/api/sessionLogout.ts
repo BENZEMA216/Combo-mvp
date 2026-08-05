@@ -22,9 +22,20 @@ export async function logoutSession(): Promise<LogoutResult | null> {
       body: '{}',
     });
     if (!response.ok) return null;
-    return LogoutResponseSchema.parse((await response.json()) as unknown).data;
+    const result = LogoutResponseSchema.parse((await response.json()) as unknown).data;
+    clearTransientSessionData();
+    return result;
   } catch {
     return null;
+  }
+}
+
+/** 登出后清理当前标签页的短期草稿与上传凭据，避免换账号后串用。 */
+export function clearTransientSessionData(storage: Pick<Storage, 'clear'> | null = null): void {
+  try {
+    (storage ?? globalThis.sessionStorage).clear();
+  } catch {
+    // 部分浏览器会禁用 storage；服务端会话仍已成功撤销。
   }
 }
 

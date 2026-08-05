@@ -1,18 +1,31 @@
 // 任务页测试：列表状态渲染（步骤/状态/分片进度/能力项数/失败原因）+ 新建任务出配对码与连接命令。
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { useLocation } from 'react-router-dom';
-import { installFetchMock, type FetchMock } from '../../test/mockFetch.js';
+import { Link, useLocation } from 'react-router-dom';
+import { installFetchMock, type FetchMock, type MockResponseSpec } from '../../test/mockFetch.js';
 import { makeTask, paginatedBody, envelopeBody } from '../../test/fixtures.js';
 import { renderPage } from '../../test/renderWithProviders.js';
 import { TasksPage } from './TasksPage.js';
+import { CREATION_INTAKE_STORAGE_KEY, readLandingDraft } from '../landing/landingDraft.js';
+import { readTaskPairingReceipt } from './taskPairingReceipt.js';
 
 function TasksWithPathProbe() {
   const location = useLocation();
   return (
     <>
-      <span data-testid="path">{location.pathname}</span>
+      <span data-testid="path">{location.pathname + location.search}</span>
+      <TasksPage />
+    </>
+  );
+}
+
+function TasksWithCreateIntentProbe() {
+  const location = useLocation();
+  return (
+    <>
+      <Link to="/tasks?create=1">模拟全局创建入口</Link>
+      <span data-testid="path">{location.pathname + location.search}</span>
       <TasksPage />
     </>
   );
@@ -22,6 +35,8 @@ let fm: FetchMock | undefined;
 afterEach(() => {
   fm?.restore();
   fm = undefined;
+  vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 const UPLOADING = makeTask({
@@ -126,7 +141,9 @@ describe('TasksPage — 列表状态渲染', () => {
   it('空列表 → 空态引导（不裸空表）', async () => {
     fm = installFetchMock({ status: 200, json: paginatedBody([]) });
     renderPage(<TasksPage />);
-    expect(await screen.findByText('还没有上传任务')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { level: 2, name: '创作进度' })).toBeInTheDocument();
+    expect(await screen.findByText('还没有创作记录')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: '用哪种方式创建 Agent？' })).toBeInTheDocument();
   });
 
   it('列表加载失败 → 人话错误 + 重试（绝不裸露状态码）', async () => {
@@ -166,8 +183,102 @@ describe('TasksPage — 列表状态渲染', () => {
 });
 
 describe('TasksPage — 新建上传任务', () => {
+  it('直接刷新 /tasks?create=1 也只打开创建方式，不自动 POST', async () => {
+    fm = installFetchMock({ status: 200, json: paginatedBody([UPLOADING]) });
+
+    renderPage(<TasksWithPathProbe />, { route: '/tasks?create=1' });
+
+    expect(
+      await screen.findByRole('heading', { name: '用哪种方式创建 Agent？' }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('path')).toHaveTextContent('/tasks');
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+  });
+
+  it('消费 Shell 的一次性 create intent，只打开创建方式；确认真实导入后才创建任务', async () => {
+    const created = makeTask({
+      id: 'task-intent',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
+    fm = installFetchMock([
+      { status: 200, json: paginatedBody([]) },
+      { status: 201, json: envelopeBody({ task: created, pairingCode: 'PAIR-INTENT-1' }) },
+      { status: 200, json: paginatedBody([created]) },
+      { match: '/tasks/task-intent', status: 200, json: envelopeBody(created) },
+    ]);
+
+    renderPage(<TasksWithCreateIntentProbe />, { route: '/tasks' });
+    await screen.findByText('还没有创作记录');
+    await userEvent.click(screen.getByRole('link', { name: '模拟全局创建入口' }));
+
+    expect(
+      await screen.findByRole('heading', { name: '用哪种方式创建 Agent？' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('导入本机会话')).toBeInTheDocument();
+    expect(screen.getByText('提交公开主页')).toBeInTheDocument();
+    expect(screen.getByTestId('path')).toHaveTextContent('/tasks');
+    expect(screen.getByTestId('path')).not.toHaveTextContent('create=1');
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(0);
+
+    await userEvent.click(screen.getByRole('button', { name: '创建连接任务' }));
+    expect(await screen.findByText('PAIR-INTENT-1')).toBeInTheDocument();
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  });
+
+  it('真实导入动作在首个请求完成前被重复点击也只创建一个任务', async () => {
+    const created = makeTask({
+      id: 'task-single-flight',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
+    let resolveCreate!: (value: MockResponseSpec) => void;
+    const pendingCreate = new Promise<MockResponseSpec>((resolve) => {
+      resolveCreate = resolve;
+    });
+    fm = installFetchMock([
+      { status: 200, json: paginatedBody([]) },
+      { deferred: pendingCreate },
+      { status: 200, json: paginatedBody([created]) },
+      { match: '/tasks/task-single-flight', status: 200, json: envelopeBody(created) },
+    ]);
+
+    renderPage(<TasksWithCreateIntentProbe />, { route: '/tasks' });
+    await screen.findByText('还没有创作记录');
+    await userEvent.click(screen.getByRole('link', { name: '模拟全局创建入口' }));
+    const realCreate = screen.getByRole('button', { name: '创建连接任务' });
+
+    await userEvent.click(realCreate);
+    await waitFor(() => expect(fm!.calls.filter((call) => call.method === 'POST')).toHaveLength(1));
+    await userEvent.click(realCreate);
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+
+    resolveCreate({
+      status: 201,
+      json: envelopeBody({ task: created, pairingCode: 'PAIR-SINGLE-FLIGHT' }),
+    });
+    expect(await screen.findByText('PAIR-SINGLE-FLIGHT')).toBeInTheDocument();
+    expect(fm.calls.filter((call) => call.method === 'POST')).toHaveLength(1);
+  });
+
   it('POST /tasks 带幂等键；配对码明文 + 连接命令展示（仅此一次提示）', async () => {
-    const created = makeTask({ id: 'task-new' });
+    const created = makeTask({
+      id: 'task-new',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
     fm = installFetchMock([
       { status: 200, json: paginatedBody([]) }, // 初始列表
       { status: 201, json: envelopeBody({ task: created, pairingCode: 'PAIR-CODE-XYZ' }) },
@@ -175,9 +286,9 @@ describe('TasksPage — 新建上传任务', () => {
       { match: '/tasks/task-new', status: 200, json: envelopeBody(created) }, // 配对等待 watcher
     ]);
     renderPage(<TasksPage />);
-    await screen.findByText('还没有上传任务');
+    await screen.findByText('还没有创作记录');
 
-    await userEvent.click(screen.getByRole('button', { name: '新建上传任务' }));
+    await userEvent.click(screen.getByRole('button', { name: '创建连接任务' }));
 
     // 请求形态：POST /api/v1/tasks，body 带前端生成的幂等键（≥8 字符）。
     const post = fm.calls.find((c) => c.method === 'POST');
@@ -186,16 +297,23 @@ describe('TasksPage — 新建上传任务', () => {
     expect(typeof body.idempotencyKey).toBe('string');
     expect(body.idempotencyKey!.length).toBeGreaterThanOrEqual(8);
 
-    // 配对码只出现这一次 + 一条命令（GET /connect/script?code=<配对码> | sh）。
+    // 云端仅下发一次；当前标签页临时保留，并给出完整连接命令。
     expect(await screen.findByText('PAIR-CODE-XYZ')).toBeInTheDocument();
-    expect(screen.getByText(/只显示一次/)).toBeInTheDocument();
+    expect(screen.getByText(/云端仅下发一次/)).toBeInTheDocument();
     const cmd = screen.getByText(/connect\/script\?code=PAIR-CODE-XYZ/);
     expect(cmd.textContent).toContain('curl -fsSL');
     expect(cmd.textContent).toContain('| sh');
     expect(screen.getByText('等待本机助手连接，上传开始后会自动打开进度页。')).toBeInTheDocument();
+    expect(
+      screen.getByText('当前标签页已临时保存这条命令；刷新后可从任务详情继续。'),
+    ).toBeInTheDocument();
+    expect(readTaskPairingReceipt('task-new')).toMatchObject({
+      taskId: 'task-new',
+      pairingCode: 'PAIR-CODE-XYZ',
+    });
 
-    // 「我已复制，关闭」收起引导卡。
-    await userEvent.click(screen.getByRole('button', { name: '我已复制，关闭' }));
+    // 「已保存命令，收起」收起引导卡。
+    await userEvent.click(screen.getByRole('button', { name: '已保存命令，收起' }));
     expect(screen.queryByText('PAIR-CODE-XYZ')).toBeNull();
   });
 
@@ -206,7 +324,7 @@ describe('TasksPage — 新建上传任务', () => {
         status: 'pending',
         partsExpected: null,
         partsLanded: 0,
-        pairingExpiresAt: '2026-07-14T12:00:00.000Z',
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
       },
     });
     const started = makeTask({
@@ -224,11 +342,90 @@ describe('TasksPage — 新建上传任务', () => {
       { match: '/tasks/task-auto', status: 200, json: envelopeBody(started) },
     ]);
     renderPage(<TasksWithPathProbe />, { route: '/tasks' });
-    await screen.findByText('还没有上传任务');
+    await screen.findByText('还没有创作记录');
 
-    await userEvent.click(screen.getByRole('button', { name: '新建上传任务' }));
+    await userEvent.click(screen.getByRole('button', { name: '创建连接任务' }));
 
     await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/tasks/task-auto'));
     expect(fm.calls.some((call) => call.url === '/api/v1/tasks/task-auto')).toBe(true);
+  });
+
+  it('公开主页方式明确是 Mock，只保存当前标签页草稿且不创建后端任务', async () => {
+    fm = installFetchMock({ status: 200, json: paginatedBody([]) });
+    renderPage(<TasksPage />);
+    await screen.findByText('还没有创作记录');
+
+    const callsBeforeManagedSubmit = fm.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: '填写资料' }));
+    await userEvent.type(
+      screen.getByRole('textbox', { name: '公开主页链接' }),
+      'https://example.com/creator',
+    );
+    await userEvent.type(screen.getByRole('textbox', { name: '联系邮箱' }), 'creator@example.com');
+    await userEvent.click(screen.getByRole('checkbox', { name: /我确认这些内容是公开资料/ }));
+    await userEvent.click(screen.getByRole('button', { name: '保存体验草稿' }));
+
+    expect(
+      await screen.findByText('体验草稿已保存在当前标签页；关闭标签页后不会作为真实任务保留。'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/尚未提交到 Combo，不会开始抓取或生成 Agent/)).toBeInTheDocument();
+    expect(fm.calls).toHaveLength(callsBeforeManagedSubmit);
+    expect(readLandingDraft()?.contactEmail).toBe('creator@example.com');
+  });
+
+  it('Landing 旧草稿缺少联系邮箱时，不误报为完整托管资料已保存', async () => {
+    sessionStorage.setItem(
+      CREATION_INTAKE_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        mode: 'kol_profile',
+        profileUrl: 'https://example.com/creator',
+        consent: true,
+        preparedAt: new Date().toISOString(),
+      }),
+    );
+    fm = installFetchMock({ status: 200, json: paginatedBody([]) });
+    renderPage(<TasksPage />);
+    await screen.findByText('还没有创作记录');
+
+    await userEvent.click(screen.getByRole('button', { name: '填写资料' }));
+    expect(screen.getByRole('textbox', { name: '公开主页链接' })).toHaveValue(
+      'https://example.com/creator',
+    );
+    expect(screen.getByRole('textbox', { name: '联系邮箱' })).toHaveValue('');
+    expect(screen.queryByText(/体验草稿已保存在当前标签页/)).toBeNull();
+  });
+
+  it('浏览器无法暂存连接命令时，收起动作要求用户明确确认已复制', async () => {
+    const created = makeTask({
+      id: 'task-storage-blocked',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
+    fm = installFetchMock([
+      { status: 200, json: paginatedBody([]) },
+      {
+        status: 201,
+        json: envelopeBody({ task: created, pairingCode: 'PAIR-STORAGE-BLOCKED' }),
+      },
+      { status: 200, json: paginatedBody([created]) },
+      { match: '/tasks/task-storage-blocked', status: 200, json: envelopeBody(created) },
+    ]);
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => {
+      throw new DOMException('blocked', 'SecurityError');
+    });
+    renderPage(<TasksPage />);
+    await screen.findByText('还没有创作记录');
+    await userEvent.click(screen.getByRole('button', { name: '创建连接任务' }));
+
+    expect(await screen.findByText('PAIR-STORAGE-BLOCKED')).toBeInTheDocument();
+    expect(
+      screen.getByText('当前浏览器未能临时保存命令，请先运行或安全保存。'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '确认已复制，收起' })).toBeInTheDocument();
   });
 });

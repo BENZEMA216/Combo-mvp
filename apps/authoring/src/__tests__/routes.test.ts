@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 16 endpoints (account 4 + task 8 + capability 4)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(16);
+  it('registers exactly 17 endpoints (account 4 + task 9 + capability 4)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(17);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -56,5 +56,13 @@ describe('route registry self-check', () => {
     const connect = ALL_ENDPOINTS.filter((endpoint) => endpoint.url.startsWith('/connect/'));
     expect(connect.length).toBeGreaterThanOrEqual(2);
     for (const endpoint of connect) expect(endpoint.preHandlers ?? []).toHaveLength(0);
+  });
+
+  it('exposes one authenticated, read-only Shell resume endpoint', () => {
+    const resume = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.method === 'GET' && endpoint.url === '/tasks/resume',
+    );
+    expect(resume).toBeDefined();
+    expect(resume?.preHandlers).toHaveLength(1);
   });
 });

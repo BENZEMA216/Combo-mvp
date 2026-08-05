@@ -18,7 +18,7 @@ import {
 import { sendError } from '../../platform/http/_helpers.js';
 import { asTxPool } from '../../platform/infra/db-tx.js';
 import { createTask, reconcileExpiredUploadTasks, retryTask } from './service.js';
-import { listTaskViews, readTaskView } from './repo.js';
+import { listCreationResumeTaskViews, listTaskViews, readTaskView } from './repo.js';
 import { canFetchConnectScript, landPart, prepareUpload } from './pairing.js';
 import { renderConnectScript, renderExpiredScript } from './connect-script.js';
 
@@ -123,6 +123,36 @@ export function listTasksHandler(): RouteHandlerMethod {
         },
       },
     };
+    reply.code(200).send(body);
+    return reply;
+  };
+}
+
+// ───────────────────────────── GET /tasks/resume ─────────────────────────────
+
+/**
+ * Shell 的恢复入口：一次有界只读查询，不翻页扫描用户的全部任务历史。
+ * 有可操作任务时只返回这些任务；没有时返回最近一条，供异步结果验收。
+ * 过期状态由 worker 的分钟级对账与任务列表/详情的读修复统一持久化，避免 Shell
+ * 5 秒轮询同时触发全表状态修复。
+ */
+export function getCreationResumeTasksHandler(): RouteHandlerMethod {
+  return async function (req: FastifyRequest, reply: FastifyReply) {
+    const userId = req.auth?.userId;
+    if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
+
+    let tasks: TaskView[];
+    try {
+      tasks = await listCreationResumeTaskViews(req.server.infra.db, {
+        ownerUserId: userId,
+        limit: 20,
+      });
+    } catch (err) {
+      req.log.error({ err, traceId: req.id }, 'read creation resume tasks failed');
+      return sendError(req, reply, ErrorCode.INTERNAL);
+    }
+
+    const body: Envelope<TaskView[]> = { data: tasks, meta: { traceId: req.id } };
     reply.code(200).send(body);
     return reply;
   };

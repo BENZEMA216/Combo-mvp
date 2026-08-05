@@ -22,8 +22,51 @@ describe('Shell navigation', () => {
       'href',
       '/capabilities',
     );
+    const createAgent = screen.getByRole('link', { name: '创建 Agent' });
+    expect(createAgent).toHaveAttribute('href', '/tasks?create=1');
+    expect(createAgent).toHaveAttribute('aria-label', '创建 Agent');
+    expect(screen.getByRole('link', { name: '创作进度' })).toHaveAttribute('href', '/tasks');
 
     await userEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
     expect(screen.getByRole('link', { name: '我的 Agent' })).toHaveAttribute('title', '我的 Agent');
+  });
+
+  it('keeps the latest creation recoverable from every protected page', async () => {
+    globalThis.localStorage.clear();
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route
+            element={
+              <Shell
+                creationResume={{
+                  title: '旅行穿搭 Agent',
+                  stage: '正在提取 Agent',
+                  href: '/tasks/task-live',
+                  total: 3,
+                }}
+              />
+            }
+          >
+            <Route path="/tasks" element={<p>任务页</p>} />
+            <Route path="/tasks/:taskId" element={<p>任务详情</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const resume = screen.getByRole('link', {
+      name: '继续创作：旅行穿搭 Agent，正在提取 Agent',
+    });
+    expect(resume).toHaveAttribute('href', '/tasks/task-live');
+    expect(screen.getByRole('link', { name: '另有 2 个创作' })).toHaveAttribute(
+      'href',
+      '/creation/tasks',
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: '收起侧栏' }));
+    expect(resume).toHaveAttribute('title', '旅行穿搭 Agent · 正在提取 Agent · 继续创作');
+    await userEvent.click(resume);
+    expect(screen.getByText('任务详情')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,7 @@
 // 任务域路由。
 //   POST /tasks                 建任务（返回配对码）—— trusted Origin + requireAuth
 //   GET  /tasks                 任务列表 —— requireAuth
+//   GET  /tasks/resume          Shell 有界恢复任务集 —— requireAuth
 //   GET  /tasks/:taskId         任务详情 —— requireAuth
 //   GET  /tasks/:taskId/events  进度 SSE —— requireSseAuth（同源 Cookie）
 //   POST /tasks/:taskId/retry   重试失败任务 —— trusted Origin + requireAuth
@@ -16,6 +17,7 @@ import {
   connectPrepareHandler,
   connectUploadHandler,
   createTaskHandler,
+  getCreationResumeTasksHandler,
   getTaskHandler,
   listTasksHandler,
   retryTaskHandler,
@@ -32,6 +34,12 @@ export const TASK_ENDPOINTS: EndpointDecl[] = [
     handler: createTaskHandler(),
   },
   { method: 'GET', url: '/tasks', preHandlers: [requireAuth()], handler: listTasksHandler() },
+  {
+    method: 'GET',
+    url: '/tasks/resume',
+    preHandlers: [requireAuth()],
+    handler: getCreationResumeTasksHandler(),
+  },
   { method: 'GET', url: '/tasks/:taskId', preHandlers: [requireAuth()], handler: getTaskHandler() },
   {
     method: 'GET',

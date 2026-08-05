@@ -1,13 +1,16 @@
 // 任务页（默认页）：「新建上传任务」+ 任务列表（游标分页）。
 // 建任务成功 → PairingCard 展示配对码（明文仅此一次）+ 助手连接命令；行点入任务详情看实时进度。
-import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { CreateTaskResult, TaskView } from '@cb/shared';
 import { createTask, getTask, listTasks } from '../../api/index.js';
 import { ErrorState, Skeleton } from '../../components/index.js';
 import { useDocumentTitle } from '../../shell/useDocumentTitle.js';
 import { PairingCard } from './PairingCard.js';
+import { CreationMethodPicker } from './CreationMethodPicker.js';
+import { TestDemoAgentEntry } from './TestDemoAgentEntry.js';
+import { saveTaskPairingReceipt } from './taskPairingReceipt.js';
 import {
   formatTime,
   taskStatusLabel,
@@ -17,12 +20,19 @@ import {
 } from './taskPresent.js';
 
 export function TasksPage(): ReactElement {
-  useDocumentTitle('上传任务 · Combo');
+  useDocumentTitle('创作进度 · Combo');
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [created, setCreated] = useState<CreateTaskResult | null>(null);
   const [pairingVisible, setPairingVisible] = useState(false);
+  const [methodPickerVisible, setMethodPickerVisible] = useState(false);
+  const [pairingReceiptSaved, setPairingReceiptSaved] = useState(false);
   const createResultRef = useRef<HTMLDivElement>(null);
+  const methodPickerRef = useRef<HTMLDivElement>(null);
+  // Link 跳转不会天然继承页面按钮的 disabled 状态。用同步 ref 把所有创建入口收口成
+  // 同一个在途锁，覆盖 React 状态更新前的双击、重复导航和 StrictMode effect 重放。
+  const createInFlightRef = useRef(false);
 
   const tasksQuery = useInfiniteQuery({
     queryKey: ['tasks'],
@@ -36,9 +46,35 @@ export function TasksPage(): ReactElement {
     onSuccess: (result) => {
       setCreated(result);
       setPairingVisible(true);
+      setMethodPickerVisible(false);
+      setPairingReceiptSaved(
+        saveTaskPairingReceipt({
+          taskId: result.task.id,
+          pairingCode: result.pairingCode,
+          pairingExpiresAt: result.task.upload.pairingExpiresAt,
+        }),
+      );
       void qc.invalidateQueries({ queryKey: ['tasks'] });
     },
+    onSettled: () => {
+      createInFlightRef.current = false;
+    },
   });
+  const mutateCreate = createMutation.mutate;
+  const requestCreateTask = useCallback(() => {
+    if (createInFlightRef.current) return;
+    createInFlightRef.current = true;
+    mutateCreate();
+  }, [mutateCreate]);
+
+  // Shell 的全局“创建 Agent”入口只展开创建方式，不替用户擅自创建真实上传任务。
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return;
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+    setMethodPickerVisible(true);
+  }, [searchParams, setSearchParams]);
 
   // 新建后持续观察这个任务：配对卡给“等待助手连接”的明确反馈；第一片一落地就自动进入
   // 任务详情，让用户连续看到上传进度与随后自动出现的提取进度，无需刷新或手动点“查看进度”。
@@ -75,6 +111,15 @@ export function TasksPage(): ReactElement {
   }, [createMutation.isError, created, pairingVisible]);
 
   const tasks = tasksQuery.data?.pages.flatMap((p) => p.items) ?? [];
+  useEffect(() => {
+    if (tasksQuery.isSuccess && tasks.length === 0 && !created) setMethodPickerVisible(true);
+  }, [created, tasks.length, tasksQuery.isSuccess]);
+
+  useEffect(() => {
+    if (!methodPickerVisible) return;
+    methodPickerRef.current?.scrollIntoView?.({ block: 'start' });
+    methodPickerRef.current?.focus({ preventScroll: true });
+  }, [methodPickerVisible]);
   const runningCount = tasks.filter((task) => task.status === 'running').length;
   const completedCount = tasks.filter((task) => task.status === 'succeeded').length;
   const capabilityCount = tasks.reduce((sum, task) => sum + task.capabilityCount, 0);
@@ -87,16 +132,8 @@ export function TasksPage(): ReactElement {
   } else if (tasks.length === 0) {
     listBody = (
       <div className="cb-empty">
-        <p className="cb-empty__title">还没有上传任务</p>
-        <p className="cb-empty__hint">新建一个任务，把你的对话历史变成可分享的能力。</p>
-        <button
-          type="button"
-          className="cb-empty__action"
-          onClick={() => createMutation.mutate()}
-          disabled={createMutation.isPending}
-        >
-          新建第一个任务
-        </button>
+        <p className="cb-empty__title">还没有创作记录</p>
+        <p className="cb-empty__hint">在上方选择一种 Context 来源，完成后进度会保存在这里。</p>
       </div>
     );
   } else {
@@ -118,7 +155,7 @@ export function TasksPage(): ReactElement {
                 key={t.id}
                 task={t}
                 createPending={createMutation.isPending}
-                onCreateUpload={() => createMutation.mutate()}
+                onCreateUpload={requestCreateTask}
               />
             ))}
           </tbody>
@@ -146,41 +183,62 @@ export function TasksPage(): ReactElement {
       <div className="cb-page__head cb-page__head--split">
         <div>
           <h2 className="cb-page__title" id="cb-tasks-title">
-            上传任务
+            创作进度
           </h2>
           <p className="cb-page__lead">
-            新建任务拿到配对码，在本机跑一条命令上传对话历史；云端自动提取成能力项。
+            从上传、提取到结果验收，每一步都会保留。离开后也可以随时回来继续。
           </p>
         </div>
         <button
           type="button"
           className="cb-primary-btn"
-          onClick={() => createMutation.mutate()}
-          disabled={createMutation.isPending}
+          onClick={() => setMethodPickerVisible(true)}
+          aria-expanded={methodPickerVisible}
+          aria-controls="cb-create-methods-region"
         >
-          {createMutation.isPending ? '正在创建…' : '新建上传任务'}
+          创建 Agent
         </button>
       </div>
 
+      {methodPickerVisible && (
+        <div
+          ref={methodPickerRef}
+          className="cb-create-methods-anchor"
+          id="cb-create-methods-region"
+          role="region"
+          aria-label="创建 Agent 的 Context 来源"
+          tabIndex={-1}
+        >
+          <CreationMethodPicker
+            createPending={createMutation.isPending}
+            onCreateUpload={requestCreateTask}
+            onClose={tasks.length > 0 ? () => setMethodPickerVisible(false) : undefined}
+          />
+        </div>
+      )}
+
       <div ref={createResultRef} tabIndex={-1} className="cb-create-result">
         {createMutation.isError && (
-          <ErrorState error={createMutation.error} onRetry={() => createMutation.mutate()} />
+          <ErrorState error={createMutation.error} onRetry={requestCreateTask} />
         )}
         {created && pairingVisible && (
           <PairingCard
             created={created}
             liveTask={watchedTask}
             progressUnavailable={watchedTaskQuery.isError || watchedTaskQuery.isRefetchError}
+            receiptSaved={pairingReceiptSaved}
             onDismiss={() => setPairingVisible(false)}
           />
         )}
       </div>
 
+      <TestDemoAgentEntry placement="tasks" />
+
       <div className="cb-tasks-panel">
         <div className="cb-tasks-panel__header">
           <div>
-            <p className="cb-section-kicker">任务列表</p>
-            <h3 className="cb-tasks-panel__title">上传与提取队列</h3>
+            <p className="cb-section-kicker">创建记录</p>
+            <h3 className="cb-tasks-panel__title">Agent 创作任务</h3>
             <p className="cb-tasks-panel__hint">
               每个任务都会保留上传进度、提取状态和生成的能力数量。
             </p>

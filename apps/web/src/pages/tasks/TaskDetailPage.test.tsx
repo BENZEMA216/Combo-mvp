@@ -1,13 +1,15 @@
 // 任务详情测试：SSE 实时进度（快照点亮 + progress + item-appended + done 终态刷新）与失败重试。
-import { describe, it, expect, afterEach } from 'vitest';
-import { act, screen } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient } from '@tanstack/react-query';
 import { installFetchMock, type FetchMock } from '../../test/mockFetch.js';
 import { MockFetchEventSource } from '../../test/mockFetchEventSource.js';
 import { __setFetchEventSourceForTests } from '../../api/index.js';
 import { makeTask, makeCapability, envelopeBody } from '../../test/fixtures.js';
 import { renderPage } from '../../test/renderWithProviders.js';
 import { TaskDetailPage } from './TaskDetailPage.js';
+import { readTaskPairingReceipt, saveTaskPairingReceipt } from './taskPairingReceipt.js';
 
 let fm: FetchMock | undefined;
 let restoreSse: (() => void) | undefined;
@@ -16,6 +18,8 @@ afterEach(() => {
   fm = undefined;
   restoreSse?.();
   restoreSse = undefined;
+  vi.restoreAllMocks();
+  sessionStorage.clear();
 });
 
 const RUNNING = makeTask({
@@ -36,6 +40,81 @@ function renderDetail(): void {
 }
 
 describe('TaskDetailPage — SSE 实时进度', () => {
+  it('等待上传时从当前标签页恢复连接命令，并明确可以离开后继续', async () => {
+    const waiting = makeTask({
+      id: 't-1',
+      description: '等待上传的任务',
+      currentStep: 'upload',
+      status: 'running',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
+    saveTaskPairingReceipt({
+      taskId: 't-1',
+      pairingCode: 'PAIR-RESTORED',
+      pairingExpiresAt: waiting.upload.pairingExpiresAt,
+    });
+    fm = installFetchMock({ status: 200, json: envelopeBody(waiting) });
+
+    renderDetail();
+
+    expect(
+      await screen.findByRole('heading', { name: '任务已保存，等待开始上传' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/你可以离开此页/)).toBeInTheDocument();
+    expect(screen.getByText(/connect\/script\?code=PAIR-RESTORED/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '复制命令' })).toBeInTheDocument();
+  });
+
+  it('没有本地连接命令时提供真实兜底，不让用户面对不可持续等待', async () => {
+    const waiting = makeTask({
+      id: 't-1',
+      description: '等待上传的任务',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
+    fm = installFetchMock({ status: 200, json: envelopeBody(waiting) });
+
+    renderDetail();
+
+    expect(await screen.findByText('当前标签页没有保留这项任务的连接命令。')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '选择创建方式' })).toHaveAttribute(
+      'href',
+      '/tasks?create=1',
+    );
+  });
+
+  it('绝不把另一项任务的连接命令显示在当前任务', async () => {
+    const waiting = makeTask({
+      id: 't-1',
+      upload: {
+        status: 'pending',
+        partsExpected: null,
+        partsLanded: 0,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+    });
+    saveTaskPairingReceipt({
+      taskId: 'another-task',
+      pairingCode: 'PAIR-WRONG-TASK',
+      pairingExpiresAt: waiting.upload.pairingExpiresAt,
+    });
+    fm = installFetchMock({ status: 200, json: envelopeBody(waiting) });
+
+    renderDetail();
+
+    expect(await screen.findByText('当前标签页没有保留这项任务的连接命令。')).toBeInTheDocument();
+    expect(screen.queryByText(/PAIR-WRONG-TASK/)).toBeNull();
+  });
+
   it('上传收齐后由轮询自动切到提取加载态，不需要手动刷新', async () => {
     restoreSse = __setFetchEventSourceForTests(MockFetchEventSource.impl);
     const uploading = makeTask({
@@ -117,14 +196,15 @@ describe('TaskDetailPage — SSE 实时进度', () => {
     expect(screen.getByText('已分析 6 / 10 段会话')).toBeInTheDocument();
     expect(screen.getByText('切分会话段落')).toBeInTheDocument();
 
-    // item-appended：触发能力列表重拉，新 Agent 就地浮现，可试用或继续完善。
+    // item-appended：触发能力列表重拉，新 Agent 就地浮现，可试用、调整 UI 或直接定价。
     act(() => conn.emit('item-appended', { item: cap1 }, { id: '3-1' }));
     act(() => conn.emit('item-appended', { item: cap2 }, { id: '3-2' }));
     expect(await screen.findByText('周报整理')).toBeInTheDocument();
     expect(await screen.findByText('代码评审')).toBeInTheDocument();
     // 非规范测试 id 不跨 bundle 传播；生产 UUID 会由专门的 returnTo 契约覆盖。
     expect(screen.getAllByRole('link', { name: '先试用' })[0]).toHaveAttribute('href', '/try/c/c1');
-    expect(screen.getAllByRole('link', { name: /继续完善/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /调整「.*」UI/ })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: /直接定价与发布/ })).toHaveLength(2);
     expect(screen.queryByRole('checkbox')).toBeNull();
 
     // done 帧 → 重拉任务定格终态 → 整页切换成成果形态（大标题 + 挑选发布区）。
@@ -140,7 +220,7 @@ describe('TaskDetailPage — SSE 实时进度', () => {
       'href',
       '/capabilities',
     );
-    expect(screen.getAllByRole('link', { name: /继续完善/ })[0]).toHaveAttribute(
+    expect(screen.getAllByRole('link', { name: /直接定价与发布/ })[0]).toHaveAttribute(
       'href',
       '/capabilities/c1/release/pricing',
     );
@@ -164,14 +244,49 @@ describe('TaskDetailPage — 结果到发布链路', () => {
     ).toBeInTheDocument();
     expect(await screen.findByLabelText('优先级 1')).toHaveTextContent('01');
     expect(screen.getByLabelText('优先级 2')).toHaveTextContent('02');
-    expect(screen.getAllByRole('link', { name: /继续完善/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /调整「.*」UI/ })).toHaveLength(2);
+    expect(screen.getAllByRole('link', { name: /直接定价与发布/ })).toHaveLength(2);
     expect(screen.queryByRole('button', { name: /一键发布/ })).toBeNull();
     expect(fm.calls.every((call) => call.method === 'GET')).toBe(true);
   });
 });
 
 describe('TaskDetailPage — 失败与重试', () => {
+  it('提取失败时不把已完成的上传误说成正在接收', async () => {
+    const failed = makeTask({
+      id: 't-1',
+      currentStep: 'extract',
+      status: 'failed',
+      upload: {
+        status: 'processed',
+        partsExpected: 4,
+        partsLanded: 4,
+        pairingExpiresAt: '2099-08-05T12:00:00.000Z',
+      },
+      lastError: {
+        userMessage: '提取暂时失败，请稍后重试。',
+        retriable: true,
+        action: 'retry',
+        traceId: 'trace-extract-failed',
+      },
+    });
+    saveTaskPairingReceipt({
+      taskId: 't-1',
+      pairingCode: 'PAIR-MUST-BE-CLEARED',
+      pairingExpiresAt: failed.upload.pairingExpiresAt,
+    });
+    fm = installFetchMock({ status: 200, json: envelopeBody(failed) });
+
+    renderDetail();
+
+    expect(await screen.findByRole('heading', { name: 'Context 已上传' })).toBeInTheDocument();
+    expect(screen.queryByText('正在接收对话历史')).toBeNull();
+    expect(screen.getByText('提取暂时失败，请稍后重试。')).toBeInTheDocument();
+    await waitFor(() => expect(readTaskPairingReceipt('t-1')).toBeNull());
+  });
+
   it('失败任务显示 lastError 人话 + 重试按钮；重试 POST 后回到跑态', async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
     restoreSse = __setFetchEventSourceForTests(MockFetchEventSource.impl);
     const failed = makeTask({
       ...RUNNING,
@@ -203,6 +318,11 @@ describe('TaskDetailPage — 失败与重试', () => {
     // 重试成功 → 任务回 running（badge 变提取中），重新建流。
     expect(await screen.findByText('提取中')).toBeInTheDocument();
     expect(MockFetchEventSource.connections.length).toBeGreaterThan(0);
+    await waitFor(() =>
+      expect(invalidateSpy).toHaveBeenCalledWith({
+        queryKey: ['tasks'],
+      }),
+    );
   });
 
   it('过期上传任务显示失败原因与重新上传出口，不把旧配对码原地重试回 running', async () => {
@@ -232,7 +352,10 @@ describe('TaskDetailPage — 失败与重试', () => {
     expect(screen.getByLabelText('上传状态：上传已超时，任务已停止')).toBeInTheDocument();
     expect(screen.queryByText(/本机助手正在上传/)).toBeNull();
     expect(screen.getByText('失败')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: '重新上传' })).toHaveAttribute('href', '/tasks');
+    expect(screen.getByRole('link', { name: '重新上传' })).toHaveAttribute(
+      'href',
+      '/tasks?create=1',
+    );
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull();
     expect(fm.calls.every((call) => call.method === 'GET')).toBe(true);
   });

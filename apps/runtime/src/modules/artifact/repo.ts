@@ -244,6 +244,17 @@ async function bindCapabilityUiArtifactIfEmpty(
   return bindCapabilityUiArtifactWithGuard(db, input, true);
 }
 
+/**
+ * 把受信任的无 Turn Studio 种子提升为 Capability 首个当前 UI。
+ * 仅允许空指针 CAS；Artifact、Session、owner、mode 与 null-turn 守卫仍由同一条 SQL 验证。
+ */
+export async function bindCapabilitySeedUiArtifactIfEmpty(
+  db: Queryable,
+  input: { capabilityId: string; artifactId: string; studioSessionId: string },
+): Promise<boolean> {
+  return bindCapabilityUiArtifactWithGuard(db, input, true);
+}
+
 async function bindCapabilityUiArtifactWithGuard(
   db: Queryable,
   input: {

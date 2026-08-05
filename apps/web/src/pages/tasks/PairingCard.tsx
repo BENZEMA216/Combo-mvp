@@ -13,6 +13,8 @@ export interface PairingCardProps {
   liveTask?: TaskView;
   /** 本拍查询失败时的非阻断提示；watcher 会继续自动重试。 */
   progressUnavailable?: boolean;
+  /** 是否已把明文命令暂存在当前标签页，供任务详情刷新后恢复。 */
+  receiptSaved?: boolean;
   onDismiss: () => void;
 }
 
@@ -36,6 +38,7 @@ export function PairingCard({
   created,
   liveTask = created.task,
   progressUnavailable = false,
+  receiptSaved = false,
   onDismiss,
 }: PairingCardProps): ReactElement {
   const command = connectCommand(created.pairingCode);
@@ -59,7 +62,7 @@ export function PairingCard({
         <code className="cb-pairing__code">{created.pairingCode}</code>
         <CopyButton text={created.pairingCode} label="复制" />
         <span className="cb-pairing__note">
-          只显示一次，有效期至 {formatTime(created.task.upload.pairingExpiresAt)}
+          云端仅下发一次；当前标签页可暂存至 {formatTime(created.task.upload.pairingExpiresAt)}
         </span>
       </div>
 
@@ -80,9 +83,14 @@ export function PairingCard({
             {pairingProgressLabel(liveTask, progressUnavailable)}
           </p>
           <p className="cb-pairing__note">命令中断后重跑同一条即可续传。</p>
+          <p className="cb-pairing__note">
+            {receiptSaved
+              ? '当前标签页已临时保存这条命令；刷新后可从任务详情继续。'
+              : '当前浏览器未能临时保存命令，请先运行或安全保存。'}
+          </p>
         </div>
         <button type="button" className="cb-pairing__dismiss" onClick={onDismiss}>
-          我已复制，关闭
+          {receiptSaved ? '已保存命令，收起' : '确认已复制，收起'}
         </button>
       </div>
 

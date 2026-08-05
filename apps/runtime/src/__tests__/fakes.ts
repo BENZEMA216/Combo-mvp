@@ -33,6 +33,7 @@ export interface CapabilityRowF {
   storage_key: string;
   published: boolean;
   ui_artifact_id: string | null;
+  meta: Record<string, unknown>;
   created_at: string;
 }
 
@@ -209,6 +210,7 @@ export class FakeDb implements Queryable, TxPool {
       storage_key: input.storage_key ?? `capabilities/${id}/definition.json`,
       published: input.published ?? false,
       ui_artifact_id: input.ui_artifact_id ?? null,
+      meta: input.meta ?? {},
       created_at: input.created_at ?? nowIso(),
     };
     this.capabilities.set(row.id, row);
@@ -243,6 +245,21 @@ export class FakeDb implements Queryable, TxPool {
     }
 
     // ---------- capabilities ----------
+    if (
+      s.startsWith('SELECT id FROM capabilities WHERE id = $1') &&
+      s.includes('owner_user_id = $2') &&
+      s.includes('meta @> $3::jsonb')
+    ) {
+      const [capabilityId, ownerUserId, expectedJson] = params as [string, string, string];
+      const capability = this.capabilities.get(capabilityId);
+      const expected = JSON.parse(expectedJson) as Record<string, unknown>;
+      const matchesMeta = Object.entries(expected).every(
+        ([key, value]) => capability?.meta[key] === value,
+      );
+      return capability?.owner_user_id === ownerUserId && matchesMeta
+        ? { rows: [{ id: capability.id }] as R[], rowCount: 1 }
+        : { rows: [], rowCount: 0 };
+    }
     if (s.startsWith('UPDATE capabilities c SET ui_artifact_id = $2')) {
       const [capabilityId, artifactId, studioSessionId, turnId] = params as [
         string,
@@ -319,6 +336,24 @@ export class FakeDb implements Queryable, TxPool {
     }
 
     // ---------- sessions ----------
+    if (
+      s.startsWith('SELECT id, capability_id, owner_user_id, mode, title, status') &&
+      s.includes('FROM sessions') &&
+      s.includes('capability_id = $1') &&
+      s.includes('owner_user_id = $2') &&
+      s.includes("mode = 'studio'") &&
+      s.includes("status = 'active'")
+    ) {
+      const [capabilityId, ownerUserId] = params as [string, string];
+      const session = [...this.sessions.values()].find(
+        (candidate) =>
+          candidate.capability_id === capabilityId &&
+          candidate.owner_user_id === ownerUserId &&
+          candidate.mode === 'studio' &&
+          candidate.status === 'active',
+      );
+      return session ? { rows: [{ ...session }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
     if (s.startsWith('INSERT INTO sessions')) {
       const [capabilityId, ownerUserId] = params as [string, string];
       const mode: SessionRowF['mode'] = s.includes("'studio'") ? 'studio' : 'consume';

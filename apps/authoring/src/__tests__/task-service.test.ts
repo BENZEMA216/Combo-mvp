@@ -9,7 +9,7 @@ import {
 } from '../modules/task/service.js';
 import { verifyPairingCode } from '../modules/task/pairing.js';
 import { RAW_BUCKET, partObjectKey } from '../modules/task/pairing.js';
-import { trackExpiredUploadOrphanKey } from '../modules/task/repo.js';
+import { listCreationResumeTaskViews, trackExpiredUploadOrphanKey } from '../modules/task/repo.js';
 import { FakeDb, FakeObjectStore, FakeQueue } from './fakes.js';
 
 const OWNER = 'user-me';
@@ -240,6 +240,87 @@ describe('reconcileExpiredUploadTasks', () => {
     expect(statements[0]).toContain('FOR UPDATE OF t, u SKIP LOCKED');
     expect(db.uploads.get(taskId)!.status).toBe('expired');
     expect(db.tasks.get(taskId)!.status).toBe('failed');
+  });
+});
+
+describe('listCreationResumeTaskViews', () => {
+  it('有界返回 running 与所有可操作失败，不混入普通终态或其他 owner', async () => {
+    const db = new FakeDb();
+    const running = await seedTask(db, 'idem-resume-running');
+    const retry = await seedTask(db, 'idem-resume-retry');
+    const changeInput = await seedTask(db, 'idem-resume-change-input');
+    const legacyExpired = await seedTask(db, 'idem-resume-legacy-expired');
+    const waiting = await seedTask(db, 'idem-resume-waiting');
+    const other = await createTask(db, db, {
+      ownerUserId: OTHER,
+      idempotencyKey: 'idem-resume-other',
+    });
+    if (other.kind !== 'ok') throw new Error('seed other failed');
+
+    const runningRow = db.tasks.get(running.taskId)!;
+    runningRow.updated_at = '2026-07-20T12:00:00.000Z';
+    const retryRow = db.tasks.get(retry.taskId)!;
+    retryRow.status = 'failed';
+    retryRow.updated_at = '2026-07-22T12:00:00.000Z';
+    retryRow.last_error = {
+      userMessage: '可以重试',
+      retriable: true,
+      action: 'retry',
+      traceId: 'trace-retry',
+    };
+    const changeInputRow = db.tasks.get(changeInput.taskId)!;
+    changeInputRow.status = 'failed';
+    changeInputRow.updated_at = '2026-07-21T12:00:00.000Z';
+    changeInputRow.last_error = {
+      userMessage: '请重新上传',
+      retriable: false,
+      action: 'change_input',
+      traceId: 'trace-change-input',
+    };
+    const legacyExpiredRow = db.tasks.get(legacyExpired.taskId)!;
+    legacyExpiredRow.status = 'failed';
+    legacyExpiredRow.updated_at = '2026-07-21T18:00:00.000Z';
+    legacyExpiredRow.last_error = null;
+    db.uploads.get(legacyExpired.taskId)!.status = 'expired';
+    const waitingRow = db.tasks.get(waiting.taskId)!;
+    waitingRow.status = 'failed';
+    waitingRow.updated_at = '2026-07-23T12:00:00.000Z';
+    waitingRow.last_error = {
+      userMessage: '后台处理中',
+      retriable: false,
+      action: 'wait',
+      traceId: 'trace-wait',
+    };
+
+    const tasks = await listCreationResumeTaskViews(db, { ownerUserId: OWNER, limit: 3 });
+
+    expect(tasks.map((task) => task.id)).toEqual([
+      retry.taskId,
+      legacyExpired.taskId,
+      changeInput.taskId,
+    ]);
+  });
+
+  it('没有可操作任务时只回退最近一条，供异步结果验收', async () => {
+    const db = new FakeDb();
+    const older = await seedTask(db, 'idem-resume-older');
+    const latest = await seedTask(db, 'idem-resume-latest');
+    const olderRow = db.tasks.get(older.taskId)!;
+    olderRow.status = 'succeeded';
+    olderRow.updated_at = '2026-07-20T12:00:00.000Z';
+    const latestRow = db.tasks.get(latest.taskId)!;
+    latestRow.status = 'failed';
+    latestRow.updated_at = '2026-07-21T12:00:00.000Z';
+    latestRow.last_error = {
+      userMessage: '暂不可操作',
+      retriable: false,
+      action: 'none',
+      traceId: 'trace-none',
+    };
+
+    const tasks = await listCreationResumeTaskViews(db, { ownerUserId: OWNER, limit: 20 });
+
+    expect(tasks.map((task) => task.id)).toEqual([latest.taskId]);
   });
 });
 
