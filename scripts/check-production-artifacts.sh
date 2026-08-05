@@ -39,12 +39,6 @@ legacy_auth_hits=$(
     --glob '!scripts/check-production-artifacts.sh' \
     | grep -Ev \
       -e '^scripts/start\.sh:[0-9]+:(# Logto 容器；不触碰卷、数据服务或其他 Compose 项目。|OBSOLETE_SERVICES=\(logto logto_db_seed logto_alteration\)|log .*废弃 Logto 容器.*)$' \
-      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*\\['cb_refresh', 'cb_auth_tx', secureCookie \\? 'cb_session' : '__Host-cb_session'\\]\\.includes\\($" \
-      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*\\['/api/v1/auth/(login|callback)', 'GET'\\],$" \
-      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*\\['/api/v1/auth/(refresh|dev-login)', 'POST'\\],$" \
-      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*!cookies\\.some\\(\\(cookie\\) => \\['cb_refresh', 'cb_auth_tx'\\]\\.includes\\(cookie\\.name\\)\\),$" \
-      -e "^scripts/goal-b-test-acceptance\\.mjs:[0-9]+:[[:space:]]*!remainingCookieNames\\.includes\\('(cb_refresh|cb_auth_tx)'\\) &&$" \
-      -e "^scripts/retire-legacy-auth-secrets\\.sh:[0-9]+:readonly LEGACY_EXTERNAL_KEYS_CSV='LOGTO_ENDPOINT,LOGTO_ISSUER,LOGTO_JWKS_URI,LOGTO_APP_ID,LOGTO_APP_SECRET,LOGTO_AUDIENCE,LOGTO_REDIRECT_URI,LOGTO_ADMIN_ENDPOINT,LOGTO_DB,LOGTO_DB_ALTERATION_TARGET,LOGTO_MANAGEMENT_APP_ID,LOGTO_MANAGEMENT_APP_SECRET,LOGTO_BRANDING_LOGO_URL,LOGTO_BRANDING_DARK_LOGO_URL,LOGTO_BRANDING_FAVICON_URL,LOGTO_BRANDING_DARK_FAVICON_URL'$" \
     || true
 )
 if [[ -n "$legacy_auth_hits" ]]; then
