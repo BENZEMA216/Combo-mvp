@@ -115,7 +115,7 @@ export function RechargeDialog({
     try {
       const next = await createOrder.mutateAsync({
         rechargeIntentId,
-        amountCents: amountCents.toString(),
+        amountCents,
         channel: 'qr',
         payType,
       });

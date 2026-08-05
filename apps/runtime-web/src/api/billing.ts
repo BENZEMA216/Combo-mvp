@@ -37,7 +37,7 @@ export interface RechargeOrderView {
 
 export interface CreateRechargeOrderInput {
   rechargeIntentId: string;
-  amountCents: string;
+  amountCents: number;
   channel: RechargeChannel;
   payType: RechargePayType;
 }

@@ -191,7 +191,7 @@ describe('RechargeDialog', () => {
     await waitFor(() =>
       expect(mocks.createOrder).toHaveBeenCalledWith({
         rechargeIntentId: requirement.rechargeIntentId,
-        amountCents: '300',
+        amountCents: 300,
         channel: 'qr',
         payType: 'alipay',
       }),
@@ -222,7 +222,7 @@ describe('RechargeDialog', () => {
     await waitFor(() =>
       expect(mocks.createOrder).toHaveBeenCalledWith({
         rechargeIntentId: requirement.rechargeIntentId,
-        amountCents: '300',
+        amountCents: 300,
         channel: 'qr',
         payType: 'wechat',
       }),
