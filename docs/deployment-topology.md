@@ -37,6 +37,8 @@
 
 `deploy.yml` 的 `workflow_run` 触发器必须引用 `Release build` 显示名；重命名 ci.yml 时需要同步。
 
+`ci.yml` 的并发组名是 `main-cd-*`（main push 时 `main-cd-main`，分支构建时 `main-cd-<revision>`），与 `combo-deploy-<env>` 部署锁互不相交。自动部署只作用于 Preview（main 的 `Release build` 成功后触发）；Test 没有自动触发路径，只接受手工 `workflow_dispatch`。
+
 ## 4. 域名
 
 | 环境       | 域名                                                                                                                               |
@@ -66,7 +68,7 @@
 
 - 各应用 namespace 必须存在 `combo-env` Secret（Postgres/S3/Resend/OTP/LLM 配置）与 `ghcr-pull`（镜像拉取）。
 - 共享 foundation（`combo-foundation`）的 Postgres/S3 凭证必须与 `combo-preview`、`combo-prod` 的凭证一致；否则应用无法连接共享数据库。
-- 凭证只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建。
+- 凭证只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建；轮换目标是各应用 namespace 的 `combo-env`（test→`combo-test`、preview→`combo-preview`、production→`combo-prod`）。
 - 部署脚本不得输出、落盘、复制或提交任何 Secret 值。
 
 ## 8. 更新流程

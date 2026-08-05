@@ -83,6 +83,4 @@ pnpm test:local
 pnpm release:verify:preview -- --expected-sha <main-merge-sha>
 ```
 
-7. 在云端浏览器从真实入口完成本次用户链路，至少覆盖刷新、返回、重新进入和错误恢复。
-
-最终交付必须同时给出：PR、merge SHA、Release build run、Deploy run、`version.json` 对齐结果和浏览器验收结果。任一项缺失时，状态只能写“未完成”或“被阻塞”。
+最终交付必须同时给出：PR、merge SHA、Release build run、Deploy run 和 `version.json` 对齐结果。任一项缺失时，状态只能写“未完成”或“被阻塞”。

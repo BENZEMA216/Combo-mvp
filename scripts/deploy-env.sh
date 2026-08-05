@@ -139,6 +139,7 @@ case "$COMMAND" in
     foundation_lock
     ensure_namespace "$NAMESPACE"
     require_secret "$NAMESPACE" combo-env
+    require_secret "$NAMESPACE" ghcr-pull
     render_phase migrate
     "${K[@]}" -n "$NAMESPACE" delete job migrate --ignore-not-found --wait=false >/dev/null 2>&1 || true
     "${K[@]}" apply -f "$WORK/migrate.yaml"
@@ -147,6 +148,7 @@ case "$COMMAND" in
   apps)
     ensure_namespace "$NAMESPACE"
     require_secret "$NAMESPACE" combo-env
+    require_secret "$NAMESPACE" ghcr-pull
     render_phase apps
     "${K[@]}" apply -f "$WORK/apps.yaml"
     [[ "$WAIT" == 1 ]] && wait_ready apps
