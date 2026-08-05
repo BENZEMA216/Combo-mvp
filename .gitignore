@@ -13,6 +13,7 @@ dist/
 build/
 .env
 .env.local
+.env.show
 
 # TypeScript 增量编译产物
 *.tsbuildinfo
