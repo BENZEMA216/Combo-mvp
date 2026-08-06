@@ -667,6 +667,16 @@ export async function executeExternalMcpTool(
           hasMore: page.hasMore,
           limit,
         },
+        nextAction:
+          page.items.length === 0 && !parsed.data.cursor && !parsed.data.taskId
+            ? {
+                kind: 'extract_capabilities',
+                tool: 'create_extraction_task',
+                requiresSourceAuthorization: true,
+                userMessage:
+                  '还没有可用 Capability。请先确认要使用的本地对话历史范围，再开始能力提取。',
+              }
+            : null,
       });
     }
 

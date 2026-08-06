@@ -15,6 +15,9 @@ import { registerExternalMcpRoutes } from '../modules/external-mcp/routes.js';
 const ORIGIN = 'http://localhost';
 const RESOURCE = `${ORIGIN}/api/external-mcp/mcp`;
 const TOKEN = `mat1.${'a'.repeat(43)}`;
+const CAPABILITY_ID = '00000000-0000-4000-8000-000000000004';
+const TASK_ID = '00000000-0000-4000-8000-000000000010';
+const NOW = '2026-08-06T00:00:00.000Z';
 
 function testEnv() {
   const sourceSha = 'a'.repeat(40);
@@ -327,6 +330,35 @@ describe('external MCP stateless machine contract', () => {
     app = Fastify({ logger: false });
     const db = {
       query: vi.fn(async (sql: string) => {
+        if (sql.includes('FROM capabilities')) {
+          return {
+            rows: [
+              {
+                id: CAPABILITY_ID,
+                task_id: TASK_ID,
+                name: 'Entry capability',
+                summary: 'A reusable workflow.',
+                kind: 'knowledge',
+                published: false,
+                published_at: null,
+                share_token: null,
+                created_at: NOW,
+              },
+              {
+                id: '00000000-0000-4000-8000-000000000003',
+                task_id: TASK_ID,
+                name: 'Second capability',
+                summary: '',
+                kind: 'workflow',
+                published: false,
+                published_at: null,
+                share_token: null,
+                created_at: NOW,
+              },
+            ],
+            rowCount: 2,
+          };
+        }
         if (!sql.includes('FROM oauth_access_tokens')) throw new Error('unexpected SQL');
         return {
           rows: [
@@ -563,6 +595,51 @@ describe('external MCP stateless machine contract', () => {
       },
     });
     expect(invalidUi.json()).toMatchObject({ result: { isError: true } });
+  });
+
+  it('returns a non-empty list_capabilities result through the JSON-RPC route', async () => {
+    const response = await call('tools/call', {
+      name: 'list_capabilities',
+      arguments: { limit: 1 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as {
+      jsonrpc: string;
+      id: string | number | null;
+      error?: unknown;
+      result: {
+        content: Array<{ type: string; text: string }>;
+        structuredContent: Record<string, unknown>;
+        isError?: boolean;
+      };
+    };
+    expect(body.jsonrpc).toBe('2.0');
+    expect(body.id).toBe(7);
+    expect(body).not.toHaveProperty('error');
+    expect(body.result.isError).toBeUndefined();
+    expect(body.result.structuredContent).toEqual({
+      items: [
+        {
+          id: CAPABILITY_ID,
+          taskId: TASK_ID,
+          name: 'Entry capability',
+          summary: 'A reusable workflow.',
+          kind: 'knowledge',
+          published: false,
+          createdAt: NOW,
+        },
+      ],
+      page: {
+        nextCursor: expect.any(String),
+        hasMore: true,
+        limit: 1,
+      },
+      nextAction: null,
+    });
+    expect(body.result.content).toHaveLength(1);
+    expect(body.result.content[0]).toMatchObject({ type: 'text' });
+    expect(JSON.parse(body.result.content[0]!.text)).toEqual(body.result.structuredContent);
   });
 
   it('denies a write tool when the access token has read-only scope', async () => {

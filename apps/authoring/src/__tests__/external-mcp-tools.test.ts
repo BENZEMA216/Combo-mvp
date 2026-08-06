@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ObjectStorePort } from '@cb/shared';
+import { encodeIdCursor, type ObjectStorePort } from '@cb/shared';
 import type { Queryable } from '../platform/infra/db.js';
 import type { TxPool } from '../platform/infra/db-tx.js';
 
@@ -134,6 +134,130 @@ beforeEach(() => {
 });
 
 describe('external MCP public tool results', () => {
+  it('returns a non-empty list_capabilities page as matching text and structured content', async () => {
+    const secondCapabilityId = '00000000-0000-4000-8000-000000000003';
+    const firstRow = {
+      id: CAPABILITY_ID,
+      task_id: '00000000-0000-4000-8000-000000000010',
+      name: 'Entry capability',
+      summary: 'A reusable workflow.',
+      kind: 'knowledge',
+      published: false,
+      published_at: null,
+      share_token: null,
+      created_at: NOW,
+    };
+    const secondRow = {
+      id: secondCapabilityId,
+      task_id: '00000000-0000-4000-8000-000000000011',
+      name: 'Second capability',
+      summary: '',
+      kind: 'workflow',
+      published: true,
+      published_at: NOW,
+      share_token: 'share-token',
+      created_at: NOW,
+    };
+    const query = vi
+      .fn()
+      .mockResolvedValueOnce({ rows: [firstRow, secondRow], rowCount: 2 })
+      .mockResolvedValueOnce({ rows: [secondRow], rowCount: 1 });
+    const testContext = context();
+    testContext.db = { query } as unknown as Queryable;
+
+    const first = await executeExternalMcpTool(testContext, 'list_capabilities', { limit: 1 });
+
+    const expected = {
+      items: [
+        {
+          id: CAPABILITY_ID,
+          taskId: '00000000-0000-4000-8000-000000000010',
+          name: 'Entry capability',
+          summary: 'A reusable workflow.',
+          kind: 'knowledge',
+          published: false,
+          createdAt: NOW,
+        },
+      ],
+      page: {
+        nextCursor: encodeIdCursor(CAPABILITY_ID),
+        hasMore: true,
+        limit: 1,
+      },
+      nextAction: null,
+    };
+    expect(query).toHaveBeenNthCalledWith(1, expect.stringContaining('FROM capabilities'), [
+      OWNER_ID,
+      null,
+      null,
+      2,
+    ]);
+    expect(first.isError).toBeUndefined();
+    expect(first.structuredContent).toEqual(expected);
+    expect(JSON.parse(first.content[0]!.text)).toEqual(expected);
+
+    const second = await executeExternalMcpTool(testContext, 'list_capabilities', {
+      cursor: encodeIdCursor(CAPABILITY_ID),
+      limit: 1,
+    });
+    expect(query).toHaveBeenNthCalledWith(2, expect.stringContaining('FROM capabilities'), [
+      OWNER_ID,
+      null,
+      CAPABILITY_ID,
+      2,
+    ]);
+    expect(second.isError).toBeUndefined();
+    expect(second.structuredContent).toEqual({
+      items: [
+        {
+          id: secondCapabilityId,
+          taskId: secondRow.task_id,
+          name: secondRow.name,
+          summary: secondRow.summary,
+          kind: secondRow.kind,
+          published: true,
+          publishedAt: NOW,
+          shareToken: 'share-token',
+          createdAt: NOW,
+        },
+      ],
+      page: { nextCursor: null, hasMore: false, limit: 1 },
+      nextAction: null,
+    });
+    expect(JSON.parse(second.content[0]!.text)).toEqual(second.structuredContent);
+  });
+
+  it('guides a first-time user from an empty capability list into extraction', async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [], rowCount: 0 });
+    const testContext = context();
+    testContext.db = { query } as unknown as Queryable;
+
+    const result = await executeExternalMcpTool(testContext, 'list_capabilities', {});
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toEqual({
+      items: [],
+      page: { nextCursor: null, hasMore: false, limit: 20 },
+      nextAction: {
+        kind: 'extract_capabilities',
+        tool: 'create_extraction_task',
+        requiresSourceAuthorization: true,
+        userMessage: '还没有可用 Capability。请先确认要使用的本地对话历史范围，再开始能力提取。',
+      },
+    });
+    expect(JSON.parse(result.content[0]!.text)).toEqual(result.structuredContent);
+
+    const filtered = await executeExternalMcpTool(testContext, 'list_capabilities', {
+      taskId: '00000000-0000-4000-8000-000000000010',
+    });
+    expect(filtered.structuredContent).toMatchObject({ items: [], nextAction: null });
+
+    const exhaustedPage = await executeExternalMcpTool(testContext, 'list_capabilities', {
+      cursor: encodeIdCursor(CAPABILITY_ID),
+    });
+    expect(exhaustedPage.structuredContent).toMatchObject({ items: [], nextAction: null });
+  });
+
   it('returns list_agent_projects with items/page keys', async () => {
     mocks.listAgentProjects.mockResolvedValue({ items: [projectDetail.project], hasMore: false });
     const result = await executeExternalMcpTool(context(), 'list_agent_projects', {});
