@@ -65,6 +65,37 @@ test('Deploy grants its reusable Main CI caller the complete permission ceiling'
   assert.match(buildBranch, /\n {4}uses: \.\/\.github\/workflows\/ci\.yml\n/);
 });
 
+test('branch Test deploys consume the exact artifact identity produced by the reusable build', () => {
+  const deployWorkflow = text('.github/workflows/deploy.yml');
+  const mainWorkflow = text('.github/workflows/ci.yml');
+  const workflowCall = capture(
+    mainWorkflow,
+    /\n {2}workflow_call:\n([\s\S]*?)\n\npermissions:/,
+    'Main CI workflow_call contract',
+  );
+  const releaseJob = capture(mainWorkflow, /\n {2}release:\n([\s\S]*)$/, 'Main CI release job');
+  const deployJob = capture(deployWorkflow, /\n {2}deploy:\n([\s\S]*)$/, 'Deploy job');
+
+  assert.match(
+    workflowCall,
+    /release_artifact_name:\n {8}description: [^\n]+\n {8}value: \$\{\{ jobs\.release\.outputs\.artifact_name \}\}/,
+  );
+  assert.match(
+    releaseJob,
+    /\n {4}outputs:\n {6}artifact_name: \$\{\{ steps\.build\.outputs\.name \}\}/,
+  );
+  assert.match(
+    deployJob,
+    /BRANCH_BUILD_ARTIFACT_NAME: \$\{\{ needs\.build_branch\.outputs\.release_artifact_name \}\}/,
+  );
+  assert.match(deployJob, /branch-build\)\n {14}artifact_name=\$BRANCH_BUILD_ARTIFACT_NAME\n/);
+  assert.match(
+    deployJob,
+    /main-ci\)\n {14}\[\[ "\$SELECTED_CI_RUN_ATTEMPT" =~ \^\[1-9\]\[0-9\]\*\$ \]\]\n {14}artifact_name="combo-build-\$\{REVISION\}-\$\{SELECTED_CI_RUN_ATTEMPT\}"/,
+  );
+  assert.doesNotMatch(deployJob, /artifact_name=.*github\.run_attempt/);
+});
+
 test('three environments keep explicit app, foundation, listener, and public-domain ownership', () => {
   const deploy = text('scripts/deploy-env.sh');
   const workflow = text('.github/workflows/deploy.yml');

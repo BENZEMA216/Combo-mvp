@@ -265,13 +265,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REVISION: ${{ needs.select.outputs.revision }}
           CI_RUN_ID: ${{ needs.select.outputs.ci_run_id }}
-          CI_RUN_ATTEMPT: ${{ needs.select.outputs.ci_run_attempt }}
+          SOURCE_MODE: ${{ needs.select.outputs.source_mode }}
+          BRANCH_BUILD_ARTIFACT_NAME: ${{ needs.build_branch.outputs.release_artifact_name }}
+          SELECTED_CI_RUN_ATTEMPT: ${{ needs.select.outputs.ci_run_attempt }}
         run: |
           set -euo pipefail
           [[ "$REVISION" =~ ^[0-9a-f]{40}$ ]]
           [[ "$CI_RUN_ID" =~ ^[1-9][0-9]*$ ]]
-          [[ "$CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
-          artifact_name="combo-build-${REVISION}-${CI_RUN_ATTEMPT}"
+          case "$SOURCE_MODE" in
+            branch-build)
+              artifact_name=$BRANCH_BUILD_ARTIFACT_NAME
+              [[ "$artifact_name" =~ ^combo-build-${REVISION}-[1-9][0-9]*$ ]]
+              ;;
+            main-ci)
+              [[ "$SELECTED_CI_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]
+              artifact_name="combo-build-${REVISION}-${SELECTED_CI_RUN_ATTEMPT}"
+              ;;
+            *)
+              echo 'Unsupported artifact source mode.' >&2
+              exit 1
+              ;;
+          esac
           artifacts=$(mktemp)
           gh api \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${CI_RUN_ID}/artifacts?per_page=100&name=${artifact_name}" \
