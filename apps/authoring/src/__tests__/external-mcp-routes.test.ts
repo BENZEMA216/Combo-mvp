@@ -588,7 +588,25 @@ describe('external MCP consent boundary', () => {
   const requestToken = `mar1.${'r'.repeat(43)}`;
   const sessionCookie = `s1.${'s'.repeat(43)}`;
   let app: FastifyInstance;
+  const release = vi.fn();
   const query = vi.fn(async (sql: string) => {
+    if (sql.includes('cleanup_expired_oauth_artifacts')) {
+      return {
+        rows: [
+          {
+            authorization_requests_deleted: 0,
+            authorization_codes_deleted: 0,
+            access_tokens_deleted: 0,
+            refresh_tokens_deleted: 0,
+            clients_deleted: 0,
+          },
+        ],
+        rowCount: 1,
+      };
+    }
+    if (sql === 'BEGIN' || sql === 'COMMIT' || sql === 'ROLLBACK') {
+      return { rows: [], rowCount: 0 };
+    }
     if (sql.includes('FROM oauth_authorization_requests')) {
       return {
         rows: [
@@ -622,14 +640,23 @@ describe('external MCP consent boundary', () => {
         rowCount: 1,
       };
     }
+    if (
+      sql.includes('UPDATE oauth_authorization_requests') ||
+      sql.includes('INSERT INTO oauth_authorization_codes')
+    ) {
+      return { rows: [], rowCount: 1 };
+    }
     throw new Error(`unexpected SQL: ${sql}`);
   });
+  const connect = vi.fn(async () => ({ query, release }));
+  const nonCleanupQueries = () =>
+    query.mock.calls.filter(([sql]) => !String(sql).includes('cleanup_expired_oauth_artifacts'));
 
   beforeAll(async () => {
     app = Fastify({ logger: false });
     app.decorate('infra', {
       env: testEnv(),
-      db: { query },
+      db: { query, connect },
       objectStore: {},
     } as never);
     await app.register(cookie);
@@ -653,7 +680,71 @@ describe('external MCP consent boundary', () => {
     expect(response.body).toContain('<code>127.0.0.1/callback/codex-id</code>');
     expect(response.body).not.toContain('private-oauth-state');
     expect(response.body).not.toContain('internal=not-visible');
+    expect(response.headers['referrer-policy']).toBe('strict-origin');
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.headers['content-security-policy']).toContain("form-action 'self'");
   });
+
+  it('keeps no-referrer on authorization error pages', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/external-mcp/oauth/authorize?request=invalid',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.headers['referrer-policy']).toBe('no-referrer');
+  });
+
+  it('accepts the same-origin consent POST emitted by the authorization page', async () => {
+    query.mockClear();
+    connect.mockClear();
+    release.mockClear();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/external-mcp/oauth/authorize',
+      headers: {
+        cookie: `cb_session=${sessionCookie}`,
+        origin: ORIGIN,
+        'sec-fetch-site': 'same-origin',
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      payload: `request=${requestToken}&decision=approve`,
+    });
+
+    expect(response.statusCode).toBe(303);
+    const redirect = new URL(response.headers.location ?? '');
+    expect(`${redirect.origin}${redirect.pathname}`).toBe(
+      'http://127.0.0.1:49152/callback/codex-id',
+    );
+    expect(redirect.searchParams.get('state')).toBe('private-oauth-state');
+    expect(redirect.searchParams.get('code')).toMatch(/^mac1\./);
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { name: 'opaque Origin', origin: 'null', fetchSite: 'same-origin' },
+    { name: 'cross-site metadata', origin: ORIGIN, fetchSite: 'cross-site' },
+  ])(
+    'rejects $name before session or authorization state lookup',
+    async ({ origin, fetchSite }) => {
+      query.mockClear();
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/external-mcp/oauth/authorize',
+        headers: {
+          origin,
+          'sec-fetch-site': fetchSite,
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: `request=${requestToken}&decision=approve`,
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.body).toContain('授权确认来源无效');
+      expect(nonCleanupQueries()).toHaveLength(0);
+    },
+  );
 
   it.each([
     `request=${requestToken}&request=${requestToken}&decision=approve`,
@@ -671,6 +762,6 @@ describe('external MCP consent boundary', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.body).toContain('授权确认内容无效');
-    expect(query).not.toHaveBeenCalled();
+    expect(nonCleanupQueries()).toHaveLength(0);
   });
 });

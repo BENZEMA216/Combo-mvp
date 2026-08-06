@@ -62,13 +62,16 @@ function noStore(reply: FastifyReply): void {
   reply.header('pragma', 'no-cache');
 }
 
-function htmlSecurityHeaders(reply: FastifyReply): void {
+function htmlSecurityHeaders(
+  reply: FastifyReply,
+  referrerPolicy: 'no-referrer' | 'strict-origin' = 'no-referrer',
+): void {
   noStore(reply);
   reply.header(
     'content-security-policy',
     "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
   );
-  reply.header('referrer-policy', 'no-referrer');
+  reply.header('referrer-policy', referrerPolicy);
   reply.header('x-content-type-options', 'nosniff');
 }
 
@@ -267,7 +270,9 @@ export function authorizationGetHandler(): RouteHandlerMethod {
       return reply.redirect(`/login?returnTo=${encodeURIComponent(returnTo)}`, 303);
     }
 
-    htmlSecurityHeaders(reply);
+    // The consent form is a same-origin navigation POST guarded by an exact Origin check.
+    // `no-referrer` serializes that Origin as `null`; strict-origin keeps only the origin tuple.
+    htmlSecurityHeaders(reply, 'strict-origin');
     const scopes = pending.scope
       .split(' ')
       .map((scope) => `<li><code>${escapeHtml(scope)}</code></li>`)

@@ -117,6 +117,10 @@ describe('authentication mutation origin guard', () => {
   it.each([
     { name: 'missing Origin', headers: {} },
     {
+      name: 'opaque Origin',
+      headers: { origin: 'null', 'sec-fetch-site': 'same-origin' },
+    },
+    {
       name: 'same-site sibling',
       headers: {
         cookie: `cb_session=s1.${'A'.repeat(43)}`,
