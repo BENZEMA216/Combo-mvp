@@ -66,11 +66,23 @@ vi.mock('../api/useSessionStream.js', () => ({
 }));
 
 vi.mock('../components/SessionSidebar.js', () => ({
-  SessionSidebar: ({ experience, returnTo }: { experience?: string; returnTo?: string | null }) => (
+  SessionSidebar: ({
+    experience,
+    returnTo,
+    agentProjectId,
+    agentReleaseId,
+  }: {
+    experience?: string;
+    returnTo?: string | null;
+    agentProjectId?: string;
+    agentReleaseId?: string;
+  }) => (
     <div
       data-testid="session-sidebar"
       data-experience={experience}
       data-return-to={returnTo ?? undefined}
+      data-agent-project-id={agentProjectId}
+      data-agent-release-id={agentReleaseId}
     />
   ),
 }));
@@ -495,6 +507,34 @@ describe('ChatPage consume Miniapp bridge', () => {
       createdAt: '2026-07-23T01:00:00.000Z',
       updatedAt: '2026-07-23T01:00:00.000Z',
     };
+  });
+
+  it('forwards Agent Project and Release identity to desktop and mobile sidebars', () => {
+    mocks.detail = {
+      ...mocks.detail!,
+      session: {
+        ...mocks.detail!.session,
+        agentProjectId: '44444444-4444-4444-8444-444444444444',
+        agentRevisionId: '55555555-5555-4555-8555-555555555555',
+        agentReleaseId: '66666666-6666-4666-8666-666666666666',
+      },
+    };
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    fireEvent.click(screen.getByRole('button', { name: '会话管理' }));
+    const sidebars = screen.getAllByTestId('session-sidebar');
+    expect(sidebars).toHaveLength(2);
+    for (const sidebar of sidebars) {
+      expect(sidebar).toHaveAttribute(
+        'data-agent-project-id',
+        '44444444-4444-4444-8444-444444444444',
+      );
+      expect(sidebar).toHaveAttribute(
+        'data-agent-release-id',
+        '66666666-6666-4666-8666-666666666666',
+      );
+    }
   });
 
   it('keeps a task-detail return target across a session-page reload', () => {

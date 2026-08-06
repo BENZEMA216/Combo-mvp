@@ -54,6 +54,7 @@ export function SessionSidebar({
   activeSessionId,
   capabilityId,
   agentProjectId,
+  agentReleaseId,
   capabilityName,
   returnTo,
   runningSessionId,
@@ -64,8 +65,10 @@ export function SessionSidebar({
   activeSessionId?: string;
   /** 当前能力：会话列表与「新会话」都限定在它下面；缺省（加载中）时列表为空态。 */
   capabilityId?: string;
-  /** Released Agent 会话按 Project 隔离，并继续从同一个当前 Release 新建。 */
+  /** Agent Builder Project 身份；只有同时带 agentReleaseId 才进入 Released 会话范围。 */
   agentProjectId?: string;
+  /** 只有发布态会话才带 Release；固定 Revision 的 Agent Test 不得冒充可续开的 Release。 */
+  agentReleaseId?: string;
   capabilityName?: string;
   returnTo?: string | null;
   /** 当前正在生成的会话不能归档；服务端仍会做最终并发校验。 */
@@ -82,11 +85,13 @@ export function SessionSidebar({
   const accountName = me?.account ?? '当前账号';
   const role = me?.roles[0];
   const accountTitle = role ? (ROLE_LABEL[role] ?? DEFAULT_ROLE_LABEL) : DEFAULT_ROLE_LABEL;
-  const hasSessionScope = Boolean(capabilityId || agentProjectId);
-  const sessions = useSessions(agentProjectId ? undefined : capabilityId, {
+  const agentTestMode = Boolean(agentProjectId && !agentReleaseId);
+  const releasedAgentProjectId = agentProjectId && agentReleaseId ? agentProjectId : undefined;
+  const hasSessionScope = !agentTestMode && Boolean(capabilityId || releasedAgentProjectId);
+  const sessions = useSessions(releasedAgentProjectId ? undefined : capabilityId, {
     enabled: hasSessionScope,
     mode: studioMode ? 'studio' : 'consume',
-    ...(agentProjectId ? { agentProjectId } : {}),
+    ...(releasedAgentProjectId ? { agentProjectId: releasedAgentProjectId } : {}),
   });
   const createSession = useCreateSession();
   const createReleasedAgentSession = useCreateReleasedAgentSession();
@@ -103,7 +108,7 @@ export function SessionSidebar({
   const createPending = createSession.isPending || createReleasedAgentSession.isPending;
 
   const startNewSession = () => {
-    if ((!capabilityId && !agentProjectId) || createPending) return;
+    if ((!capabilityId && !releasedAgentProjectId) || agentTestMode || createPending) return;
     setCreateError(false);
     const callbacks = {
       onSuccess: (session: SessionView) => {
@@ -112,8 +117,9 @@ export function SessionSidebar({
       },
       onError: () => setCreateError(true),
     };
-    if (agentProjectId) createReleasedAgentSession.mutate(agentProjectId, callbacks);
-    else if (capabilityId) createSession.mutate(capabilityId, callbacks);
+    if (releasedAgentProjectId) {
+      createReleasedAgentSession.mutate(releasedAgentProjectId, callbacks);
+    } else if (capabilityId) createSession.mutate(capabilityId, callbacks);
   };
 
   const renameSession = async (sessionId: string, title: string) => {
@@ -171,7 +177,7 @@ export function SessionSidebar({
               <span className="rt-sidebar__item-cap">
                 {createError
                   ? '没建成，点击重试'
-                  : agentProjectId
+                  : releasedAgentProjectId
                     ? '从当前发布版本再开一次'
                     : '用这个能力再开一次'}
               </span>
@@ -192,6 +198,11 @@ export function SessionSidebar({
             onNavigate={onNavigate}
           />
         ))}
+        {agentTestMode && !studioMode && (
+          <div className="rt-sidebar__empty">
+            这是固定 Revision 的测试会话，不进入正式会话列表。请返回 Agent 项目继续测试或发布。
+          </div>
+        )}
         {hasSessionScope && sessions.data && ordered.length === 0 && (
           <div className="rt-sidebar__empty">
             {studioMode ? '还没有设计记录' : '这个能力下还没有会话'}

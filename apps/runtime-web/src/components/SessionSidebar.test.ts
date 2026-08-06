@@ -148,6 +148,7 @@ describe('SessionSidebar 会话操作', () => {
             activeSessionId: CURRENT.id,
             capabilityId: CURRENT.capabilityId,
             agentProjectId: projectId,
+            agentReleaseId: releasedSession.agentReleaseId,
             capabilityName: '发布态 Agent',
           }),
         ),
@@ -173,6 +174,47 @@ describe('SessionSidebar 会话操作', () => {
           (init as RequestInit | undefined)?.method === 'POST',
       ),
     ).toBe(false);
+    queryClient.clear();
+  });
+
+  it('固定 Revision 的 Agent Test 不冒充已发布 Agent 会话', async () => {
+    const testSession: SessionView = {
+      ...CURRENT,
+      agentProjectId: '33333333-3333-4333-8333-333333333333',
+      agentRevisionId: '55555555-5555-4555-8555-555555555555',
+    };
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          { initialEntries: ['/session/session-current'] },
+          createElement(SessionSidebar, {
+            activeSessionId: CURRENT.id,
+            capabilityId: CURRENT.capabilityId,
+            agentProjectId: testSession.agentProjectId,
+            capabilityName: '测试态 Agent',
+          }),
+        ),
+      ),
+    );
+
+    expect(screen.queryByRole('button', { name: /新会话/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('从当前发布版本再开一次')).not.toBeInTheDocument();
+    expect(
+      screen.getByText(
+        '这是固定 Revision 的测试会话，不进入正式会话列表。请返回 Agent 项目继续测试或发布。',
+      ),
+    ).toBeInTheDocument();
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
     queryClient.clear();
   });
 });
