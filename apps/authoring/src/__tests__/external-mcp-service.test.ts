@@ -239,7 +239,7 @@ describe('external MCP OAuth client and authorization validation', () => {
     expect(params).toContain(challenge);
   });
 
-  it('rejects duplicated token parameters and public-client secrets before a transaction', async () => {
+  it('rejects conflicting token resources, duplicated scalar parameters and public-client secrets before a transaction', async () => {
     const pool = { connect: vi.fn().mockRejectedValue(new Error('must not connect')) };
     await expect(
       issueTokens(
@@ -248,6 +248,19 @@ describe('external MCP OAuth client and authorization validation', () => {
           ['grant_type', 'refresh_token'],
           ['client_id', `mcp_client_${'a'.repeat(43)}`],
           ['resource', RESOURCE],
+          ['resource', `${RESOURCE}/conflict`],
+          ['refresh_token', `mrt1.${'a'.repeat(43)}`],
+        ]),
+        RESOURCE,
+      ),
+    ).resolves.toEqual({ kind: 'invalid_request' });
+    await expect(
+      issueTokens(
+        pool,
+        new URLSearchParams([
+          ['grant_type', 'refresh_token'],
+          ['grant_type', 'refresh_token'],
+          ['client_id', `mcp_client_${'a'.repeat(43)}`],
           ['resource', RESOURCE],
           ['refresh_token', `mrt1.${'a'.repeat(43)}`],
         ]),
@@ -268,5 +281,23 @@ describe('external MCP OAuth client and authorization validation', () => {
       ),
     ).resolves.toEqual({ kind: 'invalid_client' });
     expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it('coalesces repeated identical resource values before entering the token transaction', async () => {
+    const pool = { connect: vi.fn().mockRejectedValue(new Error('transaction reached')) };
+    await expect(
+      issueTokens(
+        pool,
+        new URLSearchParams([
+          ['grant_type', 'refresh_token'],
+          ['client_id', `mcp_client_${'a'.repeat(43)}`],
+          ['resource', RESOURCE],
+          ['resource', RESOURCE],
+          ['refresh_token', `mrt1.${'a'.repeat(43)}`],
+        ]),
+        RESOURCE,
+      ),
+    ).rejects.toThrow('transaction reached');
+    expect(pool.connect).toHaveBeenCalledTimes(1);
   });
 });

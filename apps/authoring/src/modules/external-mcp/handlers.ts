@@ -196,6 +196,15 @@ function queryValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+// RFC 8707 allows resource to occur more than once. Codex can send the same single resource from
+// both the Plugin's oauth_resource and protected-resource discovery; accept only identical values.
+function queryResourceValue(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const first = value[0];
+  return typeof first === 'string' && value.every((item) => item === first) ? first : undefined;
+}
+
 export function authorizationGetHandler(): RouteHandlerMethod {
   return async function (req, reply) {
     noStore(reply);
@@ -215,7 +224,7 @@ export function authorizationGetHandler(): RouteHandlerMethod {
             state: queryValue(query.state),
             codeChallenge: queryValue(query.code_challenge),
             codeChallengeMethod: queryValue(query.code_challenge_method),
-            resource: queryValue(query.resource),
+            resource: queryResourceValue(query.resource),
           },
           resourceUri(req),
         );

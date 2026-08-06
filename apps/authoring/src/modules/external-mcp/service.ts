@@ -371,7 +371,6 @@ export async function issueTokens(
   for (const parameter of [
     'grant_type',
     'client_id',
-    'resource',
     'code',
     'redirect_uri',
     'code_verifier',
@@ -383,9 +382,11 @@ export async function issueTokens(
   if (form.has('client_secret')) return { kind: 'invalid_client' };
   const grantType = form.get('grant_type');
   const clientId = form.get('client_id');
-  const resource = form.get('resource');
+  const resources = form.getAll('resource');
   if (!clientId || !MCP_CLIENT_ID_PATTERN.test(clientId)) return { kind: 'invalid_client' };
-  if (!resource || resource !== expectedResourceUri) return { kind: 'invalid_request' };
+  if (resources.length === 0 || resources.some((resource) => resource !== expectedResourceUri)) {
+    return { kind: 'invalid_request' };
+  }
 
   if (grantType === 'authorization_code') {
     const code = form.get('code');

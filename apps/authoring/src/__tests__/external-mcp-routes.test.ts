@@ -95,6 +95,89 @@ describe('external MCP root route integration', () => {
     );
   });
 
+  it('accepts Codex repeated identical resource values but rejects conflicting resources', async () => {
+    const clientId = `mcp_client_${'a'.repeat(43)}`;
+    const redirectUri = 'http://127.0.0.1:49152/callback/codex-id';
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('cleanup_expired_oauth_artifacts')) {
+        return {
+          rows: [
+            {
+              authorization_requests_deleted: 0,
+              authorization_codes_deleted: 0,
+              access_tokens_deleted: 0,
+              refresh_tokens_deleted: 0,
+              clients_deleted: 0,
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes('UPDATE oauth_clients')) {
+        return {
+          rows: [
+            {
+              client_id: clientId,
+              client_name: 'Codex',
+              redirect_uris: [redirectUri],
+              grant_types: ['authorization_code', 'refresh_token'],
+              response_types: ['code'],
+              token_endpoint_auth_method: 'none',
+              created_at: new Date('2026-08-06T00:00:00.000Z'),
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes('INSERT INTO oauth_authorization_requests')) {
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error('unexpected SQL');
+    });
+    const isolated = Fastify({ logger: false });
+    isolated.decorate('infra', {
+      env: testEnv(),
+      db: { query },
+      objectStore: {},
+    } as never);
+    await registerExternalMcpRoutes(isolated);
+    const parameters = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      scope: 'combo.agent:read combo.agent:write',
+      state: 'codex-state',
+      code_challenge: 'c'.repeat(43),
+      code_challenge_method: 'S256',
+      resource: RESOURCE,
+    });
+    try {
+      parameters.append('resource', RESOURCE);
+      const repeated = await isolated.inject({
+        method: 'GET',
+        url: `/api/external-mcp/oauth/authorize?${parameters.toString()}`,
+      });
+      expect(repeated.statusCode).toBe(303);
+      expect(repeated.headers.location).toMatch(/^\/api\/external-mcp\/oauth\/authorize\?request=/);
+
+      parameters.set('resource', RESOURCE);
+      parameters.append('resource', `${RESOURCE}/conflict`);
+      const conflicting = await isolated.inject({
+        method: 'GET',
+        url: `/api/external-mcp/oauth/authorize?${parameters.toString()}`,
+      });
+      expect(conflicting.statusCode).toBe(400);
+      expect(conflicting.body).toContain('授权请求无效');
+      expect(
+        query.mock.calls.filter(([sql]) =>
+          String(sql).includes('INSERT INTO oauth_authorization_requests'),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await isolated.close();
+    }
+  });
+
   it('serves an environment-pinned Desktop upgrade guide without duplicate mcp add', async () => {
     const response = await app.inject({ method: 'GET', url: '/codex-plugin' });
     expect(response.statusCode).toBe(200);
