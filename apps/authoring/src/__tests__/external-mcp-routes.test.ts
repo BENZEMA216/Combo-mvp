@@ -682,7 +682,11 @@ describe('external MCP consent boundary', () => {
     expect(response.body).not.toContain('internal=not-visible');
     expect(response.headers['referrer-policy']).toBe('strict-origin');
     expect(response.headers['cache-control']).toBe('no-store');
-    expect(response.headers['content-security-policy']).toContain("form-action 'self'");
+    expect(response.headers['content-security-policy']).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' http://127.0.0.1:49152; base-uri 'none'; frame-ancestors 'none'",
+    );
+    expect(response.headers['content-security-policy']).not.toContain('/callback');
+    expect(response.headers['content-security-policy']).not.toContain('internal=not-visible');
   });
 
   it('keeps no-referrer on authorization error pages', async () => {
@@ -693,6 +697,9 @@ describe('external MCP consent boundary', () => {
 
     expect(response.statusCode).toBe(400);
     expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.headers['content-security-policy']).toBe(
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    );
   });
 
   it('accepts the same-origin consent POST emitted by the authorization page', async () => {

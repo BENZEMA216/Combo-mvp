@@ -120,6 +120,11 @@ describe('external MCP OAuth client and authorization validation', () => {
         REGISTERED_REDIRECT,
       ]),
     ).toBe(false);
+    expect(
+      matchesRegisteredLoopbackRedirect('http://[::1]:65530/callback/codex-id', [
+        'http://[::1]:1455/callback/codex-id',
+      ]),
+    ).toBe(false);
   });
 
   it('accepts only loopback public clients with authorization-code plus refresh grants', async () => {
@@ -163,7 +168,7 @@ describe('external MCP OAuth client and authorization validation', () => {
       redirect_uris: ['http://[::1]:1455/callback/codex-id'],
       client_name: 'Codex IPv6',
     });
-    expect(ipv6.kind).toBe('registered');
+    expect(ipv6.kind).toBe('invalid_request');
 
     const sameCodexInstallOnAnotherPort = await registerDynamicClient(db, {
       redirect_uris: ['http://127.0.0.1:65530/callback/codex-id'],
@@ -176,7 +181,7 @@ describe('external MCP OAuth client and authorization validation', () => {
         'http://127.0.0.1:65530/callback/codex-id',
       ]);
     }
-    expect(clients.size).toBe(2);
+    expect(clients.size).toBe(1);
   });
 
   it('surfaces database capacity exhaustion without attempting a direct table insert', async () => {

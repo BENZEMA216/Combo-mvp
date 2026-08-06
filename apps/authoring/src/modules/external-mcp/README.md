@@ -6,7 +6,7 @@
 
 - `routes.ts` 注册 RFC 9728 资源发现、RFC 8414 授权服务器发现、动态客户端注册、授权页、令牌、MCP 和公开安装引导路由，并限制正文和调用频率。
 - `handlers.ts` 渲染不加载第三方脚本的授权与安装 HTML，处理 OAuth 响应，校验 MCP transport 请求，并分发 JSON-RPC 工具。
-- `service.ts` 生成高熵一次性凭据，执行 PKCE S256、scope 和 resource 校验，只接受 Codex 当前使用的 `127.0.0.1` / `[::1]` loopback callback 并只放宽端口。动态注册对规范元数据计算 SHA-256 digest；临时监听端口与 URI 集合顺序不进入 identity。
+- `service.ts` 生成高熵一次性凭据，执行 PKCE S256、scope 和 resource 校验，只接受 Codex 当前使用的 `127.0.0.1` loopback callback 并只放宽端口。IPv6 literal 无法作为 CSP Level 3 的精确 `form-action` source，因此当前明确拒绝，不能通过放宽到任意 `http:` 回调规避。动态注册对规范元数据计算 SHA-256 digest；临时监听端口与 URI 集合顺序不进入 identity。
 - `repo.ts` 保存动态客户端、摘要化授权请求、一次性授权码和摘要化令牌；刷新令牌按 family advisory lock 串行，发生重放时撤销整个令牌家族。API 不能直接插入或删除 client，只能调用迁移定义的受控注册与有界清理函数。
 - `runtime-client.ts` 只经固定集群内 Runtime origin 转发当前请求的 Bearer Header，按共享 schema 校验 Studio UI 与 Agent Test 响应，并把 Runtime 错误收敛成安全失败。
 - `tools.ts` 暴露显式 Project ID 的无状态 Agent Builder 工具，复用现有 Agent Project service 和共享 schema，不保存进程内 TargetState。
@@ -14,6 +14,8 @@
 ## 协议边界
 
 MCP 资源是规范 origin 下的 `/api/external-mcp/mcp`。未认证 GET 与 POST 返回带路径版 protected-resource metadata 的 Bearer challenge；根路径和路径版 metadata 返回相同资源文档。授权、换码和刷新都必须携带同一个精确 resource，客户端必须使用 S256 PKCE。
+
+授权确认页的内容安全策略只允许表单提交到自身和本次请求已经校验过的精确 loopback origin，使 303 回调可以返回 Codex，同时不开放其他主机或端口。成功页使用 `strict-origin` 保留同源 POST 的 Origin 校验；错误页继续使用 `no-referrer`。
 
 当前远程工具面固定为十六项：提取任务创建/读取、Capability 列表/定义读取、Project 列表/创建/目标快照/读取、Miniapp UI 保存/读取、Revision 提交/读取、Test 运行/列表/读取和 Release 发布。MCP 不保存 TargetState；所有 Project、Revision、Test 与发布操作都显式携带资源 ID，发布 Revision 只从已通过的 Test 服务端推导。
 

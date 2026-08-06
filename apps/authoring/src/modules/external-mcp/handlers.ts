@@ -64,14 +64,21 @@ function noStore(reply: FastifyReply): void {
 
 function htmlSecurityHeaders(
   reply: FastifyReply,
-  referrerPolicy: 'no-referrer' | 'strict-origin' = 'no-referrer',
+  options: {
+    referrerPolicy?: 'no-referrer' | 'strict-origin';
+    formActionOrigin?: string;
+  } = {},
 ): void {
+  const formAction = [
+    "'self'",
+    ...(options.formActionOrigin ? [options.formActionOrigin] : []),
+  ].join(' ');
   noStore(reply);
   reply.header(
     'content-security-policy',
-    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}; base-uri 'none'; frame-ancestors 'none'`,
   );
-  reply.header('referrer-policy', referrerPolicy);
+  reply.header('referrer-policy', options.referrerPolicy ?? 'no-referrer');
   reply.header('x-content-type-options', 'nosniff');
 }
 
@@ -190,9 +197,15 @@ function authorizationResumePath(requestToken: string): string {
   return `${OAUTH_AUTHORIZE_PATH}?request=${encodeURIComponent(requestToken)}`;
 }
 
-function authorizationCallbackLabel(redirectUri: string): string {
+function authorizationCallbackPresentation(redirectUri: string): {
+  label: string;
+  origin: string;
+} {
   const callback = new URL(redirectUri);
-  return `${callback.hostname}${callback.pathname}`;
+  return {
+    label: `${callback.hostname}${callback.pathname}`,
+    origin: callback.origin,
+  };
 }
 
 function queryValue(value: unknown): string | undefined {
@@ -270,17 +283,20 @@ export function authorizationGetHandler(): RouteHandlerMethod {
       return reply.redirect(`/login?returnTo=${encodeURIComponent(returnTo)}`, 303);
     }
 
-    // The consent form is a same-origin navigation POST guarded by an exact Origin check.
-    // `no-referrer` serializes that Origin as `null`; strict-origin keeps only the origin tuple.
-    htmlSecurityHeaders(reply, 'strict-origin');
+    const callback = authorizationCallbackPresentation(pending.redirectUri);
+    // The same-origin POST is guarded by exact Origin. Its redirect remains a form navigation,
+    // so CSP must also admit only this already-validated loopback origin for the Codex callback.
+    htmlSecurityHeaders(reply, {
+      referrerPolicy: 'strict-origin',
+      formActionOrigin: callback.origin,
+    });
     const scopes = pending.scope
       .split(' ')
       .map((scope) => `<li><code>${escapeHtml(scope)}</code></li>`)
       .join('');
-    const callbackLabel = authorizationCallbackLabel(pending.redirectUri);
     const body = `<h1>授权 Codex 使用 Combo</h1>
 <p><strong>${escapeHtml(pending.clientName)}</strong> 请求以账号 <code>${escapeHtml(session.context.account)}</code> 使用你的 Combo Agent Builder。</p>
-<p>授权结果只会返回到本机回调 <code>${escapeHtml(callbackLabel)}</code>。</p>
+<p>授权结果只会返回到本机回调 <code>${escapeHtml(callback.label)}</code>。</p>
 <div class="scope"><strong>授权范围</strong><ul>${scopes}</ul></div>
 <p>授权后，Codex 只获得绑定 Combo MCP 地址的短期 Bearer Token；浏览器 Session Cookie 不会交给 Codex。</p>
 <form method="post" action="${OAUTH_AUTHORIZE_PATH}">

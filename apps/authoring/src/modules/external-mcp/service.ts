@@ -41,7 +41,10 @@ const TOKEN_BYTES = 32;
 const MAX_STATE_LENGTH = 1_024;
 const OAUTH_CLEANUP_INTERVAL_MS = 60_000;
 const OAUTH_CLEANUP_BATCH_SIZE = 100;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]']);
+// CSP Level 3 cannot express an IPv6 literal as an exact form-action host source.
+// Keep the Codex browser callback both usable and least-privilege by accepting only
+// the IPv4 loopback address that the Desktop CLI currently opens.
+const CODEX_LOOPBACK_HOST = '127.0.0.1';
 
 /**
  * 每个 API 进程至多每分钟触发一次 DB 侧有界清理。同步占领时间窗发生在 await 前，
@@ -81,7 +84,7 @@ function canonicalLoopbackRedirectUri(value: string): string | null {
   }
   if (
     url.protocol !== 'http:' ||
-    !LOOPBACK_HOSTS.has(url.hostname) ||
+    url.hostname !== CODEX_LOOPBACK_HOST ||
     url.username ||
     url.password ||
     url.hash
@@ -121,7 +124,7 @@ export function dynamicClientRegistrationDigest(input: {
   return createHash('sha256').update(canonical, 'utf8').digest();
 }
 
-/** RFC 8252 loopback redirect 只允许端口在注册与授权间变化。 */
+/** Codex 的 IPv4 loopback redirect 只允许端口在注册与授权间变化。 */
 export function matchesRegisteredLoopbackRedirect(
   candidate: string,
   registeredUris: readonly string[],
