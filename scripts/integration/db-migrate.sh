@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# 集成：业务迁移端到端（O-05 / O-07）。对一个可达的 PostgreSQL 跑全部迁移，断言迁移文件全部记账、
-# 当前终态表集合精确、关键命名约束存在。CI 用临时 PG 容器即可（不需 Docker compose 全栈）。
-# 入参：DATABASE_URL（必填，指向可达 PG）。
+# 集成：业务迁移端到端（O-05 / O-07）。只允许 disposable loopback PostgreSQL；会执行迁移、
+# 构造回滚数据，并调用会 TRUNCATE OAuth 测试表的 MCP 契约。不得指向共享、Test 或生产数据库。
+# CI 使用临时 PG service；本地必须显式设置 COMBO_ALLOW_DESTRUCTIVE_INTEGRATION_DB=1。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,6 +19,9 @@ fail() {
 : "${POSTGRES_RUNTIME_PASSWORD:?需设置 POSTGRES_RUNTIME_PASSWORD}"
 command -v pnpm >/dev/null 2>&1 || fail "需要 pnpm"
 command -v psql >/dev/null 2>&1 || fail "需要 psql（断言 schema 用）"
+command -v node >/dev/null 2>&1 || fail "需要 Node.js"
+
+bash "${SCRIPT_DIR}/assert-disposable-postgres.sh"
 
 # 1) 跑迁移
 log "执行迁移 ..."
@@ -147,5 +150,8 @@ log "二次迁移（幂等）..."
 pnpm -C "$ROOT_DIR" -F @cb/db migrate
 applied2="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 [ "$applied2" = "$expected" ] || fail "二次迁移后记账数变化 ${applied2} != ${expected}"
+
+log "执行远程 MCP OAuth PostgreSQL 契约 ..."
+bash "${SCRIPT_DIR}/external-mcp-pg.sh"
 
 log "迁移集成全部通过 ✓"

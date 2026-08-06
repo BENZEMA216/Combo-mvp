@@ -5,6 +5,8 @@
 # 入参：REDIS_QUEUE_HOST/PORT、REDIS_HOT_HOST/PORT（默认本地 6379/6380）。需 redis-cli。
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 QUEUE_HOST="${REDIS_QUEUE_HOST:-localhost}"
 QUEUE_PORT="${REDIS_QUEUE_PORT:-6379}"
 HOT_HOST="${REDIS_HOT_HOST:-localhost}"
@@ -17,6 +19,7 @@ fail() {
 }
 
 command -v redis-cli >/dev/null 2>&1 || fail "需要 redis-cli"
+command -v pnpm >/dev/null 2>&1 || fail "需要 pnpm"
 
 # 1) 两实例 PING
 [ "$(redis-cli -h "$QUEUE_HOST" -p "$QUEUE_PORT" ping)" = "PONG" ] || fail "redis_queue 不通"
@@ -38,5 +41,11 @@ log "redis_hot = allkeys-lru ✓"
 # 4) 策略对立性（两实例不能同策略，否则混用污染）
 [ "$q_policy" != "$h_policy" ] || fail "两实例驱逐策略相同（${q_policy}），违反物理分实例意图"
 log "双实例策略对立 ✓"
+
+log "验证两个 Authoring replica 共用 redis_hot 且 Redis 故障时失败关闭 ..."
+env \
+  MCP_RATE_LIMIT_REDIS_URL="redis://${HOT_HOST}:${HOT_PORT}/0" \
+  pnpm --dir "$ROOT_DIR/apps/authoring" exec vitest run \
+    src/__tests__/external-mcp-rate-limit.integration.test.ts
 
 log "Redis 双实例集成通过 ✓"

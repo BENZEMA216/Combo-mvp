@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -230,5 +231,105 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
     mainWorkflow,
     /0000_baseline_schema\.sql/,
     'ci.yml must not hardcode the migration file list',
+  );
+});
+
+test('trusted Main CI reaches candidate-owned MCP PostgreSQL and Redis contracts', () => {
+  const mainWorkflow = text('.github/workflows/ci.yml');
+  const migration = text('scripts/integration/db-migrate.sh');
+  const mcpPostgres = text('scripts/integration/external-mcp-pg.sh');
+  const postgresGuard = 'scripts/integration/assert-disposable-postgres.sh';
+  const redis = text('scripts/integration/redis-dual.sh');
+
+  assert.match(mainWorkflow, /bash scripts\/integration\/db-migrate\.sh/);
+  assert.match(mainWorkflow, /bash scripts\/integration\/redis-dual\.sh/);
+  assert.match(migration, /bash "\$\{SCRIPT_DIR\}\/assert-disposable-postgres\.sh"/);
+  assert.match(migration, /bash "\$\{SCRIPT_DIR\}\/external-mcp-pg\.sh"/);
+  assert.match(mcpPostgres, /bash "\$\{SCRIPT_DIR\}\/assert-disposable-postgres\.sh"/);
+  assert.doesNotThrow(() => text(postgresGuard));
+  assert.match(mcpPostgres, /external-mcp-refresh\.pg\.test\.ts/);
+  assert.match(mcpPostgres, /external-mcp-dcr\.pg\.test\.ts/);
+  assert.match(redis, /external-mcp-rate-limit\.integration\.test\.ts/);
+
+  assert.equal(
+    (mainWorkflow.match(/external-mcp-(?:refresh|dcr|rate-limit)/g) ?? []).length,
+    0,
+    'workflow must not duplicate candidate-owned MCP integration commands',
+  );
+});
+
+test('destructive PostgreSQL contracts require authorization and an unambiguous loopback URL', () => {
+  const guard = join(repo, 'scripts/integration/assert-disposable-postgres.sh');
+  const runGuard = (env) =>
+    spawnSync('bash', [guard], {
+      cwd: repo,
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH, ...env },
+    });
+
+  const unauthorized = runGuard({
+    DATABASE_URL: 'postgres://agora:guard-password-must-not-appear@127.0.0.1:5432/agora',
+  });
+  assert.notEqual(unauthorized.status, 0);
+  assert.match(unauthorized.stderr, /COMBO_ALLOW_DESTRUCTIVE_INTEGRATION_DB/);
+  assert.doesNotMatch(unauthorized.stderr, /guard-password-must-not-appear/);
+
+  const remote = runGuard({
+    COMBO_ALLOW_DESTRUCTIVE_INTEGRATION_DB: '1',
+    DATABASE_URL: 'postgres://agora:guard-password-must-not-appear@database.invalid:5432/agora',
+  });
+  assert.notEqual(remote.status, 0);
+  assert.match(remote.stderr, /loopback PostgreSQL/);
+  assert.doesNotMatch(remote.stderr, /database\.invalid|guard-password-must-not-appear/);
+
+  const override = runGuard({
+    CI: 'true',
+    GITHUB_ACTIONS: 'true',
+    DATABASE_URL: 'postgres://agora:agora@localhost:5432/agora?host=database.invalid',
+  });
+  assert.notEqual(override.status, 0);
+  assert.match(override.stderr, /loopback PostgreSQL/);
+  assert.doesNotMatch(override.stderr, /database\.invalid/);
+
+  const githubActions = runGuard({
+    CI: 'true',
+    GITHUB_ACTIONS: 'true',
+    DATABASE_URL: 'postgres://agora:agora@localhost:5432/agora',
+  });
+  assert.equal(githubActions.status, 0, githubActions.stderr);
+
+  const explicitLocal = runGuard({
+    COMBO_ALLOW_DESTRUCTIVE_INTEGRATION_DB: '1',
+    DATABASE_URL: 'postgresql://agora:agora@[::1]:5432/agora',
+  });
+  assert.equal(explicitLocal.status, 0, explicitLocal.stderr);
+});
+
+test('Compose compatibility never turns an absent MCP origin into a production default', () => {
+  const compose = text('infra/docker-compose.yml');
+  const start = text('scripts/start.sh');
+  const authoringEnv = text('apps/authoring/src/platform/config/env.ts');
+  const runtimeEnv = text('apps/runtime/src/platform/config/env.ts');
+  const compatibilityLine = 'EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:-}';
+
+  assert.equal(compose.split(compatibilityLine).length - 1, 2);
+  const startRequiredAt = start.indexOf(
+    'REQUIRED_CONFIG=(PUBLIC_APP_ORIGINS EXTERNAL_MCP_PUBLIC_ORIGIN)',
+  );
+  const startGuardExitAt = start.indexOf('if [[ "${GUARD_FAILED}" -ne 0 ]]');
+  const firstComposeAt = start.indexOf('"${COMPOSE[@]}"');
+  assert.ok(startRequiredAt >= 0, 'start.sh must require the external MCP origin');
+  assert.ok(startGuardExitAt > startRequiredAt, 'start.sh must enforce its required config');
+  assert.ok(
+    firstComposeAt > startGuardExitAt,
+    'start.sh must fail before the first Compose action',
+  );
+  assert.match(
+    authoringEnv,
+    /const AUTH_API_REQUIRED = \[[\s\S]*?'EXTERNAL_MCP_PUBLIC_ORIGIN',[\s\S]*?\] as const;/,
+  );
+  assert.match(
+    runtimeEnv,
+    /const PRODUCTION_REQUIRED = \[[\s\S]*?'EXTERNAL_MCP_PUBLIC_ORIGIN',[\s\S]*?\] as const;/,
   );
 });

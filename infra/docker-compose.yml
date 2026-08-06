@@ -235,7 +235,9 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:?}
       S3_REGION: ${S3_REGION:-us-east-1}
       PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 必填}
-      EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:?EXTERNAL_MCP_PUBLIC_ORIGIN 必填}
+      # 受信任的 main CI 会用候选分支源码渲染 Compose，但不会继承候选 workflow 新增的 env。
+      # 允许结构检查保留空值；start.sh 与生产 env loader 仍会在进程启动前后双重拒绝空值。
+      EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:-}
       MCP_RUNTIME_INTERNAL_BASE_URL: ${MCP_RUNTIME_INTERNAL_BASE_URL:-http://runtime:3100}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       RESEND_API_KEY: ${RESEND_API_KEY:?RESEND_API_KEY 必填}
@@ -340,7 +342,8 @@ services:
       DATABASE_URL: postgres://combo_runtime:${POSTGRES_RUNTIME_PASSWORD:?}@postgres:5432/${POSTGRES_DB:?}
       REDIS_URL: redis://redis_queue:6379
       PUBLIC_APP_ORIGINS: ${PUBLIC_APP_ORIGINS:?PUBLIC_APP_ORIGINS 必填}
-      EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:?EXTERNAL_MCP_PUBLIC_ORIGIN 必填}
+      # 与 API 相同：只放宽 Compose 静态渲染，Runtime 生产配置仍 fail closed。
+      EXTERNAL_MCP_PUBLIC_ORIGIN: ${EXTERNAL_MCP_PUBLIC_ORIGIN:-}
       SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-true}
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?}

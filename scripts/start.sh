@@ -57,8 +57,16 @@ REQUIRED_SECRETS=(
   RESEND_API_KEY OTP_HMAC_SECRET
   GRAFANA_ADMIN_PASSWORD
 )
+REQUIRED_CONFIG=(PUBLIC_APP_ORIGINS EXTERNAL_MCP_PUBLIC_ORIGIN)
 
 GUARD_FAILED=0
+for key in "${REQUIRED_CONFIG[@]}"; do
+  val="${!key:-}"
+  if [[ -z "${val}" ]]; then
+    printf '\033[1;31m[start:guard]\033[0m %s 未设（生产必填配置）\n' "${key}" >&2
+    GUARD_FAILED=1
+  fi
+done
 for key in "${REQUIRED_SECRETS[@]}"; do
   val="${!key:-}"
   if [[ -z "${val}" ]]; then

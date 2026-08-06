@@ -51,6 +51,23 @@ describe('authoring authentication environment boundary', () => {
     expect(loadEnv).toThrowError(/REDIS_HOT_URL/);
   });
 
+  it('fails production API startup when the external MCP public origin is empty', async () => {
+    stub({
+      ...COMMON,
+      NODE_ENV: 'production',
+      PROCESS: 'api',
+      PUBLIC_APP_ORIGINS: 'https://combo.example',
+      EXTERNAL_MCP_PUBLIC_ORIGIN: '',
+      SESSION_COOKIE_SECURE: 'true',
+      RESEND_API_KEY: 'test-resend-key-value',
+      RESEND_FROM_EMAIL: PRODUCTION_RESEND_FROM_EMAIL,
+      OTP_HMAC_SECRET: 'h'.repeat(32),
+    });
+    const loadEnv = await freshLoadEnv();
+
+    expect(loadEnv).toThrowError(/EXTERNAL_MCP_PUBLIC_ORIGIN/);
+  });
+
   it('fails production API startup on missing auth keys without printing values', async () => {
     stub({
       ...COMMON,

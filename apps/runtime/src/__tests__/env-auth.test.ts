@@ -80,6 +80,15 @@ describe('runtime authentication configuration', () => {
     expect(() => loadEnv()).toThrowError('SESSION_COOKIE_SECURE');
   });
 
+  it('fails production Runtime startup when the external MCP public origin is empty', async () => {
+    setProductionInfrastructure();
+    process.env.EXTERNAL_MCP_PUBLIC_ORIGIN = '';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    expect(() => loadEnv()).toThrowError('EXTERNAL_MCP_PUBLIC_ORIGIN');
+  });
+
   it('rejects a production-mode Test process with a non-secure Cookie', async () => {
     setProductionInfrastructure();
     process.env.COMBO_ENVIRONMENT = 'test';
