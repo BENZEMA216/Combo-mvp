@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { SessionView } from '@cb/shared';
@@ -32,6 +32,13 @@ const OTHER: SessionView = {
 function ok(data: unknown): Response {
   return new Response(JSON.stringify({ data, meta: { traceId: 'trace-sidebar' } }), {
     status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function fail(status: number, userMessage: string): Response {
+  return new Response(JSON.stringify({ error: { userMessage, traceId: 'trace-sidebar-error' } }), {
+    status,
     headers: { 'content-type': 'application/json' },
   });
 }
@@ -215,6 +222,88 @@ describe('SessionSidebar 会话操作', () => {
     ).toBeInTheDocument();
     await Promise.resolve();
     expect(fetchMock).not.toHaveBeenCalled();
+    queryClient.clear();
+  });
+
+  it('区分首次加载、加载失败与成功空列表，并允许用户原地重试', async () => {
+    let resolveInitial!: (response: Response) => void;
+    const initialResponse = new Promise<Response>((resolve) => {
+      resolveInitial = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => initialResponse)
+      .mockResolvedValueOnce(ok([CURRENT]));
+    globalThis.fetch = fetchMock;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(SessionSidebar, {
+            activeSessionId: CURRENT.id,
+            capabilityId: CURRENT.capabilityId,
+          }),
+        ),
+      ),
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('正在加载历史会话…');
+    expect(screen.queryByText('这个能力下还没有会话')).not.toBeInTheDocument();
+    act(() => resolveInitial(fail(503, '历史会话暂时不可用。')));
+    expect(await screen.findByRole('alert')).toHaveTextContent('历史会话暂时不可用。');
+    expect(screen.queryByText('这个能力下还没有会话')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(await screen.findByText('项目复盘')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    queryClient.clear();
+  });
+
+  it('刷新失败时保留已加载的会话，并提供不会清空列表的重试入口', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(ok([CURRENT]))
+      .mockResolvedValueOnce(fail(503, '历史会话刷新失败。'))
+      .mockResolvedValueOnce(ok([CURRENT]));
+    globalThis.fetch = fetchMock;
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    render(
+      createElement(
+        QueryClientProvider,
+        { client: queryClient },
+        createElement(
+          MemoryRouter,
+          null,
+          createElement(SessionSidebar, {
+            activeSessionId: CURRENT.id,
+            capabilityId: CURRENT.capabilityId,
+          }),
+        ),
+      ),
+    );
+
+    expect(await screen.findByText('项目复盘')).toBeInTheDocument();
+    await queryClient.refetchQueries({
+      queryKey: ['sessions', CURRENT.capabilityId, 'consume', null],
+    });
+
+    expect(screen.getByText('项目复盘')).toBeInTheDocument();
+    expect(await screen.findByText('历史会话刷新失败，已保留上次结果。')).toBeInTheDocument();
+    expect(screen.getByRole('alert')).toHaveTextContent('历史会话刷新失败。');
+
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(screen.getByText('项目复盘')).toBeInTheDocument();
     queryClient.clear();
   });
 });

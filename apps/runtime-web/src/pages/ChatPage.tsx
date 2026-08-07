@@ -708,6 +708,7 @@ function ArtifactStage({
   onElementManifest?: (elements: ComboElementSelection[]) => void;
 }) {
   const content = useArtifactContent(artifact);
+  const hasContent = content.data !== undefined;
   const title = artifact.title ?? '未命名产物';
   const htmlStage =
     artifact.kind === 'html' ||
@@ -728,6 +729,13 @@ function ArtifactStage({
       }`}
     >
       <div className="rt-artifact-stage__actions">
+        {hasContent && content.isRefetchError && (
+          <QueryErrorNotice
+            className="rt-artifact-refresh-error"
+            error={content.error}
+            onRetry={() => void content.refetch()}
+          />
+        )}
         {runNotice && (
           <span className="rt-artifact-run-notice" role="status">
             {runNotice}
@@ -739,21 +747,19 @@ function ArtifactStage({
         <button
           type="button"
           className="rt-toolbar-pill rt-artifact-download"
-          disabled={content.data === undefined || content.isPending || content.isError}
+          disabled={!hasContent}
           title={downloadTitle}
           aria-describedby={downloadHelpId}
           onClick={() => {
             if (content.data !== undefined) downloadArtifact(title, artifact.kind, content.data);
           }}
         >
-          {content.isPending ? '正在准备…' : artifactDownloadLabel(artifact.kind, studioMode)}
+          {content.isPending && !hasContent
+            ? '正在准备…'
+            : artifactDownloadLabel(artifact.kind, studioMode)}
         </button>
       </div>
-      {content.isPending ? (
-        <div className="rt-empty">产物加载中…</div>
-      ) : content.isError ? (
-        <div className="rt-empty rt-empty--error">产物内容加载失败，稍后重试。</div>
-      ) : (
+      {hasContent ? (
         <ArtifactRenderer
           kind={artifact.kind}
           title={title}
@@ -769,6 +775,12 @@ function ArtifactStage({
           onElementSelect={onElementSelect}
           onElementManifest={onElementManifest}
         />
+      ) : content.isPending ? (
+        <div className="rt-empty">产物加载中…</div>
+      ) : content.isError ? (
+        <QueryErrorNotice error={content.error} onRetry={() => void content.refetch()} />
+      ) : (
+        <div className="rt-empty rt-empty--error">产物内容暂不可用。</div>
       )}
     </div>
   );

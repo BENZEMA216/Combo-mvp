@@ -13,6 +13,7 @@ import {
 } from '../api/runtime.js';
 import { useRuntimeMe } from '../shell/AuthGate.js';
 import { ComboWordmark } from './ComboBrand.js';
+import { QueryErrorNotice } from './QueryErrorNotice.js';
 import {
   appendRuntimeReturnTo,
   runtimeBackLabel,
@@ -105,6 +106,7 @@ export function SessionSidebar({
       ),
     [hasSessionScope, sessions.data],
   );
+  const hasSessionsData = sessions.data !== undefined;
   const createPending = createSession.isPending || createReleasedAgentSession.isPending;
 
   const startNewSession = () => {
@@ -184,6 +186,28 @@ export function SessionSidebar({
             </span>
           </button>
         )}
+        {hasSessionScope && sessions.isPending && !hasSessionsData && (
+          <div className="rt-sidebar__empty" role="status">
+            正在加载历史会话…
+          </div>
+        )}
+        {hasSessionScope && sessions.isError && !hasSessionsData && (
+          <QueryErrorNotice
+            className="rt-sidebar__empty rt-sidebar__empty--error"
+            error={sessions.error}
+            onRetry={() => void sessions.refetch()}
+          />
+        )}
+        {hasSessionScope && sessions.isRefetchError && hasSessionsData && (
+          <div className="rt-sidebar__refresh-error">
+            <span>历史会话刷新失败，已保留上次结果。</span>
+            <QueryErrorNotice
+              className="rt-sidebar__empty rt-sidebar__empty--error"
+              error={sessions.error}
+              onRetry={() => void sessions.refetch()}
+            />
+          </div>
+        )}
         {ordered.map((s) => (
           <SessionListItem
             key={s.id}
@@ -203,7 +227,7 @@ export function SessionSidebar({
             这是固定 Revision 的测试会话，不进入正式会话列表。请返回 Agent 项目继续测试或发布。
           </div>
         )}
-        {hasSessionScope && sessions.data && ordered.length === 0 && (
+        {hasSessionScope && sessions.isSuccess && ordered.length === 0 && (
           <div className="rt-sidebar__empty">
             {studioMode ? '还没有设计记录' : '这个能力下还没有会话'}
           </div>

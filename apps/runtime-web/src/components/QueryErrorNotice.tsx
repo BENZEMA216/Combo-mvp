@@ -5,15 +5,17 @@ import { loginUrl } from '../navigation/login.js';
 export function QueryErrorNotice({
   error,
   onRetry,
+  className = 'rt-empty rt-empty--error',
   navigateToAuth = (target) => window.location.assign(target),
 }: {
   error: unknown;
   onRetry: () => void;
+  className?: string;
   navigateToAuth?: (target: string) => void;
 }) {
   if (isUnauthenticated(error)) {
     return (
-      <div className="rt-empty rt-empty--error">
+      <div className={className} role="alert">
         请先登录。{' '}
         <button
           type="button"
@@ -27,7 +29,7 @@ export function QueryErrorNotice({
   }
   const message = error instanceof ApiError ? error.userMessage : '加载失败，请稍后重试。';
   return (
-    <div className="rt-empty rt-empty--error">
+    <div className={className} role="alert">
       {message}{' '}
       <button type="button" className="rt-btn" onClick={onRetry}>
         重试

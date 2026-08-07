@@ -1,6 +1,4 @@
 /* Combo 试用端设计系统：白色内容底 + 浅灰侧栏 + Combo 墨色/砖红品牌。 */
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,900&family=Noto+Serif+SC:wght@500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Geist+Mono:wght@400;500;600&display=swap');
-
 :root {
   /* ===== Combo 统一设计 token（canon 单一事实源；与 web/styles.css 逐值同步，diff 必须为零）===== */
   /* 面层级（4 级）：paper 品牌时刻 / page 页面底 / surface 卡片 / raised 纯白 */
@@ -735,6 +733,28 @@ body {
   color: var(--cb-muted);
   font-size: 12px;
   padding: 8px 10px;
+}
+.rt-sidebar__empty.rt-sidebar__empty--error,
+.rt-sidebar__refresh-error {
+  color: var(--cb-danger);
+}
+.rt-sidebar__refresh-error {
+  border: 1px solid var(--cb-danger-line);
+  border-radius: 8px;
+  background: var(--cb-danger-soft);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.rt-sidebar__refresh-error .rt-sidebar__empty,
+.rt-sidebar__empty.rt-sidebar__empty--error {
+  padding: 4px 0 0;
+}
+.rt-sidebar__empty .rt-btn,
+.rt-sidebar__refresh-error .rt-btn {
+  min-height: 28px;
+  padding: 5px 10px;
+  font-size: 12px;
 }
 /* 「新会话」是按钮不是链接：继承 item 外观，抹掉原生按钮样式。 */
 .rt-sidebar__item--action {
@@ -1517,6 +1537,28 @@ body {
   margin-bottom: 8px;
   pointer-events: none;
 }
+.rt-artifact-refresh-error {
+  min-width: 0;
+  max-width: min(520px, calc(100% - 120px));
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+  border: 1px solid var(--cb-danger-line);
+  border-radius: 8px;
+  background: var(--cb-danger-soft);
+  color: var(--cb-danger);
+  padding: 6px 8px;
+  font-size: 12px;
+  line-height: 1.35;
+  pointer-events: auto;
+}
+.rt-artifact-refresh-error .rt-btn {
+  min-height: 28px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
 .rt-artifact-run-notice {
   margin-right: auto;
   align-self: center;
@@ -2141,8 +2183,12 @@ body {
   }
   .rt-trial__actions {
     width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
     gap: 10px;
+  }
+  .rt-trial__actions > * {
+    max-width: 100%;
   }
   .rt-mobile-sessions-trigger {
     display: inline-flex;

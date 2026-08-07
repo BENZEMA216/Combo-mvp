@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import type { ArtifactView, SessionDetail } from '@cb/shared';
+import { ApiError } from '../api/client.js';
 import { ChatPage } from './ChatPage.js';
 
 const mocks = vi.hoisted(() => ({
@@ -15,7 +16,13 @@ const mocks = vi.hoisted(() => ({
   } | null,
   errorMessage: null as string | null,
   artifact: null as ArtifactView | null,
-  artifactContent: '<!doctype html><html><body><button>运行</button></body></html>',
+  artifactContent: '<!doctype html><html><body><button>运行</button></body></html>' as
+    | string
+    | undefined,
+  artifactContentPending: false,
+  artifactContentError: null as unknown,
+  artifactContentRefetchError: false,
+  artifactContentRefetch: vi.fn(),
   send: vi.fn(),
   pendingRetryAvailable: false,
   retryPending: vi.fn(),
@@ -34,8 +41,11 @@ vi.mock('../api/runtime.js', () => ({
   }),
   useArtifactContent: () => ({
     data: mocks.artifactContent,
-    isPending: false,
-    isError: false,
+    isPending: mocks.artifactContentPending,
+    isError: mocks.artifactContentError !== null,
+    isRefetchError: mocks.artifactContentRefetchError,
+    error: mocks.artifactContentError,
+    refetch: mocks.artifactContentRefetch,
   }),
 }));
 
@@ -151,6 +161,12 @@ function renderPage(url: string): ReturnType<typeof render> {
 
 beforeEach(() => {
   window.sessionStorage.clear();
+  mocks.artifactContent = '<!doctype html><html><body><button>运行</button></body></html>';
+  mocks.artifactContentPending = false;
+  mocks.artifactContentError = null;
+  mocks.artifactContentRefetchError = false;
+  mocks.artifactContentRefetch.mockReset();
+  mocks.artifactContentRefetch.mockResolvedValue(undefined);
   mocks.send.mockResolvedValue({
     id: '44444444-4444-4444-8444-444444444444',
     seq: 1,
@@ -507,6 +523,31 @@ describe('ChatPage consume Miniapp bridge', () => {
       createdAt: '2026-07-23T01:00:00.000Z',
       updatedAt: '2026-07-23T01:00:00.000Z',
     };
+  });
+
+  it('shows an actionable retry when artifact content fails before first paint', () => {
+    mocks.artifactContent = undefined;
+    mocks.artifactContentError = new ApiError('产物内容暂时不可用。', 503);
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('产物内容暂时不可用。');
+    expect(screen.getByRole('button', { name: '下载 HTML' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(mocks.artifactContentRefetch).toHaveBeenCalledOnce();
+  });
+
+  it('keeps stale artifact content and download available when a background refresh fails', () => {
+    mocks.artifactContentError = new ApiError('产物刷新失败。', 503);
+    mocks.artifactContentRefetchError = true;
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTitle('周报助手页面')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '下载 HTML' })).toBeEnabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('产物刷新失败。');
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    expect(mocks.artifactContentRefetch).toHaveBeenCalledOnce();
   });
 
   it('forwards Agent Project and Release identity to desktop and mobile sidebars', () => {
