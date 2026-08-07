@@ -9,7 +9,10 @@
 - `service.ts` 生成高熵一次性凭据，执行 PKCE S256、scope 和 resource 校验，只接受 Codex 当前使用的 `127.0.0.1` loopback callback 并只放宽端口。IPv6 literal 无法作为 CSP Level 3 的精确 `form-action` source，因此当前明确拒绝，不能通过放宽到任意 `http:` 回调规避。动态注册对规范元数据计算 SHA-256 digest；临时监听端口与 URI 集合顺序不进入 identity。
 - `repo.ts` 保存动态客户端、摘要化授权请求、一次性授权码和摘要化令牌；刷新令牌按 family advisory lock 串行，发生重放时撤销整个令牌家族。API 不能直接插入或删除 client，只能调用迁移定义的受控注册与有界清理函数。
 - `runtime-client.ts` 只经固定集群内 Runtime origin 转发当前请求的 Bearer Header，按共享 schema 校验 Studio UI、Agent Test 技术状态、质量状态和发布资格，并把 Runtime 错误收敛成安全失败。解析兼容旧 Runtime 缺少质量字段的响应，并将其视为未复核且不可发布。
-- `agent-builder-app.ts` 提供 MCP Apps 标准的内联 Agent Builder 卡片资源。卡片只展示模型已经核验的阶段数据，按钮通过 `ui/message` 把用户选择送回当前对话，本身不创建、复核或发布业务对象。
+- `agent-builder-app.ts` 提供 MCP Apps 标准的内联 Agent Builder 卡片资源，先完成
+  `ui/initialize` / `ui/notifications/initialized` 生命周期，再接收工具数据。卡片只展示模型
+  已经核验的阶段数据，按钮优先通过标准 `ui/message` 把用户选择送回当前对话，并在宿主
+  未声明该能力时 feature-detect OpenAI 兼容消息桥；卡片本身不创建、复核或发布业务对象。
 - `tools.ts` 暴露显式 Project ID 的无状态 Agent Builder 工具和只读展示工具，复用现有 Agent Project service 和共享 schema，不保存进程内 TargetState。`record_agent_test_review` 只能在当前 Codex 任务中得到用户对三类案例的明确质量确认后调用，服务端会把当前 OAuth 用户冻结为 reviewer。Test 与 Release 结果同时返回可点击的 Runtime 资源链接。
 
 ## 协议边界

@@ -479,7 +479,11 @@ describe('external MCP stateless machine contract', () => {
         ],
       },
     });
-    expect(resource.json().result.contents[0].text).toContain("request('ui/message'");
+    const html = resource.json().result.contents[0].text as string;
+    expect(html).toContain("request('ui/initialize'");
+    expect(html).toContain("notify('ui/notifications/initialized'");
+    expect(html).toContain("request('ui/message'");
+    expect(html).toContain('window.openai.sendFollowUpMessage');
   });
 
   it('rejects incomplete initialize params and negotiates an unsupported body version', async () => {

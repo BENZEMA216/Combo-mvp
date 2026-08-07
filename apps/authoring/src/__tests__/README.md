@@ -20,6 +20,7 @@
 - `routes.test.ts` 核对端点总数、无重复、认证公开面和前置守卫。
 - `external-mcp-tools.test.ts` 验证无状态 MCP 工具的公开投影、显式资源身份、三类案例质量复核与发布门禁。
 - `external-mcp-routes.test.ts` 验证 OAuth 后的 MCP transport、十八项工具发现、Agent Builder MCP App 资源及手写 JSON Schema 与共享契约的一致性。
+- `agent-builder-app.test.ts` 用宿主仿真验证 MCP App 的 initialize/initialized 生命周期、工具结果渲染、标准 `ui/message`、兼容消息回退与固定 HTML 摘要。
 - `task-service.test.ts` 验证任务状态机、建任务幂等、重试和过期对账。
 - `pairing.test.ts` 验证配对码、快照准备、分片登记和对象清理。
 - `connect-script.test.ts` 验证本机助手脚本的续传与响应丢失处理。

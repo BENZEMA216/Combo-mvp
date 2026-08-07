@@ -1,4 +1,6 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
+export const AGENT_BUILDER_APP_HTML_SHA256 =
+  'b1d226c99b8ca90cba45c784aa54cc12d8b5ff895dae9db0ca2d5d9faf0cc4c0';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
@@ -62,17 +64,31 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
     </main>
     <script>
       (() => {
+        const MCP_UI_PROTOCOL_VERSION = '2026-01-26';
+        const REQUEST_TIMEOUT_MS = 8000;
         const stageLabels = {
           readiness: '就绪与范围', recommendations: 'Agent 建议', production: '生产进度',
           draft: 'Agent 草稿', test: '测试摘要', release: '发布确认'
         };
         const pending = new Map();
         let nextId = 1;
+        let bridgeState = 'starting';
+        let hostCapabilities = {};
 
         function request(method, params) {
           const id = nextId++;
           window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
-          return new Promise((resolve, reject) => pending.set(id, { resolve, reject }));
+          return new Promise((resolve, reject) => {
+            const timeout = window.setTimeout(() => {
+              pending.delete(id);
+              reject(new Error('Host request timed out.'));
+            }, REQUEST_TIMEOUT_MS);
+            pending.set(id, { resolve, reject, timeout });
+          });
+        }
+
+        function notify(method, params = {}) {
+          window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
         }
 
         function text(value) { return typeof value === 'string' ? value : ''; }
@@ -89,10 +105,23 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           error.hidden = true;
           button.disabled = true;
           try {
-            await request('ui/message', {
-              role: 'user',
-              content: [{ type: 'text', text: action.message }]
-            });
+            if (bridgeState === 'ready' && hostCapabilities.message) {
+              await request('ui/message', {
+                role: 'user',
+                content: [{ type: 'text', text: action.message }]
+              });
+            } else if (window.openai && typeof window.openai.sendFollowUpMessage === 'function') {
+              await window.openai.sendFollowUpMessage({
+                prompt: action.message,
+                scrollToBottom: true
+              });
+            } else {
+              throw new Error(
+                bridgeState === 'starting'
+                  ? 'Agent Builder 仍在连接 Codex。'
+                  : '当前 Codex 宿主不支持卡片消息，请在对话框中输入同样内容。'
+              );
+            }
           } catch (cause) {
             error.textContent = cause && cause.message ? cause.message : '无法把选择发送回 Codex，请在对话框中输入同样内容。';
             error.hidden = false;
@@ -160,6 +189,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           if (message.id !== undefined && pending.has(message.id)) {
             const waiter = pending.get(message.id);
             pending.delete(message.id);
+            window.clearTimeout(waiter.timeout);
             if (message.error) waiter.reject(new Error(message.error.message || 'Host rejected the action.'));
             else waiter.resolve(message.result || {});
             return;
@@ -170,10 +200,43 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           if (message.method === 'ui/notifications/tool-input') {
             render(message.params && (message.params.arguments || message.params));
           }
+          if (message.method === 'ui/notifications/tool-cancelled') {
+            const error = document.getElementById('error');
+            error.textContent = message.params && message.params.reason
+              ? message.params.reason
+              : 'Agent Builder 调用已取消。';
+            error.hidden = false;
+          }
+          if (message.method === 'ui/resource-teardown' && message.id !== undefined) {
+            window.parent.postMessage({ jsonrpc: '2.0', id: message.id, result: {} }, '*');
+          }
         }, { passive: true });
 
-        if (window.openai && window.openai.toolOutput) render(window.openai.toolOutput);
-        else if (window.openai && window.openai.toolInput) render(window.openai.toolInput);
+        async function initialize() {
+          const legacyPayload = window.openai && (window.openai.toolOutput || window.openai.toolInput);
+          if (legacyPayload) render(legacyPayload);
+          try {
+            const result = await request('ui/initialize', {
+              appInfo: { name: 'combo-agent-builder', version: '0.5.0' },
+              appCapabilities: { availableDisplayModes: ['inline'] },
+              protocolVersion: MCP_UI_PROTOCOL_VERSION
+            });
+            hostCapabilities = result && result.hostCapabilities ? result.hostCapabilities : {};
+            bridgeState = 'ready';
+            notify('ui/notifications/initialized');
+          } catch (cause) {
+            bridgeState = 'compatibility';
+            if (!legacyPayload) {
+              const error = document.getElementById('error');
+              error.textContent = cause && cause.message
+                ? 'Agent Builder 无法完成宿主初始化：' + cause.message
+                : 'Agent Builder 无法完成宿主初始化。';
+              error.hidden = false;
+            }
+          }
+        }
+
+        initialize();
       })();
     </script>
   </body>

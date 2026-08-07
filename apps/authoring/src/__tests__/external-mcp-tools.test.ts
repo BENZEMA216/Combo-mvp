@@ -497,8 +497,18 @@ describe('external MCP public tool results', () => {
         createdAt: NOW,
       },
     });
+    const releasedProjectDetail = {
+      ...projectDetail,
+      project: {
+        ...projectDetail.project,
+        currentReleaseId: '00000000-0000-4000-8000-000000000009',
+      },
+    };
+    mocks.readAgentProjectDetail
+      .mockResolvedValueOnce(projectDetail)
+      .mockResolvedValueOnce(releasedProjectDetail);
 
-    await executeExternalMcpTool(context(runtime), 'publish_agent_revision', {
+    const published = await executeExternalMcpTool(context(runtime), 'publish_agent_revision', {
       projectId: PROJECT_ID,
       testId: TEST_ID,
       idempotencyKey: 'publish-request-123',
@@ -514,6 +524,16 @@ describe('external MCP public tool results', () => {
         notes: '',
       },
     });
+    expect(published.isError).toBeUndefined();
+    expect(published.structuredContent).toMatchObject({
+      releasedAgentUrl: `https://test.example/try/a/${PROJECT_ID}`,
+    });
+    expect(published.content).toContainEqual(
+      expect.objectContaining({
+        type: 'resource_link',
+        uri: `https://test.example/try/a/${PROJECT_ID}`,
+      }),
+    );
 
     runtime.readAgentTest.mockResolvedValueOnce({
       ...(await runtime.readAgentTest.mock.results[0]!.value),
