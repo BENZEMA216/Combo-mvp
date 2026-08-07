@@ -12,6 +12,7 @@ type JsonRpcMessage = {
   method?: string;
   params?: Record<string, unknown>;
   result?: Record<string, unknown>;
+  error?: { code: number; message: string };
 };
 
 class FakeElement {
@@ -61,6 +62,20 @@ async function startApp(options: { useCompatibilityMessage?: boolean } = {}) {
   );
   const outbound: JsonRpcMessage[] = [];
   const compatibilityMessage = vi.fn(async () => undefined);
+  const toolPayload = {
+    stage: 'readiness',
+    title: 'Combo 已就绪',
+    summary: '等待确认分析范围。',
+    progress: [{ label: '确认范围', state: 'current' }],
+    items: [],
+    actions: [
+      {
+        label: '确认范围',
+        message: '我确认这个分析范围。',
+        emphasis: 'primary',
+      },
+    ],
+  };
   let onMessage: ((event: { source: unknown; data: JsonRpcMessage }) => void) | undefined;
 
   const parent = {
@@ -71,16 +86,22 @@ async function startApp(options: { useCompatibilityMessage?: boolean } = {}) {
         queueMicrotask(() =>
           onMessage?.({
             source: parent,
-            data: {
-              jsonrpc: '2.0',
-              id: requestId,
-              result: {
-                protocolVersion: '2026-01-26',
-                hostInfo: { name: 'test-host', version: '1.0.0' },
-                hostCapabilities: options.useCompatibilityMessage ? {} : { message: {} },
-                hostContext: {},
-              },
-            },
+            data: options.useCompatibilityMessage
+              ? {
+                  jsonrpc: '2.0',
+                  id: requestId,
+                  error: { code: -32601, message: 'Method not found' },
+                }
+              : {
+                  jsonrpc: '2.0',
+                  id: requestId,
+                  result: {
+                    protocolVersion: '2026-01-26',
+                    hostInfo: { name: 'test-host', version: '1.0.0' },
+                    hostCapabilities: {},
+                    hostContext: {},
+                  },
+                },
           }),
         );
       }
@@ -102,20 +123,7 @@ async function startApp(options: { useCompatibilityMessage?: boolean } = {}) {
               jsonrpc: '2.0',
               method: 'ui/notifications/tool-result',
               params: {
-                structuredContent: {
-                  stage: 'readiness',
-                  title: 'Combo 已就绪',
-                  summary: '等待确认分析范围。',
-                  progress: [{ label: '确认范围', state: 'current' }],
-                  items: [],
-                  actions: [
-                    {
-                      label: '确认范围',
-                      message: '我确认这个分析范围。',
-                      emphasis: 'primary',
-                    },
-                  ],
-                },
+                structuredContent: toolPayload,
               },
             },
           }),
@@ -137,7 +145,7 @@ async function startApp(options: { useCompatibilityMessage?: boolean } = {}) {
     setTimeout,
     clearTimeout,
     openai: options.useCompatibilityMessage
-      ? { sendFollowUpMessage: compatibilityMessage }
+      ? { toolOutput: toolPayload, sendFollowUpMessage: compatibilityMessage }
       : undefined,
     addEventListener(
       type: string,

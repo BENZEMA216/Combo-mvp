@@ -1,6 +1,6 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  'b1d226c99b8ca90cba45c784aa54cc12d8b5ff895dae9db0ca2d5d9faf0cc4c0';
+  'deb9bcfcfb1c6ca19e70a33d89477efc3816d91fa2994035a75ac62b65da5953';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
@@ -73,7 +73,6 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
         const pending = new Map();
         let nextId = 1;
         let bridgeState = 'starting';
-        let hostCapabilities = {};
 
         function request(method, params) {
           const id = nextId++;
@@ -105,7 +104,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           error.hidden = true;
           button.disabled = true;
           try {
-            if (bridgeState === 'ready' && hostCapabilities.message) {
+            if (bridgeState === 'ready') {
               await request('ui/message', {
                 role: 'user',
                 content: [{ type: 'text', text: action.message }]
@@ -216,12 +215,11 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           const legacyPayload = window.openai && (window.openai.toolOutput || window.openai.toolInput);
           if (legacyPayload) render(legacyPayload);
           try {
-            const result = await request('ui/initialize', {
+            await request('ui/initialize', {
               appInfo: { name: 'combo-agent-builder', version: '0.5.0' },
               appCapabilities: { availableDisplayModes: ['inline'] },
               protocolVersion: MCP_UI_PROTOCOL_VERSION
             });
-            hostCapabilities = result && result.hostCapabilities ? result.hostCapabilities : {};
             bridgeState = 'ready';
             notify('ui/notifications/initialized');
           } catch (cause) {
