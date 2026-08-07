@@ -63,6 +63,10 @@ export function taskEventsUrl(taskId: string): string {
   return SSE_ROUTES.taskEvents(taskId);
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 /**
  * 本机助手一条命令（配对码只在建任务响应里明文出现一次）。
  * GET /connect/script?code=<配对码> 下发内嵌配对码的脚本；网页端显式授权历史范围。
@@ -70,7 +74,7 @@ export function taskEventsUrl(taskId: string): string {
 export function connectCommand(pairingCode: string, origin?: string): string {
   const base = origin ?? window.location.origin;
   const connectUrl = `${base}${API_PREFIX}/connect/script?code=${encodeURIComponent(pairingCode)}`;
-  return `(umask 077; combo_connect_tmp=$(mktemp "\${TMPDIR:-/tmp}/combo-connect.XXXXXX") || exit 1; trap 'rm -f "$combo_connect_tmp"' EXIT; curl -fsSL "${connectUrl}" -o "$combo_connect_tmp" && env COMBO_SOURCE_SCOPE=history sh < "$combo_connect_tmp")`;
+  return `(set +x; combo_connect_script=$(curl -fsSL -- ${shellQuote(connectUrl)}) || exit $?; case "$combo_connect_script" in *[![:space:]]*) ;; *) printf '%s\\n' 'Combo connect script response was empty or whitespace-only.' >&2; exit 1 ;; esac; printf '%s\\n' "$combo_connect_script" | env BASH_ENV=/dev/null ENV=/dev/null COMBO_SOURCE_SCOPE=history /bin/sh)`;
 }
 
 // ---------- 能力项 ----------

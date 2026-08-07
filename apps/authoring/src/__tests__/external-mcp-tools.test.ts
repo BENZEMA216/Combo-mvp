@@ -1,4 +1,6 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { createServer, type Server } from 'node:http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeIdCursor, type ObjectStorePort } from '@cb/shared';
 import type { Queryable } from '../platform/infra/db.js';
@@ -34,6 +36,87 @@ import {
   renderCurrentCodexTaskConnectCommand,
 } from '../modules/external-mcp/tools.js';
 import type { McpRuntimeClient } from '../modules/external-mcp/runtime-client.js';
+
+const CODEX_THREAD_ID_FIXTURE = '019fdd00-ff57-7550-be78-654a2e4cd49e';
+
+function connectCommandEnv(overrides: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CODEX_THREAD_ID: CODEX_THREAD_ID_FIXTURE,
+    NO_PROXY: '127.0.0.1',
+    no_proxy: '127.0.0.1',
+    HTTP_PROXY: '',
+    HTTPS_PROXY: '',
+    ALL_PROXY: '',
+    http_proxy: '',
+    https_proxy: '',
+    all_proxy: '',
+  };
+  for (const [name, value] of Object.entries(overrides)) {
+    if (value === undefined) delete env[name];
+    else env[name] = value;
+  }
+  return env;
+}
+
+async function runConnectCommand(
+  command: string,
+  env = connectCommandEnv(),
+  xtrace = false,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const child = spawn('sh', xtrace ? ['-x', '-c', command] : ['-c', command], {
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on('data', (chunk: string) => {
+    stderr += chunk;
+  });
+  const timeout = setTimeout(() => child.kill('SIGKILL'), 5_000);
+  try {
+    const [status] = (await once(child, 'close')) as [number | null, NodeJS.Signals | null];
+    return { status, stdout, stderr };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function serveConnectScript(script: string): Promise<{
+  server: Server;
+  url: string;
+  requestCount: () => number;
+}> {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    response.end(script);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('server address unavailable');
+  return {
+    server,
+    url: `http://127.0.0.1:${address.port}/api/v1/connect/script`,
+    requestCount: () => requests,
+  };
+}
+
+async function closeServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
 
 const OWNER_ID = '00000000-0000-4000-8000-000000000001';
 const PROJECT_ID = '00000000-0000-4000-8000-000000000002';
@@ -145,14 +228,21 @@ describe('external MCP public tool results', () => {
     const command = renderCurrentCodexTaskConnectCommand(
       'https://combo.example/api/v1/connect/script?code=one-time-code',
     );
-    expect(command).toContain('umask 077');
+    expect(command.startsWith('(set +x;')).toBe(true);
     expect(command).toContain('CODEX_THREAD_ID');
-    expect(command).toContain('mktemp');
     expect(command).toContain(
-      "curl -fsSL 'https://combo.example/api/v1/connect/script?code=one-time-code' -o",
+      "combo_connect_script=$(curl -fsSL -- 'https://combo.example/api/v1/connect/script?code=one-time-code')",
     );
-    expect(command).toContain('env COMBO_SOURCE_SCOPE=codex_current_task sh');
-    expect(command).toContain("trap 'rm -f");
+    expect(command).toContain('case "$combo_connect_script" in *[![:space:]]*');
+    expect(command).toContain(
+      'printf \'%s\\n\' "$combo_connect_script" | env BASH_ENV=/dev/null ENV=/dev/null COMBO_SOURCE_SCOPE=codex_current_task /bin/sh',
+    );
+    expect(command).not.toContain('<<');
+    expect(command).not.toContain('mktemp');
+    expect(command).not.toMatch(/\brm\b/);
+    expect(command).not.toContain('trap');
+    expect(command).not.toContain('unlink');
+    expect(command).not.toContain('combo_connect_tmp');
   });
 
   it('returns a non-zero status when the connect script download fails', () => {
@@ -162,22 +252,89 @@ describe('external MCP public tool results', () => {
     const result = spawnSync('sh', ['-c', command], {
       encoding: 'utf8',
       timeout: 2_000,
-      env: {
-        ...process.env,
-        CODEX_THREAD_ID: '019fdd00-ff57-7550-be78-654a2e4cd49e',
-        NO_PROXY: '127.0.0.1',
-        no_proxy: '127.0.0.1',
-        HTTP_PROXY: '',
-        HTTPS_PROXY: '',
-        ALL_PROXY: '',
-        http_proxy: '',
-        https_proxy: '',
-        all_proxy: '',
-      },
+      env: connectCommandEnv(),
     });
 
     expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
+  });
+
+  it('does not download or execute when CODEX_THREAD_ID is unavailable', async () => {
+    const fixture = await serveConnectScript("printf '%s\\n' should-not-run");
+    try {
+      const command = renderCurrentCodexTaskConnectCommand(fixture.url);
+      const result = await runConnectCommand(
+        command,
+        connectCommandEnv({ CODEX_THREAD_ID: undefined }),
+      );
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).not.toContain('should-not-run');
+      expect(result.stderr).toContain('CODEX_THREAD_ID is required.');
+      expect(fixture.requestCount()).toBe(0);
+    } finally {
+      await closeServer(fixture.server);
+    }
+  });
+
+  it.each([
+    ['empty', ''],
+    ['whitespace-only', ' \n\t\n'],
+  ])('does not execute an %s successful download', async (_label, body) => {
+    const fixture = await serveConnectScript(body);
+    try {
+      const command = renderCurrentCodexTaskConnectCommand(fixture.url);
+      const result = await runConnectCommand(command);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain(
+        'Combo connect script response was empty or whitespace-only.',
+      );
+      expect(fixture.requestCount()).toBe(1);
+    } finally {
+      await closeServer(fixture.server);
+    }
+  });
+
+  it('executes a complete download through stdin and inherits the Codex task environment', async () => {
+    const fixture = await serveConnectScript(`#!/bin/sh
+# downloaded-script-private-marker
+test "\${COMBO_SOURCE_SCOPE:-}" = codex_current_task || exit 71
+test -n "\${CODEX_THREAD_ID:-}" || exit 72
+test "\${BASH_ENV:-}" = /dev/null || exit 73
+test "\${ENV:-}" = /dev/null || exit 74
+test "$#" -eq 0 || exit 75
+printf '%s\\n' combo-connect-executed
+`);
+    try {
+      const command = renderCurrentCodexTaskConnectCommand(fixture.url);
+      const result = await runConnectCommand(command);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('combo-connect-executed\n');
+      expect(result.stdout + result.stderr).not.toContain('downloaded-script-private-marker');
+      expect(result.stdout + result.stderr).not.toContain(CODEX_THREAD_ID_FIXTURE);
+      expect(fixture.requestCount()).toBe(1);
+    } finally {
+      await closeServer(fixture.server);
+    }
+  });
+
+  it('disables inherited xtrace before touching the task identity or connect URL', async () => {
+    const fixture = await serveConnectScript("printf '%s\\n' combo-xtrace-safe");
+    try {
+      const command = renderCurrentCodexTaskConnectCommand(fixture.url);
+      const result = await runConnectCommand(command, connectCommandEnv(), true);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toBe('combo-xtrace-safe\n');
+      expect(result.stderr).toContain('+ set +x');
+      expect(result.stderr).not.toContain(fixture.url);
+      expect(result.stderr).not.toContain(CODEX_THREAD_ID_FIXTURE);
+    } finally {
+      await closeServer(fixture.server);
+    }
   });
 
   it('returns a non-empty list_capabilities page as matching text and structured content', async () => {

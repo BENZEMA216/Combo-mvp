@@ -190,9 +190,17 @@ describe('TasksPage — 新建上传任务', () => {
     expect(await screen.findByText('PAIR-CODE-XYZ')).toBeInTheDocument();
     expect(screen.getByText(/只显示一次/)).toBeInTheDocument();
     const cmd = screen.getByText(/connect\/script\?code=PAIR-CODE-XYZ/);
+    expect(cmd.textContent?.startsWith('(set +x;')).toBe(true);
     expect(cmd.textContent).toContain('curl -fsSL');
-    expect(cmd.textContent).toContain('mktemp');
-    expect(cmd.textContent).toContain('env COMBO_SOURCE_SCOPE=history sh');
+    expect(cmd.textContent).toContain('case "$combo_connect_script" in *[![:space:]]*');
+    expect(cmd.textContent).toContain(
+      'env BASH_ENV=/dev/null ENV=/dev/null COMBO_SOURCE_SCOPE=history /bin/sh',
+    );
+    expect(cmd.textContent).not.toContain('<<');
+    expect(cmd.textContent).not.toContain('mktemp');
+    expect(cmd.textContent).not.toMatch(/\brm\b/);
+    expect(cmd.textContent).not.toContain('trap');
+    expect(cmd.textContent).not.toContain('unlink');
     expect(screen.getByText('等待本机助手连接，上传开始后会自动打开进度页。')).toBeInTheDocument();
 
     // 「我已复制，关闭」收起引导卡。

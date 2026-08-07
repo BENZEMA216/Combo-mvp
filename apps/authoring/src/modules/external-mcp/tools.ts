@@ -854,7 +854,7 @@ function shellQuote(value: string): string {
 }
 
 export function renderCurrentCodexTaskConnectCommand(connectUrl: string): string {
-  return `(umask 077; test -n "\${CODEX_THREAD_ID:-}" || { echo "CODEX_THREAD_ID is required." >&2; exit 1; }; combo_connect_tmp=$(mktemp "\${TMPDIR:-/tmp}/combo-connect.XXXXXX") || exit 1; trap 'rm -f "$combo_connect_tmp"' EXIT; curl -fsSL ${shellQuote(connectUrl)} -o "$combo_connect_tmp" && env COMBO_SOURCE_SCOPE=codex_current_task sh < "$combo_connect_tmp")`;
+  return `(set +x; test -n "\${CODEX_THREAD_ID:-}" || { printf '%s\\n' 'CODEX_THREAD_ID is required.' >&2; exit 1; }; combo_connect_script=$(curl -fsSL -- ${shellQuote(connectUrl)}) || exit $?; case "$combo_connect_script" in *[![:space:]]*) ;; *) printf '%s\\n' 'Combo connect script response was empty or whitespace-only.' >&2; exit 1 ;; esac; printf '%s\\n' "$combo_connect_script" | env BASH_ENV=/dev/null ENV=/dev/null COMBO_SOURCE_SCOPE=codex_current_task /bin/sh)`;
 }
 
 function decodeCursor(cursor: string | undefined): string | undefined {
