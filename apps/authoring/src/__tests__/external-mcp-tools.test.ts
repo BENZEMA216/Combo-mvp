@@ -713,17 +713,22 @@ printf '%s\\n' combo-connect-executed
       testId: TEST_ID,
       idempotencyKey: 'publish-request-123',
     });
-    expect(mocks.publishAgentRevision).toHaveBeenCalledWith(expect.anything(), {
-      projectId: PROJECT_ID,
-      ownerUserId: OWNER_ID,
-      body: {
-        expectedHeadRevisionId: REVISION_ID,
-        agentRevisionId: REVISION_ID,
-        qualifyingTestId: TEST_ID,
-        idempotencyKey: 'publish-request-123',
-        notes: '',
+    expect(mocks.publishAgentRevision).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      {
+        projectId: PROJECT_ID,
+        ownerUserId: OWNER_ID,
+        body: {
+          expectedHeadRevisionId: REVISION_ID,
+          agentRevisionId: REVISION_ID,
+          qualifyingTestId: TEST_ID,
+          idempotencyKey: 'publish-request-123',
+          notes: '',
+        },
       },
-    });
+    );
     expect(published.isError).toBeUndefined();
     expect(published.structuredContent).toMatchObject({
       releasedAgentUrl: `https://test.example/try/a/${PROJECT_ID}`,

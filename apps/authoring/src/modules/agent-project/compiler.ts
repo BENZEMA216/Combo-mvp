@@ -12,11 +12,13 @@ import {
   type ObjectStorePort,
 } from '@cb/shared';
 import type { Queryable } from '../../platform/infra/db.js';
+import { isFallbackCapabilityMeta } from '../capability/eligibility.js';
 
 export const AGENT_ARTIFACT_BUCKET = 'combo-artifacts' as const;
 
 export type AgentCompileFailure =
   | 'capability_not_found'
+  | 'capability_ineligible'
   | 'capability_invalid'
   | 'ui_not_found'
   | 'ui_capability_mismatch'
@@ -61,6 +63,7 @@ export interface CompiledAgentRevision {
 interface CapabilitySourceRow {
   id: string;
   storage_key: string;
+  meta: unknown;
 }
 
 interface UiSourceRow {
@@ -140,7 +143,7 @@ async function loadCapabilitySnapshots(
 ): Promise<AgentCapabilitySnapshot[]> {
   const ids = definition.behavior.capabilities.map((binding) => binding.capabilityId);
   const rows = await db.query<CapabilitySourceRow>(
-    `SELECT id, storage_key
+    `SELECT id, storage_key, meta
        FROM capabilities
       WHERE owner_user_id = $1 AND id = ANY($2::uuid[])`,
     [ownerUserId, ids],
@@ -151,6 +154,11 @@ async function loadCapabilitySnapshots(
     const row = byId.get(binding.capabilityId);
     if (!row) {
       throw new AgentCompileError('capability_not_found', {
+        capabilityId: binding.capabilityId,
+      });
+    }
+    if (isFallbackCapabilityMeta(row.meta)) {
+      throw new AgentCompileError('capability_ineligible', {
         capabilityId: binding.capabilityId,
       });
     }
@@ -171,6 +179,11 @@ async function loadCapabilitySnapshots(
     const parsed = CapabilityDefinitionSchema.safeParse(raw);
     if (!parsed.success) {
       throw new AgentCompileError('capability_invalid', {
+        capabilityId: binding.capabilityId,
+      });
+    }
+    if (isFallbackCapabilityMeta(parsed.data.meta)) {
+      throw new AgentCompileError('capability_ineligible', {
         capabilityId: binding.capabilityId,
       });
     }

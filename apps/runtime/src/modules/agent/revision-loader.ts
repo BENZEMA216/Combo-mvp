@@ -40,7 +40,40 @@ const REVISION_COLUMNS = `r.id, r.project_id, r.entry_capability_id,
   r.runtime_bundle_storage_key, r.runtime_bundle_sha256,
   r.ui_artifact_id, r.ui_storage_key, r.ui_sha256`;
 
+interface CapabilityEligibilityRow {
+  id: string;
+  meta?: unknown;
+}
+
+function hasFallbackOrigin(meta: unknown): boolean {
+  return typeof meta === 'object' && meta !== null && Reflect.get(meta, 'origin') === 'fallback';
+}
+
+async function hasEligibleCapabilities(
+  db: Queryable,
+  bundle: AgentRuntimeBundle,
+): Promise<boolean> {
+  const capabilityIds = [
+    ...new Set([
+      bundle.entryCapabilityId,
+      ...bundle.capabilityHashes.map((capability) => capability.capabilityId),
+    ]),
+  ];
+  const result = await db.query<CapabilityEligibilityRow>(
+    `SELECT id, meta
+       FROM capabilities
+      WHERE id = ANY($1::uuid[])`,
+    [capabilityIds],
+  );
+  const rowsById = new Map(result.rows.map((row) => [row.id, row]));
+  return capabilityIds.every((id) => {
+    const row = rowsById.get(id);
+    return row !== undefined && !hasFallbackOrigin(row.meta);
+  });
+}
+
 async function loadRow(
+  db: Queryable,
   objectStore: RuntimeObjectStore,
   row: AgentRevisionDbRow | undefined,
 ): Promise<LoadAgentRevisionResult> {
@@ -72,6 +105,7 @@ async function loadRow(
   ) {
     return { kind: 'invalid_bundle' };
   }
+  if (!(await hasEligibleCapabilities(db, parsed.data))) return { kind: 'not_found' };
   return {
     kind: 'ok',
     revision: {
@@ -103,7 +137,7 @@ export async function loadOwnedAgentRevision(
       WHERE r.id = $1 AND p.owner_user_id = $2 AND p.status = 'active'`,
     [input.revisionId, input.ownerUserId],
   );
-  return loadRow(objectStore, result.rows[0]);
+  return loadRow(db, objectStore, result.rows[0]);
 }
 
 /** 新建正式 Session 时只解析一次 Project 当前 Release。 */
@@ -121,7 +155,7 @@ export async function loadCurrentAgentRelease(
       WHERE p.id = $1 AND p.status = 'active'`,
     [projectId],
   );
-  return loadRow(objectStore, result.rows[0]);
+  return loadRow(db, objectStore, result.rows[0]);
 }
 
 /** 已创建 Session 永远按自身固定的 Revision/Release 加载，不追随 Project 当前指针。 */
@@ -148,5 +182,5 @@ export async function loadPinnedSessionAgentRevision(
           WHERE r.id = $1 AND p.owner_user_id = $2`,
         [input.revisionId, input.sessionOwnerUserId],
       );
-  return loadRow(objectStore, result.rows[0]);
+  return loadRow(db, objectStore, result.rows[0]);
 }

@@ -35,7 +35,12 @@ interface CapabilityDbRow {
   kind: string;
   storage_key: string;
   published: boolean;
+  meta?: unknown;
   created_at: string | Date;
+}
+
+function hasFallbackOrigin(meta: unknown): boolean {
+  return typeof meta === 'object' && meta !== null && Reflect.get(meta, 'origin') === 'fallback';
 }
 
 /**
@@ -50,7 +55,7 @@ export async function loadCapability(
   access: CapabilityAccess = 'consume',
 ): Promise<LoadCapabilityResult> {
   const res = await db.query<CapabilityDbRow>(
-    `SELECT id, owner_user_id, name, summary, kind, storage_key, published, created_at
+    `SELECT id, owner_user_id, name, summary, kind, storage_key, published, meta, created_at
        FROM capabilities
       WHERE id = $1
       LIMIT 1`,
@@ -58,6 +63,7 @@ export async function loadCapability(
   );
   const row = res.rows[0];
   if (!row) return { kind: 'not_found' };
+  if (hasFallbackOrigin(row.meta)) return { kind: 'not_found' };
   if (row.owner_user_id !== userId && (access === 'owner' || !row.published)) {
     return { kind: 'not_found' };
   }
@@ -68,6 +74,9 @@ export async function loadCapability(
   } catch {
     return { kind: 'invalid_definition' };
   }
+  if (typeof raw === 'object' && raw !== null && hasFallbackOrigin(Reflect.get(raw, 'meta'))) {
+    return { kind: 'not_found' };
+  }
 
   // version 前置判定：不是当前认识的 1 → 格式过新（与「结构坏了」区分，报不同人话）。
   const version = (raw as { version?: unknown } | null)?.version;
@@ -75,6 +84,7 @@ export async function loadCapability(
 
   const parsed = CapabilityDefinitionSchema.safeParse(raw);
   if (!parsed.success) return { kind: 'invalid_definition' };
+  if (hasFallbackOrigin(parsed.data.meta)) return { kind: 'not_found' };
 
   return {
     kind: 'ok',
@@ -121,9 +131,10 @@ export async function listTrialCapabilities(
   userId: string,
 ): Promise<TrialCapabilityItem[]> {
   const res = await db.query<CapabilityDbRow>(
-    `SELECT id, owner_user_id, name, summary, kind, storage_key, published, created_at
+    `SELECT id, owner_user_id, name, summary, kind, storage_key, published, meta, created_at
        FROM capabilities
-      WHERE owner_user_id = $1 OR published = true
+      WHERE (owner_user_id = $1 OR published = true)
+        AND COALESCE(meta ->> 'origin', '') <> 'fallback'
       ORDER BY created_at DESC
       LIMIT 100`,
     [userId],

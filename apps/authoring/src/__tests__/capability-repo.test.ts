@@ -2,7 +2,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   insertCapability,
+  listCapabilityViews,
   publishCapability,
+  readCapabilityDefinitionRef,
+  readCapabilityView,
   unpublishCapability,
 } from '../modules/capability/repo.js';
 import { FakeDb, nextId } from './fakes.js';
@@ -10,7 +13,7 @@ import { FakeDb, nextId } from './fakes.js';
 const OWNER = 'user-me';
 const OTHER = 'user-other';
 
-async function seedCapability(db: FakeDb): Promise<string> {
+async function seedCapability(db: FakeDb, meta: Record<string, unknown> = {}): Promise<string> {
   const id = nextId('cap');
   await insertCapability(db, {
     id,
@@ -20,12 +23,35 @@ async function seedCapability(db: FakeDb): Promise<string> {
     summary: '把散乱记录整理成结构化周报',
     kind: '写作',
     storageKey: `capabilities/${id}/definition.json`,
-    meta: {},
+    meta,
   });
   return id;
 }
 
 describe('publish / unpublish', () => {
+  it('hides and refuses to publish deterministic fallback capabilities even by direct id', async () => {
+    const db = new FakeDb();
+    const fallbackId = await seedCapability(db, { origin: 'fallback' });
+    const regularId = await seedCapability(db, { origin: 'llm', degraded: true });
+
+    await expect(readCapabilityView(db, fallbackId, OWNER)).resolves.toBeNull();
+    await expect(readCapabilityDefinitionRef(db, fallbackId, OWNER)).resolves.toBeNull();
+    await expect(
+      publishCapability(db, {
+        capabilityId: fallbackId,
+        ownerUserId: OWNER,
+        shareToken: 'must-not-publish',
+      }),
+    ).resolves.toBeNull();
+    const page = await listCapabilityViews(db, { ownerUserId: OWNER, limit: 10 });
+    expect(page.items.map((item) => item.id)).toEqual([regularId]);
+
+    db.capabilities.get(fallbackId)!.published = true;
+    await expect(
+      unpublishCapability(db, { capabilityId: fallbackId, ownerUserId: OWNER }),
+    ).resolves.toMatchObject({ published: false });
+  });
+
   it('发布：标记置真、记时间、生成分享令牌；返回视图', async () => {
     const db = new FakeDb();
     const id = await seedCapability(db);

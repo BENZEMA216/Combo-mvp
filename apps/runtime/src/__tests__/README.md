@@ -15,6 +15,7 @@
 - `billing.test.ts` 验证免费三次、owner 免计费、钱包结算、`usageId` 幂等、余额不足、失败释放和清扫补偿。
 - `billing.pg.test.ts` 仅在 `BILLING_PG_TEST=1` 且同时提供专用 `BILLING_TEST_DATABASE_URL` 和 `BILLING_RUNTIME_TEST_DATABASE_URL` 时运行。管理员连接只准备与核对随机测试数据，真实 service SQL 必须通过最小 `combo_runtime` 身份执行；用例覆盖免费额度的成功结算与失败释放，也验证同一 Session 或跨 Session 并发提交时，同一用户的 `usageId` 只产生一条用量、一个 Turn 和一笔扣费。测试不清理不可变资金流水，数据库应由外层 fixture 整体重建。
 - `build-agent.test.ts`、`run-turn.test.ts`、`stream-events.test.ts`、`turn-control.test.ts`、`turn-repo.test.ts` 和 `terminal-fence.integration.test.ts` 验证 Pi Agent、Turn 生命周期、Redis 补发与终态栅栏。
+- `loader.test.ts` 与 `revision-loader.test.ts` 验证普通 Capability 和 Agent Revision 在 Runtime 入口按完整定义、全部绑定 ID 与来源元信息执行资格校验。
 - `sandbox-backend.test.ts`、`sandbox-capability.test.ts`、`sandbox-client.test.ts`、`sandbox-config.test.ts` 和 `sandbox-tools.test.ts` 验证 Kubernetes 后端、内部能力令牌、远程协议、配置门禁和四个模型工具。
 - `fakes.ts` 提供与当前 SQL 守卫一致的内存数据库、Redis 事件日志、对象存储和 Pi Agent 假件。
 

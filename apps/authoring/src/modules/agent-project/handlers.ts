@@ -325,11 +325,16 @@ export function createAgentReleaseHandler(): RouteHandlerMethod {
     const parsed = CreateAgentReleaseBodySchema.safeParse(req.body ?? {});
     if (!parsed.success) return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
     try {
-      const outcome = await publishAgentRevision(asTxPool(req.server.infra.db), {
-        projectId,
-        ownerUserId: userId,
-        body: parsed.data,
-      });
+      const outcome = await publishAgentRevision(
+        asTxPool(req.server.infra.db),
+        req.server.infra.db,
+        req.server.infra.objectStore,
+        {
+          projectId,
+          ownerUserId: userId,
+          body: parsed.data,
+        },
+      );
       if (outcome.kind === 'not_found') return sendError(req, reply, ErrorCode.NOT_FOUND);
       if (outcome.kind === 'idempotency_conflict') {
         return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
@@ -348,6 +353,11 @@ export function createAgentReleaseHandler(): RouteHandlerMethod {
       if (outcome.kind === 'review_not_publishable') {
         return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
           userMessage: '发布要求该 Test 已有通过或已接受例外的不可变质量复核。',
+        });
+      }
+      if (outcome.kind === 'capability_ineligible') {
+        return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
+          userMessage: '占位能力不可用于 Agent。',
         });
       }
       const project = await readAgentProjectDetail(req.server.infra.db, {

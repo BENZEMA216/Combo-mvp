@@ -1,14 +1,10 @@
 // LLM 提取：把切好的去敏段落分批喂 LLM 网关，归纳出结构化能力列表（name/summary/kind/instructions）。
-//   - 上游降级/坏输出/无 key：落到确定性兜底（按段落标题生成占位能力），保证链路可跑、不裸抛。
+//   - 上游降级/坏输出/无 key：标记对应批次 degraded，不生成任何占位能力。
 //   - 每次 LLM 调用记 audit_llm_calls（经注入的 LlmAuditSink，归属 task_id）。
 import { jsonrepair } from 'jsonrepair';
 import type { CapabilityInputField, LlmGatewayPort } from '@cb/shared';
 import type { LlmAuditSink } from '../../platform/infra/llm/types.js';
-import {
-  firstNonEmptyLine,
-  isBlockedCapabilityLabel,
-  stripRolePrefix,
-} from '../../platform/text/session-noise.js';
+import { isBlockedCapabilityLabel } from '../../platform/text/session-noise.js';
 
 /** 提取输入段（去敏后正文）。 */
 export interface ExtractSegment {
@@ -36,7 +32,7 @@ export interface ExtractDeps {
   audit: LlmAuditSink;
   /** 审计记账用的模型名（网关内部已定，这里只为落库可读）。 */
   model?: string;
-  /** 诊断日志（批次降级记原因与文本头，info 记每批耗时；缺省静默）。 */
+  /** 诊断日志（批次降级只记长度与安全错误分类，info 记每批耗时；缺省静默）。 */
   log?: { warn: (o: object, m: string) => void; info?: (o: object, m: string) => void };
 }
 
@@ -51,7 +47,7 @@ export interface ExtractInput {
 
 export interface ExtractOutput {
   items: CapabilityDraft[];
-  /** 任一批走了兜底（上游降级/坏输出）。 */
+  /** 任一批发生上游降级或输出不可解析；合法空数组不算降级。 */
   degraded: boolean;
 }
 
@@ -59,12 +55,8 @@ export interface ExtractOutput {
 const BATCH_SIZE = 8;
 /** 单段正文喂给 LLM 的截断长度。 */
 const SEGMENT_SAMPLE_CHARS = 1500;
-/**
- * 本模块消费段正文的最长字符数（归纳采样 1500、兜底节选 2000，取两者最大值）。
- * 流水线据此在去敏后立刻把段正文截断——超出部分任何下游都不会用到，提前丢弃是
- * 逐片处理内存不涨的前提（真实规模上千段时全文驻留曾把 worker 撑爆，见 issue #25）。
- */
-export const SEGMENT_CONTENT_MAX_CHARS = 2000;
+/** 本模块消费段正文的最长字符数；流水线据此在去敏后立刻丢弃不会进入 prompt 的尾部。 */
+export const SEGMENT_CONTENT_MAX_CHARS = SEGMENT_SAMPLE_CHARS;
 /** 全任务能力项上限（防 LLM 发散刷屏）。 */
 const MAX_CAPABILITIES = 12;
 /**
@@ -75,8 +67,9 @@ const MAX_CAPABILITIES = 12;
 const EXTRACT_CONCURRENCY = 8;
 
 /**
- * 提取主入口：分批归纳（批间并发）→ 跨批按名去重合并 → 空结果落兜底。
+ * 提取主入口：分批归纳（批间并发）→ 跨批按名去重合并。
  * 不抛上游错误：网关异常按该批降级处理（部分批成功仍产出）。
+ * 合法空数组保留为正常空结果；全批降级返回空 items + degraded=true，由流水线收口失败。
  * 并发只改时间不改结果：产出按批下标序合并，同输入必得同输出。
  */
 export async function extractCapabilities(
@@ -138,10 +131,6 @@ export async function extractCapabilities(
     }
   }
 
-  if (merged.length === 0) {
-    // 全部批降级/空产出：确定性兜底，保证任务有可试用的产物、链路可跑。
-    return { items: buildFallbackCapabilities(input.segments), degraded: true };
-  }
   return { items: merged, degraded };
 }
 
@@ -174,14 +163,11 @@ async function extractBatch(
 
   const diag: ParseDiag = {};
   const parsed = parseCapabilityJson(result.text, diag);
-  if (!parsed || parsed.length === 0) {
+  if (parsed === null) {
     deps.log?.warn(
       {
         textLen: result.text.length,
-        textHead: result.text.slice(0, 200),
-        textTail: result.text.slice(-200),
-        // 首个配平候选的严格 JSON.parse 报错（含出错位置）。头尾采样看不出中段病灶，
-        // 没有它会把非法 JSON 误诊成围栏问题（issue #57 的验收就是这么误判的）。
+        // 只含固定分类和数字位置，不保留 JSON.parse 可能附带的模型正文片段。
         parseError: diag.parseError ?? null,
       },
       'extract batch degraded: model text not parseable as capability array',
@@ -217,7 +203,7 @@ export function buildPrompt(segments: ExtractSegment[]): string {
   );
 }
 
-/** 解析诊断出参：首个配平候选的严格 JSON.parse 报错，供降级日志定位病灶。 */
+/** 解析诊断出参：首个严格 JSON.parse 的安全错误分类与数字位置，不含模型正文。 */
 export interface ParseDiag {
   parseError?: string;
 }
@@ -249,6 +235,8 @@ export function parseCapabilityJson(text: string, diag?: ParseDiag): CapabilityD
       meta: { origin: 'llm' },
     });
   }
+  // 明确的 [] 是“没有可归纳能力”的合法结果；非空数组若所有条目都坏，则属于模型坏输出。
+  if (arr.length > 0 && out.length === 0) return null;
   return out;
 }
 
@@ -297,10 +285,10 @@ export function coerceStarterPrompts(raw: unknown): string[] {
  * 优先返回「能力形」候选（至少一个条目带非空字符串 name）：外层数组坏掉时，
  * 后续 '[' 起点会撞上条目里的 inputs 嵌套数组，无条件收下会拿空数组掩盖真实病灶
  * （issue #57）。非能力形的首个合法数组（如空数组）记为兜底返回，保住
- * 「模型明说没能力可归纳」的空数组语义。
+ * 「模型明说没能力可归纳」的空数组语义。其它非空、非能力形数组不是合法结果，不作兜底。
  */
 function extractFirstJsonArray(text: string, diag?: ParseDiag): unknown | null {
-  let fallback: unknown | null = null;
+  let emptyArrayFallback: unknown[] | null = null;
   for (let start = text.indexOf('['); start !== -1; start = text.indexOf('[', start + 1)) {
     let depth = 0;
     let inString = false;
@@ -326,7 +314,9 @@ function extractFirstJsonArray(text: string, diag?: ParseDiag): unknown | null {
         if (depth === 0) {
           const parsed = parseCandidate(text.slice(start, i + 1), diag);
           if (isCapabilityShapedArray(parsed)) return parsed;
-          if (fallback === null && Array.isArray(parsed)) fallback = parsed;
+          if (emptyArrayFallback === null && Array.isArray(parsed) && parsed.length === 0) {
+            emptyArrayFallback = parsed;
+          }
           break; // 本起点不是能力形数组：换下一个 '[' 起点
         }
       }
@@ -340,7 +330,7 @@ function extractFirstJsonArray(text: string, diag?: ParseDiag): unknown | null {
     const parsed = parseCandidate(text.slice(start), diag);
     if (isCapabilityShapedArray(parsed)) return parsed;
   }
-  return fallback;
+  return emptyArrayFallback;
 }
 
 /** 单个候选串：严格 JSON.parse 失败 → jsonrepair 修复重试；都失败返回 null。 */
@@ -349,7 +339,7 @@ function parseCandidate(candidate: string, diag?: ParseDiag): unknown | null {
     return JSON.parse(candidate);
   } catch (e) {
     if (diag && diag.parseError === undefined) {
-      diag.parseError = e instanceof Error ? e.message : String(e);
+      diag.parseError = safeJsonParseError(e);
     }
   }
   try {
@@ -357,6 +347,18 @@ function parseCandidate(candidate: string, diag?: ParseDiag): unknown | null {
   } catch {
     return null;
   }
+}
+
+/** Node 的 JSON.parse 错误可能回显输入片段；日志只保留可枚举分类和纯数字坐标。 */
+function safeJsonParseError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const position = /\bposition\s+(\d+)\b/i.exec(message)?.[1];
+  const lineColumn = /\bline\s+(\d+)\s+column\s+(\d+)\b/i.exec(message);
+  const coords = [
+    ...(position ? [`position=${position}`] : []),
+    ...(lineColumn ? [`line=${lineColumn[1]}`, `column=${lineColumn[2]}`] : []),
+  ];
+  return coords.length > 0 ? `JSON_PARSE_FAILED ${coords.join(' ')}` : 'JSON_PARSE_FAILED';
 }
 
 /** 能力形数组：至少一个条目是带非空字符串 name 的对象。 */
@@ -371,36 +373,6 @@ function isCapabilityShapedArray(v: unknown): v is unknown[] {
         (item as { name: string }).name.trim().length > 0,
     )
   );
-}
-
-/**
- * 确定性兜底：无 LLM key / 全批降级时，按段落主题生成占位能力（每段一个，取消息最多的前几段），
- * instructions 用模板 + 段落节选拼出，保证链路可跑、可试用。
- */
-export function buildFallbackCapabilities(segments: ExtractSegment[]): CapabilityDraft[] {
-  const picked = [...segments]
-    .filter((s) => {
-      const title = stripRolePrefix(firstNonEmptyLine(s.title));
-      return title.length > 0 && !isBlockedCapabilityLabel(title);
-    })
-    .sort((a, b) => b.messageCount - a.messageCount)
-    .slice(0, 3);
-
-  return picked.map((s) => {
-    const title = stripRolePrefix(firstNonEmptyLine(s.title)).slice(0, 24);
-    return {
-      name: title,
-      summary: `从会话「${title}」提炼的能力（模型服务不可用时的占位归纳）`,
-      kind: '工作流',
-      instructions:
-        `你是执行「${title}」这类工作的助手。参考下面这段真实工作记录的做法，` +
-        `按同样的思路完成用户交给你的同类任务，先澄清目标，再分步执行，最后给出结果核对清单。\n\n` +
-        `参考记录（已去敏，节选）：\n${s.content.slice(0, SEGMENT_CONTENT_MAX_CHARS)}`,
-      inputs: [],
-      starterPrompts: [`帮我完成一个「${title}」类型的任务。`],
-      meta: { origin: 'fallback' },
-    };
-  });
 }
 
 async function recordAudit(

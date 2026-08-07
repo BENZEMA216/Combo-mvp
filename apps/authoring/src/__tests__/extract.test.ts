@@ -139,5 +139,55 @@ describe('extractCapabilities 批间并发', () => {
 
     expect(out.items.map((c) => c.name)).toEqual(['日志分析']);
     expect(out.degraded).toBe(true);
+    expect(out.items.every((c) => c.meta.origin === 'llm')).toBe(true);
+  });
+});
+
+describe('extractCapabilities · 空结果与降级边界', () => {
+  it('模型明确返回合法 []：正常空结果，不标 degraded', async () => {
+    const out = await extractCapabilities(
+      { llm: gateway(async () => llmText('[]')), audit: noopAudit },
+      makeInput(segs(9, 'empty'), []),
+    );
+
+    expect(out).toEqual({ items: [], degraded: false });
+  });
+
+  it('所有批次由网关标记 degraded：返回空结果且不生成 fallback', async () => {
+    const out = await extractCapabilities(
+      {
+        llm: gateway(async () => ({
+          degraded: true,
+          usage: { promptTokens: 0, completionTokens: 0, costMicros: 0 },
+        })),
+        audit: noopAudit,
+      },
+      makeInput(segs(9, 'degraded'), []),
+    );
+
+    expect(out).toEqual({ items: [], degraded: true });
+    expect(JSON.stringify(out)).not.toContain('fallback');
+  });
+
+  it('所有批次返回不可解析文本：返回空结果并标 degraded', async () => {
+    const modelTextMarker = 'PRIVATE_MODEL_TEXT_MUST_NOT_REACH_LOGS';
+    const warnings: object[] = [];
+    const out = await extractCapabilities(
+      {
+        llm: gateway(async () => llmText(`[${modelTextMarker}`)),
+        audit: noopAudit,
+        log: { warn: (fields) => warnings.push(fields) },
+      },
+      makeInput(segs(9, 'invalid'), []),
+    );
+
+    expect(out).toEqual({ items: [], degraded: true });
+    expect(warnings).toHaveLength(2);
+    expect(JSON.stringify(warnings)).not.toContain(modelTextMarker);
+    for (const warning of warnings) {
+      expect(warning).not.toHaveProperty('textHead');
+      expect(warning).not.toHaveProperty('textTail');
+      expect(warning).toMatchObject({ parseError: expect.stringMatching(/^JSON_PARSE_FAILED/) });
+    }
   });
 });

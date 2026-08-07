@@ -25,7 +25,8 @@ export async function readCapabilityDefinitionRef(
   const res = await db.query<CapabilityRow>(
     `SELECT ${VIEW_COLUMNS}, storage_key
        FROM capabilities
-      WHERE id = $1 AND owner_user_id = $2`,
+      WHERE id = $1 AND owner_user_id = $2
+        AND COALESCE(meta->>'origin', '') <> 'fallback'`,
     [capabilityId, ownerUserId],
   );
   const row = res.rows[0];
@@ -87,7 +88,10 @@ export async function readCapabilityView(
   ownerUserId: string,
 ): Promise<CapabilityView | null> {
   const res = await db.query<CapabilityRow>(
-    `SELECT ${VIEW_COLUMNS} FROM capabilities WHERE id = $1 AND owner_user_id = $2`,
+    `SELECT ${VIEW_COLUMNS}
+       FROM capabilities
+      WHERE id = $1 AND owner_user_id = $2
+        AND COALESCE(meta->>'origin', '') <> 'fallback'`,
     [capabilityId, ownerUserId],
   );
   const row = res.rows[0];
@@ -103,6 +107,7 @@ export async function listCapabilityViews(
     `SELECT ${VIEW_COLUMNS}
        FROM capabilities
       WHERE owner_user_id = $1
+        AND COALESCE(meta->>'origin', '') <> 'fallback'
         AND ($2::uuid IS NULL OR task_id = $2)
         AND ($3::uuid IS NULL OR id < $3)
       ORDER BY id DESC
@@ -128,6 +133,7 @@ export async function publishCapability(
             share_token = COALESCE(share_token, $3),
             updated_at = now()
       WHERE id = $1 AND owner_user_id = $2
+        AND COALESCE(meta->>'origin', '') <> 'fallback'
       RETURNING ${VIEW_COLUMNS}`,
     [input.capabilityId, input.ownerUserId, input.shareToken],
   );

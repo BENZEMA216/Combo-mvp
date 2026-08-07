@@ -37,6 +37,7 @@ import {
   type CreateReleaseOutcome,
   type RecordTestReviewOutcome,
 } from './repo.js';
+import { isFallbackCapabilityMeta } from '../capability/eligibility.js';
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -84,6 +85,34 @@ export type CommitAgentRevisionServiceOutcome =
   | CommitRevisionOutcome
   | { kind: 'compile_failed'; error: AgentCompileError };
 
+async function readEligibleAgentRevision(
+  db: Queryable,
+  objectStore: ObjectStorePort,
+  input: { projectId: string; revisionId: string; ownerUserId: string },
+): Promise<AgentRevisionDetail | null | false> {
+  const detail = await readAgentRevisionDetail(db, objectStore, input);
+  if (!detail) return null;
+  if (
+    detail.capabilitySnapshots.some((snapshot) =>
+      isFallbackCapabilityMeta(snapshot.definition.meta),
+    )
+  ) {
+    return false;
+  }
+
+  const capabilityIds = [
+    ...new Set(detail.capabilitySnapshots.map((snapshot) => snapshot.capabilityId)),
+  ];
+  const result = await db.query<{ id: string; meta: unknown }>(
+    `SELECT id, meta
+       FROM capabilities
+      WHERE owner_user_id = $1 AND id = ANY($2::uuid[])`,
+    [input.ownerUserId, capabilityIds],
+  );
+  if (result.rows.length !== capabilityIds.length) return false;
+  return result.rows.some((row) => isFallbackCapabilityMeta(row.meta)) ? false : detail;
+}
+
 export async function saveAgentRevision(
   pool: TxPool,
   db: Queryable,
@@ -107,9 +136,19 @@ export async function saveAgentRevision(
     ownerUserId: input.ownerUserId,
   });
   if (replay) {
-    return replay.mutationSha256 === mutationSha256
-      ? { kind: 'replayed', revision: replay }
-      : { kind: 'idempotency_conflict' };
+    if (replay.mutationSha256 !== mutationSha256) return { kind: 'idempotency_conflict' };
+    const eligible = await readEligibleAgentRevision(db, objectStore, {
+      projectId: input.projectId,
+      revisionId: replay.id,
+      ownerUserId: input.ownerUserId,
+    });
+    if (!eligible) {
+      return {
+        kind: 'compile_failed',
+        error: new AgentCompileError('capability_ineligible'),
+      };
+    }
+    return { kind: 'replayed', revision: replay };
   }
   const project = await readAgentProject(db, input.projectId, input.ownerUserId);
   if (!project) return { kind: 'not_found' };
@@ -230,14 +269,25 @@ export async function readAgentProjectDetail(
   };
 }
 
+export type PublishAgentRevisionOutcome = CreateReleaseOutcome | { kind: 'capability_ineligible' };
+
 export async function publishAgentRevision(
   pool: TxPool,
+  db: Queryable,
+  objectStore: ObjectStorePort,
   input: {
     projectId: string;
     ownerUserId: string;
     body: CreateAgentReleaseBody;
   },
-): Promise<CreateReleaseOutcome> {
+): Promise<PublishAgentRevisionOutcome> {
+  const eligible = await readEligibleAgentRevision(db, objectStore, {
+    projectId: input.projectId,
+    revisionId: input.body.agentRevisionId,
+    ownerUserId: input.ownerUserId,
+  });
+  if (eligible === null) return { kind: 'not_found' };
+  if (eligible === false) return { kind: 'capability_ineligible' };
   const idempotencySha256 = sha256(
     canonicalJson({
       expectedHeadRevisionId: input.body.expectedHeadRevisionId,

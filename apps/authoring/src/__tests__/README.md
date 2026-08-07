@@ -24,8 +24,9 @@
 - `task-service.test.ts` 验证任务状态机、建任务幂等、重试和过期对账。
 - `pairing.test.ts` 验证配对码、快照准备、分片登记和对象清理。
 - `connect-script.test.ts` 验证本机助手脚本的续传与响应丢失处理。
+- `session-parse.test.ts` 验证 Codex 宿主注入过滤、委派消息只提取真实输入，以及畸形委派包装安全丢弃。
 - `pipeline.test.ts` 验证提取流水线的租约、进度、终态、清理和失败收口。
-- `extract.test.ts` 验证大模型输出修复、候选过滤和确定性降级。
+- `extract.test.ts` 验证大模型输出修复、候选过滤，以及合法空结果与上游降级的区分。
 - `capability-repo.test.ts` 验证能力项读取、发布和归属过滤。
 - `leshouying-signer.test.ts` 使用固定假参数验证 null、空串、ASCII 排序、UTF-8 和回调重签的签名 golden vectors。
 - `leshouying-gateway.test.ts` 通过注入的假 fetch 验证二维码支付（C扫B `/v3/prepay`）、支付查单、响应验签、字段归属、超时不重试、无长度响应的流式上限、非法回调参数名和支付动作安全边界。

@@ -242,6 +242,39 @@ function parseClaudeLines(lines: string[]): SessionAccum {
 //   缺失时回退 event_msg(user_message/agent_message)。同一 turn 双写按 (role, 文本 hash) 去重。
 // ---------------------------------------------------------------------------
 
+type CodexDelegationResult =
+  | { kind: 'not_delegation' }
+  | { kind: 'valid'; input: string }
+  | { kind: 'malformed' };
+
+const CODEX_DELEGATION_OPEN = '<codex_delegation>';
+const CODEX_DELEGATION_CLOSE = '</codex_delegation>';
+
+/** 与 Codex Desktop 的 delegation 文本转义保持一致；只解码宿主会编码的三种实体。 */
+function decodeCodexDelegationText(text: string): string {
+  return text.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&');
+}
+
+function readCodexDelegationElement(text: string, tag: string): string | null {
+  const match = new RegExp(`<${tag}>\\s*([\\s\\S]*?)\\s*</${tag}>`, 'i').exec(text);
+  return match?.[1]?.trim() ?? null;
+}
+
+/**
+ * Codex Desktop 把委派任务包装成 codex_delegation。只有完整包裹且同时含来源与 input 才解包；
+ * 一旦消息以该宿主标签开头却不满足契约，就按 malformed 跳过，绝不把内部元数据当用户正文。
+ */
+function unwrapCodexDelegation(text: string): CodexDelegationResult {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith(CODEX_DELEGATION_OPEN)) return { kind: 'not_delegation' };
+  if (!trimmed.endsWith(CODEX_DELEGATION_CLOSE)) return { kind: 'malformed' };
+
+  const sourceThreadId = readCodexDelegationElement(trimmed, 'source_thread_id');
+  const input = readCodexDelegationElement(trimmed, 'input');
+  if (sourceThreadId === null || input === null) return { kind: 'malformed' };
+  return { kind: 'valid', input: decodeCodexDelegationText(input) };
+}
+
 function parseCodexLines(lines: string[]): SessionAccum {
   const acc = newAccum();
   const seen = new Set<string>();
@@ -283,7 +316,12 @@ function parseCodexLines(lines: string[]): SessionAccum {
 
     // Codex 会把环境、AGENTS、标题生成等运行时上下文也记录成 role=user。
     // 这些不是用户真正要复用的工作流，必须在解析阶段剥掉，避免污染标题、正文和后续提取。
-    if (normRole === 'user' && isPlatformPromptText(text)) continue;
+    if (normRole === 'user') {
+      const delegation = unwrapCodexDelegation(text);
+      if (delegation.kind === 'malformed') continue;
+      if (delegation.kind === 'valid') text = delegation.input;
+      if (!text.trim() || isPlatformPromptText(text)) continue;
+    }
     if (normRole !== 'user' && normRole !== 'assistant') continue;
     if (!sawRealUserTask && normRole !== 'user') continue;
 

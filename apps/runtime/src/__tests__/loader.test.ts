@@ -100,6 +100,49 @@ describe('loadCapability 权限闸', () => {
     const result = await loadCapability(db, store, cap.id, ME);
     expect(result.kind).toBe('invalid_definition');
   });
+
+  it('数据库标记为 fallback 的能力 → not_found', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME, meta: { origin: 'fallback' } });
+    seedDefinition(store, cap.storage_key);
+
+    const result = await loadCapability(db, store, cap.id, ME);
+    expect(result.kind).toBe('not_found');
+  });
+
+  it('定义标记为 fallback 的能力 → not_found', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    seedDefinition(store, cap.storage_key, { meta: { origin: 'fallback' } });
+
+    const result = await loadCapability(db, store, cap.id, ME);
+    expect(result.kind).toBe('not_found');
+  });
+
+  it('fallback 定义即使版本不受支持也保持 not_found', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    seedDefinition(store, cap.storage_key, { version: 2, meta: { origin: 'fallback' } });
+
+    const result = await loadCapability(db, store, cap.id, ME);
+    expect(result.kind).toBe('not_found');
+  });
+
+  it.each([
+    ['origin=llm', { origin: 'llm' }, { origin: 'llm' }],
+    ['origin/meta 缺失', {}, undefined],
+  ])('正常来源不回归：%s', async (_case, dbMeta, definitionMeta) => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME, meta: dbMeta });
+    seedDefinition(store, cap.storage_key, { meta: definitionMeta });
+
+    const result = await loadCapability(db, store, cap.id, ME);
+    expect(result.kind).toBe('ok');
+  });
 });
 
 describe('listTrialCapabilities（试用入口）', () => {
@@ -108,6 +151,11 @@ describe('listTrialCapabilities（试用入口）', () => {
     const mineUnpublished = db.seedCapability({ owner_user_id: ME, published: false });
     const minePublished = db.seedCapability({ owner_user_id: ME, published: true });
     const otherPublished = db.seedCapability({ owner_user_id: OTHER, published: true });
+    const fallback = db.seedCapability({
+      owner_user_id: ME,
+      published: true,
+      meta: { origin: 'fallback' },
+    });
     db.seedCapability({ owner_user_id: OTHER, published: false }); // 不可见
 
     const items = await listTrialCapabilities(db, ME);
@@ -118,5 +166,6 @@ describe('listTrialCapabilities（试用入口）', () => {
     );
     expect(items.find((i) => i.id === otherPublished.id)?.owned).toBe(false);
     expect(items.find((i) => i.id === mineUnpublished.id)?.owned).toBe(true);
+    expect(ids).not.toContain(fallback.id);
   });
 });

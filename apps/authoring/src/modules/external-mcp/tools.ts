@@ -1342,7 +1342,7 @@ export async function executeExternalMcpTool(
         idempotencyKey: parsed.data.idempotencyKey,
         notes: parsed.data.notes ?? '',
       });
-      const outcome = await publishAgentRevision(context.txPool, {
+      const outcome = await publishAgentRevision(context.txPool, context.db, context.objectStore, {
         projectId: parsed.data.projectId,
         ownerUserId: context.principal.userId,
         body,
@@ -1363,6 +1363,9 @@ export async function executeExternalMcpTool(
       }
       if (outcome.kind === 'review_not_publishable') {
         return toolFailure(context.traceId, '发布要求该 Test 已有可发布的不可变质量复核。');
+      }
+      if (outcome.kind === 'capability_ineligible') {
+        return toolFailure(context.traceId, '占位能力不可用于 Agent。');
       }
       const detail = await readAgentProjectDetail(context.db, {
         projectId: parsed.data.projectId,

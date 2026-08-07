@@ -15,8 +15,10 @@ const OWNER_USER_ID = '01900000-0000-7000-8000-000000000001';
 const PROJECT_ID = '01900000-0000-7000-8000-000000000002';
 const REVISION_ID = '01900000-0000-7000-8000-000000000003';
 const CAPABILITY_ID = '01900000-0000-7000-8000-000000000004';
+const SUPPORT_CAPABILITY_ID = '01900000-0000-7000-8000-000000000006';
 const UI_ARTIFACT_ID = '01900000-0000-7000-8000-000000000005';
 const CAPABILITY_STORAGE_KEY = `capabilities/${CAPABILITY_ID}/definition.json`;
+const SUPPORT_CAPABILITY_STORAGE_KEY = `capabilities/${SUPPORT_CAPABILITY_ID}/definition.json`;
 const UI_STORAGE_KEY = `artifacts/${UI_ARTIFACT_ID}/index.html`;
 
 const CAPABILITY_DEFINITION = {
@@ -72,13 +74,19 @@ function agentDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinit
 class CompilerDb implements Queryable {
   readonly queries: string[] = [];
 
+  constructor(
+    readonly capabilityRows: Array<{ id: string; storage_key: string; meta?: unknown }> = [
+      { id: CAPABILITY_ID, storage_key: CAPABILITY_STORAGE_KEY, meta: {} },
+    ],
+  ) {}
+
   async query<R = Record<string, unknown>>(
     sql: string,
     _params?: unknown[],
   ): Promise<QueryResultLike<R>> {
     this.queries.push(sql);
     if (sql.includes('FROM capabilities')) {
-      const rows = [{ id: CAPABILITY_ID, storage_key: CAPABILITY_STORAGE_KEY }] as R[];
+      const rows = this.capabilityRows as R[];
       return { rows, rowCount: rows.length };
     }
     if (sql.includes('FROM artifacts')) {
@@ -117,6 +125,82 @@ async function compile(db: Queryable, store: FakeObjectStore, definition: AgentD
 }
 
 describe('Agent Project revision compiler', () => {
+  it.each([
+    {
+      label: 'database metadata',
+      dbMeta: { origin: 'fallback' },
+      definitionMeta: {},
+    },
+    {
+      label: 'stored definition metadata',
+      dbMeta: {},
+      definitionMeta: { origin: 'fallback' },
+    },
+  ])('rejects an entry fallback declared by $label', async ({ dbMeta, definitionMeta }) => {
+    const db = new CompilerDb([
+      { id: CAPABILITY_ID, storage_key: CAPABILITY_STORAGE_KEY, meta: dbMeta },
+    ]);
+    const store = new FakeObjectStore();
+    await putText(
+      store,
+      CAPABILITY_STORAGE_KEY,
+      JSON.stringify({ ...CAPABILITY_DEFINITION, meta: definitionMeta }),
+    );
+    await putText(store, UI_STORAGE_KEY, VALID_MINIAPP_HTML);
+
+    await expect(compile(db, store, agentDefinition())).rejects.toMatchObject({
+      name: 'AgentCompileError',
+      kind: 'capability_ineligible',
+      details: { capabilityId: CAPABILITY_ID },
+    });
+  });
+
+  it('rejects a fallback support capability, not only the entry capability', async () => {
+    const db = new CompilerDb([
+      { id: CAPABILITY_ID, storage_key: CAPABILITY_STORAGE_KEY, meta: {} },
+      {
+        id: SUPPORT_CAPABILITY_ID,
+        storage_key: SUPPORT_CAPABILITY_STORAGE_KEY,
+        meta: { origin: 'fallback' },
+      },
+    ]);
+    const store = new FakeObjectStore();
+    await putText(store, CAPABILITY_STORAGE_KEY, JSON.stringify(CAPABILITY_DEFINITION));
+    await putText(store, SUPPORT_CAPABILITY_STORAGE_KEY, JSON.stringify(CAPABILITY_DEFINITION));
+    await putText(store, UI_STORAGE_KEY, VALID_MINIAPP_HTML);
+    const definition = agentDefinition({
+      behavior: {
+        instructions: 'Use both frozen capabilities.',
+        capabilities: [
+          { capabilityId: CAPABILITY_ID, role: 'entry' },
+          { capabilityId: SUPPORT_CAPABILITY_ID, role: 'support' },
+        ],
+      },
+    });
+
+    await expect(compile(db, store, definition)).rejects.toMatchObject({
+      name: 'AgentCompileError',
+      kind: 'capability_ineligible',
+      details: { capabilityId: SUPPORT_CAPABILITY_ID },
+    });
+  });
+
+  it('keeps normal LLM capabilities eligible even when extraction was degraded', async () => {
+    const meta = { origin: 'llm', degraded: true };
+    const db = new CompilerDb([{ id: CAPABILITY_ID, storage_key: CAPABILITY_STORAGE_KEY, meta }]);
+    const store = new FakeObjectStore();
+    await putText(
+      store,
+      CAPABILITY_STORAGE_KEY,
+      JSON.stringify({ ...CAPABILITY_DEFINITION, meta }),
+    );
+    await putText(store, UI_STORAGE_KEY, VALID_MINIAPP_HTML);
+
+    await expect(compile(db, store, agentDefinition())).resolves.toMatchObject({
+      entryCapabilityId: CAPABILITY_ID,
+    });
+  });
+
   it('uses distinct content-addressed keys when the same revision id carries different definitions', async () => {
     const { db, store } = await seededCompiler();
     const firstDefinition = agentDefinition();

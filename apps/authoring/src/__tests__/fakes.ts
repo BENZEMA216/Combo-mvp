@@ -628,8 +628,23 @@ export class FakeDb implements TxPool {
 
     if (s.includes('FROM capabilities WHERE id = $1 AND owner_user_id = $2')) {
       const c = this.capabilities.get(params[0] as string);
-      if (!c || c.owner_user_id !== params[1]) return { rows: [], rowCount: 0 };
+      if (
+        !c ||
+        c.owner_user_id !== params[1] ||
+        (s.includes("meta->>'origin'") && c.meta.origin === 'fallback')
+      ) {
+        return { rows: [], rowCount: 0 };
+      }
       return { rows: [this.capabilityShape(c)] as R[], rowCount: 1 };
+    }
+
+    if (s.startsWith('SELECT id, meta FROM capabilities') && s.includes('id = ANY($2::uuid[])')) {
+      const [owner, ids] = params as [string, string[]];
+      const rows = ids
+        .map((id) => this.capabilities.get(id))
+        .filter((c): c is CapabilityRowF => c?.owner_user_id === owner)
+        .map((c) => ({ id: c.id, meta: c.meta }));
+      return { rows: rows as R[], rowCount: rows.length };
     }
 
     if (s.includes('FROM capabilities WHERE owner_user_id = $1')) {
@@ -643,6 +658,7 @@ export class FakeDb implements TxPool {
         .filter(
           (c) =>
             c.owner_user_id === owner &&
+            (!s.includes("meta->>'origin'") || c.meta.origin !== 'fallback') &&
             (taskId === null || c.task_id === taskId) &&
             (cursor === null || c.id < cursor),
         )
@@ -655,7 +671,11 @@ export class FakeDb implements TxPool {
     if (s.includes('UPDATE capabilities') && s.includes('SET published = true')) {
       const [id, owner, token] = params as [string, string, string];
       const c = this.capabilities.get(id);
-      if (!c || c.owner_user_id !== owner) {
+      if (
+        !c ||
+        c.owner_user_id !== owner ||
+        (s.includes("meta->>'origin'") && c.meta.origin === 'fallback')
+      ) {
         this.updateRowCounts.push(0);
         return { rows: [], rowCount: 0 };
       }

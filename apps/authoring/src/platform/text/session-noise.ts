@@ -10,6 +10,9 @@ const PLATFORM_PROMPT_PREFIXES = [
   'You are editing a Markdown artifact for a local AI doc editor.',
 ];
 
+// 这类注入是完整 XML 包裹块；只匹配整个消息，避免误伤用户正文里对同名标签的讨论。
+const PLATFORM_PROMPT_WRAPPERS = ['recommended_plugins'];
+
 export function firstNonEmptyLine(text: string | null | undefined): string {
   if (!text) return '';
   return (
@@ -26,6 +29,15 @@ export function stripRolePrefix(line: string): string {
 }
 
 export function isPlatformPromptText(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const whole = stripRolePrefix(text.trim()).toLowerCase();
+  if (
+    PLATFORM_PROMPT_WRAPPERS.some(
+      (tag) => whole.startsWith(`<${tag}>`) && whole.endsWith(`</${tag}>`),
+    )
+  ) {
+    return true;
+  }
   const first = stripRolePrefix(firstNonEmptyLine(text));
   if (!first) return false;
   const lower = first.toLowerCase();

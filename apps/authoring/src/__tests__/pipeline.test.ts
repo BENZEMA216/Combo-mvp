@@ -1,10 +1,11 @@
-// 提取流水线自检：成功 / 逐片与跨片去重 / 降级兜底 / 失败 / 未认领。忠实假 PG + 假对象存储/LLM/事件流。
+// 提取流水线自检：成功 / 逐片与跨片去重 / 提取降级 / 失败 / 未认领。忠实假 PG + 假对象存储/LLM/事件流。
 import { describe, it, expect } from 'vitest';
-import { createTask, transition } from '../modules/task/service.js';
+import { ErrorCode } from '@cb/shared';
+import { createTask, retryTask, transition } from '../modules/task/service.js';
 import { RAW_BUCKET, partObjectKey } from '../modules/task/pairing.js';
 import { BUNDLE_SENTINEL } from '../modules/task/session-parse.js';
 import { CAPABILITY_BUCKET, runPipeline, type PipelineDeps } from '../modules/task/pipeline.js';
-import { FakeDb, FakeLlm, FakeObjectStore, FakeStream, llmText } from './fakes.js';
+import { FakeDb, FakeLlm, FakeObjectStore, FakeQueue, FakeStream, llmText } from './fakes.js';
 
 const OWNER = 'user-me';
 
@@ -92,8 +93,10 @@ describe('parseCapabilityJson · 真实模型输出形态', () => {
     expect(parsed).toHaveLength(1);
   });
 
-  it('空数组返回 []（由批处理层判空走兜底）；无 JSON → null', () => {
+  it('空数组返回 []（批处理层保留为正常空结果）；无 JSON → null', () => {
     expect(parseCapabilityJson('[]')).toEqual([]);
+    expect(parseCapabilityJson('分析标记 [0] 不算结果，最终结果：[]')).toEqual([]);
+    expect(parseCapabilityJson('[1]')).toBeNull();
     expect(parseCapabilityJson('没有可归纳的能力。')).toBeNull();
   });
 
@@ -157,10 +160,17 @@ describe('parseCapabilityJson · 真实模型输出形态', () => {
     expect(parsed![0]!.name).toBe('周报整理');
   });
 
-  it('降级诊断：候选串非法时首个 JSON.parse 报错写入 diag 供日志定位', () => {
+  it('降级诊断：只保留安全分类与数字位置，不回显模型正文', () => {
     const diag: { parseError?: string } = {};
-    parseCapabilityJson('```json\n[' + item + ',]\n```', diag);
-    expect(diag.parseError).toBeTruthy();
+    const modelTextMarker = 'PRIVATE_MODEL_TEXT_MUST_NOT_REACH_LOGS';
+    parseCapabilityJson(
+      '```json\n[' +
+        `{"name":"${modelTextMarker}","summary":"s","kind":"写作","instructions":"i"},` +
+        ']\n```',
+      diag,
+    );
+    expect(diag.parseError).toMatch(/^JSON_PARSE_FAILED(?: (?:position|line|column)=\d+)*$/);
+    expect(diag.parseError).not.toContain(modelTextMarker);
   });
 });
 
@@ -281,13 +291,85 @@ describe('runPipeline · extract 期间续租', () => {
   });
 });
 
-describe('runPipeline · 降级兜底', () => {
-  it('LLM 全程降级：走确定性兜底，仍产出可试用的能力项并成功终态', async () => {
+describe('runPipeline · 提取空结果与降级', () => {
+  it('LLM 明确返回 []：成功终态且 capabilityCount=0，不写能力 artifact', async () => {
+    const { deps, taskId } = await setup(new FakeLlm(() => llmText('[]')));
+    expect(await runPipeline(deps, taskId, 'trace-empty')).toBe('succeeded');
+
+    expect([...deps.db.capabilities.values()]).toHaveLength(0);
+    expect(
+      [...deps.objectStore.objects.keys()].filter((key) => key.startsWith(`${CAPABILITY_BUCKET}/`)),
+    ).toEqual([]);
+    expect(deps.stream.events(taskId)).not.toContain('item-appended');
+    const doneFrames = deps.stream.frames.filter(
+      (frame) => frame.taskId === taskId && frame.event === 'done',
+    );
+    expect(doneFrames[doneFrames.length - 1]!.payload).toEqual({
+      status: 'succeeded',
+      result: { capabilityCount: 0 },
+    });
+    expect(deps.db.uploads.get(taskId)).toMatchObject({
+      status: 'processed',
+      raw_purged_at: expect.any(String),
+    });
+  });
+
+  it('LLM 全程降级：以 LLM_UPSTREAM_FAILED 失败，零占位产物且原始分片可重试', async () => {
     const { deps, taskId } = await setup(new FakeLlm()); // 缺省脚本恒 degraded
-    expect(await runPipeline(deps, taskId, 'trace-1')).toBe('succeeded');
-    const caps = [...deps.db.capabilities.values()];
-    expect(caps.length).toBeGreaterThan(0);
-    expect(caps[0]!.meta).toMatchObject({ degraded: true });
+    const rawKey = partObjectKey(taskId, 0);
+    let loggedCode: unknown;
+    deps.log = {
+      info: () => undefined,
+      warn: () => undefined,
+      error: (fields) => {
+        loggedCode = (fields as { code?: unknown }).code;
+      },
+    };
+    expect(await runPipeline(deps, taskId, 'trace-degraded')).toBe('failed');
+
+    expect([...deps.db.capabilities.values()]).toHaveLength(0);
+    expect(
+      [...deps.objectStore.objects.keys()].filter((key) => key.startsWith(`${CAPABILITY_BUCKET}/`)),
+    ).toEqual([]);
+    await expect(deps.objectStore.getObjectText(RAW_BUCKET, rawKey)).resolves.toContain(
+      '帮我把这周的工作记录整理成周报',
+    );
+    expect(deps.db.uploads.get(taskId)).toMatchObject({ status: 'raw', raw_purged_at: null });
+
+    const task = deps.db.tasks.get(taskId)!;
+    expect(task.status).toBe('failed');
+    expect(loggedCode).toBe(ErrorCode.LLM_UPSTREAM_FAILED);
+    expect(task.last_error).toMatchObject({
+      userMessage: '模型服务暂时不可用，请稍后重试。',
+      action: 'retry',
+      traceId: 'trace-degraded',
+    });
+    expect(task.last_error).not.toHaveProperty('code');
+    const frames = deps.stream.frames.filter((frame) => frame.taskId === taskId);
+    expect(frames.map((frame) => frame.event)).not.toContain('item-appended');
+    expect(frames).not.toContainEqual(
+      expect.objectContaining({
+        event: 'done',
+        payload: expect.objectContaining({ status: 'succeeded' }),
+      }),
+    );
+    expect(frames.slice(-2).map((frame) => frame.event)).toEqual(['error', 'done']);
+    expect(frames[frames.length - 1]!.payload).toMatchObject({ status: 'failed' });
+
+    // 失败前没有清理 raw；同一任务走正式 retry 状态机后可重新提取并成功。
+    const queue = new FakeQueue();
+    expect(
+      await retryTask(deps.db, queue, {
+        taskId,
+        ownerUserId: OWNER,
+        traceId: 'trace-retry',
+      }),
+    ).toMatchObject({ kind: 'ok' });
+    expect(queue.enqueued).toHaveLength(1);
+    deps.llm = new FakeLlm(() => llmText(LLM_CAPABILITIES));
+    expect(await runPipeline(deps, taskId, 'trace-retry')).toBe('succeeded');
+    expect([...deps.db.capabilities.values()]).toHaveLength(1);
+    await expect(deps.objectStore.getObjectText(RAW_BUCKET, rawKey)).rejects.toThrow();
   });
 });
 

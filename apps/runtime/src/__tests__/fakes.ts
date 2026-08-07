@@ -32,6 +32,7 @@ export interface CapabilityRowF {
   kind: string;
   storage_key: string;
   published: boolean;
+  meta: Record<string, unknown>;
   ui_artifact_id: string | null;
   created_at: string;
 }
@@ -263,6 +264,7 @@ export class FakeDb implements Queryable, TxPool {
       kind: input.kind ?? 'writing',
       storage_key: input.storage_key ?? `capabilities/${id}/definition.json`,
       published: input.published ?? false,
+      meta: input.meta ?? {},
       ui_artifact_id: input.ui_artifact_id ?? null,
       created_at: input.created_at ?? nowIso(),
     };
@@ -655,10 +657,14 @@ export class FakeDb implements Queryable, TxPool {
         rowCount: 1,
       };
     }
-    if (s.includes('FROM capabilities WHERE owner_user_id = $1 OR published = true')) {
+    if (
+      s.includes('FROM capabilities') &&
+      s.includes('owner_user_id = $1 OR published = true') &&
+      s.includes('ORDER BY created_at DESC')
+    ) {
       const owner = params[0] as string;
       const rows = [...this.capabilities.values()]
-        .filter((c) => c.owner_user_id === owner || c.published)
+        .filter((c) => (c.owner_user_id === owner || c.published) && c.meta.origin !== 'fallback')
         .sort((a, b) => (a.id < b.id ? 1 : -1)) // created_at DESC（id 时间有序等价）
         .slice(0, 100)
         .map((c) => ({ ...c }));

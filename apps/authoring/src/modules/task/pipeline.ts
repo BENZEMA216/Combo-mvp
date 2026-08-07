@@ -341,7 +341,7 @@ async function execute(
   await renewLease(deps.db, { taskId, leaseOwner: deps.leaseOwner });
   markStep('segment');
 
-  // ⑤ extract：LLM 归纳（降级兜底在 extract.ts 内收口，不裸抛）。
+  // ⑤ extract：LLM 归纳。部分批次降级仍保留真实产物；全量降级由本层失败收口。
   await reporter.subtask('extract', 'running', 48, '正在归纳提炼能力…');
   const extracted = await extractCapabilities(
     {
@@ -368,6 +368,14 @@ async function execute(
       },
     },
   );
+  // 全部批次都降级/输出不可解析时，不允许用空成功掩盖上游故障，更不能持久化占位能力。
+  // 明确的模型空数组是 degraded=false，会继续走成功且 capabilityCount=0 的诚实结果。
+  if (extracted.degraded && extracted.items.length === 0) {
+    throw new PipelineFailure(
+      ErrorCode.LLM_UPSTREAM_FAILED,
+      'all extraction batches degraded or returned invalid output',
+    );
+  }
   await reporter.subtask('extract', 'done', 80, `归纳出 ${extracted.items.length} 个能力项`);
   await renewLease(deps.db, { taskId, leaseOwner: deps.leaseOwner });
   markStep('extract');
