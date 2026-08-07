@@ -4,7 +4,7 @@
 
 ## 文件
 
-- `session-noise.ts` 导出四个函数：firstNonEmptyLine 取文本第一个非空行；stripRolePrefix 去掉行首的 user:/assistant: 等角色前缀；isPlatformPromptText 按前缀清单和完整包裹块清单判断一段文本是不是平台注入的提示词，其中 recommended_plugins 只在占满整条消息时过滤；isBlockedCapabilityLabel 判断一个标题能不能用作能力项名字（空或属于平台噪声就拒绝）。
+- `session-noise.ts` 导出四个函数：firstNonEmptyLine 取文本第一个非空行；stripRolePrefix 去掉行首的 user:/assistant: 等角色前缀；isPlatformPromptText 按前缀清单和完整包裹块清单判断一段文本是不是平台注入的提示词，其中 recommended_plugins / environment_context 只有在一个或多个已知宿主块完整占满整条消息时才过滤；isBlockedCapabilityLabel 判断一个标题能不能用作能力项名字（空或属于平台噪声就拒绝）。
 
 ## 上下游
 

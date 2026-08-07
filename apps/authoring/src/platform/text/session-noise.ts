@@ -10,8 +10,24 @@ const PLATFORM_PROMPT_PREFIXES = [
   'You are editing a Markdown artifact for a local AI doc editor.',
 ];
 
-// 这类注入是完整 XML 包裹块；只匹配整个消息，避免误伤用户正文里对同名标签的讨论。
-const PLATFORM_PROMPT_WRAPPERS = ['recommended_plugins'];
+// 这类注入是完整 XML 包裹块；Codex Desktop 可能把多个宿主块合并成一条 user 消息。
+// 只在整条消息能被一个或多个已知块完整消费时过滤，避免误伤用户正文里的 XML 讨论。
+const PLATFORM_PROMPT_WRAPPERS = ['recommended_plugins', 'environment_context'];
+
+function isOnlyKnownPlatformWrappers(text: string): boolean {
+  let remaining = stripRolePrefix(text.trim());
+  let consumed = false;
+  const tags = PLATFORM_PROMPT_WRAPPERS.join('|');
+  const wrapper = new RegExp(`^<(${tags})(?:\\s[^>]*)?>[\\s\\S]*?<\\/\\1>\\s*`, 'i');
+
+  while (remaining.length > 0) {
+    const match = wrapper.exec(remaining);
+    if (!match) return false;
+    consumed = true;
+    remaining = remaining.slice(match[0].length).trimStart();
+  }
+  return consumed;
+}
 
 export function firstNonEmptyLine(text: string | null | undefined): string {
   if (!text) return '';
@@ -30,14 +46,7 @@ export function stripRolePrefix(line: string): string {
 
 export function isPlatformPromptText(text: string | null | undefined): boolean {
   if (!text) return false;
-  const whole = stripRolePrefix(text.trim()).toLowerCase();
-  if (
-    PLATFORM_PROMPT_WRAPPERS.some(
-      (tag) => whole.startsWith(`<${tag}>`) && whole.endsWith(`</${tag}>`),
-    )
-  ) {
-    return true;
-  }
+  if (isOnlyKnownPlatformWrappers(text)) return true;
   const first = stripRolePrefix(firstNonEmptyLine(text));
   if (!first) return false;
   const lower = first.toLowerCase();

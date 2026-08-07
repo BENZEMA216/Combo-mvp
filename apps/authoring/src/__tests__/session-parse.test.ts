@@ -42,6 +42,30 @@ describe('parseSessions · Codex 宿主消息', () => {
     expect(out.segments[0]!.content).not.toContain('recommended_plugins');
   });
 
+  it('recommended_plugins 与 environment_context 合并成同一消息时整体过滤', () => {
+    const combinedInjection = [
+      '<recommended_plugins>',
+      '- GitHub (github@example)',
+      '</recommended_plugins>',
+      '<environment_context>',
+      '<cwd>/private/host/context</cwd>',
+      '</environment_context>',
+    ].join('\n');
+    const out = parseCodex([
+      { role: 'user', text: combinedInjection },
+      { role: 'user', text: '请帮我完成发布就绪决策' },
+      { role: 'assistant', text: '我会核对关键检查、负责人和回滚证据。' },
+    ]);
+
+    expect(out.segments[0]).toMatchObject({
+      title: '请帮我完成发布就绪决策',
+      messageCount: 2,
+    });
+    expect(out.segments[0]!.content).not.toContain('recommended_plugins');
+    expect(out.segments[0]!.content).not.toContain('environment_context');
+    expect(out.segments[0]!.content).not.toContain('/private/host/context');
+  });
+
   it('只过滤纯注入块，不泛化过滤用户对同名 XML 标签的讨论', () => {
     const userText =
       '<recommended_plugins>这是示例，不是完整宿主块</recommended_plugins>\n请解释上面的标签。';
