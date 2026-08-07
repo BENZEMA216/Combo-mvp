@@ -355,7 +355,7 @@ describe('external MCP public tool results', () => {
     }
   });
 
-  it('does not expose the legacy Capability Studio URL from authoring or Test tools', async () => {
+  it('keeps legacy Studio private while returning authoritative Runtime preview links', async () => {
     mocks.readAgentRevisionDetail.mockResolvedValue({ revision: projectDetail.headRevision });
     const testDetail = {
       test: {
@@ -404,8 +404,58 @@ describe('external MCP public tool results', () => {
     for (const result of [saved, started, read]) {
       expect(result.isError).toBeUndefined();
       expect(result.structuredContent).not.toHaveProperty('editorUrl');
-      expect(JSON.stringify(result)).not.toContain('/try/session/');
     }
+    expect(JSON.stringify(saved)).not.toContain('/try/session/');
+    for (const result of [started, read]) {
+      expect(result.structuredContent).toMatchObject({
+        runtimeSessionUrl: `https://test.example/try/session/${SESSION_ID}`,
+      });
+      expect(result.content).toContainEqual(
+        expect.objectContaining({
+          type: 'resource_link',
+          uri: `https://test.example/try/session/${SESSION_ID}`,
+          name: 'combo-agent-test',
+        }),
+      );
+    }
+    expect(JSON.stringify([saved, started, read])).not.toContain('mode=studio');
+  });
+
+  it('renders only validated presentation data without changing business state', async () => {
+    const payload = {
+      stage: 'recommendations',
+      title: 'Agent 建议',
+      summary: '基于已确认范围。',
+      progress: [
+        { label: '范围已确认', state: 'done' },
+        { label: '选择建议', state: 'current' },
+      ],
+      items: [
+        {
+          id: 'recommendation-1',
+          title: '发布验收 Agent',
+          summary: '重复核对发布证据。',
+          facts: [{ label: '支撑实例', value: '3' }],
+          action: {
+            label: '选择这个 Agent',
+            message: '我选择发布验收 Agent，请继续创建草稿。',
+            emphasis: 'primary',
+          },
+        },
+      ],
+      actions: [],
+    } as const;
+
+    const rendered = await executeExternalMcpTool(context(), 'render_agent_builder', payload);
+    expect(rendered.isError).toBeUndefined();
+    expect(rendered.structuredContent).toEqual(payload);
+    expect(mocks.readAgentProjectDetail).not.toHaveBeenCalled();
+
+    const rejected = await executeExternalMcpTool(context(), 'render_agent_builder', {
+      ...payload,
+      actions: [{ label: 'Bad', message: '', emphasis: 'primary' }],
+    });
+    expect(rejected.isError).toBe(true);
   });
 
   it('derives publish revision identity from a passed Test and rejects cross-project Tests', async () => {

@@ -149,7 +149,7 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 本机直跑复制 `.env.local.example`；Compose 使用 `.env.compose.example`。生产式配置必须提供 `PUBLIC_APP_ORIGINS`、同列表中的规范 HTTPS `EXTERNAL_MCP_PUBLIC_ORIGIN`、固定 `MCP_RUNTIME_INTERNAL_BASE_URL`、三个数据库角色密码、`RESEND_API_KEY` 和 `OTP_HMAC_SECRET`。`scripts/start.sh` 会拒绝空值和已知弱默认值。
 
-Codex 插件不再需要 `COMBO_SESSION_COOKIE`。公开入口 `/codex-plugin` 当前只在 Test 输出 macOS Codex Desktop 内置 CLI 的升级序列，并固定 V2 Test 候选 `codex/combo-plugin-v2-codex-first`；Preview 不提供会错误连接 Test 的跨环境命令，Production 要等独立插件 release 将静态 MCP 地址切到 Production、合并 `main` 并验收后再开放。安装插件后只运行 `mcp login combo`，在浏览器用现有邮箱验证码完成 OAuth，再完全新建一个任务；不要重复 `mcp add`，也不要在聊天中发送 Cookie、验证码或访问令牌。
+Codex 插件不再需要 `COMBO_SESSION_COOKIE`。公开入口 `/codex-plugin` 当前只在 Test 输出 macOS Codex Desktop 内置 CLI 的升级序列，并固定带 Agent Builder 内联卡片的 V2 Test 候选 `codex/combo-plugin-v2-ui`；Preview 不提供会错误连接 Test 的跨环境命令，Production 要等独立插件 release 将静态 MCP 地址切到 Production、合并 `main` 并验收后再开放。安装插件后只运行 `mcp login combo`，在浏览器用现有邮箱验证码完成 OAuth，再完全退出并重开 Codex Desktop、新建一个顶层任务；不要重复 `mcp add`，也不要在聊天中发送 Cookie、验证码或访问令牌。
 
 环境变量真源是上述两个 `.env.*.example`，分两类消费者：`[app]`（Node 进程的环境 schema 校验）与 `[compose]`（compose 变量替换）。
 

@@ -186,7 +186,7 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('--ref codex/combo-plugin-v2-codex-first');
+    expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
     expect(response.body).toContain('mcp login combo');
     expect(response.body).not.toContain('mcp add combo');
   });
@@ -207,7 +207,7 @@ describe('external MCP root route integration', () => {
         expect(response.body).toContain('暂不可安装');
         expect(response.body).not.toContain('plugin marketplace add');
         expect(response.body).not.toContain('mcp login combo');
-        expect(response.body).not.toContain('codex/combo-plugin-v2-codex-first');
+        expect(response.body).not.toContain('codex/combo-plugin-v2-ui');
       } finally {
         await isolated.close();
       }
@@ -398,7 +398,7 @@ describe('external MCP stateless machine contract', () => {
     });
   }
 
-  it('supports initialize and advertises exactly the 17 stateless tools', async () => {
+  it('supports initialize and advertises exactly the 18 stateless tools plus the Agent Builder app', async () => {
     const initialized = await call('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
@@ -408,7 +408,11 @@ describe('external MCP stateless machine contract', () => {
     expect(initialized.json()).toMatchObject({
       jsonrpc: '2.0',
       id: 7,
-      result: { protocolVersion: '2025-11-25', capabilities: { tools: {} } },
+      result: {
+        protocolVersion: '2025-11-25',
+        capabilities: { tools: {}, resources: {} },
+        serverInfo: { version: '0.5.0' },
+      },
     });
 
     const listed = await call('tools/list');
@@ -420,6 +424,7 @@ describe('external MCP stateless machine contract', () => {
       'list_capabilities',
       'read_capability_definition',
       'list_agent_projects',
+      'render_agent_builder',
       'create_agent_project',
       'target_agent_project',
       'read_agent_project',
@@ -433,11 +438,48 @@ describe('external MCP stateless machine contract', () => {
       'record_agent_test_review',
       'publish_agent_revision',
     ]);
-    expect(tools).toHaveLength(17);
+    expect(tools).toHaveLength(18);
     const run = tools.find((tool) => tool.name === 'run_agent_test')!;
     expect((run.inputSchema as { required: string[] }).required).toContain('revisionId');
     const readUi = tools.find((tool) => tool.name === 'read_agent_ui')!;
     expect((readUi.inputSchema as { oneOf: unknown[] }).oneOf).toHaveLength(2);
+    const renderer = tools.find((tool) => tool.name === 'render_agent_builder')!;
+    expect(renderer).toMatchObject({
+      outputSchema: { type: 'object' },
+      _meta: {
+        ui: { resourceUri: 'ui://combo/agent-builder/v1.html' },
+        'openai/outputTemplate': 'ui://combo/agent-builder/v1.html',
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    });
+
+    const resources = await call('resources/list');
+    expect(resources.json()).toMatchObject({
+      result: {
+        resources: [
+          {
+            uri: 'ui://combo/agent-builder/v1.html',
+            name: 'combo-agent-builder',
+            mimeType: 'text/html;profile=mcp-app',
+          },
+        ],
+      },
+    });
+    const resource = await call('resources/read', {
+      uri: 'ui://combo/agent-builder/v1.html',
+    });
+    expect(resource.json()).toMatchObject({
+      result: {
+        contents: [
+          {
+            uri: 'ui://combo/agent-builder/v1.html',
+            mimeType: 'text/html;profile=mcp-app',
+            _meta: { ui: { prefersBorder: true } },
+          },
+        ],
+      },
+    });
+    expect(resource.json().result.contents[0].text).toContain("request('ui/message'");
   });
 
   it('rejects incomplete initialize params and negotiates an unsupported body version', async () => {

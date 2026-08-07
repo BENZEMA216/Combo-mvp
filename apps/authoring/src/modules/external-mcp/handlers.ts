@@ -31,6 +31,11 @@ import {
   resolveMcpBearer,
 } from './service.js';
 import { EXTERNAL_MCP_TOOLS, executeExternalMcpTool, toolTxPool } from './tools.js';
+import {
+  AGENT_BUILDER_APP_RESOURCE,
+  AGENT_BUILDER_APP_URI,
+  agentBuilderAppResourceContents,
+} from './agent-builder-app.js';
 import { McpRuntimeClient } from './runtime-client.js';
 
 const NO_STORE = 'no-store';
@@ -521,10 +526,13 @@ export function mcpPostHandler(): RouteHandlerMethod {
         .send(
           jsonRpcResult(id, {
             protocolVersion: negotiatedProtocolVersion,
-            capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.4.0' },
+            capabilities: {
+              tools: { listChanged: false },
+              resources: { listChanged: false },
+            },
+            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.5.0' },
             instructions:
-              'Create and edit Combo Agent Projects. This remote server is stateless, so pass projectId explicitly.',
+              'Call list_agent_projects first. This server is stateless, so pass every Project identity explicitly. Use render_agent_builder only after the required reads or authorized analysis; its buttons send user messages but never persist, review, or release by themselves.',
           }),
         );
     }
@@ -540,6 +548,25 @@ export function mcpPostHandler(): RouteHandlerMethod {
             tools: EXTERNAL_MCP_TOOLS.map(({ requiredScope: _requiredScope, ...tool }) => tool),
           }),
         );
+    }
+    if (message.method === 'resources/list') {
+      return reply
+        .code(200)
+        .type(JSON_CONTENT_TYPE)
+        .send(jsonRpcResult(id, { resources: [AGENT_BUILDER_APP_RESOURCE] }));
+    }
+    if (message.method === 'resources/read') {
+      const params = message.params as { uri?: unknown } | undefined;
+      if (!params || params.uri !== AGENT_BUILDER_APP_URI) {
+        return reply
+          .code(200)
+          .type(JSON_CONTENT_TYPE)
+          .send(jsonRpcError(id, -32602, 'Unknown Combo UI resource.'));
+      }
+      return reply
+        .code(200)
+        .type(JSON_CONTENT_TYPE)
+        .send(jsonRpcResult(id, agentBuilderAppResourceContents()));
     }
     if (message.method === 'tools/call') {
       const params = message.params as { name?: unknown; arguments?: unknown } | undefined;
@@ -592,11 +619,11 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
 
     const codex = '"/Applications/ChatGPT.app/Contents/Resources/codex"';
     const prompt =
-      '请在 macOS Codex Desktop 中使用内置 CLI 安装 Combo Test 插件，运行 OAuth 登录并在浏览器用邮箱验证码授权；然后完全新建一个 Codex 任务，调用 list_agent_projects 验证初始化。不要在聊天中发送 Cookie、验证码或访问令牌。';
+      '请在 macOS Codex Desktop 中使用内置 CLI 安装 Combo Test 插件，运行 OAuth 登录并在浏览器用邮箱验证码授权；然后完全退出并重开 Codex Desktop，新建一个顶层任务，先调用 list_agent_projects，再用 Combo Agent Builder 卡片完成建议、草稿、测试与发布确认。不要在聊天中发送 Cookie、验证码或访问令牌。';
     const commands =
       `${codex} plugin remove combo@dangdang-tech-combo\n` +
       `${codex} plugin marketplace remove dangdang-tech-combo\n` +
-      `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-codex-first\n` +
+      `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-ui\n` +
       `${codex} plugin add combo@dangdang-tech-combo\n` +
       `${codex} mcp login combo`;
     const body = `<h1>在 Codex 中使用 Combo Test</h1>

@@ -36,14 +36,15 @@ import { createTask, readTaskView, reconcileExpiredUploadTasks } from '../task/i
 import type { McpPrincipal } from './repo.js';
 import { McpRuntimeRequestError, type McpRuntimeClient } from './runtime-client.js';
 import { hasMcpScope } from './service.js';
+import { AGENT_BUILDER_APP_URI } from './agent-builder-app.js';
 
-interface JsonSchema {
+interface JsonSchema extends Record<string, unknown> {
   type: string;
-  properties?: Record<string, unknown>;
-  required?: string[];
+  properties?: Readonly<Record<string, unknown>>;
+  required?: readonly string[];
   additionalProperties?: boolean;
   description?: string;
-  oneOf?: unknown[];
+  oneOf?: readonly unknown[];
 }
 
 export interface McpToolDefinition {
@@ -51,6 +52,13 @@ export interface McpToolDefinition {
   title: string;
   description: string;
   inputSchema: JsonSchema;
+  outputSchema?: JsonSchema;
+  _meta?: {
+    ui: { resourceUri: string };
+    'openai/outputTemplate'?: string;
+    'openai/toolInvocation/invoking'?: string;
+    'openai/toolInvocation/invoked'?: string;
+  };
   annotations: {
     readOnlyHint: boolean;
     openWorldHint: boolean;
@@ -61,6 +69,83 @@ export interface McpToolDefinition {
 
 const UUID_SCHEMA = { type: 'string', format: 'uuid' } as const;
 const IDEMPOTENCY_SCHEMA = { type: 'string', minLength: 8, maxLength: 200 } as const;
+const AGENT_BUILDER_CARD_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['stage', 'title', 'summary', 'progress', 'items', 'actions'],
+  properties: {
+    stage: {
+      type: 'string',
+      enum: ['readiness', 'recommendations', 'production', 'draft', 'test', 'release'],
+    },
+    title: { type: 'string', minLength: 1, maxLength: 120 },
+    summary: { type: 'string', maxLength: 1000 },
+    progress: {
+      type: 'array',
+      maxItems: 8,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['label', 'state'],
+        properties: {
+          label: { type: 'string', minLength: 1, maxLength: 80 },
+          state: { type: 'string', enum: ['pending', 'current', 'done'] },
+        },
+      },
+    },
+    items: {
+      type: 'array',
+      maxItems: 8,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'title', 'summary', 'facts'],
+        properties: {
+          id: { type: 'string', minLength: 1, maxLength: 120 },
+          title: { type: 'string', minLength: 1, maxLength: 120 },
+          summary: { type: 'string', maxLength: 1000 },
+          facts: {
+            type: 'array',
+            maxItems: 12,
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['label', 'value'],
+              properties: {
+                label: { type: 'string', minLength: 1, maxLength: 80 },
+                value: { type: 'string', maxLength: 2000 },
+              },
+            },
+          },
+          action: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['label', 'message', 'emphasis'],
+            properties: {
+              label: { type: 'string', minLength: 1, maxLength: 80 },
+              message: { type: 'string', minLength: 1, maxLength: 1000 },
+              emphasis: { type: 'string', enum: ['primary', 'secondary'] },
+            },
+          },
+        },
+      },
+    },
+    actions: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['label', 'message', 'emphasis'],
+        properties: {
+          label: { type: 'string', minLength: 1, maxLength: 80 },
+          message: { type: 'string', minLength: 1, maxLength: 1000 },
+          emphasis: { type: 'string', enum: ['primary', 'secondary'] },
+        },
+      },
+    },
+  },
+} as const;
 const AGENT_DEFINITION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -249,6 +334,22 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     requiredScope: 'combo.agent:read',
   },
   {
+    name: 'render_agent_builder',
+    title: 'Render Combo Agent Builder card',
+    description:
+      'Render one final, model-checked Agent Builder stage after the required data reads or authorized analysis. This presentation-only tool does not persist a recommendation, select an Agent, record a Review, or publish a Release. A button is confirmation only after its resulting user message appears in the conversation.',
+    inputSchema: AGENT_BUILDER_CARD_JSON_SCHEMA,
+    outputSchema: AGENT_BUILDER_CARD_JSON_SCHEMA,
+    _meta: {
+      ui: { resourceUri: AGENT_BUILDER_APP_URI },
+      'openai/outputTemplate': AGENT_BUILDER_APP_URI,
+      'openai/toolInvocation/invoking': '正在整理 Agent Builder…',
+      'openai/toolInvocation/invoked': 'Agent Builder 已更新',
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:read',
+  },
+  {
     name: 'create_agent_project',
     title: 'Create Agent Project',
     description: 'Create an empty Agent Project with an idempotency key.',
@@ -374,7 +475,7 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     name: 'run_agent_test',
     title: 'Run pinned Agent Revision test',
     description:
-      'Start a real Runtime Session and Turn pinned to one immutable Agent Revision. projectId is required.',
+      'Start a real Runtime Session and Turn pinned to an explicit Project and immutable Revision, then return its visible Runtime preview. A running response is not a pass; read the Test later with its testId.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -408,7 +509,8 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
   {
     name: 'read_agent_test',
     title: 'Read Agent Revision test',
-    description: 'Read and finalize one real Agent Test. testId is required.',
+    description:
+      'Read and finalize one real Agent Test and return its visible Runtime preview. status=passed means execution completed, not business quality; Release also requires a publishable immutable Review of the current Head.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -500,7 +602,7 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     name: 'publish_agent_revision',
     title: 'Publish tested Agent Revision',
     description:
-      'Publish a tested current Head as an immutable Release. Call only after explicit user confirmation.',
+      'Create an immutable Release only when the selected Test completed, has a publishable immutable quality Review, and still matches the current Head. Requires a separate explicit Release confirmation before calling.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -519,15 +621,28 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
 
 const toolByName = new Map(EXTERNAL_MCP_TOOLS.map((tool) => [tool.name, tool]));
 
+type McpTextContent = { type: 'text'; text: string };
+type McpResourceLink = {
+  type: 'resource_link';
+  uri: string;
+  name: string;
+  title: string;
+  description?: string;
+  mimeType?: string;
+};
+
 export interface McpToolResult {
-  content: Array<{ type: 'text'; text: string }>;
+  content: [McpTextContent, ...McpResourceLink[]];
   structuredContent: Record<string, unknown>;
   isError?: true;
 }
 
-function toolSuccess(value: Record<string, unknown>): McpToolResult {
+function toolSuccess(
+  value: Record<string, unknown>,
+  resourceLinks: McpResourceLink[] = [],
+): McpToolResult {
   return {
-    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify(value, null, 2) }, ...resourceLinks],
     structuredContent: value,
   };
 }
@@ -633,6 +748,53 @@ const publishInputSchema = z
     notes: z.string().trim().max(2_000).optional(),
   })
   .strict();
+const agentBuilderActionInputSchema = z
+  .object({
+    label: z.string().trim().min(1).max(80),
+    message: z.string().trim().min(1).max(1_000),
+    emphasis: z.enum(['primary', 'secondary']),
+  })
+  .strict();
+const renderAgentBuilderInputSchema = z
+  .object({
+    stage: z.enum(['readiness', 'recommendations', 'production', 'draft', 'test', 'release']),
+    title: z.string().trim().min(1).max(120),
+    summary: z.string().max(1_000),
+    progress: z
+      .array(
+        z
+          .object({
+            label: z.string().trim().min(1).max(80),
+            state: z.enum(['pending', 'current', 'done']),
+          })
+          .strict(),
+      )
+      .max(8),
+    items: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1).max(120),
+            title: z.string().trim().min(1).max(120),
+            summary: z.string().max(1_000),
+            facts: z
+              .array(
+                z
+                  .object({
+                    label: z.string().trim().min(1).max(80),
+                    value: z.string().max(2_000),
+                  })
+                  .strict(),
+              )
+              .max(12),
+            action: agentBuilderActionInputSchema.optional(),
+          })
+          .strict(),
+      )
+      .max(8),
+    actions: z.array(agentBuilderActionInputSchema).max(4),
+  })
+  .strict();
 
 function validationFailure(traceId: string, error: z.ZodError): McpToolResult {
   return toolFailure(traceId, '工具参数不符合 Combo 契约，请修正后重试。', {
@@ -661,6 +823,32 @@ function releasedAgentUrl(
     : null;
 }
 
+function runtimeSessionUrl(publicOrigin: string, sessionId: string): string {
+  return new URL(`/try/session/${encodeURIComponent(sessionId)}`, publicOrigin).toString();
+}
+
+function runtimeSessionLink(uri: string): McpResourceLink {
+  return {
+    type: 'resource_link',
+    uri,
+    name: 'combo-agent-test',
+    title: '打开 Agent 测试预览',
+    description: '在 Combo Runtime 中查看这个固定 Revision 的真实交互与输出。',
+    mimeType: 'text/html',
+  };
+}
+
+function releasedAgentLink(uri: string): McpResourceLink {
+  return {
+    type: 'resource_link',
+    uri,
+    name: 'combo-released-agent',
+    title: '打开已发布 Agent',
+    description: '打开当前不可变 Release 的稳定使用入口。',
+    mimeType: 'text/html',
+  };
+}
+
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
@@ -687,6 +875,12 @@ export async function executeExternalMcpTool(
   const input = rawArguments ?? {};
 
   try {
+    if (name === 'render_agent_builder') {
+      const parsed = renderAgentBuilderInputSchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      return toolSuccess(parsed.data);
+    }
+
     if (name === 'create_extraction_task') {
       const parsed = CreateTaskBodySchema.safeParse(input);
       if (!parsed.success) return validationFailure(context.traceId, parsed.error);
@@ -1019,10 +1213,15 @@ export async function executeExternalMcpTool(
         text: parsed.data.text,
         idempotencyKey: parsed.data.idempotencyKey,
       });
-      return toolSuccess({
-        ...detail,
-        checkBackAfterSeconds: detail.test.status === 'running' ? 2 : null,
-      });
+      const previewUrl = runtimeSessionUrl(context.publicOrigin, detail.test.sessionId);
+      return toolSuccess(
+        {
+          ...detail,
+          runtimeSessionUrl: previewUrl,
+          checkBackAfterSeconds: detail.test.status === 'running' ? 2 : null,
+        },
+        [runtimeSessionLink(previewUrl)],
+      );
     }
 
     if (name === 'list_agent_tests') {
@@ -1051,11 +1250,16 @@ export async function executeExternalMcpTool(
         ownerUserId: context.principal.userId,
       });
       if (!project) return toolFailure(context.traceId, '没有找到这个 Agent Test。');
-      return toolSuccess({
-        ...detail,
-        canPublish: detail.test.canPublish,
-        checkBackAfterSeconds: detail.test.status === 'running' ? 2 : null,
-      });
+      const previewUrl = runtimeSessionUrl(context.publicOrigin, detail.test.sessionId);
+      return toolSuccess(
+        {
+          ...detail,
+          runtimeSessionUrl: previewUrl,
+          canPublish: detail.test.canPublish,
+          checkBackAfterSeconds: detail.test.status === 'running' ? 2 : null,
+        },
+        [runtimeSessionLink(previewUrl)],
+      );
     }
 
     if (name === 'record_agent_test_review') {
@@ -1161,13 +1365,17 @@ export async function executeExternalMcpTool(
         ownerUserId: context.principal.userId,
       });
       if (!detail) throw new Error('released project cannot be read back');
-      return toolSuccess({
-        project: detail,
-        release: outcome.release,
-        releasedAgentUrl: releasedAgentUrl(context.publicOrigin, detail),
-        editorUrl: releasedAgentUrl(context.publicOrigin, detail),
-        target: targetSnapshot(detail),
-      });
+      const releaseUrl = releasedAgentUrl(context.publicOrigin, detail);
+      if (!releaseUrl) throw new Error('released project is missing its stable URL');
+      return toolSuccess(
+        {
+          project: detail,
+          release: outcome.release,
+          releasedAgentUrl: releaseUrl,
+          target: targetSnapshot(detail),
+        },
+        [releasedAgentLink(releaseUrl)],
+      );
     }
   } catch (error) {
     if (error instanceof AgentCompileDependencyError) {
