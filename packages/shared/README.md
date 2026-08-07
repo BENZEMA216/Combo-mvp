@@ -18,6 +18,6 @@
 
 ## 使用与验证
 
-Agent Builder 也从本包读取 `AgentDefinition`、Project、Revision、Test、Project Test 恢复列表与 Release 契约。恢复列表独立覆盖 `starting` claim，查询默认 20 条且硬限制为 50 条；Agent Revision 通过稳定 JSON 编码计算内容摘要，测试和发布必须引用同一份不可变 Runtime Bundle。
+Agent Builder 也从本包读取 `AgentDefinition`、Project、Revision、Test、不可变 Test 质量复核、Project Test 恢复列表与 Release 契约。恢复列表独立覆盖 `starting` claim，查询默认 20 条且硬限制为 50 条；每个 Test 同时暴露技术状态、质量状态和当前发布资格。Agent Revision 通过稳定 JSON 编码计算内容摘要，新 Release 必须引用同一份不可变 Runtime Bundle、技术通过的 Test 和可发布质量复核。
 
 业务包通过 `@cb/shared` 根入口导入契约，不引用 `dist/` 内部路径，也不在各应用重复定义相同 schema。`pnpm -F @cb/shared typecheck` 检查生产源码，`pnpm -F @cb/shared typecheck:test` 检查测试源码，`pnpm -F @cb/shared test` 运行单元测试。

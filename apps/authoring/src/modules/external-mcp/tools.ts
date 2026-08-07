@@ -12,6 +12,7 @@ import {
   canonicalJson,
   decodeIdCursor,
   encodeIdCursor,
+  RecordAgentTestReviewBodySchema,
   type McpOAuthScope,
   type ObjectStorePort,
 } from '@cb/shared';
@@ -24,6 +25,7 @@ import {
   createAgentProject,
   listAgentProjects,
   publishAgentRevision,
+  recordAgentTestReview,
   readAgentProjectDetail,
   readAgentRevisionDetail,
   saveAgentRevision,
@@ -417,6 +419,84 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     requiredScope: 'combo.agent:read',
   },
   {
+    name: 'record_agent_test_review',
+    title: 'Record immutable Agent Test quality review',
+    description:
+      'Record the authenticated user’s immutable quality decision for a passed Test. Call only after the user explicitly confirms the normal, boundary and failure case results in the current Codex task. caseId values must be unique.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['projectId', 'testId', 'idempotencyKey', 'cases'],
+      properties: {
+        projectId: UUID_SCHEMA,
+        testId: UUID_SCHEMA,
+        idempotencyKey: IDEMPOTENCY_SCHEMA,
+        summary: { type: 'string', maxLength: 2000, default: '' },
+        cases: {
+          type: 'array',
+          minItems: 3,
+          maxItems: 50,
+          uniqueItems: true,
+          allOf: [
+            {
+              contains: {
+                type: 'object',
+                required: ['kind'],
+                properties: { kind: { type: 'string', const: 'normal' } },
+              },
+            },
+            {
+              contains: {
+                type: 'object',
+                required: ['kind'],
+                properties: { kind: { type: 'string', const: 'boundary' } },
+              },
+            },
+            {
+              contains: {
+                type: 'object',
+                required: ['kind'],
+                properties: { kind: { type: 'string', const: 'failure' } },
+              },
+            },
+          ],
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['caseId', 'kind', 'executionStatus', 'qualityVerdict', 'reason'],
+            properties: {
+              caseId: { type: 'string', minLength: 1, maxLength: 120 },
+              kind: { type: 'string', enum: ['normal', 'boundary', 'failure'] },
+              executionStatus: { type: 'string', enum: ['completed', 'failed'] },
+              qualityVerdict: {
+                type: 'string',
+                enum: ['passed', 'failed', 'accepted_exception'],
+              },
+              reason: { type: 'string', minLength: 1, maxLength: 2000 },
+              impact: { type: 'string', maxLength: 2000 },
+            },
+            allOf: [
+              {
+                if: {
+                  required: ['qualityVerdict'],
+                  properties: {
+                    qualityVerdict: { type: 'string', const: 'accepted_exception' },
+                  },
+                },
+                then: {
+                  required: ['impact'],
+                  properties: { impact: { type: 'string', minLength: 1, maxLength: 2000 } },
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+    annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:write',
+  },
+  {
     name: 'publish_agent_revision',
     title: 'Publish tested Agent Revision',
     description:
@@ -542,6 +622,9 @@ const listTestsInputSchema = z
   })
   .strict();
 const readTestInputSchema = z.object({ testId: AgentResourceIdSchema }).strict();
+const reviewTestInputSchema = z
+  .object({ projectId: AgentResourceIdSchema, testId: AgentResourceIdSchema })
+  .merge(RecordAgentTestReviewBodySchema);
 const publishInputSchema = z
   .object({
     projectId: AgentResourceIdSchema,
@@ -576,10 +659,6 @@ function releasedAgentUrl(
   return detail.project.currentReleaseId
     ? new URL(`/try/a/${encodeURIComponent(detail.project.id)}`, publicOrigin).toString()
     : null;
-}
-
-function editorUrl(publicOrigin: string, sessionId: string): string {
-  return new URL(`/try/session/${encodeURIComponent(sessionId)}`, publicOrigin).toString();
 }
 
 function shellQuote(value: string): string {
@@ -813,7 +892,6 @@ export async function executeExternalMcpTool(
         projectId: parsed.data.projectId,
         studioSessionId: studio.session.id,
         saved,
-        editorUrl: editorUrl(context.publicOrigin, studio.session.id),
       });
     }
 
@@ -944,7 +1022,6 @@ export async function executeExternalMcpTool(
       return toolSuccess({
         ...detail,
         checkBackAfterSeconds: detail.test.status === 'running' ? 2 : null,
-        editorUrl: editorUrl(context.publicOrigin, detail.test.sessionId),
       });
     }
 
@@ -976,11 +1053,52 @@ export async function executeExternalMcpTool(
       if (!project) return toolFailure(context.traceId, '没有找到这个 Agent Test。');
       return toolSuccess({
         ...detail,
-        canPublish:
-          detail.test.status === 'passed' &&
-          project.project.headRevisionId === detail.test.agentRevisionId,
+        canPublish: detail.test.canPublish,
         checkBackAfterSeconds: detail.test.status === 'running' ? 2 : null,
-        editorUrl: editorUrl(context.publicOrigin, detail.test.sessionId),
+      });
+    }
+
+    if (name === 'record_agent_test_review') {
+      const parsed = reviewTestInputSchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      const outcome = await recordAgentTestReview(context.txPool, {
+        projectId: parsed.data.projectId,
+        testId: parsed.data.testId,
+        ownerUserId: context.principal.userId,
+        body: {
+          idempotencyKey: parsed.data.idempotencyKey,
+          cases: parsed.data.cases,
+          summary: parsed.data.summary,
+        },
+      });
+      if (outcome.kind === 'not_found') {
+        return toolFailure(context.traceId, '没有找到这个 Agent Project 或 Test。');
+      }
+      if (outcome.kind === 'idempotency_conflict') {
+        return toolFailure(context.traceId, '这个幂等键已经用于另一份质量复核正文。');
+      }
+      if (outcome.kind === 'test_not_passed') {
+        return toolFailure(context.traceId, '只有技术执行已经通过的 Agent Test 才能记录质量复核。');
+      }
+      if (outcome.kind === 'review_exists') {
+        return toolFailure(
+          context.traceId,
+          '这个 Test 已有不可变质量复核；需要改变结论时请重新运行 Test。',
+        );
+      }
+      const project = await readAgentProjectDetail(context.db, {
+        projectId: parsed.data.projectId,
+        ownerUserId: context.principal.userId,
+      });
+      if (!project) throw new Error('reviewed project cannot be read back');
+      const canPublish =
+        (outcome.review.qualityStatus === 'passed' ||
+          outcome.review.qualityStatus === 'accepted_exception') &&
+        project.project.headRevisionId === outcome.review.agentRevisionId;
+      return toolSuccess({
+        review: outcome.review,
+        canPublish,
+        target: targetSnapshot(project),
       });
     }
 
@@ -993,6 +1111,13 @@ export async function executeExternalMcpTool(
       }
       if (test.test.status !== 'passed') {
         return toolFailure(context.traceId, '所选 Agent Test 尚未通过。');
+      }
+      if (
+        test.test.canPublish === false ||
+        test.test.qualityStatus === 'unreviewed' ||
+        test.test.qualityStatus === 'failed'
+      ) {
+        return toolFailure(context.traceId, '所选 Test 还没有通过或已接受例外的不可变质量复核。');
       }
       const project = await readAgentProjectDetail(context.db, {
         projectId: parsed.data.projectId,
@@ -1027,6 +1152,9 @@ export async function executeExternalMcpTool(
       }
       if (outcome.kind === 'test_not_passed') {
         return toolFailure(context.traceId, '发布要求同一 Revision 的真实 Runtime Test 已通过。');
+      }
+      if (outcome.kind === 'review_not_publishable') {
+        return toolFailure(context.traceId, '发布要求该 Test 已有可发布的不可变质量复核。');
       }
       const detail = await readAgentProjectDetail(context.db, {
         projectId: parsed.data.projectId,

@@ -23,12 +23,16 @@ import {
   SendMessageBodySchema,
   UpdateSessionBodySchema,
   AgentDefinitionSchema,
+  AgentReleaseViewSchema,
+  AgentTestViewSchema,
   AgentTestListItemSchema,
   AgentTestListSchema,
   CommitAgentRevisionBodySchema,
   ListAgentProjectTestsQuerySchema,
   SaveAgentUiRevisionBodySchema,
+  RecordAgentTestReviewBodySchema,
   canonicalJson,
+  deriveAgentTestReviewStatus,
 } from '../index.js';
 import { z } from 'zod';
 
@@ -446,6 +450,10 @@ describe('Agent Builder V1 契约', () => {
       completedAt: null,
     };
     expect(AgentTestListItemSchema.safeParse(starting).success).toBe(true);
+    expect(AgentTestListItemSchema.parse(starting)).toMatchObject({
+      qualityStatus: 'unreviewed',
+      canPublish: false,
+    });
     expect(AgentTestListItemSchema.safeParse({ ...starting, status: 'queued' }).success).toBe(
       false,
     );
@@ -455,6 +463,94 @@ describe('Agent Builder V1 契约', () => {
     expect(AgentTestListSchema.safeParse(Array.from({ length: 51 }, () => starting)).success).toBe(
       false,
     );
+  });
+
+  it('质量复核覆盖 normal、boundary、failure，并强制例外理由与影响', () => {
+    const cases = [
+      {
+        caseId: 'normal-1',
+        kind: 'normal',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: '正常输入结果完整。',
+      },
+      {
+        caseId: 'boundary-1',
+        kind: 'boundary',
+        executionStatus: 'completed',
+        qualityVerdict: 'accepted_exception',
+        reason: '缺少回滚信息时会要求补充。',
+        impact: '只影响缺失回滚字段的输入，不会给出错误 GO 结论。',
+      },
+      {
+        caseId: 'failure-1',
+        kind: 'failure',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: '未解决严重缺陷时稳定返回 NO_GO。',
+      },
+    ] as const;
+    const parsed = RecordAgentTestReviewBodySchema.parse({
+      idempotencyKey: 'quality-review-0001',
+      cases,
+    });
+    expect(parsed.summary).toBe('');
+    expect(deriveAgentTestReviewStatus(parsed.cases)).toBe('accepted_exception');
+    expect(
+      deriveAgentTestReviewStatus([{ ...cases[0], executionStatus: 'failed' }, cases[1], cases[2]]),
+    ).toBe('failed');
+    expect(
+      RecordAgentTestReviewBodySchema.safeParse({
+        idempotencyKey: 'quality-review-0002',
+        cases: cases.map((reviewCase) =>
+          reviewCase.kind === 'boundary' ? { ...reviewCase, impact: undefined } : reviewCase,
+        ),
+      }).success,
+    ).toBe(false);
+    expect(
+      RecordAgentTestReviewBodySchema.safeParse({
+        idempotencyKey: 'quality-review-0003',
+        cases: cases.filter((reviewCase) => reviewCase.kind !== 'failure'),
+      }).success,
+    ).toBe(false);
+    expect(
+      RecordAgentTestReviewBodySchema.safeParse({
+        idempotencyKey: 'quality-review-0004',
+        cases: [cases[0], { ...cases[1], caseId: cases[0].caseId }, cases[2]],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('旧 Test 与 Release 响应补齐未复核默认值，但服务端可显式返回新证据', () => {
+    const test = AgentTestViewSchema.parse({
+      id: '44444444-4444-4444-8444-444444444444',
+      projectId: '55555555-5555-4555-8555-555555555555',
+      agentRevisionId: '66666666-6666-4666-8666-666666666666',
+      runtimeBundleSha256: 'a'.repeat(64),
+      uiSha256: 'b'.repeat(64),
+      sessionId: '77777777-7777-4777-8777-777777777777',
+      turnId: '88888888-8888-4888-8888-888888888888',
+      status: 'passed',
+      errorCode: null,
+      createdAt: '2026-08-05T12:00:00.000Z',
+      completedAt: '2026-08-05T12:00:01.000Z',
+    });
+    expect(test).toMatchObject({ qualityStatus: 'unreviewed', canPublish: false });
+
+    const release = AgentReleaseViewSchema.parse({
+      id: '99999999-9999-4999-8999-999999999999',
+      projectId: test.projectId,
+      versionNumber: 1,
+      agentRevisionId: test.agentRevisionId,
+      qualifyingTestId: test.id,
+      runtimeBundleSha256: test.runtimeBundleSha256,
+      uiSha256: test.uiSha256,
+      releaseSha256: 'c'.repeat(64),
+      notes: '',
+      runtimePath: `/try/a/${test.projectId}`,
+      createdAt: '2026-08-05T12:00:02.000Z',
+    });
+    expect(release).toMatchObject({ qualifyingReviewId: null, reviewSha256: null });
   });
 
   it('稳定 JSON 编码不受对象键插入顺序影响', () => {

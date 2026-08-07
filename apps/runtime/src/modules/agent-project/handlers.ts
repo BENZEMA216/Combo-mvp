@@ -203,7 +203,7 @@ export function startAgentTestHandler(): RouteHandlerMethod {
       }
       if (!test) throw new Error('Agent Test reservation could not be activated');
       reservation = undefined;
-      const data: AgentTestDetail = { test, outputText: null };
+      const data: AgentTestDetail = { test, outputText: null, review: null };
       const body: Envelope<AgentTestDetail> = { data, meta: { traceId: req.id } };
       reply.code(202).send(body);
       return reply;

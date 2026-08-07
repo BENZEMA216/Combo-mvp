@@ -522,7 +522,7 @@ export function mcpPostHandler(): RouteHandlerMethod {
           jsonRpcResult(id, {
             protocolVersion: negotiatedProtocolVersion,
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.3.0' },
+            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.4.0' },
             instructions:
               'Create and edit Combo Agent Projects. This remote server is stateless, so pass projectId explicitly.',
           }),
@@ -596,7 +596,7 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
     const commands =
       `${codex} plugin remove combo@dangdang-tech-combo\n` +
       `${codex} plugin marketplace remove dangdang-tech-combo\n` +
-      `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/mcp-oauth-v1\n` +
+      `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-codex-first\n` +
       `${codex} plugin add combo@dangdang-tech-combo\n` +
       `${codex} mcp login combo`;
     const body = `<h1>在 Codex 中使用 Combo Test</h1>

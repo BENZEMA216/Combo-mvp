@@ -4,12 +4,14 @@ import {
   AgentDefinitionSchema,
   AgentRuntimeBundleSchema,
   canonicalJson,
+  deriveAgentTestReviewStatus,
   type AgentProjectDetail,
   type AgentRevisionDetail,
   type CommitAgentRevisionBody,
   type CreateAgentProjectBody,
   type CreateAgentReleaseBody,
   type ObjectStorePort,
+  type RecordAgentTestReviewBody,
 } from '@cb/shared';
 import type { Queryable } from '../../platform/infra/db.js';
 import type { TxPool } from '../../platform/infra/db-tx.js';
@@ -24,6 +26,7 @@ import {
   createAgentProject as insertAgentProject,
   createAgentRelease as insertAgentRelease,
   isOwnedSourceTask,
+  recordAgentTestReview as insertAgentTestReview,
   readAgentProject,
   readAgentRelease,
   readAgentRevisionRecord,
@@ -32,6 +35,7 @@ import {
   type CommitRevisionOutcome,
   type CreateProjectOutcome,
   type CreateReleaseOutcome,
+  type RecordTestReviewOutcome,
 } from './repo.js';
 
 function sha256(value: string): string {
@@ -251,5 +255,35 @@ export async function publishAgentRevision(
     idempotencyKey: input.body.idempotencyKey,
     idempotencySha256,
     notes: input.body.notes,
+  });
+}
+
+export async function recordAgentTestReview(
+  pool: TxPool,
+  input: {
+    projectId: string;
+    testId: string;
+    ownerUserId: string;
+    body: RecordAgentTestReviewBody;
+  },
+): Promise<RecordTestReviewOutcome> {
+  const qualityStatus = deriveAgentTestReviewStatus(input.body.cases);
+  const canonicalReview = {
+    projectId: input.projectId,
+    testId: input.testId,
+    reviewerUserId: input.ownerUserId,
+    qualityStatus,
+    cases: input.body.cases,
+    summary: input.body.summary,
+  };
+  return insertAgentTestReview(pool, {
+    projectId: input.projectId,
+    testId: input.testId,
+    ownerUserId: input.ownerUserId,
+    qualityStatus,
+    cases: input.body.cases,
+    summary: input.body.summary,
+    idempotencyKey: input.body.idempotencyKey,
+    idempotencySha256: sha256(canonicalJson(canonicalReview)),
   });
 }

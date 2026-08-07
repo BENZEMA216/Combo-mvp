@@ -31,8 +31,8 @@ async function call(handler: RouteHandlerMethod, req: FastifyRequest): Promise<C
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 28 endpoints (account 4 + task 8 + capability 5 + agent-project 6 + billing 5)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(28);
+  it('registers exactly 29 endpoints (account 4 + task 8 + capability 5 + agent-project 7 + billing 5)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(29);
   });
 
   it('has no duplicate method and URL pairs', () => {

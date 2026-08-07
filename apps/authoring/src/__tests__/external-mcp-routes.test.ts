@@ -186,7 +186,7 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('--ref codex/mcp-oauth-v1');
+    expect(response.body).toContain('--ref codex/combo-plugin-v2-codex-first');
     expect(response.body).toContain('mcp login combo');
     expect(response.body).not.toContain('mcp add combo');
   });
@@ -207,7 +207,7 @@ describe('external MCP root route integration', () => {
         expect(response.body).toContain('暂不可安装');
         expect(response.body).not.toContain('plugin marketplace add');
         expect(response.body).not.toContain('mcp login combo');
-        expect(response.body).not.toContain('codex/mcp-oauth-v1');
+        expect(response.body).not.toContain('codex/combo-plugin-v2-codex-first');
       } finally {
         await isolated.close();
       }
@@ -398,7 +398,7 @@ describe('external MCP stateless machine contract', () => {
     });
   }
 
-  it('supports initialize and advertises exactly the 16 stateless tools', async () => {
+  it('supports initialize and advertises exactly the 17 stateless tools', async () => {
     const initialized = await call('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
@@ -430,9 +430,10 @@ describe('external MCP stateless machine contract', () => {
       'run_agent_test',
       'list_agent_tests',
       'read_agent_test',
+      'record_agent_test_review',
       'publish_agent_revision',
     ]);
-    expect(tools).toHaveLength(16);
+    expect(tools).toHaveLength(17);
     const run = tools.find((tool) => tool.name === 'run_agent_test')!;
     expect((run.inputSchema as { required: string[] }).required).toContain('revisionId');
     const readUi = tools.find((tool) => tool.name === 'read_agent_ui')!;
@@ -576,6 +577,69 @@ describe('external MCP stateless machine contract', () => {
     invalidStructured.definition.interface.output = { type: 'structured' };
     expect(validate(invalidStructured)).toBe(false);
     expect(AgentDefinitionSchema.safeParse(invalidStructured.definition).success).toBe(false);
+  });
+
+  it('advertises the two-axis three-kind quality review contract', async () => {
+    const listed = await call('tools/list');
+    const tools = (listed.json() as { result: { tools: Array<Record<string, unknown>> } }).result
+      .tools;
+    const review = tools.find((tool) => tool.name === 'record_agent_test_review')!;
+    const ajv = new Ajv({ allErrors: true, strict: false });
+    ajv.addFormat(
+      'uuid',
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    const validate = ajv.compile(review.inputSchema as Record<string, unknown>);
+    const cases = [
+      {
+        caseId: 'normal-1',
+        kind: 'normal',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'complete',
+      },
+      {
+        caseId: 'boundary-1',
+        kind: 'boundary',
+        executionStatus: 'completed',
+        qualityVerdict: 'accepted_exception',
+        reason: 'bounded exception',
+        impact: 'missing rollback inputs only',
+      },
+      {
+        caseId: 'failure-1',
+        kind: 'failure',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'returns NO_GO',
+      },
+    ];
+    expect(
+      validate({
+        projectId: '00000000-0000-4000-8000-000000000002',
+        testId: '00000000-0000-4000-8000-000000000006',
+        idempotencyKey: 'quality-review-123',
+        cases,
+      }),
+    ).toBe(true);
+    expect(
+      validate({
+        projectId: '00000000-0000-4000-8000-000000000002',
+        testId: '00000000-0000-4000-8000-000000000006',
+        idempotencyKey: 'quality-review-456',
+        cases: cases.map((reviewCase) =>
+          reviewCase.kind === 'boundary' ? { ...reviewCase, impact: undefined } : reviewCase,
+        ),
+      }),
+    ).toBe(false);
+    expect(
+      validate({
+        projectId: '00000000-0000-4000-8000-000000000002',
+        testId: '00000000-0000-4000-8000-000000000006',
+        idempotencyKey: 'quality-review-789',
+        cases: cases.filter((reviewCase) => reviewCase.kind !== 'failure'),
+      }),
+    ).toBe(false);
   });
 
   it('rejects missing project IDs and UI XOR violations before touching business state', async () => {

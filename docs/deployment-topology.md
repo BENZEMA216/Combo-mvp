@@ -68,6 +68,10 @@ Authoring API 每个环境固定运行两个 replica。路由级限流必须由�
 
 `scripts/render-env.mjs` 按环境渲染 apps / migrate / foundation 三份清单，替换镜像 digest 与每环境占位符（Secret 名、Postgres/Redis/MinIO 主机、公开入口、Cookie 安全标志）。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。
 
+跨数据库与服务响应的契约变更必须使用 reader-compatible → expand/write → enforce 的分阶段
+发布，不能把不兼容迁移与新响应字段放在同一次 migrate-before-app rollout。Agent Review V2
+的具体阻断与拆分门禁见 [`agent-review-v2-rollout.md`](agent-review-v2-rollout.md)。
+
 ## 7. 凭证规范
 
 - 各应用 namespace 必须存在 `combo-env` Secret（Postgres/S3/Resend/OTP/LLM 配置）与 `ghcr-pull`（镜像拉取）。

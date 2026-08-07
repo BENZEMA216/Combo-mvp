@@ -18,6 +18,8 @@
 - `browser-origin.test.ts` 验证 CORS、认证请求和 Cookie 鉴权业务写请求的精确来源策略。
 - `observability-redaction.test.ts` 使用内存 span 导出器验证查询凭据、客户端地址、请求头、正文和异常文本在导出前被删除，并验证浏览器事件的敏感 pathname 只形成固定路由桶。
 - `routes.test.ts` 核对端点总数、无重复、认证公开面和前置守卫。
+- `external-mcp-tools.test.ts` 验证无状态 MCP 工具的公开投影、显式资源身份、三类案例质量复核与发布门禁。
+- `external-mcp-routes.test.ts` 验证 OAuth 后的 MCP transport、十七项工具发现及手写 JSON Schema 与共享契约的一致性。
 - `task-service.test.ts` 验证任务状态机、建任务幂等、重试和过期对账。
 - `pairing.test.ts` 验证配对码、快照准备、分片登记和对象清理。
 - `connect-script.test.ts` 验证本机助手脚本的续传与响应丢失处理。
@@ -33,6 +35,8 @@
 - `billing-http-boundary.test.ts` 验证支付通知不要求 Cookie 或 Origin，并且错误内容类型、畸形 JSON、请求体上限和限流始终返回固定网关响应。
 - `billing-handler.test.ts` 验证按充值意图恢复订单时使用 owner 范围查询，未找到只返回安全 404 信封。
 - `billing.pg.test.ts` 是显式开启的专用 PostgreSQL 并发测试。只有 `BILLING_PG_TEST=1` 且同时提供管理员 `BILLING_TEST_DATABASE_URL` 与 `combo_api` 的 `BILLING_AUTHORING_TEST_DATABASE_URL` 时运行；所有真实仓储 SQL 使用最小权限角色，管理员连接只负责隔离测试数据的准备和断言。它验证预下单崩溃恢复、并发幂等准备、用户订单 admission、查单退休、支付动作清理、通知与查单并发只入账一次，以及通知早于预下单结果时成功状态不被降级。
+
+Agent Project 模块旁的 `repo.test.ts` 使用事务假件验证 Test Review 的幂等、不可变和 Release 证据冻结，不连接外部服务。
 
 ## 上下游
 

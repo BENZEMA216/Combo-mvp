@@ -11,6 +11,7 @@
 - `health.test.ts`、`http-logging.test.ts` 与 `observability-redaction.test.ts` 验证依赖状态、低敏日志和追踪脱敏。
 - `routes.test.ts` 验证端点声明、鉴权与来源守卫、owner 隔离、普通与 Studio Session、UI 恢复和 Artifact 读取。
 - `artifact.test.ts`、`session-detail.test.ts`、`session-repo.test.ts` 和 `session-consistency.integration.test.ts` 验证 Artifact 来源、详情快照、会话仓储、UI 晋升和事务约束。
+- `modules/agent-project/repo.test.ts` 验证 Test 启动租约、技术终态、质量状态联查，以及技术、质量和当前 Head 共同决定的发布资格。
 - `billing.test.ts` 验证免费三次、owner 免计费、钱包结算、`usageId` 幂等、余额不足、失败释放和清扫补偿。
 - `billing.pg.test.ts` 仅在 `BILLING_PG_TEST=1` 且同时提供专用 `BILLING_TEST_DATABASE_URL` 和 `BILLING_RUNTIME_TEST_DATABASE_URL` 时运行。管理员连接只准备与核对随机测试数据，真实 service SQL 必须通过最小 `combo_runtime` 身份执行；用例覆盖免费额度的成功结算与失败释放，也验证同一 Session 或跨 Session 并发提交时，同一用户的 `usageId` 只产生一条用量、一个 Turn 和一笔扣费。测试不清理不可变资金流水，数据库应由外层 fixture 整体重建。
 - `build-agent.test.ts`、`run-turn.test.ts`、`stream-events.test.ts`、`turn-control.test.ts`、`turn-repo.test.ts` 和 `terminal-fence.integration.test.ts` 验证 Pi Agent、Turn 生命周期、Redis 补发与终态栅栏。

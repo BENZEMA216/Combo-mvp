@@ -4,6 +4,7 @@ import {
   CreateAgentProjectBodySchema,
   CreateAgentReleaseBodySchema,
   AgentResourceIdSchema,
+  RecordAgentTestReviewBodySchema,
   DEFAULT_PAGE_LIMIT,
   ErrorCode,
   InvalidCursorError,
@@ -12,6 +13,7 @@ import {
   encodeIdCursor,
   type AgentProjectView,
   type AgentRevisionView,
+  type AgentTestReviewView,
   type Envelope,
   type Paginated,
 } from '@cb/shared';
@@ -23,6 +25,7 @@ import {
   AgentRevisionIntegrityError,
   createAgentProject,
   publishAgentRevision,
+  recordAgentTestReview,
   readAgentProjectDetail,
   readAgentRevisionDetail,
   saveAgentRevision,
@@ -255,6 +258,61 @@ export function getAgentRevisionHandler(): RouteHandlerMethod {
   };
 }
 
+export function recordAgentTestReviewHandler(): RouteHandlerMethod {
+  return async function (req: FastifyRequest, reply: FastifyReply) {
+    const userId = req.auth?.userId;
+    if (!userId) return sendError(req, reply, ErrorCode.UNAUTHENTICATED);
+    const params = req.params as { projectId?: string; testId?: string };
+    const parsedProjectId = AgentResourceIdSchema.safeParse(params.projectId);
+    const parsedTestId = AgentResourceIdSchema.safeParse(params.testId);
+    if (!parsedProjectId.success || !parsedTestId.success) {
+      return sendError(req, reply, ErrorCode.VALIDATION_FAILED);
+    }
+    const parsed = RecordAgentTestReviewBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return sendError(req, reply, ErrorCode.VALIDATION_FAILED, {
+        details: {
+          issues: parsed.error.issues.map((issue) => ({
+            path: issue.path,
+            message: issue.message,
+          })),
+        },
+      });
+    }
+    try {
+      const outcome = await recordAgentTestReview(asTxPool(req.server.infra.db), {
+        projectId: parsedProjectId.data,
+        testId: parsedTestId.data,
+        ownerUserId: userId,
+        body: parsed.data,
+      });
+      if (outcome.kind === 'not_found') return sendError(req, reply, ErrorCode.NOT_FOUND);
+      if (outcome.kind === 'idempotency_conflict') {
+        return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
+      }
+      if (outcome.kind === 'test_not_passed') {
+        return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
+          userMessage: '只有技术执行已经通过的 Agent Test 才能记录质量复核。',
+        });
+      }
+      if (outcome.kind === 'review_exists') {
+        return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
+          userMessage: '这个 Agent Test 已有不可变质量复核；需要改变结论时请重新运行 Test。',
+        });
+      }
+      const body: Envelope<AgentTestReviewView> = {
+        data: outcome.review,
+        meta: { traceId: req.id },
+      };
+      reply.code(outcome.kind === 'created' ? 201 : 200).send(body);
+      return reply;
+    } catch (err) {
+      req.log.error({ err, traceId: req.id }, 'record agent test review failed');
+      return sendError(req, reply, ErrorCode.INTERNAL);
+    }
+  };
+}
+
 export function createAgentReleaseHandler(): RouteHandlerMethod {
   return async function (req: FastifyRequest, reply: FastifyReply) {
     const userId = req.auth?.userId;
@@ -285,6 +343,11 @@ export function createAgentReleaseHandler(): RouteHandlerMethod {
       if (outcome.kind === 'test_not_passed') {
         return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
           userMessage: '发布要求同一个 Agent Revision 的真实测试已经通过。',
+        });
+      }
+      if (outcome.kind === 'review_not_publishable') {
+        return sendError(req, reply, ErrorCode.STATE_CONFLICT, {
+          userMessage: '发布要求该 Test 已有通过或已接受例外的不可变质量复核。',
         });
       }
       const project = await readAgentProjectDetail(req.server.infra.db, {

@@ -11,6 +11,8 @@
 - `platform/` 保存配置、数据库、Redis、对象存储、不透明会话读取、模型选择、沙箱后端、HTTP 公共设施和观测接线。
 - `__tests__/` 保存单元测试、忠实假件和显式启用的 PostgreSQL、Redis 集成测试。
 
+Agent Test 读取会联结 Authoring 写入的不可变质量复核，返回 `qualityStatus`、服务端派生的 `canPublish`，并在单 Test 详情中返回 nullable 完整 Review 供跨任务恢复案例理由与限制。只有技术 Test 通过、复核结论可发布，且 Test 仍绑定 Project 当前 Head Revision 时才为 `true`；Runtime 对复核表仅有读权限。
+
 ## 消息提交路径
 
 浏览器写请求先通过严格 `PUBLIC_APP_ORIGINS` 白名单守卫，再按 `SESSION_COOKIE_SECURE` 读取对应的不透明会话 Cookie。鉴权中间件校验格式、计算摘要并联查 `auth_sessions` 与 `users`，随后把用户身份挂到请求上。

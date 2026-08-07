@@ -23,8 +23,8 @@
 3. 浏览器只持有一枚 HttpOnly Cookie。HTTPS 发布入口显式配置根路径、Secure 且主机限定的 `__Host-cb_session`，本地 HTTP 开发入口显式配置根路径 `cb_session`，选择不依赖 `NODE_ENV`。authoring 的受保护路由只按当前安全策略对应的 Cookie 查询本地会话，不接受 Bearer 或 refresh 凭据。
 4. 创作者创建任务后，本机助手凭配对码上传分片。worker 消费任务，读取原文、解析、脱敏、调用大模型并写入能力项。
 5. 浏览器通过任务事件流读取进度，终态仍以 PostgreSQL 中的任务状态为准。
-6. Codex 或 Studio 创建 Agent Project，提交带 Head CAS 的 Revision；编译器冻结 Capability、Miniapp 和 Runtime Bundle，Runtime Test 通过后才能发布同一 Revision。
-7. Codex 插件通过根级 OAuth 发现和 PKCE 登录获得短期 Bearer Token；远程 MCP 的十六个工具始终要求显式资源 ID，不读取或暴露浏览器 Cookie。
+6. Codex 或 Studio 创建 Agent Project，提交带 Head CAS 的 Revision；编译器冻结 Capability、Miniapp 和 Runtime Bundle。Runtime Test 技术通过后，当前用户还必须确认 normal、boundary 与 failure 三类案例的执行和质量结果，Authoring 才保存不可变复核；只有技术通过、质量通过或已接受例外且仍是当前 Head 的同一 Revision 才能发布。
+7. Codex 插件通过根级 OAuth 发现和 PKCE 登录获得短期 Bearer Token；远程 MCP 的十七个工具始终要求显式资源 ID，不读取或暴露浏览器 Cookie。
 
 ## 充值主链路
 

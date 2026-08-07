@@ -91,7 +91,11 @@ export class McpRuntimeClient {
     );
   }
 
-  private async json<T>(path: string, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
+  private async json<TSchema extends z.ZodTypeAny>(
+    path: string,
+    schema: TSchema,
+    init?: RequestInit,
+  ): Promise<z.output<TSchema>> {
     const response = await this.request(path, init);
     let raw: unknown;
     try {

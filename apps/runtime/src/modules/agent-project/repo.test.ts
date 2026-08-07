@@ -32,6 +32,15 @@ interface TestRow {
   completed_at: string | null;
   turn_status: 'running' | 'completed' | 'failed' | 'interrupted';
   turn_error_code: string | null;
+  quality_status: 'passed' | 'failed' | 'accepted_exception' | null;
+  review_id: string | null;
+  review_cases: unknown;
+  review_summary: string | null;
+  review_sha256: string | null;
+  review_user_id: string | null;
+  review_created_at: string | null;
+  current_head_revision_id: string | null;
+  project_status: 'active' | 'archived';
 }
 
 const IDS = {
@@ -72,6 +81,15 @@ function testRow(overrides: Partial<TestRow> = {}): TestRow {
     completed_at: null,
     turn_status: 'completed',
     turn_error_code: null,
+    quality_status: null,
+    review_id: null,
+    review_cases: null,
+    review_summary: null,
+    review_sha256: null,
+    review_user_id: null,
+    review_created_at: null,
+    current_head_revision_id: IDS.revision,
+    project_status: 'active',
     ...overrides,
   };
 }
@@ -382,6 +400,8 @@ describe('agent-project repo', () => {
         sessionId: null,
         turnId: null,
         status: 'starting',
+        qualityStatus: 'unreviewed',
+        canPublish: false,
         errorCode: null,
         createdAt: '2026-08-05T02:00:00.000Z',
         completedAt: null,
@@ -464,6 +484,62 @@ describe('agent-project repo', () => {
     });
   });
 
+  it('recovers the complete immutable quality Review with a terminal Test', async () => {
+    const cases = [
+      {
+        caseId: 'normal-1',
+        kind: 'normal',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'Normal output met the expected result.',
+      },
+      {
+        caseId: 'boundary-1',
+        kind: 'boundary',
+        executionStatus: 'completed',
+        qualityVerdict: 'accepted_exception',
+        reason: 'The missing optional field is surfaced.',
+        impact: 'Only requests without that optional field need manual follow-up.',
+      },
+      {
+        caseId: 'failure-1',
+        kind: 'failure',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'Invalid input produced the bounded error.',
+      },
+    ];
+    const db = new FinalizeTestDb(
+      testRow({
+        status: 'passed',
+        completed_at: '2026-08-05T01:00:01.000Z',
+        quality_status: 'accepted_exception',
+        review_id: '66666666-6666-4666-8666-666666666666',
+        review_cases: cases,
+        review_summary: 'Accepted one bounded exception.',
+        review_sha256: 'd'.repeat(64),
+        review_user_id: '77777777-7777-4777-8777-777777777777',
+        review_created_at: '2026-08-05T01:01:00.000Z',
+      }),
+      [{ type: 'text', text: '{"answer":"grounded"}' }],
+    );
+
+    await expect(readAndFinalizeAgentTest(db, IDS.test, 'owner-1')).resolves.toMatchObject({
+      test: { qualityStatus: 'accepted_exception', canPublish: true },
+      review: {
+        id: '66666666-6666-4666-8666-666666666666',
+        testId: IDS.test,
+        qualityStatus: 'accepted_exception',
+        cases,
+        summary: 'Accepted one bounded exception.',
+        reviewSha256: 'd'.repeat(64),
+        reviewerUserId: '77777777-7777-4777-8777-777777777777',
+        reviewedAt: '2026-08-05T01:01:00.000Z',
+        acceptedAt: '2026-08-05T01:01:00.000Z',
+      },
+    });
+  });
+
   it('replays the same idempotency key and request hash, but conflicts on a different hash', async () => {
     const row = testRow();
     const db = new RequestTestDb(row);
@@ -485,6 +561,54 @@ describe('agent-project repo', () => {
     await expect(
       readAgentTestRequest(db, { ...request, requestSha256: 'd'.repeat(64) }),
     ).resolves.toEqual({ kind: 'idempotency_conflict' });
+  });
+
+  it('publishes readiness only for a passed reviewed Test that still matches the active Head', async () => {
+    const publishable = testRow({
+      status: 'passed',
+      completed_at: '2026-08-05T01:00:01.000Z',
+      quality_status: 'accepted_exception',
+    });
+    await expect(
+      readAgentTestRequest(new RequestTestDb(publishable), {
+        projectId: IDS.project,
+        requestKey: publishable.request_key,
+        requestSha256: publishable.request_sha256,
+        ownerUserId: 'owner-1',
+      }),
+    ).resolves.toMatchObject({
+      kind: 'replayed',
+      test: { qualityStatus: 'accepted_exception', canPublish: true },
+    });
+
+    const staleHead = testRow({
+      status: 'passed',
+      completed_at: '2026-08-05T01:00:01.000Z',
+      quality_status: 'passed',
+      current_head_revision_id: '99999999-9999-4999-8999-999999999999',
+    });
+    await expect(
+      readAgentTestRequest(new RequestTestDb(staleHead), {
+        projectId: IDS.project,
+        requestKey: staleHead.request_key,
+        requestSha256: staleHead.request_sha256,
+        ownerUserId: 'owner-1',
+      }),
+    ).resolves.toMatchObject({ test: { qualityStatus: 'passed', canPublish: false } });
+
+    const failedReview = testRow({
+      status: 'passed',
+      completed_at: '2026-08-05T01:00:01.000Z',
+      quality_status: 'failed',
+    });
+    await expect(
+      readAgentTestRequest(new RequestTestDb(failedReview), {
+        projectId: IDS.project,
+        requestKey: failedReview.request_key,
+        requestSha256: failedReview.request_sha256,
+        ownerUserId: 'owner-1',
+      }),
+    ).resolves.toMatchObject({ test: { qualityStatus: 'failed', canPublish: false } });
   });
 
   it('reserves the idempotency key before activation, then replays the single bound Test', async () => {

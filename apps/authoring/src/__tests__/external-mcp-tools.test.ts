@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   readAgentProjectDetail: vi.fn(),
   readAgentRevisionDetail: vi.fn(),
   publishAgentRevision: vi.fn(),
+  recordAgentTestReview: vi.fn(),
 }));
 
 vi.mock('../modules/agent-project/index.js', async () => {
@@ -23,6 +24,7 @@ vi.mock('../modules/agent-project/index.js', async () => {
     readAgentProjectDetail: mocks.readAgentProjectDetail,
     readAgentRevisionDetail: mocks.readAgentRevisionDetail,
     publishAgentRevision: mocks.publishAgentRevision,
+    recordAgentTestReview: mocks.recordAgentTestReview,
   };
 });
 
@@ -36,6 +38,7 @@ const CAPABILITY_ID = '00000000-0000-4000-8000-000000000004';
 const ARTIFACT_ID = '00000000-0000-4000-8000-000000000005';
 const TEST_ID = '00000000-0000-4000-8000-000000000006';
 const SESSION_ID = '00000000-0000-4000-8000-000000000007';
+const REVIEW_ID = '00000000-0000-4000-8000-000000000008';
 const SHA = 'a'.repeat(64);
 const NOW = '2026-08-06T00:00:00.000Z';
 
@@ -352,6 +355,59 @@ describe('external MCP public tool results', () => {
     }
   });
 
+  it('does not expose the legacy Capability Studio URL from authoring or Test tools', async () => {
+    mocks.readAgentRevisionDetail.mockResolvedValue({ revision: projectDetail.headRevision });
+    const testDetail = {
+      test: {
+        id: TEST_ID,
+        projectId: PROJECT_ID,
+        agentRevisionId: REVISION_ID,
+        runtimeBundleSha256: SHA,
+        uiSha256: SHA,
+        sessionId: SESSION_ID,
+        turnId: '00000000-0000-4000-8000-000000000009',
+        status: 'passed' as const,
+        qualityStatus: 'unreviewed' as const,
+        canPublish: false,
+        errorCode: null,
+        createdAt: NOW,
+        completedAt: NOW,
+      },
+      outputText: 'ok',
+    };
+    const runtime = {
+      createStudioSession: vi.fn().mockResolvedValue({ session: { id: SESSION_ID } }),
+      saveAgentUiRevision: vi.fn().mockResolvedValue({
+        artifact: { id: ARTIFACT_ID, sha256: SHA },
+      }),
+      startAgentTest: vi.fn().mockResolvedValue(testDetail),
+      readAgentTest: vi.fn().mockResolvedValue(testDetail),
+    };
+    const testContext = context(runtime);
+
+    const saved = await executeExternalMcpTool(testContext, 'save_agent_ui', {
+      projectId: PROJECT_ID,
+      entryCapabilityId: CAPABILITY_ID,
+      html: '<!doctype html><html><body>Agent</body></html>',
+      idempotencyKey: 'save-without-studio-url',
+    });
+    const started = await executeExternalMcpTool(testContext, 'run_agent_test', {
+      projectId: PROJECT_ID,
+      revisionId: REVISION_ID,
+      text: 'Run the Agent',
+      idempotencyKey: 'test-without-studio-url',
+    });
+    const read = await executeExternalMcpTool(testContext, 'read_agent_test', {
+      testId: TEST_ID,
+    });
+
+    for (const result of [saved, started, read]) {
+      expect(result.isError).toBeUndefined();
+      expect(result.structuredContent).not.toHaveProperty('editorUrl');
+      expect(JSON.stringify(result)).not.toContain('/try/session/');
+    }
+  });
+
   it('derives publish revision identity from a passed Test and rejects cross-project Tests', async () => {
     const runtime = {
       readAgentTest: vi.fn().mockResolvedValue({
@@ -364,6 +420,8 @@ describe('external MCP public tool results', () => {
           sessionId: SESSION_ID,
           turnId: '00000000-0000-4000-8000-000000000008',
           status: 'passed',
+          qualityStatus: 'passed',
+          canPublish: true,
           errorCode: null,
           createdAt: NOW,
           completedAt: NOW,
@@ -379,6 +437,8 @@ describe('external MCP public tool results', () => {
         versionNumber: 1,
         agentRevisionId: REVISION_ID,
         qualifyingTestId: TEST_ID,
+        qualifyingReviewId: REVIEW_ID,
+        reviewSha256: SHA,
         runtimeBundleSha256: SHA,
         uiSha256: SHA,
         releaseSha256: SHA,
@@ -419,5 +479,83 @@ describe('external MCP public tool results', () => {
     });
     expect(rejected.isError).toBe(true);
     expect(mocks.publishAgentRevision).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a user-confirmed three-case quality review and rejects an incomplete exception', async () => {
+    const cases = [
+      {
+        caseId: 'normal-1',
+        kind: 'normal' as const,
+        executionStatus: 'completed' as const,
+        qualityVerdict: 'passed' as const,
+        reason: 'Normal result is complete.',
+      },
+      {
+        caseId: 'boundary-1',
+        kind: 'boundary' as const,
+        executionStatus: 'completed' as const,
+        qualityVerdict: 'accepted_exception' as const,
+        reason: 'Missing rollback data is surfaced.',
+        impact: 'Only incomplete rollback inputs require a follow-up.',
+      },
+      {
+        caseId: 'failure-1',
+        kind: 'failure' as const,
+        executionStatus: 'completed' as const,
+        qualityVerdict: 'passed' as const,
+        reason: 'A critical unresolved defect returns NO_GO.',
+      },
+    ];
+    mocks.recordAgentTestReview.mockResolvedValue({
+      kind: 'created',
+      review: {
+        id: REVIEW_ID,
+        projectId: PROJECT_ID,
+        testId: TEST_ID,
+        agentRevisionId: REVISION_ID,
+        qualityStatus: 'accepted_exception',
+        cases,
+        summary: 'Accepted the bounded missing-data behavior.',
+        reviewSha256: SHA,
+        reviewerUserId: OWNER_ID,
+        reviewedAt: NOW,
+        acceptedAt: NOW,
+      },
+    });
+
+    const result = await executeExternalMcpTool(context(), 'record_agent_test_review', {
+      projectId: PROJECT_ID,
+      testId: TEST_ID,
+      idempotencyKey: 'quality-review-123',
+      cases,
+      summary: 'Accepted the bounded missing-data behavior.',
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.structuredContent).toMatchObject({
+      review: { id: REVIEW_ID, reviewerUserId: OWNER_ID, acceptedAt: NOW },
+      canPublish: true,
+    });
+    expect(mocks.recordAgentTestReview).toHaveBeenCalledWith(expect.anything(), {
+      projectId: PROJECT_ID,
+      testId: TEST_ID,
+      ownerUserId: OWNER_ID,
+      body: {
+        idempotencyKey: 'quality-review-123',
+        cases,
+        summary: 'Accepted the bounded missing-data behavior.',
+      },
+    });
+
+    const rejected = await executeExternalMcpTool(context(), 'record_agent_test_review', {
+      projectId: PROJECT_ID,
+      testId: TEST_ID,
+      idempotencyKey: 'quality-review-456',
+      cases: cases.map((reviewCase) =>
+        reviewCase.kind === 'boundary' ? { ...reviewCase, impact: undefined } : reviewCase,
+      ),
+    });
+    expect(rejected.isError).toBe(true);
+    expect(mocks.recordAgentTestReview).toHaveBeenCalledTimes(1);
   });
 });

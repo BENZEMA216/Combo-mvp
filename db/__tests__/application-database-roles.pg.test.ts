@@ -290,6 +290,244 @@ pgDescribe('application database roles on PostgreSQL', () => {
     ).rejects.toMatchObject({ code: '42501' });
   });
 
+  it('keeps Agent Test quality reviews append-only and isolated by service role', async () => {
+    const api = clients.get('combo_api')!;
+    const worker = clients.get('combo_worker')!;
+    const runtime = clients.get('combo_runtime')!;
+
+    expect(await privilege(api, 'has_table_privilege', 'public.agent_test_reviews', 'SELECT')).toBe(
+      true,
+    );
+    expect(await privilege(api, 'has_table_privilege', 'public.agent_test_reviews', 'INSERT')).toBe(
+      true,
+    );
+    for (const action of ['UPDATE', 'DELETE']) {
+      expect(await privilege(api, 'has_table_privilege', 'public.agent_test_reviews', action)).toBe(
+        false,
+      );
+    }
+
+    expect(
+      await privilege(runtime, 'has_table_privilege', 'public.agent_test_reviews', 'SELECT'),
+    ).toBe(true);
+    for (const action of ['INSERT', 'UPDATE', 'DELETE']) {
+      expect(
+        await privilege(runtime, 'has_table_privilege', 'public.agent_test_reviews', action),
+      ).toBe(false);
+    }
+    for (const action of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+      expect(
+        await privilege(worker, 'has_table_privilege', 'public.agent_test_reviews', action),
+      ).toBe(false);
+    }
+
+    expect(await functionPrivilege(api, 'public.validate_agent_test_review()', 'EXECUTE')).toBe(
+      true,
+    );
+    expect(await functionPrivilege(runtime, 'public.validate_agent_test_review()', 'EXECUTE')).toBe(
+      false,
+    );
+  });
+
+  it('fails Release closed without a Review and accepts the same passed Test after Review', async () => {
+    const api = clients.get('combo_api')!;
+    const suffix = randomUUID()
+      .replaceAll('-', '')
+      .replaceAll('0', 'a')
+      .replaceAll('1', 'b')
+      .replaceAll('8', 'c')
+      .replaceAll('9', 'd')
+      .slice(0, 8);
+    const user = await owner.query<{ id: string }>(
+      `INSERT INTO users (account) VALUES ($1) RETURNING id`,
+      [`creator-${suffix}`],
+    );
+    const userId = user.rows[0]!.id;
+    const task = await owner.query<{ id: string }>(
+      `INSERT INTO tasks (owner_user_id, idempotency_key)
+       VALUES ($1, $2) RETURNING id`,
+      [userId, `review-gate-task-${suffix}`],
+    );
+    const capability = await owner.query<{ id: string }>(
+      `INSERT INTO capabilities (task_id, owner_user_id, name, storage_key)
+       VALUES ($1, $2, 'review gate', $3) RETURNING id`,
+      [task.rows[0]!.id, userId, `review-gate/${suffix}/capability`],
+    );
+    const capabilityId = capability.rows[0]!.id;
+    const studioSession = await owner.query<{ id: string }>(
+      `INSERT INTO sessions (capability_id, owner_user_id, mode)
+       VALUES ($1, $2, 'studio') RETURNING id`,
+      [capabilityId, userId],
+    );
+    const artifact = await owner.query<{ id: string }>(
+      `INSERT INTO artifacts (session_id, kind, title, storage_key)
+       VALUES ($1, 'html', 'review gate UI', $2) RETURNING id`,
+      [studioSession.rows[0]!.id, `review-gate/${suffix}/ui.html`],
+    );
+    const project = await owner.query<{ id: string }>(
+      `INSERT INTO agent_projects (
+         owner_user_id, name, idempotency_key, idempotency_sha256
+       ) VALUES ($1, 'review gate project', $2, $3) RETURNING id`,
+      [userId, `review-gate-project-${suffix}`, 'a'.repeat(64)],
+    );
+    const projectId = project.rows[0]!.id;
+    const revision = await owner.query<{ id: string }>(
+      `INSERT INTO agent_revisions (
+         project_id, revision_number, entry_capability_id,
+         definition_storage_key, definition_sha256,
+         runtime_bundle_storage_key, runtime_bundle_sha256,
+         ui_artifact_id, ui_storage_key, ui_sha256,
+         compiler_version, mutation_id, mutation_sha256, created_by_user_id
+       ) VALUES (
+         $1, 1, $2, $3, $4, $5, $6, $7, $8, $9,
+         'review-gate-contract', $10, $11, $12
+       ) RETURNING id`,
+      [
+        projectId,
+        capabilityId,
+        `review-gate/${suffix}/definition.json`,
+        'b'.repeat(64),
+        `review-gate/${suffix}/runtime.json`,
+        'c'.repeat(64),
+        artifact.rows[0]!.id,
+        `review-gate/${suffix}/ui.html`,
+        'd'.repeat(64),
+        `review-gate-revision-${suffix}`,
+        'e'.repeat(64),
+        userId,
+      ],
+    );
+    const revisionId = revision.rows[0]!.id;
+    await owner.query(
+      `UPDATE agent_projects SET head_revision_id = $2, updated_at = now() WHERE id = $1`,
+      [projectId, revisionId],
+    );
+    const testSession = await owner.query<{ id: string }>(
+      `INSERT INTO sessions (
+         capability_id, owner_user_id, agent_project_id, agent_revision_id
+       ) VALUES ($1, $2, $3, $4) RETURNING id`,
+      [capabilityId, userId, projectId, revisionId],
+    );
+    const turnId = randomUUID();
+    await owner.query(
+      `INSERT INTO turns (id, session_id, status, finished_at)
+       VALUES ($1, $2, 'completed', now())`,
+      [turnId, testSession.rows[0]!.id],
+    );
+    const test = await owner.query<{ id: string }>(
+      `INSERT INTO agent_tests (
+         project_id, agent_revision_id, runtime_bundle_sha256, ui_sha256,
+         output_contract, request_key, request_sha256, session_id, turn_id,
+         status, completed_at
+       ) VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6, $7, $8, 'passed', now())
+       RETURNING id`,
+      [
+        projectId,
+        revisionId,
+        'c'.repeat(64),
+        'd'.repeat(64),
+        `review-gate-test-${suffix}`,
+        'f'.repeat(64),
+        testSession.rows[0]!.id,
+        turnId,
+      ],
+    );
+    const testId = test.rows[0]!.id;
+
+    await expect(
+      api.query(
+        `INSERT INTO agent_releases (
+           id, project_id, version_number, agent_revision_id, qualifying_test_id,
+           runtime_bundle_sha256, ui_sha256, release_sha256, idempotency_key,
+           idempotency_sha256, created_by_user_id
+         ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          randomUUID(),
+          projectId,
+          revisionId,
+          testId,
+          'c'.repeat(64),
+          'd'.repeat(64),
+          '1'.repeat(64),
+          `release-without-review-${suffix}`,
+          '2'.repeat(64),
+          userId,
+        ],
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+
+    const reviewId = randomUUID();
+    const reviewSha = '3'.repeat(64);
+    const cases = [
+      {
+        caseId: 'normal-1',
+        kind: 'normal',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'normal case met its expected result',
+      },
+      {
+        caseId: 'boundary-1',
+        kind: 'boundary',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'boundary case remained within the contract',
+      },
+      {
+        caseId: 'failure-1',
+        kind: 'failure',
+        executionStatus: 'completed',
+        qualityVerdict: 'passed',
+        reason: 'failure input produced the expected bounded error',
+      },
+    ];
+    await api.query(
+      `INSERT INTO agent_test_reviews (
+         id, project_id, test_id, agent_revision_id,
+         runtime_bundle_sha256, ui_sha256, quality_status, cases, summary,
+         review_sha256, idempotency_key, idempotency_sha256, created_by_user_id
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'passed', $7, 'reviewed', $8, $9, $10, $11)`,
+      [
+        reviewId,
+        projectId,
+        testId,
+        revisionId,
+        'c'.repeat(64),
+        'd'.repeat(64),
+        JSON.stringify(cases),
+        reviewSha,
+        `review-gate-review-${suffix}`,
+        '4'.repeat(64),
+        userId,
+      ],
+    );
+
+    const releaseId = randomUUID();
+    const released = await api.query<{ id: string }>(
+      `INSERT INTO agent_releases (
+         id, project_id, version_number, agent_revision_id, qualifying_test_id,
+         runtime_bundle_sha256, ui_sha256, release_sha256, idempotency_key,
+         idempotency_sha256, created_by_user_id, qualifying_review_id, review_sha256
+       ) VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       RETURNING id`,
+      [
+        releaseId,
+        projectId,
+        revisionId,
+        testId,
+        'c'.repeat(64),
+        'd'.repeat(64),
+        '5'.repeat(64),
+        `release-with-review-${suffix}`,
+        '6'.repeat(64),
+        userId,
+        reviewId,
+        reviewSha,
+      ],
+    );
+    expect(released.rows[0]).toEqual({ id: releaseId });
+  });
+
   it('separates recharge handling from Runtime usage charging', async () => {
     const api = clients.get('combo_api')!;
     const worker = clients.get('combo_worker')!;

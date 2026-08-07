@@ -201,7 +201,7 @@ describe('POST /runtime/agent-revisions/:revisionId/tests admission contract', (
 
     expect(reply.statusCode).toBe(202);
     expect(reply.body).toEqual({
-      data: { test: runningTest, outputText: null },
+      data: { test: runningTest, outputText: null, review: null },
       meta: { traceId: 'trace-agent-test' },
     });
     expect(mocks.activateAgentTest).toHaveBeenCalledWith(

@@ -102,6 +102,7 @@ describe('migrations', () => {
         'agent_projects',
         'agent_revisions',
         'agent_tests',
+        'agent_test_reviews',
         'agent_releases',
         'oauth_clients',
         'oauth_authorization_requests',
@@ -195,7 +196,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, billing, and Agent Builder after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-7)).toEqual([
+    expect(list.slice(-8)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -203,7 +204,31 @@ describe('migrations', () => {
       '0011_recharge_qr_only.sql',
       '0012_agent_builder_v1.sql',
       '0013_external_mcp_oauth.sql',
+      '0014_agent_test_reviews.sql',
     ]);
+  });
+
+  it('0014 freezes a two-axis three-case quality review into every new Release', () => {
+    const sql = readFileSync(join(MIGRATIONS_DIR, '0014_agent_test_reviews.sql'), 'utf-8');
+    expect(sql).toContain('CREATE TABLE agent_test_reviews (');
+    expect(sql).toContain('uq_agent_test_reviews_project_test');
+    expect(sql).toContain('uq_agent_test_reviews_project_idempotency');
+    expect(sql).toContain('trg_agent_test_reviews_validate');
+    expect(sql).toContain('trg_agent_test_reviews_immutable');
+    expect(sql).toContain("value ->> 'executionStatus' NOT IN ('completed', 'failed')");
+    expect(sql).toContain(
+      "value ->> 'qualityVerdict' NOT IN ('passed', 'failed', 'accepted_exception')",
+    );
+    expect(sql).toContain('accepted exception requires reason and impact');
+    expect(sql).toContain('ADD COLUMN qualifying_review_id uuid');
+    expect(sql).toContain('ADD COLUMN review_sha256 char(64)');
+    expect(sql).toContain('LEFT JOIN agent_test_reviews r');
+    expect(sql).toContain(
+      "review_status IS NULL OR review_status NOT IN ('passed', 'accepted_exception')",
+    );
+    expect(sql).toContain('GRANT SELECT, INSERT ON agent_test_reviews TO combo_api');
+    expect(sql).toContain('GRANT SELECT ON agent_test_reviews TO combo_runtime');
+    expect(sql).not.toMatch(/GRANT[^;]*(?:UPDATE|DELETE)[^;]*agent_test_reviews[^;]*TO combo_/is);
   });
 
   it('0013 stores only OAuth secret digests, bounds cleanup and minimizes app grants', () => {

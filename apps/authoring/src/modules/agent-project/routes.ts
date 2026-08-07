@@ -9,6 +9,7 @@ import {
   getAgentProjectHandler,
   getAgentRevisionHandler,
   listAgentProjectsHandler,
+  recordAgentTestReviewHandler,
 } from './handlers.js';
 
 const browserMutationGuards = [requireTrustedMutationOrigin(), requireAuth()];
@@ -43,6 +44,12 @@ export const AGENT_PROJECT_ENDPOINTS: EndpointDecl[] = [
     url: '/agent-projects/:projectId/revisions/:revisionId',
     preHandlers: [requireAuth()],
     handler: getAgentRevisionHandler(),
+  },
+  {
+    method: 'POST',
+    url: '/agent-projects/:projectId/tests/:testId/reviews',
+    preHandlers: browserMutationGuards,
+    handler: recordAgentTestReviewHandler(),
   },
   {
     method: 'POST',

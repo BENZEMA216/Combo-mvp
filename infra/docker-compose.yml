@@ -1,6 +1,6 @@
 # 本地全栈编排（O-02/O-03）。本期【只写不跑】：无 Docker，留作后续 compose up。
 #
-# 固定启动顺序：基础设施 → 0000–0013 业务迁移与应用角色配置 → API/Worker/Runtime/Web。
+# 固定启动顺序：基础设施 → 0000–0014 业务迁移与应用角色配置 → API/Worker/Runtime/Web。
 # 邮箱验证码由 API 通过 Resend 发出；PostgreSQL 保存验证码摘要和不透明会话摘要。
 #
 # Redis 物理拆两实例（70 §8.1 / 技术方案 §6.1）：

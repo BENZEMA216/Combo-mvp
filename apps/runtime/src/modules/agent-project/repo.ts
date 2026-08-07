@@ -2,10 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { Ajv } from 'ajv';
 import {
   AgentOutputSchema,
+  AgentTestReviewCasesSchema,
   TerminalTurnErrorCodeSchema,
   type AgentOutput,
   type AgentTestDetail,
   type AgentTestListItem,
+  type AgentTestQualityStatus,
+  type AgentTestReviewStatus,
+  type AgentTestReviewView,
   type AgentTestView,
   type TerminalTurnErrorCode,
 } from '@cb/shared';
@@ -32,6 +36,15 @@ interface AgentTestDbRow {
   completed_at: string | Date | null;
   turn_status?: 'running' | 'completed' | 'failed' | 'interrupted';
   turn_error_code?: unknown;
+  quality_status?: AgentTestReviewStatus | null;
+  review_id?: string | null;
+  review_cases?: unknown;
+  review_summary?: string | null;
+  review_sha256?: string | null;
+  review_user_id?: string | null;
+  review_created_at?: string | Date | null;
+  current_head_revision_id?: string | null;
+  project_status?: 'active' | 'archived';
 }
 
 const TEST_COLUMNS = `id, project_id, agent_revision_id, runtime_bundle_sha256,
@@ -40,9 +53,14 @@ const TEST_COLUMNS = `id, project_id, agent_revision_id, runtime_bundle_sha256,
 const QUALIFIED_TEST_COLUMNS = `t.id, t.project_id, t.agent_revision_id, t.runtime_bundle_sha256,
   t.ui_sha256, t.output_contract, t.request_key, t.request_sha256,
   t.lease_token, t.lease_expires_at, t.session_id, t.turn_id, t.status, t.error_code,
-  t.created_at, t.completed_at`;
+  t.created_at, t.completed_at, q.quality_status,
+  q.id AS review_id, q.cases AS review_cases, q.summary AS review_summary,
+  q.review_sha256, q.created_by_user_id AS review_user_id,
+  q.created_at AS review_created_at,
+  p.head_revision_id AS current_head_revision_id, p.status AS project_status`;
 const QUALIFIED_TEST_LIST_COLUMNS = `t.id, t.project_id, t.agent_revision_id, t.request_key,
-  t.session_id, t.turn_id, t.status, t.error_code, t.created_at, t.completed_at`;
+  t.session_id, t.turn_id, t.status, t.error_code, t.created_at, t.completed_at,
+  q.quality_status, p.head_revision_id AS current_head_revision_id, p.status AS project_status`;
 
 interface AgentTestListDbRow {
   id: string;
@@ -55,6 +73,9 @@ interface AgentTestListDbRow {
   error_code: string | null;
   created_at: string | Date;
   completed_at: string | Date | null;
+  quality_status: AgentTestReviewStatus | null;
+  current_head_revision_id: string | null;
+  project_status: 'active' | 'archived';
 }
 
 export const AGENT_TEST_START_LEASE_SECONDS = 60;
@@ -68,6 +89,7 @@ function toView(row: AgentTestDbRow): AgentTestView {
   if (row.status === 'starting' || !row.session_id || !row.turn_id) {
     throw new Error('Agent Test reservation is not active');
   }
+  const qualityStatus: AgentTestQualityStatus = row.quality_status ?? 'unreviewed';
   return {
     id: row.id,
     projectId: row.project_id,
@@ -77,6 +99,12 @@ function toView(row: AgentTestDbRow): AgentTestView {
     sessionId: row.session_id,
     turnId: row.turn_id,
     status: row.status,
+    qualityStatus,
+    canPublish:
+      row.status === 'passed' &&
+      (qualityStatus === 'passed' || qualityStatus === 'accepted_exception') &&
+      row.project_status === 'active' &&
+      row.current_head_revision_id === row.agent_revision_id,
     errorCode: row.error_code ? safeTerminalCode(row.error_code) : null,
     createdAt: toIso(row.created_at),
     completedAt: row.completed_at ? toIso(row.completed_at) : null,
@@ -84,6 +112,7 @@ function toView(row: AgentTestDbRow): AgentTestView {
 }
 
 function toListItem(row: AgentTestListDbRow): AgentTestListItem {
+  const qualityStatus: AgentTestQualityStatus = row.quality_status ?? 'unreviewed';
   return {
     id: row.id,
     projectId: row.project_id,
@@ -92,9 +121,36 @@ function toListItem(row: AgentTestListDbRow): AgentTestListItem {
     sessionId: row.session_id,
     turnId: row.turn_id,
     status: row.status,
+    qualityStatus,
+    canPublish:
+      row.status === 'passed' &&
+      (qualityStatus === 'passed' || qualityStatus === 'accepted_exception') &&
+      row.project_status === 'active' &&
+      row.current_head_revision_id === row.agent_revision_id,
     errorCode: row.error_code ? safeTerminalCode(row.error_code) : null,
     createdAt: toIso(row.created_at),
     completedAt: row.completed_at ? toIso(row.completed_at) : null,
+  };
+}
+
+function toReview(row: AgentTestDbRow): AgentTestReviewView | null {
+  if (!row.review_id) return null;
+  if (!row.quality_status || !row.review_sha256 || !row.review_user_id || !row.review_created_at) {
+    throw new Error('Agent Test Review identity is incomplete');
+  }
+  const reviewedAt = toIso(row.review_created_at);
+  return {
+    id: row.review_id,
+    projectId: row.project_id,
+    testId: row.id,
+    agentRevisionId: row.agent_revision_id,
+    qualityStatus: row.quality_status,
+    cases: AgentTestReviewCasesSchema.parse(row.review_cases),
+    summary: row.review_summary ?? '',
+    reviewSha256: row.review_sha256,
+    reviewerUserId: row.review_user_id,
+    reviewedAt,
+    acceptedAt: row.quality_status === 'accepted_exception' ? reviewedAt : null,
   };
 }
 
@@ -140,6 +196,8 @@ export async function readAgentTestRequest(
     `SELECT ${QUALIFIED_TEST_COLUMNS}
        FROM agent_tests t
        JOIN agent_projects p ON p.id = t.project_id
+       LEFT JOIN agent_test_reviews q
+         ON q.project_id = t.project_id AND q.test_id = t.id
       WHERE t.project_id = $1 AND t.request_key = $2 AND p.owner_user_id = $3`,
     [input.projectId, input.requestKey, input.ownerUserId],
   );
@@ -166,6 +224,8 @@ export async function listAgentProjectTests(
     `SELECT ${QUALIFIED_TEST_LIST_COLUMNS}
        FROM agent_tests t
        JOIN agent_projects p ON p.id = t.project_id
+       LEFT JOIN agent_test_reviews q
+         ON q.project_id = t.project_id AND q.test_id = t.id
       WHERE t.project_id = $1 AND p.owner_user_id = $2 AND p.status = 'active'
       ORDER BY t.created_at DESC, t.id DESC
       LIMIT $3`,
@@ -350,6 +410,8 @@ async function readTestWithTurn(
             tr.status AS turn_status, tr.last_error ->> 'code' AS turn_error_code
        FROM agent_tests t
        JOIN agent_projects p ON p.id = t.project_id
+       LEFT JOIN agent_test_reviews q
+         ON q.project_id = t.project_id AND q.test_id = t.id
        JOIN turns tr ON tr.id = t.turn_id AND tr.session_id = t.session_id
       WHERE t.id = $1 AND p.owner_user_id = $2`,
     [testId, ownerUserId],
@@ -409,5 +471,5 @@ export async function readAndFinalizeAgentTest(
     );
     row = (await readTestWithTurn(db, testId, ownerUserId)) ?? row;
   }
-  return { test: toView(row), outputText };
+  return { test: toView(row), outputText, review: toReview(row) };
 }

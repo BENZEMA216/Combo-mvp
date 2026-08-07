@@ -10,7 +10,7 @@
 - `ports/` 声明基础设施接口（队列、事件流、分布式锁、对象存储、大模型网关），由各服务的 infra 代码提供实现。
 - `domains/` 按业务域定义数据传输对象与校验规则。认证域包含邮箱 challenge、邮箱 verification、当前用户、登出、成功包络、显式安全 Cookie 策略和站内回跳净化函数；其余文件覆盖任务、能力项、Agent 项目与不可变版本、远程 MCP OAuth、试用会话、Artifact 来源、active Turn 恢复信息与去敏规则。
 - `__tests__/auth.test.ts` 检查邮箱请求、六位验证码、回跳白名单、会话 Cookie、成功包络、安全错误和就绪依赖。
-- `__tests__/shared.test.ts` 检查通用错误、SSE、任务、能力项、试用与包络契约。
+- `__tests__/shared.test.ts` 检查通用错误、SSE、任务、能力项、试用、Agent Test 双轴质量复核与包络契约。
 - `__tests__/redaction.test.ts` 检查去敏规则的覆盖范围与幂等性。
 - `__tests__/release.test.ts` 检查运行时发布身份和无缓存加载契约。
 

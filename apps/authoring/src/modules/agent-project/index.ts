@@ -6,6 +6,7 @@ export {
   AgentRevisionIntegrityError,
   createAgentProject,
   publishAgentRevision,
+  recordAgentTestReview,
   readAgentProjectDetail,
   readAgentRevisionDetail,
   saveAgentRevision,
