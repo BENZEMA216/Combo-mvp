@@ -14,5 +14,6 @@ describe('本机导入助手品牌', () => {
       expect(script).not.toContain('[Agora]');
     }
     expect(active).toContain('Combo 本机助手');
+    expect(active).toContain('COMBO_SOURCE_SCOPE');
   });
 });

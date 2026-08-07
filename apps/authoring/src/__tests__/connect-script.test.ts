@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { mkdtemp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,10 +26,15 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
 
 async function runScript(
   script: string,
-  env: Record<string, string>,
+  env: Record<string, string | undefined>,
 ): Promise<{ code: number; stderr: string }> {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) delete childEnv[key];
+    else childEnv[key] = value;
+  }
   const child = spawn('sh', ['-s'], {
-    env: { ...process.env, ...env },
+    env: childEnv,
     stdio: ['pipe', 'ignore', 'pipe'],
   });
   let stderr = '';
@@ -113,6 +118,7 @@ describe('renderConnectScript uploader', () => {
       COMBO_UPLOAD_TIMEOUT: '1',
       COMBO_UPLOAD_ATTEMPTS: '2',
       COMBO_RETRY_BASE_DELAY: '0',
+      COMBO_SOURCE_SCOPE: 'history',
     });
     server.close();
 
@@ -169,10 +175,16 @@ describe('renderConnectScript uploader', () => {
       COMBO_UPLOAD_TIMEOUT: '1',
       COMBO_UPLOAD_ATTEMPTS: '1',
       COMBO_RETRY_BASE_DELAY: '0',
+      COMBO_SOURCE_SCOPE: 'history',
     };
     const first = await runScript(script, env);
     expect(first.code).toBe(1);
-    expect((await readdir(cache)).length).toBe(1);
+    const cacheEntries = await readdir(cache);
+    expect(cacheEntries).toHaveLength(1);
+    const manifest = JSON.parse(
+      await readFile(join(cache, cacheEntries[0]!, 'manifest.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    expect(manifest).toMatchObject({ sourceScope: 'history', sourceKey: 'history' });
 
     failUpload = false;
     const second = await runScript(script, env);
@@ -183,4 +195,193 @@ describe('renderConnectScript uploader', () => {
     expect(replaceFlags.at(-1)).toBe(false);
     expect(await readdir(cache)).toEqual([]);
   }, 20_000);
+
+  it('current-task scope uploads exactly the matching Codex session and excludes decoys', async () => {
+    const threadId = '019fdd00-ff57-7550-be78-654a2e4cd49e';
+    const uploaded: string[] = [];
+    const server = createServer(async (req, res) => {
+      const body = await readJson(req);
+      if (req.url === '/api/v1/connect/prepare') {
+        sendJson(res, 200, {
+          data: {
+            protocolVersion: 2,
+            bundleId: body.bundleId,
+            totalParts: body.totalParts,
+            landedParts: [],
+            complete: false,
+          },
+        });
+        return;
+      }
+      if (req.url === '/api/v1/connect/upload') {
+        uploaded.push(String(body.content));
+        sendJson(res, 200, { data: { landed: 1, total: 1, complete: true } });
+        return;
+      }
+      sendJson(res, 404, {});
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server address unavailable');
+
+    const home = await mkdtemp(join(tmpdir(), 'combo-current-task-test-'));
+    tempRoots.push(home);
+    const sessions = join(home, '.codex', 'sessions', '2026', '08', '08');
+    await mkdir(sessions, { recursive: true });
+    await writeFile(
+      join(sessions, `rollout-current-${threadId}.jsonl`),
+      `${JSON.stringify({ type: 'session_meta', payload: { id: threadId } })}\n{"marker":"current-only"}\n`,
+      'utf8',
+    );
+    await writeFile(
+      join(sessions, 'rollout-decoy-00000000-0000-4000-8000-000000000001.jsonl'),
+      `${JSON.stringify({ type: 'session_meta', payload: { id: '00000000-0000-4000-8000-000000000001' } })}\n{"marker":"must-not-upload"}\n`,
+      'utf8',
+    );
+
+    const script = renderConnectScript({
+      base: `http://127.0.0.1:${address.port}`,
+      pairingCode: 'CURRENT-TASK-CODE',
+    });
+    const result = await runScript(script, {
+      HOME: home,
+      CODEX_THREAD_ID: threadId,
+      COMBO_CACHE_DIR: join(home, 'cache'),
+      COMBO_SOURCE_SCOPE: 'codex_current_task',
+    });
+    server.close();
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(uploaded.join('\n')).toContain('current-only');
+    expect(uploaded.join('\n')).not.toContain('must-not-upload');
+    expect(result.stderr).toContain('当前 Codex 任务（1 个会话）');
+  }, 20_000);
+
+  it.each([
+    ['missing thread identity', undefined],
+    ['malformed thread identity', 'not-a-uuid'],
+    ['no matching session', '00000000-0000-4000-8000-000000000099'],
+  ])('fails closed before network for %s', async (_label, threadId) => {
+    let requestCount = 0;
+    const server = createServer((_req, res) => {
+      requestCount += 1;
+      sendJson(res, 500, {});
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server address unavailable');
+    const { home, cache } = await fixtureHome();
+    const script = renderConnectScript({
+      base: `http://127.0.0.1:${address.port}`,
+      pairingCode: 'FAIL-CLOSED-CODE',
+    });
+    const result = await runScript(script, {
+      HOME: home,
+      CODEX_THREAD_ID: threadId,
+      COMBO_CACHE_DIR: cache,
+      COMBO_SOURCE_SCOPE: 'codex_current_task',
+      COMBO_UPLOAD_ATTEMPTS: '1',
+    });
+    server.close();
+
+    expect(result.code).toBe(1);
+    expect(requestCount).toBe(0);
+    expect(result.stderr).toContain('已在上传前停止');
+    expect(result.stderr).not.toContain('无法确认上传状态');
+  });
+
+  it('fails closed when an old connection command omits the source scope', async () => {
+    let requestCount = 0;
+    const server = createServer((_req, res) => {
+      requestCount += 1;
+      sendJson(res, 500, {});
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('server address unavailable');
+    const { home, cache } = await fixtureHome();
+    const script = renderConnectScript({
+      base: `http://127.0.0.1:${address.port}`,
+      pairingCode: 'OLD-UNSCOPED-CODE',
+    });
+    const result = await runScript(script, {
+      HOME: home,
+      COMBO_CACHE_DIR: cache,
+      COMBO_SOURCE_SCOPE: undefined,
+      COMBO_UPLOAD_ATTEMPTS: '1',
+    });
+    server.close();
+
+    expect(result.code).toBe(1);
+    expect(requestCount).toBe(0);
+    expect(result.stderr).toContain('连接命令缺少有效的数据范围');
+    expect(result.stderr).toContain('已在上传前停止');
+  });
+
+  it('rejects duplicate current-task matches before network', async () => {
+    const threadId = '019fdd00-ff57-7550-be78-654a2e4cd49e';
+    const home = await mkdtemp(join(tmpdir(), 'combo-unsafe-current-task-test-'));
+    tempRoots.push(home);
+    const sessions = join(home, '.codex', 'sessions');
+    const first = join(sessions, 'one');
+    const second = join(sessions, 'two');
+    await mkdir(first, { recursive: true });
+    await mkdir(second, { recursive: true });
+    const content = `${JSON.stringify({ type: 'session_meta', payload: { id: threadId } })}\n`;
+    const target = join(first, `rollout-one-${threadId}.jsonl`);
+    await writeFile(target, content, 'utf8');
+    await symlink(target, join(second, `rollout-two-${threadId}.jsonl`));
+
+    const script = renderConnectScript({
+      base: 'http://127.0.0.1:1',
+      pairingCode: 'UNSAFE-PATH-CODE',
+    });
+    const result = await runScript(script, {
+      HOME: home,
+      CODEX_THREAD_ID: threadId,
+      COMBO_CACHE_DIR: join(home, 'cache'),
+      COMBO_SOURCE_SCOPE: 'codex_current_task',
+      COMBO_UPLOAD_ATTEMPTS: '1',
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('匹配到 2 个');
+    expect(result.stderr).toContain('已在上传前停止');
+  });
+
+  it('rejects a unique symlinked current-task match before network', async () => {
+    const threadId = '019fdd00-ff57-7550-be78-654a2e4cd49e';
+    const home = await mkdtemp(join(tmpdir(), 'combo-symlink-current-task-test-'));
+    tempRoots.push(home);
+    const sessions = join(home, '.codex', 'sessions');
+    const outside = join(home, 'outside');
+    await mkdir(sessions, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    const target = join(outside, 'target.jsonl');
+    await writeFile(
+      target,
+      `${JSON.stringify({ type: 'session_meta', payload: { id: threadId } })}\n`,
+      'utf8',
+    );
+    await symlink(target, join(sessions, `rollout-link-${threadId}.jsonl`));
+
+    const script = renderConnectScript({
+      base: 'http://127.0.0.1:1',
+      pairingCode: 'SYMLINK-PATH-CODE',
+    });
+    const result = await runScript(script, {
+      HOME: home,
+      CODEX_THREAD_ID: threadId,
+      COMBO_CACHE_DIR: join(home, 'cache'),
+      COMBO_SOURCE_SCOPE: 'codex_current_task',
+      COMBO_UPLOAD_ATTEMPTS: '1',
+    });
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('符号链接');
+    expect(result.stderr).toContain('已在上传前停止');
+  });
 });

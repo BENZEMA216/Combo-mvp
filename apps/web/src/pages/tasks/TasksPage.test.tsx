@@ -186,12 +186,13 @@ describe('TasksPage — 新建上传任务', () => {
     expect(typeof body.idempotencyKey).toBe('string');
     expect(body.idempotencyKey!.length).toBeGreaterThanOrEqual(8);
 
-    // 配对码只出现这一次 + 一条命令（GET /connect/script?code=<配对码> | sh）。
+    // 配对码只出现这一次 + 一条显式历史范围命令。
     expect(await screen.findByText('PAIR-CODE-XYZ')).toBeInTheDocument();
     expect(screen.getByText(/只显示一次/)).toBeInTheDocument();
     const cmd = screen.getByText(/connect\/script\?code=PAIR-CODE-XYZ/);
     expect(cmd.textContent).toContain('curl -fsSL');
-    expect(cmd.textContent).toContain('| sh');
+    expect(cmd.textContent).toContain('mktemp');
+    expect(cmd.textContent).toContain('env COMBO_SOURCE_SCOPE=history sh');
     expect(screen.getByText('等待本机助手连接，上传开始后会自动打开进度页。')).toBeInTheDocument();
 
     // 「我已复制，关闭」收起引导卡。

@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeIdCursor, type ObjectStorePort } from '@cb/shared';
 import type { Queryable } from '../platform/infra/db.js';
@@ -28,7 +29,10 @@ vi.mock('../modules/agent-project/index.js', async () => {
   };
 });
 
-import { executeExternalMcpTool } from '../modules/external-mcp/tools.js';
+import {
+  executeExternalMcpTool,
+  renderCurrentCodexTaskConnectCommand,
+} from '../modules/external-mcp/tools.js';
 import type { McpRuntimeClient } from '../modules/external-mcp/runtime-client.js';
 
 const OWNER_ID = '00000000-0000-4000-8000-000000000001';
@@ -137,6 +141,45 @@ beforeEach(() => {
 });
 
 describe('external MCP public tool results', () => {
+  it('locks the extraction command to the current Codex task', () => {
+    const command = renderCurrentCodexTaskConnectCommand(
+      'https://combo.example/api/v1/connect/script?code=one-time-code',
+    );
+    expect(command).toContain('umask 077');
+    expect(command).toContain('CODEX_THREAD_ID');
+    expect(command).toContain('mktemp');
+    expect(command).toContain(
+      "curl -fsSL 'https://combo.example/api/v1/connect/script?code=one-time-code' -o",
+    );
+    expect(command).toContain('env COMBO_SOURCE_SCOPE=codex_current_task sh');
+    expect(command).toContain("trap 'rm -f");
+  });
+
+  it('returns a non-zero status when the connect script download fails', () => {
+    const command = renderCurrentCodexTaskConnectCommand(
+      'http://127.0.0.1:1/api/v1/connect/script?code=unreachable',
+    );
+    const result = spawnSync('sh', ['-c', command], {
+      encoding: 'utf8',
+      timeout: 2_000,
+      env: {
+        ...process.env,
+        CODEX_THREAD_ID: '019fdd00-ff57-7550-be78-654a2e4cd49e',
+        NO_PROXY: '127.0.0.1',
+        no_proxy: '127.0.0.1',
+        HTTP_PROXY: '',
+        HTTPS_PROXY: '',
+        ALL_PROXY: '',
+        http_proxy: '',
+        https_proxy: '',
+        all_proxy: '',
+      },
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+  });
+
   it('returns a non-empty list_capabilities page as matching text and structured content', async () => {
     const secondCapabilityId = '00000000-0000-4000-8000-000000000003';
     const firstRow = {

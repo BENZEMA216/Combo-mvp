@@ -29,7 +29,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 exec python3 - <<'COMBO_PY'
-import hashlib, json, os, pathlib, platform, random, shutil, sys, time, traceback
+import hashlib, json, os, pathlib, platform, random, shutil, sys, time, traceback, uuid
 import urllib.error, urllib.request
 
 BASE = os.environ['COMBO_BASE'].rstrip('/')
@@ -39,6 +39,7 @@ PROTOCOL_VERSION = 2
 PART_LIMIT = 2 * 1024 * 1024  # 兼容旧任务：按 Python 字符数、只在行边界切片
 MAX_PARTS = 10000
 DEBUG = os.environ.get('COMBO_DEBUG', '') not in ('', '0')
+SOURCE_SCOPE = os.environ.get('COMBO_SOURCE_SCOPE', '')
 TRANSIENT_HTTP = {408, 425, 429, 500, 502, 503, 504}
 
 def env_float(name, default, low, high):
@@ -108,6 +109,23 @@ def fail(message):
     log(message)
     sys.exit(1)
 
+def current_codex_thread_id():
+    value = os.environ.get('CODEX_THREAD_ID', '').strip().lower()
+    try:
+        parsed = uuid.UUID(value)
+    except (ValueError, AttributeError):
+        fail('无法识别当前 Codex 任务，已在上传前停止。请在原始 Codex 顶层任务中重试。')
+    if str(parsed) != value:
+        fail('当前 Codex 任务标识格式无效，已在上传前停止。')
+    return value
+
+def source_key():
+    if SOURCE_SCOPE == 'codex_current_task':
+        return hashlib.sha256(current_codex_thread_id().encode('utf-8')).hexdigest()
+    if SOURCE_SCOPE == 'history':
+        return 'history'
+    fail('连接命令缺少有效的数据范围，已在上传前停止。请回到 Combo 获取新的连接命令。')
+
 def elapsed_text():
     seconds = int(time.time() - _started)
     return '%d 分 %d 秒' % (seconds // 60, seconds % 60) if seconds >= 60 else '%d 秒' % seconds
@@ -119,7 +137,7 @@ def cache_paths():
     if root.is_symlink():
         fail('上传缓存根目录是符号链接，已停止以保护本机数据。')
     os.chmod(root, 0o700)
-    key = hashlib.sha256((BASE + '\\0' + CODE).encode('utf-8')).hexdigest()
+    key = hashlib.sha256((BASE + '\\0' + CODE + '\\0' + SOURCE_SCOPE + '\\0' + source_key()).encode('utf-8')).hexdigest()
     return root, root / key
 
 def part_path(cache_dir, index):
@@ -151,7 +169,10 @@ def load_cache(cache_dir):
         return None
     try:
         manifest = json.loads(manifest_path.read_text('utf-8'))
-        if manifest.get('protocolVersion') != PROTOCOL_VERSION or manifest.get('base') != BASE:
+        if (manifest.get('protocolVersion') != PROTOCOL_VERSION
+                or manifest.get('base') != BASE
+                or manifest.get('sourceScope') != SOURCE_SCOPE
+                or manifest.get('sourceKey') != source_key()):
             return None
         entries = manifest.get('parts')
         if not isinstance(entries, list) or not 0 < len(entries) <= MAX_PARTS:
@@ -162,7 +183,45 @@ def load_cache(cache_dir):
     except (OSError, ValueError, json.JSONDecodeError, KeyError, TypeError):
         return None
 
-def scan_files():
+def scan_current_codex_task():
+    thread_id = current_codex_thread_id()
+    root = pathlib.Path.home() / '.codex' / 'sessions'
+    if not root.is_dir() or root.is_symlink():
+        fail('找不到安全的 Codex 会话目录，已在上传前停止。')
+    try:
+        root_real = root.resolve(strict=True)
+        candidates = list(root.rglob('rollout-*-' + thread_id + '.jsonl'))
+    except OSError:
+        fail('无法读取 Codex 会话目录，已在上传前停止。')
+    if len(candidates) != 1:
+        fail('当前 Codex 任务必须精确匹配一个本地会话文件；本次匹配到 %d 个，已在上传前停止。' % len(candidates))
+    path = candidates[0]
+    cursor = path
+    while cursor != root:
+        if cursor.is_symlink():
+            fail('当前 Codex 会话路径包含符号链接，已在上传前停止。')
+        cursor = cursor.parent
+    try:
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root_real)
+    except (OSError, ValueError):
+        fail('当前 Codex 会话文件不在安全目录内，已在上传前停止。')
+    if not resolved.is_file():
+        fail('当前 Codex 会话不是普通文件，已在上传前停止。')
+    try:
+        with resolved.open('r', encoding='utf-8', errors='strict') as handle:
+            first = next((line.strip() for line in handle if line.strip()), '')
+        meta = json.loads(first)
+    except (OSError, UnicodeError, json.JSONDecodeError, StopIteration):
+        fail('当前 Codex 会话元数据不可读，已在上传前停止。')
+    if (not isinstance(meta, dict) or meta.get('type') != 'session_meta'
+            or not isinstance(meta.get('payload'), dict)
+            or str(meta['payload'].get('id', '')).lower() != thread_id):
+        fail('当前 Codex 会话元数据与任务不一致，已在上传前停止。')
+    log('已将数据范围锁定为当前 Codex 任务（1 个会话）。')
+    return [resolved]
+
+def scan_history():
     roots = [pathlib.Path.home() / '.claude' / 'projects', pathlib.Path.home() / '.codex' / 'sessions']
     files = []
     for root in roots:
@@ -185,6 +244,13 @@ def scan_files():
         files = files[:limit]
         log('本机共 %d 个会话，本次只导入最近 %d 个（按修改时间）。要导入全部请设 COMBO_SESSION_LIMIT=0 后重跑本命令。' % (found, limit))
     return files
+
+def scan_files():
+    if SOURCE_SCOPE == 'codex_current_task':
+        return scan_current_codex_task()
+    if SOURCE_SCOPE == 'history':
+        return scan_history()
+    fail('连接命令缺少有效的数据范围，已在上传前停止。请回到 Combo 获取新的连接命令。')
 
 def build_cache(cache_dir):
     if cache_dir.exists():
@@ -236,6 +302,8 @@ def build_cache(cache_dir):
         manifest = {
             'protocolVersion': PROTOCOL_VERSION,
             'base': BASE,
+            'sourceScope': SOURCE_SCOPE,
+            'sourceKey': source_key(),
             'bundleId': bundle_id,
             'totalParts': len(entries),
             'parts': entries,

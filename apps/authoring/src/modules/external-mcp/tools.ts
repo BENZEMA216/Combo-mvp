@@ -262,7 +262,7 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     name: 'create_extraction_task',
     title: 'Create Combo extraction task',
     description:
-      'Create a real Combo extraction task and return the one-time local pairing command. Raw source never enters MCP arguments.',
+      'Create a real Combo extraction task for the current Codex task and return the one-time local pairing command. The command fails closed unless it can identify exactly that task; raw source never enters MCP arguments.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -853,6 +853,10 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
+export function renderCurrentCodexTaskConnectCommand(connectUrl: string): string {
+  return `(umask 077; test -n "\${CODEX_THREAD_ID:-}" || { echo "CODEX_THREAD_ID is required." >&2; exit 1; }; combo_connect_tmp=$(mktemp "\${TMPDIR:-/tmp}/combo-connect.XXXXXX") || exit 1; trap 'rm -f "$combo_connect_tmp"' EXIT; curl -fsSL ${shellQuote(connectUrl)} -o "$combo_connect_tmp" && env COMBO_SOURCE_SCOPE=codex_current_task sh < "$combo_connect_tmp")`;
+}
+
 function decodeCursor(cursor: string | undefined): string | undefined {
   if (!cursor) return undefined;
   const id = decodeIdCursor(cursor);
@@ -898,7 +902,7 @@ export async function executeExternalMcpTool(
       return toolSuccess({
         task,
         connectUrl: connectUrl.toString(),
-        connectCommand: `curl -fsSL ${shellQuote(connectUrl.toString())} | sh`,
+        connectCommand: renderCurrentCodexTaskConnectCommand(connectUrl.toString()),
         pairingExpiresAt: task.upload.pairingExpiresAt,
       });
     }
