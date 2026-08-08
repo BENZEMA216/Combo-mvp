@@ -152,3 +152,55 @@ describe('0009 shared Agent billing', () => {
     );
   });
 });
+
+describe('0010 recharge QR channel rename', () => {
+  const sql0010 = readFileSync(
+    resolve(directory, '..', 'migrations', '0010_recharge_qr_channel.sql'),
+    'utf8',
+  );
+
+  it('drops the old CHECK constraint before renaming the channel value', () => {
+    expect(sql0010).toContain('DROP CONSTRAINT ck_recharge_payment_method');
+    expect(sql0010).toContain(
+      "UPDATE recharge_orders\n   SET payment_method = 'qr'\n WHERE payment_method = 'aggregate_qr'",
+    );
+  });
+
+  it('re-adds the CHECK constraint to accept only h5 and qr', () => {
+    expect(sql0010).toContain('ADD CONSTRAINT ck_recharge_payment_method');
+    expect(sql0010).toContain("payment_method IN ('h5', 'qr')");
+    const addConstraint = sql0010.match(
+      /ADD CONSTRAINT ck_recharge_payment_method CHECK \([\s\S]*?\);?/,
+    )?.[0];
+    expect(addConstraint).not.toContain('aggregate_qr');
+  });
+
+  it('adds a nullable pay_type column with a wechat/alipay constraint', () => {
+    expect(sql0010).toContain('ADD COLUMN pay_type text');
+    expect(sql0010).toContain('ADD CONSTRAINT ck_recharge_pay_type');
+    expect(sql0010).toContain("pay_type IS NULL OR pay_type IN ('wechat', 'alipay')");
+  });
+});
+
+describe('0011 recharge QR-only channel', () => {
+  const sql0011 = readFileSync(
+    resolve(directory, '..', 'migrations', '0011_recharge_qr_only.sql'),
+    'utf8',
+  );
+
+  it('migrates every non-qr payment method to qr first', () => {
+    expect(sql0011).toContain("SET payment_method = 'qr'");
+    expect(sql0011).toContain("WHERE payment_method <> 'qr'");
+  });
+
+  it('replaces the constraint so only qr remains accepted', () => {
+    expect(sql0011).toContain('DROP CONSTRAINT ck_recharge_payment_method');
+    expect(sql0011).toContain('ADD CONSTRAINT ck_recharge_payment_method');
+    const addConstraint = sql0011.match(
+      /ADD CONSTRAINT ck_recharge_payment_method CHECK \([\s\S]*?\);?/,
+    )?.[0];
+    expect(addConstraint).toContain("payment_method IN ('qr')");
+    expect(addConstraint).not.toContain("'h5'");
+    expect(addConstraint).not.toContain('aggregate_qr');
+  });
+});

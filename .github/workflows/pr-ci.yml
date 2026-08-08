@@ -89,3 +89,70 @@ jobs:
             infra/entrypoint.sh \
             infra/minio/init-buckets.sh \
             infra/k8s/overlays/sandbox-tools/maintenance/*.sh
+
+  billing-pg:
+    name: CI / billing PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agora
+          POSTGRES_PASSWORD: agora
+          POSTGRES_DB: agora
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U agora"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.0.9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared first
+        run: pnpm -F @cb/shared build
+
+      - name: Install database client
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Database migration
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_API_PASSWORD: ci-api-role-password
+          POSTGRES_WORKER_PASSWORD: ci-worker-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+        run: bash scripts/integration/db-migrate.sh
+
+      - name: Authoring billing PostgreSQL invariants
+        env:
+          BILLING_PG_TEST: '1'
+          BILLING_TEST_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          BILLING_AUTHORING_TEST_DATABASE_URL: postgres://combo_api:ci-api-role-password@localhost:5432/agora
+        run: pnpm --dir apps/authoring exec vitest run src/__tests__/billing.pg.test.ts
+
+      - name: Runtime billing PostgreSQL invariants
+        env:
+          BILLING_PG_TEST: '1'
+          BILLING_TEST_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          BILLING_RUNTIME_TEST_DATABASE_URL: postgres://combo_runtime:ci-runtime-role-password@localhost:5432/agora
+        run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts

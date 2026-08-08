@@ -44,6 +44,7 @@ export interface EndpointDecl {
   onRequest?: onRequestHookHandler[];
   preHandlers?: preHandlerHookHandler[];
   bodyLimit?: number;
+  config?: RouteOptions['config'];
   handler: RouteHandlerMethod;
 }
 
@@ -59,6 +60,7 @@ export function registerEndpoints(
       ...(ep.onRequest && ep.onRequest.length > 0 ? { onRequest: ep.onRequest } : {}),
       ...(ep.preHandlers && ep.preHandlers.length > 0 ? { preHandler: ep.preHandlers } : {}),
       ...(ep.bodyLimit === undefined ? {} : { bodyLimit: ep.bodyLimit }),
+      ...(ep.config === undefined ? {} : { config: ep.config }),
       handler: ep.handler,
     });
   }

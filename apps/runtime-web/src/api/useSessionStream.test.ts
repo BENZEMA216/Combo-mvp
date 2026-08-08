@@ -4,15 +4,21 @@ import { act, renderHook } from '@testing-library/react';
 import { createElement, type PropsWithChildren, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ReleaseMetadataProvider } from '../shell/releaseIdentity.js';
-import { sendSessionMessage } from './runtime.js';
+import {
+  readRechargeRequired,
+  sendSessionMessage,
+  type SendSessionMessageResult,
+} from './runtime.js';
 import { sortArtifacts, subscribeSessionEvents, useSessionStream } from './useSessionStream.js';
 
 vi.mock('./runtime.js', () => ({
   interruptSession: vi.fn(async () => ({ interrupted: false })),
+  readRechargeRequired: vi.fn(() => null),
   sendSessionMessage: vi.fn(),
 }));
 
 const sendSessionMessageMock = vi.mocked(sendSessionMessage);
+const readRechargeRequiredMock = vi.mocked(readRechargeRequired);
 const SESSION_A = '11111111-1111-4111-8111-111111111111';
 const SESSION_B = '22222222-2222-4222-8222-222222222222';
 const TURN_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -55,7 +61,10 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  window.sessionStorage.clear();
   sendSessionMessageMock.mockReset();
+  readRechargeRequiredMock.mockReset();
+  readRechargeRequiredMock.mockReturnValue(null);
 });
 
 describe('runtime session EventSource fixed-session behavior', () => {
@@ -110,7 +119,7 @@ describe('runtime session EventSource fixed-session behavior', () => {
 describe('runtime session generation fencing', () => {
   it('uses one synchronous in-flight lock for all send callers', async () => {
     vi.stubGlobal('EventSource', MockEventSource);
-    const pending = deferred<MessageView>();
+    const pending = deferred<SendSessionMessageResult>();
     sendSessionMessageMock.mockReturnValueOnce(pending.promise);
     const queryClient = testQueryClient();
     const detail = sessionDetail(SESSION_A);
@@ -127,18 +136,154 @@ describe('runtime session generation fencing', () => {
 
     await expect(duplicate).rejects.toThrow('Agent 正在处理当前任务');
     expect(sendSessionMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendSessionMessageMock).toHaveBeenCalledWith(
+      SESSION_A,
+      'first request',
+      expect.any(String),
+    );
 
     await act(async () => {
-      pending.resolve(message(TURN_A));
+      pending.resolve(gatewayResponse(TURN_A));
       await accepted;
     });
     expect(result.current.activeRunId).toBe(TURN_A);
   });
 
+  it('reuses the same usageId after an uncertain failure and rotates it after acceptance', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new Error('network lost'))
+      .mockResolvedValueOnce(gatewayResponse(TURN_A))
+      .mockRejectedValueOnce(new Error('second failure'));
+    const queryClient = testQueryClient();
+    const detail = sessionDetail(SESSION_A);
+    const { result } = renderHook(() => useSessionStream(SESSION_A, detail), {
+      wrapper: testWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('same request')).rejects.toThrow('发送失败');
+    });
+    await act(async () => {
+      await result.current.send('same request');
+    });
+    const firstUsageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    expect(firstUsageId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(firstUsageId);
+
+    act(() => {
+      MockEventSource.instances[0]?.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'RUN_FINISHED', runId: TURN_A }),
+        }),
+      );
+    });
+    await vi.waitFor(() => expect(result.current.running).toBe(false));
+
+    await act(async () => {
+      await expect(result.current.send('same request')).rejects.toThrow('发送失败');
+    });
+    expect(sendSessionMessageMock.mock.calls[2]?.[2]).not.toBe(firstUsageId);
+  });
+
+  it('keeps an uncertain usageId across a component remount and blocks a different request', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    sendSessionMessageMock
+      .mockRejectedValueOnce(new Error('network lost'))
+      .mockResolvedValueOnce(gatewayResponse(TURN_A, true));
+    const queryClient = testQueryClient();
+    const detail = sessionDetail(SESSION_A);
+    const first = renderHook(() => useSessionStream(SESSION_A, detail), {
+      wrapper: testWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await expect(first.result.current.send('persisted request')).rejects.toThrow('发送失败');
+    });
+    const originalUsageId = sendSessionMessageMock.mock.calls[0]?.[2];
+    await act(async () => {
+      await expect(first.result.current.send('different request')).rejects.toThrow(
+        '上一次发送结果仍待确认',
+      );
+    });
+    expect(sendSessionMessageMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    const second = renderHook(() => useSessionStream(SESSION_A, detail), {
+      wrapper: testWrapper(queryClient),
+    });
+    await vi.waitFor(() => expect(second.result.current.pendingRetryAvailable).toBe(true));
+    act(() => {
+      MockEventSource.instances.at(-1)?.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'RUN_FINISHED', runId: TURN_A }),
+        }),
+      );
+    });
+    await act(async () => {
+      await second.result.current.retryPending();
+    });
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).toBe(originalUsageId);
+    expect(window.sessionStorage.length).toBe(0);
+    expect(second.result.current.running).toBe(false);
+    expect(second.result.current.activeRunId).toBeNull();
+    expect(second.result.current.terminalRun).toMatchObject({
+      runId: TURN_A,
+      state: 'completed',
+    });
+    second.unmount();
+  });
+
+  it('blocks every new send while the current recharge requirement is unresolved', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    sendSessionMessageMock.mockRejectedValueOnce(new Error('test 402'));
+    readRechargeRequiredMock.mockReturnValue({
+      rechargeRequired: true,
+      rechargeIntentId: '77777777-7777-4777-8777-777777777777',
+      balanceCents: '0',
+      requiredCents: '100',
+    });
+    const queryClient = testQueryClient();
+    const detail = sessionDetail(SESSION_A);
+    const { result } = renderHook(() => useSessionStream(SESSION_A, detail), {
+      wrapper: testWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await expect(result.current.send('first request')).rejects.toThrow('免费次数已用完');
+    });
+    expect(result.current.rechargeRequired).not.toBeNull();
+    expect(readRechargeRequiredMock).toHaveBeenCalledWith(
+      expect.any(Error),
+      sendSessionMessageMock.mock.calls[0]?.[2],
+    );
+
+    await act(async () => {
+      await expect(result.current.send('another request')).rejects.toThrow(
+        '请先完成或关闭当前充值流程',
+      );
+    });
+    expect(sendSessionMessageMock).toHaveBeenCalledTimes(1);
+
+    sendSessionMessageMock.mockResolvedValueOnce(gatewayResponse(TURN_A));
+    await act(async () => {
+      result.current.abandonRechargeUsage();
+    });
+    await act(async () => {
+      await result.current.send('another request');
+    });
+    expect(sendSessionMessageMock).toHaveBeenCalledTimes(2);
+    expect(sendSessionMessageMock.mock.calls[1]?.[2]).not.toBe(
+      sendSessionMessageMock.mock.calls[0]?.[2],
+    );
+  });
+
   it('does not let an old session POST completion or stale detail poison the new session', async () => {
     vi.stubGlobal('EventSource', MockEventSource);
-    const pendingA = deferred<MessageView>();
-    const pendingB = deferred<MessageView>();
+    const pendingA = deferred<SendSessionMessageResult>();
+    const pendingB = deferred<SendSessionMessageResult>();
     sendSessionMessageMock
       .mockReturnValueOnce(pendingA.promise)
       .mockReturnValueOnce(pendingB.promise);
@@ -168,13 +313,13 @@ describe('runtime session generation fencing', () => {
       requestB = result.current.send('session B request');
     });
     await act(async () => {
-      pendingB.resolve(message(TURN_B));
+      pendingB.resolve(gatewayResponse(TURN_B));
       await requestB;
     });
     expect(result.current.activeRunId).toBe(TURN_B);
 
     await act(async () => {
-      pendingA.resolve(message(TURN_A));
+      pendingA.resolve(gatewayResponse(TURN_A));
       await requestA;
     });
     expect(result.current.running).toBe(true);
@@ -184,8 +329,8 @@ describe('runtime session generation fencing', () => {
 
   it('does not let an old session rejection reset a newer active generation', async () => {
     vi.stubGlobal('EventSource', MockEventSource);
-    const pendingA = deferred<MessageView>();
-    const pendingB = deferred<MessageView>();
+    const pendingA = deferred<SendSessionMessageResult>();
+    const pendingB = deferred<SendSessionMessageResult>();
     sendSessionMessageMock
       .mockReturnValueOnce(pendingA.promise)
       .mockReturnValueOnce(pendingB.promise);
@@ -211,7 +356,7 @@ describe('runtime session generation fencing', () => {
       requestB = result.current.send('session B request');
     });
     await act(async () => {
-      pendingB.resolve(message(TURN_B));
+      pendingB.resolve(gatewayResponse(TURN_B));
       await requestB;
     });
 
@@ -322,6 +467,10 @@ function message(turnId: string): MessageView {
     status: 'completed',
     createdAt: '2026-07-25T00:00:01.000Z',
   };
+}
+
+function gatewayResponse(turnId: string, replayed = false): SendSessionMessageResult {
+  return { message: message(turnId), replayed };
 }
 
 function deferred<T>(): {

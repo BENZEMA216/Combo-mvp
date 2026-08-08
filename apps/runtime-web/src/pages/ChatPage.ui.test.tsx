@@ -17,6 +17,11 @@ const mocks = vi.hoisted(() => ({
   artifact: null as ArtifactView | null,
   artifactContent: '<!doctype html><html><body><button>运行</button></body></html>',
   send: vi.fn(),
+  pendingRetryAvailable: false,
+  retryPending: vi.fn(),
+  rechargeRequired: null,
+  clearRechargeRequired: vi.fn(),
+  abandonRechargeUsage: vi.fn(),
   createTrial: vi.fn(),
   createTrialPending: false,
 }));
@@ -48,6 +53,11 @@ vi.mock('../api/useSessionStream.js', () => ({
       activeRunId: mocks.activeRunId ?? restoredTurn?.id ?? null,
       terminalRun: mocks.terminalRun,
       errorMessage: mocks.errorMessage,
+      pendingRetryAvailable: mocks.pendingRetryAvailable,
+      retryPending: mocks.retryPending,
+      rechargeRequired: mocks.rechargeRequired,
+      clearRechargeRequired: mocks.clearRechargeRequired,
+      abandonRechargeUsage: mocks.abandonRechargeUsage,
       send: mocks.send,
       interrupt: vi.fn(),
       selectArtifact: vi.fn(),
@@ -147,6 +157,8 @@ beforeEach(() => {
     updatedAt: '2026-07-23T01:02:00.000Z',
   });
   mocks.createTrialPending = false;
+  mocks.pendingRetryAvailable = false;
+  mocks.retryPending.mockResolvedValue(undefined);
 });
 
 describe('ChatPage studio experience', () => {
@@ -562,6 +574,18 @@ describe('ChatPage consume intake regression', () => {
       status: 'completed',
       createdAt: '2026-07-23T01:01:00.000Z',
     });
+  });
+
+  it('offers a safe retry entry even before the first consumer conversation exists', async () => {
+    mocks.pendingRetryAvailable = true;
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    const originalDraft = screen.getByRole('textbox', { name: /本周工作/ });
+    fireEvent.change(originalDraft, { target: { value: '不会再次发送的旧草稿' } });
+    expect(screen.getByText(/上一次发送结果仍待确认/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '重试原任务' }));
+    await waitFor(() => expect(mocks.retryPending).toHaveBeenCalledOnce());
+    expect(screen.getByRole('textbox', { name: /本周工作/ })).toHaveValue('');
   });
 
   it('keeps the consumer form interactive and sends its structured prompt', async () => {

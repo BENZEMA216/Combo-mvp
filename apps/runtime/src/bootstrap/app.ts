@@ -92,6 +92,10 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       idleTimeoutMs: env.RUNTIME_TURN_IDLE_TIMEOUT_MS,
       interrupts: createRedisInterruptBus(env),
       sandbox: infra.sandbox,
+      billingPolicy: {
+        freeUses: env.RUNTIME_BILLING_FREE_USES,
+        unitPriceCents: env.RUNTIME_BILLING_UNIT_PRICE_CENTS,
+      },
       sweepIntervalMs: TURN_SWEEP_INTERVAL_MS,
       shutdownTimeoutMs: env.RUNTIME_SHUTDOWN_TIMEOUT_MS,
       log: app.log,

@@ -67,6 +67,17 @@ const EnvSchema = z.object({
   ),
   OTP_HMAC_SECRET: z.string().default(''),
 
+  // 余额充值只由 API 进程使用。网关环境是固定枚举，正式网关另有显式二次开关。
+  LESHOUYING_ENABLED: booleanFromString,
+  LESHOUYING_ENVIRONMENT: z.enum(['TEST', 'PRODUCTION']).default('TEST'),
+  LESHOUYING_PRODUCTION_ENABLED: booleanFromString,
+  LESHOUYING_INSTITUTION_NO: z.string().default(''),
+  LESHOUYING_MERCHANT_NO: z.string().default(''),
+  LESHOUYING_INSTITUTION_KEY: z.string().default(''),
+  LESHOUYING_NOTIFY_URL: z.string().default(''),
+  LESHOUYING_TIMEOUT_MS: z.coerce.number().int().min(500).max(15_000).default(5_000),
+  BILLING_RECONCILE_INTERVAL_MS: z.coerce.number().int().min(5_000).max(300_000).default(15_000),
+
   LLM_PROVIDER: z.preprocess(emptyToUndefined, z.enum(['anthropic', 'openrouter']).optional()),
   ANTHROPIC_API_KEY: z.string().default(''),
   OPENROUTER_API_KEY: z.string().default(''),
@@ -145,6 +156,77 @@ const AUTH_API_REQUIRED = [
   'RESEND_FROM_EMAIL',
   'OTP_HMAC_SECRET',
 ] as const;
+
+export interface BillingConfiguration {
+  gatewayEnabled: boolean;
+  submissionRecoveryMs: number;
+}
+
+function parseHttpsEndpoint(value: string, expectedPath?: string): URL | null {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (
+    url.protocol !== 'https:' ||
+    url.username ||
+    url.password ||
+    url.hash ||
+    (expectedPath !== undefined && (url.pathname !== expectedPath || url.search))
+  ) {
+    return null;
+  }
+  return url;
+}
+
+/**
+ * 解析支付配置；充值金额由调用方在 HTTP 边界提交（bigint 分），进程内不再配置套餐。
+ */
+export function billingConfigurationFromEnv(env: Env): BillingConfiguration {
+  if (!env.LESHOUYING_ENABLED) {
+    return { gatewayEnabled: false, submissionRecoveryMs: env.LESHOUYING_TIMEOUT_MS + 5_000 };
+  }
+
+  const invalidKeys: string[] = [];
+  if (
+    !/^[\x21-\x7e]{1,32}$/u.test(env.LESHOUYING_INSTITUTION_NO) ||
+    env.LESHOUYING_INSTITUTION_NO.includes('&') ||
+    env.LESHOUYING_INSTITUTION_NO.includes('=')
+  ) {
+    invalidKeys.push('LESHOUYING_INSTITUTION_NO');
+  }
+  if (
+    !/^[\x21-\x7e]{1,64}$/u.test(env.LESHOUYING_MERCHANT_NO) ||
+    env.LESHOUYING_MERCHANT_NO.includes('&') ||
+    env.LESHOUYING_MERCHANT_NO.includes('=')
+  ) {
+    invalidKeys.push('LESHOUYING_MERCHANT_NO');
+  }
+  if (
+    env.LESHOUYING_INSTITUTION_KEY.length === 0 ||
+    env.LESHOUYING_INSTITUTION_KEY.length > 512 ||
+    containsControlCharacter(env.LESHOUYING_INSTITUTION_KEY)
+  ) {
+    invalidKeys.push('LESHOUYING_INSTITUTION_KEY');
+  }
+  if (!parseHttpsEndpoint(env.LESHOUYING_NOTIFY_URL, '/api/v1/billing/leshouying/payment-notify')) {
+    invalidKeys.push('LESHOUYING_NOTIFY_URL');
+  }
+  if (
+    env.LESHOUYING_ENVIRONMENT === 'PRODUCTION' &&
+    (!env.LESHOUYING_PRODUCTION_ENABLED ||
+      env.NODE_ENV !== 'production' ||
+      releaseMetadataFromEnv(env).environment !== 'production')
+  ) {
+    invalidKeys.push('LESHOUYING_PRODUCTION_ENABLED', 'LESHOUYING_ENVIRONMENT');
+  }
+  if (invalidKeys.length > 0) {
+    throw new Error(`[env] 支付配置不合法：${[...new Set(invalidKeys)].join(', ')}`);
+  }
+  return { gatewayEnabled: true, submissionRecoveryMs: env.LESHOUYING_TIMEOUT_MS + 5_000 };
+}
 
 const PRODUCTION_REQUIRED_BY_PROCESS: Record<Env['PROCESS'], readonly string[]> = {
   api: [
@@ -271,6 +353,7 @@ export function loadEnv(): Env {
     ) {
       throw new Error('[env] 邮件发件配置不合法：RESEND_FROM_EMAIL');
     }
+    billingConfigurationFromEnv(cached);
     if (isProduction) validateProductionAuthConfig(cached);
   }
 

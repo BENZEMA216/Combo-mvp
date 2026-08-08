@@ -105,7 +105,7 @@ PROCESS=worker node apps/authoring/dist/processes/worker.js
 
 ## 数据库迁移
 
-DDL 真源在 `db/migrations/`（`0000` 至 `0009`，共 10 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把两者混作同一份线上证据。
+DDL 真源在 `db/migrations/`（`0000` 至 `0010`，共 11 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`；冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把两者混作同一份线上证据。
 Runner 自带记账表 `schema_migrations`，**幂等可重入**：已应用文件跳过、逐文件单事务、失败即止。
 
 ```bash
@@ -126,7 +126,7 @@ pnpm -F @cb/db migrate:status  # 列清单（无连接也能列）
 
 > 以下 Compose 命令只用于独立开发环境，不作为 Test、Preview 或 Production 的验收证据。tecent2 源码检查不运行这些命令。
 
-编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0009` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
+编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0010` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
 
 要点：
 
@@ -193,6 +193,8 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 
 ## 验证
 
-源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0009`、再次幂等执行、应用角色权限和异常账本拒绝。
+源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0010`、再次幂等执行、应用角色权限和异常账本拒绝。
 
 Test、Preview 与 Production 的环境证据来自 tecent2 K3s 的 `combo-test`、`combo-preview` 与 `combo-prod` namespace。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；每次部署都核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要并验证环境域名返回对应 SHA。源码目录中的普通测试不启动 Docker 或 Docker Compose。
+
+Agent 固定按次计费与乐收赢充值的源码验收、未完成现场证据和后续 Test 人工步骤见 [`docs/leshouying-test-acceptance.md`](docs/leshouying-test-acceptance.md)。

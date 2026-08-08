@@ -2526,3 +2526,199 @@ body {
     text-align: left;
   }
 }
+.rt-recharge-layer {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgb(17 24 39 / 58%);
+  backdrop-filter: blur(5px);
+}
+
+.rt-recharge-dialog {
+  width: min(540px, 100%);
+  max-height: min(760px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid rgb(15 23 42 / 10%);
+  border-radius: 22px;
+  padding: 24px;
+  background: #fff;
+  box-shadow: 0 24px 70px rgb(15 23 42 / 24%);
+  color: #172033;
+}
+
+.rt-recharge-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.rt-recharge-dialog h2 {
+  margin: 6px 0 0;
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.rt-recharge-dialog__eyebrow {
+  color: #795548;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.rt-recharge-dialog__close {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 50%;
+  background: #f2f3f5;
+  color: #5b6473;
+  font-size: 24px;
+  cursor: pointer;
+}
+
+.rt-recharge-dialog__balance {
+  margin: 18px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f8f6f2;
+  color: #4f463f;
+}
+
+.rt-recharge-dialog fieldset {
+  margin: 18px 0;
+  padding: 0;
+  border: 0;
+}
+
+.rt-recharge-dialog legend {
+  margin-bottom: 10px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.rt-recharge-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.rt-recharge-options label,
+.rt-recharge-methods label,
+.rt-recharge-pay-types label {
+  cursor: pointer;
+}
+
+.rt-recharge-options label {
+  display: grid;
+  gap: 4px;
+  padding: 13px;
+  border: 1px solid #d9dde5;
+  border-radius: 12px;
+}
+
+.rt-recharge-options label.is-selected {
+  border-color: #6d4c41;
+  background: #fbf7f5;
+  box-shadow: 0 0 0 1px #6d4c41;
+}
+
+.rt-recharge-options input {
+  position: absolute;
+  opacity: 0;
+}
+
+.rt-recharge-options span {
+  color: #667085;
+  font-size: 13px;
+}
+
+.rt-recharge-methods,
+.rt-recharge-pay-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+
+.rt-recharge-pay-types {
+  margin: 12px 0 0 25px;
+  color: #596273;
+  font-size: 13px;
+}
+
+.rt-recharge-dialog__primary {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 12px;
+  padding: 0 18px;
+  background: #5d4037;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.rt-recharge-dialog__primary:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.rt-recharge-dialog__notice {
+  margin: 18px 0 0;
+  color: #697386;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.rt-recharge-dialog__error {
+  color: #a52828;
+  font-size: 13px;
+}
+
+.rt-recharge-progress,
+.rt-recharge-result {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  margin: 20px 0;
+  padding: 20px;
+  border-radius: 16px;
+  background: #f8f9fb;
+  text-align: center;
+}
+
+.rt-recharge-progress img,
+.rt-recharge-qr-placeholder {
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.rt-recharge-qr-placeholder {
+  display: grid;
+  width: 240px;
+  height: 240px;
+  place-items: center;
+  color: #7a8495;
+}
+
+.rt-recharge-result.is-success {
+  background: #eef9f2;
+  color: #19633c;
+}
+
+.rt-recharge-result.is-error {
+  background: #fff1f1;
+  color: #8b2525;
+}
+.rt-recharge-background {
+  display: contents;
+}

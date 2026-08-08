@@ -175,3 +175,60 @@ test('three environments keep explicit app, foundation, listener, and public-dom
   });
   assert.equal(new Set(Object.values(domains)).size, 3, 'public domains must be environment-owned');
 });
+
+test('CI runs both billing PostgreSQL suites against the migrated ephemeral database', () => {
+  const mainWorkflow = text('.github/workflows/ci.yml');
+  const migrationAt = mainWorkflow.indexOf('bash scripts/integration/db-migrate.sh');
+  const authoringAt = mainWorkflow.indexOf(
+    'pnpm --dir apps/authoring exec vitest run src/__tests__/billing.pg.test.ts',
+  );
+  const runtimeAt = mainWorkflow.indexOf(
+    'pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts',
+  );
+  assert.ok(migrationAt >= 0, 'ci.yml must run the db migration before the billing PG suites');
+  assert.ok(authoringAt > migrationAt, 'authoring billing.pg.test.ts must run after the migration');
+  assert.ok(
+    runtimeAt > authoringAt,
+    'runtime billing.pg.test.ts must run after the authoring suite',
+  );
+  assert.equal((mainWorkflow.match(/BILLING_PG_TEST: '1'/g) ?? []).length, 2);
+  assert.equal(
+    (
+      mainWorkflow.match(
+        /BILLING_TEST_DATABASE_URL: postgres:\/\/agora:agora@localhost:5432\/agora/g,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.equal(
+    (
+      mainWorkflow.match(
+        /BILLING_AUTHORING_TEST_DATABASE_URL: postgres:\/\/combo_api:ci-api-role-password@localhost:5432\/agora/g,
+      ) ?? []
+    ).length,
+    1,
+  );
+  assert.equal(
+    (
+      mainWorkflow.match(
+        /BILLING_RUNTIME_TEST_DATABASE_URL: postgres:\/\/combo_runtime:ci-runtime-role-password@localhost:5432\/agora/g,
+      ) ?? []
+    ).length,
+    1,
+  );
+  assert.match(
+    mainWorkflow,
+    /find db\/migrations -maxdepth 1 -type f -name '\*\.sql'/,
+    'ci.yml must derive the expected migration list from the source',
+  );
+  assert.match(
+    mainWorkflow,
+    /sort > "\$expected_migrations"/,
+    'ci.yml must write the derived migration list to the expected file',
+  );
+  assert.doesNotMatch(
+    mainWorkflow,
+    /0000_baseline_schema\.sql/,
+    'ci.yml must not hardcode the migration file list',
+  );
+});

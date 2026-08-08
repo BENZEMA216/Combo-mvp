@@ -17,6 +17,7 @@ import {
 } from '@cb/shared';
 import { loadEnv, type Env } from '../platform/config/env.js';
 import { buildInfra } from '../platform/infra/index.js';
+import { asTxPool } from '../platform/infra/db-tx.js';
 import { registerHealthRoutes } from '../platform/http/health.js';
 import { registerVersionRoute } from '../platform/http/version.js';
 import { registerBusinessRoutes } from './routes.js';
@@ -28,6 +29,8 @@ import {
 } from '../platform/observability/node.js';
 // 副作用导入：注册 Fastify 类型增强（req.auth / app.infra）。
 import '../platform/http/fastify.js';
+import { PgBillingRepository } from '../modules/billing/repo.js';
+import { startBillingReconciler } from '../modules/billing/reconcile.js';
 
 /** 生成/继承请求 traceId。 */
 function resolveRequestTraceId(
@@ -64,7 +67,8 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   });
 
   // 基础设施容器还包含 Resend HTTP 适配器与 Redis 认证软限流器；认证事实仍只写 PostgreSQL。
-  app.decorate('infra', buildInfra(env));
+  const infra = buildInfra(env);
+  app.decorate('infra', infra);
 
   // —— 全局插件 ——
   await app.register(helmet, { contentSecurityPolicy: false });
@@ -156,11 +160,22 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   // 公开发布身份（无密钥、no-store），供部署验收核对 API 与同一 release manifest。
   await registerVersionRoute(app, env);
 
-  // 业务路由（account / task / capability）。
+  // 业务路由（account / task / capability / billing）。
   await registerBusinessRoutes(app);
+
+  const billingReconciler = startBillingReconciler({
+    repository: new PgBillingRepository(asTxPool(infra.db), infra.db),
+    gateway: infra.paymentGateway,
+    enabled: env.NODE_ENV !== 'test',
+    gatewayReconciliationEnabled: infra.billing.gatewayEnabled && infra.paymentGateway.configured,
+    intervalMs: env.BILLING_RECONCILE_INTERVAL_MS,
+    leaseMs: Math.max(30_000, env.LESHOUYING_TIMEOUT_MS * 10 + 15_000),
+    log: app.log,
+  });
 
   // 进程退出时关闭基础设施连接。
   app.addHook('onClose', async () => {
+    await billingReconciler.stop();
     const { closeDb, closeRedis, closeQueues, closeObjectStore } =
       await import('../platform/infra/index.js');
     await Promise.allSettled([closeDb(), closeRedis(), closeQueues()]);

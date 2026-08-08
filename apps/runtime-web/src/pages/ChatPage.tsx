@@ -16,6 +16,7 @@ import {
 import { FloatingChat } from '../components/FloatingChat.js';
 import { GeneratingPageSkeleton } from '../components/GeneratingPageSkeleton.js';
 import { QueryErrorNotice } from '../components/QueryErrorNotice.js';
+import { RechargeDialog } from '../components/RechargeDialog.js';
 import { SessionSidebar } from '../components/SessionSidebar.js';
 import { TrialIntakeForm } from '../components/TrialIntakeForm.js';
 import {
@@ -117,6 +118,8 @@ export function ChatPage() {
   const [operationPending, setOperationPending] = useState(false);
   const operationInFlightRef = useRef(false);
   const [trialStartError, setTrialStartError] = useState<string | null>(null);
+  const [retryResolutionVersion, setRetryResolutionVersion] = useState(0);
+  const rechargeBackgroundRef = useRef<HTMLDivElement>(null);
 
   // 普通试用和 Studio 都记住严格校验后的 returnTo，保证反复修改后能继续定价发布。
   const queryReturnTo = safeRuntimeReturnTo(searchParams.get('returnTo'));
@@ -194,6 +197,10 @@ export function ChatPage() {
   }, [activeArtifact?.id, activeArtifact?.updatedAt]);
 
   useEffect(() => {
+    rechargeBackgroundRef.current?.toggleAttribute('inert', stream.rechargeRequired !== null);
+  }, [stream.rechargeRequired]);
+
+  useEffect(() => {
     if (!mobileSessionsOpen) return undefined;
     const closeOnEscape = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') setMobileSessionsOpen(false);
@@ -215,6 +222,19 @@ export function ChatPage() {
     },
     [selectedElement, stream.send, studioMode],
   );
+
+  const retryPendingUsage = useCallback(async (): Promise<void> => {
+    try {
+      await stream.retryPending();
+      // 统一恢复入口持有并重放的是完整原请求。成功确认后重挂载原输入源，
+      // 避免表单、对话草稿或 Miniapp 再把相同内容以新 usageId 发送一次。
+      setRetryResolutionVersion((version) => version + 1);
+      setSelectedElement(null);
+      setInspectionEnabled(false);
+    } catch {
+      // useSessionStream owns the visible error and retains the same usageId for another retry.
+    }
+  }, [stream.retryPending]);
 
   const runDesignOperation = useCallback(
     async (operation: StudioDesignOperation): Promise<void> => {
@@ -259,278 +279,307 @@ export function ChatPage() {
 
   return (
     <div className={`rt-app rt-trial-app${studioMode ? ' rt-trial-app--studio' : ''}`}>
-      {!studioMode && (
-        <SessionSidebar
-          activeSessionId={sessionId}
-          capabilityId={sidebarCapability?.id}
-          capabilityName={sidebarCapability?.name}
-          returnTo={contextualReturnTo}
-          runningSessionId={stream.running ? sessionId : undefined}
-          experience={experience}
-        />
-      )}
-      <div className="rt-trial">
-        {sessionQ.isPending ? (
-          <div className="rt-loading">加载会话…</div>
-        ) : sessionQ.isError || !detail || !capability ? (
-          <QueryErrorNotice error={sessionQ.error} onRetry={() => void sessionQ.refetch()} />
-        ) : (
-          <>
-            <header className="rt-trial__toolbar">
-              <div className="rt-trial__title-group">
-                <h1>
-                  {activeArtifact?.title ??
-                    (studioMode ? `${capability.name} UI` : capability.name)}
-                </h1>
-                {studioMode ? (
-                  <div className="rt-studio-status">
-                    <span className="rt-source-pill">UI 设计</span>
-                    <span id="rt-studio-save-help" className="rt-sr-only">
-                      每次生成成功后会自动设为 Agent 当前 UI，无需手动保存。
+      <div
+        ref={rechargeBackgroundRef}
+        className="rt-recharge-background"
+        aria-hidden={stream.rechargeRequired ? true : undefined}
+      >
+        {!studioMode && (
+          <SessionSidebar
+            activeSessionId={sessionId}
+            capabilityId={sidebarCapability?.id}
+            capabilityName={sidebarCapability?.name}
+            returnTo={contextualReturnTo}
+            runningSessionId={stream.running ? sessionId : undefined}
+            experience={experience}
+          />
+        )}
+        <div className="rt-trial">
+          {sessionQ.isPending ? (
+            <div className="rt-loading">加载会话…</div>
+          ) : sessionQ.isError || !detail || !capability ? (
+            <QueryErrorNotice error={sessionQ.error} onRetry={() => void sessionQ.refetch()} />
+          ) : (
+            <>
+              <header className="rt-trial__toolbar">
+                <div className="rt-trial__title-group">
+                  <h1>
+                    {activeArtifact?.title ??
+                      (studioMode ? `${capability.name} UI` : capability.name)}
+                  </h1>
+                  {studioMode ? (
+                    <div className="rt-studio-status">
+                      <span className="rt-source-pill">UI 设计</span>
+                      <span id="rt-studio-save-help" className="rt-sr-only">
+                        每次生成成功后会自动设为 Agent 当前 UI，无需手动保存。
+                      </span>
+                      <span
+                        className={`rt-save-pill is-${studioSaveStatus.tone}`}
+                        role="status"
+                        aria-live="polite"
+                        aria-label={`保存状态：${studioSaveStatus.label}`}
+                        aria-describedby="rt-studio-save-help"
+                      >
+                        <span className="rt-save-pill__dot" aria-hidden="true" />
+                        {studioSaveStatus.label}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="rt-source-pill">
+                      {capability.name} · {capability.kind}
                     </span>
-                    <span
-                      className={`rt-save-pill is-${studioSaveStatus.tone}`}
-                      role="status"
-                      aria-live="polite"
-                      aria-label={`保存状态：${studioSaveStatus.label}`}
-                      aria-describedby="rt-studio-save-help"
+                  )}
+                </div>
+                <div className="rt-trial__actions">
+                  {!studioMode && (
+                    <button
+                      type="button"
+                      className="rt-toolbar-pill rt-mobile-sessions-trigger"
+                      aria-expanded={mobileSessionsOpen}
+                      aria-controls="rt-mobile-session-panel"
+                      onClick={() => setMobileSessionsOpen(true)}
                     >
-                      <span className="rt-save-pill__dot" aria-hidden="true" />
-                      {studioSaveStatus.label}
-                    </span>
-                  </div>
-                ) : (
-                  <span className="rt-source-pill">
-                    {capability.name} · {capability.kind}
-                  </span>
-                )}
-              </div>
-              <div className="rt-trial__actions">
-                {!studioMode && (
-                  <button
-                    type="button"
-                    className="rt-toolbar-pill rt-mobile-sessions-trigger"
-                    aria-expanded={mobileSessionsOpen}
-                    aria-controls="rt-mobile-session-panel"
-                    onClick={() => setMobileSessionsOpen(true)}
-                  >
-                    会话管理
-                  </button>
-                )}
-                {studioMode ? (
-                  <>
-                    {detail.currentUiArtifactId && (
-                      <button
-                        type="button"
-                        className="rt-toolbar-pill rt-toolbar-pill--accent"
-                        disabled={stream.running || createTrial.isPending}
-                        onClick={() => void startCurrentUiTrial()}
-                      >
-                        {createTrial.isPending ? '正在创建试用…' : '试用当前 UI'}
-                      </button>
-                    )}
-                    {releaseReturnTo && (
-                      <button
-                        type="button"
-                        className="rt-toolbar-pill rt-toolbar-pill--accent"
-                        disabled={stream.running}
-                        onClick={() => window.location.assign(releaseReturnTo)}
-                      >
-                        下一步：定价与发布
-                      </button>
-                    )}
+                      会话管理
+                    </button>
+                  )}
+                  {studioMode ? (
+                    <>
+                      {detail.currentUiArtifactId && (
+                        <button
+                          type="button"
+                          className="rt-toolbar-pill rt-toolbar-pill--accent"
+                          disabled={stream.running || createTrial.isPending}
+                          onClick={() => void startCurrentUiTrial()}
+                        >
+                          {createTrial.isPending ? '正在创建试用…' : '试用当前 UI'}
+                        </button>
+                      )}
+                      {releaseReturnTo && (
+                        <button
+                          type="button"
+                          className="rt-toolbar-pill rt-toolbar-pill--accent"
+                          disabled={stream.running}
+                          onClick={() => window.location.assign(releaseReturnTo)}
+                        >
+                          下一步：定价与发布
+                        </button>
+                      )}
+                      <a className="rt-toolbar-pill" href="/capabilities">
+                        返回我的 Agent
+                      </a>
+                    </>
+                  ) : returnTo ? (
+                    <button
+                      type="button"
+                      className="rt-toolbar-pill"
+                      onClick={() => window.location.assign(returnTo)}
+                    >
+                      {runtimeBackLabel(returnTo).replace(/^←\s*/, '')}
+                    </button>
+                  ) : (
                     <a className="rt-toolbar-pill" href="/capabilities">
                       返回我的 Agent
                     </a>
-                  </>
-                ) : returnTo ? (
-                  <button
-                    type="button"
-                    className="rt-toolbar-pill"
-                    onClick={() => window.location.assign(returnTo)}
-                  >
-                    {runtimeBackLabel(returnTo).replace(/^←\s*/, '')}
-                  </button>
-                ) : (
-                  <a className="rt-toolbar-pill" href="/capabilities">
-                    返回我的 Agent
-                  </a>
-                )}
-              </div>
-            </header>
+                  )}
+                </div>
+              </header>
 
-            <main className={`rt-genui${showConversation ? ' rt-genui--conversation' : ''}`}>
-              {showConversation && sessionId && (
-                <FloatingChat
-                  key={sessionId}
-                  sessionId={sessionId}
-                  messages={messages}
-                  streamingText={stream.streamingText}
-                  isRunning={stream.running}
-                  hasArtifact={activeArtifact !== null}
-                  error={stream.errorMessage}
-                  onSend={sendConversationMessage}
-                  onInterrupt={stream.interrupt}
-                  experience={experience}
-                  formatMessageText={studioMode ? formatStudioAnnotationMessage : undefined}
-                />
-              )}
-              <div className="rt-genui__canvas" data-state={canvasState}>
-                {studioMode && activeArtifact && (
-                  <StudioDesignToolbar
-                    artifact={activeArtifact}
-                    running={stream.running}
-                    operationPending={operationPending}
-                    inspectionEnabled={inspectionEnabled}
-                    inspectableCount={inspectableElements.length}
-                    selectedElement={selectedElement}
-                    onToggleInspection={() => setInspectionEnabled((enabled) => !enabled)}
-                    onClearSelection={() => {
-                      setSelectedElement(null);
-                      setInspectionEnabled(false);
-                    }}
-                    onOperation={(operation) => void runDesignOperation(operation)}
+              <main className={`rt-genui${showConversation ? ' rt-genui--conversation' : ''}`}>
+                {showConversation && sessionId && (
+                  <FloatingChat
+                    key={`${sessionId}:${retryResolutionVersion}`}
+                    sessionId={sessionId}
+                    messages={messages}
+                    streamingText={stream.streamingText}
+                    isRunning={stream.running}
+                    hasArtifact={activeArtifact !== null}
+                    error={stream.errorMessage}
+                    onSend={sendConversationMessage}
+                    onInterrupt={stream.interrupt}
+                    experience={experience}
+                    formatMessageText={studioMode ? formatStudioAnnotationMessage : undefined}
                   />
                 )}
-                {trialStartError && (
-                  <div className="rt-inline-error" role="alert">
-                    {trialStartError}
-                  </div>
-                )}
-                {/* consume 首轮失败时对话尚未挂载，错误必须留在画布；Studio 的错误在左侧对话里。 */}
-                {stream.errorMessage && !showConversation && (
-                  <div className="rt-inline-error" role="alert">
-                    {stream.errorMessage}
-                  </div>
-                )}
-                {(stream.artifactList.length > 1 ||
-                  (studioMode && stream.artifactList.length > 0)) && (
-                  <div
-                    className={`rt-canvas-chips${studioMode ? ' rt-canvas-chips--revisions' : ''}`}
-                    aria-label={studioMode ? 'UI 版本历史' : '产物列表'}
-                  >
-                    {stream.artifactList.map((a, index) => (
+                <div className="rt-genui__canvas" data-state={canvasState}>
+                  {stream.pendingRetryAvailable && !stream.rechargeRequired && (
+                    <div className="rt-inline-error" role="alert">
+                      上一次发送结果仍待确认。为避免重复运行或扣费，请先重试原任务。
                       <button
-                        key={a.id}
                         type="button"
-                        className={`rt-artifact-chip${a.id === activeArtifact?.id ? ' is-active' : ''}`}
-                        onClick={() => stream.selectArtifact(a.id)}
-                      >
-                        <span className="rt-artifact-chip__glyph">▤</span>
-                        <span className="rt-artifact-chip__title">
-                          {studioMode ? `版本 ${index + 1}` : (a.title ?? '未命名产物')}
-                        </span>
-                        {studioMode && detail.currentUiArtifactId === a.id && (
-                          <span className="rt-artifact-chip__state">当前 UI</span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {activeArtifact ? (
-                  <ArtifactStage
-                    artifact={activeArtifact}
-                    onRunRequest={
-                      studioMode
-                        ? undefined
-                        : async ({ prompt }) => {
-                            const message = await stream.send(prompt);
-                            if (!message.turnId) {
-                              throw new Error('运行请求缺少轮次标识，请重试。');
-                            }
-                            return { turnId: message.turnId };
-                          }
-                    }
-                    runActive={!studioMode && stream.running}
-                    activeRunId={studioMode ? null : stream.activeRunId}
-                    terminalRun={studioMode ? null : stream.terminalRun}
-                    runDisabledMessage={
-                      studioMode
-                        ? '当前是 UI 设计预览。请返回「我的 Agent」，从真实试用运行 Agent。'
-                        : undefined
-                    }
-                    studioMode={studioMode}
-                    inspectionEnabled={studioMode && inspectionEnabled}
-                    selectedElementKey={studioMode ? (selectedElement?.key ?? null) : null}
-                    onElementSelect={
-                      studioMode
-                        ? (element) => {
-                            setSelectedElement(element);
-                            setInspectionEnabled(false);
-                          }
-                        : undefined
-                    }
-                    onElementManifest={studioMode ? setInspectableElements : undefined}
-                  />
-                ) : !studioMode && hasStarted && !showGenerating ? (
-                  <div className="rt-empty">这轮还没有生成产物，可以在对话里继续要求。</div>
-                ) : null}
-                {(showStudioDefault || (!studioMode && showIntake)) && (
-                  <div
-                    className={`rt-genui__overlay${
-                      studioMode ? ' rt-genui__overlay--studio-default' : ''
-                    }`}
-                  >
-                    {studioMode ? (
-                      <StudioDefaultPreview capability={capability} />
-                    ) : (
-                      <TrialIntakeForm
-                        capability={capability}
+                        className="rt-toolbar-pill"
                         disabled={stream.running}
-                        onSubmit={(prompt) => {
-                          void stream.send(prompt).catch(() => undefined);
-                        }}
-                      />
-                    )}
-                  </div>
-                )}
-                {showGenerating && (
-                  <div className="rt-genui__overlay rt-genui__overlay--plain">
-                    <GeneratingPageSkeleton startedAt={runStartedAt} experience={experience} />
-                  </div>
-                )}
+                        onClick={() => void retryPendingUsage()}
+                      >
+                        重试原任务
+                      </button>
+                    </div>
+                  )}
+                  {studioMode && activeArtifact && (
+                    <StudioDesignToolbar
+                      artifact={activeArtifact}
+                      running={stream.running}
+                      operationPending={operationPending}
+                      inspectionEnabled={inspectionEnabled}
+                      inspectableCount={inspectableElements.length}
+                      selectedElement={selectedElement}
+                      onToggleInspection={() => setInspectionEnabled((enabled) => !enabled)}
+                      onClearSelection={() => {
+                        setSelectedElement(null);
+                        setInspectionEnabled(false);
+                      }}
+                      onOperation={(operation) => void runDesignOperation(operation)}
+                    />
+                  )}
+                  {trialStartError && (
+                    <div className="rt-inline-error" role="alert">
+                      {trialStartError}
+                    </div>
+                  )}
+                  {/* consume 首轮失败时对话尚未挂载，错误必须留在画布；Studio 的错误在左侧对话里。 */}
+                  {stream.errorMessage && !showConversation && (
+                    <div className="rt-inline-error" role="alert">
+                      {stream.errorMessage}
+                    </div>
+                  )}
+                  {(stream.artifactList.length > 1 ||
+                    (studioMode && stream.artifactList.length > 0)) && (
+                    <div
+                      className={`rt-canvas-chips${studioMode ? ' rt-canvas-chips--revisions' : ''}`}
+                      aria-label={studioMode ? 'UI 版本历史' : '产物列表'}
+                    >
+                      {stream.artifactList.map((a, index) => (
+                        <button
+                          key={a.id}
+                          type="button"
+                          className={`rt-artifact-chip${a.id === activeArtifact?.id ? ' is-active' : ''}`}
+                          onClick={() => stream.selectArtifact(a.id)}
+                        >
+                          <span className="rt-artifact-chip__glyph">▤</span>
+                          <span className="rt-artifact-chip__title">
+                            {studioMode ? `版本 ${index + 1}` : (a.title ?? '未命名产物')}
+                          </span>
+                          {studioMode && detail.currentUiArtifactId === a.id && (
+                            <span className="rt-artifact-chip__state">当前 UI</span>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {activeArtifact ? (
+                    <ArtifactStage
+                      key={`${activeArtifact.id}:${retryResolutionVersion}`}
+                      artifact={activeArtifact}
+                      onRunRequest={
+                        studioMode
+                          ? undefined
+                          : async ({ prompt }) => {
+                              const message = await stream.send(prompt);
+                              if (!message.turnId) {
+                                throw new Error('运行请求缺少轮次标识，请重试。');
+                              }
+                              return { turnId: message.turnId };
+                            }
+                      }
+                      runActive={!studioMode && stream.running}
+                      activeRunId={studioMode ? null : stream.activeRunId}
+                      terminalRun={studioMode ? null : stream.terminalRun}
+                      runDisabledMessage={
+                        studioMode
+                          ? '当前是 UI 设计预览。请返回「我的 Agent」，从真实试用运行 Agent。'
+                          : undefined
+                      }
+                      studioMode={studioMode}
+                      inspectionEnabled={studioMode && inspectionEnabled}
+                      selectedElementKey={studioMode ? (selectedElement?.key ?? null) : null}
+                      onElementSelect={
+                        studioMode
+                          ? (element) => {
+                              setSelectedElement(element);
+                              setInspectionEnabled(false);
+                            }
+                          : undefined
+                      }
+                      onElementManifest={studioMode ? setInspectableElements : undefined}
+                    />
+                  ) : !studioMode && hasStarted && !showGenerating ? (
+                    <div className="rt-empty">这轮还没有生成产物，可以在对话里继续要求。</div>
+                  ) : null}
+                  {(showStudioDefault || (!studioMode && showIntake)) && (
+                    <div
+                      className={`rt-genui__overlay${
+                        studioMode ? ' rt-genui__overlay--studio-default' : ''
+                      }`}
+                    >
+                      {studioMode ? (
+                        <StudioDefaultPreview capability={capability} />
+                      ) : (
+                        <TrialIntakeForm
+                          key={`${sessionId}:${retryResolutionVersion}`}
+                          capability={capability}
+                          disabled={stream.running}
+                          onSubmit={(prompt) => {
+                            void stream.send(prompt).catch(() => undefined);
+                          }}
+                        />
+                      )}
+                    </div>
+                  )}
+                  {showGenerating && (
+                    <div className="rt-genui__overlay rt-genui__overlay--plain">
+                      <GeneratingPageSkeleton startedAt={runStartedAt} experience={experience} />
+                    </div>
+                  )}
+                </div>
+              </main>
+            </>
+          )}
+        </div>
+        {!studioMode && mobileSessionsOpen && (
+          <div
+            className="rt-mobile-session-layer"
+            onPointerDown={(event) => {
+              if (event.target === event.currentTarget) setMobileSessionsOpen(false);
+            }}
+          >
+            <section
+              id="rt-mobile-session-panel"
+              className="rt-mobile-session-panel"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="rt-mobile-session-title"
+            >
+              <div className="rt-mobile-session-panel__head">
+                <h2 id="rt-mobile-session-title">会话管理</h2>
+                <button
+                  type="button"
+                  autoFocus
+                  aria-label="关闭会话管理"
+                  onClick={() => setMobileSessionsOpen(false)}
+                >
+                  ×
+                </button>
               </div>
-            </main>
-          </>
+              <SessionSidebar
+                activeSessionId={sessionId}
+                capabilityId={sidebarCapability?.id}
+                capabilityName={sidebarCapability?.name}
+                returnTo={contextualReturnTo}
+                runningSessionId={stream.running ? sessionId : undefined}
+                instanceId="mobile"
+                experience={experience}
+                onNavigate={() => setMobileSessionsOpen(false)}
+              />
+            </section>
+          </div>
         )}
       </div>
-      {!studioMode && mobileSessionsOpen && (
-        <div
-          className="rt-mobile-session-layer"
-          onPointerDown={(event) => {
-            if (event.target === event.currentTarget) setMobileSessionsOpen(false);
-          }}
-        >
-          <section
-            id="rt-mobile-session-panel"
-            className="rt-mobile-session-panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="rt-mobile-session-title"
-          >
-            <div className="rt-mobile-session-panel__head">
-              <h2 id="rt-mobile-session-title">会话管理</h2>
-              <button
-                type="button"
-                autoFocus
-                aria-label="关闭会话管理"
-                onClick={() => setMobileSessionsOpen(false)}
-              >
-                ×
-              </button>
-            </div>
-            <SessionSidebar
-              activeSessionId={sessionId}
-              capabilityId={sidebarCapability?.id}
-              capabilityName={sidebarCapability?.name}
-              returnTo={contextualReturnTo}
-              runningSessionId={stream.running ? sessionId : undefined}
-              instanceId="mobile"
-              experience={experience}
-              onNavigate={() => setMobileSessionsOpen(false)}
-            />
-          </section>
-        </div>
+      {stream.rechargeRequired && (
+        <RechargeDialog
+          requirement={stream.rechargeRequired}
+          onClose={stream.clearRechargeRequired}
+          onCredited={stream.abandonRechargeUsage}
+          onAbandon={stream.abandonRechargeUsage}
+        />
       )}
     </div>
   );

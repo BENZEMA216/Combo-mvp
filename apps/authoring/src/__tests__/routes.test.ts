@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
 
 describe('route registry self-check', () => {
-  it('registers exactly 16 endpoints (account 4 + task 8 + capability 4)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(16);
+  it('registers exactly 21 endpoints (account 4 + task 8 + capability 4 + billing 5)', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(21);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -42,7 +42,11 @@ describe('route registry self-check', () => {
   });
 
   it('puts an Origin guard before every browser write and exempts only pairing-code uploads', () => {
-    const exempt = new Set(['/connect/prepare', '/connect/upload']);
+    const exempt = new Set([
+      '/connect/prepare',
+      '/connect/upload',
+      '/billing/leshouying/payment-notify',
+    ]);
     for (const endpoint of ALL_ENDPOINTS) {
       if (endpoint.method === 'GET' || exempt.has(endpoint.url)) continue;
       expect(
@@ -50,6 +54,36 @@ describe('route registry self-check', () => {
         `${String(endpoint.method)} ${endpoint.url} 缺浏览器来源守卫`,
       ).toBeGreaterThanOrEqual(2);
     }
+  });
+
+  it('keeps the payment notification independent from browser credentials and tightly bounded', () => {
+    const callback = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.url === '/billing/leshouying/payment-notify',
+    );
+    expect(callback).toMatchObject({
+      method: 'POST',
+      bodyLimit: 16 * 1_024,
+      config: { rateLimit: { max: 600, timeWindow: '1 minute' } },
+    });
+    expect(callback?.preHandlers).toHaveLength(1);
+  });
+
+  it('protects wallet and recharge-order browser endpoints with authentication and Origin', () => {
+    const billing = ALL_ENDPOINTS.filter(
+      (endpoint) =>
+        endpoint.url.startsWith('/billing/') &&
+        endpoint.url !== '/billing/leshouying/payment-notify',
+    );
+    expect(billing).toHaveLength(4);
+    for (const endpoint of billing) {
+      expect(endpoint.preHandlers?.length).toBeGreaterThanOrEqual(2);
+    }
+    expect(billing.find((endpoint) => endpoint.url === '/billing/recharge-orders')?.bodyLimit).toBe(
+      4_096,
+    );
+    expect(billing.find((endpoint) => endpoint.url === '/billing/recharge-orders')?.config).toEqual(
+      { rateLimit: { max: 10, timeWindow: '1 minute' } },
+    );
   });
 
   it('keeps assistant endpoints independent from browser login', () => {

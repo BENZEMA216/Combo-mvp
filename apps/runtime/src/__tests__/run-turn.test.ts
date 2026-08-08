@@ -1,10 +1,13 @@
 // run-turn 编排（注入假 agent 工厂）：事件双写、终态消息落库、busy 闸、失败落 failed 消息、打断。
+import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { EventType } from '@ag-ui/core';
 import type { CapabilityDefinition } from '@cb/shared';
 import {
   createTurnRunner,
   SessionInactiveError,
+  START_TURN_DATABASE_TIMEOUT_MS,
+  TurnAdmissionUnavailableError,
   TurnAgentUnavailableError,
 } from '../modules/agent/run-turn.js';
 import {
@@ -30,6 +33,10 @@ import { compareStreamIds } from '../modules/agent/event-log.js';
 import { type SandboxBackend, SandboxBackendError } from '../platform/infra/sandbox-backend.js';
 
 const ME = 'user-me';
+
+function billingIdentity(session: SessionRow) {
+  return { usageId: randomUUID(), capabilityOwnerUserId: session.ownerUserId };
+}
 
 const DEFINITION: CapabilityDefinition = {
   version: 1,
@@ -74,6 +81,7 @@ async function setup(
   shutdownTimeoutMs?: number,
   observeAppend?: (event: Record<string, unknown>, db: FakeDb) => void,
   terminalEventTimeoutMs?: number,
+  turnAdmissionTimeouts?: { databaseTimeoutMs: number; deadlineMs: number },
 ) {
   const db = new FakeDb();
   const store = new FakeObjectStore();
@@ -98,6 +106,12 @@ async function setup(
     sandbox,
     ...(shutdownTimeoutMs === undefined ? {} : { shutdownTimeoutMs }),
     ...(terminalEventTimeoutMs === undefined ? {} : { terminalEventTimeoutMs }),
+    ...(turnAdmissionTimeouts === undefined
+      ? {}
+      : {
+          turnAdmissionDatabaseTimeoutMs: turnAdmissionTimeouts.databaseTimeoutMs,
+          turnAdmissionDeadlineMs: turnAdmissionTimeouts.deadlineMs,
+        }),
     log: silentLog,
   });
   const cap = db.seedCapability({ owner_user_id: ME });
@@ -117,7 +131,13 @@ async function runToIdle(
   session: SessionRow,
   text = '帮我整理这份速记',
 ) {
-  const result = await runner.startTurn({ session, definition: DEFINITION, text, log: silentLog });
+  const result = await runner.startTurn({
+    session,
+    definition: DEFINITION,
+    text,
+    ...billingIdentity(session),
+    log: silentLog,
+  });
   await waitFor(() =>
     [...db.turns.values()].every(
       (turn) => turn.session_id !== session.id || turn.status !== 'running',
@@ -470,12 +490,226 @@ describe('run-turn 与归档串行化', () => {
     await archiveSession(db, session.id, session.ownerUserId);
 
     await expect(
-      runner.startTurn({ session, definition: DEFINITION, text: '迟到的消息', log: silentLog }),
+      runner.startTurn({
+        session,
+        definition: DEFINITION,
+        text: '迟到的消息',
+        ...billingIdentity(session),
+        log: silentLog,
+      }),
     ).rejects.toBeInstanceOf(SessionInactiveError);
     expect(db.turns.size).toBe(0);
     expect(
       db.queries.filter((query) => query.includes("status = 'active' FOR UPDATE")),
     ).toHaveLength(2);
+  });
+
+  it('入场事务设置数据库超时，并将会话锁超时归类为可重试依赖失败', async () => {
+    const { db, runner, session } = await setup();
+    const originalQuery = db.query.bind(db);
+    let configuredTimeout: unknown;
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      if (normalized.startsWith("SELECT set_config('lock_timeout'")) {
+        configuredTimeout = params[0];
+      }
+      if (normalized.includes("status = 'active' FOR UPDATE")) {
+        throw Object.assign(new Error('redacted database lock timeout'), { code: '55P03' });
+      }
+      return originalQuery<R>(sql, params);
+    };
+
+    await expect(
+      runner.startTurn({
+        session,
+        definition: DEFINITION,
+        text: '等待会话锁',
+        ...billingIdentity(session),
+        log: silentLog,
+      }),
+    ).rejects.toMatchObject({
+      name: TurnAdmissionUnavailableError.name,
+      stage: 'session_lock',
+      reason: 'database_transient',
+      databaseCode: '55P03',
+    });
+    expect(db.queries).toContainEqual(expect.stringContaining("SELECT set_config('lock_timeout'"));
+    expect(configuredTimeout).toBe(`${START_TURN_DATABASE_TIMEOUT_MS}ms`);
+    expect(db.turns.size).toBe(0);
+  });
+
+  it('数据库传输不返回时也受整笔入场墙钟约束', async () => {
+    const { db, runner, session } = await setup(
+      {},
+      60_000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { databaseTimeoutMs: 25, deadlineMs: 75 },
+    );
+    const originalConnect = db.connect.bind(db);
+    db.connect = async () => {
+      const connection = await originalConnect();
+      return {
+        async query<R = Record<string, unknown>>(
+          sql: string,
+          params?: unknown[],
+          signal?: AbortSignal,
+        ) {
+          const normalized = sql.replace(/\s+/g, ' ').trim();
+          if (normalized.includes("status = 'active' FOR UPDATE")) {
+            return new Promise<never>((_resolve, reject) => {
+              const rejectAborted = () =>
+                reject(new DOMException('database operation aborted', 'AbortError'));
+              if (signal?.aborted) rejectAborted();
+              else signal?.addEventListener('abort', rejectAborted, { once: true });
+            });
+          }
+          return connection.query<R>(sql, params, signal);
+        },
+        release: (destroy?: boolean) => connection.release(destroy),
+      };
+    };
+
+    const startedAt = Date.now();
+    await expect(
+      runner.startTurn({
+        session,
+        definition: DEFINITION,
+        text: '传输无响应',
+        ...billingIdentity(session),
+        log: silentLog,
+      }),
+    ).rejects.toMatchObject({
+      name: TurnAdmissionUnavailableError.name,
+      stage: 'session_lock',
+      reason: 'deadline',
+      databaseCode: undefined,
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(db.turns.size).toBe(0);
+  });
+
+  it('COMMIT 已生效但响应丢失时确认原 Turn 并只启动一次执行', async () => {
+    const { db, runner, session, handle } = await setup();
+    const originalQuery = db.query.bind(db);
+    let loseFirstCommitResponse = true;
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      const result = await originalQuery<R>(sql, params);
+      if (normalized === 'COMMIT' && loseFirstCommitResponse) {
+        loseFirstCommitResponse = false;
+        throw new Error('redacted commit response loss');
+      }
+      return result;
+    };
+    const identity = billingIdentity(session);
+    const input = {
+      session,
+      definition: DEFINITION,
+      text: '提交结果未知但已生效',
+      ...identity,
+      log: silentLog,
+    };
+
+    const started = await runner.startTurn(input);
+    expect(started.status).toBe('started');
+    await waitFor(() => [...db.turns.values()].every((turn) => turn.status !== 'running'));
+    expect(handle.calls).toHaveLength(1);
+
+    const replayed = await runner.startTurn(input);
+    expect(replayed.status).toBe('replayed');
+    expect(handle.calls).toHaveLength(1);
+    expect(db.usageCharges.size).toBe(1);
+  });
+
+  it('COMMIT 返回确定约束错误时原样失败且不启动未知提交恢复', async () => {
+    const { db, runner, session, handle } = await setup();
+    const originalQuery = db.query.bind(db);
+    const constraintError = Object.assign(new Error('redacted deferred constraint failure'), {
+      code: '23514',
+    });
+    let beginCount = 0;
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      if (normalized === 'BEGIN') beginCount += 1;
+      if (normalized === 'COMMIT') throw constraintError;
+      return originalQuery<R>(sql, params);
+    };
+
+    await expect(
+      runner.startTurn({
+        session,
+        definition: DEFINITION,
+        text: '提交约束失败',
+        ...billingIdentity(session),
+        log: silentLog,
+      }),
+    ).rejects.toBe(constraintError);
+    expect(beginCount).toBe(1);
+    expect(handle.calls).toHaveLength(0);
+  });
+
+  it('COMMIT 确认暂时不可用时由后台接管已提交 Turn 且重试不重复执行', async () => {
+    const { db, runner, session, handle } = await setup();
+    const originalQuery = db.query.bind(db);
+    let loseFirstCommitResponse = true;
+    let failFirstConfirmation = false;
+    let postCommitRunningReads = 0;
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      if (normalized === 'BEGIN' && failFirstConfirmation) {
+        failFirstConfirmation = false;
+        throw new Error('redacted recovery transport failure');
+      }
+      if (
+        !loseFirstCommitResponse &&
+        normalized.startsWith("SELECT id FROM turns WHERE session_id = $1 AND status = 'running'")
+      ) {
+        postCommitRunningReads += 1;
+        // The first read confirms the delayed COMMIT. Fail the executor's next
+        // ownership read once to prove it retains and retries the same handle.
+        if (postCommitRunningReads === 2) {
+          throw new Error('redacted execution ownership transport failure');
+        }
+      }
+      const result = await originalQuery<R>(sql, params);
+      if (normalized === 'COMMIT' && loseFirstCommitResponse) {
+        loseFirstCommitResponse = false;
+        failFirstConfirmation = true;
+        throw new Error('redacted commit response loss');
+      }
+      return result;
+    };
+    const identity = billingIdentity(session);
+    const input = {
+      session,
+      definition: DEFINITION,
+      text: '提交确认稍后恢复',
+      ...identity,
+      log: silentLog,
+    };
+
+    await expect(runner.startTurn(input)).rejects.toMatchObject({
+      name: TurnAdmissionUnavailableError.name,
+      stage: 'commit_recovery',
+      reason: 'commit_unknown',
+      databaseCode: undefined,
+    });
+    await waitFor(() => handle.calls.length === 1);
+    await waitFor(() => [...db.turns.values()].every((turn) => turn.status !== 'running'));
+
+    const replayed = await runner.startTurn(input);
+    expect(replayed.status).toBe('replayed');
+    expect(handle.calls).toHaveLength(1);
+    expect([...db.turns.values()]).toHaveLength(1);
+    expect(
+      db.messages.filter((message) => message.session_id === session.id && message.role === 'user'),
+    ).toHaveLength(1);
+    expect(db.usageCharges.size).toBe(1);
+    expect([...db.usageCharges.values()][0]?.status).toBe('completed');
+    expect(postCommitRunningReads).toBeGreaterThanOrEqual(3);
   });
 });
 
@@ -490,6 +724,7 @@ describe('run-turn 打断', () => {
       session,
       definition: DEFINITION,
       text: '第一条',
+      ...billingIdentity(session),
       log: silentLog,
     });
     expect(first.status).toBe('started');
@@ -533,6 +768,7 @@ describe('run-turn 打断', () => {
       session,
       definition: DEFINITION,
       text: '生成一个产物',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await uploadStarted;
@@ -564,6 +800,7 @@ describe('run-turn 空闲看门狗（issue #51：流中途停滞永无终态）'
       session,
       definition: DEFINITION,
       text: '会停滞的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     expect(result.status).toBe('started');
@@ -590,6 +827,7 @@ describe('run-turn 空闲看门狗（issue #51：流中途停滞永无终态）'
       session,
       definition: DEFINITION,
       text: '关闭中的慢取消轮次',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => handle.calls.length === 1);
@@ -616,6 +854,7 @@ describe('run-turn 空闲看门狗（issue #51：流中途停滞永无终态）'
       session,
       definition: DEFINITION,
       text: '关闭中的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => handle.calls.length === 1);
@@ -647,6 +886,7 @@ describe('run-turn 空闲看门狗（issue #51：流中途停滞永无终态）'
       session,
       definition: DEFINITION,
       text: '远程取消失联的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => handle.calls.length === 1);
@@ -670,6 +910,7 @@ describe('run-turn 空闲看门狗（issue #51：流中途停滞永无终态）'
       session,
       definition: DEFINITION,
       text: '关闭时数据库连接失联的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => handle.calls.length === 1);
@@ -695,6 +936,7 @@ describe('run-turn 空闲看门狗（issue #51：流中途停滞永无终态）'
       session,
       definition: DEFINITION,
       text: '忽略取消片刻的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => handle.calls.length === 1);
@@ -746,6 +988,7 @@ describe('run-turn 失败路径（失败落 failed 消息 + RUN_ERROR）', () =>
       session,
       definition: DEFINITION,
       text: '终态事件会超时的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => [...db.turns.values()][0]?.status === 'completed');
@@ -759,6 +1002,7 @@ describe('run-turn 失败路径（失败落 failed 消息 + RUN_ERROR）', () =>
       session,
       definition: DEFINITION,
       text: '紧接着的新一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => [...db.turns.values()].every((turn) => turn.status !== 'running'));
@@ -799,6 +1043,7 @@ describe('run-turn 失败路径（失败落 failed 消息 + RUN_ERROR）', () =>
       session,
       definition: DEFINITION,
       text: '数据库提交前失败的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => [...db.turns.values()][0]?.status === 'failed');
@@ -829,6 +1074,7 @@ describe('run-turn 失败路径（失败落 failed 消息 + RUN_ERROR）', () =>
       session,
       definition: DEFINITION,
       text: '数据库始终失败的一轮',
+      ...billingIdentity(session),
       log: silentLog,
     });
     await waitFor(() => db.txLog.filter((entry) => entry === 'ROLLBACK').length >= 2);
@@ -884,6 +1130,7 @@ describe('run-turn 失败路径（失败落 failed 消息 + RUN_ERROR）', () =>
       session,
       definition: DEFINITION,
       text: 'hi',
+      ...billingIdentity(session),
       log: silentLog,
     });
     expect(result.status).toBe('started');

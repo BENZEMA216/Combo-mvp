@@ -68,6 +68,54 @@ export interface TurnRowF {
   finished_at: string | null;
 }
 
+export interface BillingAccountRowF {
+  owner_user_id: string;
+  balance_cents: bigint;
+  reserved_cents: bigint;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BillingFreeAllowanceRowF {
+  owner_user_id: string;
+  capability_id: string;
+  policy_version: string;
+  free_limit_snapshot: number;
+  free_used_count: number;
+  free_reserved_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UsageChargeRowF {
+  id: string;
+  owner_user_id: string;
+  usage_id: string;
+  capability_id: string;
+  session_id: string;
+  turn_id: string;
+  request_fingerprint: string;
+  charge_source: 'owner' | 'free' | 'wallet';
+  status: 'reserved' | 'completed' | 'released';
+  unit_price_cents: bigint;
+  free_limit_snapshot: number;
+  reserved_cents: bigint;
+  settled_cents: bigint;
+  created_at: string;
+  updated_at: string;
+  finished_at: string | null;
+}
+
+export interface WalletLedgerRowF {
+  id: string;
+  owner_user_id: string;
+  entry_type: 'usage_debit';
+  amount_cents: bigint;
+  recharge_order_id: null;
+  usage_charge_id: string;
+  created_at: string;
+}
+
 export interface ArtifactRowF {
   id: string;
   session_id: string;
@@ -193,6 +241,10 @@ export class FakeDb implements Queryable, TxPool {
   messages: MessageRowF[] = [];
   turns = new Map<string, TurnRowF>();
   artifacts = new Map<string, ArtifactRowF>();
+  billingAccounts = new Map<string, BillingAccountRowF>();
+  billingFreeAllowances = new Map<string, BillingFreeAllowanceRowF>();
+  usageCharges = new Map<string, UsageChargeRowF>();
+  walletLedger = new Map<string, WalletLedgerRowF>();
   /** 事务轨迹（断言 BEGIN/COMMIT/ROLLBACK 收口）。 */
   txLog: string[] = [];
   queries: string[] = [];
@@ -212,6 +264,41 @@ export class FakeDb implements Queryable, TxPool {
       created_at: input.created_at ?? nowIso(),
     };
     this.capabilities.set(row.id, row);
+    return row;
+  }
+
+  seedBillingAccount(ownerUserId: string, balanceCents: bigint): BillingAccountRowF {
+    const now = nowIso();
+    const row: BillingAccountRowF = {
+      owner_user_id: ownerUserId,
+      balance_cents: balanceCents,
+      reserved_cents: 0n,
+      created_at: now,
+      updated_at: now,
+    };
+    this.billingAccounts.set(ownerUserId, row);
+    return row;
+  }
+
+  seedFreeAllowance(input: {
+    ownerUserId: string;
+    capabilityId: string;
+    freeLimit: number;
+    freeUsed?: number;
+    freeReserved?: number;
+  }): BillingFreeAllowanceRowF {
+    const now = nowIso();
+    const row: BillingFreeAllowanceRowF = {
+      owner_user_id: input.ownerUserId,
+      capability_id: input.capabilityId,
+      policy_version: 'runtime-usage-v1',
+      free_limit_snapshot: input.freeLimit,
+      free_used_count: input.freeUsed ?? 0,
+      free_reserved_count: input.freeReserved ?? 0,
+      created_at: now,
+      updated_at: now,
+    };
+    this.billingFreeAllowances.set(`${input.ownerUserId}:${input.capabilityId}`, row);
     return row;
   }
 
@@ -240,6 +327,264 @@ export class FakeDb implements Queryable, TxPool {
     }
     if (s.startsWith("SELECT set_config('lock_timeout'")) {
       return { rows: [{}] as R[], rowCount: 1 };
+    }
+
+    // ---------- usage billing ----------
+    if (s.startsWith('SELECT pg_advisory_xact_lock')) {
+      return { rows: [{}] as R[], rowCount: 1 };
+    }
+    if (s.startsWith('INSERT INTO billing_accounts')) {
+      const ownerUserId = params[0] as string;
+      if (!this.billingAccounts.has(ownerUserId)) {
+        const now = nowIso();
+        this.billingAccounts.set(ownerUserId, {
+          owner_user_id: ownerUserId,
+          balance_cents: 0n,
+          reserved_cents: 0n,
+          created_at: now,
+          updated_at: now,
+        });
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith('SELECT balance_cents, reserved_cents FROM billing_accounts') &&
+      s.endsWith('FOR UPDATE')
+    ) {
+      const row = this.billingAccounts.get(params[0] as string);
+      return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    if (s.startsWith('UPDATE billing_accounts SET balance_cents = balance_cents - $2::bigint')) {
+      const [ownerUserId, amountRaw] = params as [string, string];
+      const row = this.billingAccounts.get(ownerUserId);
+      const amount = BigInt(amountRaw);
+      if (!row || row.balance_cents < amount) return { rows: [], rowCount: 0 };
+      row.balance_cents -= amount;
+      row.reserved_cents += amount;
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
+    }
+    if (
+      s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint') &&
+      s.includes('balance_cents = balance_cents + $2::bigint')
+    ) {
+      const [ownerUserId, amountRaw] = params as [string, string];
+      const row = this.billingAccounts.get(ownerUserId);
+      const amount = BigInt(amountRaw);
+      if (!row || row.reserved_cents < amount) return { rows: [], rowCount: 0 };
+      row.reserved_cents -= amount;
+      row.balance_cents += amount;
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
+    }
+    if (s.startsWith('UPDATE billing_accounts SET reserved_cents = reserved_cents - $2::bigint')) {
+      const [ownerUserId, amountRaw] = params as [string, string];
+      const row = this.billingAccounts.get(ownerUserId);
+      const amount = BigInt(amountRaw);
+      if (!row || row.reserved_cents < amount) return { rows: [], rowCount: 0 };
+      row.reserved_cents -= amount;
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
+    }
+    if (s.startsWith('INSERT INTO billing_free_allowances')) {
+      const [ownerUserId, capabilityId, policyVersion, freeLimitSnapshot] = params as [
+        string,
+        string,
+        string,
+        number,
+      ];
+      const key = `${ownerUserId}:${capabilityId}`;
+      if (!this.billingFreeAllowances.has(key)) {
+        const now = nowIso();
+        this.billingFreeAllowances.set(key, {
+          owner_user_id: ownerUserId,
+          capability_id: capabilityId,
+          policy_version: policyVersion,
+          free_limit_snapshot: freeLimitSnapshot,
+          free_used_count: 0,
+          free_reserved_count: 0,
+          created_at: now,
+          updated_at: now,
+        });
+        return { rows: [], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith(
+        'SELECT policy_version, free_limit_snapshot, free_used_count, free_reserved_count FROM billing_free_allowances',
+      )
+    ) {
+      const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
+      return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith(
+        'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count + 1',
+      )
+    ) {
+      const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
+      if (!row || row.free_used_count + row.free_reserved_count >= row.free_limit_snapshot) {
+        return { rows: [], rowCount: 0 };
+      }
+      row.free_reserved_count += 1;
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
+    }
+    if (
+      s.startsWith(
+        'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count - 1, free_used_count = free_used_count + 1',
+      )
+    ) {
+      const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
+      if (!row || row.free_reserved_count <= 0) return { rows: [], rowCount: 0 };
+      row.free_reserved_count -= 1;
+      row.free_used_count += 1;
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
+    }
+    if (
+      s.startsWith(
+        'UPDATE billing_free_allowances SET free_reserved_count = free_reserved_count - 1',
+      )
+    ) {
+      const row = this.billingFreeAllowances.get(`${String(params[0])}:${String(params[1])}`);
+      if (!row || row.free_reserved_count <= 0) return { rows: [], rowCount: 0 };
+      row.free_reserved_count -= 1;
+      row.updated_at = nowIso();
+      return { rows: [], rowCount: 1 };
+    }
+    if (
+      s.startsWith(
+        'SELECT id, owner_user_id, usage_id, capability_id, session_id, turn_id, request_fingerprint, charge_source, status, unit_price_cents, free_limit_snapshot, reserved_cents, settled_cents FROM usage_charges',
+      )
+    ) {
+      const row = s.includes('WHERE turn_id = $1')
+        ? [...this.usageCharges.values()].find((candidate) => candidate.turn_id === params[0])
+        : [...this.usageCharges.values()].find(
+            (candidate) =>
+              candidate.owner_user_id === params[0] && candidate.usage_id === params[1],
+          );
+      return row ? { rows: [{ ...row }] as R[], rowCount: 1 } : { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith(
+        "SELECT uc.turn_id, t.session_id, t.status AS turn_status FROM usage_charges uc JOIN turns t ON t.id = uc.turn_id WHERE uc.status = 'reserved'",
+      )
+    ) {
+      const rows = [...this.usageCharges.values()]
+        .flatMap((charge) => {
+          const turn = this.turns.get(charge.turn_id);
+          return charge.status === 'reserved' &&
+            turn &&
+            ['completed', 'failed', 'interrupted'].includes(turn.status)
+            ? [
+                {
+                  turn_id: charge.turn_id,
+                  session_id: turn.session_id,
+                  turn_status: turn.status,
+                },
+              ]
+            : [];
+        })
+        .slice(0, 100);
+      return { rows: rows as R[], rowCount: rows.length };
+    }
+    if (s.startsWith('INSERT INTO usage_charges')) {
+      const [
+        ownerUserId,
+        usageId,
+        capabilityId,
+        sessionId,
+        turnId,
+        requestFingerprint,
+        chargeSource,
+        unitPriceRaw,
+        freeLimitSnapshot,
+        reservedRaw,
+      ] = params as [
+        string,
+        string,
+        string,
+        string,
+        string,
+        string,
+        UsageChargeRowF['charge_source'],
+        string,
+        number,
+        string,
+      ];
+      if (
+        [...this.usageCharges.values()].some(
+          (row) =>
+            (row.owner_user_id === ownerUserId && row.usage_id === usageId) ||
+            row.turn_id === turnId,
+        )
+      ) {
+        throw Object.assign(new Error('duplicate usage charge'), {
+          code: '23505',
+          constraint: 'uq_usage_charges_owner_usage',
+        });
+      }
+      const now = nowIso();
+      const row: UsageChargeRowF = {
+        id: nextId('usage'),
+        owner_user_id: ownerUserId,
+        usage_id: usageId,
+        capability_id: capabilityId,
+        session_id: sessionId,
+        turn_id: turnId,
+        request_fingerprint: requestFingerprint,
+        charge_source: chargeSource,
+        status: 'reserved',
+        unit_price_cents: BigInt(unitPriceRaw),
+        free_limit_snapshot: freeLimitSnapshot,
+        reserved_cents: BigInt(reservedRaw),
+        settled_cents: 0n,
+        created_at: now,
+        updated_at: now,
+        finished_at: null,
+      };
+      this.usageCharges.set(row.id, row);
+      return { rows: [{ id: row.id }] as R[], rowCount: 1 };
+    }
+    if (s.startsWith("UPDATE usage_charges SET status = 'completed'")) {
+      const [id, settledRaw] = params as [string, string];
+      const row = this.usageCharges.get(id);
+      if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
+      row.status = 'completed';
+      row.settled_cents = BigInt(settledRaw);
+      row.finished_at = nowIso();
+      row.updated_at = row.finished_at;
+      return { rows: [], rowCount: 1 };
+    }
+    if (s.startsWith("UPDATE usage_charges SET status = 'released'")) {
+      const row = this.usageCharges.get(params[0] as string);
+      if (!row || row.status !== 'reserved') return { rows: [], rowCount: 0 };
+      row.status = 'released';
+      row.settled_cents = 0n;
+      row.finished_at = nowIso();
+      row.updated_at = row.finished_at;
+      return { rows: [], rowCount: 1 };
+    }
+    if (s.startsWith('INSERT INTO wallet_ledger')) {
+      const [ownerUserId, amountRaw, usageChargeId] = params as [string, string, string];
+      const existing = [...this.walletLedger.values()].find(
+        (row) => row.entry_type === 'usage_debit' && row.usage_charge_id === usageChargeId,
+      );
+      if (existing) return { rows: [], rowCount: 0 };
+      const row: WalletLedgerRowF = {
+        id: nextId('ledger'),
+        owner_user_id: ownerUserId,
+        entry_type: 'usage_debit',
+        amount_cents: BigInt(amountRaw),
+        recharge_order_id: null,
+        usage_charge_id: usageChargeId,
+        created_at: nowIso(),
+      };
+      this.walletLedger.set(row.id, row);
+      return { rows: [{ id: row.id }] as R[], rowCount: 1 };
     }
 
     // ---------- capabilities ----------
@@ -484,6 +829,15 @@ export class FakeDb implements Queryable, TxPool {
       return row?.session_id === sessionId && row.status === 'running'
         ? { rows: [{ id: row.id }] as R[], rowCount: 1 }
         : { rows: [], rowCount: 0 };
+    }
+    if (
+      s.startsWith('SELECT status FROM turns') &&
+      s.includes('WHERE id = $1 AND session_id = $2') &&
+      s.endsWith('FOR UPDATE')
+    ) {
+      const row = this.turns.get(params[0] as string);
+      if (!row || row.session_id !== params[1]) return { rows: [], rowCount: 0 };
+      return { rows: [{ status: row.status }] as R[], rowCount: 1 };
     }
     if (s.startsWith('UPDATE turns SET status = $2')) {
       const [id, status, errorJson] = params as [string, TurnRowF['status'], string | null];

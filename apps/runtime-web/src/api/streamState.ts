@@ -68,6 +68,8 @@ export type StreamUiAction =
   | { kind: 'turn-submitting' }
   /** POST 202 返回的 message.turnId 是本轮世代的权威 id。 */
   | { kind: 'turn-accepted'; runId: string }
+  /** 同一 usageId 的 202 重放不会启动新轮；撤销本次乐观 submitting 状态。 */
+  | { kind: 'turn-replayed'; runId: string }
   | { kind: 'error'; message: string }
   | { kind: 'reset' };
 
@@ -382,7 +384,6 @@ export function streamUiReducer(state: StreamUiState, action: StreamUiAction): S
         running: true,
         awaitingRunId: true,
         activeRunId: null,
-        terminalRun: null,
         errorMessage: null,
       };
     case 'turn-accepted':
@@ -394,6 +395,19 @@ export function streamUiReducer(state: StreamUiState, action: StreamUiAction): S
         running: true,
         awaitingRunId: false,
         activeRunId: action.runId,
+        terminalRun: null,
+        errorMessage: null,
+      };
+    case 'turn-replayed':
+      if (state.running && state.activeRunId === action.runId) {
+        return { ...state, awaitingRunId: false, errorMessage: null };
+      }
+      return {
+        ...state,
+        running: false,
+        awaitingRunId: false,
+        activeRunId: null,
+        streamingText: null,
         errorMessage: null,
       };
     case 'error':

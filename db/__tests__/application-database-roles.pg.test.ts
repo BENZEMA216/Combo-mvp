@@ -314,7 +314,7 @@ pgDescribe('application database roles on PostgreSQL', () => {
          payment_method, gateway_environment, institution_no, merchant_no,
          pay_trace_no, pay_time
        )
-       VALUES ($1, $2, $3, 'test-100', 100, 'h5', 'test', 'inst-a', 'merchant-a', $4,
+       VALUES ($1, $2, $3, 'test-100', 100, 'qr', 'test', 'inst-a', 'merchant-a', $4,
                '20260801120000')
        RETURNING id, created_at`,
       [`recharge-${suffix}`, chain.user_id, `recharge-intent-${suffix}`, `trace-${suffix}`],
@@ -444,7 +444,7 @@ pgDescribe('application database roles on PostgreSQL', () => {
          payment_method, gateway_environment, institution_no, merchant_no,
          pay_trace_no, pay_time
        )
-       VALUES ($1, $2, $3, 'test-100', 100, 'h5', 'test', 'inst-a', 'merchant-a', $4,
+       VALUES ($1, $2, $3, 'test-100', 100, 'qr', 'test', 'inst-a', 'merchant-a', $4,
                '20260801120001')
        RETURNING id`,
       [
@@ -547,7 +547,7 @@ pgDescribe('application database roles on PostgreSQL', () => {
            payment_method, gateway_environment, institution_no, merchant_no,
            pay_trace_no, pay_time, platform_trade_no
          )
-         VALUES ($1, $2, $3, 'test-100', 100, 'aggregate_qr', 'test', 'inst-a', $4,
+         VALUES ($1, $2, $3, 'test-100', 100, 'qr', 'test', 'inst-a', $4,
                  $5, '20260801120000', $6)`,
         [`order-${trace}`, ownerUserId, `intent-${trace}`, merchant, trace, `shared-${suffix}`],
       );

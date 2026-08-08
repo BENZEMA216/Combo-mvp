@@ -97,3 +97,32 @@ test('renders the two foundation sets into their namespaces', () => {
   assert.match(shared, /kind: StatefulSet/);
   assert.match(shared, /name: minio/);
 });
+
+test('renders the billing payment wiring into api and the fixed policy into runtime', () => {
+  const manifest = fixtureManifest();
+  const path = join(mkdtempSync(join(tmpdir(), 'render-env-billing-')), 'release.json');
+  writeFileSync(path, serializeReleaseManifest(manifest));
+  const digest = releaseManifestDigest(manifest);
+  const apps = render('test', 'apps', path, digest);
+  const paymentEnvironmentNames = [
+    'LESHOUYING_ENABLED',
+    'LESHOUYING_ENVIRONMENT',
+    'LESHOUYING_PRODUCTION_ENABLED',
+    'LESHOUYING_INSTITUTION_NO',
+    'LESHOUYING_MERCHANT_NO',
+    'LESHOUYING_INSTITUTION_KEY',
+    'LESHOUYING_NOTIFY_URL',
+  ];
+  for (const name of paymentEnvironmentNames) {
+    assert.match(
+      apps,
+      new RegExp(
+        `name: ${name}\\s*\\n\\s+valueFrom:\\s*\\n\\s+secretKeyRef:\\s*\\n\\s+key: ${name}\\s*\\n\\s+name: combo-env`,
+      ),
+      `${name} must be wired from the combo-env secret`,
+    );
+  }
+  assert.match(apps, /name: RUNTIME_BILLING_FREE_USES\s*\n\s+value: "3"/);
+  assert.match(apps, /name: RUNTIME_BILLING_UNIT_PRICE_CENTS\s*\n\s+value: "1"/);
+  rmSync(dirname(path), { recursive: true, force: true });
+});

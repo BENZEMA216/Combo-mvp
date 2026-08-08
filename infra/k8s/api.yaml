@@ -88,6 +88,34 @@ spec:
             - name: OTP_HMAC_SECRET
               valueFrom:
                 secretKeyRef: { name: combo-env, key: OTP_HMAC_SECRET }
+            # 钱包充值只在 Authoring API 中启用。支付配置逐键读取，绝不通过 envFrom
+            # 扩散到 worker；缺省时网关保持关闭，启用后任一缺项都会由应用拒绝启动。
+            - name: LESHOUYING_ENABLED
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LESHOUYING_ENABLED, optional: true }
+            - name: LESHOUYING_ENVIRONMENT
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LESHOUYING_ENVIRONMENT, optional: true }
+            - name: LESHOUYING_PRODUCTION_ENABLED
+              valueFrom:
+                secretKeyRef:
+                  { name: combo-env, key: LESHOUYING_PRODUCTION_ENABLED, optional: true }
+            - name: LESHOUYING_INSTITUTION_NO
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LESHOUYING_INSTITUTION_NO, optional: true }
+            - name: LESHOUYING_MERCHANT_NO
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LESHOUYING_MERCHANT_NO, optional: true }
+            - name: LESHOUYING_INSTITUTION_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LESHOUYING_INSTITUTION_KEY, optional: true }
+            - name: LESHOUYING_NOTIFY_URL
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LESHOUYING_NOTIFY_URL, optional: true }
+            - name: LESHOUYING_TIMEOUT_MS
+              value: '5000'
+            - name: BILLING_RECONCILE_INTERVAL_MS
+              value: '15000'
             # 观测：OTLP 指向 observability 命名空间的采集器（HTTP 4318），缺失时应用自动降级不阻塞。
             - name: OTEL_SERVICE_NAME
               value: cb-authoring-api

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { EventType } from '@ag-ui/core';
 import type { CapabilityDefinition } from '@cb/shared';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +14,7 @@ import {
   type InterruptRequest,
 } from '../platform/infra/redis-interrupt-bus.js';
 import type { SandboxBackend } from '../platform/infra/sandbox-backend.js';
+import type { SessionRow } from '../modules/session/repo.js';
 import {
   FakeDb,
   FakeObjectStore,
@@ -32,6 +34,10 @@ const definition: CapabilityDefinition = {
   starterPrompts: [],
   meta: {},
 };
+
+function billingIdentity(session: SessionRow) {
+  return { usageId: randomUUID(), capabilityOwnerUserId: session.ownerUserId };
+}
 
 async function setup(
   factory: TurnAgentFactory,
@@ -110,8 +116,20 @@ describe('单会话单运行轮次控制', () => {
     const handle = makeFakeAgentFactory({ hangUntilAbort: true });
     const { db, session, runner } = await setup(handle.factory);
     const results = await Promise.allSettled([
-      runner.startTurn({ session, definition, text: 'a', log: silentLog }),
-      runner.startTurn({ session, definition, text: 'b', log: silentLog }),
+      runner.startTurn({
+        session,
+        definition,
+        text: 'a',
+        ...billingIdentity(session),
+        log: silentLog,
+      }),
+      runner.startTurn({
+        session,
+        definition,
+        text: 'b',
+        ...billingIdentity(session),
+        log: silentLog,
+      }),
     ]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     const rejected = results.find((result) => result.status === 'rejected');
@@ -186,7 +204,13 @@ describe('单会话单运行轮次控制', () => {
       };
     };
 
-    const starting = runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    const starting = runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await turnInsertReached;
     let interruptSettled = false;
     const interrupting = runner.interrupt(session.id).then((value) => {
@@ -236,7 +260,13 @@ describe('单会话单运行轮次控制', () => {
       };
     };
 
-    const starting = runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    const starting = runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await turnInsertReached;
     let disposed = false;
     const disposing = runner.dispose().then(() => {
@@ -293,7 +323,13 @@ describe('单会话单运行轮次控制', () => {
       };
     };
 
-    const starting = runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    const starting = runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await commitApplied;
     const disposing = runner.dispose();
     releaseCommitResponse();
@@ -314,7 +350,13 @@ describe('单会话单运行轮次控制', () => {
       finalMessages: [{ role: 'assistant', content: [{ type: 'text', text: 'ok' }] }],
     });
     const { db, session, eventLog, runner } = await setup(handle.factory);
-    await runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitDone(db);
     expect([...db.turns.values()][0]?.status).toBe('completed');
     expect(db.messages.map((message) => message.idx)).toEqual([0, 1]);
@@ -340,7 +382,13 @@ describe('单会话单运行轮次控制', () => {
       message: '服务异常中断,本轮已终止,请重试。',
     });
 
-    await runner.startTurn({ session, definition, text: 'next', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'next',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitDone(db);
     const entries = eventLog.entries(session.id);
     expect(entries.filter((entry) => entry.event.runId === 'swept-before-upgrade')).toHaveLength(1);
@@ -374,7 +422,13 @@ describe('单会话单运行轮次控制', () => {
       lastError: { code: 'SUBMIT_FAILED', message: internalMessage },
     });
 
-    await runner.startTurn({ session, definition, text: 'next', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'next',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitDone(db);
     const entries = eventLog.entries(session.id);
     const repaired = entries.filter((entry) => entry.event.runId === legacyRunId);
@@ -410,7 +464,13 @@ describe('单会话单运行轮次控制', () => {
     const interrupts: InterruptBus = { publish, subscribe: (cb) => inner.subscribe(cb) };
     const handle = makeFakeAgentFactory({ hangUntilAbort: true });
     const { db, session, runner } = await setup(handle.factory, interrupts);
-    await runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     expect(await runner.interrupt(session.id)).toBe(true);
     await waitDone(db);
     expect(publish).not.toHaveBeenCalled();
@@ -421,7 +481,13 @@ describe('单会话单运行轮次控制', () => {
     const interrupts = createInterruptBus();
     const handle = makeFakeAgentFactory({ hangUntilAbort: true });
     const { db, session, runner } = await setup(handle.factory, interrupts);
-    await runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitFor(() => handle.calls.length === 1);
 
     interrupts.publish({
@@ -444,6 +510,7 @@ describe('单会话单运行轮次控制', () => {
       session: owner.session,
       definition,
       text: 'go',
+      ...billingIdentity(owner.session),
       log: silentLog,
     });
     await waitFor(() => handle.calls.length === 1);
@@ -490,7 +557,13 @@ describe('单会话单运行轮次控制', () => {
       sandbox: cleanupSandbox(),
       log: silentLog,
     });
-    await a.runner.startTurn({ session: a.session, definition, text: 'go', log: silentLog });
+    await a.runner.startTurn({
+      session: a.session,
+      definition,
+      text: 'go',
+      ...billingIdentity(a.session),
+      log: silentLog,
+    });
     await waitFor(() => handle.calls.length === 1);
     expect(await b.interrupt(a.session.id)).toBe(true);
     await waitDone(a.db);
@@ -527,6 +600,7 @@ describe('单会话单运行轮次控制', () => {
       session: owner.session,
       definition,
       text: 'go',
+      ...billingIdentity(owner.session),
       log: silentLog,
     });
     await waitFor(() =>
@@ -612,6 +686,7 @@ describe('单会话单运行轮次控制', () => {
       session: owner.session,
       definition,
       text: 'go',
+      ...billingIdentity(owner.session),
       log: silentLog,
     });
     await uploadStarted;
@@ -652,6 +727,7 @@ describe('单会话单运行轮次控制', () => {
       session: owner.session,
       definition,
       text: 'go',
+      ...billingIdentity(owner.session),
       log: silentLog,
     });
     await waitFor(() => ownerHandle.calls.length === 1);
@@ -692,7 +768,13 @@ describe('单会话单运行轮次控制', () => {
   it('跨实例远程清理黑洞会按硬超时回滚并保留 running Turn', async () => {
     const handle = makeFakeAgentFactory({ hangUntilAbort: true });
     const a = await setup(handle.factory);
-    await a.runner.startTurn({ session: a.session, definition, text: 'go', log: silentLog });
+    await a.runner.startTurn({
+      session: a.session,
+      definition,
+      text: 'go',
+      ...billingIdentity(a.session),
+      log: silentLog,
+    });
     await waitFor(() => handle.calls.length === 1);
 
     const sandbox: SandboxBackend = {
@@ -746,7 +828,13 @@ describe('单会话单运行轮次控制', () => {
       runtimeError: () => undefined,
     });
     const { db, session, eventLog, runner } = await setup(factory);
-    await runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     const turn = [...db.turns.values()][0];
     expect(turn).toBeTruthy();
     await finishTurnCas(db, { id: turn!.id, status: 'failed' });
@@ -766,7 +854,13 @@ describe('单会话单运行轮次控制', () => {
   it('清扫循环写失败消息与 RUN_ERROR，dispose 后停止', async () => {
     const handle = makeFakeAgentFactory({ hangUntilAbort: true });
     const { db, session, eventLog, runner } = await setup(handle.factory, createInterruptBus(), 5);
-    await runner.startTurn({ session, definition, text: 'go', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'go',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     const turn = [...db.turns.values()][0]!;
     turn.created_at = new Date(Date.now() - TURN_ABANDON_AFTER_MS - 1).toISOString();
     await waitFor(() => turn.status === 'failed');
@@ -810,7 +904,13 @@ describe('单会话单运行轮次控制', () => {
       });
       await finishTurnCas(db, { id, status });
     }
-    await runner.startTurn({ session, definition, text: 'new', log: silentLog });
+    await runner.startTurn({
+      session,
+      definition,
+      text: 'new',
+      ...billingIdentity(session),
+      log: silentLog,
+    });
     await waitFor(() => handle.calls.length === 1);
     expect(
       handle.calls[0]?.history.map((message) => (message.content[0] as { text: string }).text),

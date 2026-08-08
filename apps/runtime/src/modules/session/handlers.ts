@@ -12,6 +12,7 @@ import {
   type CapabilityInputField,
   type Envelope,
   type MessageView,
+  type RechargeRequiredBody,
   type SessionDetail,
   type SessionMode,
   type SessionView,
@@ -21,7 +22,8 @@ import {
 import { sendError } from '../../platform/http/_helpers.js';
 import { loadCapability } from '../capability/loader.js';
 import { sendLoadFailure } from '../capability/handlers.js';
-import { SessionInactiveError } from '../agent/run-turn.js';
+import { SessionInactiveError, TurnAdmissionUnavailableError } from '../agent/run-turn.js';
+import { UsageRequestConflictError } from '../billing/service.js';
 import { adoptExistingConsumeUiArtifact, seedCapabilityUiArtifact } from '../artifact/repo.js';
 import {
   archiveSession,
@@ -393,6 +395,8 @@ export function sendMessageHandler(): RouteHandlerMethod {
         session,
         definition: loaded.definition,
         text: parsed.data.text,
+        usageId: parsed.data.usageId,
+        capabilityOwnerUserId: loaded.capability.ownerUserId,
         log: req.log,
       });
     } catch (err) {
@@ -406,8 +410,33 @@ export function sendMessageHandler(): RouteHandlerMethod {
           userMessage: '这条会话仍在生成，请停止或等待完成后再发送。',
         });
       }
+      if (err instanceof UsageRequestConflictError) {
+        return sendError(req, reply, ErrorCode.IDEMPOTENCY_CONFLICT);
+      }
+      if (err instanceof TurnAdmissionUnavailableError) {
+        req.log.warn(
+          {
+            traceId: req.id,
+            admissionStage: err.stage,
+            admissionReason: err.reason,
+            ...(err.databaseCode ? { databaseCode: err.databaseCode } : {}),
+          },
+          'turn admission temporarily unavailable',
+        );
+        return sendError(req, reply, ErrorCode.DEPENDENCY_UNAVAILABLE);
+      }
       req.log.error({ err, traceId: req.id }, 'start turn failed');
       return sendError(req, reply, ErrorCode.INTERNAL);
+    }
+    if (result.status === 'recharge_required') {
+      const body: RechargeRequiredBody = {
+        rechargeRequired: true,
+        rechargeIntentId: parsed.data.usageId,
+        balanceCents: result.balanceCents.toString(),
+        requiredCents: result.requiredCents.toString(),
+      };
+      reply.code(402).send(body);
+      return reply;
     }
     // 202：user 消息已落库，生成在进程内异步跑；进展经 /stream 订阅。
     const message: MessageView = {
@@ -419,8 +448,8 @@ export function sendMessageHandler(): RouteHandlerMethod {
       status: result.userMessage.status,
       createdAt: result.userMessage.createdAt,
     };
-    const body: Envelope<{ message: MessageView }> = {
-      data: { message },
+    const body: Envelope<{ message: MessageView; replayed: boolean }> = {
+      data: { message, replayed: result.status === 'replayed' },
       meta: { traceId: req.id },
     };
     reply.code(202).send(body);

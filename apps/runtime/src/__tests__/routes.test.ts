@@ -41,6 +41,7 @@ import {
 
 const ME = 'user-me';
 const OTHER = 'user-other';
+const USAGE_ID = '11111111-1111-4111-8111-111111111111';
 let directArtifactTurnSequence = 0;
 
 async function createDirectArtifactTool(input: {
@@ -858,14 +859,120 @@ describe('session 端点 owner 守卫', () => {
         objectStore: store,
         userId: ME,
         params: { id: session.id },
-        body: { text: '收紧页面间距' },
+        body: { text: '收紧页面间距', usageId: USAGE_ID },
       }),
     );
 
     expect(reply.statusCode).toBe(202);
+    const first = (
+      reply.body as {
+        data: { message: { turnId?: string }; replayed: boolean };
+      }
+    ).data;
+    expect(first.message.turnId).toBeTruthy();
+    expect(first.replayed).toBe(false);
+
+    const replay = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        userId: ME,
+        params: { id: session.id },
+        body: { text: '收紧页面间距', usageId: USAGE_ID },
+      }),
+    );
+    expect(replay.statusCode).toBe(202);
     expect(
-      (reply.body as { data: { message: { turnId?: string } } }).data.message.turnId,
-    ).toBeTruthy();
+      (
+        replay.body as {
+          data: { message: { turnId?: string }; replayed: boolean };
+        }
+      ).data,
+    ).toMatchObject({
+      message: { turnId: first.message.turnId },
+      replayed: true,
+    });
+  });
+
+  it('POST /runtime/sessions/:id/messages：免费额度耗尽且余额不足时返回安全 402 且不落 Turn', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const capability = db.seedCapability({ owner_user_id: OTHER, published: true });
+    seedRunnableDefinition(store, capability);
+    const session = await createSession(db, {
+      capabilityId: capability.id,
+      ownerUserId: ME,
+    });
+    db.seedBillingAccount(ME, 0n);
+    db.seedFreeAllowance({
+      ownerUserId: ME,
+      capabilityId: capability.id,
+      freeLimit: 3,
+      freeUsed: 3,
+    });
+
+    const reply = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        userId: ME,
+        params: { id: session.id },
+        body: { text: '第四次任务', usageId: USAGE_ID },
+      }),
+    );
+
+    expect(reply.statusCode).toBe(402);
+    expect(reply.body).toEqual({
+      rechargeRequired: true,
+      rechargeIntentId: USAGE_ID,
+      balanceCents: '0',
+      requiredCents: '100',
+    });
+    expect(db.turns.size).toBe(0);
+    expect(db.messages).toHaveLength(0);
+    expect(db.usageCharges.size).toBe(0);
+  });
+
+  it('POST /runtime/sessions/:id/messages：入场数据库锁超时返回可重试 503', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const capability = db.seedCapability({ owner_user_id: ME });
+    seedRunnableDefinition(store, capability);
+    const session = await createSession(db, {
+      capabilityId: capability.id,
+      ownerUserId: ME,
+    });
+    const originalQuery = db.query.bind(db);
+    db.query = async function <R = Record<string, unknown>>(sql: string, params: unknown[] = []) {
+      const normalized = sql.replace(/\s+/g, ' ').trim();
+      if (normalized.includes("status = 'active' FOR UPDATE")) {
+        throw Object.assign(new Error('redacted database statement timeout'), { code: '57014' });
+      }
+      return originalQuery<R>(sql, params);
+    };
+
+    const reply = await call(
+      sendMessageHandler(),
+      makeReq({
+        db,
+        objectStore: store,
+        userId: ME,
+        params: { id: session.id },
+        body: { text: '等待入场事务', usageId: USAGE_ID },
+      }),
+    );
+
+    expect(reply.statusCode).toBe(503);
+    expect(reply.body).toMatchObject({
+      error: {
+        retriable: true,
+        action: 'retry',
+      },
+    });
+    expect(db.turns.size).toBe(0);
+    expect(db.messages).toHaveLength(0);
   });
 
   it('POST /runtime/sessions/:id/messages：已有 running Turn 时返回现有 SESSION_BUSY 409', async () => {
@@ -897,7 +1004,7 @@ describe('session 端点 owner 守卫', () => {
         objectStore: store,
         userId: ME,
         params: { id: sessionId },
-        body: { text: '第二条' },
+        body: { text: '第二条', usageId: USAGE_ID },
       }),
     );
     expect(reply.statusCode).toBe(409);

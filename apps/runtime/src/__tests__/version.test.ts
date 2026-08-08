@@ -52,6 +52,8 @@ describe('runtime release version', () => {
       S3_SECRET_KEY: 'test-secret',
       PUBLIC_APP_ORIGINS: 'https://combo.example',
       SESSION_COOKIE_SECURE: 'true',
+      RUNTIME_BILLING_FREE_USES: '3',
+      RUNTIME_BILLING_UNIT_PRICE_CENTS: '1',
     };
     for (const key of Object.keys(releaseEnvironment)) delete process.env[key];
 
@@ -73,6 +75,8 @@ describe('runtime release version', () => {
         PUBLIC_APP_ORIGINS:
           environment === 'test' ? 'https://test.43-160-242-46.sslip.io' : 'https://combo.example',
         SESSION_COOKIE_SECURE: 'true',
+        RUNTIME_BILLING_FREE_USES: '3',
+        RUNTIME_BILLING_UNIT_PRICE_CENTS: '1',
         ...releaseEnvironment,
         COMBO_ENVIRONMENT: environment,
       };
