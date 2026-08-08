@@ -1,6 +1,6 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  'deb9bcfcfb1c6ca19e70a33d89477efc3816d91fa2994035a75ac62b65da5953';
+  'dc74fc05a462accf2c0cf5c056cb14528c6583798ac7d5ecc680930dca5dc821';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
@@ -40,6 +40,10 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
       button[data-emphasis="primary"] { border-color: #3b5ccc; background: #3b5ccc; color: #fff; }
       button:disabled { cursor: wait; opacity: .6; }
       .empty { padding: 10px; border-radius: 12px; background: var(--color-background-secondary, #f5f7fa); color: var(--color-text-secondary, #596579); font-size: 13px; }
+      .action-status { padding: 9px 11px; border-radius: 10px; background: var(--color-background-secondary, #f5f7fa); color: var(--color-text-secondary, #596579); font-size: 12px; line-height: 1.45; }
+      .action-status[data-state="sending"] { background: #eef2ff; color: #2949b8; }
+      .action-status[data-state="waiting"] { background: #e8f7ef; color: #187044; }
+      .action-status[data-state="uncertain"] { background: #fff4db; color: #805500; }
       .error { color: #a62b2b; font-size: 12px; }
       @media (prefers-color-scheme: dark) {
         body { color: var(--color-text-primary, #edf1f7); }
@@ -60,6 +64,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
       <div class="progress" id="progress"></div>
       <div class="items" id="items"></div>
       <div class="actions" id="actions"></div>
+      <div class="action-status" id="action-status" role="status" hidden></div>
       <div class="error" id="error" hidden></div>
     </main>
     <script>
@@ -73,6 +78,15 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
         const pending = new Map();
         let nextId = 1;
         let bridgeState = 'starting';
+        let actionState = 'idle';
+        let selectedActionLabel = '';
+        const actionButtons = [];
+
+        function actionFailure(kind, message) {
+          const cause = new Error(message);
+          cause.actionFailure = kind;
+          return cause;
+        }
 
         function request(method, params) {
           const id = nextId++;
@@ -80,7 +94,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           return new Promise((resolve, reject) => {
             const timeout = window.setTimeout(() => {
               pending.delete(id);
-              reject(new Error('Host request timed out.'));
+              reject(actionFailure('timeout', 'Host request timed out.'));
             }, REQUEST_TIMEOUT_MS);
             pending.set(id, { resolve, reject, timeout });
           });
@@ -99,10 +113,36 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           return node;
         }
 
-        async function sendFollowUp(action, button) {
+        function renderActionState() {
+          const status = document.getElementById('action-status');
+          const locked = actionState !== 'idle';
+          for (const button of actionButtons) button.disabled = locked;
+          status.dataset.state = actionState;
+          status.hidden = actionState === 'idle';
+          if (actionState === 'sending') {
+            status.textContent = '正在发送“' + selectedActionLabel + '”到 Codex…';
+          } else if (actionState === 'waiting') {
+            status.textContent = '已发送“' + selectedActionLabel + '”，正在等待 Codex 继续处理…';
+          } else if (actionState === 'uncertain') {
+            status.textContent = '发送状态不确定。为避免重复执行，本卡片保持锁定；请等待 Codex 回复。';
+          } else {
+            status.textContent = '';
+          }
+        }
+
+        function registerActionButton(button) {
+          actionButtons.push(button);
+          button.disabled = actionState !== 'idle';
+          return button;
+        }
+
+        async function sendFollowUp(action) {
+          if (actionState !== 'idle') return;
           const error = document.getElementById('error');
           error.hidden = true;
-          button.disabled = true;
+          selectedActionLabel = text(action.label) || '当前操作';
+          actionState = 'sending';
+          renderActionState();
           try {
             if (bridgeState === 'ready') {
               await request('ui/message', {
@@ -115,21 +155,32 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
                 scrollToBottom: true
               });
             } else {
-              throw new Error(
+              throw actionFailure(
+                'not-sent',
                 bridgeState === 'starting'
                   ? 'Agent Builder 仍在连接 Codex。'
                   : '当前 Codex 宿主不支持卡片消息，请在对话框中输入同样内容。'
               );
             }
+            actionState = 'waiting';
+            renderActionState();
           } catch (cause) {
-            error.textContent = cause && cause.message ? cause.message : '无法把选择发送回 Codex，请在对话框中输入同样内容。';
+            const failureKind = cause && cause.actionFailure;
+            const canRetry = failureKind === 'rejected' || failureKind === 'not-sent';
+            actionState = canRetry ? 'idle' : 'uncertain';
+            error.textContent = canRetry
+              ? cause && cause.message
+                ? cause.message
+                : 'Codex 拒绝了这次发送，你可以重新选择。'
+              : '发送结果无法确认。为避免重复执行，请勿再次点击；请等待 Codex 回复。';
             error.hidden = false;
-            button.disabled = false;
+            renderActionState();
           }
         }
 
         function render(payload) {
           if (!payload || typeof payload !== 'object') return;
+          actionButtons.length = 0;
           document.getElementById('stage').textContent = stageLabels[payload.stage] || 'Combo Agent Builder';
           document.getElementById('title').textContent = text(payload.title) || 'Combo Agent Builder';
           const summary = document.getElementById('summary');
@@ -162,9 +213,9 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
               card.appendChild(list);
             }
             if (row.action && text(row.action.label) && text(row.action.message)) {
-              const button = el('button', '', text(row.action.label));
+              const button = registerActionButton(el('button', '', text(row.action.label)));
               button.dataset.emphasis = text(row.action.emphasis) || 'secondary';
-              button.addEventListener('click', () => sendFollowUp(row.action, button));
+              button.addEventListener('click', () => sendFollowUp(row.action));
               card.appendChild(button);
             }
             items.appendChild(card);
@@ -174,11 +225,12 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           clear(actions);
           for (const action of Array.isArray(payload.actions) ? payload.actions : []) {
             if (!text(action.label) || !text(action.message)) continue;
-            const button = el('button', '', text(action.label));
+            const button = registerActionButton(el('button', '', text(action.label)));
             button.dataset.emphasis = text(action.emphasis) || 'secondary';
-            button.addEventListener('click', () => sendFollowUp(action, button));
+            button.addEventListener('click', () => sendFollowUp(action));
             actions.appendChild(button);
           }
+          renderActionState();
         }
 
         window.addEventListener('message', (event) => {
@@ -189,7 +241,11 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
             const waiter = pending.get(message.id);
             pending.delete(message.id);
             window.clearTimeout(waiter.timeout);
-            if (message.error) waiter.reject(new Error(message.error.message || 'Host rejected the action.'));
+            if (message.error) {
+              waiter.reject(
+                actionFailure('rejected', message.error.message || 'Host rejected the action.')
+              );
+            }
             else waiter.resolve(message.result || {});
             return;
           }
