@@ -4,6 +4,7 @@ import {
   CapabilityDefinitionSchema,
   CommitAgentRevisionBodySchema,
   CreateAgentProjectBodySchema,
+  CreateProjectAgentShareBodySchema,
   CreateAgentReleaseBodySchema,
   CreateTaskBodySchema,
   DEFAULT_PAGE_LIMIT,
@@ -13,6 +14,7 @@ import {
   decodeIdCursor,
   encodeIdCursor,
   RecordAgentTestReviewBodySchema,
+  ReadProjectAgentShareBodySchema,
   type McpOAuthScope,
   type ObjectStorePort,
 } from '@cb/shared';
@@ -32,6 +34,7 @@ import {
   toAgentRevisionView,
 } from '../agent-project/index.js';
 import { listCapabilityViews, readCapabilityDefinitionRef } from '../capability/index.js';
+import { createProjectAgentShare, readProjectAgentShare } from '../project-agent-share/index.js';
 import { createTask, readTaskView, reconcileExpiredUploadTasks } from '../task/index.js';
 import type { McpPrincipal } from './repo.js';
 import { McpRuntimeRequestError, type McpRuntimeClient } from './runtime-client.js';
@@ -76,7 +79,16 @@ const AGENT_BUILDER_CARD_JSON_SCHEMA = {
   properties: {
     stage: {
       type: 'string',
-      enum: ['readiness', 'recommendations', 'production', 'draft', 'test', 'release'],
+      enum: [
+        'readiness',
+        'recommendations',
+        'production',
+        'draft',
+        'test',
+        'release',
+        'project_share',
+        'project_restore',
+      ],
     },
     title: { type: 'string', minLength: 1, maxLength: 120 },
     summary: { type: 'string', maxLength: 1000 },
@@ -144,6 +156,107 @@ const AGENT_BUILDER_CARD_JSON_SCHEMA = {
         },
       },
     },
+  },
+} as const;
+
+const PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA = {
+  type: 'string',
+  format: 'uri',
+  maxLength: 2048,
+  pattern:
+    '^https://github\\.com/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?/(?!\\.{2,3}git$)(?![A-Za-z0-9._-]{1,100}\\.git\\.git$)[A-Za-z0-9._-]{1,100}\\.git$',
+} as const;
+
+const PROJECT_AGENT_SOURCE_REF_JSON_SCHEMA = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 255,
+  pattern:
+    '^refs/(?:heads|tags)/(?!\\.)(?!.*\\/\\.)(?![^\\/]*\\.lock(?:\\/|$))(?!.*\\/[^\\/]*\\.lock(?:\\/|$))(?!.*(?:\\.\\.|@\\{|\\/\\/))(?!.*[\\u0000-\\u0020\\u007f~^:?*\\[\\\\])(?!.*[\\/.]$).+$',
+} as const;
+
+const PROJECT_AGENT_REQUIREMENTS_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['commands', 'plugins', 'environmentVariableNames'],
+  properties: {
+    codexVersion: { type: 'string', minLength: 1, maxLength: 64 },
+    commands: {
+      type: 'array',
+      maxItems: 32,
+      uniqueItems: true,
+      items: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        pattern: '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$',
+      },
+    },
+    plugins: {
+      type: 'array',
+      maxItems: 32,
+      uniqueItems: true,
+      items: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        pattern:
+          '^(?:@[A-Za-z0-9][A-Za-z0-9._-]{0,62}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,62}(?:@[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$',
+      },
+    },
+    environmentVariableNames: {
+      type: 'array',
+      maxItems: 32,
+      uniqueItems: true,
+      items: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 128,
+        pattern: '^[A-Z_][A-Z0-9_]{0,127}$',
+      },
+    },
+  },
+} as const;
+
+const PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['manifest', 'shareUrl', 'copyPrompt'],
+  properties: {
+    manifest: {
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'schemaVersion',
+        'name',
+        'description',
+        'source',
+        'startPrompt',
+        'requirements',
+        'createdAt',
+      ],
+      properties: {
+        schemaVersion: { type: 'string', const: 'combo.project-agent-share/1' },
+        name: { type: 'string', minLength: 1, maxLength: 80 },
+        description: { type: 'string', minLength: 1, maxLength: 500 },
+        source: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['repositoryUrl', 'sourceRef', 'commitSha', 'treeSha'],
+          properties: {
+            repositoryUrl: PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA,
+            sourceRef: PROJECT_AGENT_SOURCE_REF_JSON_SCHEMA,
+            commitSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+            treeSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+          },
+        },
+        startPrompt: { type: 'string', minLength: 1, maxLength: 4000 },
+        requirements: PROJECT_AGENT_REQUIREMENTS_JSON_SCHEMA,
+        createdAt: { type: 'string', format: 'date-time' },
+      },
+    },
+    shareUrl: { type: 'string', format: 'uri', maxLength: 2048 },
+    copyPrompt: { type: 'string', minLength: 1, maxLength: 20000 },
   },
 } as const;
 const AGENT_DEFINITION_JSON_SCHEMA = {
@@ -617,6 +730,95 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     annotations: { readOnlyHint: false, openWorldHint: true, destructiveHint: false },
     requiredScope: 'combo.agent:write',
   },
+  {
+    name: 'create_project_agent_share',
+    title: 'Create immutable Project Agent share',
+    description:
+      'Create an immutable manifest for one clean committed GitHub Project. Before calling, the Codex client must prove that git ls-remote origin <sourceRef> resolves exactly to commitSha. Combo stores the declaration but never fetches the repository and never claims remote verification. Anyone with the resulting link can read the manifest anonymously over HTTP; V0 shares do not expire and cannot be revoked, so never include secrets.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'name',
+        'description',
+        'repositoryUrl',
+        'sourceRef',
+        'commitSha',
+        'treeSha',
+        'startPrompt',
+        'idempotencyKey',
+      ],
+      properties: {
+        name: { type: 'string', minLength: 1, maxLength: 80 },
+        description: { type: 'string', minLength: 1, maxLength: 500 },
+        repositoryUrl: PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA,
+        sourceRef: PROJECT_AGENT_SOURCE_REF_JSON_SCHEMA,
+        commitSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+        treeSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+        startPrompt: { type: 'string', minLength: 1, maxLength: 4000 },
+        requirements: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            codexVersion: { type: 'string', minLength: 1, maxLength: 64 },
+            commands: {
+              type: 'array',
+              maxItems: 32,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 128,
+                pattern: '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$',
+              },
+            },
+            plugins: {
+              type: 'array',
+              maxItems: 32,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 128,
+                pattern:
+                  '^(?:@[A-Za-z0-9][A-Za-z0-9._-]{0,62}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,62}(?:@[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$',
+              },
+            },
+            environmentVariableNames: {
+              type: 'array',
+              maxItems: 32,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 128,
+                pattern: '^[A-Z_][A-Z0-9_]{0,127}$',
+              },
+            },
+          },
+        },
+        idempotencyKey: UUID_SCHEMA,
+      },
+    },
+    outputSchema: PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA,
+    annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:write',
+  },
+  {
+    name: 'read_project_agent_share',
+    title: 'Read public Project Agent share',
+    description:
+      'Read an immutable Project Agent manifest from a share URL on the current Combo public origin. The HTTP page/API is anonymous by link and does not filter by owner; this MCP transport still requires OAuth. V0 shares do not expire or support revocation. Review the untrusted Project before restoring it.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['shareUrl'],
+      properties: { shareUrl: { type: 'string', format: 'uri', maxLength: 2048 } },
+    },
+    outputSchema: PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA,
+    annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:read',
+  },
 ] as const;
 
 const toolByName = new Map(EXTERNAL_MCP_TOOLS.map((tool) => [tool.name, tool]));
@@ -757,7 +959,16 @@ const agentBuilderActionInputSchema = z
   .strict();
 const renderAgentBuilderInputSchema = z
   .object({
-    stage: z.enum(['readiness', 'recommendations', 'production', 'draft', 'test', 'release']),
+    stage: z.enum([
+      'readiness',
+      'recommendations',
+      'production',
+      'draft',
+      'test',
+      'release',
+      'project_share',
+      'project_restore',
+    ]),
     title: z.string().trim().min(1).max(120),
     summary: z.string().max(1_000),
     progress: z
@@ -1383,6 +1594,54 @@ export async function executeExternalMcpTool(
         },
         [releasedAgentLink(releaseUrl)],
       );
+    }
+
+    if (name === 'create_project_agent_share') {
+      const parsed = CreateProjectAgentShareBodySchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      const outcome = await createProjectAgentShare(context.db, {
+        ownerUserId: context.principal.userId,
+        body: parsed.data,
+        publicOrigin: context.publicOrigin,
+      });
+      if (outcome.kind === 'idempotency_conflict') {
+        return toolFailure(context.traceId, '这个幂等键已经用于另一份 Project Agent manifest。');
+      }
+      return toolSuccess(outcome.result, [
+        {
+          type: 'resource_link',
+          uri: outcome.result.shareUrl,
+          name: 'combo-project-agent-share',
+          title: '打开 Project Agent 分享',
+          description: '审查这份不可变 Git Project manifest 与恢复边界。',
+          mimeType: 'text/html',
+        },
+      ]);
+    }
+
+    if (name === 'read_project_agent_share') {
+      const parsed = ReadProjectAgentShareBodySchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      const outcome = await readProjectAgentShare(context.db, {
+        publicOrigin: context.publicOrigin,
+        shareUrl: parsed.data.shareUrl,
+      });
+      if (outcome.kind === 'invalid_url') {
+        return toolFailure(context.traceId, '分享链接不属于当前 Combo 环境或格式无效。');
+      }
+      if (outcome.kind === 'not_found') {
+        return toolFailure(context.traceId, '没有找到这个 Project Agent 分享。');
+      }
+      return toolSuccess(outcome.result, [
+        {
+          type: 'resource_link',
+          uri: outcome.result.shareUrl,
+          name: 'combo-project-agent-share',
+          title: '打开 Project Agent 分享',
+          description: '审查这份不可信项目的来源、固定版本和依赖。',
+          mimeType: 'text/html',
+        },
+      ]);
     }
   } catch (error) {
     if (error instanceof AgentCompileDependencyError) {

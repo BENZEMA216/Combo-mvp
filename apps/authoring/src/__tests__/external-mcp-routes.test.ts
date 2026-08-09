@@ -186,8 +186,17 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
+    expect(response.body).toContain('Combo Plugin 0.6.0 Test');
+    expect(response.body).toContain('plugin marketplace upgrade dangdang-tech-combo --json');
+    expect(response.body).toContain('先检查 combo@dangdang-tech-combo 是否已安装');
+    expect(response.body).toContain('Marketplace 已存在，跳过第一条');
     expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
     expect(response.body).toContain('mcp login combo');
+    expect(response.body).toContain('create_project_agent_share');
+    expect(response.body).toContain('read_project_agent_share');
+    expect(response.body).toContain('仅在配置正确但新任务工具清单仍未更新时');
+    expect(response.body).not.toContain('plugin remove');
+    expect(response.body).not.toContain('marketplace remove');
     expect(response.body).not.toContain('mcp add combo');
   });
 
@@ -398,7 +407,7 @@ describe('external MCP stateless machine contract', () => {
     });
   }
 
-  it('supports initialize and advertises exactly the 18 stateless tools plus the Agent Builder app', async () => {
+  it('supports initialize and advertises exactly the 20 stateless tools plus the Agent Builder app', async () => {
     const initialized = await call('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
@@ -411,9 +420,19 @@ describe('external MCP stateless machine contract', () => {
       result: {
         protocolVersion: '2025-11-25',
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { version: '0.5.0' },
+        serverInfo: { version: '0.6.0' },
+        instructions: expect.stringContaining(
+          'use create_project_agent_share or read_project_agent_share',
+        ),
       },
     });
+    const initializeResult = initialized.json() as {
+      result: { instructions: string };
+    };
+    expect(initializeResult.result.instructions).not.toContain('Call list_agent_projects first');
+    expect(initializeResult.result.instructions).toContain(
+      'Call list_agent_projects only when the user explicitly requests the legacy Agent Builder flow',
+    );
 
     const listed = await call('tools/list');
     const tools = (listed.json() as { result: { tools: Array<Record<string, unknown>> } }).result
@@ -437,8 +456,10 @@ describe('external MCP stateless machine contract', () => {
       'read_agent_test',
       'record_agent_test_review',
       'publish_agent_revision',
+      'create_project_agent_share',
+      'read_project_agent_share',
     ]);
-    expect(tools).toHaveLength(18);
+    expect(tools).toHaveLength(20);
     const run = tools.find((tool) => tool.name === 'run_agent_test')!;
     expect((run.inputSchema as { required: string[] }).required).toContain('revisionId');
     const readUi = tools.find((tool) => tool.name === 'read_agent_ui')!;
@@ -452,6 +473,15 @@ describe('external MCP stateless machine contract', () => {
       },
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     });
+    for (const name of ['create_project_agent_share', 'read_project_agent_share']) {
+      expect(tools.find((tool) => tool.name === name)).toMatchObject({
+        outputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['manifest', 'shareUrl', 'copyPrompt'],
+        },
+      });
+    }
 
     const resources = await call('resources/list');
     expect(resources.json()).toMatchObject({

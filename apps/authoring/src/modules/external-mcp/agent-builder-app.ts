@@ -1,6 +1,6 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  'dc74fc05a462accf2c0cf5c056cb14528c6583798ac7d5ecc680930dca5dc821';
+  'c3166e995618525912ae15e781ab634fe01a8f27d6edc048f6d0bebaecbbf670';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
@@ -73,7 +73,8 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
         const REQUEST_TIMEOUT_MS = 8000;
         const stageLabels = {
           readiness: '就绪与范围', recommendations: 'Agent 建议', production: '生产进度',
-          draft: 'Agent 草稿', test: '测试摘要', release: '发布确认'
+          draft: 'Agent 草稿', test: '测试摘要', release: '发布确认',
+          project_share: 'Project Agent 分享', project_restore: 'Project Agent 恢复'
         };
         const pending = new Map();
         let nextId = 1;
@@ -272,7 +273,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           if (legacyPayload) render(legacyPayload);
           try {
             await request('ui/initialize', {
-              appInfo: { name: 'combo-agent-builder', version: '0.5.0' },
+              appInfo: { name: 'combo-agent-builder', version: '0.6.0' },
               appCapabilities: { availableDisplayModes: ['inline'] },
               protocolVersion: MCP_UI_PROTOCOL_VERSION
             });

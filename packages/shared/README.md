@@ -20,4 +20,8 @@
 
 Agent Builder 也从本包读取 `AgentDefinition`、Project、Revision、Test、不可变 Test 质量复核、Project Test 恢复列表与 Release 契约。恢复列表独立覆盖 `starting` claim，查询默认 20 条且硬限制为 50 条；每个 Test 同时暴露技术状态、质量状态和当前发布资格。Agent Revision 通过稳定 JSON 编码计算内容摘要，新 Release 必须引用同一份不可变 Runtime Bundle、技术通过的 Test 和可发布质量复核。
 
+Project Agent Share 从本包读取不可变 manifest、规范 GitHub HTTPS 仓库与精确 Git SHA 校验、无值的 Codex 依赖声明和公开分享结果契约。任何持链接者都可匿名读取 manifest；V0 链接不会过期且不能撤销，因此不得写入秘密。这个域不保存或归档 Git 对象、工程文件、Codex 会话、凭据或 Runtime 状态，仓库/commit 不再可取时旧分享也无法恢复。
+
+`combo.project-agent-share/1` 同时冻结 manifest 与 `copyPrompt` wire contract。Authoring 必须按 schema version 保留对应 renderer 和完整 golden；已有 renderer 不能原地改写，新增文案只能通过新 schema version，才能保证滚动发布时同一幂等请求仍返回字节一致结果。
+
 业务包通过 `@cb/shared` 根入口导入契约，不引用 `dist/` 内部路径，也不在各应用重复定义相同 schema。`pnpm -F @cb/shared typecheck` 检查生产源码，`pnpm -F @cb/shared typecheck:test` 检查测试源码，`pnpm -F @cb/shared test` 运行单元测试。

@@ -105,7 +105,7 @@ PROCESS=worker node apps/authoring/dist/processes/worker.js
 
 ## 数据库迁移
 
-DDL 真源在 `db/migrations/`（`0000` 至 `0014`，共 15 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`，`0011` 移除 H5 通道并只保留 `qr`；`0012` 增加 Agent Project、不可变 Revision、Runtime Test 与 Release；`0013` 增加远程 MCP OAuth 客户端、一次性 PKCE 授权码和摘要令牌；`0014` 在技术 Test 之上增加不可变三类案例质量复核，并让新 Release 冻结同一 Test 的复核摘要。当前 `0014` 候选只允许在独立 Test foundation 验证；合入 Preview/Production 前必须按 [`docs/agent-review-v2-rollout.md`](docs/agent-review-v2-rollout.md) 拆成兼容、扩展与强制三个发布阶段。冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把它与当前迁移链混作同一份线上证据。
+DDL 真源在 `db/migrations/`（`0000` 至 `0015`，共 16 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`，`0011` 移除 H5 通道并只保留 `qr`；`0012` 增加 Agent Project、不可变 Revision、Runtime Test 与 Release；`0013` 增加远程 MCP OAuth 客户端、一次性 PKCE 授权码和摘要令牌；`0014` 在技术 Test 之上增加不可变三类案例质量复核；`0015` 增加不可变 Git Project Agent 分享。当前 `0014` 候选只允许在独立 Test foundation 验证；合入 Preview/Production 前必须按 [`docs/agent-review-v2-rollout.md`](docs/agent-review-v2-rollout.md) 拆成兼容、扩展与强制三个发布阶段。冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把它与当前迁移链混作同一份线上证据。
 Runner 自带记账表 `schema_migrations`，**幂等可重入**：已应用文件跳过、逐文件单事务、失败即止。
 
 ```bash
@@ -126,7 +126,7 @@ pnpm -F @cb/db migrate:status  # 列清单（无连接也能列）
 
 > 以下 Compose 命令只用于独立开发环境，不作为 Test、Preview 或 Production 的验收证据。tecent2 源码检查不运行这些命令。
 
-编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0014` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
+编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0015` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
 
 要点：
 
@@ -147,9 +147,9 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 #### 环境配置
 
-本机直跑复制 `.env.local.example`；Compose 使用 `.env.compose.example`。生产式配置必须提供 `PUBLIC_APP_ORIGINS`、同列表中的规范 HTTPS `EXTERNAL_MCP_PUBLIC_ORIGIN`、固定 `MCP_RUNTIME_INTERNAL_BASE_URL`、三个数据库角色密码、`RESEND_API_KEY` 和 `OTP_HMAC_SECRET`。`scripts/start.sh` 会拒绝空值和已知弱默认值。
+本机直跑复制 `.env.local.example`；Compose 使用 `.env.compose.example`。本机完整公开体验的 canonical origin 是 Vite 的 `http://localhost:5173`，`/api`、`/.well-known`、`/codex-plugin`、`/health` 与 `/ready` 都由 Vite 代理到 Authoring `:3000`；直接访问 `:3000` 只是在调 API，不能代表 Project Agent 公开页链路。生产式配置必须提供 `PUBLIC_APP_ORIGINS`、同列表中的规范 HTTPS `EXTERNAL_MCP_PUBLIC_ORIGIN`、固定 `MCP_RUNTIME_INTERNAL_BASE_URL`、三个数据库角色密码、`RESEND_API_KEY` 和 `OTP_HMAC_SECRET`。`scripts/start.sh` 会拒绝空值和已知弱默认值。
 
-Codex 插件不再需要 `COMBO_SESSION_COOKIE`。公开入口 `/codex-plugin` 当前只在 Test 输出 macOS Codex Desktop 内置 CLI 的升级序列，并固定带 Agent Builder 内联卡片的 V2 Test 候选 `codex/combo-plugin-v2-ui`；Preview 不提供会错误连接 Test 的跨环境命令，Production 要等独立插件 release 将静态 MCP 地址切到 Production、合并 `main` 并验收后再开放。安装插件后只运行 `mcp login combo`，在浏览器用现有邮箱验证码完成 OAuth，再完全退出并重开 Codex Desktop、新建一个顶层任务；不要重复 `mcp add`，也不要在聊天中发送 Cookie、验证码或访问令牌。
+Codex 插件不再需要 `COMBO_SESSION_COOKIE`。公开入口 `/codex-plugin` 当前只在 Test 输出 macOS Codex Desktop 内置 CLI 的安装/升级序列，并固定 Test 候选 `codex/combo-plugin-v2-ui`；已安装 Combo Plugin 时优先升级 Marketplace并直接在新任务探测工具，仅当可调用工具返回 authorization 错误时才重新登录；未安装 Plugin 时才走首次安装，已有 Marketplace 可跳过重复添加，然后安装 Plugin 并完成 OAuth。Preview 不提供会错误连接 Test 的跨环境命令，Production 要等独立插件 release 将静态 MCP 地址切到 Production、合并 `main` 并验收后再开放。不默认要求重启，只有配置正确但新任务工具清单仍未更新时才完全退出并重开 Codex Desktop。不要重复 `mcp add`，也不要在聊天中发送 Cookie、验证码或访问令牌。
 
 环境变量真源是上述两个 `.env.*.example`，分两类消费者：`[app]`（Node 进程的环境 schema 校验）与 `[compose]`（compose 变量替换）。
 
@@ -195,7 +195,7 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 
 ## 验证
 
-源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0014`、再次幂等执行、应用角色权限和异常账本拒绝。
+源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0015`、再次幂等执行、应用角色权限和异常账本拒绝。
 
 Test、Preview 与 Production 的环境证据来自 tecent2 K3s 的 `combo-test`、`combo-preview` 与 `combo-prod` namespace。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；每次部署都核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要并验证环境域名返回对应 SHA。源码目录中的普通测试不启动 Docker 或 Docker Compose。
 

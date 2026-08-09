@@ -7,6 +7,6 @@
 - `docker-compose.prod.yml` 为部署环境改用已经发布的业务镜像，并收紧宿主端口。
 - `Dockerfile.api`、`Dockerfile.runtime` 和 `Dockerfile.web` 构建三个生产镜像。authoring 镜像同时包含迁移入口所需的应用角色配置脚本。`Dockerfile.resend-mock` 只构建测试替身。
 - `resend-mock/` 保存无第三方依赖、无访问日志的测试邮件服务及其单元测试。
-- `nginx.conf` 把 React、authoring API 和 runtime API 放在同一个站点下，使两端共享主机限定的 HttpOnly 会话 Cookie。生产 Cookie 使用 `__Host-` 前缀、Secure、根路径且没有 Domain；本地 HTTP 测试使用无前缀名称。访问日志只保留请求方法、响应状态和耗时；请求期错误日志写入空设备，避免上游故障把客户端地址、Cookie、原始 URL 或查询字符串写入容器日志。
+- `nginx.conf` 把 React、authoring API 和 runtime API 放在同一个站点下，使两端共享主机限定的 HttpOnly 会话 Cookie，并为 Project Agent 公开分享页添加禁止索引、禁止来源泄露和禁止缓存响应头。生产 Cookie 使用 `__Host-` 前缀、Secure、根路径且没有 Domain；本地 HTTP 测试使用无前缀名称。访问日志只保留请求方法、响应状态和耗时；请求期错误日志写入空设备，避免上游故障把客户端地址、Cookie、原始 URL 或查询字符串写入容器日志。
 - `k8s/` 保存生产 Kubernetes 清单。只有 authoring API Pod 接收 Resend 与验证码密钥。
 - `minio/`、`redis/` 和 `observability/` 保存各基础设施组件的静态配置。

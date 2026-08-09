@@ -530,9 +530,9 @@ export function mcpPostHandler(): RouteHandlerMethod {
               tools: { listChanged: false },
               resources: { listChanged: false },
             },
-            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.5.0' },
+            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.6.0' },
             instructions:
-              'Call list_agent_projects first. This server is stateless, so pass every Project identity explicitly. Use render_agent_builder only after the required reads or authorized analysis; its buttons send user messages but never persist, review, or release by themselves.',
+              'For a Project Agent share or restore request, use create_project_agent_share or read_project_agent_share and do not initialize a legacy Agent Project. Call list_agent_projects only when the user explicitly requests the legacy Agent Builder flow. This server is stateless; render_agent_builder is presentation-only and its buttons never persist or authorize work by themselves.',
           }),
         );
     }
@@ -619,17 +619,17 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
 
     const codex = '"/Applications/ChatGPT.app/Contents/Resources/codex"';
     const prompt =
-      '请在 macOS Codex Desktop 中使用内置 CLI 安装 Combo Test 插件，运行 OAuth 登录并在浏览器用邮箱验证码授权；然后完全退出并重开 Codex Desktop，新建一个顶层任务，先调用 list_agent_projects，再用 Combo Agent Builder 卡片完成建议、草稿、测试与发布确认。不要在聊天中发送 Cookie、验证码或访问令牌。';
-    const commands =
-      `${codex} plugin remove combo@dangdang-tech-combo\n` +
-      `${codex} plugin marketplace remove dangdang-tech-combo\n` +
+      '请在任意 Project 的 macOS Codex Desktop 中只使用内置 CLI 安装或升级 Combo Test：先检查 combo@dangdang-tech-combo 是否已安装；已安装才执行 marketplace upgrade，随后直接新建一个顶层任务探测 create_project_agent_share 和 read_project_agent_share，只有可调用工具明确返回 authorization 错误时才执行 mcp login combo。未安装 Combo Plugin 时走首次安装：若 dangdang-tech-combo Marketplace 已存在则跳过 marketplace add，否则添加固定 Test Marketplace；然后 plugin add 并完成 OAuth。分享前只接受 clean committed Git，先证明 git ls-remote origin <sourceRef> 精确等于 commitSha；不要上传文件、会话、Cookie、验证码、令牌或环境变量值。只有当 Plugin/MCP 配置正确但新任务工具清单仍未更新时，才完全退出并重开 Codex Desktop 后再新建任务。';
+    const upgradeCommands = `${codex} plugin marketplace upgrade dangdang-tech-combo --json`;
+    const installCommands =
       `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-ui\n` +
       `${codex} plugin add combo@dangdang-tech-combo\n` +
       `${codex} mcp login combo`;
-    const body = `<h1>在 Codex 中使用 Combo Test</h1>
+    const body = `<h1>在 Codex 中使用 Combo Test</h1><p>当前指南对应 Project Agent Share V0 与 Combo Plugin 0.6.0 Test 候选。</p>
 <p>把下面这句话复制到 Codex Desktop：</p><textarea readonly>${escapeHtml(prompt)}</textarea>
-<h2>手动升级并安装</h2><ol><li>移除旧插件和 Marketplace 缓存，再安装固定 Test 分支。</li><li>执行 OAuth 登录；验证码只在 Combo Test 浏览器页面输入。</li><li>完全新建一个任务并调用 <code>list_agent_projects</code>。</li></ol>
-<textarea readonly>${escapeHtml(commands)}</textarea>
+<h2>已安装 Combo Plugin：优先升级</h2><textarea readonly>${escapeHtml(upgradeCommands)}</textarea><p>升级后直接用新任务探测两项工具；只有可调用工具返回 authorization 错误时才运行 <code>${escapeHtml(`${codex} mcp login combo`)}</code>。</p>
+<h2>未安装 Combo Plugin：首次安装</h2><p>如果 dangdang-tech-combo Marketplace 已存在，跳过第一条 <code>marketplace add</code>，再执行 <code>plugin add</code> 与 OAuth。</p><textarea readonly>${escapeHtml(installCommands)}</textarea>
+<ol><li>执行 OAuth 登录；验证码只在 Combo Test 浏览器页面输入。</li><li>直接新建一个任务并确认 <code>create_project_agent_share</code> 与 <code>read_project_agent_share</code>。</li><li>仅在配置正确但新任务工具清单仍未更新时，才完全退出并重开 Codex Desktop。</li></ol>
 <p>Combo 不要求你在聊天中粘贴 Cookie、验证码或访问令牌。</p>`;
     return reply.code(200).type(HTML_CONTENT_TYPE).send(page('Combo Codex 插件安装', body));
   };

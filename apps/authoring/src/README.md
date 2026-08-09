@@ -6,7 +6,7 @@
 
 - `processes/` 放 API 与 worker 两个进程入口。
 - `bootstrap/` 组装 Fastify、基础设施、健康检查和业务路由。
-- `modules/` 按 account、task、capability、agent-project、billing 和 external-mcp 六个业务领域组织代码。account 是第一方浏览器认证唯一写入方，external-mcp 用 OAuth 把同一用户安全映射给 Codex，agent-project 冻结可测试和发布的 Agent，billing 是外部充值与内部钱包入账的唯一写入方。
+- `modules/` 按 account、task、capability、agent-project、project-agent-share、billing 和 external-mcp 业务领域组织代码。account 是第一方浏览器认证唯一写入方，external-mcp 用 OAuth 把同一用户安全映射给 Codex，agent-project 冻结可测试和发布的 Agent，project-agent-share 冻结可由真实 Codex 恢复的 Git Project manifest，billing 是外部充值与内部钱包入账的唯一写入方。
 - `platform/` 提供配置、HTTP 边界、PostgreSQL、Redis、队列、对象存储、Resend、本地会话校验、链路追踪和事件流等公共设施。
 
 依赖保持单向。processes 使用 bootstrap 与 modules，bootstrap 使用 modules 与 platform，modules 使用 platform，platform 不依赖业务模块。共享类型、错误信封、Cookie 常量和校验契约来自 `@cb/shared`。

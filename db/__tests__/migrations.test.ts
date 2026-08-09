@@ -109,6 +109,7 @@ describe('migrations', () => {
         'oauth_authorization_codes',
         'oauth_access_tokens',
         'oauth_refresh_tokens',
+        'project_agent_shares',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -196,7 +197,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, billing, and Agent Builder after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-8)).toEqual([
+    expect(list.slice(-9)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -205,6 +206,7 @@ describe('migrations', () => {
       '0012_agent_builder_v1.sql',
       '0013_external_mcp_oauth.sql',
       '0014_agent_test_reviews.sql',
+      '0015_project_agent_shares.sql',
     ]);
   });
 
