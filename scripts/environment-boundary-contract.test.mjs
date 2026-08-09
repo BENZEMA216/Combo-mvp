@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -287,6 +287,44 @@ test('trusted Main CI reaches candidate-owned MCP PostgreSQL and Redis contracts
     0,
     'workflow must not duplicate candidate-owned MCP integration commands',
   );
+});
+
+test('migration integration terminal-table assertions cover every source migration table', () => {
+  const migrationScript = text('scripts/integration/db-migrate.sh');
+  const migrationTables = readdirSync(join(repo, 'db/migrations'))
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .flatMap((name) =>
+      [...text(`db/migrations/${name}`).matchAll(/^CREATE TABLE\s+([a-z_][a-z0-9_]*)\s*\(/gim)].map(
+        (match) => match[1],
+      ),
+    )
+    .sort();
+  const assertedBaseTables = capture(
+    migrationScript,
+    /for tbl in ([\s\S]*?); do\n\s+exists=/,
+    'db-migrate base-table loop',
+  )
+    .replaceAll('\\\n', ' ')
+    .trim()
+    .split(/\s+/)
+    .sort();
+  const assertedTerminalTables = capture(
+    migrationScript,
+    /expected_tables='([^']+)'/,
+    'db-migrate expected terminal tables',
+  )
+    .split(',')
+    .sort();
+
+  assert.ok(migrationTables.length > 0, 'migration sources must create at least one table');
+  assert.equal(
+    new Set(migrationTables).size,
+    migrationTables.length,
+    'migration tables must be unique',
+  );
+  assert.deepEqual(assertedBaseTables, migrationTables);
+  assert.deepEqual(assertedTerminalTables, migrationTables);
 });
 
 test('destructive PostgreSQL contracts require authorization and an unambiguous loopback URL', () => {
