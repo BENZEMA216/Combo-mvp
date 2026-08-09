@@ -31,8 +31,8 @@ async function call(handler: RouteHandlerMethod, req: FastifyRequest): Promise<C
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 29 endpoints (account 4 + task 8 + capability 5 + agent-project 7 + billing 5)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(29);
+  it('registers exactly 31 endpoints including authenticated create and public Project Agent read', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(31);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -119,6 +119,24 @@ describe('route registry self-check', () => {
     const connect = ALL_ENDPOINTS.filter((endpoint) => endpoint.url.startsWith('/connect/'));
     expect(connect.length).toBeGreaterThanOrEqual(2);
     for (const endpoint of connect) expect(endpoint.preHandlers ?? []).toHaveLength(0);
+  });
+
+  it('protects Project Agent creation but keeps exact-token reads public', () => {
+    const create = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.method === 'POST' && endpoint.url === '/project-agent-shares',
+    );
+    expect(create).toMatchObject({
+      bodyLimit: 32 * 1_024,
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    });
+    expect(create?.preHandlers).toHaveLength(2);
+
+    const read = ALL_ENDPOINTS.find(
+      (endpoint) =>
+        endpoint.method === 'GET' && endpoint.url === '/project-agent-shares/:shareToken',
+    );
+    expect(read?.preHandlers ?? []).toHaveLength(0);
+    expect(read?.config).toEqual({ rateLimit: { max: 120, timeWindow: '1 minute' } });
   });
 });
 

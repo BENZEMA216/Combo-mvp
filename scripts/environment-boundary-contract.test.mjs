@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +15,221 @@ function capture(source, pattern, label) {
   const match = source.match(pattern);
   assert.ok(match, `missing ${label}`);
   return match[1];
+}
+
+function migrationSqlTokens(source, label) {
+  const tokens = [];
+  let cursor = 0;
+
+  while (cursor < source.length) {
+    const character = source[cursor];
+    const next = source[cursor + 1];
+    if (/\s/u.test(character)) {
+      cursor += 1;
+      continue;
+    }
+    if (character === '-' && next === '-') {
+      const newline = source.indexOf('\n', cursor + 2);
+      cursor = newline === -1 ? source.length : newline + 1;
+      continue;
+    }
+    if (character === '/' && next === '*') {
+      const start = cursor;
+      let depth = 1;
+      cursor += 2;
+      while (cursor < source.length && depth > 0) {
+        if (source[cursor] === '/' && source[cursor + 1] === '*') {
+          depth += 1;
+          cursor += 2;
+        } else if (source[cursor] === '*' && source[cursor + 1] === '/') {
+          depth -= 1;
+          cursor += 2;
+        } else {
+          cursor += 1;
+        }
+      }
+      if (depth !== 0) throw new Error(`${label}: unterminated SQL comment at offset ${start}`);
+      continue;
+    }
+    if (character === "'") {
+      const start = cursor;
+      const escapeBackslashes =
+        (source[start - 1] === 'E' || source[start - 1] === 'e') &&
+        (start < 2 || !/[A-Za-z0-9_$]/u.test(source[start - 2]));
+      let closed = false;
+      cursor += 1;
+      while (cursor < source.length) {
+        if (escapeBackslashes && source[cursor] === '\\') {
+          cursor += 2;
+        } else if (source[cursor] === "'" && source[cursor + 1] === "'") {
+          cursor += 2;
+        } else if (source[cursor] === "'") {
+          cursor += 1;
+          closed = true;
+          break;
+        } else {
+          cursor += 1;
+        }
+      }
+      if (!closed) throw new Error(`${label}: unterminated SQL string at offset ${start}`);
+      const body = source.slice(start + 1, cursor - 1);
+      if (/\bCREATE\b/iu.test(body)) {
+        const nestedTables = migrationCreatedTables(
+          body,
+          `${label}: SQL string at offset ${start}`,
+        );
+        if (nestedTables.length > 0) {
+          throw new Error(
+            `${label}: CREATE TABLE inside SQL string is unsupported at offset ${start}`,
+          );
+        }
+      }
+      continue;
+    }
+    if (character === '$') {
+      const delimiter = source.slice(cursor).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/u)?.[0];
+      if (delimiter) {
+        const start = cursor;
+        const closing = source.indexOf(delimiter, cursor + delimiter.length);
+        if (closing === -1) {
+          throw new Error(`${label}: unterminated dollar-quoted SQL body at offset ${start}`);
+        }
+        const body = source.slice(cursor + delimiter.length, closing);
+        if (/\bCREATE\b/iu.test(body)) {
+          const nestedTables = migrationCreatedTables(
+            body,
+            `${label}: dollar-quoted SQL body at offset ${start}`,
+          );
+          if (nestedTables.length > 0) {
+            throw new Error(
+              `${label}: CREATE TABLE inside dollar-quoted SQL body is unsupported at offset ${start}`,
+            );
+          }
+        }
+        cursor = closing + delimiter.length;
+        continue;
+      }
+    }
+    if (character === '"') {
+      const start = cursor;
+      let value = '';
+      let closed = false;
+      cursor += 1;
+      while (cursor < source.length) {
+        if (source[cursor] === '"' && source[cursor + 1] === '"') {
+          value += '"';
+          cursor += 2;
+        } else if (source[cursor] === '"') {
+          cursor += 1;
+          closed = true;
+          break;
+        } else {
+          value += source[cursor];
+          cursor += 1;
+        }
+      }
+      if (!closed) throw new Error(`${label}: unterminated quoted identifier at offset ${start}`);
+      tokens.push({ kind: 'identifier', value, offset: start });
+      continue;
+    }
+
+    const word = source.slice(cursor).match(/^[A-Za-z_][A-Za-z0-9_$]*/u)?.[0];
+    if (word) {
+      tokens.push({ kind: 'word', value: word, offset: cursor });
+      cursor += word.length;
+      continue;
+    }
+    tokens.push({ kind: 'symbol', value: character, offset: cursor });
+    cursor += 1;
+  }
+
+  return tokens;
+}
+
+function isSqlKeyword(token, keyword) {
+  return token?.kind === 'word' && token.value.toUpperCase() === keyword;
+}
+
+function sqlIdentifier(token) {
+  if (token?.kind === 'word') return token.value.toLowerCase();
+  if (token?.kind === 'identifier') return token.value;
+  return null;
+}
+
+function migrationCreatedTables(source, label) {
+  const tokens = migrationSqlTokens(source, label);
+  const tables = [];
+  let createTableStatements = 0;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (!isSqlKeyword(tokens[index], 'CREATE')) continue;
+    let cursor = index + 1;
+    let modifier = null;
+    if (isSqlKeyword(tokens[cursor], 'GLOBAL') || isSqlKeyword(tokens[cursor], 'LOCAL')) {
+      modifier = tokens[cursor].value;
+      cursor += 1;
+    }
+    if (
+      isSqlKeyword(tokens[cursor], 'TEMP') ||
+      isSqlKeyword(tokens[cursor], 'TEMPORARY') ||
+      isSqlKeyword(tokens[cursor], 'UNLOGGED')
+    ) {
+      modifier = modifier ? `${modifier} ${tokens[cursor].value}` : tokens[cursor].value;
+      cursor += 1;
+    }
+    if (!isSqlKeyword(tokens[cursor], 'TABLE')) continue;
+
+    createTableStatements += 1;
+    const statementOffset = tokens[index].offset;
+    if (modifier) {
+      throw new Error(
+        `${label}: unsupported CREATE TABLE modifier ${modifier} at offset ${statementOffset}`,
+      );
+    }
+    cursor += 1;
+    if (isSqlKeyword(tokens[cursor], 'IF')) {
+      if (!isSqlKeyword(tokens[cursor + 1], 'NOT') || !isSqlKeyword(tokens[cursor + 2], 'EXISTS')) {
+        throw new Error(
+          `${label}: unsupported CREATE TABLE IF clause at offset ${statementOffset}`,
+        );
+      }
+      cursor += 3;
+    }
+
+    const firstIdentifier = sqlIdentifier(tokens[cursor]);
+    if (!firstIdentifier) {
+      throw new Error(`${label}: missing CREATE TABLE name at offset ${statementOffset}`);
+    }
+    cursor += 1;
+    let schema = null;
+    let table = firstIdentifier;
+    if (tokens[cursor]?.kind === 'symbol' && tokens[cursor].value === '.') {
+      schema = firstIdentifier;
+      table = sqlIdentifier(tokens[cursor + 1]);
+      cursor += 2;
+    }
+    if (schema !== null && schema !== 'public') {
+      throw new Error(
+        `${label}: CREATE TABLE may only target public schema at offset ${statementOffset}`,
+      );
+    }
+    if (!table || !/^[a-z_][a-z0-9_]*$/u.test(table)) {
+      throw new Error(`${label}: unsupported CREATE TABLE name at offset ${statementOffset}`);
+    }
+    if (tokens[cursor]?.kind !== 'symbol' || tokens[cursor].value !== '(') {
+      throw new Error(
+        `${label}: CREATE TABLE must use an explicit column list at offset ${statementOffset}`,
+      );
+    }
+    tables.push(table);
+  }
+
+  assert.equal(
+    tables.length,
+    createTableStatements,
+    `${label}: every CREATE TABLE statement must be parsed`,
+  );
+  return tables;
 }
 
 function deployContract(source, environment) {
@@ -287,6 +502,91 @@ test('trusted Main CI reaches candidate-owned MCP PostgreSQL and Redis contracts
     0,
     'workflow must not duplicate candidate-owned MCP integration commands',
   );
+});
+
+test('migration table parser supports comments, newlines, IF NOT EXISTS and public qualification', () => {
+  const fixture = `
+    -- CREATE TABLE ignored_comment (id integer);
+    CREATE
+    /* keywords may be separated by comments */ TABLE IF
+    NOT EXISTS public.first_table
+    (id integer);
+
+    CREATE TABLE "public"."second_table"
+    (
+      id integer
+    );
+
+    SELECT 'standard-conforming backslash\\';
+    CREATE TABLE third_table (id integer);
+
+    DO $body$ BEGIN PERFORM 1; END $body$;
+  `;
+
+  assert.deepEqual(migrationCreatedTables(fixture, 'supported fixture'), [
+    'first_table',
+    'second_table',
+    'third_table',
+  ]);
+});
+
+test('migration table parser fails closed on unsupported creation forms', () => {
+  assert.throws(
+    () => migrationCreatedTables('CREATE UNLOGGED TABLE cache_table (id integer);', 'modifier'),
+    /unsupported CREATE TABLE modifier/,
+  );
+  assert.throws(
+    () => migrationCreatedTables('CREATE TABLE private.secret_table (id integer);', 'schema'),
+    /may only target public schema/,
+  );
+  assert.throws(
+    () => migrationCreatedTables('CREATE TABLE generated_table AS SELECT 1;', 'shape'),
+    /must use an explicit column list/,
+  );
+  assert.throws(
+    () =>
+      migrationCreatedTables(
+        `DO $body$ BEGIN EXECUTE 'CREATE TABLE dynamic_table (id integer)'; END $body$;`,
+        'dynamic',
+      ),
+    /CREATE TABLE inside SQL string is unsupported/,
+  );
+});
+
+test('migration integration terminal-table assertions cover every source migration table', () => {
+  const migrationScript = text('scripts/integration/db-migrate.sh');
+  const migrationTables = readdirSync(join(repo, 'db/migrations'))
+    .filter((name) => name.endsWith('.sql'))
+    .sort()
+    .flatMap((name) =>
+      migrationCreatedTables(text(`db/migrations/${name}`), `db/migrations/${name}`),
+    )
+    .sort();
+  const assertedBaseTables = capture(
+    migrationScript,
+    /for tbl in ([\s\S]*?); do\n\s+exists=/,
+    'db-migrate base-table loop',
+  )
+    .replaceAll('\\\n', ' ')
+    .trim()
+    .split(/\s+/)
+    .sort();
+  const assertedTerminalTables = capture(
+    migrationScript,
+    /expected_tables='([^']+)'/,
+    'db-migrate expected terminal tables',
+  )
+    .split(',')
+    .sort();
+
+  assert.ok(migrationTables.length > 0, 'migration sources must create at least one table');
+  assert.equal(
+    new Set(migrationTables).size,
+    migrationTables.length,
+    'migration tables must be unique',
+  );
+  assert.deepEqual(assertedBaseTables, migrationTables);
+  assert.deepEqual(assertedTerminalTables, migrationTables);
 });
 
 test('destructive PostgreSQL contracts require authorization and an unambiguous loopback URL', () => {

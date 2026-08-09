@@ -17,11 +17,11 @@
 
 ## 协议边界
 
-MCP 资源是规范 origin 下的 `/api/external-mcp/mcp`。未认证 GET 与 POST 返回带路径版 protected-resource metadata 的 Bearer challenge；根路径和路径版 metadata 返回相同资源文档。授权、换码和刷新都必须携带同一个精确 resource，客户端必须使用 S256 PKCE。
+MCP 资源是规范 origin 下的 `/api/external-mcp/mcp`，与 Project Agent 公开页面共用同一个 `EXTERNAL_MCP_PUBLIC_ORIGIN`。本地开发该 origin 是 Vite `:5173`，由 Vite 把 `/api`、`/.well-known` 和 `/codex-plugin` 代理到 Authoring `:3000`；直连 `:3000` 不能代表完整公开页面。未认证 GET 与 POST 返回带路径版 protected-resource metadata 的 Bearer challenge；根路径和路径版 metadata 返回相同资源文档。授权、换码和刷新都必须携带同一个精确 resource，客户端必须使用 S256 PKCE。
 
 授权确认页的内容安全策略只允许表单提交到自身和本次请求已经校验过的精确 loopback origin，使 303 回调可以返回 Codex，同时不开放其他主机或端口。成功页使用 `strict-origin` 保留同源 POST 的 Origin 校验；错误页继续使用 `no-referrer`。
 
-当前远程工具面固定为十八项：提取任务创建/读取、Capability 列表/定义读取、Project 列表/创建/目标快照/读取、Agent Builder 卡片展示、Miniapp UI 保存/读取、Revision 提交/读取、Test 运行/列表/读取、Test 质量复核和 Release 发布。展示工具只把已经核验的数据渲染为 MCP App，不保存选择；MCP 不保存 TargetState；所有 Project、Revision、Test 与发布操作都显式携带资源 ID。质量复核按案例分别保存执行终态和质量结论，整体质量状态只由服务端派生；最终发布确认不会修改复核。发布 Revision 只从技术通过、质量可发布且仍匹配当前 Head 的 Test 服务端推导。
+当前远程工具面固定为二十项：原有十八项提取与 Agent Builder 工具之后，追加 `create_project_agent_share` 和 `read_project_agent_share`。Project Agent 分享只冻结规范 GitHub 来源、创建时 ref、精确 commit/tree、启动说明和无值依赖声明；Combo 不抓取或托管 Git 对象。公开 HTTP 页面/API 由持链接者匿名读取，MCP transport 本身仍需 OAuth，但读取不按 owner 过滤。展示工具只把已经核验的数据渲染为 MCP App，不保存选择；MCP 不保存 TargetState；所有 Project、Revision、Test 与发布操作都显式携带资源 ID。质量复核按案例分别保存执行终态和质量结论，整体质量状态只由服务端派生；最终发布确认不会修改复核。发布 Revision 只从技术通过、质量可发布且仍匹配当前 Head 的 Test 服务端推导。
 
 Studio UI 与 Agent Test 仍由 Runtime 执行。Authoring 只把当前 access-token 通过固定的集群内 HTTP 路由转发；Runtime 只能只读 `oauth_access_tokens` 摘要表并再次校验 resource、有效期、账号和所需 scope，不能读取客户端、授权请求、授权码或 refresh token。浏览器 Cookie 从不进入该链路。
 
@@ -29,4 +29,4 @@ Studio UI 与 Agent Test 仍由 Runtime 执行。Authoring 只把当前 access-t
 
 DCR 使用忽略 loopback 临时端口的 canonical registration digest 去重；Codex 重启或端口变化会复用同一 `client_id`，同时响应本次 URI。数据库 advisory lock 把复用、容量恢复、计数和插入串行，client 总量硬限制为 4096。满额时只淘汰超过十分钟、最近未使用且对授权请求、授权码、access token、refresh token 均无引用的最旧 client；没有安全候选则失败关闭。普通维护只清理超过三十天且无任何引用的 client。
 
-`/codex-plugin` 当前只在 Test 环境提供固定 `codex/combo-plugin-v2-ui` 安装命令。Preview 不提供跨环境命令；Production 必须等独立插件 release 把静态 `.mcp.json` 切到 Production 并合并 `main` 后再显式开放稳定安装命令。
+`/codex-plugin` 当前只在 Test 环境提供固定 `codex/combo-plugin-v2-ui` 安装命令。已安装 Combo Plugin 时优先用 Codex Desktop 内置 CLI 执行 `plugin marketplace upgrade dangdang-tech-combo --json`，升级后直接用新任务探测两项工具，仅当可调用工具返回 authorization 错误时才登录；未安装 Plugin 时才走首次安装，Marketplace 已存在可跳过重复添加，然后安装 Plugin 并完成 OAuth。不默认要求重启，只有新任务工具清单仍未更新时才把重启作为兜底。Preview 不提供跨环境命令；Production 必须等独立插件 release 把静态 `.mcp.json` 切到 Production 并合并 `main` 后再显式开放稳定安装命令。

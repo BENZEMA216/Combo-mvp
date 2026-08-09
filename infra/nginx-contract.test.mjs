@@ -4,6 +4,8 @@ import test from 'node:test';
 import { URL } from 'node:url';
 
 const nginx = readFileSync(new URL('./nginx.conf', import.meta.url), 'utf8');
+const localEnv = readFileSync(new URL('../.env.local.example', import.meta.url), 'utf8');
+const vite = readFileSync(new URL('../apps/web/vite.config.ts', import.meta.url), 'utf8');
 
 test('OAuth discovery, guide and MCP routes bypass the SPA fallback', () => {
   for (const path of [
@@ -31,4 +33,23 @@ test('the Streamable HTTP MCP proxy keeps Authorization and disables buffering',
   assert.match(block, /proxy_buffering off/);
   assert.match(block, /proxy_cache off/);
   assert.doesNotMatch(block, /proxy_set_header Authorization ['"]?['"]?;/);
+});
+
+test('Project Agent SPA shell keeps public-link privacy headers in the same location', () => {
+  const start = nginx.indexOf('location ^~ /project-agent/ {');
+  const end = nginx.indexOf('\n  }', start);
+  const block = nginx.slice(start, end);
+  assert.ok(start > 0);
+  assert.match(block, /try_files \/index\.html =404;/);
+  assert.doesNotMatch(block, /try_files[^;]*\/index\.html;/);
+  assert.match(block, /Cache-Control "private, no-store" always/);
+  assert.match(block, /X-Robots-Tag "noindex, nofollow" always/);
+  assert.match(block, /Referrer-Policy "no-referrer" always/);
+});
+
+test('local development keeps MCP, API and Project Agent pages on the Vite public origin', () => {
+  assert.match(localEnv, /^EXTERNAL_MCP_PUBLIC_ORIGIN=http:\/\/localhost:5173$/m);
+  for (const route of ['/api', '/.well-known', '/codex-plugin', '/health', '/ready']) {
+    assert.match(vite, new RegExp(`['"]${route.replaceAll('/', '\\/')}['"]`));
+  }
 });

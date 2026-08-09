@@ -2,7 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer, type Server } from 'node:http';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { encodeIdCursor, type ObjectStorePort } from '@cb/shared';
+import { encodeIdCursor, ProjectAgentShareResultSchema, type ObjectStorePort } from '@cb/shared';
 import type { Queryable } from '../platform/infra/db.js';
 import type { TxPool } from '../platform/infra/db-tx.js';
 
@@ -32,6 +32,7 @@ vi.mock('../modules/agent-project/index.js', async () => {
 });
 
 import {
+  EXTERNAL_MCP_TOOLS,
   executeExternalMcpTool,
   renderCurrentCodexTaskConnectCommand,
 } from '../modules/external-mcp/tools.js';
@@ -224,6 +225,48 @@ beforeEach(() => {
 });
 
 describe('external MCP public tool results', () => {
+  it('appends the two Project Agent tools without reordering the existing catalog', () => {
+    expect(EXTERNAL_MCP_TOOLS).toHaveLength(20);
+    expect(EXTERNAL_MCP_TOOLS.slice(-2).map((tool) => tool.name)).toEqual([
+      'create_project_agent_share',
+      'read_project_agent_share',
+    ]);
+    const [createShare, readShare] = EXTERNAL_MCP_TOOLS.slice(-2);
+    expect(createShare?.outputSchema).toBeDefined();
+    expect(readShare?.outputSchema).toEqual(createShare?.outputSchema);
+    expect(createShare?.outputSchema?.required).toEqual(['manifest', 'shareUrl', 'copyPrompt']);
+
+    const sourceRef = createShare?.inputSchema.properties?.sourceRef as
+      | { pattern?: string }
+      | undefined;
+    const repositoryUrl = createShare?.inputSchema.properties?.repositoryUrl as
+      | { pattern?: string }
+      | undefined;
+    const repositoryUrlPattern = new RegExp(repositoryUrl?.pattern ?? 'fail');
+    expect(repositoryUrlPattern.test('https://github.com/openai/codex.git')).toBe(true);
+    for (const invalid of [
+      'https://github.com/a-/repo.git',
+      'https://github.com/a/..git',
+      'https://github.com/a/...git',
+      'https://github.com/a/repo.git.git',
+    ]) {
+      expect(repositoryUrlPattern.test(invalid), invalid).toBe(false);
+    }
+    const sourceRefPattern = new RegExp(sourceRef?.pattern ?? 'fail');
+    expect(sourceRefPattern.test('refs/heads/foo./bar')).toBe(true);
+    for (const invalid of [
+      'refs/heads/trailing.',
+      'refs/heads/a.lock',
+      'refs/heads/feature/a.lock/child',
+      'refs/heads/a..b',
+      'refs/heads/a@{b',
+      'refs/heads/a b',
+      'refs/heads/a?b',
+    ]) {
+      expect(sourceRefPattern.test(invalid), invalid).toBe(false);
+    }
+  });
+
   it('locks the extraction command to the current Codex task', () => {
     const command = renderCurrentCodexTaskConnectCommand(
       'https://combo.example/api/v1/connect/script?code=one-time-code',
@@ -428,6 +471,82 @@ printf '%s\\n' combo-connect-executed
       nextAction: null,
     });
     expect(JSON.parse(second.content[0]!.text)).toEqual(second.structuredContent);
+  });
+
+  it('lets a different OAuth principal read a Project Agent share by public link', async () => {
+    let stored:
+      | {
+          id: string;
+          owner_user_id: string;
+          share_token: string;
+          manifest: unknown;
+          manifest_sha256: string;
+          idempotency_key: string;
+          idempotency_sha256: string;
+          created_at: string;
+        }
+      | undefined;
+    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes('INSERT INTO project_agent_shares')) {
+        stored = {
+          id: '00000000-0000-4000-8000-000000000099',
+          owner_user_id: String(params[0]),
+          share_token: String(params[1]),
+          manifest: JSON.parse(String(params[2])) as unknown,
+          manifest_sha256: String(params[3]),
+          idempotency_key: String(params[4]),
+          idempotency_sha256: String(params[5]),
+          created_at: String(params[6]),
+        };
+        return { rows: [stored], rowCount: 1 };
+      }
+      if (sql.includes('WHERE share_token')) {
+        return { rows: stored && stored.share_token === params[0] ? [stored] : [], rowCount: 1 };
+      }
+      throw new Error(`unexpected query: ${sql}`);
+    });
+    const creator = context();
+    creator.db = { query } as unknown as Queryable;
+    const created = await executeExternalMcpTool(creator, 'create_project_agent_share', {
+      name: 'Repository reviewer',
+      description: 'Review a fixed repository.',
+      repositoryUrl: 'https://github.com/openai/codex.git',
+      sourceRef: 'refs/heads/main',
+      commitSha: 'a'.repeat(40),
+      treeSha: 'b'.repeat(40),
+      startPrompt: 'Review the architecture.',
+      requirements: { commands: ['git'] },
+      idempotencyKey: '00000000-0000-4000-8000-000000000090',
+    });
+    expect(created.isError).toBeUndefined();
+    expect(() => ProjectAgentShareResultSchema.parse(created.structuredContent)).not.toThrow();
+    const shareUrl = created.structuredContent.shareUrl;
+    expect(typeof shareUrl).toBe('string');
+
+    const recipient = context();
+    recipient.db = { query } as unknown as Queryable;
+    recipient.principal = {
+      userId: '00000000-0000-4000-8000-000000000091',
+      account: 'creator-bbbbbbbb',
+      scopes: ['combo.agent:read'],
+    };
+    const read = await executeExternalMcpTool(recipient, 'read_project_agent_share', {
+      shareUrl,
+    });
+
+    expect(read.isError).toBeUndefined();
+    expect(() => ProjectAgentShareResultSchema.parse(read.structuredContent)).not.toThrow();
+    expect(read.structuredContent.manifest).toEqual(created.structuredContent.manifest);
+    const publicSelect = query.mock.calls.find(([sql]) =>
+      String(sql).includes('WHERE share_token'),
+    );
+    const publicPredicate = String(publicSelect?.[0]).slice(
+      String(publicSelect?.[0]).indexOf('WHERE'),
+    );
+    expect(publicPredicate).not.toContain('owner_user_id');
+    expect(publicSelect?.[1]).toHaveLength(1);
+    expect(read.structuredContent).not.toHaveProperty('ownerUserId');
+    expect(read.structuredContent).not.toHaveProperty('shareToken');
   });
 
   it('guides a first-time user from an empty capability list into extraction', async () => {
@@ -657,6 +776,23 @@ printf '%s\\n' combo-connect-executed
     });
     expect(rejected.isError).toBe(true);
   });
+
+  it.each(['project_share', 'project_restore'] as const)(
+    'renders the %s presentation stage without persisting state',
+    async (stage) => {
+      const rendered = await executeExternalMcpTool(context(), 'render_agent_builder', {
+        stage,
+        title: stage === 'project_share' ? 'Project Agent 分享' : 'Project Agent 恢复',
+        summary: '等待用户确认。',
+        progress: [],
+        items: [],
+        actions: [],
+      });
+      expect(rendered.isError).toBeUndefined();
+      expect(rendered.structuredContent.stage).toBe(stage);
+      expect(mocks.readAgentProjectDetail).not.toHaveBeenCalled();
+    },
+  );
 
   it('derives publish revision identity from a passed Test and rejects cross-project Tests', async () => {
     const runtime = {

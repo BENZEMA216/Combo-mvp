@@ -329,6 +329,63 @@ pgDescribe('application database roles on PostgreSQL', () => {
     );
   });
 
+  it('allows only API append/read for Project Agent shares and enforces the immutable trigger', async () => {
+    const api = clients.get('combo_api')!;
+    const worker = clients.get('combo_worker')!;
+    const runtime = clients.get('combo_runtime')!;
+
+    expect(
+      await privilege(api, 'has_table_privilege', 'public.project_agent_shares', 'SELECT'),
+    ).toBe(true);
+    expect(
+      await privilege(api, 'has_table_privilege', 'public.project_agent_shares', 'INSERT'),
+    ).toBe(true);
+    for (const action of ['UPDATE', 'DELETE']) {
+      expect(
+        await privilege(api, 'has_table_privilege', 'public.project_agent_shares', action),
+      ).toBe(false);
+    }
+    for (const client of [worker, runtime]) {
+      for (const action of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) {
+        expect(
+          await privilege(client, 'has_table_privilege', 'public.project_agent_shares', action),
+        ).toBe(false);
+      }
+    }
+
+    const suffix = randomUUID()
+      .replaceAll('-', '')
+      .replaceAll('0', 'a')
+      .replaceAll('1', 'b')
+      .replaceAll('8', 'c')
+      .replaceAll('9', 'd')
+      .slice(0, 8);
+    const shareToken = `${randomUUID()}${randomUUID()}`.replaceAll('-', '').slice(0, 43);
+    const user = await owner.query<{ id: string }>(
+      `INSERT INTO users (account) VALUES ($1) RETURNING id`,
+      [`creator-${suffix}`],
+    );
+    const inserted = await api.query<{ id: string }>(
+      `INSERT INTO project_agent_shares (
+         owner_user_id, share_token, manifest, manifest_sha256,
+         idempotency_key, idempotency_sha256, created_at
+       ) VALUES ($1, $2, '{}'::jsonb, $3, $4, $5, now())
+       RETURNING id`,
+      [user.rows[0]!.id, shareToken, 'a'.repeat(64), randomUUID(), 'b'.repeat(64)],
+    );
+    const shareId = inserted.rows[0]!.id;
+
+    await expect(
+      api.query(`UPDATE project_agent_shares SET manifest = manifest WHERE id = $1`, [shareId]),
+    ).rejects.toMatchObject({ code: '42501' });
+    await expect(
+      owner.query(`UPDATE project_agent_shares SET manifest = manifest WHERE id = $1`, [shareId]),
+    ).rejects.toMatchObject({ code: '55000' });
+    await expect(
+      owner.query(`DELETE FROM project_agent_shares WHERE id = $1`, [shareId]),
+    ).rejects.toMatchObject({ code: '55000' });
+  });
+
   it('fails Release closed without a Review and accepts the same passed Test after Review', async () => {
     const api = clients.get('combo_api')!;
     const suffix = randomUUID()

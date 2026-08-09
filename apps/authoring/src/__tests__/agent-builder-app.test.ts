@@ -247,6 +247,8 @@ describe('Combo Agent Builder MCP App bridge', () => {
     expect(createHash('sha256').update(AGENT_BUILDER_APP_HTML).digest('hex')).toBe(
       AGENT_BUILDER_APP_HTML_SHA256,
     );
+    expect(AGENT_BUILDER_APP_HTML).toContain("project_share: 'Project Agent 分享'");
+    expect(AGENT_BUILDER_APP_HTML).toContain("project_restore: 'Project Agent 恢复'");
   });
 
   it('locks every card action while sending and keeps them locked while Codex continues', async () => {
@@ -255,7 +257,7 @@ describe('Combo Agent Builder MCP App bridge', () => {
     expect(app.outbound[0]).toMatchObject({
       method: 'ui/initialize',
       params: {
-        appInfo: { name: 'combo-agent-builder', version: '0.5.0' },
+        appInfo: { name: 'combo-agent-builder', version: '0.6.0' },
         appCapabilities: { availableDisplayModes: ['inline'] },
         protocolVersion: '2026-01-26',
       },

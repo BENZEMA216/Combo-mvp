@@ -16,6 +16,7 @@ import { CapabilitiesPage } from './pages/capabilities/CapabilitiesPage.js';
 import { ReleasePage } from './pages/release/ReleasePage.js';
 import { PublicCapabilityPage } from './pages/public/PublicCapabilityPage.js';
 import { PublicCreatorPage } from './pages/public/PublicCreatorPage.js';
+import { ProjectAgentSharePage } from './pages/public/ProjectAgentSharePage.js';
 import { LandingPage } from './pages/landing/LandingPage.js';
 import { ReleaseIdentityBadge } from './shell/releaseIdentity.js';
 
@@ -52,6 +53,7 @@ export function App(): ReactElement {
           {/* 公开能力页 / 公开创作者主页：匿名可读，数据走前端 mock 层（publicApi）。 */}
           <Route path="/a/:slug" element={<PublicCapabilityPage />} />
           <Route path="/c/:slug" element={<PublicCreatorPage />} />
+          <Route path="/project-agent/:shareToken" element={<ProjectAgentSharePage />} />
           {/* 登录页：两步邮箱验证码表单，只接受共享契约允许的站内 returnTo。 */}
           <Route path="/login" element={<LoginPage />} />
           <Route path="*" element={<NotFoundPage />} />

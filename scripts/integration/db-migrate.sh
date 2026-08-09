@@ -40,12 +40,13 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   billing_accounts billing_free_allowances usage_charges recharge_orders \
   payment_attempts payment_callback_events wallet_ledger \
   agent_projects agent_revisions agent_tests agent_test_reviews agent_releases \
+  project_agent_shares \
   oauth_clients oauth_authorization_requests oauth_authorization_codes \
   oauth_access_tokens oauth_refresh_tokens; do
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
+expected_tables='agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,project_agent_shares,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables

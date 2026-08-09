@@ -56,6 +56,129 @@
   --cb-font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', 'Roboto Mono', monospace;
 }
 
+/* Project Agent 公开分享：以安全审查和复制到 Codex 为主链路。 */
+.cb-project-share {
+  display: grid;
+  gap: 20px;
+  width: min(920px, 100%);
+  margin: 0 auto;
+  padding: 36px 20px 64px;
+}
+
+.cb-project-share__hero,
+.cb-project-share__panel,
+.cb-project-share__warning {
+  padding: 24px;
+  border: 1px solid var(--cb-border, #dde2ea);
+  border-radius: 18px;
+  background: var(--cb-surface, #fff);
+}
+
+.cb-project-share__hero h1,
+.cb-project-share__panel h2,
+.cb-project-share__requirement h3,
+.cb-project-share__warning p {
+  margin-top: 0;
+}
+
+.cb-project-share__eyebrow {
+  margin: 0 0 8px;
+  color: #3b5ccc;
+  font-size: 12px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.cb-project-share__warning {
+  border-color: #e8b85a;
+  background: #fff7df;
+  color: #5f4300;
+}
+
+.cb-project-share__warning p {
+  margin-bottom: 0;
+}
+
+.cb-project-share__panel dl {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.3fr) minmax(0, 1fr);
+  gap: 10px 16px;
+}
+
+.cb-project-share__panel dt {
+  color: var(--cb-text-secondary, #657086);
+}
+
+.cb-project-share__panel dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.cb-project-share__panel pre,
+.cb-project-share__copy textarea {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 14px;
+  border: 1px solid var(--cb-border, #d5dce7);
+  border-radius: 12px;
+  background: var(--cb-surface-subtle, #f6f8fb);
+  color: inherit;
+  font:
+    13px/1.55 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.cb-project-share__copy textarea {
+  min-height: 190px;
+  resize: vertical;
+}
+
+.cb-project-share__requirements {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.cb-project-share__requirement {
+  padding: 14px;
+  border-radius: 12px;
+  background: var(--cb-surface-subtle, #f6f8fb);
+}
+
+.cb-project-share__requirement h3 {
+  font-size: 14px;
+}
+
+.cb-project-share__requirement p,
+.cb-project-share__requirement ul {
+  margin-bottom: 0;
+}
+
+.cb-project-share__note {
+  color: var(--cb-text-secondary, #657086);
+  font-size: 14px;
+}
+
+.cb-project-share__copy-button {
+  margin-top: 12px;
+}
+
+@media (max-width: 700px) {
+  .cb-project-share__requirements {
+    grid-template-columns: 1fr;
+  }
+
+  .cb-project-share__panel dl {
+    grid-template-columns: 1fr;
+  }
+}
+
 * {
   box-sizing: border-box;
 }

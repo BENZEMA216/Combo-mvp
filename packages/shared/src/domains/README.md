@@ -10,6 +10,10 @@
 - `agent.ts` 定义 Agent Builder V1：单循环 AgentDefinition、恰好一个入口 Capability 的绑定规则、严格 UUID 资源边界、保留历史编译器版本的 Runtime Bundle、Project、不可变 Revision、幂等真实 Test、不可变质量复核、Project 最近 Test 恢复列表、Release，以及 Codex 直接保存 Miniapp HTML 的请求与响应契约。质量复核至少包含 normal、boundary 和 failure 三类案例，每个案例分别保存执行终态与质量结论；例外接受必须说明理由和影响。Revision、Test 和 Release 都显式携带 Runtime Bundle 与 UI 的 SHA-256 摘要；恢复列表独立覆盖尚未绑定 Session/Turn 的 `starting` claim，默认 20 条、最多 50 条。
 - `agent-ui.ts` 定义 Authoring 与 Runtime 共用的 Miniapp HTML 最小运行校验，要求自包含文档和真实 `combo:run` Bridge，并拒绝定时器、随机数和 mock 结果。
 - `mcp-oauth.ts` 定义远程 MCP 的稳定路径、OAuth 2.1 scope、RFC 9728 资源发现、RFC 8414 授权服务器发现、动态客户端注册、短期访问令牌与轮换刷新令牌响应契约。它不包含浏览器 Session Cookie，也不允许把 Cookie 当作 Bearer Token。
+- `project-agent-share.ts` 定义不可变 Git Project 分享契约，仅允许规范 GitHub HTTPS 仓库、精确 commit/tree SHA、启动说明和无值的依赖声明进入 manifest。输出只包含任何持链接者都可匿名读取的公开 manifest、分享链接和复制到 Codex 的文字，不包含 owner 或内部存储标识。V0 分享不撤销、不过期且不托管 Git 对象，调用方不得把秘密放进 manifest。
+
+Project Agent 的 schema version 也版本化服务端 `copyPrompt` renderer；v1 renderer 是 wire contract，必须永久保留并由完整 golden test 固定，不能在同一 schema version 下改写。
+
 - `trial.ts` 定义试用域：会话、消息、产物和 Turn 的视图，以及建会话、带 `usageId` 发消息和余额不足响应的契约；`usageId` 在校验 UUID 后统一输出小写规范形，Agent Builder 会话可携带固定的 Project、Revision 与 Release。Artifact 会带可选来源 Turn 和创建时间，会话详情能从 PostgreSQL 恢复 active Turn，并只用严格白名单码描述最近终态 Turn，绝不承载原始错误文本。`currentUiArtifactId` 标识 Studio 当前 UI 或普通会话创建时冻结的 UI 副本。会话详情里的能力摘要带开场表单字段与提示语（来自普通能力定义或固定 Revision Bundle，定义读不出时为空数组）。消息内容是 agent 原生分块格式，共享层只约束到「是数组」，严格校验在 runtime 侧。
 - `redaction.ts` 是去敏规则引擎，纯函数、无任何 IO：`redact` 与 `redactBatch` 按带版本号的规则集抹掉手机号、邮箱、密钥、证件号、银行卡号、IP 等隐私信息，产出只含类别与计数的聚合报告，且对已去敏文本重跑结果不变。
 - `index.ts` 汇总转出以上全部文件。
