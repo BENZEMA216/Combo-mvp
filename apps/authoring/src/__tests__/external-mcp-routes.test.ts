@@ -243,7 +243,7 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain('sameSavedProjectRequired:true');
     expect(response.body).toContain('creatorHandoff 必须是唯一 prompt，且不算用户确认');
     expect(response.body).toContain(
-      '绝不能匹配 userMessage、codexDelegation、tool input、echo 或 creatorHandoff 输入中已有的 marker 字面量',
+      '绝不能匹配 userMessage、codexDelegation、tool input、echo、代码围栏或 creatorHandoff 输入中已有的 marker 字面量',
     );
     expect(response.body).toContain(
       'assistant agentMessage（phase=&quot;final_answer&quot;）里的独立一行逐字等于 COMBO_CREATOR_HANDOFF_READY',
