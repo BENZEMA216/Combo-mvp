@@ -13,14 +13,17 @@ import {
   InvalidCursorError,
   MAX_PAGE_LIMIT,
   PrepareCodexAgentRunBodySchema,
+  RenderCodexAgentRestoreBodySchema,
   canonicalJson,
   decodeIdCursor,
   encodeIdCursor,
   RecordAgentTestReviewBodySchema,
+  renderCodexAgentReceiverOrdinalAction,
   ReadProjectAgentShareBodySchema,
   ReadCodexAgentShareBodySchema,
   type McpOAuthScope,
   type ObjectStorePort,
+  type CodexAgentShareResult,
 } from '@cb/shared';
 import { z } from 'zod';
 import type { Queryable } from '../../platform/infra/db.js';
@@ -97,6 +100,7 @@ const AGENT_BUILDER_CARD_JSON_SCHEMA = {
         'release',
         'project_share',
         'project_restore',
+        'codex_agent_restore',
       ],
     },
     title: { type: 'string', minLength: 1, maxLength: 120 },
@@ -134,7 +138,7 @@ const AGENT_BUILDER_CARD_JSON_SCHEMA = {
               required: ['label', 'value'],
               properties: {
                 label: { type: 'string', minLength: 1, maxLength: 80 },
-                value: { type: 'string', maxLength: 10000 },
+                value: { type: 'string', maxLength: 20000 },
               },
             },
           },
@@ -166,6 +170,47 @@ const AGENT_BUILDER_CARD_JSON_SCHEMA = {
       },
     },
   },
+} as const;
+
+const AGENT_BUILDER_GENERIC_CARD_JSON_SCHEMA = {
+  ...AGENT_BUILDER_CARD_JSON_SCHEMA,
+  properties: {
+    ...AGENT_BUILDER_CARD_JSON_SCHEMA.properties,
+    stage: {
+      type: 'string',
+      enum: [
+        'readiness',
+        'recommendations',
+        'production',
+        'draft',
+        'test',
+        'release',
+        'project_share',
+        'project_restore',
+      ],
+    },
+  },
+} as const;
+
+const RENDER_CODEX_AGENT_RESTORE_INPUT_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['stage', 'shareUrl', 'manifestSha256'],
+  properties: {
+    stage: { type: 'string', const: 'codex_agent_restore' },
+    shareUrl: {
+      type: 'string',
+      format: 'uri',
+      maxLength: 2048,
+      pattern: '^https://test\\.43-160-242-46\\.sslip\\.io/agent/[A-Za-z0-9_-]{43}$',
+    },
+    manifestSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+  },
+} as const;
+
+const RENDER_AGENT_BUILDER_INPUT_JSON_SCHEMA = {
+  type: 'object',
+  oneOf: [AGENT_BUILDER_GENERIC_CARD_JSON_SCHEMA, RENDER_CODEX_AGENT_RESTORE_INPUT_JSON_SCHEMA],
 } as const;
 
 const PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA = {
@@ -387,10 +432,11 @@ const CODEX_AGENT_SHARE_RESULT_JSON_SCHEMA = {
 const PREPARE_CODEX_AGENT_RUN_RESULT_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['shareUrl', 'manifestSha256', 'starterPrompt', 'runEnvelope'],
+  required: ['shareUrl', 'manifestSha256', 'starterOrdinal', 'starterPrompt', 'runEnvelope'],
   properties: {
     shareUrl: { type: 'string', format: 'uri', maxLength: 2048 },
     manifestSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+    starterOrdinal: { type: 'integer', minimum: 1, maximum: 5 },
     starterPrompt: {
       type: 'string',
       minLength: 1,
@@ -401,7 +447,7 @@ const PREPARE_CODEX_AGENT_RUN_RESULT_JSON_SCHEMA = {
   },
 } as const;
 export const PREPARE_CODEX_AGENT_RUN_TOOL_DESCRIPTION =
-  'An ordinary receiver calls this only after the user confirms restore-and-run and selects one displayed starter by 1-based ordinal. A terminal Plugin receiving an exact COMBO_CODEX_AGENT_RUN/1 advanced launch must call it exactly once before any Git preflight or Agent text solely to revalidate the four returned fields and runEnvelope byte-for-byte; that call is not evidence of prior UI consent. All other pre-confirmation calls are forbidden, and clients must never construct the envelope locally.' as const;
+  'An ordinary receiver calls this only after the user confirms restore-and-run and selects one displayed starter by 1-based ordinal. The server requires authoritative starterPrompts[starterOrdinal-1] to equal starterPrompt. A terminal Plugin receiving an exact COMBO_CODEX_AGENT_RUN/1 advanced launch must call it exactly once before any Git preflight or Agent text solely to revalidate all five returned fields, including runEnvelope byte-for-byte; that call is not evidence of prior UI consent. All other pre-confirmation calls are forbidden, and clients must never construct the envelope locally.' as const;
 const AGENT_DEFINITION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -593,8 +639,8 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     name: 'render_agent_builder',
     title: 'Render Combo Agent Builder card',
     description:
-      'Render one final, model-checked Agent Builder stage after the required data reads or authorized analysis. This presentation-only tool does not persist a recommendation, select an Agent, record a Review, or publish a Release. A button is confirmation only after its resulting user message appears in the conversation.',
-    inputSchema: AGENT_BUILDER_CARD_JSON_SCHEMA,
+      'Render one final Agent Builder stage. Generic stages remain presentation-only caller-authored cards. The reserved codex_agent_restore stage accepts exactly stage, shareUrl and manifestSha256; Combo publicly rereads the canonical share, verifies its digest fail-closed, and constructs the complete ordered confirmation card server-side. No stage persists, selects, reviews, or publishes. A button is confirmation only after its resulting user message appears in the conversation.',
+    inputSchema: RENDER_AGENT_BUILDER_INPUT_JSON_SCHEMA,
     outputSchema: AGENT_BUILDER_CARD_JSON_SCHEMA,
     _meta: {
       ui: { resourceUri: AGENT_BUILDER_APP_URI },
@@ -1117,10 +1163,11 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
     inputSchema: {
       type: 'object',
       additionalProperties: false,
-      required: ['shareUrl', 'manifestSha256', 'starterPrompt'],
+      required: ['shareUrl', 'manifestSha256', 'starterOrdinal', 'starterPrompt'],
       properties: {
         shareUrl: { type: 'string', format: 'uri', maxLength: 2048 },
         manifestSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        starterOrdinal: { type: 'integer', minimum: 1, maximum: 5 },
         starterPrompt: {
           type: 'string',
           minLength: 1,
@@ -1272,7 +1319,7 @@ const agentBuilderActionInputSchema = z
     emphasis: z.enum(['primary', 'secondary']),
   })
   .strict();
-const renderAgentBuilderInputSchema = z
+const agentBuilderCardSchema = z
   .object({
     stage: z.enum([
       'readiness',
@@ -1283,6 +1330,7 @@ const renderAgentBuilderInputSchema = z
       'release',
       'project_share',
       'project_restore',
+      'codex_agent_restore',
     ]),
     title: z.string().trim().min(1).max(120),
     summary: z.string().max(1_000),
@@ -1308,7 +1356,7 @@ const renderAgentBuilderInputSchema = z
                 z
                   .object({
                     label: z.string().trim().min(1).max(80),
-                    value: z.string().max(10_000),
+                    value: z.string().max(20_000),
                   })
                   .strict(),
               )
@@ -1321,6 +1369,80 @@ const renderAgentBuilderInputSchema = z
     actions: z.array(agentBuilderActionInputSchema).max(4),
   })
   .strict();
+
+const renderGenericAgentBuilderInputSchema = agentBuilderCardSchema.refine(
+  (card) => card.stage !== 'codex_agent_restore',
+  'codex_agent_restore only accepts the strict shareUrl + manifestSha256 request',
+);
+
+const renderAgentBuilderInputSchema = z.union([
+  RenderCodexAgentRestoreBodySchema,
+  renderGenericAgentBuilderInputSchema,
+]);
+
+function renderCodexAgentRestoreCard(result: CodexAgentShareResult) {
+  const snapshot = {
+    shareUrl: result.shareUrl,
+    manifestSha256: result.manifestSha256,
+    manifest: result.manifest,
+  };
+  const manifest = result.manifest;
+  return agentBuilderCardSchema.parse({
+    stage: 'codex_agent_restore',
+    title: 'Combo Codex Agent 恢复确认',
+    summary:
+      '以下完整卡由 Combo 服务端从公开分享重新读取并核对摘要后构造。请审查全部字段，再按一基序号选择 starter。',
+    progress: [
+      { label: '读取与摘要校验', state: 'done' },
+      { label: '完整卡确认', state: 'current' },
+      { label: '恢复与运行', state: 'pending' },
+    ],
+    items: [
+      {
+        id: 'manifest',
+        title: manifest.name,
+        summary: manifest.description,
+        facts: [
+          { label: 'schemaVersion', value: manifest.schemaVersion },
+          { label: 'shareUrl', value: result.shareUrl },
+          { label: 'manifestSha256', value: result.manifestSha256 },
+          { label: 'createdAt', value: manifest.createdAt },
+          { label: 'repositoryUrl', value: manifest.source.repositoryUrl },
+          { label: 'sourceRef', value: manifest.source.sourceRef },
+          { label: 'commitSha', value: manifest.source.commitSha },
+          { label: 'treeSha', value: manifest.source.treeSha },
+          { label: 'instructions 完整原文', value: manifest.agent.instructions },
+          { label: 'requirements 完整 JSON', value: canonicalJson(manifest.requirements) },
+          { label: 'authoringSource 完整 JSON', value: canonicalJson(manifest.authoringSource) },
+          {
+            label: '公开与隐私边界',
+            value:
+              '任何持链接者都可匿名读取；V1 无撤销/过期。rawStored=false 仅表示无独立 raw-task blob；公开 instructions/starter 是创建者声明的派生文本，服务端不能证明已脱敏。',
+          },
+        ],
+      },
+      ...manifest.agent.starterPrompts.map((starterPrompt, index) => {
+        const starterOrdinal = index + 1;
+        const action = renderCodexAgentReceiverOrdinalAction(snapshot, starterOrdinal);
+        return {
+          id: `starter-${starterOrdinal}`,
+          title: `Starter ${starterOrdinal}`,
+          summary: starterPrompt,
+          facts: [
+            { label: '一基序号', value: String(starterOrdinal) },
+            { label: '完整 starterPrompt', value: starterPrompt },
+          ],
+          action: {
+            label: action.label,
+            message: action.message,
+            emphasis: 'secondary',
+          },
+        };
+      }),
+    ],
+    actions: [],
+  });
+}
 
 function validationFailure(traceId: string, error: z.ZodError): McpToolResult {
   return toolFailure(traceId, '工具参数不符合 Combo 契约，请修正后重试。', {
@@ -1408,6 +1530,32 @@ export async function executeExternalMcpTool(
     if (name === 'render_agent_builder') {
       const parsed = renderAgentBuilderInputSchema.safeParse(input);
       if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      if (parsed.data.stage === 'codex_agent_restore') {
+        const restoreRequest = RenderCodexAgentRestoreBodySchema.safeParse(parsed.data);
+        if (!restoreRequest.success) {
+          return validationFailure(context.traceId, restoreRequest.error);
+        }
+        const outcome = await readCodexAgentShare(context.db, {
+          publicOrigin: context.publicOrigin,
+          shareUrl: restoreRequest.data.shareUrl,
+        });
+        if (outcome.kind === 'invalid_url') {
+          return toolFailure(context.traceId, '分享链接不属于当前 Combo 环境或格式无效。');
+        }
+        if (outcome.kind === 'not_found') {
+          return toolFailure(context.traceId, '没有找到这个 Codex Agent 分享。');
+        }
+        if (outcome.result.manifestSha256 !== restoreRequest.data.manifestSha256) {
+          return toolFailure(
+            context.traceId,
+            'Manifest 摘要与用户要求展示的分享不一致，已停止构卡。',
+          );
+        }
+        return {
+          content: [{ type: 'text', text: '{"rendered":true,"stage":"codex_agent_restore"}' }],
+          structuredContent: renderCodexAgentRestoreCard(outcome.result),
+        };
+      }
       return toolSuccess(parsed.data);
     }
 
@@ -2045,7 +2193,7 @@ export async function executeExternalMcpTool(
       if (outcome.kind === 'starter_not_found') {
         return toolFailure(
           context.traceId,
-          '所选 starter 不属于用户刚确认的 manifest，已停止准备运行。',
+          '所选 starter 与服务端 manifest 的一基序号不一致，已停止准备运行。',
         );
       }
       return {

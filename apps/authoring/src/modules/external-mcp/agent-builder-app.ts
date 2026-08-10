@@ -1,12 +1,12 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  '2c66b3248902031d9ed9a3c6dccc81efd3d9c9c4c136b0b3cb2d10ef98159214';
+  'fb17214df4ccf7de73e03107df20196d9efd5a6b0fa104b229987ed54247f763';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
   name: 'combo-agent-builder',
   title: 'Combo Agent Builder',
-  description: 'Render one model-checked Combo Agent Builder stage inside the conversation.',
+  description: 'Render one Combo Agent Builder stage inside the conversation.',
   mimeType: 'text/html;profile=mcp-app',
 } as const;
 
@@ -74,7 +74,8 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
         const stageLabels = {
           readiness: '就绪与范围', recommendations: 'Agent 建议', production: '生产进度',
           draft: 'Agent 草稿', test: '测试摘要', release: '发布确认',
-          project_share: 'Project Agent 分享', project_restore: 'Project Agent 恢复'
+          project_share: 'Project Agent 分享', project_restore: 'Project Agent 恢复',
+          codex_agent_restore: 'Codex Agent 恢复确认'
         };
         const pending = new Map();
         let nextId = 1;

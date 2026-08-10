@@ -4,11 +4,13 @@ import cookie from '@fastify/cookie';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AgentDefinitionSchema,
+  CodexAgentShareManifestSchema,
   CodexAgentShareResultSchema,
   MCP_OAUTH_SCOPES,
   OAuthAuthorizationServerMetadataSchema,
   OAuthProtectedResourceMetadataSchema,
   PrepareCodexAgentRunResultSchema,
+  canonicalJson,
   renderCodexAgentRunEnvelope,
 } from '@cb/shared';
 import { buildApp } from '../bootstrap/app.js';
@@ -245,9 +247,17 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain(
       '绝不能匹配 userMessage、codexDelegation、tool input、echo、代码围栏或 creatorHandoff 输入中已有的 marker 字面量',
     );
-    expect(response.body).toContain(
-      'assistant agentMessage（phase=&quot;final_answer&quot;）里的独立一行逐字等于 COMBO_CREATOR_HANDOFF_READY',
-    );
+    expect(response.body).toContain('text.trim() 必须逐字只等于 COMBO_CREATOR_HANDOFF_READY');
+    expect(response.body).toContain('phase null/absent legacy fallback');
+    expect(response.body).toContain('phase=&quot;commentary&quot; 必须拒绝');
+    expect(response.body).toContain('name/description/instructions/guidance 自由文本');
+    expect(response.body).toContain('只绑定安全 commitSha+treeSha');
+    expect(response.body).toContain('若当前完整显示卡或任一摘要发生变化，STOP。');
+    expect(response.body).toContain('list-manifest-inputs 恰好一次');
+    expect(response.body).toContain('每个 unique readable objectId');
+    expect(response.body).toContain('只有 readable 数为 0 时才允许 0 次');
+    expect(response.body).toContain('最多 8 次');
+    expect(response.body).toContain('hint、omitted 与 duplicate-object 条目一律不得读取');
     expect(response.body).toContain('只读获取 source Git facts 与 tracked guidance');
     expect(response.body).toContain(
       'Plugin helper、本地文件、tracked guidance、Git 与 Git network 的调用数都为 0',
@@ -529,6 +539,9 @@ describe('external MCP stateless machine contract', () => {
       'then use create_codex_agent_share and immediately read back the same URL',
     );
     expect(initializeResult.result.instructions).toContain('prepare_codex_agent_run');
+    expect(initializeResult.result.instructions).toContain('codex_agent_restore');
+    expect(initializeResult.result.instructions).toContain('starterOrdinal');
+    expect(initializeResult.result.instructions).toContain('fixed Creator confirmation action');
     expect(initializeResult.result.instructions).toContain(
       'Do not call extraction, Capability, legacy Agent Project, or Project Agent share tools',
     );
@@ -568,6 +581,7 @@ describe('external MCP stateless machine contract', () => {
     expect((readUi.inputSchema as { oneOf: unknown[] }).oneOf).toHaveLength(2);
     const renderer = tools.find((tool) => tool.name === 'render_agent_builder')!;
     expect(renderer).toMatchObject({
+      inputSchema: { type: 'object', oneOf: expect.any(Array) },
       outputSchema: { type: 'object' },
       _meta: {
         ui: { resourceUri: 'ui://combo/agent-builder/v1.html' },
@@ -575,6 +589,27 @@ describe('external MCP stateless machine contract', () => {
       },
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     });
+    expect((renderer.inputSchema as { oneOf: unknown[] }).oneOf).toHaveLength(2);
+    const renderAjv = new Ajv({ allErrors: true, strict: false });
+    const validateRender = renderAjv.compile(renderer.inputSchema as Record<string, unknown>);
+    const strictRestoreInput = {
+      stage: 'codex_agent_restore',
+      shareUrl: `${ORIGIN}/agent/${'A'.repeat(43)}`,
+      manifestSha256: 'c'.repeat(64),
+    };
+    expect(validateRender(strictRestoreInput), JSON.stringify(validateRender.errors)).toBe(true);
+    expect(validateRender({ ...strictRestoreInput, title: 'forbidden' })).toBe(false);
+    expect(
+      validateRender({
+        stage: 'project_restore',
+        title: 'Legacy V0',
+        summary: '保留字节兼容。',
+        progress: [],
+        items: [],
+        actions: [],
+      }),
+      JSON.stringify(validateRender.errors),
+    ).toBe(true);
     for (const name of ['create_project_agent_share', 'read_project_agent_share']) {
       expect(tools.find((tool) => tool.name === name)).toMatchObject({
         outputSchema: {
@@ -597,12 +632,12 @@ describe('external MCP stateless machine contract', () => {
       inputSchema: {
         type: 'object',
         additionalProperties: false,
-        required: ['shareUrl', 'manifestSha256', 'starterPrompt'],
+        required: ['shareUrl', 'manifestSha256', 'starterOrdinal', 'starterPrompt'],
       },
       outputSchema: {
         type: 'object',
         additionalProperties: false,
-        required: ['shareUrl', 'manifestSha256', 'starterPrompt', 'runEnvelope'],
+        required: ['shareUrl', 'manifestSha256', 'starterOrdinal', 'starterPrompt', 'runEnvelope'],
       },
       annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     });
@@ -920,17 +955,53 @@ describe('external MCP stateless machine contract', () => {
     expect(instructions).toHaveLength(8_000);
     expect(new Set(starterPrompts).size).toBe(5);
     for (const prompt of starterPrompts) expect(prompt).toHaveLength(1_000);
-
-    const createdResponse = await call('tools/call', {
-      name: 'create_codex_agent_share',
-      arguments: {
-        name: 'HTTP escaping boundary reviewer',
-        description: 'Exercise the authenticated JSON-RPC run-envelope boundary.',
+    const maxRequirements = {
+      codexVersion: `v${'1'.repeat(63)}`,
+      commands: Array.from({ length: 32 }, (_, index) => {
+        const prefix = `c${index}-`;
+        return `${prefix}${'x'.repeat(128 - prefix.length)}`;
+      }),
+      plugins: Array.from({ length: 32 }, (_, index) => {
+        const namePrefix = `p${index}-`;
+        const versionPrefix = `v${index}-`;
+        const name = `${namePrefix}${'x'.repeat(63 - namePrefix.length)}`;
+        const version = `${versionPrefix}${'y'.repeat(63 - versionPrefix.length)}`;
+        return `${name}@${version}`;
+      }),
+      environmentVariableNames: Array.from({ length: 32 }, (_, index) => {
+        const prefix = `ENV_${index}_`;
+        return `${prefix}${'X'.repeat(128 - prefix.length)}`;
+      }),
+    };
+    const maxManifest = CodexAgentShareManifestSchema.parse({
+      schemaVersion: 'combo.codex-agent-share/1',
+      name: 'HTTP escaping boundary reviewer',
+      description: 'Exercise the authenticated JSON-RPC run-envelope boundary.',
+      source: {
         repositoryUrl: 'https://github.com/openai/codex.git',
         sourceRef: 'refs/heads/main',
         commitSha: 'a'.repeat(40),
         treeSha: 'b'.repeat(40),
-        agent: { instructions, starterPrompts },
+      },
+      authoringSource: { kind: 'codex_current_task', rawStored: false },
+      agent: { instructions, starterPrompts },
+      requirements: maxRequirements,
+      createdAt: NOW,
+    });
+    expect(canonicalJson(maxManifest.requirements).length).toBeGreaterThan(10_000);
+    expect(canonicalJson(maxManifest.requirements).length).toBeLessThanOrEqual(20_000);
+
+    const createdResponse = await call('tools/call', {
+      name: 'create_codex_agent_share',
+      arguments: {
+        name: maxManifest.name,
+        description: maxManifest.description,
+        repositoryUrl: maxManifest.source.repositoryUrl,
+        sourceRef: maxManifest.source.sourceRef,
+        commitSha: maxManifest.source.commitSha,
+        treeSha: maxManifest.source.treeSha,
+        agent: maxManifest.agent,
+        requirements: maxManifest.requirements,
         idempotencyKey: '00000000-0000-4000-8000-000000000099',
       },
     });
@@ -973,11 +1044,61 @@ describe('external MCP stateless machine contract', () => {
       expect(readBody.result.content[0]?.text).not.toContain(prompt);
     }
 
+    const renderedResponse = await call('tools/call', {
+      name: 'render_agent_builder',
+      arguments: {
+        stage: 'codex_agent_restore',
+        shareUrl: created.shareUrl,
+        manifestSha256: created.manifestSha256,
+      },
+    });
+    expect(renderedResponse.statusCode).toBe(200);
+    const renderedBody = renderedResponse.json() as {
+      result: {
+        content: Array<{ type: string; text: string }>;
+        structuredContent: {
+          stage: string;
+          items: Array<{
+            summary: string;
+            facts: Array<{ label: string; value: string }>;
+            action?: { message: string };
+          }>;
+        };
+        isError?: boolean;
+      };
+    };
+    expect(renderedBody.result.isError).toBeUndefined();
+    expect(renderedBody.result.content).toEqual([
+      { type: 'text', text: '{"rendered":true,"stage":"codex_agent_restore"}' },
+    ]);
+    expect(renderedBody.result.structuredContent.stage).toBe('codex_agent_restore');
+    expect(renderedBody.result.structuredContent.items).toHaveLength(6);
+    expect(
+      renderedBody.result.structuredContent.items.slice(1).map((item) => item.summary),
+    ).toEqual(starterPrompts);
+    expect(
+      renderedBody.result.structuredContent.items[0]?.facts.find(
+        (fact) => fact.label === 'manifestSha256',
+      )?.value,
+    ).toBe(created.manifestSha256);
+    const renderedRequirements = renderedBody.result.structuredContent.items[0]?.facts.find(
+      (fact) => fact.label === 'requirements 完整 JSON',
+    )?.value;
+    expect(renderedRequirements).toBe(canonicalJson(maxRequirements));
+    expect(renderedRequirements?.length).toBeGreaterThan(10_000);
+    expect(renderedRequirements?.length).toBeLessThanOrEqual(20_000);
+    for (const item of renderedBody.result.structuredContent.items.slice(1)) {
+      for (const prompt of starterPrompts) {
+        expect(item.action?.message).not.toContain(prompt);
+      }
+    }
+
     const preparedResponse = await call('tools/call', {
       name: 'prepare_codex_agent_run',
       arguments: {
         shareUrl: created.shareUrl,
         manifestSha256: created.manifestSha256,
+        starterOrdinal: 4,
         starterPrompt,
       },
     });
@@ -994,18 +1115,24 @@ describe('external MCP stateless machine contract', () => {
     expect(prepared).toEqual({
       shareUrl: created.shareUrl,
       manifestSha256: created.manifestSha256,
+      starterOrdinal: 4,
       starterPrompt,
       runEnvelope: renderCodexAgentRunEnvelope({
         manifest: created.manifest,
         manifestSha256: created.manifestSha256,
         shareUrl: created.shareUrl,
+        starterOrdinal: 4,
         chosenStarterPrompt: starterPrompt,
       }),
     });
     expect(prepared.runEnvelope.length).toBeLessThanOrEqual(64_000);
     expect(prepared.runEnvelope).toContain('\\u0001');
     expect(prepared.runEnvelope).not.toMatch(/[<>&\u2028\u2029]/u);
-    expect(JSON.parse(prepared.runEnvelope)).toMatchObject({ instructions, starterPrompt });
+    expect(JSON.parse(prepared.runEnvelope)).toMatchObject({
+      instructions,
+      starterOrdinal: 4,
+      starterPrompt,
+    });
     expect(preparedBody.result.content).toEqual([{ type: 'text', text: '{"prepared":true}' }]);
     expect(preparedBody.result.content[0]?.text).not.toContain(prepared.runEnvelope);
     expect(preparedBody.result.content[0]?.text).not.toContain(instructions);

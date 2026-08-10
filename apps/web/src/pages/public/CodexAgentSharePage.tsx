@@ -171,7 +171,12 @@ export function CodexAgentSharePage(): ReactElement {
         <h2 id="cb-codex-agent-boundary-title">接收与运行边界</h2>
         <ul>
           <li>复制文案只引用分享链接和 manifest digest，不内嵌 instructions 或原始会话。</li>
-          <li>确认前只读 manifest，不恢复 Project，也不执行 Agent instructions。</li>
+          <li>
+            分享读取与构卡只调用 strict <code>render_agent_builder</code>：参数精确为{' '}
+            <code>{'{stage:"codex_agent_restore",shareUrl,manifestSha256}'}</code>，由 Combo
+            服务端重新公开读取、失败关闭校验 digest 并构造完整 1+M 卡；不恢复 Project，也不执行
+            Agent instructions。
+          </li>
           <li>
             四项新工具与 official Plugin <code>&gt;=0.7.0</code>/Test MCP metadata
             初始都满足时留在当前任务； 任一不满足才用 Host-safe{' '}
@@ -185,16 +190,21 @@ export function CodexAgentSharePage(): ReactElement {
             OAuth。失败或取消不创建任务；续跑任务不再登录或重建任务。
           </li>
           <li>
-            Handoff 不算确认；子任务 readiness、读取并完整重显后，必须在 assistant agentMessage（
-            <code>phase=final_answer</code>）回证 exact <code>COMBO_RECEIVER_HANDOFF_READY</code>
-            。父任务不能从 userMessage、codexDelegation、tool input、echo 或 handoff
-            输入匹配该字面量，只在证据之后的该 assistant 输出回证成功时自动导航显示它。
+            Handoff 不算确认；子任务 readiness 和 strict server render 完成后，目标 assistant
+            agentMessage 的 <code>text.trim()</code> 必须逐字只等于{' '}
+            <code>COMBO_RECEIVER_HANDOFF_READY</code>。phase 可为 <code>final_answer</code>
+            ；仅在同一唯一 completed/error-null turn、ordered lifecycle 齐全且 marker 是最后
+            behavior 时，允许 phase null/absent legacy fallback；<code>phase=commentary</code>{' '}
+            必须拒绝，说明只能在更早 commentary。 父任务不能从含其他文本的
+            final、userMessage、codexDelegation、tool input、echo 或 handoff 输入匹配该字面量。
           </li>
           <li>
-            完整卡仍显示公开 name；一基序号 action 的 user-role message 只绑定 digest、总数 M 与 N，
-            不复制 name 或其他 manifest 自由文本，且整个 card snapshot
-            变化都会失败关闭。确认后系统先调用 <code>prepare_codex_agent_run</code> 校验
-            URL、digest、精确 starter 成员关系和四项回显； 任一不一致都停止，且不得写本地。
+            服务端完整卡仍显示公开 name 与全部 manifest 字段；一基序号 action 的 user-role message
+            只绑定 digest、总数 M 与 N，不复制 name 或其他 manifest 自由文本。确认后系统先调用{' '}
+            <code>prepare_codex_agent_run</code>，并强制 authoritative{' '}
+            <code>starterPrompts[N-1]===starterPrompt</code>；回显
+            shareUrl、digest、starterOrdinal、starterPrompt 与 runEnvelope
+            五项，任一不一致都停止且不得写本地。
           </li>
           <li>
             prepare 成功后才由 Plugin packaged helper 的 restore mode 把固定 commit 恢复到全新目录，
@@ -211,19 +221,20 @@ export function CodexAgentSharePage(): ReactElement {
           <li>
             用户必须在同一次恢复确认中明确选择一条 starter prompt，不默认第一条，也不先建空任务。
             正式 Agent task 的唯一首消息是 flat compact JSON <code>COMBO_CODEX_AGENT_RUN/1</code>
-            ，包含来源、digest、完整 instructions 与所选 starter。
+            ，包含来源、digest、starterOrdinal、完整 instructions 与所选 starter。
           </li>
           <li>
             <code>expectedSourceRef</code> 只记录远端 provenance；当前本地 ref 必须是 deterministic
             restore branch，不能把两者比较相等。V1 sourceRef 只允许 shell-safe 的完整 ASCII
             heads/tags ref。Raw run envelope 是显式 advanced launch
             命令，不证明此前完成卡片或序号确认； 终端 Plugin 必须在任何 preflight 或 Agent
-            文本执行前恰好调用一次 <code>prepare_codex_agent_run</code>，并要求四项回显与
-            runEnvelope 字节完全一致。失败时零执行； 通过后不再 read、restore、调用 codex
-            app、导航或创建下一层任务。只有 preflight 成功且 chosen starter 已实际开始并由 assistant
-            agentMessage（<code>phase=final_answer</code>）回证 exact{' '}
-            <code>COMBO_CODEX_AGENT_STARTED:{manifestSha256}</code>{' '}
-            后，父任务精确核对本次分享摘要才自动显示正式 Agent；失败不导航。
+            文本执行前恰好调用一次 <code>prepare_codex_agent_run</code>
+            ，并要求五项返回（四项输入回显与 runEnvelope）完全一致。失败时零执行； 通过后不再
+            read、restore、调用 codex app、导航或创建下一层任务。只有 preflight 成功且 chosen
+            starter 已实际开始后，目标 assistant agentMessage 的 <code>text.trim()</code>{' '}
+            才可逐字只等于 <code>COMBO_CODEX_AGENT_STARTED:{manifestSha256}</code>；phase 选择与上述
+            READY marker 相同，<code>commentary</code>{' '}
+            必须拒绝。父任务精确核对本次分享摘要才自动显示正式 Agent；失败不导航。
           </li>
           <li>推理和 Agent Harness 由接收者的正式 Codex 负责，Combo 不模拟 Codex。</li>
         </ul>

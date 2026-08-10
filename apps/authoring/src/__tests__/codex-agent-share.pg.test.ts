@@ -124,6 +124,7 @@ pgDescribe('Codex Agent share PostgreSQL jsonb boundary', () => {
       body: {
         shareUrl: created.result.shareUrl,
         manifestSha256: created.result.manifestSha256,
+        starterOrdinal: 1,
         starterPrompt,
       },
     });
@@ -134,11 +135,16 @@ pgDescribe('Codex Agent share PostgreSQL jsonb boundary', () => {
         manifest: created.result.manifest,
         manifestSha256: created.result.manifestSha256,
         shareUrl: created.result.shareUrl,
+        starterOrdinal: 1,
         chosenStarterPrompt: starterPrompt,
       }),
     );
     expect(prepared.result.runEnvelope.length).toBeLessThanOrEqual(64_000);
-    expect(JSON.parse(prepared.result.runEnvelope)).toMatchObject({ instructions, starterPrompt });
+    expect(JSON.parse(prepared.result.runEnvelope)).toMatchObject({
+      instructions,
+      starterOrdinal: 1,
+      starterPrompt,
+    });
 
     const beforeRejected = await client.query<{ count: number }>(
       `SELECT count(*)::int AS count FROM project_agent_shares WHERE owner_user_id = $1`,
