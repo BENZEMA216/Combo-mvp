@@ -191,8 +191,10 @@ export function CodexAgentSharePage(): ReactElement {
             输入匹配该字面量，只在证据之后的该 assistant 输出回证成功时自动导航显示它。
           </li>
           <li>
-            用户按完整有序卡片的一基序号确认后，系统先调用 <code>prepare_codex_agent_run</code> 校验
-            URL、digest、精确 starter 成员关系和四项回显；任一不一致都停止，且不得写本地。
+            完整卡仍显示公开 name；一基序号 action 的 user-role message 只绑定 digest、总数 M 与 N，
+            不复制 name 或其他 manifest 自由文本，且整个 card snapshot
+            变化都会失败关闭。确认后系统先调用 <code>prepare_codex_agent_run</code> 校验
+            URL、digest、精确 starter 成员关系和四项回显； 任一不一致都停止，且不得写本地。
           </li>
           <li>
             prepare 成功后才由 Plugin packaged helper 的 restore mode 把固定 commit 恢复到全新目录，

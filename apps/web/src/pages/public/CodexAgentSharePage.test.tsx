@@ -74,6 +74,10 @@ describe('CodexAgentSharePage', () => {
     expect(screen.getByText(/COMBO_RECEIVER_HANDOFF_READY/)).toBeInTheDocument();
     expect(screen.getByText(/任何 create_thread 前/)).toHaveTextContent('Codex-managed OAuth');
     expect(screen.getByText(/续跑任务不再登录或重建任务/)).toBeInTheDocument();
+    expect(screen.getByText(/user-role message 只绑定 digest、总数 M 与 N/)).toHaveTextContent(
+      '不复制 name 或其他 manifest 自由文本',
+    );
+    expect(screen.getByText(/整个 card snapshot 变化都会失败关闭/)).toBeInTheDocument();
     expect(screen.getAllByText('prepare_codex_agent_run')).toHaveLength(2);
     expect(screen.getByText(/preflight 或 Agent 文本执行前恰好调用一次/)).toBeInTheDocument();
     expect(screen.getByText(/Raw run envelope 是显式 advanced launch 命令/)).toBeInTheDocument();

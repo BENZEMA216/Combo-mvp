@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { IsoDateTimeSchema } from '../core/ids.js';
+import { canonicalJson } from '../core/canonical-json.js';
 import {
   ProjectAgentGitShaSchema,
   PERSISTABLE_JSON_TEXT_ERROR,
@@ -175,6 +176,72 @@ export const CodexAgentTestShareUrlSchema = z
     isExactCodexAgentTestShareUrl,
     `shareUrl 必须是 ${CODEX_AGENT_SHARE_TEST_ORIGIN}/agent/<43-token> 的精确规范地址`,
   );
+
+export const CodexAgentReceiverCardSnapshotSchema = z
+  .object({
+    shareUrl: CodexAgentTestShareUrlSchema,
+    manifestSha256: z.string().regex(/^[a-f0-9]{64}$/),
+    manifest: CodexAgentShareManifestSchema,
+  })
+  .strict();
+export type CodexAgentReceiverCardSnapshot = z.infer<typeof CodexAgentReceiverCardSnapshotSchema>;
+
+export type CodexAgentReceiverOrdinalAction = {
+  label: string;
+  message: string;
+};
+
+/** Exact V1 action grammar. Public manifest free text must never enter the user-role message. */
+export const CODEX_AGENT_RECEIVER_ORDINAL_ACTION_WIRE_TEMPLATE =
+  '我确认当前完整有序的 Combo Codex Agent 卡（manifestSha256=<digest>，starterPrompts.length=<M>），选择第<N>条，并授权恢复卡中固定 Project、创建一个正式 local Codex Agent 任务并立即运行。若卡片、摘要、总数、顺序或序号变化，停止。' as const;
+
+/** Render one bounded ordinal action without copying name, starter text or other manifest free text. */
+export function renderCodexAgentReceiverOrdinalAction(
+  snapshot: CodexAgentReceiverCardSnapshot,
+  ordinal: number,
+): CodexAgentReceiverOrdinalAction {
+  const card = CodexAgentReceiverCardSnapshotSchema.parse(snapshot);
+  const count = card.manifest.agent.starterPrompts.length;
+  if (!Number.isInteger(ordinal) || ordinal < 1 || ordinal > count) {
+    throw new RangeError('starter ordinal is outside the complete ordered card');
+  }
+  const message = CODEX_AGENT_RECEIVER_ORDINAL_ACTION_WIRE_TEMPLATE.replace(
+    '<digest>',
+    card.manifestSha256,
+  )
+    .replace('<M>', String(count))
+    .replace('<N>', String(ordinal));
+  if (message.length >= 1_000) {
+    throw new RangeError('receiver ordinal action message exceeds the UI limit');
+  }
+  return { label: `选择第 ${ordinal} 条并确认运行`, message };
+}
+
+/**
+ * Resolve one starter only while the complete rendered card and exact generated action still match.
+ * Callers must run this fail-closed check before prepare, restore or formal local execution.
+ */
+export function resolveConfirmedCodexAgentStarter(input: {
+  renderedCard: CodexAgentReceiverCardSnapshot;
+  currentCard: CodexAgentReceiverCardSnapshot;
+  ordinal: number;
+  confirmationMessage: string;
+}): string {
+  const renderedCard = CodexAgentReceiverCardSnapshotSchema.parse(input.renderedCard);
+  const currentCard = CodexAgentReceiverCardSnapshotSchema.parse(input.currentCard);
+  if (canonicalJson(renderedCard) !== canonicalJson(currentCard)) {
+    throw new Error('receiver card changed after it was rendered');
+  }
+  const action = renderCodexAgentReceiverOrdinalAction(renderedCard, input.ordinal);
+  if (input.confirmationMessage !== action.message) {
+    throw new Error('receiver confirmation does not bind the complete ordered card and ordinal');
+  }
+  const starter = renderedCard.manifest.agent.starterPrompts[input.ordinal - 1];
+  if (starter === undefined) {
+    throw new RangeError('starter ordinal is outside the complete ordered card');
+  }
+  return starter;
+}
 
 /**
  * The only first-message wire grammar for the restored Codex Agent task.
