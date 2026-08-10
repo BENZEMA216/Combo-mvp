@@ -530,9 +530,9 @@ export function mcpPostHandler(): RouteHandlerMethod {
               tools: { listChanged: false },
               resources: { listChanged: false },
             },
-            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.6.0' },
+            serverInfo: { name: 'combo', title: 'Combo Agent Builder', version: '0.7.0' },
             instructions:
-              'For a Project Agent share or restore request, use create_project_agent_share or read_project_agent_share and do not initialize a legacy Agent Project. Call list_agent_projects only when the user explicitly requests the legacy Agent Builder flow. This server is stateless; render_agent_builder is presentation-only and its buttons never persist or authorize work by themselves.',
+              'For the default current-task Agent creation/share flow, derive a sanitized definition only from user-expressed requirements visible in the current top-level Codex task; Host wrappers are not user requirements. Show the public manifest fields, wait for explicit user confirmation, then use create_codex_agent_share and immediately read back the same URL. For /agent links, verify manifestSha256, render the complete ordered starter card, and only after the user confirms restore-and-run by 1-based ordinal call prepare_codex_agent_run with the exact manifest starter. Use its authoritative runEnvelope verbatim before any local restore. Do not call extraction, Capability, legacy Agent Project, or Project Agent share tools in this flow. Those legacy tools remain available only when the user explicitly requests their legacy workflow. Never pass threadId, messages, session paths, raw transcripts or secrets to Combo.',
           }),
         );
     }
@@ -582,6 +582,7 @@ export function mcpPostHandler(): RouteHandlerMethod {
           txPool: toolTxPool(req.server.infra.db),
           objectStore: req.server.infra.objectStore,
           principal,
+          comboEnvironment: req.server.infra.env.COMBO_ENVIRONMENT,
           publicOrigin: publicOrigin(req),
           runtime: new McpRuntimeClient({
             baseUrl: mcpRuntimeInternalBaseUrl(req.server.infra.env),
@@ -618,18 +619,40 @@ export function codexPluginGuideHandler(): RouteHandlerMethod {
     }
 
     const codex = '"/Applications/ChatGPT.app/Contents/Resources/codex"';
-    const prompt =
-      '请在任意 Project 的 macOS Codex Desktop 中只使用内置 CLI 安装或升级 Combo Test：先检查 combo@dangdang-tech-combo 是否已安装；已安装才执行 marketplace upgrade，随后直接新建一个顶层任务探测 create_project_agent_share 和 read_project_agent_share，只有可调用工具明确返回 authorization 错误时才执行 mcp login combo。未安装 Combo Plugin 时走首次安装：若 dangdang-tech-combo Marketplace 已存在则跳过 marketplace add，否则添加固定 Test Marketplace；然后 plugin add 并完成 OAuth。分享前只接受 clean committed Git，先证明 git ls-remote origin <sourceRef> 精确等于 commitSha；不要上传文件、会话、Cookie、验证码、令牌或环境变量值。只有当 Plugin/MCP 配置正确但新任务工具清单仍未更新时，才完全退出并重开 Codex Desktop 后再新建任务。';
+    const prompt = [
+      '请在当前 macOS Codex Desktop 顶层任务中完成“从当前 task 建立并分享 Codex Agent”。',
+      '检测或安装前只依据本任务中用户实际表达且对用户可见的需求、约束和结论，在本地提炼 sanitized draft={name,description,agent.instructions（不超过 8000 字符）,1–5 条唯一 starterPrompts,requirements}；此阶段对 Plugin helper、本地文件、tracked guidance、Git 与 Git network 的调用数都为 0，也不读取 repositoryUrl/sourceRef/commitSha/treeSha。recommended_plugins、in-app-browser-context、heartbeat、app-context、codex_delegation、source_thread_id 等 Host 注入 wrapper 不是用户需求，不得进入草稿、handoff 或 manifest。创建者必须自行声明这些公开文本已从当前 task 派生并完成必要去敏，但服务端不能证明 instructions 已脱敏或不含原文。',
+      'schema 不接收独立的 raw task、threadId、messages、session、路径、transcript、Cookie、验证码、令牌、秘密或环境变量值；rawStored=false 只表示没有独立 raw task blob。',
+      '先只读检查当前任务是否同时可调用 render_agent_builder、create_codex_agent_share、read_codex_agent_share、prepare_codex_agent_run，并按下述 Desktop CLI 检查 official source、installed/enabled semver>=0.7.0 与精确 Test MCP。任一工具或 metadata 缺失、过旧或不合时，才冻结独立 combo.creator-bootstrap-handoff/1：固定字段顺序为 {schemaVersion:"combo.creator-bootstrap-handoff/1",continueIntent:"create_codex_agent_share",sameSavedProjectRequired:true,draft:{name,description,agent:{instructions,starterPrompts},requirements},behaviorMarker:"COMBO_CREATOR_HANDOFF_READY"}。requirements 内若有 codexVersion 必须排第一且无值时省略，随后固定为 commands、plugins、environmentVariableNames，后三项即使为空也显式写 []。它只含公开派生草稿与续跑意图，不含 source Git facts、路径、Project ID、原始会话或 Host wrapper；JSON.stringify 后必须把实际 <、>、&、U+2028、U+2029 分别转成小写 \\u003c、\\u003e、\\u0026、\\u2028、\\u2029，作为 Host-safe compact JSON。',
+      '每次 CLI 调用都直接使用绝对路径 "/Applications/ChatGPT.app/Contents/Resources/codex"；不得依赖环境变量在不同 exec 调用间持久，也不依赖 PATH；不要求用户手动打开 shell 或二次粘贴。',
+      '先分别执行 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin marketplace list --json 与 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin list --json，记录 marketplaceInitiallyPresent 与 upgradePerformed=false。若 name=dangdang-tech-combo 已存在，必须确认 marketplaceSource.sourceType=git 且 marketplaceSource.source 精确等于 https://github.com/dangdang-tech/combo-plugin.git；同名错源、Plugin 已安装但 Marketplace 缺失、无效语义版本等异常组合立即 STOP，不 remove、不覆盖。',
+      '若 Marketplace 与 Plugin 初始都缺失，执行 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-ui --json，再重新执行 marketplace list 与 plugin list 并验证官方 source。若 marketplaceInitiallyPresent=true 且官方 Marketplace 已存在、Plugin 缺失或有效 version<0.7.0，则先精确验证官方 source，再恰好执行一次 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin marketplace upgrade dangdang-tech-combo --json，设置 upgradePerformed=true，并重新读取两份 metadata。无论 marketplaceInitiallyPresent 初值为何，只要此时已确认 official Marketplace 且 Plugin 仍缺失，就恰好执行一次 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin add combo@dangdang-tech-combo --json，并再次读取 plugin list；同一状态机内 plugin add 最多一次。fresh install 的固定顺序必须是 marketplace add→重新读取并确认 official source→plugin add→最终检查。',
+      '若 Plugin add 或刷新后得到有效 version<0.7.0 且 upgradePerformed=false，必须重新验证 official Marketplace source，恰好再执行一次 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin marketplace upgrade dangdang-tech-combo --json，设置 upgradePerformed=true，并重新读取 marketplace list 与 plugin list；若升级后仍低于 0.7.0，或 upgradePerformed=true 时仍低于 0.7.0，立即 STOP。整个状态机 marketplace upgrade 最多执行一次。',
+      '最后再次执行 "/Applications/ChatGPT.app/Contents/Resources/codex" plugin marketplace list --json、"/Applications/ChatGPT.app/Contents/Resources/codex" plugin list --json 与 "/Applications/ChatGPT.app/Contents/Resources/codex" mcp get combo --json；功能门要求 Plugin 是有效语义版本且 version>=0.7.0、installed=true、enabled=true、marketplaceSource 精确匹配，MCP 必须得到 name=combo、enabled=true、disabled_reason=null、transport.type=streamable_http，且 transport.url 精确等于 https://test.43-160-242-46.sslip.io/api/external-mcp/mcp；当前 0.7.0 Test 候选验收另要求 exact version=0.7.0。不符立即 STOP，不 remove、不 mcp add。',
+      '只有初始检查四工具与全部 metadata 已同时满足时才留在当前任务，并跳过安装变更、creatorHandoff 与 create_thread；此 stay-current 分支在首次 Combo 工具调用前主动 mcp login combo 的调用数必须为 0。否则完成安全安装/升级与最终 metadata 校验后、任何 create_thread 之前，必须用绝对 bundled CLI 恰好执行一次 "/Applications/ChatGPT.app/Contents/Resources/codex" mcp login combo 完成 Codex-managed OAuth；失败或用户取消立即 STOP，create_thread 调用数必须为 0。OAuth 成功后才依靠正式 Host 已保存的 target 绑定，用 list_projects 精确且唯一定位当前 saved Project；把上述 Host-safe compact JSON 逐字指定为 creatorHandoff，再精确调用 create_thread({prompt:creatorHandoff,target:{type:"project",projectId,environment:{type:"local"}}})。creatorHandoff 必须是唯一 prompt，且不算用户确认。子任务必须先 parse handoff、完成 readiness，再由已安装 Skill/helper 只读获取 source Git facts 与 tracked guidance，综合后完整重显草稿，并在这些证据之后的 assistant agentMessage（phase="final_answer"）中以独立一行逐字输出 COMBO_CREATOR_HANDOFF_READY；到此 create_codex_agent_share 调用数必须为 0。只返回 clientThreadId 时立即失败关闭，不能把它传给 wait_threads/read_thread，也不能重建任务；只有同时返回 ready threadId 与 hostId 才调用 wait_threads，再用 list_threads 按该 threadId 核对 documented project context 的 projectId 精确匹配，并用 read_thread({threadId,hostId,includeOutputs:true,maxOutputCharsPerItem:50000,turnLimit:20}) 只接受 readiness 与完整草稿证据之后、assistant agentMessage（phase="final_answer"）里的独立一行逐字等于 COMBO_CREATOR_HANDOFF_READY；绝不能匹配 userMessage、codexDelegation、tool input、echo 或 creatorHandoff 输入中已有的 marker 字面量。父任务看到合格的 assistant agentMessage 后必须立即只调用一次 navigate_to_codex_page(threadId) 显示该续跑任务，不得留在父任务等待确认或要求子任务先创建。Host 注入的 source thread 标识属于 harness metadata，不得写入 Combo manifest。',
+      '工具可用的当前任务或续跑任务必须同时发现 render_agent_builder、create_codex_agent_share、read_codex_agent_share、prepare_codex_agent_run，并实际成功调用 render_agent_builder({stage:"readiness",title:"Combo Codex Agent 就绪检查",summary:"仅验证 Combo MCP 展示与授权是否可用。",progress:[],items:[],actions:[]})；随后由已安装 Skill/helper 只读获取 source Git facts 与 tracked guidance，综合后完整重显草稿，不能把 creatorHandoff 当作确认。全程零重启，任一工具缺失或 readiness 调用失败就准确报告 Plugin tool catalog 阻断并停止；continuation 分支禁止再次 mcp login combo，也禁止再创建续跑任务。',
+      '仅 stay-current 分支在可调用 Combo 工具明确返回 authorization 错误时，才可恰好执行一次 "/Applications/ChatGPT.app/Contents/Resources/codex" mcp login combo；登录成功后只重试原工具，失败或取消就 STOP，不得重建任务。',
+      'readiness 通过后，用 render_agent_builder 展示将公开的全部字段：完整 instructions 放在一个 fact.value，starterPrompts 逐条展示，并披露任何持链接者都可匿名读取、当前 V1 不支持撤销或过期；它不是账户授权或 OAuth token，但它是未列出的公开定位链接，持有即匿名可读，请按公开内容处理。明确确认前不调用写工具。',
+      'V1 sourceRef 必须是以字母或数字起始、只含 ASCII 字母数字及 ._/- 的完整 refs/heads/... 或 refs/tags/...，并满足无 ..、//、隐藏 component、.lock component 或尾部点/斜杠；任一不符立即 STOP，不能传给 helper 或创建工具。V0 ref 契约不在本流程内改写。',
+      '得到明确确认并确认 worktree clean、HEAD 已 committed 后，由已安装 Skill 按参数契约调用 Plugin 内置 helper 的 verify-source mode 核验当前 root、sourceRef、commitSha、treeSha 与远端 ref；不得内嵌 shell 实现。',
+      '验证通过才调用 create_codex_agent_share；成功后立即用服务返回的同一 shareUrl 调用 read_codex_agent_share，逐字段确认 manifest、manifestSha256 与 copyPrompt 和 create 结果完全一致，任何不一致都停止且不得重建。新链路对 create_extraction_task、list_capabilities、create_agent_project、commit_agent_revision、create_project_agent_share 等旧工具的调用数必须为 0。',
+    ].join('');
+    const inspectionCommands =
+      `${codex} plugin marketplace list --json\n` +
+      `${codex} plugin list --json\n` +
+      `${codex} mcp get combo --json`;
     const upgradeCommands = `${codex} plugin marketplace upgrade dangdang-tech-combo --json`;
-    const installCommands =
-      `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-ui\n` +
-      `${codex} plugin add combo@dangdang-tech-combo\n` +
-      `${codex} mcp login combo`;
-    const body = `<h1>在 Codex 中使用 Combo Test</h1><p>当前指南对应 Project Agent Share V0 与 Combo Plugin 0.6.0 Test 候选。</p>
+    const marketplaceInstallCommand = `${codex} plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git --ref codex/combo-plugin-v2-ui --json`;
+    const pluginInstallCommand = `${codex} plugin add combo@dangdang-tech-combo --json`;
+    const loginCommand = `${codex} mcp login combo`;
+    const body = `<h1>在 Codex 中使用 Combo Test</h1><p>当前指南对应 Creator Bootstrap 与 Combo Plugin 0.7.0 Test 候选。</p>
 <p>把下面这句话复制到 Codex Desktop：</p><textarea readonly>${escapeHtml(prompt)}</textarea>
-<h2>已安装 Combo Plugin：优先升级</h2><textarea readonly>${escapeHtml(upgradeCommands)}</textarea><p>升级后直接用新任务探测两项工具；只有可调用工具返回 authorization 错误时才运行 <code>${escapeHtml(`${codex} mcp login combo`)}</code>。</p>
-<h2>未安装 Combo Plugin：首次安装</h2><p>如果 dangdang-tech-combo Marketplace 已存在，跳过第一条 <code>marketplace add</code>，再执行 <code>plugin add</code> 与 OAuth。</p><textarea readonly>${escapeHtml(installCommands)}</textarea>
-<ol><li>执行 OAuth 登录；验证码只在 Combo Test 浏览器页面输入。</li><li>直接新建一个任务并确认 <code>create_project_agent_share</code> 与 <code>read_project_agent_share</code>。</li><li>仅在配置正确但新任务工具清单仍未更新时，才完全退出并重开 Codex Desktop。</li></ol>
+<h2>先做只读精确检查</h2><textarea readonly>${escapeHtml(inspectionCommands)}</textarea><p>Marketplace name 必须对应官方 Git source；同名错源、Plugin 已安装但 Marketplace 缺失、无效版本等异常组合立即停止。功能门要求 Plugin 是已安装且启用的有效 semver &gt;=0.7.0，MCP transport URL 必须精确指向 Combo Test；当前 0.7.0 Test 候选验收另要求 exact 0.7.0。不删除或覆盖现有配置。</p>
+<h2>官方 Marketplace 需要刷新</h2><p>官方 Marketplace 初始已存在且 Plugin 缺失或有效版本低于 0.7.0 时，先验证官方 source，再最多升级 Marketplace 一次并重新执行只读检查：</p><textarea readonly>${escapeHtml(upgradeCommands)}</textarea>
+<h2>Marketplace 与 Combo Plugin 都未安装</h2><p>仅在两者都不存在时先执行 Marketplace add：</p><textarea readonly>${escapeHtml(marketplaceInstallCommand)}</textarea><p>重新执行只读检查并确认 official source。无论 <code>marketplaceInitiallyPresent</code> 初值为何，只要此时已确认 official Marketplace 且 Plugin 仍缺失，就恰好执行一次：</p><textarea readonly>${escapeHtml(pluginInstallCommand)}</textarea><p>同一状态机内 Plugin add 最多一次；fresh install 固定按 Marketplace add → 重新读取并确认 official source → Plugin add → 最终检查执行。若新安装 Plugin 仍低于 0.7.0 且本轮尚未 upgrade，验证官方 source 后恰好补一次 Marketplace upgrade 并重新读取；仍低于 0.7.0 就停止。整个状态机最多 upgrade 一次。若同名 source 不同则停止。</p>
+<h2>Codex-managed OAuth</h2><p>初始四工具与 metadata 全满足而留在当前任务时不主动登录；只有工具明确返回 authorization 错误，才恰好登录一次并只重试原调用。只要进入安装或升级 continuation，则在最终 metadata 校验后、任何 create_thread 前恰好执行一次：</p><textarea readonly>${escapeHtml(loginCommand)}</textarea><p>失败或用户取消立即停止且不创建任务；续跑任务禁止再次登录或再次建任务。验证码只在 Combo Test 浏览器页面输入。</p>
+<ol><li>通过正式 Codex Host 在同一 Project 的新顶层任务确认 <code>render_agent_builder</code>、<code>create_codex_agent_share</code>、<code>read_codex_agent_share</code> 与 <code>prepare_codex_agent_run</code>。</li><li>全程零重启；若新任务仍缺工具，准确报告 Plugin tool catalog 阻断，不再登录或重建任务。</li></ol>
+<p>Combo Plugin 0.7.0 仍保留 <code>read_project_agent_share</code>，已有 <code>combo.project-agent-share/1</code> 链接继续走冻结的旧接收文案，不会被新默认链路替代。</p>
 <p>Combo 不要求你在聊天中粘贴 Cookie、验证码或访问令牌。</p>`;
     return reply.code(200).type(HTML_CONTENT_TYPE).send(page('Combo Codex 插件安装', body));
   };

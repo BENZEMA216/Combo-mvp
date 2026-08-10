@@ -60,4 +60,11 @@ env \
   pnpm --dir "$ROOT_DIR/apps/authoring" exec vitest run \
     src/__tests__/external-mcp-dcr.pg.test.ts
 
+log "验证 Codex Agent 分享的 jsonb、摘要与 prepare 往返 ..."
+env \
+  CODEX_AGENT_SHARE_PG_TEST=1 \
+  CODEX_AGENT_SHARE_PG_DATABASE_URL="$api_database_url" \
+  pnpm --dir "$ROOT_DIR/apps/authoring" exec vitest run \
+    src/__tests__/codex-agent-share.pg.test.ts
+
 log "远程 MCP OAuth PostgreSQL 集成通过 ✓"

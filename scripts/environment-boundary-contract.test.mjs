@@ -495,6 +495,7 @@ test('trusted Main CI reaches candidate-owned MCP PostgreSQL and Redis contracts
   assert.doesNotThrow(() => text(postgresGuard));
   assert.match(mcpPostgres, /external-mcp-refresh\.pg\.test\.ts/);
   assert.match(mcpPostgres, /external-mcp-dcr\.pg\.test\.ts/);
+  assert.match(mcpPostgres, /codex-agent-share\.pg\.test\.ts/);
   assert.match(redis, /external-mcp-rate-limit\.integration\.test\.ts/);
 
   assert.equal(

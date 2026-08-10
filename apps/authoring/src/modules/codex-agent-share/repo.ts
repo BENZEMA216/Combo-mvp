@@ -1,13 +1,13 @@
 import {
-  PROJECT_AGENT_SHARE_SCHEMA_VERSION,
-  ProjectAgentShareManifestSchema,
+  CODEX_AGENT_SHARE_SCHEMA_VERSION,
+  CodexAgentShareManifestSchema,
   canonicalJson,
-  type ProjectAgentShareManifest,
+  type CodexAgentShareManifest,
 } from '@cb/shared';
 import { createHash } from 'node:crypto';
 import { toIso, type Queryable } from '../../platform/infra/db.js';
 
-interface ProjectAgentShareRow {
+interface CodexAgentShareRow {
   id: string;
   owner_user_id: string;
   share_token: string;
@@ -18,9 +18,9 @@ interface ProjectAgentShareRow {
   created_at: string | Date;
 }
 
-export interface ProjectAgentShareRecord {
+export interface CodexAgentShareRecord {
   shareToken: string;
-  manifest: ProjectAgentShareManifest;
+  manifest: CodexAgentShareManifest;
   manifestSha256: string;
   idempotencySha256: string;
 }
@@ -28,23 +28,23 @@ export interface ProjectAgentShareRecord {
 const SHARE_COLUMNS = `id, owner_user_id, share_token, manifest, manifest_sha256,
   idempotency_key, idempotency_sha256, created_at`;
 
-function isProjectAgentManifest(value: unknown): boolean {
+function isCodexAgentManifest(value: unknown): boolean {
   return (
     typeof value === 'object' &&
     value !== null &&
     'schemaVersion' in value &&
-    value.schemaVersion === PROJECT_AGENT_SHARE_SCHEMA_VERSION
+    value.schemaVersion === CODEX_AGENT_SHARE_SCHEMA_VERSION
   );
 }
 
-function toRecord(row: ProjectAgentShareRow): ProjectAgentShareRecord {
-  const manifest = ProjectAgentShareManifestSchema.parse(row.manifest);
+function toRecord(row: CodexAgentShareRow): CodexAgentShareRecord {
+  const manifest = CodexAgentShareManifestSchema.parse(row.manifest);
   if (manifest.createdAt !== toIso(row.created_at)) {
-    throw new Error('project agent share createdAt integrity mismatch');
+    throw new Error('codex agent share createdAt integrity mismatch');
   }
   const actualManifestSha256 = createHash('sha256').update(canonicalJson(manifest)).digest('hex');
   if (actualManifestSha256 !== row.manifest_sha256) {
-    throw new Error('project agent share manifest digest mismatch');
+    throw new Error('codex agent share manifest digest mismatch');
   }
   return {
     shareToken: row.share_token,
@@ -54,22 +54,22 @@ function toRecord(row: ProjectAgentShareRow): ProjectAgentShareRecord {
   };
 }
 
-export type CreateProjectAgentShareOutcome =
-  | { kind: 'created' | 'replayed'; record: ProjectAgentShareRecord }
+export type CreateCodexAgentShareOutcome =
+  | { kind: 'created' | 'replayed'; record: CodexAgentShareRecord }
   | { kind: 'idempotency_conflict' };
 
-export async function insertProjectAgentShare(
+export async function insertCodexAgentShare(
   db: Queryable,
   input: {
     ownerUserId: string;
     shareToken: string;
-    manifest: ProjectAgentShareManifest;
+    manifest: CodexAgentShareManifest;
     manifestSha256: string;
     idempotencyKey: string;
     idempotencySha256: string;
   },
-): Promise<CreateProjectAgentShareOutcome> {
-  const inserted = await db.query<ProjectAgentShareRow>(
+): Promise<CreateCodexAgentShareOutcome> {
+  const inserted = await db.query<CodexAgentShareRow>(
     `INSERT INTO project_agent_shares
        (owner_user_id, share_token, manifest, manifest_sha256,
         idempotency_key, idempotency_sha256, created_at)
@@ -89,7 +89,7 @@ export async function insertProjectAgentShare(
   const created = inserted.rows[0];
   if (created) return { kind: 'created', record: toRecord(created) };
 
-  const existing = await db.query<ProjectAgentShareRow>(
+  const existing = await db.query<CodexAgentShareRow>(
     `SELECT ${SHARE_COLUMNS}
        FROM project_agent_shares
       WHERE owner_user_id = $1 AND idempotency_key = $2::uuid
@@ -100,19 +100,19 @@ export async function insertProjectAgentShare(
   if (
     !row ||
     row.idempotency_sha256 !== input.idempotencySha256 ||
-    !isProjectAgentManifest(row.manifest)
+    !isCodexAgentManifest(row.manifest)
   ) {
     return { kind: 'idempotency_conflict' };
   }
   return { kind: 'replayed', record: toRecord(row) };
 }
 
-/** Public Project Agent share read: intentionally has no owner predicate. */
-export async function readProjectAgentShareByToken(
+/** Public Codex Agent share read: intentionally has no owner predicate. */
+export async function readCodexAgentShareByToken(
   db: Queryable,
   shareToken: string,
-): Promise<ProjectAgentShareRecord | null> {
-  const result = await db.query<ProjectAgentShareRow>(
+): Promise<CodexAgentShareRecord | null> {
+  const result = await db.query<CodexAgentShareRow>(
     `SELECT ${SHARE_COLUMNS}
        FROM project_agent_shares
       WHERE share_token = $1
@@ -120,6 +120,6 @@ export async function readProjectAgentShareByToken(
     [shareToken],
   );
   const row = result.rows[0];
-  if (!row || !isProjectAgentManifest(row.manifest)) return null;
+  if (!row || !isCodexAgentManifest(row.manifest)) return null;
   return toRecord(row);
 }

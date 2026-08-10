@@ -3,6 +3,24 @@ import { IsoDateTimeSchema } from '../core/ids.js';
 
 export const PROJECT_AGENT_SHARE_SCHEMA_VERSION = 'combo.project-agent-share/1' as const;
 
+/** PostgreSQL jsonb cannot persist NUL or an unpaired UTF-16 surrogate. */
+export function isPersistableJsonText(value: string): boolean {
+  if (value.includes('\u0000')) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!Number.isFinite(next) || next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+      continue;
+    }
+    if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
+  }
+  return true;
+}
+
+export const PERSISTABLE_JSON_TEXT_ERROR = '文本不能包含 NUL 或未配对的 Unicode surrogate' as const;
+
 export const ProjectAgentGitShaSchema = z.string().regex(/^[a-f0-9]{40}$/);
 
 export const ProjectAgentRepositoryUrlSchema = z
@@ -27,6 +45,7 @@ export const ProjectAgentSourceRefSchema = z
   .string()
   .min(1)
   .max(255)
+  .refine(isPersistableJsonText, PERSISTABLE_JSON_TEXT_ERROR)
   .superRefine((value, ctx) => {
     const prefix = value.startsWith('refs/heads/')
       ? 'refs/heads/'
@@ -64,6 +83,27 @@ export const ProjectAgentSourceRefSchema = z
     }
   });
 
+const ProjectAgentNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(80)
+  .refine(isPersistableJsonText, PERSISTABLE_JSON_TEXT_ERROR);
+
+const ProjectAgentDescriptionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .refine(isPersistableJsonText, PERSISTABLE_JSON_TEXT_ERROR);
+
+const ProjectAgentStartPromptSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(4_000)
+  .refine(isPersistableJsonText, PERSISTABLE_JSON_TEXT_ERROR);
+
 function uniqueBoundedStrings(label: string, pattern: RegExp) {
   return z
     .array(z.string().trim().min(1).max(128).regex(pattern))
@@ -81,7 +121,13 @@ function uniqueBoundedStrings(label: string, pattern: RegExp) {
 
 export const ProjectAgentRequirementsSchema = z
   .object({
-    codexVersion: z.string().trim().min(1).max(64).optional(),
+    codexVersion: z
+      .string()
+      .trim()
+      .min(1)
+      .max(64)
+      .refine(isPersistableJsonText, PERSISTABLE_JSON_TEXT_ERROR)
+      .optional(),
     commands: uniqueBoundedStrings('commands', /^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$/),
     plugins: uniqueBoundedStrings(
       'plugins',
@@ -112,13 +158,13 @@ export type ProjectAgentRequirements = z.infer<typeof ProjectAgentRequirementsSc
 
 export const CreateProjectAgentShareBodySchema = z
   .object({
-    name: z.string().trim().min(1).max(80),
-    description: z.string().trim().min(1).max(500),
+    name: ProjectAgentNameSchema,
+    description: ProjectAgentDescriptionSchema,
     repositoryUrl: ProjectAgentRepositoryUrlSchema,
     sourceRef: ProjectAgentSourceRefSchema,
     commitSha: ProjectAgentGitShaSchema,
     treeSha: ProjectAgentGitShaSchema,
-    startPrompt: z.string().trim().min(1).max(4_000),
+    startPrompt: ProjectAgentStartPromptSchema,
     requirements: ProjectAgentRequirementsSchema.optional(),
     idempotencyKey: z.string().uuid(),
   })
@@ -128,8 +174,8 @@ export type CreateProjectAgentShareBody = z.infer<typeof CreateProjectAgentShare
 export const ProjectAgentShareManifestSchema = z
   .object({
     schemaVersion: z.literal(PROJECT_AGENT_SHARE_SCHEMA_VERSION),
-    name: z.string().min(1).max(80),
-    description: z.string().min(1).max(500),
+    name: ProjectAgentNameSchema,
+    description: ProjectAgentDescriptionSchema,
     source: z
       .object({
         repositoryUrl: ProjectAgentRepositoryUrlSchema,
@@ -138,7 +184,7 @@ export const ProjectAgentShareManifestSchema = z
         treeSha: ProjectAgentGitShaSchema,
       })
       .strict(),
-    startPrompt: z.string().min(1).max(4_000),
+    startPrompt: ProjectAgentStartPromptSchema,
     requirements: ProjectAgentRequirementsSchema,
     createdAt: IsoDateTimeSchema,
   })

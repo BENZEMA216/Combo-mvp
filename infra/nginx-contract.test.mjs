@@ -47,7 +47,19 @@ test('Project Agent SPA shell keeps public-link privacy headers in the same loca
   assert.match(block, /Referrer-Policy "no-referrer" always/);
 });
 
-test('local development keeps MCP, API and Project Agent pages on the Vite public origin', () => {
+test('Codex Agent SPA shell keeps the same public-link privacy headers', () => {
+  const start = nginx.indexOf('location ^~ /agent/ {');
+  const end = nginx.indexOf('\n  }', start);
+  const block = nginx.slice(start, end);
+  assert.ok(start > 0);
+  assert.match(block, /try_files \/index\.html =404;/);
+  assert.doesNotMatch(block, /try_files[^;]*\/index\.html;/);
+  assert.match(block, /Cache-Control "private, no-store" always/);
+  assert.match(block, /X-Robots-Tag "noindex, nofollow" always/);
+  assert.match(block, /Referrer-Policy "no-referrer" always/);
+});
+
+test('local development keeps MCP, API and both share pages on the Vite public origin', () => {
   assert.match(localEnv, /^EXTERNAL_MCP_PUBLIC_ORIGIN=http:\/\/localhost:5173$/m);
   for (const route of ['/api', '/.well-known', '/codex-plugin', '/health', '/ready']) {
     assert.match(vite, new RegExp(`['"]${route.replaceAll('/', '\\/')}['"]`));

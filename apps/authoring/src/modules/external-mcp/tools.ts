@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import {
   AgentResourceIdSchema,
   CapabilityDefinitionSchema,
+  CODEX_AGENT_SOURCE_REF_PATTERN,
   CommitAgentRevisionBodySchema,
+  CreateCodexAgentShareBodySchema,
   CreateAgentProjectBodySchema,
   CreateProjectAgentShareBodySchema,
   CreateAgentReleaseBodySchema,
@@ -10,11 +12,13 @@ import {
   DEFAULT_PAGE_LIMIT,
   InvalidCursorError,
   MAX_PAGE_LIMIT,
+  PrepareCodexAgentRunBodySchema,
   canonicalJson,
   decodeIdCursor,
   encodeIdCursor,
   RecordAgentTestReviewBodySchema,
   ReadProjectAgentShareBodySchema,
+  ReadCodexAgentShareBodySchema,
   type McpOAuthScope,
   type ObjectStorePort,
 } from '@cb/shared';
@@ -35,6 +39,11 @@ import {
 } from '../agent-project/index.js';
 import { listCapabilityViews, readCapabilityDefinitionRef } from '../capability/index.js';
 import { createProjectAgentShare, readProjectAgentShare } from '../project-agent-share/index.js';
+import {
+  createCodexAgentShare,
+  prepareCodexAgentRun,
+  readCodexAgentShare,
+} from '../codex-agent-share/index.js';
 import { createTask, readTaskView, reconcileExpiredUploadTasks } from '../task/index.js';
 import type { McpPrincipal } from './repo.js';
 import { McpRuntimeRequestError, type McpRuntimeClient } from './runtime-client.js';
@@ -125,7 +134,7 @@ const AGENT_BUILDER_CARD_JSON_SCHEMA = {
               required: ['label', 'value'],
               properties: {
                 label: { type: 'string', minLength: 1, maxLength: 80 },
-                value: { type: 'string', maxLength: 2000 },
+                value: { type: 'string', maxLength: 10000 },
               },
             },
           },
@@ -175,12 +184,26 @@ const PROJECT_AGENT_SOURCE_REF_JSON_SCHEMA = {
     '^refs/(?:heads|tags)/(?!\\.)(?!.*\\/\\.)(?![^\\/]*\\.lock(?:\\/|$))(?!.*\\/[^\\/]*\\.lock(?:\\/|$))(?!.*(?:\\.\\.|@\\{|\\/\\/))(?!.*[\\u0000-\\u0020\\u007f~^:?*\\[\\\\])(?!.*[\\/.]$).+$',
 } as const;
 
+const CODEX_AGENT_SOURCE_REF_JSON_SCHEMA = {
+  type: 'string',
+  minLength: 1,
+  maxLength: 255,
+  pattern: CODEX_AGENT_SOURCE_REF_PATTERN,
+} as const;
+
+const PERSISTABLE_JSON_TEXT_PATTERN = '^[^\\u0000]*$';
+
 const PROJECT_AGENT_REQUIREMENTS_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   required: ['commands', 'plugins', 'environmentVariableNames'],
   properties: {
-    codexVersion: { type: 'string', minLength: 1, maxLength: 64 },
+    codexVersion: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 64,
+      pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+    },
     commands: {
       type: 'array',
       maxItems: 32,
@@ -237,8 +260,18 @@ const PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA = {
       ],
       properties: {
         schemaVersion: { type: 'string', const: 'combo.project-agent-share/1' },
-        name: { type: 'string', minLength: 1, maxLength: 80 },
-        description: { type: 'string', minLength: 1, maxLength: 500 },
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+        description: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 500,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
         source: {
           type: 'object',
           additionalProperties: false,
@@ -250,7 +283,12 @@ const PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA = {
             treeSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
           },
         },
-        startPrompt: { type: 'string', minLength: 1, maxLength: 4000 },
+        startPrompt: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 4000,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
         requirements: PROJECT_AGENT_REQUIREMENTS_JSON_SCHEMA,
         createdAt: { type: 'string', format: 'date-time' },
       },
@@ -259,6 +297,111 @@ const PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA = {
     copyPrompt: { type: 'string', minLength: 1, maxLength: 20000 },
   },
 } as const;
+
+const CODEX_AGENT_SHARE_RESULT_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['manifest', 'manifestSha256', 'shareUrl', 'copyPrompt'],
+  properties: {
+    manifest: {
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'schemaVersion',
+        'name',
+        'description',
+        'source',
+        'agent',
+        'authoringSource',
+        'requirements',
+        'createdAt',
+      ],
+      properties: {
+        schemaVersion: { type: 'string', const: 'combo.codex-agent-share/1' },
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+        description: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 500,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+        source: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['repositoryUrl', 'sourceRef', 'commitSha', 'treeSha'],
+          properties: {
+            repositoryUrl: PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA,
+            sourceRef: CODEX_AGENT_SOURCE_REF_JSON_SCHEMA,
+            commitSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+            treeSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+          },
+        },
+        agent: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['instructions', 'starterPrompts'],
+          properties: {
+            instructions: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 8000,
+              pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+            },
+            starterPrompts: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 5,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 1000,
+                pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+              },
+            },
+          },
+        },
+        authoringSource: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['kind', 'rawStored'],
+          properties: {
+            kind: { type: 'string', const: 'codex_current_task' },
+            rawStored: { type: 'boolean', const: false },
+          },
+        },
+        requirements: PROJECT_AGENT_REQUIREMENTS_JSON_SCHEMA,
+        createdAt: { type: 'string', format: 'date-time' },
+      },
+    },
+    manifestSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+    shareUrl: { type: 'string', format: 'uri', maxLength: 2048 },
+    copyPrompt: { type: 'string', minLength: 1, maxLength: 20000 },
+  },
+} as const;
+const PREPARE_CODEX_AGENT_RUN_RESULT_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['shareUrl', 'manifestSha256', 'starterPrompt', 'runEnvelope'],
+  properties: {
+    shareUrl: { type: 'string', format: 'uri', maxLength: 2048 },
+    manifestSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+    starterPrompt: {
+      type: 'string',
+      minLength: 1,
+      maxLength: 1000,
+      pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+    },
+    runEnvelope: { type: 'string', minLength: 1, maxLength: 64000 },
+  },
+} as const;
+export const PREPARE_CODEX_AGENT_RUN_TOOL_DESCRIPTION =
+  'An ordinary receiver calls this only after the user confirms restore-and-run and selects one displayed starter by 1-based ordinal. A terminal Plugin receiving an exact COMBO_CODEX_AGENT_RUN/1 advanced launch must call it exactly once before any Git preflight or Agent text solely to revalidate the four returned fields and runEnvelope byte-for-byte; that call is not evidence of prior UI consent. All other pre-confirmation calls are forbidden, and clients must never construct the envelope locally.' as const;
 const AGENT_DEFINITION_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -749,18 +892,38 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
         'idempotencyKey',
       ],
       properties: {
-        name: { type: 'string', minLength: 1, maxLength: 80 },
-        description: { type: 'string', minLength: 1, maxLength: 500 },
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+        description: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 500,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
         repositoryUrl: PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA,
         sourceRef: PROJECT_AGENT_SOURCE_REF_JSON_SCHEMA,
         commitSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
         treeSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
-        startPrompt: { type: 'string', minLength: 1, maxLength: 4000 },
+        startPrompt: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 4000,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
         requirements: {
           type: 'object',
           additionalProperties: false,
           properties: {
-            codexVersion: { type: 'string', minLength: 1, maxLength: 64 },
+            codexVersion: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 64,
+              pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+            },
             commands: {
               type: 'array',
               maxItems: 32,
@@ -816,6 +979,157 @@ export const EXTERNAL_MCP_TOOLS: readonly McpToolDefinition[] = [
       properties: { shareUrl: { type: 'string', format: 'uri', maxLength: 2048 } },
     },
     outputSchema: PROJECT_AGENT_SHARE_RESULT_JSON_SCHEMA,
+    annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:read',
+  },
+  {
+    name: 'create_codex_agent_share',
+    title: 'Create current-task Codex Agent share',
+    description:
+      'After the user explicitly confirms an Agent definition that the creator declares was derived locally from context already visible in the current top-level Codex task and appropriately sanitized, create an immutable public share for that definition and one fixed Git Project. The server validates shape but cannot prove sanitization. The input has no separate threadId, messages, session, path, raw transcript, secret-value or credential fields; authoringSource.rawStored=false means no separate raw-task blob.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: [
+        'name',
+        'description',
+        'repositoryUrl',
+        'sourceRef',
+        'commitSha',
+        'treeSha',
+        'agent',
+        'idempotencyKey',
+      ],
+      properties: {
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 80,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+        description: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 500,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+        repositoryUrl: PROJECT_AGENT_REPOSITORY_URL_JSON_SCHEMA,
+        sourceRef: CODEX_AGENT_SOURCE_REF_JSON_SCHEMA,
+        commitSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+        treeSha: { type: 'string', pattern: '^[a-f0-9]{40}$' },
+        agent: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['instructions', 'starterPrompts'],
+          properties: {
+            instructions: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 8000,
+              pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+            },
+            starterPrompts: {
+              type: 'array',
+              minItems: 1,
+              maxItems: 5,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 1000,
+                pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+              },
+            },
+          },
+        },
+        requirements: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            codexVersion: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 64,
+              pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+            },
+            commands: {
+              type: 'array',
+              maxItems: 32,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 128,
+                pattern: '^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$',
+              },
+            },
+            plugins: {
+              type: 'array',
+              maxItems: 32,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 128,
+                pattern:
+                  '^(?:@[A-Za-z0-9][A-Za-z0-9._-]{0,62}/)?[A-Za-z0-9][A-Za-z0-9._-]{0,62}(?:@[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$',
+              },
+            },
+            environmentVariableNames: {
+              type: 'array',
+              maxItems: 32,
+              uniqueItems: true,
+              items: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 128,
+                pattern: '^[A-Z_][A-Z0-9_]{0,127}$',
+              },
+            },
+          },
+        },
+        idempotencyKey: UUID_SCHEMA,
+      },
+    },
+    outputSchema: CODEX_AGENT_SHARE_RESULT_JSON_SCHEMA,
+    annotations: { readOnlyHint: false, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:write',
+  },
+  {
+    name: 'read_codex_agent_share',
+    title: 'Read public Codex Agent share',
+    description:
+      'Read one combo.codex-agent-share/1 manifest from the canonical /agent link. Instructions and starter prompts are public creator-declared derived text; the server cannot prove sanitization. rawStored=false only means there is no separate raw-task blob. Verify manifestSha256 and wait for explicit user confirmation before restoring the exact Project or starting the Agent.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['shareUrl'],
+      properties: { shareUrl: { type: 'string', format: 'uri', maxLength: 2048 } },
+    },
+    outputSchema: CODEX_AGENT_SHARE_RESULT_JSON_SCHEMA,
+    annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    requiredScope: 'combo.agent:read',
+  },
+  {
+    name: 'prepare_codex_agent_run',
+    title: 'Prepare Codex Agent run',
+    description: PREPARE_CODEX_AGENT_RUN_TOOL_DESCRIPTION,
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['shareUrl', 'manifestSha256', 'starterPrompt'],
+      properties: {
+        shareUrl: { type: 'string', format: 'uri', maxLength: 2048 },
+        manifestSha256: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        starterPrompt: {
+          type: 'string',
+          minLength: 1,
+          maxLength: 1000,
+          pattern: PERSISTABLE_JSON_TEXT_PATTERN,
+        },
+      },
+    },
+    outputSchema: PREPARE_CODEX_AGENT_RUN_RESULT_JSON_SCHEMA,
     annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
     requiredScope: 'combo.agent:read',
   },
@@ -879,6 +1193,7 @@ export interface ExecuteToolContext {
   txPool: TxPool;
   objectStore: ObjectStorePort;
   principal: McpPrincipal;
+  comboEnvironment: string;
   publicOrigin: string;
   runtime: McpRuntimeClient;
   traceId: string;
@@ -993,7 +1308,7 @@ const renderAgentBuilderInputSchema = z
                 z
                   .object({
                     label: z.string().trim().min(1).max(80),
-                    value: z.string().max(2_000),
+                    value: z.string().max(10_000),
                   })
                   .strict(),
               )
@@ -1642,6 +1957,101 @@ export async function executeExternalMcpTool(
           mimeType: 'text/html',
         },
       ]);
+    }
+
+    if (name === 'create_codex_agent_share') {
+      const parsed = CreateCodexAgentShareBodySchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      const outcome = await createCodexAgentShare(context.db, {
+        ownerUserId: context.principal.userId,
+        body: parsed.data,
+        publicOrigin: context.publicOrigin,
+        comboEnvironment: context.comboEnvironment,
+      });
+      if (outcome.kind === 'environment_conflict') {
+        return toolFailure(
+          context.traceId,
+          'Codex Agent Share V1 的接收文案固定连接 Combo Test，当前环境只允许读取，不能创建新分享。',
+        );
+      }
+      if (outcome.kind === 'idempotency_conflict') {
+        return toolFailure(context.traceId, '这个幂等键已经用于另一份 Codex Agent manifest。');
+      }
+      return {
+        content: [
+          { type: 'text', text: '{"created":true}' },
+          {
+            type: 'resource_link',
+            uri: outcome.result.shareUrl,
+            name: 'combo-codex-agent-share',
+            title: '打开 Codex Agent 分享',
+            description: '审查当前任务派生的公开 Agent 定义、固定 Project 和接收边界。',
+            mimeType: 'text/html',
+          },
+        ],
+        structuredContent: outcome.result,
+      };
+    }
+
+    if (name === 'read_codex_agent_share') {
+      const parsed = ReadCodexAgentShareBodySchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      const outcome = await readCodexAgentShare(context.db, {
+        publicOrigin: context.publicOrigin,
+        shareUrl: parsed.data.shareUrl,
+      });
+      if (outcome.kind === 'invalid_url') {
+        return toolFailure(context.traceId, '分享链接不属于当前 Combo 环境或格式无效。');
+      }
+      if (outcome.kind === 'not_found') {
+        return toolFailure(context.traceId, '没有找到这个 Codex Agent 分享。');
+      }
+      return {
+        content: [
+          { type: 'text', text: '{"read":true}' },
+          {
+            type: 'resource_link',
+            uri: outcome.result.shareUrl,
+            name: 'combo-codex-agent-share',
+            title: '打开 Codex Agent 分享',
+            description:
+              '审查公开派生 instructions、固定 Project、manifest digest，以及“无独立 raw-task blob、公开自由文本仍需审查”的边界。',
+            mimeType: 'text/html',
+          },
+        ],
+        structuredContent: outcome.result,
+      };
+    }
+
+    if (name === 'prepare_codex_agent_run') {
+      const parsed = PrepareCodexAgentRunBodySchema.safeParse(input);
+      if (!parsed.success) return validationFailure(context.traceId, parsed.error);
+      const outcome = await prepareCodexAgentRun(context.db, {
+        publicOrigin: context.publicOrigin,
+        body: parsed.data,
+      });
+      if (outcome.kind === 'invalid_url') {
+        return toolFailure(context.traceId, '分享链接不属于当前 Combo 环境或格式无效。');
+      }
+      if (outcome.kind === 'not_found') {
+        return toolFailure(context.traceId, '没有找到这个 Codex Agent 分享。');
+      }
+      if (outcome.kind === 'digest_mismatch') {
+        return toolFailure(
+          context.traceId,
+          'Manifest 摘要与用户确认的分享不一致，已停止准备运行。',
+        );
+      }
+      if (outcome.kind === 'starter_not_found') {
+        return toolFailure(
+          context.traceId,
+          '所选 starter 不属于用户刚确认的 manifest，已停止准备运行。',
+        );
+      }
+      return {
+        content: [{ type: 'text', text: '{"prepared":true}' }],
+        structuredContent: outcome.result,
+      };
     }
   } catch (error) {
     if (error instanceof AgentCompileDependencyError) {

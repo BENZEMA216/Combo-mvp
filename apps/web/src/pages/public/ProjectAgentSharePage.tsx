@@ -87,8 +87,8 @@ export function ProjectAgentSharePage(): ReactElement {
           Codex 恢复。
         </p>
         <p>
-          任何拿到链接的人都可匿名读取这份 manifest。V0
-          分享不会过期、也不能撤销；链接不是账号授权令牌，但应按公开链接分享，manifest
+          任何拿到链接的人都可匿名读取这份 manifest。V0 分享不会过期、也不能撤销。它不是账户授权或
+          OAuth token；但它是未列出的公开定位链接， 持有即匿名可读，请按公开内容处理，manifest
           中不要放任何秘密。
         </p>
       </section>

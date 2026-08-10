@@ -31,8 +31,8 @@ async function call(handler: RouteHandlerMethod, req: FastifyRequest): Promise<C
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 31 endpoints including authenticated create and public Project Agent read', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(31);
+  it('registers exactly 33 endpoints including both immutable share schema families', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(33);
   });
 
   it('has no duplicate method and URL pairs', () => {
@@ -134,6 +134,23 @@ describe('route registry self-check', () => {
     const read = ALL_ENDPOINTS.find(
       (endpoint) =>
         endpoint.method === 'GET' && endpoint.url === '/project-agent-shares/:shareToken',
+    );
+    expect(read?.preHandlers ?? []).toHaveLength(0);
+    expect(read?.config).toEqual({ rateLimit: { max: 120, timeWindow: '1 minute' } });
+  });
+
+  it('protects Codex Agent creation but keeps exact-token v2 reads public', () => {
+    const create = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.method === 'POST' && endpoint.url === '/codex-agent-shares',
+    );
+    expect(create).toMatchObject({
+      bodyLimit: 128 * 1_024,
+      config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    });
+    expect(create?.preHandlers).toHaveLength(2);
+
+    const read = ALL_ENDPOINTS.find(
+      (endpoint) => endpoint.method === 'GET' && endpoint.url === '/codex-agent-shares/:shareToken',
     );
     expect(read?.preHandlers ?? []).toHaveLength(0);
     expect(read?.config).toEqual({ rateLimit: { max: 120, timeWindow: '1 minute' } });

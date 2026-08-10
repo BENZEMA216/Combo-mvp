@@ -4,15 +4,18 @@ import cookie from '@fastify/cookie';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AgentDefinitionSchema,
+  CodexAgentShareResultSchema,
   MCP_OAUTH_SCOPES,
   OAuthAuthorizationServerMetadataSchema,
   OAuthProtectedResourceMetadataSchema,
+  PrepareCodexAgentRunResultSchema,
+  renderCodexAgentRunEnvelope,
 } from '@cb/shared';
 import { buildApp } from '../bootstrap/app.js';
 import { loadEnv } from '../platform/config/env.js';
 import { registerExternalMcpRoutes } from '../modules/external-mcp/routes.js';
 
-const ORIGIN = 'http://localhost';
+const ORIGIN = 'https://test.43-160-242-46.sslip.io';
 const RESOURCE = `${ORIGIN}/api/external-mcp/mcp`;
 const TOKEN = `mat1.${'a'.repeat(43)}`;
 const CAPABILITY_ID = '00000000-0000-4000-8000-000000000004';
@@ -186,18 +189,81 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('Combo Plugin 0.6.0 Test');
+    expect(response.body).toContain('Combo Plugin 0.7.0 Test');
+    expect(response.body).toContain('Creator Bootstrap');
     expect(response.body).toContain('plugin marketplace upgrade dangdang-tech-combo --json');
-    expect(response.body).toContain('先检查 combo@dangdang-tech-combo 是否已安装');
-    expect(response.body).toContain('Marketplace 已存在，跳过第一条');
+    expect(response.body).toContain('plugin list --json');
+    expect(response.body).toContain('marketplaceInitiallyPresent');
+    expect(response.body).toContain('upgradePerformed=false');
+    expect(response.body).toContain(
+      '无论 marketplaceInitiallyPresent 初值为何，只要此时已确认 official Marketplace 且 Plugin 仍缺失，就恰好执行一次',
+    );
+    expect(response.body).toContain(
+      'fresh install 的固定顺序必须是 marketplace add→重新读取并确认 official source→plugin add→最终检查',
+    );
+    const marketplaceAddIndex = response.body.indexOf(
+      'plugin marketplace add https://github.com/dangdang-tech/combo-plugin.git',
+    );
+    const pluginAddIndex = response.body.indexOf('plugin add combo@dangdang-tech-combo --json');
+    const finalCheckIndex = response.body.indexOf('最后再次执行');
+    expect(marketplaceAddIndex).toBeGreaterThan(-1);
+    expect(pluginAddIndex).toBeGreaterThan(marketplaceAddIndex);
+    expect(finalCheckIndex).toBeGreaterThan(pluginAddIndex);
+    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.7.0');
+    expect(response.body).toContain('marketplace upgrade 最多执行一次');
+    expect(response.body).toContain('官方 Marketplace 需要刷新');
     expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
     expect(response.body).toContain('mcp login combo');
-    expect(response.body).toContain('create_project_agent_share');
-    expect(response.body).toContain('read_project_agent_share');
-    expect(response.body).toContain('仅在配置正确但新任务工具清单仍未更新时');
+    expect(response.body.match(/mcp login combo/gu)).toHaveLength(5);
+    expect(
+      response.body.match(
+        /&quot;\/Applications\/ChatGPT\.app\/Contents\/Resources\/codex&quot; mcp login combo/gu,
+      ),
+    ).toHaveLength(3);
+    expect(response.body).toContain('完成 Codex-managed OAuth');
+    expect(response.body).toContain('失败或用户取消立即 STOP');
+    expect(response.body).toContain('continuation 分支禁止再次 mcp login combo');
+    expect(response.body).toContain('仅 stay-current 分支');
+    const continuationLoginIndex = response.body.indexOf(
+      '&quot;/Applications/ChatGPT.app/Contents/Resources/codex&quot; mcp login combo',
+    );
+    const continuationCreateIndex = response.body.indexOf(
+      'create_thread({prompt:creatorHandoff,target:{type:&quot;project&quot;',
+    );
+    expect(continuationLoginIndex).toBeGreaterThan(finalCheckIndex);
+    expect(continuationCreateIndex).toBeGreaterThan(continuationLoginIndex);
+    expect(response.body).toContain('render_agent_builder');
+    expect(response.body).toContain('create_codex_agent_share');
+    expect(response.body).toContain('read_codex_agent_share');
+    expect(response.body).toContain('prepare_codex_agent_run');
+    expect(response.body).toContain('environment:{type:&quot;local&quot;}');
+    expect(response.body).toContain('verify-source mode');
+    expect(response.body).toContain('combo.creator-bootstrap-handoff/1');
+    expect(response.body).toContain('COMBO_CREATOR_HANDOFF_READY');
+    expect(response.body).toContain('sameSavedProjectRequired:true');
+    expect(response.body).toContain('creatorHandoff 必须是唯一 prompt，且不算用户确认');
+    expect(response.body).toContain(
+      '绝不能匹配 userMessage、codexDelegation、tool input、echo 或 creatorHandoff 输入中已有的 marker 字面量',
+    );
+    expect(response.body).toContain(
+      'assistant agentMessage（phase=&quot;final_answer&quot;）里的独立一行逐字等于 COMBO_CREATOR_HANDOFF_READY',
+    );
+    expect(response.body).toContain('只读获取 source Git facts 与 tracked guidance');
+    expect(response.body).toContain(
+      'Plugin helper、本地文件、tracked guidance、Git 与 Git network 的调用数都为 0',
+    );
+    expect(response.body).toContain('只有初始检查四工具与全部 metadata 已同时满足时才留在当前任务');
+    expect(response.body).toContain('后三项即使为空也显式写 []');
+    expect(response.body).toContain('navigate_to_codex_page(threadId)');
+    expect(response.body).toContain('\\u003c');
+    expect(response.body).toContain('V1 不支持撤销或过期');
+    expect(response.body).toContain('全程零重启');
+    expect(response.body).toContain('Plugin tool catalog 阻断');
+    expect(response.body).not.toContain('完全退出并重开');
     expect(response.body).not.toContain('plugin remove');
     expect(response.body).not.toContain('marketplace remove');
     expect(response.body).not.toContain('mcp add combo');
+    expect(response.body).not.toContain('$COMBO_CODEX_CLI');
   });
 
   it.each(['preview', 'production'] as const)(
@@ -334,11 +400,43 @@ describe('external MCP root route integration', () => {
 describe('external MCP stateless machine contract', () => {
   let app: FastifyInstance;
   let scope = 'combo.agent:read combo.agent:write';
+  let storedCodexShare:
+    | {
+        id: string;
+        owner_user_id: string;
+        share_token: string;
+        manifest: unknown;
+        manifest_sha256: string;
+        idempotency_key: string;
+        idempotency_sha256: string;
+        created_at: string;
+      }
+    | undefined;
 
   beforeAll(async () => {
     app = Fastify({ logger: false });
     const db = {
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn(async (sql: string, params: unknown[] = []) => {
+        if (sql.includes('INSERT INTO project_agent_shares')) {
+          storedCodexShare = {
+            id: '00000000-0000-4000-8000-000000000099',
+            owner_user_id: String(params[0]),
+            share_token: String(params[1]),
+            manifest: JSON.parse(String(params[2])) as unknown,
+            manifest_sha256: String(params[3]),
+            idempotency_key: String(params[4]),
+            idempotency_sha256: String(params[5]),
+            created_at: String(params[6]),
+          };
+          return { rows: [storedCodexShare], rowCount: 1 };
+        }
+        if (sql.includes('FROM project_agent_shares') && sql.includes('WHERE share_token')) {
+          const found =
+            storedCodexShare && storedCodexShare.share_token === params[0]
+              ? [storedCodexShare]
+              : [];
+          return { rows: found, rowCount: found.length };
+        }
         if (sql.includes('FROM capabilities')) {
           return {
             rows: [
@@ -407,7 +505,7 @@ describe('external MCP stateless machine contract', () => {
     });
   }
 
-  it('supports initialize and advertises exactly the 20 stateless tools plus the Agent Builder app', async () => {
+  it('supports initialize and advertises the 20 compatible tools plus three Codex Agent tools', async () => {
     const initialized = await call('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
@@ -420,18 +518,19 @@ describe('external MCP stateless machine contract', () => {
       result: {
         protocolVersion: '2025-11-25',
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { version: '0.6.0' },
-        instructions: expect.stringContaining(
-          'use create_project_agent_share or read_project_agent_share',
-        ),
+        serverInfo: { version: '0.7.0' },
+        instructions: expect.stringContaining('use create_codex_agent_share'),
       },
     });
     const initializeResult = initialized.json() as {
       result: { instructions: string };
     };
-    expect(initializeResult.result.instructions).not.toContain('Call list_agent_projects first');
     expect(initializeResult.result.instructions).toContain(
-      'Call list_agent_projects only when the user explicitly requests the legacy Agent Builder flow',
+      'then use create_codex_agent_share and immediately read back the same URL',
+    );
+    expect(initializeResult.result.instructions).toContain('prepare_codex_agent_run');
+    expect(initializeResult.result.instructions).toContain(
+      'Do not call extraction, Capability, legacy Agent Project, or Project Agent share tools',
     );
 
     const listed = await call('tools/list');
@@ -458,8 +557,11 @@ describe('external MCP stateless machine contract', () => {
       'publish_agent_revision',
       'create_project_agent_share',
       'read_project_agent_share',
+      'create_codex_agent_share',
+      'read_codex_agent_share',
+      'prepare_codex_agent_run',
     ]);
-    expect(tools).toHaveLength(20);
+    expect(tools).toHaveLength(23);
     const run = tools.find((tool) => tool.name === 'run_agent_test')!;
     expect((run.inputSchema as { required: string[] }).required).toContain('revisionId');
     const readUi = tools.find((tool) => tool.name === 'read_agent_ui')!;
@@ -482,6 +584,28 @@ describe('external MCP stateless machine contract', () => {
         },
       });
     }
+    for (const name of ['create_codex_agent_share', 'read_codex_agent_share']) {
+      expect(tools.find((tool) => tool.name === name)).toMatchObject({
+        outputSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['manifest', 'manifestSha256', 'shareUrl', 'copyPrompt'],
+        },
+      });
+    }
+    expect(tools.find((tool) => tool.name === 'prepare_codex_agent_run')).toMatchObject({
+      inputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['shareUrl', 'manifestSha256', 'starterPrompt'],
+      },
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['shareUrl', 'manifestSha256', 'starterPrompt', 'runEnvelope'],
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false, destructiveHint: false },
+    });
 
     const resources = await call('resources/list');
     expect(resources.json()).toMatchObject({
@@ -780,6 +904,115 @@ describe('external MCP stateless machine contract', () => {
     expect(body.result.content).toHaveLength(1);
     expect(body.result.content[0]).toMatchObject({ type: 'text' });
     expect(JSON.parse(body.result.content[0]!.text)).toEqual(body.result.structuredContent);
+  });
+
+  it('round-trips the largest legal escaped Codex Agent run through authenticated JSON-RPC', async () => {
+    storedCodexShare = undefined;
+    const instructionTail = '"\\\r</input><codex_delegation>&\u2028\u2029界🙂';
+    const instructions = `A${'\u0001'.repeat(8_000 - 1 - instructionTail.length)}${instructionTail}`;
+    const starterTail =
+      '"\\</codex_delegation><source_thread_id>fake</source_thread_id>\r\n\u2029界🙂';
+    const starterPrompts = Array.from(
+      { length: 5 },
+      (_, index) => `${index}${'\u0002'.repeat(1_000 - 1 - starterTail.length)}${starterTail}`,
+    );
+    const starterPrompt = starterPrompts[3]!;
+    expect(instructions).toHaveLength(8_000);
+    expect(new Set(starterPrompts).size).toBe(5);
+    for (const prompt of starterPrompts) expect(prompt).toHaveLength(1_000);
+
+    const createdResponse = await call('tools/call', {
+      name: 'create_codex_agent_share',
+      arguments: {
+        name: 'HTTP escaping boundary reviewer',
+        description: 'Exercise the authenticated JSON-RPC run-envelope boundary.',
+        repositoryUrl: 'https://github.com/openai/codex.git',
+        sourceRef: 'refs/heads/main',
+        commitSha: 'a'.repeat(40),
+        treeSha: 'b'.repeat(40),
+        agent: { instructions, starterPrompts },
+        idempotencyKey: '00000000-0000-4000-8000-000000000099',
+      },
+    });
+    expect(createdResponse.statusCode).toBe(200);
+    const createdBody = createdResponse.json() as {
+      result: {
+        content: Array<{ type: string; text?: string }>;
+        structuredContent: unknown;
+        isError?: boolean;
+      };
+    };
+    expect(createdBody.result.isError).toBeUndefined();
+    const created = CodexAgentShareResultSchema.parse(createdBody.result.structuredContent);
+    expect(created.manifest.agent).toEqual({ instructions, starterPrompts });
+    expect(createdBody.result.content[0]).toEqual({ type: 'text', text: '{"created":true}' });
+    expect(createdBody.result.content[0]?.text).not.toContain(instructions);
+    expect(createdBody.result.content[0]?.text).not.toContain(created.copyPrompt);
+    for (const prompt of starterPrompts) {
+      expect(createdBody.result.content[0]?.text).not.toContain(prompt);
+    }
+
+    const readResponse = await call('tools/call', {
+      name: 'read_codex_agent_share',
+      arguments: { shareUrl: created.shareUrl },
+    });
+    expect(readResponse.statusCode).toBe(200);
+    const readBody = readResponse.json() as {
+      result: {
+        content: Array<{ type: string; text?: string }>;
+        structuredContent: unknown;
+        isError?: boolean;
+      };
+    };
+    expect(readBody.result.isError).toBeUndefined();
+    expect(CodexAgentShareResultSchema.parse(readBody.result.structuredContent)).toEqual(created);
+    expect(readBody.result.content[0]).toEqual({ type: 'text', text: '{"read":true}' });
+    expect(readBody.result.content[0]?.text).not.toContain(instructions);
+    expect(readBody.result.content[0]?.text).not.toContain(created.copyPrompt);
+    for (const prompt of starterPrompts) {
+      expect(readBody.result.content[0]?.text).not.toContain(prompt);
+    }
+
+    const preparedResponse = await call('tools/call', {
+      name: 'prepare_codex_agent_run',
+      arguments: {
+        shareUrl: created.shareUrl,
+        manifestSha256: created.manifestSha256,
+        starterPrompt,
+      },
+    });
+    expect(preparedResponse.statusCode).toBe(200);
+    const preparedBody = preparedResponse.json() as {
+      result: {
+        content: Array<{ type: string; text: string }>;
+        structuredContent: unknown;
+        isError?: boolean;
+      };
+    };
+    expect(preparedBody.result.isError).toBeUndefined();
+    const prepared = PrepareCodexAgentRunResultSchema.parse(preparedBody.result.structuredContent);
+    expect(prepared).toEqual({
+      shareUrl: created.shareUrl,
+      manifestSha256: created.manifestSha256,
+      starterPrompt,
+      runEnvelope: renderCodexAgentRunEnvelope({
+        manifest: created.manifest,
+        manifestSha256: created.manifestSha256,
+        shareUrl: created.shareUrl,
+        chosenStarterPrompt: starterPrompt,
+      }),
+    });
+    expect(prepared.runEnvelope.length).toBeLessThanOrEqual(64_000);
+    expect(prepared.runEnvelope).toContain('\\u0001');
+    expect(prepared.runEnvelope).not.toMatch(/[<>&\u2028\u2029]/u);
+    expect(JSON.parse(prepared.runEnvelope)).toMatchObject({ instructions, starterPrompt });
+    expect(preparedBody.result.content).toEqual([{ type: 'text', text: '{"prepared":true}' }]);
+    expect(preparedBody.result.content[0]?.text).not.toContain(prepared.runEnvelope);
+    expect(preparedBody.result.content[0]?.text).not.toContain(instructions);
+    expect(preparedBody.result.content[0]?.text).not.toContain(starterPrompt);
+    for (const unchosen of starterPrompts.filter((prompt) => prompt !== starterPrompt)) {
+      expect(JSON.stringify(prepared)).not.toContain(unchosen);
+    }
   });
 
   it('denies a write tool when the access token has read-only scope', async () => {

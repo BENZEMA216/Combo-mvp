@@ -18,8 +18,9 @@
 - `browser-origin.test.ts` 验证 CORS、认证请求和 Cookie 鉴权业务写请求的精确来源策略。
 - `observability-redaction.test.ts` 使用内存 span 导出器验证查询凭据、客户端地址、请求头、正文和异常文本在导出前被删除，并验证浏览器事件的敏感 pathname 只形成固定路由桶。
 - `routes.test.ts` 核对端点总数、无重复、认证公开面和前置守卫。
-- `external-mcp-tools.test.ts` 验证无状态 MCP 工具的公开投影、显式资源身份、三类案例质量复核与发布门禁。
-- `external-mcp-routes.test.ts` 验证 OAuth 后的 MCP transport、二十项工具发现、Agent Builder MCP App 资源及手写 JSON Schema 与共享契约的一致性。
+- `external-mcp-tools.test.ts` 验证无状态 MCP 工具的公开投影、显式资源身份、三类案例质量复核与发布门禁，并验证当前任务 Codex Agent 创建/读取不调用旧提取、Capability、Agent Project 或 Project Agent 链路。它还固定 Agent Builder 单个事实可完整承载八千字符 instructions，并拒绝超过一万字符的事实。
+- `external-mcp-routes.test.ts` 验证 OAuth 后的 MCP transport、前二十项兼容工具与末尾三项 Codex Agent 工具发现、Agent Builder MCP App 资源及手写 JSON Schema 与共享契约的一致性。
+- `codex-agent-share.pg.test.ts` 在显式开启时用最小权限 `combo_api` 连接专用 PostgreSQL，验证最长合法 instructions/starter 的 U+0001、CRLF、合法 astral 和 Host delimiter 文本经过 jsonb、公开读取、摘要与 prepare 后逐字不变，并确认 NUL 和未配对 surrogate 在 schema 边界失败且不新增行。
 - `agent-builder-app.test.ts` 用宿主仿真验证 MCP App 的 initialize/initialized 生命周期、工具结果渲染、标准 `ui/message`、兼容消息回退与固定 HTML 摘要。
 - `task-service.test.ts` 验证任务状态机、建任务幂等、重试和过期对账。
 - `pairing.test.ts` 验证配对码、快照准备、分片登记和对象清理。
@@ -40,6 +41,8 @@
 
 Agent Project 模块旁的 `repo.test.ts` 使用事务假件验证 Test Review 的幂等、不可变和 Release 证据冻结，不连接外部服务。
 
+`codex-agent-share/service.test.ts` 验证当前任务派生 manifest 的幂等字节稳定、完整接收文案 golden、摘要、旧新 schema URL 分流、同表跨 schema 幂等冲突、匿名跨用户读取、篡改失败关闭以及 instructions 与 starter 原文不进入 copyPrompt。
+
 ## 上下游
 
-测试直接读取 `modules/` 与 `platform/` 的公开函数。`account-auth.pg.test.ts` 只在 `AUTH_PG_TEST=1` 且提供 `DATABASE_URL` 时运行，并只删除本轮创建且尚未关联业务数据的认证主体。`external-mcp-refresh.pg.test.ts` 与 `external-mcp-dcr.pg.test.ts` 在 `MCP_OAUTH_PG_TEST=1` 下验证真实 PostgreSQL 的 refresh family 串行、动态注册去重、生命周期、硬容量和并发边界；后者还需要最小权限 API 连接 `MCP_OAUTH_API_DATABASE_URL`。`external-mcp-rate-limit.integration.test.ts` 在提供 `MCP_RATE_LIMIT_REDIS_URL` 时用两个 Fastify 实例验证共享 Redis 计数与故障关闭。测试数据只使用保留域名、文档地址和测试密钥。
+测试直接读取 `modules/` 与 `platform/` 的公开函数。`account-auth.pg.test.ts` 只在 `AUTH_PG_TEST=1` 且提供 `DATABASE_URL` 时运行，并只删除本轮创建且尚未关联业务数据的认证主体。`external-mcp-refresh.pg.test.ts` 与 `external-mcp-dcr.pg.test.ts` 在 `MCP_OAUTH_PG_TEST=1` 下验证真实 PostgreSQL 的 refresh family 串行、动态注册去重、生命周期、硬容量和并发边界；后者还需要最小权限 API 连接 `MCP_OAUTH_API_DATABASE_URL`。`codex-agent-share.pg.test.ts` 在 `CODEX_AGENT_SHARE_PG_TEST=1` 且提供 `CODEX_AGENT_SHARE_PG_DATABASE_URL` 时，于单个回滚事务内验证真实 jsonb 往返并要求当前角色为 `combo_api`。`external-mcp-rate-limit.integration.test.ts` 在提供 `MCP_RATE_LIMIT_REDIS_URL` 时用两个 Fastify 实例验证共享 Redis 计数与故障关闭。测试数据只使用保留域名、文档地址和测试密钥。

@@ -1,6 +1,6 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  'c3166e995618525912ae15e781ab634fe01a8f27d6edc048f6d0bebaecbbf670';
+  '2c66b3248902031d9ed9a3c6dccc81efd3d9c9c4c136b0b3cb2d10ef98159214';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
@@ -34,7 +34,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
       .item p { margin: 0; color: var(--color-text-secondary, #596579); font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
       dl { display: grid; grid-template-columns: minmax(84px, .4fr) 1fr; gap: 6px 10px; margin: 0; font-size: 12px; }
       dt { color: var(--color-text-secondary, #6b7280); }
-      dd { margin: 0; overflow-wrap: anywhere; }
+      dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
       .actions { display: flex; flex-wrap: wrap; gap: 8px; }
       button { appearance: none; border: 1px solid var(--color-border-default, #cfd7e4); border-radius: 10px; padding: 9px 12px; background: var(--color-background-primary, #fff); color: inherit; font: inherit; font-size: 13px; font-weight: 680; cursor: pointer; }
       button[data-emphasis="primary"] { border-color: #3b5ccc; background: #3b5ccc; color: #fff; }
@@ -273,7 +273,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           if (legacyPayload) render(legacyPayload);
           try {
             await request('ui/initialize', {
-              appInfo: { name: 'combo-agent-builder', version: '0.6.0' },
+              appInfo: { name: 'combo-agent-builder', version: '0.7.0' },
               appCapabilities: { availableDisplayModes: ['inline'] },
               protocolVersion: MCP_UI_PROTOCOL_VERSION
             });

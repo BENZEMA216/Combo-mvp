@@ -11,8 +11,11 @@
 - `agent-ui.ts` 定义 Authoring 与 Runtime 共用的 Miniapp HTML 最小运行校验，要求自包含文档和真实 `combo:run` Bridge，并拒绝定时器、随机数和 mock 结果。
 - `mcp-oauth.ts` 定义远程 MCP 的稳定路径、OAuth 2.1 scope、RFC 9728 资源发现、RFC 8414 授权服务器发现、动态客户端注册、短期访问令牌与轮换刷新令牌响应契约。它不包含浏览器 Session Cookie，也不允许把 Cookie 当作 Bearer Token。
 - `project-agent-share.ts` 定义不可变 Git Project 分享契约，仅允许规范 GitHub HTTPS 仓库、精确 commit/tree SHA、启动说明和无值的依赖声明进入 manifest。输出只包含任何持链接者都可匿名读取的公开 manifest、分享链接和复制到 Codex 的文字，不包含 owner 或内部存储标识。V0 分享不撤销、不过期且不托管 Git 对象，调用方不得把秘密放进 manifest。
+- `codex-agent-share.ts` 定义 `combo.codex-agent-share/1` 当前任务派生 Agent 分享契约。公开 manifest 保存固定 Project 来源、最长八千字符的 instructions、一至五条唯一 starter prompts、无值依赖声明和没有独立 raw task blob 的事实。创建输入严格拒绝独立 threadId、messages、session、路径、raw transcript、secret 和凭据字段，公开 free text 拒绝 NUL 与未配对 surrogate；输出附带稳定 manifest SHA-256、规范 `/agent` 链接和不内嵌派生 instructions 的接收文案。服务端只校验字段形状，不能证明创建者声明的派生文本已脱敏或不含原文。该文件同时定义 `combo.creator-bootstrap-handoff/1`、`combo.receiver-bootstrap-handoff/1` 和正式 Agent 唯一首消息 `COMBO_CODEX_AGENT_RUN/1` 的 Host-safe fixed-order compact JSON schema、renderer、特殊字符输入和 exact wire golden；`expectedSourceRef` 只代表远端 provenance。
 
-Project Agent 的 schema version 也版本化服务端 `copyPrompt` renderer；v1 renderer 是 wire contract，必须永久保留并由完整 golden test 固定，不能在同一 schema version 下改写。
+Project Agent 与 Codex Agent 的 schema version 都版本化服务端 `copyPrompt` renderer；每个 v1 renderer 都是 wire contract，必须永久保留并由完整 contract 或 golden test 固定，不能在同一 schema version 下改写。
+
+Codex Agent V1 digest 的 canonical JSON 不是 RFC 8785。它递归按 JavaScript 默认 UTF-16 code-unit 顺序排列对象键，对 primitive 使用 `JSON.stringify`，保持数组顺序，并拒绝 `undefined` 与非有限数字；摘要是该 UTF-8 字节串的 SHA-256。共享测试给出跨仓库必须完全匹配的 JSON 与 digest golden。
 
 - `trial.ts` 定义试用域：会话、消息、产物和 Turn 的视图，以及建会话、带 `usageId` 发消息和余额不足响应的契约；`usageId` 在校验 UUID 后统一输出小写规范形，Agent Builder 会话可携带固定的 Project、Revision 与 Release。Artifact 会带可选来源 Turn 和创建时间，会话详情能从 PostgreSQL 恢复 active Turn，并只用严格白名单码描述最近终态 Turn，绝不承载原始错误文本。`currentUiArtifactId` 标识 Studio 当前 UI 或普通会话创建时冻结的 UI 副本。会话详情里的能力摘要带开场表单字段与提示语（来自普通能力定义或固定 Revision Bundle，定义读不出时为空数组）。消息内容是 agent 原生分块格式，共享层只约束到「是数组」，严格校验在 runtime 侧。
 - `redaction.ts` 是去敏规则引擎，纯函数、无任何 IO：`redact` 与 `redactBatch` 按带版本号的规则集抹掉手机号、邮箱、密钥、证件号、银行卡号、IP 等隐私信息，产出只含类别与计数的聚合报告，且对已去敏文本重跑结果不变。

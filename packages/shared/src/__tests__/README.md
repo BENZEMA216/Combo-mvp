@@ -6,3 +6,4 @@
 - `shared.test.ts` 验证通用错误信封、任务、能力、Agent Revision、Test 质量复核与发布默认值、稳定 JSON 编码、试用会话和服务端事件流契约。各业务服务和前端通过共享包复用这些数据形状。
 - `redaction.test.ts` 验证去敏规则、类别计数、批处理和规则集边界。authoring 的提取流程在写入能力内容前消费同一套去敏实现。
 - `project-agent-share.test.ts` 验证 Project Agent 的规范 GitHub 来源、完整 ref、精确 SHA、安全依赖名和禁止文件、会话与凭据字段的严格边界。
+- `codex-agent-share.test.ts` 验证当前任务派生 Agent 的嵌套定义、instructions 与 starter prompts 上限、服务端固定 authoring source，以及 threadId、messages、session、路径、原始 transcript 与 secret 字段的严格拒绝。

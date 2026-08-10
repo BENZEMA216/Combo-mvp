@@ -1,6 +1,6 @@
 # modules/project-agent-share —— Project Agent 公开分享
 
-这个模块保存不可变的 Git Project manifest，并通过高熵随机分享链接让任意接收者读取。任何拿到链接的人都能通过公开 HTTP 端点匿名读取 manifest；链接不是账号授权令牌，但应按公开链接分享。V0 分享不会过期、不能撤销，因此 manifest 里不得放秘密。Codex 负责推理、恢复项目和运行 Harness；本模块不抓取仓库、不复制会话、不执行 Runtime。
+这个模块保存兼容的 `combo.project-agent-share/1` Git Project manifest，并通过高熵随机分享链接让任意接收者读取。任何拿到链接的人都能通过公开 HTTP 端点匿名读取 manifest；它不是账户授权或 OAuth token，但属于持有即匿名可读的未列出公开定位链接，应按公开内容处理。V0 分享不会过期、不能撤销，因此 manifest 里不得放秘密。Codex 负责推理、恢复项目和运行 Harness；本模块不抓取仓库、不复制会话、不执行 Runtime。新的当前任务 Agent 分享由相邻 `codex-agent-share/` 模块负责；两个 schema 复用不可变表，但 URL、读取和幂等重放严格分流。
 
 ## 文件
 
