@@ -36,7 +36,7 @@ Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shar
 pnpm install
 ```
 
-工作区包含 `packages/shared`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
+工作区包含 `packages/shared`、`apps/authoring`、`apps/creator-worker`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
 
 ---
 
@@ -59,6 +59,7 @@ pnpm format:check     # prettier 全量校验
 pnpm -F @cb/shared build        # 构建脊柱（apps 依赖其 dist + .d.ts，先构建它）
 pnpm -F @cb/shared openapi:gen  # 生成 OpenAPI 3.1（写 dist/openapi.json）
 pnpm -F @cb/authoring build     # 构建创作 API 与 Worker
+pnpm -F @cb/creator-worker build # 构建本机 Creator Worker Host Adapter
 pnpm -F @cb/runtime build       # 构建 Runtime API
 pnpm -F @cb/web dev             # Vite 开发服务器（前端）
 pnpm -F @cb/runtime-web dev     # Vite 试用与 Studio 前端
@@ -178,6 +179,7 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 .                      # 仓库根 = 本 monorepo（@cb/root）
 ├── packages/shared/   # @cb/shared 脊柱：DTO / zod / ErrorEnvelope / SSE 协议 / 常量 / 端口 / OpenAPI 真源
 ├── apps/authoring/    # @cb/authoring  创作 API 与任务 Worker
+├── apps/creator-worker/ # @cb/creator-worker  本机 Codex Host Adapter 与 loopback 聊天体验
 ├── apps/runtime/      # @cb/runtime  会话、Turn、Artifact 与 Runtime SSE
 ├── apps/web/          # @cb/web  创作端 React/Vite 应用
 ├── apps/runtime-web/  # @cb/runtime-web  试用与 Studio React/Vite 应用
