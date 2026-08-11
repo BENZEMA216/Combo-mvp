@@ -27,7 +27,7 @@ Worker 不启用 Codex 的全局 `--strict-config`：当前 Desktop 可能保留
 运行方式：
 
 ```bash
-pnpm --dir apps/creator-worker dev -- --project /absolute/path/to/safe-project --allow-unisolated-read
+pnpm --dir apps/creator-worker dev --project /absolute/path/to/safe-project --allow-unisolated-read
 ```
 
 启动成功后，终端会给出包含 URL fragment capability 的“本次 Worker 会话”本机体验地址；它在这次 Worker 运行期间可重复使用，并非首开即失效。该 capability 不进入 cookie、查询参数或 Codex 子进程环境。每个浏览器对话对应一个 ephemeral Codex thread；Worker 重启后旧对话失效。

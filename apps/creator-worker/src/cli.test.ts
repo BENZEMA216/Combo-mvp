@@ -11,6 +11,18 @@ afterEach(() => {
 });
 
 describe('Creator Worker CLI boundary', () => {
+  it('accepts one leading package-manager argument separator', async () => {
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    await expect(runCli(['--', '--help'])).resolves.toBe(0);
+    expect(stdout).toHaveBeenCalledWith(expect.stringContaining('Combo Creator Worker 体验版'));
+  });
+
+  it('does not accept an argument separator after CLI options have started', async () => {
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(runCli(['--help', '--'])).resolves.toBe(2);
+    expect(stderr).toHaveBeenCalledWith('启动参数无效。使用 --help 查看用法。\n');
+  });
+
   it('rejects any attempt to replace the reviewed bundled Codex executable', async () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     await expect(runCli(['--codex-bin', '/bin/echo'])).resolves.toBe(2);

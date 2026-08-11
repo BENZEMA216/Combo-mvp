@@ -132,8 +132,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
     allowLoopbackProxy: false,
     help: false,
   };
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index];
+  const effectiveArgv = argv[0] === '--' ? argv.slice(1) : argv;
+  for (let index = 0; index < effectiveArgv.length; index += 1) {
+    const argument = effectiveArgv[index];
     if (argument === '--help' || argument === '-h') {
       options.help = true;
     } else if (argument === '--allow-unisolated-read') {
@@ -141,9 +142,9 @@ function parseArgs(argv: readonly string[]): CliOptions {
     } else if (argument === '--allow-loopback-proxy') {
       options.allowLoopbackProxy = true;
     } else if (argument === '--project') {
-      options.project = requireValue(argv, ++index);
+      options.project = requireValue(effectiveArgv, ++index);
     } else if (argument === '--port') {
-      const value = Number(requireValue(argv, ++index));
+      const value = Number(requireValue(effectiveArgv, ++index));
       if (!Number.isSafeInteger(value) || value < 0 || value > 65_535) throw new Error();
       options.port = value;
     } else {
