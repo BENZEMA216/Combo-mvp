@@ -29,4 +29,7 @@ pnpm -F @cb/creator-worker-broker-client typecheck:test
 pnpm -F @cb/creator-worker-broker-client test
 ```
 
+标准 `test` 入口会先按依赖顺序构建 Protocol、Broker Journal 与 Gateway，避免 fresh
+worktree 或刚集成提交时读取旧 `dist` 产生假绿/假红。
+
 这些测试属于 `E3 Contract/Fake System`：WebSocket 客户端与回环 socket 是真实实现，Broker、Challenge、DeviceSigner 和 durable port 都是测试替身。它们不证明 Secure Enclave、真实 OAuth、真实 SQLite WAL/FULL fsync、PostgreSQL、公网 TLS、NAT、Test Cloud 或 Gate 3/4。
