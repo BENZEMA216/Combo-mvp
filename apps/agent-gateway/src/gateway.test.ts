@@ -270,7 +270,17 @@ describe('AgentGateway real WebSocket transport', () => {
     await closed;
     barrier.resolve();
 
-    await waitFor(() => authority.closed.includes('CLIENT_CLOSED'));
+    await waitFor(
+      () =>
+        (authority.sessions.length === 0 && authority.abortedAuthentications === 1) ||
+        (authority.sessions.length === 1 && authority.closed.includes('CLIENT_CLOSED')),
+    );
+    if (authority.sessions.length === 0) {
+      expect(authority.abortedAuthentications).toBe(1);
+      expect(authority.closed).toHaveLength(0);
+    } else {
+      expect(authority.closed).toContain('CLIENT_CLOSED');
+    }
     expect(authority.openCalls).toBe(0);
     expect(gateway.activeConnections).toBe(0);
     expect(await gateway.dispatch(CONNECTION_A, [])).toBe(false);
