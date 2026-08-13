@@ -366,8 +366,16 @@ export class CodexAppServerClient implements CodexHost {
 
   constructor(options: CodexAppServerClientOptions) {
     this.command = realpathSync(options.codexBinary);
-    if (!options.spawnAppServer && this.command !== realpathSync(BUNDLED_CODEX_BINARY)) {
-      throw new TypeError('Only the reviewed bundled Codex binary is supported.');
+    if (!options.spawnAppServer) {
+      let reviewedBinary: string;
+      try {
+        reviewedBinary = realpathSync(BUNDLED_CODEX_BINARY);
+      } catch {
+        throw new TypeError('Only the reviewed bundled Codex binary is supported.');
+      }
+      if (this.command !== reviewedBinary) {
+        throw new TypeError('Only the reviewed bundled Codex binary is supported.');
+      }
     }
     this.projectPath = realpathSync(options.projectPath);
     this.developerInstructions = options.developerInstructions;
