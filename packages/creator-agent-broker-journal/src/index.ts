@@ -1,5 +1,6 @@
+export * from './capability-authority.js';
 export * from './cloud-journal.js';
-export * from './fault-harness.js';
+export * from './fault-model.js';
 export * from './invocation.js';
 export * from './protocol.js';
 export * from './reconciliation.js';

@@ -11,25 +11,45 @@ import {
   initialSequenceCursor,
   parseBrokerEnvelope,
   parseFence,
+  restoreSequenceCursor,
+  serializeSequenceCursor,
   type BrokerEnvelope,
 } from './protocol.js';
+import {
+  AGENT_VERSION_DIGEST,
+  IDS,
+  REQUEST_DIGEST,
+  createSignedCapabilityFixture,
+} from './reference-fixture.js';
+
+const SIGNED_CAPABILITY = createSignedCapabilityFixture();
 
 function envelope(sequence: number, overrides: Partial<BrokerEnvelope> = {}): BrokerEnvelope {
   return {
     protocol: BROKER_PROTOCOL,
     schemaVersion: 1,
     kind: 'command',
-    messageId: `message-${sequence}`,
+    messageId: `0198f00d-1000-7000-8000-${sequence.toString(16).padStart(12, '0')}`,
     type: 'invocation.prepare',
-    correlationId: 'invocation-a',
-    connectionId: 'connection-a',
-    sequence,
+    correlationId: IDS.invocationA,
+    connectionId: '0198f00d-1000-7000-8000-000000000001',
+    sequence: sequence.toString(10),
     sentAt: '2026-08-13T08:00:00.000Z',
     expiresAt: '2026-08-13T08:01:00.000Z',
-    lease: { deploymentId: 'deployment-a', leaseId: 'lease-a', fence: '42' },
-    body: {},
+    lease: { deploymentId: IDS.deployment, leaseId: IDS.lease, fence: '42' },
+    body: {
+      invocationId: IDS.invocationA,
+      conversationId: IDS.conversationA,
+      clientMessageId: '0198f00d-1000-7000-8000-000000000002',
+      requestDigest: REQUEST_DIGEST,
+      agentVersionId: IDS.agentVersion,
+      agentVersionDigest: AGENT_VERSION_DIGEST,
+      snapshotDigest: '4'.repeat(64),
+      deadlineAt: '2026-08-13T08:03:00.000Z',
+      executionCapability: SIGNED_CAPABILITY.capability,
+    },
     ...overrides,
-  };
+  } as BrokerEnvelope;
 }
 
 describe('broker protocol', () => {
@@ -55,13 +75,13 @@ describe('broker protocol', () => {
   it('parses exact envelopes and rejects unknown keys', () => {
     expect(parseBrokerEnvelope(envelope(0))).toEqual(envelope(0));
     expect(() => parseBrokerEnvelope({ ...envelope(0), surprise: true })).toThrowError(
-      expect.objectContaining({ code: 'UNKNOWN_KEY' }),
+      expect.objectContaining({ code: 'INVALID_ENVELOPE' }),
     );
   });
 
   it('enforces durable connection sequence, replay equality and gaps', () => {
     const now = Date.parse('2026-08-13T08:00:30.000Z');
-    let cursor = initialSequenceCursor('connection-a');
+    let cursor = initialSequenceCursor('0198f00d-1000-7000-8000-000000000001');
     const accepted = consumeSequence(cursor, envelope(0), 'digest-0', now);
     expect(accepted.type).toBe('ACCEPT');
     cursor = accepted.cursor;
@@ -71,10 +91,10 @@ describe('broker protocol', () => {
     );
     expect(consumeSequence(cursor, envelope(2), 'digest-2', now)).toMatchObject({
       type: 'REQUEST_REPLAY',
-      expected: 1,
-      received: 2,
+      expected: '1',
+      received: '2',
     });
-    expect(cursor.nextExpected).toBe(1);
+    expect(cursor.nextExpected).toBe(1n);
   });
 
   it('tracks RECEIVED, PERSISTED and CLOUD_COMMITTED without conflating them', () => {
@@ -92,6 +112,11 @@ describe('broker protocol', () => {
         messageId: 'message-a',
         canonicalDigest: 'digest-a',
         level: 'PERSISTED',
+        durableProof: {
+          journal: 'WORKER_SQLITE',
+          transactionId: 'sqlite-tx-a',
+          canonicalDigest: 'digest-a',
+        },
       }).level,
     ).toBe('PERSISTED');
     expect(
@@ -99,6 +124,11 @@ describe('broker protocol', () => {
         messageId: 'message-a',
         canonicalDigest: 'digest-a',
         level: 'CLOUD_COMMITTED',
+        durableProof: {
+          journal: 'CLOUD_POSTGRESQL',
+          transactionId: 'pg-tx-a',
+          canonicalDigest: 'digest-a',
+        },
       }).level,
     ).toBe('CLOUD_COMMITTED');
     expect(
@@ -108,6 +138,41 @@ describe('broker protocol', () => {
         level: 'RECEIVED',
       }).level,
     ).toBe('CLOUD_COMMITTED');
+  });
+
+  it('accepts a lost lower ACK only with durable proof and rejects proof mutation', () => {
+    const ledger = new BrokerAckLedger();
+    expect(
+      ledger.acknowledge({
+        messageId: 'message-a',
+        canonicalDigest: 'digest-a',
+        level: 'PERSISTED',
+        durableProof: {
+          journal: 'WORKER_SQLITE',
+          transactionId: 'sqlite-tx-a',
+          canonicalDigest: 'digest-a',
+        },
+      }).level,
+    ).toBe('PERSISTED');
+    expect(() =>
+      ledger.acknowledge({
+        messageId: 'message-b',
+        canonicalDigest: 'digest-b',
+        level: 'PERSISTED',
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'ACK_DURABLE_PROOF_REQUIRED' }));
+    expect(() =>
+      ledger.acknowledge({
+        messageId: 'message-a',
+        canonicalDigest: 'digest-a',
+        level: 'PERSISTED',
+        durableProof: {
+          journal: 'WORKER_SQLITE',
+          transactionId: 'sqlite-tx-b',
+          canonicalDigest: 'digest-a',
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_CONFLICT' }));
   });
 
   it('security-blocks an ACK replay with the same ID and a different digest', () => {
@@ -126,19 +191,85 @@ describe('broker protocol', () => {
     ).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_CONFLICT' }));
   });
 
+  it('reconstructs bounded ACK facts without downgrading durable levels', () => {
+    const ledger = new BrokerAckLedger(2);
+    ledger.acknowledge({
+      messageId: 'message-a',
+      canonicalDigest: 'digest-a',
+      level: 'CLOUD_COMMITTED',
+      durableProof: {
+        journal: 'CLOUD_POSTGRESQL',
+        transactionId: 'pg-tx-a',
+        canonicalDigest: 'digest-a',
+      },
+    });
+    const restored = BrokerAckLedger.restore(ledger.serialize(), 2);
+    expect(restored.get('message-a')).toEqual(ledger.get('message-a'));
+    expect(
+      restored.acknowledge({
+        messageId: 'message-a',
+        canonicalDigest: 'digest-a',
+        level: 'RECEIVED',
+      }).level,
+    ).toBe('CLOUD_COMMITTED');
+    expect(() =>
+      BrokerAckLedger.restore(
+        JSON.stringify({
+          schemaVersion: 1,
+          records: [ledger.get('message-a'), { ...ledger.get('message-a') }],
+        }),
+        2,
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'IDEMPOTENCY_CONFLICT' }));
+    expect(() => BrokerAckLedger.restore(ledger.serialize(), 0)).toThrowError(
+      expect.objectContaining({ code: 'ACK_LEDGER_CAPACITY' }),
+    );
+  });
+
   it('rejects expired and stale-connection frames', () => {
-    const cursor = initialSequenceCursor('connection-a');
+    const cursor = initialSequenceCursor('0198f00d-1000-7000-8000-000000000001');
     expect(() =>
       consumeSequence(cursor, envelope(0), 'digest', Date.parse('2026-08-13T08:01:00.000Z')),
     ).toThrowError(expect.objectContaining({ code: 'MESSAGE_EXPIRED' }));
     expect(() =>
       consumeSequence(
         cursor,
-        envelope(0, { connectionId: 'connection-old' }),
+        envelope(0, { connectionId: '0198f00d-1000-7000-8000-000000000099' }),
         'digest',
         Date.parse('2026-08-13T08:00:30.000Z'),
       ),
     ).toThrowError(expect.objectContaining({ code: 'STALE_CONNECTION' }));
+  });
+
+  it('bounds the durable sequence replay cursor', () => {
+    const now = Date.parse('2026-08-13T08:00:30.000Z');
+    let cursor = initialSequenceCursor('0198f00d-1000-7000-8000-000000000001', 2);
+    for (let sequence = 0; sequence < 3; sequence += 1) {
+      cursor = consumeSequence(cursor, envelope(sequence), `digest-${sequence}`, now).cursor;
+    }
+    expect(cursor).toMatchObject({ nextExpected: 3n, lowestRetained: 1n, maxRetained: 2 });
+    expect(cursor.accepted.size).toBe(2);
+    expect(() => consumeSequence(cursor, envelope(0), 'digest-0', now)).toThrowError(
+      expect.objectContaining({ code: 'CURSOR_EXPIRED' }),
+    );
+    const restored = restoreSequenceCursor(serializeSequenceCursor(cursor));
+    expect(restored).toEqual(cursor);
+    expect(consumeSequence(restored, envelope(2), 'digest-2', now).type).toBe('REPLAY');
+    expect(() =>
+      restoreSequenceCursor(
+        JSON.stringify({
+          schemaVersion: 1,
+          connectionId: restored.connectionId,
+          nextExpected: '3',
+          lowestRetained: '1',
+          maxRetained: 2,
+          accepted: [
+            ['1', 'digest-1'],
+            ['1', 'changed'],
+          ],
+        }),
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'INVALID_SEQUENCE' }));
   });
 
   it('grants one active lease and rejects stale lease/fence after failover', () => {
@@ -186,6 +317,55 @@ describe('broker protocol', () => {
         30_001,
       ),
     ).toThrowError(expect.objectContaining({ code: 'STALE_FENCE' }));
+  });
+
+  it('durably expires and revokes leases and never revives them through restore', () => {
+    const registry = new LeaseRegistry();
+    const first = registry.acquire({
+      leaseId: 'lease-a',
+      deploymentId: 'deployment-a',
+      workerId: 'worker-a',
+      connectionId: 'connection-a',
+      nowMs: 0,
+      ttlMs: 30_000,
+    });
+    expect(
+      registry.assertWorkerCurrent(
+        { deploymentId: first.deploymentId, leaseId: first.leaseId, fence: '0' },
+        'worker-a',
+        29_999,
+      ).state,
+    ).toBe('ACTIVE');
+    expect(registry.expire(30_000)).toHaveLength(1);
+    expect(() =>
+      registry.assertWorkerCurrent(
+        { deploymentId: first.deploymentId, leaseId: first.leaseId, fence: '0' },
+        'worker-a',
+        30_000,
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'STALE_LEASE' }));
+
+    const second = registry.acquire({
+      leaseId: 'lease-b',
+      deploymentId: 'deployment-a',
+      workerId: 'worker-b',
+      connectionId: 'connection-b',
+      nowMs: 30_000,
+      ttlMs: 30_000,
+    });
+    expect(registry.revoke('deployment-a')).toMatchObject({
+      leaseId: second.leaseId,
+      state: 'REVOKED',
+    });
+    const restored = LeaseRegistry.restore(registry.serialize());
+    expect(restored.current('deployment-a')?.state).toBe('REVOKED');
+    expect(() =>
+      restored.assertWorkerCurrent(
+        { deploymentId: second.deploymentId, leaseId: second.leaseId, fence: '1' },
+        'worker-b',
+        30_001,
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'STALE_LEASE' }));
   });
 
   it('keeps stable protocol error identity', () => {

@@ -36,6 +36,7 @@ export interface ReconciliationResult {
   readonly decision: ReconciliationDecision;
   readonly automaticInferenceAllowed: boolean;
   readonly reason: string;
+  readonly replayCommand?: 'invocation.prepare' | 'invocation.start';
 }
 
 /**
@@ -46,20 +47,78 @@ export function reconcileInvocation(evidence: ReconciliationEvidence): Reconcili
   if (!evidence.bindingDigestsMatch) {
     return decision('SECURITY_BLOCK', false, 'binding_digest_mismatch');
   }
-  if (isTerminalInvocationState(evidence.cloudState)) {
-    return decision('NOOP_TERMINAL', false, 'cloud_terminal_is_authoritative');
-  }
   if (evidence.executionCapability === 'INVALID') {
     return decision('SECURITY_BLOCK', false, 'execution_capability_invalid');
+  }
+
+  if (isTerminalInvocationState(evidence.cloudState)) {
+    if (terminalEvidenceContradicts(evidence)) {
+      return decision('SECURITY_BLOCK', false, 'cloud_terminal_conflicts_with_other_evidence');
+    }
+    return decision('NOOP_TERMINAL', false, 'cloud_terminal_is_authoritative');
+  }
+
+  // Contradictory Host evidence is evaluated before either Journal can propose replay.
+  // A positive or terminal Host receipt always closes the automatic execution path.
+  if (evidence.hostEvidence === 'PROVEN_NOT_DISPATCHED') {
+    if (evidence.cloudState === 'RUNNING') {
+      return decision('SECURITY_BLOCK', false, 'cloud_running_conflicts_with_host_no_dispatch');
+    }
+    if (
+      evidence.localState === 'RUNNING' ||
+      evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.localState === 'FAILED' ||
+      evidence.localState === 'CANCELLED'
+    ) {
+      return decision('SECURITY_BLOCK', false, 'host_no_dispatch_conflicts_with_local_execution');
+    }
+  }
+  if (evidence.hostEvidence === 'RUNNING_EXACT_TURN') {
+    if (
+      evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.localState === 'FAILED' ||
+      evidence.localState === 'CANCELLED'
+    ) {
+      return decision('SECURITY_BLOCK', false, 'host_running_conflicts_with_local_terminal');
+    }
+    return decision('RESUME_OBSERVATION', false, 'exact_host_turn_is_queryable');
+  }
+  if (evidence.hostEvidence === 'COMPLETED_EXACT_FINAL') {
+    if (evidence.localState === 'FAILED' || evidence.localState === 'CANCELLED') {
+      return decision('SECURITY_BLOCK', false, 'host_final_conflicts_with_local_terminal');
+    }
+    return decision('SUBMIT_EXISTING_FINAL', false, 'host_completed_final_can_be_durably_imported');
+  }
+  if (evidence.hostEvidence === 'FAILED_CONFIRMED') {
+    if (
+      evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.localState === 'CANCELLED'
+    ) {
+      return decision('SECURITY_BLOCK', false, 'host_failure_conflicts_with_local_terminal');
+    }
+    return decision('MARK_FAILED', false, 'failure_is_confirmed');
+  }
+  if (evidence.hostEvidence === 'INTERRUPTED_CONFIRMED') {
+    if (
+      evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.localState === 'FAILED'
+    ) {
+      return decision('SECURITY_BLOCK', false, 'host_interrupt_conflicts_with_local_terminal');
+    }
+    return decision('MARK_CANCELLED', false, 'interrupt_is_confirmed');
   }
 
   if (evidence.localState === 'FINAL_READY' || evidence.localState === 'CLOUD_COMMITTED') {
     return decision('SUBMIT_EXISTING_FINAL', false, 'local_exact_final_is_durable');
   }
-  if (evidence.localState === 'FAILED' || evidence.hostEvidence === 'FAILED_CONFIRMED') {
+  if (evidence.localState === 'FAILED') {
     return decision('MARK_FAILED', false, 'failure_is_confirmed');
   }
-  if (evidence.localState === 'CANCELLED' || evidence.hostEvidence === 'INTERRUPTED_CONFIRMED') {
+  if (evidence.localState === 'CANCELLED') {
     return decision('MARK_CANCELLED', false, 'interrupt_is_confirmed');
   }
   if (evidence.localState === 'UNCERTAIN') {
@@ -73,7 +132,7 @@ export function reconcileInvocation(evidence: ReconciliationEvidence): Reconcili
       return decision('SECURITY_BLOCK', false, 'stale_worker_cannot_receive_or_start_work');
     }
     if (evidence.cloudState === 'QUEUED' || evidence.cloudState === 'DISPATCH_PENDING') {
-      return decision('REPLAY_COMMAND', true, 'both_journals_prove_pre_dispatch');
+      return replay('invocation.prepare', 'both_journals_prove_prepare_is_replayable');
     }
     return decision(
       'MARK_UNCERTAIN',
@@ -86,27 +145,23 @@ export function reconcileInvocation(evidence: ReconciliationEvidence): Reconcili
     if (evidence.leaseState !== 'CURRENT') {
       return decision('SECURITY_BLOCK', false, 'stale_worker_cannot_start_prepared_work');
     }
-    if (
-      evidence.cloudState === 'QUEUED' ||
-      evidence.cloudState === 'DISPATCH_PENDING' ||
-      evidence.cloudState === 'PERSISTED'
-    ) {
-      return decision('REPLAY_COMMAND', true, 'durable_prepare_proves_pre_dispatch');
+    if (evidence.cloudState === 'QUEUED' || evidence.cloudState === 'DISPATCH_PENDING') {
+      return replay('invocation.prepare', 'cloud_must_commit_the_existing_prepare');
+    }
+    if (evidence.cloudState === 'PERSISTED') {
+      return replay('invocation.start', 'durable_prepare_allows_exact_start_command_replay');
     }
     return decision('MARK_UNCERTAIN', false, 'cloud_claims_post_dispatch_without_host_evidence');
   }
 
-  if (evidence.hostEvidence === 'RUNNING_EXACT_TURN') {
-    return decision('RESUME_OBSERVATION', false, 'exact_host_turn_is_queryable');
-  }
-  if (evidence.hostEvidence === 'COMPLETED_EXACT_FINAL') {
-    return decision('SUBMIT_EXISTING_FINAL', false, 'host_completed_final_can_be_durably_imported');
-  }
   if (evidence.hostEvidence === 'PROVEN_NOT_DISPATCHED') {
     if (evidence.leaseState !== 'CURRENT') {
       return decision('SECURITY_BLOCK', false, 'stale_worker_cannot_cross_dispatch_boundary');
     }
-    return decision('REPLAY_COMMAND', true, 'independent_host_receipt_proves_no_dispatch');
+    if (evidence.localState === 'STARTING') {
+      return replay('invocation.start', 'independent_host_receipt_proves_start_not_dispatched');
+    }
+    return replay('invocation.prepare', 'independent_host_receipt_proves_prepare_is_safe');
   }
   return decision(
     'MARK_UNCERTAIN',
@@ -121,4 +176,60 @@ function decision(
   reason: string,
 ): ReconciliationResult {
   return { decision: value, automaticInferenceAllowed, reason };
+}
+
+function replay(
+  replayCommand: 'invocation.prepare' | 'invocation.start',
+  reason: string,
+): ReconciliationResult {
+  return {
+    decision: 'REPLAY_COMMAND',
+    automaticInferenceAllowed: true,
+    replayCommand,
+    reason,
+  };
+}
+
+function terminalEvidenceContradicts(evidence: ReconciliationEvidence): boolean {
+  if (
+    evidence.cloudState === 'SUCCEEDED' &&
+    (evidence.localState === 'FAILED' ||
+      evidence.localState === 'CANCELLED' ||
+      evidence.localState === 'UNCERTAIN' ||
+      evidence.hostEvidence === 'FAILED_CONFIRMED' ||
+      evidence.hostEvidence === 'INTERRUPTED_CONFIRMED' ||
+      evidence.hostEvidence === 'PROVEN_NOT_DISPATCHED')
+  ) {
+    return true;
+  }
+  if (
+    evidence.cloudState === 'FAILED' &&
+    (evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.localState === 'CANCELLED' ||
+      evidence.hostEvidence === 'COMPLETED_EXACT_FINAL' ||
+      evidence.hostEvidence === 'INTERRUPTED_CONFIRMED')
+  ) {
+    return true;
+  }
+  if (
+    evidence.cloudState === 'CANCELLED' &&
+    (evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.localState === 'FAILED' ||
+      evidence.hostEvidence === 'COMPLETED_EXACT_FINAL' ||
+      evidence.hostEvidence === 'FAILED_CONFIRMED')
+  ) {
+    return true;
+  }
+  if (
+    (evidence.cloudState === 'UNCERTAIN' || evidence.cloudState === 'EXPIRED') &&
+    (evidence.localState === 'FINAL_READY' ||
+      evidence.localState === 'CLOUD_COMMITTED' ||
+      evidence.hostEvidence === 'RUNNING_EXACT_TURN' ||
+      evidence.hostEvidence === 'COMPLETED_EXACT_FINAL')
+  ) {
+    return true;
+  }
+  return false;
 }

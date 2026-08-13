@@ -21,8 +21,11 @@
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "test": "vitest run",
     "test:property": "vitest run src/property.test.ts",
-    "test:fault": "vitest run src/fault-harness.test.ts",
+    "test:fault-model": "vitest run src/fault-model.test.ts",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@cb/creator-agent-protocol": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.3",

@@ -1,133 +1,92 @@
+import { readFileSync } from 'node:fs';
+
 import { describe, expect, it } from 'vitest';
 
 import {
   reconcileInvocation,
-  type ReconciliationEvidence,
   type ReconciliationDecision,
+  type ReconciliationEvidence,
 } from './reconciliation.js';
 
-const BASE: ReconciliationEvidence = {
-  cloudState: 'RUNNING',
-  localState: 'RUNNING',
-  hostEvidence: 'UNAVAILABLE',
-  leaseState: 'CURRENT',
-  executionCapability: 'VALID_FOR_INVOCATION',
-  bindingDigestsMatch: true,
-};
+interface GoldenRow extends ReconciliationEvidence {
+  readonly id: string;
+  readonly decision: ReconciliationDecision;
+  readonly automaticInferenceAllowed: boolean;
+  readonly replayCommand?: 'invocation.prepare' | 'invocation.start';
+}
+
+const GOLDEN_ROWS = JSON.parse(
+  readFileSync(new URL('../test-fixtures/reconciliation-golden.json', import.meta.url), 'utf8'),
+) as GoldenRow[];
 
 describe('cross-journal reconciliation', () => {
-  it.each<{
-    name: string;
-    input: Partial<ReconciliationEvidence>;
-    expected: ReconciliationDecision;
-    automatic: boolean;
-  }>([
-    {
-      name: 'cloud terminal wins',
-      input: { cloudState: 'SUCCEEDED', localState: 'STARTING' },
-      expected: 'NOOP_TERMINAL',
-      automatic: false,
-    },
-    {
-      name: 'digest conflict security blocks',
-      input: { bindingDigestsMatch: false },
-      expected: 'SECURITY_BLOCK',
-      automatic: false,
-    },
-    {
-      name: 'digest conflict security blocks even after cloud terminal',
-      input: { cloudState: 'SUCCEEDED', bindingDigestsMatch: false },
-      expected: 'SECURITY_BLOCK',
-      automatic: false,
-    },
-    {
-      name: 'queued and missing safely replays',
-      input: { cloudState: 'QUEUED', localState: 'MISSING' },
-      expected: 'REPLAY_COMMAND',
-      automatic: true,
-    },
-    {
-      name: 'prepared safely replays start',
-      input: { cloudState: 'PERSISTED', localState: 'PREPARED' },
-      expected: 'REPLAY_COMMAND',
-      automatic: true,
-    },
-    {
-      name: 'missing local journal after cloud persisted becomes uncertain',
-      input: { cloudState: 'PERSISTED', localState: 'MISSING' },
-      expected: 'MARK_UNCERTAIN',
-      automatic: false,
-    },
-    {
-      name: 'queryable exact turn resumes observation',
-      input: { localState: 'RUNNING', hostEvidence: 'RUNNING_EXACT_TURN' },
-      expected: 'RESUME_OBSERVATION',
-      automatic: false,
-    },
-    {
-      name: 'durable local final submits existing final',
-      input: { localState: 'FINAL_READY', leaseState: 'STALE' },
-      expected: 'SUBMIT_EXISTING_FINAL',
-      automatic: false,
-    },
-    {
-      name: 'exact host completed final can be imported',
-      input: { localState: 'STARTING', hostEvidence: 'COMPLETED_EXACT_FINAL' },
-      expected: 'SUBMIT_EXISTING_FINAL',
-      automatic: false,
-    },
-    {
-      name: 'confirmed failure marks failed',
-      input: { hostEvidence: 'FAILED_CONFIRMED' },
-      expected: 'MARK_FAILED',
-      automatic: false,
-    },
-    {
-      name: 'confirmed interrupt marks cancelled',
-      input: { hostEvidence: 'INTERRUPTED_CONFIRMED' },
-      expected: 'MARK_CANCELLED',
-      automatic: false,
-    },
-    {
-      name: 'starting and unavailable becomes uncertain',
-      input: { localState: 'STARTING', hostEvidence: 'UNAVAILABLE' },
-      expected: 'MARK_UNCERTAIN',
-      automatic: false,
-    },
-    {
-      name: 'independent no-dispatch proof can replay',
-      input: { localState: 'STARTING', hostEvidence: 'PROVEN_NOT_DISPATCHED' },
-      expected: 'REPLAY_COMMAND',
-      automatic: true,
-    },
-    {
-      name: 'stale worker cannot cross dispatch boundary',
-      input: {
-        localState: 'STARTING',
-        hostEvidence: 'PROVEN_NOT_DISPATCHED',
-        leaseState: 'STALE',
-      },
-      expected: 'SECURITY_BLOCK',
-      automatic: false,
-    },
-  ])('$name', ({ input, expected, automatic }) => {
-    expect(reconcileInvocation({ ...BASE, ...input })).toMatchObject({
-      decision: expected,
-      automaticInferenceAllowed: automatic,
+  it('uses an independently authored, decision-complete and duplicate-free golden fixture', () => {
+    expect(GOLDEN_ROWS).toHaveLength(20);
+    expect(new Set(GOLDEN_ROWS.map((row) => row.id)).size).toBe(GOLDEN_ROWS.length);
+    expect(new Set(GOLDEN_ROWS.map((row) => row.decision))).toEqual(
+      new Set([
+        'REPLAY_COMMAND',
+        'RESUME_OBSERVATION',
+        'SUBMIT_EXISTING_FINAL',
+        'MARK_FAILED',
+        'MARK_CANCELLED',
+        'MARK_UNCERTAIN',
+        'SECURITY_BLOCK',
+        'NOOP_TERMINAL',
+      ]),
+    );
+  });
+
+  it.each(GOLDEN_ROWS)('$id returns $decision', (row) => {
+    const { id: _id, decision, automaticInferenceAllowed, replayCommand, ...evidence } = row;
+    expect(reconcileInvocation(evidence)).toMatchObject({
+      decision,
+      automaticInferenceAllowed,
+      ...(replayCommand ? { replayCommand } : {}),
     });
   });
 
-  it('never allows automatic inference when execution evidence is unavailable', () => {
-    for (const localState of ['STARTING', 'RUNNING'] as const) {
-      const result = reconcileInvocation({
-        ...BASE,
-        localState,
-        hostEvidence: 'UNAVAILABLE',
-      });
-      expect(result).toMatchObject({
-        decision: 'MARK_UNCERTAIN',
-        automaticInferenceAllowed: false,
-      });
+  it('never replays when Host has positive dispatch, running, completed or terminal evidence', () => {
+    for (const hostEvidence of [
+      'RUNNING_EXACT_TURN',
+      'COMPLETED_EXACT_FINAL',
+      'FAILED_CONFIRMED',
+      'INTERRUPTED_CONFIRMED',
+    ] as const) {
+      for (const localState of [
+        'MISSING',
+        'RECEIVED',
+        'PREPARED',
+        'STARTING',
+        'RUNNING',
+        'FINAL_READY',
+      ] as const) {
+        const result = reconcileInvocation({
+          cloudState: 'RUNNING',
+          localState,
+          hostEvidence,
+          leaseState: 'CURRENT',
+          executionCapability: 'VALID_FOR_INVOCATION',
+          bindingDigestsMatch: true,
+        });
+        expect(result.automaticInferenceAllowed).toBe(false);
+        expect(result.decision).not.toMatch(/^REPLAY_/);
+      }
+    }
+  });
+
+  it('treats RUNNING plus proven-not-dispatched as a contradiction, not a replay signal', () => {
+    for (const localState of ['MISSING', 'PREPARED', 'STARTING', 'RUNNING'] as const) {
+      expect(
+        reconcileInvocation({
+          cloudState: 'RUNNING',
+          localState,
+          hostEvidence: 'PROVEN_NOT_DISPATCHED',
+          leaseState: 'CURRENT',
+          executionCapability: 'VALID_FOR_INVOCATION',
+          bindingDigestsMatch: true,
+        }),
+      ).toMatchObject({ decision: 'SECURITY_BLOCK', automaticInferenceAllowed: false });
     }
   });
 });

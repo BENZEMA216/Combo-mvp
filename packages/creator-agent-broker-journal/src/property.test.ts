@@ -12,6 +12,14 @@ import {
   type HostEvidence,
   type LocalEvidenceState,
 } from './reconciliation.js';
+import {
+  AGENT_VERSION_DIGEST,
+  IDS,
+  NOW_MS,
+  REQUEST_DIGEST,
+  createLeaseAuthority,
+  createSignedCapabilityFixture,
+} from './reference-fixture.js';
 import { InMemoryWorkerJournal } from './worker-journal.js';
 
 const PROPERTY_SEEDS = Array.from({ length: 256 }, (_, index) => 0x5f37_0000 + index);
@@ -99,6 +107,9 @@ describe('property model with reproducible seeds', () => {
                 });
                 if (result.automaticInferenceAllowed) {
                   expect(result.decision).toBe('REPLAY_COMMAND');
+                  expect(['invocation.prepare', 'invocation.start']).toContain(
+                    result.replayCommand,
+                  );
                   expect(leaseState).toBe('CURRENT');
                   expect(executionCapability).toBe('VALID_FOR_INVOCATION');
                   expect(bindingDigestsMatch).toBe(true);
@@ -119,18 +130,26 @@ describe('property model with reproducible seeds', () => {
   });
 
   it('coalesces 1-100 duplicate prepare deliveries for every fixed seed', () => {
+    const signed = createSignedCapabilityFixture();
+    const { lease } = createLeaseAuthority();
     for (const seed of PROPERTY_SEEDS) {
       const random = lcg(seed);
       const deliveries = 1 + Math.floor(random() * 100);
-      const worker = new InMemoryWorkerJournal();
+      const worker = new InMemoryWorkerJournal(signed.authority);
       for (let index = 0; index < deliveries; index += 1) {
         worker.prepare({
-          invocationId: `invocation-${seed}`,
-          conversationId: `conversation-${seed}`,
+          invocationId: IDS.invocationA,
+          conversationId: IDS.conversationA,
           clientMessageId: `client-${seed}`,
-          requestDigest: `request-${seed}`,
-          agentVersionId: 'version-a',
-          lease: { deploymentId: 'deployment-a', leaseId: 'lease-a', fence: '42' },
+          requestDigest: REQUEST_DIGEST,
+          agentVersionId: IDS.agentVersion,
+          agentVersionDigest: AGENT_VERSION_DIGEST,
+          providerRequestId: IDS.providerRequest,
+          workerInstallationId: IDS.worker,
+          lease,
+          executionCapability: signed.capability,
+          expectedExecutionCapability: signed.expected,
+          nowMs: NOW_MS,
           commandId: `prepare-${seed}`,
           sourceEventId: `prepared-${seed}`,
         });

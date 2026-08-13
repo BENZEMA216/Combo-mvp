@@ -383,6 +383,10 @@ importers:
         version: 2.9.0
 
   packages/creator-agent-broker-journal:
+    dependencies:
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../creator-agent-protocol
     devDependencies:
       typescript:
         specifier: ^5.7.3
