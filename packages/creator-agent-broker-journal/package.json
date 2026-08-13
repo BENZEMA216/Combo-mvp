@@ -22,6 +22,7 @@
     "test": "vitest run",
     "test:property": "vitest run src/property.test.ts",
     "test:fault-model": "vitest run src/fault-model.test.ts",
+    "generate:reconciliation-golden": "node scripts/generate-reconciliation-golden.mjs",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {

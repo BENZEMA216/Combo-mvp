@@ -150,6 +150,8 @@ export interface FaultObservation {
   readonly codexTurnStartCount: number;
   readonly providerUpstreamRequestCount: number;
   readonly consumerVisibleFinalCount: number;
+  readonly providerReplayConflictCount: number;
+  readonly consumerFinalConflictCount: number;
 }
 
 export interface FaultRecordingPort {
@@ -162,60 +164,124 @@ export interface FaultRecordingPort {
 
 /** Independent mock side-effect ledger; it is not derived from either Journal. */
 export class RecordingFaultPort implements FaultRecordingPort {
-  private readonly codexTurns = new Set<string>();
-  private readonly providerRequests = new Map<string, string>();
-  private readonly consumerFinals = new Map<string, string>();
+  private readonly codexTurnAttempts: string[] = [];
+  private readonly providerRequestAttempts: Array<readonly [string, string]> = [];
+  private readonly consumerFinalAttempts: Array<readonly [string, string]> = [];
+  private readonly providerRequestBindings = new Map<string, string>();
+  private readonly consumerFinalBindings = new Map<string, string>();
+  private providerReplayConflictCount = 0;
+  private consumerFinalConflictCount = 0;
+
+  constructor(private readonly maxAttemptsPerKind = 100_000) {
+    if (!Number.isSafeInteger(maxAttemptsPerKind) || maxAttemptsPerKind < 1) {
+      throw new Error('INVALID_RECORDING_PORT');
+    }
+  }
 
   recordCodexTurnStart(invocationId: string): void {
-    this.codexTurns.add(invocationId);
+    requireFaultToken(invocationId);
+    this.assertCapacity(this.codexTurnAttempts.length);
+    this.codexTurnAttempts.push(invocationId);
   }
 
   recordProviderRequest(providerRequestId: string, requestDigest: string): void {
-    const known = this.providerRequests.get(providerRequestId);
-    if (known !== undefined && known !== requestDigest) throw new Error('PROVIDER_REPLAY_CONFLICT');
-    this.providerRequests.set(providerRequestId, requestDigest);
+    requireFaultToken(providerRequestId);
+    requireFaultToken(requestDigest);
+    this.assertCapacity(this.providerRequestAttempts.length);
+    this.providerRequestAttempts.push([providerRequestId, requestDigest]);
+    const known = this.providerRequestBindings.get(providerRequestId);
+    if (known !== undefined && known !== requestDigest) {
+      this.providerReplayConflictCount += 1;
+      throw new Error('PROVIDER_REPLAY_CONFLICT');
+    }
+    this.providerRequestBindings.set(providerRequestId, requestDigest);
   }
 
   recordConsumerFinal(invocationId: string, resultDigest: string): void {
-    const known = this.consumerFinals.get(invocationId);
-    if (known !== undefined && known !== resultDigest) throw new Error('CONSUMER_FINAL_CONFLICT');
-    this.consumerFinals.set(invocationId, resultDigest);
+    requireFaultToken(invocationId);
+    requireFaultToken(resultDigest);
+    this.assertCapacity(this.consumerFinalAttempts.length);
+    this.consumerFinalAttempts.push([invocationId, resultDigest]);
+    const known = this.consumerFinalBindings.get(invocationId);
+    if (known !== undefined && known !== resultDigest) {
+      this.consumerFinalConflictCount += 1;
+      throw new Error('CONSUMER_FINAL_CONFLICT');
+    }
+    this.consumerFinalBindings.set(invocationId, resultDigest);
   }
 
   snapshot(): FaultObservation {
     return {
-      codexTurnStartCount: this.codexTurns.size,
-      providerUpstreamRequestCount: this.providerRequests.size,
-      consumerVisibleFinalCount: this.consumerFinals.size,
+      codexTurnStartCount: this.codexTurnAttempts.length,
+      providerUpstreamRequestCount: this.providerRequestAttempts.length,
+      consumerVisibleFinalCount: this.consumerFinalAttempts.length,
+      providerReplayConflictCount: this.providerReplayConflictCount,
+      consumerFinalConflictCount: this.consumerFinalConflictCount,
     };
   }
 
   serialize(): string {
     return JSON.stringify({
-      schemaVersion: 1,
-      codexTurns: [...this.codexTurns],
-      providerRequests: [...this.providerRequests],
-      consumerFinals: [...this.consumerFinals],
+      schemaVersion: 2,
+      codexTurnAttempts: this.codexTurnAttempts,
+      providerRequestAttempts: this.providerRequestAttempts,
+      consumerFinalAttempts: this.consumerFinalAttempts,
     });
   }
 
-  static restore(serialized: string): RecordingFaultPort {
+  static restore(serialized: string, maxAttemptsPerKind = 100_000): RecordingFaultPort {
     const parsed = JSON.parse(serialized) as {
       schemaVersion: number;
-      codexTurns: string[];
-      providerRequests: Array<[string, string]>;
-      consumerFinals: Array<[string, string]>;
+      codexTurnAttempts: string[];
+      providerRequestAttempts: Array<[string, string]>;
+      consumerFinalAttempts: Array<[string, string]>;
     };
-    if (parsed.schemaVersion !== 1) throw new Error('INVALID_RECORDING_PORT');
-    const port = new RecordingFaultPort();
-    for (const invocationId of parsed.codexTurns) port.recordCodexTurnStart(invocationId);
-    for (const [requestId, digest] of parsed.providerRequests) {
-      port.recordProviderRequest(requestId, digest);
+    if (
+      parsed.schemaVersion !== 2 ||
+      !Array.isArray(parsed.codexTurnAttempts) ||
+      !Array.isArray(parsed.providerRequestAttempts) ||
+      !Array.isArray(parsed.consumerFinalAttempts) ||
+      parsed.codexTurnAttempts.length > maxAttemptsPerKind ||
+      parsed.providerRequestAttempts.length > maxAttemptsPerKind ||
+      parsed.consumerFinalAttempts.length > maxAttemptsPerKind
+    ) {
+      throw new Error('INVALID_RECORDING_PORT');
     }
-    for (const [invocationId, digest] of parsed.consumerFinals) {
-      port.recordConsumerFinal(invocationId, digest);
+    const port = new RecordingFaultPort(maxAttemptsPerKind);
+    for (const invocationId of parsed.codexTurnAttempts) {
+      port.recordCodexTurnStart(invocationId);
+    }
+    for (const attempt of parsed.providerRequestAttempts) {
+      if (!Array.isArray(attempt) || attempt.length !== 2) {
+        throw new Error('INVALID_RECORDING_PORT');
+      }
+      try {
+        port.recordProviderRequest(attempt[0], attempt[1]);
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'PROVIDER_REPLAY_CONFLICT') throw error;
+      }
+    }
+    for (const attempt of parsed.consumerFinalAttempts) {
+      if (!Array.isArray(attempt) || attempt.length !== 2) {
+        throw new Error('INVALID_RECORDING_PORT');
+      }
+      try {
+        port.recordConsumerFinal(attempt[0], attempt[1]);
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== 'CONSUMER_FINAL_CONFLICT') throw error;
+      }
     }
     return port;
+  }
+
+  private assertCapacity(currentSize: number): void {
+    if (currentSize >= this.maxAttemptsPerKind) throw new Error('RECORDING_PORT_CAPACITY');
+  }
+}
+
+function requireFaultToken(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 256) {
+    throw new Error('INVALID_RECORDING_PORT');
   }
 }
 
@@ -401,6 +467,7 @@ function leaseBindingFrom(registry: LeaseRegistry): LeaseBinding {
   return {
     deploymentId: lease.deploymentId,
     leaseId: lease.leaseId,
+    workerSessionId: lease.workerSessionId,
     fence: lease.fence.toString(10),
   };
 }

@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import {
+  brokerSensitiveMessageAadDigest,
+  brokerSensitiveMessageCipherDigest,
+} from '@cb/creator-agent-protocol';
 
 import {
   BROKER_PROTOCOL,
@@ -25,23 +29,56 @@ import {
 const SIGNED_CAPABILITY = createSignedCapabilityFixture();
 
 function envelope(sequence: number, overrides: Partial<BrokerEnvelope> = {}): BrokerEnvelope {
+  const messageId = `0198f00d-1000-7000-8000-${sequence.toString(16).padStart(12, '0')}`;
+  const keyId = 'worker-session-key-001';
+  const nonce = Buffer.alloc(12, 1).toString('base64url');
+  const ciphertext = Buffer.from('synthetic-prompt', 'utf8').toString('base64url');
+  const authTag = Buffer.alloc(16, 2).toString('base64url');
+  const aad = {
+    protocol: BROKER_PROTOCOL,
+    schemaVersion: 1 as const,
+    envelopeType: 'invocation.prepare' as const,
+    messageId,
+    conversationId: IDS.conversationA,
+    invocationId: IDS.invocationA,
+    workerSessionId: IDS.workerSession,
+    role: 'USER' as const,
+    keyId,
+  };
   return {
     protocol: BROKER_PROTOCOL,
     schemaVersion: 1,
     kind: 'command',
-    messageId: `0198f00d-1000-7000-8000-${sequence.toString(16).padStart(12, '0')}`,
+    messageId,
     type: 'invocation.prepare',
     correlationId: IDS.invocationA,
     connectionId: '0198f00d-1000-7000-8000-000000000001',
     sequence: sequence.toString(10),
     sentAt: '2026-08-13T08:00:00.000Z',
     expiresAt: '2026-08-13T08:01:00.000Z',
-    lease: { deploymentId: IDS.deployment, leaseId: IDS.lease, fence: '42' },
+    lease: {
+      deploymentId: IDS.deployment,
+      leaseId: IDS.lease,
+      workerSessionId: IDS.workerSession,
+      fence: '42',
+    },
     body: {
       invocationId: IDS.invocationA,
       conversationId: IDS.conversationA,
       clientMessageId: '0198f00d-1000-7000-8000-000000000002',
       requestDigest: REQUEST_DIGEST,
+      userMessageCiphertext: {
+        algorithm: 'aes-256-gcm/v1',
+        keyScope: 'worker-session',
+        keyId,
+        nonce,
+        ciphertext,
+        authTag,
+        cipherDigest: brokerSensitiveMessageCipherDigest(nonce, ciphertext, authTag),
+        aad,
+        aadDigest: brokerSensitiveMessageAadDigest(aad),
+        aadVersion: 1,
+      },
       agentVersionId: IDS.agentVersion,
       agentVersionDigest: AGENT_VERSION_DIGEST,
       snapshotDigest: '4'.repeat(64),
@@ -75,6 +112,17 @@ describe('broker protocol', () => {
   it('parses exact envelopes and rejects unknown keys', () => {
     expect(parseBrokerEnvelope(envelope(0))).toEqual(envelope(0));
     expect(() => parseBrokerEnvelope({ ...envelope(0), surprise: true })).toThrowError(
+      expect.objectContaining({ code: 'INVALID_ENVELOPE' }),
+    );
+    const valid = envelope(0);
+    const wrongSession = {
+      ...valid,
+      lease: {
+        ...valid.lease,
+        workerSessionId: '0198f00d-1000-7000-8000-000000000099',
+      },
+    };
+    expect(() => parseBrokerEnvelope(wrongSession)).toThrowError(
       expect.objectContaining({ code: 'INVALID_ENVELOPE' }),
     );
   });
@@ -215,8 +263,9 @@ describe('broker protocol', () => {
     expect(() =>
       BrokerAckLedger.restore(
         JSON.stringify({
-          schemaVersion: 1,
+          schemaVersion: 3,
           records: [ledger.get('message-a'), { ...ledger.get('message-a') }],
+          archived: [],
         }),
         2,
       ),
@@ -224,6 +273,52 @@ describe('broker protocol', () => {
     expect(() => BrokerAckLedger.restore(ledger.serialize(), 0)).toThrowError(
       expect.objectContaining({ code: 'ACK_LEDGER_CAPACITY' }),
     );
+  });
+
+  it('bounds active ACK backlog and prunes 1001 terminal ACK facts', () => {
+    const ledger = new BrokerAckLedger(1, 1_001);
+    for (let index = 0; index < 1_001; index += 1) {
+      const messageId = `message-${index}`;
+      const canonicalDigest = `digest-${index}`;
+      ledger.acknowledge({ messageId, canonicalDigest, level: 'RECEIVED' });
+      ledger.acknowledge({
+        messageId,
+        canonicalDigest,
+        level: 'PERSISTED',
+        durableProof: {
+          journal: 'WORKER_SQLITE',
+          transactionId: `sqlite-${index}`,
+          canonicalDigest,
+        },
+      });
+      ledger.acknowledge({
+        messageId,
+        canonicalDigest,
+        level: 'CLOUD_COMMITTED',
+        durableProof: {
+          journal: 'CLOUD_POSTGRESQL',
+          transactionId: `postgres-${index}`,
+          canonicalDigest,
+        },
+      });
+      expect(ledger.archiveCloudCommitted(messageId, canonicalDigest, index)).toBe(true);
+    }
+    const serialized = ledger.serialize();
+    const restored = BrokerAckLedger.restore(serialized, 1, 1_001);
+    expect(restored.get('message-0')).toMatchObject({ level: 'CLOUD_COMMITTED' });
+    const negativeWatermark = JSON.parse(serialized) as {
+      archived: Array<{ archivedAtMs: number; retainedUntilMs: number }>;
+    };
+    negativeWatermark.archived[0]!.archivedAtMs = -1;
+    negativeWatermark.archived[0]!.retainedUntilMs = -1 + 7 * 24 * 60 * 60 * 1_000;
+    expect(() => BrokerAckLedger.restore(JSON.stringify(negativeWatermark), 1, 1_001)).toThrowError(
+      expect.objectContaining({ code: 'IDEMPOTENCY_CONFLICT' }),
+    );
+    expect(restored.pruneExpiredArchive(7 * 24 * 60 * 60 * 1_000 - 1)).toBe(0);
+    expect(restored.get('message-0')).toMatchObject({ level: 'CLOUD_COMMITTED' });
+    expect(restored.pruneExpiredArchive(7 * 24 * 60 * 60 * 1_000 + 1_000)).toBe(1_001);
+    expect(restored.get('message-0')).toBeUndefined();
+    expect(restored.get('message-1000')).toBeUndefined();
   });
 
   it('rejects expired and stale-connection frames', () => {
@@ -278,6 +373,7 @@ describe('broker protocol', () => {
       leaseId: 'lease-a',
       deploymentId: 'deployment-a',
       workerId: 'worker-a',
+      workerSessionId: 'worker-session-a',
       connectionId: 'connection-a',
       nowMs: 0,
       ttlMs: 30_000,
@@ -288,6 +384,7 @@ describe('broker protocol', () => {
         leaseId: 'lease-b',
         deploymentId: 'deployment-a',
         workerId: 'worker-b',
+        workerSessionId: 'worker-session-b',
         connectionId: 'connection-b',
         nowMs: 29_999,
         ttlMs: 30_000,
@@ -298,6 +395,7 @@ describe('broker protocol', () => {
       leaseId: 'lease-b',
       deploymentId: 'deployment-a',
       workerId: 'worker-b',
+      workerSessionId: 'worker-session-b',
       connectionId: 'connection-b',
       nowMs: 30_000,
       ttlMs: 30_000,
@@ -305,18 +403,40 @@ describe('broker protocol', () => {
     expect(second.fence).toBe(1n);
     expect(() =>
       registry.assertCurrent(
-        { deploymentId: 'deployment-a', leaseId: 'lease-a', fence: '0' },
+        {
+          deploymentId: 'deployment-a',
+          leaseId: 'lease-a',
+          workerSessionId: 'worker-session-a',
+          fence: '0',
+        },
         'connection-a',
         30_001,
       ),
     ).toThrowError(LeaseError);
     expect(() =>
       registry.assertCurrent(
-        { deploymentId: 'deployment-a', leaseId: 'lease-b', fence: '0' },
+        {
+          deploymentId: 'deployment-a',
+          leaseId: 'lease-b',
+          workerSessionId: 'worker-session-b',
+          fence: '0',
+        },
         'connection-b',
         30_001,
       ),
     ).toThrowError(expect.objectContaining({ code: 'STALE_FENCE' }));
+    expect(() =>
+      registry.assertCurrent(
+        {
+          deploymentId: 'deployment-a',
+          leaseId: 'lease-b',
+          workerSessionId: 'worker-session-a',
+          fence: '1',
+        },
+        'connection-b',
+        30_001,
+      ),
+    ).toThrowError(expect.objectContaining({ code: 'STALE_LEASE' }));
   });
 
   it('durably expires and revokes leases and never revives them through restore', () => {
@@ -325,13 +445,19 @@ describe('broker protocol', () => {
       leaseId: 'lease-a',
       deploymentId: 'deployment-a',
       workerId: 'worker-a',
+      workerSessionId: 'worker-session-a',
       connectionId: 'connection-a',
       nowMs: 0,
       ttlMs: 30_000,
     });
     expect(
       registry.assertWorkerCurrent(
-        { deploymentId: first.deploymentId, leaseId: first.leaseId, fence: '0' },
+        {
+          deploymentId: first.deploymentId,
+          leaseId: first.leaseId,
+          workerSessionId: first.workerSessionId,
+          fence: '0',
+        },
         'worker-a',
         29_999,
       ).state,
@@ -339,7 +465,12 @@ describe('broker protocol', () => {
     expect(registry.expire(30_000)).toHaveLength(1);
     expect(() =>
       registry.assertWorkerCurrent(
-        { deploymentId: first.deploymentId, leaseId: first.leaseId, fence: '0' },
+        {
+          deploymentId: first.deploymentId,
+          leaseId: first.leaseId,
+          workerSessionId: first.workerSessionId,
+          fence: '0',
+        },
         'worker-a',
         30_000,
       ),
@@ -349,6 +480,7 @@ describe('broker protocol', () => {
       leaseId: 'lease-b',
       deploymentId: 'deployment-a',
       workerId: 'worker-b',
+      workerSessionId: 'worker-session-b',
       connectionId: 'connection-b',
       nowMs: 30_000,
       ttlMs: 30_000,
@@ -361,7 +493,12 @@ describe('broker protocol', () => {
     expect(restored.current('deployment-a')?.state).toBe('REVOKED');
     expect(() =>
       restored.assertWorkerCurrent(
-        { deploymentId: second.deploymentId, leaseId: second.leaseId, fence: '1' },
+        {
+          deploymentId: second.deploymentId,
+          leaseId: second.leaseId,
+          workerSessionId: second.workerSessionId,
+          fence: '1',
+        },
         'worker-b',
         30_001,
       ),

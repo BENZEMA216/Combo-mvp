@@ -6,3 +6,4 @@ pnpm-lock.yaml
 *.tsbuildinfo
 docs/vnext/creator-hosted-agent-vnext-architecture.md
 docs/vnext/creator-hosted-agent-vnext-test-plan.md
+packages/creator-agent-broker-journal/test-fixtures/reconciliation-golden.json

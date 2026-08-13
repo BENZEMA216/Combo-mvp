@@ -1,4 +1,9 @@
-export * from './capability-authority.js';
+export {
+  ExecutionCapabilityAuthorityError,
+  SqliteVerifiedExecutionCapabilityGate,
+  type VerifiedExecutionCapability,
+  type VerifiedExecutionCapabilityUseDecision,
+} from './capability-authority.js';
 export * from './cloud-journal.js';
 export * from './fault-model.js';
 export * from './invocation.js';

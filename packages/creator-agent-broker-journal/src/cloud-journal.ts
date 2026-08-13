@@ -42,12 +42,14 @@ export interface CloudInvocation {
   readonly deploymentId: string;
   readonly workerInstallationId: string;
   readonly assignmentLeaseId: string;
+  readonly assignmentWorkerSessionId: string;
   readonly assignmentFence: bigint;
   readonly executionCapabilityBinding: ExpectedExecutionCapabilityBinding;
   readonly executionCapabilityDigest: string;
   readonly executionCapabilityDeadlineAtMs: number;
   readonly executionCapabilityVerifiedAtMs: number;
   readonly prepareCommandId: string;
+  startCommandId?: string;
   readonly acceptedSourceEventId: string;
   state: InvocationState;
   resultDigest?: string;
@@ -81,12 +83,20 @@ export interface BrokerOutboxRecord {
   durableAckProof?: BrokerAckDurableProof;
 }
 
+export const TERMINAL_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export interface ArchivedBrokerOutboxRecord extends BrokerOutboxRecord {
+  readonly archivedAtMs: number;
+  readonly retainedUntilMs: number;
+}
+
 export interface CloudJournalSnapshot {
   readonly conversations: ReadonlyMap<string, CloudConversation>;
   readonly invocations: ReadonlyMap<string, CloudInvocation>;
   readonly messages: readonly CloudMessage[];
   readonly events: readonly CloudInvocationEvent[];
   readonly outbox: readonly BrokerOutboxRecord[];
+  readonly archivedOutbox: readonly ArchivedBrokerOutboxRecord[];
 }
 
 export type CloudJournalErrorCode =
@@ -194,6 +204,8 @@ export interface CloudJournalTransactionPort {
     reason: CloudUncertaintyReason;
   }): CloudInvocation;
   acknowledgeOutbox(input: BrokerOutboxAckInput): BrokerOutboxRecord;
+  pruneTerminalOutbox(nowMs: number): number;
+  pruneExpiredArchive(nowMs: number): number;
   snapshot(): CloudJournalSnapshot;
 }
 
@@ -207,6 +219,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
   private messages: CloudMessage[] = [];
   private events: CloudInvocationEvent[] = [];
   private outbox: BrokerOutboxRecord[] = [];
+  private archivedOutbox: ArchivedBrokerOutboxRecord[] = [];
   private eventBodies = new Map<string, string>();
 
   constructor(
@@ -262,7 +275,12 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     }
     if (
       this.messages.some((message) => message.id === input.userMessageId) ||
-      this.outbox.some((command) => command.commandId === input.prepareCommandId)
+      [...this.outbox, ...this.archivedOutbox].some(
+        (command) => command.commandId === input.prepareCommandId,
+      ) ||
+      [...this.invocations.values()].some(
+        (invocation) => invocation.prepareCommandId === input.prepareCommandId,
+      )
     ) {
       throw new CloudJournalError('IDEMPOTENCY_CONFLICT');
     }
@@ -271,7 +289,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     const deadlineAtMs = Date.parse(verified.capability.expiresAt);
 
     return this.atomic((draft) => {
-      draft.assertOutboxCapacity(this.maxOutboxRecords);
+      draft.assertOutboxCapacity(this.maxOutboxRecords, this.maxJournalRecords);
       const invocation: CloudInvocation = {
         id: input.invocationId,
         userMessageId: input.userMessageId,
@@ -283,6 +301,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
         deploymentId: input.lease.deploymentId,
         workerInstallationId: input.workerInstallationId,
         assignmentLeaseId: input.lease.leaseId,
+        assignmentWorkerSessionId: input.lease.workerSessionId,
         assignmentFence: parseFence(input.lease.fence),
         executionCapabilityBinding: cloneExpectedBinding(expected),
         executionCapabilityDigest: verified.capabilityDigest,
@@ -344,10 +363,12 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       if (!replay) {
         invocation.state = transitionInvocation(invocation.state, { type: 'REQUEST_DISPATCH' });
       }
-      const command = draft.outbox.find(
-        (record) =>
-          record.invocationId === invocation.id && record.commandType === 'invocation.prepare',
-      );
+      const command = draft
+        .allOutbox()
+        .find(
+          (record) =>
+            record.invocationId === invocation.id && record.commandType === 'invocation.prepare',
+        );
       if (!command) throw new CloudJournalError('OUTBOX_NOT_FOUND');
       if (!replay) {
         command.state = 'SENT';
@@ -403,15 +424,22 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       });
       if (!replay) {
         if (
-          draft.outbox.some(
-            (record) =>
-              record.commandId === input.commandId || record.dedupeKey === `start:${invocation.id}`,
+          draft
+            .allOutbox()
+            .some(
+              (record) =>
+                record.commandId === input.commandId ||
+                record.dedupeKey === `start:${invocation.id}`,
+            ) ||
+          [...draft.invocations.values()].some(
+            (candidate) => candidate.startCommandId === input.commandId,
           )
         ) {
           throw new CloudJournalError('IDEMPOTENCY_CONFLICT');
         }
-        draft.assertOutboxCapacity(this.maxOutboxRecords);
+        draft.assertOutboxCapacity(this.maxOutboxRecords, this.maxJournalRecords);
         invocation.state = transitionInvocation(invocation.state, { type: 'REQUEST_START' });
+        invocation.startCommandId = input.commandId;
         draft.outbox.push({
           commandId: input.commandId,
           invocationId: invocation.id,
@@ -461,11 +489,18 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
         exactTerminalReplay && invocation.terminalCommittedAtMs !== undefined
           ? invocation.terminalCommittedAtMs
           : input.nowMs;
-      const verified = this.verifyCapability(
-        input.executionCapability,
-        invocation.executionCapabilityBinding,
-        verifyAtMs,
-      );
+      const verified = exactTerminalReplay
+        ? this.verifyCommittedCapability(
+            input.executionCapability,
+            invocation.executionCapabilityBinding,
+            invocation.executionCapabilityDigest,
+            verifyAtMs,
+          )
+        : this.verifyCapability(
+            input.executionCapability,
+            invocation.executionCapabilityBinding,
+            verifyAtMs,
+          );
       if (verified.capabilityDigest !== invocation.executionCapabilityDigest) {
         throw new CloudJournalError('EXECUTION_CAPABILITY_INVALID');
       }
@@ -556,7 +591,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     return this.atomic((draft) => {
       const invocation = draft.requireInvocation(input.invocationId);
       draft.assertAssignment(invocation, input.workerInstallationId, input.lease);
-      const command = draft.outbox.find((record) => record.commandId === input.commandId);
+      const command = draft.allOutbox().find((record) => record.commandId === input.commandId);
       if (!command) throw new CloudJournalError('OUTBOX_NOT_FOUND');
       if (
         command.invocationId !== invocation.id ||
@@ -603,6 +638,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
   }
 
   expireOutbox(nowMs: number): readonly BrokerOutboxRecord[] {
+    assertCloudTime(nowMs);
     return this.atomic((draft) => {
       const expired: BrokerOutboxRecord[] = [];
       for (const record of draft.outbox) {
@@ -618,6 +654,50 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     });
   }
 
+  pruneTerminalOutbox(nowMs: number): number {
+    assertCloudTime(nowMs);
+    return this.atomic((draft) => {
+      const before = draft.outbox.length;
+      for (let index = draft.outbox.length - 1; index >= 0; index -= 1) {
+        const record = draft.outbox[index]!;
+        const invocation = draft.invocations.get(record.invocationId);
+        if (
+          invocation &&
+          isTerminalInvocationState(invocation.state) &&
+          (record.state === 'ACKED' || record.state === 'EXPIRED')
+        ) {
+          draft.outbox.splice(index, 1);
+          draft.archivedOutbox.push({
+            ...record,
+            archivedAtMs: nowMs,
+            retainedUntilMs: cloudRetentionDeadline(nowMs),
+          });
+        }
+      }
+      return before - draft.outbox.length;
+    });
+  }
+
+  pruneExpiredArchive(nowMs: number): number {
+    assertCloudTime(nowMs);
+    return this.atomic((draft) => {
+      const before = draft.archivedOutbox.length;
+      for (let index = draft.archivedOutbox.length - 1; index >= 0; index -= 1) {
+        const record = draft.archivedOutbox[index]!;
+        const invocation = draft.invocations.get(record.invocationId);
+        if (
+          invocation &&
+          isTerminalInvocationState(invocation.state) &&
+          (record.state === 'ACKED' || record.state === 'EXPIRED') &&
+          record.retainedUntilMs <= nowMs
+        ) {
+          draft.archivedOutbox.splice(index, 1);
+        }
+      }
+      return before - draft.archivedOutbox.length;
+    });
+  }
+
   snapshot(): CloudJournalSnapshot {
     return {
       conversations: cloneMap(this.conversations),
@@ -625,12 +705,13 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       messages: this.messages.map((message) => ({ ...message })),
       events: this.events.map((event) => ({ ...event })),
       outbox: this.outbox.map(cloneOutboxRecord),
+      archivedOutbox: this.archivedOutbox.map(cloneArchivedOutboxRecord),
     };
   }
 
   serialize(): string {
     return JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       conversations: [...this.conversations.values()],
       invocations: [...this.invocations.values()].map((invocation) => ({
         ...invocation,
@@ -639,6 +720,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       messages: this.messages,
       events: this.events,
       outbox: this.outbox,
+      archivedOutbox: this.archivedOutbox,
       eventBodies: [...this.eventBodies],
     });
   }
@@ -652,14 +734,16 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
   ): InMemoryCloudJournal {
     const parsed = JSON.parse(serialized) as SerializedCloudJournal;
     if (
-      parsed.schemaVersion !== 1 ||
+      parsed.schemaVersion !== 2 ||
       !Array.isArray(parsed.conversations) ||
       !Array.isArray(parsed.invocations) ||
       !Array.isArray(parsed.messages) ||
       !Array.isArray(parsed.events) ||
       !Array.isArray(parsed.outbox) ||
+      !Array.isArray(parsed.archivedOutbox) ||
       !Array.isArray(parsed.eventBodies) ||
-      parsed.outbox.length > maxOutboxRecords ||
+      activeCloudOutboxCount(parsed.outbox) > maxOutboxRecords ||
+      parsed.outbox.length + parsed.archivedOutbox.length > maxJournalRecords ||
       parsed.conversations.length > maxJournalRecords ||
       parsed.invocations.length > maxJournalRecords ||
       parsed.messages.length > maxJournalRecords ||
@@ -690,13 +774,31 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     journal.messages = parsed.messages.map((message) => ({ ...message }));
     journal.events = parsed.events.map((event) => ({ ...event }));
     journal.outbox = parsed.outbox.map(cloneOutboxRecord);
+    journal.archivedOutbox = parsed.archivedOutbox.map(cloneArchivedOutboxRecord);
     journal.eventBodies = new Map(parsed.eventBodies);
     if (
       journal.conversations.size !== parsed.conversations.length ||
       journal.invocations.size !== parsed.invocations.length ||
+      [...journal.invocations.values()].some(
+        (invocation) => !isJournalIdentifier(invocation.assignmentWorkerSessionId),
+      ) ||
       journal.eventBodies.size !== parsed.eventBodies.length ||
       new Set(journal.messages.map((message) => message.id)).size !== journal.messages.length ||
-      new Set(journal.outbox.map((record) => record.commandId)).size !== journal.outbox.length
+      new Set([...journal.outbox, ...journal.archivedOutbox].map((record) => record.commandId))
+        .size !==
+        journal.outbox.length + journal.archivedOutbox.length ||
+      journal.archivedOutbox.some((record) => {
+        const invocation = journal.invocations.get(record.invocationId);
+        return (
+          !Number.isSafeInteger(record.archivedAtMs) ||
+          record.archivedAtMs < 0 ||
+          !Number.isSafeInteger(record.retainedUntilMs) ||
+          record.retainedUntilMs !== record.archivedAtMs + TERMINAL_OUTBOX_RETENTION_MS ||
+          (record.state !== 'ACKED' && record.state !== 'EXPIRED') ||
+          !invocation ||
+          !isTerminalInvocationState(invocation.state)
+        );
+      })
     ) {
       throw new CloudJournalError('IDEMPOTENCY_CONFLICT');
     }
@@ -720,7 +822,9 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       throw new CloudJournalError('IDEMPOTENCY_CONFLICT');
     }
     const message = this.messages.find((candidate) => candidate.id === input.userMessageId);
-    const command = this.outbox.find((candidate) => candidate.commandId === input.prepareCommandId);
+    const command = [...this.outbox, ...this.archivedOutbox].find(
+      (candidate) => candidate.commandId === input.prepareCommandId,
+    );
     const event = this.events.find(
       (candidate) => candidate.source === 'API' && candidate.sourceEventId === input.sourceEventId,
     );
@@ -728,8 +832,8 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       !message ||
       message.invocationId !== invocation.id ||
       message.contentDigest !== input.contentDigest ||
-      !command ||
-      command.invocationId !== invocation.id ||
+      (!command && !isTerminalInvocationState(invocation.state)) ||
+      (command !== undefined && command.invocationId !== invocation.id) ||
       !event ||
       event.invocationId !== invocation.id ||
       event.canonicalBody !== acceptanceEventBody(invocation)
@@ -751,6 +855,24 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     }
   }
 
+  private verifyCommittedCapability(
+    input: unknown,
+    expected: ExpectedExecutionCapabilityBinding,
+    committedCapabilityDigest: string,
+    committedAtMs: number,
+  ) {
+    try {
+      return this.capabilityAuthority.verifyPreviouslyCommitted(
+        input,
+        expected,
+        committedCapabilityDigest,
+        new Date(committedAtMs),
+      );
+    } catch {
+      throw new CloudJournalError('EXECUTION_CAPABILITY_INVALID');
+    }
+  }
+
   private atomic<T>(operation: (draft: CloudDraft) => T): T {
     const draft = new CloudDraft({
       conversations: cloneMap(this.conversations),
@@ -758,6 +880,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
       messages: this.messages.map((message) => ({ ...message })),
       events: this.events.map((event) => ({ ...event })),
       outbox: this.outbox.map(cloneOutboxRecord),
+      archivedOutbox: this.archivedOutbox.map(cloneArchivedOutboxRecord),
       eventBodies: new Map(this.eventBodies),
     });
     const result = operation(draft);
@@ -767,6 +890,7 @@ export class InMemoryCloudJournal implements CloudJournalTransactionPort {
     this.messages = draft.messages;
     this.events = draft.events;
     this.outbox = draft.outbox;
+    this.archivedOutbox = draft.archivedOutbox;
     this.eventBodies = draft.eventBodies;
     return cloneResult(result);
   }
@@ -779,6 +903,7 @@ interface SerializedCloudJournal {
   messages: CloudMessage[];
   events: CloudInvocationEvent[];
   outbox: BrokerOutboxRecord[];
+  archivedOutbox: ArchivedBrokerOutboxRecord[];
   eventBodies: Array<[string, string]>;
 }
 
@@ -788,6 +913,7 @@ class CloudDraft {
   readonly messages: CloudMessage[];
   readonly events: CloudInvocationEvent[];
   readonly outbox: BrokerOutboxRecord[];
+  readonly archivedOutbox: ArchivedBrokerOutboxRecord[];
   readonly eventBodies: Map<string, string>;
 
   constructor(input: {
@@ -796,6 +922,7 @@ class CloudDraft {
     messages: CloudMessage[];
     events: CloudInvocationEvent[];
     outbox: BrokerOutboxRecord[];
+    archivedOutbox: ArchivedBrokerOutboxRecord[];
     eventBodies: Map<string, string>;
   }) {
     this.conversations = input.conversations;
@@ -803,6 +930,7 @@ class CloudDraft {
     this.messages = input.messages;
     this.events = input.events;
     this.outbox = input.outbox;
+    this.archivedOutbox = input.archivedOutbox;
     this.eventBodies = input.eventBodies;
   }
 
@@ -820,7 +948,8 @@ class CloudDraft {
     if (
       invocation.workerInstallationId !== workerInstallationId ||
       invocation.deploymentId !== lease.deploymentId ||
-      invocation.assignmentLeaseId !== lease.leaseId
+      invocation.assignmentLeaseId !== lease.leaseId ||
+      invocation.assignmentWorkerSessionId !== lease.workerSessionId
     ) {
       throw new CloudJournalError('STALE_LEASE');
     }
@@ -848,8 +977,13 @@ class CloudDraft {
     return false;
   }
 
-  assertOutboxCapacity(maxRecords: number): void {
-    if (this.outbox.length >= maxRecords) throw new CloudJournalError('OUTBOX_CAPACITY');
+  assertOutboxCapacity(maxActiveRecords: number, maxRetainedRecords: number): void {
+    if (
+      activeCloudOutboxCount(this.outbox) >= maxActiveRecords ||
+      this.outbox.length + this.archivedOutbox.length >= maxRetainedRecords
+    ) {
+      throw new CloudJournalError('OUTBOX_CAPACITY');
+    }
   }
 
   assertJournalCapacity(maxRecords: number): void {
@@ -858,7 +992,8 @@ class CloudDraft {
       this.invocations.size > maxRecords ||
       this.messages.length > maxRecords ||
       this.events.length > maxRecords ||
-      this.eventBodies.size > maxRecords
+      this.eventBodies.size > maxRecords ||
+      this.outbox.length + this.archivedOutbox.length > maxRecords
     ) {
       throw new CloudJournalError('JOURNAL_CAPACITY');
     }
@@ -868,13 +1003,17 @@ class CloudDraft {
     invocationId: string,
     commandType: BrokerOutboxRecord['commandType'],
   ): void {
-    const record = this.outbox.find(
+    const record = this.allOutbox().find(
       (candidate) =>
         candidate.invocationId === invocationId && candidate.commandType === commandType,
     );
     if (!record || record.state !== 'ACKED' || record.ackLevel !== 'PERSISTED') {
       throw new CloudJournalError('OUTBOX_ACK_INVALID');
     }
+  }
+
+  allOutbox(): readonly BrokerOutboxRecord[] {
+    return [...this.outbox, ...this.archivedOutbox];
   }
 }
 
@@ -913,6 +1052,7 @@ function sameAcceptBinding(
     invocation.workerInstallationId === input.workerInstallationId &&
     invocation.deploymentId === input.lease.deploymentId &&
     invocation.assignmentLeaseId === input.lease.leaseId &&
+    invocation.assignmentWorkerSessionId === input.lease.workerSessionId &&
     invocation.assignmentFence === parseFence(input.lease.fence) &&
     canonicalControlBody({
       capabilityId: invocation.executionCapabilityBinding.capabilityId,
@@ -943,6 +1083,7 @@ function assignmentFields(invocation: CloudInvocation): Readonly<Record<string, 
     workerInstallationId: invocation.workerInstallationId,
     deploymentId: invocation.deploymentId,
     leaseId: invocation.assignmentLeaseId,
+    workerSessionId: invocation.assignmentWorkerSessionId,
     fence: formatFence(invocation.assignmentFence),
   };
 }
@@ -961,6 +1102,18 @@ function assertDeadline(deadlineAtMs: number, nowMs: number): void {
   if (!Number.isSafeInteger(deadlineAtMs) || deadlineAtMs <= nowMs) {
     throw new CloudJournalError('INVOCATION_DEADLINE_EXPIRED');
   }
+}
+
+function assertCloudTime(nowMs: number): void {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+    throw new CloudJournalError('IDEMPOTENCY_CONFLICT');
+  }
+}
+
+function cloudRetentionDeadline(nowMs: number): number {
+  const deadline = nowMs + TERMINAL_OUTBOX_RETENTION_MS;
+  if (!Number.isSafeInteger(deadline)) throw new CloudJournalError('IDEMPOTENCY_CONFLICT');
+  return deadline;
 }
 
 function cloneExpectedBinding(
@@ -1004,6 +1157,22 @@ function cloneOutboxRecord(record: BrokerOutboxRecord): BrokerOutboxRecord {
   };
 }
 
+function cloneArchivedOutboxRecord(record: ArchivedBrokerOutboxRecord): ArchivedBrokerOutboxRecord {
+  return {
+    ...cloneOutboxRecord(record),
+    archivedAtMs: record.archivedAtMs,
+    retainedUntilMs: record.retainedUntilMs,
+  };
+}
+
 function canonicalProof(proof: BrokerAckDurableProof | undefined): string {
   return proof ? `${proof.journal}\0${proof.transactionId}\0${proof.canonicalDigest}` : '';
+}
+
+function activeCloudOutboxCount(records: readonly BrokerOutboxRecord[]): number {
+  return records.filter((record) => record.state === 'PENDING' || record.state === 'SENT').length;
+}
+
+function isJournalIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 }

@@ -2,6 +2,7 @@ import {
   CREATOR_BROKER_PROTOCOL,
   parseBrokerFrame,
   type BrokerEnvelope as AuthoritativeBrokerEnvelope,
+  type LeaseBinding as AuthoritativeLeaseBinding,
 } from '@cb/creator-agent-protocol';
 
 export const BROKER_PROTOCOL = CREATOR_BROKER_PROTOCOL;
@@ -12,11 +13,7 @@ const FENCE_PATTERN = /^(0|[1-9][0-9]{0,18})$/;
 
 export type BrokerAckLevel = 'RECEIVED' | 'PERSISTED' | 'CLOUD_COMMITTED';
 
-export interface LeaseBinding {
-  deploymentId: string;
-  leaseId: string;
-  fence: string;
-}
+export type LeaseBinding = AuthoritativeLeaseBinding;
 
 export type BrokerEnvelope = AuthoritativeBrokerEnvelope;
 
@@ -88,6 +85,13 @@ export interface BrokerAckRecord {
   readonly durableProof?: BrokerAckDurableProof;
 }
 
+export const ACK_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export interface ArchivedBrokerAckRecord extends BrokerAckRecord {
+  readonly archivedAtMs: number;
+  readonly retainedUntilMs: number;
+}
+
 const ACK_RANK: Readonly<Record<BrokerAckLevel, number>> = {
   RECEIVED: 0,
   PERSISTED: 1,
@@ -102,15 +106,24 @@ const ACK_RANK: Readonly<Record<BrokerAckLevel, number>> = {
  */
 export class BrokerAckLedger {
   private readonly records = new Map<string, BrokerAckRecord>();
+  private readonly archived = new Map<string, ArchivedBrokerAckRecord>();
 
-  constructor(private readonly maxRecords = 10_000) {
-    if (!Number.isSafeInteger(maxRecords) || maxRecords < 1) {
+  constructor(
+    private readonly maxActiveRecords = 10_000,
+    private readonly maxRetainedRecords = 40_000,
+  ) {
+    if (
+      !Number.isSafeInteger(maxActiveRecords) ||
+      maxActiveRecords < 1 ||
+      !Number.isSafeInteger(maxRetainedRecords) ||
+      maxRetainedRecords < maxActiveRecords
+    ) {
       throw new BrokerProtocolError('ACK_LEDGER_CAPACITY');
     }
   }
 
   acknowledge(input: BrokerAckRecord): BrokerAckRecord {
-    const existing = this.records.get(input.messageId);
+    const existing = this.records.get(input.messageId) ?? this.archived.get(input.messageId);
     if (existing && existing.canonicalDigest !== input.canonicalDigest) {
       throw new BrokerProtocolError('IDEMPOTENCY_CONFLICT');
     }
@@ -124,7 +137,13 @@ export class BrokerAckLedger {
       }
       if (ACK_RANK[input.level] < ACK_RANK[existing.level]) return cloneAck(existing);
     } else {
-      if (this.records.size >= this.maxRecords) {
+      if (
+        input.level !== 'CLOUD_COMMITTED' &&
+        activeAckCount(this.records.values()) >= this.maxActiveRecords
+      ) {
+        throw new BrokerProtocolError('ACK_LEDGER_CAPACITY');
+      }
+      if (this.records.size + this.archived.size >= this.maxRetainedRecords) {
         throw new BrokerProtocolError('ACK_LEDGER_CAPACITY');
       }
     }
@@ -134,24 +153,70 @@ export class BrokerAckLedger {
   }
 
   get(messageId: string): BrokerAckRecord | undefined {
-    const record = this.records.get(messageId);
+    const record = this.records.get(messageId) ?? this.archived.get(messageId);
     return record ? cloneAck(record) : undefined;
   }
 
-  serialize(): string {
-    return JSON.stringify({ schemaVersion: 1, records: [...this.records.values()] });
+  archiveCloudCommitted(messageId: string, canonicalDigest: string, nowMs: number): boolean {
+    assertAckTime(nowMs);
+    const record = this.records.get(messageId) ?? this.archived.get(messageId);
+    if (!record) return false;
+    if (record.canonicalDigest !== canonicalDigest) {
+      throw new BrokerProtocolError('IDEMPOTENCY_CONFLICT');
+    }
+    if (record.level !== 'CLOUD_COMMITTED') {
+      throw new BrokerProtocolError('INVALID_ACK_TRANSITION');
+    }
+    if (this.archived.has(messageId)) return true;
+    const retainedUntilMs = ackRetentionDeadline(nowMs);
+    this.records.delete(messageId);
+    this.archived.set(messageId, {
+      ...cloneAck(record),
+      archivedAtMs: nowMs,
+      retainedUntilMs,
+    });
+    return true;
   }
 
-  static restore(serialized: string, maxRecords = 10_000): BrokerAckLedger {
-    const parsed = JSON.parse(serialized) as { schemaVersion: number; records: unknown[] };
+  pruneExpiredArchive(nowMs: number): number {
+    assertAckTime(nowMs);
+    let pruned = 0;
+    for (const [messageId, record] of this.archived) {
+      if (record.retainedUntilMs <= nowMs) {
+        this.archived.delete(messageId);
+        pruned += 1;
+      }
+    }
+    return pruned;
+  }
+
+  serialize(): string {
+    return JSON.stringify({
+      schemaVersion: 3,
+      records: [...this.records.values()],
+      archived: [...this.archived.values()],
+    });
+  }
+
+  static restore(
+    serialized: string,
+    maxActiveRecords = 10_000,
+    maxRetainedRecords = 40_000,
+  ): BrokerAckLedger {
+    const parsed = JSON.parse(serialized) as {
+      schemaVersion: number;
+      records: unknown[];
+      archived: unknown[];
+    };
     if (
-      parsed.schemaVersion !== 1 ||
+      parsed.schemaVersion !== 3 ||
       !Array.isArray(parsed.records) ||
-      parsed.records.length > maxRecords
+      !Array.isArray(parsed.archived) ||
+      parsed.records.length + parsed.archived.length > maxRetainedRecords
     ) {
       throw new BrokerProtocolError('ACK_LEDGER_CAPACITY');
     }
-    const ledger = new BrokerAckLedger(maxRecords);
+    const ledger = new BrokerAckLedger(maxActiveRecords, maxRetainedRecords);
     for (const input of parsed.records) {
       if (!input || typeof input !== 'object' || Array.isArray(input)) {
         throw new BrokerProtocolError('INVALID_ACK_TRANSITION');
@@ -168,8 +233,54 @@ export class BrokerAckLedger {
       }
       ledger.records.set(record.messageId, cloneAck(record));
     }
+    for (const input of parsed.archived) {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        throw new BrokerProtocolError('INVALID_ACK_TRANSITION');
+      }
+      const record = input as ArchivedBrokerAckRecord;
+      requireIdentifier(record.messageId);
+      requireBoundedText(record.canonicalDigest, 256);
+      validateAckProof(record);
+      if (
+        record.level !== 'CLOUD_COMMITTED' ||
+        !Number.isSafeInteger(record.archivedAtMs) ||
+        record.archivedAtMs < 0 ||
+        !Number.isSafeInteger(record.retainedUntilMs) ||
+        record.retainedUntilMs !== record.archivedAtMs + ACK_TERMINAL_RETENTION_MS ||
+        ledger.records.has(record.messageId) ||
+        ledger.archived.has(record.messageId)
+      ) {
+        throw new BrokerProtocolError('IDEMPOTENCY_CONFLICT');
+      }
+      ledger.archived.set(record.messageId, cloneArchivedAck(record));
+    }
+    if (activeAckCount(ledger.records.values()) > maxActiveRecords) {
+      throw new BrokerProtocolError('ACK_LEDGER_CAPACITY');
+    }
     return ledger;
   }
+}
+
+function activeAckCount(records: Iterable<BrokerAckRecord>): number {
+  let count = 0;
+  for (const record of records) {
+    if (record.level !== 'CLOUD_COMMITTED') count += 1;
+  }
+  return count;
+}
+
+function assertAckTime(nowMs: number): void {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+    throw new BrokerProtocolError('INVALID_ACK_TRANSITION');
+  }
+}
+
+function ackRetentionDeadline(nowMs: number): number {
+  const deadline = nowMs + ACK_TERMINAL_RETENTION_MS;
+  if (!Number.isSafeInteger(deadline)) {
+    throw new BrokerProtocolError('INVALID_ACK_TRANSITION');
+  }
+  return deadline;
 }
 
 export type SequenceDecision =
@@ -308,6 +419,7 @@ export interface WorkerLease {
   readonly leaseId: string;
   readonly deploymentId: string;
   readonly workerId: string;
+  readonly workerSessionId: string;
   readonly connectionId: string;
   readonly fence: bigint;
   readonly expiresAtMs: number;
@@ -342,6 +454,7 @@ export class LeaseRegistry {
     leaseId: string;
     deploymentId: string;
     workerId: string;
+    workerSessionId: string;
     connectionId: string;
     nowMs: number;
     ttlMs: number;
@@ -367,6 +480,7 @@ export class LeaseRegistry {
       leaseId: requireIdentifier(input.leaseId),
       deploymentId: requireIdentifier(input.deploymentId),
       workerId: requireIdentifier(input.workerId),
+      workerSessionId: requireIdentifier(input.workerSessionId),
       connectionId: requireIdentifier(input.connectionId),
       fence,
       expiresAtMs: input.nowMs + input.ttlMs,
@@ -391,6 +505,7 @@ export class LeaseRegistry {
       !current ||
       current.state !== 'ACTIVE' ||
       current.leaseId !== binding.leaseId ||
+      current.workerSessionId !== binding.workerSessionId ||
       current.connectionId !== connectionId ||
       current.expiresAtMs <= nowMs
     ) {
@@ -406,6 +521,7 @@ export class LeaseRegistry {
       !current ||
       current.state !== 'ACTIVE' ||
       current.leaseId !== binding.leaseId ||
+      current.workerSessionId !== binding.workerSessionId ||
       current.workerId !== workerId ||
       current.expiresAtMs <= nowMs
     ) {
@@ -477,6 +593,7 @@ export class LeaseRegistry {
       requireIdentifier(lease.deploymentId);
       requireIdentifier(lease.leaseId);
       requireIdentifier(lease.workerId);
+      requireIdentifier(lease.workerSessionId);
       requireIdentifier(lease.connectionId);
       if (
         registry.leases.has(lease.deploymentId) ||
@@ -542,6 +659,14 @@ function cloneAck(record: BrokerAckRecord): BrokerAckRecord {
   return {
     ...record,
     ...(record.durableProof ? { durableProof: { ...record.durableProof } } : {}),
+  };
+}
+
+function cloneArchivedAck(record: ArchivedBrokerAckRecord): ArchivedBrokerAckRecord {
+  return {
+    ...cloneAck(record),
+    archivedAtMs: record.archivedAtMs,
+    retainedUntilMs: record.retainedUntilMs,
   };
 }
 

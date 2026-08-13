@@ -1,30 +1,15 @@
-export const INVOCATION_STATES = [
-  'ACCEPTED',
-  'QUEUED',
-  'DISPATCH_PENDING',
-  'PERSISTED',
-  'STARTING',
-  'RUNNING',
-  'CANCEL_REQUESTED',
-  'RECONCILING',
-  'SUCCEEDED',
-  'FAILED',
-  'CANCELLED',
-  'UNCERTAIN',
-  'EXPIRED',
-] as const;
+import {
+  InvocationStateSchema,
+  TERMINAL_INVOCATION_STATES,
+  isTerminalInvocationState as isAuthoritativeTerminalInvocationState,
+  transitionInvocationState,
+  type InvocationState as AuthoritativeInvocationState,
+  type InvocationTransitionEvidence,
+} from '@cb/creator-agent-protocol';
 
-export type InvocationState = (typeof INVOCATION_STATES)[number];
-
-export const TERMINAL_INVOCATION_STATES = [
-  'SUCCEEDED',
-  'FAILED',
-  'CANCELLED',
-  'UNCERTAIN',
-  'EXPIRED',
-] as const satisfies readonly InvocationState[];
-
-const TERMINAL_STATES = new Set<InvocationState>(TERMINAL_INVOCATION_STATES);
+export const INVOCATION_STATES = InvocationStateSchema.options;
+export type InvocationState = AuthoritativeInvocationState;
+export { TERMINAL_INVOCATION_STATES };
 
 export type InvocationEvent =
   | { type: 'QUEUE' }
@@ -64,9 +49,14 @@ export class InvocationStateError extends Error {
 }
 
 export function isTerminalInvocationState(state: InvocationState): boolean {
-  return TERMINAL_STATES.has(state);
+  return isAuthoritativeTerminalInvocationState(state);
 }
 
+/**
+ * Thin event-name adapter over the authoritative shared transition reducer.
+ * It may preserve exact terminal idempotent replay, but it never owns an
+ * independent transition graph.
+ */
 export function transitionInvocation(
   state: InvocationState,
   event: InvocationEvent,
@@ -76,80 +66,69 @@ export function transitionInvocation(
     throw new InvocationStateError('TERMINAL_MONOTONIC', state, event.type);
   }
 
-  switch (event.type) {
-    case 'QUEUE':
-      return requireState(state, event, ['ACCEPTED'], 'QUEUED');
-    case 'REQUEST_DISPATCH':
-      return requireState(state, event, ['QUEUED'], 'DISPATCH_PENDING');
-    case 'RELEASE_DISPATCH':
-      return requireState(state, event, ['DISPATCH_PENDING'], 'QUEUED');
-    case 'WORKER_PERSISTED':
-      return requireState(state, event, ['DISPATCH_PENDING'], 'PERSISTED');
-    case 'REQUEST_START':
-      return requireState(state, event, ['PERSISTED'], 'STARTING');
-    case 'HOST_STARTED':
-      return requireState(state, event, ['STARTING', 'RECONCILING'], 'RUNNING');
-    case 'REQUEST_CANCEL':
-      if (state === 'ACCEPTED' || state === 'QUEUED') return 'CANCELLED';
-      return requireState(
-        state,
-        event,
-        ['PERSISTED', 'STARTING', 'RUNNING', 'RECONCILING'],
-        'CANCEL_REQUESTED',
-      );
-    case 'SUCCEED':
-      if (!event.finalDurable) {
-        throw new InvocationStateError('FINAL_NOT_DURABLE', state, event.type);
-      }
-      return requireState(
-        state,
-        event,
-        ['RUNNING', 'CANCEL_REQUESTED', 'RECONCILING'],
-        'SUCCEEDED',
-      );
-    case 'FAIL_CONFIRMED':
-      return requireState(
-        state,
-        event,
-        ['PERSISTED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED', 'RECONCILING'],
-        'FAILED',
-      );
-    case 'INTERRUPT_CONFIRMED':
-      return requireState(state, event, ['CANCEL_REQUESTED', 'RECONCILING'], 'CANCELLED');
-    case 'LOSE_EXECUTION_EVIDENCE':
-      return requireState(state, event, ['STARTING', 'RUNNING', 'CANCEL_REQUESTED'], 'RECONCILING');
-    case 'RECONCILE_RUNNING':
-      return requireState(state, event, ['RECONCILING'], 'RUNNING');
-    case 'RECONCILE_SUCCEEDED':
-      if (!event.finalDurable) {
-        throw new InvocationStateError('FINAL_NOT_DURABLE', state, event.type);
-      }
-      return requireState(state, event, ['RECONCILING'], 'SUCCEEDED');
-    case 'RECONCILE_FAILED':
-      return requireState(state, event, ['RECONCILING'], 'FAILED');
-    case 'RECONCILE_CANCELLED':
-      if (!event.interruptConfirmed) {
-        throw new InvocationStateError('INTERRUPT_NOT_CONFIRMED', state, event.type);
-      }
-      return requireState(state, event, ['RECONCILING'], 'CANCELLED');
-    case 'RECONCILE_UNCERTAIN':
-      return requireState(state, event, ['RECONCILING'], 'UNCERTAIN');
-    case 'EXPIRE_BEFORE_DISPATCH':
-      if (!event.dispatchProvenAbsent) {
-        throw new InvocationStateError('DISPATCH_EVIDENCE_REQUIRED', state, event.type);
-      }
-      return requireState(state, event, ['QUEUED'], 'EXPIRED');
+  const { to, evidence } = targetForEvent(state, event);
+  try {
+    return transitionInvocationState({ from: state, to, evidence });
+  } catch {
+    throw new InvocationStateError(errorCodeForEvent(event), state, event.type);
   }
 }
 
-function requireState(
+function targetForEvent(
   state: InvocationState,
   event: InvocationEvent,
-  allowed: readonly InvocationState[],
-  next: InvocationState,
-): InvocationState {
-  if (allowed.includes(state)) return next;
-  throw new InvocationStateError('ILLEGAL_TRANSITION', state, event.type);
+): { readonly to: InvocationState; readonly evidence: InvocationTransitionEvidence } {
+  switch (event.type) {
+    case 'QUEUE':
+      return { to: 'QUEUED', evidence: {} };
+    case 'REQUEST_DISPATCH':
+      return { to: 'DISPATCH_PENDING', evidence: {} };
+    case 'RELEASE_DISPATCH':
+      return { to: 'QUEUED', evidence: {} };
+    case 'WORKER_PERSISTED':
+      return { to: 'PERSISTED', evidence: {} };
+    case 'REQUEST_START':
+      return { to: 'STARTING', evidence: {} };
+    case 'HOST_STARTED':
+    case 'RECONCILE_RUNNING':
+      return { to: 'RUNNING', evidence: {} };
+    case 'REQUEST_CANCEL':
+      return state === 'ACCEPTED' || state === 'QUEUED'
+        ? { to: 'CANCELLED', evidence: { provedNotExecuted: true } }
+        : { to: 'CANCEL_REQUESTED', evidence: {} };
+    case 'SUCCEED':
+    case 'RECONCILE_SUCCEEDED':
+      return { to: 'SUCCEEDED', evidence: { durableFinal: event.finalDurable } };
+    case 'FAIL_CONFIRMED':
+    case 'RECONCILE_FAILED':
+      return { to: 'FAILED', evidence: { terminalFailureConfirmed: true } };
+    case 'INTERRUPT_CONFIRMED':
+      return { to: 'CANCELLED', evidence: { interruptConfirmed: true } };
+    case 'LOSE_EXECUTION_EVIDENCE':
+      return { to: 'RECONCILING', evidence: { executionEvidenceLost: true } };
+    case 'RECONCILE_CANCELLED':
+      return { to: 'CANCELLED', evidence: { interruptConfirmed: event.interruptConfirmed } };
+    case 'RECONCILE_UNCERTAIN':
+      return { to: 'UNCERTAIN', evidence: { reconciliationExhausted: true } };
+    case 'EXPIRE_BEFORE_DISPATCH':
+      return {
+        to: 'EXPIRED',
+        evidence: { queueTtlExpiredBeforeDispatch: event.dispatchProvenAbsent },
+      };
+  }
+}
+
+function errorCodeForEvent(event: InvocationEvent): InvocationStateErrorCode {
+  if ((event.type === 'SUCCEED' || event.type === 'RECONCILE_SUCCEEDED') && !event.finalDurable) {
+    return 'FINAL_NOT_DURABLE';
+  }
+  if (event.type === 'RECONCILE_CANCELLED' && !event.interruptConfirmed) {
+    return 'INTERRUPT_NOT_CONFIRMED';
+  }
+  if (event.type === 'EXPIRE_BEFORE_DISPATCH' && !event.dispatchProvenAbsent) {
+    return 'DISPATCH_EVIDENCE_REQUIRED';
+  }
+  return 'ILLEGAL_TRANSITION';
 }
 
 function isIdempotentTerminalReplay(state: InvocationState, event: InvocationEvent): boolean {

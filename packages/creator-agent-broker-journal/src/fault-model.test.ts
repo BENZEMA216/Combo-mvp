@@ -37,7 +37,7 @@ describe('E1 fault-model registry', () => {
     },
   );
 
-  it('keeps the independent recording port idempotent across reconstruction', () => {
+  it('counts every real attempt while tracking key/digest conflicts independently', () => {
     const recorder = new RecordingFaultPort();
     recorder.recordCodexTurnStart('invocation-a');
     recorder.recordProviderRequest('provider-a', 'digest-a');
@@ -47,13 +47,38 @@ describe('E1 fault-model registry', () => {
     restored.recordProviderRequest('provider-a', 'digest-a');
     restored.recordConsumerFinal('invocation-a', 'result-a');
     expect(restored.snapshot()).toEqual({
-      codexTurnStartCount: 1,
-      providerUpstreamRequestCount: 1,
-      consumerVisibleFinalCount: 1,
+      codexTurnStartCount: 2,
+      providerUpstreamRequestCount: 2,
+      consumerVisibleFinalCount: 2,
+      providerReplayConflictCount: 0,
+      consumerFinalConflictCount: 0,
     });
     expect(() => restored.recordProviderRequest('provider-a', 'changed')).toThrow(
       'PROVIDER_REPLAY_CONFLICT',
     );
+    expect(() => restored.recordConsumerFinal('invocation-a', 'changed')).toThrow(
+      'CONSUMER_FINAL_CONFLICT',
+    );
+    expect(restored.snapshot()).toMatchObject({
+      providerUpstreamRequestCount: 3,
+      consumerVisibleFinalCount: 3,
+      providerReplayConflictCount: 1,
+      consumerFinalConflictCount: 1,
+    });
+    expect(RecordingFaultPort.restore(restored.serialize()).snapshot()).toEqual(
+      restored.snapshot(),
+    );
+  });
+
+  it('bounds append-only oracle attempts and rejects oversized reconstruction', () => {
+    const recorder = new RecordingFaultPort(2);
+    recorder.recordCodexTurnStart('invocation-a');
+    recorder.recordCodexTurnStart('invocation-a');
+    expect(() => recorder.recordCodexTurnStart('invocation-a')).toThrow('RECORDING_PORT_CAPACITY');
+    expect(() => RecordingFaultPort.restore(recorder.serialize(), 1)).toThrow(
+      'INVALID_RECORDING_PORT',
+    );
+    expect(() => recorder.recordProviderRequest('', 'digest-a')).toThrow('INVALID_RECORDING_PORT');
   });
 
   it(`runs ${MODEL_RUNS} seeded E1 reconstruction-model sequences without duplicate effects`, () => {
@@ -68,6 +93,8 @@ describe('E1 fault-model registry', () => {
         codexTurnStartCount: 1,
         providerUpstreamRequestCount: 1,
         consumerVisibleFinalCount: 1,
+        providerReplayConflictCount: 0,
+        consumerFinalConflictCount: 0,
         cloudAssistantMessageCount: 1,
         automaticRetryAfterUnknown: false,
       });

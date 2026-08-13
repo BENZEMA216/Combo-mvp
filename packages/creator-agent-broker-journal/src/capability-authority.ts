@@ -327,6 +327,12 @@ export interface ExecutionCapabilityAuthorityPort {
     expected: ExpectedExecutionCapabilityBinding,
     now: Date,
   ): VerifiedExecutionCapability;
+  verifyPreviouslyCommitted(
+    input: unknown,
+    expected: ExpectedExecutionCapabilityBinding,
+    committedCapabilityDigest: string,
+    committedAt: Date,
+  ): VerifiedExecutionCapability;
 }
 
 export class ExecutionCapabilityAuthorityError extends Error {
@@ -363,5 +369,86 @@ export class RegisteredExecutionCapabilityAuthority implements ExecutionCapabili
     );
     if (!result.ok) throw new ExecutionCapabilityAuthorityError(result.reasons);
     return result;
+  }
+
+  verifyPreviouslyCommitted(
+    input: unknown,
+    expected: ExpectedExecutionCapabilityBinding,
+    committedCapabilityDigest: string,
+    committedAt: Date,
+  ): VerifiedExecutionCapability {
+    const result = validateExecutionCapabilityBinding(
+      input,
+      expected,
+      committedAt,
+      new Set(),
+      this.registeredCloudP256PublicKey,
+    );
+    if (!result.ok) throw new ExecutionCapabilityAuthorityError(result.reasons);
+    if (result.capabilityDigest !== committedCapabilityDigest) {
+      throw new ExecutionCapabilityAuthorityError(['committed-capability-digest']);
+    }
+    return result;
+  }
+}
+
+export interface VerifiedExecutionCapabilityUseDecision {
+  readonly verifiedCapability: VerifiedExecutionCapability;
+  readonly decision: ExecutionCapabilityUseDecision;
+}
+
+/**
+ * The only package-public Provider dispatch gate. Signature/binding/time
+ * verification and the durable SQLite one-use CAS cannot be invoked separately
+ * through the package entrypoint, so an unverified wire capability can never
+ * reach DISPATCH_ONCE.
+ */
+export class SqliteVerifiedExecutionCapabilityGate {
+  private readonly authority: RegisteredExecutionCapabilityAuthority;
+  private readonly store: SqliteExecutionCapabilityUseStore;
+  private readonly journal: ExecutionCapabilityUseJournal;
+
+  constructor(
+    filename: string,
+    registeredCloudP256PublicKey: P256PublicKeyInput,
+    revokedCapabilityIds: ReadonlySet<string> = new Set(),
+    maxRecords = 100_000,
+  ) {
+    this.authority = new RegisteredExecutionCapabilityAuthority(
+      registeredCloudP256PublicKey,
+      revokedCapabilityIds,
+    );
+    this.store = new SqliteExecutionCapabilityUseStore(filename, maxRecords);
+    this.journal = new ExecutionCapabilityUseJournal(this.store);
+  }
+
+  authorize(
+    input: unknown,
+    expected: ExpectedExecutionCapabilityBinding,
+    now: Date,
+  ): VerifiedExecutionCapabilityUseDecision {
+    const verifiedCapability = this.authority.verify(input, expected, now);
+    return {
+      verifiedCapability,
+      decision: this.journal.authorize(verifiedCapability.capability),
+    };
+  }
+
+  markDurableResult(
+    input: unknown,
+    expected: ExpectedExecutionCapabilityBinding,
+    now: Date,
+    resultDigest: string,
+  ): void {
+    const verified = this.authority.verify(input, expected, now);
+    this.journal.markDurableResult(verified.capability, resultDigest);
+  }
+
+  getUseRecord(capabilityId: string): ExecutionCapabilityUseRecord | undefined {
+    return this.journal.get(capabilityId);
+  }
+
+  close(): void {
+    this.store.close();
   }
 }

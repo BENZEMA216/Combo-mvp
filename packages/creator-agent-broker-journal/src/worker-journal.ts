@@ -33,14 +33,17 @@ export interface LocalInvocation {
   readonly deploymentId: string;
   readonly workerInstallationId: string;
   readonly leaseId: string;
+  readonly workerSessionId: string;
   readonly fence: bigint;
   readonly executionCapabilityBinding: ExpectedExecutionCapabilityBinding;
   readonly executionCapabilityDigest: string;
   readonly executionCapabilityDeadlineAtMs: number;
   readonly executionCapabilityVerifiedAtMs: number;
   readonly prepareCommandId: string;
+  readonly preparedSourceEventId: string;
   state: LocalInvocationState;
   startCommandId?: string;
+  startedSourceEventId?: string;
   runtimeTurnId?: string;
   resultDigest?: string;
   resultSourceEventId?: string;
@@ -67,9 +70,17 @@ export interface LocalOutboxRecord {
   attemptCount: number;
 }
 
+export const WORKER_TERMINAL_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export interface ArchivedLocalOutboxRecord extends LocalOutboxRecord {
+  readonly archivedAtMs: number;
+  readonly retainedUntilMs: number;
+}
+
 export interface WorkerJournalSnapshot {
   readonly invocations: ReadonlyMap<string, LocalInvocation>;
   readonly outbox: readonly LocalOutboxRecord[];
+  readonly archivedOutbox: readonly ArchivedLocalOutboxRecord[];
   readonly activeInvocationId?: string;
 }
 
@@ -159,6 +170,8 @@ export interface WorkerJournalTransactionPort {
     sourceEventId: string;
     interruptEvidenceDigest: string;
   }): LocalInvocation;
+  pruneTerminalOutbox(nowMs: number): number;
+  pruneExpiredArchive(nowMs: number): number;
   snapshot(): WorkerJournalSnapshot;
 }
 
@@ -169,6 +182,7 @@ export interface WorkerJournalTransactionPort {
 export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
   private invocations = new Map<string, LocalInvocation>();
   private outbox: LocalOutboxRecord[] = [];
+  private archivedOutbox: ArchivedLocalOutboxRecord[] = [];
   private activeInvocationId?: string;
 
   constructor(
@@ -199,11 +213,7 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
       if (existing.executionCapabilityDigest !== verified.capabilityDigest) {
         throw new WorkerJournalError('IDEMPOTENCY_CONFLICT');
       }
-      const preparedEvent = this.outbox.find(
-        (item) =>
-          item.invocationId === existing.invocationId && item.eventType === 'invocation.prepared',
-      );
-      if (!preparedEvent || preparedEvent.sourceEventId !== input.sourceEventId) {
+      if (existing.preparedSourceEventId !== input.sourceEventId) {
         throw new WorkerJournalError('IDEMPOTENCY_CONFLICT');
       }
       return cloneInvocation(existing);
@@ -222,7 +232,10 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
     const deadlineAtMs = Date.parse(verified.capability.expiresAt);
 
     return this.atomic((draft) => {
-      draft.assertOutboxCapacity(this.maxOutboxRecords);
+      draft.assertOutboxCapacity(
+        this.maxOutboxRecords,
+        retainedWorkerOutboxLimit(this.maxInvocationRecords),
+      );
       const invocation: LocalInvocation = {
         invocationId: input.invocationId,
         conversationId: input.conversationId,
@@ -232,12 +245,14 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
         deploymentId: input.lease.deploymentId,
         workerInstallationId: input.workerInstallationId,
         leaseId: input.lease.leaseId,
+        workerSessionId: input.lease.workerSessionId,
         fence: parseFence(input.lease.fence),
         executionCapabilityBinding: cloneExpectedBinding(expected),
         executionCapabilityDigest: verified.capabilityDigest,
         executionCapabilityDeadlineAtMs: deadlineAtMs,
         executionCapabilityVerifiedAtMs: input.nowMs,
         prepareCommandId: input.commandId,
+        preparedSourceEventId: input.sourceEventId,
         state: 'PREPARED',
         hostDispatchIntentCount: 0,
         hostDispatchConfirmedCount: 0,
@@ -307,12 +322,7 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
         if (invocation.runtimeTurnId !== input.runtimeTurnId) {
           throw new WorkerJournalError('HOST_DISPATCH_ALREADY_CONFIRMED');
         }
-        const startedEvent = draft.outbox.find(
-          (item) =>
-            item.invocationId === invocation.invocationId &&
-            item.eventType === 'invocation.started',
-        );
-        if (!startedEvent || startedEvent.sourceEventId !== input.sourceEventId) {
+        if (invocation.startedSourceEventId !== input.sourceEventId) {
           throw new WorkerJournalError('IDEMPOTENCY_CONFLICT');
         }
         return invocation;
@@ -320,8 +330,12 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
       if (invocation.state !== 'STARTING') {
         throw new WorkerJournalError('ILLEGAL_LOCAL_TRANSITION');
       }
-      draft.assertOutboxCapacity(this.maxOutboxRecords);
+      draft.assertOutboxCapacity(
+        this.maxOutboxRecords,
+        retainedWorkerOutboxLimit(this.maxInvocationRecords),
+      );
       invocation.runtimeTurnId = input.runtimeTurnId;
+      invocation.startedSourceEventId = input.sourceEventId;
       invocation.hostDispatchConfirmedCount += 1;
       invocation.state = 'RUNNING';
       draft.appendOutbox({
@@ -360,7 +374,10 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
       if (invocation.state !== 'RUNNING') {
         throw new WorkerJournalError('ILLEGAL_LOCAL_TRANSITION');
       }
-      draft.assertOutboxCapacity(this.maxOutboxRecords);
+      draft.assertOutboxCapacity(
+        this.maxOutboxRecords,
+        retainedWorkerOutboxLimit(this.maxInvocationRecords),
+      );
       invocation.resultDigest = input.resultDigest;
       invocation.resultSourceEventId = input.sourceEventId;
       invocation.terminalSourceEventId = input.sourceEventId;
@@ -397,11 +414,14 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
       ) {
         throw new WorkerJournalError('ILLEGAL_LOCAL_TRANSITION');
       }
-      const record = draft.outbox.find(
-        (item) => item.invocationId === invocationId && item.sourceEventId === sourceEventId,
-      );
+      const record = draft
+        .allOutbox()
+        .find((item) => item.invocationId === invocationId && item.sourceEventId === sourceEventId);
       if (!record) throw new WorkerJournalError('OUTBOX_NOT_FOUND');
       record.state = 'CLOUD_COMMITTED';
+      for (const item of draft.allOutbox()) {
+        if (item.invocationId === invocationId) item.state = 'CLOUD_COMMITTED';
+      }
       invocation.cloudCommitted = true;
       if (invocation.state === 'FINAL_READY') invocation.state = 'CLOUD_COMMITTED';
       if (draft.activeInvocationId === invocationId) delete draft.activeInvocationId;
@@ -452,6 +472,7 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
   }
 
   expireOutbox(nowMs: number): readonly LocalOutboxRecord[] {
+    assertWorkerTime(nowMs);
     return this.atomic((draft) => {
       const expired: LocalOutboxRecord[] = [];
       for (const record of draft.outbox) {
@@ -468,14 +489,58 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
     });
   }
 
+  pruneTerminalOutbox(nowMs: number): number {
+    assertWorkerTime(nowMs);
+    return this.atomic((draft) => {
+      const before = draft.outbox.length;
+      for (let index = draft.outbox.length - 1; index >= 0; index -= 1) {
+        const record = draft.outbox[index]!;
+        const invocation = draft.invocations.get(record.invocationId);
+        if (
+          invocation?.cloudCommitted === true &&
+          (record.state === 'CLOUD_COMMITTED' || record.state === 'EXPIRED')
+        ) {
+          draft.outbox.splice(index, 1);
+          draft.archivedOutbox.push({
+            ...record,
+            archivedAtMs: nowMs,
+            retainedUntilMs: workerRetentionDeadline(nowMs),
+          });
+        }
+      }
+      return before - draft.outbox.length;
+    });
+  }
+
+  pruneExpiredArchive(nowMs: number): number {
+    assertWorkerTime(nowMs);
+    return this.atomic((draft) => {
+      const before = draft.archivedOutbox.length;
+      for (let index = draft.archivedOutbox.length - 1; index >= 0; index -= 1) {
+        const record = draft.archivedOutbox[index]!;
+        const invocation = draft.invocations.get(record.invocationId);
+        if (
+          invocation?.cloudCommitted === true &&
+          isLocalInvocationTerminal(invocation.state) &&
+          record.state === 'CLOUD_COMMITTED' &&
+          record.retainedUntilMs <= nowMs
+        ) {
+          draft.archivedOutbox.splice(index, 1);
+        }
+      }
+      return before - draft.archivedOutbox.length;
+    });
+  }
+
   serialize(): string {
     return JSON.stringify({
-      schemaVersion: 1,
+      schemaVersion: 2,
       invocations: [...this.invocations.values()].map((invocation) => ({
         ...invocation,
         fence: invocation.fence.toString(10),
       })),
       outbox: this.outbox,
+      archivedOutbox: this.archivedOutbox,
       activeInvocationId: this.activeInvocationId ?? null,
     });
   }
@@ -488,10 +553,17 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
   ): InMemoryWorkerJournal {
     const parsed = JSON.parse(serialized) as SerializedWorkerJournal;
     if (
-      parsed.schemaVersion !== 1 ||
-      parsed.outbox.length > maxOutboxRecords ||
+      parsed.schemaVersion !== 2 ||
+      !Array.isArray(parsed.invocations) ||
+      !Array.isArray(parsed.outbox) ||
+      !Array.isArray(parsed.archivedOutbox) ||
+      activeWorkerOutboxCount(parsed.outbox) > maxOutboxRecords ||
+      parsed.outbox.length + parsed.archivedOutbox.length >
+        retainedWorkerOutboxLimit(maxInvocationRecords) ||
       parsed.invocations.length > maxInvocationRecords ||
-      new Set(parsed.outbox.map((record) => record.sourceEventId)).size !== parsed.outbox.length
+      new Set([...parsed.outbox, ...parsed.archivedOutbox].map((record) => record.sourceEventId))
+        .size !==
+        parsed.outbox.length + parsed.archivedOutbox.length
     ) {
       throw new WorkerJournalError('IDEMPOTENCY_CONFLICT');
     }
@@ -511,9 +583,25 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
       ]),
     );
     journal.outbox = parsed.outbox.map((record) => ({ ...record }));
+    journal.archivedOutbox = parsed.archivedOutbox.map((record) => ({ ...record }));
     journal.activeInvocationId = parsed.activeInvocationId ?? undefined;
     if (
       journal.invocations.size !== parsed.invocations.length ||
+      [...journal.invocations.values()].some(
+        (invocation) => !isJournalIdentifier(invocation.workerSessionId),
+      ) ||
+      journal.archivedOutbox.some((record) => {
+        const invocation = journal.invocations.get(record.invocationId);
+        return (
+          !Number.isSafeInteger(record.archivedAtMs) ||
+          record.archivedAtMs < 0 ||
+          !Number.isSafeInteger(record.retainedUntilMs) ||
+          record.retainedUntilMs !== record.archivedAtMs + WORKER_TERMINAL_OUTBOX_RETENTION_MS ||
+          record.state !== 'CLOUD_COMMITTED' ||
+          invocation?.cloudCommitted !== true ||
+          !isLocalInvocationTerminal(invocation.state)
+        );
+      }) ||
       (journal.activeInvocationId !== undefined &&
         !journal.invocations.has(journal.activeInvocationId))
     ) {
@@ -547,7 +635,10 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
       ) {
         throw new WorkerJournalError('ILLEGAL_LOCAL_TRANSITION');
       }
-      draft.assertOutboxCapacity(this.maxOutboxRecords);
+      draft.assertOutboxCapacity(
+        this.maxOutboxRecords,
+        retainedWorkerOutboxLimit(this.maxInvocationRecords),
+      );
       invocation.state = input.state;
       invocation.terminalSourceEventId = input.sourceEventId;
       invocation.terminalPayloadDigest = input.payloadDigest;
@@ -569,6 +660,7 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
     return {
       invocations: cloneInvocationMap(this.invocations),
       outbox: this.outbox.map((item) => ({ ...item })),
+      archivedOutbox: this.archivedOutbox.map((item) => ({ ...item })),
       ...(this.activeInvocationId ? { activeInvocationId: this.activeInvocationId } : {}),
     };
   }
@@ -589,11 +681,13 @@ export class InMemoryWorkerJournal implements WorkerJournalTransactionPort {
     const draft = new WorkerDraft({
       invocations: cloneInvocationMap(this.invocations),
       outbox: this.outbox.map((item) => ({ ...item })),
+      archivedOutbox: this.archivedOutbox.map((item) => ({ ...item })),
       activeInvocationId: this.activeInvocationId,
     });
     const result = operation(draft);
     this.invocations = draft.invocations;
     this.outbox = draft.outbox;
+    this.archivedOutbox = draft.archivedOutbox;
     this.activeInvocationId = draft.activeInvocationId;
     return cloneResult(result);
   }
@@ -603,21 +697,25 @@ interface SerializedWorkerJournal {
   schemaVersion: number;
   invocations: Array<Omit<LocalInvocation, 'fence'> & { fence: string }>;
   outbox: LocalOutboxRecord[];
+  archivedOutbox: ArchivedLocalOutboxRecord[];
   activeInvocationId: string | null;
 }
 
 class WorkerDraft {
   readonly invocations: Map<string, LocalInvocation>;
   readonly outbox: LocalOutboxRecord[];
+  readonly archivedOutbox: ArchivedLocalOutboxRecord[];
   activeInvocationId?: string;
 
   constructor(input: {
     invocations: Map<string, LocalInvocation>;
     outbox: LocalOutboxRecord[];
+    archivedOutbox: ArchivedLocalOutboxRecord[];
     activeInvocationId?: string;
   }) {
     this.invocations = input.invocations;
     this.outbox = input.outbox;
+    this.archivedOutbox = input.archivedOutbox;
     this.activeInvocationId = input.activeInvocationId;
   }
 
@@ -644,6 +742,7 @@ class WorkerDraft {
       invocation.workerInstallationId !== workerInstallationId ||
       invocation.deploymentId !== lease.deploymentId ||
       invocation.leaseId !== lease.leaseId ||
+      invocation.workerSessionId !== lease.workerSessionId ||
       invocation.executionCapabilityDigest !== executionCapabilityDigest
     ) {
       throw new WorkerJournalError('STALE_LEASE');
@@ -652,12 +751,17 @@ class WorkerDraft {
     assertLocalDeadline(invocation.executionCapabilityDeadlineAtMs, nowMs);
   }
 
-  assertOutboxCapacity(maxRecords: number): void {
-    if (this.outbox.length >= maxRecords) throw new WorkerJournalError('OUTBOX_CAPACITY');
+  assertOutboxCapacity(maxActiveRecords: number, maxRetainedRecords: number): void {
+    if (
+      activeWorkerOutboxCount(this.outbox) >= maxActiveRecords ||
+      this.outbox.length + this.archivedOutbox.length >= maxRetainedRecords
+    ) {
+      throw new WorkerJournalError('OUTBOX_CAPACITY');
+    }
   }
 
   appendOutbox(record: LocalOutboxRecord): void {
-    const existing = this.outbox.find((item) => item.sourceEventId === record.sourceEventId);
+    const existing = this.allOutbox().find((item) => item.sourceEventId === record.sourceEventId);
     if (existing) {
       if (
         existing.invocationId !== record.invocationId ||
@@ -670,6 +774,10 @@ class WorkerDraft {
       return;
     }
     this.outbox.push(record);
+  }
+
+  allOutbox(): readonly LocalOutboxRecord[] {
+    return [...this.outbox, ...this.archivedOutbox];
   }
 }
 
@@ -700,6 +808,7 @@ function samePrepareBinding(existing: LocalInvocation, input: WorkerPrepareInput
     existing.deploymentId === input.lease.deploymentId &&
     existing.prepareCommandId === input.commandId &&
     existing.leaseId === input.lease.leaseId &&
+    existing.workerSessionId === input.lease.workerSessionId &&
     existing.fence === parseFence(input.lease.fence) &&
     existing.executionCapabilityBinding.capabilityId ===
       input.expectedExecutionCapability.capabilityId &&
@@ -711,6 +820,18 @@ function assertLocalDeadline(deadlineAtMs: number, nowMs: number): void {
   if (!Number.isSafeInteger(deadlineAtMs) || deadlineAtMs <= nowMs) {
     throw new WorkerJournalError('INVOCATION_DEADLINE_EXPIRED');
   }
+}
+
+function assertWorkerTime(nowMs: number): void {
+  if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+    throw new WorkerJournalError('IDEMPOTENCY_CONFLICT');
+  }
+}
+
+function workerRetentionDeadline(nowMs: number): number {
+  const deadline = nowMs + WORKER_TERMINAL_OUTBOX_RETENTION_MS;
+  if (!Number.isSafeInteger(deadline)) throw new WorkerJournalError('IDEMPOTENCY_CONFLICT');
+  return deadline;
 }
 
 function cloneExpectedBinding(
@@ -752,4 +873,16 @@ function isTerminalOutboxEvent(eventType: LocalOutboxRecord['eventType']): boole
     eventType === 'invocation.cancelled' ||
     eventType === 'invocation.uncertain'
   );
+}
+
+function activeWorkerOutboxCount(records: readonly LocalOutboxRecord[]): number {
+  return records.filter((record) => record.state === 'PENDING').length;
+}
+
+function retainedWorkerOutboxLimit(maxInvocationRecords: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, maxInvocationRecords * 4);
+}
+
+function isJournalIdentifier(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(value);
 }

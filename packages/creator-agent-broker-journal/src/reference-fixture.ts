@@ -20,6 +20,7 @@ export const IDS = {
   deployment: '0198f00d-0000-7000-8000-000000000006',
   worker: '0198f00d-0000-7000-8000-000000000007',
   lease: '0198f00d-0000-7000-8000-000000000008',
+  workerSession: '0198f00d-0000-7000-8000-00000000000d',
   providerRequest: '0198f00d-0000-7000-8000-000000000009',
   capability: '0198f00d-0000-7000-8000-00000000000a',
   userMessage: '0198f00d-0000-7000-8000-00000000000b',
@@ -102,6 +103,7 @@ export function createLeaseAuthority(nowMs = NOW_MS): {
     leaseId: IDS.lease,
     deploymentId: IDS.deployment,
     workerId: IDS.worker,
+    workerSessionId: IDS.workerSession,
     connectionId: 'connection-a',
     nowMs,
     ttlMs: 10 * 60_000,
@@ -111,6 +113,7 @@ export function createLeaseAuthority(nowMs = NOW_MS): {
     lease: {
       deploymentId: lease.deploymentId,
       leaseId: lease.leaseId,
+      workerSessionId: lease.workerSessionId,
       fence: lease.fence.toString(10),
     },
   };
