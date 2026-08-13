@@ -3,6 +3,11 @@ import type { Duplex } from 'node:stream';
 
 import {
   BROKER_MAX_FRAME_BYTES,
+  BROKER_WORKER_CONNECT_PATH,
+  BrokerAuthenticationError,
+  BrokerAuthenticationFailureCode,
+  BrokerCloseCode,
+  BrokerCloseReason,
   BrokerEnvelopeSchema,
   UuidSchema,
   canonicalSha256,
@@ -19,16 +24,7 @@ import {
 } from '@cb/creator-agent-broker-journal';
 import { WebSocket, WebSocketServer, type RawData } from 'ws';
 
-export const WORKER_CONNECT_PATH = '/v1/worker/connect' as const;
-
-const CLOSE = {
-  SESSION_REPLACED: 4001,
-  PROTOCOL_ERROR: 4002,
-  AUTH_FAILED: 4003,
-  CAPACITY: 4004,
-  REPLAY_REQUIRED: 4009,
-  INTERNAL_ERROR: 1011,
-} as const;
+export const WORKER_CONNECT_PATH = BROKER_WORKER_CONNECT_PATH;
 
 const MAX_BUFFERED_BYTES = 256 * 1024;
 const MAX_PENDING_FRAMES_PER_SESSION = 8;
@@ -59,6 +55,7 @@ export type GatewayDelivery = Readonly<{
 /**
  * The authority implementation owns every durable/security decision. In particular,
  * authenticate must verify and consume the registered device challenge exactly once;
+ * expected rejection must throw BrokerAuthenticationError with a machine-readable code;
  * accept/replay must transact against PostgreSQL before returning durable ACK frames.
  */
 export interface AgentGatewayAuthorityPort {
@@ -252,7 +249,12 @@ export class AgentGateway {
     }
     const task = session.chain.then(() => this.#sendOutbound(session, envelopes));
     session.chain = task.catch(() => {
-      this.#failSession(session, 'INTERNAL_ERROR', CLOSE.INTERNAL_ERROR, 'INTERNAL_ERROR');
+      this.#failSession(
+        session,
+        'INTERNAL_ERROR',
+        BrokerCloseCode.INTERNAL_ERROR,
+        BrokerCloseReason.INTERNAL_ERROR,
+      );
     });
     await task;
     return true;
@@ -319,7 +321,12 @@ export class AgentGateway {
     const sessions = [...this.#sessions];
     const socketClosures = sessions.map((session) => waitForSocketClose(session.socket));
     for (const session of sessions) {
-      this.#failSession(session, 'SERVER_STOPPED', 1001, 'SERVER_STOPPED');
+      this.#failSession(
+        session,
+        'SERVER_STOPPED',
+        BrokerCloseCode.GOING_AWAY,
+        BrokerCloseReason.SERVER_STOPPED,
+      );
     }
 
     const closeServer =
@@ -361,7 +368,7 @@ export class AgentGateway {
     try {
       this.#webSockets.handleUpgrade(request, socket, head, (webSocket) => {
         if (!this.#accepting) {
-          webSocket.close(CLOSE.CAPACITY, 'NOT_ACCEPTING');
+          webSocket.close(BrokerCloseCode.CAPACITY, BrokerCloseReason.NOT_ACCEPTING);
           return;
         }
         this.#attach(webSocket);
@@ -378,7 +385,12 @@ export class AgentGateway {
       chain: Promise.resolve(),
       handshakeTimer: setTimeout(() => {
         this.#diagnostic('handshake_rejected');
-        this.#failSession(session, 'AUTH_FAILED', CLOSE.AUTH_FAILED, 'HANDSHAKE_TIMEOUT');
+        this.#failSession(
+          session,
+          'AUTH_FAILED',
+          BrokerCloseCode.AUTH_FAILED,
+          BrokerCloseReason.HANDSHAKE_TIMEOUT,
+        );
       }, this.#handshakeTimeoutMs),
       closed: false,
       cleaned: false,
@@ -398,22 +410,32 @@ export class AgentGateway {
           this.#failSession(
             session,
             'PROTOCOL_ERROR',
-            CLOSE.PROTOCOL_ERROR,
-            'HANDSHAKE_IN_PROGRESS',
+            BrokerCloseCode.PROTOCOL_ERROR,
+            BrokerCloseReason.PROTOCOL_ERROR,
           );
           return;
         }
         session.handshakeReceived = true;
       }
       if (session.pendingFrames >= MAX_PENDING_FRAMES_PER_SESSION) {
-        this.#failSession(session, 'CAPACITY', CLOSE.CAPACITY, 'TRANSPORT_CAPACITY');
+        this.#failSession(
+          session,
+          'CAPACITY',
+          BrokerCloseCode.CAPACITY,
+          BrokerCloseReason.TRANSPORT_CAPACITY,
+        );
         return;
       }
       session.pendingFrames += 1;
       const task = session.chain.then(() => this.#handleMessage(session, data, isBinary));
       session.chain = task
         .catch(() => {
-          this.#failSession(session, 'PROTOCOL_ERROR', CLOSE.PROTOCOL_ERROR, 'PROTOCOL_ERROR');
+          this.#failSession(
+            session,
+            'PROTOCOL_ERROR',
+            BrokerCloseCode.PROTOCOL_ERROR,
+            BrokerCloseReason.PROTOCOL_ERROR,
+          );
         })
         .finally(() => {
           session.pendingFrames -= 1;
@@ -421,7 +443,12 @@ export class AgentGateway {
     });
     socket.on('error', () => {
       this.#diagnostic('transport_error');
-      this.#failSession(session, 'INTERNAL_ERROR', CLOSE.INTERNAL_ERROR, 'TRANSPORT_ERROR');
+      this.#failSession(
+        session,
+        'INTERNAL_ERROR',
+        BrokerCloseCode.INTERNAL_ERROR,
+        BrokerCloseReason.TRANSPORT_ERROR,
+      );
     });
     socket.on('close', () => this.#cleanupSession(session));
   }
@@ -444,7 +471,12 @@ export class AgentGateway {
       handshake = parseBrokerHandshake(bytes);
     } catch {
       this.#diagnostic('handshake_rejected');
-      this.#failSession(session, 'AUTH_FAILED', CLOSE.AUTH_FAILED, 'AUTH_FAILED');
+      this.#failSession(
+        session,
+        'AUTH_FAILED',
+        BrokerCloseCode.AUTH_FAILED,
+        BrokerCloseReason.AUTHENTICATION_REJECTED,
+      );
       return;
     }
 
@@ -464,9 +496,18 @@ export class AgentGateway {
         ),
         handshake.installationId,
       );
-    } catch {
+    } catch (error) {
       this.#diagnostic('handshake_rejected');
-      this.#failSession(session, 'AUTH_FAILED', CLOSE.AUTH_FAILED, 'AUTH_FAILED');
+      if (error instanceof BrokerAuthenticationError) {
+        this.#failSession(session, 'AUTH_FAILED', BrokerCloseCode.AUTH_FAILED, error.code);
+      } else {
+        this.#failSession(
+          session,
+          'INTERNAL_ERROR',
+          BrokerCloseCode.INTERNAL_ERROR,
+          BrokerCloseReason.AUTHORITY_FAILED,
+        );
+      }
       return;
     }
     if (session.closed || session.socket.readyState !== WebSocket.OPEN || !this.#accepting) {
@@ -481,14 +522,24 @@ export class AgentGateway {
       (workerSessionOwner !== undefined && workerSessionOwner !== session)
     ) {
       this.#diagnostic('handshake_rejected');
-      this.#failSession(session, 'AUTH_FAILED', CLOSE.AUTH_FAILED, 'AUTH_FAILED');
+      this.#failSession(
+        session,
+        'AUTH_FAILED',
+        BrokerCloseCode.AUTH_FAILED,
+        BrokerAuthenticationFailureCode.AUTHENTICATION_REJECTED,
+      );
       return;
     }
 
     const previous = this.#byInstallation.get(context.installationId);
     if (previous !== undefined && previous !== session) {
       this.#diagnostic('session_replaced');
-      this.#failSession(previous, 'SESSION_REPLACED', CLOSE.SESSION_REPLACED, 'SESSION_REPLACED');
+      this.#failSession(
+        previous,
+        'SESSION_REPLACED',
+        BrokerCloseCode.SESSION_REPLACED,
+        BrokerCloseReason.SESSION_REPLACED,
+      );
     }
 
     clearTimeout(session.handshakeTimer);
@@ -507,7 +558,12 @@ export class AgentGateway {
       );
       await this.#sendOutbound(session, initial);
     } catch {
-      this.#failSession(session, 'INTERNAL_ERROR', CLOSE.INTERNAL_ERROR, 'AUTHORITY_FAILED');
+      this.#failSession(
+        session,
+        'INTERNAL_ERROR',
+        BrokerCloseCode.INTERNAL_ERROR,
+        BrokerCloseReason.AUTHORITY_FAILED,
+      );
       return;
     }
     if (
@@ -559,10 +615,20 @@ export class AgentGateway {
           session.lifecycle.signal,
         );
       } catch {
-        this.#failSession(session, 'INTERNAL_ERROR', CLOSE.INTERNAL_ERROR, 'AUTHORITY_FAILED');
+        this.#failSession(
+          session,
+          'INTERNAL_ERROR',
+          BrokerCloseCode.INTERNAL_ERROR,
+          BrokerCloseReason.AUTHORITY_FAILED,
+        );
         return;
       }
-      this.#failSession(session, 'REPLAY_REQUIRED', CLOSE.REPLAY_REQUIRED, 'REPLAY_REQUIRED');
+      this.#failSession(
+        session,
+        'REPLAY_REQUIRED',
+        BrokerCloseCode.REPLAY_REQUIRED,
+        BrokerCloseReason.REPLAY_REQUIRED,
+      );
       return;
     }
     session.inbound = decision.cursor;
@@ -585,7 +651,12 @@ export class AgentGateway {
             );
       await this.#sendOutbound(session, responses);
     } catch {
-      this.#failSession(session, 'INTERNAL_ERROR', CLOSE.INTERNAL_ERROR, 'AUTHORITY_FAILED');
+      this.#failSession(
+        session,
+        'INTERNAL_ERROR',
+        BrokerCloseCode.INTERNAL_ERROR,
+        BrokerCloseReason.AUTHORITY_FAILED,
+      );
       return;
     }
     this.#diagnostic(decision.type === 'REPLAY' ? 'frame_replayed' : 'frame_accepted');

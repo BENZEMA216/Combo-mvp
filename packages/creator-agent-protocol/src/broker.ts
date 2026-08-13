@@ -16,6 +16,89 @@ import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.
 export const CREATOR_BROKER_PROTOCOL = 'combo.creator-broker/1' as const;
 export const EXECUTION_CAPABILITY_PROTOCOL = 'combo.execution-capability/1' as const;
 export const BROKER_MAX_FRAME_BYTES = 65_536;
+export const BROKER_WORKER_CONNECT_PATH = '/v1/worker/connect' as const;
+
+/** Worker and Gateway must consume this single wire authority; do not duplicate numeric codes. */
+export const BrokerCloseCode = Object.freeze({
+  NORMAL: 1000,
+  GOING_AWAY: 1001,
+  INTERNAL_ERROR: 1011,
+  SESSION_REPLACED: 4001,
+  PROTOCOL_ERROR: 4002,
+  AUTH_FAILED: 4003,
+  CAPACITY: 4004,
+  REPLAY_REQUIRED: 4009,
+} as const);
+
+/** ASCII machine reasons stay below the WebSocket close-frame reason limit. */
+export const BrokerCloseReason = Object.freeze({
+  STOPPING: 'STOPPING',
+  SERVER_STOPPED: 'SERVER_STOPPED',
+  SESSION_REPLACED: 'SESSION_REPLACED',
+  PROTOCOL_ERROR: 'PROTOCOL_ERROR',
+  TRANSPORT_ERROR: 'TRANSPORT_ERROR',
+  TRANSPORT_FAILED: 'TRANSPORT_FAILED',
+  AUTHENTICATION_REJECTED: 'AUTHENTICATION_REJECTED',
+  HANDSHAKE_TIMEOUT: 'HANDSHAKE_TIMEOUT',
+  LEASE_GRANT_TIMEOUT: 'LEASE_GRANT_TIMEOUT',
+  SESSION_EXPIRED: 'SESSION_EXPIRED',
+  INSTALLATION_REVOKED: 'INSTALLATION_REVOKED',
+  WORKER_INCOMPATIBLE: 'WORKER_INCOMPATIBLE',
+  NOT_ACCEPTING: 'NOT_ACCEPTING',
+  TRANSPORT_CAPACITY: 'TRANSPORT_CAPACITY',
+  REPLAY_REQUIRED: 'REPLAY_REQUIRED',
+  LEASE_EXPIRED: 'LEASE_EXPIRED',
+  AUTHORITY_FAILED: 'AUTHORITY_FAILED',
+  INTERNAL_ERROR: 'INTERNAL_ERROR',
+} as const);
+export type BrokerCloseReason = (typeof BrokerCloseReason)[keyof typeof BrokerCloseReason];
+
+export const BrokerAuthenticationFailureCode = Object.freeze({
+  AUTHENTICATION_REJECTED: BrokerCloseReason.AUTHENTICATION_REJECTED,
+  SESSION_EXPIRED: BrokerCloseReason.SESSION_EXPIRED,
+  INSTALLATION_REVOKED: BrokerCloseReason.INSTALLATION_REVOKED,
+  WORKER_INCOMPATIBLE: BrokerCloseReason.WORKER_INCOMPATIBLE,
+} as const);
+export type BrokerAuthenticationFailureCode =
+  (typeof BrokerAuthenticationFailureCode)[keyof typeof BrokerAuthenticationFailureCode];
+
+/** Durable auth adapters throw this exact type so Gateway can send a machine-readable close. */
+export class BrokerAuthenticationError extends Error {
+  constructor(readonly code: BrokerAuthenticationFailureCode) {
+    if (!Object.values(BrokerAuthenticationFailureCode).includes(code)) {
+      throw new TypeError('INVALID_BROKER_AUTHENTICATION_FAILURE_CODE');
+    }
+    super(code);
+    this.name = 'BrokerAuthenticationError';
+  }
+}
+
+export type BrokerCloseDisposition = 'RETRY' | 'BLOCK';
+
+/** Remote close policy is shared protocol authority, never inferred from free-form logging text. */
+export function classifyBrokerRemoteClose(code: number, reason: string): BrokerCloseDisposition {
+  if (
+    code === BrokerCloseCode.NORMAL ||
+    code === BrokerCloseCode.GOING_AWAY ||
+    code === BrokerCloseCode.INTERNAL_ERROR ||
+    code === BrokerCloseCode.CAPACITY ||
+    code === BrokerCloseCode.REPLAY_REQUIRED ||
+    code === 1006
+  ) {
+    return 'RETRY';
+  }
+  if (code === BrokerCloseCode.AUTH_FAILED) {
+    return reason === BrokerCloseReason.SESSION_EXPIRED ||
+      reason === BrokerCloseReason.HANDSHAKE_TIMEOUT ||
+      reason === BrokerCloseReason.LEASE_GRANT_TIMEOUT
+      ? 'RETRY'
+      : 'BLOCK';
+  }
+  if (code === BrokerCloseCode.SESSION_REPLACED || code === BrokerCloseCode.PROTOCOL_ERROR) {
+    return 'BLOCK';
+  }
+  return code >= 4000 && code <= 4999 ? 'BLOCK' : 'RETRY';
+}
 
 export const BrokerCapacitySchema = z
   .object({
@@ -24,25 +107,37 @@ export const BrokerCapacitySchema = z
   })
   .strict();
 
+const BrokerHandshakeUnsignedShape = {
+  protocol: z.literal(CREATOR_BROKER_PROTOCOL),
+  schemaVersion: z.literal(1),
+  installationId: UuidSchema,
+  workerVersion: Utf8TextSchema(128),
+  supportedProtocolVersions: z.tuple([z.literal(1)]),
+  codexRuntimeArtifacts: z.array(Sha256DigestSchema).min(1).max(8),
+  codexProtocolSchemaDigests: z.array(Sha256DigestSchema).min(1).max(8),
+  isolationModes: z
+    .array(z.enum(['apple-container-v1', 'lima-vz-v1']))
+    .min(1)
+    .max(2),
+  capacity: BrokerCapacitySchema,
+  challengeId: UuidSchema,
+};
+
+export const BrokerHandshakeUnsignedSchema = z.object(BrokerHandshakeUnsignedShape).strict();
+export type BrokerHandshakeUnsigned = z.infer<typeof BrokerHandshakeUnsignedSchema>;
+
 export const BrokerHandshakeSchema = z
   .object({
-    protocol: z.literal(CREATOR_BROKER_PROTOCOL),
-    schemaVersion: z.literal(1),
-    installationId: UuidSchema,
-    workerVersion: Utf8TextSchema(128),
-    supportedProtocolVersions: z.tuple([z.literal(1)]),
-    codexRuntimeArtifacts: z.array(Sha256DigestSchema).min(1).max(8),
-    codexProtocolSchemaDigests: z.array(Sha256DigestSchema).min(1).max(8),
-    isolationModes: z
-      .array(z.enum(['apple-container-v1', 'lima-vz-v1']))
-      .min(1)
-      .max(2),
-    capacity: BrokerCapacitySchema,
-    challengeId: UuidSchema,
+    ...BrokerHandshakeUnsignedShape,
     challengeSignature: Base64UrlSchema.min(32).max(256),
   })
   .strict();
 export type BrokerHandshake = z.infer<typeof BrokerHandshakeSchema>;
+
+/** DeviceSigner 只签固定字段的 RFC 8785 canonical bytes，不接触 JSON 字符串拼装。 */
+export function brokerHandshakeSigningBytes(handshake: BrokerHandshakeUnsigned): Buffer {
+  return Buffer.from(canonicalizeJson(BrokerHandshakeUnsignedSchema.parse(handshake)), 'utf8');
+}
 
 export const LeaseBindingSchema = z
   .object({

@@ -6,9 +6,16 @@ import { canonicalSha256, canonicalizeJson } from '../canonical.js';
 import {
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
+  BrokerHandshakeUnsignedSchema,
+  BrokerAuthenticationError,
+  BrokerAuthenticationFailureCode,
+  BrokerCloseCode,
+  BrokerCloseReason,
   ExecutionCapabilitySchema,
   ExecutionCapabilityUseRecordSchema,
   decideExecutionCapabilityUse,
+  brokerHandshakeSigningBytes,
+  classifyBrokerRemoteClose,
   executionCapabilityDigest,
   executionCapabilityBindingFrom,
   executionCapabilitySigningBytes,
@@ -173,6 +180,54 @@ describe('六类共享协议运行时 schema', () => {
       expect(BrokerEnvelopeSchema.safeParse(JSON.parse(text)).success, fixture).toBe(true);
       expect(parseBrokerFrame(text).protocol, fixture).toBe('combo.creator-broker/1');
     }
+  });
+
+  it('Broker DeviceSigner receives canonical unsigned handshake bytes only', async () => {
+    const handshake = BrokerHandshakeSchema.parse(await readFixture('broker-handshake.v1.json'));
+    const { challengeSignature: _challengeSignature, ...unsignedInput } = handshake;
+    const unsigned = BrokerHandshakeUnsignedSchema.parse(unsignedInput);
+    const reordered = BrokerHandshakeUnsignedSchema.parse({
+      challengeId: unsigned.challengeId,
+      capacity: unsigned.capacity,
+      isolationModes: unsigned.isolationModes,
+      codexProtocolSchemaDigests: unsigned.codexProtocolSchemaDigests,
+      codexRuntimeArtifacts: unsigned.codexRuntimeArtifacts,
+      supportedProtocolVersions: unsigned.supportedProtocolVersions,
+      workerVersion: unsigned.workerVersion,
+      installationId: unsigned.installationId,
+      schemaVersion: unsigned.schemaVersion,
+      protocol: unsigned.protocol,
+    });
+    expect(brokerHandshakeSigningBytes(reordered)).toEqual(brokerHandshakeSigningBytes(unsigned));
+    expect(brokerHandshakeSigningBytes(unsigned).toString('utf8')).not.toContain(
+      handshake.challengeSignature,
+    );
+  });
+
+  it('shares one machine-readable Broker close authority across Gateway and Worker', () => {
+    expect(BrokerCloseCode.CAPACITY).toBe(4004);
+    expect(
+      classifyBrokerRemoteClose(BrokerCloseCode.CAPACITY, BrokerCloseReason.TRANSPORT_CAPACITY),
+    ).toBe('RETRY');
+    expect(
+      classifyBrokerRemoteClose(BrokerCloseCode.AUTH_FAILED, BrokerCloseReason.SESSION_EXPIRED),
+    ).toBe('RETRY');
+    for (const reason of [
+      BrokerCloseReason.INSTALLATION_REVOKED,
+      BrokerCloseReason.WORKER_INCOMPATIBLE,
+      BrokerCloseReason.AUTHENTICATION_REJECTED,
+    ]) {
+      expect(classifyBrokerRemoteClose(BrokerCloseCode.AUTH_FAILED, reason)).toBe('BLOCK');
+    }
+    expect(
+      classifyBrokerRemoteClose(
+        BrokerCloseCode.SESSION_REPLACED,
+        BrokerCloseReason.SESSION_REPLACED,
+      ),
+    ).toBe('BLOCK');
+    expect(new BrokerAuthenticationError(BrokerAuthenticationFailureCode.SESSION_EXPIRED)).toEqual(
+      expect.objectContaining({ code: 'SESSION_EXPIRED' }),
+    );
   });
 
   it('Broker sensitive payload binds AEAD bytes and exact invocation/envelope context', async () => {

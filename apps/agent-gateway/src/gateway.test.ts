@@ -2,6 +2,8 @@ import { once } from 'node:events';
 
 import {
   BROKER_MAX_FRAME_BYTES,
+  BrokerAuthenticationError,
+  BrokerAuthenticationFailureCode,
   BrokerAckSchema,
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
@@ -79,7 +81,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
       input.handshake.challengeSignature !== SIGNATURE ||
       !this.challenges.delete(input.handshake.challengeId)
     ) {
-      throw new Error('AUTH_FAILED');
+      throw new BrokerAuthenticationError(BrokerAuthenticationFailureCode.AUTHENTICATION_REJECTED);
     }
     if (this.authenticateBarrier !== undefined) {
       await Promise.race([
@@ -248,7 +250,10 @@ describe('AgentGateway real WebSocket transport', () => {
     const second = await connect(url);
     const close = closeResult(second);
     second.send(canonicalizeJson(handshake(CHALLENGE_A)));
-    await expect(close).resolves.toMatchObject({ code: 4003, reason: 'AUTH_FAILED' });
+    await expect(close).resolves.toMatchObject({
+      code: 4003,
+      reason: 'AUTHENTICATION_REJECTED',
+    });
     expect(authority.sessions).toHaveLength(1);
   });
 
@@ -284,7 +289,10 @@ describe('AgentGateway real WebSocket transport', () => {
       const second = await connect(url);
       const rejected = closeResult(second);
       second.send(canonicalizeJson(handshake(CHALLENGE_B)));
-      await expect(rejected).resolves.toMatchObject({ code: 4003, reason: 'AUTH_FAILED' });
+      await expect(rejected).resolves.toMatchObject({
+        code: 4003,
+        reason: 'AUTHENTICATION_REJECTED',
+      });
       expect(gateway.activeConnections).toBe(1);
       expect(first.readyState).toBe(WebSocket.OPEN);
 
@@ -521,7 +529,7 @@ describe('AgentGateway real WebSocket transport', () => {
     const socket = await connect(url);
     const close = closeResult(socket);
     socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
-    await expect(close).resolves.toMatchObject({ code: 4003, reason: 'AUTH_FAILED' });
+    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'AUTHORITY_FAILED' });
     expect(authority.abortedAuthentications).toBe(1);
     expect(authority.sessions).toHaveLength(0);
     expect(gateway.activeConnections).toBe(0);
