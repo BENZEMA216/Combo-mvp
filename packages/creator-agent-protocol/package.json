@@ -23,7 +23,7 @@
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "test": "vitest run",
-    "test:g0": "vitest run src/__tests__/canonical.test.ts src/__tests__/schemas.test.ts src/__tests__/artifacts.test.ts src/__tests__/registry.test.ts src/__tests__/invocation.test.ts src/__tests__/invocation.property.test.ts",
+    "test:g0": "vitest run src/__tests__/canonical.test.ts src/__tests__/schemas.test.ts src/__tests__/artifacts.test.ts src/__tests__/registry.test.ts src/__tests__/invocation.test.ts src/__tests__/invocation.property.test.ts src/__tests__/capability.property.test.ts",
     "test:property": "node scripts/run-property.mjs",
     "generate:contracts": "pnpm build && node scripts/generate-contract-artifacts.mjs",
     "check:contracts": "pnpm build && node scripts/check-contract-artifacts.mjs",

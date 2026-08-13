@@ -148,6 +148,7 @@ export const VnextErrorCodeSchema = z.enum([
   'STALE_LEASE',
   'STALE_FENCE',
   'PROTOCOL_INCOMPATIBLE',
+  'EXECUTION_CAPABILITY_INVALID',
   'SANDBOX_ATTESTATION_FAILED',
   'RUNTIME_START_FAILED',
   'TURN_TIMEOUT',
@@ -313,6 +314,12 @@ export const VNEXT_ERROR_CLASSIFICATION: Readonly<
     httpStatus: 409,
     retryPolicy: 'NOT_RETRYABLE',
     publicMessage: 'Worker 版本与服务不兼容。',
+  }),
+  EXECUTION_CAPABILITY_INVALID: classification({
+    code: 'EXECUTION_CAPABILITY_INVALID',
+    httpStatus: 409,
+    retryPolicy: 'NOT_RETRYABLE',
+    publicMessage: '本次运行授权校验失败。',
   }),
   SANDBOX_ATTESTATION_FAILED: classification({
     code: 'SANDBOX_ATTESTATION_FAILED',

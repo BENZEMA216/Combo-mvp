@@ -14,8 +14,8 @@
     },
     {
       "path": "broker-invocation-prepare.v1.json",
-      "bytes": 2350,
-      "digest": "sha256:297796be9d46a637ed79175a0e1f4c8b980319112f6f159149db42e29655bd7e"
+      "bytes": 2495,
+      "digest": "sha256:77a3a069f312fc6d5ab2a8e0a2518350f5372a6ce1fa5dc2eb1ccd6ca1dfa058"
     },
     {
       "path": "broker-invocation-succeeded.v1.json",
@@ -39,8 +39,8 @@
     },
     {
       "path": "sandbox-attestation.v1.json",
-      "bytes": 1810,
-      "digest": "sha256:616af0a3b4a9db9fd7b6c3e8bcfd12ad1fd9a3c526ffc33714f4db2b0eccd826"
+      "bytes": 1889,
+      "digest": "sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91"
     },
     {
       "path": "sandbox-spec.v1.json",
@@ -49,8 +49,8 @@
     },
     {
       "path": "snapshot-manifest.v1.json",
-      "bytes": 1207,
-      "digest": "sha256:ce7ee3abafdda8976c8a9d128a36a9c5b88e98501090124e2f0b09953c0c78cb"
+      "bytes": 1296,
+      "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
     }
   ]
 }

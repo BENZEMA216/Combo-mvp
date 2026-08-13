@@ -30,5 +30,6 @@
   "expiresAt": "2026-08-13T08:02:30.000Z",
   "destroyed": false,
   "signatureAlgorithm": "P-256-ECDSA-SHA256",
-  "supervisorSignature": "ZXhhbXBsZS1wMjU2LXN1cGVydmlzb3Itc2lnbmF0dXJl"
+  "signatureEncoding": "ieee-p1363",
+  "supervisorSignature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 }

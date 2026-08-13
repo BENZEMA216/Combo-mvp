@@ -4,6 +4,8 @@ import {
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
   ExecutionCapabilitySchema,
+  ExecutionCapabilityUnsignedSchema,
+  ExecutionCapabilityUseRecordSchema,
 } from './broker.js';
 import {
   EvidenceBundleIndexSchema,
@@ -38,7 +40,11 @@ import {
   InvariantRegistrySchema,
   TestCaseRegistrySchema,
 } from './registry.js';
-import { SandboxAttestationSchema, SandboxSpecSchema } from './sandbox.js';
+import {
+  SandboxAttestationSchema,
+  SandboxAttestationUnsignedSchema,
+  SandboxSpecSchema,
+} from './sandbox.js';
 import { SnapshotManifestSchema } from './snapshot.js';
 
 export const ContractSchemaDefinitions = {
@@ -46,10 +52,13 @@ export const ContractSchemaDefinitions = {
   SnapshotManifest: SnapshotManifestSchema,
   BrokerHandshake: BrokerHandshakeSchema,
   BrokerEnvelope: BrokerEnvelopeSchema,
+  ExecutionCapabilityUnsigned: ExecutionCapabilityUnsignedSchema,
   ExecutionCapability: ExecutionCapabilitySchema,
+  ExecutionCapabilityUseRecord: ExecutionCapabilityUseRecordSchema,
   InvocationTransition: InvocationTransitionSchema,
   VnextErrorResponse: VnextErrorResponseSchema,
   SandboxSpec: SandboxSpecSchema,
+  SandboxAttestationUnsigned: SandboxAttestationUnsignedSchema,
   SandboxAttestation: SandboxAttestationSchema,
   SnapshotUploadCreateRequest: SnapshotUploadCreateRequestSchema,
   SnapshotUploadCreateResponse: SnapshotUploadCreateResponseSchema,
@@ -204,6 +213,26 @@ export function createOpenApiDocument(): Record<string, unknown> {
           ],
           requestBody: requestBody('CreateAgentVersionRequest'),
           responses: response('已创建或复用不可变 AgentVersion', 'AgentVersionView', '201'),
+        },
+      },
+      '/v1/creator/agents/{agentId}/versions/{versionId}': {
+        get: {
+          operationId: 'getAgentVersion',
+          parameters: [
+            {
+              name: 'agentId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', format: 'uuid' },
+            },
+            {
+              name: 'versionId',
+              in: 'path',
+              required: true,
+              schema: { type: 'string', format: 'uuid' },
+            },
+          ],
+          responses: response('不可变 AgentVersion 视图', 'AgentVersionView'),
         },
       },
       '/v1/creator/agents/{agentId}/deployment': {

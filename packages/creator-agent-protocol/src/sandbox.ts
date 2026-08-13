@@ -3,12 +3,14 @@ import { canonicalizeJson } from './canonical.js';
 import {
   Base64UrlSchema,
   IsoDateTimeSchema,
+  P256P1363SignatureSchema,
   Sha256DigestSchema,
   Sha256HexSchema,
   Uint63StringSchema,
   Utf8TextSchema,
   UuidSchema,
 } from './primitives.js';
+import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.js';
 
 export const SANDBOX_SPEC_PROTOCOL = 'combo.sandbox-spec/1' as const;
 export const SANDBOX_ATTESTATION_PROTOCOL = 'combo.sandbox-attestation/1' as const;
@@ -78,72 +80,116 @@ export const SandboxSpecSchema = z
   .strict();
 export type SandboxSpec = z.infer<typeof SandboxSpecSchema>;
 
-export const SandboxAttestationSchema = z
-  .object({
-    protocol: z.literal(SANDBOX_ATTESTATION_PROTOCOL),
-    schemaVersion: z.literal(1),
-    adapter: SandboxAdapterSchema,
-    adapterVersion: Utf8TextSchema(128),
-    sandboxInstanceId: UuidSchema,
-    conversationId: UuidSchema,
-    invocationId: UuidSchema,
-    workerSessionId: UuidSchema,
-    leaseId: UuidSchema,
-    fencingToken: Uint63StringSchema,
-    bootNonce: Base64UrlSchema.min(22).max(128),
-    sandboxImageDigest: Sha256DigestSchema,
-    codexImageDigest: Sha256DigestSchema,
-    codexVersion: Utf8TextSchema(128),
-    protocolSchemaDigest: Sha256DigestSchema,
-    agentVersionDigest: Sha256HexSchema,
-    snapshotDigest: Sha256HexSchema,
-    behaviorDigest: Sha256HexSchema,
-    runtimePolicyDigest: Sha256HexSchema,
-    ioContractDigest: Sha256HexSchema,
-    noHostHomeMount: z.literal(true),
-    contextReadOnly: z.literal(true),
-    contextNoExec: z.literal(true),
-    noLongLivedCredential: z.literal(true),
-    projectExecution: z.literal('closed-world-context-tools-only'),
-    egressMode: z.literal('model-proxy-only'),
-    proxyTransportBinding: Base64UrlSchema.min(22).max(256),
-    createdAt: IsoDateTimeSchema,
-    expiresAt: IsoDateTimeSchema,
-    destroyed: z.literal(false),
-    signatureAlgorithm: z.literal('P-256-ECDSA-SHA256'),
-    supervisorSignature: Base64UrlSchema.min(32).max(256),
-  })
-  .strict()
-  .superRefine((attestation, context) => {
-    if (Date.parse(attestation.expiresAt) <= Date.parse(attestation.createdAt)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['expiresAt'],
-        message: 'expiresAt 必须晚于 createdAt',
-      });
-    }
-  });
-export type SandboxAttestation = z.infer<typeof SandboxAttestationSchema>;
+const SandboxAttestationUnsignedShape = {
+  protocol: z.literal(SANDBOX_ATTESTATION_PROTOCOL),
+  schemaVersion: z.literal(1),
+  adapter: SandboxAdapterSchema,
+  adapterVersion: Utf8TextSchema(128),
+  sandboxInstanceId: UuidSchema,
+  conversationId: UuidSchema,
+  invocationId: UuidSchema,
+  workerSessionId: UuidSchema,
+  leaseId: UuidSchema,
+  fencingToken: Uint63StringSchema,
+  bootNonce: Base64UrlSchema.min(22).max(128),
+  sandboxImageDigest: Sha256DigestSchema,
+  codexImageDigest: Sha256DigestSchema,
+  codexVersion: Utf8TextSchema(128),
+  protocolSchemaDigest: Sha256DigestSchema,
+  agentVersionDigest: Sha256HexSchema,
+  snapshotDigest: Sha256HexSchema,
+  behaviorDigest: Sha256HexSchema,
+  runtimePolicyDigest: Sha256HexSchema,
+  ioContractDigest: Sha256HexSchema,
+  noHostHomeMount: z.literal(true),
+  contextReadOnly: z.literal(true),
+  contextNoExec: z.literal(true),
+  noLongLivedCredential: z.literal(true),
+  projectExecution: z.literal('closed-world-context-tools-only'),
+  egressMode: z.literal('model-proxy-only'),
+  proxyTransportBinding: Base64UrlSchema.min(22).max(256),
+  createdAt: IsoDateTimeSchema,
+  expiresAt: IsoDateTimeSchema,
+  destroyed: z.literal(false),
+  signatureAlgorithm: z.literal('P-256-ECDSA-SHA256'),
+  signatureEncoding: z.literal('ieee-p1363'),
+};
 
-export type SandboxAttestationUnsigned = Omit<SandboxAttestation, 'supervisorSignature'>;
-
-export function sandboxAttestationSigningBytes(attestation: SandboxAttestation): Buffer {
-  const { supervisorSignature: _signature, ...unsigned } =
-    SandboxAttestationSchema.parse(attestation);
-  return Buffer.from(canonicalizeJson(unsigned), 'utf8');
+function refineAttestationWindow(
+  attestation: { createdAt: string; expiresAt: string },
+  context: z.RefinementCtx,
+): void {
+  if (Date.parse(attestation.expiresAt) <= Date.parse(attestation.createdAt)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['expiresAt'],
+      message: 'expiresAt 必须晚于 createdAt',
+    });
+  }
 }
 
-export interface ExpectedAttestationBinding {
-  sandboxInstanceId: string;
-  conversationId: string;
-  invocationId: string;
-  workerSessionId: string;
-  leaseId: string;
-  fencingToken: string;
-  agentVersionDigest: string;
-  snapshotDigest: string;
-  protocolSchemaDigest: string;
-  proxyTransportBinding: string;
+const SandboxAttestationUnsignedObjectSchema = z.object(SandboxAttestationUnsignedShape).strict();
+
+export const SandboxAttestationUnsignedSchema =
+  SandboxAttestationUnsignedObjectSchema.superRefine(refineAttestationWindow);
+export type SandboxAttestationUnsigned = z.infer<typeof SandboxAttestationUnsignedSchema>;
+
+export const SandboxAttestationSchema = z
+  .object({
+    ...SandboxAttestationUnsignedShape,
+    supervisorSignature: P256P1363SignatureSchema,
+  })
+  .strict()
+  .superRefine(refineAttestationWindow);
+export type SandboxAttestation = z.infer<typeof SandboxAttestationSchema>;
+
+export function sandboxAttestationSigningBytes(
+  attestation: SandboxAttestation | SandboxAttestationUnsigned,
+): Buffer {
+  const { supervisorSignature: _signature, ...unsigned } = attestation as SandboxAttestation;
+  return Buffer.from(canonicalizeJson(SandboxAttestationUnsignedSchema.parse(unsigned)), 'utf8');
+}
+
+const ATTESTATION_BOUND_FIELDS = [
+  'adapter',
+  'adapterVersion',
+  'sandboxInstanceId',
+  'conversationId',
+  'invocationId',
+  'workerSessionId',
+  'leaseId',
+  'fencingToken',
+  'bootNonce',
+  'sandboxImageDigest',
+  'codexImageDigest',
+  'codexVersion',
+  'protocolSchemaDigest',
+  'agentVersionDigest',
+  'snapshotDigest',
+  'behaviorDigest',
+  'runtimePolicyDigest',
+  'ioContractDigest',
+  'proxyTransportBinding',
+] as const satisfies readonly (keyof SandboxAttestation)[];
+
+export type ExpectedAttestationBinding = Pick<
+  SandboxAttestation,
+  (typeof ATTESTATION_BOUND_FIELDS)[number]
+>;
+
+const ExpectedAttestationBindingSchema = SandboxAttestationUnsignedObjectSchema.pick(
+  Object.fromEntries(ATTESTATION_BOUND_FIELDS.map((key) => [key, true])) as Record<
+    (typeof ATTESTATION_BOUND_FIELDS)[number],
+    true
+  >,
+);
+
+export function attestationBindingFrom(
+  attestation: SandboxAttestation,
+): ExpectedAttestationBinding {
+  return Object.fromEntries(
+    ATTESTATION_BOUND_FIELDS.map((key) => [key, attestation[key]]),
+  ) as ExpectedAttestationBinding;
 }
 
 export type AttestationBindingResult =
@@ -155,15 +201,30 @@ export function validateAttestationBinding(
   expected: ExpectedAttestationBinding,
   now: Date,
   activeInstances: ReadonlySet<string>,
+  registeredSupervisorPublicKey: P256PublicKeyInput,
 ): AttestationBindingResult {
+  const expectedBinding = ExpectedAttestationBindingSchema.safeParse(expected);
+  if (!expectedBinding.success) {
+    return { ok: false, code: 'SANDBOX_ATTESTATION_FAILED', reasons: ['expected-binding'] };
+  }
   const parsed = SandboxAttestationSchema.safeParse(input);
   if (!parsed.success) {
     return { ok: false, code: 'SANDBOX_ATTESTATION_FAILED', reasons: ['schema'] };
   }
 
+  if (
+    !verifyP256P1363Signature(
+      sandboxAttestationSigningBytes(parsed.data),
+      parsed.data.supervisorSignature,
+      registeredSupervisorPublicKey,
+    )
+  ) {
+    return { ok: false, code: 'SANDBOX_ATTESTATION_FAILED', reasons: ['signature'] };
+  }
+
   const reasons: string[] = [];
-  for (const key of Object.keys(expected) as (keyof ExpectedAttestationBinding)[]) {
-    if (parsed.data[key] !== expected[key]) reasons.push(`binding:${key}`);
+  for (const key of ATTESTATION_BOUND_FIELDS) {
+    if (parsed.data[key] !== expectedBinding.data[key]) reasons.push(`binding:${key}`);
   }
   if (!activeInstances.has(`${parsed.data.sandboxInstanceId}:${parsed.data.bootNonce}`)) {
     reasons.push('instance-not-active');

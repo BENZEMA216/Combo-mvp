@@ -1,15 +1,17 @@
 import { z } from 'zod';
-import { parseJsonNoDuplicateKeys } from './canonical.js';
+import { canonicalizeJson, canonicalSha256, parseJsonNoDuplicateKeys } from './canonical.js';
 import {
   Base64UrlSchema,
   HmacSha256DigestSchema,
   IsoDateTimeSchema,
+  P256P1363SignatureSchema,
   Sha256DigestSchema,
   Sha256HexSchema,
   Uint63StringSchema,
   Utf8TextSchema,
   UuidSchema,
 } from './primitives.js';
+import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.js';
 
 export const CREATOR_BROKER_PROTOCOL = 'combo.creator-broker/1' as const;
 export const EXECUTION_CAPABILITY_PROTOCOL = 'combo.execution-capability/1' as const;
@@ -51,46 +53,296 @@ export const LeaseBindingSchema = z
   .strict();
 export type LeaseBinding = z.infer<typeof LeaseBindingSchema>;
 
+const ExecutionCapabilityUnsignedShape = {
+  protocol: z.literal(EXECUTION_CAPABILITY_PROTOCOL),
+  schemaVersion: z.literal(1),
+  capabilityId: UuidSchema,
+  invocationId: UuidSchema,
+  conversationId: UuidSchema,
+  deploymentId: UuidSchema,
+  agentVersionId: UuidSchema,
+  agentVersionDigest: Sha256HexSchema,
+  workerInstallationId: UuidSchema,
+  leaseId: UuidSchema,
+  fence: Uint63StringSchema,
+  providerRequestId: UuidSchema,
+  requestDigest: HmacSha256DigestSchema,
+  model: Utf8TextSchema(128),
+  reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
+  budget: z
+    .object({
+      maxInputTokens: z.number().int().min(1).max(200_000),
+      maxOutputTokens: z.number().int().min(1).max(32_768),
+      maxCostMicros: z.number().int().min(1).max(100_000_000),
+    })
+    .strict(),
+  notBefore: IsoDateTimeSchema,
+  expiresAt: IsoDateTimeSchema,
+  nonce: Base64UrlSchema.min(22).max(128),
+  signatureAlgorithm: z.literal('ES256'),
+  signatureEncoding: z.literal('ieee-p1363'),
+};
+
+function refineExecutionCapabilityWindow(
+  capability: { notBefore: string; expiresAt: string },
+  context: z.RefinementCtx,
+): void {
+  if (Date.parse(capability.expiresAt) <= Date.parse(capability.notBefore)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['expiresAt'],
+      message: 'Execution Capability expiry 必须晚于 notBefore',
+    });
+  }
+}
+
+const ExecutionCapabilityUnsignedObjectSchema = z.object(ExecutionCapabilityUnsignedShape).strict();
+
+export const ExecutionCapabilityUnsignedSchema =
+  ExecutionCapabilityUnsignedObjectSchema.superRefine(refineExecutionCapabilityWindow);
+export type ExecutionCapabilityUnsigned = z.infer<typeof ExecutionCapabilityUnsignedSchema>;
+
 export const ExecutionCapabilitySchema = z
   .object({
-    protocol: z.literal(EXECUTION_CAPABILITY_PROTOCOL),
-    schemaVersion: z.literal(1),
-    capabilityId: UuidSchema,
-    invocationId: UuidSchema,
-    conversationId: UuidSchema,
-    agentVersionId: UuidSchema,
-    agentVersionDigest: Sha256HexSchema,
-    workerInstallationId: UuidSchema,
-    leaseId: UuidSchema,
-    fence: Uint63StringSchema,
-    providerRequestId: UuidSchema,
-    requestDigest: HmacSha256DigestSchema,
-    model: Utf8TextSchema(128),
-    reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
-    budget: z
-      .object({
-        maxInputTokens: z.number().int().min(1).max(200_000),
-        maxOutputTokens: z.number().int().min(1).max(32_768),
-        maxCostMicros: z.number().int().min(1).max(100_000_000),
-      })
-      .strict(),
-    notBefore: IsoDateTimeSchema,
-    expiresAt: IsoDateTimeSchema,
-    nonce: Base64UrlSchema.min(22).max(128),
-    signatureAlgorithm: z.literal('ES256'),
-    signature: Base64UrlSchema.min(32).max(256),
+    ...ExecutionCapabilityUnsignedShape,
+    signature: P256P1363SignatureSchema,
   })
   .strict()
-  .superRefine((capability, context) => {
-    if (Date.parse(capability.expiresAt) <= Date.parse(capability.notBefore)) {
+  .superRefine(refineExecutionCapabilityWindow);
+export type ExecutionCapability = z.infer<typeof ExecutionCapabilitySchema>;
+
+export function executionCapabilitySigningBytes(
+  capability: ExecutionCapability | ExecutionCapabilityUnsigned,
+): Buffer {
+  const { signature: _signature, ...unsigned } = capability as ExecutionCapability;
+  return Buffer.from(canonicalizeJson(ExecutionCapabilityUnsignedSchema.parse(unsigned)), 'utf8');
+}
+
+/** 完整 wire capability（含签名）的稳定 journal/audit digest。 */
+export function executionCapabilityDigest(capability: ExecutionCapability): string {
+  return canonicalSha256(ExecutionCapabilitySchema.parse(capability));
+}
+
+const EXECUTION_CAPABILITY_BOUND_FIELDS = [
+  'capabilityId',
+  'invocationId',
+  'conversationId',
+  'deploymentId',
+  'agentVersionId',
+  'agentVersionDigest',
+  'workerInstallationId',
+  'leaseId',
+  'fence',
+  'providerRequestId',
+  'requestDigest',
+  'model',
+  'reasoningEffort',
+  'budget',
+  'notBefore',
+  'expiresAt',
+  'nonce',
+] as const satisfies readonly (keyof ExecutionCapability)[];
+
+export type ExpectedExecutionCapabilityBinding = Pick<
+  ExecutionCapability,
+  (typeof EXECUTION_CAPABILITY_BOUND_FIELDS)[number]
+>;
+
+const ExpectedExecutionCapabilityBindingSchema = ExecutionCapabilityUnsignedObjectSchema.pick(
+  Object.fromEntries(EXECUTION_CAPABILITY_BOUND_FIELDS.map((key) => [key, true])) as Record<
+    (typeof EXECUTION_CAPABILITY_BOUND_FIELDS)[number],
+    true
+  >,
+);
+
+export function executionCapabilityBindingFrom(
+  capability: ExecutionCapability,
+): ExpectedExecutionCapabilityBinding {
+  return Object.fromEntries(
+    EXECUTION_CAPABILITY_BOUND_FIELDS.map((key) => [key, capability[key]]),
+  ) as ExpectedExecutionCapabilityBinding;
+}
+
+export type ExecutionCapabilityBindingResult =
+  | { ok: true; capability: ExecutionCapability; capabilityDigest: string }
+  | { ok: false; code: 'EXECUTION_CAPABILITY_INVALID'; reasons: string[] };
+
+export function validateExecutionCapabilityBinding(
+  input: unknown,
+  expected: ExpectedExecutionCapabilityBinding,
+  now: Date,
+  revokedCapabilityIds: ReadonlySet<string>,
+  registeredCloudPublicKey: P256PublicKeyInput,
+): ExecutionCapabilityBindingResult {
+  const expectedBinding = ExpectedExecutionCapabilityBindingSchema.safeParse(expected);
+  if (!expectedBinding.success) {
+    return { ok: false, code: 'EXECUTION_CAPABILITY_INVALID', reasons: ['expected-binding'] };
+  }
+  const parsed = ExecutionCapabilitySchema.safeParse(input);
+  if (!parsed.success) {
+    return { ok: false, code: 'EXECUTION_CAPABILITY_INVALID', reasons: ['schema'] };
+  }
+  if (
+    !verifyP256P1363Signature(
+      executionCapabilitySigningBytes(parsed.data),
+      parsed.data.signature,
+      registeredCloudPublicKey,
+    )
+  ) {
+    return { ok: false, code: 'EXECUTION_CAPABILITY_INVALID', reasons: ['signature'] };
+  }
+
+  const reasons: string[] = [];
+  for (const key of EXECUTION_CAPABILITY_BOUND_FIELDS) {
+    if (canonicalizeJson(parsed.data[key]) !== canonicalizeJson(expectedBinding.data[key])) {
+      reasons.push(`binding:${key}`);
+    }
+  }
+  if (revokedCapabilityIds.has(parsed.data.capabilityId)) reasons.push('revoked');
+  if (Date.parse(parsed.data.notBefore) > now.getTime()) reasons.push('not-yet-valid');
+  if (Date.parse(parsed.data.expiresAt) <= now.getTime()) reasons.push('expired');
+
+  return reasons.length === 0
+    ? {
+        ok: true,
+        capability: parsed.data,
+        capabilityDigest: executionCapabilityDigest(parsed.data),
+      }
+    : { ok: false, code: 'EXECUTION_CAPABILITY_INVALID', reasons };
+}
+
+export const ExecutionCapabilityUseStateSchema = z.enum([
+  'UNUSED',
+  'DISPATCHED',
+  'DURABLE_RESULT',
+  'REVOKED',
+]);
+export type ExecutionCapabilityUseState = z.infer<typeof ExecutionCapabilityUseStateSchema>;
+
+export const ExecutionCapabilityUseRecordSchema = z
+  .object({
+    capabilityId: UuidSchema,
+    capabilityDigest: Sha256HexSchema,
+    providerRequestId: UuidSchema,
+    requestDigest: HmacSha256DigestSchema,
+    state: ExecutionCapabilityUseStateSchema,
+    providerUpstreamRequestCount: z.number().int().min(0).max(1),
+    resultDigest: HmacSha256DigestSchema.nullable(),
+  })
+  .strict()
+  .superRefine((record, context) => {
+    if (record.state === 'UNUSED' && record.providerUpstreamRequestCount !== 0) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['expiresAt'],
-        message: 'Execution Capability expiry 必须晚于 notBefore',
+        path: ['providerUpstreamRequestCount'],
+        message: 'UNUSED capability 不得有 upstream attempt',
+      });
+    }
+    if (
+      (record.state === 'DISPATCHED' || record.state === 'DURABLE_RESULT') &&
+      record.providerUpstreamRequestCount !== 1
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['providerUpstreamRequestCount'],
+        message: '已 dispatch capability 必须且只能有一个 upstream attempt',
+      });
+    }
+    if (record.state === 'DURABLE_RESULT' && record.resultDigest === null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['resultDigest'],
+        message: 'DURABLE_RESULT 必须绑定 resultDigest',
+      });
+    }
+    if (record.state !== 'DURABLE_RESULT' && record.resultDigest !== null) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['resultDigest'],
+        message: '只有 DURABLE_RESULT 可携带 resultDigest',
       });
     }
   });
-export type ExecutionCapability = z.infer<typeof ExecutionCapabilitySchema>;
+export type ExecutionCapabilityUseRecord = z.infer<typeof ExecutionCapabilityUseRecordSchema>;
+
+export type ExecutionCapabilityUseDecision =
+  | { action: 'DISPATCH_ONCE'; nextRecord: ExecutionCapabilityUseRecord }
+  | { action: 'RETURN_IN_PROGRESS'; record: ExecutionCapabilityUseRecord }
+  | {
+      action: 'RETURN_DURABLE_RESULT';
+      record: ExecutionCapabilityUseRecord & { state: 'DURABLE_RESULT'; resultDigest: string };
+    }
+  | {
+      action: 'SECURITY_BLOCK';
+      code: 'CAPABILITY_REVOKED' | 'CAPABILITY_REUSE_CONFLICT' | 'CAPABILITY_LEDGER_INVALID';
+    };
+
+/**
+ * 纯决策函数。调用方必须以 durable unique key/CAS 原子落下 nextRecord 后，
+ * 才允许发起上游请求；exact replay 只能观察旧 attempt，永不二次 dispatch。
+ */
+export function decideExecutionCapabilityUse(
+  capability: ExecutionCapability,
+  existing: ExecutionCapabilityUseRecord | null,
+): ExecutionCapabilityUseDecision {
+  const parsedCapability = ExecutionCapabilitySchema.parse(capability);
+  const parsedRecord = ExecutionCapabilityUseRecordSchema.safeParse(existing);
+  if (existing !== null && !parsedRecord.success) {
+    return { action: 'SECURITY_BLOCK', code: 'CAPABILITY_LEDGER_INVALID' };
+  }
+
+  const capabilityDigest = executionCapabilityDigest(parsedCapability);
+  if (existing === null) {
+    return {
+      action: 'DISPATCH_ONCE',
+      nextRecord: {
+        capabilityId: parsedCapability.capabilityId,
+        capabilityDigest,
+        providerRequestId: parsedCapability.providerRequestId,
+        requestDigest: parsedCapability.requestDigest,
+        state: 'DISPATCHED',
+        providerUpstreamRequestCount: 1,
+        resultDigest: null,
+      },
+    };
+  }
+
+  const record = parsedRecord.data!;
+  if (record.state === 'REVOKED') {
+    return { action: 'SECURITY_BLOCK', code: 'CAPABILITY_REVOKED' };
+  }
+  if (
+    record.capabilityId !== parsedCapability.capabilityId ||
+    record.capabilityDigest !== capabilityDigest ||
+    record.providerRequestId !== parsedCapability.providerRequestId ||
+    record.requestDigest !== parsedCapability.requestDigest
+  ) {
+    return { action: 'SECURITY_BLOCK', code: 'CAPABILITY_REUSE_CONFLICT' };
+  }
+  if (record.state === 'UNUSED') {
+    return {
+      action: 'DISPATCH_ONCE',
+      nextRecord: {
+        ...record,
+        state: 'DISPATCHED',
+        providerUpstreamRequestCount: 1,
+      },
+    };
+  }
+  if (record.state === 'DURABLE_RESULT') {
+    return {
+      action: 'RETURN_DURABLE_RESULT',
+      record: record as ExecutionCapabilityUseRecord & {
+        state: 'DURABLE_RESULT';
+        resultDigest: string;
+      },
+    };
+  }
+  if (record.state === 'DISPATCHED') {
+    return { action: 'RETURN_IN_PROGRESS', record };
+  }
+  return { action: 'SECURITY_BLOCK', code: 'CAPABILITY_LEDGER_INVALID' };
+}
 
 const commonEnvelopeShape = {
   protocol: z.literal(CREATOR_BROKER_PROTOCOL),

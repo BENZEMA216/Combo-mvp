@@ -5,21 +5,24 @@
     "encoding": "utf-8",
     "normalization": "NFC",
     "ordering": "utf-8-byte-order",
-    "collision": "nfc-plus-ecmascript-simple-case-fold"
+    "collision": "nfc-plus-unicode-lowercase"
   },
   "archive": {
     "format": "pax",
-    "tarImplementation": "tar-stream@3.2.0",
-    "zstdImplementation": "zstd@1.5.7",
+    "tarImplementation": "combo-ustar-pax/1",
+    "directoryEntries": "omitted",
+    "zstdImplementation": "node-zlib-zstd@1.5.7",
     "zstdLevel": 9,
     "zstdChecksum": true,
+    "zstdContentSize": true,
+    "zstdDictionaryId": false,
+    "zstdWorkers": 0,
     "uid": 0,
     "gid": 0,
     "uname": "",
     "gname": "",
     "mtimeUnixSeconds": 0,
-    "fileMode": "0444",
-    "directoryMode": "0555"
+    "fileMode": "0444"
   },
   "files": [
     {

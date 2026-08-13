@@ -30,6 +30,7 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     for (const path of [
       '/v1/creator/snapshot-uploads',
       '/v1/creator/agents/{agentId}/versions',
+      '/v1/creator/agents/{agentId}/versions/{versionId}',
       '/v1/public/agents/{slug}/conversations',
       '/v1/conversations/{conversationId}/messages',
       '/v1/conversations/{conversationId}/events',

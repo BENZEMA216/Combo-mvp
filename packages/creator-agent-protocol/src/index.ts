@@ -8,4 +8,5 @@ export * from './invocation.js';
 export * from './primitives.js';
 export * from './registry.js';
 export * from './sandbox.js';
+export * from './signatures.js';
 export * from './snapshot.js';

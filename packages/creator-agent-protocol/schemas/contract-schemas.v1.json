@@ -178,7 +178,7 @@
                 "encoding": { "type": "string", "const": "utf-8" },
                 "normalization": { "type": "string", "const": "NFC" },
                 "ordering": { "type": "string", "const": "utf-8-byte-order" },
-                "collision": { "type": "string", "const": "nfc-plus-ecmascript-simple-case-fold" }
+                "collision": { "type": "string", "const": "nfc-plus-unicode-lowercase" }
               },
               "required": ["encoding", "normalization", "ordering", "collision"],
               "additionalProperties": false
@@ -187,31 +187,37 @@
               "type": "object",
               "properties": {
                 "format": { "type": "string", "const": "pax" },
-                "tarImplementation": { "type": "string", "const": "tar-stream@3.2.0" },
-                "zstdImplementation": { "type": "string", "const": "zstd@1.5.7" },
+                "tarImplementation": { "type": "string", "const": "combo-ustar-pax/1" },
+                "directoryEntries": { "type": "string", "const": "omitted" },
+                "zstdImplementation": { "type": "string", "const": "node-zlib-zstd@1.5.7" },
                 "zstdLevel": { "type": "number", "const": 9 },
                 "zstdChecksum": { "type": "boolean", "const": true },
+                "zstdContentSize": { "type": "boolean", "const": true },
+                "zstdDictionaryId": { "type": "boolean", "const": false },
+                "zstdWorkers": { "type": "number", "const": 0 },
                 "uid": { "type": "number", "const": 0 },
                 "gid": { "type": "number", "const": 0 },
                 "uname": { "type": "string", "const": "" },
                 "gname": { "type": "string", "const": "" },
                 "mtimeUnixSeconds": { "type": "number", "const": 0 },
-                "fileMode": { "type": "string", "const": "0444" },
-                "directoryMode": { "type": "string", "const": "0555" }
+                "fileMode": { "type": "string", "const": "0444" }
               },
               "required": [
                 "format",
                 "tarImplementation",
+                "directoryEntries",
                 "zstdImplementation",
                 "zstdLevel",
                 "zstdChecksum",
+                "zstdContentSize",
+                "zstdDictionaryId",
+                "zstdWorkers",
                 "uid",
                 "gid",
                 "uname",
                 "gname",
                 "mtimeUnixSeconds",
-                "fileMode",
-                "directoryMode"
+                "fileMode"
               ],
               "additionalProperties": false
             },
@@ -816,6 +822,9 @@
                             "conversationId": {
                               "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                             },
+                            "deploymentId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
                             "agentVersionId": {
                               "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                             },
@@ -877,12 +886,8 @@
                               "maxLength": 128
                             },
                             "signatureAlgorithm": { "type": "string", "const": "ES256" },
-                            "signature": {
-                              "type": "string",
-                              "pattern": "^[A-Za-z0-9_-]+$",
-                              "minLength": 32,
-                              "maxLength": 256
-                            }
+                            "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
+                            "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
                           },
                           "required": [
                             "protocol",
@@ -890,6 +895,7 @@
                             "capabilityId",
                             "invocationId",
                             "conversationId",
+                            "deploymentId",
                             "agentVersionId",
                             "agentVersionDigest",
                             "workerInstallationId",
@@ -904,6 +910,7 @@
                             "expiresAt",
                             "nonce",
                             "signatureAlgorithm",
+                            "signatureEncoding",
                             "signature"
                           ],
                           "additionalProperties": false
@@ -2200,6 +2207,92 @@
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
+    "ExecutionCapabilityUnsigned": {
+      "$ref": "#/definitions/ExecutionCapabilityUnsigned",
+      "definitions": {
+        "ExecutionCapabilityUnsigned": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.execution-capability/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "capabilityId": { "type": "string", "format": "uuid" },
+            "invocationId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "conversationId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "deploymentId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "agentVersionId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "workerInstallationId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "leaseId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "fence": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+            "providerRequestId": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
+            },
+            "requestDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+            "model": { "type": "string", "minLength": 1 },
+            "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
+            "budget": {
+              "type": "object",
+              "properties": {
+                "maxInputTokens": { "type": "integer", "minimum": 1, "maximum": 200000 },
+                "maxOutputTokens": { "type": "integer", "minimum": 1, "maximum": 32768 },
+                "maxCostMicros": { "type": "integer", "minimum": 1, "maximum": 100000000 }
+              },
+              "required": ["maxInputTokens", "maxOutputTokens", "maxCostMicros"],
+              "additionalProperties": false
+            },
+            "notBefore": { "type": "string", "format": "date-time" },
+            "expiresAt": {
+              "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/notBefore"
+            },
+            "nonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 128
+            },
+            "signatureAlgorithm": { "type": "string", "const": "ES256" },
+            "signatureEncoding": { "type": "string", "const": "ieee-p1363" }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "capabilityId",
+            "invocationId",
+            "conversationId",
+            "deploymentId",
+            "agentVersionId",
+            "agentVersionDigest",
+            "workerInstallationId",
+            "leaseId",
+            "fence",
+            "providerRequestId",
+            "requestDigest",
+            "model",
+            "reasoningEffort",
+            "budget",
+            "notBefore",
+            "expiresAt",
+            "nonce",
+            "signatureAlgorithm",
+            "signatureEncoding"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
     "ExecutionCapability": {
       "$ref": "#/definitions/ExecutionCapability",
       "definitions": {
@@ -2213,6 +2306,7 @@
             "conversationId": {
               "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
             },
+            "deploymentId": { "$ref": "#/definitions/ExecutionCapability/properties/capabilityId" },
             "agentVersionId": {
               "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
             },
@@ -2247,12 +2341,8 @@
               "maxLength": 128
             },
             "signatureAlgorithm": { "type": "string", "const": "ES256" },
-            "signature": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "minLength": 32,
-              "maxLength": 256
-            }
+            "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
+            "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
           },
           "required": [
             "protocol",
@@ -2260,6 +2350,7 @@
             "capabilityId",
             "invocationId",
             "conversationId",
+            "deploymentId",
             "agentVersionId",
             "agentVersionDigest",
             "workerInstallationId",
@@ -2274,7 +2365,46 @@
             "expiresAt",
             "nonce",
             "signatureAlgorithm",
+            "signatureEncoding",
             "signature"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ExecutionCapabilityUseRecord": {
+      "$ref": "#/definitions/ExecutionCapabilityUseRecord",
+      "definitions": {
+        "ExecutionCapabilityUseRecord": {
+          "type": "object",
+          "properties": {
+            "capabilityId": { "type": "string", "format": "uuid" },
+            "capabilityDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "providerRequestId": {
+              "$ref": "#/definitions/ExecutionCapabilityUseRecord/properties/capabilityId"
+            },
+            "requestDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+            "state": {
+              "type": "string",
+              "enum": ["UNUSED", "DISPATCHED", "DURABLE_RESULT", "REVOKED"]
+            },
+            "providerUpstreamRequestCount": { "type": "integer", "minimum": 0, "maximum": 1 },
+            "resultDigest": {
+              "anyOf": [
+                { "$ref": "#/definitions/ExecutionCapabilityUseRecord/properties/requestDigest" },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": [
+            "capabilityId",
+            "capabilityDigest",
+            "providerRequestId",
+            "requestDigest",
+            "state",
+            "providerUpstreamRequestCount",
+            "resultDigest"
           ],
           "additionalProperties": false
         }
@@ -2359,6 +2489,7 @@
                 "STALE_LEASE",
                 "STALE_FENCE",
                 "PROTOCOL_INCOMPATIBLE",
+                "EXECUTION_CAPABILITY_INVALID",
                 "SANDBOX_ATTESTATION_FAILED",
                 "RUNTIME_START_FAILED",
                 "TURN_TIMEOUT",
@@ -2510,6 +2641,116 @@
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
+    "SandboxAttestationUnsigned": {
+      "$ref": "#/definitions/SandboxAttestationUnsigned",
+      "definitions": {
+        "SandboxAttestationUnsigned": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.sandbox-attestation/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
+            "adapterVersion": { "type": "string", "minLength": 1 },
+            "sandboxInstanceId": { "type": "string", "format": "uuid" },
+            "conversationId": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxInstanceId"
+            },
+            "invocationId": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxInstanceId"
+            },
+            "workerSessionId": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxInstanceId"
+            },
+            "leaseId": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxInstanceId"
+            },
+            "fencingToken": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+            "bootNonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 128
+            },
+            "sandboxImageDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "codexImageDigest": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxImageDigest"
+            },
+            "codexVersion": { "type": "string", "minLength": 1 },
+            "protocolSchemaDigest": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxImageDigest"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "snapshotDigest": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/agentVersionDigest"
+            },
+            "behaviorDigest": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/agentVersionDigest"
+            },
+            "runtimePolicyDigest": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/agentVersionDigest"
+            },
+            "ioContractDigest": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/agentVersionDigest"
+            },
+            "noHostHomeMount": { "type": "boolean", "const": true },
+            "contextReadOnly": { "type": "boolean", "const": true },
+            "contextNoExec": { "type": "boolean", "const": true },
+            "noLongLivedCredential": { "type": "boolean", "const": true },
+            "projectExecution": { "type": "string", "const": "closed-world-context-tools-only" },
+            "egressMode": { "type": "string", "const": "model-proxy-only" },
+            "proxyTransportBinding": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 256
+            },
+            "createdAt": { "type": "string", "format": "date-time" },
+            "expiresAt": {
+              "$ref": "#/definitions/SandboxAttestationUnsigned/properties/createdAt"
+            },
+            "destroyed": { "type": "boolean", "const": false },
+            "signatureAlgorithm": { "type": "string", "const": "P-256-ECDSA-SHA256" },
+            "signatureEncoding": { "type": "string", "const": "ieee-p1363" }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "adapter",
+            "adapterVersion",
+            "sandboxInstanceId",
+            "conversationId",
+            "invocationId",
+            "workerSessionId",
+            "leaseId",
+            "fencingToken",
+            "bootNonce",
+            "sandboxImageDigest",
+            "codexImageDigest",
+            "codexVersion",
+            "protocolSchemaDigest",
+            "agentVersionDigest",
+            "snapshotDigest",
+            "behaviorDigest",
+            "runtimePolicyDigest",
+            "ioContractDigest",
+            "noHostHomeMount",
+            "contextReadOnly",
+            "contextNoExec",
+            "noLongLivedCredential",
+            "projectExecution",
+            "egressMode",
+            "proxyTransportBinding",
+            "createdAt",
+            "expiresAt",
+            "destroyed",
+            "signatureAlgorithm",
+            "signatureEncoding"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
     "SandboxAttestation": {
       "$ref": "#/definitions/SandboxAttestation",
       "definitions": {
@@ -2575,12 +2816,8 @@
             "expiresAt": { "$ref": "#/definitions/SandboxAttestation/properties/createdAt" },
             "destroyed": { "type": "boolean", "const": false },
             "signatureAlgorithm": { "type": "string", "const": "P-256-ECDSA-SHA256" },
-            "supervisorSignature": {
-              "type": "string",
-              "pattern": "^[A-Za-z0-9_-]+$",
-              "minLength": 32,
-              "maxLength": 256
-            }
+            "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
+            "supervisorSignature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
           },
           "required": [
             "protocol",
@@ -2614,6 +2851,7 @@
             "expiresAt",
             "destroyed",
             "signatureAlgorithm",
+            "signatureEncoding",
             "supervisorSignature"
           ],
           "additionalProperties": false
@@ -3218,6 +3456,7 @@
                         "STALE_LEASE",
                         "STALE_FENCE",
                         "PROTOCOL_INCOMPATIBLE",
+                        "EXECUTION_CAPABILITY_INVALID",
                         "SANDBOX_ATTESTATION_FAILED",
                         "RUNTIME_START_FAILED",
                         "TURN_TIMEOUT",

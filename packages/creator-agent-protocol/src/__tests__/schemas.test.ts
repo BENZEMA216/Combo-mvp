@@ -1,17 +1,29 @@
+import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { AgentVersionManifestSchema, computeAgentVersionDigests } from '../agent-version.js';
 import {
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
+  ExecutionCapabilitySchema,
+  ExecutionCapabilityUseRecordSchema,
+  decideExecutionCapabilityUse,
+  executionCapabilityDigest,
+  executionCapabilityBindingFrom,
+  executionCapabilitySigningBytes,
   parseBrokerFrame,
   parseBrokerHandshake,
+  validateExecutionCapabilityBinding,
+  type ExecutionCapability,
 } from '../broker.js';
 import { EvidenceBundleManifestSchema } from '../evidence.js';
-import { Uint63StringSchema } from '../primitives.js';
+import { Uint63StringSchema, Utf8TextSchema } from '../primitives.js';
 import {
   SandboxAttestationSchema,
   SandboxSpecSchema,
+  attestationBindingFrom,
+  sandboxAttestationSigningBytes,
   validateAttestationBinding,
+  type SandboxAttestation,
 } from '../sandbox.js';
 import {
   isCompressionRatioAllowed,
@@ -20,6 +32,28 @@ import {
   snapshotDigest,
 } from '../snapshot.js';
 import { readFixture, readFixtureText } from './fixture-helpers.js';
+
+function signAttestation(
+  attestation: SandboxAttestation,
+  privateKey: KeyObject,
+): SandboxAttestation {
+  const signature = sign('sha256', sandboxAttestationSigningBytes(attestation), {
+    key: privateKey,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64url');
+  return SandboxAttestationSchema.parse({ ...attestation, supervisorSignature: signature });
+}
+
+function signCapability(
+  capability: ExecutionCapability,
+  privateKey: KeyObject,
+): ExecutionCapability {
+  const signature = sign('sha256', executionCapabilitySigningBytes(capability), {
+    key: privateKey,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64url');
+  return ExecutionCapabilitySchema.parse({ ...capability, signature });
+}
 
 describe('六类共享协议运行时 schema', () => {
   it('解析 Snapshot 和 AgentVersion golden fixtures，并产生稳定 digest', async () => {
@@ -66,7 +100,21 @@ describe('六类共享协议运行时 schema', () => {
       ],
     };
     expect(SnapshotManifestSchema.safeParse(collision).success).toBe(false);
-    for (const path of ['/etc/passwd', '../secret', '.env', 'a\\b', 'x\u0000y']) {
+    for (const path of [
+      '/etc/passwd',
+      '../secret',
+      '.env',
+      '.ENV.production',
+      '.GIT/config',
+      '.GITMODULES',
+      '.SsH/id_ed25519',
+      '.CoDeX/auth.json',
+      'Node_Modules/pkg/index.js',
+      'a\\b',
+      'x\u0000y',
+      'x\ty',
+      'x\u0085y',
+    ]) {
       expect(SnapshotPathSchema.safeParse(path).success, path).toBe(false);
     }
     expect(isCompressionRatioAllowed(1_000, 100_000)).toBe(true);
@@ -110,40 +158,213 @@ describe('六类共享协议运行时 schema', () => {
     }
   });
 
-  it('Sandbox spec/attestation 与 exact binding、expiry、active registry 联动', async () => {
+  it('普通文字保留 TAB/LF/CR，但拒绝其他 C0/C1 控制字符', () => {
+    const schema = Utf8TextSchema(64);
+    expect(schema.safeParse('line 1\tvalue\r\nline 2').success).toBe(true);
+    for (const rejected of ['a\u0000b', 'a\u0001b', 'a\u001fb', 'a\u007fb', 'a\u0085b']) {
+      expect(schema.safeParse(rejected).success, JSON.stringify(rejected)).toBe(false);
+    }
+  });
+
+  it('Sandbox Attestation 先验 P-256，再校验全部 binding、expiry 与 active registry', async () => {
     expect(SandboxSpecSchema.safeParse(await readFixture('sandbox-spec.v1.json')).success).toBe(
       true,
     );
-    const attestation = SandboxAttestationSchema.parse(
+    const keyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const fixture = SandboxAttestationSchema.parse(
       await readFixture('sandbox-attestation.v1.json'),
     );
-    const expected = {
-      sandboxInstanceId: attestation.sandboxInstanceId,
-      conversationId: attestation.conversationId,
-      invocationId: attestation.invocationId,
-      workerSessionId: attestation.workerSessionId,
-      leaseId: attestation.leaseId,
-      fencingToken: attestation.fencingToken,
-      agentVersionDigest: attestation.agentVersionDigest,
-      snapshotDigest: attestation.snapshotDigest,
-      protocolSchemaDigest: attestation.protocolSchemaDigest,
-      proxyTransportBinding: attestation.proxyTransportBinding,
-    };
+    const attestation = signAttestation(fixture, keyPair.privateKey);
+    const { supervisorSignature: _supervisorSignature, ...unsignedAttestation } = attestation;
+    expect(sandboxAttestationSigningBytes(unsignedAttestation)).toEqual(
+      sandboxAttestationSigningBytes(attestation),
+    );
+    const expected = attestationBindingFrom(attestation);
+    const now = new Date('2026-08-13T08:01:00Z');
     const active = new Set([`${attestation.sandboxInstanceId}:${attestation.bootNonce}`]);
     expect(
-      validateAttestationBinding(attestation, expected, new Date('2026-08-13T08:01:00Z'), active),
+      validateAttestationBinding(attestation, expected, now, active, keyPair.publicKey),
     ).toMatchObject({ ok: true });
+
+    const badSignature = {
+      ...attestation,
+      supervisorSignature: `${attestation.supervisorSignature[0] === 'A' ? 'B' : 'A'}${attestation.supervisorSignature.slice(1)}`,
+    };
+    expect(
+      validateAttestationBinding(badSignature, expected, now, active, keyPair.publicKey),
+    ).toMatchObject({ ok: false, reasons: ['signature'] });
+
+    const otherKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    expect(
+      validateAttestationBinding(attestation, expected, now, active, otherKeyPair.publicKey),
+    ).toMatchObject({ ok: false, reasons: ['signature'] });
+
+    const mutations: [keyof typeof expected, string][] = [
+      ['conversationId', '0198f00d-9999-7999-8999-999999999991'],
+      ['workerSessionId', '0198f00d-9999-7999-8999-999999999992'],
+      ['agentVersionDigest', '0'.repeat(64)],
+      ['behaviorDigest', '4'.repeat(64)],
+      ['runtimePolicyDigest', '5'.repeat(64)],
+      ['ioContractDigest', '6'.repeat(64)],
+      ['codexImageDigest', `sha256:${'7'.repeat(64)}`],
+      ['codexVersion', 'different-linux-arm64-codex'],
+    ];
+    for (const [field, value] of mutations) {
+      const resigned = signAttestation({ ...attestation, [field]: value }, keyPair.privateKey);
+      expect(
+        validateAttestationBinding(
+          resigned,
+          expected,
+          now,
+          new Set([`${resigned.sandboxInstanceId}:${resigned.bootNonce}`]),
+          keyPair.publicKey,
+        ),
+        field,
+      ).toMatchObject({ ok: false, reasons: [`binding:${field}`] });
+    }
+
     expect(
       validateAttestationBinding(
         attestation,
         { ...expected, invocationId: '0198f00d-9999-7999-8999-999999999999' },
-        new Date('2026-08-13T08:01:00Z'),
+        now,
         active,
+        keyPair.publicKey,
       ),
     ).toMatchObject({ ok: false, reasons: ['binding:invocationId'] });
     expect(
-      validateAttestationBinding(attestation, expected, new Date('2026-08-13T08:03:00Z'), active),
+      validateAttestationBinding(
+        attestation,
+        expected,
+        new Date('2026-08-13T08:03:00Z'),
+        active,
+        keyPair.publicKey,
+      ),
     ).toMatchObject({ ok: false, reasons: ['expired'] });
+  });
+
+  it('Execution Capability 先验 ES256，再校验 nonce/model/budget/request/fence exact binding', async () => {
+    const keyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const prepare = (await readFixture('broker-invocation-prepare.v1.json')) as {
+      body: { executionCapability: unknown };
+    };
+    const fixture = ExecutionCapabilitySchema.parse(prepare.body.executionCapability);
+    const capability = signCapability(fixture, keyPair.privateKey);
+    const { signature: _signature, ...unsignedCapability } = capability;
+    expect(executionCapabilitySigningBytes(unsignedCapability)).toEqual(
+      executionCapabilitySigningBytes(capability),
+    );
+    const expected = executionCapabilityBindingFrom(capability);
+    const now = new Date('2026-08-13T08:01:00Z');
+    expect(
+      validateExecutionCapabilityBinding(capability, expected, now, new Set(), keyPair.publicKey),
+    ).toMatchObject({ ok: true, capabilityDigest: executionCapabilityDigest(capability) });
+
+    const invalidSignature = {
+      ...capability,
+      signature: `${capability.signature[0] === 'A' ? 'B' : 'A'}${capability.signature.slice(1)}`,
+    };
+    expect(
+      validateExecutionCapabilityBinding(
+        invalidSignature,
+        expected,
+        now,
+        new Set(),
+        keyPair.publicKey,
+      ),
+    ).toMatchObject({ ok: false, reasons: ['signature'] });
+
+    const otherKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    expect(
+      validateExecutionCapabilityBinding(
+        capability,
+        expected,
+        now,
+        new Set(),
+        otherKeyPair.publicKey,
+      ),
+    ).toMatchObject({ ok: false, reasons: ['signature'] });
+
+    const mutations: [keyof typeof expected, unknown][] = [
+      ['nonce', 'MDE5OGYwMGQtZGlmZmVyZW50LW5vbmNl'],
+      ['model', 'different-model'],
+      ['budget', { ...capability.budget, maxOutputTokens: capability.budget.maxOutputTokens + 1 }],
+      ['requestDigest', `hmac-sha256:${'1'.repeat(64)}`],
+      ['fence', '43'],
+      ['conversationId', '0198f00d-9999-7999-8999-999999999993'],
+      ['deploymentId', '0198f00d-9999-7999-8999-999999999994'],
+    ];
+    for (const [field, value] of mutations) {
+      const resigned = signCapability({ ...capability, [field]: value }, keyPair.privateKey);
+      expect(
+        validateExecutionCapabilityBinding(resigned, expected, now, new Set(), keyPair.publicKey),
+        field,
+      ).toMatchObject({ ok: false, reasons: [`binding:${field}`] });
+    }
+    expect(
+      validateExecutionCapabilityBinding(
+        capability,
+        expected,
+        now,
+        new Set([capability.capabilityId]),
+        keyPair.publicKey,
+      ),
+    ).toMatchObject({ ok: false, reasons: ['revoked'] });
+
+    const firstUse = decideExecutionCapabilityUse(capability, null);
+    expect(firstUse).toMatchObject({
+      action: 'DISPATCH_ONCE',
+      nextRecord: { providerUpstreamRequestCount: 1, state: 'DISPATCHED' },
+    });
+    if (firstUse.action !== 'DISPATCH_ONCE') throw new Error('first use 必须 dispatch');
+    expect(decideExecutionCapabilityUse(capability, firstUse.nextRecord)).toMatchObject({
+      action: 'RETURN_IN_PROGRESS',
+      record: { providerUpstreamRequestCount: 1 },
+    });
+    for (let replay = 0; replay < 100; replay += 1) {
+      expect(decideExecutionCapabilityUse(capability, firstUse.nextRecord)).toMatchObject({
+        action: 'RETURN_IN_PROGRESS',
+        record: { providerUpstreamRequestCount: 1 },
+      });
+    }
+    const durableRecord = ExecutionCapabilityUseRecordSchema.parse({
+      ...firstUse.nextRecord,
+      state: 'DURABLE_RESULT',
+      resultDigest: `hmac-sha256:${'9'.repeat(64)}`,
+    });
+    expect(decideExecutionCapabilityUse(capability, durableRecord)).toMatchObject({
+      action: 'RETURN_DURABLE_RESULT',
+      record: { providerUpstreamRequestCount: 1, resultDigest: `hmac-sha256:${'9'.repeat(64)}` },
+    });
+
+    const secondTurnCapability = signCapability(
+      {
+        ...capability,
+        invocationId: '0198f00d-9999-7999-8999-999999999995',
+        providerRequestId: '0198f00d-9999-7999-8999-999999999996',
+        requestDigest: `hmac-sha256:${'8'.repeat(64)}`,
+        nonce: 'MDE5OGYwMGQtc2Vjb25kLXR1cm4tbm9uY2U',
+      },
+      keyPair.privateKey,
+    );
+    expect(decideExecutionCapabilityUse(secondTurnCapability, firstUse.nextRecord)).toEqual({
+      action: 'SECURITY_BLOCK',
+      code: 'CAPABILITY_REUSE_CONFLICT',
+    });
+    const changedDigest = signCapability(
+      { ...capability, requestDigest: `hmac-sha256:${'7'.repeat(64)}` },
+      keyPair.privateKey,
+    );
+    expect(decideExecutionCapabilityUse(changedDigest, firstUse.nextRecord)).toEqual({
+      action: 'SECURITY_BLOCK',
+      code: 'CAPABILITY_REUSE_CONFLICT',
+    });
+    expect(
+      ExecutionCapabilityUseRecordSchema.safeParse({
+        ...firstUse.nextRecord,
+        providerUpstreamRequestCount: 2,
+      }).success,
+    ).toBe(false);
   });
 
   it('Evidence Bundle manifest fixture 可解析且时间单调', async () => {

@@ -29,6 +29,7 @@
       "capabilityId": "0198f00d-3000-7000-8000-000000000009",
       "invocationId": "0198f00d-3000-7000-8000-000000000002",
       "conversationId": "0198f00d-3000-7000-8000-000000000006",
+      "deploymentId": "0198f00d-3000-7000-8000-000000000004",
       "agentVersionId": "0198f00d-3000-7000-8000-000000000008",
       "agentVersionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "workerInstallationId": "0198f00d-1111-7111-8111-111111111111",
@@ -47,7 +48,8 @@
       "expiresAt": "2026-08-13T08:02:30.000Z",
       "nonce": "MDE5OGYwMGQtZXhlY3V0aW9uLW5vbmNl",
       "signatureAlgorithm": "ES256",
-      "signature": "ZXhhbXBsZS1lczI1Ni1leGVjdXRpb24tc2lnbmF0dXJl"
+      "signatureEncoding": "ieee-p1363",
+      "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     }
   }
 }

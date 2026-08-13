@@ -30,6 +30,11 @@ describe('RFC 8785 canonical JSON 与敏感摘要', () => {
     expect(() => parseJsonNoDuplicateKeys('{"a":1,"a":2}')).toThrow(/重复 JSON key/u);
     expect(() => canonicalizeJson('\ud800')).toThrow(/surrogate/u);
     expect(() => canonicalizeJson({ value: undefined })).toThrow(/undefined/u);
+    expect(() => canonicalizeJson(new Array(2))).toThrow(/sparse array hole/u);
+    const holey = new Array<unknown>(2);
+    holey[1] = 1;
+    expect(() => canonicalizeJson(holey)).toThrow(/sparse array hole/u);
+    expect(() => canonicalizeJson([undefined])).toThrow(/undefined/u);
     expect(() => canonicalizeJson(Number.POSITIVE_INFINITY)).toThrow(/非有限/u);
   });
 

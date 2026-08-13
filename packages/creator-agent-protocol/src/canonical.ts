@@ -61,7 +61,14 @@ function assertCanonicalValue(value: unknown, path: string): asserts value is Ca
     return;
   }
   if (Array.isArray(value)) {
-    value.forEach((item, index) => assertCanonicalValue(item, `${path}[${index}]`));
+    for (let index = 0; index < value.length; index += 1) {
+      if (!Object.hasOwn(value, index)) {
+        throw new TypeError(`${path}[${index}] 不能是 sparse array hole`);
+      }
+      const item: unknown = value[index];
+      if (item === undefined) throw new TypeError(`${path}[${index}] 不能是 undefined`);
+      assertCanonicalValue(item, `${path}[${index}]`);
+    }
     return;
   }
   if (typeof value === 'object') {

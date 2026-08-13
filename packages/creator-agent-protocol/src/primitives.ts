@@ -19,6 +19,11 @@ export const HmacSha256DigestSchema = z.string().regex(/^hmac-sha256:[a-f0-9]{64
 
 export const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 
+export const P256P1363SignatureSchema = Base64UrlSchema.refine((value) => {
+  const bytes = Buffer.from(value, 'base64url');
+  return bytes.byteLength === 64 && bytes.toString('base64url') === value;
+}, 'P-256 IEEE-P1363 signature 必须是 64 bytes');
+
 export const Uint63StringSchema = z
   .string()
   .regex(/^(0|[1-9]\d*)$/)
@@ -36,7 +41,28 @@ export const Utf8TextSchema = (maxBytes: number) =>
       message: `UTF-8 内容不得超过 ${maxBytes} bytes`,
     })
     .refine((value) => !containsLoneSurrogate(value), '不接受未配对的 Unicode surrogate')
-    .refine((value) => !/[\u0000]/u.test(value), '不接受 NUL');
+    .refine(
+      (value) => !containsForbiddenControl(value, true),
+      '除 TAB、LF、CR 外不接受 C0/C1 控制字符',
+    );
+
+/**
+ * C0/C1 都是协议文字里的非法控制字符；普通多行文字仅允许 TAB/LF/CR，
+ * 路径等结构性文字一律不允许。
+ */
+export function containsForbiddenControl(value: string, allowTabLfCr = false): boolean {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)!;
+    if (codePoint <= 0x1f) {
+      if (allowTabLfCr && (codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0d)) {
+        continue;
+      }
+      return true;
+    }
+    if (codePoint >= 0x7f && codePoint <= 0x9f) return true;
+  }
+  return false;
+}
 
 export function containsLoneSurrogate(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
