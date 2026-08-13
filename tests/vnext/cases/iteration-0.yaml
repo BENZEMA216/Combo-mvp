@@ -351,6 +351,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/sandbox-attestation.v1.json
       - packages/creator-agent-protocol/fixtures/sandbox-spec.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-envelope.v1.json
+      - packages/creator-agent-protocol/fixtures/snapshot-manifest-envelope.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json
     fault: []
     steps:
@@ -387,6 +388,7 @@ cases:
       - sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91
       - sha256:e4b9749843a479a2669950a6c33cd9be4f90ddea8dd00c2436bf7dbdc6fb9a0a
       - sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9
+      - sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
   - <<: *sch
     id: SCH-002
@@ -443,8 +445,8 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:1ead62df607034063c3ae108dff9082b06b49f334b9fc96b675487f6c3897c3b
-      - sha256:2d3ea36862667dbd82a2bc8696edb78f1814cf745c5bf8fa3ad1fc69eb6ce605
+      - sha256:a5038a292c8c97b62139087f9fe9f9b9b7b9147f93eab317376119452d8e90ba
+      - sha256:079fadef4841e665841ab4b82fa56cf15f3d5bfacb11949d69cab85fd6186cd8
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest

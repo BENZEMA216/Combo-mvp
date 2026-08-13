@@ -4,7 +4,7 @@
 
 ## 目录职责
 
-- `src/` 定义共享协议（包括 Snapshot Manifest、Snapshot archive Envelope、AgentVersion、Broker、Sandbox 与 HTTP）、RFC 8785 JSON 规范化、Invocation 状态机、稳定错误和重试策略、Evidence Bundle、不变量与测试注册表。
+- `src/` 定义共享协议（包括 Snapshot Manifest、archive/manifest 两类加密 Envelope、AgentVersion、Broker、Sandbox 与 HTTP）、RFC 8785 JSON 规范化、Invocation 状态机、稳定错误和重试策略、Evidence Bundle、不变量与测试注册表。
 - `fixtures/` 保存 Schema、WSS、状态机、canonical digest 和 Evidence Bundle 的 golden vectors；`index.json` 绑定每个 fixture 的 SHA-256。
 - `schemas/contract-schemas.v1.json` 是从运行时 Zod 真源生成的 JSON Schema bundle。
 - `openapi/creator-agent-v1.openapi.json` 是 Creator 与 Consumer HTTP API 的 OpenAPI 3.1 契约。
@@ -12,7 +12,7 @@
 
 ## 协议边界
 
-包内冻结 `AgentVersionManifest/1`、`SnapshotManifest/1`、`SnapshotArchiveEnvelope/1`、`combo.creator-broker/1`、Invocation 状态机、`SandboxSpec/1`、`SandboxAttestation/1` 和 Creator/Consumer HTTP API。Snapshot archive Envelope 绑定最终对象 key、三组摘要、明文长度、KEK key id 和固定 binary framing；架构要求的 encrypted Manifest Envelope 尚未实现，不能据此声明 Gate 1 完成。Schema 采用严格 unknown-key 策略；Broker JSON frame 还在运行时拒绝重复 JSON key和超限 frame。Fence 与 sequence 在 wire 上统一使用 canonical uint63 十进制字符串，避免 JavaScript number 精度损失。
+包内冻结 `AgentVersionManifest/1`、`SnapshotManifest/1`、archive/manifest 两类加密 Envelope、`combo.creator-broker/1`、Invocation 状态机、`SandboxSpec/1`、`SandboxAttestation/1` 和 Creator/Consumer HTTP API。两类 Envelope 绑定最终对象 key、摘要、明文长度、KEK key id 和各自固定 binary framing，并要求同一 Snapshot 的 Creator、digest、wrapped DEK 一致且 nonce 不同。Snapshot upload API 只在 Worker 已完成两个密文对象后创建会话，并一次返回两个绑定 exact length、canonical base64 checksum、`If-None-Match` 和完整 metadata 的 Signed PUT。Schema 采用严格 unknown-key 策略；Broker JSON frame 还在运行时拒绝重复 JSON key和超限 frame。Fence 与 sequence 在 wire 上统一使用 canonical uint63 十进制字符串，避免 JavaScript number 精度损失。
 
 `requestDigest`、`contentDigest` 和 `resultDigest` 使用按租户或版本密钥计算的 domain-separated HMAC-SHA-256；Snapshot 与公开构建产物继续使用普通 SHA-256 内容寻址。这些 digest 不代替 AEAD、签名、Lease 或 Execution Capability。
 

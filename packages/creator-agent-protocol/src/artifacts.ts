@@ -59,6 +59,8 @@ import {
 import {
   SnapshotArchiveEnvelopeAadSchema,
   SnapshotArchiveEnvelopeSchema,
+  SnapshotManifestEnvelopeAadSchema,
+  SnapshotManifestEnvelopeSchema,
   SnapshotManifestSchema,
 } from './snapshot.js';
 
@@ -67,6 +69,8 @@ export const ContractSchemaDefinitions = {
   SnapshotManifest: SnapshotManifestSchema,
   SnapshotArchiveEnvelopeAad: SnapshotArchiveEnvelopeAadSchema,
   SnapshotArchiveEnvelope: SnapshotArchiveEnvelopeSchema,
+  SnapshotManifestEnvelopeAad: SnapshotManifestEnvelopeAadSchema,
+  SnapshotManifestEnvelope: SnapshotManifestEnvelopeSchema,
   BrokerHandshake: BrokerHandshakeSchema,
   BrokerEnvelope: BrokerEnvelopeSchema,
   ExecutionCapabilityUnsigned: ExecutionCapabilityUnsignedSchema,
@@ -130,6 +134,35 @@ const RuntimeSemanticConstraints: Partial<
     'envelope nonce/authTag MUST equal the cipher object segments byte-for-byte',
     'all consumers MUST pass the authoritative runtime SnapshotArchiveEnvelopeSchema parser after structural JSON Schema validation',
     'all cipher object consumers MUST pass parseSnapshotArchiveCipherObject(envelope,objectBytes) before unwrap or decrypt',
+  ],
+  SnapshotManifestEnvelopeAad: [
+    'objectKey == snapshotManifestObjectKey(creatorId,snapshotDigest)',
+    'all consumers MUST pass the authoritative runtime SnapshotManifestEnvelopeAadSchema parser after structural JSON Schema validation',
+  ],
+  SnapshotManifestEnvelope: [
+    'aadDigest == sha256(JCS(aad))',
+    'cipherObjectFormat == aad.cipherObjectFormat',
+    'cipherBytes == aad.plaintextBytes + 36',
+    'cipher object == ASCII("CSNPMAN1") || nonce[12] || ciphertext[aad.plaintextBytes] || authTag[16]',
+    'cipherDigest == sha256(exact whole manifest cipher object)',
+    'envelope nonce/authTag MUST equal the manifest cipher object segments byte-for-byte',
+    'archive and manifest envelopes MUST bind the same creatorId/snapshotDigest/keyId/wrappedDek and distinct nonces',
+    'all consumers MUST pass the authoritative runtime SnapshotManifestEnvelopeSchema parser after structural JSON Schema validation',
+    'all manifest cipher object consumers MUST pass parseSnapshotManifestCipherObject(envelope,objectBytes) before unwrap, decrypt, or JSON parse',
+  ],
+  SnapshotUploadCreateRequest: [
+    'archive.checksumSha256 == canonicalBase64(hexToBytes(archive.envelope.cipherDigest))',
+    'manifest.checksumSha256 == canonicalBase64(hexToBytes(manifest.envelope.cipherDigest))',
+    'archive and manifest envelopes MUST bind the same creatorId/snapshotDigest/keyId/wrappedDek and distinct nonces',
+    'the Worker MUST finish both cipher objects before constructing this request',
+    'all consumers MUST pass the authoritative runtime SnapshotUploadCreateRequestSchema parser after structural JSON Schema validation',
+  ],
+  SnapshotUploadCreateResponse: [
+    'each target requiredHeaders MUST bind exact cipherBytes/cipherDigest/checksum/object-kind and include no unknown header',
+    'archive and manifest targets MUST bind the same snapshotDigest/archiveDigest and distinct temp object locators',
+    'archive cipherBytes <= SNAPSHOT_MAX_COMPRESSED_BYTES + 36 and manifest cipherBytes <= SNAPSHOT_MAX_MANIFEST_BYTES + 36',
+    'public Authoring responses MUST use HTTPS; insecure loopback is only an explicit disposable component-test authority',
+    'all consumers MUST pass the authoritative runtime SnapshotUploadCreateResponseSchema parser after structural JSON Schema validation',
   ],
   BrokerEnvelope: [
     'sensitive.cipherDigest == sha256(JCS(nonce,ciphertext,authTag))',

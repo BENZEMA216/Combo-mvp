@@ -1,116 +1,178 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { type Readable } from 'node:stream';
 import {
   GetObjectCommand,
   PutObjectCommand,
   type GetObjectCommandOutput,
   type PutObjectCommandOutput,
+  type S3Client,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
-  Sha256HexSchema,
-  SnapshotArchiveEnvelopeSchema,
+  CREATOR_AGENT_HTTP_PROTOCOL,
+  SNAPSHOT_OBJECT_STORAGE_PROTOCOL,
+  SnapshotUploadCreateRequestSchema,
+  SnapshotUploadCreateResponseSchema,
   UuidSchema,
   parseSnapshotArchiveCipherObject,
+  parseSnapshotManifestCipherObject,
   snapshotArchiveObjectKey,
+  snapshotManifestObjectKey,
   type SnapshotArchiveEnvelope,
+  type SnapshotManifestEnvelope,
+  type SnapshotSignedPutTarget,
+  type SnapshotUploadCreateRequest,
+  type SnapshotUploadCreateResponse,
 } from '@cb/creator-agent-protocol';
 
-import { type SnapshotKeyEnvelopePort } from './encryption.js';
+import { type SnapshotDataKeyUnwrapperPort } from './encryption.js';
 import { fail, isSnapshotError } from './errors.js';
-import { decryptAndVerifySnapshot, type VerifiedSnapshotArchive } from './snapshot.js';
+import { decryptAndVerifySnapshotBundle, type VerifiedSnapshotArchive } from './snapshot.js';
 
-export const SNAPSHOT_OBJECT_STORAGE_PROTOCOL = 'combo.snapshot-object-storage/1' as const;
+export { SNAPSHOT_OBJECT_STORAGE_PROTOCOL };
+
 export const MAX_ENCRYPTED_SNAPSHOT_BYTES = 50 * 1024 * 1024 + 36;
+export const MAX_ENCRYPTED_MANIFEST_BYTES = 4 * 1024 * 1024 + 36;
 const DATA_ENCRYPTION_KEY_BYTES = 32;
 const CONTENT_TYPE = 'application/octet-stream';
 const CACHE_CONTROL = 'no-store';
+const MAX_SIGNED_PUT_SECONDS = 15 * 60;
 
 export interface SnapshotS3CommandClient {
   send(command: PutObjectCommand): Promise<PutObjectCommandOutput>;
   send(command: GetObjectCommand): Promise<GetObjectCommandOutput>;
 }
 
-type SnapshotCipherIdentity = Readonly<{
+export interface SnapshotS3PutPresigner {
+  presignPut(input: {
+    command: PutObjectCommand;
+    requiredHeaders: Readonly<Record<string, string>>;
+    expiresInSeconds: number;
+    signingDate: Date;
+  }): Promise<string>;
+}
+
+export function createSnapshotS3PutPresigner(client: S3Client): SnapshotS3PutPresigner {
+  return {
+    async presignPut(input) {
+      const headerNames = Object.keys(input.requiredHeaders);
+      return getSignedUrl(client, input.command, {
+        expiresIn: input.expiresInSeconds,
+        signingDate: input.signingDate,
+        signableHeaders: new Set(headerNames),
+        unhoistableHeaders: new Set(headerNames.filter((name) => name.startsWith('x-amz-'))),
+      });
+    },
+  };
+}
+
+export type SnapshotEncryptedUploadBundle = Readonly<{
+  uploadId: string;
+  request: SnapshotUploadCreateRequest;
+  archiveObjectBytes: Uint8Array;
+  manifestObjectBytes: Uint8Array;
+}>;
+
+export type StoredSnapshotCipherObject<
+  TEnvelope extends SnapshotArchiveEnvelope | SnapshotManifestEnvelope =
+    | SnapshotArchiveEnvelope
+    | SnapshotManifestEnvelope,
+> = Readonly<{
+  kind: 'archive' | 'manifest';
+  envelope: TEnvelope;
+  objectKey: string;
+  encryptedObjectBytes: Buffer;
+}>;
+
+export type StoredSnapshotBundle = Readonly<{
+  archive: StoredSnapshotCipherObject<SnapshotArchiveEnvelope>;
+  manifest: StoredSnapshotCipherObject<SnapshotManifestEnvelope>;
+}>;
+
+export type FinalizeSnapshotUploadInput = Readonly<{
+  uploadId: string;
+  request: SnapshotUploadCreateRequest;
+  keyEnvelope: SnapshotDataKeyUnwrapperPort;
+}>;
+
+export type ReadAndVerifyStoredSnapshotInput = Readonly<{
+  request: SnapshotUploadCreateRequest;
+  keyEnvelope: SnapshotDataKeyUnwrapperPort;
+}>;
+
+type ObjectKind = 'archive' | 'manifest';
+type ObjectState = 'upload' | 'immutable';
+type SnapshotMetadata = Record<string, string>;
+
+type ArchiveExpectation = Readonly<{
+  kind: 'archive';
+  envelope: SnapshotArchiveEnvelope;
+  checksumSha256: string;
   creatorId: string;
   snapshotDigest: string;
   archiveDigest: string;
   cipherDigest: string;
   cipherBytes: number;
+  finalKey: string;
 }>;
 
-export type SnapshotUploadObject = Readonly<{
-  uploadId: string;
-  envelope: SnapshotArchiveEnvelope;
-  encryptedObjectBytes: Uint8Array;
+type ManifestExpectation = Readonly<{
+  kind: 'manifest';
+  envelope: SnapshotManifestEnvelope;
+  checksumSha256: string;
+  creatorId: string;
+  snapshotDigest: string;
+  archiveDigest: string;
+  cipherDigest: string;
+  cipherBytes: number;
+  finalKey: string;
 }>;
 
-export type StoredSnapshotCipherObject = Readonly<{
-  envelope: SnapshotArchiveEnvelope;
-  objectKey: string;
-  encryptedObjectBytes: Buffer;
+type ObjectExpectation = ArchiveExpectation | ManifestExpectation;
+type UploadExpectations = Readonly<{
+  request: SnapshotUploadCreateRequest;
+  archive: ArchiveExpectation;
+  manifest: ManifestExpectation;
 }>;
-
-export type FinalizeSnapshotUploadInput = Readonly<{
-  uploadId: string;
-  envelope: SnapshotArchiveEnvelope;
-}>;
-
-export type ReadAndVerifyStoredSnapshotInput = Readonly<{
-  manifestBytes: Uint8Array;
-  envelope: SnapshotArchiveEnvelope;
-  keyEnvelope: SnapshotKeyEnvelopePort;
-}>;
-
-type ObjectState = 'upload' | 'immutable';
-type SnapshotMetadata = Record<string, string>;
 
 const REQUIRED_METADATA_KEYS = [
   'archive-digest',
   'cipher-bytes',
   'cipher-digest',
+  'object-kind',
   'object-state',
   'protocol',
   'snapshot-digest',
 ] as const;
 
-function normalizeIdentity(input: SnapshotCipherIdentity): SnapshotCipherIdentity {
-  const parsedCreator = UuidSchema.safeParse(input.creatorId);
-  const parsedSnapshot = Sha256HexSchema.safeParse(input.snapshotDigest);
-  const parsedArchive = Sha256HexSchema.safeParse(input.archiveDigest);
-  const parsedCipher = Sha256HexSchema.safeParse(input.cipherDigest);
-  if (
-    !parsedCreator.success ||
-    !parsedSnapshot.success ||
-    !parsedArchive.success ||
-    !parsedCipher.success ||
-    !Number.isSafeInteger(input.cipherBytes) ||
-    input.cipherBytes < 37 ||
-    input.cipherBytes > MAX_ENCRYPTED_SNAPSHOT_BYTES
-  ) {
-    fail('SNAPSHOT_OBJECT_INVALID');
-  }
-  return Object.freeze({
-    creatorId: parsedCreator.data,
-    snapshotDigest: parsedSnapshot.data,
-    archiveDigest: parsedArchive.data,
-    cipherDigest: parsedCipher.data,
-    cipherBytes: input.cipherBytes,
-  });
-}
-
-function parseEnvelope(input: SnapshotArchiveEnvelope): Readonly<{
-  envelope: SnapshotArchiveEnvelope;
-  identity: SnapshotCipherIdentity;
-}> {
-  const parsed = SnapshotArchiveEnvelopeSchema.safeParse(input);
+function parseUploadRequest(input: SnapshotUploadCreateRequest): UploadExpectations {
+  const parsed = SnapshotUploadCreateRequestSchema.safeParse(input);
   if (!parsed.success) fail('SNAPSHOT_OBJECT_INVALID');
+  const archive = parsed.data.archive.envelope;
+  const manifest = parsed.data.manifest.envelope;
   return Object.freeze({
-    envelope: parsed.data,
-    identity: normalizeIdentity({
-      creatorId: parsed.data.aad.creatorId,
-      snapshotDigest: parsed.data.aad.snapshotDigest,
-      archiveDigest: parsed.data.aad.archiveDigest,
-      cipherDigest: parsed.data.cipherDigest,
-      cipherBytes: parsed.data.cipherBytes,
+    request: parsed.data,
+    archive: Object.freeze({
+      kind: 'archive',
+      envelope: archive,
+      checksumSha256: parsed.data.archive.checksumSha256,
+      creatorId: archive.aad.creatorId,
+      snapshotDigest: archive.aad.snapshotDigest,
+      archiveDigest: archive.aad.archiveDigest,
+      cipherDigest: archive.cipherDigest,
+      cipherBytes: archive.cipherBytes,
+      finalKey: snapshotArchiveObjectKey(archive.aad.creatorId, archive.aad.snapshotDigest),
+    }),
+    manifest: Object.freeze({
+      kind: 'manifest',
+      envelope: manifest,
+      checksumSha256: parsed.data.manifest.checksumSha256,
+      creatorId: manifest.aad.creatorId,
+      snapshotDigest: manifest.aad.snapshotDigest,
+      archiveDigest: archive.aad.archiveDigest,
+      cipherDigest: manifest.cipherDigest,
+      cipherBytes: manifest.cipherBytes,
+      finalKey: snapshotManifestObjectKey(manifest.aad.creatorId, manifest.aad.snapshotDigest),
     }),
   });
 }
@@ -127,11 +189,17 @@ function assertBucket(bucket: string): void {
   }
 }
 
-export function snapshotUploadObjectKey(creatorId: string, uploadId: string): string {
+export function snapshotUploadObjectKey(
+  creatorId: string,
+  uploadId: string,
+  kind: ObjectKind,
+): string {
   const creator = UuidSchema.safeParse(creatorId);
   const upload = UuidSchema.safeParse(uploadId);
-  if (!creator.success || !upload.success) fail('SNAPSHOT_OBJECT_INVALID');
-  return `uploads/${creator.data}/${upload.data}.part`;
+  if (!creator.success || !upload.success || (kind !== 'archive' && kind !== 'manifest')) {
+    fail('SNAPSHOT_OBJECT_INVALID');
+  }
+  return `uploads/${creator.data}/${upload.data}/${kind}.part`;
 }
 
 export function immutableSnapshotObjectKey(creatorId: string, snapshotDigest: string): string {
@@ -142,14 +210,46 @@ export function immutableSnapshotObjectKey(creatorId: string, snapshotDigest: st
   }
 }
 
-function metadataFor(identity: SnapshotCipherIdentity, state: ObjectState): SnapshotMetadata {
+export function immutableSnapshotManifestObjectKey(
+  creatorId: string,
+  snapshotDigest: string,
+): string {
+  try {
+    return snapshotManifestObjectKey(creatorId, snapshotDigest);
+  } catch {
+    fail('SNAPSHOT_OBJECT_INVALID');
+  }
+}
+
+function metadataFor(expectation: ObjectExpectation, state: ObjectState): SnapshotMetadata {
   return {
     protocol: SNAPSHOT_OBJECT_STORAGE_PROTOCOL,
+    'object-kind': expectation.kind,
     'object-state': state,
-    'snapshot-digest': identity.snapshotDigest,
-    'archive-digest': identity.archiveDigest,
-    'cipher-digest': identity.cipherDigest,
-    'cipher-bytes': String(identity.cipherBytes),
+    'snapshot-digest': expectation.snapshotDigest,
+    'archive-digest': expectation.archiveDigest,
+    'cipher-digest': expectation.cipherDigest,
+    'cipher-bytes': String(expectation.cipherBytes),
+  };
+}
+
+function requiredHeadersFor(
+  expectation: ObjectExpectation,
+): SnapshotSignedPutTarget['requiredHeaders'] {
+  const metadata = metadataFor(expectation, 'upload');
+  return {
+    'cache-control': CACHE_CONTROL,
+    'content-length': String(expectation.cipherBytes),
+    'content-type': CONTENT_TYPE,
+    'if-none-match': '*',
+    'x-amz-checksum-sha256': expectation.checksumSha256,
+    'x-amz-meta-archive-digest': metadata['archive-digest']!,
+    'x-amz-meta-cipher-bytes': metadata['cipher-bytes']!,
+    'x-amz-meta-cipher-digest': metadata['cipher-digest']!,
+    'x-amz-meta-object-kind': expectation.kind,
+    'x-amz-meta-object-state': 'upload',
+    'x-amz-meta-protocol': SNAPSHOT_OBJECT_STORAGE_PROTOCOL,
+    'x-amz-meta-snapshot-digest': metadata['snapshot-digest']!,
   };
 }
 
@@ -205,6 +305,26 @@ function isMissingObject(error: unknown): boolean {
   return names.includes('NoSuchKey') || names.includes('NotFound');
 }
 
+function isInsecureLoopbackUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === 'http:' &&
+      url.username === '' &&
+      url.password === '' &&
+      url.hash === '' &&
+      (url.hostname === '127.0.0.1' || url.hostname === '[::1]' || url.hostname === 'localhost')
+    );
+  } catch {
+    return false;
+  }
+}
+
+function presignedObjectLocator(value: string): string {
+  const url = new URL(value);
+  return `${url.origin}${url.pathname}`;
+}
+
 async function readBoundedBody(
   body: GetObjectCommandOutput['Body'],
   maxBytes: number,
@@ -215,7 +335,7 @@ async function readBoundedBody(
   const chunks: Buffer[] = [];
   let total = 0;
   try {
-    for await (const chunk of body as AsyncIterable<unknown>) {
+    for await (const chunk of body as Readable) {
       if (!(chunk instanceof Uint8Array)) fail('SNAPSHOT_OBJECT_INVALID');
       if (chunk.byteLength > maxBytes - total) fail('SNAPSHOT_OBJECT_INVALID');
       const bytes = Buffer.from(chunk);
@@ -231,30 +351,256 @@ async function readBoundedBody(
 
 export class S3ImmutableSnapshotObjectStore {
   readonly #client: SnapshotS3CommandClient;
+  readonly #presigner: SnapshotS3PutPresigner | undefined;
   readonly #bucket: string;
   readonly #creatorId: string;
+  readonly #allowInsecureLoopbackPresignedUrls: boolean;
 
-  constructor(input: { client: SnapshotS3CommandClient; bucket: string; creatorId: string }) {
+  constructor(input: {
+    client: SnapshotS3CommandClient;
+    presigner?: SnapshotS3PutPresigner;
+    bucket: string;
+    creatorId: string;
+    /** Disposable local component tests only; production must keep the default false. */
+    allowInsecureLoopbackPresignedUrls?: boolean;
+  }) {
     assertBucket(input.bucket);
     const creator = UuidSchema.safeParse(input.creatorId);
     if (!creator.success) fail('SNAPSHOT_OBJECT_INVALID');
     this.#client = input.client;
+    this.#presigner = input.presigner;
     this.#bucket = input.bucket;
     this.#creatorId = creator.data;
+    this.#allowInsecureLoopbackPresignedUrls = input.allowInsecureLoopbackPresignedUrls === true;
   }
 
-  async putUpload(input: SnapshotUploadObject): Promise<StoredSnapshotCipherObject> {
-    const { envelope, identity } = parseEnvelope(input.envelope);
-    if (identity.creatorId !== this.#creatorId) fail('SNAPSHOT_OBJECT_INVALID');
+  async createUploadSession(input: {
+    uploadId: string;
+    request: SnapshotUploadCreateRequest;
+    expiresInSeconds?: number;
+    now?: Date;
+  }): Promise<SnapshotUploadCreateResponse> {
+    if (this.#presigner === undefined) fail('SNAPSHOT_STORAGE_UNAVAILABLE');
     const uploadId = normalizeUploadId(input.uploadId);
-    try {
-      parseSnapshotArchiveCipherObject(envelope, input.encryptedObjectBytes);
-    } catch {
+    const expected = this.#expectations(input.request);
+    const expiresInSeconds = input.expiresInSeconds ?? MAX_SIGNED_PUT_SECONDS;
+    if (
+      !Number.isSafeInteger(expiresInSeconds) ||
+      expiresInSeconds < 1 ||
+      expiresInSeconds > MAX_SIGNED_PUT_SECONDS
+    ) {
       fail('SNAPSHOT_OBJECT_INVALID');
     }
-    const bytes = Buffer.from(input.encryptedObjectBytes);
-    const key = snapshotUploadObjectKey(identity.creatorId, uploadId);
-    const metadata = metadataFor(identity, 'upload');
+    const now = input.now ?? new Date();
+    if (Number.isNaN(now.getTime())) fail('SNAPSHOT_OBJECT_INVALID');
+    const [archive, manifest] = await Promise.all([
+      this.#signTarget(uploadId, expected.archive, expiresInSeconds, now),
+      this.#signTarget(uploadId, expected.manifest, expiresInSeconds, now),
+    ]);
+    const response = {
+      protocol: CREATOR_AGENT_HTTP_PROTOCOL,
+      uploadId,
+      state: 'CREATED' as const,
+      uploads: { archive, manifest },
+      expiresAt: new Date(now.getTime() + expiresInSeconds * 1_000).toISOString(),
+    };
+    if (archive.putUrl.startsWith('https://') && manifest.putUrl.startsWith('https://')) {
+      return SnapshotUploadCreateResponseSchema.parse(response);
+    }
+    // This explicit constructor capability exists only for the disposable loopback MinIO E2.
+    // It cannot admit a LAN/public plaintext URL or silently weaken the Authoring contract.
+    if (
+      !this.#allowInsecureLoopbackPresignedUrls ||
+      !isInsecureLoopbackUrl(archive.putUrl) ||
+      !isInsecureLoopbackUrl(manifest.putUrl) ||
+      presignedObjectLocator(archive.putUrl) === presignedObjectLocator(manifest.putUrl)
+    ) {
+      fail('SNAPSHOT_OBJECT_INVALID');
+    }
+    return response;
+  }
+
+  /** Internal/test helper. Production Worker uploads through createUploadSession Signed PUTs. */
+  async putUpload(input: SnapshotEncryptedUploadBundle): Promise<StoredSnapshotBundle> {
+    const uploadId = normalizeUploadId(input.uploadId);
+    const expected = this.#expectations(input.request);
+    this.#assertObjectBytes(expected.archive, input.archiveObjectBytes);
+    this.#assertObjectBytes(expected.manifest, input.manifestObjectBytes);
+    const archive = await this.#putObject(
+      snapshotUploadObjectKey(this.#creatorId, uploadId, 'archive'),
+      expected.archive,
+      input.archiveObjectBytes,
+      'upload',
+    );
+    const manifest = await this.#putObject(
+      snapshotUploadObjectKey(this.#creatorId, uploadId, 'manifest'),
+      expected.manifest,
+      input.manifestObjectBytes,
+      'upload',
+    );
+    return Object.freeze({ archive, manifest });
+  }
+
+  async finalizeUpload(input: FinalizeSnapshotUploadInput): Promise<
+    Readonly<{
+      stored: StoredSnapshotBundle;
+      verified: VerifiedSnapshotArchive;
+    }>
+  > {
+    const uploadId = normalizeUploadId(input.uploadId);
+    const expected = this.#expectations(input.request);
+    const existingArchive = await this.#readFinalForFinalize(expected.archive);
+    const existingManifest = await this.#readFinalForFinalize(expected.manifest);
+    if (existingArchive !== undefined && existingManifest !== undefined) {
+      const stored = Object.freeze({ archive: existingArchive, manifest: existingManifest });
+      return Object.freeze({
+        stored,
+        verified: await this.#verifyBundle(stored, expected, input.keyEnvelope),
+      });
+    }
+
+    // P0 ordering: both temp objects are read and fully authenticated before either final key is
+    // touched. A corrupt temp therefore cannot reserve an immutable content-addressed key.
+    const uploadedArchive = await this.#readObject(
+      snapshotUploadObjectKey(this.#creatorId, uploadId, 'archive'),
+      expected.archive,
+      'upload',
+    );
+    const uploadedManifest = await this.#readObject(
+      snapshotUploadObjectKey(this.#creatorId, uploadId, 'manifest'),
+      expected.manifest,
+      'upload',
+    );
+    if (uploadedArchive === undefined || uploadedManifest === undefined) {
+      fail('SNAPSHOT_OBJECT_NOT_FOUND');
+    }
+    const uploaded = Object.freeze({ archive: uploadedArchive, manifest: uploadedManifest });
+    const verified = await this.#verifyBundle(uploaded, expected, input.keyEnvelope);
+
+    if (
+      existingArchive !== undefined &&
+      !bytesEqual(existingArchive.encryptedObjectBytes, uploadedArchive.encryptedObjectBytes)
+    ) {
+      fail('SNAPSHOT_IMMUTABLE_CONFLICT');
+    }
+    if (
+      existingManifest !== undefined &&
+      !bytesEqual(existingManifest.encryptedObjectBytes, uploadedManifest.encryptedObjectBytes)
+    ) {
+      fail('SNAPSHOT_IMMUTABLE_CONFLICT');
+    }
+
+    const archive =
+      existingArchive ??
+      (await this.#putObject(
+        expected.archive.finalKey,
+        expected.archive,
+        uploadedArchive.encryptedObjectBytes,
+        'immutable',
+      ));
+    const manifest =
+      existingManifest ??
+      (await this.#putObject(
+        expected.manifest.finalKey,
+        expected.manifest,
+        uploadedManifest.encryptedObjectBytes,
+        'immutable',
+      ));
+    return Object.freeze({ stored: Object.freeze({ archive, manifest }), verified });
+  }
+
+  async readFinalBundle(
+    input: SnapshotUploadCreateRequest,
+  ): Promise<StoredSnapshotBundle | undefined> {
+    const expected = this.#expectations(input);
+    const [archive, manifest] = await Promise.all([
+      this.#readObject(expected.archive.finalKey, expected.archive, 'immutable'),
+      this.#readObject(expected.manifest.finalKey, expected.manifest, 'immutable'),
+    ]);
+    if (archive === undefined && manifest === undefined) return undefined;
+    if (archive === undefined || manifest === undefined) fail('SNAPSHOT_IMMUTABLE_CONFLICT');
+    return Object.freeze({ archive, manifest });
+  }
+
+  async readAndVerify(input: ReadAndVerifyStoredSnapshotInput): Promise<
+    Readonly<{
+      stored: StoredSnapshotBundle;
+      verified: VerifiedSnapshotArchive;
+    }>
+  > {
+    const expected = this.#expectations(input.request);
+    const stored = await this.readFinalBundle(expected.request);
+    if (stored === undefined) fail('SNAPSHOT_OBJECT_NOT_FOUND');
+    return Object.freeze({
+      stored,
+      verified: await this.#verifyBundle(stored, expected, input.keyEnvelope),
+    });
+  }
+
+  #expectations(input: SnapshotUploadCreateRequest): UploadExpectations {
+    const expected = parseUploadRequest(input);
+    if (expected.archive.creatorId !== this.#creatorId) fail('SNAPSHOT_OBJECT_INVALID');
+    return expected;
+  }
+
+  async #signTarget(
+    uploadId: string,
+    expectation: ObjectExpectation,
+    expiresInSeconds: number,
+    signingDate: Date,
+  ): Promise<SnapshotSignedPutTarget> {
+    const requiredHeaders = requiredHeadersFor(expectation);
+    const command = new PutObjectCommand({
+      Bucket: this.#bucket,
+      Key: snapshotUploadObjectKey(this.#creatorId, uploadId, expectation.kind),
+      ContentLength: expectation.cipherBytes,
+      ContentType: CONTENT_TYPE,
+      CacheControl: CACHE_CONTROL,
+      ChecksumSHA256: expectation.checksumSha256,
+      IfNoneMatch: '*',
+      Metadata: metadataFor(expectation, 'upload'),
+    });
+    let putUrl: string;
+    try {
+      putUrl = await this.#presigner!.presignPut({
+        command,
+        requiredHeaders,
+        expiresInSeconds,
+        signingDate,
+      });
+    } catch (error) {
+      fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
+    }
+    return {
+      method: 'PUT',
+      putUrl,
+      cipherBytes: expectation.cipherBytes,
+      cipherDigest: expectation.cipherDigest,
+      requiredHeaders,
+    };
+  }
+
+  async #readFinalForFinalize<T extends ObjectExpectation>(
+    expectation: T,
+  ): Promise<StoredSnapshotCipherObject<T['envelope']> | undefined> {
+    try {
+      return await this.#readObject(expectation.finalKey, expectation, 'immutable');
+    } catch (error) {
+      if (isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID')) {
+        fail('SNAPSHOT_IMMUTABLE_CONFLICT');
+      }
+      throw error;
+    }
+  }
+
+  async #putObject<T extends ObjectExpectation>(
+    key: string,
+    expectation: T,
+    bytesInput: Uint8Array,
+    state: ObjectState,
+  ): Promise<StoredSnapshotCipherObject<T['envelope']>> {
+    this.#assertObjectBytes(expectation, bytesInput);
+    const bytes = Buffer.from(bytesInput);
     try {
       await this.#client.send(
         new PutObjectCommand({
@@ -264,14 +610,14 @@ export class S3ImmutableSnapshotObjectStore {
           ContentLength: bytes.byteLength,
           ContentType: CONTENT_TYPE,
           CacheControl: CACHE_CONTROL,
-          ChecksumSHA256: sha256Base64(bytes),
+          ChecksumSHA256: expectation.checksumSha256,
           IfNoneMatch: '*',
-          Metadata: metadata,
+          Metadata: metadataFor(expectation, state),
         }),
       );
     } catch (error) {
       if (!isConditionalConflict(error)) fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
-      const existing = await this.#readObject(key, envelope, 'upload').catch((readError) => {
+      const existing = await this.#readObject(key, expectation, state).catch((readError) => {
         if (isSnapshotError(readError, 'SNAPSHOT_OBJECT_INVALID')) {
           fail('SNAPSHOT_IMMUTABLE_CONFLICT');
         }
@@ -282,85 +628,37 @@ export class S3ImmutableSnapshotObjectStore {
       }
       return existing;
     }
-    return this.#requireExactObject(key, envelope, 'upload');
+    const stored = await this.#readObject(key, expectation, state);
+    if (stored === undefined) fail('SNAPSHOT_STORAGE_UNAVAILABLE');
+    return stored;
   }
 
-  async finalizeUpload(input: FinalizeSnapshotUploadInput): Promise<StoredSnapshotCipherObject> {
-    const { envelope, identity } = parseEnvelope(input.envelope);
-    if (identity.creatorId !== this.#creatorId) fail('SNAPSHOT_OBJECT_INVALID');
-    const uploadId = normalizeUploadId(input.uploadId);
-    const finalKey = immutableSnapshotObjectKey(identity.creatorId, identity.snapshotDigest);
-
-    const alreadyFinal = await this.#readObject(finalKey, envelope, 'immutable').catch((error) => {
-      if (isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID')) {
-        fail('SNAPSHOT_IMMUTABLE_CONFLICT');
-      }
-      throw error;
-    });
-    if (alreadyFinal !== undefined) return alreadyFinal;
-
-    const uploadKey = snapshotUploadObjectKey(identity.creatorId, uploadId);
-    const uploaded = await this.#readObject(uploadKey, envelope, 'upload').catch((error) => {
-      if (isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID')) {
-        fail('SNAPSHOT_IMMUTABLE_CONFLICT');
-      }
-      throw error;
-    });
-    if (uploaded === undefined) fail('SNAPSHOT_OBJECT_NOT_FOUND');
-
+  #assertObjectBytes(expectation: ObjectExpectation, bytes: Uint8Array): void {
     try {
-      await this.#client.send(
-        new PutObjectCommand({
-          Bucket: this.#bucket,
-          Key: finalKey,
-          Body: uploaded.encryptedObjectBytes,
-          ContentLength: identity.cipherBytes,
-          ContentType: CONTENT_TYPE,
-          CacheControl: CACHE_CONTROL,
-          ChecksumSHA256: sha256Base64(uploaded.encryptedObjectBytes),
-          IfNoneMatch: '*',
-          Metadata: metadataFor(identity, 'immutable'),
-        }),
-      );
-    } catch (error) {
-      if (!isConditionalConflict(error)) fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
-      const winner = await this.#readObject(finalKey, envelope, 'immutable').catch((readError) => {
-        if (isSnapshotError(readError, 'SNAPSHOT_OBJECT_INVALID')) {
-          fail('SNAPSHOT_IMMUTABLE_CONFLICT');
-        }
-        throw readError;
-      });
-      if (winner === undefined) fail('SNAPSHOT_STORAGE_UNAVAILABLE');
-      return winner;
+      if (expectation.kind === 'archive') {
+        parseSnapshotArchiveCipherObject(expectation.envelope, bytes);
+      } else {
+        parseSnapshotManifestCipherObject(expectation.envelope, bytes);
+      }
+    } catch {
+      fail('SNAPSHOT_OBJECT_INVALID');
     }
-    return this.#requireExactObject(finalKey, envelope, 'immutable');
+    if (sha256Base64(bytes) !== expectation.checksumSha256) fail('SNAPSHOT_OBJECT_INVALID');
   }
 
-  async readFinal(input: SnapshotArchiveEnvelope): Promise<StoredSnapshotCipherObject | undefined> {
-    const { envelope, identity } = parseEnvelope(input);
-    if (identity.creatorId !== this.#creatorId) return undefined;
-    return this.#readObject(
-      immutableSnapshotObjectKey(identity.creatorId, identity.snapshotDigest),
-      envelope,
-      'immutable',
-    );
-  }
-
-  async readAndVerify(
-    input: ReadAndVerifyStoredSnapshotInput,
-  ): Promise<Readonly<{ stored: StoredSnapshotCipherObject; verified: VerifiedSnapshotArchive }>> {
-    const { envelope } = parseEnvelope(input.envelope);
-    const stored = await this.readFinal(envelope);
-    if (stored === undefined) fail('SNAPSHOT_OBJECT_NOT_FOUND');
-    if (envelope.aad.objectKey !== stored.objectKey) fail('SNAPSHOT_OBJECT_INVALID');
-    const wrappedDek = Buffer.from(envelope.wrappedDek, 'base64url');
+  async #verifyBundle(
+    stored: StoredSnapshotBundle,
+    expected: UploadExpectations,
+    keyEnvelope: SnapshotDataKeyUnwrapperPort,
+  ): Promise<VerifiedSnapshotArchive> {
+    const wrappedDek = Buffer.from(expected.archive.envelope.wrappedDek, 'base64url');
     let unwrapped: Uint8Array | undefined;
     let dataKey: Buffer | undefined;
     try {
       try {
-        unwrapped = await input.keyEnvelope.unwrapDataKey({
-          context: envelope.aad,
-          keyId: envelope.aad.keyId,
+        unwrapped = await keyEnvelope.unwrapDataKey({
+          context: expected.archive.envelope.aad,
+          keyId: expected.archive.envelope.aad.keyId,
           wrappedDek,
         });
       } catch (error) {
@@ -374,13 +672,20 @@ export class S3ImmutableSnapshotObjectStore {
         fail('SNAPSHOT_ENCRYPTION_INVALID');
       }
       dataKey = Buffer.from(unwrapped);
-      const verified = decryptAndVerifySnapshot({
-        manifestBytes: input.manifestBytes,
-        encryptedObjectBytes: stored.encryptedObjectBytes,
-        encryptionEnvelope: envelope,
+      const verified = decryptAndVerifySnapshotBundle({
+        encryptedManifestBytes: stored.manifest.encryptedObjectBytes,
+        manifestEnvelope: expected.manifest.envelope,
+        encryptedArchiveBytes: stored.archive.encryptedObjectBytes,
+        archiveEnvelope: expected.archive.envelope,
         dataEncryptionKey: dataKey,
       });
-      return Object.freeze({ stored, verified });
+      if (
+        verified.fileCount !== expected.request.fileCount ||
+        verified.expandedBytes !== expected.request.expandedBytes
+      ) {
+        fail('SNAPSHOT_DIGEST_MISMATCH');
+      }
+      return verified;
     } finally {
       dataKey?.fill(0);
       unwrapped?.fill(0);
@@ -388,22 +693,11 @@ export class S3ImmutableSnapshotObjectStore {
     }
   }
 
-  async #requireExactObject(
+  async #readObject<T extends ObjectExpectation>(
     key: string,
-    envelope: SnapshotArchiveEnvelope,
+    expectation: T,
     state: ObjectState,
-  ): Promise<StoredSnapshotCipherObject> {
-    const stored = await this.#readObject(key, envelope, state);
-    if (stored === undefined) fail('SNAPSHOT_STORAGE_UNAVAILABLE');
-    return stored;
-  }
-
-  async #readObject(
-    key: string,
-    envelope: SnapshotArchiveEnvelope,
-    state: ObjectState,
-  ): Promise<StoredSnapshotCipherObject | undefined> {
-    const { identity } = parseEnvelope(envelope);
+  ): Promise<StoredSnapshotCipherObject<T['envelope']> | undefined> {
     let output: GetObjectCommandOutput;
     try {
       output = await this.#client.send(
@@ -418,28 +712,30 @@ export class S3ImmutableSnapshotObjectStore {
       fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
     }
 
+    const maxBytes =
+      expectation.kind === 'archive' ? MAX_ENCRYPTED_SNAPSHOT_BYTES : MAX_ENCRYPTED_MANIFEST_BYTES;
     if (
-      output.ContentLength !== identity.cipherBytes ||
-      output.ContentLength > MAX_ENCRYPTED_SNAPSHOT_BYTES ||
+      output.ContentLength !== expectation.cipherBytes ||
+      output.ContentLength > maxBytes ||
       output.ContentType !== CONTENT_TYPE ||
       output.CacheControl !== CACHE_CONTROL
     ) {
       fail('SNAPSHOT_OBJECT_INVALID');
     }
-    assertExactMetadata(output.Metadata, metadataFor(identity, state));
-    const bytes = await readBoundedBody(output.Body, identity.cipherBytes);
-    try {
-      parseSnapshotArchiveCipherObject(envelope, bytes);
-    } catch {
-      fail('SNAPSHOT_OBJECT_INVALID');
-    }
-    if (output.ChecksumSHA256 !== undefined && output.ChecksumSHA256 !== sha256Base64(bytes)) {
+    assertExactMetadata(output.Metadata, metadataFor(expectation, state));
+    const bytes = await readBoundedBody(output.Body, expectation.cipherBytes);
+    this.#assertObjectBytes(expectation, bytes);
+    if (
+      output.ChecksumSHA256 !== undefined &&
+      output.ChecksumSHA256 !== expectation.checksumSha256
+    ) {
       fail('SNAPSHOT_OBJECT_INVALID');
     }
     return Object.freeze({
-      envelope,
+      kind: expectation.kind,
+      envelope: expectation.envelope,
       objectKey: key,
       encryptedObjectBytes: bytes,
-    });
+    }) as StoredSnapshotCipherObject<T['envelope']>;
   }
 }

@@ -1,23 +1,27 @@
-import { randomBytes } from 'node:crypto';
-import { CreateBucketCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
-  SNAPSHOT_ENVELOPE_PROTOCOL,
-  snapshotArchiveObjectKey,
-  type SnapshotArchiveEnvelope,
-} from '@cb/creator-agent-protocol';
+  CreateBucketCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { type SnapshotUploadCreateRequest } from '@cb/creator-agent-protocol';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { sha256Hex } from '../digest.js';
-import { encryptSnapshotArchive, type SnapshotKeyEnvelopePort } from '../encryption.js';
+import { type SnapshotKeyEnvelopePort } from '../encryption.js';
 import { isSnapshotError } from '../errors.js';
 import { createSnapshotManifest, snapshotManifestBytes } from '../manifest.js';
 import {
   S3ImmutableSnapshotObjectStore,
+  createSnapshotS3PutPresigner,
+  immutableSnapshotManifestObjectKey,
   immutableSnapshotObjectKey,
-  type SnapshotUploadObject,
+  snapshotUploadObjectKey,
+  type SnapshotEncryptedUploadBundle,
 } from '../object-storage.js';
 import { compressDeterministicTar, createDeterministicTar } from '../tar.js';
+import { prepareEncryptedSnapshotUpload } from '../upload.js';
 
 const _requiredEnvironment = [
   'COMBO_SNAPSHOT_MINIO_E2',
@@ -29,24 +33,25 @@ const _requiredEnvironment = [
 
 function environment(name: (typeof _requiredEnvironment)[number]): string {
   const value = process.env[name];
-  if (value === undefined || value.length === 0) {
-    throw new Error(`BLOCKED: missing ${name}`);
-  }
+  if (value === undefined || value.length === 0) throw new Error(`BLOCKED: missing ${name}`);
   return value;
 }
 
-type EncryptedFixture = {
-  upload: SnapshotUploadObject;
-  manifestBytes: Buffer;
-  envelope: SnapshotArchiveEnvelope;
-  keyEnvelope: SnapshotKeyEnvelopePort;
-};
+function checksum(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('base64');
+}
 
-function encryptedFixture(input: {
+type EncryptedFixture = Readonly<{
+  bundle: SnapshotEncryptedUploadBundle;
+  request: SnapshotUploadCreateRequest;
+  keyEnvelope: SnapshotKeyEnvelopePort;
+}>;
+
+async function encryptedFixture(input: {
   creatorId: string;
   uploadId: string;
   marker: string;
-}): EncryptedFixture {
+}): Promise<EncryptedFixture> {
   const fileBytes = Buffer.from(`# Synthetic MinIO fixture\nmarker=${input.marker}\n`);
   const manifest = createSnapshotManifest([
     {
@@ -61,46 +66,69 @@ function encryptedFixture(input: {
     createDeterministicTar([{ path: 'FACTS.md', bytes: fileBytes }]),
   );
   const dataKey = randomBytes(32);
+  const unwrapKey = Buffer.from(dataKey);
   const snapshotDigest = sha256Hex(manifestBytes);
+  const archiveDigest = sha256Hex(archiveBytes);
   const keyId = 'synthetic-minio-key:v1';
   const wrappedDek = randomBytes(40);
-  const context = {
-    protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
-    schemaVersion: 1 as const,
-    cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+  const expectedWrappedDek = Buffer.from(wrappedDek);
+  const prepared = await prepareEncryptedSnapshotUpload({
     creatorId: input.creatorId,
-    snapshotDigest,
-    archiveDigest: sha256Hex(archiveBytes),
-    objectKey: snapshotArchiveObjectKey(input.creatorId, snapshotDigest),
-    plaintextBytes: archiveBytes.byteLength,
-    keyId,
-  };
-  const encrypted = encryptSnapshotArchive(archiveBytes, context, dataKey, {
-    keyId,
-    wrappedDek,
-  });
-  return {
-    upload: {
-      uploadId: input.uploadId,
-      envelope: encrypted.envelope,
-      encryptedObjectBytes: encrypted.objectBytes,
+    snapshot: {
+      manifest,
+      manifestBytes,
+      archiveBytes,
+      snapshotDigest,
+      archiveDigest,
+      fileCount: manifest.totals.fileCount,
+      expandedBytes: manifest.totals.expandedBytes,
+      compressedBytes: archiveBytes.byteLength,
     },
-    manifestBytes,
-    envelope: encrypted.envelope,
+    keyEnvelope: {
+      async createDataKey(context) {
+        expect(context).toEqual({ creatorId: input.creatorId, snapshotDigest, archiveDigest });
+        return { keyId, plaintextKey: dataKey, wrappedDek };
+      },
+    },
+  });
+  const request: SnapshotUploadCreateRequest = prepared.request;
+  expect(request.archive.checksumSha256).toBe(checksum(prepared.archiveObjectBytes));
+  expect(request.manifest.checksumSha256).toBe(checksum(prepared.manifestObjectBytes));
+  return {
+    request,
+    bundle: {
+      uploadId: input.uploadId,
+      request,
+      archiveObjectBytes: prepared.archiveObjectBytes,
+      manifestObjectBytes: prepared.manifestObjectBytes,
+    },
     keyEnvelope: {
       async createDataKey() {
-        throw new Error('not used by read verifier');
+        throw new Error('not used by verifier');
       },
-      async unwrapDataKey(request) {
-        expect(request.keyId).toBe(keyId);
-        expect(request.wrappedDek).toEqual(wrappedDek);
-        return Buffer.from(dataKey);
+      async unwrapDataKey(requestInput) {
+        expect(requestInput.keyId).toBe(keyId);
+        expect(requestInput.wrappedDek).toEqual(expectedWrappedDek);
+        return Buffer.from(unwrapKey);
       },
     },
   };
 }
 
-describe('real disposable MinIO Snapshot object storage E2', () => {
+async function signedPut(
+  target: {
+    putUrl: string;
+    requiredHeaders: Record<string, string>;
+  },
+  bytes: Uint8Array,
+  mutate?: (headers: Record<string, string>) => void,
+): Promise<Response> {
+  const headers = { ...target.requiredHeaders };
+  mutate?.(headers);
+  return fetch(target.putUrl, { method: 'PUT', headers, body: Buffer.from(bytes) });
+}
+
+describe('real disposable MinIO Snapshot signed upload + verify-before-promote E2', () => {
   const creatorId = '0198f00d-7000-7000-8000-000000000001';
   let client: S3Client;
   let store: S3ImmutableSnapshotObjectStore;
@@ -113,9 +141,6 @@ describe('real disposable MinIO Snapshot object storage E2', () => {
       endpoint: environment('COMBO_SNAPSHOT_MINIO_ENDPOINT'),
       region: 'us-east-1',
       forcePathStyle: true,
-      // MinIO may close the request body connection after a failed If-None-Match
-      // precondition. The AWS SDK default retry budget transparently replaces that
-      // stale keep-alive socket for the following idempotent GET verification.
       maxAttempts: 3,
       credentials: {
         accessKeyId: environment('COMBO_SNAPSHOT_MINIO_ACCESS_KEY'),
@@ -123,115 +148,180 @@ describe('real disposable MinIO Snapshot object storage E2', () => {
       },
     });
     await client.send(new CreateBucketCommand({ Bucket: bucket }));
-    store = new S3ImmutableSnapshotObjectStore({ client, bucket, creatorId });
+    store = new S3ImmutableSnapshotObjectStore({
+      client,
+      presigner: createSnapshotS3PutPresigner(client),
+      bucket,
+      creatorId,
+      allowInsecureLoopbackPresignedUrls: true,
+    });
   }, 30_000);
 
   afterAll(() => client?.destroy());
 
-  it('conditionally uploads, finalizes concurrently, rereads and verifies real encrypted bytes', async () => {
-    const fixture = encryptedFixture({
+  it('uses two real presigned PUTs, exact signed headers, full verification and 32-way finalize', async () => {
+    const fixture = await encryptedFixture({
       creatorId,
       uploadId: '0198f00d-7000-7000-8000-000000000011',
-      marker: 'REAL-MINIO-E2-A',
+      marker: 'REAL-MINIO-SIGNED-E2-A',
     });
-    await store.putUpload(fixture.upload);
-    await store.putUpload(fixture.upload);
+    const session = await store.createUploadSession({
+      uploadId: fixture.bundle.uploadId,
+      request: fixture.request,
+      expiresInSeconds: 900,
+    });
+    for (const target of Object.values(session.uploads)) {
+      const signedHeaders = new Set(
+        (new URL(target.putUrl).searchParams.get('X-Amz-SignedHeaders') ?? '').split(';'),
+      );
+      expect(Object.keys(target.requiredHeaders).every((header) => signedHeaders.has(header))).toBe(
+        true,
+      );
+    }
+    const [archiveResponse, manifestResponse] = await Promise.all([
+      signedPut(session.uploads.archive, fixture.bundle.archiveObjectBytes),
+      signedPut(session.uploads.manifest, fixture.bundle.manifestObjectBytes),
+    ]);
+    expect(archiveResponse.status).toBe(200);
+    expect(manifestResponse.status).toBe(200);
+
     const finalized = await Promise.all(
       Array.from({ length: 32 }, () =>
         store.finalizeUpload({
-          envelope: fixture.upload.envelope,
-          uploadId: fixture.upload.uploadId,
+          uploadId: fixture.bundle.uploadId,
+          request: fixture.request,
+          keyEnvelope: fixture.keyEnvelope,
         }),
       ),
     );
-    expect(new Set(finalized.map((object) => object.objectKey)).size).toBe(1);
-
+    expect(new Set(finalized.map((result) => result.verified.snapshotDigest))).toEqual(
+      new Set([fixture.request.archive.envelope.aad.snapshotDigest]),
+    );
     const read = await store.readAndVerify({
-      manifestBytes: fixture.manifestBytes,
-      envelope: fixture.envelope,
+      request: fixture.request,
       keyEnvelope: fixture.keyEnvelope,
     });
-    expect(read.verified).toMatchObject({
-      snapshotDigest: fixture.upload.envelope.aad.snapshotDigest,
-      archiveDigest: fixture.upload.envelope.aad.archiveDigest,
-      fileCount: 1,
-    });
+    expect(read.verified).toMatchObject({ fileCount: 1, expandedBytes: expect.any(Number) });
   });
 
-  it('keeps identical digests tenant-scoped and rejects conflicting upload replay', async () => {
-    const fixture = encryptedFixture({
-      creatorId: '0198f00d-7000-7000-8000-000000000002',
+  it('the real signature rejects a missing bound header before object creation', async () => {
+    const fixture = await encryptedFixture({
+      creatorId,
       uploadId: '0198f00d-7000-7000-8000-000000000012',
-      marker: 'REAL-MINIO-E2-B',
+      marker: 'REAL-MINIO-SIGNED-E2-HEADER',
     });
-    const tenantBStore = new S3ImmutableSnapshotObjectStore({
-      client,
-      bucket,
-      creatorId: fixture.upload.envelope.aad.creatorId,
+    const session = await store.createUploadSession({
+      uploadId: fixture.bundle.uploadId,
+      request: fixture.request,
     });
-    await tenantBStore.putUpload(fixture.upload);
-    await tenantBStore.finalizeUpload({
-      envelope: fixture.upload.envelope,
-      uploadId: fixture.upload.uploadId,
-    });
-
-    const fixtureC = encryptedFixture({
-      creatorId: '0198f00d-7000-7000-8000-000000000003',
-      uploadId: '0198f00d-7000-7000-8000-000000000013',
-      marker: 'REAL-MINIO-E2-B',
-    });
-    const tenantCStore = new S3ImmutableSnapshotObjectStore({
-      client,
-      bucket,
-      creatorId: fixtureC.upload.envelope.aad.creatorId,
-    });
-    await tenantCStore.putUpload(fixtureC.upload);
-    const finalC = await tenantCStore.finalizeUpload({
-      envelope: fixtureC.upload.envelope,
-      uploadId: fixtureC.upload.uploadId,
-    });
-    expect(fixtureC.upload.envelope.aad.snapshotDigest).toBe(
-      fixture.upload.envelope.aad.snapshotDigest,
+    const rejected = await signedPut(
+      session.uploads.archive,
+      fixture.bundle.archiveObjectBytes,
+      (headers) => delete headers['x-amz-meta-cipher-digest'],
     );
-    expect(finalC.objectKey).not.toBe(fixture.upload.envelope.aad.objectKey);
-    expect(await tenantBStore.readFinal(fixtureC.upload.envelope)).toBeUndefined();
-
-    const conflict = encryptedFixture({
-      creatorId: fixture.upload.envelope.aad.creatorId,
-      uploadId: fixture.upload.uploadId,
-      marker: 'REAL-MINIO-E2-CONFLICT',
-    });
-    await expect(tenantBStore.putUpload(conflict.upload)).rejects.toSatisfy((error: unknown) =>
-      isSnapshotError(error, 'SNAPSHOT_IMMUTABLE_CONFLICT'),
-    );
+    expect([400, 403]).toContain(rejected.status);
+    const accepted = await signedPut(session.uploads.archive, fixture.bundle.archiveObjectBytes);
+    const manifest = await signedPut(session.uploads.manifest, fixture.bundle.manifestObjectBytes);
+    expect(accepted.status).toBe(200);
+    expect(manifest.status).toBe(200);
+    await expect(
+      store.finalizeUpload({
+        uploadId: fixture.bundle.uploadId,
+        request: fixture.request,
+        keyEnvelope: fixture.keyEnvelope,
+      }),
+    ).resolves.toMatchObject({ verified: { fileCount: 1 } });
   });
 
-  it('detects a privileged out-of-band body or metadata overwrite on read', async () => {
-    const fixture = encryptedFixture({
-      creatorId: '0198f00d-7000-7000-8000-000000000004',
-      uploadId: '0198f00d-7000-7000-8000-000000000014',
-      marker: 'REAL-MINIO-E2-TAMPER',
+  it('a privileged corrupt temp never occupies final keys; a correct same-digest uploadId succeeds', async () => {
+    const first = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000013',
+      marker: 'REAL-MINIO-SIGNED-E2-RETRY',
     });
-    const tamperTenantStore = new S3ImmutableSnapshotObjectStore({
-      client,
-      bucket,
-      creatorId: fixture.upload.envelope.aad.creatorId,
+    const firstSession = await store.createUploadSession({
+      uploadId: first.bundle.uploadId,
+      request: first.request,
     });
-    await tamperTenantStore.putUpload(fixture.upload);
-    await tamperTenantStore.finalizeUpload({
-      envelope: fixture.upload.envelope,
-      uploadId: fixture.upload.uploadId,
-    });
+    expect(
+      (await signedPut(firstSession.uploads.archive, first.bundle.archiveObjectBytes)).status,
+    ).toBe(200);
+    expect(
+      (await signedPut(firstSession.uploads.manifest, first.bundle.manifestObjectBytes)).status,
+    ).toBe(200);
+    const corruptManifest = Buffer.from(first.bundle.manifestObjectBytes);
+    corruptManifest[20] = corruptManifest[20]! ^ 1;
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: snapshotUploadObjectKey(creatorId, first.bundle.uploadId, 'manifest'),
+        Body: corruptManifest,
+        ContentLength: corruptManifest.byteLength,
+        ContentType: 'application/octet-stream',
+        CacheControl: 'no-store',
+        Metadata: {
+          protocol: 'combo.snapshot-object-storage/1',
+          'object-kind': 'manifest',
+          'object-state': 'upload',
+          'snapshot-digest': first.request.archive.envelope.aad.snapshotDigest,
+          'archive-digest': first.request.archive.envelope.aad.archiveDigest,
+          'cipher-digest': first.request.manifest.envelope.cipherDigest,
+          'cipher-bytes': String(first.request.manifest.envelope.cipherBytes),
+        },
+      }),
+    );
+    await expect(
+      store.finalizeUpload({
+        uploadId: first.bundle.uploadId,
+        request: first.request,
+        keyEnvelope: first.keyEnvelope,
+      }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'));
+    expect(await store.readFinalBundle(first.request)).toBeUndefined();
 
-    const mutated = Buffer.from(fixture.upload.encryptedObjectBytes);
-    const mutatedIndex = mutated.length - 1;
-    mutated[mutatedIndex] = mutated[mutatedIndex]! ^ 1;
+    const retry = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000014',
+      marker: 'REAL-MINIO-SIGNED-E2-RETRY',
+    });
+    expect(retry.request.archive.envelope.aad.snapshotDigest).toBe(
+      first.request.archive.envelope.aad.snapshotDigest,
+    );
+    const retrySession = await store.createUploadSession({
+      uploadId: retry.bundle.uploadId,
+      request: retry.request,
+    });
+    await signedPut(retrySession.uploads.archive, retry.bundle.archiveObjectBytes);
+    await signedPut(retrySession.uploads.manifest, retry.bundle.manifestObjectBytes);
+    await expect(
+      store.finalizeUpload({
+        uploadId: retry.bundle.uploadId,
+        request: retry.request,
+        keyEnvelope: retry.keyEnvelope,
+      }),
+    ).resolves.toMatchObject({ verified: { fileCount: 1 } });
+  });
+
+  it('detects privileged overwrite of either immutable object', async () => {
+    const fixture = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000015',
+      marker: 'REAL-MINIO-SIGNED-E2-TAMPER',
+    });
+    await store.putUpload(fixture.bundle);
+    await store.finalizeUpload({
+      uploadId: fixture.bundle.uploadId,
+      request: fixture.request,
+      keyEnvelope: fixture.keyEnvelope,
+    });
+    const mutated = Buffer.from(fixture.bundle.archiveObjectBytes);
+    mutated[mutated.length - 1] = mutated[mutated.length - 1]! ^ 1;
     await client.send(
       new PutObjectCommand({
         Bucket: bucket,
         Key: immutableSnapshotObjectKey(
-          fixture.upload.envelope.aad.creatorId,
-          fixture.upload.envelope.aad.snapshotDigest,
+          creatorId,
+          fixture.request.archive.envelope.aad.snapshotDigest,
         ),
         Body: mutated,
         ContentLength: mutated.byteLength,
@@ -240,8 +330,19 @@ describe('real disposable MinIO Snapshot object storage E2', () => {
         Metadata: { deliberately: 'wrong' },
       }),
     );
-    await expect(tamperTenantStore.readFinal(fixture.upload.envelope)).rejects.toSatisfy(
-      (error: unknown) => isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'),
-    );
+    await expect(
+      store.readAndVerify({ request: fixture.request, keyEnvelope: fixture.keyEnvelope }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'));
+    await expect(
+      client.send(
+        new HeadObjectCommand({
+          Bucket: bucket,
+          Key: immutableSnapshotManifestObjectKey(
+            creatorId,
+            fixture.request.archive.envelope.aad.snapshotDigest,
+          ),
+        }),
+      ),
+    ).resolves.toBeDefined();
   });
 });

@@ -441,7 +441,8 @@ Secret 扫描只能降低风险，不能证明“没有秘密”。Creator 最�
 ```text
 snapshotDigest = SHA256(JCS(snapshot-manifest.json))
 archiveDigest  = SHA256(snapshot.tar.zst)
-cipherDigest   = SHA256(snapshot.tar.zst.enc)
+archiveCipherDigest  = SHA256(snapshot.tar.zst.enc)
+manifestCipherDigest = SHA256(snapshot-manifest.json.enc)
 ```
 
 ### 5.4 MinIO 对象布局
@@ -453,7 +454,8 @@ Bucket: combo-agent-versions-test
 
 creators/{creatorId}/snapshots/sha256/{prefix}/{snapshotDigest}.tar.zst.enc
 creators/{creatorId}/manifests/sha256/{prefix}/{snapshotDigest}.json.enc
-uploads/{creatorId}/{uploadId}.part
+uploads/{creatorId}/{uploadId}/archive.part
+uploads/{creatorId}/{uploadId}/manifest.part
 ```
 
 这是对象存储 key，不是 Creator Mac 文件路径，也不是消费者可访问的公开 URL。
@@ -461,11 +463,13 @@ uploads/{creatorId}/{uploadId}.part
 ### 5.5 上传与校验
 
 ```text
-Worker 请求 upload session
-→ 云端返回绑定 exact key/size/checksum 的短期 PUT
-→ Worker 上传 staging bytes
+Worker 先用同一 Snapshot DEK、不同 nonce 加密 archive 与 canonical manifest
+→ Worker 用两个完整 Envelope/cipherBytes/cipherDigest/base64 checksum 请求 upload session
+→ 云端返回分别绑定 exact temp key/size/checksum/If-None-Match/metadata 的两条短期 PUT
+→ Worker 按返回的完整 requiredHeaders 上传两个密文对象
 → complete 只触发 VERIFYING
-→ Snapshot Verifier 流式读取、解密、限制性解包、重算三组 digest
+→ Snapshot Verifier 完整读取并 AEAD 认证两个 temp 对象，重算 manifest/archive/snapshot digest
+→ 认证与内容验证全部成功后才 conditional promote 两个正式 key
 → VERIFIED 或 REJECTED
 → 只有 VERIFIED Snapshot 能创建 AgentVersion
 ```
@@ -1348,15 +1352,20 @@ Content-Type: application/json
 
 ```json
 {
-  "snapshotDigest": "64-char-sha256",
-  "archiveDigest": "64-char-sha256",
-  "compressedBytes": 123456,
+  "archive": {
+    "envelope": "SnapshotArchiveEnvelope/1 的完整对象",
+    "checksumSha256": "archive cipher bytes 的 canonical base64 SHA-256"
+  },
+  "manifest": {
+    "envelope": "SnapshotManifestEnvelope/1 的完整对象",
+    "checksumSha256": "manifest cipher bytes 的 canonical base64 SHA-256"
+  },
   "expandedBytes": 654321,
   "fileCount": 218
 }
 ```
 
-返回绑定 exact object、size、checksum 和 15 分钟 expiry 的私有 PUT，不返回 Bucket list 权限。
+返回 `uploads.archive` 与 `uploads.manifest` 两个 15 分钟私有 PUT。每个 target 包含 `cipherBytes`、`cipherDigest` 和完整 `requiredHeaders`；签名覆盖 `content-length`、`content-type`、`cache-control`、`if-none-match`、`x-amz-checksum-sha256` 与全部 `x-amz-meta-*`，不返回 Bucket list 权限。
 
 完成上传：
 
@@ -1365,7 +1374,7 @@ POST /v1/creator/snapshot-uploads/{uploadId}:complete
 Idempotency-Key: <uuid>
 ```
 
-返回 `VERIFYING`；只有 Verifier 完成后才是 `VERIFIED`。
+请求 body 是严格空对象；服务端使用创建会话时已持久化的两个 Envelope。返回 `VERIFYING`；只有 Verifier 先验证两个 temp 对象再成功晋升后才是 `VERIFIED`。
 
 ### 13.2 Agent 与 Version
 

@@ -1,11 +1,13 @@
 import {
   SnapshotArchiveEnvelopeSchema,
+  SnapshotManifestEnvelopeSchema,
   type SnapshotArchiveEnvelope,
+  type SnapshotManifestEnvelope,
 } from '@cb/creator-agent-protocol';
 
 import { equalHexDigest, sha256Hex } from './digest.js';
 import { inspectTextContent } from './content-policy.js';
-import { decryptSnapshotArchive } from './encryption.js';
+import { decryptSnapshotArchive, decryptSnapshotManifest } from './encryption.js';
 import { fail } from './errors.js';
 import {
   createSnapshotManifest,
@@ -137,5 +139,51 @@ export function decryptAndVerifySnapshot(
     archiveBytes,
     expectedSnapshotDigest: envelope.data.aad.snapshotDigest,
     expectedArchiveDigest: envelope.data.aad.archiveDigest,
+  });
+}
+
+export type VerifyEncryptedSnapshotBundleInput = Readonly<{
+  encryptedManifestBytes: Uint8Array;
+  manifestEnvelope: SnapshotManifestEnvelope;
+  encryptedArchiveBytes: Uint8Array;
+  archiveEnvelope: SnapshotArchiveEnvelope;
+  dataEncryptionKey: Uint8Array;
+}>;
+
+/**
+ * Verifier 的正式入口：两个对象都先完成 whole-object digest 与 AEAD 认证，
+ * 只有认证后的 manifest/archive 明文才会进入 JSON 与 archive parser。
+ */
+export function decryptAndVerifySnapshotBundle(
+  input: VerifyEncryptedSnapshotBundleInput,
+): VerifiedSnapshotArchive {
+  const archive = SnapshotArchiveEnvelopeSchema.safeParse(input.archiveEnvelope);
+  const manifest = SnapshotManifestEnvelopeSchema.safeParse(input.manifestEnvelope);
+  if (
+    !archive.success ||
+    !manifest.success ||
+    archive.data.aad.creatorId !== manifest.data.aad.creatorId ||
+    archive.data.aad.snapshotDigest !== manifest.data.aad.snapshotDigest ||
+    archive.data.aad.keyId !== manifest.data.aad.keyId ||
+    archive.data.wrappedDek !== manifest.data.wrappedDek ||
+    archive.data.nonce === manifest.data.nonce
+  ) {
+    fail('SNAPSHOT_ENCRYPTION_INVALID');
+  }
+  const manifestBytes = decryptSnapshotManifest(
+    input.encryptedManifestBytes,
+    manifest.data,
+    input.dataEncryptionKey,
+  );
+  const archiveBytes = decryptSnapshotArchive(
+    input.encryptedArchiveBytes,
+    archive.data,
+    input.dataEncryptionKey,
+  );
+  return verifySnapshotArchive({
+    manifestBytes,
+    archiveBytes,
+    expectedSnapshotDigest: archive.data.aad.snapshotDigest,
+    expectedArchiveDigest: archive.data.aad.archiveDigest,
   });
 }

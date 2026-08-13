@@ -12,7 +12,7 @@ import {
   parseVnextRegistryYaml,
   type TestCaseRegistry,
 } from '../registry.js';
-import { SnapshotArchiveEnvelopeSchema } from '../snapshot.js';
+import { SnapshotArchiveEnvelopeSchema, SnapshotManifestEnvelopeSchema } from '../snapshot.js';
 import { readFixture } from './fixture-helpers.js';
 
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url));
@@ -195,15 +195,36 @@ describe('VNext machine-readable contract registries', () => {
       'snapshotDigest',
     ];
     expect(Object.keys(snapshotEnvelope.aad).sort()).toEqual(authoritativeArchiveAadBindings);
+    const manifestEnvelope = SnapshotManifestEnvelopeSchema.parse(
+      await readFixture('snapshot-manifest-envelope.v1.json'),
+    );
+    const authoritativeManifestAadBindings = [
+      'cipherObjectFormat',
+      'creatorId',
+      'keyId',
+      'objectKey',
+      'plaintextBytes',
+      'protocol',
+      'schemaVersion',
+      'snapshotDigest',
+    ];
+    expect(Object.keys(manifestEnvelope.aad).sort()).toEqual(authoritativeManifestAadBindings);
 
     for (const system of ['minio', 'minio-backup'] as const) {
-      const snapshotCipher = allowlist.fields.find(
+      const archiveCipher = allowlist.fields.find(
         (field) =>
           field.system === system &&
-          field.fieldId === `context.${system}.context-snapshot-cipher-object`,
+          field.fieldId === `context.${system}.context-snapshot-archive-cipher-object`,
       );
-      expect(snapshotCipher?.aadBindings).toEqual(authoritativeArchiveAadBindings);
-      expect(snapshotCipher?.aadBindings).not.toContain('agentVersionDigest');
+      const manifestCipher = allowlist.fields.find(
+        (field) =>
+          field.system === system &&
+          field.fieldId === `context.${system}.context-snapshot-manifest-cipher-object`,
+      );
+      expect(archiveCipher?.aadBindings).toEqual(authoritativeArchiveAadBindings);
+      expect(manifestCipher?.aadBindings).toEqual(authoritativeManifestAadBindings);
+      expect(archiveCipher?.aadBindings).not.toContain('agentVersionDigest');
+      expect(manifestCipher?.aadBindings).not.toContain('agentVersionDigest');
     }
 
     const known = allowlist.fields[0]!;

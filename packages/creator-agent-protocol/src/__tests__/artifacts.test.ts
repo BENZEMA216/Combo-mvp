@@ -12,6 +12,8 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'SnapshotManifest',
       'SnapshotArchiveEnvelopeAad',
       'SnapshotArchiveEnvelope',
+      'SnapshotManifestEnvelopeAad',
+      'SnapshotManifestEnvelope',
       'BrokerHandshake',
       'BrokerEnvelope',
       'InvocationTransition',
@@ -39,6 +41,29 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
         'cipherDigest == sha256(exact whole cipher object)',
         'envelope nonce/authTag MUST equal the cipher object segments byte-for-byte',
         'all cipher object consumers MUST pass parseSnapshotArchiveCipherObject(envelope,objectBytes) before unwrap or decrypt',
+      ]),
+    });
+  });
+
+  it('publishes encrypted manifest Envelope and upload pair semantic bindings', () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    expect(bundle.schemas.SnapshotManifestEnvelope).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'cipherBytes == aad.plaintextBytes + 36',
+        'archive and manifest envelopes MUST bind the same creatorId/snapshotDigest/keyId/wrappedDek and distinct nonces',
+        'all manifest cipher object consumers MUST pass parseSnapshotManifestCipherObject(envelope,objectBytes) before unwrap, decrypt, or JSON parse',
+      ]),
+    });
+    expect(bundle.schemas.SnapshotUploadCreateRequest).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'archive and manifest envelopes MUST bind the same creatorId/snapshotDigest/keyId/wrappedDek and distinct nonces',
+        'the Worker MUST finish both cipher objects before constructing this request',
+      ]),
+    });
+    expect(bundle.schemas.SnapshotUploadCreateResponse).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'each target requiredHeaders MUST bind exact cipherBytes/cipherDigest/checksum/object-kind and include no unknown header',
+        'public Authoring responses MUST use HTTPS; insecure loopback is only an explicit disposable component-test authority',
       ]),
     });
   });

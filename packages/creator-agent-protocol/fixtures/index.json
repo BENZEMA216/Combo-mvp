@@ -88,6 +88,11 @@
       "digest": "sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9"
     },
     {
+      "path": "snapshot-manifest-envelope.v1.json",
+      "bytes": 1080,
+      "digest": "sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd"
+    },
+    {
       "path": "snapshot-manifest.v1.json",
       "bytes": 1296,
       "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"

@@ -43,6 +43,7 @@ import {
   validateEvidenceReviewerSignoff,
   type EvidenceReviewerSignoff,
 } from '../evidence.js';
+import { SnapshotUploadCreateRequestSchema, SnapshotUploadCreateResponseSchema } from '../http.js';
 import {
   IsoDateTimeSchema,
   Uint63StringSchema,
@@ -61,11 +62,14 @@ import {
 import {
   isCompressionRatioAllowed,
   SnapshotArchiveEnvelopeSchema,
+  SnapshotManifestEnvelopeSchema,
   SnapshotManifestSchema,
   SnapshotPathSchema,
   snapshotArchiveEnvelopeAadBytes,
   snapshotArchiveEnvelopeAadDigest,
   snapshotDigest,
+  snapshotManifestEnvelopeAadDigest,
+  snapshotManifestObjectKey,
 } from '../snapshot.js';
 import { readFixture, readFixtureText } from './fixture-helpers.js';
 
@@ -161,6 +165,163 @@ describe('六类共享协议运行时 schema', () => {
     ]) {
       expect(SnapshotArchiveEnvelopeSchema.safeParse(mutation).success).toBe(false);
     }
+  });
+
+  it('parses the independent encrypted manifest Envelope and freezes its AAD identity', async () => {
+    const envelope = SnapshotManifestEnvelopeSchema.parse(
+      await readFixture('snapshot-manifest-envelope.v1.json'),
+    );
+    expect(snapshotManifestEnvelopeAadDigest(envelope.aad)).toBe(
+      'a73a5f805e2eed35f94233bcf305e3f2f0dde98b3696fd34b8e5aecacd36f014',
+    );
+    expect(envelope.aad.objectKey).toBe(
+      snapshotManifestObjectKey(envelope.aad.creatorId, envelope.aad.snapshotDigest),
+    );
+    for (const mutation of [
+      { ...envelope, schemaVersion: 2 },
+      { ...envelope, unexpected: true },
+      { ...envelope, cipherBytes: envelope.cipherBytes + 1 },
+      { ...envelope, aadDigest: '0'.repeat(64) },
+      { ...envelope, nonce: `${envelope.nonce}=` },
+      {
+        ...envelope,
+        aad: { ...envelope.aad, objectKey: `${envelope.aad.objectKey}.wrong` },
+      },
+    ]) {
+      expect(SnapshotManifestEnvelopeSchema.safeParse(mutation).success).toBe(false);
+    }
+  });
+
+  it('requires both encrypted objects before upload session creation and returns two exact PUTs', async () => {
+    const archive = SnapshotArchiveEnvelopeSchema.parse(
+      await readFixture('snapshot-envelope.v1.json'),
+    );
+    const manifestFixture = SnapshotManifestEnvelopeSchema.parse(
+      await readFixture('snapshot-manifest-envelope.v1.json'),
+    );
+    const manifestAad = {
+      ...manifestFixture.aad,
+      creatorId: archive.aad.creatorId,
+      snapshotDigest: archive.aad.snapshotDigest,
+      objectKey: snapshotManifestObjectKey(archive.aad.creatorId, archive.aad.snapshotDigest),
+      keyId: archive.aad.keyId,
+    };
+    const manifest = SnapshotManifestEnvelopeSchema.parse({
+      ...manifestFixture,
+      aad: manifestAad,
+      aadDigest: snapshotManifestEnvelopeAadDigest(manifestAad),
+      wrappedDek: archive.wrappedDek,
+    });
+    const archiveChecksum = Buffer.from(archive.cipherDigest, 'hex').toString('base64');
+    const manifestChecksum = Buffer.from(manifest.cipherDigest, 'hex').toString('base64');
+    const request = SnapshotUploadCreateRequestSchema.parse({
+      archive: { envelope: archive, checksumSha256: archiveChecksum },
+      manifest: { envelope: manifest, checksumSha256: manifestChecksum },
+      expandedBytes: 1,
+      fileCount: 1,
+    });
+    expect(
+      SnapshotUploadCreateRequestSchema.safeParse({
+        ...request,
+        manifest: { ...request.manifest, checksumSha256: archiveChecksum },
+      }).success,
+    ).toBe(false);
+    expect(
+      SnapshotUploadCreateRequestSchema.safeParse({
+        ...request,
+        manifest: {
+          ...request.manifest,
+          envelope: { ...request.manifest.envelope, nonce: request.archive.envelope.nonce },
+        },
+      }).success,
+    ).toBe(false);
+
+    const target = (
+      kind: 'archive' | 'manifest',
+      cipherBytes: number,
+      cipherDigest: string,
+      objectChecksum: string,
+    ) => ({
+      method: 'PUT',
+      putUrl: `https://uploads.example.invalid/${kind}`,
+      cipherBytes,
+      cipherDigest,
+      requiredHeaders: {
+        'cache-control': 'no-store',
+        'content-length': String(cipherBytes),
+        'content-type': 'application/octet-stream',
+        'if-none-match': '*',
+        'x-amz-checksum-sha256': objectChecksum,
+        'x-amz-meta-archive-digest': archive.aad.archiveDigest,
+        'x-amz-meta-cipher-bytes': String(cipherBytes),
+        'x-amz-meta-cipher-digest': cipherDigest,
+        'x-amz-meta-object-kind': kind,
+        'x-amz-meta-object-state': 'upload',
+        'x-amz-meta-protocol': 'combo.snapshot-object-storage/1',
+        'x-amz-meta-snapshot-digest': archive.aad.snapshotDigest,
+      },
+    });
+    expect(
+      SnapshotUploadCreateResponseSchema.parse({
+        protocol: 'combo.creator-agent-http/1',
+        uploadId: '0198f00d-8000-7000-8000-000000000011',
+        state: 'CREATED',
+        uploads: {
+          archive: target('archive', archive.cipherBytes, archive.cipherDigest, archiveChecksum),
+          manifest: target(
+            'manifest',
+            manifest.cipherBytes,
+            manifest.cipherDigest,
+            manifestChecksum,
+          ),
+        },
+        expiresAt: '2026-08-13T08:15:00.000Z',
+      }),
+    ).toBeDefined();
+    const sameObjectResponse = {
+      protocol: 'combo.creator-agent-http/1',
+      uploadId: '0198f00d-8000-7000-8000-000000000011',
+      state: 'CREATED',
+      uploads: {
+        archive: target('archive', archive.cipherBytes, archive.cipherDigest, archiveChecksum),
+        manifest: {
+          ...target('manifest', manifest.cipherBytes, manifest.cipherDigest, manifestChecksum),
+          putUrl: 'https://uploads.example.invalid/archive?different-signature=true',
+        },
+      },
+      expiresAt: '2026-08-13T08:15:00.000Z',
+    };
+    expect(SnapshotUploadCreateResponseSchema.safeParse(sameObjectResponse).success).toBe(false);
+    expect(
+      SnapshotUploadCreateResponseSchema.safeParse({
+        ...sameObjectResponse,
+        uploads: {
+          ...sameObjectResponse.uploads,
+          manifest: {
+            ...sameObjectResponse.uploads.manifest,
+            putUrl: 'https://user:password@uploads.example.invalid/manifest#ignored',
+          },
+        },
+      }).success,
+    ).toBe(false);
+    const oversizedManifestBytes = 4 * 1024 * 1024 + 37;
+    expect(
+      SnapshotUploadCreateResponseSchema.safeParse({
+        protocol: 'combo.creator-agent-http/1',
+        uploadId: '0198f00d-8000-7000-8000-000000000011',
+        state: 'CREATED',
+        uploads: {
+          archive: target('archive', archive.cipherBytes, archive.cipherDigest, archiveChecksum),
+          manifest: target(
+            'manifest',
+            oversizedManifestBytes,
+            manifest.cipherDigest,
+            manifestChecksum,
+          ),
+        },
+        expiresAt: '2026-08-13T08:15:00.000Z',
+      }).success,
+    ).toBe(false);
   });
 
   it('Snapshot 拒绝排序、case-fold collision、危险路径与压缩炸弹', async () => {

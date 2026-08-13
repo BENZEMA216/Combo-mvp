@@ -114,12 +114,12 @@ fields:
     aadBindings: [artifactPath, rcId, schemaVersion]
     retention: evidence-vault-7-days
     deletionOrHold: 仅随机 synthetic context canary，Reviewer 完成后七天内可验证删除。
-  - fieldId: context.minio-backup.context-snapshot-cipher-object
+  - fieldId: context.minio-backup.context-snapshot-archive-cipher-object
     fieldClass: context
     contentKind: real
     system: minio-backup
     container: context_snapshots
-    field: object_key.cipher-object
+    field: object_key.archive-cipher-object
     protection: application-aead
     algorithm: aes-256-gcm/v1
     keyOwner: combo-kms
@@ -137,12 +137,34 @@ fields:
       ]
     retention: referenced-plus-30-days
     deletionOrHold: Snapshot 有 serving/reference 时保留；最后引用下线30天后受审 Reclaimer 清理，备份按策略过期。
-  - fieldId: context.minio.context-snapshot-cipher-object
+  - fieldId: context.minio-backup.context-snapshot-manifest-cipher-object
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: manifest_object_key.manifest-cipher-object
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 加密 Manifest 与 archive 使用同一 Snapshot DEK 和独立 nonce；引用与备份保留策略一致。
+  - fieldId: context.minio.context-snapshot-archive-cipher-object
     fieldClass: context
     contentKind: real
     system: minio
     container: context_snapshots
-    field: object_key.cipher-object
+    field: object_key.archive-cipher-object
     protection: application-aead
     algorithm: aes-256-gcm/v1
     keyOwner: combo-kms
@@ -160,6 +182,28 @@ fields:
       ]
     retention: referenced-plus-30-days
     deletionOrHold: Snapshot 有 serving/reference 时保留；最后引用下线30天后受审 Reclaimer 清理。
+  - fieldId: context.minio.context-snapshot-manifest-cipher-object
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: manifest_object_key.manifest-cipher-object
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 加密 Manifest 与 archive 使用同一 Snapshot DEK 和独立 nonce；最后引用下线30天后受审 Reclaimer 清理。
   - fieldId: context.model-request.selected-context
     fieldClass: context
     contentKind: real

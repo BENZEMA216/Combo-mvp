@@ -1,0 +1,23 @@
+{
+  "protocol": "combo.snapshot-manifest-envelope/1",
+  "schemaVersion": 1,
+  "cipherObjectFormat": "combo.snapshot-manifest-binary/1",
+  "algorithm": "aes-256-gcm/v1",
+  "keyWrapAlgorithm": "rfc3394-aes-256-kw/v1",
+  "aad": {
+    "protocol": "combo.snapshot-manifest-envelope/1",
+    "schemaVersion": 1,
+    "cipherObjectFormat": "combo.snapshot-manifest-binary/1",
+    "creatorId": "0198f00d-8000-7000-8000-000000000001",
+    "snapshotDigest": "ce3312ad14990faadc1e10e34e7dfb91fa17d96651095c3f1e03fd047f552e4b",
+    "objectKey": "creators/0198f00d-8000-7000-8000-000000000001/manifests/sha256/ce/ce3312ad14990faadc1e10e34e7dfb91fa17d96651095c3f1e03fd047f552e4b.json.enc",
+    "plaintextBytes": 179,
+    "keyId": "combo-kek/test-2026-08"
+  },
+  "aadDigest": "a73a5f805e2eed35f94233bcf305e3f2f0dde98b3696fd34b8e5aecacd36f014",
+  "nonce": "MzMzMzMzMzMzMzMz",
+  "authTag": "2eQwmKO87FiDA2oIPC5mcQ",
+  "wrappedDek": "RERERERERERERERERERERERERERERERERERERERERERERERERERERA",
+  "cipherDigest": "5d264c5a7d94ead7cc4d7df33711d3d9bef961dea34d444e404ef868db16e0a0",
+  "cipherBytes": 215
+}

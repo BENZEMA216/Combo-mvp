@@ -544,20 +544,196 @@
       "SnapshotUploadCreateRequest": {
         "type": "object",
         "properties": {
-          "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "archiveDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "compressedBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
+          "archive": {
+            "type": "object",
+            "properties": {
+              "envelope": {
+                "type": "object",
+                "properties": {
+                  "protocol": { "type": "string", "enum": ["combo.snapshot-envelope/1"] },
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "cipherObjectFormat": { "type": "string", "enum": ["combo.snapshot-binary/1"] },
+                  "algorithm": { "type": "string", "enum": ["aes-256-gcm/v1"] },
+                  "keyWrapAlgorithm": { "type": "string", "enum": ["rfc3394-aes-256-kw/v1"] },
+                  "aad": {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.snapshot-envelope/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "cipherObjectFormat": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-binary/1"]
+                      },
+                      "creatorId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "archiveDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "objectKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+                      "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
+                      "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$" }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "cipherObjectFormat",
+                      "creatorId",
+                      "snapshotDigest",
+                      "archiveDigest",
+                      "objectKey",
+                      "plaintextBytes",
+                      "keyId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "aadDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "nonce": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 16,
+                    "maxLength": 16
+                  },
+                  "authTag": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 22,
+                    "maxLength": 22
+                  },
+                  "wrappedDek": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 54,
+                    "maxLength": 54
+                  },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 }
+                },
+                "required": [
+                  "protocol",
+                  "schemaVersion",
+                  "cipherObjectFormat",
+                  "algorithm",
+                  "keyWrapAlgorithm",
+                  "aad",
+                  "aadDigest",
+                  "nonce",
+                  "authTag",
+                  "wrappedDek",
+                  "cipherDigest",
+                  "cipherBytes"
+                ],
+                "additionalProperties": false
+              },
+              "checksumSha256": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" }
+            },
+            "required": ["envelope", "checksumSha256"],
+            "additionalProperties": false
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "envelope": {
+                "type": "object",
+                "properties": {
+                  "protocol": { "type": "string", "enum": ["combo.snapshot-manifest-envelope/1"] },
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "cipherObjectFormat": {
+                    "type": "string",
+                    "enum": ["combo.snapshot-manifest-binary/1"]
+                  },
+                  "algorithm": { "type": "string", "enum": ["aes-256-gcm/v1"] },
+                  "keyWrapAlgorithm": { "type": "string", "enum": ["rfc3394-aes-256-kw/v1"] },
+                  "aad": {
+                    "type": "object",
+                    "properties": {
+                      "protocol": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-manifest-envelope/1"]
+                      },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "cipherObjectFormat": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-manifest-binary/1"]
+                      },
+                      "creatorId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "objectKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+                      "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+                      "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$" }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "cipherObjectFormat",
+                      "creatorId",
+                      "snapshotDigest",
+                      "objectKey",
+                      "plaintextBytes",
+                      "keyId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "aadDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "nonce": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 16,
+                    "maxLength": 16
+                  },
+                  "authTag": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 22,
+                    "maxLength": 22
+                  },
+                  "wrappedDek": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 54,
+                    "maxLength": 54
+                  },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 4194340 }
+                },
+                "required": [
+                  "protocol",
+                  "schemaVersion",
+                  "cipherObjectFormat",
+                  "algorithm",
+                  "keyWrapAlgorithm",
+                  "aad",
+                  "aadDigest",
+                  "nonce",
+                  "authTag",
+                  "wrappedDek",
+                  "cipherDigest",
+                  "cipherBytes"
+                ],
+                "additionalProperties": false
+              },
+              "checksumSha256": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" }
+            },
+            "required": ["envelope", "checksumSha256"],
+            "additionalProperties": false
+          },
           "expandedBytes": { "type": "integer", "minimum": 1, "maximum": 209715200 },
           "fileCount": { "type": "integer", "minimum": 1, "maximum": 2000 }
         },
-        "required": [
-          "snapshotDigest",
-          "archiveDigest",
-          "compressedBytes",
-          "expandedBytes",
-          "fileCount"
-        ],
-        "additionalProperties": false
+        "required": ["archive", "manifest", "expandedBytes", "fileCount"],
+        "additionalProperties": false,
+        "x-combo-runtime-constraints": [
+          "archive.checksumSha256 == canonicalBase64(hexToBytes(archive.envelope.cipherDigest))",
+          "manifest.checksumSha256 == canonicalBase64(hexToBytes(manifest.envelope.cipherDigest))",
+          "archive and manifest envelopes MUST bind the same creatorId/snapshotDigest/keyId/wrappedDek and distinct nonces",
+          "the Worker MUST finish both cipher objects before constructing this request",
+          "all consumers MUST pass the authoritative runtime SnapshotUploadCreateRequestSchema parser after structural JSON Schema validation"
+        ]
       },
       "SnapshotUploadCreateResponse": {
         "type": "object",
@@ -569,14 +745,133 @@
             "format": "uuid"
           },
           "state": { "type": "string", "enum": ["CREATED"] },
-          "putUrl": { "type": "string", "format": "uri" },
-          "requiredHeaders": {
+          "uploads": {
             "type": "object",
             "properties": {
-              "contentLength": { "type": "integer", "minimum": 1, "maximum": 53477376 },
-              "checksumSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+              "archive": {
+                "type": "object",
+                "properties": {
+                  "method": { "type": "string", "enum": ["PUT"] },
+                  "putUrl": { "type": "string", "format": "uri" },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "requiredHeaders": {
+                    "type": "object",
+                    "properties": {
+                      "cache-control": { "type": "string", "enum": ["no-store"] },
+                      "content-length": { "type": "string", "pattern": "^[1-9][0-9]{0,7}$" },
+                      "content-type": { "type": "string", "enum": ["application/octet-stream"] },
+                      "if-none-match": { "type": "string", "enum": ["*"] },
+                      "x-amz-checksum-sha256": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9+/]{43}=$"
+                      },
+                      "x-amz-meta-archive-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "x-amz-meta-cipher-bytes": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,7}$"
+                      },
+                      "x-amz-meta-cipher-digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "x-amz-meta-object-kind": {
+                        "type": "string",
+                        "enum": ["archive", "manifest"]
+                      },
+                      "x-amz-meta-object-state": { "type": "string", "enum": ["upload"] },
+                      "x-amz-meta-protocol": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-object-storage/1"]
+                      },
+                      "x-amz-meta-snapshot-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "cache-control",
+                      "content-length",
+                      "content-type",
+                      "if-none-match",
+                      "x-amz-checksum-sha256",
+                      "x-amz-meta-archive-digest",
+                      "x-amz-meta-cipher-bytes",
+                      "x-amz-meta-cipher-digest",
+                      "x-amz-meta-object-kind",
+                      "x-amz-meta-object-state",
+                      "x-amz-meta-protocol",
+                      "x-amz-meta-snapshot-digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["method", "putUrl", "cipherBytes", "cipherDigest", "requiredHeaders"],
+                "additionalProperties": false
+              },
+              "manifest": {
+                "type": "object",
+                "properties": {
+                  "method": { "type": "string", "enum": ["PUT"] },
+                  "putUrl": { "type": "string", "format": "uri" },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "requiredHeaders": {
+                    "type": "object",
+                    "properties": {
+                      "cache-control": { "type": "string", "enum": ["no-store"] },
+                      "content-length": { "type": "string", "pattern": "^[1-9][0-9]{0,7}$" },
+                      "content-type": { "type": "string", "enum": ["application/octet-stream"] },
+                      "if-none-match": { "type": "string", "enum": ["*"] },
+                      "x-amz-checksum-sha256": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9+/]{43}=$"
+                      },
+                      "x-amz-meta-archive-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "x-amz-meta-cipher-bytes": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,7}$"
+                      },
+                      "x-amz-meta-cipher-digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "x-amz-meta-object-kind": {
+                        "type": "string",
+                        "enum": ["archive", "manifest"]
+                      },
+                      "x-amz-meta-object-state": { "type": "string", "enum": ["upload"] },
+                      "x-amz-meta-protocol": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-object-storage/1"]
+                      },
+                      "x-amz-meta-snapshot-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "cache-control",
+                      "content-length",
+                      "content-type",
+                      "if-none-match",
+                      "x-amz-checksum-sha256",
+                      "x-amz-meta-archive-digest",
+                      "x-amz-meta-cipher-bytes",
+                      "x-amz-meta-cipher-digest",
+                      "x-amz-meta-object-kind",
+                      "x-amz-meta-object-state",
+                      "x-amz-meta-protocol",
+                      "x-amz-meta-snapshot-digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["method", "putUrl", "cipherBytes", "cipherDigest", "requiredHeaders"],
+                "additionalProperties": false
+              }
             },
-            "required": ["contentLength", "checksumSha256"],
+            "required": ["archive", "manifest"],
             "additionalProperties": false
           },
           "expiresAt": {
@@ -585,16 +880,19 @@
             "format": "date-time"
           }
         },
-        "required": ["protocol", "uploadId", "state", "putUrl", "requiredHeaders", "expiresAt"],
-        "additionalProperties": false
+        "required": ["protocol", "uploadId", "state", "uploads", "expiresAt"],
+        "additionalProperties": false,
+        "x-combo-runtime-constraints": [
+          "each target requiredHeaders MUST bind exact cipherBytes/cipherDigest/checksum/object-kind and include no unknown header",
+          "archive and manifest targets MUST bind the same snapshotDigest/archiveDigest and distinct temp object locators",
+          "archive cipherBytes <= SNAPSHOT_MAX_COMPRESSED_BYTES + 36 and manifest cipherBytes <= SNAPSHOT_MAX_MANIFEST_BYTES + 36",
+          "public Authoring responses MUST use HTTPS; insecure loopback is only an explicit disposable component-test authority",
+          "all consumers MUST pass the authoritative runtime SnapshotUploadCreateResponseSchema parser after structural JSON Schema validation"
+        ]
       },
       "SnapshotUploadCompleteRequest": {
         "type": "object",
-        "properties": {
-          "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "encryptedBytes": { "type": "integer", "minimum": 1, "maximum": 53477376 }
-        },
-        "required": ["cipherDigest", "encryptedBytes"],
+        "properties": {},
         "additionalProperties": false
       },
       "SnapshotUploadView": {

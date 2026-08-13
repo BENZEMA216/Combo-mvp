@@ -18,6 +18,14 @@ export const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const HmacSha256DigestSchema = z.string().regex(/^hmac-sha256:[a-f0-9]{64}$/);
 
+export const CanonicalSha256Base64Schema = z
+  .string()
+  .regex(/^[A-Za-z0-9+/]{43}=$/u)
+  .refine((value) => {
+    const bytes = Buffer.from(value, 'base64');
+    return bytes.byteLength === 32 && bytes.toString('base64') === value;
+  }, 'SHA-256 checksum 必须是 32 bytes canonical base64');
+
 export const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 
 export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) => {

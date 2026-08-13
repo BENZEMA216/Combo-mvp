@@ -8,7 +8,7 @@
 
 ## Decision
 
-每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK；每个加密对象独立生成唯一 96-bit CSPRNG nonce，同 DEK 下严禁 nonce 复用。Snapshot archive 使用 AES-256-GCM 和 16-byte tag；AAD 是 combo.snapshot-envelope/1 canonical JSON，精确绑定 protocol/schemaVersion/cipherObjectFormat/creatorId/snapshotDigest/archiveDigest/objectKey/plaintextBytes/keyId。archive 密文格式冻结为 combo.snapshot-binary/1，即 ASCII("CSNPENC1") || nonce[12] || ciphertext[plaintextBytes] || authTag[16]，不允许 trailing bytes；cipherBytes=plaintextBytes+36，cipherDigest覆盖完整对象，Envelope nonce/tag必须与内嵌段逐 byte 相等。DEK 用 RFC3394 AES-256-KW 在独立 KEK 下包裹，32-byte DEK 的 wrappedDek固定40 bytes；nonce/tag/wrappedDek使用canonical base64url。先校验长度、完整对象digest、magic、nonce/tag绑定和AEAD认证，再校验明文大小/archive digest，最后才交给parser。该版本的SnapshotArchiveEnvelope只覆盖archive；架构要求的encrypted manifest必须使用独立nonce和独立envelope，完成前Gate 1保持BLOCKED。
+每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK，archive 与 canonical manifest 共享该 DEK、各自使用唯一 96-bit CSPRNG nonce，严禁复用。两者均为 AES-256-GCM、16-byte tag、cipherBytes=plaintextBytes+36、cipherDigest覆盖完整对象；archive 使用 combo.snapshot-envelope/1 与 ASCII("CSNPENC1")，AAD 绑定 creatorId/snapshotDigest/archiveDigest/final objectKey/plaintextBytes/keyId；manifest 使用 combo.snapshot-manifest-envelope/1 与 ASCII("CSNPMAN1")，AAD 绑定 creatorId/snapshotDigest/final manifest objectKey/plaintextBytes/keyId。DEK 用 RFC3394 AES-256-KW 包裹，32-byte DEK 的 wrappedDek固定40 bytes；nonce/tag/wrappedDek使用canonical base64url。Worker 必须先完成两个加密对象，再以完整 Envelope、cipherBytes、cipherDigest和canonical base64 checksum创建upload session；云端一次返回两个绑定temp key、长度、checksum、If-None-Match和完整metadata的15分钟Signed PUT。Verifier先完整读取并认证两个temp对象、重算manifest/archive/snapshot digest，成功后才conditional promote正式key；失败不得占正式key。真实RFC3394/KMS适配器仍是独立未完成Gate，不得由本协议或测试key冒充。
 
 ## Alternatives considered
 
@@ -30,6 +30,10 @@ bit flip、跨 Creator/Object swap、错误 KEK 均在解包前失败；KEK 与�
 
 ## Affected protocol versions
 
-- combo.snapshot-envelope/1
+- combo.creator-agent-http/1
 - combo.snapshot-binary/1
+- combo.snapshot-envelope/1
+- combo.snapshot-manifest-binary/1
+- combo.snapshot-manifest-envelope/1
 - combo.snapshot-manifest/1
+- combo.snapshot-object-storage/1

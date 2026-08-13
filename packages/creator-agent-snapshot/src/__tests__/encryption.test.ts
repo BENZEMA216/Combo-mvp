@@ -1,9 +1,13 @@
 import {
   SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
   SNAPSHOT_ENVELOPE_PROTOCOL,
+  SNAPSHOT_MANIFEST_ENVELOPE_PROTOCOL,
+  SNAPSHOT_MANIFEST_OBJECT_FORMAT,
   SnapshotArchiveEnvelopeSchema,
   snapshotArchiveEnvelopeAadDigest,
   snapshotArchiveObjectKey,
+  snapshotManifestEnvelopeAadDigest,
+  snapshotManifestObjectKey,
   type SnapshotArchiveEnvelopeAad,
 } from '@cb/creator-agent-protocol';
 import { readFile } from 'node:fs/promises';
@@ -12,11 +16,13 @@ import { describe, expect, it } from 'vitest';
 import {
   aes256GcmEncrypt,
   decryptSnapshotArchive,
+  decryptSnapshotManifest,
   encryptSnapshotArchive,
+  encryptSnapshotManifest,
   isSnapshotError,
   sha256Hex,
 } from '../index.js';
-import { encryptSnapshotArchiveTestOnly } from '../encryption.js';
+import { encryptSnapshotArchiveTestOnly, encryptSnapshotManifestTestOnly } from '../encryption.js';
 
 const CREATOR = '0198f00d-8000-7000-8000-000000000001';
 const KEY_ID = 'combo-kek/test-2026-08';
@@ -220,6 +226,87 @@ describe('Snapshot archive envelope encryption primitives', () => {
     );
     expectEncryptionFailure(() =>
       aes256GcmEncrypt(Buffer.alloc(0), Buffer.alloc(32), Buffer.alloc(11)),
+    );
+  });
+});
+
+describe('Snapshot manifest envelope encryption primitives', () => {
+  it('uses a separate Envelope, magic and nonce while binding canonical manifest bytes', () => {
+    const manifestBytes = Buffer.from('{"protocol":"synthetic-manifest"}');
+    const snapshotDigest = sha256Hex(manifestBytes);
+    const key = Buffer.alloc(32, 0x33);
+    const archiveNonce = Buffer.alloc(12, 0x44);
+    const manifestNonce = Buffer.alloc(12, 0x55);
+    const encrypted = encryptSnapshotManifestTestOnly(
+      manifestBytes,
+      {
+        protocol: SNAPSHOT_MANIFEST_ENVELOPE_PROTOCOL,
+        schemaVersion: 1,
+        cipherObjectFormat: SNAPSHOT_MANIFEST_OBJECT_FORMAT,
+        creatorId: CREATOR,
+        snapshotDigest,
+        objectKey: snapshotManifestObjectKey(CREATOR, snapshotDigest),
+        plaintextBytes: manifestBytes.byteLength,
+        keyId: KEY_ID,
+      },
+      key,
+      { keyId: KEY_ID, wrappedDek: WRAPPED_DEK },
+      manifestNonce,
+    );
+    expect(encrypted.objectBytes.subarray(0, 8).toString('ascii')).toBe('CSNPMAN1');
+    expect(encrypted.envelope.nonce).not.toBe(archiveNonce.toString('base64url'));
+    expect(encrypted.objectBytes.byteLength).toBe(manifestBytes.byteLength + 36);
+    expect(decryptSnapshotManifest(encrypted.objectBytes, encrypted.envelope, key)).toEqual(
+      manifestBytes,
+    );
+  });
+
+  it('uses independent production nonces and rejects ciphertext/tag/AAD mutation', () => {
+    const manifestBytes = Buffer.from('{"protocol":"synthetic-manifest"}');
+    const snapshotDigest = sha256Hex(manifestBytes);
+    const aad = {
+      protocol: SNAPSHOT_MANIFEST_ENVELOPE_PROTOCOL,
+      schemaVersion: 1 as const,
+      cipherObjectFormat: SNAPSHOT_MANIFEST_OBJECT_FORMAT,
+      creatorId: CREATOR,
+      snapshotDigest,
+      objectKey: snapshotManifestObjectKey(CREATOR, snapshotDigest),
+      plaintextBytes: manifestBytes.byteLength,
+      keyId: KEY_ID,
+    };
+    const key = Buffer.alloc(32, 0x66);
+    const first = encryptSnapshotManifest(manifestBytes, aad, key, {
+      keyId: KEY_ID,
+      wrappedDek: WRAPPED_DEK,
+    });
+    const second = encryptSnapshotManifest(manifestBytes, aad, key, {
+      keyId: KEY_ID,
+      wrappedDek: WRAPPED_DEK,
+    });
+    expect(first.envelope.nonce).not.toBe(second.envelope.nonce);
+
+    const mutated = Buffer.from(first.objectBytes);
+    mutated[20] = mutated[20]! ^ 1;
+    expectEncryptionFailure(() =>
+      decryptSnapshotManifest(
+        mutated,
+        { ...first.envelope, cipherDigest: sha256Hex(mutated) },
+        key,
+      ),
+    );
+    expectEncryptionFailure(() =>
+      decryptSnapshotManifest(
+        first.objectBytes,
+        {
+          ...first.envelope,
+          aad: { ...first.envelope.aad, keyId: 'other-key' },
+          aadDigest: snapshotManifestEnvelopeAadDigest({
+            ...first.envelope.aad,
+            keyId: 'other-key',
+          }),
+        },
+        key,
+      ),
     );
   });
 });
