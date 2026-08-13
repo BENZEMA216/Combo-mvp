@@ -10,6 +10,8 @@
 - `encryptSnapshotArchive` 使用 AES-256-GCM 生成认证加密对象，并分别保留 Snapshot、archive 与 cipher digest。
 - `buildAgentVersion` 把 Snapshot、Behavior、Runtime、IO、Codex artifact、Schema 与模型策略冻结进 `versionDigest`。内存仓库只提供创建、读取和独立 revoke control，不提供修改执行字段的入口。
 - `InMemoryConversationPinRepository` 在 Conversation 创建时固定 AgentVersion，之后任何换版请求都会拒绝。
+- `S3ImmutableSnapshotObjectStore` 把密文 archive 写入由 Creator UUID 与 Snapshot digest 派生的私有 key；上传和正式化都使用 `If-None-Match: *`，重放时只接受 size、三组 digest、完整 metadata 和密文字节全部一致的既有对象。每个实例固定一个 Creator，公开 API 不接受任意 object key，也不提供 list/delete。
+- 对象读取会限制长度并复核 `Content-Length`、实际密文字节摘要、完整 metadata 集，以及服务返回时的 S3 SHA-256 checksum；`readAndVerify` 再调用受保护 metadata 提供的 key envelope port，完成 AEAD、archive、Manifest 与逐文件复核。wrapped DEK 和 key reference 不复制进 MinIO user metadata。
 
 ## 冻结策略
 
@@ -22,9 +24,11 @@
 
 ## 证据边界
 
-本包提供 E1 级确定性、属性、恶意输入和真实 AES-GCM 向量证据。本机测试会在独立 Node 进程复核冻结的 tar/zstd golden；支持的 Linux builder 仍必须在 CI 运行同一 gate，在 Linux 结果产生前跨平台证据状态是 `NOT_RUN`。`SnapshotObjectRepository` 与 `SnapshotKeyEnvelopePort` 是云端 MinIO、PostgreSQL 和 KEK 适配器的严格接口；当前 `InMemoryImmutableSnapshotRepository` 只用于测试和并行开发，不是 MinIO、KMS 或数据库 E2E，也不能据此声明 Gate 1 已完整通过。
+本包提供 E1 级确定性、属性、恶意输入和真实 AES-GCM 向量证据。本机测试会在独立 Node 进程复核冻结的 tar/zstd golden；支持的 Linux builder 仍必须在 CI 运行同一 gate，在 Linux 结果产生前跨平台证据状态是 `NOT_RUN`。`SnapshotObjectRepository` 与 `SnapshotKeyEnvelopePort` 仍分别定义内存领域对象与密钥封装端口；`S3ImmutableSnapshotObjectStore` 是真实 S3-compatible 密文 archive 适配器。
 
-当前 verifier 会在进程内持有认证后的 archive 和最多 200 MiB 的解包正文，用于 E1 复核。生产 Verifier 仍需实现技术方案要求的独占 tmpfs、272 MiB 组合 quota、进程或 Pod 崩溃清零、MinIO conditional PUT、真实 wrapped-DEK/KEK 和 PostgreSQL 不可变约束；这些项目当前均为 `BLOCKED/NOT_IMPLEMENTED`，不能由内存测试冒充。
+`pnpm -F @cb/creator-agent-snapshot test:minio:e2` 会用固定版本的 MinIO 镜像、临时 root credential、随机 loopback 端口和 tmpfs bucket 运行真实组件集成测试，覆盖条件写入重放、32 路正式化竞争、跨 Creator key 隔离、冲突写入、读取后完整解密复核和特权越权篡改检测。它证明的是 adapter 与 MinIO 的 E2 对象语义；测试进程持有管理员 credential，未配置生产 IAM/Object Lock，因此不证明服务身份最小权限或管理员不可覆盖。
+
+当前 verifier 会在进程内持有认证后的 archive 和最多 200 MiB 的解包正文。生产 Verifier 仍需实现技术方案要求的独占 tmpfs、272 MiB 组合 quota、进程或 Pod 崩溃清零、正式 manifest 加密对象、真实 wrapped-DEK/KEK、PostgreSQL 不可变约束、MinIO IAM/Object Lock、Retention/Reclaimer 和 DR；这些项目仍是 `BLOCKED/NOT_IMPLEMENTED`，不能由该 E2 冒充完整 Gate 1。
 
 当前 Node staging 使用 `lstat/realpath/open(O_NOFOLLOW)/fstat` 的多点身份复核，并包含根目录换 inode、换 symlink 和读中 mutation 的注入测试；Node 标准库没有暴露 `openat(2)` 目录句柄遍历。生产 Gate 1 仍需 native helper 或等价的 root-fd confinement 证明，现有 E1 不冒充该 OS 级 E2 证据。
 

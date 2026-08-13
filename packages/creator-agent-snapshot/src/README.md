@@ -15,7 +15,8 @@
 - `encryption.ts` 实现 AES-256-GCM 对象格式，并声明真实 KEK 适配器需要实现的端口。
 - `agent-version.ts` 计算 Contract 与 AgentVersion 摘要，并实现测试用不可变 Version 与 Conversation pin 仓库。
 - `repository.ts` 声明云对象持久化端口，并提供拒绝覆盖的内存实现。
+- `object-storage.ts` 实现 Creator-bound 的 S3-compatible 密文 archive adapter：派生 upload/final key、条件不可变写入、并发重放裁决、严格 metadata/size/checksum/body 校验，以及从受保护 metadata 解包密钥后的完整 Snapshot 复核。它不提供 list、delete、任意 key 或 KEK 实现。
 
 ## 上下游
 
-Creator Worker 将调用 staging 与 builder 生成发布候选。Authoring Verifier 将调用 decrypt 和 verifier 复核对象。Authoring 数据层未来实现 Snapshot、AgentVersion 与 Conversation pin 的 PostgreSQL 适配器。当前源码不直接连接 MinIO、PostgreSQL、Kubernetes 或 macOS Keychain。
+Creator Worker 将调用 staging 与 builder 生成发布候选。Authoring Verifier 通过对象存储 adapter 读取密文，再调用 decrypt 和 verifier 复核对象。Authoring 数据层仍需实现 Snapshot、AgentVersion、wrapped DEK reference 与 Conversation pin 的 PostgreSQL 适配器。当前源码可连接 S3-compatible MinIO，但不实现 PostgreSQL、Kubernetes、IAM、KMS/KEK 或 macOS Keychain。

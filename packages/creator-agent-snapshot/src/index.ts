@@ -9,5 +9,6 @@ export * from './path-policy.js';
 export * from './policy.js';
 export * from './repository.js';
 export * from './snapshot.js';
+export * from './object-storage.js';
 export * from './staging.js';
 export * from './tar.js';

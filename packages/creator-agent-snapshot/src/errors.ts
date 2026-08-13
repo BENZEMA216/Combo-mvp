@@ -12,6 +12,9 @@ export type CreatorSnapshotErrorCode =
   | 'SNAPSHOT_FILE_TOO_LARGE'
   | 'SNAPSHOT_HARDLINK_FORBIDDEN'
   | 'SNAPSHOT_IMMUTABLE_CONFLICT'
+  | 'SNAPSHOT_OBJECT_INVALID'
+  | 'SNAPSHOT_OBJECT_NOT_FOUND'
+  | 'SNAPSHOT_STORAGE_UNAVAILABLE'
   | 'SNAPSHOT_INVALID_PATH'
   | 'SNAPSHOT_LFS_POINTER_FORBIDDEN'
   | 'SNAPSHOT_NUL_FORBIDDEN'
@@ -45,6 +48,9 @@ const publicMessages: Record<CreatorSnapshotErrorCode, string> = {
   SNAPSHOT_FILE_TOO_LARGE: 'Snapshot 单文件超过上限。',
   SNAPSHOT_HARDLINK_FORBIDDEN: 'Snapshot 不接受 hardlink。',
   SNAPSHOT_IMMUTABLE_CONFLICT: 'Snapshot 不可变对象发生冲突。',
+  SNAPSHOT_OBJECT_INVALID: 'Snapshot 对象存储内容或元数据无效。',
+  SNAPSHOT_OBJECT_NOT_FOUND: 'Snapshot 对象不存在。',
+  SNAPSHOT_STORAGE_UNAVAILABLE: 'Snapshot 对象存储暂不可用。',
   SNAPSHOT_INVALID_PATH: 'Snapshot 包含无效相对路径。',
   SNAPSHOT_LFS_POINTER_FORBIDDEN: 'Snapshot 不接受 Git LFS pointer。',
   SNAPSHOT_NUL_FORBIDDEN: 'Snapshot 文件包含 NUL。',

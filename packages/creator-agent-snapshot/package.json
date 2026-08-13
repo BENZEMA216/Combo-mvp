@@ -19,11 +19,14 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
-    "test": "pnpm build && vitest run",
+    "test": "pnpm build && vitest run --exclude 'src/**/*.integration.test.ts'",
+    "test:object-storage": "pnpm build && vitest run src/__tests__/object-storage.test.ts",
+    "test:minio:e2": "pnpm build && node scripts/run-minio-e2.mjs",
     "test:watch": "vitest",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.726.1",
     "@cb/creator-agent-protocol": "workspace:*"
   },
   "devDependencies": {
