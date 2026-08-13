@@ -1,0 +1,48 @@
+{
+  "protocol": "combo.snapshot-manifest/1",
+  "schemaVersion": 1,
+  "pathPolicy": {
+    "encoding": "utf-8",
+    "normalization": "NFC",
+    "ordering": "utf-8-byte-order",
+    "collision": "nfc-plus-ecmascript-simple-case-fold"
+  },
+  "archive": {
+    "format": "pax",
+    "tarImplementation": "tar-stream@3.2.0",
+    "zstdImplementation": "zstd@1.5.7",
+    "zstdLevel": 9,
+    "zstdChecksum": true,
+    "uid": 0,
+    "gid": 0,
+    "uname": "",
+    "gname": "",
+    "mtimeUnixSeconds": 0,
+    "fileMode": "0444",
+    "directoryMode": "0555"
+  },
+  "files": [
+    {
+      "path": "FACTS.md",
+      "size": 64,
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    },
+    {
+      "path": "NESTED/POLICY.md",
+      "size": 80,
+      "mediaType": "text/markdown; charset=utf-8",
+      "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "path": "TABLE.csv",
+      "size": 48,
+      "mediaType": "text/csv; charset=utf-8",
+      "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+    }
+  ],
+  "totals": {
+    "fileCount": 3,
+    "expandedBytes": 192
+  }
+}

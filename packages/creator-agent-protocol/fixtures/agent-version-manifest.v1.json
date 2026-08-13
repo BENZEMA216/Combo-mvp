@@ -1,0 +1,64 @@
+{
+  "protocol": "combo.agent-version-manifest/1",
+  "schemaVersion": 1,
+  "snapshotDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "behaviorContract": {
+    "schemaVersion": 1,
+    "role": "合成知识库研究助理",
+    "objective": "只根据已发布资料回答受邀消费者的问题",
+    "developerInstructions": [
+      "优先使用 Context 中的依据",
+      "资料不足时明确说明不知道",
+      "不得虚构文件、人物、数字或日期"
+    ],
+    "language": "zh-CN",
+    "evidencePolicy": "cite-relative-path-when-used",
+    "answerStyle": "conclusion-evidence-risk"
+  },
+  "runtimePolicy": {
+    "schemaVersion": 1,
+    "isolation": "conversation-vm-required",
+    "filesystem": {
+      "context": "read-only-noexec",
+      "scratch": "conversation-only",
+      "hostMounts": "forbidden"
+    },
+    "contextTools": ["read_context", "list_context", "search_context"],
+    "projectExecution": "forbidden",
+    "network": "model-proxy-only",
+    "externalTools": "disabled",
+    "hostCredentials": "forbidden",
+    "maxTurnSeconds": 120,
+    "maxConversationTurns": 20,
+    "maxVisibleHistoryBytes": 65536,
+    "maxActiveTurns": 1,
+    "resolvedModel": "gpt-5.6",
+    "reasoningEffort": "high"
+  },
+  "ioContract": {
+    "schemaVersion": 1,
+    "input": {
+      "type": "text",
+      "maxUtf8Bytes": 16384
+    },
+    "output": {
+      "type": "text",
+      "maxUtf8Bytes": 32768
+    },
+    "files": false,
+    "actions": false,
+    "rawReasoning": false
+  },
+  "codexRuntime": {
+    "version": "0.147.0-alpha.6.5-linux-arm64",
+    "artifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "protocolSchemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "platform": "linux-arm64"
+  },
+  "modelPolicy": {
+    "schemaVersion": 1,
+    "model": "gpt-5.6",
+    "reasoningEffort": "high",
+    "creatorFunded": true
+  }
+}

@@ -1,0 +1,4037 @@
+{
+  "protocol": "combo.creator-agent-contract-schemas/1",
+  "schemaVersion": 1,
+  "schemas": {
+    "AgentVersionManifest": {
+      "$ref": "#/definitions/AgentVersionManifest",
+      "definitions": {
+        "AgentVersionManifest": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.agent-version-manifest/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "behaviorContract": {
+              "type": "object",
+              "properties": {
+                "schemaVersion": { "type": "number", "const": 1 },
+                "role": { "type": "string", "minLength": 1 },
+                "objective": { "type": "string", "minLength": 1 },
+                "developerInstructions": {
+                  "type": "array",
+                  "items": { "type": "string", "minLength": 1 },
+                  "minItems": 1,
+                  "maxItems": 32
+                },
+                "language": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+                "evidencePolicy": {
+                  "type": "string",
+                  "enum": ["none", "cite-relative-path-when-used"]
+                },
+                "answerStyle": { "type": "string", "enum": ["plain", "conclusion-evidence-risk"] }
+              },
+              "required": [
+                "schemaVersion",
+                "role",
+                "objective",
+                "developerInstructions",
+                "language",
+                "evidencePolicy",
+                "answerStyle"
+              ],
+              "additionalProperties": false
+            },
+            "runtimePolicy": {
+              "type": "object",
+              "properties": {
+                "schemaVersion": { "type": "number", "const": 1 },
+                "isolation": { "type": "string", "const": "conversation-vm-required" },
+                "filesystem": {
+                  "type": "object",
+                  "properties": {
+                    "context": { "type": "string", "const": "read-only-noexec" },
+                    "scratch": { "type": "string", "const": "conversation-only" },
+                    "hostMounts": { "type": "string", "const": "forbidden" }
+                  },
+                  "required": ["context", "scratch", "hostMounts"],
+                  "additionalProperties": false
+                },
+                "contextTools": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": [
+                    { "type": "string", "const": "read_context" },
+                    { "type": "string", "const": "list_context" },
+                    { "type": "string", "const": "search_context" }
+                  ]
+                },
+                "projectExecution": { "type": "string", "const": "forbidden" },
+                "network": { "type": "string", "const": "model-proxy-only" },
+                "externalTools": { "type": "string", "const": "disabled" },
+                "hostCredentials": { "type": "string", "const": "forbidden" },
+                "maxTurnSeconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+                "maxConversationTurns": { "type": "integer", "minimum": 1, "maximum": 20 },
+                "maxVisibleHistoryBytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+                "maxActiveTurns": { "type": "number", "const": 1 },
+                "resolvedModel": { "type": "string", "minLength": 1 },
+                "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] }
+              },
+              "required": [
+                "schemaVersion",
+                "isolation",
+                "filesystem",
+                "contextTools",
+                "projectExecution",
+                "network",
+                "externalTools",
+                "hostCredentials",
+                "maxTurnSeconds",
+                "maxConversationTurns",
+                "maxVisibleHistoryBytes",
+                "maxActiveTurns",
+                "resolvedModel",
+                "reasoningEffort"
+              ],
+              "additionalProperties": false
+            },
+            "ioContract": {
+              "type": "object",
+              "properties": {
+                "schemaVersion": { "type": "number", "const": 1 },
+                "input": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string", "const": "text" },
+                    "maxUtf8Bytes": { "type": "number", "const": 16384 }
+                  },
+                  "required": ["type", "maxUtf8Bytes"],
+                  "additionalProperties": false
+                },
+                "output": {
+                  "type": "object",
+                  "properties": {
+                    "type": { "type": "string", "const": "text" },
+                    "maxUtf8Bytes": { "type": "number", "const": 32768 }
+                  },
+                  "required": ["type", "maxUtf8Bytes"],
+                  "additionalProperties": false
+                },
+                "files": { "type": "boolean", "const": false },
+                "actions": { "type": "boolean", "const": false },
+                "rawReasoning": { "type": "boolean", "const": false }
+              },
+              "required": ["schemaVersion", "input", "output", "files", "actions", "rawReasoning"],
+              "additionalProperties": false
+            },
+            "codexRuntime": {
+              "type": "object",
+              "properties": {
+                "version": { "type": "string", "minLength": 1 },
+                "artifactDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                "protocolSchemaDigest": {
+                  "$ref": "#/definitions/AgentVersionManifest/properties/codexRuntime/properties/artifactDigest"
+                },
+                "platform": { "type": "string", "const": "linux-arm64" }
+              },
+              "required": ["version", "artifactDigest", "protocolSchemaDigest", "platform"],
+              "additionalProperties": false
+            },
+            "modelPolicy": {
+              "type": "object",
+              "properties": {
+                "schemaVersion": { "type": "number", "const": 1 },
+                "model": { "type": "string", "minLength": 1 },
+                "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
+                "creatorFunded": { "type": "boolean", "const": true }
+              },
+              "required": ["schemaVersion", "model", "reasoningEffort", "creatorFunded"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "snapshotDigest",
+            "behaviorContract",
+            "runtimePolicy",
+            "ioContract",
+            "codexRuntime",
+            "modelPolicy"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SnapshotManifest": {
+      "$ref": "#/definitions/SnapshotManifest",
+      "definitions": {
+        "SnapshotManifest": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.snapshot-manifest/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "pathPolicy": {
+              "type": "object",
+              "properties": {
+                "encoding": { "type": "string", "const": "utf-8" },
+                "normalization": { "type": "string", "const": "NFC" },
+                "ordering": { "type": "string", "const": "utf-8-byte-order" },
+                "collision": { "type": "string", "const": "nfc-plus-ecmascript-simple-case-fold" }
+              },
+              "required": ["encoding", "normalization", "ordering", "collision"],
+              "additionalProperties": false
+            },
+            "archive": {
+              "type": "object",
+              "properties": {
+                "format": { "type": "string", "const": "pax" },
+                "tarImplementation": { "type": "string", "const": "tar-stream@3.2.0" },
+                "zstdImplementation": { "type": "string", "const": "zstd@1.5.7" },
+                "zstdLevel": { "type": "number", "const": 9 },
+                "zstdChecksum": { "type": "boolean", "const": true },
+                "uid": { "type": "number", "const": 0 },
+                "gid": { "type": "number", "const": 0 },
+                "uname": { "type": "string", "const": "" },
+                "gname": { "type": "string", "const": "" },
+                "mtimeUnixSeconds": { "type": "number", "const": 0 },
+                "fileMode": { "type": "string", "const": "0444" },
+                "directoryMode": { "type": "string", "const": "0555" }
+              },
+              "required": [
+                "format",
+                "tarImplementation",
+                "zstdImplementation",
+                "zstdLevel",
+                "zstdChecksum",
+                "uid",
+                "gid",
+                "uname",
+                "gname",
+                "mtimeUnixSeconds",
+                "fileMode",
+                "directoryMode"
+              ],
+              "additionalProperties": false
+            },
+            "files": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": { "type": "string", "minLength": 1 },
+                  "size": { "type": "integer", "minimum": 0, "maximum": 10485760 },
+                  "mediaType": {
+                    "type": "string",
+                    "pattern": "^(?:text\\/[a-z0-9.+-]+|application\\/(?:json|csv|javascript|xml|yaml|toml))(?:; charset=utf-8)?$"
+                  },
+                  "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+                },
+                "required": ["path", "size", "mediaType", "sha256"],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 2000
+            },
+            "totals": {
+              "type": "object",
+              "properties": {
+                "fileCount": { "type": "integer", "minimum": 1, "maximum": 2000 },
+                "expandedBytes": { "type": "integer", "minimum": 0, "maximum": 209715200 }
+              },
+              "required": ["fileCount", "expandedBytes"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["protocol", "schemaVersion", "pathPolicy", "archive", "files", "totals"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerHandshake": {
+      "$ref": "#/definitions/BrokerHandshake",
+      "definitions": {
+        "BrokerHandshake": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "installationId": { "type": "string", "format": "uuid" },
+            "workerVersion": { "type": "string", "minLength": 1 },
+            "supportedProtocolVersions": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": [{ "type": "number", "const": 1 }]
+            },
+            "codexRuntimeArtifacts": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "codexProtocolSchemaDigests": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/BrokerHandshake/properties/codexRuntimeArtifacts/items"
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "isolationModes": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["apple-container-v1", "lima-vz-v1"] },
+              "minItems": 1,
+              "maxItems": 2
+            },
+            "capacity": {
+              "type": "object",
+              "properties": {
+                "maxActiveConversations": { "type": "number", "const": 1 },
+                "maxActiveTurns": { "type": "number", "const": 1 }
+              },
+              "required": ["maxActiveConversations", "maxActiveTurns"],
+              "additionalProperties": false
+            },
+            "challengeId": { "$ref": "#/definitions/BrokerHandshake/properties/installationId" },
+            "challengeSignature": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 32,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "installationId",
+            "workerVersion",
+            "supportedProtocolVersions",
+            "codexRuntimeArtifacts",
+            "codexProtocolSchemaDigests",
+            "isolationModes",
+            "capacity",
+            "challengeId",
+            "challengeSignature"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerEnvelope": {
+      "$ref": "#/definitions/BrokerEnvelope",
+      "definitions": {
+        "BrokerEnvelope": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+                    "schemaVersion": { "type": "number", "const": 1 },
+                    "messageId": { "type": "string", "format": "uuid" },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+                    "sentAt": { "type": "string", "format": "date-time" },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "lease.grant" },
+                    "lease": {
+                      "type": "object",
+                      "properties": {
+                        "deploymentId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        }
+                      },
+                      "required": ["deploymentId", "leaseId", "fence"],
+                      "additionalProperties": false
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "leaseExpiresAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        },
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        }
+                      },
+                      "required": ["leaseExpiresAt", "workerSessionId", "generation"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "lease.revoke" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "SESSION_REPLACED",
+                            "DRAIN",
+                            "IMMEDIATE",
+                            "SECURITY",
+                            "INSTALLATION_REVOKED"
+                          ]
+                        },
+                        "effectiveAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["reason", "effectiveAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "version.prepare" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        }
+                      },
+                      "required": [
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "generation"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "deployment.drain" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "mode": { "type": "string", "enum": ["DRAIN", "IMMEDIATE"] },
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "deadlineAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["mode", "generation", "deadlineAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "conversation.open" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "visibleTranscriptDigest": {
+                          "type": "string",
+                          "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": [
+                        "conversationId",
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "visibleTranscriptDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "conversation.close" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": ["USER", "EXPIRED", "DRAIN", "SECURITY"]
+                        }
+                      },
+                      "required": ["conversationId", "reason"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.prepare" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "clientMessageId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "requestDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                        },
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "deadlineAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        },
+                        "executionCapability": {
+                          "type": "object",
+                          "properties": {
+                            "protocol": {
+                              "type": "string",
+                              "const": "combo.execution-capability/1"
+                            },
+                            "schemaVersion": { "type": "number", "const": 1 },
+                            "capabilityId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "invocationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "conversationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "agentVersionId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "agentVersionDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                            },
+                            "workerInstallationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "leaseId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "fence": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                            },
+                            "providerRequestId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "requestDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                            },
+                            "model": { "type": "string", "minLength": 1 },
+                            "reasoningEffort": {
+                              "type": "string",
+                              "enum": ["low", "medium", "high", "xhigh"]
+                            },
+                            "budget": {
+                              "type": "object",
+                              "properties": {
+                                "maxInputTokens": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 200000
+                                },
+                                "maxOutputTokens": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 32768
+                                },
+                                "maxCostMicros": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 100000000
+                                }
+                              },
+                              "required": ["maxInputTokens", "maxOutputTokens", "maxCostMicros"],
+                              "additionalProperties": false
+                            },
+                            "notBefore": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                            },
+                            "expiresAt": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                            },
+                            "nonce": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 22,
+                              "maxLength": 128
+                            },
+                            "signatureAlgorithm": { "type": "string", "const": "ES256" },
+                            "signature": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 32,
+                              "maxLength": 256
+                            }
+                          },
+                          "required": [
+                            "protocol",
+                            "schemaVersion",
+                            "capabilityId",
+                            "invocationId",
+                            "conversationId",
+                            "agentVersionId",
+                            "agentVersionDigest",
+                            "workerInstallationId",
+                            "leaseId",
+                            "fence",
+                            "providerRequestId",
+                            "requestDigest",
+                            "model",
+                            "reasoningEffort",
+                            "budget",
+                            "notBefore",
+                            "expiresAt",
+                            "nonce",
+                            "signatureAlgorithm",
+                            "signature"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "invocationId",
+                        "conversationId",
+                        "clientMessageId",
+                        "requestDigest",
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "deadlineAt",
+                        "executionCapability"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.start" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "prepareCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "executionCapabilityId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "prepareCommandId", "executionCapabilityId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.cancel" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "CONSUMER_REQUEST",
+                            "DRAIN_DEADLINE",
+                            "SECURITY_REVOKE",
+                            "DEADLINE"
+                          ]
+                        }
+                      },
+                      "required": ["invocationId", "reason"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.reconcile" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "cloudState": {
+                          "type": "string",
+                          "enum": [
+                            "ACCEPTED",
+                            "QUEUED",
+                            "DISPATCH_PENDING",
+                            "PERSISTED",
+                            "STARTING",
+                            "RUNNING",
+                            "CANCEL_REQUESTED",
+                            "RECONCILING"
+                          ]
+                        },
+                        "reconciliationDeadlineAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["invocationId", "cloudState", "reconciliationDeadlineAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "ping" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "nonce": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 16,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": ["nonce"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "lease.accepted" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "leaseExpiresAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["leaseExpiresAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "lease.renewed" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "leaseExpiresAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["leaseExpiresAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "version.ready" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "smokeAttestationDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": ["generation", "agentVersionDigest", "smokeAttestationDigest"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "version.rejected" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "errorCode": { "type": "string", "minLength": 1 }
+                      },
+                      "required": ["generation", "errorCode"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "conversation.ready" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "sandboxInstanceId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["conversationId", "sandboxInstanceId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.prepared" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "requestDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                        },
+                        "prepareCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "requestDigest", "prepareCommandId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.started" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "dispatchReceiptDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "sandboxAttestationDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        }
+                      },
+                      "required": [
+                        "invocationId",
+                        "dispatchReceiptDigest",
+                        "sandboxAttestationDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.delta" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "deltaSequence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "text": { "type": "string", "minLength": 1 }
+                      },
+                      "required": ["invocationId", "deltaSequence", "text"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.succeeded" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "resultDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                        },
+                        "resultText": { "type": "string", "minLength": 1 },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "resultDigest", "resultText", "sourceEventId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.failed" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "errorCode": { "type": "string", "minLength": 1 },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "errorCode", "sourceEventId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.cancelled" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "interruptReceiptDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "interruptReceiptDigest", "sourceEventId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.uncertain" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "START_DISPATCH_UNKNOWN",
+                            "HOST_EVIDENCE_LOST",
+                            "MODEL_ATTEMPT_UNKNOWN",
+                            "CANCEL_NOT_CONFIRMED",
+                            "JOURNAL_LOST"
+                          ]
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "reason", "sourceEventId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "heartbeat" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "runtimeReady": { "type": "boolean" },
+                        "proxyReady": { "type": "boolean" },
+                        "journalReady": { "type": "boolean" },
+                        "activeInvocationId": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            { "type": "null" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "workerSessionId",
+                        "runtimeReady",
+                        "proxyReady",
+                        "journalReady",
+                        "activeInvocationId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "pong" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "nonce": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 16,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": ["nonce"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                },
+                "messageId": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                },
+                "correlationId": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                },
+                "connectionId": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                },
+                "sequence": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                },
+                "sentAt": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                },
+                "expiresAt": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                },
+                "kind": { "type": "string", "const": "ack" },
+                "type": { "type": "string", "const": "message.ack" },
+                "lease": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                },
+                "body": {
+                  "type": "object",
+                  "properties": {
+                    "acknowledgedMessageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": ["RECEIVED", "PERSISTED", "CLOUD_COMMITTED"]
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "APPLIED",
+                        "IDEMPOTENT_REPLAY",
+                        "NOOP_TERMINAL",
+                        "RECONCILE",
+                        "SECURITY_BLOCK"
+                      ]
+                    }
+                  },
+                  "required": ["acknowledgedMessageId", "level", "decision"],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "messageId",
+                "correlationId",
+                "connectionId",
+                "sequence",
+                "sentAt",
+                "expiresAt",
+                "kind",
+                "type",
+                "lease",
+                "body"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ExecutionCapability": {
+      "$ref": "#/definitions/ExecutionCapability",
+      "definitions": {
+        "ExecutionCapability": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.execution-capability/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "capabilityId": { "type": "string", "format": "uuid" },
+            "invocationId": { "$ref": "#/definitions/ExecutionCapability/properties/capabilityId" },
+            "conversationId": {
+              "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
+            },
+            "agentVersionId": {
+              "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "workerInstallationId": {
+              "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
+            },
+            "leaseId": { "$ref": "#/definitions/ExecutionCapability/properties/capabilityId" },
+            "fence": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+            "providerRequestId": {
+              "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
+            },
+            "requestDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+            "model": { "type": "string", "minLength": 1 },
+            "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
+            "budget": {
+              "type": "object",
+              "properties": {
+                "maxInputTokens": { "type": "integer", "minimum": 1, "maximum": 200000 },
+                "maxOutputTokens": { "type": "integer", "minimum": 1, "maximum": 32768 },
+                "maxCostMicros": { "type": "integer", "minimum": 1, "maximum": 100000000 }
+              },
+              "required": ["maxInputTokens", "maxOutputTokens", "maxCostMicros"],
+              "additionalProperties": false
+            },
+            "notBefore": { "type": "string", "format": "date-time" },
+            "expiresAt": { "$ref": "#/definitions/ExecutionCapability/properties/notBefore" },
+            "nonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 128
+            },
+            "signatureAlgorithm": { "type": "string", "const": "ES256" },
+            "signature": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 32,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "capabilityId",
+            "invocationId",
+            "conversationId",
+            "agentVersionId",
+            "agentVersionDigest",
+            "workerInstallationId",
+            "leaseId",
+            "fence",
+            "providerRequestId",
+            "requestDigest",
+            "model",
+            "reasoningEffort",
+            "budget",
+            "notBefore",
+            "expiresAt",
+            "nonce",
+            "signatureAlgorithm",
+            "signature"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "InvocationTransition": {
+      "$ref": "#/definitions/InvocationTransition",
+      "definitions": {
+        "InvocationTransition": {
+          "type": "object",
+          "properties": {
+            "from": {
+              "type": "string",
+              "enum": [
+                "ACCEPTED",
+                "QUEUED",
+                "DISPATCH_PENDING",
+                "PERSISTED",
+                "STARTING",
+                "RUNNING",
+                "CANCEL_REQUESTED",
+                "RECONCILING",
+                "SUCCEEDED",
+                "FAILED",
+                "CANCELLED",
+                "UNCERTAIN",
+                "EXPIRED"
+              ]
+            },
+            "to": { "$ref": "#/definitions/InvocationTransition/properties/from" },
+            "evidence": {
+              "type": "object",
+              "properties": {
+                "durableFinal": { "type": "boolean" },
+                "terminalFailureConfirmed": { "type": "boolean" },
+                "interruptConfirmed": { "type": "boolean" },
+                "provedNotExecuted": { "type": "boolean" },
+                "executionEvidenceLost": { "type": "boolean" },
+                "reconciliationExhausted": { "type": "boolean" },
+                "queueTtlExpiredBeforeDispatch": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": ["from", "to", "evidence"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "VnextErrorResponse": {
+      "$ref": "#/definitions/VnextErrorResponse",
+      "definitions": {
+        "VnextErrorResponse": {
+          "type": "object",
+          "properties": {
+            "code": {
+              "type": "string",
+              "enum": [
+                "INVALID_INPUT",
+                "UNAUTHORIZED",
+                "FORBIDDEN",
+                "RATE_LIMITED",
+                "IDEMPOTENCY_CONFLICT",
+                "SNAPSHOT_EMPTY",
+                "SNAPSHOT_SOURCE_CHANGED",
+                "SNAPSHOT_LIMIT_EXCEEDED",
+                "SNAPSHOT_PATH_REJECTED",
+                "SNAPSHOT_SECRET_DETECTED",
+                "AGENT_OFFLINE",
+                "AGENT_BUSY",
+                "QUEUE_FULL",
+                "VERSION_UNAVAILABLE",
+                "VERSION_DIGEST_MISMATCH",
+                "SNAPSHOT_DIGEST_MISMATCH",
+                "CONVERSATION_BUSY",
+                "CONVERSATION_EXPIRED",
+                "CONVERSATION_CONTEXT_LIMIT",
+                "WORKER_OFFLINE_TIMEOUT",
+                "MODEL_QUOTA_EXHAUSTED",
+                "STALE_LEASE",
+                "STALE_FENCE",
+                "PROTOCOL_INCOMPATIBLE",
+                "SANDBOX_ATTESTATION_FAILED",
+                "RUNTIME_START_FAILED",
+                "TURN_TIMEOUT",
+                "TURN_FAILED",
+                "CANCEL_NOT_CONFIRMED",
+                "EXECUTION_STATE_UNKNOWN",
+                "SSE_CURSOR_EXPIRED"
+              ]
+            },
+            "retryPolicy": {
+              "type": "string",
+              "enum": [
+                "REPLAY_SAME_REQUEST",
+                "NEW_INVOCATION_ALLOWED",
+                "DO_NOT_AUTO_RETRY",
+                "NOT_RETRYABLE"
+              ]
+            },
+            "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "requestId": { "type": "string", "minLength": 8, "maxLength": 128 }
+          },
+          "required": ["code", "retryPolicy", "message", "requestId"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SandboxSpec": {
+      "$ref": "#/definitions/SandboxSpec",
+      "definitions": {
+        "SandboxSpec": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.sandbox-spec/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
+            "adapterVersion": { "type": "string", "minLength": 1 },
+            "imageDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "codexArtifactDigest": { "$ref": "#/definitions/SandboxSpec/properties/imageDigest" },
+            "codexProtocolSchemaDigest": {
+              "$ref": "#/definitions/SandboxSpec/properties/imageDigest"
+            },
+            "platform": { "type": "string", "const": "linux-arm64" },
+            "lifecycle": {
+              "type": "object",
+              "properties": {
+                "isolationUnit": { "type": "string", "const": "conversation" },
+                "idleTtlSeconds": { "type": "number", "const": 600 },
+                "writableStateReuse": { "type": "string", "const": "forbidden" },
+                "reconstruction": { "type": "string", "const": "visible-transcript-only" }
+              },
+              "required": [
+                "isolationUnit",
+                "idleTtlSeconds",
+                "writableStateReuse",
+                "reconstruction"
+              ],
+              "additionalProperties": false
+            },
+            "resources": {
+              "type": "object",
+              "properties": {
+                "vcpu": { "type": "number", "const": 2 },
+                "memoryBytes": { "type": "number", "const": 2147483648 },
+                "scratchBytes": { "type": "number", "const": 268435456 },
+                "pids": { "type": "number", "const": 256 },
+                "fileDescriptors": { "type": "number", "const": 256 },
+                "turnDeadlineSeconds": { "type": "number", "const": 120 }
+              },
+              "required": [
+                "vcpu",
+                "memoryBytes",
+                "scratchBytes",
+                "pids",
+                "fileDescriptors",
+                "turnDeadlineSeconds"
+              ],
+              "additionalProperties": false
+            },
+            "mounts": {
+              "type": "object",
+              "properties": {
+                "context": { "type": "string", "const": "/agent/context:ro,noexec" },
+                "scratch": { "type": "string", "const": "/agent/scratch:rw,conversation-only" },
+                "temporary": { "type": "string", "const": "/tmp:rw,conversation-only" },
+                "hostMounts": { "type": "string", "const": "none" }
+              },
+              "required": ["context", "scratch", "temporary", "hostMounts"],
+              "additionalProperties": false
+            },
+            "runtimeCapabilities": {
+              "type": "object",
+              "properties": {
+                "contextTools": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": [
+                    { "type": "string", "const": "read_context" },
+                    { "type": "string", "const": "list_context" },
+                    { "type": "string", "const": "search_context" }
+                  ]
+                },
+                "shell": { "type": "boolean", "const": false },
+                "interpreters": { "type": "boolean", "const": false },
+                "compilers": { "type": "boolean", "const": false },
+                "dynamicLoaders": { "type": "boolean", "const": false },
+                "externalTools": { "type": "boolean", "const": false }
+              },
+              "required": [
+                "contextTools",
+                "shell",
+                "interpreters",
+                "compilers",
+                "dynamicLoaders",
+                "externalTools"
+              ],
+              "additionalProperties": false
+            },
+            "network": {
+              "type": "object",
+              "properties": {
+                "ingress": { "type": "string", "const": "deny-all" },
+                "egress": { "type": "string", "const": "model-proxy-only" },
+                "dns": { "type": "string", "const": "disabled" },
+                "proxyTransport": { "type": "string", "enum": ["vsock", "protected-ipc"] }
+              },
+              "required": ["ingress", "egress", "dns", "proxyTransport"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "adapter",
+            "adapterVersion",
+            "imageDigest",
+            "codexArtifactDigest",
+            "codexProtocolSchemaDigest",
+            "platform",
+            "lifecycle",
+            "resources",
+            "mounts",
+            "runtimeCapabilities",
+            "network"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SandboxAttestation": {
+      "$ref": "#/definitions/SandboxAttestation",
+      "definitions": {
+        "SandboxAttestation": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.sandbox-attestation/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
+            "adapterVersion": { "type": "string", "minLength": 1 },
+            "sandboxInstanceId": { "type": "string", "format": "uuid" },
+            "conversationId": {
+              "$ref": "#/definitions/SandboxAttestation/properties/sandboxInstanceId"
+            },
+            "invocationId": {
+              "$ref": "#/definitions/SandboxAttestation/properties/sandboxInstanceId"
+            },
+            "workerSessionId": {
+              "$ref": "#/definitions/SandboxAttestation/properties/sandboxInstanceId"
+            },
+            "leaseId": { "$ref": "#/definitions/SandboxAttestation/properties/sandboxInstanceId" },
+            "fencingToken": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+            "bootNonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 128
+            },
+            "sandboxImageDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "codexImageDigest": {
+              "$ref": "#/definitions/SandboxAttestation/properties/sandboxImageDigest"
+            },
+            "codexVersion": { "type": "string", "minLength": 1 },
+            "protocolSchemaDigest": {
+              "$ref": "#/definitions/SandboxAttestation/properties/sandboxImageDigest"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "snapshotDigest": {
+              "$ref": "#/definitions/SandboxAttestation/properties/agentVersionDigest"
+            },
+            "behaviorDigest": {
+              "$ref": "#/definitions/SandboxAttestation/properties/agentVersionDigest"
+            },
+            "runtimePolicyDigest": {
+              "$ref": "#/definitions/SandboxAttestation/properties/agentVersionDigest"
+            },
+            "ioContractDigest": {
+              "$ref": "#/definitions/SandboxAttestation/properties/agentVersionDigest"
+            },
+            "noHostHomeMount": { "type": "boolean", "const": true },
+            "contextReadOnly": { "type": "boolean", "const": true },
+            "contextNoExec": { "type": "boolean", "const": true },
+            "noLongLivedCredential": { "type": "boolean", "const": true },
+            "projectExecution": { "type": "string", "const": "closed-world-context-tools-only" },
+            "egressMode": { "type": "string", "const": "model-proxy-only" },
+            "proxyTransportBinding": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 256
+            },
+            "createdAt": { "type": "string", "format": "date-time" },
+            "expiresAt": { "$ref": "#/definitions/SandboxAttestation/properties/createdAt" },
+            "destroyed": { "type": "boolean", "const": false },
+            "signatureAlgorithm": { "type": "string", "const": "P-256-ECDSA-SHA256" },
+            "supervisorSignature": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 32,
+              "maxLength": 256
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "adapter",
+            "adapterVersion",
+            "sandboxInstanceId",
+            "conversationId",
+            "invocationId",
+            "workerSessionId",
+            "leaseId",
+            "fencingToken",
+            "bootNonce",
+            "sandboxImageDigest",
+            "codexImageDigest",
+            "codexVersion",
+            "protocolSchemaDigest",
+            "agentVersionDigest",
+            "snapshotDigest",
+            "behaviorDigest",
+            "runtimePolicyDigest",
+            "ioContractDigest",
+            "noHostHomeMount",
+            "contextReadOnly",
+            "contextNoExec",
+            "noLongLivedCredential",
+            "projectExecution",
+            "egressMode",
+            "proxyTransportBinding",
+            "createdAt",
+            "expiresAt",
+            "destroyed",
+            "signatureAlgorithm",
+            "supervisorSignature"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SnapshotUploadCreateRequest": {
+      "$ref": "#/definitions/SnapshotUploadCreateRequest",
+      "definitions": {
+        "SnapshotUploadCreateRequest": {
+          "type": "object",
+          "properties": {
+            "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "archiveDigest": {
+              "$ref": "#/definitions/SnapshotUploadCreateRequest/properties/snapshotDigest"
+            },
+            "compressedBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
+            "expandedBytes": { "type": "integer", "minimum": 1, "maximum": 209715200 },
+            "fileCount": { "type": "integer", "minimum": 1, "maximum": 2000 }
+          },
+          "required": [
+            "snapshotDigest",
+            "archiveDigest",
+            "compressedBytes",
+            "expandedBytes",
+            "fileCount"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SnapshotUploadCreateResponse": {
+      "$ref": "#/definitions/SnapshotUploadCreateResponse",
+      "definitions": {
+        "SnapshotUploadCreateResponse": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "uploadId": { "type": "string", "format": "uuid" },
+            "state": { "type": "string", "const": "CREATED" },
+            "putUrl": { "type": "string", "format": "uri" },
+            "requiredHeaders": {
+              "type": "object",
+              "properties": {
+                "contentLength": { "type": "integer", "minimum": 1, "maximum": 53477376 },
+                "checksumSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+              },
+              "required": ["contentLength", "checksumSha256"],
+              "additionalProperties": false
+            },
+            "expiresAt": { "type": "string", "format": "date-time" }
+          },
+          "required": ["protocol", "uploadId", "state", "putUrl", "requiredHeaders", "expiresAt"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SnapshotUploadCompleteRequest": {
+      "$ref": "#/definitions/SnapshotUploadCompleteRequest",
+      "definitions": {
+        "SnapshotUploadCompleteRequest": {
+          "type": "object",
+          "properties": {
+            "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "encryptedBytes": { "type": "integer", "minimum": 1, "maximum": 53477376 }
+          },
+          "required": ["cipherDigest", "encryptedBytes"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SnapshotUploadView": {
+      "$ref": "#/definitions/SnapshotUploadView",
+      "definitions": {
+        "SnapshotUploadView": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "uploadId": { "type": "string", "format": "uuid" },
+            "state": {
+              "type": "string",
+              "enum": ["CREATED", "UPLOADED", "VERIFYING", "VERIFIED", "REJECTED", "EXPIRED"]
+            },
+            "snapshotId": {
+              "anyOf": [
+                { "$ref": "#/definitions/SnapshotUploadView/properties/uploadId" },
+                { "type": "null" }
+              ]
+            },
+            "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "errorCode": { "anyOf": [{ "type": "string", "maxLength": 128 }, { "type": "null" }] },
+            "updatedAt": { "type": "string", "format": "date-time" }
+          },
+          "required": [
+            "protocol",
+            "uploadId",
+            "state",
+            "snapshotId",
+            "snapshotDigest",
+            "errorCode",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "CreateAgentRequest": {
+      "$ref": "#/definitions/CreateAgentRequest",
+      "definitions": {
+        "CreateAgentRequest": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "description": { "type": "string", "minLength": 1 }
+          },
+          "required": ["name", "description"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "AgentView": {
+      "$ref": "#/definitions/AgentView",
+      "definitions": {
+        "AgentView": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "agentId": { "type": "string", "format": "uuid" },
+            "publicSlug": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" },
+            "name": { "type": "string", "minLength": 1 },
+            "description": { "type": "string", "minLength": 1 },
+            "lifecycle": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
+            "createdAt": { "type": "string", "format": "date-time" }
+          },
+          "required": [
+            "protocol",
+            "agentId",
+            "publicSlug",
+            "name",
+            "description",
+            "lifecycle",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "CreateAgentVersionRequest": {
+      "$ref": "#/definitions/CreateAgentVersionRequest",
+      "definitions": {
+        "CreateAgentVersionRequest": {
+          "type": "object",
+          "properties": {
+            "verifiedSnapshotId": { "type": "string", "format": "uuid" },
+            "manifest": {
+              "type": "object",
+              "properties": {
+                "protocol": { "type": "string", "const": "combo.agent-version-manifest/1" },
+                "schemaVersion": { "type": "number", "const": 1 },
+                "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "behaviorContract": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "number", "const": 1 },
+                    "role": { "type": "string", "minLength": 1 },
+                    "objective": { "type": "string", "minLength": 1 },
+                    "developerInstructions": {
+                      "type": "array",
+                      "items": { "type": "string", "minLength": 1 },
+                      "minItems": 1,
+                      "maxItems": 32
+                    },
+                    "language": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+                    "evidencePolicy": {
+                      "type": "string",
+                      "enum": ["none", "cite-relative-path-when-used"]
+                    },
+                    "answerStyle": {
+                      "type": "string",
+                      "enum": ["plain", "conclusion-evidence-risk"]
+                    }
+                  },
+                  "required": [
+                    "schemaVersion",
+                    "role",
+                    "objective",
+                    "developerInstructions",
+                    "language",
+                    "evidencePolicy",
+                    "answerStyle"
+                  ],
+                  "additionalProperties": false
+                },
+                "runtimePolicy": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "number", "const": 1 },
+                    "isolation": { "type": "string", "const": "conversation-vm-required" },
+                    "filesystem": {
+                      "type": "object",
+                      "properties": {
+                        "context": { "type": "string", "const": "read-only-noexec" },
+                        "scratch": { "type": "string", "const": "conversation-only" },
+                        "hostMounts": { "type": "string", "const": "forbidden" }
+                      },
+                      "required": ["context", "scratch", "hostMounts"],
+                      "additionalProperties": false
+                    },
+                    "contextTools": {
+                      "type": "array",
+                      "minItems": 3,
+                      "maxItems": 3,
+                      "items": [
+                        { "type": "string", "const": "read_context" },
+                        { "type": "string", "const": "list_context" },
+                        { "type": "string", "const": "search_context" }
+                      ]
+                    },
+                    "projectExecution": { "type": "string", "const": "forbidden" },
+                    "network": { "type": "string", "const": "model-proxy-only" },
+                    "externalTools": { "type": "string", "const": "disabled" },
+                    "hostCredentials": { "type": "string", "const": "forbidden" },
+                    "maxTurnSeconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+                    "maxConversationTurns": { "type": "integer", "minimum": 1, "maximum": 20 },
+                    "maxVisibleHistoryBytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+                    "maxActiveTurns": { "type": "number", "const": 1 },
+                    "resolvedModel": { "type": "string", "minLength": 1 },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "enum": ["low", "medium", "high", "xhigh"]
+                    }
+                  },
+                  "required": [
+                    "schemaVersion",
+                    "isolation",
+                    "filesystem",
+                    "contextTools",
+                    "projectExecution",
+                    "network",
+                    "externalTools",
+                    "hostCredentials",
+                    "maxTurnSeconds",
+                    "maxConversationTurns",
+                    "maxVisibleHistoryBytes",
+                    "maxActiveTurns",
+                    "resolvedModel",
+                    "reasoningEffort"
+                  ],
+                  "additionalProperties": false
+                },
+                "ioContract": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "number", "const": 1 },
+                    "input": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string", "const": "text" },
+                        "maxUtf8Bytes": { "type": "number", "const": 16384 }
+                      },
+                      "required": ["type", "maxUtf8Bytes"],
+                      "additionalProperties": false
+                    },
+                    "output": {
+                      "type": "object",
+                      "properties": {
+                        "type": { "type": "string", "const": "text" },
+                        "maxUtf8Bytes": { "type": "number", "const": 32768 }
+                      },
+                      "required": ["type", "maxUtf8Bytes"],
+                      "additionalProperties": false
+                    },
+                    "files": { "type": "boolean", "const": false },
+                    "actions": { "type": "boolean", "const": false },
+                    "rawReasoning": { "type": "boolean", "const": false }
+                  },
+                  "required": [
+                    "schemaVersion",
+                    "input",
+                    "output",
+                    "files",
+                    "actions",
+                    "rawReasoning"
+                  ],
+                  "additionalProperties": false
+                },
+                "codexRuntime": {
+                  "type": "object",
+                  "properties": {
+                    "version": { "type": "string", "minLength": 1 },
+                    "artifactDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                    "protocolSchemaDigest": {
+                      "$ref": "#/definitions/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/artifactDigest"
+                    },
+                    "platform": { "type": "string", "const": "linux-arm64" }
+                  },
+                  "required": ["version", "artifactDigest", "protocolSchemaDigest", "platform"],
+                  "additionalProperties": false
+                },
+                "modelPolicy": {
+                  "type": "object",
+                  "properties": {
+                    "schemaVersion": { "type": "number", "const": 1 },
+                    "model": { "type": "string", "minLength": 1 },
+                    "reasoningEffort": {
+                      "type": "string",
+                      "enum": ["low", "medium", "high", "xhigh"]
+                    },
+                    "creatorFunded": { "type": "boolean", "const": true }
+                  },
+                  "required": ["schemaVersion", "model", "reasoningEffort", "creatorFunded"],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "snapshotDigest",
+                "behaviorContract",
+                "runtimePolicy",
+                "ioContract",
+                "codexRuntime",
+                "modelPolicy"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": ["verifiedSnapshotId", "manifest"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "AgentVersionView": {
+      "$ref": "#/definitions/AgentVersionView",
+      "definitions": {
+        "AgentVersionView": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "agentVersionId": { "type": "string", "format": "uuid" },
+            "agentId": { "$ref": "#/definitions/AgentVersionView/properties/agentVersionId" },
+            "ordinal": { "type": "integer", "minimum": 1 },
+            "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "snapshotDigest": { "$ref": "#/definitions/AgentVersionView/properties/versionDigest" },
+            "availability": { "type": "string", "enum": ["ACTIVE", "DEPRECATED", "REVOKED"] },
+            "createdAt": { "type": "string", "format": "date-time" }
+          },
+          "required": [
+            "protocol",
+            "agentVersionId",
+            "agentId",
+            "ordinal",
+            "versionDigest",
+            "snapshotDigest",
+            "availability",
+            "createdAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "DeploymentMutation": {
+      "$ref": "#/definitions/DeploymentMutation",
+      "definitions": {
+        "DeploymentMutation": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "desiredState": { "type": "string", "const": "ONLINE" },
+                "desiredVersionId": { "type": "string", "format": "uuid" }
+              },
+              "required": ["desiredState", "desiredVersionId"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "desiredState": { "type": "string", "const": "OFFLINE" },
+                "mode": { "type": "string", "enum": ["DRAIN", "IMMEDIATE"] }
+              },
+              "required": ["desiredState", "mode"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "DeploymentView": {
+      "$ref": "#/definitions/DeploymentView",
+      "definitions": {
+        "DeploymentView": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "agentId": { "type": "string", "format": "uuid" },
+            "desiredState": { "type": "string", "enum": ["ONLINE", "OFFLINE"] },
+            "desiredVersionId": {
+              "anyOf": [
+                { "$ref": "#/definitions/DeploymentView/properties/agentId" },
+                { "type": "null" }
+              ]
+            },
+            "servingVersionId": {
+              "anyOf": [
+                { "$ref": "#/definitions/DeploymentView/properties/agentId" },
+                { "type": "null" }
+              ]
+            },
+            "observedState": {
+              "type": "string",
+              "enum": [
+                "OFFLINE",
+                "PREPARING",
+                "ONLINE",
+                "UPDATING",
+                "DRAINING",
+                "DEGRADED",
+                "BLOCKED"
+              ]
+            },
+            "generation": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+            "lastErrorCode": {
+              "anyOf": [{ "type": "string", "maxLength": 128 }, { "type": "null" }]
+            },
+            "updatedAt": { "type": "string", "format": "date-time" }
+          },
+          "required": [
+            "protocol",
+            "agentId",
+            "desiredState",
+            "desiredVersionId",
+            "servingVersionId",
+            "observedState",
+            "generation",
+            "lastErrorCode",
+            "updatedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "CreateConversationRequest": {
+      "$ref": "#/definitions/CreateConversationRequest",
+      "definitions": {
+        "CreateConversationRequest": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ConversationView": {
+      "$ref": "#/definitions/ConversationView",
+      "definitions": {
+        "ConversationView": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "conversationId": { "type": "string", "format": "uuid" },
+            "agentId": { "$ref": "#/definitions/ConversationView/properties/conversationId" },
+            "agentVersionId": {
+              "$ref": "#/definitions/ConversationView/properties/conversationId"
+            },
+            "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "state": {
+              "type": "string",
+              "enum": [
+                "OPENING",
+                "IDLE",
+                "BUSY",
+                "SUSPENDED",
+                "CLOSING",
+                "CLOSED",
+                "FAILED",
+                "EXPIRED"
+              ]
+            },
+            "createdAt": { "type": "string", "format": "date-time" },
+            "expiresAt": { "$ref": "#/definitions/ConversationView/properties/createdAt" }
+          },
+          "required": [
+            "protocol",
+            "conversationId",
+            "agentId",
+            "agentVersionId",
+            "versionDigest",
+            "state",
+            "createdAt",
+            "expiresAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "SendConversationMessageRequest": {
+      "$ref": "#/definitions/SendConversationMessageRequest",
+      "definitions": {
+        "SendConversationMessageRequest": {
+          "type": "object",
+          "properties": {
+            "clientMessageId": { "type": "string", "format": "uuid" },
+            "text": { "type": "string", "minLength": 1 }
+          },
+          "required": ["clientMessageId", "text"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "InvocationAcceptedResponse": {
+      "$ref": "#/definitions/InvocationAcceptedResponse",
+      "definitions": {
+        "InvocationAcceptedResponse": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "invocationId": { "type": "string", "format": "uuid" },
+            "state": { "type": "string", "enum": ["ACCEPTED", "QUEUED"] }
+          },
+          "required": ["protocol", "invocationId", "state"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "InvocationView": {
+      "$ref": "#/definitions/InvocationView",
+      "definitions": {
+        "InvocationView": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "invocationId": { "type": "string", "format": "uuid" },
+            "conversationId": { "$ref": "#/definitions/InvocationView/properties/invocationId" },
+            "state": {
+              "type": "string",
+              "enum": [
+                "ACCEPTED",
+                "QUEUED",
+                "DISPATCH_PENDING",
+                "PERSISTED",
+                "STARTING",
+                "RUNNING",
+                "CANCEL_REQUESTED",
+                "RECONCILING",
+                "SUCCEEDED",
+                "FAILED",
+                "CANCELLED",
+                "UNCERTAIN",
+                "EXPIRED"
+              ]
+            },
+            "resultDigest": {
+              "anyOf": [
+                { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+                { "type": "null" }
+              ]
+            },
+            "error": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "INVALID_INPUT",
+                        "UNAUTHORIZED",
+                        "FORBIDDEN",
+                        "RATE_LIMITED",
+                        "IDEMPOTENCY_CONFLICT",
+                        "SNAPSHOT_EMPTY",
+                        "SNAPSHOT_SOURCE_CHANGED",
+                        "SNAPSHOT_LIMIT_EXCEEDED",
+                        "SNAPSHOT_PATH_REJECTED",
+                        "SNAPSHOT_SECRET_DETECTED",
+                        "AGENT_OFFLINE",
+                        "AGENT_BUSY",
+                        "QUEUE_FULL",
+                        "VERSION_UNAVAILABLE",
+                        "VERSION_DIGEST_MISMATCH",
+                        "SNAPSHOT_DIGEST_MISMATCH",
+                        "CONVERSATION_BUSY",
+                        "CONVERSATION_EXPIRED",
+                        "CONVERSATION_CONTEXT_LIMIT",
+                        "WORKER_OFFLINE_TIMEOUT",
+                        "MODEL_QUOTA_EXHAUSTED",
+                        "STALE_LEASE",
+                        "STALE_FENCE",
+                        "PROTOCOL_INCOMPATIBLE",
+                        "SANDBOX_ATTESTATION_FAILED",
+                        "RUNTIME_START_FAILED",
+                        "TURN_TIMEOUT",
+                        "TURN_FAILED",
+                        "CANCEL_NOT_CONFIRMED",
+                        "EXECUTION_STATE_UNKNOWN",
+                        "SSE_CURSOR_EXPIRED"
+                      ]
+                    },
+                    "retryPolicy": {
+                      "type": "string",
+                      "enum": [
+                        "REPLAY_SAME_REQUEST",
+                        "NEW_INVOCATION_ALLOWED",
+                        "DO_NOT_AUTO_RETRY",
+                        "NOT_RETRYABLE"
+                      ]
+                    },
+                    "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "requestId": { "type": "string", "minLength": 8, "maxLength": 128 }
+                  },
+                  "required": ["code", "retryPolicy", "message", "requestId"],
+                  "additionalProperties": false
+                },
+                { "type": "null" }
+              ]
+            },
+            "retryOfInvocationId": {
+              "anyOf": [
+                { "$ref": "#/definitions/InvocationView/properties/invocationId" },
+                { "type": "null" }
+              ]
+            },
+            "createdAt": { "type": "string", "format": "date-time" },
+            "terminalAt": {
+              "anyOf": [
+                { "$ref": "#/definitions/InvocationView/properties/createdAt" },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": [
+            "protocol",
+            "invocationId",
+            "conversationId",
+            "state",
+            "resultDigest",
+            "error",
+            "retryOfInvocationId",
+            "createdAt",
+            "terminalAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "CancelInvocationRequest": {
+      "$ref": "#/definitions/CancelInvocationRequest",
+      "definitions": {
+        "CancelInvocationRequest": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "RetryInvocationRequest": {
+      "$ref": "#/definitions/RetryInvocationRequest",
+      "definitions": {
+        "RetryInvocationRequest": {
+          "type": "object",
+          "properties": { "clientMessageId": { "type": "string", "format": "uuid" } },
+          "required": ["clientMessageId"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ConversationTranscript": {
+      "$ref": "#/definitions/ConversationTranscript",
+      "definitions": {
+        "ConversationTranscript": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+            "conversation": {
+              "type": "object",
+              "properties": {
+                "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
+                "conversationId": { "type": "string", "format": "uuid" },
+                "agentId": {
+                  "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/conversationId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/conversationId"
+                },
+                "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "OPENING",
+                    "IDLE",
+                    "BUSY",
+                    "SUSPENDED",
+                    "CLOSING",
+                    "CLOSED",
+                    "FAILED",
+                    "EXPIRED"
+                  ]
+                },
+                "createdAt": { "type": "string", "format": "date-time" },
+                "expiresAt": {
+                  "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/createdAt"
+                }
+              },
+              "required": [
+                "protocol",
+                "conversationId",
+                "agentId",
+                "agentVersionId",
+                "versionDigest",
+                "state",
+                "createdAt",
+                "expiresAt"
+              ],
+              "additionalProperties": false
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "messageId": {
+                    "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/conversationId"
+                  },
+                  "invocationId": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/conversationId"
+                      },
+                      { "type": "null" }
+                    ]
+                  },
+                  "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
+                  "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
+                  "text": { "type": "string", "minLength": 1 },
+                  "createdAt": {
+                    "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/createdAt"
+                  }
+                },
+                "required": ["messageId", "invocationId", "turnNo", "role", "text", "createdAt"],
+                "additionalProperties": false
+              },
+              "maxItems": 40
+            },
+            "latestEventId": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" }
+          },
+          "required": ["protocol", "conversation", "messages", "latestEventId"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ConsumerEvent": {
+      "$ref": "#/definitions/ConsumerEvent",
+      "definitions": {
+        "ConsumerEvent": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+                "type": { "type": "string", "const": "invocation.state" },
+                "invocationId": { "type": "string", "format": "uuid" },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "ACCEPTED",
+                    "QUEUED",
+                    "DISPATCH_PENDING",
+                    "PERSISTED",
+                    "STARTING",
+                    "RUNNING",
+                    "CANCEL_REQUESTED",
+                    "RECONCILING",
+                    "SUCCEEDED",
+                    "FAILED",
+                    "CANCELLED",
+                    "UNCERTAIN",
+                    "EXPIRED"
+                  ]
+                },
+                "occurredAt": { "type": "string", "format": "date-time" }
+              },
+              "required": ["id", "type", "invocationId", "state", "occurredAt"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": { "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/id" },
+                "type": { "type": "string", "const": "invocation.delta" },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                },
+                "text": { "type": "string", "minLength": 1 },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                }
+              },
+              "required": ["id", "type", "invocationId", "text", "occurredAt"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": { "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/id" },
+                "type": { "type": "string", "const": "conversation.message" },
+                "message": {
+                  "type": "object",
+                  "properties": {
+                    "messageId": {
+                      "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                    },
+                    "invocationId": {
+                      "anyOf": [
+                        { "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId" },
+                        { "type": "null" }
+                      ]
+                    },
+                    "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
+                    "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
+                    "text": { "type": "string", "minLength": 1 },
+                    "createdAt": {
+                      "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                    }
+                  },
+                  "required": ["messageId", "invocationId", "turnNo", "role", "text", "createdAt"],
+                  "additionalProperties": false
+                },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                }
+              },
+              "required": ["id", "type", "message", "occurredAt"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": { "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/id" },
+                "type": { "type": "string", "const": "conversation.presence" },
+                "status": { "type": "string", "enum": ["ONLINE", "BUSY", "OFFLINE"] },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                }
+              },
+              "required": ["id", "type", "status", "occurredAt"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceBundleManifest": {
+      "$ref": "#/definitions/EvidenceBundleManifest",
+      "definitions": {
+        "EvidenceBundleManifest": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "rcId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+            "sourceSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "cloudImageDigests": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "propertyNames": { "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+            },
+            "workerArtifactDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "codexArtifactDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "sandboxImageDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "modelProxyArtifactDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "snapshotDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/agentVersionDigest"
+            },
+            "behaviorContractDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/agentVersionDigest"
+            },
+            "runtimePolicyDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/agentVersionDigest"
+            },
+            "codexProtocolSchemaDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "sandboxAdapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
+            "sandboxAdapterVersion": { "type": "string", "minLength": 1 },
+            "testSuiteDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "macosBuild": { "type": "string", "minLength": 1 },
+            "kernelBuild": { "type": "string", "minLength": 1 },
+            "testBuildMode": {
+              "type": "string",
+              "const": "exact-release-artifact-with-locked-one-shot-probe"
+            },
+            "startedAt": { "type": "string", "format": "date-time" },
+            "finishedAt": { "$ref": "#/definitions/EvidenceBundleManifest/properties/startedAt" },
+            "results": {
+              "type": "object",
+              "properties": {
+                "pass": { "type": "integer", "minimum": 0 },
+                "fail": { "type": "integer", "minimum": 0 },
+                "blocked": { "type": "integer", "minimum": 0 },
+                "notRun": { "type": "integer", "minimum": 0 }
+              },
+              "required": ["pass", "fail", "blocked", "notRun"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "rcId",
+            "sourceSha",
+            "cloudImageDigests",
+            "workerArtifactDigest",
+            "codexArtifactDigest",
+            "sandboxImageDigest",
+            "modelProxyArtifactDigest",
+            "agentVersionDigest",
+            "snapshotDigest",
+            "behaviorContractDigest",
+            "runtimePolicyDigest",
+            "codexProtocolSchemaDigest",
+            "sandboxAdapter",
+            "sandboxAdapterVersion",
+            "testSuiteDigest",
+            "macosBuild",
+            "kernelBuild",
+            "testBuildMode",
+            "startedAt",
+            "finishedAt",
+            "results"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceBundleIndex": {
+      "$ref": "#/definitions/EvidenceBundleIndex",
+      "definitions": {
+        "EvidenceBundleIndex": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "manifestDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "artifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "enum": [
+                      "manifest.json",
+                      "environment.json",
+                      "junit/index.json",
+                      "contract-fixtures/index.json",
+                      "digests/index.json",
+                      "metrics-summary.json",
+                      "fault-summary.json",
+                      "isolation-summary.json",
+                      "dr-summary.json",
+                      "privacy-scan.json",
+                      "reviewer-signoff.json"
+                    ]
+                  },
+                  "digest": {
+                    "$ref": "#/definitions/EvidenceBundleIndex/properties/manifestDigest"
+                  },
+                  "bytes": { "type": "integer", "minimum": 0, "maximum": 1073741824 }
+                },
+                "required": ["path", "digest", "bytes"],
+                "additionalProperties": false
+              },
+              "minItems": 11,
+              "maxItems": 11
+            }
+          },
+          "required": ["protocol", "schemaVersion", "manifestDigest", "artifacts"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceEnvironment": {
+      "$ref": "#/definitions/EvidenceEnvironment",
+      "definitions": {
+        "EvidenceEnvironment": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "environmentId": {
+              "type": "string",
+              "enum": [
+                "T0-LINUX-CI",
+                "T1-SERVICE-CI",
+                "T2-LOCAL-CONTRACT",
+                "T3-MAC-REAL-HOST",
+                "T4-MAC-ISOLATION",
+                "T5-K3S-TEST",
+                "T6-FULL-E2E",
+                "T7-DR"
+              ]
+            },
+            "os": { "type": "string", "minLength": 1 },
+            "architecture": { "type": "string", "enum": ["arm64", "x64"] },
+            "runtimeVersions": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 },
+              "propertyNames": { "minLength": 1, "maxLength": 64 }
+            },
+            "realComponents": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "maxItems": 64
+            },
+            "substitutedComponents": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "maxItems": 64
+            },
+            "capturedAt": { "type": "string", "format": "date-time" }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "environmentId",
+            "os",
+            "architecture",
+            "runtimeVersions",
+            "realComponents",
+            "substitutedComponents",
+            "capturedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "InvariantRegistry": {
+      "$ref": "#/definitions/InvariantRegistry",
+      "definitions": {
+        "InvariantRegistry": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-invariant-registry/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "invariants": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "pattern": "^INV-\\d{3}$" },
+                  "statement": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                  "severity": { "type": "string", "enum": ["P0", "P1"] },
+                  "gates": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"]
+                    },
+                    "minItems": 1
+                  },
+                  "owners": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+                    "minItems": 1
+                  }
+                },
+                "required": ["id", "statement", "severity", "gates", "owners"],
+                "additionalProperties": false
+              },
+              "minItems": 25,
+              "maxItems": 25
+            }
+          },
+          "required": ["protocol", "schemaVersion", "invariants"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "TestCaseRegistry": {
+      "$ref": "#/definitions/TestCaseRegistry",
+      "definitions": {
+        "TestCaseRegistry": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-test-registry/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "cases": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^(?:SCH|SNP|AVR|DEP|BRK|CJR|WJR|HST|RTP|ISO|CRD|CRT|CON|SEC|FLT|PER|K8S|BKP|OBS|E2E|AQL)-[A-Z0-9-]+$"
+                  },
+                  "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "level": {
+                    "type": "string",
+                    "enum": ["E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7"]
+                  },
+                  "environment": {
+                    "type": "string",
+                    "enum": [
+                      "T0-LINUX-CI",
+                      "T1-SERVICE-CI",
+                      "T2-LOCAL-CONTRACT",
+                      "T3-MAC-REAL-HOST",
+                      "T4-MAC-ISOLATION",
+                      "T5-K3S-TEST",
+                      "T6-FULL-E2E",
+                      "T7-DR"
+                    ]
+                  },
+                  "invariants": {
+                    "type": "array",
+                    "items": { "type": "string", "pattern": "^INV-\\d{3}$" },
+                    "minItems": 1
+                  },
+                  "fixture": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "minItems": 1
+                  },
+                  "fault": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 256 }
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+                  },
+                  "assertions": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "minItems": 1
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 256 },
+                    "minItems": 1
+                  },
+                  "frequency": {
+                    "type": "string",
+                    "enum": [
+                      "every-pr",
+                      "merge-integration",
+                      "nightly",
+                      "runtime-rc",
+                      "cloud-rc",
+                      "alpha-release"
+                    ]
+                  },
+                  "owner": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "reviewer": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "gate": {
+                    "type": "string",
+                    "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"]
+                  },
+                  "implementation": {
+                    "type": "object",
+                    "properties": {
+                      "status": { "type": "string", "enum": ["implemented", "planned"] },
+                      "testFiles": {
+                        "type": "array",
+                        "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+                      }
+                    },
+                    "required": ["status", "testFiles"],
+                    "additionalProperties": false
+                  },
+                  "releaseTuple": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "minItems": 1
+                  },
+                  "fixtureDigests": {
+                    "type": "array",
+                    "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+                  }
+                },
+                "required": [
+                  "id",
+                  "title",
+                  "level",
+                  "environment",
+                  "invariants",
+                  "fixture",
+                  "fault",
+                  "steps",
+                  "assertions",
+                  "evidence",
+                  "frequency",
+                  "owner",
+                  "reviewer",
+                  "gate",
+                  "implementation",
+                  "releaseTuple",
+                  "fixtureDigests"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1
+            }
+          },
+          "required": ["protocol", "schemaVersion", "cases"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "DecisionRegistry": {
+      "$ref": "#/definitions/DecisionRegistry",
+      "definitions": {
+        "DecisionRegistry": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-decision-registry/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "decisions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "pattern": "^ADR-VNEXT-\\d{3}$" },
+                  "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "status": { "type": "string", "const": "accepted" },
+                  "owner": { "type": "string", "minLength": 1, "maxLength": 64 },
+                  "decidedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+                  "decision": { "type": "string", "minLength": 1, "maxLength": 2048 },
+                  "alternatives": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                    "minItems": 1
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 512 },
+                    "minItems": 1
+                  },
+                  "securityImpact": { "type": "string", "minLength": 1, "maxLength": 2048 },
+                  "reversalTriggers": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
+                    "minItems": 1
+                  },
+                  "protocolVersions": {
+                    "type": "array",
+                    "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "minItems": 1
+                  },
+                  "document": {
+                    "type": "string",
+                    "pattern": "^docs\\/vnext\\/adr\\/ADR-VNEXT-\\d{3}\\.md$"
+                  }
+                },
+                "required": [
+                  "id",
+                  "title",
+                  "status",
+                  "owner",
+                  "decidedAt",
+                  "decision",
+                  "alternatives",
+                  "evidence",
+                  "securityImpact",
+                  "reversalTriggers",
+                  "protocolVersions",
+                  "document"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 20,
+              "maxItems": 20
+            }
+          },
+          "required": ["protocol", "schemaVersion", "decisions"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "DataFlowAllowlist": {
+      "$ref": "#/definitions/DataFlowAllowlist",
+      "definitions": {
+        "DataFlowAllowlist": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-data-flow-allowlist/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "fields": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "fieldClass": {
+                    "type": "string",
+                    "enum": [
+                      "prompt",
+                      "answer",
+                      "context",
+                      "control-id",
+                      "credential",
+                      "absolute-path",
+                      "reasoning"
+                    ]
+                  },
+                  "allowedStores": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "pg-message-aead",
+                        "worker-sqlite-result-aead",
+                        "minio-snapshot-aead",
+                        "browser-memory",
+                        "model-request-ephemeral",
+                        "evidence-vault-test-only"
+                      ]
+                    }
+                  },
+                  "forbiddenStores": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "application-log",
+                        "audit-event-payload",
+                        "telemetry",
+                        "browser-persistent-storage",
+                        "evidence-public",
+                        "process-argv",
+                        "process-env"
+                      ]
+                    }
+                  },
+                  "encryption": {
+                    "type": "string",
+                    "enum": [
+                      "message-aead",
+                      "snapshot-envelope-aead",
+                      "ephemeral-only",
+                      "forbidden"
+                    ]
+                  },
+                  "keyOwner": {
+                    "type": "string",
+                    "enum": ["combo-kms", "worker-keychain", "none"]
+                  },
+                  "retention": {
+                    "type": "string",
+                    "enum": [
+                      "request-lifetime",
+                      "sandbox-lifetime",
+                      "7-days",
+                      "30-days",
+                      "90-days",
+                      "referenced-plus-30-days",
+                      "never"
+                    ]
+                  },
+                  "deletionOrHold": { "type": "string", "minLength": 1, "maxLength": 1024 }
+                },
+                "required": [
+                  "fieldClass",
+                  "allowedStores",
+                  "forbiddenStores",
+                  "encryption",
+                  "keyOwner",
+                  "retention",
+                  "deletionOrHold"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 7,
+              "maxItems": 7
+            },
+            "updatedAt": { "type": "string", "format": "date-time" }
+          },
+          "required": ["protocol", "schemaVersion", "fields", "updatedAt"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  }
+}

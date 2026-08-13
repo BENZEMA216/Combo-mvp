@@ -1,0 +1,44 @@
+{
+  "protocol": "combo.sandbox-spec/1",
+  "schemaVersion": 1,
+  "adapter": "apple-container",
+  "adapterVersion": "0.8.0",
+  "imageDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "codexArtifactDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "codexProtocolSchemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "platform": "linux-arm64",
+  "lifecycle": {
+    "isolationUnit": "conversation",
+    "idleTtlSeconds": 600,
+    "writableStateReuse": "forbidden",
+    "reconstruction": "visible-transcript-only"
+  },
+  "resources": {
+    "vcpu": 2,
+    "memoryBytes": 2147483648,
+    "scratchBytes": 268435456,
+    "pids": 256,
+    "fileDescriptors": 256,
+    "turnDeadlineSeconds": 120
+  },
+  "mounts": {
+    "context": "/agent/context:ro,noexec",
+    "scratch": "/agent/scratch:rw,conversation-only",
+    "temporary": "/tmp:rw,conversation-only",
+    "hostMounts": "none"
+  },
+  "runtimeCapabilities": {
+    "contextTools": ["read_context", "list_context", "search_context"],
+    "shell": false,
+    "interpreters": false,
+    "compilers": false,
+    "dynamicLoaders": false,
+    "externalTools": false
+  },
+  "network": {
+    "ingress": "deny-all",
+    "egress": "model-proxy-only",
+    "dns": "disabled",
+    "proxyTransport": "vsock"
+  }
+}

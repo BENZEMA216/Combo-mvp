@@ -1,0 +1,43 @@
+{
+  "name": "@cb/creator-agent-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Creator-hosted Agent VNext 的跨进程协议、状态机和验收契约真源",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "schemas",
+    "openapi"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "test": "vitest run",
+    "test:g0": "vitest run src/__tests__/canonical.test.ts src/__tests__/schemas.test.ts src/__tests__/artifacts.test.ts src/__tests__/registry.test.ts src/__tests__/invocation.test.ts src/__tests__/invocation.property.test.ts",
+    "test:property": "node scripts/run-property.mjs",
+    "generate:contracts": "pnpm build && node scripts/generate-contract-artifacts.mjs",
+    "check:contracts": "pnpm build && node scripts/check-contract-artifacts.mjs",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "yaml": "2.9.0",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "3.25.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

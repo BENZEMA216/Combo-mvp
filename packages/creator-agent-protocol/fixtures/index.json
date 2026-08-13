@@ -1,0 +1,56 @@
+{
+  "protocol": "combo.creator-agent-fixtures/1",
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "path": "agent-version-manifest.v1.json",
+      "bytes": 1955,
+      "digest": "sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
+    },
+    {
+      "path": "broker-handshake.v1.json",
+      "bytes": 671,
+      "digest": "sha256:b842b397216a5f71fa41c5112b6718cbe4614bb38cb2b0995a75c2a169d74058"
+    },
+    {
+      "path": "broker-invocation-prepare.v1.json",
+      "bytes": 2350,
+      "digest": "sha256:297796be9d46a637ed79175a0e1f4c8b980319112f6f159149db42e29655bd7e"
+    },
+    {
+      "path": "broker-invocation-succeeded.v1.json",
+      "bytes": 843,
+      "digest": "sha256:0e7a11bf32b0a66b33337ae78215e4ef41daea0b1f550b404d154da1c52fd985"
+    },
+    {
+      "path": "canonical-vectors.v1.json",
+      "bytes": 724,
+      "digest": "sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184"
+    },
+    {
+      "path": "evidence-bundle-manifest.v1.json",
+      "bytes": 1836,
+      "digest": "sha256:15e2c93b8b3b8a6a5087dbc9c6cbd4b77a67494a12b799632577b99e502d77aa"
+    },
+    {
+      "path": "invocation-state-machine.v1.json",
+      "bytes": 1044,
+      "digest": "sha256:bdb5946783965bec027fe60598ad18c13500bfe5c23933a7169d0177bd712eaf"
+    },
+    {
+      "path": "sandbox-attestation.v1.json",
+      "bytes": 1810,
+      "digest": "sha256:616af0a3b4a9db9fd7b6c3e8bcfd12ad1fd9a3c526ffc33714f4db2b0eccd826"
+    },
+    {
+      "path": "sandbox-spec.v1.json",
+      "bytes": 1351,
+      "digest": "sha256:e4b9749843a479a2669950a6c33cd9be4f90ddea8dd00c2436bf7dbdc6fb9a0a"
+    },
+    {
+      "path": "snapshot-manifest.v1.json",
+      "bytes": 1207,
+      "digest": "sha256:ce7ee3abafdda8976c8a9d128a36a9c5b88e98501090124e2f0b09953c0c78cb"
+    }
+  ]
+}

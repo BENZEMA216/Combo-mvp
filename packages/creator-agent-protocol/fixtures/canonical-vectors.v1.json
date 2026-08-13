@@ -1,0 +1,29 @@
+{
+  "protocol": "combo.canonical-json-vectors/1",
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "name": "key-order",
+      "input": {
+        "z": 1,
+        "a": 2,
+        "nested": {
+          "β": true,
+          "A": null
+        }
+      },
+      "canonical": "{\"a\":2,\"nested\":{\"A\":null,\"β\":true},\"z\":1}",
+      "sha256": "45399ca8303df0d5138e18cf107027c145d7a4533509bd312eecdb639a9d1e1d"
+    },
+    {
+      "name": "number-rendering",
+      "input": {
+        "minusZero": 0,
+        "fraction": 0.002,
+        "integer": 42
+      },
+      "canonical": "{\"fraction\":0.002,\"integer\":42,\"minusZero\":0}",
+      "sha256": "a44d25e0cb5a4f900fdc51b15fa2305ce560afad62dc6bef12dc41bc24f02f64"
+    }
+  ]
+}
