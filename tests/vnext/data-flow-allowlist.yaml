@@ -159,6 +159,41 @@ fields:
       ]
     retention: referenced-plus-30-days
     deletionOrHold: 加密 Manifest 与 archive 使用同一 Snapshot DEK 和独立 nonce；引用与备份保留策略一致。
+  - fieldId: context.minio-backup.context-snapshot-publication-commit-marker
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: publication_commit_marker.body
+    protection: digest-linked-metadata
+    algorithm: sha-256/v1
+    keyOwner: none
+    aadBindings: []
+    retention: referenced-plus-30-days
+    deletionOrHold: 只保存 Creator/Snapshot、固定派生的 preparation key 与 canonical preparation digest；不含 Envelope、wrapped DEK、Context 正文或调用方提供的任意对象 key。与被引用 Snapshot 同期保留并在恢复时最后恢复。
+  - fieldId: context.minio-backup.context-snapshot-publication-preparation-marker
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: publication_preparation_marker.body
+    protection: wrapped-key-envelope-metadata
+    algorithm: rfc3394-aes-256-kw/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 私有 canonical body 只保存经完整验证后选中的双 Envelope、checksum、计数和 upload ID；wrapped DEK 是 RFC3394 key ciphertext，普通 reader/backup 无 unwrap authority。禁止复制到 user metadata、URL、日志、浏览器、Gateway 或模型输入；与密文对象同期受审清理。
   - fieldId: context.minio.context-snapshot-archive-cipher-object
     fieldClass: context
     contentKind: real
@@ -204,6 +239,41 @@ fields:
       ]
     retention: referenced-plus-30-days
     deletionOrHold: 加密 Manifest 与 archive 使用同一 Snapshot DEK 和独立 nonce；最后引用下线30天后受审 Reclaimer 清理。
+  - fieldId: context.minio.context-snapshot-publication-commit-marker
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: publication_commit_marker.body
+    protection: digest-linked-metadata
+    algorithm: sha-256/v1
+    keyOwner: none
+    aadBindings: []
+    retention: referenced-plus-30-days
+    deletionOrHold: 只保存 Creator/Snapshot、固定派生的 preparation key 与 canonical preparation digest；它是唯一读可见性权威，不含 Envelope、wrapped DEK、Context 正文或调用方提供的任意对象 key，最后引用下线30天后受审清理。
+  - fieldId: context.minio.context-snapshot-publication-preparation-marker
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: publication_preparation_marker.body
+    protection: wrapped-key-envelope-metadata
+    algorithm: rfc3394-aes-256-kw/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 私有 canonical body 只保存经完整验证后选中的双 Envelope、checksum、计数和 upload ID；wrapped DEK 是 RFC3394 key ciphertext，只有 Verifier/Recovery 可按完整 tenant AAD 请求 KMS unwrap。禁止进入 user metadata、URL、日志、浏览器、Gateway 或模型输入；最后引用下线30天后受审清理。
   - fieldId: context.model-request.selected-context
     fieldClass: context
     contentKind: real

@@ -205,12 +205,16 @@ const DataFlowProtectionSchema = z.enum([
   'browser-memory-only',
   'request-memory-only',
   'evidence-aead',
+  'wrapped-key-envelope-metadata',
+  'digest-linked-metadata',
 ]);
 const DataFlowAlgorithmSchema = z.enum([
   'aes-256-gcm/v1',
   'worker-session-aes-256-gcm/v1',
   'memory-only',
   'independent-test-aes-256-gcm/v1',
+  'rfc3394-aes-256-kw/v1',
+  'sha-256/v1',
 ]);
 const DataFlowKeyOwnerSchema = z.enum([
   'combo-kms',

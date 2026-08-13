@@ -653,12 +653,19 @@ staging 完成后再修改活 Project，断言上传 bytes 仍只来自 staging�
 ### 8.6 对象不变性和恢复
 
 - 正式 key 的 overwrite/conditional PUT 拒绝；
+- preparation marker 只能在双 temp 完整 AEAD 与明文身份验证后以 `If-None-Match` 创建，并且只允许 Data-flow Allowlist 中的私有 wrapped-key Envelope 控制元数据；`wrappedDek/keyId` 在 user metadata、URL、日志、浏览器、Gateway 和模型输入命中为 0；
+- archive final 成功后让 manifest final PUT 失败或模拟进程崩溃，断言 preparation/final orphan 全部对 reader 不可见，commit marker 不存在，原 temp/Envelope 重放可以补齐并提交；
+- 删除原 temp 后，用新 DEK/nonce 对同一 canonical plaintext 重新上传，先完整验证新 pair，再 exact replay prepared `(DEK, nonce, AAD, plaintext)` 并补齐旧密文；任一 Creator/Snapshot/archive digest、明文长度、fileCount、expandedBytes、AAD、tag、cipherDigest、cipherBytes 或 checksum 不匹配都必须在 final PUT 前失败；
+- 两个不同 cipher generation 并发 finalize 时只有一个 preparation CAS winner，所有成功返回读取同一个 committed pair；commit 前读永远返回未发布，commit ACK 丢失后重放读取原 commit；
+- DR/越权丢失形成 commit + preparation + 单/零 final 时，普通 reader 必须 fail-closed；Recovery 读取并核验 marker authority 后，只有经完整验证的新 upload 才能 exact replay 并补齐 final，selected temp 损坏不得阻止该安全恢复；
 - 普通 API/Gateway identity 无 delete/list 权限；
 - Reclaimer 删除被引用对象拒绝；
 - MinIO mirror 恢复后 cipher digest 相同；
 - 解密后 archive/snapshot digest 相同；
 - 抽取 `min(100, N)` 个对象（`N<100` 时全量）验证无 orphan DB row/object；
 - GC 中间 crash 重跑幂等。
+
+旧版无 marker final 只能在与当前完整 Envelope/密文 exact 一致且再次验证成功时 backfill；不一致对象必须在写 preparation 前 BLOCKED。旧/新 writer 或 reader 不得滚动混跑，生产切换必须先 quiesce/version gate 或迁移到新 namespace。fake S3 与 disposable MinIO 只证明 adapter/CAS/故障恢复语义；正式 IAM/Object Lock、真实 KMS unwrap、PostgreSQL inventory、备份顺序（data + preparation 先于 commit）和异机 DR 仍分别需要 E2/E8 证据。
 
 ---
 

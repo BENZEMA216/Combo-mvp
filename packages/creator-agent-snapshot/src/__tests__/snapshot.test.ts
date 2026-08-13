@@ -2,6 +2,7 @@ import { mkdtemp, mkdir, readFile, rm, chmod, utimes, writeFile } from 'node:fs/
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { constants as zlibConstants, zstdCompressSync } from 'node:zlib';
 
 import {
   SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
@@ -203,6 +204,42 @@ describe('deterministic Snapshot', () => {
         expectedArchiveDigest: built.archiveDigest,
       }),
     ).toThrowError();
+  });
+
+  it('rejects a valid but non-canonical zstd encoding before publication identity can be reserved', () => {
+    const fileBytes = Buffer.from('canonical snapshot archive\n', 'utf8');
+    const manifest = createSnapshotManifest([
+      {
+        path: 'FACTS.md',
+        size: fileBytes.byteLength,
+        mediaType: 'text/plain; charset=utf-8',
+        sha256: sha256Hex(fileBytes),
+      },
+    ]);
+    const manifestBytes = snapshotManifestBytes(manifest);
+    const tarBytes = createDeterministicTar([{ path: 'FACTS.md', bytes: fileBytes }]);
+    const canonicalArchive = compressDeterministicTar(tarBytes);
+    const alternateArchive = zstdCompressSync(tarBytes, {
+      params: {
+        [zlibConstants.ZSTD_c_compressionLevel]: 1,
+        [zlibConstants.ZSTD_c_checksumFlag]: 1,
+        [zlibConstants.ZSTD_c_contentSizeFlag]: 1,
+        [zlibConstants.ZSTD_c_dictIDFlag]: 0,
+        [zlibConstants.ZSTD_c_nbWorkers]: 0,
+      },
+    });
+    expect(alternateArchive.equals(canonicalArchive)).toBe(false);
+
+    expectSnapshotCode(
+      () =>
+        verifySnapshotArchive({
+          manifestBytes,
+          archiveBytes: alternateArchive,
+          expectedSnapshotDigest: sha256Hex(manifestBytes),
+          expectedArchiveDigest: sha256Hex(alternateArchive),
+        }),
+      'SNAPSHOT_ARCHIVE_INVALID',
+    );
   });
 
   it('authenticates encrypted bytes before the archive verifier receives plaintext', async () => {

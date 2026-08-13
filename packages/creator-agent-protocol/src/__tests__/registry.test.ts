@@ -225,6 +225,29 @@ describe('VNext machine-readable contract registries', () => {
       expect(manifestCipher?.aadBindings).toEqual(authoritativeManifestAadBindings);
       expect(archiveCipher?.aadBindings).not.toContain('agentVersionDigest');
       expect(manifestCipher?.aadBindings).not.toContain('agentVersionDigest');
+
+      const preparationMarker = allowlist.fields.find(
+        (field) =>
+          field.system === system &&
+          field.fieldId === `context.${system}.context-snapshot-publication-preparation-marker`,
+      );
+      const commitMarker = allowlist.fields.find(
+        (field) =>
+          field.system === system &&
+          field.fieldId === `context.${system}.context-snapshot-publication-commit-marker`,
+      );
+      expect(preparationMarker).toMatchObject({
+        protection: 'wrapped-key-envelope-metadata',
+        algorithm: 'rfc3394-aes-256-kw/v1',
+        keyOwner: 'combo-kms',
+      });
+      expect(preparationMarker?.deletionOrHold).toContain('wrapped DEK');
+      expect(commitMarker).toMatchObject({
+        protection: 'digest-linked-metadata',
+        algorithm: 'sha-256/v1',
+        keyOwner: 'none',
+        aadBindings: [],
+      });
     }
 
     const known = allowlist.fields[0]!;

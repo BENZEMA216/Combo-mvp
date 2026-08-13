@@ -454,11 +454,17 @@ Bucket: combo-agent-versions-test
 
 creators/{creatorId}/snapshots/sha256/{prefix}/{snapshotDigest}.tar.zst.enc
 creators/{creatorId}/manifests/sha256/{prefix}/{snapshotDigest}.json.enc
+creators/{creatorId}/publications/sha256/{prefix}/{snapshotDigest}.prepare.json
+creators/{creatorId}/publications/sha256/{prefix}/{snapshotDigest}.commit.json
 uploads/{creatorId}/{uploadId}/archive.part
 uploads/{creatorId}/{uploadId}/manifest.part
 ```
 
 这是对象存储 key，不是 Creator Mac 文件路径，也不是消费者可访问的公开 URL。
+
+`prepare.json` 是 Verifier/Recovery/Backup 专用的私有恢复控制面：它只在两个 temp 密文完成 whole-object、双 AEAD、canonical Manifest、archive 和逐文件验证后，以 `If-None-Match: *` 冻结首个已验证的完整双 Envelope、checksum、计数和 `selectedUploadId`。其中 `wrappedDek` 是 RFC3394 包裹后的 key ciphertext，不是明文 DEK；Data-flow Allowlist 明确允许它只存在于私有 marker body，禁止复制到 S3 user metadata、URL、日志、浏览器、Gateway 或模型输入，普通 reader 没有 unwrap authority。
+
+`commit.json` 只保存 Creator/Snapshot、固定 preparation key 和 exact canonical preparation digest。它在两个正式密文完整读回并再次验证后才条件创建，是唯一的读可见性权威；只有 final、只有 preparation、或 preparation 加两个 final 但没有 commit 都属于不可见的恢复中状态。hash link 能检测普通损坏和单对象错配，但不替代正式 IAM、Object Lock、外部签名或异机恢复证据。
 
 ### 5.5 上传与校验
 
@@ -469,10 +475,16 @@ Worker 先用同一 Snapshot DEK、不同 nonce 加密 archive 与 canonical man
 → Worker 按返回的完整 requiredHeaders 上传两个密文对象
 → complete 只触发 VERIFYING
 → Snapshot Verifier 完整读取并 AEAD 认证两个 temp 对象，重算 manifest/archive/snapshot digest
-→ 认证与内容验证全部成功后才 conditional promote 两个正式 key
+→ 认证与内容验证全部成功后才 conditional create preparation marker，冻结首个密文对
+→ conditional materialize 两个正式 key，并完整读回、认证和复核
+→ conditional create commit marker；只有该原子 marker 成功并可读后才是 VERIFIED
 → VERIFIED 或 REJECTED
 → 只有 VERIFIED Snapshot 能创建 AgentVersion
 ```
+
+Verifier 在 archive final 成功、manifest final 或 commit 失败后重放同一 preparation：原 temp 仍在时直接补齐；原 temp 丢失时，新 upload 必须先用自己的 Envelope 完成双 AEAD、canonical manifest/archive/逐文件和全部明文身份验证。只有 `creatorId + snapshotDigest + archiveDigest + 双明文长度 + fileCount + expandedBytes` 全部一致，才允许 unwrap prepared DEK，并使用 prepared nonce 与 exact prepared AAD 重建同一密文；重建结果的 nonce/tag/cipherDigest/cipherBytes/checksum 任一不等即在 PUT 前拒绝。这里是同一 `(key, nonce, AAD, plaintext)` 的 exact replay，不授权一般调用方注入 nonce，也不允许对不同明文或 AAD 复用 GCM nonce。
+
+若异机恢复或对象丢失形成 `commit + preparation + 单/零 final`，普通 Reader 仍按 commit authority fail-closed，不能返回残缺 pair；Recovery 则先独立核验 commit 与 preparation 的 hash link，再按上述完整验证规则用原 temp 或新 upload 补齐缺失 final。已存在但损坏/越权覆盖的 final 无法用 `If-None-Match` 安全替换，必须保持 BLOCKED 并进入受审的对象恢复流程，adapter 不以特权 delete 绕过不可变性。
 
 正式对象不可覆盖。删除只能由带审计的 Retention/Reclaimer 身份完成。
 
@@ -780,8 +792,10 @@ Test Alpha 先遵循现有权威部署拓扑，部署在 `combo-test`，复用 T
 | `idempotency_key` / `request_digest` | 幂等绑定 |
 | `expected_snapshot_digest` | Manifest digest |
 | `expected_archive_digest` | tar.zst digest |
-| `expected_compressed_bytes` | 声明大小 |
-| `temp_object_key` | 临时 MinIO key，unique |
+| `expected_archive_cipher_digest/bytes` | archive 密文摘要和长度 |
+| `expected_manifest_cipher_digest/bytes` | manifest 密文摘要和长度 |
+| `archive_envelope/manifest_envelope` | 完整严格 Envelope；受保护字段，不能复制到日志或普通 metadata |
+| `archive_temp_object_key/manifest_temp_object_key` | 两个 Creator-bound 临时 MinIO key，分别 unique |
 | `state` | `CREATED/UPLOADED/VERIFYING/VERIFIED/REJECTED/EXPIRED` |
 | `error_code` | 稳定错误码 |
 | `expires_at/created_at/verified_at` | 时间 |
@@ -795,13 +809,17 @@ Test Alpha 先遵循现有权威部署拓扑，部署在 `combo-test`，复用 T
 | `id` | Snapshot ID |
 | `creator_id` | 所有者 |
 | `snapshot_digest` | Canonical manifest digest |
-| `archive_digest` / `cipher_digest` | 明文包与密文对象摘要 |
+| `archive_digest` / `archive_cipher_digest` / `manifest_cipher_digest` | 明文包与两个正式密文摘要 |
 | `object_key` / `manifest_object_key` | MinIO 私有对象 |
+| `publication_preparation_key/digest` | 已验证密文选择及 canonical marker digest |
+| `publication_commit_key/digest` | 唯一读可见性 marker 及 exact body digest |
 | `compressed_bytes/expanded_bytes/file_count` | 边界数据 |
 | `encryption_key_ref` | wrapped DEK reference |
 | `created_at` | 创建时间 |
 
 唯一约束：`(creator_id, snapshot_digest)`。Snapshot 行和对象创建后不可原地覆盖。
+
+当前 `@cb/creator-agent-snapshot` 只实现上述严格 MinIO publication marker 协议和 S3-compatible adapter，没有实现 PostgreSQL repository、migration 或跨 PG/MinIO transaction。后续 PG adapter 必须原样持久化双 Envelope、双 temp/final key 与两个 marker digest，并以 commit marker 已核验作为 `VERIFIED` 前置条件；当前 fake/MinIO 测试不能冒充该 E2 PG 事务证据。
 
 ### 9.4 `agents`
 

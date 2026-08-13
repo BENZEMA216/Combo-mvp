@@ -532,6 +532,300 @@
         "all manifest cipher object consumers MUST pass parseSnapshotManifestCipherObject(envelope,objectBytes) before unwrap, decrypt, or JSON parse"
       ]
     },
+    "SnapshotPublicationPreparationMarker": {
+      "$ref": "#/definitions/SnapshotPublicationPreparationMarker",
+      "definitions": {
+        "SnapshotPublicationPreparationMarker": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.snapshot-publication-preparation/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "creatorId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "selectedUploadId": {
+              "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/creatorId"
+            },
+            "request": {
+              "type": "object",
+              "properties": {
+                "archive": {
+                  "type": "object",
+                  "properties": {
+                    "envelope": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": { "type": "string", "const": "combo.snapshot-envelope/1" },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "cipherObjectFormat": {
+                          "type": "string",
+                          "const": "combo.snapshot-binary/1"
+                        },
+                        "algorithm": { "type": "string", "const": "aes-256-gcm/v1" },
+                        "keyWrapAlgorithm": { "type": "string", "const": "rfc3394-aes-256-kw/v1" },
+                        "aad": {
+                          "type": "object",
+                          "properties": {
+                            "protocol": { "type": "string", "const": "combo.snapshot-envelope/1" },
+                            "schemaVersion": { "type": "number", "const": 1 },
+                            "cipherObjectFormat": {
+                              "type": "string",
+                              "const": "combo.snapshot-binary/1"
+                            },
+                            "creatorId": {
+                              "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/creatorId"
+                            },
+                            "snapshotDigest": {
+                              "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                            },
+                            "archiveDigest": {
+                              "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                            },
+                            "objectKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+                            "plaintextBytes": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 52428800
+                            },
+                            "keyId": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$"
+                            }
+                          },
+                          "required": [
+                            "protocol",
+                            "schemaVersion",
+                            "cipherObjectFormat",
+                            "creatorId",
+                            "snapshotDigest",
+                            "archiveDigest",
+                            "objectKey",
+                            "plaintextBytes",
+                            "keyId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "aadDigest": {
+                          "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                        },
+                        "nonce": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 16,
+                          "maxLength": 16
+                        },
+                        "authTag": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 22,
+                          "maxLength": 22
+                        },
+                        "wrappedDek": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 54,
+                          "maxLength": 54
+                        },
+                        "cipherDigest": {
+                          "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                        },
+                        "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "cipherObjectFormat",
+                        "algorithm",
+                        "keyWrapAlgorithm",
+                        "aad",
+                        "aadDigest",
+                        "nonce",
+                        "authTag",
+                        "wrappedDek",
+                        "cipherDigest",
+                        "cipherBytes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "checksumSha256": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" }
+                  },
+                  "required": ["envelope", "checksumSha256"],
+                  "additionalProperties": false
+                },
+                "manifest": {
+                  "type": "object",
+                  "properties": {
+                    "envelope": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "type": "string",
+                          "const": "combo.snapshot-manifest-envelope/1"
+                        },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "cipherObjectFormat": {
+                          "type": "string",
+                          "const": "combo.snapshot-manifest-binary/1"
+                        },
+                        "algorithm": { "type": "string", "const": "aes-256-gcm/v1" },
+                        "keyWrapAlgorithm": { "type": "string", "const": "rfc3394-aes-256-kw/v1" },
+                        "aad": {
+                          "type": "object",
+                          "properties": {
+                            "protocol": {
+                              "type": "string",
+                              "const": "combo.snapshot-manifest-envelope/1"
+                            },
+                            "schemaVersion": { "type": "number", "const": 1 },
+                            "cipherObjectFormat": {
+                              "type": "string",
+                              "const": "combo.snapshot-manifest-binary/1"
+                            },
+                            "creatorId": {
+                              "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/creatorId"
+                            },
+                            "snapshotDigest": {
+                              "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                            },
+                            "objectKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+                            "plaintextBytes": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 4194304
+                            },
+                            "keyId": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$"
+                            }
+                          },
+                          "required": [
+                            "protocol",
+                            "schemaVersion",
+                            "cipherObjectFormat",
+                            "creatorId",
+                            "snapshotDigest",
+                            "objectKey",
+                            "plaintextBytes",
+                            "keyId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "aadDigest": {
+                          "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                        },
+                        "nonce": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 16,
+                          "maxLength": 16
+                        },
+                        "authTag": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 22,
+                          "maxLength": 22
+                        },
+                        "wrappedDek": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 54,
+                          "maxLength": 54
+                        },
+                        "cipherDigest": {
+                          "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/snapshotDigest"
+                        },
+                        "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 4194340 }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "cipherObjectFormat",
+                        "algorithm",
+                        "keyWrapAlgorithm",
+                        "aad",
+                        "aadDigest",
+                        "nonce",
+                        "authTag",
+                        "wrappedDek",
+                        "cipherDigest",
+                        "cipherBytes"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "checksumSha256": {
+                      "$ref": "#/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/archive/properties/checksumSha256"
+                    }
+                  },
+                  "required": ["envelope", "checksumSha256"],
+                  "additionalProperties": false
+                },
+                "expandedBytes": { "type": "integer", "minimum": 1, "maximum": 209715200 },
+                "fileCount": { "type": "integer", "minimum": 1, "maximum": 2000 }
+              },
+              "required": ["archive", "manifest", "expandedBytes", "fileCount"],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "creatorId",
+            "snapshotDigest",
+            "selectedUploadId",
+            "request"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "creatorId/snapshotDigest MUST equal request archive and manifest Envelope identity",
+        "selectedUploadId identifies only derived tenant temp keys and MUST NOT admit an arbitrary object key",
+        "the marker MUST be exact bounded RFC 8785 JCS bytes and written only after full dual-object AEAD and plaintext verification",
+        "wrappedDek/keyId are private verifier/recovery control metadata and MUST NOT enter S3 user metadata, URLs, logs, browser, Gateway, or model input"
+      ]
+    },
+    "SnapshotPublicationCommitMarker": {
+      "$ref": "#/definitions/SnapshotPublicationCommitMarker",
+      "definitions": {
+        "SnapshotPublicationCommitMarker": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.snapshot-publication-commit/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "creatorId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "preparationKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "preparationDigest": {
+              "$ref": "#/definitions/SnapshotPublicationCommitMarker/properties/snapshotDigest"
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "creatorId",
+            "snapshotDigest",
+            "preparationKey",
+            "preparationDigest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "preparationKey == snapshotPublicationPreparationObjectKey(creatorId,snapshotDigest)",
+        "preparationDigest == sha256(exact canonical preparation marker bytes)",
+        "the commit marker MUST be written with If-None-Match only after both selected final objects read back and verify",
+        "readers MUST treat absence of this marker as unpublished even when preparation or final objects exist"
+      ]
+    },
     "BrokerHandshake": {
       "$ref": "#/definitions/BrokerHandshake",
       "definitions": {
@@ -6467,7 +6761,9 @@
                       "session-aead",
                       "browser-memory-only",
                       "request-memory-only",
-                      "evidence-aead"
+                      "evidence-aead",
+                      "wrapped-key-envelope-metadata",
+                      "digest-linked-metadata"
                     ]
                   },
                   "algorithm": {
@@ -6476,7 +6772,9 @@
                       "aes-256-gcm/v1",
                       "worker-session-aes-256-gcm/v1",
                       "memory-only",
-                      "independent-test-aes-256-gcm/v1"
+                      "independent-test-aes-256-gcm/v1",
+                      "rfc3394-aes-256-kw/v1",
+                      "sha-256/v1"
                     ]
                   },
                   "keyOwner": {

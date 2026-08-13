@@ -12,7 +12,7 @@
 
 ## 协议边界
 
-包内冻结 `AgentVersionManifest/1`、`SnapshotManifest/1`、archive/manifest 两类加密 Envelope、`combo.creator-broker/1`、Invocation 状态机、`SandboxSpec/1`、`SandboxAttestation/1` 和 Creator/Consumer HTTP API。两类 Envelope 绑定最终对象 key、摘要、明文长度、KEK key id 和各自固定 binary framing，并要求同一 Snapshot 的 Creator、digest、wrapped DEK 一致且 nonce 不同。Snapshot upload API 只在 Worker 已完成两个密文对象后创建会话，并一次返回两个绑定 exact length、canonical base64 checksum、`If-None-Match` 和完整 metadata 的 Signed PUT。Schema 采用严格 unknown-key 策略；Broker JSON frame 还在运行时拒绝重复 JSON key和超限 frame。Fence 与 sequence 在 wire 上统一使用 canonical uint63 十进制字符串，避免 JavaScript number 精度损失。
+包内冻结 `AgentVersionManifest/1`、`SnapshotManifest/1`、archive/manifest 两类加密 Envelope、Snapshot publication preparation/commit marker、`combo.creator-broker/1`、Invocation 状态机、`SandboxSpec/1`、`SandboxAttestation/1` 和 Creator/Consumer HTTP API。两类 Envelope 绑定最终对象 key、摘要、明文长度、KEK key id 和各自固定 binary framing，并要求同一 Snapshot 的 Creator、digest、wrapped DEK 一致且 nonce 不同。Snapshot upload API 只在 Worker 已完成两个密文对象后创建会话，并一次返回两个绑定 exact length、canonical base64 checksum、`If-None-Match` 和完整 metadata 的 Signed PUT。preparation marker 以 bounded canonical JCS 冻结首个已验证密文对，commit marker 只 hash-link exact preparation bytes并作为唯一读可见性权威；两者均使用 Creator/Snapshot 派生 fixed key 和 strict unknown-key contract。Schema 采用严格 unknown-key 策略；Broker JSON frame 还在运行时拒绝重复 JSON key和超限 frame。Fence 与 sequence 在 wire 上统一使用 canonical uint63 十进制字符串，避免 JavaScript number 精度损失。
 
 `requestDigest`、`contentDigest` 和 `resultDigest` 使用按租户或版本密钥计算的 domain-separated HMAC-SHA-256；Snapshot 与公开构建产物继续使用普通 SHA-256 内容寻址。这些 digest 不代替 AEAD、签名、Lease 或 Execution Capability。
 

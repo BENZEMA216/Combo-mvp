@@ -16,8 +16,8 @@
 - `upload.ts` 是 Creator Worker 的 create-only 连接层：完整复核 `BuiltSnapshot` 后才请求 DEK，生成两个密文对象及唯一权威 `SnapshotUploadCreateRequest`，并在返回前清零调用方和本地的明文 key buffer。
 - `agent-version.ts` 计算 Contract 与 AgentVersion 摘要，并实现测试用不可变 Version 与 Conversation pin 仓库。
 - `repository.ts` 声明测试用对象持久化端口，并提供持有权威 Envelope、拒绝覆盖的内存实现；它不是生产数据库合同。
-- `object-storage.ts` 实现 Creator-bound 的 S3-compatible 双对象 adapter：从两个权威 Envelope 派生 temp/final key，生成覆盖完整 headers 的短期 Signed PUT，并在两个 temp 完成 AEAD/Manifest/archive/逐文件验证后才条件晋升。它不提供 list、delete、任意 key、RFC3394 wrap 或 KEK/KMS 实现。
+- `object-storage.ts` 实现 Creator-bound 的 S3-compatible 双对象 adapter：从两个权威 Envelope 派生 temp/final key，生成覆盖完整 headers 的短期 Signed PUT；两个 temp 完成双 AEAD、canonical Manifest/archive 与逐文件验证后，先用不可变 preparation marker 冻结可恢复密文选择，再物化双 final，最后用不可变 commit marker 原子开放读取。它支持原 temp 重放和经新 upload 完整验证后的 prepared cipher exact replay，不提供 list、delete、任意 key、RFC3394 wrap、KEK/KMS 或 PostgreSQL 实现。
 
 ## 上下游
 
-Creator Worker 将调用 staging、builder 与 `prepareEncryptedSnapshotUpload` 生成完整发布候选。Authoring API 保存 upload request 后调用对象存储 adapter 签发两条 PUT；Verifier 从两个 temp 对象解密复核并晋升。Worker 只需要 `SnapshotDataKeyCreatorPort`，Verifier 只需要 `SnapshotDataKeyUnwrapperPort`；不得默认给同一进程组合 authority。Authoring 数据层仍需实现两个 Envelope、AgentVersion、wrapped DEK 与 Conversation pin 的受保护 PostgreSQL 适配器。当前源码可连接 S3-compatible MinIO，但不实现 PostgreSQL、Kubernetes、IAM、RFC3394 wrap、KMS/KEK 或 macOS Keychain。
+Creator Worker 将调用 staging、builder 与 `prepareEncryptedSnapshotUpload` 生成完整发布候选。Authoring API 保存 upload request 后调用对象存储 adapter 签发两条 PUT；Verifier 从两个 temp 对象解密复核，并以 preparation/commit marker 完成可恢复原子发布。Worker 只需要 `SnapshotDataKeyCreatorPort`，Verifier/Recovery 只需要 `SnapshotDataKeyUnwrapperPort`；不得默认给同一进程组合 authority。Authoring 数据层仍需实现两个 Envelope、两个 marker digest、AgentVersion、wrapped DEK 与 Conversation pin 的受保护 PostgreSQL inventory，并在 commit 已核验后才标记 VERIFIED。当前源码可连接 S3-compatible MinIO，但不实现 PostgreSQL、Kubernetes、IAM/Object Lock、RFC3394 wrap、KMS/KEK 或 macOS Keychain。

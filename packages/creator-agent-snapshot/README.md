@@ -13,7 +13,7 @@
 - `buildAgentVersion` 把 Snapshot、Behavior、Runtime、IO、Codex artifact、Schema 与模型策略冻结进 `versionDigest`。内存仓库只提供创建、读取和独立 revoke control，不提供修改执行字段的入口。
 - `InMemoryConversationPinRepository` 在 Conversation 创建时固定 AgentVersion，之后任何换版请求都会拒绝。
 - `S3ImmutableSnapshotObjectStore` 只在 Worker 已提供两个完整 Envelope 和 canonical base64 checksum 后签发 archive/manifest 两条短期 PUT；SignedHeaders 覆盖 exact length、checksum、`If-None-Match` 和完整 metadata。每个实例固定一个 Creator，公开 API 不接受任意 object key，也不提供 list/delete。
-- `finalizeUpload` 先从两个 temp key 读取完整密文，完成 whole-object digest、AEAD、Manifest、archive、逐文件和三 digest 复核，成功后才对两个正式 key 执行 `If-None-Match: *`。损坏 temp 不会占正式 key；同 Snapshot digest 使用新 upload ID 可重新上传。wrapped DEK 和 KEK key id 不复制进 MinIO user metadata。
+- `finalizeUpload` 先从两个 temp key 读取完整密文，完成 whole-object digest、双 AEAD、canonical Manifest/archive、逐文件和三 digest 复核，成功后才以 `If-None-Match: *` 冻结私有 preparation marker、物化两个正式 key，完整读回后再条件创建唯一 commit marker。Reader 在 commit 前看不到 partial final。原 temp 丢失时，新 DEK/nonce upload 必须先独立完成全部明文身份验证，Verifier 才能用 preparation 中冻结的 DEK/nonce/AAD exact replay 同一密文并补齐，不依赖 delete。wrapped DEK 和 KEK key id 只存在于 Data-flow Allowlist 明确授权的私有 marker body，不复制进 MinIO user metadata、URL、日志或普通 reader 路径。
 
 ## 冻结策略
 
@@ -28,9 +28,9 @@
 
 本包提供 E1 级确定性、属性、恶意输入、真实 AES-GCM 向量和冻结 binary framing 证据。本机测试会在独立 Node 进程复核冻结的 tar/zstd golden；支持的 Linux builder 仍必须在 CI 运行同一 gate，在 Linux 结果产生前跨平台证据状态是 `NOT_RUN`。`SnapshotObjectRepository` 是仅供旧领域单元测试的内存仓库；`SnapshotDataKeyCreatorPort` 与 `SnapshotDataKeyUnwrapperPort` 分别冻结 Worker 与 verifier 的最小密钥 authority，`SnapshotKeyEnvelopePort` 只是有意组合两者的便利类型；`S3ImmutableSnapshotObjectStore` 是真实 S3-compatible 双密文对象、Signed PUT 与 verifier 适配器。
 
-`pnpm -F @cb/creator-agent-snapshot test:minio:e2` 会用固定版本的 MinIO 镜像、临时 root credential、随机 loopback 端口和 tmpfs bucket 运行真实组件集成测试，覆盖两条真实 SigV4 PUT、完整 SignedHeaders、缺 header 拒绝、32 路正式化竞争、损坏 temp 后同 digest 重试、读取后完整解密复核和特权越权篡改检测。只有该 disposable 测试显式打开 `allowInsecureLoopbackPresignedUrls`；默认和公开地址仍强制 HTTPS。它证明的是 adapter 与 MinIO 的 E2 对象语义；测试进程持有管理员 credential，未配置生产 IAM/Object Lock，因此不证明服务身份最小权限或管理员不可覆盖。
+`pnpm -F @cb/creator-agent-snapshot test:minio:e2` 会用固定版本的 MinIO 镜像、临时 root credential、随机 loopback 端口和 tmpfs bucket 运行真实组件集成测试，覆盖两条真实 SigV4 PUT、完整 SignedHeaders、缺 header 拒绝、32 路正式化竞争、损坏 temp 后同 digest 重试、archive final 后 manifest 故障的 pre-commit 不可见性、原 temp 重放、新 DEK/nonce 与原 temp 丢失后的 exact replay、commit 已恢复但 final 缺失时 reader fail-closed 并由新 upload 修复、不同 cipher generation 并发收敛、读取后完整解密复核和特权越权篡改检测。只有该 disposable 测试显式打开 `allowInsecureLoopbackPresignedUrls`；默认和公开地址仍强制 HTTPS。它证明的是 adapter 与 MinIO 的 E2 对象语义；测试进程持有管理员 credential，未配置生产 IAM/Object Lock，因此不证明服务身份最小权限、marker 抵抗特权协同改写或管理员不可覆盖。
 
-当前 verifier 会在进程内持有两个认证后的明文和最多 200 MiB 的解包正文。真实 RFC3394 wrap、KEK/KMS 适配器、技术方案要求的独占 tmpfs、272 MiB 组合 quota、进程或 Pod 崩溃清零、PostgreSQL 不可变约束、MinIO IAM/Object Lock、Retention/Reclaimer 和 DR 仍是 `BLOCKED/NOT_IMPLEMENTED`，不能由该 E2 冒充完整 Gate 1。
+当前 verifier 会在进程内持有两个认证后的明文和最多 200 MiB 的解包正文。真实 RFC3394 wrap、KEK/KMS 适配器（包括只接受受审 keyId，并保证 unresolved preparation 的旧 KEK 在完成/回收前仍可 unwrap）、技术方案要求的独占 tmpfs、272 MiB 组合 quota、进程或 Pod 崩溃清零、PostgreSQL 双 Envelope/marker inventory 与不可变约束、MinIO IAM/Object Lock、旧 writer/reader quiesce 或迁移、Retention/Reclaimer 和异机 DR 仍是 `BLOCKED/NOT_IMPLEMENTED`，不能由该 E2 冒充完整 Gate 1。
 
 当前 Node staging 使用 `lstat/realpath/open(O_NOFOLLOW)/fstat` 的多点身份复核，并包含根目录换 inode、换 symlink 和读中 mutation 的注入测试；Node 标准库没有暴露 `openat(2)` 目录句柄遍历。生产 Gate 1 仍需 native helper 或等价的 root-fd confinement 证明，现有 E1 不冒充该 OS 级 E2 证据。
 

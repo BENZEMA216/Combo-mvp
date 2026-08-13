@@ -43,7 +43,17 @@ import {
   validateEvidenceReviewerSignoff,
   type EvidenceReviewerSignoff,
 } from '../evidence.js';
-import { SnapshotUploadCreateRequestSchema, SnapshotUploadCreateResponseSchema } from '../http.js';
+import {
+  SnapshotPublicationCommitMarkerSchema,
+  SnapshotPublicationPreparationMarkerSchema,
+  SnapshotUploadCreateRequestSchema,
+  SnapshotUploadCreateResponseSchema,
+  parseSnapshotPublicationCommitMarker,
+  parseSnapshotPublicationPreparationMarker,
+  snapshotPublicationCommitMarkerBytes,
+  snapshotPublicationPreparationDigest,
+  snapshotPublicationPreparationMarkerBytes,
+} from '../http.js';
 import {
   IsoDateTimeSchema,
   Uint63StringSchema,
@@ -70,6 +80,7 @@ import {
   snapshotDigest,
   snapshotManifestEnvelopeAadDigest,
   snapshotManifestObjectKey,
+  snapshotPublicationPreparationObjectKey,
 } from '../snapshot.js';
 import { readFixture, readFixtureText } from './fixture-helpers.js';
 
@@ -320,6 +331,53 @@ describe('六类共享协议运行时 schema', () => {
           ),
         },
         expiresAt: '2026-08-13T08:15:00.000Z',
+      }).success,
+    ).toBe(false);
+
+    const preparation = SnapshotPublicationPreparationMarkerSchema.parse({
+      protocol: 'combo.snapshot-publication-preparation/1',
+      schemaVersion: 1,
+      creatorId: archive.aad.creatorId,
+      snapshotDigest: archive.aad.snapshotDigest,
+      selectedUploadId: '0198f00d-8000-7000-8000-000000000011',
+      request,
+    });
+    const preparationBytes = snapshotPublicationPreparationMarkerBytes(preparation);
+    expect(parseSnapshotPublicationPreparationMarker(preparationBytes)).toEqual(preparation);
+    expect(() =>
+      parseSnapshotPublicationPreparationMarker(
+        Buffer.from(` ${preparationBytes.toString('utf8')}`, 'utf8'),
+      ),
+    ).toThrowError();
+    expect(() =>
+      parseSnapshotPublicationPreparationMarker(
+        Buffer.from(
+          preparationBytes
+            .toString('utf8')
+            .replace('"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1'),
+          'utf8',
+        ),
+      ),
+    ).toThrowError();
+
+    const commit = SnapshotPublicationCommitMarkerSchema.parse({
+      protocol: 'combo.snapshot-publication-commit/1',
+      schemaVersion: 1,
+      creatorId: archive.aad.creatorId,
+      snapshotDigest: archive.aad.snapshotDigest,
+      preparationKey: snapshotPublicationPreparationObjectKey(
+        archive.aad.creatorId,
+        archive.aad.snapshotDigest,
+      ),
+      preparationDigest: snapshotPublicationPreparationDigest(preparation),
+    });
+    expect(
+      parseSnapshotPublicationCommitMarker(snapshotPublicationCommitMarkerBytes(commit)),
+    ).toEqual(commit);
+    expect(
+      SnapshotPublicationCommitMarkerSchema.safeParse({
+        ...commit,
+        preparationKey: `${commit.preparationKey}.cross-tenant`,
       }).success,
     ).toBe(false);
   });

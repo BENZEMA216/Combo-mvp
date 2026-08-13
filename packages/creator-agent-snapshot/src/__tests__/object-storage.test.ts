@@ -22,6 +22,7 @@ import { sha256Hex } from '../digest.js';
 import {
   encryptSnapshotArchiveTestOnly,
   encryptSnapshotManifestTestOnly,
+  type SnapshotDataKeyUnwrapperPort,
   type SnapshotKeyEnvelopePort,
 } from '../encryption.js';
 import { isSnapshotError } from '../errors.js';
@@ -30,6 +31,8 @@ import {
   S3ImmutableSnapshotObjectStore,
   immutableSnapshotManifestObjectKey,
   immutableSnapshotObjectKey,
+  snapshotPublicationCommitKey,
+  snapshotPublicationPreparationKey,
   snapshotUploadObjectKey,
   type SnapshotEncryptedUploadBundle,
   type SnapshotS3CommandClient,
@@ -54,6 +57,7 @@ function s3Error(name: string, status: number): Error {
 class FakeSnapshotS3Client implements SnapshotS3CommandClient {
   readonly objects = new Map<string, FakeObject>();
   readonly commands: (PutObjectCommand | GetObjectCommand)[] = [];
+  readonly putFailures = new Map<string, unknown[]>();
   getFailure: unknown;
 
   async send(command: PutObjectCommand): Promise<PutObjectCommandOutput>;
@@ -67,6 +71,12 @@ class FakeSnapshotS3Client implements SnapshotS3CommandClient {
       if (key === undefined || command.input.Bucket === undefined)
         throw new TypeError('missing key');
       if (command.input.IfNoneMatch !== '*') throw new TypeError('missing conditional put');
+      const failures = this.putFailures.get(key);
+      if (failures !== undefined && failures.length > 0) {
+        const failure = failures.shift();
+        if (failures.length === 0) this.putFailures.delete(key);
+        throw failure;
+      }
       if (this.objects.has(key)) throw s3Error('PreconditionFailed', 412);
       if (!Buffer.isBuffer(command.input.Body)) throw new TypeError('fake expects Buffer body');
       this.objects.set(key, {
@@ -102,6 +112,12 @@ class FakeSnapshotS3Client implements SnapshotS3CommandClient {
     const object = this.objects.get(key);
     if (object === undefined) throw new Error('missing fake object');
     mutate(object);
+  }
+
+  failNextPut(key: string, error: unknown): void {
+    const failures = this.putFailures.get(key) ?? [];
+    failures.push(error);
+    this.putFailures.set(key, failures);
   }
 }
 
@@ -156,6 +172,9 @@ type UploadFixture = Readonly<{
   request: SnapshotUploadCreateRequest;
   keyEnvelope: SnapshotKeyEnvelopePort;
   dataKeyResult: { value?: Buffer };
+  keyId: string;
+  wrappedDek: Buffer;
+  dataKey: Buffer;
 }>;
 
 function uploadFixture(
@@ -165,11 +184,17 @@ function uploadFixture(
     marker: string;
     archiveNonceByte: number;
     manifestNonceByte: number;
+    keyId: string;
+    wrappedDek: Buffer;
+    dataKey: Buffer;
   }> = {},
 ): UploadFixture {
   const creatorId = options.creatorId ?? CREATOR_A;
   const uploadId = options.uploadId ?? UPLOAD_A;
   const marker = options.marker ?? 'SNAPSHOT-SIGNED-PUT-A';
+  const keyId = options.keyId ?? KEY_ID;
+  const wrappedDek = Buffer.from(options.wrappedDek ?? WRAPPED_DEK);
+  const dataKey = Buffer.from(options.dataKey ?? DATA_KEY);
   const fileBytes = Buffer.from(`# Synthetic facts\nmarker=${marker}\n`);
   const manifest = createSnapshotManifest([
     {
@@ -195,10 +220,10 @@ function uploadFixture(
       archiveDigest: sha256Hex(archiveBytes),
       objectKey: snapshotArchiveObjectKey(creatorId, snapshotDigest),
       plaintextBytes: archiveBytes.byteLength,
-      keyId: KEY_ID,
+      keyId,
     },
-    DATA_KEY,
-    { keyId: KEY_ID, wrappedDek: WRAPPED_DEK },
+    dataKey,
+    { keyId, wrappedDek },
     Buffer.alloc(12, options.archiveNonceByte ?? 1),
   );
   const encryptedManifest = encryptSnapshotManifestTestOnly(
@@ -211,10 +236,10 @@ function uploadFixture(
       snapshotDigest,
       objectKey: snapshotManifestObjectKey(creatorId, snapshotDigest),
       plaintextBytes: manifestBytes.byteLength,
-      keyId: KEY_ID,
+      keyId,
     },
-    DATA_KEY,
-    { keyId: KEY_ID, wrappedDek: WRAPPED_DEK },
+    dataKey,
+    { keyId, wrappedDek },
     Buffer.alloc(12, options.manifestNonceByte ?? 2),
   );
   const request: SnapshotUploadCreateRequest = {
@@ -232,9 +257,9 @@ function uploadFixture(
       throw new Error('not used by verifier');
     },
     async unwrapDataKey(input) {
-      expect(input.keyId).toBe(KEY_ID);
-      expect(input.wrappedDek).toEqual(WRAPPED_DEK);
-      dataKeyResult.value = Buffer.from(DATA_KEY);
+      expect(input.keyId).toBe(keyId);
+      expect(input.wrappedDek).toEqual(wrappedDek);
+      dataKeyResult.value = Buffer.from(dataKey);
       return dataKeyResult.value;
     },
   };
@@ -242,11 +267,27 @@ function uploadFixture(
     request,
     keyEnvelope,
     dataKeyResult,
+    keyId,
+    wrappedDek,
+    dataKey,
     bundle: {
       uploadId,
       request,
       archiveObjectBytes: archive.objectBytes,
       manifestObjectBytes: encryptedManifest.objectBytes,
+    },
+  };
+}
+
+function verifierKeyring(...fixtures: readonly UploadFixture[]): SnapshotDataKeyUnwrapperPort {
+  return {
+    async unwrapDataKey(input) {
+      const fixture = fixtures.find(
+        (candidate) =>
+          candidate.keyId === input.keyId && candidate.wrappedDek.equals(input.wrappedDek),
+      );
+      if (fixture === undefined) throw new Error('unknown synthetic wrapped key');
+      return Buffer.from(fixture.dataKey);
     },
   };
 }
@@ -380,9 +421,157 @@ describe('S3 immutable Snapshot signed upload and verifier', () => {
         CREATOR_A,
         fixture.request.archive.envelope.aad.snapshotDigest,
       ),
+      snapshotPublicationCommitKey(CREATOR_A, fixture.request.archive.envelope.aad.snapshotDigest),
+      snapshotPublicationPreparationKey(
+        CREATOR_A,
+        fixture.request.archive.envelope.aad.snapshotDigest,
+      ),
       immutableSnapshotObjectKey(CREATOR_A, fixture.request.archive.envelope.aad.snapshotDigest),
     ]);
     expect(fixture.dataKeyResult.value).toEqual(Buffer.alloc(32));
+  });
+
+  it('keeps a partial final pair invisible and heals it by replaying the prepared temp pair', async () => {
+    const client = new FakeSnapshotS3Client();
+    const store = tenantStore(client);
+    const fixture = uploadFixture();
+    await store.putUpload(fixture.bundle);
+    const digest = fixture.request.archive.envelope.aad.snapshotDigest;
+    const archiveFinalKey = immutableSnapshotObjectKey(CREATOR_A, digest);
+    const manifestFinalKey = immutableSnapshotManifestObjectKey(CREATOR_A, digest);
+    const preparationKey = snapshotPublicationPreparationKey(CREATOR_A, digest);
+    const commitKey = snapshotPublicationCommitKey(CREATOR_A, digest);
+    client.failNextPut(manifestFinalKey, s3Error('ServiceUnavailable', 503));
+
+    await expect(
+      store.finalizeUpload({
+        uploadId: UPLOAD_A,
+        request: fixture.request,
+        keyEnvelope: fixture.keyEnvelope,
+      }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_STORAGE_UNAVAILABLE'));
+    expect(client.objects.has(preparationKey)).toBe(true);
+    expect(client.objects.has(archiveFinalKey)).toBe(true);
+    expect(client.objects.has(manifestFinalKey)).toBe(false);
+    expect(client.objects.has(commitKey)).toBe(false);
+    expect(await store.readFinalBundle(fixture.request)).toBeUndefined();
+    expect(JSON.stringify(client.objects.get(preparationKey)?.metadata)).not.toContain('wrapped');
+    expect(JSON.stringify(client.objects.get(preparationKey)?.metadata)).not.toContain(KEY_ID);
+
+    await expect(
+      store.finalizeUpload({
+        uploadId: UPLOAD_A,
+        request: fixture.request,
+        keyEnvelope: fixture.keyEnvelope,
+      }),
+    ).resolves.toMatchObject({ verified: { snapshotDigest: digest } });
+    expect(client.objects.has(manifestFinalKey)).toBe(true);
+    expect(client.objects.has(commitKey)).toBe(true);
+  });
+
+  it('fails closed when a privileged rewrite changes the committed preparation body', async () => {
+    const client = new FakeSnapshotS3Client();
+    const store = tenantStore(client);
+    const fixture = uploadFixture();
+    await store.putUpload(fixture.bundle);
+    await store.finalizeUpload({
+      uploadId: UPLOAD_A,
+      request: fixture.request,
+      keyEnvelope: fixture.keyEnvelope,
+    });
+
+    const digest = fixture.request.archive.envelope.aad.snapshotDigest;
+    client.mutate(snapshotPublicationPreparationKey(CREATOR_A, digest), (object) => {
+      const rewritten = object.body.toString('utf8').replace(UPLOAD_A, UPLOAD_B);
+      expect(rewritten).not.toBe(object.body.toString('utf8'));
+      object.body = Buffer.from(rewritten, 'utf8');
+      object.contentLength = object.body.byteLength;
+      object.checksumSha256 = checksum(object.body);
+      object.metadata['body-bytes'] = String(object.body.byteLength);
+      object.metadata['body-digest'] = sha256Hex(object.body);
+    });
+
+    await expect(
+      store.readAndVerify({ request: fixture.request, keyEnvelope: fixture.keyEnvelope }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_IMMUTABLE_CONFLICT'));
+  });
+
+  it('rebuilds the exact prepared ciphertext after original temp loss using a verified fresh DEK pair', async () => {
+    const client = new FakeSnapshotS3Client();
+    const store = tenantStore(client);
+    const prepared = uploadFixture();
+    await store.putUpload(prepared.bundle);
+    const digest = prepared.request.archive.envelope.aad.snapshotDigest;
+    client.failNextPut(
+      immutableSnapshotManifestObjectKey(CREATOR_A, digest),
+      s3Error('ServiceUnavailable', 503),
+    );
+    await expect(
+      store.finalizeUpload({
+        uploadId: UPLOAD_A,
+        request: prepared.request,
+        keyEnvelope: prepared.keyEnvelope,
+      }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_STORAGE_UNAVAILABLE'));
+    client.objects.delete(snapshotUploadObjectKey(CREATOR_A, UPLOAD_A, 'archive'));
+    client.objects.delete(snapshotUploadObjectKey(CREATOR_A, UPLOAD_A, 'manifest'));
+
+    const replacement = uploadFixture({
+      uploadId: UPLOAD_B,
+      archiveNonceByte: 3,
+      manifestNonceByte: 4,
+      keyId: 'test-key:v2',
+      wrappedDek: Buffer.alloc(40, 10),
+      dataKey: Buffer.alloc(32, 8),
+    });
+    expect(replacement.request.archive.envelope.aad.snapshotDigest).toBe(digest);
+    expect(replacement.request.archive.envelope.cipherDigest).not.toBe(
+      prepared.request.archive.envelope.cipherDigest,
+    );
+    await store.putUpload(replacement.bundle);
+    const finalized = await store.finalizeUpload({
+      uploadId: UPLOAD_B,
+      request: replacement.request,
+      keyEnvelope: verifierKeyring(prepared, replacement),
+    });
+    expect(finalized.stored.archive.envelope.cipherDigest).toBe(
+      prepared.request.archive.envelope.cipherDigest,
+    );
+    expect(finalized.stored.manifest.envelope.cipherDigest).toBe(
+      prepared.request.manifest.envelope.cipherDigest,
+    );
+    await expect(
+      store.readAndVerify({
+        request: replacement.request,
+        keyEnvelope: verifierKeyring(prepared, replacement),
+      }),
+    ).resolves.toMatchObject({ verified: { snapshotDigest: digest } });
+  });
+
+  it('concurrent finalize with different cipher generations converges on one committed pair', async () => {
+    const client = new FakeSnapshotS3Client();
+    const store = tenantStore(client);
+    const first = uploadFixture();
+    const second = uploadFixture({
+      uploadId: UPLOAD_B,
+      archiveNonceByte: 7,
+      manifestNonceByte: 8,
+      keyId: 'test-key:v2',
+      wrappedDek: Buffer.alloc(40, 11),
+      dataKey: Buffer.alloc(32, 12),
+    });
+    await Promise.all([store.putUpload(first.bundle), store.putUpload(second.bundle)]);
+    const keyEnvelope = verifierKeyring(first, second);
+    const results = await Promise.all([
+      store.finalizeUpload({ uploadId: UPLOAD_A, request: first.request, keyEnvelope }),
+      store.finalizeUpload({ uploadId: UPLOAD_B, request: second.request, keyEnvelope }),
+    ]);
+    expect(new Set(results.map((result) => result.stored.archive.envelope.cipherDigest)).size).toBe(
+      1,
+    );
+    expect(
+      new Set(results.map((result) => result.stored.manifest.envelope.cipherDigest)).size,
+    ).toBe(1);
   });
 
   it('never reserves final keys for an AEAD-corrupt temp and accepts a correct same-digest retry', async () => {
@@ -437,7 +626,7 @@ describe('S3 immutable Snapshot signed upload and verifier', () => {
     expect(finalized.verified.fileCount).toBe(1);
   });
 
-  it('rejects a competing ciphertext pair for an existing immutable snapshot key', async () => {
+  it('adopts the committed verified plaintext identity across a fresh DEK and nonce pair', async () => {
     const client = new FakeSnapshotS3Client();
     const store = tenantStore(client);
     const first = uploadFixture();
@@ -445,6 +634,9 @@ describe('S3 immutable Snapshot signed upload and verifier', () => {
       uploadId: UPLOAD_B,
       archiveNonceByte: 5,
       manifestNonceByte: 6,
+      keyId: 'test-key:v2',
+      wrappedDek: Buffer.alloc(40, 10),
+      dataKey: Buffer.alloc(32, 8),
     });
     await store.putUpload(first.bundle);
     await store.finalizeUpload({
@@ -453,13 +645,62 @@ describe('S3 immutable Snapshot signed upload and verifier', () => {
       keyEnvelope: first.keyEnvelope,
     });
     await store.putUpload(competitor.bundle);
+    const adopted = await store.finalizeUpload({
+      uploadId: UPLOAD_B,
+      request: competitor.request,
+      keyEnvelope: verifierKeyring(first, competitor),
+    });
+    expect(adopted.stored.archive.envelope.cipherDigest).toBe(
+      first.request.archive.envelope.cipherDigest,
+    );
+    expect(adopted.stored.manifest.envelope.cipherDigest).toBe(
+      first.request.manifest.envelope.cipherDigest,
+    );
+  });
+
+  it('repairs a committed missing final from a verified fresh upload when the selected temp is corrupt', async () => {
+    const client = new FakeSnapshotS3Client();
+    const store = tenantStore(client);
+    const prepared = uploadFixture();
+    await store.putUpload(prepared.bundle);
+    await store.finalizeUpload({
+      uploadId: UPLOAD_A,
+      request: prepared.request,
+      keyEnvelope: prepared.keyEnvelope,
+    });
+
+    const digest = prepared.request.archive.envelope.aad.snapshotDigest;
+    client.objects.delete(immutableSnapshotManifestObjectKey(CREATOR_A, digest));
+    client.mutate(snapshotUploadObjectKey(CREATOR_A, UPLOAD_A, 'manifest'), (object) => {
+      object.body[object.body.length - 1] = object.body[object.body.length - 1]! ^ 1;
+    });
+    await expect(store.readFinalBundle(prepared.request)).rejects.toSatisfy((error: unknown) =>
+      isSnapshotError(error, 'SNAPSHOT_IMMUTABLE_CONFLICT'),
+    );
+
+    const replacement = uploadFixture({
+      uploadId: UPLOAD_B,
+      archiveNonceByte: 9,
+      manifestNonceByte: 10,
+      keyId: 'test-key:v2',
+      wrappedDek: Buffer.alloc(40, 12),
+      dataKey: Buffer.alloc(32, 13),
+    });
+    await store.putUpload(replacement.bundle);
+    const repaired = await store.finalizeUpload({
+      uploadId: UPLOAD_B,
+      request: replacement.request,
+      keyEnvelope: verifierKeyring(prepared, replacement),
+    });
+    expect(repaired.stored.manifest.envelope.cipherDigest).toBe(
+      prepared.request.manifest.envelope.cipherDigest,
+    );
     await expect(
-      store.finalizeUpload({
-        uploadId: UPLOAD_B,
-        request: competitor.request,
-        keyEnvelope: competitor.keyEnvelope,
+      store.readAndVerify({
+        request: replacement.request,
+        keyEnvelope: verifierKeyring(prepared, replacement),
       }),
-    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_IMMUTABLE_CONFLICT'));
+    ).resolves.toMatchObject({ verified: { snapshotDigest: digest } });
   });
 
   it('rejects client-declared file count or expanded size lies before promotion', async () => {

@@ -14,6 +14,8 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'SnapshotArchiveEnvelope',
       'SnapshotManifestEnvelopeAad',
       'SnapshotManifestEnvelope',
+      'SnapshotPublicationPreparationMarker',
+      'SnapshotPublicationCommitMarker',
       'BrokerHandshake',
       'BrokerEnvelope',
       'InvocationTransition',
@@ -64,6 +66,22 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'x-combo-runtime-constraints': expect.arrayContaining([
         'each target requiredHeaders MUST bind exact cipherBytes/cipherDigest/checksum/object-kind and include no unknown header',
         'public Authoring responses MUST use HTTPS; insecure loopback is only an explicit disposable component-test authority',
+      ]),
+    });
+  });
+
+  it('publishes the two-phase Snapshot publication authority and visibility rule', () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    expect(bundle.schemas.SnapshotPublicationPreparationMarker).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'the marker MUST be exact bounded RFC 8785 JCS bytes and written only after full dual-object AEAD and plaintext verification',
+        'wrappedDek/keyId are private verifier/recovery control metadata and MUST NOT enter S3 user metadata, URLs, logs, browser, Gateway, or model input',
+      ]),
+    });
+    expect(bundle.schemas.SnapshotPublicationCommitMarker).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'preparationDigest == sha256(exact canonical preparation marker bytes)',
+        'readers MUST treat absence of this marker as unpublished even when preparation or final objects exist',
       ]),
     });
   });

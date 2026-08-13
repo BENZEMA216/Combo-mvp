@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AgentVersionManifestSchema } from './agent-version.js';
+import { canonicalizeJson, parseJsonNoDuplicateKeys, sha256Hex } from './canonical.js';
 import { ConsumerTerminalEventPayloadSchema } from './consumer-events.js';
 import { InvocationStateSchema, VnextErrorResponseSchema } from './invocation.js';
 import {
@@ -17,8 +18,12 @@ import {
   SNAPSHOT_MAX_EXPANDED_BYTES,
   SNAPSHOT_MAX_FILES,
   SNAPSHOT_MAX_MANIFEST_BYTES,
+  SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES,
+  SNAPSHOT_PUBLICATION_COMMIT_PROTOCOL,
+  SNAPSHOT_PUBLICATION_PREPARATION_PROTOCOL,
   SnapshotArchiveEnvelopeSchema,
   SnapshotManifestEnvelopeSchema,
+  snapshotPublicationPreparationObjectKey,
 } from './snapshot.js';
 
 export const CREATOR_AGENT_HTTP_PROTOCOL = 'combo.creator-agent-http/1' as const;
@@ -197,6 +202,118 @@ export const SnapshotUploadCreateRequestSchema = z
     }
   });
 export type SnapshotUploadCreateRequest = z.infer<typeof SnapshotUploadCreateRequestSchema>;
+
+export const SnapshotPublicationPreparationMarkerSchema = z
+  .object({
+    protocol: z.literal(SNAPSHOT_PUBLICATION_PREPARATION_PROTOCOL),
+    schemaVersion: z.literal(1),
+    creatorId: UuidSchema,
+    snapshotDigest: Sha256HexSchema,
+    selectedUploadId: UuidSchema,
+    request: SnapshotUploadCreateRequestSchema,
+  })
+  .strict()
+  .superRefine((marker, context) => {
+    const archiveAad = marker.request.archive.envelope.aad;
+    if (marker.creatorId !== archiveAad.creatorId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['creatorId'],
+        message: 'preparation creatorId 必须绑定所选双 Envelope',
+      });
+    }
+    if (marker.snapshotDigest !== archiveAad.snapshotDigest) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['snapshotDigest'],
+        message: 'preparation snapshotDigest 必须绑定所选双 Envelope',
+      });
+    }
+  });
+export type SnapshotPublicationPreparationMarker = z.infer<
+  typeof SnapshotPublicationPreparationMarkerSchema
+>;
+
+export const SnapshotPublicationCommitMarkerSchema = z
+  .object({
+    protocol: z.literal(SNAPSHOT_PUBLICATION_COMMIT_PROTOCOL),
+    schemaVersion: z.literal(1),
+    creatorId: UuidSchema,
+    snapshotDigest: Sha256HexSchema,
+    preparationKey: z.string().min(1).max(512),
+    preparationDigest: Sha256HexSchema,
+  })
+  .strict()
+  .superRefine((marker, context) => {
+    if (
+      marker.preparationKey !==
+      snapshotPublicationPreparationObjectKey(marker.creatorId, marker.snapshotDigest)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['preparationKey'],
+        message: 'commit preparationKey 必须由 creatorId 和 snapshotDigest 精确派生',
+      });
+    }
+  });
+export type SnapshotPublicationCommitMarker = z.infer<typeof SnapshotPublicationCommitMarkerSchema>;
+
+function canonicalPublicationMarkerBytes(value: unknown): Buffer {
+  const bytes = Buffer.from(canonicalizeJson(value), 'utf8');
+  if (bytes.byteLength > SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES) {
+    throw new TypeError('Snapshot publication marker 超过冻结上限');
+  }
+  return bytes;
+}
+
+function parseCanonicalPublicationMarkerJson(bytesInput: Uint8Array): unknown {
+  if (
+    !(bytesInput instanceof Uint8Array) ||
+    bytesInput.byteLength === 0 ||
+    bytesInput.byteLength > SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES
+  ) {
+    throw new TypeError('Snapshot publication marker bytes 无效');
+  }
+  const bytes = Buffer.from(bytesInput);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  const parsed = parseJsonNoDuplicateKeys(text);
+  if (!canonicalPublicationMarkerBytes(parsed).equals(bytes)) {
+    throw new TypeError('Snapshot publication marker 必须是 exact canonical JCS bytes');
+  }
+  return parsed;
+}
+
+export function snapshotPublicationPreparationMarkerBytes(
+  input: SnapshotPublicationPreparationMarker,
+): Buffer {
+  return canonicalPublicationMarkerBytes(SnapshotPublicationPreparationMarkerSchema.parse(input));
+}
+
+export function snapshotPublicationPreparationDigest(
+  input: SnapshotPublicationPreparationMarker,
+): string {
+  return sha256Hex(snapshotPublicationPreparationMarkerBytes(input));
+}
+
+export function parseSnapshotPublicationPreparationMarker(
+  bytes: Uint8Array,
+): SnapshotPublicationPreparationMarker {
+  return SnapshotPublicationPreparationMarkerSchema.parse(
+    parseCanonicalPublicationMarkerJson(bytes),
+  );
+}
+
+export function snapshotPublicationCommitMarkerBytes(
+  input: SnapshotPublicationCommitMarker,
+): Buffer {
+  return canonicalPublicationMarkerBytes(SnapshotPublicationCommitMarkerSchema.parse(input));
+}
+
+export function parseSnapshotPublicationCommitMarker(
+  bytes: Uint8Array,
+): SnapshotPublicationCommitMarker {
+  return SnapshotPublicationCommitMarkerSchema.parse(parseCanonicalPublicationMarkerJson(bytes));
+}
 
 export const SnapshotUploadCreateResponseSchema = z
   .object({

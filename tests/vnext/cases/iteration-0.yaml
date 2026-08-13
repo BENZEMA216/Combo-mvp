@@ -445,7 +445,7 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:a5038a292c8c97b62139087f9fe9f9b9b7b9147f93eab317376119452d8e90ba
+      - sha256:6f2b3f2268cd8601b9e2747bd91c03cd522fe85e698570fb62860e45c765fb31
       - sha256:079fadef4841e665841ab4b82fa56cf15f3d5bfacb11949d69cab85fd6186cd8
   - <<: *sch
     id: SCH-007

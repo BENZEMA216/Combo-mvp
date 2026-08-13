@@ -10,6 +10,7 @@ import {
   SnapshotArchiveEnvelopeSchema,
   SnapshotManifestEnvelopeAadSchema,
   SnapshotManifestEnvelopeSchema,
+  canonicalizeJson,
   parseSnapshotArchiveCipherObject,
   parseSnapshotManifestCipherObject,
   snapshotArchiveEnvelopeAadBytes,
@@ -165,6 +166,36 @@ export function encryptSnapshotArchiveTestOnly(
   return encryptSnapshotArchiveWithNonce(archiveBytes, context, dataEncryptionKey, keyWrap, nonce);
 }
 
+/**
+ * Verifier recovery-only exact replay. Callers must first authenticate a replacement upload and
+ * prove the same canonical plaintext identity. This function never admits a caller-selected nonce
+ * or AAD: both come from the already-frozen preparation Envelope, and no bytes are returned unless
+ * the complete reproduced Envelope is byte-for-byte semantically identical.
+ */
+export function recreatePreparedSnapshotArchiveCipherObject(
+  archiveBytes: Uint8Array,
+  envelopeInput: SnapshotArchiveEnvelope,
+  dataEncryptionKey: Uint8Array,
+): Buffer {
+  const parsed = SnapshotArchiveEnvelopeSchema.safeParse(envelopeInput);
+  if (!parsed.success) fail('SNAPSHOT_ENCRYPTION_INVALID');
+  const envelope = parsed.data;
+  const recreated = encryptSnapshotArchiveWithNonce(
+    archiveBytes,
+    envelope.aad,
+    dataEncryptionKey,
+    {
+      keyId: envelope.aad.keyId,
+      wrappedDek: parseCanonicalBytes(envelope.wrappedDek, WRAPPED_DEK_BYTES),
+    },
+    parseCanonicalBytes(envelope.nonce, NONCE_BYTES),
+  );
+  if (canonicalizeJson(recreated.envelope) !== canonicalizeJson(envelope)) {
+    fail('SNAPSHOT_ENCRYPTION_INVALID');
+  }
+  return recreated.objectBytes;
+}
+
 export function decryptSnapshotArchive(
   objectBytesInput: Uint8Array,
   envelopeInput: SnapshotArchiveEnvelope,
@@ -293,6 +324,31 @@ export function encryptSnapshotManifestTestOnly(
     keyWrap,
     nonce,
   );
+}
+
+/** Recovery-only exact replay; see recreatePreparedSnapshotArchiveCipherObject. */
+export function recreatePreparedSnapshotManifestCipherObject(
+  manifestBytes: Uint8Array,
+  envelopeInput: SnapshotManifestEnvelope,
+  dataEncryptionKey: Uint8Array,
+): Buffer {
+  const parsed = SnapshotManifestEnvelopeSchema.safeParse(envelopeInput);
+  if (!parsed.success) fail('SNAPSHOT_ENCRYPTION_INVALID');
+  const envelope = parsed.data;
+  const recreated = encryptSnapshotManifestWithNonce(
+    manifestBytes,
+    envelope.aad,
+    dataEncryptionKey,
+    {
+      keyId: envelope.aad.keyId,
+      wrappedDek: parseCanonicalBytes(envelope.wrappedDek, WRAPPED_DEK_BYTES),
+    },
+    parseCanonicalBytes(envelope.nonce, NONCE_BYTES),
+  );
+  if (canonicalizeJson(recreated.envelope) !== canonicalizeJson(envelope)) {
+    fail('SNAPSHOT_ENCRYPTION_INVALID');
+  }
+  return recreated.objectBytes;
 }
 
 export function decryptSnapshotManifest(

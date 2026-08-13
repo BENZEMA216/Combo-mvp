@@ -1,15 +1,19 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
   CreateBucketCommand,
+  DeleteObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
   S3Client,
+  type GetObjectCommand,
+  type GetObjectCommandOutput,
+  type PutObjectCommandOutput,
 } from '@aws-sdk/client-s3';
 import { type SnapshotUploadCreateRequest } from '@cb/creator-agent-protocol';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { sha256Hex } from '../digest.js';
-import { type SnapshotKeyEnvelopePort } from '../encryption.js';
+import { type SnapshotDataKeyUnwrapperPort, type SnapshotKeyEnvelopePort } from '../encryption.js';
 import { isSnapshotError } from '../errors.js';
 import { createSnapshotManifest, snapshotManifestBytes } from '../manifest.js';
 import {
@@ -19,6 +23,7 @@ import {
   immutableSnapshotObjectKey,
   snapshotUploadObjectKey,
   type SnapshotEncryptedUploadBundle,
+  type SnapshotS3CommandClient,
 } from '../object-storage.js';
 import { compressDeterministicTar, createDeterministicTar } from '../tar.js';
 import { prepareEncryptedSnapshotUpload } from '../upload.js';
@@ -45,6 +50,9 @@ type EncryptedFixture = Readonly<{
   bundle: SnapshotEncryptedUploadBundle;
   request: SnapshotUploadCreateRequest;
   keyEnvelope: SnapshotKeyEnvelopePort;
+  keyId: string;
+  wrappedDek: Buffer;
+  dataKey: Buffer;
 }>;
 
 async function encryptedFixture(input: {
@@ -96,6 +104,9 @@ async function encryptedFixture(input: {
   expect(request.manifest.checksumSha256).toBe(checksum(prepared.manifestObjectBytes));
   return {
     request,
+    keyId,
+    wrappedDek: expectedWrappedDek,
+    dataKey: unwrapKey,
     bundle: {
       uploadId: input.uploadId,
       request,
@@ -113,6 +124,46 @@ async function encryptedFixture(input: {
       },
     },
   };
+}
+
+function verifierKeyring(...fixtures: readonly EncryptedFixture[]): SnapshotDataKeyUnwrapperPort {
+  return {
+    async unwrapDataKey(input) {
+      const fixture = fixtures.find(
+        (candidate) =>
+          candidate.keyId === input.keyId && candidate.wrappedDek.equals(input.wrappedDek),
+      );
+      if (fixture === undefined) throw new Error('unknown synthetic wrapped key');
+      return Buffer.from(fixture.dataKey);
+    },
+  };
+}
+
+class FailOncePutClient implements SnapshotS3CommandClient {
+  #failed = false;
+
+  constructor(
+    readonly delegate: S3Client,
+    readonly key: string,
+  ) {}
+
+  async send(command: PutObjectCommand): Promise<PutObjectCommandOutput>;
+  async send(command: GetObjectCommand): Promise<GetObjectCommandOutput>;
+  async send(
+    command: PutObjectCommand | GetObjectCommand,
+  ): Promise<PutObjectCommandOutput | GetObjectCommandOutput> {
+    if (command instanceof PutObjectCommand) {
+      if (!this.#failed && command.input.Key === this.key) {
+        this.#failed = true;
+        throw Object.assign(new Error('synthetic manifest promotion outage'), {
+          name: 'ServiceUnavailable',
+          $metadata: { httpStatusCode: 503 },
+        });
+      }
+      return this.delegate.send(command);
+    }
+    return this.delegate.send(command);
+  }
 }
 
 async function signedPut(
@@ -300,6 +351,187 @@ describe('real disposable MinIO Snapshot signed upload + verify-before-promote E
         keyEnvelope: retry.keyEnvelope,
       }),
     ).resolves.toMatchObject({ verified: { fileCount: 1 } });
+  });
+
+  it('keeps archive-only promotion invisible and replays the original prepared temp pair', async () => {
+    const fixture = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000016',
+      marker: 'REAL-MINIO-PUBLICATION-CRASH-REPLAY',
+    });
+    await store.putUpload(fixture.bundle);
+    const digest = fixture.request.archive.envelope.aad.snapshotDigest;
+    const failpointStore = new S3ImmutableSnapshotObjectStore({
+      client: new FailOncePutClient(client, immutableSnapshotManifestObjectKey(creatorId, digest)),
+      bucket,
+      creatorId,
+    });
+    await expect(
+      failpointStore.finalizeUpload({
+        uploadId: fixture.bundle.uploadId,
+        request: fixture.request,
+        keyEnvelope: fixture.keyEnvelope,
+      }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_STORAGE_UNAVAILABLE'));
+    expect(await store.readFinalBundle(fixture.request)).toBeUndefined();
+    await expect(
+      store.finalizeUpload({
+        uploadId: fixture.bundle.uploadId,
+        request: fixture.request,
+        keyEnvelope: fixture.keyEnvelope,
+      }),
+    ).resolves.toMatchObject({ verified: { snapshotDigest: digest } });
+  });
+
+  it('recovers a prepared pair after original temp loss from a fresh DEK and nonce upload', async () => {
+    const prepared = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000017',
+      marker: 'REAL-MINIO-PUBLICATION-LOST-TEMP',
+    });
+    await store.putUpload(prepared.bundle);
+    const digest = prepared.request.archive.envelope.aad.snapshotDigest;
+    const failpointStore = new S3ImmutableSnapshotObjectStore({
+      client: new FailOncePutClient(client, immutableSnapshotManifestObjectKey(creatorId, digest)),
+      bucket,
+      creatorId,
+    });
+    await expect(
+      failpointStore.finalizeUpload({
+        uploadId: prepared.bundle.uploadId,
+        request: prepared.request,
+        keyEnvelope: prepared.keyEnvelope,
+      }),
+    ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_STORAGE_UNAVAILABLE'));
+    expect(await store.readFinalBundle(prepared.request)).toBeUndefined();
+    await Promise.all([
+      client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: snapshotUploadObjectKey(creatorId, prepared.bundle.uploadId, 'archive'),
+        }),
+      ),
+      client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: snapshotUploadObjectKey(creatorId, prepared.bundle.uploadId, 'manifest'),
+        }),
+      ),
+    ]);
+
+    const replacement = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000018',
+      marker: 'REAL-MINIO-PUBLICATION-LOST-TEMP',
+    });
+    expect(replacement.request.archive.envelope.aad.snapshotDigest).toBe(digest);
+    expect(replacement.request.archive.envelope.cipherDigest).not.toBe(
+      prepared.request.archive.envelope.cipherDigest,
+    );
+    await store.putUpload(replacement.bundle);
+    const finalized = await store.finalizeUpload({
+      uploadId: replacement.bundle.uploadId,
+      request: replacement.request,
+      keyEnvelope: verifierKeyring(prepared, replacement),
+    });
+    expect(finalized.stored.archive.envelope.cipherDigest).toBe(
+      prepared.request.archive.envelope.cipherDigest,
+    );
+    expect(finalized.stored.manifest.envelope.cipherDigest).toBe(
+      prepared.request.manifest.envelope.cipherDigest,
+    );
+  });
+
+  it('repairs a committed missing final after restore from a verified fresh upload', async () => {
+    const prepared = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000021',
+      marker: 'REAL-MINIO-COMMITTED-MISSING-FINAL',
+    });
+    await store.putUpload(prepared.bundle);
+    await store.finalizeUpload({
+      uploadId: prepared.bundle.uploadId,
+      request: prepared.request,
+      keyEnvelope: prepared.keyEnvelope,
+    });
+    const digest = prepared.request.archive.envelope.aad.snapshotDigest;
+    await Promise.all([
+      client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: immutableSnapshotManifestObjectKey(creatorId, digest),
+        }),
+      ),
+      client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: snapshotUploadObjectKey(creatorId, prepared.bundle.uploadId, 'archive'),
+        }),
+      ),
+      client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: snapshotUploadObjectKey(creatorId, prepared.bundle.uploadId, 'manifest'),
+        }),
+      ),
+    ]);
+    await expect(store.readFinalBundle(prepared.request)).rejects.toSatisfy((error: unknown) =>
+      isSnapshotError(error, 'SNAPSHOT_IMMUTABLE_CONFLICT'),
+    );
+
+    const replacement = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000022',
+      marker: 'REAL-MINIO-COMMITTED-MISSING-FINAL',
+    });
+    await store.putUpload(replacement.bundle);
+    const repaired = await store.finalizeUpload({
+      uploadId: replacement.bundle.uploadId,
+      request: replacement.request,
+      keyEnvelope: verifierKeyring(prepared, replacement),
+    });
+    expect(repaired.stored.manifest.envelope.cipherDigest).toBe(
+      prepared.request.manifest.envelope.cipherDigest,
+    );
+    await expect(
+      store.readAndVerify({
+        request: replacement.request,
+        keyEnvelope: verifierKeyring(prepared, replacement),
+      }),
+    ).resolves.toMatchObject({ verified: { snapshotDigest: digest } });
+  });
+
+  it('concurrent real MinIO finalize with fresh cipher generations converges on one marker', async () => {
+    const first = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000019',
+      marker: 'REAL-MINIO-PUBLICATION-CONCURRENT',
+    });
+    const second = await encryptedFixture({
+      creatorId,
+      uploadId: '0198f00d-7000-7000-8000-000000000020',
+      marker: 'REAL-MINIO-PUBLICATION-CONCURRENT',
+    });
+    await Promise.all([store.putUpload(first.bundle), store.putUpload(second.bundle)]);
+    const keyEnvelope = verifierKeyring(first, second);
+    const finalized = await Promise.all([
+      store.finalizeUpload({
+        uploadId: first.bundle.uploadId,
+        request: first.request,
+        keyEnvelope,
+      }),
+      store.finalizeUpload({
+        uploadId: second.bundle.uploadId,
+        request: second.request,
+        keyEnvelope,
+      }),
+    ]);
+    expect(
+      new Set(finalized.map((result) => result.stored.archive.envelope.cipherDigest)).size,
+    ).toBe(1);
+    expect(
+      new Set(finalized.map((result) => result.stored.manifest.envelope.cipherDigest)).size,
+    ).toBe(1);
   });
 
   it('detects privileged overwrite of either immutable object', async () => {

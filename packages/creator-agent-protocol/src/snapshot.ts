@@ -15,6 +15,10 @@ export const SNAPSHOT_MANIFEST_ENVELOPE_PROTOCOL = 'combo.snapshot-manifest-enve
 export const SNAPSHOT_MANIFEST_OBJECT_FORMAT = 'combo.snapshot-manifest-binary/1' as const;
 export const SNAPSHOT_MANIFEST_OBJECT_MAGIC = 'CSNPMAN1' as const;
 export const SNAPSHOT_OBJECT_STORAGE_PROTOCOL = 'combo.snapshot-object-storage/1' as const;
+export const SNAPSHOT_PUBLICATION_PREPARATION_PROTOCOL =
+  'combo.snapshot-publication-preparation/1' as const;
+export const SNAPSHOT_PUBLICATION_COMMIT_PROTOCOL = 'combo.snapshot-publication-commit/1' as const;
+export const SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES = 16 * 1024;
 export const SNAPSHOT_MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 export const SNAPSHOT_MAX_FILES = 2_000;
 export const SNAPSHOT_MAX_FILE_BYTES = 10 * 1024 * 1024;
@@ -45,6 +49,24 @@ export function snapshotManifestObjectKey(creatorId: string, snapshotDigest: str
   const creator = UuidSchema.parse(creatorId);
   const digest = Sha256HexSchema.parse(snapshotDigest);
   return `creators/${creator}/manifests/sha256/${digest.slice(0, 2)}/${digest}.json.enc`;
+}
+
+export function snapshotPublicationPreparationObjectKey(
+  creatorId: string,
+  snapshotDigest: string,
+): string {
+  const creator = UuidSchema.parse(creatorId);
+  const digest = Sha256HexSchema.parse(snapshotDigest);
+  return `creators/${creator}/publications/sha256/${digest.slice(0, 2)}/${digest}.prepare.json`;
+}
+
+export function snapshotPublicationCommitObjectKey(
+  creatorId: string,
+  snapshotDigest: string,
+): string {
+  const creator = UuidSchema.parse(creatorId);
+  const digest = Sha256HexSchema.parse(snapshotDigest);
+  return `creators/${creator}/publications/sha256/${digest.slice(0, 2)}/${digest}.commit.json`;
 }
 
 export const SnapshotArchiveEnvelopeAadSchema = z

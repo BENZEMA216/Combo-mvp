@@ -91,6 +91,12 @@ export function verifySnapshotArchive(input: VerifySnapshotArchiveInput): Verifi
   }
   assertCompressedArchiveLimits(input.archiveBytes.byteLength, manifest.totals.expandedBytes);
   const archiveFiles = decompressAndParseDeterministicArchive(input.archiveBytes);
+  const canonicalArchiveBytes = compressDeterministicTar(
+    createDeterministicTar(archiveFiles.map(({ path, bytes }) => ({ path, bytes }))),
+  );
+  if (!Buffer.from(input.archiveBytes).equals(canonicalArchiveBytes)) {
+    fail('SNAPSHOT_ARCHIVE_INVALID');
+  }
   if (archiveFiles.length !== manifest.files.length) fail('SNAPSHOT_ARCHIVE_INVALID');
 
   for (let index = 0; index < manifest.files.length; index += 1) {
