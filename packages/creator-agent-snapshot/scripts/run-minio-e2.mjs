@@ -1,10 +1,11 @@
-/* global fetch, process */
+/* global AbortSignal, fetch, process */
 import { randomBytes } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const image =
@@ -121,7 +122,7 @@ try {
     } catch {
       // 容器拉起和首次初始化期间连接失败属于预期等待。
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await delay(250);
   }
   if (!ready) throw new Error('disposable MinIO did not become ready within 30 seconds');
   await runVitest(endpoint);

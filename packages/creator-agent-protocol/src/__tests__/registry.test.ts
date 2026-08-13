@@ -12,6 +12,8 @@ import {
   parseVnextRegistryYaml,
   type TestCaseRegistry,
 } from '../registry.js';
+import { SnapshotArchiveEnvelopeSchema } from '../snapshot.js';
+import { readFixture } from './fixture-helpers.js';
 
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 const vnextDirectory = join(repositoryRoot, 'tests', 'vnext');
@@ -177,6 +179,32 @@ describe('VNext machine-readable contract registries', () => {
             field.keyOwner === 'independent-test-kek',
         ),
     ).toBe(true);
+
+    const snapshotEnvelope = SnapshotArchiveEnvelopeSchema.parse(
+      await readFixture('snapshot-envelope.v1.json'),
+    );
+    const authoritativeArchiveAadBindings = [
+      'archiveDigest',
+      'cipherObjectFormat',
+      'creatorId',
+      'keyId',
+      'objectKey',
+      'plaintextBytes',
+      'protocol',
+      'schemaVersion',
+      'snapshotDigest',
+    ];
+    expect(Object.keys(snapshotEnvelope.aad).sort()).toEqual(authoritativeArchiveAadBindings);
+
+    for (const system of ['minio', 'minio-backup'] as const) {
+      const snapshotCipher = allowlist.fields.find(
+        (field) =>
+          field.system === system &&
+          field.fieldId === `context.${system}.context-snapshot-cipher-object`,
+      );
+      expect(snapshotCipher?.aadBindings).toEqual(authoritativeArchiveAadBindings);
+      expect(snapshotCipher?.aadBindings).not.toContain('agentVersionDigest');
+    }
 
     const known = allowlist.fields[0]!;
     const { fieldId: _id, retention: _retention, deletionOrHold: _hold, ...observation } = known;

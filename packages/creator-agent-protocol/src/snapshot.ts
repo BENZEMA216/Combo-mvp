@@ -1,8 +1,16 @@
 import { z } from 'zod';
-import { canonicalSha256 } from './canonical.js';
-import { containsForbiddenControl, Sha256HexSchema } from './primitives.js';
+import { canonicalSha256, canonicalizeJson, sha256Hex } from './canonical.js';
+import {
+  CanonicalBase64UrlBytesSchema,
+  containsForbiddenControl,
+  Sha256HexSchema,
+  UuidSchema,
+} from './primitives.js';
 
 export const SNAPSHOT_PROTOCOL = 'combo.snapshot-manifest/1' as const;
+export const SNAPSHOT_ENVELOPE_PROTOCOL = 'combo.snapshot-envelope/1' as const;
+export const SNAPSHOT_ARCHIVE_OBJECT_FORMAT = 'combo.snapshot-binary/1' as const;
+export const SNAPSHOT_ARCHIVE_OBJECT_MAGIC = 'CSNPENC1' as const;
 export const SNAPSHOT_MAX_FILES = 2_000;
 export const SNAPSHOT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const SNAPSHOT_MAX_EXPANDED_BYTES = 200 * 1024 * 1024;
@@ -21,6 +29,115 @@ const FORBIDDEN_SEGMENTS = new Set([
   '.ds_store',
   'thumbs.db',
 ]);
+
+export function snapshotArchiveObjectKey(creatorId: string, snapshotDigest: string): string {
+  const creator = UuidSchema.parse(creatorId);
+  const digest = Sha256HexSchema.parse(snapshotDigest);
+  return `creators/${creator}/snapshots/sha256/${digest.slice(0, 2)}/${digest}.tar.zst.enc`;
+}
+
+export const SnapshotArchiveEnvelopeAadSchema = z
+  .object({
+    protocol: z.literal(SNAPSHOT_ENVELOPE_PROTOCOL),
+    schemaVersion: z.literal(1),
+    cipherObjectFormat: z.literal(SNAPSHOT_ARCHIVE_OBJECT_FORMAT),
+    creatorId: UuidSchema,
+    snapshotDigest: Sha256HexSchema,
+    archiveDigest: Sha256HexSchema,
+    objectKey: z.string().min(1).max(512),
+    plaintextBytes: z.number().int().min(1).max(SNAPSHOT_MAX_COMPRESSED_BYTES),
+    keyId: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{0,255}$/u),
+  })
+  .strict()
+  .superRefine((aad, context) => {
+    if (aad.objectKey !== snapshotArchiveObjectKey(aad.creatorId, aad.snapshotDigest)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['objectKey'],
+        message: 'objectKey 必须由 creatorId 和 snapshotDigest 精确派生',
+      });
+    }
+  });
+export type SnapshotArchiveEnvelopeAad = z.infer<typeof SnapshotArchiveEnvelopeAadSchema>;
+
+export function snapshotArchiveEnvelopeAadBytes(aad: SnapshotArchiveEnvelopeAad): Buffer {
+  return Buffer.from(canonicalizeJson(SnapshotArchiveEnvelopeAadSchema.parse(aad)), 'utf8');
+}
+
+export function snapshotArchiveEnvelopeAadDigest(aad: SnapshotArchiveEnvelopeAad): string {
+  return canonicalSha256(SnapshotArchiveEnvelopeAadSchema.parse(aad));
+}
+
+export const SnapshotArchiveEnvelopeSchema = z
+  .object({
+    protocol: z.literal(SNAPSHOT_ENVELOPE_PROTOCOL),
+    schemaVersion: z.literal(1),
+    cipherObjectFormat: z.literal(SNAPSHOT_ARCHIVE_OBJECT_FORMAT),
+    algorithm: z.literal('aes-256-gcm/v1'),
+    keyWrapAlgorithm: z.literal('rfc3394-aes-256-kw/v1'),
+    aad: SnapshotArchiveEnvelopeAadSchema,
+    aadDigest: Sha256HexSchema,
+    nonce: CanonicalBase64UrlBytesSchema(12, 12),
+    authTag: CanonicalBase64UrlBytesSchema(16, 16),
+    wrappedDek: CanonicalBase64UrlBytesSchema(40, 40),
+    cipherDigest: Sha256HexSchema,
+    cipherBytes: z
+      .number()
+      .int()
+      .min(37)
+      .max(SNAPSHOT_MAX_COMPRESSED_BYTES + 36),
+  })
+  .strict()
+  .superRefine((envelope, context) => {
+    if (envelope.aadDigest !== canonicalSha256(envelope.aad)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aadDigest'],
+        message: 'aadDigest 必须绑定 exact Snapshot archive AAD',
+      });
+    }
+    if (envelope.cipherObjectFormat !== envelope.aad.cipherObjectFormat) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aad', 'cipherObjectFormat'],
+        message: 'cipherObjectFormat 必须受 AAD 绑定',
+      });
+    }
+    if (envelope.cipherBytes !== envelope.aad.plaintextBytes + 36) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cipherBytes'],
+        message: 'cipherBytes 必须等于 plaintextBytes + 8-byte magic + 12-byte nonce + 16-byte tag',
+      });
+    }
+  });
+export type SnapshotArchiveEnvelope = z.infer<typeof SnapshotArchiveEnvelopeSchema>;
+
+export function parseSnapshotArchiveCipherObject(
+  envelopeInput: SnapshotArchiveEnvelope,
+  objectBytesInput: Uint8Array,
+): SnapshotArchiveEnvelope {
+  const envelope = SnapshotArchiveEnvelopeSchema.parse(envelopeInput);
+  if (!(objectBytesInput instanceof Uint8Array)) {
+    throw new TypeError('Snapshot cipher object 必须是 bytes');
+  }
+  const object = Buffer.from(objectBytesInput);
+  const nonce = Buffer.from(envelope.nonce, 'base64url');
+  const tag = Buffer.from(envelope.authTag, 'base64url');
+  const tagStart = object.byteLength - tag.byteLength;
+  if (
+    object.byteLength !== envelope.cipherBytes ||
+    object.byteLength !== envelope.aad.plaintextBytes + 36 ||
+    sha256Hex(object) !== envelope.cipherDigest ||
+    object.subarray(0, 8).toString('ascii') !== SNAPSHOT_ARCHIVE_OBJECT_MAGIC ||
+    !object.subarray(8, 20).equals(nonce) ||
+    tagStart !== 20 + envelope.aad.plaintextBytes ||
+    !object.subarray(tagStart).equals(tag)
+  ) {
+    throw new TypeError('Snapshot cipher object 与 Envelope 不匹配');
+  }
+  return envelope;
+}
 
 export const SnapshotPathSchema = z
   .string()

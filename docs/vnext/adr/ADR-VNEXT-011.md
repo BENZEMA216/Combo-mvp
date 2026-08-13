@@ -8,7 +8,7 @@
 
 ## Decision
 
-每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK 和 96-bit nonce，以 AES-256-GCM 加密、16-byte tag；AAD 是 combo.snapshot-envelope/1 canonical JSON，绑定 creatorId、snapshotDigest、archiveDigest、objectKey、plaintextBytes、keyId。DEK 用 RFC3394 AES-256-KW 在独立 KEK 下包裹，32-byte DEK 的 wrappedDek 固定 40 bytes；nonce/tag/wrappedDek 用 canonical base64url。先完整认证再把明文交给 parser。
+每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK；每个加密对象独立生成唯一 96-bit CSPRNG nonce，同 DEK 下严禁 nonce 复用。Snapshot archive 使用 AES-256-GCM 和 16-byte tag；AAD 是 combo.snapshot-envelope/1 canonical JSON，精确绑定 protocol/schemaVersion/cipherObjectFormat/creatorId/snapshotDigest/archiveDigest/objectKey/plaintextBytes/keyId。archive 密文格式冻结为 combo.snapshot-binary/1，即 ASCII("CSNPENC1") || nonce[12] || ciphertext[plaintextBytes] || authTag[16]，不允许 trailing bytes；cipherBytes=plaintextBytes+36，cipherDigest覆盖完整对象，Envelope nonce/tag必须与内嵌段逐 byte 相等。DEK 用 RFC3394 AES-256-KW 在独立 KEK 下包裹，32-byte DEK 的 wrappedDek固定40 bytes；nonce/tag/wrappedDek使用canonical base64url。先校验长度、完整对象digest、magic、nonce/tag绑定和AEAD认证，再校验明文大小/archive digest，最后才交给parser。该版本的SnapshotArchiveEnvelope只覆盖archive；架构要求的encrypted manifest必须使用独立nonce和独立envelope，完成前Gate 1保持BLOCKED。
 
 ## Alternatives considered
 
@@ -31,4 +31,5 @@ bit flip、跨 Creator/Object swap、错误 KEK 均在解包前失败；KEK 与�
 ## Affected protocol versions
 
 - combo.snapshot-envelope/1
+- combo.snapshot-binary/1
 - combo.snapshot-manifest/1

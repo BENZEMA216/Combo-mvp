@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { canonicalizeJson, canonicalSha256, parseJsonNoDuplicateKeys } from './canonical.js';
 import {
   Base64UrlSchema,
+  CanonicalBase64UrlBytesSchema,
   HmacSha256DigestSchema,
   IsoDateTimeSchema,
   P256P1363SignatureSchema,
@@ -477,16 +478,6 @@ function event<const Type extends string, Schema extends z.ZodTypeAny>(type: Typ
 
 const EmptyBodySchema = z.object({}).strict();
 const GenerationSchema = Uint63StringSchema;
-const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) =>
-  Base64UrlSchema.refine((value) => {
-    const bytes = Buffer.from(value, 'base64url');
-    return (
-      bytes.byteLength >= minimumBytes &&
-      bytes.byteLength <= maximumBytes &&
-      bytes.toString('base64url') === value
-    );
-  }, `必须是 ${minimumBytes}..${maximumBytes} bytes canonical base64url`);
-
 export const BrokerSensitiveMessageAadSchema = z
   .object({
     protocol: z.literal(CREATOR_BROKER_PROTOCOL),

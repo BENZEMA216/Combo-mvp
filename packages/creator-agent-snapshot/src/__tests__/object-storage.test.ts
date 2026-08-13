@@ -5,17 +5,27 @@ import {
   type GetObjectCommandOutput,
   type PutObjectCommandOutput,
 } from '@aws-sdk/client-s3';
+import {
+  SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+  SNAPSHOT_ENVELOPE_PROTOCOL,
+  snapshotArchiveObjectKey,
+  type SnapshotArchiveEnvelope,
+  type SnapshotArchiveEnvelopeAad,
+} from '@cb/creator-agent-protocol';
 import { describe, expect, it } from 'vitest';
 
 import { sha256Hex } from '../digest.js';
-import { encryptSnapshotArchive, type SnapshotKeyEnvelopePort } from '../encryption.js';
+import {
+  encryptSnapshotArchive,
+  encryptSnapshotArchiveTestOnly,
+  type SnapshotKeyEnvelopePort,
+} from '../encryption.js';
 import { isSnapshotError } from '../errors.js';
 import { createSnapshotManifest, snapshotManifestBytes } from '../manifest.js';
 import {
   S3ImmutableSnapshotObjectStore,
   immutableSnapshotObjectKey,
   snapshotUploadObjectKey,
-  type SnapshotCipherIdentity,
   type SnapshotS3CommandClient,
   type SnapshotUploadObject,
 } from '../object-storage.js';
@@ -93,8 +103,27 @@ const CREATOR_A = '0198f00d-6000-7000-8000-000000000001';
 const CREATOR_B = '0198f00d-6000-7000-8000-000000000002';
 const UPLOAD_A = '0198f00d-6000-7000-8000-000000000011';
 const UPLOAD_B = '0198f00d-6000-7000-8000-000000000012';
-const KEY_REFERENCE = 'test-key:v1';
-const WRAPPED_DATA_KEY = Buffer.alloc(40, 9);
+const KEY_ID = 'test-key:v1';
+const WRAPPED_DEK = Buffer.alloc(40, 9);
+
+function encryptionContext(input: {
+  creatorId: string;
+  snapshotDigest: string;
+  archiveDigest: string;
+  plaintextBytes: number;
+}): SnapshotArchiveEnvelopeAad {
+  return {
+    protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
+    schemaVersion: 1,
+    cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+    creatorId: input.creatorId,
+    snapshotDigest: input.snapshotDigest,
+    archiveDigest: input.archiveDigest,
+    objectKey: snapshotArchiveObjectKey(input.creatorId, input.snapshotDigest),
+    plaintextBytes: input.plaintextBytes,
+    keyId: KEY_ID,
+  };
+}
 
 function tenantStore(
   client: FakeSnapshotS3Client,
@@ -107,30 +136,39 @@ function tenantStore(
   });
 }
 
-function uploadFixture(overrides: Partial<SnapshotUploadObject> = {}): SnapshotUploadObject {
-  const encryptedObjectBytes = Buffer.from(
-    overrides.encryptedObjectBytes ?? Buffer.concat([Buffer.from('CSNPENC1'), Buffer.alloc(29, 7)]),
+function uploadFixture(
+  options: Partial<{
+    creatorId: string;
+    uploadId: string;
+    archiveMarker: string;
+    snapshotMarker: string;
+  }> = {},
+): SnapshotUploadObject {
+  const creatorId = options.creatorId ?? CREATOR_A;
+  const archive = Buffer.from(options.archiveMarker ?? 'archive-a');
+  const snapshotDigest = sha256Hex(Buffer.from(options.snapshotMarker ?? 'snapshot-manifest'));
+  const context = encryptionContext({
+    creatorId,
+    snapshotDigest,
+    archiveDigest: sha256Hex(archive),
+    plaintextBytes: archive.byteLength,
+  });
+  const encrypted = encryptSnapshotArchiveTestOnly(
+    archive,
+    context,
+    Buffer.alloc(32, 7),
+    { keyId: KEY_ID, wrappedDek: WRAPPED_DEK },
+    Buffer.alloc(12, archive[0] ?? 1),
   );
   return {
-    creatorId: CREATOR_A,
-    uploadId: UPLOAD_A,
-    snapshotDigest: sha256Hex(Buffer.from('snapshot-manifest')),
-    archiveDigest: sha256Hex(Buffer.from('archive')),
-    cipherDigest: sha256Hex(encryptedObjectBytes),
-    cipherBytes: encryptedObjectBytes.byteLength,
-    encryptedObjectBytes,
-    ...overrides,
+    uploadId: options.uploadId ?? UPLOAD_A,
+    envelope: encrypted.envelope,
+    encryptedObjectBytes: encrypted.objectBytes,
   };
 }
 
-function identity(upload: SnapshotUploadObject): SnapshotCipherIdentity {
-  return {
-    creatorId: upload.creatorId,
-    snapshotDigest: upload.snapshotDigest,
-    archiveDigest: upload.archiveDigest,
-    cipherDigest: upload.cipherDigest,
-    cipherBytes: upload.cipherBytes,
-  };
+function identity(upload: SnapshotUploadObject): Readonly<{ envelope: SnapshotArchiveEnvelope }> {
+  return { envelope: upload.envelope };
 }
 
 describe('S3 immutable Snapshot object storage', () => {
@@ -150,7 +188,7 @@ describe('S3 immutable Snapshot object storage', () => {
     });
     expect(replayedFinal).toEqual(final);
     expect(final.objectKey).toBe(
-      immutableSnapshotObjectKey(upload.creatorId, upload.snapshotDigest),
+      immutableSnapshotObjectKey(upload.envelope.aad.creatorId, upload.envelope.aad.snapshotDigest),
     );
 
     const putCommands = client.commands.filter(
@@ -190,8 +228,8 @@ describe('S3 immutable Snapshot object storage', () => {
         store.finalizeUpload({ ...identity(upload), uploadId: upload.uploadId }),
       ),
     );
-    expect(new Set(results.map((result) => result.cipherDigest))).toEqual(
-      new Set([upload.cipherDigest]),
+    expect(new Set(results.map((result) => result.envelope.cipherDigest))).toEqual(
+      new Set([upload.envelope.cipherDigest]),
     );
     expect(
       [...client.objects.keys()].filter((key) => key.startsWith(`creators/${CREATOR_A}/`)),
@@ -204,10 +242,8 @@ describe('S3 immutable Snapshot object storage', () => {
     const first = uploadFixture();
     await store.putUpload(first);
 
-    const changedBytes = Buffer.concat([Buffer.from('CSNPENC1'), Buffer.alloc(29, 8)]);
     const conflictingUpload = uploadFixture({
-      encryptedObjectBytes: changedBytes,
-      cipherDigest: sha256Hex(changedBytes),
+      archiveMarker: 'different-archive',
     });
     await expect(store.putUpload(conflictingUpload)).rejects.toSatisfy((error: unknown) =>
       isSnapshotError(error, 'SNAPSHOT_IMMUTABLE_CONFLICT'),
@@ -215,9 +251,7 @@ describe('S3 immutable Snapshot object storage', () => {
 
     const competitor = uploadFixture({
       uploadId: UPLOAD_B,
-      encryptedObjectBytes: changedBytes,
-      cipherDigest: sha256Hex(changedBytes),
-      archiveDigest: sha256Hex(Buffer.from('different-archive')),
+      archiveMarker: 'different-archive',
     });
     await store.putUpload(competitor);
     await store.finalizeUpload({ ...identity(first), uploadId: first.uploadId });
@@ -255,8 +289,8 @@ describe('S3 immutable Snapshot object storage', () => {
       const upload = uploadFixture();
       await store.putUpload(upload);
       await store.finalizeUpload({ ...identity(upload), uploadId: upload.uploadId });
-      client.mutate(immutableSnapshotObjectKey(upload.creatorId, upload.snapshotDigest), mutate);
-      await expect(store.readFinal(identity(upload))).rejects.toSatisfy((error: unknown) =>
+      client.mutate(upload.envelope.aad.objectKey, mutate);
+      await expect(store.readFinal(upload.envelope)).rejects.toSatisfy((error: unknown) =>
         isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'),
       );
     }
@@ -269,9 +303,10 @@ describe('S3 immutable Snapshot object storage', () => {
     await store.putUpload(upload);
     await store.finalizeUpload({ ...identity(upload), uploadId: upload.uploadId });
 
-    expect(await store.readFinal({ ...identity(upload), creatorId: CREATOR_B })).toBeUndefined();
-    await expect(store.putUpload({ ...upload, creatorId: CREATOR_B })).rejects.toSatisfy(
-      (error: unknown) => isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'),
+    const tenantBUpload = uploadFixture({ creatorId: CREATOR_B });
+    expect(await store.readFinal(tenantBUpload.envelope)).toBeUndefined();
+    await expect(store.putUpload(tenantBUpload)).rejects.toSatisfy((error: unknown) =>
+      isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'),
     );
     expect(
       client.commands.every(
@@ -286,15 +321,31 @@ describe('S3 immutable Snapshot object storage', () => {
     const client = new FakeSnapshotS3Client();
     client.getFailure = s3Error('NoSuchBucket', 404);
     const store = tenantStore(client);
-    await expect(store.readFinal(identity(uploadFixture()))).rejects.toSatisfy((error: unknown) =>
+    await expect(store.readFinal(uploadFixture().envelope)).rejects.toSatisfy((error: unknown) =>
       isSnapshotError(error, 'SNAPSHOT_STORAGE_UNAVAILABLE'),
     );
   });
 
-  it('enforces the frozen wrapped-DEK size and sanitizes envelope-provider failures', async () => {
+  it('rejects invalid Envelope binding before unwrap and sanitizes provider failures', async () => {
     const client = new FakeSnapshotS3Client();
     const store = tenantStore(client);
-    const upload = uploadFixture();
+    const archive = Buffer.from('archive');
+    const snapshotDigest = sha256Hex(Buffer.from('snapshot-manifest'));
+    const context = encryptionContext({
+      creatorId: CREATOR_A,
+      snapshotDigest,
+      archiveDigest: sha256Hex(archive),
+      plaintextBytes: archive.byteLength,
+    });
+    const encrypted = encryptSnapshotArchive(archive, context, Buffer.alloc(32, 2), {
+      keyId: KEY_ID,
+      wrappedDek: WRAPPED_DEK,
+    });
+    const upload: SnapshotUploadObject = {
+      uploadId: UPLOAD_A,
+      envelope: encrypted.envelope,
+      encryptedObjectBytes: encrypted.objectBytes,
+    };
     await store.putUpload(upload);
     await store.finalizeUpload({ ...identity(upload), uploadId: upload.uploadId });
     let unwrapCalls = 0;
@@ -313,10 +364,8 @@ describe('S3 immutable Snapshot object storage', () => {
 
     await expect(
       store.readAndVerify({
-        ...identity(upload),
         manifestBytes: Buffer.from('{}'),
-        keyReference: KEY_REFERENCE,
-        wrappedDataKey: Buffer.alloc(39),
+        envelope: { ...encrypted.envelope, cipherDigest: '0'.repeat(64) },
         keyEnvelope,
       }),
     ).rejects.toSatisfy((error: unknown) => isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID'));
@@ -325,10 +374,8 @@ describe('S3 immutable Snapshot object storage', () => {
     let caught: unknown;
     try {
       await store.readAndVerify({
-        ...identity(upload),
         manifestBytes: Buffer.from('{}'),
-        keyReference: KEY_REFERENCE,
-        wrappedDataKey: WRAPPED_DATA_KEY,
+        envelope: encrypted.envelope,
         keyEnvelope,
       });
     } catch (error) {
@@ -356,28 +403,29 @@ describe('S3 immutable Snapshot object storage', () => {
       createDeterministicTar([{ path: 'FACTS.md', bytes: fileBytes }]),
     );
     const dataKey = Buffer.alloc(32, 3);
-    const context = {
-      schemaVersion: 1 as const,
+    const context = encryptionContext({
       creatorId: CREATOR_A,
       snapshotDigest: sha256Hex(manifestBytes),
       archiveDigest: sha256Hex(archiveBytes),
-    };
-    const encrypted = encryptSnapshotArchive(archiveBytes, context, dataKey, Buffer.alloc(12, 4));
-    const upload = uploadFixture({
-      snapshotDigest: context.snapshotDigest,
-      archiveDigest: context.archiveDigest,
-      cipherDigest: encrypted.cipherDigest,
-      cipherBytes: encrypted.objectBytes.byteLength,
-      encryptedObjectBytes: encrypted.objectBytes,
+      plaintextBytes: archiveBytes.byteLength,
     });
+    const encrypted = encryptSnapshotArchive(archiveBytes, context, dataKey, {
+      keyId: KEY_ID,
+      wrappedDek: WRAPPED_DEK,
+    });
+    const upload: SnapshotUploadObject = {
+      uploadId: UPLOAD_A,
+      envelope: encrypted.envelope,
+      encryptedObjectBytes: encrypted.objectBytes,
+    };
     let returnedPlaintextKey: Buffer | undefined;
     const keyEnvelope: SnapshotKeyEnvelopePort = {
       async createDataKey() {
         throw new Error('not used by read verifier');
       },
       async unwrapDataKey(input) {
-        expect(input.keyReference).toBe(KEY_REFERENCE);
-        expect(input.wrappedKey).toEqual(WRAPPED_DATA_KEY);
+        expect(input.keyId).toBe(KEY_ID);
+        expect(input.wrappedDek).toEqual(WRAPPED_DEK);
         returnedPlaintextKey = Buffer.from(dataKey);
         return returnedPlaintextKey;
       },
@@ -386,10 +434,8 @@ describe('S3 immutable Snapshot object storage', () => {
     await store.putUpload(upload);
     await store.finalizeUpload({ ...identity(upload), uploadId: upload.uploadId });
     const result = await store.readAndVerify({
-      ...identity(upload),
       manifestBytes,
-      keyReference: KEY_REFERENCE,
-      wrappedDataKey: WRAPPED_DATA_KEY,
+      envelope: encrypted.envelope,
       keyEnvelope,
     });
     expect(result.verified).toMatchObject({

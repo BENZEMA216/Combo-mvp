@@ -10,6 +10,8 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     for (const required of [
       'AgentVersionManifest',
       'SnapshotManifest',
+      'SnapshotArchiveEnvelopeAad',
+      'SnapshotArchiveEnvelope',
       'BrokerHandshake',
       'BrokerEnvelope',
       'InvocationTransition',
@@ -27,6 +29,33 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     ]) {
       expect(bundle.schemas[required], required).toBeDefined();
     }
+  });
+
+  it('publishes Snapshot archive Envelope semantic bindings beside structural JSON Schema', () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    expect(bundle.schemas.SnapshotArchiveEnvelope).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'cipherBytes == aad.plaintextBytes + 36',
+        'cipherDigest == sha256(exact whole cipher object)',
+        'envelope nonce/authTag MUST equal the cipher object segments byte-for-byte',
+        'all cipher object consumers MUST pass parseSnapshotArchiveCipherObject(envelope,objectBytes) before unwrap or decrypt',
+      ]),
+    });
+  });
+
+  it('standard JSON Schema validates the Snapshot archive Envelope structure before runtime bindings', async () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    const validateEnvelope = ajv.compile(bundle.schemas.SnapshotArchiveEnvelope as AnySchema);
+    const envelope = (await readFixture('snapshot-envelope.v1.json')) as Record<string, unknown>;
+
+    expect(validateEnvelope(envelope)).toBe(true);
+    expect(validateEnvelope({ ...envelope, nonce: 'short' })).toBe(false);
+    expect(
+      validateEnvelope({ ...envelope, wrappedDek: Buffer.alloc(39).toString('base64url') }),
+    ).toBe(false);
+    expect(validateEnvelope({ ...envelope, cipherBytes: '68' })).toBe(false);
+    expect(validateEnvelope({ ...envelope, unexpected: true })).toBe(false);
   });
 
   it('generated Consumer terminal schema physically advertises only the five terminal states', () => {

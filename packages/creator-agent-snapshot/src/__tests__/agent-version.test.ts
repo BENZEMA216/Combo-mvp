@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import {
+  SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+  SNAPSHOT_ENVELOPE_PROTOCOL,
+  snapshotArchiveEnvelopeAadDigest,
+  snapshotArchiveObjectKey,
+} from '@cb/creator-agent-protocol';
 
 import {
   buildAgentVersion,
@@ -365,22 +371,82 @@ describe('immutable Snapshot object repository', () => {
       },
     ]);
     const manifestBytes = snapshotManifestBytes(manifest);
-    const encryptedObjectBytes = Buffer.from('encrypted-object');
-    const object = {
-      creatorId: 'creator-1',
-      snapshotDigest: snapshotDigest(manifest),
+    const encryptedObjectBytes = Buffer.concat([
+      Buffer.from('CSNPENC1'),
+      Buffer.alloc(12, 1),
+      Buffer.alloc(1, 2),
+      Buffer.alloc(16, 3),
+    ]);
+    const creatorId = '0198f00d-8000-7000-8000-000000000099';
+    const manifestDigest = snapshotDigest(manifest);
+    const aad = {
+      protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
+      schemaVersion: 1 as const,
+      cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+      creatorId,
+      snapshotDigest: manifestDigest,
       archiveDigest: digest('archive'),
-      cipherDigest: sha256Hex(encryptedObjectBytes),
+      objectKey: snapshotArchiveObjectKey(creatorId, manifestDigest),
+      plaintextBytes: 1,
+      keyId: 'test-kek/key-1',
+    };
+    const object = {
+      envelope: {
+        protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
+        schemaVersion: 1 as const,
+        cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+        algorithm: 'aes-256-gcm/v1' as const,
+        keyWrapAlgorithm: 'rfc3394-aes-256-kw/v1' as const,
+        aad,
+        aadDigest: snapshotArchiveEnvelopeAadDigest(aad),
+        nonce: Buffer.alloc(12, 1).toString('base64url'),
+        authTag: Buffer.alloc(16, 3).toString('base64url'),
+        wrappedDek: Buffer.alloc(40, 4).toString('base64url'),
+        cipherDigest: sha256Hex(encryptedObjectBytes),
+        cipherBytes: encryptedObjectBytes.byteLength,
+      },
       manifestBytes,
       encryptedObjectBytes,
-      keyReference: 'test-kek/key-1',
-      wrappedDataKey: Buffer.from('wrapped-key'),
     };
     expect(await repository.putIfAbsent(object)).toEqual(await repository.putIfAbsent(object));
+    const reorderedEnvelope = {
+      cipherBytes: object.envelope.cipherBytes,
+      cipherDigest: object.envelope.cipherDigest,
+      wrappedDek: object.envelope.wrappedDek,
+      authTag: object.envelope.authTag,
+      nonce: object.envelope.nonce,
+      aadDigest: object.envelope.aadDigest,
+      aad: {
+        keyId: aad.keyId,
+        plaintextBytes: aad.plaintextBytes,
+        objectKey: aad.objectKey,
+        archiveDigest: aad.archiveDigest,
+        snapshotDigest: aad.snapshotDigest,
+        creatorId: aad.creatorId,
+        cipherObjectFormat: aad.cipherObjectFormat,
+        schemaVersion: aad.schemaVersion,
+        protocol: aad.protocol,
+      },
+      keyWrapAlgorithm: object.envelope.keyWrapAlgorithm,
+      algorithm: object.envelope.algorithm,
+      cipherObjectFormat: object.envelope.cipherObjectFormat,
+      schemaVersion: object.envelope.schemaVersion,
+      protocol: object.envelope.protocol,
+    };
+    expect(await repository.putIfAbsent({ ...object, envelope: reorderedEnvelope })).toEqual(
+      await repository.putIfAbsent(object),
+    );
+    const competingBytes = Buffer.from(encryptedObjectBytes);
+    competingBytes[competingBytes.length - 1] = competingBytes[competingBytes.length - 1]! ^ 1;
     await expect(
       repository.putIfAbsent({
         ...object,
-        archiveDigest: digest('different-archive'),
+        encryptedObjectBytes: competingBytes,
+        envelope: {
+          ...object.envelope,
+          authTag: competingBytes.subarray(competingBytes.length - 16).toString('base64url'),
+          cipherDigest: sha256Hex(competingBytes),
+        },
       }),
     ).rejects.toMatchObject({ code: 'SNAPSHOT_IMMUTABLE_CONFLICT' });
   });

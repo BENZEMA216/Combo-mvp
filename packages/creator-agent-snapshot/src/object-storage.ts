@@ -5,16 +5,21 @@ import {
   type GetObjectCommandOutput,
   type PutObjectCommandOutput,
 } from '@aws-sdk/client-s3';
-import { Sha256HexSchema, UuidSchema } from '@cb/creator-agent-protocol';
+import {
+  Sha256HexSchema,
+  SnapshotArchiveEnvelopeSchema,
+  UuidSchema,
+  parseSnapshotArchiveCipherObject,
+  snapshotArchiveObjectKey,
+  type SnapshotArchiveEnvelope,
+} from '@cb/creator-agent-protocol';
 
-import { equalHexDigest, sha256Hex } from './digest.js';
 import { type SnapshotKeyEnvelopePort } from './encryption.js';
 import { fail, isSnapshotError } from './errors.js';
 import { decryptAndVerifySnapshot, type VerifiedSnapshotArchive } from './snapshot.js';
 
 export const SNAPSHOT_OBJECT_STORAGE_PROTOCOL = 'combo.snapshot-object-storage/1' as const;
 export const MAX_ENCRYPTED_SNAPSHOT_BYTES = 50 * 1024 * 1024 + 36;
-const WRAPPED_DATA_KEY_BYTES = 40;
 const DATA_ENCRYPTION_KEY_BYTES = 32;
 const CONTENT_TYPE = 'application/octet-stream';
 const CACHE_CONTROL = 'no-store';
@@ -24,7 +29,7 @@ export interface SnapshotS3CommandClient {
   send(command: GetObjectCommand): Promise<GetObjectCommandOutput>;
 }
 
-export type SnapshotCipherIdentity = Readonly<{
+type SnapshotCipherIdentity = Readonly<{
   creatorId: string;
   snapshotDigest: string;
   archiveDigest: string;
@@ -32,27 +37,28 @@ export type SnapshotCipherIdentity = Readonly<{
   cipherBytes: number;
 }>;
 
-export type SnapshotUploadObject = SnapshotCipherIdentity &
-  Readonly<{
-    uploadId: string;
-    encryptedObjectBytes: Uint8Array;
-  }>;
+export type SnapshotUploadObject = Readonly<{
+  uploadId: string;
+  envelope: SnapshotArchiveEnvelope;
+  encryptedObjectBytes: Uint8Array;
+}>;
 
-export type StoredSnapshotCipherObject = SnapshotCipherIdentity &
-  Readonly<{
-    objectKey: string;
-    encryptedObjectBytes: Buffer;
-  }>;
+export type StoredSnapshotCipherObject = Readonly<{
+  envelope: SnapshotArchiveEnvelope;
+  objectKey: string;
+  encryptedObjectBytes: Buffer;
+}>;
 
-export type FinalizeSnapshotUploadInput = SnapshotCipherIdentity & Readonly<{ uploadId: string }>;
+export type FinalizeSnapshotUploadInput = Readonly<{
+  uploadId: string;
+  envelope: SnapshotArchiveEnvelope;
+}>;
 
-export type ReadAndVerifyStoredSnapshotInput = SnapshotCipherIdentity &
-  Readonly<{
-    manifestBytes: Uint8Array;
-    keyReference: string;
-    wrappedDataKey: Uint8Array;
-    keyEnvelope: SnapshotKeyEnvelopePort;
-  }>;
+export type ReadAndVerifyStoredSnapshotInput = Readonly<{
+  manifestBytes: Uint8Array;
+  envelope: SnapshotArchiveEnvelope;
+  keyEnvelope: SnapshotKeyEnvelopePort;
+}>;
 
 type ObjectState = 'upload' | 'immutable';
 type SnapshotMetadata = Record<string, string>;
@@ -91,20 +97,21 @@ function normalizeIdentity(input: SnapshotCipherIdentity): SnapshotCipherIdentit
   });
 }
 
-function normalizeKeyEnvelopeInput(input: {
-  keyReference: string;
-  wrappedDataKey: Uint8Array;
-}): Readonly<{ keyReference: string; wrappedDataKey: Buffer }> {
-  if (
-    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/u.test(input.keyReference) ||
-    !(input.wrappedDataKey instanceof Uint8Array) ||
-    input.wrappedDataKey.byteLength !== WRAPPED_DATA_KEY_BYTES
-  ) {
-    fail('SNAPSHOT_OBJECT_INVALID');
-  }
+function parseEnvelope(input: SnapshotArchiveEnvelope): Readonly<{
+  envelope: SnapshotArchiveEnvelope;
+  identity: SnapshotCipherIdentity;
+}> {
+  const parsed = SnapshotArchiveEnvelopeSchema.safeParse(input);
+  if (!parsed.success) fail('SNAPSHOT_OBJECT_INVALID');
   return Object.freeze({
-    keyReference: input.keyReference,
-    wrappedDataKey: Buffer.from(input.wrappedDataKey),
+    envelope: parsed.data,
+    identity: normalizeIdentity({
+      creatorId: parsed.data.aad.creatorId,
+      snapshotDigest: parsed.data.aad.snapshotDigest,
+      archiveDigest: parsed.data.aad.archiveDigest,
+      cipherDigest: parsed.data.cipherDigest,
+      cipherBytes: parsed.data.cipherBytes,
+    }),
   });
 }
 
@@ -128,10 +135,11 @@ export function snapshotUploadObjectKey(creatorId: string, uploadId: string): st
 }
 
 export function immutableSnapshotObjectKey(creatorId: string, snapshotDigest: string): string {
-  const creator = UuidSchema.safeParse(creatorId);
-  const digest = Sha256HexSchema.safeParse(snapshotDigest);
-  if (!creator.success || !digest.success) fail('SNAPSHOT_OBJECT_INVALID');
-  return `creators/${creator.data}/snapshots/sha256/${digest.data.slice(0, 2)}/${digest.data}.tar.zst.enc`;
+  try {
+    return snapshotArchiveObjectKey(creatorId, snapshotDigest);
+  } catch {
+    fail('SNAPSHOT_OBJECT_INVALID');
+  }
 }
 
 function metadataFor(identity: SnapshotCipherIdentity, state: ObjectState): SnapshotMetadata {
@@ -236,17 +244,15 @@ export class S3ImmutableSnapshotObjectStore {
   }
 
   async putUpload(input: SnapshotUploadObject): Promise<StoredSnapshotCipherObject> {
-    const identity = normalizeIdentity(input);
+    const { envelope, identity } = parseEnvelope(input.envelope);
     if (identity.creatorId !== this.#creatorId) fail('SNAPSHOT_OBJECT_INVALID');
     const uploadId = normalizeUploadId(input.uploadId);
-    if (!(input.encryptedObjectBytes instanceof Uint8Array)) fail('SNAPSHOT_OBJECT_INVALID');
-    if (input.encryptedObjectBytes.byteLength !== identity.cipherBytes) {
+    try {
+      parseSnapshotArchiveCipherObject(envelope, input.encryptedObjectBytes);
+    } catch {
       fail('SNAPSHOT_OBJECT_INVALID');
     }
     const bytes = Buffer.from(input.encryptedObjectBytes);
-    if (!equalHexDigest(sha256Hex(bytes), identity.cipherDigest)) {
-      fail('SNAPSHOT_OBJECT_INVALID');
-    }
     const key = snapshotUploadObjectKey(identity.creatorId, uploadId);
     const metadata = metadataFor(identity, 'upload');
     try {
@@ -265,7 +271,7 @@ export class S3ImmutableSnapshotObjectStore {
       );
     } catch (error) {
       if (!isConditionalConflict(error)) fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
-      const existing = await this.#readObject(key, identity, 'upload').catch((readError) => {
+      const existing = await this.#readObject(key, envelope, 'upload').catch((readError) => {
         if (isSnapshotError(readError, 'SNAPSHOT_OBJECT_INVALID')) {
           fail('SNAPSHOT_IMMUTABLE_CONFLICT');
         }
@@ -276,16 +282,16 @@ export class S3ImmutableSnapshotObjectStore {
       }
       return existing;
     }
-    return this.#requireExactObject(key, identity, 'upload');
+    return this.#requireExactObject(key, envelope, 'upload');
   }
 
   async finalizeUpload(input: FinalizeSnapshotUploadInput): Promise<StoredSnapshotCipherObject> {
-    const identity = normalizeIdentity(input);
+    const { envelope, identity } = parseEnvelope(input.envelope);
     if (identity.creatorId !== this.#creatorId) fail('SNAPSHOT_OBJECT_INVALID');
     const uploadId = normalizeUploadId(input.uploadId);
     const finalKey = immutableSnapshotObjectKey(identity.creatorId, identity.snapshotDigest);
 
-    const alreadyFinal = await this.#readObject(finalKey, identity, 'immutable').catch((error) => {
+    const alreadyFinal = await this.#readObject(finalKey, envelope, 'immutable').catch((error) => {
       if (isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID')) {
         fail('SNAPSHOT_IMMUTABLE_CONFLICT');
       }
@@ -294,7 +300,7 @@ export class S3ImmutableSnapshotObjectStore {
     if (alreadyFinal !== undefined) return alreadyFinal;
 
     const uploadKey = snapshotUploadObjectKey(identity.creatorId, uploadId);
-    const uploaded = await this.#readObject(uploadKey, identity, 'upload').catch((error) => {
+    const uploaded = await this.#readObject(uploadKey, envelope, 'upload').catch((error) => {
       if (isSnapshotError(error, 'SNAPSHOT_OBJECT_INVALID')) {
         fail('SNAPSHOT_IMMUTABLE_CONFLICT');
       }
@@ -318,7 +324,7 @@ export class S3ImmutableSnapshotObjectStore {
       );
     } catch (error) {
       if (!isConditionalConflict(error)) fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
-      const winner = await this.#readObject(finalKey, identity, 'immutable').catch((readError) => {
+      const winner = await this.#readObject(finalKey, envelope, 'immutable').catch((readError) => {
         if (isSnapshotError(readError, 'SNAPSHOT_OBJECT_INVALID')) {
           fail('SNAPSHOT_IMMUTABLE_CONFLICT');
         }
@@ -327,15 +333,15 @@ export class S3ImmutableSnapshotObjectStore {
       if (winner === undefined) fail('SNAPSHOT_STORAGE_UNAVAILABLE');
       return winner;
     }
-    return this.#requireExactObject(finalKey, identity, 'immutable');
+    return this.#requireExactObject(finalKey, envelope, 'immutable');
   }
 
-  async readFinal(input: SnapshotCipherIdentity): Promise<StoredSnapshotCipherObject | undefined> {
-    const identity = normalizeIdentity(input);
+  async readFinal(input: SnapshotArchiveEnvelope): Promise<StoredSnapshotCipherObject | undefined> {
+    const { envelope, identity } = parseEnvelope(input);
     if (identity.creatorId !== this.#creatorId) return undefined;
     return this.#readObject(
       immutableSnapshotObjectKey(identity.creatorId, identity.snapshotDigest),
-      identity,
+      envelope,
       'immutable',
     );
   }
@@ -343,24 +349,19 @@ export class S3ImmutableSnapshotObjectStore {
   async readAndVerify(
     input: ReadAndVerifyStoredSnapshotInput,
   ): Promise<Readonly<{ stored: StoredSnapshotCipherObject; verified: VerifiedSnapshotArchive }>> {
-    const identity = normalizeIdentity(input);
-    const stored = await this.readFinal(identity);
+    const { envelope } = parseEnvelope(input.envelope);
+    const stored = await this.readFinal(envelope);
     if (stored === undefined) fail('SNAPSHOT_OBJECT_NOT_FOUND');
-    const keyInput = normalizeKeyEnvelopeInput(input);
-    const context = {
-      schemaVersion: 1 as const,
-      creatorId: identity.creatorId,
-      snapshotDigest: identity.snapshotDigest,
-      archiveDigest: identity.archiveDigest,
-    };
+    if (envelope.aad.objectKey !== stored.objectKey) fail('SNAPSHOT_OBJECT_INVALID');
+    const wrappedDek = Buffer.from(envelope.wrappedDek, 'base64url');
     let unwrapped: Uint8Array | undefined;
     let dataKey: Buffer | undefined;
     try {
       try {
         unwrapped = await input.keyEnvelope.unwrapDataKey({
-          context,
-          keyReference: keyInput.keyReference,
-          wrappedKey: keyInput.wrappedDataKey,
+          context: envelope.aad,
+          keyId: envelope.aad.keyId,
+          wrappedDek,
         });
       } catch (error) {
         if (isSnapshotError(error)) throw error;
@@ -376,33 +377,33 @@ export class S3ImmutableSnapshotObjectStore {
       const verified = decryptAndVerifySnapshot({
         manifestBytes: input.manifestBytes,
         encryptedObjectBytes: stored.encryptedObjectBytes,
-        encryptionContext: context,
+        encryptionEnvelope: envelope,
         dataEncryptionKey: dataKey,
-        expectedCipherDigest: identity.cipherDigest,
       });
       return Object.freeze({ stored, verified });
     } finally {
       dataKey?.fill(0);
       unwrapped?.fill(0);
-      keyInput.wrappedDataKey.fill(0);
+      wrappedDek.fill(0);
     }
   }
 
   async #requireExactObject(
     key: string,
-    identity: SnapshotCipherIdentity,
+    envelope: SnapshotArchiveEnvelope,
     state: ObjectState,
   ): Promise<StoredSnapshotCipherObject> {
-    const stored = await this.#readObject(key, identity, state);
+    const stored = await this.#readObject(key, envelope, state);
     if (stored === undefined) fail('SNAPSHOT_STORAGE_UNAVAILABLE');
     return stored;
   }
 
   async #readObject(
     key: string,
-    identity: SnapshotCipherIdentity,
+    envelope: SnapshotArchiveEnvelope,
     state: ObjectState,
   ): Promise<StoredSnapshotCipherObject | undefined> {
+    const { identity } = parseEnvelope(envelope);
     let output: GetObjectCommandOutput;
     try {
       output = await this.#client.send(
@@ -427,15 +428,16 @@ export class S3ImmutableSnapshotObjectStore {
     }
     assertExactMetadata(output.Metadata, metadataFor(identity, state));
     const bytes = await readBoundedBody(output.Body, identity.cipherBytes);
-    if (
-      bytes.byteLength !== identity.cipherBytes ||
-      !equalHexDigest(sha256Hex(bytes), identity.cipherDigest) ||
-      (output.ChecksumSHA256 !== undefined && output.ChecksumSHA256 !== sha256Base64(bytes))
-    ) {
+    try {
+      parseSnapshotArchiveCipherObject(envelope, bytes);
+    } catch {
+      fail('SNAPSHOT_OBJECT_INVALID');
+    }
+    if (output.ChecksumSHA256 !== undefined && output.ChecksumSHA256 !== sha256Base64(bytes)) {
       fail('SNAPSHOT_OBJECT_INVALID');
     }
     return Object.freeze({
-      ...identity,
+      envelope,
       objectKey: key,
       encryptedObjectBytes: bytes,
     });

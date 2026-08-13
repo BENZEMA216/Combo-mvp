@@ -20,6 +20,27 @@ export const HmacSha256DigestSchema = z.string().regex(/^hmac-sha256:[a-f0-9]{64
 
 export const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 
+export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) => {
+  if (
+    !Number.isSafeInteger(minimumBytes) ||
+    !Number.isSafeInteger(maximumBytes) ||
+    minimumBytes < 0 ||
+    maximumBytes < minimumBytes
+  ) {
+    throw new TypeError('canonical base64url byte boundary 无效');
+  }
+  return Base64UrlSchema.min(Math.ceil((minimumBytes * 4) / 3))
+    .max(Math.ceil((maximumBytes * 4) / 3))
+    .refine((value) => {
+      const bytes = Buffer.from(value, 'base64url');
+      return (
+        bytes.byteLength >= minimumBytes &&
+        bytes.byteLength <= maximumBytes &&
+        bytes.toString('base64url') === value
+      );
+    }, `必须是 ${minimumBytes}..${maximumBytes} bytes canonical base64url`);
+};
+
 export const P256P1363SignatureSchema = Base64UrlSchema.refine((value) => {
   const bytes = Buffer.from(value, 'base64url');
   return bytes.byteLength === 64 && bytes.toString('base64url') === value;

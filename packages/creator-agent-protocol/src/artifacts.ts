@@ -56,11 +56,17 @@ import {
   SandboxAttestationUnsignedSchema,
   SandboxSpecSchema,
 } from './sandbox.js';
-import { SnapshotManifestSchema } from './snapshot.js';
+import {
+  SnapshotArchiveEnvelopeAadSchema,
+  SnapshotArchiveEnvelopeSchema,
+  SnapshotManifestSchema,
+} from './snapshot.js';
 
 export const ContractSchemaDefinitions = {
   AgentVersionManifest: AgentVersionManifestSchema,
   SnapshotManifest: SnapshotManifestSchema,
+  SnapshotArchiveEnvelopeAad: SnapshotArchiveEnvelopeAadSchema,
+  SnapshotArchiveEnvelope: SnapshotArchiveEnvelopeSchema,
   BrokerHandshake: BrokerHandshakeSchema,
   BrokerEnvelope: BrokerEnvelopeSchema,
   ExecutionCapabilityUnsigned: ExecutionCapabilityUnsignedSchema,
@@ -111,6 +117,20 @@ export const ContractSchemaDefinitions = {
 const RuntimeSemanticConstraints: Partial<
   Record<keyof typeof ContractSchemaDefinitions, readonly string[]>
 > = {
+  SnapshotArchiveEnvelopeAad: [
+    'objectKey == snapshotArchiveObjectKey(creatorId,snapshotDigest)',
+    'all consumers MUST pass the authoritative runtime SnapshotArchiveEnvelopeAadSchema parser after structural JSON Schema validation',
+  ],
+  SnapshotArchiveEnvelope: [
+    'aadDigest == sha256(JCS(aad))',
+    'cipherObjectFormat == aad.cipherObjectFormat',
+    'cipherBytes == aad.plaintextBytes + 36',
+    'cipher object == ASCII("CSNPENC1") || nonce[12] || ciphertext[aad.plaintextBytes] || authTag[16]',
+    'cipherDigest == sha256(exact whole cipher object)',
+    'envelope nonce/authTag MUST equal the cipher object segments byte-for-byte',
+    'all consumers MUST pass the authoritative runtime SnapshotArchiveEnvelopeSchema parser after structural JSON Schema validation',
+    'all cipher object consumers MUST pass parseSnapshotArchiveCipherObject(envelope,objectBytes) before unwrap or decrypt',
+  ],
   BrokerEnvelope: [
     'sensitive.cipherDigest == sha256(JCS(nonce,ciphertext,authTag))',
     'sensitive.aadDigest == sha256(JCS(sensitive.aad))',

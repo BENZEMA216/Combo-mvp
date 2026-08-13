@@ -12,11 +12,11 @@
 - `manifest.ts` 直接消费共享协议的 `SnapshotManifestSchema` 与 digest helper，建立 Snapshot Manifest 并重算 canonical digest。
 - `staging.ts` 从活 Project 安全复制到一次性 staging，并检测 symlink、hardlink、sparse、特殊文件和复制期间变化。
 - `snapshot.ts` 组合 staging、Manifest、tar.zst、摘要和 verifier。
-- `encryption.ts` 实现 AES-256-GCM 对象格式，并声明真实 KEK 适配器需要实现的端口。
+- `encryption.ts` 消费权威 `SnapshotArchiveEnvelope`，实现 `combo.snapshot-binary/1` AES-256-GCM 对象格式、随机生产 nonce、逐字段绑定与认证后明文复核，并声明真实 RFC3394/KEK 适配器需要实现的端口。
 - `agent-version.ts` 计算 Contract 与 AgentVersion 摘要，并实现测试用不可变 Version 与 Conversation pin 仓库。
-- `repository.ts` 声明云对象持久化端口，并提供拒绝覆盖的内存实现。
-- `object-storage.ts` 实现 Creator-bound 的 S3-compatible 密文 archive adapter：派生 upload/final key、条件不可变写入、并发重放裁决、严格 metadata/size/checksum/body 校验，以及从受保护 metadata 解包密钥后的完整 Snapshot 复核。它不提供 list、delete、任意 key 或 KEK 实现。
+- `repository.ts` 声明测试用对象持久化端口，并提供持有权威 Envelope、拒绝覆盖的内存实现；它不是生产数据库合同。
+- `object-storage.ts` 实现 Creator-bound 的 S3-compatible 密文 archive adapter：从权威 Envelope 派生 upload/final key、条件不可变写入、并发重放裁决、严格 metadata/size/checksum/body 校验，以及从受保护 metadata 解包密钥后的完整 Snapshot 复核。它不提供 list、delete、任意 key、RFC3394 wrap 或 KEK/KMS 实现。
 
 ## 上下游
 
-Creator Worker 将调用 staging 与 builder 生成发布候选。Authoring Verifier 通过对象存储 adapter 读取密文，再调用 decrypt 和 verifier 复核对象。Authoring 数据层仍需实现 Snapshot、AgentVersion、wrapped DEK reference 与 Conversation pin 的 PostgreSQL 适配器。当前源码可连接 S3-compatible MinIO，但不实现 PostgreSQL、Kubernetes、IAM、KMS/KEK 或 macOS Keychain。
+Creator Worker 将调用 staging 与 builder 生成发布候选。Authoring Verifier 通过对象存储 adapter 读取密文，再调用 decrypt 和 verifier 复核对象。Authoring 数据层仍需实现 Snapshot archive Envelope、AgentVersion、wrapped DEK 与 Conversation pin 的受保护 PostgreSQL 适配器。当前源码可连接 S3-compatible MinIO，但不实现 encrypted manifest、PostgreSQL、Kubernetes、IAM、RFC3394 wrap、KMS/KEK 或 macOS Keychain。

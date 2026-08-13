@@ -256,6 +256,146 @@
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
+    "SnapshotArchiveEnvelopeAad": {
+      "$ref": "#/definitions/SnapshotArchiveEnvelopeAad",
+      "definitions": {
+        "SnapshotArchiveEnvelopeAad": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.snapshot-envelope/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "cipherObjectFormat": { "type": "string", "const": "combo.snapshot-binary/1" },
+            "creatorId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "archiveDigest": {
+              "$ref": "#/definitions/SnapshotArchiveEnvelopeAad/properties/snapshotDigest"
+            },
+            "objectKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
+            "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$" }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "cipherObjectFormat",
+            "creatorId",
+            "snapshotDigest",
+            "archiveDigest",
+            "objectKey",
+            "plaintextBytes",
+            "keyId"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "objectKey == snapshotArchiveObjectKey(creatorId,snapshotDigest)",
+        "all consumers MUST pass the authoritative runtime SnapshotArchiveEnvelopeAadSchema parser after structural JSON Schema validation"
+      ]
+    },
+    "SnapshotArchiveEnvelope": {
+      "$ref": "#/definitions/SnapshotArchiveEnvelope",
+      "definitions": {
+        "SnapshotArchiveEnvelope": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.snapshot-envelope/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "cipherObjectFormat": { "type": "string", "const": "combo.snapshot-binary/1" },
+            "algorithm": { "type": "string", "const": "aes-256-gcm/v1" },
+            "keyWrapAlgorithm": { "type": "string", "const": "rfc3394-aes-256-kw/v1" },
+            "aad": {
+              "type": "object",
+              "properties": {
+                "protocol": { "type": "string", "const": "combo.snapshot-envelope/1" },
+                "schemaVersion": { "type": "number", "const": 1 },
+                "cipherObjectFormat": { "type": "string", "const": "combo.snapshot-binary/1" },
+                "creatorId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
+                "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "archiveDigest": {
+                  "$ref": "#/definitions/SnapshotArchiveEnvelope/properties/aad/properties/snapshotDigest"
+                },
+                "objectKey": { "type": "string", "minLength": 1, "maxLength": 512 },
+                "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
+                "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "cipherObjectFormat",
+                "creatorId",
+                "snapshotDigest",
+                "archiveDigest",
+                "objectKey",
+                "plaintextBytes",
+                "keyId"
+              ],
+              "additionalProperties": false
+            },
+            "aadDigest": {
+              "$ref": "#/definitions/SnapshotArchiveEnvelope/properties/aad/properties/snapshotDigest"
+            },
+            "nonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 16,
+              "maxLength": 16
+            },
+            "authTag": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 22
+            },
+            "wrappedDek": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 54,
+              "maxLength": 54
+            },
+            "cipherDigest": {
+              "$ref": "#/definitions/SnapshotArchiveEnvelope/properties/aad/properties/snapshotDigest"
+            },
+            "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "cipherObjectFormat",
+            "algorithm",
+            "keyWrapAlgorithm",
+            "aad",
+            "aadDigest",
+            "nonce",
+            "authTag",
+            "wrappedDek",
+            "cipherDigest",
+            "cipherBytes"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "aadDigest == sha256(JCS(aad))",
+        "cipherObjectFormat == aad.cipherObjectFormat",
+        "cipherBytes == aad.plaintextBytes + 36",
+        "cipher object == ASCII(\"CSNPENC1\") || nonce[12] || ciphertext[aad.plaintextBytes] || authTag[16]",
+        "cipherDigest == sha256(exact whole cipher object)",
+        "envelope nonce/authTag MUST equal the cipher object segments byte-for-byte",
+        "all consumers MUST pass the authoritative runtime SnapshotArchiveEnvelopeSchema parser after structural JSON Schema validation",
+        "all cipher object consumers MUST pass parseSnapshotArchiveCipherObject(envelope,objectBytes) before unwrap or decrypt"
+      ]
+    },
     "BrokerHandshake": {
       "$ref": "#/definitions/BrokerHandshake",
       "definitions": {
@@ -817,12 +957,23 @@
                               "type": "string",
                               "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
                             },
-                            "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+                            "nonce": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 16,
+                              "maxLength": 16
+                            },
                             "ciphertext": {
-                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 2,
+                              "maxLength": 65536
                             },
                             "authTag": {
-                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 22,
+                              "maxLength": 22
                             },
                             "cipherDigest": {
                               "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
@@ -984,9 +1135,7 @@
                             },
                             "signatureAlgorithm": { "type": "string", "const": "ES256" },
                             "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
-                            "signature": {
-                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
-                            }
+                            "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
                           },
                           "required": [
                             "protocol",
@@ -5954,16 +6103,23 @@
                       "type": "string",
                       "enum": [
                         "agentVersionDigest",
+                        "archiveDigest",
                         "artifactPath",
+                        "cipherObjectFormat",
                         "conversationId",
+                        "creatorId",
                         "installationId",
                         "invocationId",
                         "keyId",
                         "messageId",
+                        "objectKey",
                         "ownerId",
+                        "plaintextBytes",
+                        "protocol",
                         "rcId",
                         "role",
                         "schemaVersion",
+                        "snapshotDigest",
                         "workerSessionId"
                       ]
                     },

@@ -190,7 +190,7 @@ decisions:
     status: accepted
     owner: Security/SRE
     decidedAt: 2026-08-13
-    decision: 每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK 和 96-bit nonce，以 AES-256-GCM 加密、16-byte tag；AAD 是 combo.snapshot-envelope/1 canonical JSON，绑定 creatorId、snapshotDigest、archiveDigest、objectKey、plaintextBytes、keyId。DEK 用 RFC3394 AES-256-KW 在独立 KEK 下包裹，32-byte DEK 的 wrappedDek 固定 40 bytes；nonce/tag/wrappedDek 用 canonical base64url。先完整认证再把明文交给 parser。
+    decision: 每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK；每个加密对象独立生成唯一 96-bit CSPRNG nonce，同 DEK 下严禁 nonce 复用。Snapshot archive 使用 AES-256-GCM 和 16-byte tag；AAD 是 combo.snapshot-envelope/1 canonical JSON，精确绑定 protocol/schemaVersion/cipherObjectFormat/creatorId/snapshotDigest/archiveDigest/objectKey/plaintextBytes/keyId。archive 密文格式冻结为 combo.snapshot-binary/1，即 ASCII("CSNPENC1") || nonce[12] || ciphertext[plaintextBytes] || authTag[16]，不允许 trailing bytes；cipherBytes=plaintextBytes+36，cipherDigest覆盖完整对象，Envelope nonce/tag必须与内嵌段逐 byte 相等。DEK 用 RFC3394 AES-256-KW 在独立 KEK 下包裹，32-byte DEK 的 wrappedDek固定40 bytes；nonce/tag/wrappedDek使用canonical base64url。先校验长度、完整对象digest、magic、nonce/tag绑定和AEAD认证，再校验明文大小/archive digest，最后才交给parser。该版本的SnapshotArchiveEnvelope只覆盖archive；架构要求的encrypted manifest必须使用独立nonce和独立envelope，完成前Gate 1保持BLOCKED。
     alternatives:
       - 仅 MinIO 磁盘加密；拒绝，因为对象/备份泄露可读。
       - 复用一个长期 DEK；拒绝，因为 nonce 管理和爆炸半径不可接受。
@@ -200,7 +200,8 @@ decisions:
     securityImpact: bit flip、跨 Creator/Object swap、错误 KEK 均在解包前失败；KEK 与数据备份必须分故障域。
     reversalTriggers:
       - 迁移云 KMS 原生 wrap 算法或 Creator-held key；必须发布新 envelope version 和迁移方案。
-    protocolVersions: [combo.snapshot-envelope/1, combo.snapshot-manifest/1]
+    protocolVersions:
+      [combo.snapshot-envelope/1, combo.snapshot-binary/1, combo.snapshot-manifest/1]
     document: docs/vnext/adr/ADR-VNEXT-011.md
 
   - id: ADR-VNEXT-012
@@ -319,7 +320,7 @@ decisions:
     status: accepted
     owner: Security/SRE
     decidedAt: 2026-08-13
-    decision: 字段落点以 data-flow-allowlist/1 为唯一真源。Chat/Worker result 用 AES-256-GCM、随机唯一96-bit nonce和JCS AAD；云端 AAD 绑定 ownerId/conversationId/messageId/role/schemaVersion，本地再绑定 installationId/invocationId/agentVersionDigest。Broker 中 prompt/delta/final 也必须使用 worker-session AES-256-GCM，AAD 精确绑定 protocol/schemaVersion/envelopeType/messageId/conversationId/invocationId/workerSessionId/role/keyId，并分别重算 aadDigest 与 nonce/ciphertext/tag 的 cipherDigest；frame 禁止敏感明文。tenant/version key 90天轮换，旧 key仅在保留期 decrypt。PG 对全部tenant表启用 FORCE RLS并加复合owner FK；事务 SET LOCAL app.creator_id/app.consumer_id，缺失即 deny。runtime roles固定 combo_agent_api、combo_agent_broker、combo_agent_reconciler，均非owner/NOBYPASSRLS；combo_agent_migrator仅DDL，combo_agent_maintenance为NOLOGIN受审break-glass。
+    decision: 字段落点以 data-flow-allowlist/1 为唯一真源。Snapshot archive Context对象的AAD精确绑定archiveDigest/cipherObjectFormat/creatorId/keyId/objectKey/plaintextBytes/protocol/schemaVersion/snapshotDigest；Snapshot生成早于AgentVersion，不得伪造agentVersionDigest绑定。Chat/Worker result 用 AES-256-GCM、随机唯一96-bit nonce和JCS AAD；云端 AAD 绑定 ownerId/conversationId/messageId/role/schemaVersion，本地再绑定 installationId/invocationId/agentVersionDigest。Broker 中 prompt/delta/final 也必须使用 worker-session AES-256-GCM，AAD 精确绑定 protocol/schemaVersion/envelopeType/messageId/conversationId/invocationId/workerSessionId/role/keyId，并分别重算 aadDigest 与 nonce/ciphertext/tag 的 cipherDigest；frame 禁止敏感明文。tenant/version key 90天轮换，旧 key仅在保留期 decrypt。PG 对全部tenant表启用 FORCE RLS并加复合owner FK；事务 SET LOCAL app.creator_id/app.consumer_id，缺失即 deny。runtime roles固定 combo_agent_api、combo_agent_broker、combo_agent_reconciler，均非owner/NOBYPASSRLS；combo_agent_migrator仅DDL，combo_agent_maintenance为NOLOGIN受审break-glass。
     alternatives:
       - 只靠 Repo owner filter；拒绝，漏一条 query 即跨租户。
       - 单一 combo_app role；拒绝，不满足每服务最小权限和故障隔离。

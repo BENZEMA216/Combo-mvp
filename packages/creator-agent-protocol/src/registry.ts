@@ -221,16 +221,23 @@ const DataFlowKeyOwnerSchema = z.enum([
 ]);
 const DataFlowAadBindingSchema = z.enum([
   'agentVersionDigest',
+  'archiveDigest',
   'artifactPath',
+  'cipherObjectFormat',
   'conversationId',
+  'creatorId',
   'installationId',
   'invocationId',
   'keyId',
   'messageId',
+  'objectKey',
   'ownerId',
+  'plaintextBytes',
+  'protocol',
   'rcId',
   'role',
   'schemaVersion',
+  'snapshotDigest',
   'workerSessionId',
 ]);
 

@@ -1,6 +1,11 @@
+import {
+  SnapshotArchiveEnvelopeSchema,
+  type SnapshotArchiveEnvelope,
+} from '@cb/creator-agent-protocol';
+
 import { equalHexDigest, sha256Hex } from './digest.js';
 import { inspectTextContent } from './content-policy.js';
-import { decryptSnapshotArchive, type SnapshotEncryptionContext } from './encryption.js';
+import { decryptSnapshotArchive } from './encryption.js';
 import { fail } from './errors.js';
 import {
   createSnapshotManifest,
@@ -113,24 +118,24 @@ export function verifySnapshotArchive(input: VerifySnapshotArchiveInput): Verifi
 export type VerifyEncryptedSnapshotInput = Readonly<{
   manifestBytes: Uint8Array;
   encryptedObjectBytes: Uint8Array;
-  encryptionContext: SnapshotEncryptionContext;
+  encryptionEnvelope: SnapshotArchiveEnvelope;
   dataEncryptionKey: Uint8Array;
-  expectedCipherDigest: string;
 }>;
 
 export function decryptAndVerifySnapshot(
   input: VerifyEncryptedSnapshotInput,
 ): VerifiedSnapshotArchive {
+  const envelope = SnapshotArchiveEnvelopeSchema.safeParse(input.encryptionEnvelope);
+  if (!envelope.success) fail('SNAPSHOT_ENCRYPTION_INVALID');
   const archiveBytes = decryptSnapshotArchive(
     input.encryptedObjectBytes,
-    input.encryptionContext,
+    envelope.data,
     input.dataEncryptionKey,
-    input.expectedCipherDigest,
   );
   return verifySnapshotArchive({
     manifestBytes: input.manifestBytes,
     archiveBytes,
-    expectedSnapshotDigest: input.encryptionContext.snapshotDigest,
-    expectedArchiveDigest: input.encryptionContext.archiveDigest,
+    expectedSnapshotDigest: envelope.data.aad.snapshotDigest,
+    expectedArchiveDigest: envelope.data.aad.archiveDigest,
   });
 }

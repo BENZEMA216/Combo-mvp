@@ -8,7 +8,7 @@
 
 ## Decision
 
-字段落点以 data-flow-allowlist/1 为唯一真源。Chat/Worker result 用 AES-256-GCM、随机唯一96-bit nonce和JCS AAD；云端 AAD 绑定 ownerId/conversationId/messageId/role/schemaVersion，本地再绑定 installationId/invocationId/agentVersionDigest。Broker 中 prompt/delta/final 也必须使用 worker-session AES-256-GCM，AAD 精确绑定 protocol/schemaVersion/envelopeType/messageId/conversationId/invocationId/workerSessionId/role/keyId，并分别重算 aadDigest 与 nonce/ciphertext/tag 的 cipherDigest；frame 禁止敏感明文。tenant/version key 90天轮换，旧 key仅在保留期 decrypt。PG 对全部tenant表启用 FORCE RLS并加复合owner FK；事务 SET LOCAL app.creator_id/app.consumer_id，缺失即 deny。runtime roles固定 combo_agent_api、combo_agent_broker、combo_agent_reconciler，均非owner/NOBYPASSRLS；combo_agent_migrator仅DDL，combo_agent_maintenance为NOLOGIN受审break-glass。
+字段落点以 data-flow-allowlist/1 为唯一真源。Snapshot archive Context对象的AAD精确绑定archiveDigest/cipherObjectFormat/creatorId/keyId/objectKey/plaintextBytes/protocol/schemaVersion/snapshotDigest；Snapshot生成早于AgentVersion，不得伪造agentVersionDigest绑定。Chat/Worker result 用 AES-256-GCM、随机唯一96-bit nonce和JCS AAD；云端 AAD 绑定 ownerId/conversationId/messageId/role/schemaVersion，本地再绑定 installationId/invocationId/agentVersionDigest。Broker 中 prompt/delta/final 也必须使用 worker-session AES-256-GCM，AAD 精确绑定 protocol/schemaVersion/envelopeType/messageId/conversationId/invocationId/workerSessionId/role/keyId，并分别重算 aadDigest 与 nonce/ciphertext/tag 的 cipherDigest；frame 禁止敏感明文。tenant/version key 90天轮换，旧 key仅在保留期 decrypt。PG 对全部tenant表启用 FORCE RLS并加复合owner FK；事务 SET LOCAL app.creator_id/app.consumer_id，缺失即 deny。runtime roles固定 combo_agent_api、combo_agent_broker、combo_agent_reconciler，均非owner/NOBYPASSRLS；combo_agent_migrator仅DDL，combo_agent_maintenance为NOLOGIN受审break-glass。
 
 ## Alternatives considered
 

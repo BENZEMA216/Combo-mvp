@@ -1,18 +1,20 @@
 import { timingSafeEqual } from 'node:crypto';
+import {
+  SnapshotArchiveEnvelopeSchema,
+  canonicalizeJson,
+  parseSnapshotArchiveCipherObject,
+  type SnapshotArchiveEnvelope,
+} from '@cb/creator-agent-protocol';
 
 import { parseSnapshotManifest, snapshotDigest } from './manifest.js';
-import { equalHexDigest, SHA256_HEX_PATTERN, sha256Hex } from './digest.js';
+import { equalHexDigest, sha256Hex } from './digest.js';
 import { fail } from './errors.js';
 
+/** 仅供领域单元测试使用；生产对象存储使用 S3ImmutableSnapshotObjectStore。 */
 export type ImmutableSnapshotObject = Readonly<{
-  creatorId: string;
-  snapshotDigest: string;
-  archiveDigest: string;
-  cipherDigest: string;
+  envelope: SnapshotArchiveEnvelope;
   manifestBytes: Uint8Array;
   encryptedObjectBytes: Uint8Array;
-  keyReference: string;
-  wrappedDataKey: Uint8Array;
 }>;
 
 export interface SnapshotObjectRepository {
@@ -22,10 +24,9 @@ export interface SnapshotObjectRepository {
 
 function cloneObject(object: ImmutableSnapshotObject): ImmutableSnapshotObject {
   return Object.freeze({
-    ...object,
+    envelope: structuredClone(object.envelope),
     manifestBytes: Buffer.from(object.manifestBytes),
     encryptedObjectBytes: Buffer.from(object.encryptedObjectBytes),
-    wrappedDataKey: Buffer.from(object.wrappedDataKey),
   });
 }
 
@@ -33,22 +34,20 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength && timingSafeEqual(left, right);
 }
 
-function assertObject(object: ImmutableSnapshotObject): void {
+function parseObject(object: ImmutableSnapshotObject): SnapshotArchiveEnvelope {
   try {
+    const envelope = SnapshotArchiveEnvelopeSchema.parse(object.envelope);
+    parseSnapshotArchiveCipherObject(envelope, object.encryptedObjectBytes);
     const manifest = parseSnapshotManifest(object.manifestBytes);
     if (
-      object.creatorId.length === 0 ||
-      object.keyReference.length === 0 ||
-      !SHA256_HEX_PATTERN.test(object.snapshotDigest) ||
-      !SHA256_HEX_PATTERN.test(object.archiveDigest) ||
-      !SHA256_HEX_PATTERN.test(object.cipherDigest) ||
-      !equalHexDigest(snapshotDigest(manifest), object.snapshotDigest) ||
-      !equalHexDigest(sha256Hex(object.manifestBytes), object.snapshotDigest) ||
-      !equalHexDigest(sha256Hex(object.encryptedObjectBytes), object.cipherDigest) ||
-      object.wrappedDataKey.byteLength === 0
+      !equalHexDigest(snapshotDigest(manifest), envelope.aad.snapshotDigest) ||
+      !equalHexDigest(sha256Hex(object.manifestBytes), envelope.aad.snapshotDigest) ||
+      !equalHexDigest(sha256Hex(object.encryptedObjectBytes), envelope.cipherDigest) ||
+      object.encryptedObjectBytes.byteLength !== envelope.cipherBytes
     ) {
       fail('SNAPSHOT_DIGEST_MISMATCH');
     }
+    return envelope;
   } catch {
     fail('SNAPSHOT_DIGEST_MISMATCH');
   }
@@ -56,14 +55,9 @@ function assertObject(object: ImmutableSnapshotObject): void {
 
 function objectsEqual(left: ImmutableSnapshotObject, right: ImmutableSnapshotObject): boolean {
   return (
-    left.creatorId === right.creatorId &&
-    left.snapshotDigest === right.snapshotDigest &&
-    left.archiveDigest === right.archiveDigest &&
-    left.cipherDigest === right.cipherDigest &&
-    left.keyReference === right.keyReference &&
+    canonicalizeJson(left.envelope) === canonicalizeJson(right.envelope) &&
     bytesEqual(left.manifestBytes, right.manifestBytes) &&
-    bytesEqual(left.encryptedObjectBytes, right.encryptedObjectBytes) &&
-    bytesEqual(left.wrappedDataKey, right.wrappedDataKey)
+    bytesEqual(left.encryptedObjectBytes, right.encryptedObjectBytes)
   );
 }
 
@@ -71,8 +65,8 @@ export class InMemoryImmutableSnapshotRepository implements SnapshotObjectReposi
   readonly #objects = new Map<string, ImmutableSnapshotObject>();
 
   async putIfAbsent(object: ImmutableSnapshotObject): Promise<ImmutableSnapshotObject> {
-    assertObject(object);
-    const key = `${object.creatorId}\u0000${object.snapshotDigest}`;
+    const envelope = parseObject(object);
+    const key = `${envelope.aad.creatorId}\u0000${envelope.aad.snapshotDigest}`;
     const existing = this.#objects.get(key);
     if (existing !== undefined) {
       if (!objectsEqual(existing, object)) fail('SNAPSHOT_IMMUTABLE_CONFLICT');

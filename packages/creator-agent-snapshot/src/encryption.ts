@@ -1,46 +1,56 @@
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import {
+  SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+  SNAPSHOT_ARCHIVE_OBJECT_MAGIC,
+  SNAPSHOT_ENVELOPE_PROTOCOL,
+  SnapshotArchiveEnvelopeAadSchema,
+  SnapshotArchiveEnvelopeSchema,
+  parseSnapshotArchiveCipherObject,
+  snapshotArchiveEnvelopeAadBytes,
+  snapshotArchiveEnvelopeAadDigest,
+  type SnapshotArchiveEnvelope,
+  type SnapshotArchiveEnvelopeAad,
+} from '@cb/creator-agent-protocol';
 
-import { canonicalJsonBytes } from './canonical-json.js';
-import { equalHexDigest, SHA256_HEX_PATTERN, sha256Hex } from './digest.js';
+import { equalHexDigest, sha256Hex } from './digest.js';
 import { fail } from './errors.js';
 
-const OBJECT_MAGIC = Buffer.from('CSNPENC1', 'ascii');
+const OBJECT_MAGIC = Buffer.from(SNAPSHOT_ARCHIVE_OBJECT_MAGIC, 'ascii');
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 const KEY_BYTES = 32;
+const WRAPPED_DEK_BYTES = 40;
 
-export type SnapshotEncryptionContext = Readonly<{
-  schemaVersion: 1;
-  creatorId: string;
-  snapshotDigest: string;
-  archiveDigest: string;
-}>;
+export type SnapshotEncryptionContext = SnapshotArchiveEnvelopeAad;
 
 export type EncryptedSnapshotObject = Readonly<{
-  schemaVersion: 1;
-  algorithm: 'AES-256-GCM';
+  envelope: SnapshotArchiveEnvelope;
   objectBytes: Buffer;
-  cipherDigest: string;
-  nonce: Buffer;
 }>;
 
-function assertContext(context: SnapshotEncryptionContext): void {
+function parseContext(context: SnapshotEncryptionContext): SnapshotArchiveEnvelopeAad {
+  const parsed = SnapshotArchiveEnvelopeAadSchema.safeParse(context);
+  if (!parsed.success) fail('SNAPSHOT_ENCRYPTION_INVALID');
+  return parsed.data;
+}
+
+function assertKeyAndNonce(key: Uint8Array, nonce: Uint8Array): void {
   if (
-    context.schemaVersion !== 1 ||
-    typeof context.creatorId !== 'string' ||
-    context.creatorId.length === 0 ||
-    Buffer.byteLength(context.creatorId, 'utf8') > 256 ||
-    !SHA256_HEX_PATTERN.test(context.snapshotDigest) ||
-    !SHA256_HEX_PATTERN.test(context.archiveDigest)
+    !(key instanceof Uint8Array) ||
+    !(nonce instanceof Uint8Array) ||
+    key.byteLength !== KEY_BYTES ||
+    nonce.byteLength !== NONCE_BYTES
   ) {
     fail('SNAPSHOT_ENCRYPTION_INVALID');
   }
 }
 
-function assertKeyAndNonce(key: Uint8Array, nonce: Uint8Array): void {
-  if (key.byteLength !== KEY_BYTES || nonce.byteLength !== NONCE_BYTES) {
+function parseCanonicalBytes(value: string, expectedBytes: number): Buffer {
+  const bytes = Buffer.from(value, 'base64url');
+  if (bytes.byteLength !== expectedBytes || bytes.toString('base64url') !== value) {
     fail('SNAPSHOT_ENCRYPTION_INVALID');
   }
+  return bytes;
 }
 
 export type Aes256GcmResult = Readonly<{ ciphertext: Buffer; tag: Buffer }>;
@@ -62,49 +72,95 @@ export function aes256GcmEncrypt(
   }
 }
 
-export function encryptSnapshotArchive(
+function encryptSnapshotArchiveWithNonce(
   archiveBytes: Uint8Array,
-  context: SnapshotEncryptionContext,
+  contextInput: SnapshotEncryptionContext,
   dataEncryptionKey: Uint8Array,
-  nonce: Uint8Array = randomBytes(NONCE_BYTES),
+  keyWrap: Readonly<{ keyId: string; wrappedDek: Uint8Array }>,
+  nonce: Uint8Array,
 ): EncryptedSnapshotObject {
-  assertContext(context);
-  if (!equalHexDigest(sha256Hex(archiveBytes), context.archiveDigest)) {
-    fail('SNAPSHOT_DIGEST_MISMATCH');
+  const context = parseContext(contextInput);
+  if (
+    !(archiveBytes instanceof Uint8Array) ||
+    archiveBytes.byteLength !== context.plaintextBytes ||
+    !equalHexDigest(sha256Hex(archiveBytes), context.archiveDigest) ||
+    keyWrap === null ||
+    typeof keyWrap !== 'object' ||
+    typeof keyWrap.keyId !== 'string' ||
+    context.keyId !== keyWrap.keyId ||
+    !(keyWrap.wrappedDek instanceof Uint8Array) ||
+    keyWrap.wrappedDek.byteLength !== WRAPPED_DEK_BYTES
+  ) {
+    fail('SNAPSHOT_ENCRYPTION_INVALID');
   }
-  const aad = canonicalJsonBytes(context);
-  const encrypted = aes256GcmEncrypt(archiveBytes, dataEncryptionKey, nonce, aad);
+  const encrypted = aes256GcmEncrypt(
+    archiveBytes,
+    dataEncryptionKey,
+    nonce,
+    snapshotArchiveEnvelopeAadBytes(context),
+  );
   const objectBytes = Buffer.concat([
     OBJECT_MAGIC,
     Buffer.from(nonce),
     encrypted.ciphertext,
     encrypted.tag,
   ]);
-  return Object.freeze({
+  const envelope = SnapshotArchiveEnvelopeSchema.parse({
+    protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
     schemaVersion: 1,
-    algorithm: 'AES-256-GCM',
-    objectBytes,
+    cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+    algorithm: 'aes-256-gcm/v1',
+    keyWrapAlgorithm: 'rfc3394-aes-256-kw/v1',
+    aad: context,
+    aadDigest: snapshotArchiveEnvelopeAadDigest(context),
+    nonce: Buffer.from(nonce).toString('base64url'),
+    authTag: encrypted.tag.toString('base64url'),
+    wrappedDek: Buffer.from(keyWrap.wrappedDek).toString('base64url'),
     cipherDigest: sha256Hex(objectBytes),
-    nonce: Buffer.from(nonce),
+    cipherBytes: objectBytes.byteLength,
   });
+  return Object.freeze({ envelope, objectBytes });
+}
+
+/** 生产入口：每个加密对象始终生成独立的 96-bit CSPRNG nonce。 */
+export function encryptSnapshotArchive(
+  archiveBytes: Uint8Array,
+  context: SnapshotEncryptionContext,
+  dataEncryptionKey: Uint8Array,
+  keyWrap: Readonly<{ keyId: string; wrappedDek: Uint8Array }>,
+): EncryptedSnapshotObject {
+  return encryptSnapshotArchiveWithNonce(
+    archiveBytes,
+    context,
+    dataEncryptionKey,
+    keyWrap,
+    randomBytes(NONCE_BYTES),
+  );
+}
+
+/** 只供已知答案和 mutation 测试使用，不从包入口导出。 */
+export function encryptSnapshotArchiveTestOnly(
+  archiveBytes: Uint8Array,
+  context: SnapshotEncryptionContext,
+  dataEncryptionKey: Uint8Array,
+  keyWrap: Readonly<{ keyId: string; wrappedDek: Uint8Array }>,
+  nonce: Uint8Array,
+): EncryptedSnapshotObject {
+  return encryptSnapshotArchiveWithNonce(archiveBytes, context, dataEncryptionKey, keyWrap, nonce);
 }
 
 export function decryptSnapshotArchive(
-  objectBytes: Uint8Array,
-  context: SnapshotEncryptionContext,
+  objectBytesInput: Uint8Array,
+  envelopeInput: SnapshotArchiveEnvelope,
   dataEncryptionKey: Uint8Array,
-  expectedCipherDigest: string,
 ): Buffer {
-  assertContext(context);
-  const object = Buffer.from(objectBytes);
-  if (
-    !equalHexDigest(sha256Hex(object), expectedCipherDigest) ||
-    object.byteLength < OBJECT_MAGIC.byteLength + NONCE_BYTES + TAG_BYTES ||
-    !object.subarray(0, OBJECT_MAGIC.byteLength).equals(OBJECT_MAGIC)
-  ) {
+  let envelope: SnapshotArchiveEnvelope;
+  try {
+    envelope = parseSnapshotArchiveCipherObject(envelopeInput, objectBytesInput);
+  } catch {
     fail('SNAPSHOT_ENCRYPTION_INVALID');
   }
-
+  const object = Buffer.from(objectBytesInput);
   const nonceStart = OBJECT_MAGIC.byteLength;
   const ciphertextStart = nonceStart + NONCE_BYTES;
   const tagStart = object.byteLength - TAG_BYTES;
@@ -112,17 +168,26 @@ export function decryptSnapshotArchive(
   const ciphertext = object.subarray(ciphertextStart, tagStart);
   const tag = object.subarray(tagStart);
   assertKeyAndNonce(dataEncryptionKey, nonce);
+  if (
+    !nonce.equals(parseCanonicalBytes(envelope.nonce, NONCE_BYTES)) ||
+    !tag.equals(parseCanonicalBytes(envelope.authTag, TAG_BYTES))
+  ) {
+    fail('SNAPSHOT_ENCRYPTION_INVALID');
+  }
 
   try {
     const decipher = createDecipheriv('aes-256-gcm', dataEncryptionKey, nonce, {
       authTagLength: TAG_BYTES,
     });
-    decipher.setAAD(canonicalJsonBytes(context));
+    decipher.setAAD(snapshotArchiveEnvelopeAadBytes(envelope.aad));
     decipher.setAuthTag(tag);
     // update 的未认证明文只保存在本函数局部；final 成功前不会交给 archive parser。
     const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    if (!equalHexDigest(sha256Hex(plaintext), context.archiveDigest)) {
-      fail('SNAPSHOT_DIGEST_MISMATCH');
+    if (
+      plaintext.byteLength !== envelope.aad.plaintextBytes ||
+      !equalHexDigest(sha256Hex(plaintext), envelope.aad.archiveDigest)
+    ) {
+      fail('SNAPSHOT_ENCRYPTION_INVALID');
     }
     return plaintext;
   } catch (error) {
@@ -131,8 +196,8 @@ export function decryptSnapshotArchive(
 }
 
 export type WrappedSnapshotDataKey = Readonly<{
-  keyReference: string;
-  wrappedKey: Uint8Array;
+  keyId: string;
+  wrappedDek: Uint8Array;
   plaintextKey: Uint8Array;
 }>;
 
@@ -140,7 +205,7 @@ export interface SnapshotKeyEnvelopePort {
   createDataKey(context: SnapshotEncryptionContext): Promise<WrappedSnapshotDataKey>;
   unwrapDataKey(input: {
     context: SnapshotEncryptionContext;
-    keyReference: string;
-    wrappedKey: Uint8Array;
+    keyId: string;
+    wrappedDek: Uint8Array;
   }): Promise<Uint8Array>;
 }

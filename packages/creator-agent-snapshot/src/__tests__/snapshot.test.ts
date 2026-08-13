@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { SnapshotManifestSchema } from '@cb/creator-agent-protocol';
+import {
+  SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+  SNAPSHOT_ENVELOPE_PROTOCOL,
+  SnapshotManifestSchema,
+  snapshotArchiveObjectKey,
+} from '@cb/creator-agent-protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
@@ -204,26 +209,29 @@ describe('deterministic Snapshot', () => {
     const root = await temporaryProject();
     await writeGoldenProject(root, false);
     const built = await buildSnapshotFromProject(root);
+    const creatorId = '0198f00d-8000-7000-8000-000000000010';
     const context = {
+      protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
       schemaVersion: 1 as const,
-      creatorId: 'creator-a',
+      cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+      creatorId,
       snapshotDigest: built.snapshotDigest,
       archiveDigest: built.archiveDigest,
+      objectKey: snapshotArchiveObjectKey(creatorId, built.snapshotDigest),
+      plaintextBytes: built.archiveBytes.byteLength,
+      keyId: 'combo-kek/test-2026-08',
     };
     const key = Buffer.from('44'.repeat(32), 'hex');
-    const encrypted = encryptSnapshotArchive(
-      built.archiveBytes,
-      context,
-      key,
-      Buffer.from('55'.repeat(12), 'hex'),
-    );
+    const encrypted = encryptSnapshotArchive(built.archiveBytes, context, key, {
+      keyId: context.keyId,
+      wrappedDek: Buffer.alloc(40, 6),
+    });
     expect(
       decryptAndVerifySnapshot({
         manifestBytes: built.manifestBytes,
         encryptedObjectBytes: encrypted.objectBytes,
-        encryptionContext: context,
+        encryptionEnvelope: encrypted.envelope,
         dataEncryptionKey: key,
-        expectedCipherDigest: encrypted.cipherDigest,
       }),
     ).toMatchObject({ snapshotDigest: built.snapshotDigest, archiveDigest: built.archiveDigest });
 
@@ -233,9 +241,8 @@ describe('deterministic Snapshot', () => {
       decryptAndVerifySnapshot({
         manifestBytes: built.manifestBytes,
         encryptedObjectBytes: changed,
-        encryptionContext: context,
+        encryptionEnvelope: { ...encrypted.envelope, cipherDigest: sha256Hex(changed) },
         dataEncryptionKey: key,
-        expectedCipherDigest: sha256Hex(changed),
       }),
     ).toThrowError();
   });

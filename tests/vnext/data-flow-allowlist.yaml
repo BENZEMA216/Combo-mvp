@@ -123,7 +123,18 @@ fields:
     protection: application-aead
     algorithm: aes-256-gcm/v1
     keyOwner: combo-kms
-    aadBindings: [agentVersionDigest, ownerId, schemaVersion]
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
     retention: referenced-plus-30-days
     deletionOrHold: Snapshot 有 serving/reference 时保留；最后引用下线30天后受审 Reclaimer 清理，备份按策略过期。
   - fieldId: context.minio.context-snapshot-cipher-object
@@ -135,7 +146,18 @@ fields:
     protection: application-aead
     algorithm: aes-256-gcm/v1
     keyOwner: combo-kms
-    aadBindings: [agentVersionDigest, ownerId, schemaVersion]
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
     retention: referenced-plus-30-days
     deletionOrHold: Snapshot 有 serving/reference 时保留；最后引用下线30天后受审 Reclaimer 清理。
   - fieldId: context.model-request.selected-context

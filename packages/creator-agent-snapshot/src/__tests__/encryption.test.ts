@@ -1,3 +1,12 @@
+import {
+  SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+  SNAPSHOT_ENVELOPE_PROTOCOL,
+  SnapshotArchiveEnvelopeSchema,
+  snapshotArchiveEnvelopeAadDigest,
+  snapshotArchiveObjectKey,
+  type SnapshotArchiveEnvelopeAad,
+} from '@cb/creator-agent-protocol';
+import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -7,8 +16,28 @@ import {
   isSnapshotError,
   sha256Hex,
 } from '../index.js';
+import { encryptSnapshotArchiveTestOnly } from '../encryption.js';
 
-describe('Snapshot envelope encryption primitives', () => {
+const CREATOR = '0198f00d-8000-7000-8000-000000000001';
+const KEY_ID = 'combo-kek/test-2026-08';
+const WRAPPED_DEK = Buffer.alloc(40, 0x44);
+
+function context(archive: Uint8Array): SnapshotArchiveEnvelopeAad {
+  const snapshotDigest = sha256Hex(Buffer.from('manifest'));
+  return {
+    protocol: SNAPSHOT_ENVELOPE_PROTOCOL,
+    schemaVersion: 1,
+    cipherObjectFormat: SNAPSHOT_ARCHIVE_OBJECT_FORMAT,
+    creatorId: CREATOR,
+    snapshotDigest,
+    archiveDigest: sha256Hex(archive),
+    objectKey: snapshotArchiveObjectKey(CREATOR, snapshotDigest),
+    plaintextBytes: archive.byteLength,
+    keyId: KEY_ID,
+  };
+}
+
+describe('Snapshot archive envelope encryption primitives', () => {
   it('matches the NIST AES-256-GCM known-answer vector', () => {
     const key = Buffer.alloc(32);
     const nonce = Buffer.alloc(12);
@@ -18,72 +47,174 @@ describe('Snapshot envelope encryption primitives', () => {
     expect(encrypted.tag.toString('hex')).toBe('d0d1c8a799996bf0265b98b5d48ab919');
   });
 
-  it('authenticates archive bytes and canonical creator/digest AAD', () => {
+  it('freezes exact binary framing and matches the protocol Envelope golden', async () => {
     const archive = Buffer.from('synthetic authenticated archive bytes');
-    const context = {
-      schemaVersion: 1 as const,
-      creatorId: 'creator-a',
-      snapshotDigest: sha256Hex(Buffer.from('manifest')),
-      archiveDigest: sha256Hex(archive),
-    };
+    const aad = context(archive);
     const key = Buffer.from('11'.repeat(32), 'hex');
     const nonce = Buffer.from('22'.repeat(12), 'hex');
-    const encrypted = encryptSnapshotArchive(archive, context, key, nonce);
+    const encrypted = encryptSnapshotArchiveTestOnly(
+      archive,
+      aad,
+      key,
+      { keyId: KEY_ID, wrappedDek: WRAPPED_DEK },
+      nonce,
+    );
 
-    expect(
-      decryptSnapshotArchive(encrypted.objectBytes, context, key, encrypted.cipherDigest).equals(
-        archive,
+    expect(encrypted.objectBytes.subarray(0, 8).toString('ascii')).toBe('CSNPENC1');
+    expect(encrypted.objectBytes.byteLength).toBe(archive.byteLength + 36);
+    expect(encrypted.objectBytes.toString('hex')).toBe(
+      '43534e50454e4331222222222222222222222222648e693da8aaeb36861fbf493cce8cbb6bfaae831ee4c86b333d6980609700232706df67206eb443833334472f3360b88969f32c39',
+    );
+    const protocolFixture = SnapshotArchiveEnvelopeSchema.parse(
+      JSON.parse(
+        await readFile(
+          new URL(
+            '../../../creator-agent-protocol/fixtures/snapshot-envelope.v1.json',
+            import.meta.url,
+          ),
+          'utf8',
+        ),
       ),
-    ).toBe(true);
-    expect(encrypted.cipherDigest).toBe(sha256Hex(encrypted.objectBytes));
+    );
+    expect(encrypted.envelope).toEqual(protocolFixture);
+    expect(encrypted.envelope.cipherDigest).toBe(sha256Hex(encrypted.objectBytes));
+    expect(decryptSnapshotArchive(encrypted.objectBytes, encrypted.envelope, key)).toEqual(archive);
   });
 
-  it('fails closed for ciphertext, tag, digest, key and AAD mutations', () => {
+  it('production entry creates a fresh CSPRNG nonce for each encrypted object', () => {
+    const archive = Buffer.from('same archive');
+    const aad = context(archive);
+    const key = Buffer.alloc(32, 7);
+    const first = encryptSnapshotArchive(archive, aad, key, {
+      keyId: KEY_ID,
+      wrappedDek: WRAPPED_DEK,
+    });
+    const second = encryptSnapshotArchive(archive, aad, key, {
+      keyId: KEY_ID,
+      wrappedDek: WRAPPED_DEK,
+    });
+    expect(first.envelope.nonce).not.toBe(second.envelope.nonce);
+    expect(first.objectBytes).not.toEqual(second.objectBytes);
+  });
+
+  it('fails closed for every AAD field and magic nonce ciphertext tag mutation', () => {
     const archive = Buffer.from('synthetic authenticated archive bytes');
-    const context = {
-      schemaVersion: 1 as const,
-      creatorId: 'creator-a',
-      snapshotDigest: sha256Hex(Buffer.from('manifest')),
-      archiveDigest: sha256Hex(archive),
-    };
+    const aad = context(archive);
     const key = Buffer.from('11'.repeat(32), 'hex');
-    const encrypted = encryptSnapshotArchive(
+    const encrypted = encryptSnapshotArchiveTestOnly(
       archive,
-      context,
+      aad,
       key,
+      { keyId: KEY_ID, wrappedDek: WRAPPED_DEK },
       Buffer.from('22'.repeat(12), 'hex'),
     );
 
-    const bitFlips = [20, encrypted.objectBytes.length - 1];
-    for (const index of bitFlips) {
+    for (const index of [0, 20]) {
       const changed = Buffer.from(encrypted.objectBytes);
       changed[index] = changed[index]! ^ 1;
       expectEncryptionFailure(() =>
-        decryptSnapshotArchive(changed, context, key, sha256Hex(changed)),
+        decryptSnapshotArchive(
+          changed,
+          { ...encrypted.envelope, cipherDigest: sha256Hex(changed) },
+          key,
+        ),
+      );
+    }
+
+    const changedNonce = Buffer.from(encrypted.objectBytes);
+    changedNonce[8] = changedNonce[8]! ^ 1;
+    expectEncryptionFailure(() =>
+      decryptSnapshotArchive(
+        changedNonce,
+        {
+          ...encrypted.envelope,
+          nonce: changedNonce.subarray(8, 20).toString('base64url'),
+          cipherDigest: sha256Hex(changedNonce),
+        },
+        key,
+      ),
+    );
+    const changedTag = Buffer.from(encrypted.objectBytes);
+    changedTag[changedTag.length - 1] = changedTag[changedTag.length - 1]! ^ 1;
+    expectEncryptionFailure(() =>
+      decryptSnapshotArchive(
+        changedTag,
+        {
+          ...encrypted.envelope,
+          authTag: changedTag.subarray(changedTag.length - 16).toString('base64url'),
+          cipherDigest: sha256Hex(changedTag),
+        },
+        key,
+      ),
+    );
+
+    const otherCreator = '0198f00d-8000-7000-8000-000000000002';
+    const otherSnapshot = 'a'.repeat(64);
+    const mutatedAads: ReadonlyArray<readonly [string, SnapshotArchiveEnvelopeAad]> = [
+      [
+        'creatorId',
+        {
+          ...aad,
+          creatorId: otherCreator,
+          objectKey: snapshotArchiveObjectKey(otherCreator, aad.snapshotDigest),
+        },
+      ],
+      [
+        'snapshotDigest',
+        {
+          ...aad,
+          snapshotDigest: otherSnapshot,
+          objectKey: snapshotArchiveObjectKey(aad.creatorId, otherSnapshot),
+        },
+      ],
+      ['archiveDigest', { ...aad, archiveDigest: 'b'.repeat(64) }],
+      ['plaintextBytes', { ...aad, plaintextBytes: aad.plaintextBytes + 1 }],
+      ['keyId', { ...aad, keyId: 'combo-kek/other' }],
+    ];
+    for (const [field, mutatedAad] of mutatedAads) {
+      expectEncryptionFailure(
+        () =>
+          decryptSnapshotArchive(
+            encrypted.objectBytes,
+            {
+              ...encrypted.envelope,
+              aad: mutatedAad,
+              aadDigest: snapshotArchiveEnvelopeAadDigest(mutatedAad),
+              cipherBytes: mutatedAad.plaintextBytes + 36,
+            },
+            key,
+          ),
+        field,
       );
     }
     expectEncryptionFailure(() =>
-      decryptSnapshotArchive(encrypted.objectBytes, context, key, '00'.repeat(32)),
-    );
-    expectEncryptionFailure(() =>
-      decryptSnapshotArchive(
-        encrypted.objectBytes,
-        context,
-        Buffer.from('33'.repeat(32), 'hex'),
-        encrypted.cipherDigest,
-      ),
-    );
-    expectEncryptionFailure(() =>
-      decryptSnapshotArchive(
-        encrypted.objectBytes,
-        { ...context, creatorId: 'creator-b' },
-        key,
-        encrypted.cipherDigest,
-      ),
+      decryptSnapshotArchive(encrypted.objectBytes, encrypted.envelope, Buffer.alloc(32, 9)),
     );
   });
 
-  it('rejects malformed key and nonce lengths', () => {
+  it('rejects wrong archive size digest wrap id and malformed key or nonce lengths', () => {
+    const archive = Buffer.from('archive');
+    const aad = context(archive);
+    const key = Buffer.alloc(32, 1);
+    expectEncryptionFailure(() =>
+      encryptSnapshotArchive(Buffer.concat([archive, Buffer.from('x')]), aad, key, {
+        keyId: KEY_ID,
+        wrappedDek: WRAPPED_DEK,
+      }),
+    );
+    expectEncryptionFailure(() =>
+      encryptSnapshotArchive(archive, aad, key, {
+        keyId: 'other-key',
+        wrappedDek: WRAPPED_DEK,
+      }),
+    );
+    expectEncryptionFailure(() =>
+      encryptSnapshotArchive(archive, aad, key, {
+        keyId: KEY_ID,
+        wrappedDek: Buffer.alloc(39),
+      }),
+    );
+    expectEncryptionFailure(() => encryptSnapshotArchive(archive, aad, key, undefined as never));
     expectEncryptionFailure(() =>
       aes256GcmEncrypt(Buffer.alloc(0), Buffer.alloc(31), Buffer.alloc(12)),
     );
@@ -93,11 +224,11 @@ describe('Snapshot envelope encryption primitives', () => {
   });
 });
 
-function expectEncryptionFailure(action: () => unknown): void {
+function expectEncryptionFailure(action: () => unknown, marker = 'mutation'): void {
   try {
     action();
     expect.fail('expected authenticated decryption failure');
   } catch (error) {
-    expect(isSnapshotError(error, 'SNAPSHOT_ENCRYPTION_INVALID')).toBe(true);
+    expect(isSnapshotError(error, 'SNAPSHOT_ENCRYPTION_INVALID'), marker).toBe(true);
   }
 }

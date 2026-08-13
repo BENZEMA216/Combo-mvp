@@ -60,8 +60,11 @@ import {
 } from '../sandbox.js';
 import {
   isCompressionRatioAllowed,
+  SnapshotArchiveEnvelopeSchema,
   SnapshotManifestSchema,
   SnapshotPathSchema,
+  snapshotArchiveEnvelopeAadBytes,
+  snapshotArchiveEnvelopeAadDigest,
   snapshotDigest,
 } from '../snapshot.js';
 import { readFixture, readFixtureText } from './fixture-helpers.js';
@@ -127,6 +130,37 @@ describe('六类共享协议运行时 schema', () => {
         behaviorContract: { ...version.behaviorContract, objective: '只改一个语义值' },
       }).versionDigest,
     ).not.toBe(computeAgentVersionDigests(version).versionDigest);
+  });
+
+  it('parses the Snapshot archive Envelope golden and freezes canonical AAD bytes', async () => {
+    const envelope = SnapshotArchiveEnvelopeSchema.parse(
+      await readFixture('snapshot-envelope.v1.json'),
+    );
+    expect(snapshotArchiveEnvelopeAadDigest(envelope.aad)).toBe(
+      '66583db71c725d152aef1224efbb0095c438927c67da51e1db750871dbeeaff9',
+    );
+    expect(snapshotArchiveEnvelopeAadBytes(envelope.aad).toString('utf8')).toBe(
+      '{"archiveDigest":"59b430c694a6b4dc0faf03d1aaaab29a2dfb083c00a1fe9916afd5e532431378","cipherObjectFormat":"combo.snapshot-binary/1","creatorId":"0198f00d-8000-7000-8000-000000000001","keyId":"combo-kek/test-2026-08","objectKey":"creators/0198f00d-8000-7000-8000-000000000001/snapshots/sha256/05/05b3abf2579a5eb66403cd78be557fd860633a1fe2103c7642030defe32c657f.tar.zst.enc","plaintextBytes":37,"protocol":"combo.snapshot-envelope/1","schemaVersion":1,"snapshotDigest":"05b3abf2579a5eb66403cd78be557fd860633a1fe2103c7642030defe32c657f"}',
+    );
+    for (const mutation of [
+      { ...envelope, schemaVersion: 2 },
+      { ...envelope, unexpected: true },
+      { ...envelope, cipherBytes: envelope.cipherBytes + 1 },
+      { ...envelope, aadDigest: '0'.repeat(64) },
+      { ...envelope, nonce: `${envelope.nonce}=` },
+      { ...envelope, nonce: Buffer.alloc(11).toString('base64url') },
+      { ...envelope, authTag: Buffer.alloc(15).toString('base64url') },
+      { ...envelope, wrappedDek: Buffer.alloc(39).toString('base64url') },
+      {
+        ...envelope,
+        aad: {
+          ...envelope.aad,
+          objectKey: `${envelope.aad.objectKey}.wrong`,
+        },
+      },
+    ]) {
+      expect(SnapshotArchiveEnvelopeSchema.safeParse(mutation).success).toBe(false);
+    }
   });
 
   it('Snapshot 拒绝排序、case-fold collision、危险路径与压缩炸弹', async () => {
