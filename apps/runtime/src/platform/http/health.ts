@@ -9,7 +9,7 @@ import {
   type HealthStatus,
   type ReadyView,
 } from '@cb/shared';
-import { pingDb } from '../infra/db.js';
+import { pingCreatorAgentDb, pingDb } from '../infra/db.js';
 import { pingObjectStore } from '../infra/object-store.js';
 import { hasLlmCredential } from '../infra/llm.js';
 import { pingRedis } from '../infra/redis.js';
@@ -19,8 +19,9 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
 
   app.get(READY_PATH, async (req, reply) => {
     const { env } = app.infra;
-    const [db, minio, redis] = await Promise.all([
+    const [db, creatorAgentDb, minio, redis] = await Promise.all([
       pingDb(env),
+      env.CREATOR_AGENT_PUBLIC_ENABLED ? pingCreatorAgentDb(env) : Promise.resolve(true),
       pingObjectStore(env),
       pingRedis(env),
     ]);
@@ -29,6 +30,11 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
     const toStatus = (up: boolean): HealthStatus => (up ? 'ok' : 'down');
     const dependencies: DependencyHealth[] = [
       { name: 'db', status: toStatus(db), required: true },
+      ...(env.CREATOR_AGENT_PUBLIC_ENABLED
+        ? ([
+            { name: 'creator_agent_db', status: toStatus(creatorAgentDb), required: true },
+          ] satisfies DependencyHealth[])
+        : []),
       { name: 'minio', status: toStatus(minio), required: true },
       { name: 'redis_queue', status: toStatus(redis), required: true },
       { name: 'llm', status: llm, required: false },

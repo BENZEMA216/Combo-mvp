@@ -86,8 +86,9 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     await owner.query(
       `INSERT INTO agent_conversations (
          id, agent_id, deployment_id, agent_version_id, creator_id,
-         consumer_subject_id, version_digest, state, assigned_worker_id, expires_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'IDLE', $8, now() + interval '1 hour')`,
+         consumer_subject_id, idempotency_key, request_digest,
+         version_digest, state, assigned_worker_id, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, gen_uuid_v7(), $7, $8, 'IDLE', $9, now() + interval '1 hour')`,
       [
         conversationId,
         ids.agentId,
@@ -95,6 +96,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         ids.agentVersionId,
         ids.creatorId,
         ids.consumerId,
+        digest('c'),
         digest('7'),
         ids.workerId,
       ],

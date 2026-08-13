@@ -102,6 +102,7 @@ describe('migrations', () => {
         'snapshot_uploads',
         'context_snapshots',
         'agents',
+        'agent_access_grants',
         'agent_versions',
         'agent_version_controls',
         'deployments',
@@ -201,13 +202,14 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-6)).toEqual([
+    expect(list.slice(-7)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
       '0012_creator_hosted_agent_vnext.sql',
+      '0013_creator_agent_consumer_create.sql',
     ]);
   });
 

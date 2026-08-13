@@ -1,18 +1,25 @@
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
-const sql = readFileSync(
+const baseSql = readFileSync(
   resolve(directory, '..', 'migrations', '0012_creator_hosted_agent_vnext.sql'),
   'utf8',
 );
+const consumerCreateSql = readFileSync(
+  resolve(directory, '..', 'migrations', '0013_creator_agent_consumer_create.sql'),
+  'utf8',
+);
+const sql = `${baseSql}\n${consumerCreateSql}`;
 
 const TABLES = [
   'snapshot_uploads',
   'context_snapshots',
   'agents',
+  'agent_access_grants',
   'agent_versions',
   'agent_version_controls',
   'deployments',
@@ -33,7 +40,18 @@ const APPLICATION_ROLES = [
   'combo_agent_reconciler',
 ] as const;
 
-describe('0012 Creator-hosted Agent VNext migration', () => {
+describe('0012 + 0013 Creator-hosted Agent VNext migration chain', () => {
+  it('keeps already-published 0012 byte-for-byte immutable', () => {
+    expect(createHash('sha256').update(baseSql).digest('hex')).toBe(
+      '6200cf838e67db2c6f2a7aada2342a0ab3d3b784c14343a2e43ed555944a031f',
+    );
+  });
+
+  it('aligns the append-only public slug constraint with the frozen 64-character wire schema', () => {
+    expect(consumerCreateSql).toContain('DROP CONSTRAINT agents_public_slug_check');
+    expect(consumerCreateSql).toContain('[a-z0-9-]{1,62}[a-z0-9]');
+  });
+
   it('creates the complete PostgreSQL authority model', () => {
     for (const table of TABLES) expect(sql, table).toContain(`CREATE TABLE ${table} (`);
     expect(sql.match(/CREATE TABLE /g)).toHaveLength(TABLES.length);
@@ -60,6 +78,7 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
     for (const constraint of [
       'fk_agent_versions_agent_creator',
       'fk_agent_versions_snapshot_creator',
+      'fk_agent_access_grants_agent_creator',
       'fk_deployments_desired_version',
       'fk_deployments_serving_version',
       'fk_worker_leases_deployment_creator',
@@ -107,7 +126,28 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
     expect(sql).toContain('invocation reconciliation binding is immutable once set');
     expect(sql).toContain('uncertain invocation requires exhausted reconciliation deadline');
     expect(sql).toContain('CREATE TRIGGER worker_installations_transition');
+    expect(sql).toContain('CREATE TRIGGER agent_access_grants_transition');
     expect(sql).toContain('CREATE TRIGGER agent_conversations_transition');
+    expect(sql).toContain('uq_agent_access_grants_agent_consumer');
+    expect(sql).toContain('uq_agent_conversations_consumer_idempotency');
+    expect(sql).toContain('creator_agent_lock_live_worker(');
+    expect(sql).toContain('creator_agent_lock_consumer_access(');
+    expect(sql).toContain("lease.expires_at > clock_timestamp() + interval '3 seconds'");
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION creator_agent_lock_live_worker(uuid, uuid, uuid, bigint)',
+    );
+    expect(sql).toContain(
+      'GRANT EXECUTE ON FUNCTION creator_agent_lock_consumer_access(uuid, uuid, uuid)',
+    );
+    expect(sql).not.toContain(
+      'GRANT UPDATE (state, revoked_at) ON agent_access_grants TO combo_agent_api',
+    );
+    expect(consumerCreateSql).toContain(
+      'DROP TRIGGER agent_conversations_transition ON agent_conversations',
+    );
+    expect(consumerCreateSql).toMatch(
+      /DROP TRIGGER agent_conversations_transition[\s\S]+UPDATE agent_conversations[\s\S]+CREATE TRIGGER agent_conversations_transition/u,
+    );
     expect(sql).toContain('terminal invocation is immutable');
   });
 
@@ -160,7 +200,12 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
     expect(sql).toContain("current_setting('app.creator_id', true)");
     expect(sql).toContain("current_setting('app.consumer_id', true)");
     expect(sql).toContain('CREATE POLICY agent_conversations_select');
+    expect(sql).toContain('CREATE POLICY agent_conversations_consumer_select');
     expect(sql).toContain('CREATE POLICY agent_conversations_insert');
+    expect(sql).toContain('CREATE POLICY agent_access_grants_consumer_select');
+    expect(sql).toContain('CREATE POLICY agents_consumer_select');
+    expect(sql).not.toContain('CREATE POLICY deployments_consumer_select');
+    expect(sql).not.toContain('CREATE POLICY worker_leases_consumer_select');
     expect(sql).toContain('CREATE POLICY agent_invocations_update');
     expect(sql).toContain('CREATE POLICY agent_invocation_events_insert');
     expect(sql).toContain('CREATE POLICY consumer_event_outbox_select');

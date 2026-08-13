@@ -32,21 +32,34 @@ export interface TxPool {
 export type RuntimeDb = Queryable & TxPool;
 
 let pool: Pool | undefined;
+let creatorAgentPool: Pool | undefined;
+
+function createPool(connectionString: string): Pool {
+  const created = new Pool({
+    connectionString,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 2_000,
+  });
+  created.on('error', () => {
+    /* swallow idle-client errors; handled at query call sites */
+  });
+  return created;
+}
 
 /** PG 连接池单例。 */
 export function getPool(env: Env): Pool {
-  if (!pool) {
-    pool = new Pool({
-      connectionString: env.DATABASE_URL,
-      max: 10,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 2_000,
-    });
-    pool.on('error', () => {
-      /* swallow idle-client errors; handled at query call sites */
-    });
-  }
+  if (!pool) pool = createPool(env.DATABASE_URL);
   return pool;
+}
+
+/** Creator-hosted Consumer transaction pool; always uses its future dedicated role URL. */
+export function getCreatorAgentPool(env: Env): Pool {
+  if (!env.CREATOR_AGENT_PUBLIC_ENABLED || !env.CREATOR_AGENT_DATABASE_URL) {
+    throw new Error('Creator Agent database is disabled');
+  }
+  if (!creatorAgentPool) creatorAgentPool = createPool(env.CREATOR_AGENT_DATABASE_URL);
+  return creatorAgentPool;
 }
 
 /** 把 pg.Pool 适配成 RuntimeDb（生产用）；测试直接注入 FakeDb。 */
@@ -211,8 +224,32 @@ export async function pingDb(env: Env): Promise<boolean> {
   }
 }
 
+/** Readiness proves the URL did not accidentally use any known broad legacy/control-plane role. */
+export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
+  if (!env.CREATOR_AGENT_PUBLIC_ENABLED) return true;
+  try {
+    const client = await getCreatorAgentPool(env).connect();
+    try {
+      const result = await client.query<{ current_user: string }>('SELECT current_user');
+      const role = result.rows[0]?.current_user;
+      return (
+        typeof role === 'string' &&
+        !['combo_api', 'combo_worker', 'combo_runtime', 'combo_agent_api'].includes(role)
+      );
+    } finally {
+      client.release();
+    }
+  } catch {
+    return false;
+  }
+}
+
 /** 优雅关闭连接池。 */
 export async function closeDb(): Promise<void> {
-  await pool?.end().catch(() => undefined);
+  await Promise.all([
+    pool?.end().catch(() => undefined),
+    creatorAgentPool?.end().catch(() => undefined),
+  ]);
   pool = undefined;
+  creatorAgentPool = undefined;
 }

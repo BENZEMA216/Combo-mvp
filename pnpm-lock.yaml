@@ -175,6 +175,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.726.1
         version: 3.1068.0
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-protocol
       '@cb/shared':
         specifier: workspace:*
         version: link:../../packages/shared

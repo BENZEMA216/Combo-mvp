@@ -59,7 +59,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build shared first
-        run: pnpm -F @cb/shared build
+        run: |
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
 
       - name: Format check
         run: pnpm format:check
@@ -127,7 +129,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build shared first
-        run: pnpm -F @cb/shared build
+        run: |
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
 
       - name: Install database client
         run: |
@@ -141,7 +145,33 @@ jobs:
           POSTGRES_API_PASSWORD: ci-api-role-password
           POSTGRES_WORKER_PASSWORD: ci-worker-role-password
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
         run: bash scripts/integration/db-migrate.sh
+
+      - name: Creator Agent PostgreSQL authority gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          CREATOR_AGENT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-hosted-agent-vnext.pg.test.ts
+
+      - name: Creator Agent Cloud Journal and Conversation PostgreSQL gates
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
+          CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
+        run: |
+          set -euo pipefail
+          pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
+          pnpm --dir apps/runtime exec vitest run \
+            src/modules/creator-agent-conversation/repo.pg.test.ts
 
       - name: Authoring billing PostgreSQL invariants
         env:
@@ -156,3 +186,10 @@ jobs:
           BILLING_TEST_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           BILLING_RUNTIME_TEST_DATABASE_URL: postgres://combo_runtime:ci-runtime-role-password@localhost:5432/agora
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts
+
+      # Replaying 0008/0012 mutates cluster-global role attributes; keep this last in the PG job.
+      - name: Creator Agent persistent 0012 to 0013 upgrade gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_UPGRADE_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-consumer-upgrade.pg.test.ts

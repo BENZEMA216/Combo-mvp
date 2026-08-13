@@ -6,9 +6,20 @@ import { SESSION_ENDPOINTS, registerSessionRoutes } from '../modules/session/rou
 import { ARTIFACT_ENDPOINTS, registerArtifactRoutes } from '../modules/artifact/routes.js';
 import { registerClientEventRoutes } from '../platform/http/client-events.js';
 import type { EndpointDecl } from '../platform/http/_helpers.js';
+import {
+  CREATOR_AGENT_CONVERSATION_ENDPOINTS,
+  registerCreatorAgentConversationRoutes,
+} from '../modules/creator-agent-conversation/routes.js';
 
 /** 全部业务端点声明汇总（供守门/测试核对端点数、方法、鉴权链）。 */
 export const ALL_ENDPOINTS: EndpointDecl[] = [
+  ...CAPABILITY_ENDPOINTS,
+  ...SESSION_ENDPOINTS,
+  ...ARTIFACT_ENDPOINTS,
+  ...CREATOR_AGENT_CONVERSATION_ENDPOINTS,
+];
+
+export const ALWAYS_ENABLED_ENDPOINTS: EndpointDecl[] = [
   ...CAPABILITY_ENDPOINTS,
   ...SESSION_ENDPOINTS,
   ...ARTIFACT_ENDPOINTS,
@@ -25,4 +36,9 @@ export async function registerBusinessRoutes(app: FastifyInstance): Promise<void
     },
     { prefix: API_PREFIX },
   );
+  // Default-off is a product safety boundary. Runtime must not expose a partially authorized
+  // Consumer surface merely because Nginx already knows the frozen route ownership.
+  if (app.infra.env.CREATOR_AGENT_PUBLIC_ENABLED) {
+    await registerCreatorAgentConversationRoutes(app);
+  }
 }

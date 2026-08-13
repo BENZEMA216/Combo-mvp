@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const MANAGED_KEYS = [
   'NODE_ENV',
   'DATABASE_URL',
+  'CREATOR_AGENT_DATABASE_URL',
+  'CREATOR_AGENT_PUBLIC_ENABLED',
   'REDIS_URL',
   'S3_ENDPOINT',
   'S3_ACCESS_KEY',
@@ -38,6 +40,7 @@ afterEach(() => {
 function setProductionInfrastructure(): void {
   process.env.NODE_ENV = 'production';
   process.env.DATABASE_URL = 'postgres://runtime:runtime@database.invalid/runtime';
+  process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'false';
   process.env.REDIS_URL = 'redis://redis.invalid:6379';
   process.env.S3_ENDPOINT = 'https://objects.invalid';
   process.env.S3_ACCESS_KEY = 'test-placeholder';
@@ -131,6 +134,21 @@ describe('runtime authentication configuration', () => {
     expect(message).toContain('RUNTIME_BILLING_FREE_USES');
     expect(message).toContain('RUNTIME_BILLING_UNIT_PRICE_CENTS');
     expect(message).not.toMatch(/identity|issuer|jwks|audience|session.*secret/i);
+  });
+
+  it('keeps the VNext public API off by default and requires a dedicated URL when enabled', async () => {
+    setProductionInfrastructure();
+    delete process.env.CREATOR_AGENT_DATABASE_URL;
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'false';
+    vi.resetModules();
+
+    let loaded = await import('../platform/config/env.js');
+    expect(loaded.loadEnv().CREATOR_AGENT_PUBLIC_ENABLED).toBe(false);
+
+    vi.resetModules();
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'true';
+    loaded = await import('../platform/config/env.js');
+    expect(() => loaded.loadEnv()).toThrowError('CREATOR_AGENT_DATABASE_URL');
   });
 
   it('validates configurable free uses and integer cent price', async () => {

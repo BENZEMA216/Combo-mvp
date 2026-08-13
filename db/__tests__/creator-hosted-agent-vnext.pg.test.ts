@@ -178,10 +178,11 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
     await owner.query(
       `INSERT INTO agent_conversations (
          id, agent_id, deployment_id, agent_version_id, creator_id,
-         consumer_subject_id, version_digest, state, expires_at
+         consumer_subject_id, idempotency_key, request_digest,
+         version_digest, state, expires_at
        ) VALUES
-         ($1, $2, $3, $4, $5, $6, $7, 'IDLE', now() + interval '1 hour'),
-         ($8, $2, $3, $4, $5, $9, $7, 'IDLE', now() + interval '1 hour')`,
+         ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'IDLE', now() + interval '1 hour'),
+         ($10, $2, $3, $4, $5, $11, $12, $13, $9, 'IDLE', now() + interval '1 hour')`,
       [
         ids.conversationA,
         ids.agentA,
@@ -189,9 +190,13 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
         ids.versionA,
         ids.creatorA,
         ids.consumerA,
+        randomUuidV7(),
+        digest('c'),
         digest('7'),
         ids.conversationB,
         ids.consumerB,
+        randomUuidV7(),
+        digest('d'),
       ],
     );
   });
@@ -213,10 +218,11 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
     await expect(api.query(`SELECT id FROM agents`)).resolves.toMatchObject({ rows: [] });
     await api.query('BEGIN');
     await setLocalTenant(api, { consumerId: ids.consumerA });
-    await expect(api.query(`SELECT id FROM agent_conversations`)).resolves.toMatchObject({
-      rows: [],
-    });
-    await api.query('ROLLBACK');
+    const consumerOnlyRows = await api.query<{ id: string }>(
+      `SELECT id FROM agent_conversations ORDER BY id`,
+    );
+    expect(consumerOnlyRows.rows.map((row) => row.id)).toEqual([ids.conversationA]);
+    await api.query('COMMIT');
 
     await api.query('BEGIN');
     await setLocalTenant(api, { creatorId: ids.creatorA, consumerId: ids.consumerA });
@@ -228,9 +234,19 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
       api.query(
         `INSERT INTO agent_conversations (
            agent_id, deployment_id, agent_version_id, creator_id,
-           consumer_subject_id, version_digest, state, expires_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, 'IDLE', now() + interval '1 hour')`,
-        [ids.agentA, ids.deploymentA, ids.versionA, ids.creatorA, ids.consumerB, '7'.repeat(64)],
+           consumer_subject_id, idempotency_key, request_digest,
+           version_digest, state, expires_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'IDLE', now() + interval '1 hour')`,
+        [
+          ids.agentA,
+          ids.deploymentA,
+          ids.versionA,
+          ids.creatorA,
+          ids.consumerB,
+          randomUuidV7(),
+          'e'.repeat(64),
+          '7'.repeat(64),
+        ],
       ),
     ).rejects.toMatchObject({ code: '42501' });
     await api.query('ROLLBACK');
@@ -341,6 +357,48 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
         [ids.conversationA],
       ),
     ).rejects.toMatchObject({ code: '23514' });
+  });
+
+  it('allows exactly one valid access-grant revocation and never reopens it', async () => {
+    const grantId = randomUuidV7();
+    await owner.query(
+      `INSERT INTO agent_access_grants (
+         id, agent_id, creator_id, consumer_subject_id
+       ) VALUES ($1, $2, $3, $4)`,
+      [grantId, ids.agentA, ids.creatorA, ids.consumerA],
+    );
+
+    await expect(
+      owner.query(
+        `UPDATE agent_access_grants
+            SET state = 'REVOKED', revoked_at = created_at - interval '1 second'
+          WHERE id = $1`,
+        [grantId],
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+
+    await owner.query(
+      `UPDATE agent_access_grants
+          SET state = 'REVOKED', revoked_at = clock_timestamp()
+        WHERE id = $1`,
+      [grantId],
+    );
+    await expect(
+      owner.query(
+        `UPDATE agent_access_grants
+            SET state = 'ACTIVE', revoked_at = NULL
+          WHERE id = $1`,
+        [grantId],
+      ),
+    ).rejects.toMatchObject({ code: '55000' });
+    await expect(
+      owner.query(
+        `UPDATE agent_access_grants
+            SET consumer_subject_id = $2
+          WHERE id = $1`,
+        [grantId, ids.consumerB],
+      ),
+    ).rejects.toMatchObject({ code: '55000' });
   });
 
   it('keeps Deployment generations and Lease fencing monotonic', async () => {
@@ -694,6 +752,11 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
     ).resolves.toMatchObject({ rows: [{ ok: false }] });
     await expect(
       broker.query(
+        `SELECT has_table_privilege(current_user, 'agent_access_grants', 'SELECT') AS ok`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ ok: false }] });
+    await expect(
+      broker.query(
         `SELECT has_table_privilege(current_user, 'agent_conversations', 'INSERT') AS ok`,
       ),
     ).resolves.toMatchObject({ rows: [{ ok: false }] });
@@ -703,6 +766,11 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
     await expect(
       reconciler.query(
         `SELECT has_table_privilege(current_user, 'agent_versions', 'UPDATE') AS ok`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ ok: false }] });
+    await expect(
+      reconciler.query(
+        `SELECT has_table_privilege(current_user, 'agent_access_grants', 'SELECT') AS ok`,
       ),
     ).resolves.toMatchObject({ rows: [{ ok: false }] });
     await expect(
@@ -716,6 +784,43 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
         `SELECT has_column_privilege(current_user, 'agents', 'creator_id', 'UPDATE') AS ok`,
       ),
     ).resolves.toMatchObject({ rows: [{ ok: false }] });
+    await expect(
+      api.query(`SELECT has_table_privilege(current_user, 'worker_leases', 'UPDATE') AS ok`),
+    ).resolves.toMatchObject({ rows: [{ ok: false }] });
+    await expect(
+      api.query(
+        `SELECT has_column_privilege(
+           current_user,
+           'agent_access_grants',
+           'state',
+           'UPDATE'
+         ) AS ok`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ ok: false }] });
+    await expect(
+      api.query(
+        `SELECT has_function_privilege(
+           current_user,
+           'creator_agent_lock_live_worker(uuid,uuid,uuid,bigint)',
+           'EXECUTE'
+         ) AS ok`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ ok: true }] });
+    await expect(
+      api.query(
+        `SELECT has_function_privilege(
+           current_user,
+           'creator_agent_lock_consumer_access(uuid,uuid,uuid)',
+           'EXECUTE'
+         ) AS ok`,
+      ),
+    ).resolves.toMatchObject({ rows: [{ ok: true }] });
+    await expect(
+      api.query<{ live: boolean }>(
+        `SELECT creator_agent_lock_live_worker($1, $2, $3, $4) AS live`,
+        [ids.deploymentA, ids.creatorA, ids.workerA, 1],
+      ),
+    ).resolves.toMatchObject({ rows: [{ live: false }] });
 
     await owner.query(`UPDATE worker_leases SET state = 'REVOKED' WHERE id = $1`, [ids.leaseA]);
     await expect(

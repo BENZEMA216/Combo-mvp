@@ -47,6 +47,13 @@ const EnvSchema = z
 
     // PostgreSQL：与创作端同一个库（capabilities 只读 + 试用层四表读写）。
     DATABASE_URL: z.string().default('postgres://combo:combo@localhost:5432/combo'),
+    // Reserved dedicated Consumer authority URL. This may never fall back to DATABASE_URL.
+    // No supported deployment sets it until the consumer-only database role enablement gate is
+    // implemented; combo_agent_api still has Creator control-plane privileges and is not allowed.
+    CREATOR_AGENT_DATABASE_URL: z.preprocess(emptyToUndefined, z.string().optional()),
+    // VNext Consumer API remains unreachable until the complete authorization/revoke and
+    // Conversation open/ready chain is explicitly enabled for a disposable environment.
+    CREATOR_AGENT_PUBLIC_ENABLED: booleanFromString,
     REDIS_URL: z.string().trim().min(1).default('redis://localhost:6379'),
 
     // ObjectStore（MinIO/S3）：按 capabilities.storage_key 读能力定义 + 读写产物内容。
@@ -117,6 +124,13 @@ const EnvSchema = z
     SANDBOX_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   })
   .superRefine((env, ctx) => {
+    if (env.CREATOR_AGENT_PUBLIC_ENABLED && !env.CREATOR_AGENT_DATABASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_DATABASE_URL'],
+        message: 'CREATOR_AGENT_DATABASE_URL is required when the VNext public API is enabled',
+      });
+    }
     if (!env.SANDBOX_TOOLS_ENABLED) return;
     if (!env.SANDBOX_IMAGE) {
       ctx.addIssue({

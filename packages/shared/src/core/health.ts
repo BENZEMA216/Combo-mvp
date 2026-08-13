@@ -5,7 +5,14 @@ export const HealthStatusSchema = z.enum(['ok', 'degraded', 'down']);
 export type HealthStatus = z.infer<typeof HealthStatusSchema>;
 
 /** 四个 required 依赖加 llm；llm 只造成 degraded，不计入 ready。 */
-export const DependencyNameSchema = z.enum(['db', 'redis_queue', 'redis_hot', 'minio', 'llm']);
+export const DependencyNameSchema = z.enum([
+  'db',
+  'creator_agent_db',
+  'redis_queue',
+  'redis_hot',
+  'minio',
+  'llm',
+]);
 export type DependencyName = z.infer<typeof DependencyNameSchema>;
 
 export const DependencyHealthSchema = z.object({
