@@ -19,6 +19,13 @@
   "codexProtocolSchemaDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
   "sandboxAdapter": "apple-container",
   "sandboxAdapterVersion": "0.8.0",
+  "protocolSchemaBundleDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "openApiDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "invariantRegistryDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "testCaseRegistryDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "decisionRegistryDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+  "dataFlowAllowlistDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+  "artifactIndexDigest": "sha256:ebbd1a052560f8a4caee00d6f6f71baf07d63949248200e234f63db94b55f4d3",
   "testSuiteDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
   "macosBuild": "26.0-25A123",
   "kernelBuild": "Darwin-25.0.0-arm64",
@@ -26,9 +33,9 @@
   "startedAt": "2026-08-13T08:00:00.000Z",
   "finishedAt": "2026-08-13T09:00:00.000Z",
   "results": {
-    "pass": 66,
+    "pass": 7,
     "fail": 0,
     "blocked": 0,
-    "notRun": 0
+    "notRun": 59
   }
 }

@@ -1,0 +1,128 @@
+protocol: combo.vnext-invariant-registry/1
+schemaVersion: 1
+invariants:
+  - id: INV-001
+    statement: AgentVersion 的执行内容创建后不可修改。
+    severity: P0
+    gates: [G0, G1]
+    owners: [Protocol, Snapshot/Version]
+  - id: INV-002
+    statement: 相同 Snapshot bytes 得到相同 digest，任一 byte 变化得到不同身份。
+    severity: P0
+    gates: [G0, G1]
+    owners: [Protocol, Snapshot/Version]
+  - id: INV-003
+    statement: Consumer Conversation 从创建到关闭固定同一 AgentVersion。
+    severity: P0
+    gates: [G1, G6]
+    owners: [Cloud/Broker, Product/Web]
+  - id: INV-004
+    statement: 每个 Conversation 独占 Sandbox、thread 和 scratch。
+    severity: P0
+    gates: [G2]
+    owners: [Runtime/Sandbox]
+  - id: INV-005
+    statement: Sandbox 看不到 Creator HOME、其他 Project、长期凭据和其他 Conversation。
+    severity: P0
+    gates: [G2]
+    owners: [Runtime/Sandbox, Independent Verifier/SRE]
+  - id: INV-006
+    statement: Snapshot 只读，Runtime 仅用闭世界 Context Reader，Project bytes 不可被执行。
+    severity: P0
+    gates: [G1, G2]
+    owners: [Snapshot/Version, Runtime/Sandbox]
+  - id: INV-007
+    statement: Sandbox 只能通过绑定 Invocation 的 Model Proxy capability 出网。
+    severity: P0
+    gates: [G2]
+    owners: [Runtime/Sandbox]
+  - id: INV-008
+    statement: 同一 Conversation 同时最多一个非终态 Invocation。
+    severity: P0
+    gates: [G0, G4, G6]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-009
+    statement: 同 message ID 加同 bytes 复用，同 ID 加不同 bytes 冲突。
+    severity: P0
+    gates: [G0, G4, G6]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-010
+    statement: Codex dispatch 前可以幂等重投，dispatch 后不得自动二次推理。
+    severity: P0
+    gates: [G0, G4]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-011
+    statement: Invocation 终态单调，进入后不被覆盖。
+    severity: P0
+    gates: [G0, G4]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-012
+    statement: 一次 Invocation 最多产生一条 Consumer 可见 final。
+    severity: P0
+    gates: [G4, G6]
+    owners: [Cloud/Broker, Product/Web]
+  - id: INV-013
+    statement: stale Lease 或 Fence 不得更新 Deployment 或开始新 Invocation，仍有效且精确绑定的 Capability 只能幂等提交原 Invocation 终态。
+    severity: P0
+    gates: [G0, G3, G4]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-014
+    statement: Cloud Journal 和 Worker Journal 的同一事实可通过 ID 与 digest 对账。
+    severity: P0
+    gates: [G4]
+    owners: [Cloud/Broker, Creator Worker]
+  - id: INV-015
+    statement: 无法确认执行事实时进入 UNCERTAIN，绝不自动重跑。
+    severity: P0
+    gates: [G0, G4, G6]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-016
+    statement: CANCELLED 必须有未执行或 Runtime interrupted 的证据。
+    severity: P0
+    gates: [G0, G4, G6]
+    owners: [Protocol, Cloud/Broker]
+  - id: INV-017
+    statement: Consumer A 无法读写 Consumer B 的 Agent、Conversation 和 Event。
+    severity: P0
+    gates: [G3, G6, G8]
+    owners: [Cloud/Broker, Independent Verifier/SRE]
+  - id: INV-018
+    statement: 控制 ID、Lease、Fence、Token 和 Object Key 不进入模型语义输入。
+    severity: P0
+    gates: [G0, G2, G8]
+    owners: [Protocol, Runtime/Sandbox]
+  - id: INV-019
+    statement: Prompt、答案、Context、Token、绝对路径和 Reasoning 不进入普通日志。
+    severity: P0
+    gates: [G0, G2, G8]
+    owners: [Independent Verifier/SRE]
+  - id: INV-020
+    statement: observed ONLINE 只在 Worker、Version 和 Sandbox Smoke 真实就绪后成立。
+    severity: P0
+    gates: [G3, G5]
+    owners: [Cloud/Broker, Product/Web]
+  - id: INV-021
+    statement: 安全 Gate 失败不得回退 Native unisolated Runtime。
+    severity: P0
+    gates: [G0, G2]
+    owners: [Runtime/Sandbox, Independent Verifier/SRE]
+  - id: INV-022
+    statement: Creator 活 Project 在发布和运行过程中不被修改。
+    severity: P0
+    gates: [G1, G5]
+    owners: [Snapshot/Version, Product/Web]
+  - id: INV-023
+    statement: Redis 或 WebSocket 丢失不改变 PostgreSQL 权威事实。
+    severity: P1
+    gates: [G3, G4]
+    owners: [Cloud/Broker]
+  - id: INV-024
+    statement: 所有资源均有 size、time、count 上限并可回收。
+    severity: P1
+    gates: [G1, G2, G3, G4, G7]
+    owners: [Independent Verifier/SRE]
+  - id: INV-025
+    statement: 已接受的 Snapshot 和 Journal 可以从异机备份恢复。
+    severity: P0
+    gates: [G7, G8]
+    owners: [Independent Verifier/SRE]

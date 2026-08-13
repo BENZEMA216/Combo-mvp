@@ -14,13 +14,13 @@
     },
     {
       "path": "broker-invocation-prepare.v1.json",
-      "bytes": 2495,
-      "digest": "sha256:77a3a069f312fc6d5ab2a8e0a2518350f5372a6ce1fa5dc2eb1ccd6ca1dfa058"
+      "bytes": 3501,
+      "digest": "sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7"
     },
     {
       "path": "broker-invocation-succeeded.v1.json",
-      "bytes": 843,
-      "digest": "sha256:0e7a11bf32b0a66b33337ae78215e4ef41daea0b1f550b404d154da1c52fd985"
+      "bytes": 1852,
+      "digest": "sha256:6168976d7cd541e26f740583f4d1c22704116a2284f520f8acf4a1c0dd0f2267"
     },
     {
       "path": "canonical-vectors.v1.json",
@@ -28,14 +28,49 @@
       "digest": "sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184"
     },
     {
+      "path": "consumer-terminal-event-outbox.v1.json",
+      "bytes": 1217,
+      "digest": "sha256:627ee0c59c91edfb067bdf534c4ef9e24d4d0279835cc934fd174b52c9702d4a"
+    },
+    {
+      "path": "evidence-bundle-index.v1.json",
+      "bytes": 1541,
+      "digest": "sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb"
+    },
+    {
       "path": "evidence-bundle-manifest.v1.json",
-      "bytes": 1836,
-      "digest": "sha256:15e2c93b8b3b8a6a5087dbc9c6cbd4b77a67494a12b799632577b99e502d77aa"
+      "bytes": 2551,
+      "digest": "sha256:99bb2e91df30706472c02acbcf7d23a5dcc772f16fd28754266f584d8f5a0f4a"
+    },
+    {
+      "path": "evidence-case-result.v1.json",
+      "bytes": 509,
+      "digest": "sha256:a4fb707bd3b5e82a0125ee8b3cf0dd3a7e24f31f5a554c2d4cf1289212c1fd4f"
+    },
+    {
+      "path": "evidence-environment.v1.json",
+      "bytes": 401,
+      "digest": "sha256:5f6d858f2269537861bdd4dad925033e3851a541633037e48da2c50c61a8e3f8"
+    },
+    {
+      "path": "evidence-environments.v1.json",
+      "bytes": 554,
+      "digest": "sha256:6a3a489eadf43ca092c7cfe65e148f0fc986033f7b5adfc59889d58fc26ef168"
+    },
+    {
+      "path": "evidence-privacy-scan.v1.json",
+      "bytes": 1756,
+      "digest": "sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0"
+    },
+    {
+      "path": "evidence-reviewer-signoff.v1.json",
+      "bytes": 661,
+      "digest": "sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b"
     },
     {
       "path": "invocation-state-machine.v1.json",
-      "bytes": 1044,
-      "digest": "sha256:bdb5946783965bec027fe60598ad18c13500bfe5c23933a7169d0177bd712eaf"
+      "bytes": 1059,
+      "digest": "sha256:ce3711d8e99c371c7c4b360a0f7673ac7bf1e299e0d452ce177a4ba7d7103cf2"
     },
     {
       "path": "sandbox-attestation.v1.json",

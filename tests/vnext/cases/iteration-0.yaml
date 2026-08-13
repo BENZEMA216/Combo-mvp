@@ -1,0 +1,538 @@
+protocol: combo.vnext-test-registry/1
+schemaVersion: 1
+cases:
+  - &avr
+    id: AVR-001
+    title: AgentVersion key order does not change digest
+    level: E1
+    environment: T0-LINUX-CI
+    invariants: [INV-001]
+    fixture: [project-golden-v1]
+    fault: []
+    steps:
+      [
+        Build both variants from independently materialized inputs,
+        Compare canonical manifest and digests,
+      ]
+    assertions: [Different JSON key order produces the same versionDigest]
+    evidence: [JUnit result, canonical manifest digest]
+    frequency: every-pr
+    owner: Snapshot/Version
+    reviewer: Protocol
+    gate: G1
+    implementation: { status: planned, testFiles: [] }
+    releaseTuple: [creator-agent-snapshot, creator-agent-protocol]
+    fixtureDigests: []
+  - <<: *avr
+    id: AVR-002
+    title: Display metadata is outside execution identity
+    fixture: [project-golden-v1]
+    assertions: [Changing only display name or statistics leaves versionDigest unchanged]
+  - <<: *avr
+    id: AVR-003
+    title: Snapshot digest participates in version identity
+    fixture: [project-golden-v1, project-golden-v2-one-byte]
+    assertions: [Changing snapshotDigest changes versionDigest]
+  - <<: *avr
+    id: AVR-004
+    title: Behavior canonical semantics participate in identity
+    fixture: [project-golden-v1, project-behavior-v2]
+    assertions:
+      [One semantic byte changes contract and version digests while whitespace and key order do not]
+  - <<: *avr
+    id: AVR-005
+    title: Runtime and IO policies participate in identity
+    fixture: [project-golden-v1]
+    assertions: [Changing RuntimePolicy or IOContract changes versionDigest]
+  - <<: *avr
+    id: AVR-006
+    title: Codex artifact schema model and effort participate in identity
+    fixture: [project-golden-v1]
+    assertions:
+      [Each Codex artifact schema model or reasoning effort mutation changes versionDigest]
+  - <<: *avr
+    id: AVR-007
+    title: Maximum legal AgentVersion contract runs end to end
+    level: E2
+    environment: T1-SERVICE-CI
+    fixture: [project-size-limits]
+    assertions: [Maximum legal contract can be created read and selected for execution]
+    frequency: merge-integration
+  - <<: *avr
+    id: AVR-008
+    title: AgentVersion creation is idempotent for identical request
+    level: E2
+    environment: T1-SERVICE-CI
+    invariants: [INV-001, INV-009]
+    fixture: [project-golden-v1]
+    assertions: [Same Idempotency-Key and request returns the same Version row]
+    frequency: merge-integration
+  - <<: *avr
+    id: AVR-009
+    title: AgentVersion idempotency conflict creates no row
+    level: E2
+    environment: T1-SERVICE-CI
+    invariants: [INV-001, INV-009]
+    fixture: [project-golden-v1, project-behavior-v2]
+    assertions:
+      [Same Idempotency-Key with different request returns 409 and creates zero new Version]
+    frequency: merge-integration
+
+  - &brk
+    id: BRK-001
+    title: Valid OAuth and Device signature creates Worker session
+    level: E3
+    environment: T2-LOCAL-CONTRACT
+    invariants: [INV-013]
+    fixture: [broker-clock]
+    fault: []
+    steps: [Register a synthetic P-256 installation, Complete challenge and WSS handshake]
+    assertions: [A short Worker Session is established and no long-lived credential enters frames]
+    evidence: [JUnit result, redacted handshake audit]
+    frequency: merge-integration
+    owner: Cloud/Broker
+    reviewer: Security/SRE
+    gate: G3
+    implementation: { status: planned, testFiles: [] }
+    releaseTuple: [agent-gateway, creator-worker, creator-agent-protocol]
+    fixtureDigests: []
+  - <<: *brk
+    id: BRK-002
+    title: Wrong creator installation or public key gets no Lease
+    assertions: [Handshake fails closed and creates zero Worker Session or Lease]
+  - <<: *brk
+    id: BRK-003
+    title: Device challenge nonce replay is rejected once
+    fault: [Replay the exact signed challenge nonce]
+    assertions: [Replay is rejected and one redacted security audit event is committed]
+  - <<: *brk
+    id: BRK-004
+    title: Revoked installation cannot reconnect
+    fault: [Revoke installation while old session remains unexpired]
+    assertions: [Reconnect is rejected and no new Lease is granted]
+  - <<: *brk
+    id: BRK-005
+    title: Incompatible Worker capability is blocked
+    fault: [Advertise unsupported protocol Codex or isolation capability]
+    assertions: [Deployment is BLOCKED with no downgrade and no Native runtime]
+  - <<: *brk
+    id: BRK-006
+    title: Only current connection epoch owns an installation
+    fault: [Connect twice with the same installation]
+    assertions: [Only the current session epoch can heartbeat renew Lease or receive dispatch]
+  - <<: *brk
+    id: BRK-007
+    title: Worker session rotation invalidates old token
+    fault: [Expire session during an active WSS lifecycle]
+    assertions: [Reauthentication is smooth and the prior token immediately loses authority]
+  - <<: *brk
+    id: BRK-008
+    title: Outbound WSS survives NAT address change
+    environment: T6-FULL-E2E
+    level: E6
+    fault: [Change Creator public IP behind NAT]
+    assertions: [Worker reconnects outbound without any Creator inbound port]
+    frequency: cloud-rc
+
+  - &dep
+    id: DEP-001
+    title: Desired ONLINE does not fake observed ONLINE
+    level: E2
+    environment: T1-SERVICE-CI
+    invariants: [INV-020]
+    fixture: [broker-clock]
+    fault: [Request ONLINE while Worker is offline]
+    steps: [Commit desired state, Run reconciler once, Read Deployment projection]
+    assertions: [desired is ONLINE while observed remains OFFLINE or PREPARING]
+    evidence: [JUnit result, PostgreSQL projection]
+    frequency: merge-integration
+    owner: Cloud/Broker
+    reviewer: Product/Web
+    gate: G3
+    implementation: { status: planned, testFiles: [] }
+    releaseTuple: [agent-gateway, agent-reconciler, postgresql-schema]
+    fixtureDigests: []
+  - <<: *dep
+    id: DEP-002
+    title: Snapshot verification failure blocks Deployment
+    invariants: [INV-020, INV-022]
+    fault: [Reject serving Snapshot during prepare]
+    assertions: [observed becomes BLOCKED and never ONLINE]
+  - <<: *dep
+    id: DEP-003
+    title: Failed V2 smoke keeps V1 serving
+    invariants: [INV-001, INV-020]
+    fault: [Fail Sandbox smoke for V2]
+    assertions: [Old serving Version remains authoritative]
+  - <<: *dep
+    id: DEP-004
+    title: Stale ready generation is rejected
+    invariants: [INV-013, INV-020]
+    fault: [Deliver V2 ready for an obsolete generation]
+    assertions: [Stale ready causes zero serving or observed state mutation]
+  - <<: *dep
+    id: DEP-005
+    title: Concurrent V2 cutover has one winning generation
+    invariants: [INV-001, INV-013]
+    fault: [Run two cutovers concurrently]
+    assertions: [Exactly one generation wins and servingVersion is unambiguous]
+  - <<: *dep
+    id: DEP-006
+    title: Drain rejects new conversations and bounds shutdown
+    invariants: [INV-015, INV-016, INV-020]
+    fault: [Enter DRAIN with an invocation in flight]
+    assertions:
+      [
+        New conversations stop immediately and observed OFFLINE occurs within 180 seconds with evidence-based terminal,
+      ]
+  - <<: *dep
+    id: DEP-007
+    title: Immediate offline stops dispatch and preserves facts
+    invariants: [INV-015, INV-016, INV-020]
+    fault: [Enter IMMEDIATE with an invocation in flight]
+    assertions: [New dispatch stops and the invocation reaches an evidenced terminal or UNCERTAIN]
+  - <<: *dep
+    id: DEP-008
+    title: Heartbeat timeout removes online presence
+    invariants: [INV-020]
+    fault: [Stop Worker heartbeat]
+    assertions: [observed is offline within 30 seconds]
+  - <<: *dep
+    id: DEP-009
+    title: Live process with broken runtime is not online
+    invariants: [INV-020, INV-021]
+    fault: [Keep Worker process alive while Runtime capability probe fails]
+    assertions: [observed is DEGRADED or BLOCKED and never ONLINE]
+
+  - &flt
+    id: FLT-001
+    title: Crash before API transaction is replayable
+    level: E3
+    environment: T1-SERVICE-CI
+    invariants: [INV-009, INV-010]
+    fixture: [host-scenario-corpus]
+    fault: [Kill before API transaction begins]
+    steps: [Arm exact failpoint, Submit request, Restart component, Replay same idempotency key]
+    assertions: [Replay creates one request fact and zero duplicate inference]
+    evidence: [JUnit result, Cloud Journal and provider attempt counters]
+    frequency: nightly
+    owner: Cloud/Broker
+    reviewer: Independent Verifier/SRE
+    gate: G4
+    implementation: { status: planned, testFiles: [] }
+    releaseTuple: [agent-gateway, creator-worker, postgresql-schema, creator-agent-protocol]
+    fixtureDigests: []
+  - <<: *flt
+    id: FLT-002
+    title: Lost HTTP 202 replays the same Invocation
+    fault: [Kill after transaction commit before HTTP 202]
+    assertions: [Replay returns the identical Invocation and creates no second row]
+  - <<: *flt
+    id: FLT-003
+    title: Outbox commit before Broker send safely redelivers
+    fault: [Kill after Outbox commit before Broker send]
+    assertions: [Same command is redelivered and deduplicated]
+  - <<: *flt
+    id: FLT-004
+    title: Worker crash before SQLite commit causes Cloud redelivery
+    fault: [Kill after Worker receive before SQLite commit]
+    assertions: [Cloud redelivers and Worker persists one prepare]
+  - <<: *flt
+    id: FLT-005
+    title: Lost prepared ACK causes zero Codex dispatch
+    fault: [Kill after PREPARED commit before ACK]
+    assertions: [Prepared event is replayed and Codex dispatch count remains zero]
+  - <<: *flt
+    id: FLT-006
+    title: Lost start command is replayed without a second start identity
+    fault: [Disconnect after Cloud PERSISTED before start send]
+    assertions: [Exact start command is resent under the same Invocation]
+  - <<: *flt
+    id: FLT-007
+    title: STARTING crash requires independent dispatch evidence
+    fault: [Kill after STARTING commit before Host call boundary]
+    assertions:
+      [Recovery never trusts the failpoint and becomes UNCERTAIN when dispatch cannot be disproved]
+  - <<: *flt
+    id: FLT-008
+    title: Lost Host turn response never starts a second turn
+    fault: [Disconnect after Host accepted turn/start]
+    assertions: [Invocation becomes UNCERTAIN and Host turn count stays one]
+  - <<: *flt
+    id: FLT-009
+    title: Saved turnId resumes observation
+    fault: [Kill after turnId save before started event]
+    assertions: [Recovery queries the same turn or reconciles without new dispatch]
+  - <<: *flt
+    id: FLT-010
+    title: RUNNING Worker crash resumes only with observable Host
+    fault: [Kill Worker while RUNNING]
+    assertions: [Observable Host or VM is resumed otherwise Invocation becomes UNCERTAIN]
+  - <<: *flt
+    id: FLT-011
+    title: Final before SQLite commit needs exact Host evidence
+    fault: [Kill after final generation before SQLite commit]
+    assertions: [Only an exact completed Host final may be durably recovered otherwise UNCERTAIN]
+  - <<: *flt
+    id: FLT-012
+    title: Durable local final resubmits exact bytes
+    fault: [Disconnect after SQLite final commit before Cloud submit]
+    assertions: [Exact final is resent and provider attempt count remains one]
+  - <<: *flt
+    id: FLT-013
+    title: Lost terminal ACK does not duplicate answer
+    fault: [Disconnect after Cloud terminal commit before ACK]
+    assertions: [Replay returns CLOUD_COMMITTED and Assistant message count remains one]
+  - <<: *flt
+    id: FLT-014
+    title: Lost interrupt ACK is not fake cancellation
+    fault: [Disconnect after cancel send before interrupt ACK]
+    assertions: [State remains CANCEL_REQUESTED or RECONCILING until evidence arrives]
+  - <<: *flt
+    id: FLT-015
+    title: Final cancel race follows durable evidence
+    fault: [Commit final and interrupt concurrently]
+    assertions: [Durable final may win and CANCELLED requires confirmed interruption]
+  - <<: *flt
+    id: FLT-016
+    title: Old Worker final cannot mutate new Deployment
+    invariants: [INV-013, INV-015]
+    fault: [Expire Lease and deliver old Worker final after new fence]
+    assertions: [Capability and fence reconciliation preserves the new Deployment]
+  - <<: *flt
+    id: FLT-017
+    title: Redis loss does not change execution facts
+    invariants: [INV-023]
+    fault: [Delete Redis projection during active work]
+    assertions: [Projection rebuilds from PostgreSQL without a second execution]
+  - <<: *flt
+    id: FLT-018
+    title: Gateway rolling restart replays cursors and Outbox
+    invariants: [INV-010, INV-023]
+    fault: [Roll both Gateway replicas while commands are unacknowledged]
+    assertions: [Durable cursors and Outbox converge with no duplicate inference]
+  - <<: *flt
+    id: FLT-019
+    title: Lost Model Proxy response never repeats provider request
+    invariants: [INV-007, INV-010, INV-015]
+    fault: [Disconnect after Model Proxy response before Worker receipt]
+    assertions: [Unknown attempt becomes UNCERTAIN and provider request count stays one]
+  - <<: *flt
+    id: FLT-020
+    title: Failed VM cleanup blocks reuse
+    invariants: [INV-004, INV-005, INV-024]
+    environment: T4-MAC-ISOLATION
+    level: E5
+    fault: [Fail Sandbox and scratch cleanup]
+    assertions: [Deployment is DEGRADED or BLOCKED and the contaminated Sandbox is never reused]
+    frequency: runtime-rc
+
+  - &sch
+    id: SCH-001
+    title: Authoritative protocol examples round trip
+    level: E1
+    environment: T0-LINUX-CI
+    invariants: [INV-001, INV-002]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/agent-version-manifest.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-handshake.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-invocation-prepare.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-invocation-succeeded.v1.json
+      - packages/creator-agent-protocol/fixtures/canonical-vectors.v1.json
+      - packages/creator-agent-protocol/fixtures/consumer-terminal-event-outbox.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-bundle-index.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-bundle-manifest.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-case-result.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-environment.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-environments.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-privacy-scan.v1.json
+      - packages/creator-agent-protocol/fixtures/evidence-reviewer-signoff.v1.json
+      - packages/creator-agent-protocol/fixtures/invocation-state-machine.v1.json
+      - packages/creator-agent-protocol/fixtures/sandbox-attestation.v1.json
+      - packages/creator-agent-protocol/fixtures/sandbox-spec.v1.json
+      - packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json
+    fault: []
+    steps:
+      [Parse each authoritative fixture, Render canonical form, Parse the rendered object again]
+    assertions: [parse render parse has no semantic change]
+    evidence: [Vitest JUnit, fixture SHA-256 index]
+    frequency: every-pr
+    owner: Protocol
+    reviewer: Independent Verifier/SRE
+    gate: G0
+    implementation:
+      status: implemented
+      testFiles:
+        - packages/creator-agent-protocol/src/__tests__/schemas.test.ts
+        - packages/creator-agent-protocol/src/__tests__/canonical.test.ts
+        - packages/creator-agent-protocol/src/__tests__/consumer-events.test.ts
+        - packages/creator-agent-protocol/src/__tests__/invocation.test.ts
+    releaseTuple: [creator-agent-protocol@0.1.0]
+    fixtureDigests:
+      - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
+      - sha256:b842b397216a5f71fa41c5112b6718cbe4614bb38cb2b0995a75c2a169d74058
+      - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
+      - sha256:6168976d7cd541e26f740583f4d1c22704116a2284f520f8acf4a1c0dd0f2267
+      - sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184
+      - sha256:627ee0c59c91edfb067bdf534c4ef9e24d4d0279835cc934fd174b52c9702d4a
+      - sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb
+      - sha256:99bb2e91df30706472c02acbcf7d23a5dcc772f16fd28754266f584d8f5a0f4a
+      - sha256:a4fb707bd3b5e82a0125ee8b3cf0dd3a7e24f31f5a554c2d4cf1289212c1fd4f
+      - sha256:5f6d858f2269537861bdd4dad925033e3851a541633037e48da2c50c61a8e3f8
+      - sha256:6a3a489eadf43ca092c7cfe65e148f0fc986033f7b5adfc59889d58fc26ef168
+      - sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0
+      - sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b
+      - sha256:ce3711d8e99c371c7c4b360a0f7673ac7bf1e299e0d452ce177a4ba7d7103cf2
+      - sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91
+      - sha256:e4b9749843a479a2669950a6c33cd9be4f90ddea8dd00c2436bf7dbdc6fb9a0a
+      - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
+  - <<: *sch
+    id: SCH-002
+    title: Unknown schema version fails closed
+    fixture: [packages/creator-agent-protocol/fixtures/broker-invocation-prepare.v1.json]
+    steps: [Mutate schemaVersion to an unsupported value, Parse through the runtime schema]
+    assertions: [Unknown version is rejected without downgrade]
+    implementation:
+      status: implemented
+      testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
+    fixtureDigests: [sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7]
+  - <<: *sch
+    id: SCH-003
+    title: Unknown and duplicate JSON keys are rejected
+    fixture: [packages/creator-agent-protocol/fixtures/broker-invocation-prepare.v1.json]
+    steps: [Add one unknown key, Inject one duplicate JSON key, Parse both frames]
+    assertions: [Strict schema and duplicate-key scanner reject before business mutation]
+    implementation:
+      status: implemented
+      testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
+    fixtureDigests: [sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7]
+  - <<: *sch
+    id: SCH-004
+    title: Every protocol length boundary is exact
+    fixture: [project-size-limits]
+    steps: [Generate max minus one max and max plus one for every public length]
+    assertions: [Every advertised maximum matches runtime behavior]
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
+  - <<: *sch
+    id: SCH-005
+    title: Malformed Unicode NUL and controls fail closed
+    fixture: [packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json]
+    steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
+    assertions: [Invalid text is rejected and no error echoes source content]
+    implementation:
+      status: implemented
+      testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
+    fixtureDigests: [sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088]
+  - <<: *sch
+    id: SCH-006
+    title: Runtime and generated schemas cannot drift
+    level: E0
+    fixture:
+      - packages/creator-agent-protocol/schemas/contract-schemas.v1.json
+      - packages/creator-agent-protocol/openapi/creator-agent-v1.openapi.json
+    steps:
+      [
+        Generate contracts from runtime Zod source in a temporary directory,
+        Byte compare checked artifacts,
+      ]
+    assertions: [Any JSON Schema OpenAPI or fixture index drift fails CI]
+    implementation:
+      status: implemented
+      testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
+    fixtureDigests:
+      - sha256:40dc6e9e885bdf6945a8cfba37bd0b1c8179a0fa40e143652653d7bbb6d9e876
+      - sha256:2d3ea36862667dbd82a2bc8696edb78f1814cf745c5bf8fa3ad1fc69eb6ce605
+  - <<: *sch
+    id: SCH-007
+    title: Canonical JSON key reorder preserves digest
+    fixture: [packages/creator-agent-protocol/fixtures/canonical-vectors.v1.json]
+    steps: [Parse reordered equivalent objects, Canonicalize and hash both]
+    assertions: [Canonical bytes and digest are identical]
+    implementation:
+      status: implemented
+      testFiles: [packages/creator-agent-protocol/src/__tests__/canonical.test.ts]
+    fixtureDigests: [sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184]
+  - <<: *sch
+    id: SCH-008
+    title: Unicode normalization and case collisions fail closed
+    fixture: [packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json]
+    steps: [Construct NFC NFD and Unicode-lowercase colliding paths, Parse manifest]
+    assertions: [Collision rejects the complete Snapshot]
+    implementation:
+      status: implemented
+      testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
+    fixtureDigests: [sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088]
+  - <<: *sch
+    id: SCH-009
+    title: Declared N minus one and N fixtures remain compatible
+    fixture: [protocol-version-corpus]
+    steps: [Run every declared protocol pair against its exact golden fixtures]
+    assertions: [Every advertised pair passes and no unadvertised pair is attempted]
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
+  - <<: *sch
+    id: SCH-010
+    title: N plus one or unknown capability blocks
+    fixture: [protocol-version-corpus]
+    steps: [Advertise an unknown future protocol or capability, Attempt readiness]
+    assertions: [Deployment becomes BLOCKED without guessing or Native fallback]
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
+
+  - &snp
+    id: SNP-001
+    title: Empty Snapshot is rejected
+    level: E1
+    environment: T0-LINUX-CI
+    invariants: [INV-002, INV-024]
+    fixture: [project-size-limits]
+    fault: []
+    steps: [Build the exact boundary fixture, Verify both builder and verifier result]
+    assertions: [Zero files returns SNAPSHOT_EMPTY]
+    evidence: [JUnit result, manifest and archive digests]
+    frequency: every-pr
+    owner: Snapshot/Version
+    reviewer: Security/SRE
+    gate: G1
+    implementation: { status: planned, testFiles: [] }
+    releaseTuple: [creator-agent-snapshot, creator-agent-protocol]
+    fixtureDigests: []
+  - <<: *snp
+    id: SNP-002
+    title: Two thousand files are accepted
+    assertions: [Exactly 2000 legal files build and verify]
+  - <<: *snp
+    id: SNP-003
+    title: Two thousand and one files are rejected
+    assertions: [Exactly 2001 files fail before VERIFIED]
+  - <<: *snp
+    id: SNP-004
+    title: Ten MiB file is accepted
+    assertions: [A legal file of exactly 10485760 bytes builds and verifies]
+  - <<: *snp
+    id: SNP-005
+    title: Ten MiB plus one file is rejected
+    assertions: [A file of 10485761 bytes fails before VERIFIED]
+  - <<: *snp
+    id: SNP-006
+    title: Two hundred MiB expanded Snapshot is accepted
+    assertions: [Exactly 209715200 expanded bytes build and verify]
+  - <<: *snp
+    id: SNP-007
+    title: Expanded limit plus one is rejected
+    assertions: [Exactly 209715201 expanded bytes fail before extraction completes]
+  - <<: *snp
+    id: SNP-008
+    title: Fifty MiB compressed boundary is exact
+    assertions: [52428800 compressed bytes pass and plus one fails]
+  - <<: *snp
+    id: SNP-009
+    title: Five hundred twelve byte path boundary is exact
+    fixture: [project-hostile-paths]
+    assertions: [A 512 UTF-8 byte path passes and 513 bytes fails]
+  - <<: *snp
+    id: SNP-010
+    title: Malformed Snapshot path bytes are rejected
+    fixture: [project-hostile-paths]
+    assertions: [Malformed UTF-8 NUL and every C0 C1 path fail before VERIFIED]

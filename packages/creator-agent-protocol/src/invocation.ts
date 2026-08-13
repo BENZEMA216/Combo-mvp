@@ -24,6 +24,8 @@ export const TERMINAL_INVOCATION_STATES = [
   'UNCERTAIN',
   'EXPIRED',
 ] as const satisfies readonly InvocationState[];
+export const TerminalInvocationStateSchema = z.enum(TERMINAL_INVOCATION_STATES);
+export type TerminalInvocationState = z.infer<typeof TerminalInvocationStateSchema>;
 
 const terminalStateSet = new Set<InvocationState>(TERMINAL_INVOCATION_STATES);
 
@@ -53,7 +55,7 @@ const allowedTransitions: Readonly<Record<InvocationState, ReadonlySet<Invocatio
   ACCEPTED: new Set(['QUEUED', 'CANCELLED']),
   QUEUED: new Set(['DISPATCH_PENDING', 'CANCELLED', 'EXPIRED']),
   DISPATCH_PENDING: new Set(['PERSISTED', 'QUEUED']),
-  PERSISTED: new Set(['STARTING', 'CANCEL_REQUESTED']),
+  PERSISTED: new Set(['STARTING', 'CANCEL_REQUESTED', 'RECONCILING']),
   STARTING: new Set(['RUNNING', 'RECONCILING']),
   RUNNING: new Set(['SUCCEEDED', 'FAILED', 'CANCEL_REQUESTED', 'RECONCILING']),
   CANCEL_REQUESTED: new Set(['CANCELLED', 'SUCCEEDED', 'FAILED', 'RECONCILING']),
@@ -64,6 +66,21 @@ const allowedTransitions: Readonly<Record<InvocationState, ReadonlySet<Invocatio
   UNCERTAIN: new Set(),
   EXPIRED: new Set(),
 };
+
+export function listAllowedInvocationTransitions(): Record<InvocationState, InvocationState[]> {
+  return Object.fromEntries(
+    InvocationStateSchema.options.map((state) => [state, [...allowedTransitions[state]]]),
+  ) as Record<InvocationState, InvocationState[]>;
+}
+
+export const INVOCATION_TRANSITION_GUARDS = {
+  SUCCEEDED: 'durableFinal',
+  FAILED: 'terminalFailureConfirmed',
+  CANCELLED: 'interruptConfirmed|provedNotExecuted',
+  RECONCILING: 'executionEvidenceLost',
+  UNCERTAIN: 'reconciliationExhausted',
+  EXPIRED: 'queueTtlExpiredBeforeDispatch',
+} as const;
 
 export class InvalidInvocationTransitionError extends Error {
   public readonly code = 'INVALID_INVOCATION_TRANSITION';
@@ -143,6 +160,7 @@ export const VnextErrorCodeSchema = z.enum([
   'CONVERSATION_BUSY',
   'CONVERSATION_EXPIRED',
   'CONVERSATION_CONTEXT_LIMIT',
+  'INVOCATION_EXPIRED',
   'WORKER_OFFLINE_TIMEOUT',
   'MODEL_QUOTA_EXHAUSTED',
   'STALE_LEASE',
@@ -284,6 +302,12 @@ export const VNEXT_ERROR_CLASSIFICATION: Readonly<
     httpStatus: 409,
     retryPolicy: 'NOT_RETRYABLE',
     publicMessage: '这段对话已达到上下文上限，请创建新对话。',
+  }),
+  INVOCATION_EXPIRED: classification({
+    code: 'INVOCATION_EXPIRED',
+    httpStatus: 410,
+    retryPolicy: 'NEW_INVOCATION_ALLOWED',
+    publicMessage: '请求在执行前已过期，可以创建新的请求。',
   }),
   WORKER_OFFLINE_TIMEOUT: classification({
     code: 'WORKER_OFFLINE_TIMEOUT',

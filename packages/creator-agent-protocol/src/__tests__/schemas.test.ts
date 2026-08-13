@@ -1,6 +1,8 @@
-import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+// VNext registry cases: SCH-001 SCH-002 SCH-003 SCH-005 SCH-008
 import { describe, expect, it } from 'vitest';
 import { AgentVersionManifestSchema, computeAgentVersionDigests } from '../agent-version.js';
+import { canonicalSha256, canonicalizeJson } from '../canonical.js';
 import {
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
@@ -15,8 +17,32 @@ import {
   validateExecutionCapabilityBinding,
   type ExecutionCapability,
 } from '../broker.js';
-import { EvidenceBundleManifestSchema } from '../evidence.js';
-import { Uint63StringSchema, Utf8TextSchema } from '../primitives.js';
+import {
+  EvidenceBundleIndexSchema,
+  EvidenceBundleManifestSchema,
+  EvidenceCaseResultSchema,
+  EvidenceEnvironmentSchema,
+  EvidenceEnvironmentsSchema,
+  EvidencePrivacyScanSchema,
+  EvidenceReviewerSignoffSchema,
+  EvidenceSupportingArtifactPathSchema,
+  evidenceBundleIndexDigest,
+  evidenceBundleManifestDigest,
+  evidencePrivacyScanScopeDigest,
+  evidenceReleaseTupleDigest,
+  evidenceReviewerSigningBytes,
+  evidenceTestSuiteDigest,
+  validateEvidenceBundleChain,
+  validateEvidenceReviewerSignoff,
+  type EvidenceReviewerSignoff,
+} from '../evidence.js';
+import {
+  IsoDateTimeSchema,
+  Uint63StringSchema,
+  Utf8TextSchema,
+  UuidSchema,
+} from '../primitives.js';
+import { TestCaseRegistrySchema } from '../registry.js';
 import {
   SandboxAttestationSchema,
   SandboxSpecSchema,
@@ -53,6 +79,17 @@ function signCapability(
     dsaEncoding: 'ieee-p1363',
   }).toString('base64url');
   return ExecutionCapabilitySchema.parse({ ...capability, signature });
+}
+
+function signEvidenceReview(
+  review: EvidenceReviewerSignoff,
+  privateKey: KeyObject,
+): EvidenceReviewerSignoff {
+  const signature = sign('sha256', evidenceReviewerSigningBytes(review), {
+    key: privateKey,
+    dsaEncoding: 'ieee-p1363',
+  }).toString('base64url');
+  return EvidenceReviewerSignoffSchema.parse({ ...review, signature });
 }
 
 describe('六类共享协议运行时 schema', () => {
@@ -138,6 +175,45 @@ describe('六类共享协议运行时 schema', () => {
     }
   });
 
+  it('Broker sensitive payload binds AEAD bytes and exact invocation/envelope context', async () => {
+    const prepare = (await readFixture('broker-invocation-prepare.v1.json')) as {
+      body: {
+        userMessageCiphertext: {
+          ciphertext: string;
+          aad: { invocationId: string };
+        };
+      };
+    };
+    const succeeded = (await readFixture('broker-invocation-succeeded.v1.json')) as {
+      lease: { workerSessionId: string };
+      body: { conversationId: string; resultCiphertext: unknown };
+    };
+
+    const wrongInvocation = structuredClone(prepare);
+    wrongInvocation.body.userMessageCiphertext.aad.invocationId =
+      '0198f00d-9999-7999-8999-999999999999';
+    expect(BrokerEnvelopeSchema.safeParse(wrongInvocation).success).toBe(false);
+
+    const changedCiphertext = structuredClone(prepare);
+    const originalCiphertext = changedCiphertext.body.userMessageCiphertext.ciphertext;
+    changedCiphertext.body.userMessageCiphertext.ciphertext = `${
+      originalCiphertext[0] === 'A' ? 'B' : 'A'
+    }${originalCiphertext.slice(1)}`;
+    expect(BrokerEnvelopeSchema.safeParse(changedCiphertext).success).toBe(false);
+
+    const crossEnvelopeReplay = structuredClone(succeeded);
+    crossEnvelopeReplay.body.resultCiphertext = structuredClone(prepare.body.userMessageCiphertext);
+    expect(BrokerEnvelopeSchema.safeParse(crossEnvelopeReplay).success).toBe(false);
+
+    const wrongResponseConversation = structuredClone(succeeded);
+    wrongResponseConversation.body.conversationId = '0198f00d-9999-7999-8999-999999999998';
+    expect(BrokerEnvelopeSchema.safeParse(wrongResponseConversation).success).toBe(false);
+
+    const wrongWorkerSession = structuredClone(succeeded);
+    wrongWorkerSession.lease.workerSessionId = '0198f00d-9999-7999-8999-999999999997';
+    expect(BrokerEnvelopeSchema.safeParse(wrongWorkerSession).success).toBe(false);
+  });
+
   it('Broker exact keys、重复 JSON key、unknown protocol 与 frame size fail closed', async () => {
     const command = (await readFixture('broker-invocation-prepare.v1.json')) as Record<
       string,
@@ -156,6 +232,26 @@ describe('六类共享协议运行时 schema', () => {
     for (const rejected of [-1, 42, '-1', '+1', '01', '1e3', '', '9223372036854775808']) {
       expect(Uint63StringSchema.safeParse(rejected).success, String(rejected)).toBe(false);
     }
+  });
+
+  it('all wire timestamps use canonical UTC with exactly millisecond precision', () => {
+    expect(IsoDateTimeSchema.safeParse('2026-08-13T08:00:00.000Z').success).toBe(true);
+    for (const rejected of [
+      '2026-08-13T08:00:00Z',
+      '2026-08-13T08:00:00.00Z',
+      '2026-08-13T08:00:00.0000Z',
+      '2026-08-13T16:00:00.000+08:00',
+    ]) {
+      expect(IsoDateTimeSchema.safeParse(rejected).success, rejected).toBe(false);
+    }
+  });
+
+  it('all opaque wire IDs use canonical lowercase UUIDv7', () => {
+    const id = '0198f00d-6000-7000-8000-000000000001';
+    expect(UuidSchema.safeParse(id).success).toBe(true);
+    expect(UuidSchema.safeParse(id.toUpperCase()).success).toBe(false);
+    expect(UuidSchema.safeParse('550e8400-e29b-41d4-a716-446655440000').success).toBe(false);
+    expect(UuidSchema.safeParse('0198f00d-6000-7000-7000-000000000001').success).toBe(false);
   });
 
   it('普通文字保留 TAB/LF/CR，但拒绝其他 C0/C1 控制字符', () => {
@@ -367,10 +463,445 @@ describe('六类共享协议运行时 schema', () => {
     ).toBe(false);
   });
 
-  it('Evidence Bundle manifest fixture 可解析且时间单调', async () => {
+  it('Evidence Bundle manifest/index/environment/result/signoff fixtures 严格解析', async () => {
+    const manifest = EvidenceBundleManifestSchema.parse(
+      await readFixture('evidence-bundle-manifest.v1.json'),
+    );
+    const index = EvidenceBundleIndexSchema.parse(
+      await readFixture('evidence-bundle-index.v1.json'),
+    );
+    expect(evidenceBundleIndexDigest(index)).toBe(manifest.artifactIndexDigest);
+    expect(index.artifacts.map((artifact) => artifact.path)).not.toContain('manifest.json');
+    expect(index.artifacts.map((artifact) => artifact.path)).not.toContain('reviewer-signoff.json');
+    const environment = EvidenceEnvironmentSchema.parse(
+      await readFixture('evidence-environment.v1.json'),
+    );
     expect(
-      EvidenceBundleManifestSchema.safeParse(await readFixture('evidence-bundle-manifest.v1.json'))
+      EvidenceEnvironmentsSchema.safeParse(await readFixture('evidence-environments.v1.json'))
         .success,
     ).toBe(true);
+    expect(
+      EvidencePrivacyScanSchema.safeParse(await readFixture('evidence-privacy-scan.v1.json'))
+        .success,
+    ).toBe(true);
+    expect(
+      EvidenceEnvironmentSchema.safeParse({
+        ...environment,
+        substitutedComponents: [...environment.substitutedComponents].reverse(),
+      }).success,
+    ).toBe(false);
+    expect(
+      EvidenceBundleIndexSchema.safeParse({
+        ...index,
+        artifacts: [...index.artifacts].reverse(),
+      }).success,
+    ).toBe(false);
+    const result = await readFixture('evidence-case-result.v1.json');
+    expect(EvidenceCaseResultSchema.safeParse(result).success).toBe(true);
+    expect(
+      EvidenceCaseResultSchema.safeParse({
+        ...(result as Record<string, unknown>),
+        status: 'PASS',
+        assertionCount: 0,
+      }).success,
+    ).toBe(false);
+    expect(
+      EvidenceCaseResultSchema.safeParse({
+        ...(result as Record<string, unknown>),
+        status: 'PASS',
+        artifactDigests: [],
+      }).success,
+    ).toBe(false);
+    expect(
+      EvidenceBundleIndexSchema.safeParse({
+        ...index,
+        artifacts: index.artifacts.map((artifact, indexPosition) =>
+          indexPosition === 0 ? { ...artifact, bytes: 0 } : artifact,
+        ),
+      }).success,
+    ).toBe(false);
+    const signoff = EvidenceReviewerSignoffSchema.parse(
+      await readFixture('evidence-reviewer-signoff.v1.json'),
+    ) satisfies EvidenceReviewerSignoff;
+    expect(signoff.manifestDigest).toBe(evidenceBundleManifestDigest(manifest));
+    expect(manifest.results).toEqual({ pass: 7, fail: 0, blocked: 0, notRun: 59 });
+    expect(signoff.verdict).toBe('BLOCKED');
+    const reviewerPublicKey = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAENUe+OQgcgEmgbFDlfd9/cZjZPq9l
+h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
+-----END PUBLIC KEY-----`;
+    const expected = {
+      rcId: signoff.rcId,
+      manifestDigest: signoff.manifestDigest,
+      reviewerKeyId: signoff.reviewerKeyId,
+      reviewedGates: signoff.reviewedGates,
+    };
+    expect(
+      validateEvidenceReviewerSignoff(signoff, expected, reviewerPublicKey, new Set()),
+    ).toEqual({ ok: true });
+    expect(
+      validateEvidenceReviewerSignoff(
+        { ...signoff, manifestDigest: `sha256:${'f'.repeat(64)}` },
+        expected,
+        reviewerPublicKey,
+        new Set(),
+      ),
+    ).toMatchObject({ ok: false, reasons: ['signature'] });
+    expect(
+      validateEvidenceReviewerSignoff(
+        signoff,
+        expected,
+        reviewerPublicKey,
+        new Set([signoff.reviewerKeyId]),
+      ),
+    ).toMatchObject({ ok: false, reasons: ['reviewer-key-revoked'] });
+
+    const provisionalArtifactBytes = Object.fromEntries(
+      EvidenceSupportingArtifactPathSchema.options
+        .filter((path) => path !== 'environment.json' && path !== 'privacy-scan.json')
+        .map((path) => [path, Buffer.from(`synthetic evidence artifact for ${path}\n`, 'utf8')]),
+    ) as Record<string, Uint8Array>;
+    const provisionalArtifacts = EvidenceSupportingArtifactPathSchema.options
+      .filter((path) => path !== 'environment.json' && path !== 'privacy-scan.json')
+      .map((path) => {
+        const bytes = provisionalArtifactBytes[path]!;
+        return {
+          path,
+          bytes: bytes.byteLength,
+          digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        };
+      });
+    const environmentSummary = {
+      protocol: 'combo.vnext-evidence-bundle/1',
+      schemaVersion: 1,
+      environments: [environment],
+    };
+    const environmentBytes = Buffer.from(canonicalizeJson(environmentSummary), 'utf8');
+    const environmentArtifact = {
+      path: 'environment.json' as const,
+      bytes: environmentBytes.byteLength,
+      digest: `sha256:${createHash('sha256').update(environmentBytes).digest('hex')}`,
+    };
+    const artifactsBeforePrivacy = [environmentArtifact, ...provisionalArtifacts];
+    const privacyScan = {
+      protocol: 'combo.vnext-evidence-bundle/1',
+      schemaVersion: 1,
+      rcId: manifest.rcId,
+      scannerId: 'evidence-privacy-scanner',
+      scannerVersion: '1.0.0',
+      scannedArtifacts: artifactsBeforePrivacy.map(({ path, digest }) => ({ path, digest })),
+      scopeDigest: evidencePrivacyScanScopeDigest(
+        artifactsBeforePrivacy.map(({ path, digest }) => ({ path, digest })),
+      ),
+      findingCounts: {
+        credentials: 0,
+        authorizationMaterial: 0,
+        consumerPlaintext: 0,
+        creatorProjectContent: 0,
+        absolutePaths: 0,
+        hiddenReasoning: 0,
+        rawRuntimeEvents: 0,
+        realThreadTurnIds: 0,
+      },
+      totalForbiddenFindings: 0,
+      status: 'CLEAN',
+      scannedAt: '2026-08-13T09:00:00.000Z',
+    };
+    const privacyScanBytes = Buffer.from(canonicalizeJson(privacyScan), 'utf8');
+    const privacyArtifact = {
+      path: 'privacy-scan.json' as const,
+      bytes: privacyScanBytes.byteLength,
+      digest: `sha256:${createHash('sha256').update(privacyScanBytes).digest('hex')}`,
+    };
+    const liveIndex = EvidenceBundleIndexSchema.parse({
+      ...index,
+      artifacts: [...artifactsBeforePrivacy, privacyArtifact],
+    });
+    const supportingArtifacts = {
+      ...provisionalArtifactBytes,
+      'environment.json': environmentBytes,
+      'privacy-scan.json': privacyScanBytes,
+    } as unknown as Record<
+      (typeof EvidenceSupportingArtifactPathSchema.options)[number],
+      Uint8Array
+    >;
+    const liveTestCaseRegistry = TestCaseRegistrySchema.parse({
+      protocol: 'combo.vnext-test-registry/1',
+      schemaVersion: 1,
+      cases: [
+        {
+          id: 'SCH-001',
+          title: 'synthetic evidence-chain contract case',
+          level: 'E1',
+          environment: 'T0-LINUX-CI',
+          invariants: ['INV-001'],
+          fixture: ['synthetic-artifact'],
+          fault: [],
+          steps: ['verify the complete evidence chain'],
+          assertions: ['all artifact bytes and case results are digest-bound'],
+          evidence: ['synthetic evidence artifact'],
+          frequency: 'every-pr',
+          owner: 'Protocol',
+          reviewer: 'Independent Verifier',
+          gate: 'G0',
+          implementation: {
+            status: 'implemented',
+            testFiles: ['packages/creator-agent-protocol/src/__tests__/schemas.test.ts'],
+          },
+          releaseTuple: ['sourceSha'],
+          fixtureDigests: [liveIndex.artifacts[0]!.digest],
+        },
+      ],
+    });
+    const manifestWithAuthority = EvidenceBundleManifestSchema.parse({
+      ...manifest,
+      artifactIndexDigest: evidenceBundleIndexDigest(liveIndex),
+      testCaseRegistryDigest: `sha256:${canonicalSha256(liveTestCaseRegistry)}`,
+      results: { pass: 1, fail: 0, blocked: 0, notRun: 0 },
+    });
+    const liveResult = EvidenceCaseResultSchema.parse({
+      ...(result as Record<string, unknown>),
+      evidenceLevel: 'E1',
+      environmentId: 'T0-LINUX-CI',
+      releaseTupleDigest: evidenceReleaseTupleDigest(manifestWithAuthority),
+      artifactDigests: [liveIndex.artifacts[0]!.digest],
+    });
+    const liveManifest = EvidenceBundleManifestSchema.parse({
+      ...manifestWithAuthority,
+      testSuiteDigest: evidenceTestSuiteDigest([liveResult]),
+    });
+    const liveReviewerKeys = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const unsignedLiveSignoff = EvidenceReviewerSignoffSchema.parse({
+      ...signoff,
+      manifestDigest: evidenceBundleManifestDigest(liveManifest),
+      reviewerKeyId: 'reviewer-key-live-001',
+      verdict: 'PASS',
+      reviewedGates: ['G0'],
+      signature: 'A'.repeat(86),
+    });
+    const liveSignoff = signEvidenceReview(unsignedLiveSignoff, liveReviewerKeys.privateKey);
+    const liveExpected = {
+      rcId: liveSignoff.rcId,
+      manifestDigest: liveSignoff.manifestDigest,
+      reviewerKeyId: liveSignoff.reviewerKeyId,
+      reviewedGates: liveSignoff.reviewedGates,
+    };
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [liveResult],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toEqual({ ok: true });
+
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [{ ...liveResult, evidenceLevel: 'E0' }],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: expect.arrayContaining(['case:SCH-001:evidenceLevel', 'testSuiteDigest']),
+    });
+
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [{ ...liveResult, releaseTupleDigest: `sha256:${'0'.repeat(64)}` }],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: expect.arrayContaining(['case:SCH-001:releaseTupleDigest', 'testSuiteDigest']),
+    });
+
+    const wrongGateRegistry = TestCaseRegistrySchema.parse({
+      ...liveTestCaseRegistry,
+      cases: [{ ...liveTestCaseRegistry.cases[0]!, gate: 'G8' }],
+    });
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [liveResult],
+        testCaseRegistry: wrongGateRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: expect.arrayContaining(['testCaseRegistryDigest', 'reviewedGates']),
+    });
+
+    const plannedRegistry = TestCaseRegistrySchema.parse({
+      ...liveTestCaseRegistry,
+      cases: [
+        {
+          ...liveTestCaseRegistry.cases[0]!,
+          implementation: { status: 'planned', testFiles: [] },
+        },
+      ],
+    });
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [liveResult],
+        testCaseRegistry: plannedRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: expect.arrayContaining(['testCaseRegistryDigest', 'case:SCH-001:planned-result']),
+    });
+
+    const uncleanPrivacyScan = {
+      ...privacyScan,
+      findingCounts: { ...privacyScan.findingCounts, credentials: 1 },
+      totalForbiddenFindings: 1,
+      status: 'FINDINGS',
+    };
+    const uncleanPrivacyScanBytes = Buffer.from(canonicalizeJson(uncleanPrivacyScan), 'utf8');
+    const uncleanPrivacyArtifact = {
+      path: 'privacy-scan.json' as const,
+      bytes: uncleanPrivacyScanBytes.byteLength,
+      digest: `sha256:${createHash('sha256').update(uncleanPrivacyScanBytes).digest('hex')}`,
+    };
+    const uncleanIndex = EvidenceBundleIndexSchema.parse({
+      ...liveIndex,
+      artifacts: [...artifactsBeforePrivacy, uncleanPrivacyArtifact],
+    });
+    const uncleanManifest = EvidenceBundleManifestSchema.parse({
+      ...liveManifest,
+      artifactIndexDigest: evidenceBundleIndexDigest(uncleanIndex),
+    });
+    const unsignedUncleanSignoff = EvidenceReviewerSignoffSchema.parse({
+      ...liveSignoff,
+      manifestDigest: evidenceBundleManifestDigest(uncleanManifest),
+      signature: 'A'.repeat(86),
+    });
+    const uncleanSignoff = signEvidenceReview(unsignedUncleanSignoff, liveReviewerKeys.privateKey);
+    expect(
+      validateEvidenceBundleChain({
+        index: uncleanIndex,
+        supportingArtifacts: {
+          ...supportingArtifacts,
+          'privacy-scan.json': uncleanPrivacyScanBytes,
+        },
+        caseResults: [liveResult],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: uncleanManifest,
+        signoff: uncleanSignoff,
+        expected: {
+          ...liveExpected,
+          manifestDigest: uncleanSignoff.manifestDigest,
+        },
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: ['verdict'],
+    });
+
+    const omittedCaseRegistry = TestCaseRegistrySchema.parse({
+      ...liveTestCaseRegistry,
+      cases: [...liveTestCaseRegistry.cases, { ...liveTestCaseRegistry.cases[0]!, id: 'SCH-002' }],
+    });
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [liveResult],
+        testCaseRegistry: omittedCaseRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: expect.arrayContaining(['testCaseRegistryDigest', 'testCaseCoverage']),
+    });
+
+    const replacedSummary = {
+      ...supportingArtifacts,
+      'metrics-summary.json': Buffer.from(supportingArtifacts['metrics-summary.json']),
+    };
+    replacedSummary['metrics-summary.json'][0] = replacedSummary['metrics-summary.json'][0]! ^ 0xff;
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts: replacedSummary,
+        caseResults: [liveResult],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({ ok: false, reasons: ['artifact:metrics-summary.json:digest'] });
+
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [{ ...liveResult, assertionCount: liveResult.assertionCount + 1 }],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: liveManifest,
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({ ok: false, reasons: ['testSuiteDigest'] });
+
+    expect(
+      validateEvidenceBundleChain({
+        index: liveIndex,
+        supportingArtifacts,
+        caseResults: [liveResult],
+        testCaseRegistry: liveTestCaseRegistry,
+        manifest: {
+          ...liveManifest,
+          results: { pass: 0, fail: 0, blocked: 0, notRun: 1 },
+        },
+        signoff: liveSignoff,
+        expected: liveExpected,
+        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+        revokedReviewerKeyIds: new Set(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      reasons: expect.arrayContaining(['manifestDigest', 'resultCounts', 'verdict']),
+    });
   });
 });

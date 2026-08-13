@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parse } from 'yaml';
 import { IsoDateTimeSchema, Sha256DigestSchema } from './primitives.js';
 
 export const TEST_REGISTRY_PROTOCOL = 'combo.vnext-test-registry/1' as const;
@@ -27,18 +28,29 @@ export const InvariantRegistrySchema = z
             gates: z.array(z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8'])).min(1),
             owners: z.array(z.string().min(1).max(64)).min(1),
           })
-          .strict(),
+          .strict()
+          .superRefine((invariant, context) => {
+            assertUniqueValues(invariant.gates, context, ['gates']);
+            assertUniqueValues(invariant.owners, context, ['owners']);
+          }),
       )
       .length(25),
   })
-  .strict();
+  .strict()
+  .superRefine((registry, context) => {
+    assertUniqueSortedIds(
+      registry.invariants.map((invariant) => invariant.id),
+      context,
+      ['invariants'],
+    );
+  });
 export type InvariantRegistry = z.infer<typeof InvariantRegistrySchema>;
 
 export const TestCaseSchema = z
   .object({
     id: TestCaseIdSchema,
     title: z.string().min(1).max(256),
-    level: z.enum(['E0', 'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7']),
+    level: z.enum(['E0', 'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8']),
     environment: z.enum([
       'T0-LINUX-CI',
       'T1-SERVICE-CI',
@@ -75,7 +87,45 @@ export const TestCaseSchema = z
     releaseTuple: z.array(z.string().min(1).max(128)).min(1),
     fixtureDigests: z.array(Sha256DigestSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((testCase, context) => {
+    for (const [path, values] of [
+      ['invariants', testCase.invariants],
+      ['fixture', testCase.fixture],
+      ['fault', testCase.fault],
+      ['evidence', testCase.evidence],
+      ['releaseTuple', testCase.releaseTuple],
+      ['implementation.testFiles', testCase.implementation.testFiles],
+    ] as const) {
+      assertUniqueValues(values, context, path.split('.'));
+    }
+    if (testCase.implementation.status === 'implemented') {
+      if (testCase.implementation.testFiles.length === 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['implementation', 'testFiles'],
+          message: 'implemented case 必须绑定至少一个 test file',
+        });
+      }
+      if (testCase.fixtureDigests.length !== testCase.fixture.length) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['fixtureDigests'],
+          message: 'implemented case 的每个 fixture 必须有同位置 digest',
+        });
+      }
+    }
+    if (
+      testCase.implementation.status === 'planned' &&
+      testCase.implementation.testFiles.length !== 0
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['implementation', 'testFiles'],
+        message: 'planned case 不得用未验收 test file 暗示已实现',
+      });
+    }
+  });
 export type TestCase = z.infer<typeof TestCaseSchema>;
 
 export const TestCaseRegistrySchema = z
@@ -84,7 +134,14 @@ export const TestCaseRegistrySchema = z
     schemaVersion: z.literal(1),
     cases: z.array(TestCaseSchema).min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((registry, context) => {
+    assertUniqueSortedIds(
+      registry.cases.map((testCase) => testCase.id),
+      context,
+      ['cases'],
+    );
+  });
 export type TestCaseRegistry = z.infer<typeof TestCaseRegistrySchema>;
 
 export const DecisionRegistrySchema = z
@@ -108,73 +165,220 @@ export const DecisionRegistrySchema = z
             protocolVersions: z.array(z.string().min(1).max(128)).min(1),
             document: z.string().regex(/^docs\/vnext\/adr\/ADR-VNEXT-\d{3}\.md$/u),
           })
-          .strict(),
+          .strict()
+          .superRefine((decision, context) => {
+            assertUniqueValues(decision.alternatives, context, ['alternatives']);
+            assertUniqueValues(decision.evidence, context, ['evidence']);
+            assertUniqueValues(decision.reversalTriggers, context, ['reversalTriggers']);
+            assertUniqueValues(decision.protocolVersions, context, ['protocolVersions']);
+          }),
       )
       .length(20),
   })
-  .strict();
+  .strict()
+  .superRefine((registry, context) => {
+    assertUniqueSortedIds(
+      registry.decisions.map((decision) => decision.id),
+      context,
+      ['decisions'],
+    );
+  });
 export type DecisionRegistry = z.infer<typeof DecisionRegistrySchema>;
+
+const DataFlowFieldClassSchema = z.enum(['prompt', 'answer', 'context']);
+const DataFlowContentKindSchema = z.enum(['real', 'synthetic-test-only']);
+const DataFlowSystemSchema = z.enum([
+  'postgresql',
+  'postgresql-backup',
+  'worker-sqlite',
+  'worker-backup',
+  'minio',
+  'minio-backup',
+  'broker-wss',
+  'browser',
+  'model-request',
+  'evidence-vault',
+]);
+const DataFlowProtectionSchema = z.enum([
+  'application-aead',
+  'session-aead',
+  'browser-memory-only',
+  'request-memory-only',
+  'evidence-aead',
+]);
+const DataFlowAlgorithmSchema = z.enum([
+  'aes-256-gcm/v1',
+  'worker-session-aes-256-gcm/v1',
+  'memory-only',
+  'independent-test-aes-256-gcm/v1',
+]);
+const DataFlowKeyOwnerSchema = z.enum([
+  'combo-kms',
+  'worker-keychain',
+  'combo-kms-and-worker-keychain',
+  'independent-test-kek',
+  'none',
+]);
+const DataFlowAadBindingSchema = z.enum([
+  'agentVersionDigest',
+  'artifactPath',
+  'conversationId',
+  'installationId',
+  'invocationId',
+  'keyId',
+  'messageId',
+  'ownerId',
+  'rcId',
+  'role',
+  'schemaVersion',
+  'workerSessionId',
+]);
+
+const DataFlowObservationShape = {
+  fieldClass: DataFlowFieldClassSchema,
+  contentKind: DataFlowContentKindSchema,
+  system: DataFlowSystemSchema,
+  container: z.string().regex(/^[a-z][a-z0-9_.-]{0,127}$/u),
+  field: z.string().regex(/^[a-z][A-Za-z0-9_.[\]-]{0,255}$/u),
+  protection: DataFlowProtectionSchema,
+  algorithm: DataFlowAlgorithmSchema,
+  keyOwner: DataFlowKeyOwnerSchema,
+  aadBindings: z.array(DataFlowAadBindingSchema).max(12),
+} as const;
+
+export const DataFlowObservationSchema = z.object(DataFlowObservationShape).strict();
+export type DataFlowObservation = z.infer<typeof DataFlowObservationSchema>;
+
+export const DataFlowFieldSchema = z
+  .object({
+    fieldId: z.string().regex(/^(?:prompt|answer|context)\.[a-z0-9][a-z0-9._-]{2,255}$/u),
+    ...DataFlowObservationShape,
+    retention: z.enum([
+      'request-lifetime',
+      'browser-session',
+      'conversation-30-days',
+      'backup-14-daily-8-weekly',
+      'worker-cloud-committed-plus-7-days',
+      'referenced-plus-30-days',
+      'evidence-vault-7-days',
+    ]),
+    deletionOrHold: z.string().min(1).max(1_024),
+  })
+  .strict()
+  .superRefine((field, context) => {
+    assertUniqueValues(field.aadBindings, context, ['aadBindings']);
+    if (
+      field.aadBindings.some(
+        (binding, index) => index > 0 && field.aadBindings[index - 1]! >= binding,
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aadBindings'],
+        message: 'AAD binding 必须按 lexical order 严格递增',
+      });
+    }
+    const memoryOnly =
+      field.protection === 'browser-memory-only' || field.protection === 'request-memory-only';
+    if (
+      memoryOnly !==
+      (field.algorithm === 'memory-only' &&
+        field.keyOwner === 'none' &&
+        field.aadBindings.length === 0)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['protection'],
+        message: 'memory-only location 不得伪造 AEAD；durable/session location 必须有 key 与 AAD',
+      });
+    }
+    if ((field.system === 'evidence-vault') !== (field.contentKind === 'synthetic-test-only')) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['contentKind'],
+        message: 'Evidence Vault 只允许 synthetic-test-only，真实正文永不进入 Evidence',
+      });
+    }
+  });
 
 export const DataFlowAllowlistSchema = z
   .object({
     protocol: z.literal(DATA_FLOW_ALLOWLIST_PROTOCOL),
     schemaVersion: z.literal(1),
-    fields: z
-      .array(
-        z
-          .object({
-            fieldClass: z.enum([
-              'prompt',
-              'answer',
-              'context',
-              'control-id',
-              'credential',
-              'absolute-path',
-              'reasoning',
-            ]),
-            allowedStores: z.array(
-              z.enum([
-                'pg-message-aead',
-                'worker-sqlite-result-aead',
-                'minio-snapshot-aead',
-                'browser-memory',
-                'model-request-ephemeral',
-                'evidence-vault-test-only',
-              ]),
-            ),
-            forbiddenStores: z.array(
-              z.enum([
-                'application-log',
-                'audit-event-payload',
-                'telemetry',
-                'browser-persistent-storage',
-                'evidence-public',
-                'process-argv',
-                'process-env',
-              ]),
-            ),
-            encryption: z.enum([
-              'message-aead',
-              'snapshot-envelope-aead',
-              'ephemeral-only',
-              'forbidden',
-            ]),
-            keyOwner: z.enum(['combo-kms', 'worker-keychain', 'none']),
-            retention: z.enum([
-              'request-lifetime',
-              'sandbox-lifetime',
-              '7-days',
-              '30-days',
-              '90-days',
-              'referenced-plus-30-days',
-              'never',
-            ]),
-            deletionOrHold: z.string().min(1).max(1_024),
-          })
-          .strict(),
-      )
-      .length(7),
+    unlistedLocationDisposition: z.literal('SECURITY_LEAK'),
+    globallyForbiddenDataClasses: z.tuple([
+      z.literal('absolute-path'),
+      z.literal('credential'),
+      z.literal('reasoning'),
+    ]),
+    fields: z.array(DataFlowFieldSchema).min(1).max(128),
     updatedAt: IsoDateTimeSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((allowlist, context) => {
+    assertUniqueSortedIds(
+      allowlist.fields.map((field) => field.fieldId),
+      context,
+      ['fields'],
+    );
+    const locations = allowlist.fields.map(
+      (field) =>
+        `${field.fieldClass}\u0000${field.contentKind}\u0000${field.system}\u0000${field.container}\u0000${field.field}`,
+    );
+    assertUniqueValues(locations, context, ['fields']);
+  });
 export type DataFlowAllowlist = z.infer<typeof DataFlowAllowlistSchema>;
+
+export type DataFlowDecision =
+  | { decision: 'ALLOWED'; fieldId: string }
+  | { decision: 'SECURITY_LEAK' };
+
+/** 列表外即泄漏；不存在 store-class 通配符或 encrypted-content-column 豁免。 */
+export function decideDataFlowObservation(
+  observationInput: unknown,
+  allowlistInput: unknown,
+): DataFlowDecision {
+  const observation = DataFlowObservationSchema.parse(observationInput);
+  const allowlist = DataFlowAllowlistSchema.parse(allowlistInput);
+  const observed = JSON.stringify(observation);
+  const field = allowlist.fields.find((candidate) => {
+    const { fieldId: _fieldId, retention: _retention, deletionOrHold: _hold, ...shape } = candidate;
+    return JSON.stringify(shape) === observed;
+  });
+  return field === undefined
+    ? { decision: 'SECURITY_LEAK' }
+    : { decision: 'ALLOWED', fieldId: field.fieldId };
+}
+
+/** Normative YAML loader：支持本仓库 anchors/merge，并对 alias expansion 设硬上限。 */
+export function parseVnextRegistryYaml(text: string): unknown {
+  return parse(text, { merge: true, maxAliasCount: 1_000, uniqueKeys: true }) as unknown;
+}
+
+function assertUniqueValues(
+  values: readonly unknown[],
+  context: z.RefinementCtx,
+  path: (string | number)[],
+): void {
+  if (new Set(values).size !== values.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path, message: '列表值必须唯一' });
+  }
+}
+
+function assertUniqueSortedIds(
+  ids: readonly string[],
+  context: z.RefinementCtx,
+  path: (string | number)[],
+  requireSorted = true,
+): void {
+  if (new Set(ids).size !== ids.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path, message: 'ID 必须唯一' });
+  }
+  if (requireSorted && ids.some((id, index) => index > 0 && ids[index - 1]! >= id)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path,
+      message: 'ID 必须按 lexical order 严格递增',
+    });
+  }
+}

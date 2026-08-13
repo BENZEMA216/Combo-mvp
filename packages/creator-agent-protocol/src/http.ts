@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { AgentVersionManifestSchema } from './agent-version.js';
+import { ConsumerTerminalEventPayloadSchema } from './consumer-events.js';
 import { InvocationStateSchema, VnextErrorResponseSchema } from './invocation.js';
 import {
   HmacSha256DigestSchema,
@@ -267,6 +268,13 @@ export const ConsumerEventSchema = z.discriminatedUnion('type', [
       type: z.literal('conversation.presence'),
       status: z.enum(['ONLINE', 'BUSY', 'OFFLINE']),
       occurredAt: IsoDateTimeSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: Uint63StringSchema,
+      type: z.literal('invocation.terminal'),
+      payload: ConsumerTerminalEventPayloadSchema,
     })
     .strict(),
 ]);

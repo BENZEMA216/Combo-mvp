@@ -8,9 +8,15 @@ import {
   ExecutionCapabilityUseRecordSchema,
 } from './broker.js';
 import {
+  EvidenceCaseResultSchema,
+  EvidenceCaseResultsSchema,
   EvidenceBundleIndexSchema,
   EvidenceBundleManifestSchema,
   EvidenceEnvironmentSchema,
+  EvidenceEnvironmentsSchema,
+  EvidencePrivacyScanSchema,
+  EvidenceReleaseTupleSchema,
+  EvidenceReviewerSignoffSchema,
 } from './evidence.js';
 import {
   AgentVersionViewSchema,
@@ -34,6 +40,11 @@ import {
   SnapshotUploadViewSchema,
 } from './http.js';
 import { InvocationTransitionSchema, VnextErrorResponseSchema } from './invocation.js';
+import {
+  ConsumerEventOutboxRecordSchema,
+  ConsumerEventStreamSchema,
+  ConsumerTerminalEventPayloadSchema,
+} from './consumer-events.js';
 import {
   DataFlowAllowlistSchema,
   DecisionRegistrySchema,
@@ -79,14 +90,57 @@ export const ContractSchemaDefinitions = {
   RetryInvocationRequest: RetryInvocationRequestSchema,
   ConversationTranscript: ConversationTranscriptSchema,
   ConsumerEvent: ConsumerEventSchema,
+  ConsumerTerminalEventPayload: ConsumerTerminalEventPayloadSchema,
+  ConsumerEventOutboxRecord: ConsumerEventOutboxRecordSchema,
+  ConsumerEventStream: ConsumerEventStreamSchema,
   EvidenceBundleManifest: EvidenceBundleManifestSchema,
   EvidenceBundleIndex: EvidenceBundleIndexSchema,
   EvidenceEnvironment: EvidenceEnvironmentSchema,
+  EvidenceEnvironments: EvidenceEnvironmentsSchema,
+  EvidencePrivacyScan: EvidencePrivacyScanSchema,
+  EvidenceReleaseTuple: EvidenceReleaseTupleSchema,
+  EvidenceCaseResult: EvidenceCaseResultSchema,
+  EvidenceCaseResults: EvidenceCaseResultsSchema,
+  EvidenceReviewerSignoff: EvidenceReviewerSignoffSchema,
   InvariantRegistry: InvariantRegistrySchema,
   TestCaseRegistry: TestCaseRegistrySchema,
   DecisionRegistry: DecisionRegistrySchema,
   DataFlowAllowlist: DataFlowAllowlistSchema,
 } as const;
+
+const RuntimeSemanticConstraints: Partial<
+  Record<keyof typeof ContractSchemaDefinitions, readonly string[]>
+> = {
+  BrokerEnvelope: [
+    'sensitive.cipherDigest == sha256(JCS(nonce,ciphertext,authTag))',
+    'sensitive.aadDigest == sha256(JCS(sensitive.aad))',
+    'sensitive.keyId == sensitive.aad.keyId',
+    'sensitive.aad.envelopeType == type',
+    'sensitive.aad.messageId == messageId',
+    'sensitive.aad.conversationId == body.conversationId',
+    'sensitive.aad.invocationId == body.invocationId',
+    'sensitive.aad.workerSessionId == lease.workerSessionId',
+    'sensitive.aad.role == USER for invocation.prepare, ASSISTANT otherwise',
+    'all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation',
+  ],
+  ConsumerEventOutboxRecord: [
+    'payload.conversationId == conversationId',
+    'payload.invocationId == invocationId',
+    'payloadDigest == sha256(JCS(payload))',
+    'dedupeKey == sha256(JCS(protocol,ownerId,sourceEventId,eventType))',
+    'retainedUntil == createdAt + 7 days',
+  ],
+};
+
+function attachRuntimeSemanticConstraints(
+  name: keyof typeof ContractSchemaDefinitions,
+  schema: Record<string, unknown>,
+): Record<string, unknown> {
+  const constraints = RuntimeSemanticConstraints[name];
+  return constraints === undefined
+    ? schema
+    : { ...schema, 'x-combo-runtime-constraints': [...constraints] };
+}
 
 export function createJsonSchemaBundle(): Record<string, unknown> {
   return {
@@ -95,17 +149,27 @@ export function createJsonSchemaBundle(): Record<string, unknown> {
     schemas: Object.fromEntries(
       Object.entries(ContractSchemaDefinitions).map(([name, schema]) => [
         name,
-        zodToJsonSchema(schema, { name, target: 'jsonSchema7', $refStrategy: 'root' }),
+        attachRuntimeSemanticConstraints(
+          name as keyof typeof ContractSchemaDefinitions,
+          zodToJsonSchema(schema, {
+            name,
+            target: 'jsonSchema7',
+            $refStrategy: 'root',
+          }) as Record<string, unknown>,
+        ),
       ]),
     ),
   };
 }
 
 function openApiSchema(name: keyof typeof ContractSchemaDefinitions): Record<string, unknown> {
-  const converted = zodToJsonSchema(ContractSchemaDefinitions[name], {
-    target: 'openApi3',
-    $refStrategy: 'none',
-  }) as Record<string, unknown>;
+  const converted = attachRuntimeSemanticConstraints(
+    name,
+    zodToJsonSchema(ContractSchemaDefinitions[name], {
+      target: 'openApi3',
+      $refStrategy: 'none',
+    }) as Record<string, unknown>,
+  );
   delete converted.$schema;
   return converted;
 }
@@ -149,6 +213,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
     'RetryInvocationRequest',
     'ConversationTranscript',
     'ConsumerEvent',
+    'ConsumerTerminalEventPayload',
     'VnextErrorResponse',
   ] as const;
 

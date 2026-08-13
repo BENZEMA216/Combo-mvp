@@ -3,6 +3,7 @@ import { containsLoneSurrogate } from './primitives.js';
 
 export type CanonicalJson = null | boolean | number | string | CanonicalJson[] | CanonicalObject;
 export type CanonicalObject = { [key: string]: CanonicalJson };
+export const CANONICAL_JSON_IMPLEMENTATION = 'combo-rfc8785-jcs/1' as const;
 
 /** RFC 8785 JCS：I-JSON 输入、ECMAScript 数字序列化、UTF-16 code-unit key 排序。 */
 export function canonicalizeJson(value: unknown): string {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+// VNext registry cases: SCH-001 SCH-007
 import {
   canonicalizeJson,
   domainSeparatedHmacSha256,

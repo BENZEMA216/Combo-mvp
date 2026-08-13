@@ -264,7 +264,11 @@
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-broker/1" },
             "schemaVersion": { "type": "number", "const": 1 },
-            "installationId": { "type": "string", "format": "uuid" },
+            "installationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "workerVersion": { "type": "string", "minLength": 1 },
             "supportedProtocolVersions": {
               "type": "array",
@@ -339,7 +343,11 @@
                   "properties": {
                     "protocol": { "type": "string", "const": "combo.creator-broker/1" },
                     "schemaVersion": { "type": "number", "const": 1 },
-                    "messageId": { "type": "string", "format": "uuid" },
+                    "messageId": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "format": "uuid"
+                    },
                     "correlationId": {
                       "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                     },
@@ -347,7 +355,11 @@
                       "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                     },
                     "sequence": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
-                    "sentAt": { "type": "string", "format": "date-time" },
+                    "sentAt": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                      "format": "date-time"
+                    },
                     "expiresAt": {
                       "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
                     },
@@ -362,11 +374,14 @@
                         "leaseId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
                         "fence": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
                         }
                       },
-                      "required": ["deploymentId", "leaseId", "fence"],
+                      "required": ["deploymentId", "leaseId", "workerSessionId", "fence"],
                       "additionalProperties": false
                     },
                     "body": {
@@ -793,6 +808,88 @@
                         "requestDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
                         },
+                        "userMessageCiphertext": {
+                          "type": "object",
+                          "properties": {
+                            "algorithm": { "type": "string", "const": "aes-256-gcm/v1" },
+                            "keyScope": { "type": "string", "const": "worker-session" },
+                            "keyId": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
+                            },
+                            "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
+                            "ciphertext": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+                            },
+                            "authTag": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+                            },
+                            "cipherDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                            },
+                            "aad": {
+                              "type": "object",
+                              "properties": {
+                                "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+                                "schemaVersion": { "type": "number", "const": 1 },
+                                "envelopeType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "invocation.prepare",
+                                    "invocation.delta",
+                                    "invocation.succeeded"
+                                  ]
+                                },
+                                "messageId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "workerSessionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
+                                "keyId": {
+                                  "type": "string",
+                                  "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
+                                }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "envelopeType",
+                                "messageId",
+                                "conversationId",
+                                "invocationId",
+                                "workerSessionId",
+                                "role",
+                                "keyId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "aadDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                            },
+                            "aadVersion": { "type": "number", "const": 1 }
+                          },
+                          "required": [
+                            "algorithm",
+                            "keyScope",
+                            "keyId",
+                            "nonce",
+                            "ciphertext",
+                            "authTag",
+                            "cipherDigest",
+                            "aad",
+                            "aadDigest",
+                            "aadVersion"
+                          ],
+                          "additionalProperties": false
+                        },
                         "agentVersionId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
@@ -887,7 +984,9 @@
                             },
                             "signatureAlgorithm": { "type": "string", "const": "ES256" },
                             "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
-                            "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+                            "signature": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+                            }
                           },
                           "required": [
                             "protocol",
@@ -921,6 +1020,7 @@
                         "conversationId",
                         "clientMessageId",
                         "requestDigest",
+                        "userMessageCiphertext",
                         "agentVersionId",
                         "agentVersionDigest",
                         "snapshotDigest",
@@ -1698,12 +1798,22 @@
                         "invocationId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
                         "deltaSequence": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
                         },
-                        "text": { "type": "string", "minLength": 1 }
+                        "deltaCiphertext": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext"
+                        }
                       },
-                      "required": ["invocationId", "deltaSequence", "text"],
+                      "required": [
+                        "invocationId",
+                        "conversationId",
+                        "deltaSequence",
+                        "deltaCiphertext"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -1761,15 +1871,26 @@
                         "invocationId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
                         "resultDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
                         },
-                        "resultText": { "type": "string", "minLength": 1 },
+                        "resultCiphertext": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext"
+                        },
                         "sourceEventId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         }
                       },
-                      "required": ["invocationId", "resultDigest", "resultText", "sourceEventId"],
+                      "required": [
+                        "invocationId",
+                        "conversationId",
+                        "resultDigest",
+                        "resultCiphertext",
+                        "sourceEventId"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -2205,7 +2326,19 @@
           ]
         }
       },
-      "$schema": "http://json-schema.org/draft-07/schema#"
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "sensitive.cipherDigest == sha256(JCS(nonce,ciphertext,authTag))",
+        "sensitive.aadDigest == sha256(JCS(sensitive.aad))",
+        "sensitive.keyId == sensitive.aad.keyId",
+        "sensitive.aad.envelopeType == type",
+        "sensitive.aad.messageId == messageId",
+        "sensitive.aad.conversationId == body.conversationId",
+        "sensitive.aad.invocationId == body.invocationId",
+        "sensitive.aad.workerSessionId == lease.workerSessionId",
+        "sensitive.aad.role == USER for invocation.prepare, ASSISTANT otherwise",
+        "all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation"
+      ]
     },
     "ExecutionCapabilityUnsigned": {
       "$ref": "#/definitions/ExecutionCapabilityUnsigned",
@@ -2215,7 +2348,11 @@
           "properties": {
             "protocol": { "type": "string", "const": "combo.execution-capability/1" },
             "schemaVersion": { "type": "number", "const": 1 },
-            "capabilityId": { "type": "string", "format": "uuid" },
+            "capabilityId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "invocationId": {
               "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
             },
@@ -2252,7 +2389,11 @@
               "required": ["maxInputTokens", "maxOutputTokens", "maxCostMicros"],
               "additionalProperties": false
             },
-            "notBefore": { "type": "string", "format": "date-time" },
+            "notBefore": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "expiresAt": {
               "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/notBefore"
             },
@@ -2301,7 +2442,11 @@
           "properties": {
             "protocol": { "type": "string", "const": "combo.execution-capability/1" },
             "schemaVersion": { "type": "number", "const": 1 },
-            "capabilityId": { "type": "string", "format": "uuid" },
+            "capabilityId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "invocationId": { "$ref": "#/definitions/ExecutionCapability/properties/capabilityId" },
             "conversationId": {
               "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
@@ -2332,7 +2477,11 @@
               "required": ["maxInputTokens", "maxOutputTokens", "maxCostMicros"],
               "additionalProperties": false
             },
-            "notBefore": { "type": "string", "format": "date-time" },
+            "notBefore": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "expiresAt": { "$ref": "#/definitions/ExecutionCapability/properties/notBefore" },
             "nonce": {
               "type": "string",
@@ -2379,7 +2528,11 @@
         "ExecutionCapabilityUseRecord": {
           "type": "object",
           "properties": {
-            "capabilityId": { "type": "string", "format": "uuid" },
+            "capabilityId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "capabilityDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "providerRequestId": {
               "$ref": "#/definitions/ExecutionCapabilityUseRecord/properties/capabilityId"
@@ -2484,6 +2637,7 @@
                 "CONVERSATION_BUSY",
                 "CONVERSATION_EXPIRED",
                 "CONVERSATION_CONTEXT_LIMIT",
+                "INVOCATION_EXPIRED",
                 "WORKER_OFFLINE_TIMEOUT",
                 "MODEL_QUOTA_EXHAUSTED",
                 "STALE_LEASE",
@@ -2651,7 +2805,11 @@
             "schemaVersion": { "type": "number", "const": 1 },
             "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
             "adapterVersion": { "type": "string", "minLength": 1 },
-            "sandboxInstanceId": { "type": "string", "format": "uuid" },
+            "sandboxInstanceId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "conversationId": {
               "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxInstanceId"
             },
@@ -2704,7 +2862,11 @@
               "minLength": 22,
               "maxLength": 256
             },
-            "createdAt": { "type": "string", "format": "date-time" },
+            "createdAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "expiresAt": {
               "$ref": "#/definitions/SandboxAttestationUnsigned/properties/createdAt"
             },
@@ -2761,7 +2923,11 @@
             "schemaVersion": { "type": "number", "const": 1 },
             "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
             "adapterVersion": { "type": "string", "minLength": 1 },
-            "sandboxInstanceId": { "type": "string", "format": "uuid" },
+            "sandboxInstanceId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "conversationId": {
               "$ref": "#/definitions/SandboxAttestation/properties/sandboxInstanceId"
             },
@@ -2812,7 +2978,11 @@
               "minLength": 22,
               "maxLength": 256
             },
-            "createdAt": { "type": "string", "format": "date-time" },
+            "createdAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "expiresAt": { "$ref": "#/definitions/SandboxAttestation/properties/createdAt" },
             "destroyed": { "type": "boolean", "const": false },
             "signatureAlgorithm": { "type": "string", "const": "P-256-ECDSA-SHA256" },
@@ -2892,7 +3062,11 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "uploadId": { "type": "string", "format": "uuid" },
+            "uploadId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "state": { "type": "string", "const": "CREATED" },
             "putUrl": { "type": "string", "format": "uri" },
             "requiredHeaders": {
@@ -2904,7 +3078,11 @@
               "required": ["contentLength", "checksumSha256"],
               "additionalProperties": false
             },
-            "expiresAt": { "type": "string", "format": "date-time" }
+            "expiresAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
           "required": ["protocol", "uploadId", "state", "putUrl", "requiredHeaders", "expiresAt"],
           "additionalProperties": false
@@ -2934,7 +3112,11 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "uploadId": { "type": "string", "format": "uuid" },
+            "uploadId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "state": {
               "type": "string",
               "enum": ["CREATED", "UPLOADED", "VERIFYING", "VERIFIED", "REJECTED", "EXPIRED"]
@@ -2947,7 +3129,11 @@
             },
             "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "errorCode": { "anyOf": [{ "type": "string", "maxLength": 128 }, { "type": "null" }] },
-            "updatedAt": { "type": "string", "format": "date-time" }
+            "updatedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
           "required": [
             "protocol",
@@ -2985,12 +3171,20 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "agentId": { "type": "string", "format": "uuid" },
+            "agentId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "publicSlug": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" },
             "name": { "type": "string", "minLength": 1 },
             "description": { "type": "string", "minLength": 1 },
             "lifecycle": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
-            "createdAt": { "type": "string", "format": "date-time" }
+            "createdAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
           "required": [
             "protocol",
@@ -3012,7 +3206,11 @@
         "CreateAgentVersionRequest": {
           "type": "object",
           "properties": {
-            "verifiedSnapshotId": { "type": "string", "format": "uuid" },
+            "verifiedSnapshotId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "manifest": {
               "type": "object",
               "properties": {
@@ -3199,13 +3397,21 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "agentVersionId": { "type": "string", "format": "uuid" },
+            "agentVersionId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "agentId": { "$ref": "#/definitions/AgentVersionView/properties/agentVersionId" },
             "ordinal": { "type": "integer", "minimum": 1 },
             "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "snapshotDigest": { "$ref": "#/definitions/AgentVersionView/properties/versionDigest" },
             "availability": { "type": "string", "enum": ["ACTIVE", "DEPRECATED", "REVOKED"] },
-            "createdAt": { "type": "string", "format": "date-time" }
+            "createdAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
           "required": [
             "protocol",
@@ -3231,7 +3437,11 @@
               "type": "object",
               "properties": {
                 "desiredState": { "type": "string", "const": "ONLINE" },
-                "desiredVersionId": { "type": "string", "format": "uuid" }
+                "desiredVersionId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                }
               },
               "required": ["desiredState", "desiredVersionId"],
               "additionalProperties": false
@@ -3257,7 +3467,11 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "agentId": { "type": "string", "format": "uuid" },
+            "agentId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "desiredState": { "type": "string", "enum": ["ONLINE", "OFFLINE"] },
             "desiredVersionId": {
               "anyOf": [
@@ -3287,7 +3501,11 @@
             "lastErrorCode": {
               "anyOf": [{ "type": "string", "maxLength": 128 }, { "type": "null" }]
             },
-            "updatedAt": { "type": "string", "format": "date-time" }
+            "updatedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
           "required": [
             "protocol",
@@ -3323,7 +3541,11 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "conversationId": { "type": "string", "format": "uuid" },
+            "conversationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "agentId": { "$ref": "#/definitions/ConversationView/properties/conversationId" },
             "agentVersionId": {
               "$ref": "#/definitions/ConversationView/properties/conversationId"
@@ -3342,7 +3564,11 @@
                 "EXPIRED"
               ]
             },
-            "createdAt": { "type": "string", "format": "date-time" },
+            "createdAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "expiresAt": { "$ref": "#/definitions/ConversationView/properties/createdAt" }
           },
           "required": [
@@ -3366,7 +3592,11 @@
         "SendConversationMessageRequest": {
           "type": "object",
           "properties": {
-            "clientMessageId": { "type": "string", "format": "uuid" },
+            "clientMessageId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "text": { "type": "string", "minLength": 1 }
           },
           "required": ["clientMessageId", "text"],
@@ -3382,7 +3612,11 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "invocationId": { "type": "string", "format": "uuid" },
+            "invocationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "state": { "type": "string", "enum": ["ACCEPTED", "QUEUED"] }
           },
           "required": ["protocol", "invocationId", "state"],
@@ -3398,7 +3632,11 @@
           "type": "object",
           "properties": {
             "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-            "invocationId": { "type": "string", "format": "uuid" },
+            "invocationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
             "conversationId": { "$ref": "#/definitions/InvocationView/properties/invocationId" },
             "state": {
               "type": "string",
@@ -3451,6 +3689,7 @@
                         "CONVERSATION_BUSY",
                         "CONVERSATION_EXPIRED",
                         "CONVERSATION_CONTEXT_LIMIT",
+                        "INVOCATION_EXPIRED",
                         "WORKER_OFFLINE_TIMEOUT",
                         "MODEL_QUOTA_EXHAUSTED",
                         "STALE_LEASE",
@@ -3490,7 +3729,11 @@
                 { "type": "null" }
               ]
             },
-            "createdAt": { "type": "string", "format": "date-time" },
+            "createdAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "terminalAt": {
               "anyOf": [
                 { "$ref": "#/definitions/InvocationView/properties/createdAt" },
@@ -3530,7 +3773,13 @@
       "definitions": {
         "RetryInvocationRequest": {
           "type": "object",
-          "properties": { "clientMessageId": { "type": "string", "format": "uuid" } },
+          "properties": {
+            "clientMessageId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            }
+          },
           "required": ["clientMessageId"],
           "additionalProperties": false
         }
@@ -3548,7 +3797,11 @@
               "type": "object",
               "properties": {
                 "protocol": { "type": "string", "const": "combo.creator-agent-http/1" },
-                "conversationId": { "type": "string", "format": "uuid" },
+                "conversationId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
                 "agentId": {
                   "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/conversationId"
                 },
@@ -3569,7 +3822,11 @@
                     "EXPIRED"
                   ]
                 },
-                "createdAt": { "type": "string", "format": "date-time" },
+                "createdAt": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "format": "date-time"
+                },
                 "expiresAt": {
                   "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/createdAt"
                 }
@@ -3632,7 +3889,11 @@
               "properties": {
                 "id": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
                 "type": { "type": "string", "const": "invocation.state" },
-                "invocationId": { "type": "string", "format": "uuid" },
+                "invocationId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
                 "state": {
                   "type": "string",
                   "enum": [
@@ -3651,7 +3912,11 @@
                     "EXPIRED"
                   ]
                 },
-                "occurredAt": { "type": "string", "format": "date-time" }
+                "occurredAt": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "format": "date-time"
+                }
               },
               "required": ["id", "type", "invocationId", "state", "occurredAt"],
               "additionalProperties": false
@@ -3718,8 +3983,928 @@
               },
               "required": ["id", "type", "status", "occurredAt"],
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "id": { "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/id" },
+                "type": { "type": "string", "const": "invocation.terminal" },
+                "payload": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": { "type": "string", "const": "combo.consumer-event-outbox/1" },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "type": { "type": "string", "const": "invocation.terminal" },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "SUCCEEDED" },
+                        "assistantMessageId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "resultDigest": {
+                          "type": "string",
+                          "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                        },
+                        "errorCode": { "type": "null" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "FAILED" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": {
+                          "type": "string",
+                          "enum": [
+                            "INVALID_INPUT",
+                            "UNAUTHORIZED",
+                            "FORBIDDEN",
+                            "RATE_LIMITED",
+                            "IDEMPOTENCY_CONFLICT",
+                            "SNAPSHOT_EMPTY",
+                            "SNAPSHOT_SOURCE_CHANGED",
+                            "SNAPSHOT_LIMIT_EXCEEDED",
+                            "SNAPSHOT_PATH_REJECTED",
+                            "SNAPSHOT_SECRET_DETECTED",
+                            "AGENT_OFFLINE",
+                            "AGENT_BUSY",
+                            "QUEUE_FULL",
+                            "VERSION_UNAVAILABLE",
+                            "VERSION_DIGEST_MISMATCH",
+                            "SNAPSHOT_DIGEST_MISMATCH",
+                            "CONVERSATION_BUSY",
+                            "CONVERSATION_EXPIRED",
+                            "CONVERSATION_CONTEXT_LIMIT",
+                            "INVOCATION_EXPIRED",
+                            "WORKER_OFFLINE_TIMEOUT",
+                            "MODEL_QUOTA_EXHAUSTED",
+                            "STALE_LEASE",
+                            "STALE_FENCE",
+                            "PROTOCOL_INCOMPATIBLE",
+                            "EXECUTION_CAPABILITY_INVALID",
+                            "SANDBOX_ATTESTATION_FAILED",
+                            "RUNTIME_START_FAILED",
+                            "TURN_TIMEOUT",
+                            "TURN_FAILED",
+                            "CANCEL_NOT_CONFIRMED",
+                            "EXECUTION_STATE_UNKNOWN",
+                            "SSE_CURSOR_EXPIRED"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "CANCELLED" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": { "type": "null" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "UNCERTAIN" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": { "type": "string", "const": "EXECUTION_STATE_UNKNOWN" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/4/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "EXPIRED" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": { "type": "string", "const": "INVOCATION_EXPIRED" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "required": ["id", "type", "payload"],
+              "additionalProperties": false
             }
           ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ConsumerTerminalEventPayload": {
+      "$ref": "#/definitions/ConsumerTerminalEventPayload",
+      "definitions": {
+        "ConsumerTerminalEventPayload": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "protocol": { "type": "string", "const": "combo.consumer-event-outbox/1" },
+                "schemaVersion": { "type": "number", "const": 1 },
+                "type": { "type": "string", "const": "invocation.terminal" },
+                "conversationId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "occurredAt": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "format": "date-time"
+                },
+                "terminalState": { "type": "string", "const": "SUCCEEDED" },
+                "assistantMessageId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "resultDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+                "errorCode": { "type": "null" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "type",
+                "conversationId",
+                "invocationId",
+                "occurredAt",
+                "terminalState",
+                "assistantMessageId",
+                "resultDigest",
+                "errorCode"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/schemaVersion"
+                },
+                "type": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/type"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/occurredAt"
+                },
+                "terminalState": { "type": "string", "const": "FAILED" },
+                "assistantMessageId": { "type": "null" },
+                "resultDigest": { "type": "null" },
+                "errorCode": {
+                  "type": "string",
+                  "enum": [
+                    "INVALID_INPUT",
+                    "UNAUTHORIZED",
+                    "FORBIDDEN",
+                    "RATE_LIMITED",
+                    "IDEMPOTENCY_CONFLICT",
+                    "SNAPSHOT_EMPTY",
+                    "SNAPSHOT_SOURCE_CHANGED",
+                    "SNAPSHOT_LIMIT_EXCEEDED",
+                    "SNAPSHOT_PATH_REJECTED",
+                    "SNAPSHOT_SECRET_DETECTED",
+                    "AGENT_OFFLINE",
+                    "AGENT_BUSY",
+                    "QUEUE_FULL",
+                    "VERSION_UNAVAILABLE",
+                    "VERSION_DIGEST_MISMATCH",
+                    "SNAPSHOT_DIGEST_MISMATCH",
+                    "CONVERSATION_BUSY",
+                    "CONVERSATION_EXPIRED",
+                    "CONVERSATION_CONTEXT_LIMIT",
+                    "INVOCATION_EXPIRED",
+                    "WORKER_OFFLINE_TIMEOUT",
+                    "MODEL_QUOTA_EXHAUSTED",
+                    "STALE_LEASE",
+                    "STALE_FENCE",
+                    "PROTOCOL_INCOMPATIBLE",
+                    "EXECUTION_CAPABILITY_INVALID",
+                    "SANDBOX_ATTESTATION_FAILED",
+                    "RUNTIME_START_FAILED",
+                    "TURN_TIMEOUT",
+                    "TURN_FAILED",
+                    "CANCEL_NOT_CONFIRMED",
+                    "EXECUTION_STATE_UNKNOWN",
+                    "SSE_CURSOR_EXPIRED"
+                  ]
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "type",
+                "conversationId",
+                "invocationId",
+                "occurredAt",
+                "terminalState",
+                "assistantMessageId",
+                "resultDigest",
+                "errorCode"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/schemaVersion"
+                },
+                "type": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/type"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/occurredAt"
+                },
+                "terminalState": { "type": "string", "const": "CANCELLED" },
+                "assistantMessageId": { "type": "null" },
+                "resultDigest": { "type": "null" },
+                "errorCode": { "type": "null" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "type",
+                "conversationId",
+                "invocationId",
+                "occurredAt",
+                "terminalState",
+                "assistantMessageId",
+                "resultDigest",
+                "errorCode"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/schemaVersion"
+                },
+                "type": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/type"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/occurredAt"
+                },
+                "terminalState": { "type": "string", "const": "UNCERTAIN" },
+                "assistantMessageId": { "type": "null" },
+                "resultDigest": { "type": "null" },
+                "errorCode": { "type": "string", "const": "EXECUTION_STATE_UNKNOWN" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "type",
+                "conversationId",
+                "invocationId",
+                "occurredAt",
+                "terminalState",
+                "assistantMessageId",
+                "resultDigest",
+                "errorCode"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/schemaVersion"
+                },
+                "type": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/type"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/conversationId"
+                },
+                "occurredAt": {
+                  "$ref": "#/definitions/ConsumerTerminalEventPayload/anyOf/0/properties/occurredAt"
+                },
+                "terminalState": { "type": "string", "const": "EXPIRED" },
+                "assistantMessageId": { "type": "null" },
+                "resultDigest": { "type": "null" },
+                "errorCode": { "type": "string", "const": "INVOCATION_EXPIRED" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "type",
+                "conversationId",
+                "invocationId",
+                "occurredAt",
+                "terminalState",
+                "assistantMessageId",
+                "resultDigest",
+                "errorCode"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "ConsumerEventOutboxRecord": {
+      "$ref": "#/definitions/ConsumerEventOutboxRecord",
+      "definitions": {
+        "ConsumerEventOutboxRecord": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "protocol": { "type": "string", "const": "combo.consumer-event-outbox/1" },
+                "schemaVersion": { "type": "number", "const": 1 },
+                "cursor": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+                "ownerId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                },
+                "sourceEventId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/cursor"
+                },
+                "eventType": { "type": "string", "const": "invocation.terminal" },
+                "payload": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": { "type": "string", "const": "combo.consumer-event-outbox/1" },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "type": { "type": "string", "const": "invocation.terminal" },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "occurredAt": {
+                          "type": "string",
+                          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                          "format": "date-time"
+                        },
+                        "terminalState": { "type": "string", "const": "SUCCEEDED" },
+                        "assistantMessageId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "resultDigest": {
+                          "type": "string",
+                          "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                        },
+                        "errorCode": { "type": "null" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "FAILED" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": {
+                          "type": "string",
+                          "enum": [
+                            "INVALID_INPUT",
+                            "UNAUTHORIZED",
+                            "FORBIDDEN",
+                            "RATE_LIMITED",
+                            "IDEMPOTENCY_CONFLICT",
+                            "SNAPSHOT_EMPTY",
+                            "SNAPSHOT_SOURCE_CHANGED",
+                            "SNAPSHOT_LIMIT_EXCEEDED",
+                            "SNAPSHOT_PATH_REJECTED",
+                            "SNAPSHOT_SECRET_DETECTED",
+                            "AGENT_OFFLINE",
+                            "AGENT_BUSY",
+                            "QUEUE_FULL",
+                            "VERSION_UNAVAILABLE",
+                            "VERSION_DIGEST_MISMATCH",
+                            "SNAPSHOT_DIGEST_MISMATCH",
+                            "CONVERSATION_BUSY",
+                            "CONVERSATION_EXPIRED",
+                            "CONVERSATION_CONTEXT_LIMIT",
+                            "INVOCATION_EXPIRED",
+                            "WORKER_OFFLINE_TIMEOUT",
+                            "MODEL_QUOTA_EXHAUSTED",
+                            "STALE_LEASE",
+                            "STALE_FENCE",
+                            "PROTOCOL_INCOMPATIBLE",
+                            "EXECUTION_CAPABILITY_INVALID",
+                            "SANDBOX_ATTESTATION_FAILED",
+                            "RUNTIME_START_FAILED",
+                            "TURN_TIMEOUT",
+                            "TURN_FAILED",
+                            "CANCEL_NOT_CONFIRMED",
+                            "EXECUTION_STATE_UNKNOWN",
+                            "SSE_CURSOR_EXPIRED"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "CANCELLED" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": { "type": "null" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "UNCERTAIN" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": { "type": "string", "const": "EXECUTION_STATE_UNKNOWN" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/schemaVersion"
+                        },
+                        "type": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/type"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                        },
+                        "occurredAt": {
+                          "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                        },
+                        "terminalState": { "type": "string", "const": "EXPIRED" },
+                        "assistantMessageId": { "type": "null" },
+                        "resultDigest": { "type": "null" },
+                        "errorCode": { "type": "string", "const": "INVOCATION_EXPIRED" }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "conversationId",
+                        "invocationId",
+                        "occurredAt",
+                        "terminalState",
+                        "assistantMessageId",
+                        "resultDigest",
+                        "errorCode"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                },
+                "payloadDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "dedupeKey": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payloadDigest"
+                },
+                "attemptCount": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+                "createdAt": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                },
+                "retainedUntil": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                },
+                "state": { "type": "string", "const": "PENDING" },
+                "nextAttemptAt": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                },
+                "publishedAt": { "type": "null" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "cursor",
+                "ownerId",
+                "conversationId",
+                "invocationId",
+                "sourceEventId",
+                "eventType",
+                "payload",
+                "payloadDigest",
+                "dedupeKey",
+                "attemptCount",
+                "createdAt",
+                "retainedUntil",
+                "state",
+                "nextAttemptAt",
+                "publishedAt"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/schemaVersion"
+                },
+                "cursor": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/cursor"
+                },
+                "ownerId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/ownerId"
+                },
+                "sourceEventId": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/cursor"
+                },
+                "eventType": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/eventType"
+                },
+                "payload": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload"
+                },
+                "payloadDigest": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payloadDigest"
+                },
+                "dedupeKey": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payloadDigest"
+                },
+                "attemptCount": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/attemptCount"
+                },
+                "createdAt": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                },
+                "retainedUntil": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                },
+                "state": { "type": "string", "const": "PUBLISHED" },
+                "nextAttemptAt": { "type": "null" },
+                "publishedAt": {
+                  "$ref": "#/definitions/ConsumerEventOutboxRecord/anyOf/0/properties/payload/anyOf/0/properties/occurredAt"
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "cursor",
+                "ownerId",
+                "conversationId",
+                "invocationId",
+                "sourceEventId",
+                "eventType",
+                "payload",
+                "payloadDigest",
+                "dedupeKey",
+                "attemptCount",
+                "createdAt",
+                "retainedUntil",
+                "state",
+                "nextAttemptAt",
+                "publishedAt"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "payload.conversationId == conversationId",
+        "payload.invocationId == invocationId",
+        "payloadDigest == sha256(JCS(payload))",
+        "dedupeKey == sha256(JCS(protocol,ownerId,sourceEventId,eventType))",
+        "retainedUntil == createdAt + 7 days"
+      ]
+    },
+    "ConsumerEventStream": {
+      "$ref": "#/definitions/ConsumerEventStream",
+      "definitions": {
+        "ConsumerEventStream": {
+          "type": "object",
+          "properties": {
+            "ownerId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "conversationId": { "$ref": "#/definitions/ConsumerEventStream/properties/ownerId" },
+            "latestCursor": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+            "expiredThroughCursor": {
+              "$ref": "#/definitions/ConsumerEventStream/properties/latestCursor"
+            },
+            "updatedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "ownerId",
+            "conversationId",
+            "latestCursor",
+            "expiredThroughCursor",
+            "updatedAt"
+          ],
+          "additionalProperties": false
         }
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
@@ -3765,17 +4950,45 @@
               "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
             },
             "sandboxAdapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
-            "sandboxAdapterVersion": { "type": "string", "minLength": 1 },
+            "sandboxAdapterVersion": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$"
+            },
+            "protocolSchemaBundleDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "openApiDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "invariantRegistryDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "testCaseRegistryDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "decisionRegistryDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "dataFlowAllowlistDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
+            "artifactIndexDigest": {
+              "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
+            },
             "testSuiteDigest": {
               "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
             },
-            "macosBuild": { "type": "string", "minLength": 1 },
-            "kernelBuild": { "type": "string", "minLength": 1 },
+            "macosBuild": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
+            "kernelBuild": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
             "testBuildMode": {
               "type": "string",
               "const": "exact-release-artifact-with-locked-one-shot-probe"
             },
-            "startedAt": { "type": "string", "format": "date-time" },
+            "startedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
             "finishedAt": { "$ref": "#/definitions/EvidenceBundleManifest/properties/startedAt" },
             "results": {
               "type": "object",
@@ -3806,6 +5019,13 @@
             "codexProtocolSchemaDigest",
             "sandboxAdapter",
             "sandboxAdapterVersion",
+            "protocolSchemaBundleDigest",
+            "openApiDigest",
+            "invariantRegistryDigest",
+            "testCaseRegistryDigest",
+            "decisionRegistryDigest",
+            "dataFlowAllowlistDigest",
+            "artifactIndexDigest",
             "testSuiteDigest",
             "macosBuild",
             "kernelBuild",
@@ -3827,7 +5047,6 @@
           "properties": {
             "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
             "schemaVersion": { "type": "number", "const": 1 },
-            "manifestDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
             "artifacts": {
               "type": "array",
               "items": {
@@ -3836,7 +5055,6 @@
                   "path": {
                     "type": "string",
                     "enum": [
-                      "manifest.json",
                       "environment.json",
                       "junit/index.json",
                       "contract-fixtures/index.json",
@@ -3845,23 +5063,20 @@
                       "fault-summary.json",
                       "isolation-summary.json",
                       "dr-summary.json",
-                      "privacy-scan.json",
-                      "reviewer-signoff.json"
+                      "privacy-scan.json"
                     ]
                   },
-                  "digest": {
-                    "$ref": "#/definitions/EvidenceBundleIndex/properties/manifestDigest"
-                  },
-                  "bytes": { "type": "integer", "minimum": 0, "maximum": 1073741824 }
+                  "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                  "bytes": { "type": "integer", "minimum": 1, "maximum": 1073741824 }
                 },
                 "required": ["path", "digest", "bytes"],
                 "additionalProperties": false
               },
-              "minItems": 11,
-              "maxItems": 11
+              "minItems": 9,
+              "maxItems": 9
             }
           },
-          "required": ["protocol", "schemaVersion", "manifestDigest", "artifacts"],
+          "required": ["protocol", "schemaVersion", "artifacts"],
           "additionalProperties": false
         }
       },
@@ -3888,24 +5103,31 @@
                 "T7-DR"
               ]
             },
-            "os": { "type": "string", "minLength": 1 },
+            "os": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,255}$" },
             "architecture": { "type": "string", "enum": ["arm64", "x64"] },
             "runtimeVersions": {
               "type": "object",
-              "additionalProperties": { "type": "string", "minLength": 1, "maxLength": 256 },
-              "propertyNames": { "minLength": 1, "maxLength": 64 }
+              "additionalProperties": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,255}$"
+              },
+              "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$" }
             },
             "realComponents": {
               "type": "array",
-              "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
               "maxItems": 64
             },
             "substitutedComponents": {
               "type": "array",
-              "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
               "maxItems": 64
             },
-            "capturedAt": { "type": "string", "format": "date-time" }
+            "capturedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
           "required": [
             "protocol",
@@ -3917,6 +5139,487 @@
             "realComponents",
             "substitutedComponents",
             "capturedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceEnvironments": {
+      "$ref": "#/definitions/EvidenceEnvironments",
+      "definitions": {
+        "EvidenceEnvironments": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "environments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+                  "schemaVersion": { "type": "number", "const": 1 },
+                  "environmentId": {
+                    "type": "string",
+                    "enum": [
+                      "T0-LINUX-CI",
+                      "T1-SERVICE-CI",
+                      "T2-LOCAL-CONTRACT",
+                      "T3-MAC-REAL-HOST",
+                      "T4-MAC-ISOLATION",
+                      "T5-K3S-TEST",
+                      "T6-FULL-E2E",
+                      "T7-DR"
+                    ]
+                  },
+                  "os": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,255}$" },
+                  "architecture": { "type": "string", "enum": ["arm64", "x64"] },
+                  "runtimeVersions": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,255}$"
+                    },
+                    "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$" }
+                  },
+                  "realComponents": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$"
+                    },
+                    "maxItems": 64
+                  },
+                  "substitutedComponents": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$"
+                    },
+                    "maxItems": 64
+                  },
+                  "capturedAt": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                    "format": "date-time"
+                  }
+                },
+                "required": [
+                  "protocol",
+                  "schemaVersion",
+                  "environmentId",
+                  "os",
+                  "architecture",
+                  "runtimeVersions",
+                  "realComponents",
+                  "substitutedComponents",
+                  "capturedAt"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "maxItems": 8
+            }
+          },
+          "required": ["protocol", "schemaVersion", "environments"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidencePrivacyScan": {
+      "$ref": "#/definitions/EvidencePrivacyScan",
+      "definitions": {
+        "EvidencePrivacyScan": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "rcId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+            "scannerId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
+            "scannerVersion": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$"
+            },
+            "scannedArtifacts": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "enum": [
+                      "environment.json",
+                      "junit/index.json",
+                      "contract-fixtures/index.json",
+                      "digests/index.json",
+                      "metrics-summary.json",
+                      "fault-summary.json",
+                      "isolation-summary.json",
+                      "dr-summary.json"
+                    ]
+                  },
+                  "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+                },
+                "required": ["path", "digest"],
+                "additionalProperties": false
+              },
+              "minItems": 8,
+              "maxItems": 8
+            },
+            "scopeDigest": {
+              "$ref": "#/definitions/EvidencePrivacyScan/properties/scannedArtifacts/items/properties/digest"
+            },
+            "findingCounts": {
+              "type": "object",
+              "properties": {
+                "credentials": { "type": "integer", "minimum": 0 },
+                "authorizationMaterial": { "type": "integer", "minimum": 0 },
+                "consumerPlaintext": { "type": "integer", "minimum": 0 },
+                "creatorProjectContent": { "type": "integer", "minimum": 0 },
+                "absolutePaths": { "type": "integer", "minimum": 0 },
+                "hiddenReasoning": { "type": "integer", "minimum": 0 },
+                "rawRuntimeEvents": { "type": "integer", "minimum": 0 },
+                "realThreadTurnIds": { "type": "integer", "minimum": 0 }
+              },
+              "required": [
+                "credentials",
+                "authorizationMaterial",
+                "consumerPlaintext",
+                "creatorProjectContent",
+                "absolutePaths",
+                "hiddenReasoning",
+                "rawRuntimeEvents",
+                "realThreadTurnIds"
+              ],
+              "additionalProperties": false
+            },
+            "totalForbiddenFindings": { "type": "integer", "minimum": 0 },
+            "status": { "type": "string", "enum": ["CLEAN", "FINDINGS"] },
+            "scannedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "rcId",
+            "scannerId",
+            "scannerVersion",
+            "scannedArtifacts",
+            "scopeDigest",
+            "findingCounts",
+            "totalForbiddenFindings",
+            "status",
+            "scannedAt"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceReleaseTuple": {
+      "$ref": "#/definitions/EvidenceReleaseTuple",
+      "definitions": {
+        "EvidenceReleaseTuple": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-release-tuple/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "sourceSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+            "cloudImageDigests": {
+              "type": "object",
+              "additionalProperties": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "propertyNames": { "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+            },
+            "workerArtifactDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "codexArtifactDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "sandboxImageDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "modelProxyArtifactDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "snapshotDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/agentVersionDigest"
+            },
+            "behaviorContractDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/agentVersionDigest"
+            },
+            "runtimePolicyDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/agentVersionDigest"
+            },
+            "codexProtocolSchemaDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "sandboxAdapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
+            "sandboxAdapterVersion": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$"
+            },
+            "protocolSchemaBundleDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "openApiDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "invariantRegistryDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "testCaseRegistryDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "decisionRegistryDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "dataFlowAllowlistDigest": {
+              "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
+            },
+            "macosBuild": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
+            "kernelBuild": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
+            "testBuildMode": {
+              "type": "string",
+              "const": "exact-release-artifact-with-locked-one-shot-probe"
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "sourceSha",
+            "cloudImageDigests",
+            "workerArtifactDigest",
+            "codexArtifactDigest",
+            "sandboxImageDigest",
+            "modelProxyArtifactDigest",
+            "agentVersionDigest",
+            "snapshotDigest",
+            "behaviorContractDigest",
+            "runtimePolicyDigest",
+            "codexProtocolSchemaDigest",
+            "sandboxAdapter",
+            "sandboxAdapterVersion",
+            "protocolSchemaBundleDigest",
+            "openApiDigest",
+            "invariantRegistryDigest",
+            "testCaseRegistryDigest",
+            "decisionRegistryDigest",
+            "dataFlowAllowlistDigest",
+            "macosBuild",
+            "kernelBuild",
+            "testBuildMode"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceCaseResult": {
+      "$ref": "#/definitions/EvidenceCaseResult",
+      "definitions": {
+        "EvidenceCaseResult": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "testCaseId": {
+              "type": "string",
+              "pattern": "^(?:SCH|SNP|AVR|DEP|BRK|CJR|WJR|HST|RTP|ISO|CRD|CRT|CON|SEC|FLT|PER|K8S|BKP|OBS|E2E|AQL)-[A-Z0-9-]+$"
+            },
+            "status": { "type": "string", "enum": ["PASS", "FAIL", "BLOCKED", "NOT_RUN"] },
+            "evidenceLevel": {
+              "type": "string",
+              "enum": ["E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"]
+            },
+            "environmentId": {
+              "type": "string",
+              "enum": [
+                "T0-LINUX-CI",
+                "T1-SERVICE-CI",
+                "T2-LOCAL-CONTRACT",
+                "T3-MAC-REAL-HOST",
+                "T4-MAC-ISOLATION",
+                "T5-K3S-TEST",
+                "T6-FULL-E2E",
+                "T7-DR"
+              ]
+            },
+            "releaseTupleDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "startedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
+            "finishedAt": { "$ref": "#/definitions/EvidenceCaseResult/properties/startedAt" },
+            "assertionCount": { "type": "integer", "minimum": 0 },
+            "artifactDigests": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/EvidenceCaseResult/properties/releaseTupleDigest" },
+              "maxItems": 1024
+            },
+            "blockerCode": {
+              "anyOf": [
+                { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,127}$" },
+                { "type": "null" }
+              ]
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "testCaseId",
+            "status",
+            "evidenceLevel",
+            "environmentId",
+            "releaseTupleDigest",
+            "startedAt",
+            "finishedAt",
+            "assertionCount",
+            "artifactDigests",
+            "blockerCode"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceCaseResults": {
+      "$ref": "#/definitions/EvidenceCaseResults",
+      "definitions": {
+        "EvidenceCaseResults": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+              "schemaVersion": { "type": "number", "const": 1 },
+              "testCaseId": {
+                "type": "string",
+                "pattern": "^(?:SCH|SNP|AVR|DEP|BRK|CJR|WJR|HST|RTP|ISO|CRD|CRT|CON|SEC|FLT|PER|K8S|BKP|OBS|E2E|AQL)-[A-Z0-9-]+$"
+              },
+              "status": { "type": "string", "enum": ["PASS", "FAIL", "BLOCKED", "NOT_RUN"] },
+              "evidenceLevel": {
+                "type": "string",
+                "enum": ["E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"]
+              },
+              "environmentId": {
+                "type": "string",
+                "enum": [
+                  "T0-LINUX-CI",
+                  "T1-SERVICE-CI",
+                  "T2-LOCAL-CONTRACT",
+                  "T3-MAC-REAL-HOST",
+                  "T4-MAC-ISOLATION",
+                  "T5-K3S-TEST",
+                  "T6-FULL-E2E",
+                  "T7-DR"
+                ]
+              },
+              "releaseTupleDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "startedAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "finishedAt": {
+                "$ref": "#/definitions/EvidenceCaseResults/items/properties/startedAt"
+              },
+              "assertionCount": { "type": "integer", "minimum": 0 },
+              "artifactDigests": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/EvidenceCaseResults/items/properties/releaseTupleDigest"
+                },
+                "maxItems": 1024
+              },
+              "blockerCode": {
+                "anyOf": [
+                  { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,127}$" },
+                  { "type": "null" }
+                ]
+              }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "testCaseId",
+              "status",
+              "evidenceLevel",
+              "environmentId",
+              "releaseTupleDigest",
+              "startedAt",
+              "finishedAt",
+              "assertionCount",
+              "artifactDigests",
+              "blockerCode"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1,
+          "maxItems": 10000
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "EvidenceReviewerSignoff": {
+      "$ref": "#/definitions/EvidenceReviewerSignoff",
+      "definitions": {
+        "EvidenceReviewerSignoff": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-evidence-bundle/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "rcId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+            "manifestDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "reviewerId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,127}$" },
+            "reviewerKeyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$" },
+            "reviewerRole": { "type": "string", "const": "independent-security-release-reviewer" },
+            "verdict": { "type": "string", "enum": ["PASS", "FAIL", "BLOCKED"] },
+            "reviewedGates": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"]
+              },
+              "minItems": 1
+            },
+            "reviewedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
+            "nonce": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 22,
+              "maxLength": 128
+            },
+            "signatureAlgorithm": { "type": "string", "const": "ES256" },
+            "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
+            "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "rcId",
+            "manifestDigest",
+            "reviewerId",
+            "reviewerKeyId",
+            "reviewerRole",
+            "verdict",
+            "reviewedGates",
+            "reviewedAt",
+            "nonce",
+            "signatureAlgorithm",
+            "signatureEncoding",
+            "signature"
           ],
           "additionalProperties": false
         }
@@ -3986,7 +5689,7 @@
                   "title": { "type": "string", "minLength": 1, "maxLength": 256 },
                   "level": {
                     "type": "string",
-                    "enum": ["E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7"]
+                    "enum": ["E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"]
                   },
                   "environment": {
                     "type": "string",
@@ -4177,96 +5880,142 @@
           "properties": {
             "protocol": { "type": "string", "const": "combo.vnext-data-flow-allowlist/1" },
             "schemaVersion": { "type": "number", "const": 1 },
+            "unlistedLocationDisposition": { "type": "string", "const": "SECURITY_LEAK" },
+            "globallyForbiddenDataClasses": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": [
+                { "type": "string", "const": "absolute-path" },
+                { "type": "string", "const": "credential" },
+                { "type": "string", "const": "reasoning" }
+              ]
+            },
             "fields": {
               "type": "array",
               "items": {
                 "type": "object",
                 "properties": {
-                  "fieldClass": {
+                  "fieldId": {
+                    "type": "string",
+                    "pattern": "^(?:prompt|answer|context)\\.[a-z0-9][a-z0-9._-]{2,255}$"
+                  },
+                  "fieldClass": { "type": "string", "enum": ["prompt", "answer", "context"] },
+                  "contentKind": { "type": "string", "enum": ["real", "synthetic-test-only"] },
+                  "system": {
                     "type": "string",
                     "enum": [
-                      "prompt",
-                      "answer",
-                      "context",
-                      "control-id",
-                      "credential",
-                      "absolute-path",
-                      "reasoning"
+                      "postgresql",
+                      "postgresql-backup",
+                      "worker-sqlite",
+                      "worker-backup",
+                      "minio",
+                      "minio-backup",
+                      "broker-wss",
+                      "browser",
+                      "model-request",
+                      "evidence-vault"
                     ]
                   },
-                  "allowedStores": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "enum": [
-                        "pg-message-aead",
-                        "worker-sqlite-result-aead",
-                        "minio-snapshot-aead",
-                        "browser-memory",
-                        "model-request-ephemeral",
-                        "evidence-vault-test-only"
-                      ]
-                    }
-                  },
-                  "forbiddenStores": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "enum": [
-                        "application-log",
-                        "audit-event-payload",
-                        "telemetry",
-                        "browser-persistent-storage",
-                        "evidence-public",
-                        "process-argv",
-                        "process-env"
-                      ]
-                    }
-                  },
-                  "encryption": {
+                  "container": { "type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,127}$" },
+                  "field": { "type": "string", "pattern": "^[a-z][A-Za-z0-9_.[\\]-]{0,255}$" },
+                  "protection": {
                     "type": "string",
                     "enum": [
-                      "message-aead",
-                      "snapshot-envelope-aead",
-                      "ephemeral-only",
-                      "forbidden"
+                      "application-aead",
+                      "session-aead",
+                      "browser-memory-only",
+                      "request-memory-only",
+                      "evidence-aead"
+                    ]
+                  },
+                  "algorithm": {
+                    "type": "string",
+                    "enum": [
+                      "aes-256-gcm/v1",
+                      "worker-session-aes-256-gcm/v1",
+                      "memory-only",
+                      "independent-test-aes-256-gcm/v1"
                     ]
                   },
                   "keyOwner": {
                     "type": "string",
-                    "enum": ["combo-kms", "worker-keychain", "none"]
+                    "enum": [
+                      "combo-kms",
+                      "worker-keychain",
+                      "combo-kms-and-worker-keychain",
+                      "independent-test-kek",
+                      "none"
+                    ]
+                  },
+                  "aadBindings": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": [
+                        "agentVersionDigest",
+                        "artifactPath",
+                        "conversationId",
+                        "installationId",
+                        "invocationId",
+                        "keyId",
+                        "messageId",
+                        "ownerId",
+                        "rcId",
+                        "role",
+                        "schemaVersion",
+                        "workerSessionId"
+                      ]
+                    },
+                    "maxItems": 12
                   },
                   "retention": {
                     "type": "string",
                     "enum": [
                       "request-lifetime",
-                      "sandbox-lifetime",
-                      "7-days",
-                      "30-days",
-                      "90-days",
+                      "browser-session",
+                      "conversation-30-days",
+                      "backup-14-daily-8-weekly",
+                      "worker-cloud-committed-plus-7-days",
                       "referenced-plus-30-days",
-                      "never"
+                      "evidence-vault-7-days"
                     ]
                   },
                   "deletionOrHold": { "type": "string", "minLength": 1, "maxLength": 1024 }
                 },
                 "required": [
+                  "fieldId",
                   "fieldClass",
-                  "allowedStores",
-                  "forbiddenStores",
-                  "encryption",
+                  "contentKind",
+                  "system",
+                  "container",
+                  "field",
+                  "protection",
+                  "algorithm",
                   "keyOwner",
+                  "aadBindings",
                   "retention",
                   "deletionOrHold"
                 ],
                 "additionalProperties": false
               },
-              "minItems": 7,
-              "maxItems": 7
+              "minItems": 1,
+              "maxItems": 128
             },
-            "updatedAt": { "type": "string", "format": "date-time" }
+            "updatedAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            }
           },
-          "required": ["protocol", "schemaVersion", "fields", "updatedAt"],
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "unlistedLocationDisposition",
+            "globallyForbiddenDataClasses",
+            "fields",
+            "updatedAt"
+          ],
           "additionalProperties": false
         }
       },

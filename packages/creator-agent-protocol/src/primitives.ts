@@ -4,14 +4,15 @@ export const MAX_UINT63 = 9_223_372_036_854_775_807n;
 
 export const UuidSchema = z
   .string()
-  .uuid()
-  .transform((value) => value.toLowerCase());
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
+  .uuid();
 export type Uuid = z.infer<typeof UuidSchema>;
 
 export const IsoDateTimeSchema = z
   .string()
-  .datetime({ offset: true })
-  .refine((value) => !Number.isNaN(Date.parse(value)), '必须是可解析的 RFC 3339 时间');
+  .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u)
+  .datetime({ offset: false, precision: 3 })
+  .refine((value) => !Number.isNaN(Date.parse(value)), '必须是 UTC RFC 3339 毫秒时间');
 
 export const Sha256HexSchema = z.string().regex(/^[a-f0-9]{64}$/);
 export const Sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/);

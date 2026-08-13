@@ -48,6 +48,7 @@ export const LeaseBindingSchema = z
   .object({
     deploymentId: UuidSchema,
     leaseId: UuidSchema,
+    workerSessionId: UuidSchema,
     fence: Uint63StringSchema,
   })
   .strict();
@@ -381,6 +382,103 @@ function event<const Type extends string, Schema extends z.ZodTypeAny>(type: Typ
 
 const EmptyBodySchema = z.object({}).strict();
 const GenerationSchema = Uint63StringSchema;
+const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) =>
+  Base64UrlSchema.refine((value) => {
+    const bytes = Buffer.from(value, 'base64url');
+    return (
+      bytes.byteLength >= minimumBytes &&
+      bytes.byteLength <= maximumBytes &&
+      bytes.toString('base64url') === value
+    );
+  }, `必须是 ${minimumBytes}..${maximumBytes} bytes canonical base64url`);
+
+export const BrokerSensitiveMessageAadSchema = z
+  .object({
+    protocol: z.literal(CREATOR_BROKER_PROTOCOL),
+    schemaVersion: z.literal(1),
+    envelopeType: z.enum(['invocation.prepare', 'invocation.delta', 'invocation.succeeded']),
+    messageId: UuidSchema,
+    conversationId: UuidSchema,
+    invocationId: UuidSchema,
+    workerSessionId: UuidSchema,
+    role: z.enum(['USER', 'ASSISTANT']),
+    keyId: z.string().regex(/^[a-z0-9][a-z0-9._:-]{2,127}$/u),
+  })
+  .strict();
+export type BrokerSensitiveMessageAad = z.infer<typeof BrokerSensitiveMessageAadSchema>;
+
+export function brokerSensitiveMessageAadBytes(aad: BrokerSensitiveMessageAad): Buffer {
+  return Buffer.from(canonicalizeJson(BrokerSensitiveMessageAadSchema.parse(aad)), 'utf8');
+}
+
+export function brokerSensitiveMessageAadDigest(aad: BrokerSensitiveMessageAad): string {
+  return canonicalSha256(BrokerSensitiveMessageAadSchema.parse(aad));
+}
+
+export function brokerSensitiveMessageCipherDigest(
+  nonce: string,
+  ciphertext: string,
+  authTag: string,
+): string {
+  const fields = [
+    CanonicalBase64UrlBytesSchema(12, 12).parse(nonce),
+    CanonicalBase64UrlBytesSchema(1, 49_152).parse(ciphertext),
+    CanonicalBase64UrlBytesSchema(16, 16).parse(authTag),
+  ];
+  return canonicalSha256({
+    protocol: CREATOR_BROKER_PROTOCOL,
+    schemaVersion: 1,
+    nonce: fields[0],
+    ciphertext: fields[1],
+    authTag: fields[2],
+  });
+}
+
+/**
+ * Broker 内的 Prompt/delta/final 不能使用明文 JSON 字段。Cloud 与 Worker Keychain
+ * 共同持有按安装轮换的 session content key；TLS 仍是传输层，不替代此 AEAD。
+ */
+export const BrokerSensitiveMessageSchema = z
+  .object({
+    algorithm: z.literal('aes-256-gcm/v1'),
+    keyScope: z.literal('worker-session'),
+    keyId: z.string().regex(/^[a-z0-9][a-z0-9._:-]{2,127}$/u),
+    nonce: CanonicalBase64UrlBytesSchema(12, 12),
+    ciphertext: CanonicalBase64UrlBytesSchema(1, 49_152),
+    authTag: CanonicalBase64UrlBytesSchema(16, 16),
+    cipherDigest: Sha256HexSchema,
+    aad: BrokerSensitiveMessageAadSchema,
+    aadDigest: Sha256HexSchema,
+    aadVersion: z.literal(1),
+  })
+  .strict()
+  .superRefine((message, context) => {
+    if (
+      message.cipherDigest !==
+      brokerSensitiveMessageCipherDigest(message.nonce, message.ciphertext, message.authTag)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cipherDigest'],
+        message: 'cipherDigest 必须绑定 nonce/ciphertext/authTag canonical bytes',
+      });
+    }
+    if (message.aadDigest !== brokerSensitiveMessageAadDigest(message.aad)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aadDigest'],
+        message: 'aadDigest 必须绑定 exact Broker message context',
+      });
+    }
+    if (message.keyId !== message.aad.keyId) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['aad', 'keyId'],
+        message: 'AEAD keyId 必须与 AAD 一致',
+      });
+    }
+  });
+export type BrokerSensitiveMessage = z.infer<typeof BrokerSensitiveMessageSchema>;
 
 export const BrokerCommandSchema = z.discriminatedUnion('type', [
   command(
@@ -458,6 +556,7 @@ export const BrokerCommandSchema = z.discriminatedUnion('type', [
         conversationId: UuidSchema,
         clientMessageId: UuidSchema,
         requestDigest: HmacSha256DigestSchema,
+        userMessageCiphertext: BrokerSensitiveMessageSchema,
         agentVersionId: UuidSchema,
         agentVersionDigest: Sha256HexSchema,
         snapshotDigest: Sha256HexSchema,
@@ -554,8 +653,9 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
     z
       .object({
         invocationId: UuidSchema,
+        conversationId: UuidSchema,
         deltaSequence: Uint63StringSchema,
-        text: Utf8TextSchema(8_192),
+        deltaCiphertext: BrokerSensitiveMessageSchema,
       })
       .strict(),
   ),
@@ -564,8 +664,9 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
     z
       .object({
         invocationId: UuidSchema,
+        conversationId: UuidSchema,
         resultDigest: HmacSha256DigestSchema,
-        resultText: Utf8TextSchema(32_768),
+        resultCiphertext: BrokerSensitiveMessageSchema,
         sourceEventId: UuidSchema,
       })
       .strict(),
@@ -653,6 +754,41 @@ export const BrokerEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ['expiresAt'],
         message: 'expiresAt 必须晚于 sentAt',
+      });
+    }
+    let sensitive: BrokerSensitiveMessage | undefined;
+    let conversationId: string | undefined;
+    let invocationId: string | undefined;
+    let expectedRole: 'USER' | 'ASSISTANT' | undefined;
+    if (envelope.type === 'invocation.prepare') {
+      sensitive = envelope.body.userMessageCiphertext;
+      conversationId = envelope.body.conversationId;
+      invocationId = envelope.body.invocationId;
+      expectedRole = 'USER';
+    } else if (envelope.type === 'invocation.delta') {
+      sensitive = envelope.body.deltaCiphertext;
+      invocationId = envelope.body.invocationId;
+      conversationId = envelope.body.conversationId;
+      expectedRole = 'ASSISTANT';
+    } else if (envelope.type === 'invocation.succeeded') {
+      sensitive = envelope.body.resultCiphertext;
+      invocationId = envelope.body.invocationId;
+      conversationId = envelope.body.conversationId;
+      expectedRole = 'ASSISTANT';
+    }
+    if (
+      sensitive !== undefined &&
+      (sensitive.aad.envelopeType !== envelope.type ||
+        sensitive.aad.messageId !== envelope.messageId ||
+        sensitive.aad.conversationId !== conversationId ||
+        sensitive.aad.invocationId !== invocationId ||
+        sensitive.aad.workerSessionId !== envelope.lease.workerSessionId ||
+        sensitive.aad.role !== expectedRole)
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['body'],
+        message: '敏感 Broker payload 的 AEAD AAD 必须绑定 exact envelope/message/context/role',
       });
     }
   });

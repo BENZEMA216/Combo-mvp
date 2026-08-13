@@ -1,0 +1,55 @@
+{
+  "protocol": "combo.vnext-evidence-bundle/1",
+  "schemaVersion": 1,
+  "rcId": "vnext-alpha-rc-001",
+  "scannerId": "evidence-privacy-scanner",
+  "scannerVersion": "1.0.0",
+  "scannedArtifacts": [
+    {
+      "path": "environment.json",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "path": "junit/index.json",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    {
+      "path": "contract-fixtures/index.json",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    {
+      "path": "digests/index.json",
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+    },
+    {
+      "path": "metrics-summary.json",
+      "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    },
+    {
+      "path": "fault-summary.json",
+      "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    },
+    {
+      "path": "isolation-summary.json",
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888"
+    },
+    {
+      "path": "dr-summary.json",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+    }
+  ],
+  "scopeDigest": "sha256:0581621efe7188ec4393decd7698e50b95bfbfc493e151e6404d2816d7282b26",
+  "findingCounts": {
+    "credentials": 0,
+    "authorizationMaterial": 0,
+    "consumerPlaintext": 0,
+    "creatorProjectContent": 0,
+    "absolutePaths": 0,
+    "hiddenReasoning": 0,
+    "rawRuntimeEvents": 0,
+    "realThreadTurnIds": 0
+  },
+  "totalForbiddenFindings": 0,
+  "status": "CLEAN",
+  "scannedAt": "2026-08-13T09:00:00.000Z"
+}

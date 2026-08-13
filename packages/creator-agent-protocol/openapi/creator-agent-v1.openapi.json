@@ -563,7 +563,11 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "uploadId": { "type": "string", "format": "uuid" },
+          "uploadId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "state": { "type": "string", "enum": ["CREATED"] },
           "putUrl": { "type": "string", "format": "uri" },
           "requiredHeaders": {
@@ -575,7 +579,11 @@
             "required": ["contentLength", "checksumSha256"],
             "additionalProperties": false
           },
-          "expiresAt": { "type": "string", "format": "date-time" }
+          "expiresAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
         },
         "required": ["protocol", "uploadId", "state", "putUrl", "requiredHeaders", "expiresAt"],
         "additionalProperties": false
@@ -593,15 +601,28 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "uploadId": { "type": "string", "format": "uuid" },
+          "uploadId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "state": {
             "type": "string",
             "enum": ["CREATED", "UPLOADED", "VERIFYING", "VERIFIED", "REJECTED", "EXPIRED"]
           },
-          "snapshotId": { "type": "string", "format": "uuid", "nullable": true },
+          "snapshotId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
           "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "errorCode": { "type": "string", "maxLength": 128, "nullable": true },
-          "updatedAt": { "type": "string", "format": "date-time" }
+          "updatedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
         },
         "required": [
           "protocol",
@@ -627,12 +648,20 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "agentId": { "type": "string", "format": "uuid" },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "publicSlug": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" },
           "name": { "type": "string", "minLength": 1 },
           "description": { "type": "string", "minLength": 1 },
           "lifecycle": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
-          "createdAt": { "type": "string", "format": "date-time" }
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
         },
         "required": [
           "protocol",
@@ -648,7 +677,11 @@
       "CreateAgentVersionRequest": {
         "type": "object",
         "properties": {
-          "verifiedSnapshotId": { "type": "string", "format": "uuid" },
+          "verifiedSnapshotId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "manifest": {
             "type": "object",
             "properties": {
@@ -824,13 +857,25 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "agentVersionId": { "type": "string", "format": "uuid" },
-          "agentId": { "type": "string", "format": "uuid" },
+          "agentVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "ordinal": { "type": "integer", "minimum": 1 },
           "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "availability": { "type": "string", "enum": ["ACTIVE", "DEPRECATED", "REVOKED"] },
-          "createdAt": { "type": "string", "format": "date-time" }
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
         },
         "required": [
           "protocol",
@@ -850,7 +895,11 @@
             "type": "object",
             "properties": {
               "desiredState": { "type": "string", "enum": ["ONLINE"] },
-              "desiredVersionId": { "type": "string", "format": "uuid" }
+              "desiredVersionId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              }
             },
             "required": ["desiredState", "desiredVersionId"],
             "additionalProperties": false
@@ -870,10 +919,24 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "agentId": { "type": "string", "format": "uuid" },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "desiredState": { "type": "string", "enum": ["ONLINE", "OFFLINE"] },
-          "desiredVersionId": { "type": "string", "format": "uuid", "nullable": true },
-          "servingVersionId": { "type": "string", "format": "uuid", "nullable": true },
+          "desiredVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
+          "servingVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
           "observedState": {
             "type": "string",
             "enum": [
@@ -888,7 +951,11 @@
           },
           "generation": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
           "lastErrorCode": { "type": "string", "maxLength": 128, "nullable": true },
-          "updatedAt": { "type": "string", "format": "date-time" }
+          "updatedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
         },
         "required": [
           "protocol",
@@ -912,9 +979,21 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "conversationId": { "type": "string", "format": "uuid" },
-          "agentId": { "type": "string", "format": "uuid" },
-          "agentVersionId": { "type": "string", "format": "uuid" },
+          "conversationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "agentVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "state": {
             "type": "string",
@@ -929,8 +1008,16 @@
               "EXPIRED"
             ]
           },
-          "createdAt": { "type": "string", "format": "date-time" },
-          "expiresAt": { "type": "string", "format": "date-time" }
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
         },
         "required": [
           "protocol",
@@ -947,7 +1034,11 @@
       "SendConversationMessageRequest": {
         "type": "object",
         "properties": {
-          "clientMessageId": { "type": "string", "format": "uuid" },
+          "clientMessageId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "text": { "type": "string", "minLength": 1 }
         },
         "required": ["clientMessageId", "text"],
@@ -957,7 +1048,11 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "invocationId": { "type": "string", "format": "uuid" },
+          "invocationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "state": { "type": "string", "enum": ["ACCEPTED", "QUEUED"] }
         },
         "required": ["protocol", "invocationId", "state"],
@@ -967,8 +1062,16 @@
         "type": "object",
         "properties": {
           "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-          "invocationId": { "type": "string", "format": "uuid" },
-          "conversationId": { "type": "string", "format": "uuid" },
+          "invocationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "conversationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
           "state": {
             "type": "string",
             "enum": [
@@ -1017,6 +1120,7 @@
                   "CONVERSATION_BUSY",
                   "CONVERSATION_EXPIRED",
                   "CONVERSATION_CONTEXT_LIMIT",
+                  "INVOCATION_EXPIRED",
                   "WORKER_OFFLINE_TIMEOUT",
                   "MODEL_QUOTA_EXHAUSTED",
                   "STALE_LEASE",
@@ -1048,9 +1152,23 @@
             "additionalProperties": false,
             "nullable": true
           },
-          "retryOfInvocationId": { "type": "string", "format": "uuid", "nullable": true },
-          "createdAt": { "type": "string", "format": "date-time" },
-          "terminalAt": { "type": "string", "format": "date-time", "nullable": true }
+          "retryOfInvocationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          },
+          "terminalAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time",
+            "nullable": true
+          }
         },
         "required": [
           "protocol",
@@ -1072,7 +1190,13 @@
       },
       "RetryInvocationRequest": {
         "type": "object",
-        "properties": { "clientMessageId": { "type": "string", "format": "uuid" } },
+        "properties": {
+          "clientMessageId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          }
+        },
         "required": ["clientMessageId"],
         "additionalProperties": false
       },
@@ -1084,9 +1208,21 @@
             "type": "object",
             "properties": {
               "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
-              "conversationId": { "type": "string", "format": "uuid" },
-              "agentId": { "type": "string", "format": "uuid" },
-              "agentVersionId": { "type": "string", "format": "uuid" },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "agentId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "agentVersionId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
               "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
               "state": {
                 "type": "string",
@@ -1101,8 +1237,16 @@
                   "EXPIRED"
                 ]
               },
-              "createdAt": { "type": "string", "format": "date-time" },
-              "expiresAt": { "type": "string", "format": "date-time" }
+              "createdAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "expiresAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
             },
             "required": [
               "protocol",
@@ -1121,12 +1265,25 @@
             "items": {
               "type": "object",
               "properties": {
-                "messageId": { "type": "string", "format": "uuid" },
-                "invocationId": { "type": "string", "format": "uuid", "nullable": true },
+                "messageId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
+                "invocationId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid",
+                  "nullable": true
+                },
                 "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
                 "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
                 "text": { "type": "string", "minLength": 1 },
-                "createdAt": { "type": "string", "format": "date-time" }
+                "createdAt": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "format": "date-time"
+                }
               },
               "required": ["messageId", "invocationId", "turnNo", "role", "text", "createdAt"],
               "additionalProperties": false
@@ -1145,7 +1302,11 @@
             "properties": {
               "id": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
               "type": { "type": "string", "enum": ["invocation.state"] },
-              "invocationId": { "type": "string", "format": "uuid" },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
               "state": {
                 "type": "string",
                 "enum": [
@@ -1164,7 +1325,11 @@
                   "EXPIRED"
                 ]
               },
-              "occurredAt": { "type": "string", "format": "date-time" }
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
             },
             "required": ["id", "type", "invocationId", "state", "occurredAt"],
             "additionalProperties": false
@@ -1174,9 +1339,17 @@
             "properties": {
               "id": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
               "type": { "type": "string", "enum": ["invocation.delta"] },
-              "invocationId": { "type": "string", "format": "uuid" },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
               "text": { "type": "string", "minLength": 1 },
-              "occurredAt": { "type": "string", "format": "date-time" }
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
             },
             "required": ["id", "type", "invocationId", "text", "occurredAt"],
             "additionalProperties": false
@@ -1189,17 +1362,34 @@
               "message": {
                 "type": "object",
                 "properties": {
-                  "messageId": { "type": "string", "format": "uuid" },
-                  "invocationId": { "type": "string", "format": "uuid", "nullable": true },
+                  "messageId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "format": "uuid"
+                  },
+                  "invocationId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "format": "uuid",
+                    "nullable": true
+                  },
                   "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
                   "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
                   "text": { "type": "string", "minLength": 1 },
-                  "createdAt": { "type": "string", "format": "date-time" }
+                  "createdAt": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                    "format": "date-time"
+                  }
                 },
                 "required": ["messageId", "invocationId", "turnNo", "role", "text", "createdAt"],
                 "additionalProperties": false
               },
-              "occurredAt": { "type": "string", "format": "date-time" }
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
             },
             "required": ["id", "type", "message", "occurredAt"],
             "additionalProperties": false
@@ -1210,9 +1400,512 @@
               "id": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
               "type": { "type": "string", "enum": ["conversation.presence"] },
               "status": { "type": "string", "enum": ["ONLINE", "BUSY", "OFFLINE"] },
-              "occurredAt": { "type": "string", "format": "date-time" }
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
             },
             "required": ["id", "type", "status", "occurredAt"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string", "pattern": "^(0|[1-9]\\d*)$" },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "payload": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["SUCCEEDED"] },
+                      "assistantMessageId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "resultDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+                      "errorCode": { "enum": ["null"], "nullable": true }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["FAILED"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": {
+                        "type": "string",
+                        "enum": [
+                          "INVALID_INPUT",
+                          "UNAUTHORIZED",
+                          "FORBIDDEN",
+                          "RATE_LIMITED",
+                          "IDEMPOTENCY_CONFLICT",
+                          "SNAPSHOT_EMPTY",
+                          "SNAPSHOT_SOURCE_CHANGED",
+                          "SNAPSHOT_LIMIT_EXCEEDED",
+                          "SNAPSHOT_PATH_REJECTED",
+                          "SNAPSHOT_SECRET_DETECTED",
+                          "AGENT_OFFLINE",
+                          "AGENT_BUSY",
+                          "QUEUE_FULL",
+                          "VERSION_UNAVAILABLE",
+                          "VERSION_DIGEST_MISMATCH",
+                          "SNAPSHOT_DIGEST_MISMATCH",
+                          "CONVERSATION_BUSY",
+                          "CONVERSATION_EXPIRED",
+                          "CONVERSATION_CONTEXT_LIMIT",
+                          "INVOCATION_EXPIRED",
+                          "WORKER_OFFLINE_TIMEOUT",
+                          "MODEL_QUOTA_EXHAUSTED",
+                          "STALE_LEASE",
+                          "STALE_FENCE",
+                          "PROTOCOL_INCOMPATIBLE",
+                          "EXECUTION_CAPABILITY_INVALID",
+                          "SANDBOX_ATTESTATION_FAILED",
+                          "RUNTIME_START_FAILED",
+                          "TURN_TIMEOUT",
+                          "TURN_FAILED",
+                          "CANCEL_NOT_CONFIRMED",
+                          "EXECUTION_STATE_UNKNOWN",
+                          "SSE_CURSOR_EXPIRED"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["CANCELLED"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": { "enum": ["null"], "nullable": true }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["UNCERTAIN"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": { "type": "string", "enum": ["EXECUTION_STATE_UNKNOWN"] }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["EXPIRED"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": { "type": "string", "enum": ["INVOCATION_EXPIRED"] }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": ["id", "type", "payload"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ConsumerTerminalEventPayload": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["SUCCEEDED"] },
+              "assistantMessageId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "resultDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+              "errorCode": { "enum": ["null"], "nullable": true }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["FAILED"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": {
+                "type": "string",
+                "enum": [
+                  "INVALID_INPUT",
+                  "UNAUTHORIZED",
+                  "FORBIDDEN",
+                  "RATE_LIMITED",
+                  "IDEMPOTENCY_CONFLICT",
+                  "SNAPSHOT_EMPTY",
+                  "SNAPSHOT_SOURCE_CHANGED",
+                  "SNAPSHOT_LIMIT_EXCEEDED",
+                  "SNAPSHOT_PATH_REJECTED",
+                  "SNAPSHOT_SECRET_DETECTED",
+                  "AGENT_OFFLINE",
+                  "AGENT_BUSY",
+                  "QUEUE_FULL",
+                  "VERSION_UNAVAILABLE",
+                  "VERSION_DIGEST_MISMATCH",
+                  "SNAPSHOT_DIGEST_MISMATCH",
+                  "CONVERSATION_BUSY",
+                  "CONVERSATION_EXPIRED",
+                  "CONVERSATION_CONTEXT_LIMIT",
+                  "INVOCATION_EXPIRED",
+                  "WORKER_OFFLINE_TIMEOUT",
+                  "MODEL_QUOTA_EXHAUSTED",
+                  "STALE_LEASE",
+                  "STALE_FENCE",
+                  "PROTOCOL_INCOMPATIBLE",
+                  "EXECUTION_CAPABILITY_INVALID",
+                  "SANDBOX_ATTESTATION_FAILED",
+                  "RUNTIME_START_FAILED",
+                  "TURN_TIMEOUT",
+                  "TURN_FAILED",
+                  "CANCEL_NOT_CONFIRMED",
+                  "EXECUTION_STATE_UNKNOWN",
+                  "SSE_CURSOR_EXPIRED"
+                ]
+              }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["CANCELLED"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": { "enum": ["null"], "nullable": true }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["UNCERTAIN"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": { "type": "string", "enum": ["EXECUTION_STATE_UNKNOWN"] }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["EXPIRED"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": { "type": "string", "enum": ["INVOCATION_EXPIRED"] }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
             "additionalProperties": false
           }
         ]
@@ -1242,6 +1935,7 @@
               "CONVERSATION_BUSY",
               "CONVERSATION_EXPIRED",
               "CONVERSATION_CONTEXT_LIMIT",
+              "INVOCATION_EXPIRED",
               "WORKER_OFFLINE_TIMEOUT",
               "MODEL_QUOTA_EXHAUSTED",
               "STALE_LEASE",
