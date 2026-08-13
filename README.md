@@ -36,7 +36,7 @@ Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shar
 pnpm install
 ```
 
-工作区包含 `packages/shared`、`apps/authoring`、`apps/creator-worker`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
+工作区包含 `packages/shared`、`apps/agent-gateway`、`apps/authoring`、`apps/creator-worker`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
 
 ---
 
@@ -60,6 +60,7 @@ pnpm -F @cb/shared build        # 构建脊柱（apps 依赖其 dist + .d.ts，�
 pnpm -F @cb/shared openapi:gen  # 生成 OpenAPI 3.1（写 dist/openapi.json）
 pnpm -F @cb/authoring build     # 构建创作 API 与 Worker
 pnpm -F @cb/creator-worker build # 构建本机 Creator Worker Host Adapter
+pnpm -F @cb/agent-gateway test   # 运行 VNext Worker WebSocket 传输契约测试
 pnpm -F @cb/runtime build       # 构建 Runtime API
 pnpm -F @cb/web dev             # Vite 开发服务器（前端）
 pnpm -F @cb/runtime-web dev     # Vite 试用与 Studio 前端
