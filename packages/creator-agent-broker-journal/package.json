@@ -1,0 +1,31 @@
+{
+  "name": "@cb/creator-agent-broker-journal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Creator-hosted Agent VNext 的 Broker、Lease/Fence 与双 Journal 可执行参考内核",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "test": "vitest run",
+    "test:property": "vitest run src/property.test.ts",
+    "test:fault": "vitest run src/fault-harness.test.ts",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
