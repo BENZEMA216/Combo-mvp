@@ -1,10 +1,15 @@
 import {
-  canonicalSha256,
+  CONSUMER_EVENT_OUTBOX_PROTOCOL,
+  ConsumerEventOutboxRecordSchema,
+  ConsumerTerminalEventPayloadSchema,
+  consumerEventDedupeKey,
+  consumerEventPayloadDigest,
   HmacSha256DigestSchema,
   Sha256HexSchema,
   Uint63StringSchema,
   UuidSchema,
   VnextErrorCodeSchema,
+  type ConsumerEventOutboxRecord,
 } from '@cb/creator-agent-protocol';
 import { z } from 'zod';
 import type { EncryptedMessage } from './message-crypto.js';
@@ -41,6 +46,10 @@ export type CloudJournalStep =
   | 'ASSISTANT_MESSAGE'
   | 'INVOCATION_SUCCEEDED'
   | 'SUCCEEDED_EVENT'
+  | 'INVOCATION_RECONCILING'
+  | 'RECONCILING_EVENT'
+  | 'INVOCATION_UNCERTAIN'
+  | 'UNCERTAIN_EVENT'
   | 'CONSUMER_EVENT_OUTBOX'
   | 'CONSUMER_EVENT_STREAM'
   | 'CONVERSATION_IDLE';
@@ -140,6 +149,48 @@ export interface CommittedSuccess {
   replayed: boolean;
 }
 
+export const InvocationUncertaintyReasonSchema = z.enum([
+  'START_DISPATCH_UNKNOWN',
+  'HOST_EVIDENCE_LOST',
+  'MODEL_ATTEMPT_UNKNOWN',
+  'CANCEL_NOT_CONFIRMED',
+  'JOURNAL_LOST',
+]);
+export type InvocationUncertaintyReason = z.infer<typeof InvocationUncertaintyReasonSchema>;
+
+const BeginReconciliationInputSchema = TenantIdentitySchema.extend({
+  conversationId: UuidSchema,
+  invocationId: UuidSchema,
+  sourceEventId: UuidSchema,
+  reason: InvocationUncertaintyReasonSchema,
+}).strict();
+
+const MarkUncertainInputSchema = BeginReconciliationInputSchema;
+
+export type BeginReconciliationInput = z.input<typeof BeginReconciliationInputSchema>;
+
+export interface BeginReconciliationResult {
+  invocationId: string;
+  state: 'RECONCILING';
+  reason: InvocationUncertaintyReason;
+  reconciliationStartedAt: string;
+  reconciliationDeadlineAt: string;
+  replayed: boolean;
+}
+
+export type MarkUncertainInput = z.input<typeof MarkUncertainInputSchema>;
+
+export interface MarkUncertainResult {
+  invocationId: string;
+  state: 'RECONCILING' | 'UNCERTAIN';
+  reason: InvocationUncertaintyReason;
+  reconciliationStartedAt: string;
+  reconciliationDeadlineAt: string;
+  consumerEventCursor: string | null;
+  exhausted: boolean;
+  replayed: boolean;
+}
+
 interface ExistingInvocationRow {
   id: string;
   user_message_id: string;
@@ -174,20 +225,27 @@ interface SuccessAuthorityRow {
   consumer_event_payload: unknown;
   consumer_event_payload_digest: string | null;
   consumer_event_dedupe_key: string | null;
+  terminal_source_event_id: string | null;
 }
 
-const ConsumerEventPayloadSchema = z.discriminatedUnion('state', [
-  z
-    .object({
-      state: z.literal('SUCCEEDED'),
-      messageId: UuidSchema,
-      resultDigest: HmacSha256DigestSchema,
-    })
-    .strict(),
-  z.object({ state: z.literal('CANCELLED') }).strict(),
-  z.object({ state: z.literal('FAILED'), errorCode: VnextErrorCodeSchema }).strict(),
-  z.object({ state: z.literal('UNCERTAIN'), errorCode: VnextErrorCodeSchema }).strict(),
-]);
+interface ReconciliationAuthorityRow {
+  state: string;
+  conversation_state: string;
+  reconciliation_reason: string | null;
+  reconciliation_started_at: Date | string | null;
+  uncertainty_reason: string | null;
+  error_code: string | null;
+  terminal_at: Date | string | null;
+  reconciliation_exhausted: boolean;
+  consumer_event_cursor: string | null;
+  consumer_event_source_event_id: string | null;
+  consumer_event_type: string | null;
+  consumer_event_payload: unknown;
+  consumer_event_payload_digest: string | null;
+  consumer_event_dedupe_key: string | null;
+  terminal_source_event_id: string | null;
+  reconciliation_source_event_id: string | null;
+}
 
 const ConsumerEventIdentitySchema = TenantIdentitySchema.extend({
   conversationId: UuidSchema,
@@ -209,6 +267,7 @@ const PublishConsumerEventInputSchema = ConsumerEventIdentitySchema.extend({
 
 interface ConsumerEventRow {
   cursor: string;
+  owner_id: string;
   conversation_id: string;
   invocation_id: string;
   source_event_id: string;
@@ -218,28 +277,13 @@ interface ConsumerEventRow {
   dedupe_key: string;
   state: string;
   attempt_count: number;
+  next_attempt_at: Date | string | null;
   created_at: Date | string;
+  published_at: Date | string | null;
   retained_until: Date | string;
 }
 
-export interface DurableConsumerEvent {
-  cursor: string;
-  conversationId: string;
-  invocationId: string;
-  sourceEventId: string;
-  eventType:
-    | 'invocation.succeeded'
-    | 'invocation.failed'
-    | 'invocation.cancelled'
-    | 'invocation.uncertain';
-  payload: z.output<typeof ConsumerEventPayloadSchema>;
-  payloadDigest: string;
-  dedupeKey: string;
-  state: 'PENDING' | 'PUBLISHED';
-  attemptCount: number;
-  createdAt: string;
-  retainedUntil: string;
-}
+export type DurableConsumerEvent = ConsumerEventOutboxRecord;
 
 export interface ConsumerEventPage {
   latestCursor: string;
@@ -255,41 +299,45 @@ function isoDate(value: Date | string): string {
   return parsed.toISOString();
 }
 
-function parseConsumerEventRow(row: ConsumerEventRow): DurableConsumerEvent {
-  const cursor = Uint63StringSchema.parse(row.cursor);
-  const conversationId = UuidSchema.parse(row.conversation_id);
-  const invocationId = UuidSchema.parse(row.invocation_id);
-  const sourceEventId = z.string().min(1).max(256).parse(row.source_event_id);
-  const eventType = z
-    .enum([
-      'invocation.succeeded',
-      'invocation.failed',
-      'invocation.cancelled',
-      'invocation.uncertain',
-    ])
-    .parse(row.event_type);
-  const payload = ConsumerEventPayloadSchema.parse(row.payload);
-  const payloadDigest = Sha256HexSchema.parse(row.payload_digest);
-  if (canonicalSha256(payload) !== payloadDigest) {
+function reconciliationDeadline(value: Date | string): string {
+  const startedAt = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(startedAt.valueOf())) {
     throw new CloudJournalError(
       'PERSISTENCE_INVARIANT_FAILED',
-      'Consumer Event payload digest 不一致',
+      'Reconciliation durable timestamp 不合法',
     );
   }
-  return {
-    cursor,
-    conversationId,
-    invocationId,
-    sourceEventId,
-    eventType,
-    payload,
-    payloadDigest,
+  return new Date(startedAt.valueOf() + 300_000).toISOString();
+}
+
+function parseConsumerEventRow(row: ConsumerEventRow): DurableConsumerEvent {
+  const candidate = {
+    protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+    schemaVersion: 1,
+    cursor: Uint63StringSchema.parse(row.cursor),
+    ownerId: UuidSchema.parse(row.owner_id),
+    conversationId: UuidSchema.parse(row.conversation_id),
+    invocationId: UuidSchema.parse(row.invocation_id),
+    sourceEventId: Uint63StringSchema.parse(row.source_event_id),
+    eventType: row.event_type,
+    payload: row.payload,
+    payloadDigest: Sha256HexSchema.parse(row.payload_digest),
     dedupeKey: Sha256HexSchema.parse(row.dedupe_key),
-    state: z.enum(['PENDING', 'PUBLISHED']).parse(row.state),
-    attemptCount: z.number().int().min(0).max(100).parse(row.attempt_count),
+    state: row.state,
+    attemptCount: row.attempt_count,
+    nextAttemptAt: row.next_attempt_at === null ? null : isoDate(row.next_attempt_at),
     createdAt: isoDate(row.created_at),
+    publishedAt: row.published_at === null ? null : isoDate(row.published_at),
     retainedUntil: isoDate(row.retained_until),
   };
+  const parsed = ConsumerEventOutboxRecordSchema.safeParse(candidate);
+  if (!parsed.success) {
+    throw new CloudJournalError(
+      'PERSISTENCE_INVARIANT_FAILED',
+      'Consumer Event durable record 与权威协议不一致',
+    );
+  }
+  return parsed.data;
 }
 
 async function withTenantTransaction<T>(
@@ -516,7 +564,8 @@ export class PostgresCloudJournal {
                 consumer_event.event_type AS consumer_event_type,
                 consumer_event.payload AS consumer_event_payload,
                 consumer_event.payload_digest AS consumer_event_payload_digest,
-                consumer_event.dedupe_key AS consumer_event_dedupe_key
+                consumer_event.dedupe_key AS consumer_event_dedupe_key,
+                terminal_event.source_event_id AS terminal_source_event_id
            FROM agent_invocations AS invocation
            JOIN agent_conversations AS conversation
              ON conversation.id = invocation.conversation_id
@@ -529,7 +578,10 @@ export class PostgresCloudJournal {
             AND lease.fence = invocation.assignment_fence
            LEFT JOIN consumer_event_outbox AS consumer_event
              ON consumer_event.invocation_id = invocation.id
-            AND consumer_event.event_type = 'invocation.succeeded'
+            AND consumer_event.event_type = 'invocation.terminal'
+           LEFT JOIN agent_invocation_events AS terminal_event
+             ON terminal_event.id = consumer_event.source_event_id
+            AND terminal_event.invocation_id = invocation.id
           WHERE invocation.id = $1
             AND invocation.conversation_id = $2
             AND invocation.creator_id = $3
@@ -556,21 +608,6 @@ export class PostgresCloudJournal {
           'final 与 durable Version/Worker/Lease/Fence/Capability 不一致',
         );
       }
-      const terminalPayload = {
-        state: 'SUCCEEDED',
-        messageId: input.assistantMessageId,
-        resultDigest: input.resultDigest,
-      } as const;
-      const terminalPayloadDigest = canonicalSha256(terminalPayload);
-      const terminalDedupeKey = canonicalSha256({
-        protocol: 'combo.consumer-event/1',
-        ownerId: input.consumerId,
-        conversationId: input.conversationId,
-        invocationId: input.invocationId,
-        eventType: 'invocation.succeeded',
-        messageId: input.assistantMessageId,
-        resultDigest: input.resultDigest,
-      });
       if (current.state === 'SUCCEEDED') {
         if (
           current.result_digest !== input.resultDigest ||
@@ -578,27 +615,43 @@ export class PostgresCloudJournal {
         ) {
           throw new CloudJournalError('TERMINAL_CONFLICT', '终态重放与 durable result 不一致');
         }
-        if (current.consumer_event_cursor === null) {
+        if (
+          current.consumer_event_cursor === null ||
+          current.consumer_event_source_event_id === null
+        ) {
           throw new CloudJournalError(
             'PERSISTENCE_INVARIANT_FAILED',
             '已成功 Invocation 缺少 durable Consumer Event',
           );
         }
         if (
-          current.consumer_event_source_event_id !== input.sourceEventId ||
-          current.consumer_event_type !== 'invocation.succeeded'
+          current.terminal_source_event_id !== input.sourceEventId ||
+          current.consumer_event_type !== 'invocation.terminal'
         ) {
           throw new CloudJournalError(
             'TERMINAL_CONFLICT',
             '终态重放与 durable Consumer Event identity 不一致',
           );
         }
-        const durablePayload = ConsumerEventPayloadSchema.safeParse(current.consumer_event_payload);
+        const durablePayload = ConsumerTerminalEventPayloadSchema.safeParse(
+          current.consumer_event_payload,
+        );
         if (
           !durablePayload.success ||
-          canonicalSha256(durablePayload.data) !== terminalPayloadDigest ||
-          current.consumer_event_payload_digest !== terminalPayloadDigest ||
-          current.consumer_event_dedupe_key !== terminalDedupeKey
+          durablePayload.data.conversationId !== input.conversationId ||
+          durablePayload.data.invocationId !== input.invocationId ||
+          durablePayload.data.terminalState !== 'SUCCEEDED' ||
+          durablePayload.data.assistantMessageId !== input.assistantMessageId ||
+          durablePayload.data.resultDigest !== input.resultDigest ||
+          durablePayload.data.errorCode !== null ||
+          current.consumer_event_payload_digest !==
+            consumerEventPayloadDigest(durablePayload.data) ||
+          current.consumer_event_dedupe_key !==
+            consumerEventDedupeKey({
+              ownerId: input.consumerId,
+              sourceEventId: current.consumer_event_source_event_id,
+              eventType: 'invocation.terminal',
+            })
         ) {
           throw new CloudJournalError(
             'PERSISTENCE_INVARIANT_FAILED',
@@ -655,7 +708,7 @@ export class PostgresCloudJournal {
       );
       await inject(this.failureInjector, 'ASSISTANT_MESSAGE');
 
-      const terminal = await connection.query(
+      const terminal = await connection.query<{ terminal_at: Date | string }>(
         `UPDATE agent_invocations
             SET state = 'SUCCEEDED', result_message_id = $5, result_digest = $6,
                 error_code = NULL, uncertainty_reason = NULL, terminal_at = now()
@@ -663,7 +716,8 @@ export class PostgresCloudJournal {
             AND state IN ('RUNNING', 'CANCEL_REQUESTED', 'RECONCILING')
             AND agent_version_id = $7 AND assigned_worker_id = $8
             AND assignment_lease_id = $9 AND assignment_fence = $10
-            AND execution_capability_id = $11`,
+            AND execution_capability_id = $11
+          RETURNING terminal_at`,
         [
           input.invocationId,
           input.conversationId,
@@ -684,6 +738,14 @@ export class PostgresCloudJournal {
           '终态 compare-and-set 未匹配 exact authority',
         );
       }
+      const terminalAt = terminal.rows[0]?.terminal_at;
+      if (!terminalAt) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'Invocation terminal 缺少 Cloud 时间',
+        );
+      }
+      const terminalOccurredAt = isoDate(terminalAt);
       await inject(this.failureInjector, 'INVOCATION_SUCCEEDED');
 
       const terminalEvent = await connection.query<{ id: string }>(
@@ -692,7 +754,7 @@ export class PostgresCloudJournal {
            source_event_id, event_type, payload, occurred_at
          )
          SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
-                'BROKER', $4, 'invocation.succeeded', $5::jsonb, now()
+                'BROKER', $4, 'invocation.succeeded', $5::jsonb, $6
            FROM agent_invocation_events
           WHERE invocation_id = $1
          RETURNING id::text AS id`,
@@ -701,7 +763,12 @@ export class PostgresCloudJournal {
           input.creatorId,
           input.consumerId,
           input.sourceEventId,
-          JSON.stringify(terminalPayload),
+          JSON.stringify({
+            state: 'SUCCEEDED',
+            messageId: input.assistantMessageId,
+            resultDigest: input.resultDigest,
+          }),
+          terminalOccurredAt,
         ],
       );
       const terminalEventId = terminalEvent.rows[0]?.id;
@@ -713,21 +780,39 @@ export class PostgresCloudJournal {
       }
       await inject(this.failureInjector, 'SUCCEEDED_EVENT');
 
+      const terminalPayload = ConsumerTerminalEventPayloadSchema.parse({
+        protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+        schemaVersion: 1,
+        type: 'invocation.terminal',
+        conversationId: input.conversationId,
+        invocationId: input.invocationId,
+        terminalState: 'SUCCEEDED',
+        assistantMessageId: input.assistantMessageId,
+        resultDigest: input.resultDigest,
+        errorCode: null,
+        occurredAt: terminalOccurredAt,
+      });
+      const terminalPayloadDigest = consumerEventPayloadDigest(terminalPayload);
+      const terminalDedupeKey = consumerEventDedupeKey({
+        ownerId: input.consumerId,
+        sourceEventId: terminalEventId,
+        eventType: 'invocation.terminal',
+      });
+
       const consumerEvent = await connection.query<{ cursor: string }>(
         `INSERT INTO consumer_event_outbox (
            owner_id, conversation_id, invocation_id, source_event_id,
-           event_type, payload, payload_digest, dedupe_key, terminal_event_id
-         ) VALUES ($1, $2, $3, $4, 'invocation.succeeded', $5::jsonb, $6, $7, $8)
+           event_type, payload, payload_digest, dedupe_key
+         ) VALUES ($1, $2, $3, $4, 'invocation.terminal', $5::jsonb, $6, $7)
          RETURNING cursor::text AS cursor`,
         [
           input.consumerId,
           input.conversationId,
           input.invocationId,
-          input.sourceEventId,
+          terminalEventId,
           JSON.stringify(terminalPayload),
           terminalPayloadDigest,
           terminalDedupeKey,
-          terminalEventId,
         ],
       );
       const consumerEventCursor = consumerEvent.rows[0]?.cursor;
@@ -777,6 +862,464 @@ export class PostgresCloudJournal {
     });
   }
 
+  public async beginReconciliation(
+    rawInput: BeginReconciliationInput,
+  ): Promise<BeginReconciliationResult> {
+    const input = BeginReconciliationInputSchema.parse(rawInput);
+    const pool = this.pools.reconciler;
+    if (!pool) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'Invocation reconciliation 需要独立 Reconciler pool',
+      );
+    }
+    return withTenantTransaction(pool, input, async (connection) => {
+      await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+        input.invocationId,
+      ]);
+      const authority = await connection.query<ReconciliationAuthorityRow>(
+        `SELECT invocation.state, conversation.state AS conversation_state,
+                invocation.reconciliation_reason, invocation.reconciliation_started_at,
+                invocation.uncertainty_reason, invocation.error_code, invocation.terminal_at,
+                false AS reconciliation_exhausted,
+                NULL::text AS consumer_event_cursor,
+                NULL::text AS consumer_event_source_event_id,
+                NULL::text AS consumer_event_type,
+                NULL::jsonb AS consumer_event_payload,
+                NULL::text AS consumer_event_payload_digest,
+                NULL::text AS consumer_event_dedupe_key,
+                NULL::text AS terminal_source_event_id,
+                reconciling_event.source_event_id AS reconciliation_source_event_id
+           FROM agent_invocations AS invocation
+           JOIN agent_conversations AS conversation
+             ON conversation.id = invocation.conversation_id
+            AND conversation.creator_id = invocation.creator_id
+            AND conversation.consumer_subject_id = invocation.consumer_subject_id
+           LEFT JOIN agent_invocation_events AS reconciling_event
+             ON reconciling_event.invocation_id = invocation.id
+            AND reconciling_event.event_type = 'invocation.reconciling'
+          WHERE invocation.id = $1
+            AND invocation.conversation_id = $2
+            AND invocation.creator_id = $3
+            AND invocation.consumer_subject_id = $4
+          FOR UPDATE OF invocation, conversation`,
+        [input.invocationId, input.conversationId, input.creatorId, input.consumerId],
+      );
+      const current = authority.rows[0];
+      if (!current) {
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'Invocation 不存在或 reconciliation 租户不匹配',
+        );
+      }
+      if (current.state === 'RECONCILING') {
+        if (
+          current.reconciliation_reason !== input.reason ||
+          current.reconciliation_started_at === null ||
+          current.reconciliation_source_event_id !== input.sourceEventId
+        ) {
+          throw new CloudJournalError(
+            'TERMINAL_CONFLICT',
+            'Reconciliation 重放与 durable lost-evidence binding 不一致',
+          );
+        }
+        return {
+          invocationId: input.invocationId,
+          state: 'RECONCILING',
+          reason: input.reason,
+          reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+          reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+          replayed: true,
+        };
+      }
+      if (
+        current.state === 'RUNNING' &&
+        current.conversation_state === 'BUSY' &&
+        current.reconciliation_started_at !== null &&
+        current.reconciliation_reason !== null
+      ) {
+        if (
+          current.reconciliation_reason !== input.reason ||
+          current.reconciliation_source_event_id !== input.sourceEventId
+        ) {
+          throw new CloudJournalError(
+            'TERMINAL_CONFLICT',
+            '再次 reconciliation 与首个 durable lost-evidence binding 不一致',
+          );
+        }
+        const resumed = await connection.query(
+          `UPDATE agent_invocations
+              SET state = 'RECONCILING'
+            WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
+              AND consumer_subject_id = $4 AND state = 'RUNNING'
+              AND reconciliation_reason = $5
+              AND reconciliation_started_at IS NOT NULL`,
+          [
+            input.invocationId,
+            input.conversationId,
+            input.creatorId,
+            input.consumerId,
+            input.reason,
+          ],
+        );
+        if (resumed.rowCount !== 1) {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            'Invocation 未按首个 durable binding 重新进入 RECONCILING',
+          );
+        }
+        return {
+          invocationId: input.invocationId,
+          state: 'RECONCILING',
+          reason: input.reason,
+          reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+          reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+          replayed: true,
+        };
+      }
+      if (['SUCCEEDED', 'FAILED', 'CANCELLED', 'UNCERTAIN', 'EXPIRED'].includes(current.state)) {
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有终态');
+      }
+      if (
+        !['PERSISTED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED'].includes(current.state) ||
+        current.conversation_state !== 'BUSY' ||
+        current.reconciliation_started_at !== null ||
+        current.reconciliation_reason !== null
+      ) {
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'Invocation 不在可进入 reconciliation 的 durable 状态',
+        );
+      }
+
+      const projection = await connection.query<{
+        reconciliation_started_at: Date | string;
+      }>(
+        `UPDATE agent_invocations
+            SET state = 'RECONCILING', reconciliation_reason = $5,
+                reconciliation_started_at = now()
+          WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
+            AND consumer_subject_id = $4
+            AND state IN ('PERSISTED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED')
+            AND reconciliation_reason IS NULL AND reconciliation_started_at IS NULL
+          RETURNING reconciliation_started_at`,
+        [input.invocationId, input.conversationId, input.creatorId, input.consumerId, input.reason],
+      );
+      const startedAt = projection.rows[0]?.reconciliation_started_at;
+      if (!startedAt) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'Invocation projection 未原子进入 RECONCILING',
+        );
+      }
+      await inject(this.failureInjector, 'INVOCATION_RECONCILING');
+
+      await connection.query(
+        `INSERT INTO agent_invocation_events (
+           invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+           source_event_id, event_type, payload, occurred_at
+         )
+         SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                'RECONCILER', $4, 'invocation.reconciling', $5::jsonb, $6
+           FROM agent_invocation_events
+          WHERE invocation_id = $1`,
+        [
+          input.invocationId,
+          input.creatorId,
+          input.consumerId,
+          input.sourceEventId,
+          JSON.stringify({ state: 'RECONCILING', reason: input.reason }),
+          isoDate(startedAt),
+        ],
+      );
+      await inject(this.failureInjector, 'RECONCILING_EVENT');
+
+      return {
+        invocationId: input.invocationId,
+        state: 'RECONCILING',
+        reason: input.reason,
+        reconciliationStartedAt: isoDate(startedAt),
+        reconciliationDeadlineAt: reconciliationDeadline(startedAt),
+        replayed: false,
+      };
+    });
+  }
+
+  public async markUncertain(rawInput: MarkUncertainInput): Promise<MarkUncertainResult> {
+    const input = MarkUncertainInputSchema.parse(rawInput);
+    const pool = this.pools.reconciler;
+    if (!pool) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'Invocation reconciliation 需要独立 Reconciler pool',
+      );
+    }
+    return withTenantTransaction(pool, input, async (connection) => {
+      await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+        input.invocationId,
+      ]);
+      const authority = await connection.query<ReconciliationAuthorityRow>(
+        `SELECT invocation.state, conversation.state AS conversation_state,
+                invocation.reconciliation_reason, invocation.reconciliation_started_at,
+                invocation.uncertainty_reason, invocation.error_code, invocation.terminal_at,
+                CASE WHEN invocation.reconciliation_started_at IS NULL THEN false
+                     ELSE creator_agent_reconciliation_is_exhausted(
+                       invocation.reconciliation_started_at, now()
+                     ) END AS reconciliation_exhausted,
+                consumer_event.cursor::text AS consumer_event_cursor,
+                consumer_event.source_event_id::text AS consumer_event_source_event_id,
+                consumer_event.event_type AS consumer_event_type,
+                consumer_event.payload AS consumer_event_payload,
+                consumer_event.payload_digest AS consumer_event_payload_digest,
+                consumer_event.dedupe_key AS consumer_event_dedupe_key,
+                terminal_event.source_event_id AS terminal_source_event_id,
+                reconciling_event.source_event_id AS reconciliation_source_event_id
+           FROM agent_invocations AS invocation
+           JOIN agent_conversations AS conversation
+             ON conversation.id = invocation.conversation_id
+            AND conversation.creator_id = invocation.creator_id
+            AND conversation.consumer_subject_id = invocation.consumer_subject_id
+           LEFT JOIN consumer_event_outbox AS consumer_event
+             ON consumer_event.invocation_id = invocation.id
+            AND consumer_event.event_type = 'invocation.terminal'
+           LEFT JOIN agent_invocation_events AS terminal_event
+             ON terminal_event.id = consumer_event.source_event_id
+            AND terminal_event.invocation_id = invocation.id
+           LEFT JOIN agent_invocation_events AS reconciling_event
+             ON reconciling_event.invocation_id = invocation.id
+            AND reconciling_event.event_type = 'invocation.reconciling'
+          WHERE invocation.id = $1
+            AND invocation.conversation_id = $2
+            AND invocation.creator_id = $3
+            AND invocation.consumer_subject_id = $4
+          FOR UPDATE OF invocation, conversation`,
+        [input.invocationId, input.conversationId, input.creatorId, input.consumerId],
+      );
+      const current = authority.rows[0];
+      if (!current) {
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'Invocation 不存在或 reconciliation 租户不匹配',
+        );
+      }
+      if (current.state === 'UNCERTAIN') {
+        if (
+          current.reconciliation_reason !== input.reason ||
+          current.uncertainty_reason !== input.reason ||
+          current.error_code !== 'EXECUTION_STATE_UNKNOWN' ||
+          current.reconciliation_started_at === null ||
+          current.reconciliation_source_event_id === null ||
+          current.reconciliation_source_event_id === input.sourceEventId ||
+          current.terminal_at === null ||
+          current.terminal_source_event_id !== input.sourceEventId ||
+          current.consumer_event_cursor === null ||
+          current.consumer_event_source_event_id === null ||
+          current.consumer_event_type !== 'invocation.terminal'
+        ) {
+          throw new CloudJournalError(
+            'TERMINAL_CONFLICT',
+            'UNCERTAIN 重放与 durable terminal binding 不一致',
+          );
+        }
+        const durablePayload = ConsumerTerminalEventPayloadSchema.safeParse(
+          current.consumer_event_payload,
+        );
+        if (
+          !durablePayload.success ||
+          durablePayload.data.conversationId !== input.conversationId ||
+          durablePayload.data.invocationId !== input.invocationId ||
+          durablePayload.data.terminalState !== 'UNCERTAIN' ||
+          durablePayload.data.assistantMessageId !== null ||
+          durablePayload.data.resultDigest !== null ||
+          durablePayload.data.errorCode !== 'EXECUTION_STATE_UNKNOWN' ||
+          current.consumer_event_payload_digest !==
+            consumerEventPayloadDigest(durablePayload.data) ||
+          current.consumer_event_dedupe_key !==
+            consumerEventDedupeKey({
+              ownerId: input.consumerId,
+              sourceEventId: current.consumer_event_source_event_id,
+              eventType: 'invocation.terminal',
+            })
+        ) {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            'UNCERTAIN durable Consumer Event 不一致',
+          );
+        }
+        return {
+          invocationId: input.invocationId,
+          state: 'UNCERTAIN',
+          reason: input.reason,
+          reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+          reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+          consumerEventCursor: current.consumer_event_cursor,
+          exhausted: true,
+          replayed: true,
+        };
+      }
+      if (['SUCCEEDED', 'FAILED', 'CANCELLED', 'EXPIRED'].includes(current.state)) {
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有其他终态');
+      }
+      if (
+        current.state !== 'RECONCILING' ||
+        current.conversation_state !== 'BUSY' ||
+        current.reconciliation_reason !== input.reason ||
+        current.reconciliation_started_at === null ||
+        current.reconciliation_source_event_id === null ||
+        current.reconciliation_source_event_id === input.sourceEventId ||
+        current.uncertainty_reason !== null
+      ) {
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'Invocation 没有匹配的 durable reconciliation binding',
+        );
+      }
+      if (current.reconciliation_exhausted !== true) {
+        return {
+          invocationId: input.invocationId,
+          state: 'RECONCILING',
+          reason: input.reason,
+          reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+          reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+          consumerEventCursor: null,
+          exhausted: false,
+          replayed: true,
+        };
+      }
+
+      const terminal = await connection.query<{ terminal_at: Date | string }>(
+        `UPDATE agent_invocations
+            SET state = 'UNCERTAIN', uncertainty_reason = $5,
+                error_code = 'EXECUTION_STATE_UNKNOWN', terminal_at = now()
+          WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
+            AND consumer_subject_id = $4 AND state = 'RECONCILING'
+            AND reconciliation_reason = $5
+            AND creator_agent_reconciliation_is_exhausted(reconciliation_started_at, now())
+          RETURNING terminal_at`,
+        [input.invocationId, input.conversationId, input.creatorId, input.consumerId, input.reason],
+      );
+      const terminalAt = terminal.rows[0]?.terminal_at;
+      if (!terminalAt) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'UNCERTAIN compare-and-set 未匹配 exhausted reconciliation',
+        );
+      }
+      const terminalOccurredAt = isoDate(terminalAt);
+      await inject(this.failureInjector, 'INVOCATION_UNCERTAIN');
+
+      const terminalEvent = await connection.query<{ id: string }>(
+        `INSERT INTO agent_invocation_events (
+           invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+           source_event_id, event_type, payload, occurred_at
+         )
+         SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                'RECONCILER', $4, 'invocation.uncertain', $5::jsonb, $6
+           FROM agent_invocation_events
+          WHERE invocation_id = $1
+         RETURNING id::text AS id`,
+        [
+          input.invocationId,
+          input.creatorId,
+          input.consumerId,
+          input.sourceEventId,
+          JSON.stringify({ state: 'UNCERTAIN', errorCode: 'EXECUTION_STATE_UNKNOWN' }),
+          terminalOccurredAt,
+        ],
+      );
+      const terminalEventId = terminalEvent.rows[0]?.id;
+      if (!terminalEventId) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'UNCERTAIN terminal Event 未返回 durable identity',
+        );
+      }
+      await inject(this.failureInjector, 'UNCERTAIN_EVENT');
+
+      const terminalPayload = ConsumerTerminalEventPayloadSchema.parse({
+        protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+        schemaVersion: 1,
+        type: 'invocation.terminal',
+        conversationId: input.conversationId,
+        invocationId: input.invocationId,
+        terminalState: 'UNCERTAIN',
+        assistantMessageId: null,
+        resultDigest: null,
+        errorCode: 'EXECUTION_STATE_UNKNOWN',
+        occurredAt: terminalOccurredAt,
+      });
+      const terminalPayloadDigest = consumerEventPayloadDigest(terminalPayload);
+      const terminalDedupeKey = consumerEventDedupeKey({
+        ownerId: input.consumerId,
+        sourceEventId: terminalEventId,
+        eventType: 'invocation.terminal',
+      });
+      const consumerEvent = await connection.query<{ cursor: string }>(
+        `INSERT INTO consumer_event_outbox (
+           owner_id, conversation_id, invocation_id, source_event_id,
+           event_type, payload, payload_digest, dedupe_key
+         ) VALUES ($1, $2, $3, $4, 'invocation.terminal', $5::jsonb, $6, $7)
+         RETURNING cursor::text AS cursor`,
+        [
+          input.consumerId,
+          input.conversationId,
+          input.invocationId,
+          terminalEventId,
+          JSON.stringify(terminalPayload),
+          terminalPayloadDigest,
+          terminalDedupeKey,
+        ],
+      );
+      const consumerEventCursor = consumerEvent.rows[0]?.cursor;
+      if (!consumerEventCursor) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'UNCERTAIN Consumer Event Outbox 未返回 cursor',
+        );
+      }
+      await inject(this.failureInjector, 'CONSUMER_EVENT_OUTBOX');
+
+      await connection.query(
+        `INSERT INTO consumer_event_streams (
+           owner_id, conversation_id, latest_cursor, expired_through_cursor, updated_at
+         ) VALUES ($1, $2, $3, 0, now())
+         ON CONFLICT (owner_id, conversation_id) DO UPDATE
+           SET latest_cursor = GREATEST(
+                 consumer_event_streams.latest_cursor,
+                 EXCLUDED.latest_cursor
+               ),
+               updated_at = now()`,
+        [input.consumerId, input.conversationId, consumerEventCursor],
+      );
+      await inject(this.failureInjector, 'CONSUMER_EVENT_STREAM');
+
+      const conversation = await connection.query(
+        `UPDATE agent_conversations
+            SET state = 'IDLE', last_activity_at = now()
+          WHERE id = $1 AND creator_id = $2 AND consumer_subject_id = $3 AND state = 'BUSY'`,
+        [input.conversationId, input.creatorId, input.consumerId],
+      );
+      if (conversation.rowCount !== 1) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'UNCERTAIN terminal 未原子释放 Conversation',
+        );
+      }
+      await inject(this.failureInjector, 'CONVERSATION_IDLE');
+
+      return {
+        invocationId: input.invocationId,
+        state: 'UNCERTAIN',
+        reason: input.reason,
+        reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+        reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+        consumerEventCursor,
+        exhausted: true,
+        replayed: false,
+      };
+    });
+  }
+
   /**
    * Claims a bounded batch for an at-least-once publisher. The lease is encoded by
    * next_attempt_at; publication itself happens only after this transaction commits.
@@ -807,10 +1350,12 @@ export class PostgresCloudJournal {
                 next_attempt_at = now() + interval '30 seconds'
            FROM candidates
           WHERE event.cursor = candidates.cursor
-          RETURNING event.cursor::text, event.conversation_id, event.invocation_id,
+          RETURNING event.cursor::text, event.owner_id, event.conversation_id,
+                    event.invocation_id,
                     event.source_event_id, event.event_type, event.payload,
                     event.payload_digest, event.dedupe_key, event.state,
-                    event.attempt_count, event.created_at, event.retained_until`,
+                    event.attempt_count, event.next_attempt_at, event.created_at,
+                    event.published_at, event.retained_until`,
         [input.consumerId, input.limit],
       );
       return result.rows
@@ -853,8 +1398,8 @@ export class PostgresCloudJournal {
           'Consumer Event 发布确认的 payload digest 不匹配',
         );
       }
-      const payload = ConsumerEventPayloadSchema.safeParse(row.payload);
-      if (!payload.success || canonicalSha256(payload.data) !== row.payload_digest) {
+      const payload = ConsumerTerminalEventPayloadSchema.safeParse(row.payload);
+      if (!payload.success || consumerEventPayloadDigest(payload.data) !== row.payload_digest) {
         throw new CloudJournalError(
           'PERSISTENCE_INVARIANT_FAILED',
           'Consumer Event 发布前 payload 完整性校验失败',
@@ -917,9 +1462,9 @@ export class PostgresCloudJournal {
         throw new CloudJournalError('SSE_CURSOR_EXPIRED', '事件游标已过期，请重新加载完整对话');
       }
       const result = await connection.query<ConsumerEventRow>(
-        `SELECT cursor::text, conversation_id, invocation_id, source_event_id,
+        `SELECT cursor::text, owner_id, conversation_id, invocation_id, source_event_id,
                 event_type, payload, payload_digest, dedupe_key, state,
-                attempt_count, created_at, retained_until
+                attempt_count, next_attempt_at, created_at, published_at, retained_until
            FROM consumer_event_outbox
           WHERE owner_id = $1 AND conversation_id = $2 AND cursor > $3
           ORDER BY cursor

@@ -1,5 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { canonicalSha256 } from '@cb/creator-agent-protocol';
+import {
+  CONSUMER_EVENT_OUTBOX_PROTOCOL,
+  ConsumerTerminalEventPayloadSchema,
+  consumerEventPayloadDigest,
+} from '@cb/creator-agent-protocol';
 import { Client, Pool } from 'pg';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -20,6 +24,11 @@ const enabled =
   process.env.CREATOR_AGENT_PERSISTENCE_PG_TEST === '1' &&
   Boolean(databaseUrl && apiPassword && brokerPassword && reconcilerPassword);
 const pgDescribe = enabled ? describe : describe.skip;
+
+function randomUuidV7(): string {
+  const value = randomUUID();
+  return `${value.slice(0, 14)}7${value.slice(15)}`;
+}
 
 function roleUrl(
   role: 'combo_agent_api' | 'combo_agent_broker' | 'combo_agent_reconciler',
@@ -61,19 +70,19 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
   const ids = {
     creatorId: '',
     consumerId: '',
-    snapshotId: randomUUID(),
-    agentId: randomUUID(),
-    agentVersionId: randomUUID(),
-    deploymentId: randomUUID(),
-    workerId: randomUUID(),
-    leaseId: randomUUID(),
+    snapshotId: randomUuidV7(),
+    agentId: randomUuidV7(),
+    agentVersionId: randomUuidV7(),
+    deploymentId: randomUuidV7(),
+    workerId: randomUuidV7(),
+    leaseId: randomUuidV7(),
   };
   const encryptionKey = Buffer.alloc(32, 0x31);
   const digestKey = Buffer.alloc(32, 0x32);
   let nonceCounter = 1;
 
   async function createConversation(): Promise<string> {
-    const conversationId = randomUUID();
+    const conversationId = randomUuidV7();
     await owner.query(
       `INSERT INTO agent_conversations (
          id, agent_id, deployment_id, agent_version_id, creator_id,
@@ -127,7 +136,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       turnNo?: number;
     } = {},
   ): AcceptInvocationInput {
-    const userMessageId = randomUUID();
+    const userMessageId = randomUuidV7();
     const turnNo = options.turnNo ?? 1;
     return {
       creatorId: ids.creatorId,
@@ -137,10 +146,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       agentVersionDigest: digest('7'),
       targetWorkerId: ids.workerId,
       userMessageId,
-      invocationId: randomUUID(),
-      outboxCommandId: randomUUID(),
-      sourceEventId: randomUUID(),
-      clientMessageId: options.clientMessageId ?? randomUUID(),
+      invocationId: randomUuidV7(),
+      outboxCommandId: randomUuidV7(),
+      sourceEventId: randomUuidV7(),
+      clientMessageId: options.clientMessageId ?? randomUuidV7(),
       requestDigest: options.requestDigest ?? hmac('8'),
       turnNo,
       deadlineAt: new Date(Date.now() + 120_000),
@@ -155,7 +164,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
   }
 
   async function assignRunning(input: AcceptInvocationInput): Promise<string> {
-    const capabilityId = randomUUID();
+    const capabilityId = randomUuidV7();
     await owner.query(`UPDATE agent_invocations SET state = 'QUEUED' WHERE id = $1`, [
       input.invocationId,
     ]);
@@ -183,15 +192,63 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     return capabilityId;
   }
 
+  async function assignPersisted(input: AcceptInvocationInput): Promise<void> {
+    await owner.query(`UPDATE agent_invocations SET state = 'QUEUED' WHERE id = $1`, [
+      input.invocationId,
+    ]);
+    await owner.query(
+      `UPDATE agent_invocations
+          SET state = 'DISPATCH_PENDING', assigned_worker_id = $2,
+              assignment_lease_id = $3, assignment_fence = 1,
+              execution_capability_id = $4
+        WHERE id = $1`,
+      [input.invocationId, ids.workerId, ids.leaseId, randomUuidV7()],
+    );
+    await owner.query(`UPDATE agent_invocations SET state = 'PERSISTED' WHERE id = $1`, [
+      input.invocationId,
+    ]);
+  }
+
+  async function backdateReconciliation(
+    input: AcceptInvocationInput,
+    reason: string,
+    sourceEventId: string,
+  ): Promise<void> {
+    await assignPersisted(input);
+    const transition = await owner.query<{ reconciliation_started_at: Date }>(
+      `UPDATE agent_invocations
+          SET state = 'RECONCILING', reconciliation_reason = $2,
+              reconciliation_started_at = now() - interval '301 seconds'
+        WHERE id = $1
+        RETURNING reconciliation_started_at`,
+      [input.invocationId, reason],
+    );
+    await owner.query(
+      `INSERT INTO agent_invocation_events (
+         invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+         source_event_id, event_type, payload, occurred_at
+       ) VALUES ($1, $2, $3, 2, 'RECONCILER', $4,
+                 'invocation.reconciling', $5::jsonb, $6)`,
+      [
+        input.invocationId,
+        ids.creatorId,
+        ids.consumerId,
+        sourceEventId,
+        JSON.stringify({ state: 'RECONCILING', reason }),
+        transition.rows[0]!.reconciliation_started_at,
+      ],
+    );
+  }
+
   function successInput(accepted: AcceptInvocationInput, capabilityId: string): CommitSuccessInput {
-    const assistantMessageId = randomUUID();
+    const assistantMessageId = randomUuidV7();
     return {
       creatorId: ids.creatorId,
       consumerId: ids.consumerId,
       conversationId: accepted.conversationId,
       invocationId: accepted.invocationId,
       assistantMessageId,
-      sourceEventId: randomUUID(),
+      sourceEventId: randomUuidV7(),
       agentVersionId: ids.agentVersionId,
       workerId: ids.workerId,
       leaseId: ids.leaseId,
@@ -311,7 +368,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       `INSERT INTO worker_leases (
          id, deployment_id, creator_id, worker_id, connection_id, fence, expires_at
        ) VALUES ($1, $2, $3, $4, $5, 1, now() + interval '10 minutes')`,
-      [ids.leaseId, ids.deploymentId, ids.creatorId, ids.workerId, randomUUID()],
+      [ids.leaseId, ids.deploymentId, ids.creatorId, ids.workerId, randomUuidV7()],
     );
   });
 
@@ -422,7 +479,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumerEventCursor: committed.consumerEventCursor,
     });
     await expect(
-      journal.commitSuccess({ ...success, sourceEventId: randomUUID() }),
+      journal.commitSuccess({ ...success, sourceEventId: randomUuidV7() }),
     ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'TERMINAL_CONFLICT' });
     await expect(journal.commitSuccess({ ...success, fence: 2n })).rejects.toMatchObject<
       Partial<CloudJournalError>
@@ -442,6 +499,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumer_events: string;
       latest_cursor: string;
       payload_digest: string;
+      payload: unknown;
     }>(
       `SELECT
          (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
@@ -454,12 +512,26 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
          (SELECT latest_cursor::text FROM consumer_event_streams
            WHERE conversation_id = invocation.conversation_id) AS latest_cursor,
          (SELECT payload_digest
-            FROM consumer_event_outbox WHERE invocation_id = $1) AS payload_digest
+            FROM consumer_event_outbox WHERE invocation_id = $1) AS payload_digest,
+         (SELECT payload
+            FROM consumer_event_outbox WHERE invocation_id = $1) AS payload
        FROM agent_invocations AS invocation
        JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
        WHERE invocation.id = $1`,
       [accepted.invocationId],
     );
+    const terminalPayload = ConsumerTerminalEventPayloadSchema.parse(state.rows[0]!.payload);
+    expect(terminalPayload).toMatchObject({
+      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.terminal',
+      conversationId,
+      invocationId: accepted.invocationId,
+      terminalState: 'SUCCEEDED',
+      assistantMessageId: success.assistantMessageId,
+      resultDigest: success.resultDigest,
+      errorCode: null,
+    });
     expect(state.rows[0]).toEqual({
       messages: '2',
       succeeded_events: '1',
@@ -468,11 +540,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       conversation_state: 'IDLE',
       consumer_events: '1',
       latest_cursor: committed.consumerEventCursor,
-      payload_digest: canonicalSha256({
-        state: 'SUCCEEDED',
-        messageId: success.assistantMessageId,
-        resultDigest: success.resultDigest,
-      }),
+      payload_digest: consumerEventPayloadDigest(terminalPayload),
+      payload: terminalPayload,
     });
   });
 
@@ -504,19 +573,25 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         cursor: committed.consumerEventCursor,
         conversationId,
         invocationId: accepted.invocationId,
-        eventType: 'invocation.succeeded',
+        protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+        eventType: 'invocation.terminal',
         state: 'PENDING',
-        payload: {
-          state: 'SUCCEEDED',
-          messageId: success.assistantMessageId,
+        payload: expect.objectContaining({
+          protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+          type: 'invocation.terminal',
+          conversationId,
+          invocationId: accepted.invocationId,
+          terminalState: 'SUCCEEDED',
+          assistantMessageId: success.assistantMessageId,
           resultDigest: success.resultDigest,
-        },
+          errorCode: null,
+        }),
       }),
     ]);
     await expect(
       journal.replayConsumerEvents({
         ...identity,
-        consumerId: randomUUID(),
+        consumerId: randomUuidV7(),
         afterCursor: '0',
         limit: 10,
       }),
@@ -665,45 +740,273 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     expect(durable.rows.map((row) => row.cursor)).toEqual([cursors[1], cursors[2]]);
   });
 
-  it('allows lost PERSISTED execution evidence to converge through RECONCILING to UNCERTAIN', async () => {
+  it('durably begins reconciliation once and does not mark UNCERTAIN before 300 seconds', async () => {
     const conversationId = await createConversation();
     const accepted = acceptInput(conversationId);
     const journal = new PostgresCloudJournal(journalPools);
     await journal.acceptInvocation(accepted);
-    await owner.query(`UPDATE agent_invocations SET state = 'QUEUED' WHERE id = $1`, [
+    await assignPersisted(accepted);
+    const sourceEventId = randomUuidV7();
+    const reconciliation = await journal.beginReconciliation({
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId,
+      reason: 'JOURNAL_LOST',
+    });
+    expect(reconciliation).toMatchObject({
+      invocationId: accepted.invocationId,
+      state: 'RECONCILING',
+      reason: 'JOURNAL_LOST',
+      replayed: false,
+    });
+    expect(
+      Date.parse(reconciliation.reconciliationDeadlineAt) -
+        Date.parse(reconciliation.reconciliationStartedAt),
+    ).toBe(300_000);
+    await expect(
+      journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId,
+        reason: 'JOURNAL_LOST',
+      }),
+    ).resolves.toMatchObject({ replayed: true });
+    await expect(
+      journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: randomUuidV7(),
+        reason: 'JOURNAL_LOST',
+      }),
+    ).rejects.toMatchObject({ code: 'TERMINAL_CONFLICT' });
+    await expect(
+      journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: randomUuidV7(),
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId,
+        reason: 'JOURNAL_LOST',
+      }),
+    ).rejects.toMatchObject({ code: 'EXECUTION_AUTHORITY_MISMATCH' });
+
+    await expect(
+      owner.query(
+        `UPDATE agent_invocations
+            SET state = 'UNCERTAIN', uncertainty_reason = reconciliation_reason,
+                error_code = 'EXECUTION_STATE_UNKNOWN', terminal_at = now()
+          WHERE id = $1`,
+        [accepted.invocationId],
+      ),
+    ).rejects.toMatchObject({ code: '23514' });
+
+    await owner.query(`UPDATE agent_invocations SET state = 'RUNNING' WHERE id = $1`, [
       accepted.invocationId,
     ]);
-    await owner.query(`UPDATE agent_invocations SET state = 'DISPATCH_PENDING' WHERE id = $1`, [
-      accepted.invocationId,
-    ]);
-    await owner.query(`UPDATE agent_invocations SET state = 'PERSISTED' WHERE id = $1`, [
-      accepted.invocationId,
-    ]);
-    await owner.query(`UPDATE agent_invocations SET state = 'RECONCILING' WHERE id = $1`, [
-      accepted.invocationId,
-    ]);
-    await owner.query(
-      `UPDATE agent_invocations
-          SET state = 'UNCERTAIN', uncertainty_reason = $2, terminal_at = now()
-        WHERE id = $1`,
-      [accepted.invocationId, 'WORKER_JOURNAL_MISSING_HOST_UNAVAILABLE'],
-    );
+    await expect(
+      journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId,
+        reason: 'JOURNAL_LOST',
+      }),
+    ).resolves.toMatchObject({ state: 'RECONCILING', replayed: true });
+
+    await expect(
+      journal.markUncertain({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: randomUuidV7(),
+        reason: 'JOURNAL_LOST',
+      }),
+    ).resolves.toMatchObject({
+      state: 'RECONCILING',
+      exhausted: false,
+      consumerEventCursor: null,
+    });
     const state = await owner.query<{
       state: string;
-      runtime_thread_id: string | null;
-      runtime_turn_id: string | null;
-      uncertainty_reason: string;
+      reconciliation_reason: string;
+      reconciliation_started_at: Date;
+      terminal_at: Date | null;
     }>(
-      `SELECT state, runtime_thread_id, runtime_turn_id, uncertainty_reason
+      `SELECT state, reconciliation_reason, reconciliation_started_at, terminal_at
          FROM agent_invocations WHERE id = $1`,
       [accepted.invocationId],
     );
-    expect(state.rows[0]).toEqual({
-      state: 'UNCERTAIN',
-      runtime_thread_id: null,
-      runtime_turn_id: null,
-      uncertainty_reason: 'WORKER_JOURNAL_MISSING_HOST_UNAVAILABLE',
+    expect(state.rows[0]).toMatchObject({
+      state: 'RECONCILING',
+      reconciliation_reason: 'JOURNAL_LOST',
+      terminal_at: null,
     });
+    expect(await counts(conversationId)).toMatchObject({
+      events: '2',
+      consumer_events: '0',
+      consumer_streams: '0',
+      conversation_state: 'BUSY',
+    });
+  });
+
+  it('uses Cloud time at the before/equal/after 300-second boundary', async () => {
+    const boundary = await owner.query<{ before: boolean; equal: boolean; after: boolean }>(
+      `SELECT
+         creator_agent_reconciliation_is_exhausted(
+           '2026-08-13T08:00:00.000Z'::timestamptz,
+           '2026-08-13T08:04:59.999Z'::timestamptz
+         ) AS before,
+         creator_agent_reconciliation_is_exhausted(
+           '2026-08-13T08:00:00.000Z'::timestamptz,
+           '2026-08-13T08:05:00.000Z'::timestamptz
+         ) AS equal,
+         creator_agent_reconciliation_is_exhausted(
+           '2026-08-13T08:00:00.000Z'::timestamptz,
+           '2026-08-13T08:05:00.001Z'::timestamptz
+         ) AS after`,
+    );
+    expect(boundary.rows[0]).toEqual({ before: false, equal: true, after: true });
+  });
+
+  it('atomically commits UNCERTAIN, terminal event, Consumer outbox and IDLE projection', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    await backdateReconciliation(accepted, 'HOST_EVIDENCE_LOST', randomUuidV7());
+    const terminalSourceEventId = randomUuidV7();
+
+    const terminal = await journal.markUncertain({
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId: terminalSourceEventId,
+      reason: 'HOST_EVIDENCE_LOST',
+    });
+    expect(terminal).toMatchObject({
+      state: 'UNCERTAIN',
+      reason: 'HOST_EVIDENCE_LOST',
+      exhausted: true,
+      replayed: false,
+    });
+    expect(terminal.consumerEventCursor).not.toBeNull();
+    await expect(
+      journal.markUncertain({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: terminalSourceEventId,
+        reason: 'HOST_EVIDENCE_LOST',
+      }),
+    ).resolves.toMatchObject({ state: 'UNCERTAIN', replayed: true });
+    await expect(
+      journal.markUncertain({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: randomUuidV7(),
+        reason: 'HOST_EVIDENCE_LOST',
+      }),
+    ).rejects.toMatchObject({ code: 'TERMINAL_CONFLICT' });
+
+    const durable = await owner.query<{
+      state: string;
+      error_code: string;
+      uncertainty_reason: string;
+      reconciliation_reason: string;
+      events: string;
+      consumer_events: string;
+      conversation_state: string;
+    }>(
+      `SELECT invocation.state, invocation.error_code, invocation.uncertainty_reason,
+              invocation.reconciliation_reason,
+              (SELECT count(*) FROM agent_invocation_events
+                WHERE invocation_id = invocation.id)::text AS events,
+              (SELECT count(*) FROM consumer_event_outbox
+                WHERE invocation_id = invocation.id)::text AS consumer_events,
+              conversation.state AS conversation_state
+         FROM agent_invocations AS invocation
+         JOIN agent_conversations AS conversation
+           ON conversation.id = invocation.conversation_id
+        WHERE invocation.id = $1`,
+      [accepted.invocationId],
+    );
+    expect(durable.rows[0]).toEqual({
+      state: 'UNCERTAIN',
+      error_code: 'EXECUTION_STATE_UNKNOWN',
+      uncertainty_reason: 'HOST_EVIDENCE_LOST',
+      reconciliation_reason: 'HOST_EVIDENCE_LOST',
+      events: '3',
+      consumer_events: '1',
+      conversation_state: 'IDLE',
+    });
+    const page = await journal.replayConsumerEvents({
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      afterCursor: '0',
+      limit: 10,
+    });
+    expect(page.events).toHaveLength(1);
+    expect(page.events[0]).toMatchObject({
+      cursor: terminal.consumerEventCursor,
+      eventType: 'invocation.terminal',
+      payload: {
+        terminalState: 'UNCERTAIN',
+        errorCode: 'EXECUTION_STATE_UNKNOWN',
+      },
+    });
+  });
+
+  it('rolls back every UNCERTAIN crash window and safely retries the exact terminal event', async () => {
+    const steps: CloudJournalStep[] = [
+      'INVOCATION_UNCERTAIN',
+      'UNCERTAIN_EVENT',
+      'CONSUMER_EVENT_OUTBOX',
+      'CONSUMER_EVENT_STREAM',
+      'CONVERSATION_IDLE',
+    ];
+    for (const target of steps) {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const baseJournal = new PostgresCloudJournal(journalPools);
+      await baseJournal.acceptInvocation(accepted);
+      await backdateReconciliation(accepted, 'MODEL_ATTEMPT_UNKNOWN', randomUuidV7());
+      const input = {
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: randomUuidV7(),
+        reason: 'MODEL_ATTEMPT_UNKNOWN' as const,
+      };
+      const failing = new PostgresCloudJournal(journalPools, (step) => {
+        if (step === target) throw new Error(`FAILPOINT:${target}`);
+      });
+
+      await expect(failing.markUncertain(input)).rejects.toThrow(`FAILPOINT:${target}`);
+      expect(await counts(conversationId), target).toMatchObject({
+        events: '2',
+        consumer_events: '0',
+        consumer_streams: '0',
+        conversation_state: 'BUSY',
+      });
+      await expect(baseJournal.markUncertain(input)).resolves.toMatchObject({
+        state: 'UNCERTAIN',
+        replayed: false,
+      });
+    }
   });
 
   it('rolls back every final crash window to the original RUNNING projection', async () => {

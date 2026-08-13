@@ -11,12 +11,17 @@ import {
 const encryptionKey = Buffer.alloc(32, 0x11);
 const digestKey = Buffer.alloc(32, 0x22);
 
+function randomUuidV7(): string {
+  const value = randomUUID();
+  return `${value.slice(0, 14)}7${value.slice(15)}`;
+}
+
 function aad(overrides: Partial<MessageAad> = {}): MessageAad {
   return {
     schemaVersion: 1,
-    ownerId: randomUUID(),
-    conversationId: randomUUID(),
-    messageId: randomUUID(),
+    ownerId: randomUuidV7(),
+    conversationId: randomUuidV7(),
+    messageId: randomUuidV7(),
     role: 'USER',
     ...overrides,
   };
@@ -67,9 +72,9 @@ describe('message-level AEAD', () => {
   });
 
   it.each([
-    ['owner', (binding: MessageAad) => ({ ...binding, ownerId: randomUUID() })],
-    ['conversation', (binding: MessageAad) => ({ ...binding, conversationId: randomUUID() })],
-    ['message', (binding: MessageAad) => ({ ...binding, messageId: randomUUID() })],
+    ['owner', (binding: MessageAad) => ({ ...binding, ownerId: randomUuidV7() })],
+    ['conversation', (binding: MessageAad) => ({ ...binding, conversationId: randomUuidV7() })],
+    ['message', (binding: MessageAad) => ({ ...binding, messageId: randomUuidV7() })],
     ['role', (binding: MessageAad) => ({ ...binding, role: 'ASSISTANT' as const })],
   ])('rejects a cross-binding %s swap', (_label, mutate) => {
     const binding = aad();

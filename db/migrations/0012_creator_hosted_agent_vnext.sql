@@ -661,6 +661,8 @@ CREATE TABLE agent_invocations (
   result_message_id        uuid,
   result_digest            text        CHECK (result_digest IS NULL OR result_digest ~ '^hmac-sha256:[a-f0-9]{64}$'),
   error_code               text,
+  reconciliation_reason    text,
+  reconciliation_started_at timestamptz,
   uncertainty_reason       text,
   retry_of_invocation_id   uuid,
   created_at               timestamptz NOT NULL DEFAULT now(),
@@ -717,9 +719,46 @@ CREATE TABLE agent_invocations (
     state <> 'FAILED' OR error_code IS NOT NULL
   ),
   CONSTRAINT ck_agent_invocations_uncertain CHECK (
-    state <> 'UNCERTAIN' OR uncertainty_reason IS NOT NULL
+    state <> 'UNCERTAIN'
+    OR (
+      uncertainty_reason IS NOT NULL
+      AND uncertainty_reason = reconciliation_reason
+      AND error_code = 'EXECUTION_STATE_UNKNOWN'
+    )
+  ),
+  CONSTRAINT ck_agent_invocations_reconciliation CHECK (
+    (reconciliation_reason IS NULL AND reconciliation_started_at IS NULL)
+    OR (
+      reconciliation_reason IN (
+        'START_DISPATCH_UNKNOWN',
+        'HOST_EVIDENCE_LOST',
+        'MODEL_ATTEMPT_UNKNOWN',
+        'CANCEL_NOT_CONFIRMED',
+        'JOURNAL_LOST'
+      )
+      AND reconciliation_started_at IS NOT NULL
+      AND state IN (
+        'RECONCILING', 'RUNNING', 'CANCEL_REQUESTED',
+        'SUCCEEDED', 'FAILED', 'CANCELLED', 'UNCERTAIN'
+      )
+    )
+  ),
+  CONSTRAINT ck_agent_invocations_reconciling_state CHECK (
+    state NOT IN ('RECONCILING', 'UNCERTAIN')
+    OR (reconciliation_reason IS NOT NULL AND reconciliation_started_at IS NOT NULL)
   )
 );
+
+CREATE OR REPLACE FUNCTION creator_agent_reconciliation_is_exhausted(
+  input_started_at timestamptz,
+  input_now timestamptz
+)
+RETURNS boolean AS $$
+  SELECT input_now >= input_started_at + interval '300 seconds';
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+REVOKE ALL ON FUNCTION creator_agent_reconciliation_is_exhausted(timestamptz, timestamptz)
+  FROM PUBLIC;
 
 CREATE OR REPLACE FUNCTION enforce_creator_agent_invocation_transition()
 RETURNS trigger AS $$
@@ -781,6 +820,26 @@ BEGIN
     RAISE EXCEPTION 'invocation runtime turn binding is immutable once set'
       USING ERRCODE = '55000';
   END IF;
+  IF OLD.reconciliation_started_at IS NOT NULL AND (
+    NEW.reconciliation_started_at IS DISTINCT FROM OLD.reconciliation_started_at
+    OR NEW.reconciliation_reason IS DISTINCT FROM OLD.reconciliation_reason
+  ) THEN
+    RAISE EXCEPTION 'invocation reconciliation binding is immutable once set'
+      USING ERRCODE = '55000';
+  END IF;
+  IF NEW.state = 'RECONCILING' AND (
+    NEW.reconciliation_started_at IS NULL OR NEW.reconciliation_reason IS NULL
+  ) THEN
+    RAISE EXCEPTION 'reconciling invocation requires durable lost-evidence binding'
+      USING ERRCODE = '23514';
+  END IF;
+  IF NEW.state = 'UNCERTAIN' AND NOT creator_agent_reconciliation_is_exhausted(
+    NEW.reconciliation_started_at,
+    now()
+  ) THEN
+    RAISE EXCEPTION 'uncertain invocation requires exhausted reconciliation deadline'
+      USING ERRCODE = '23514';
+  END IF;
   IF NEW.state = 'CANCEL_REQUESTED' AND NEW.cancel_requested_at IS NULL THEN
     RAISE EXCEPTION 'cancel request requires a durable timestamp'
       USING ERRCODE = '23514';
@@ -836,12 +895,22 @@ RETURNS boolean AS $$
       input_payload = '{"state":"RUNNING"}'::jsonb
     WHEN 'invocation.cancel_requested' THEN
       input_payload = '{"state":"CANCEL_REQUESTED"}'::jsonb
+    WHEN 'invocation.reconciling' THEN
+      (SELECT count(*) FROM jsonb_object_keys(input_payload)) = 2
+      AND input_payload->>'state' = 'RECONCILING'
+      AND input_payload->>'reason' IN (
+        'START_DISPATCH_UNKNOWN',
+        'HOST_EVIDENCE_LOST',
+        'MODEL_ATTEMPT_UNKNOWN',
+        'CANCEL_NOT_CONFIRMED',
+        'JOURNAL_LOST'
+      )
     WHEN 'invocation.cancelled' THEN
       input_payload = '{"state":"CANCELLED"}'::jsonb
     WHEN 'invocation.succeeded' THEN
       (SELECT count(*) FROM jsonb_object_keys(input_payload)) = 3
       AND input_payload->>'state' = 'SUCCEEDED'
-      AND input_payload->>'messageId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      AND input_payload->>'messageId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
       AND input_payload->>'resultDigest' ~ '^hmac-sha256:[a-f0-9]{64}$'
     WHEN 'invocation.failed' THEN
       (SELECT count(*) FROM jsonb_object_keys(input_payload)) = 2
@@ -851,6 +920,42 @@ RETURNS boolean AS $$
       (SELECT count(*) FROM jsonb_object_keys(input_payload)) = 2
       AND input_payload->>'state' = 'UNCERTAIN'
       AND input_payload->>'errorCode' ~ '^[A-Z][A-Z0-9_]{1,127}$'
+    WHEN 'invocation.expired' THEN
+      input_payload = '{"state":"EXPIRED","errorCode":"INVOCATION_EXPIRED"}'::jsonb
+    WHEN 'invocation.terminal' THEN
+      (SELECT count(*) FROM jsonb_object_keys(input_payload)) = 10
+      AND input_payload->>'protocol' = 'combo.consumer-event-outbox/1'
+      AND input_payload->>'schemaVersion' = '1'
+      AND input_payload->>'type' = 'invocation.terminal'
+      AND input_payload->>'conversationId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      AND input_payload->>'invocationId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      AND input_payload->>'terminalState' IN (
+        'SUCCEEDED', 'FAILED', 'CANCELLED', 'UNCERTAIN', 'EXPIRED'
+      )
+      AND input_payload->>'occurredAt' ~ '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$'
+      AND CASE input_payload->>'terminalState'
+        WHEN 'SUCCEEDED' THEN
+          input_payload->>'assistantMessageId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          AND input_payload->>'resultDigest' ~ '^hmac-sha256:[a-f0-9]{64}$'
+          AND input_payload->'errorCode' = 'null'::jsonb
+        WHEN 'FAILED' THEN
+          input_payload->'assistantMessageId' = 'null'::jsonb
+          AND input_payload->'resultDigest' = 'null'::jsonb
+          AND input_payload->>'errorCode' ~ '^[A-Z][A-Z0-9_]{1,127}$'
+        WHEN 'CANCELLED' THEN
+          input_payload->'assistantMessageId' = 'null'::jsonb
+          AND input_payload->'resultDigest' = 'null'::jsonb
+          AND input_payload->'errorCode' = 'null'::jsonb
+        WHEN 'UNCERTAIN' THEN
+          input_payload->'assistantMessageId' = 'null'::jsonb
+          AND input_payload->'resultDigest' = 'null'::jsonb
+          AND input_payload->>'errorCode' = 'EXECUTION_STATE_UNKNOWN'
+        WHEN 'EXPIRED' THEN
+          input_payload->'assistantMessageId' = 'null'::jsonb
+          AND input_payload->'resultDigest' = 'null'::jsonb
+          AND input_payload->>'errorCode' = 'INVOCATION_EXPIRED'
+        ELSE false
+      END
     ELSE false
   END;
 $$ LANGUAGE sql IMMUTABLE STRICT;
@@ -873,8 +978,10 @@ CREATE TABLE agent_invocation_events (
                          event_type IN (
                            'invocation.accepted', 'invocation.queued', 'invocation.leased',
                            'invocation.persisted', 'invocation.started',
-                           'invocation.cancel_requested', 'invocation.succeeded',
-                           'invocation.failed', 'invocation.cancelled', 'invocation.uncertain'
+                           'invocation.cancel_requested', 'invocation.reconciling',
+                           'invocation.succeeded',
+                           'invocation.failed', 'invocation.cancelled', 'invocation.uncertain',
+                           'invocation.expired'
                          )
                        ),
   payload              jsonb       NOT NULL DEFAULT '{}'::jsonb
@@ -889,7 +996,8 @@ CREATE TABLE agent_invocation_events (
   CONSTRAINT uq_agent_invocation_events_invocation_seq UNIQUE (invocation_id, journal_seq),
   CONSTRAINT uq_agent_invocation_events_source_id UNIQUE (source, source_event_id),
   CONSTRAINT uq_agent_invocation_events_terminal_binding
-    UNIQUE (id, invocation_id, source_event_id, event_type)
+    UNIQUE (id, invocation_id, source_event_id, event_type),
+  CONSTRAINT uq_agent_invocation_events_id_invocation UNIQUE (id, invocation_id)
 );
 
 CREATE OR REPLACE FUNCTION enforce_creator_agent_event_sequence()
@@ -950,6 +1058,10 @@ FOR EACH ROW EXECUTE FUNCTION enforce_creator_agent_event_sequence();
 CREATE TRIGGER agent_invocation_events_immutable
 BEFORE UPDATE OR DELETE ON agent_invocation_events
 FOR EACH ROW EXECUTE FUNCTION reject_creator_agent_immutable_mutation();
+
+CREATE UNIQUE INDEX uq_agent_invocation_events_reconciliation
+  ON agent_invocation_events (invocation_id, event_type)
+  WHERE event_type = 'invocation.reconciling';
 
 CREATE TABLE broker_outbox (
   command_id          uuid        PRIMARY KEY DEFAULT gen_uuid_v7(),
@@ -1068,13 +1180,10 @@ CREATE TABLE consumer_event_outbox (
   owner_id         uuid        NOT NULL REFERENCES users(id),
   conversation_id  uuid        NOT NULL,
   invocation_id    uuid        NOT NULL,
-  source_event_id  text        NOT NULL CHECK (length(source_event_id) BETWEEN 1 AND 256),
-  event_type       text        NOT NULL
+  source_event_id  bigint      NOT NULL CHECK (source_event_id >= 1),
+  event_type       text        NOT NULL DEFAULT 'invocation.terminal'
                    CONSTRAINT ck_consumer_event_outbox_type CHECK (
-                     event_type IN (
-                       'invocation.succeeded', 'invocation.failed',
-                       'invocation.cancelled', 'invocation.uncertain'
-                     )
+                     event_type = 'invocation.terminal'
                    ),
   payload          jsonb       NOT NULL
                    CHECK (jsonb_typeof(payload) = 'object')
@@ -1082,7 +1191,6 @@ CREATE TABLE consumer_event_outbox (
                    CHECK (creator_agent_event_payload_is_allowed(event_type, payload)),
   payload_digest   text        NOT NULL CHECK (payload_digest ~ '^[a-f0-9]{64}$'),
   dedupe_key       text        NOT NULL CHECK (dedupe_key ~ '^[a-f0-9]{64}$'),
-  terminal_event_id bigint     NOT NULL,
   state            text        NOT NULL DEFAULT 'PENDING'
                    CONSTRAINT ck_consumer_event_outbox_state CHECK (
                      state IN ('PENDING', 'PUBLISHED')
@@ -1098,9 +1206,9 @@ CREATE TABLE consumer_event_outbox (
   CONSTRAINT fk_consumer_event_outbox_invocation_owner
     FOREIGN KEY (invocation_id, conversation_id, owner_id)
     REFERENCES agent_invocations (id, conversation_id, consumer_subject_id),
-  CONSTRAINT fk_consumer_event_outbox_terminal_event
-    FOREIGN KEY (terminal_event_id, invocation_id, source_event_id, event_type)
-    REFERENCES agent_invocation_events (id, invocation_id, source_event_id, event_type),
+  CONSTRAINT fk_consumer_event_outbox_source_event
+    FOREIGN KEY (source_event_id, invocation_id)
+    REFERENCES agent_invocation_events (id, invocation_id),
   CONSTRAINT uq_consumer_event_outbox_owner_source UNIQUE (owner_id, source_event_id),
   CONSTRAINT uq_consumer_event_outbox_owner_dedupe UNIQUE (owner_id, dedupe_key),
   CONSTRAINT uq_consumer_event_outbox_invocation_type UNIQUE (invocation_id, event_type),
@@ -1155,7 +1263,6 @@ BEGIN
      OR NEW.payload IS DISTINCT FROM OLD.payload
      OR NEW.payload_digest IS DISTINCT FROM OLD.payload_digest
      OR NEW.dedupe_key IS DISTINCT FROM OLD.dedupe_key
-     OR NEW.terminal_event_id IS DISTINCT FROM OLD.terminal_event_id
      OR NEW.created_at IS DISTINCT FROM OLD.created_at
      OR NEW.retained_until IS DISTINCT FROM OLD.retained_until THEN
     RAISE EXCEPTION 'consumer event outbox binding is immutable'
@@ -1520,7 +1627,8 @@ GRANT UPDATE (state, assigned_worker_id, last_activity_at, closed_at)
 GRANT UPDATE (
   state, assigned_worker_id, assignment_lease_id, assignment_fence,
   execution_capability_id, cancel_requested_at, runtime_thread_id, runtime_turn_id,
-  result_message_id, result_digest, error_code, uncertainty_reason, started_at, terminal_at
+  result_message_id, result_digest, error_code, reconciliation_reason,
+  reconciliation_started_at, uncertainty_reason, started_at, terminal_at
 ) ON agent_invocations TO combo_agent_reconciler;
 GRANT UPDATE (state, attempt_count, next_attempt_at, acked_at)
   ON broker_outbox TO combo_agent_reconciler;
@@ -1550,6 +1658,8 @@ GRANT EXECUTE ON FUNCTION reject_creator_agent_immutable_mutation() TO
   combo_agent_api,
   combo_agent_broker,
   combo_agent_reconciler;
+GRANT EXECUTE ON FUNCTION creator_agent_reconciliation_is_exhausted(timestamptz, timestamptz)
+  TO combo_agent_api, combo_agent_broker, combo_agent_reconciler;
 GRANT EXECUTE ON FUNCTION enforce_creator_agent_event_sequence() TO
   combo_agent_api,
   combo_agent_broker,

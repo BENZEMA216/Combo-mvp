@@ -75,7 +75,7 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
       'fk_consumer_event_streams_conversation_owner',
       'fk_consumer_event_outbox_conversation_owner',
       'fk_consumer_event_outbox_invocation_owner',
-      'fk_consumer_event_outbox_terminal_event',
+      'fk_consumer_event_outbox_source_event',
     ]) {
       expect(sql, constraint).toContain(`CONSTRAINT ${constraint}`);
     }
@@ -100,6 +100,12 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
     expect(sql).toContain(
       "WHEN 'PERSISTED' THEN NEW.state IN ('STARTING', 'CANCEL_REQUESTED', 'RECONCILING')",
     );
+    expect(sql).toContain('reconciliation_started_at timestamptz');
+    expect(sql).toContain('reconciliation_reason    text');
+    expect(sql).toContain('creator_agent_reconciliation_is_exhausted(');
+    expect(sql).toContain("input_started_at + interval '300 seconds'");
+    expect(sql).toContain('invocation reconciliation binding is immutable once set');
+    expect(sql).toContain('uncertain invocation requires exhausted reconciliation deadline');
     expect(sql).toContain('CREATE TRIGGER worker_installations_transition');
     expect(sql).toContain('CREATE TRIGGER agent_conversations_transition');
     expect(sql).toContain('terminal invocation is immutable');
@@ -136,6 +142,9 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
     expect(sql).toContain('CREATE TRIGGER agent_invocation_events_immutable');
     expect(sql).toContain('uq_agent_invocation_events_invocation_seq');
     expect(sql).toContain('uq_agent_invocation_events_source_id');
+    expect(sql).toContain('uq_agent_invocation_events_reconciliation');
+    expect(sql).toContain("'invocation.reconciling'");
+    expect(sql).toContain("input_payload->>'reason' IN (");
     expect(sql).toContain('creator_agent_event_payload_is_allowed(event_type, payload)');
     expect(sql).toContain("input_payload->>'state' = 'SUCCEEDED'");
     expect(sql).toContain("input_payload->>'messageId'");
@@ -193,8 +202,10 @@ describe('0012 Creator-hosted Agent VNext migration', () => {
     expect(sql).toContain('cursor           bigint      GENERATED ALWAYS AS IDENTITY PRIMARY KEY');
     expect(sql).toContain('uq_consumer_event_outbox_owner_source');
     expect(sql).toContain('uq_consumer_event_outbox_owner_dedupe');
-    expect(sql).toContain('terminal_event_id bigint     NOT NULL');
+    expect(sql).toContain('source_event_id  bigint      NOT NULL');
+    expect(sql).toContain("event_type = 'invocation.terminal'");
     expect(sql).toContain('uq_agent_invocation_events_terminal_binding');
+    expect(sql).toContain('uq_agent_invocation_events_id_invocation');
     expect(sql).toContain('idx_consumer_event_outbox_publish');
     expect(sql).toContain('idx_consumer_event_outbox_replay');
     expect(sql).toContain("state IN ('PENDING', 'PUBLISHED')");

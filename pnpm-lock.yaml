@@ -388,6 +388,9 @@ importers:
         specifier: ^8.13.1
         version: 8.21.0
     devDependencies:
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../packages/creator-agent-protocol
       '@types/node':
         specifier: ^22.10.5
         version: 22.19.21

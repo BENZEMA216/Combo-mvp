@@ -1,4 +1,9 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import {
+  CONSUMER_EVENT_OUTBOX_PROTOCOL,
+  consumerEventDedupeKey,
+  consumerEventPayloadDigest,
+} from '@cb/creator-agent-protocol';
 import { Client } from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -13,6 +18,11 @@ const enabled =
   Boolean(databaseUrl) &&
   Object.values(passwords).every(Boolean);
 const pgDescribe = enabled ? describe : describe.skip;
+
+function randomUuidV7(): string {
+  const value = randomUUID();
+  return `${value.slice(0, 14)}7${value.slice(15)}`;
+}
 
 type VnextRole = keyof typeof passwords;
 
@@ -43,17 +53,17 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
     creatorB: '',
     consumerA: '',
     consumerB: '',
-    snapshotA: randomUUID(),
-    snapshotB: randomUUID(),
-    agentA: randomUUID(),
-    agentB: randomUUID(),
-    versionA: randomUUID(),
-    versionB: randomUUID(),
-    deploymentA: randomUUID(),
-    workerA: randomUUID(),
-    leaseA: randomUUID(),
-    conversationA: randomUUID(),
-    conversationB: randomUUID(),
+    snapshotA: randomUuidV7(),
+    snapshotB: randomUuidV7(),
+    agentA: randomUuidV7(),
+    agentB: randomUuidV7(),
+    versionA: randomUuidV7(),
+    versionB: randomUuidV7(),
+    deploymentA: randomUuidV7(),
+    workerA: randomUuidV7(),
+    leaseA: randomUuidV7(),
+    conversationA: randomUuidV7(),
+    conversationB: randomUuidV7(),
   };
 
   beforeAll(async () => {
@@ -163,7 +173,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
       `INSERT INTO worker_leases (
          id, deployment_id, creator_id, worker_id, connection_id, fence, expires_at
        ) VALUES ($1, $2, $3, $4, $5, 1, now() + interval '30 seconds')`,
-      [ids.leaseA, ids.deploymentA, ids.creatorA, ids.workerA, randomUUID()],
+      [ids.leaseA, ids.deploymentA, ids.creatorA, ids.workerA, randomUuidV7()],
     );
     await owner.query(
       `INSERT INTO agent_conversations (
@@ -254,7 +264,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
   });
 
   it('keeps upload, Version-control, Agent, Worker, and Conversation state monotonic', async () => {
-    const uploadId = randomUUID();
+    const uploadId = randomUuidV7();
     await owner.query(
       `INSERT INTO snapshot_uploads (
          id, creator_id, idempotency_key, request_digest,
@@ -361,7 +371,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
   });
 
   it('binds assignment to the exact Lease worker and fence', async () => {
-    const userMessageId = randomUUID();
+    const userMessageId = randomUuidV7();
     await owner.query(
       `INSERT INTO agent_messages (
          id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
@@ -377,7 +387,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
         ids.conversationA,
         ids.creatorA,
         ids.consumerA,
-        randomUUID(),
+        randomUuidV7(),
         randomBytes(12),
         Buffer.from('ciphertext'),
         Buffer.alloc(16, 2),
@@ -398,7 +408,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
           ids.consumerA,
           ids.versionA,
           userMessageId,
-          randomUUID(),
+          randomUuidV7(),
           `hmac-sha256:${'e'.repeat(64)}`,
           ids.workerA,
           ids.leaseA,
@@ -409,7 +419,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
 
   it('enforces WIP=1, exact Event sequence, and immutable Event history', async () => {
     const insertUser = async (turnNo: number) => {
-      const id = randomUUID();
+      const id = randomUuidV7();
       await owner.query(
         `INSERT INTO agent_messages (
            id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
@@ -426,7 +436,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
           ids.creatorA,
           ids.consumerB,
           turnNo,
-          randomUUID(),
+          randomUuidV7(),
           randomBytes(12),
           Buffer.from(`ciphertext-${turnNo}`),
           Buffer.alloc(16, turnNo),
@@ -438,7 +448,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
     };
     const firstUser = await insertUser(1);
     const secondUser = await insertUser(2);
-    const firstInvocation = randomUUID();
+    const firstInvocation = randomUuidV7();
     await owner.query(
       `INSERT INTO agent_invocations (
          id, conversation_id, creator_id, consumer_subject_id, agent_version_id,
@@ -451,7 +461,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
         ids.consumerB,
         ids.versionA,
         firstUser,
-        randomUUID(),
+        randomUuidV7(),
         `hmac-sha256:${'7'.repeat(64)}`,
       ],
     );
@@ -467,7 +477,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
           ids.consumerB,
           ids.versionA,
           secondUser,
-          randomUUID(),
+          randomUuidV7(),
           `hmac-sha256:${'8'.repeat(64)}`,
         ],
       ),
@@ -481,7 +491,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
          $1, $2, $3, 1, 'API', $4, 'invocation.accepted',
          '{"state":"ACCEPTED"}'::jsonb, now()
        )`,
-      [firstInvocation, ids.creatorA, ids.consumerB, randomUUID()],
+      [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
     );
     await expect(
       owner.query(
@@ -492,7 +502,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
            $1, $2, $3, 3, 'BROKER', $4, 'invocation.persisted',
            '{"state":"PERSISTED"}'::jsonb, now()
          )`,
-        [firstInvocation, ids.creatorA, ids.consumerB, randomUUID()],
+        [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
       ),
     ).rejects.toMatchObject({ code: '23514' });
     await expect(
@@ -510,7 +520,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
            $1, $2, $3, 2, 'BROKER', $4, 'invocation.queued',
            '{"state":"QUEUED"}'::jsonb, now()
          )`,
-        [firstInvocation, ids.creatorA, ids.consumerB, randomUUID()],
+        [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
       ),
     ).rejects.toMatchObject({ code: '23514' });
 
@@ -525,21 +535,21 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
          $1, $2, $3, 2, 'BROKER', $4, 'invocation.queued',
          '{"state":"QUEUED"}'::jsonb, now()
        )`,
-      [firstInvocation, ids.creatorA, ids.consumerB, randomUUID()],
+      [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
     );
     await owner.query(
       `UPDATE agent_invocations SET state = 'CANCELLED', terminal_at = now() WHERE id = $1`,
       [firstInvocation],
     );
-    const terminalSourceEventId = randomUUID();
-    const terminalEvent = await owner.query<{ id: string }>(
+    const terminalSourceEventId = randomUuidV7();
+    const terminalEvent = await owner.query<{ id: string; occurred_at: Date }>(
       `INSERT INTO agent_invocation_events (
          invocation_id, creator_id, consumer_subject_id, journal_seq,
          source, source_event_id, event_type, payload, occurred_at
        ) VALUES (
          $1, $2, $3, 3, 'BROKER', $4, 'invocation.cancelled',
          '{"state":"CANCELLED"}'::jsonb, now()
-       ) RETURNING id::text AS id`,
+       ) RETURNING id::text AS id, occurred_at`,
       [firstInvocation, ids.creatorA, ids.consumerB, terminalSourceEventId],
     );
     await expect(
@@ -551,7 +561,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
            $1, $2, $3, 4, 'BROKER', $4, 'invocation.cancelled',
            '{"state":"CANCELLED"}'::jsonb, now()
          )`,
-        [firstInvocation, ids.creatorA, ids.consumerB, randomUUID()],
+        [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
       ),
     ).rejects.toMatchObject({ code: '55000' });
     await expect(
@@ -561,7 +571,7 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
       ),
     ).rejects.toMatchObject({ code: '55000' });
 
-    const commandId = randomUUID();
+    const commandId = randomUuidV7();
     await owner.query(
       `INSERT INTO broker_outbox (
          command_id, creator_id, target_worker_id, invocation_id, consumer_subject_id,
@@ -591,21 +601,38 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
       ),
     ).rejects.toMatchObject({ code: '55000' });
 
+    const terminalEventId = terminalEvent.rows[0]!.id;
+    const terminalPayload = {
+      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+      schemaVersion: 1 as const,
+      type: 'invocation.terminal' as const,
+      conversationId: ids.conversationB,
+      invocationId: firstInvocation,
+      terminalState: 'CANCELLED' as const,
+      assistantMessageId: null,
+      resultDigest: null,
+      errorCode: null,
+      occurredAt: terminalEvent.rows[0]!.occurred_at.toISOString(),
+    };
     const consumerEvent = await owner.query<{ cursor: string }>(
       `INSERT INTO consumer_event_outbox (
          owner_id, conversation_id, invocation_id, source_event_id, event_type,
-         payload, payload_digest, dedupe_key, terminal_event_id
+         payload, payload_digest, dedupe_key
        ) VALUES (
-         $1, $2, $3, $4, 'invocation.cancelled', '{"state":"CANCELLED"}'::jsonb, $5, $6, $7
+         $1, $2, $3, $4, 'invocation.terminal', $5::jsonb, $6, $7
        ) RETURNING cursor::text AS cursor`,
       [
         ids.consumerB,
         ids.conversationB,
         firstInvocation,
-        terminalSourceEventId,
-        'a'.repeat(64),
-        'b'.repeat(64),
-        terminalEvent.rows[0]!.id,
+        terminalEventId,
+        JSON.stringify(terminalPayload),
+        consumerEventPayloadDigest(terminalPayload),
+        consumerEventDedupeKey({
+          ownerId: ids.consumerB,
+          sourceEventId: terminalEventId,
+          eventType: 'invocation.terminal',
+        }),
       ],
     );
     const cursor = consumerEvent.rows[0]!.cursor;
