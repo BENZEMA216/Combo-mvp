@@ -62,9 +62,6 @@ class HandlerDb implements RuntimeDb {
         ? rows<R>([])
         : rows<R>([{ agent_id: AGENT, creator_id: CREATOR }]);
     }
-    if (sql.includes('creator_agent_lock_consumer_access')) {
-      return rows<R>([{ live: this.options.grant !== false }]);
-    }
     if (sql.includes('FROM deployments AS deployment')) {
       return rows<R>([
         {
@@ -83,15 +80,14 @@ class HandlerDb implements RuntimeDb {
     if (sql.includes('FROM agent_version_controls')) {
       return this.options.unavailableVersion ? rows<R>([]) : rows<R>([{ availability: 'ACTIVE' }]);
     }
-    if (sql.includes('creator_agent_lock_live_worker')) return rows<R>([{ live: true }]);
-    if (sql.includes('INSERT INTO agent_conversations')) {
+    if (sql.includes('creator_agent_create_opening_conversation')) {
       return rows<R>([
         {
           id: CONVERSATION,
           agent_id: AGENT,
           agent_version_id: VERSION,
           version_digest: VERSION_DIGEST,
-          state: 'IDLE',
+          state: 'OPENING',
           created_at: new Date('2026-08-14T00:00:00.000Z'),
           expires_at: new Date('2026-08-15T00:00:00.000Z'),
         },
@@ -205,7 +201,7 @@ describe('POST /v1/public/agents/:slug/conversations handler', () => {
       agentId: AGENT,
       agentVersionId: VERSION,
       versionDigest: VERSION_DIGEST,
-      state: 'IDLE',
+      state: 'OPENING',
     });
   });
 

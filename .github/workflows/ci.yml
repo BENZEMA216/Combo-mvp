@@ -214,6 +214,7 @@ jobs:
           POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
           POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
           POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
           APPLICATION_ROLE_PG_TEST: '1'
         run: |
           set -euo pipefail
@@ -235,6 +236,7 @@ jobs:
           POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
           POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
           POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
           CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
           CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
         run: |
@@ -287,7 +289,7 @@ jobs:
 
       # The child database replays role DDL which is cluster-global. This must remain the final
       # PostgreSQL step so no later suite attempts a combo_* application login.
-      - name: Creator Agent persistent 0012 to 0013 upgrade gate
+      - name: Creator Agent persistent 0012 to 0014 upgrade gate
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           CREATOR_AGENT_UPGRADE_PG_TEST: '1'

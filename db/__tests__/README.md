@@ -9,7 +9,9 @@
 - `application-database-roles.pg.test.ts` 在显式启用并提供专用 PostgreSQL 与三份应用密码时，以三个真实角色分别登录，核对表级与列级权限，并实际执行充值、预留、结算、错误角色流水、失衡写入、账本防改和跨商户平台单号场景。
 - `billing_migration.test.ts` 静态核对全局钱包、按 Agent 免费额度、usageId 与 Turn 幂等、充值双状态、查单调度、低敏回调、不可变资金流水和计费角色隔离。
 - `creator-hosted-agent-vnext-migration.test.ts` 静态核对 VNext 的 13 张权威表、不可变 Snapshot/Version、租户复合外键、单 Lease/WIP、消息 AEAD、Event 顺序、Outbox、强制 RLS 和三个专用服务角色。
+- `creator-agent-consumer-open-ready-migration.test.ts` 静态核对 `0014` 的 Consumer-only role、OPENING + normalized open command、immutable ready receipt、窄 definer 和 application-role bypass fence。
 - `creator-hosted-agent-vnext.pg.test.ts` 只在显式独立 PostgreSQL 门开启时，以三份真实 VNext 服务角色登录，验证 transaction-local RLS 不泄漏、跨租户外键、不可变 Version/Event、精确 Lease fence、单 WIP 和 Event 序号。
 - `provision-app-roles.test.ts` 核对旧服务与 VNext 服务的角色密码必须分别完整成组提供，并确认密码只作为绑定值传给 PostgreSQL，不出现在 SQL 模板或错误中。
+- `creator-agent-consumer-upgrade.pg.test.ts` 在 child database 真实执行 0012→0013→0014，验证历史 active/terminal Conversation 不被改写，新增 open/ready authority fail closed。
 
-真实 PostgreSQL 的迁移执行、重复运行和非空门禁由 `scripts/integration/db-migrate.sh` 负责。应用角色测试还会核对充值与使用计费隔离和资金流水只追加；它只有在 `APPLICATION_ROLE_PG_TEST=1`、`DATABASE_URL` 和三项 `POSTGRES_*_PASSWORD` 都存在时运行。
+真实 PostgreSQL 的迁移执行、重复运行和非空门禁由 `scripts/integration/db-migrate.sh` 负责。应用角色测试还会核对充值与使用计费隔离和资金流水只追加；Consumer authority gate 使用独立 `POSTGRES_AGENT_CONSUMER_API_PASSWORD`，CI 显式置位时缺任一连接/角色密码会失败而不是 skip。

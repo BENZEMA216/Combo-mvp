@@ -224,18 +224,239 @@ export async function pingDb(env: Env): Promise<boolean> {
   }
 }
 
-/** Readiness proves the URL did not accidentally use any known broad legacy/control-plane role. */
+interface CreatorAgentReadinessRow {
+  current_user_name: string;
+  session_user_name: string;
+  can_login: boolean;
+  superuser: boolean;
+  bypass_rls: boolean;
+  create_database: boolean;
+  create_role: boolean;
+  inherit_privileges: boolean;
+  replicate: boolean;
+  database_connect: boolean;
+  database_create: boolean;
+  database_temporary: boolean;
+  exact_capabilities: boolean;
+}
+
+export function isExactCreatorAgentConsumerAuthority(
+  row: CreatorAgentReadinessRow | undefined,
+): boolean {
+  return (
+    row?.current_user_name === 'combo_agent_consumer_api' &&
+    row.session_user_name === 'combo_agent_consumer_api' &&
+    row.current_user_name === row.session_user_name &&
+    row.can_login === true &&
+    row.superuser === false &&
+    row.bypass_rls === false &&
+    row.create_database === false &&
+    row.create_role === false &&
+    row.inherit_privileges === false &&
+    row.replicate === false &&
+    row.database_connect === true &&
+    row.database_create === false &&
+    row.database_temporary === true &&
+    row.exact_capabilities === true
+  );
+}
+
+/** Readiness proves the URL uses the exact Consumer-only identity and capability boundary. */
 export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
   if (!env.CREATOR_AGENT_PUBLIC_ENABLED) return true;
   try {
     const client = await getCreatorAgentPool(env).connect();
     try {
-      const result = await client.query<{ current_user: string }>('SELECT current_user');
-      const role = result.rows[0]?.current_user;
-      return (
-        typeof role === 'string' &&
-        !['combo_api', 'combo_worker', 'combo_runtime', 'combo_agent_api'].includes(role)
+      const result = await client.query<CreatorAgentReadinessRow>(
+        `WITH expected_select(table_name, column_name) AS (
+           VALUES
+             ('agent_access_grants', 'agent_id'),
+             ('agent_access_grants', 'consumer_subject_id'),
+             ('agent_access_grants', 'creator_id'),
+             ('agent_access_grants', 'state'),
+             ('agent_conversations', 'agent_id'),
+             ('agent_conversations', 'agent_version_id'),
+             ('agent_conversations', 'consumer_subject_id'),
+             ('agent_conversations', 'created_at'),
+             ('agent_conversations', 'creator_id'),
+             ('agent_conversations', 'expires_at'),
+             ('agent_conversations', 'id'),
+             ('agent_conversations', 'idempotency_key'),
+             ('agent_conversations', 'request_digest'),
+             ('agent_conversations', 'state'),
+             ('agent_conversations', 'version_digest'),
+             ('agent_version_controls', 'availability'),
+             ('agent_version_controls', 'creator_id'),
+             ('agent_version_controls', 'version_id'),
+             ('agent_versions', 'agent_id'),
+             ('agent_versions', 'creator_id'),
+             ('agent_versions', 'id'),
+             ('agent_versions', 'version_digest'),
+             ('agents', 'creator_id'),
+             ('agents', 'id'),
+             ('agents', 'lifecycle'),
+             ('agents', 'public_slug'),
+             ('deployments', 'agent_id'),
+             ('deployments', 'creator_id'),
+             ('deployments', 'desired_state'),
+             ('deployments', 'environment'),
+             ('deployments', 'generation'),
+             ('deployments', 'id'),
+             ('deployments', 'lease_fence'),
+             ('deployments', 'observed_generation'),
+             ('deployments', 'observed_state'),
+             ('deployments', 'observed_worker_id'),
+             ('deployments', 'serving_version_id')
+         ), actual_select AS (
+           SELECT relation.relname::text AS table_name,
+                  attribute.attname::text AS column_name
+             FROM pg_class AS relation
+             JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+             JOIN pg_attribute AS attribute
+               ON attribute.attrelid = relation.oid
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+            WHERE namespace.nspname = 'public'
+              AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+              AND has_column_privilege(
+                    current_user,
+                    relation.oid,
+                    attribute.attnum,
+                    'SELECT'
+                  )
+         )
+         SELECT current_user AS current_user_name,
+                session_user AS session_user_name,
+                role.rolcanlogin AS can_login,
+                role.rolsuper AS superuser,
+                role.rolbypassrls AS bypass_rls,
+                role.rolcreatedb AS create_database,
+                role.rolcreaterole AS create_role,
+                role.rolinherit AS inherit_privileges,
+                role.rolreplication AS replicate,
+                has_database_privilege(
+                  current_user,
+                  current_database(),
+                  'CONNECT'
+                ) AS database_connect,
+                has_database_privilege(
+                  current_user,
+                  current_database(),
+                  'CREATE'
+                ) AS database_create,
+                has_database_privilege(
+                  current_user,
+                  current_database(),
+                  'TEMPORARY'
+                ) AS database_temporary,
+                (
+                  has_schema_privilege(current_user, 'public', 'USAGE')
+                  AND NOT has_schema_privilege(current_user, 'public', 'CREATE')
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_namespace AS namespace
+                     WHERE namespace.nspname NOT IN ('information_schema', 'pg_catalog', 'public')
+                       AND (
+                         has_schema_privilege(current_user, namespace.oid, 'USAGE')
+                         OR has_schema_privilege(current_user, namespace.oid, 'CREATE')
+                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_auth_members AS membership
+                     WHERE membership.member = role.oid
+                        OR membership.roleid = role.oid
+                  )
+                  AND NOT EXISTS (
+                    SELECT expected.table_name, expected.column_name FROM expected_select AS expected
+                    EXCEPT
+                    SELECT actual.table_name, actual.column_name FROM actual_select AS actual
+                  )
+                  AND NOT EXISTS (
+                    SELECT actual.table_name, actual.column_name FROM actual_select AS actual
+                    EXCEPT
+                    SELECT expected.table_name, expected.column_name FROM expected_select AS expected
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_class AS relation
+                      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                     WHERE namespace.nspname = 'public'
+                       AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+                       AND (
+                         has_table_privilege(current_user, relation.oid, 'SELECT')
+                         OR has_table_privilege(current_user, relation.oid, 'INSERT')
+                         OR has_table_privilege(current_user, relation.oid, 'UPDATE')
+                         OR has_table_privilege(current_user, relation.oid, 'DELETE')
+                         OR has_table_privilege(current_user, relation.oid, 'TRUNCATE')
+                         OR has_table_privilege(current_user, relation.oid, 'REFERENCES')
+                         OR has_table_privilege(current_user, relation.oid, 'TRIGGER')
+                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_class AS sequence
+                      JOIN pg_namespace AS namespace ON namespace.oid = sequence.relnamespace
+                     WHERE namespace.nspname = 'public'
+                       AND sequence.relkind = 'S'
+                       AND (
+                         has_sequence_privilege(current_user, sequence.oid, 'USAGE')
+                         OR has_sequence_privilege(current_user, sequence.oid, 'SELECT')
+                         OR has_sequence_privilege(current_user, sequence.oid, 'UPDATE')
+                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_class AS relation
+                      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                      JOIN pg_attribute AS attribute
+                        ON attribute.attrelid = relation.oid
+                       AND attribute.attnum > 0
+                       AND NOT attribute.attisdropped
+                     WHERE namespace.nspname = 'public'
+                       AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+                       AND (
+                         has_column_privilege(
+                           current_user,
+                           relation.oid,
+                           attribute.attnum,
+                           'INSERT'
+                         )
+                         OR has_column_privilege(
+                           current_user,
+                           relation.oid,
+                           attribute.attnum,
+                           'UPDATE'
+                         )
+                         OR has_column_privilege(
+                           current_user,
+                           relation.oid,
+                           attribute.attnum,
+                           'REFERENCES'
+                         )
+                       )
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_create_opening_conversation(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer)',
+                    'EXECUTE'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_proc AS procedure
+                      JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+                     WHERE namespace.nspname NOT IN ('information_schema', 'pg_catalog')
+                       AND procedure.prosecdef
+                       AND has_function_privilege(current_user, procedure.oid, 'EXECUTE')
+                       AND procedure.oid NOT IN (
+                         'public.creator_agent_create_opening_conversation(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer)'::regprocedure
+                       )
+                  )
+                ) AS exact_capabilities
+           FROM pg_roles AS role
+          WHERE role.rolname = current_user`,
       );
+      return isExactCreatorAgentConsumerAuthority(result.rows[0]);
     } finally {
       client.release();
     }

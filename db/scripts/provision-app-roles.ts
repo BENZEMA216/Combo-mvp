@@ -11,13 +11,17 @@ const APPLICATION_ROLE_GROUPS = [
     { role: 'combo_agent_broker', envKey: 'POSTGRES_AGENT_BROKER_PASSWORD' },
     { role: 'combo_agent_reconciler', envKey: 'POSTGRES_AGENT_RECONCILER_PASSWORD' },
   ],
+  // Public Conversation admission is an independent rollout boundary. It must never force an
+  // existing Creator/Broker deployment to provision a new credential, and it must never share
+  // combo_agent_api's control-plane authority.
+  [{ role: 'combo_agent_consumer_api', envKey: 'POSTGRES_AGENT_CONSUMER_API_PASSWORD' }],
 ] as const;
 
 /**
  * 0008 先创建无登录应用角色并收口权限。迁移全部成功后，本函数才通过绑定参数设置
- * 每组独立密码并启用登录；密码不进入迁移 SQL、输出或异常消息。VNext 角色组是
- * 可独立启用的 expand 阶段，因此旧环境不需要在同一个 rollout 立即配置新凭据；
- * 但任一组内部仍必须一次配置完整，禁止多个服务共用一个数据库身份。
+ * 每组独立密码并启用登录；密码不进入迁移 SQL、输出或异常消息。VNext control-plane
+ * 角色组与 Consumer 单角色都是可独立启用的 expand 阶段，因此旧环境不需要在同一个
+ * rollout 立即配置新凭据；任何服务都不得共用另一个服务的数据库身份。
  */
 export async function provisionApplicationRoleLogins(client: Client): Promise<boolean> {
   const enabledGroups = APPLICATION_ROLE_GROUPS.filter((group) =>

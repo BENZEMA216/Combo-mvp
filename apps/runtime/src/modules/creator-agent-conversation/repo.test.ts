@@ -78,9 +78,6 @@ class CreatorConversationFakeDb implements RuntimeDb {
         ? result<R>([])
         : result<R>([{ agent_id: AGENT, creator_id: CREATOR }]);
     }
-    if (sql.includes('creator_agent_lock_consumer_access')) {
-      return result<R>([{ live: this.options.grant !== false }]);
-    }
     if (sql.includes('FROM deployments AS deployment')) {
       const overrides = this.options.deployment ?? {};
       return result<R>([
@@ -105,10 +102,8 @@ class CreatorConversationFakeDb implements RuntimeDb {
         ? result<R>([{ availability: 'ACTIVE' }])
         : result<R>([]);
     }
-    if (sql.includes('creator_agent_lock_live_worker')) {
-      return result<R>([{ live: this.options.lease !== false }]);
-    }
-    if (sql.includes('INSERT INTO agent_conversations')) {
+    if (sql.includes('creator_agent_create_opening_conversation')) {
+      if (this.options.lease === false) return result<R>([]);
       if (this.options.failInsert) throw new Error('insert unavailable');
       if (this.options.insertDelayMs) {
         await new Promise((resolve) => setTimeout(resolve, this.options.insertDelayMs));
@@ -119,7 +114,7 @@ class CreatorConversationFakeDb implements RuntimeDb {
           agent_id: AGENT,
           agent_version_id: VERSION,
           version_digest: VERSION_DIGEST,
-          state: 'IDLE',
+          state: 'OPENING',
           created_at: CREATED_AT,
           expires_at: EXPIRES_AT,
         },
@@ -154,7 +149,7 @@ describe('Creator-hosted Consumer Conversation repository', () => {
         agentId: AGENT,
         agentVersionId: VERSION,
         versionDigest: VERSION_DIGEST,
-        state: 'IDLE',
+        state: 'OPENING',
         createdAt: CREATED_AT.toISOString(),
         expiresAt: EXPIRES_AT.toISOString(),
       },
@@ -164,11 +159,8 @@ describe('Creator-hosted Consumer Conversation repository', () => {
     expect(db.statements.some((sql) => sql.includes("set_config('app.consumer_id'"))).toBe(true);
     expect(db.statements.some((sql) => sql.includes("set_config('app.creator_id'"))).toBe(true);
     expect(
-      db.statements.filter((sql) => sql.includes('INSERT INTO agent_conversations')),
+      db.statements.filter((sql) => sql.includes('creator_agent_create_opening_conversation')),
     ).toHaveLength(1);
-    expect(
-      db.statements.some((sql) => sql.includes('creator_agent_lock_live_worker($1, $2, $3, $4)')),
-    ).toBe(true);
     expect(db.released).toBe(true);
   });
 
@@ -197,9 +189,9 @@ describe('Creator-hosted Consumer Conversation repository', () => {
 
     expect(replay.replayed).toBe(true);
     expect(db.statements.some((sql) => sql.includes('FROM agents AS agent'))).toBe(false);
-    expect(db.statements.some((sql) => sql.includes('INSERT INTO agent_conversations'))).toBe(
-      false,
-    );
+    expect(
+      db.statements.some((sql) => sql.includes('creator_agent_create_opening_conversation')),
+    ).toBe(false);
     expect(db.statements).toContain('COMMIT');
   });
 
@@ -210,9 +202,9 @@ describe('Creator-hosted Consumer Conversation repository', () => {
       code: 'IDEMPOTENCY_CONFLICT',
     } satisfies Partial<ConsumerConversationError>);
     expect(db.statements).toContain('ROLLBACK');
-    expect(db.statements.some((sql) => sql.includes('INSERT INTO agent_conversations'))).toBe(
-      false,
-    );
+    expect(
+      db.statements.some((sql) => sql.includes('creator_agent_create_opening_conversation')),
+    ).toBe(false);
   });
 
   it('treats the public slug as a locator and creates nothing without an ACTIVE grant', async () => {
@@ -234,20 +226,22 @@ describe('Creator-hosted Consumer Conversation repository', () => {
     const db = new CreatorConversationFakeDb({ deployment });
 
     await expect(createConsumerConversation(db, input())).rejects.toMatchObject({ code });
-    expect(db.statements.some((sql) => sql.includes('INSERT INTO agent_conversations'))).toBe(
-      false,
-    );
+    expect(
+      db.statements.some((sql) => sql.includes('creator_agent_create_opening_conversation')),
+    ).toBe(false);
   });
 
-  it('rejects an expired/missing Worker Lease before the Conversation insert', async () => {
+  it('lets the atomic authority reject an expired/missing Worker Lease', async () => {
     const db = new CreatorConversationFakeDb({ lease: false });
 
     await expect(createConsumerConversation(db, input())).rejects.toMatchObject({
       code: 'AGENT_OFFLINE',
     });
-    expect(db.statements.some((sql) => sql.includes('INSERT INTO agent_conversations'))).toBe(
-      false,
-    );
+    expect(
+      db.statements.some((sql) => sql.includes('creator_agent_create_opening_conversation')),
+    ).toBe(true);
+    expect(db.statements).toContain('ROLLBACK');
+    expect(db.statements).not.toContain('COMMIT');
   });
 
   it('rolls back and releases the connection when persistence fails', async () => {

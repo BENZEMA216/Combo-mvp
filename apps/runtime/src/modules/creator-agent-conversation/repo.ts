@@ -82,11 +82,11 @@ interface VersionControlRow {
   availability: string;
 }
 
-interface LiveWorkerRow {
-  live: boolean;
+interface InsertedConversationRow extends Omit<ExistingConversationRow, 'request_digest'> {
+  open_command_id?: string;
+  assignment_lease_id?: string;
+  assignment_fence?: string | number | bigint;
 }
-
-type InsertedConversationRow = Omit<ExistingConversationRow, 'request_digest'>;
 
 function isoDate(value: Date | string): string {
   const parsed = value instanceof Date ? value : new Date(value);
@@ -121,8 +121,9 @@ function conversationView(row: InsertedConversationRow) {
 
 /**
  * 在一个 PostgreSQL transaction 内把公开 slug、ACTIVE grant、ONLINE Deployment、
- * serving Version 和当前 Worker Lease 固定到不可变 Conversation。公开 slug 只定位，
- * 没有 ACTIVE grant 时 RLS 不会让调用者看到 Agent 行。
+ * serving Version 和当前 Worker Lease 固定到不可变 OPENING Conversation，并在同一事务
+ * 追加 exact conversation.open Outbox command。公开 slug 只定位，没有 ACTIVE grant 时
+ * RLS 不会让调用者看到 Agent 行；公网连接本身没有任何表 INSERT/UPDATE 权限。
  */
 export async function createConsumerConversation(
   db: RuntimeDb,
@@ -189,17 +190,6 @@ export async function createConsumerConversation(
 
       await tx.query(`SELECT set_config('app.creator_id', $1, true)`, [agent.creator_id]);
 
-      // A Consumer-only RLS context may read an ACTIVE grant, but the API role intentionally has
-      // no UPDATE privilege and therefore cannot acquire a row lock directly. The narrow definer
-      // revalidates both transaction identities and SHARE-locks only this exact tuple.
-      const lockedGrant = await tx.query<{ live: boolean }>(
-        `SELECT creator_agent_lock_consumer_access($1, $2, $3) AS live`,
-        [agent.agent_id, agent.creator_id, input.consumerId],
-      );
-      if (lockedGrant.rows[0]?.live !== true) {
-        throw new ConsumerConversationError('FORBIDDEN', 'Consumer 没有该 Agent 的有效授权');
-      }
-
       const deploymentResult = await tx.query<DeploymentRow>(
         `SELECT deployment.id AS deployment_id,
                 deployment.desired_state,
@@ -218,7 +208,7 @@ export async function createConsumerConversation(
           WHERE deployment.agent_id = $1
             AND deployment.creator_id = $2
             AND deployment.environment = $3
-          FOR SHARE OF deployment`,
+          `,
         [agent.agent_id, agent.creator_id, input.environment],
       );
       const deployment = deploymentResult.rows[0];
@@ -244,37 +234,27 @@ export async function createConsumerConversation(
           WHERE version_id = $1
             AND creator_id = $2
             AND availability = 'ACTIVE'
-          FOR SHARE`,
+        `,
         [deployment.serving_version_id, agent.creator_id],
       );
       if (!versionControl.rows[0]) {
         throw new ConsumerConversationError('VERSION_UNAVAILABLE', 'Agent Version 当前不可用');
       }
 
-      const liveWorker = await tx.query<LiveWorkerRow>(
-        `SELECT creator_agent_lock_live_worker($1, $2, $3, $4) AS live`,
-        [
-          deployment.deployment_id,
-          agent.creator_id,
-          deployment.observed_worker_id,
-          deployment.lease_fence,
-        ],
-      );
-      if (liveWorker.rows[0]?.live !== true) {
-        throw new ConsumerConversationError('AGENT_OFFLINE', 'Creator Worker Lease 已失效');
-      }
-
       const inserted = await tx.query<InsertedConversationRow>(
-        `INSERT INTO agent_conversations (
-           agent_id, deployment_id, agent_version_id, creator_id,
-           consumer_subject_id, idempotency_key, request_digest, version_digest,
-           state, assigned_worker_id, expires_at
-         ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8,
-           'IDLE', $9, now() + make_interval(secs => $10)
-         )
-         ON CONFLICT (consumer_subject_id, idempotency_key) DO NOTHING
-         RETURNING id, agent_id, agent_version_id, version_digest, state, created_at, expires_at`,
+        `SELECT conversation_id AS id,
+                agent_id,
+                agent_version_id,
+                version_digest,
+                conversation_state AS state,
+                created_at,
+                expires_at,
+                open_command_id,
+                assignment_lease_id,
+                assignment_fence
+           FROM creator_agent_create_opening_conversation(
+             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+           )`,
         [
           agent.agent_id,
           deployment.deployment_id,
@@ -285,6 +265,7 @@ export async function createConsumerConversation(
           requestDigest,
           deployment.version_digest,
           deployment.observed_worker_id,
+          deployment.lease_fence,
           input.ttlSeconds,
         ],
       );
@@ -298,11 +279,16 @@ export async function createConsumerConversation(
                   created_at, expires_at, request_digest
              FROM agent_conversations
             WHERE consumer_subject_id = $1 AND idempotency_key = $2
-            FOR UPDATE`,
+          `,
           [input.consumerId, input.idempotencyKey],
         );
         const winner = winnerResult.rows[0];
-        if (!winner) throw new Error('Conversation idempotency winner is unavailable');
+        if (!winner) {
+          throw new ConsumerConversationError(
+            'AGENT_OFFLINE',
+            'Conversation open authority 已变化，请稍后重试',
+          );
+        }
         if (winner.request_digest !== requestDigest) {
           throw new ConsumerConversationError(
             'IDEMPOTENCY_CONFLICT',

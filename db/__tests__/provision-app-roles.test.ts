@@ -9,6 +9,7 @@ const PASSWORD_KEYS = [
   'POSTGRES_AGENT_API_PASSWORD',
   'POSTGRES_AGENT_BROKER_PASSWORD',
   'POSTGRES_AGENT_RECONCILER_PASSWORD',
+  'POSTGRES_AGENT_CONSUMER_API_PASSWORD',
 ] as const;
 
 afterEach(() => {
@@ -98,6 +99,22 @@ describe('application database role login provisioning', () => {
       /POSTGRES_AGENT_BROKER_PASSWORD, POSTGRES_AGENT_RECONCILER_PASSWORD/,
     );
     expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it('provisions the Consumer-only login as an independent enablement boundary', async () => {
+    process.env.POSTGRES_AGENT_CONSUMER_API_PASSWORD = 'consumer-api-secret';
+    const client = clientDouble();
+
+    await expect(provisionApplicationRoleLogins(client)).resolves.toBe(true);
+
+    const formatCalls = client.query.mock.calls.filter(([sql]) =>
+      String(sql).includes('SELECT format('),
+    );
+    expect(formatCalls).toHaveLength(1);
+    expect(formatCalls[0]?.[1]).toEqual(['consumer-api-secret']);
+    expect(client.query.mock.calls.map(([sql]) => String(sql))).toContain(
+      "ALTER ROLE combo_agent_consumer_api LOGIN PASSWORD '<server-formatted>'",
+    );
   });
 
   it('replaces PostgreSQL diagnostics with a stable error that cannot echo a password', async () => {

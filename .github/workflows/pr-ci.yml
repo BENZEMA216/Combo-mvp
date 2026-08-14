@@ -148,6 +148,7 @@ jobs:
           POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
           POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
           POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
         run: bash scripts/integration/db-migrate.sh
 
       - name: Creator Agent PostgreSQL authority gate
@@ -165,6 +166,7 @@ jobs:
           POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
           POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
           POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
           CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
           CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
         run: |
@@ -188,7 +190,7 @@ jobs:
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts
 
       # Replaying 0008/0012 mutates cluster-global role attributes; keep this last in the PG job.
-      - name: Creator Agent persistent 0012 to 0013 upgrade gate
+      - name: Creator Agent persistent 0012 to 0014 upgrade gate
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           CREATOR_AGENT_UPGRADE_PG_TEST: '1'

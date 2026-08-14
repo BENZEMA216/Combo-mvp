@@ -232,3 +232,21 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
     'ci.yml must not hardcode the migration file list',
   );
 });
+
+test('PR and Main CI run the non-skipping Consumer PostgreSQL gates with the exact credential', () => {
+  for (const workflow of ['.github/workflows/pr-ci.yml', '.github/workflows/ci.yml']) {
+    const source = text(workflow);
+    assert.equal(
+      (
+        source.match(
+          /POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password/g,
+        ) ?? []
+      ).length,
+      2,
+      `${workflow} must pass the Consumer credential to migration and Conversation PG gates`,
+    );
+    assert.match(source, /CREATOR_AGENT_CONVERSATION_PG_TEST: '1'/);
+    assert.match(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0013 upgrade gate/);
+  }
+});

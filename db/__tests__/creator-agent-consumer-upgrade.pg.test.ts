@@ -33,8 +33,8 @@ async function applyMigration(client: Client, filename: string): Promise<void> {
   }
 }
 
-pgDescribe('0012 -> 0013 Creator Agent persistent upgrade', () => {
-  it('backfills both active and terminal Conversations before restoring the immutable trigger', async () => {
+pgDescribe('0012 -> 0013 -> 0014 Creator Agent persistent upgrade', () => {
+  it('preserves active/terminal rows before adding fail-closed open/ready authority', async () => {
     const admin = new Client({ connectionString: databaseUrl });
     const databaseName = `combo_vnext_upgrade_${randomUUID().replaceAll('-', '')}`;
     await admin.connect();
@@ -63,6 +63,8 @@ pgDescribe('0012 -> 0013 Creator Agent persistent upgrade', () => {
         agent: randomUUID(),
         version: randomUUID(),
         deployment: randomUUID(),
+        worker: randomUUID(),
+        preexistingCommand: randomUUID(),
         idle: randomUUID(),
         closed: randomUUID(),
       };
@@ -124,6 +126,20 @@ pgDescribe('0012 -> 0013 Creator Agent persistent upgrade', () => {
         [ids.deployment, ids.agent, ids.creator, ids.version],
       );
       await target.query(
+        `INSERT INTO worker_installations (
+           id, creator_id, installation_key_id, device_public_key,
+           worker_version, protocol_versions, capabilities
+         ) VALUES ($1, $2, $3, $4, '0.1.0', '[1]'::jsonb, '{}'::jsonb)`,
+        [ids.worker, ids.creator, `upgrade-${ids.worker}`, Buffer.alloc(65, 7)],
+      );
+      await target.query(
+        `INSERT INTO broker_outbox (
+           command_id, creator_id, target_worker_id, command_type,
+           dedupe_key, state, expires_at
+         ) VALUES ($1, $2, $3, 'deployment.prepare', $4, 'PENDING', now() + interval '1 day')`,
+        [ids.preexistingCommand, ids.creator, ids.worker, `upgrade-${ids.preexistingCommand}`],
+      );
+      await target.query(
         `INSERT INTO agent_conversations (
            id, agent_id, deployment_id, agent_version_id, creator_id,
            consumer_subject_id, version_digest, state, expires_at, closed_at
@@ -174,6 +190,71 @@ pgDescribe('0012 -> 0013 Creator Agent persistent upgrade', () => {
               AND NOT tgisinternal`,
         ),
       ).resolves.toMatchObject({ rows: [{ enabled: 'O' }] });
+
+      await applyMigration(target, '0014_creator_agent_consumer_open_ready.sql');
+
+      await expect(
+        target.query<{
+          id: string;
+          state: string;
+          idempotency_key: string;
+          open_commands: string;
+        }>(
+          `SELECT conversation.id, conversation.state, conversation.idempotency_key,
+                  count(command.command_id)::text AS open_commands
+             FROM agent_conversations AS conversation
+             LEFT JOIN broker_outbox AS command
+               ON command.conversation_id = conversation.id
+              AND command.command_type = 'conversation.open'
+            GROUP BY conversation.id, conversation.state, conversation.idempotency_key
+            ORDER BY conversation.state`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          { id: ids.closed, state: 'CLOSED', idempotency_key: ids.closed, open_commands: '0' },
+          { id: ids.idle, state: 'IDLE', idempotency_key: ids.idle, open_commands: '0' },
+        ],
+      });
+      await expect(
+        target.query(
+          `SELECT to_regclass('public.conversation_ready_receipts')::text AS receipts,
+                  to_regprocedure(
+                    'public.creator_agent_commit_conversation_ready(uuid,uuid,uuid,uuid,uuid,uuid,bigint,uuid)'
+                  )::text AS ready_function`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            receipts: 'conversation_ready_receipts',
+            ready_function:
+              'creator_agent_commit_conversation_ready(uuid,uuid,uuid,uuid,uuid,uuid,bigint,uuid)',
+          },
+        ],
+      });
+      await expect(
+        target.query(
+          `SELECT command_type, conversation_id, deployment_id,
+                  assignment_lease_id, assignment_fence
+             FROM broker_outbox
+            WHERE command_id = $1`,
+          [ids.preexistingCommand],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            command_type: 'deployment.prepare',
+            conversation_id: null,
+            deployment_id: null,
+            assignment_lease_id: null,
+            assignment_fence: null,
+          },
+        ],
+      });
+      await expect(
+        target.query(`SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1`),
+      ).resolves.toMatchObject({
+        rows: [{ filename: '0014_creator_agent_consumer_open_ready.sql' }],
+      });
     } finally {
       await target?.end().catch(() => undefined);
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);

@@ -47,9 +47,9 @@ const EnvSchema = z
 
     // PostgreSQL：与创作端同一个库（capabilities 只读 + 试用层四表读写）。
     DATABASE_URL: z.string().default('postgres://combo:combo@localhost:5432/combo'),
-    // Reserved dedicated Consumer authority URL. This may never fall back to DATABASE_URL.
-    // No supported deployment sets it until the consumer-only database role enablement gate is
-    // implemented; combo_agent_api still has Creator control-plane privileges and is not allowed.
+    // Dedicated Consumer-only authority URL. This may never fall back to DATABASE_URL or use
+    // combo_agent_api; readiness proves the exact role and capability set before traffic is ready.
+    // Supported deployments still omit it while the public feature flag remains false.
     CREATOR_AGENT_DATABASE_URL: z.preprocess(emptyToUndefined, z.string().optional()),
     // VNext Consumer API remains unreachable until the complete authorization/revoke and
     // Conversation open/ready chain is explicitly enabled for a disposable environment.
