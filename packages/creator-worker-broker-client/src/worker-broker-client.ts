@@ -32,6 +32,11 @@ import {
 import WebSocket, { type RawData } from 'ws';
 
 export const WORKER_BROKER_CONNECT_PATH = BROKER_WORKER_CONNECT_PATH;
+export const WORKER_CONVERSATION_READY_REPLAY_BATCH = 128;
+export type ConversationReadyReplayRefill = Readonly<{
+  enqueued: number;
+  remaining: boolean;
+}>;
 
 const durablePortDeadlines = new WeakMap<AbortSignal, number>();
 
@@ -159,6 +164,13 @@ export interface WorkerBrokerDurableTransportPort {
     inboundCursor: string;
     signal: AbortSignal;
   }): Promise<DurableBrokerConnection>;
+  /** Narrow reconnect reducer; it never accepts an arbitrary event body or logical source id. */
+  replayPendingConversationReady(input: {
+    installationId: string;
+    ownerToken: string;
+    connectionId: string;
+    signal: AbortSignal;
+  }): Promise<ConversationReadyReplayRefill>;
   loadConnection(input: {
     installationId: string;
     ownerToken: string;
@@ -766,6 +778,22 @@ export class WorkerBrokerClient {
     ) {
       throw new WorkerBrokerClientError('STALE_LEASE', true);
     }
+    await this.#callLivePort(live, async (signal) => {
+      const refill = await this.#durablePort.replayPendingConversationReady({
+        installationId: this.#installationId,
+        ownerToken: this.#ownerToken,
+        connectionId: state.connectionId,
+        signal,
+      });
+      if (
+        !Number.isSafeInteger(refill.enqueued) ||
+        refill.enqueued < 0 ||
+        refill.enqueued > WORKER_CONVERSATION_READY_REPLAY_BATCH ||
+        typeof refill.remaining !== 'boolean'
+      ) {
+        throw new WorkerBrokerClientError('PORT_FAILED', true);
+      }
+    });
     const monotonicAfterCommit = this.#monotonicNow();
     const cloudNowAfterCommit = this.#estimatedCloudNow(live, envelope);
     live.connection = state;
@@ -864,6 +892,24 @@ export class WorkerBrokerClient {
     validateCommittedConnection(durable, envelope, next);
     live.connection = next;
     this.#applyLeaseTransition(live, envelope, next);
+    if (envelope.kind === 'ack') {
+      await this.#callLivePort(live, async (signal) => {
+        const refill = await this.#durablePort.replayPendingConversationReady({
+          installationId: this.#installationId,
+          ownerToken: this.#ownerToken,
+          connectionId: next.connectionId,
+          signal,
+        });
+        if (
+          !Number.isSafeInteger(refill.enqueued) ||
+          refill.enqueued < 0 ||
+          refill.enqueued > WORKER_CONVERSATION_READY_REPLAY_BATCH ||
+          typeof refill.remaining !== 'boolean'
+        ) {
+          throw new WorkerBrokerClientError('PORT_FAILED', true);
+        }
+      });
+    }
     this.#diagnostic('frame_applied');
     await this.#queueFlush(live);
 

@@ -11,11 +11,13 @@ import {
   WorkerInvocationPreparedFactSchema,
   WorkerInvocationStartedFactSchema,
   WorkerInvocationSucceededFactSchema,
+  WorkerConversationReadyFactSchema,
   canonicalSha256,
   canonicalizeJson,
   executionCapabilityBindingFrom,
   executionCapabilityDigest,
   workerInvocationFactDigest,
+  workerConversationReadyFactDigest,
   type BrokerCommand,
   type BrokerEnvelope,
   type BrokerSensitiveMessage,
@@ -26,6 +28,7 @@ import {
 } from '@cb/creator-agent-protocol';
 
 export const WORKER_INVOCATION_SCHEMA_VERSION = 2;
+export const WORKER_CONVERSATION_READY_SCHEMA_VERSION = 3;
 export const WORKER_INVOCATION_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const LOCAL_INVOCATION_PROMPT_PROTOCOL = 'combo.local-invocation-prompt/1' as const;
 export const LOCAL_INVOCATION_RESULT_PROTOCOL = 'combo.local-invocation-result/1' as const;
@@ -522,6 +525,11 @@ export const WORKER_INVOCATION_SCHEMA_SQL = `
     BEFORE UPDATE ON local_consumed_commands BEGIN
       SELECT RAISE(ABORT, 'local_consumed_commands is append-only');
     END;
+  CREATE TRIGGER local_consumed_conversation_open_no_delete
+    BEFORE DELETE ON local_consumed_commands
+    WHEN OLD.command_type = 'conversation.open' BEGIN
+      SELECT RAISE(ABORT, 'consumed conversation.open is immutable');
+    END;
   CREATE TRIGGER local_invocation_events_no_update
     BEFORE UPDATE ON local_invocation_events BEGIN
       SELECT RAISE(ABORT, 'local_invocation_events is append-only');
@@ -540,6 +548,137 @@ export const WORKER_INVOCATION_SCHEMA_SQL = `
     END;
 `;
 
+/** Additive v2 -> v3 authority for one durable conversation.ready business fact. */
+export const WORKER_CONVERSATION_READY_SCHEMA_SQL = `
+  ALTER TABLE local_conversations
+    ADD COLUMN ready_cloud_state TEXT NOT NULL DEFAULT 'PENDING'
+      CHECK (ready_cloud_state IN ('PENDING', 'CLOUD_COMMITTED', 'CLOUD_REJECTED'));
+
+  CREATE TABLE local_conversation_ready_facts (
+    source_event_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL UNIQUE REFERENCES local_conversations(conversation_id),
+    open_command_id TEXT NOT NULL UNIQUE,
+    fact_digest TEXT NOT NULL UNIQUE,
+    fact_json TEXT NOT NULL,
+    original_connection_id TEXT NOT NULL,
+    original_sequence TEXT NOT NULL,
+    original_canonical_digest TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    row_digest TEXT NOT NULL,
+    CHECK (source_event_id = open_command_id)
+  ) STRICT;
+
+  CREATE TABLE local_conversation_ready_outbox (
+    source_event_id TEXT PRIMARY KEY
+      REFERENCES local_conversation_ready_facts(source_event_id),
+    conversation_id TEXT NOT NULL UNIQUE REFERENCES local_conversations(conversation_id),
+    correlation_id TEXT NOT NULL,
+    fact_digest TEXT NOT NULL UNIQUE,
+    fact_json TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    row_digest TEXT NOT NULL,
+    CHECK (conversation_id = correlation_id)
+  ) STRICT;
+
+  CREATE TABLE local_conversation_ready_deliveries (
+    delivery_message_id TEXT PRIMARY KEY,
+    source_event_id TEXT NOT NULL REFERENCES local_conversation_ready_outbox(source_event_id),
+    conversation_id TEXT NOT NULL REFERENCES local_conversations(conversation_id),
+    connection_id TEXT NOT NULL,
+    deployment_id TEXT NOT NULL,
+    worker_session_id TEXT NOT NULL,
+    lease_id TEXT NOT NULL,
+    fence TEXT NOT NULL,
+    sequence TEXT NOT NULL,
+    canonical_digest TEXT NOT NULL,
+    fact_digest TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    row_digest TEXT NOT NULL,
+    UNIQUE (connection_id, sequence)
+  ) STRICT;
+
+  CREATE INDEX local_conversation_ready_delivery_source
+    ON local_conversation_ready_deliveries(source_event_id, created_at_ms);
+
+  CREATE TABLE local_conversation_ready_outbox_receipts (
+    receipt_id INTEGER PRIMARY KEY,
+    source_event_id TEXT NOT NULL UNIQUE
+      REFERENCES local_conversation_ready_outbox(source_event_id),
+    conversation_id TEXT NOT NULL UNIQUE REFERENCES local_conversations(conversation_id),
+    fact_digest TEXT NOT NULL,
+    delivery_message_id TEXT NOT NULL,
+    ack_message_id TEXT NOT NULL UNIQUE,
+    ack_connection_id TEXT NOT NULL,
+    ack_sequence TEXT NOT NULL,
+    ack_canonical_digest TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (
+      decision IN ('APPLIED', 'IDEMPOTENT_REPLAY', 'SECURITY_BLOCK')
+    ),
+    cloud_decided_at_ms INTEGER NOT NULL,
+    row_digest TEXT NOT NULL,
+    UNIQUE (ack_connection_id, ack_sequence)
+  ) STRICT;
+
+  CREATE TABLE local_conversation_ready_terminal_tombstones (
+    source_event_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL UNIQUE REFERENCES local_conversations(conversation_id),
+    open_command_id TEXT NOT NULL UNIQUE,
+    open_semantic_digest TEXT NOT NULL,
+    fact_digest TEXT NOT NULL UNIQUE,
+    delivery_message_id TEXT NOT NULL UNIQUE,
+    delivery_canonical_digest TEXT NOT NULL,
+    ack_message_id TEXT NOT NULL UNIQUE,
+    ack_canonical_digest TEXT NOT NULL,
+    ack_logical_digest TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (
+      decision IN ('APPLIED', 'IDEMPOTENT_REPLAY', 'SECURITY_BLOCK')
+    ),
+    cloud_state TEXT NOT NULL CHECK (
+      cloud_state IN ('CLOUD_COMMITTED', 'CLOUD_REJECTED')
+    ),
+    cloud_decided_at_ms INTEGER NOT NULL,
+    compacted_at_ms INTEGER NOT NULL,
+    row_digest TEXT NOT NULL,
+    CHECK (source_event_id = open_command_id),
+    CHECK (
+      compacted_at_ms >= cloud_decided_at_ms + ${WORKER_INVOCATION_TERMINAL_RETENTION_MS}
+    )
+  ) STRICT;
+
+  CREATE TRIGGER local_conversation_ready_facts_no_update
+    BEFORE UPDATE ON local_conversation_ready_facts BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_facts is append-only');
+    END;
+  CREATE TRIGGER local_conversation_ready_facts_no_delete
+    BEFORE DELETE ON local_conversation_ready_facts
+    WHEN NOT EXISTS (
+      SELECT 1 FROM local_conversation_ready_terminal_tombstones AS terminal
+      WHERE terminal.source_event_id = OLD.source_event_id
+    ) BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_facts is immutable');
+    END;
+  CREATE TRIGGER local_conversation_ready_outbox_no_update
+    BEFORE UPDATE ON local_conversation_ready_outbox BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_outbox is append-only');
+    END;
+  CREATE TRIGGER local_conversation_ready_deliveries_no_update
+    BEFORE UPDATE ON local_conversation_ready_deliveries BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_deliveries is append-only');
+    END;
+  CREATE TRIGGER local_conversation_ready_outbox_receipts_no_update
+    BEFORE UPDATE ON local_conversation_ready_outbox_receipts BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_outbox_receipts is append-only');
+    END;
+  CREATE TRIGGER local_conversation_ready_terminal_tombstones_no_update
+    BEFORE UPDATE ON local_conversation_ready_terminal_tombstones BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_terminal_tombstones is append-only');
+    END;
+  CREATE TRIGGER local_conversation_ready_terminal_tombstones_no_delete
+    BEFORE DELETE ON local_conversation_ready_terminal_tombstones BEGIN
+      SELECT RAISE(ABORT, 'local_conversation_ready_terminal_tombstones is immutable');
+    END;
+`;
+
 const LOCAL_AUTHORITY_TABLES = [
   ['local_conversations', 'conversation_id'],
   ['local_invocations', 'invocation_id'],
@@ -549,6 +688,29 @@ const LOCAL_AUTHORITY_TABLES = [
   ['local_invocation_deliveries', 'delivery_message_id'],
   ['local_invocation_outbox_receipts', 'receipt_id'],
 ] as const;
+
+const LOCAL_READY_AUTHORITY_TABLES = [
+  ['local_conversation_ready_facts', 'source_event_id'],
+  ['local_conversation_ready_outbox', 'source_event_id'],
+  ['local_conversation_ready_deliveries', 'delivery_message_id'],
+  ['local_conversation_ready_outbox_receipts', 'receipt_id'],
+  ['local_conversation_ready_terminal_tombstones', 'source_event_id'],
+] as const;
+
+export function workerConversationReadyTablesExist(database: DatabaseSync): boolean {
+  const row = database
+    .prepare(
+      `SELECT count(*) AS count FROM sqlite_master
+       WHERE type = 'table' AND name IN (
+         'local_conversation_ready_facts', 'local_conversation_ready_outbox',
+         'local_conversation_ready_deliveries',
+         'local_conversation_ready_outbox_receipts',
+         'local_conversation_ready_terminal_tombstones'
+       )`,
+    )
+    .get() as { count: number };
+  return row.count === LOCAL_READY_AUTHORITY_TABLES.length;
+}
 
 export function workerInvocationTablesExist(database: DatabaseSync): boolean {
   const row = database
@@ -573,12 +735,376 @@ export function workerInvocationTablesExist(database: DatabaseSync): boolean {
 /** Rows folded into transport_meta.authority_digest and therefore the external watermark. */
 export function workerInvocationAuthorityRows(database: DatabaseSync): unknown {
   if (!workerInvocationTablesExist(database)) return undefined;
-  return Object.fromEntries(
+  const invocation = Object.fromEntries(
     LOCAL_AUTHORITY_TABLES.map(([table, orderBy]) => [
       table,
       database.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all(),
     ]),
   );
+  if (!workerConversationReadyTablesExist(database)) return invocation;
+  return {
+    ...invocation,
+    ...Object.fromEntries(
+      LOCAL_READY_AUTHORITY_TABLES.map(([table, orderBy]) => [
+        table,
+        database.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all(),
+      ]),
+    ),
+  };
+}
+
+export function assertWorkerConversationReadyIntegrity(database: DatabaseSync): void {
+  if (!workerConversationReadyTablesExist(database)) {
+    throw new Error('missing-local-conversation-ready-schema');
+  }
+  const conversations = new Map(
+    (
+      database.prepare('SELECT * FROM local_conversations').all() as Array<Record<string, unknown>>
+    ).map((row) => [String(row.conversation_id), row]),
+  );
+  for (const [table] of LOCAL_READY_AUTHORITY_TABLES) {
+    const rows = database.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const stored = String(row.row_digest);
+      const payload = { ...row };
+      delete payload.row_digest;
+      if (table === 'local_conversation_ready_outbox_receipts') delete payload.receipt_id;
+      if (stored !== sqliteInvocationRowDigest(table, payload)) {
+        throw new Error(`invalid-${table}-row-digest`);
+      }
+      if (
+        table === 'local_conversation_ready_facts' ||
+        table === 'local_conversation_ready_outbox'
+      ) {
+        const fact = WorkerConversationReadyFactSchema.parse(JSON.parse(String(row.fact_json)));
+        const conversation = conversations.get(fact.conversationId);
+        if (
+          canonicalizeJson(fact) !== row.fact_json ||
+          workerConversationReadyFactDigest(fact) !== row.fact_digest ||
+          fact.sourceEventId !== row.source_event_id ||
+          fact.openCommandId !== row.source_event_id ||
+          fact.conversationId !== row.conversation_id ||
+          conversation === undefined ||
+          fact.installationId !== conversation.installation_id ||
+          fact.deploymentId !== conversation.deployment_id ||
+          fact.agentVersionId !== conversation.agent_version_id ||
+          fact.agentVersionDigest !== conversation.agent_version_digest ||
+          fact.snapshotDigest !== conversation.snapshot_digest ||
+          fact.workerSessionId !== conversation.worker_session_id ||
+          fact.leaseId !== conversation.lease_id ||
+          fact.fence !== conversation.fence ||
+          fact.sandboxInstanceId !== conversation.sandbox_instance_id ||
+          fact.runtimeThreadId !== conversation.runtime_thread_id ||
+          fact.readyEvidenceDigest !== conversation.ready_evidence_digest
+        ) {
+          throw new Error('invalid-local-conversation-ready-fact');
+        }
+        if (table === 'local_conversation_ready_facts') {
+          const inbound = database
+            .prepare(
+              `SELECT message_id, canonical_digest, envelope_json, envelope_kind, envelope_type
+               FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+            )
+            .get(String(row.original_connection_id), String(row.original_sequence)) as
+            | Record<string, unknown>
+            | undefined;
+          if (inbound === undefined) {
+            const tombstone = database
+              .prepare(
+                `SELECT * FROM local_conversation_ready_terminal_tombstones
+                 WHERE source_event_id = ?`,
+              )
+              .get(String(row.source_event_id)) as Record<string, unknown> | undefined;
+            const consumed = database
+              .prepare('SELECT * FROM local_consumed_commands WHERE command_id = ?')
+              .get(String(row.open_command_id)) as Record<string, unknown> | undefined;
+            if (
+              tombstone === undefined ||
+              consumed === undefined ||
+              tombstone.open_command_id !== row.open_command_id ||
+              tombstone.fact_digest !== row.fact_digest ||
+              consumed.connection_id !== row.original_connection_id ||
+              consumed.sequence !== row.original_sequence ||
+              consumed.canonical_digest !== row.original_canonical_digest ||
+              consumed.semantic_digest !== tombstone.open_semantic_digest
+            ) {
+              throw new Error('missing-ready-original-inbound');
+            }
+          } else {
+            const envelope = BrokerEnvelopeSchema.parse(JSON.parse(String(inbound.envelope_json)));
+            if (
+              inbound.message_id !== row.source_event_id ||
+              inbound.canonical_digest !== row.original_canonical_digest ||
+              inbound.envelope_kind !== 'command' ||
+              inbound.envelope_type !== 'conversation.open' ||
+              canonicalizeJson(envelope) !== inbound.envelope_json ||
+              canonicalSha256(envelope) !== inbound.canonical_digest ||
+              envelope.kind !== 'command' ||
+              envelope.type !== 'conversation.open' ||
+              envelope.body.conversationId !== fact.conversationId ||
+              envelope.body.agentVersionId !== fact.agentVersionId ||
+              envelope.body.agentVersionDigest !== fact.agentVersionDigest ||
+              envelope.body.snapshotDigest !== fact.snapshotDigest ||
+              envelope.lease.deploymentId !== fact.deploymentId ||
+              envelope.lease.workerSessionId !== fact.workerSessionId ||
+              envelope.lease.leaseId !== fact.leaseId ||
+              envelope.lease.fence !== fact.fence
+            ) {
+              throw new Error('invalid-ready-original-inbound');
+            }
+          }
+        } else {
+          const storedFact = database
+            .prepare(
+              `SELECT fact_digest, fact_json FROM local_conversation_ready_facts
+               WHERE source_event_id = ?`,
+            )
+            .get(String(row.source_event_id)) as Record<string, unknown> | undefined;
+          if (
+            storedFact === undefined ||
+            storedFact.fact_digest !== row.fact_digest ||
+            storedFact.fact_json !== row.fact_json ||
+            row.correlation_id !== row.conversation_id
+          ) {
+            throw new Error('invalid-local-conversation-ready-outbox');
+          }
+        }
+      }
+      if (table === 'local_conversation_ready_deliveries') {
+        const outbox = database
+          .prepare(
+            `SELECT conversation_id, fact_digest, fact_json
+             FROM local_conversation_ready_outbox WHERE source_event_id = ?`,
+          )
+          .get(String(row.source_event_id)) as Record<string, unknown> | undefined;
+        const transport = database
+          .prepare(
+            `SELECT canonical_digest, envelope_json FROM transport_outbox WHERE message_id = ?`,
+          )
+          .get(String(row.delivery_message_id)) as Record<string, unknown> | undefined;
+        if (
+          outbox === undefined ||
+          outbox.conversation_id !== row.conversation_id ||
+          outbox.fact_digest !== row.fact_digest ||
+          (transport !== undefined &&
+            !conversationReadyDeliveryEnvelopeMatches(transport, row, outbox))
+        ) {
+          throw new Error('invalid-local-conversation-ready-delivery');
+        }
+      }
+      if (table === 'local_conversation_ready_outbox_receipts') {
+        const delivery = database
+          .prepare(
+            'SELECT * FROM local_conversation_ready_deliveries WHERE delivery_message_id = ?',
+          )
+          .get(String(row.delivery_message_id)) as Record<string, unknown> | undefined;
+        const inbound = database
+          .prepare(
+            `SELECT message_id, canonical_digest, envelope_json, effect_state
+             FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+          )
+          .get(String(row.ack_connection_id), String(row.ack_sequence)) as
+          | Record<string, unknown>
+          | undefined;
+        if (
+          delivery === undefined ||
+          delivery.source_event_id !== row.source_event_id ||
+          delivery.conversation_id !== row.conversation_id ||
+          delivery.fact_digest !== row.fact_digest ||
+          inbound === undefined ||
+          inbound.effect_state !== 'APPLIED' ||
+          inbound.message_id !== row.ack_message_id ||
+          inbound.canonical_digest !== row.ack_canonical_digest
+        ) {
+          throw new Error('invalid-local-conversation-ready-receipt');
+        }
+        if (
+          exactConversationReadyAckEnvelope(
+            inbound.envelope_json,
+            inbound.canonical_digest,
+            String(row.delivery_message_id),
+          ).body.decision !== row.decision
+        ) {
+          throw new Error('invalid-local-conversation-ready-receipt-decision');
+        }
+      }
+      if (table === 'local_conversation_ready_terminal_tombstones') {
+        const fact = database
+          .prepare('SELECT * FROM local_conversation_ready_facts WHERE source_event_id = ?')
+          .get(String(row.source_event_id)) as Record<string, unknown> | undefined;
+        const outbox = database
+          .prepare('SELECT * FROM local_conversation_ready_outbox WHERE source_event_id = ?')
+          .get(String(row.source_event_id)) as Record<string, unknown> | undefined;
+        const delivery = database
+          .prepare(
+            'SELECT * FROM local_conversation_ready_deliveries WHERE delivery_message_id = ?',
+          )
+          .get(String(row.delivery_message_id)) as Record<string, unknown> | undefined;
+        const receipt = database
+          .prepare(
+            'SELECT * FROM local_conversation_ready_outbox_receipts WHERE source_event_id = ?',
+          )
+          .get(String(row.source_event_id)) as Record<string, unknown> | undefined;
+        const consumed = database
+          .prepare('SELECT * FROM local_consumed_commands WHERE command_id = ?')
+          .get(String(row.open_command_id)) as Record<string, unknown> | undefined;
+        const conversation = conversations.get(String(row.conversation_id));
+        const compact =
+          fact === undefined &&
+          outbox === undefined &&
+          delivery === undefined &&
+          receipt === undefined;
+        const reconstructedFact =
+          conversation === undefined
+            ? undefined
+            : WorkerConversationReadyFactSchema.parse({
+                protocol: 'combo.worker-conversation-ready-fact/1',
+                schemaVersion: 1,
+                type: 'conversation.ready',
+                sourceEventId: row.source_event_id,
+                conversationId: row.conversation_id,
+                openCommandId: row.open_command_id,
+                deploymentId: conversation.deployment_id,
+                agentVersionId: conversation.agent_version_id,
+                agentVersionDigest: conversation.agent_version_digest,
+                snapshotDigest: conversation.snapshot_digest,
+                installationId: conversation.installation_id,
+                workerSessionId: conversation.worker_session_id,
+                leaseId: conversation.lease_id,
+                fence: conversation.fence,
+                sandboxInstanceId: conversation.sandbox_instance_id,
+                runtimeThreadId: conversation.runtime_thread_id,
+                readyEvidenceDigest: conversation.ready_evidence_digest,
+              });
+        if (
+          consumed === undefined ||
+          conversation === undefined ||
+          !compact ||
+          row.open_command_id !== row.source_event_id ||
+          row.open_command_id !== consumed.command_id ||
+          row.open_semantic_digest !== consumed.semantic_digest ||
+          reconstructedFact === undefined ||
+          workerConversationReadyFactDigest(reconstructedFact) !== row.fact_digest ||
+          Number(row.compacted_at_ms) <
+            Number(row.cloud_decided_at_ms) + WORKER_INVOCATION_TERMINAL_RETENTION_MS ||
+          row.cloud_state !== conversation.ready_cloud_state ||
+          (row.decision === 'SECURITY_BLOCK'
+            ? conversation.ready_cloud_state !== 'CLOUD_REJECTED'
+            : conversation.ready_cloud_state !== 'CLOUD_COMMITTED')
+        ) {
+          throw new Error('invalid-local-conversation-ready-terminal-tombstone');
+        }
+      }
+    }
+  }
+  for (const conversation of conversations.values()) {
+    const shape = database
+      .prepare(
+        `SELECT
+           (SELECT count(*) FROM local_conversation_ready_facts
+             WHERE conversation_id = ?) AS facts,
+           (SELECT count(*) FROM local_conversation_ready_outbox
+             WHERE conversation_id = ?) AS outbox,
+           (SELECT count(*) FROM local_conversation_ready_deliveries
+             WHERE conversation_id = ?) AS deliveries,
+           (SELECT count(*) FROM local_conversation_ready_outbox_receipts
+             WHERE conversation_id = ?) AS receipts,
+           (SELECT count(*) FROM local_conversation_ready_terminal_tombstones
+             WHERE conversation_id = ?) AS terminals`,
+      )
+      .get(
+        String(conversation.conversation_id),
+        String(conversation.conversation_id),
+        String(conversation.conversation_id),
+        String(conversation.conversation_id),
+        String(conversation.conversation_id),
+      ) as {
+      facts: number;
+      outbox: number;
+      deliveries: number;
+      receipts: number;
+      terminals: number;
+    };
+    const terminalDecision = database
+      .prepare(
+        `SELECT decision FROM (
+           SELECT decision FROM local_conversation_ready_outbox_receipts
+            WHERE conversation_id = ?
+           UNION ALL
+           SELECT decision FROM local_conversation_ready_terminal_tombstones
+            WHERE conversation_id = ?
+         ) LIMIT 1`,
+      )
+      .get(String(conversation.conversation_id), String(conversation.conversation_id)) as
+      | { decision: string }
+      | undefined;
+    const pendingShape =
+      shape.facts === 1 && shape.outbox === 1 && shape.receipts === 0 && shape.terminals === 0;
+    const terminalFullShape =
+      shape.facts === 1 &&
+      shape.outbox === 1 &&
+      shape.deliveries >= 1 &&
+      shape.receipts === 1 &&
+      shape.terminals === 0;
+    const terminalCompactedShape =
+      shape.facts === 0 &&
+      shape.outbox === 0 &&
+      shape.deliveries === 0 &&
+      shape.receipts === 0 &&
+      shape.terminals === 1;
+    if (!pendingShape && !terminalFullShape && !terminalCompactedShape) {
+      throw new Error('invalid-local-conversation-ready-shape');
+    }
+    const expected =
+      terminalDecision === undefined
+        ? 'PENDING'
+        : terminalDecision.decision === 'SECURITY_BLOCK'
+          ? 'CLOUD_REJECTED'
+          : 'CLOUD_COMMITTED';
+    if (conversation.ready_cloud_state !== expected) {
+      throw new Error('invalid-local-conversation-ready-cloud-state');
+    }
+  }
+}
+
+function conversationReadyDeliveryEnvelopeMatches(
+  transport: Record<string, unknown>,
+  delivery: Record<string, unknown>,
+  outbox: Record<string, unknown>,
+): boolean {
+  try {
+    const envelope = BrokerEnvelopeSchema.parse(JSON.parse(String(transport.envelope_json)));
+    if (
+      canonicalizeJson(envelope) !== transport.envelope_json ||
+      canonicalSha256(envelope) !== transport.canonical_digest ||
+      transport.canonical_digest !== delivery.canonical_digest ||
+      envelope.kind !== 'event' ||
+      envelope.type !== 'conversation.ready' ||
+      envelope.messageId !== delivery.delivery_message_id ||
+      envelope.connectionId !== delivery.connection_id ||
+      envelope.sequence !== delivery.sequence ||
+      envelope.lease.deploymentId !== delivery.deployment_id ||
+      envelope.lease.workerSessionId !== delivery.worker_session_id ||
+      envelope.lease.leaseId !== delivery.lease_id ||
+      envelope.lease.fence !== delivery.fence ||
+      envelope.correlationId !== delivery.conversation_id
+    ) {
+      return false;
+    }
+    const body = { ...envelope.body } as Record<string, unknown>;
+    delete body.factDigest;
+    const fact = WorkerConversationReadyFactSchema.parse(body);
+    return (
+      canonicalizeJson(fact) === outbox.fact_json &&
+      fact.deploymentId === delivery.deployment_id &&
+      fact.sourceEventId === delivery.source_event_id &&
+      fact.conversationId === delivery.conversation_id &&
+      workerConversationReadyFactDigest(fact) === delivery.fact_digest &&
+      envelope.body.factDigest === delivery.fact_digest
+    );
+  } catch {
+    return false;
+  }
 }
 
 export function sqliteInvocationRowDigest(domain: string, row: unknown): string {
@@ -770,16 +1296,32 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
         if (transport === undefined) {
           const invocation =
             row.invocation_id === null ? undefined : invocations.get(String(row.invocation_id));
+          const compactReadyOpen =
+            row.command_type === 'conversation.open'
+              ? database
+                  .prepare(
+                    `SELECT 1 AS present
+                     FROM local_conversation_ready_terminal_tombstones
+                     WHERE open_command_id = ? AND conversation_id = ?
+                       AND open_semantic_digest = ?`,
+                  )
+                  .get(
+                    String(row.command_id),
+                    String(row.conversation_id),
+                    String(row.semantic_digest),
+                  )
+              : undefined;
           if (
-            row.command_type !== 'invocation.prepare' ||
-            (row.disposition === 'SECURITY_BLOCK'
-              ? row.invocation_id === null || row.conversation_id === null
-              : invocation === undefined ||
-                invocation.prepare_command_id !== row.command_id ||
-                invocation.prepare_connection_id !== row.connection_id ||
-                invocation.prepare_sequence !== row.sequence ||
-                invocation.prepare_canonical_digest !== row.canonical_digest ||
-                invocation.prepare_semantic_digest !== row.semantic_digest)
+            compactReadyOpen === undefined &&
+            (row.command_type !== 'invocation.prepare' ||
+              (row.disposition === 'SECURITY_BLOCK'
+                ? row.invocation_id === null || row.conversation_id === null
+                : invocation === undefined ||
+                  invocation.prepare_command_id !== row.command_id ||
+                  invocation.prepare_connection_id !== row.connection_id ||
+                  invocation.prepare_sequence !== row.sequence ||
+                  invocation.prepare_canonical_digest !== row.canonical_digest ||
+                  invocation.prepare_semantic_digest !== row.semantic_digest))
           ) {
             throw new Error('invalid-local-consumed-command-binding');
           }
@@ -984,6 +1526,116 @@ function cloudAckEnvelopeMatches(
     );
   } catch {
     return false;
+  }
+}
+
+type StoredPendingConversationReadyOutbox = Readonly<{
+  source_event_id: string;
+  conversation_id: string;
+  correlation_id: string;
+  fact_json: string;
+  fact_digest: string;
+}>;
+
+function loadExactPendingConversationReadyOutbox(
+  database: DatabaseSync,
+  installationId: string,
+  reference: PendingConversationReadyFactReference,
+): StoredPendingConversationReadyOutbox {
+  const row = database
+    .prepare(
+      `SELECT o.source_event_id, o.conversation_id, o.correlation_id,
+              o.fact_json, o.fact_digest
+       FROM local_conversation_ready_outbox AS o
+       JOIN local_conversations AS c ON c.conversation_id = o.conversation_id
+       LEFT JOIN local_conversation_ready_outbox_receipts AS r
+         ON r.source_event_id = o.source_event_id
+       WHERE c.installation_id = ? AND o.source_event_id = ? AND o.conversation_id = ?
+         AND o.correlation_id = ? AND o.fact_digest = ? AND r.source_event_id IS NULL`,
+    )
+    .get(
+      installationId,
+      reference.sourceEventId,
+      reference.conversationId,
+      reference.correlationId,
+      reference.factDigest,
+    ) as StoredPendingConversationReadyOutbox | undefined;
+  if (row === undefined) throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
+  const fact = WorkerConversationReadyFactSchema.parse(JSON.parse(row.fact_json));
+  if (
+    canonicalizeJson(fact) !== row.fact_json ||
+    workerConversationReadyFactDigest(fact) !== row.fact_digest ||
+    fact.sourceEventId !== row.source_event_id ||
+    fact.conversationId !== row.conversation_id ||
+    row.correlation_id !== row.conversation_id
+  ) {
+    throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
+  }
+  return row;
+}
+
+function activeConversationReadyDelivery(
+  database: DatabaseSync,
+  sourceEventId: string,
+): DurableConversationReadyDelivery | undefined {
+  const row = database
+    .prepare(
+      `SELECT d.delivery_message_id, d.source_event_id, d.conversation_id,
+              d.connection_id, d.sequence, d.canonical_digest, d.fact_digest
+       FROM local_conversation_ready_deliveries AS d
+       JOIN transport_outbox AS t ON t.message_id = d.delivery_message_id
+       WHERE d.source_event_id = ? AND t.state IN ('PENDING', 'WRITTEN', 'ACKED')
+       ORDER BY d.created_at_ms DESC LIMIT 1`,
+    )
+    .get(sourceEventId) as
+    | {
+        delivery_message_id: string;
+        source_event_id: string;
+        conversation_id: string;
+        connection_id: string;
+        sequence: string;
+        canonical_digest: string;
+        fact_digest: string;
+      }
+    | undefined;
+  return row === undefined
+    ? undefined
+    : Object.freeze({
+        deliveryMessageId: row.delivery_message_id,
+        sourceEventId: row.source_event_id,
+        conversationId: row.conversation_id,
+        connectionId: row.connection_id,
+        sequence: row.sequence,
+        canonicalDigest: row.canonical_digest,
+        factDigest: row.fact_digest,
+      });
+}
+
+function exactConversationReadyAckEnvelope(
+  envelopeJson: unknown,
+  canonicalDigest: unknown,
+  deliveryMessageId: string,
+): Extract<BrokerEnvelope, { type: 'message.ack' }> {
+  try {
+    const envelope = BrokerEnvelopeSchema.parse(JSON.parse(String(envelopeJson)));
+    if (
+      canonicalizeJson(envelope) !== envelopeJson ||
+      canonicalSha256(envelope) !== canonicalDigest ||
+      envelope.kind !== 'ack' ||
+      envelope.type !== 'message.ack' ||
+      envelope.body.acknowledgedMessageId !== deliveryMessageId ||
+      envelope.body.level !== 'CLOUD_COMMITTED' ||
+      !(
+        envelope.body.decision === 'APPLIED' ||
+        envelope.body.decision === 'IDEMPOTENT_REPLAY' ||
+        envelope.body.decision === 'SECURITY_BLOCK'
+      )
+    ) {
+      throw new Error('invalid-ready-ack');
+    }
+    return envelope;
+  } catch {
+    throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
   }
 }
 
@@ -1266,10 +1918,19 @@ export type ReadyConversationExpectedBinding = Readonly<{
   openCommandId: string;
 }>;
 
+export type DurableReadyConversation = ReadyConversationExpectedBinding &
+  Readonly<{
+    sourceEventId: string;
+    factDigest: string;
+    cloudState: 'PENDING' | 'CLOUD_COMMITTED' | 'CLOUD_REJECTED';
+  }>;
+
 export type VerifiedReadyConversationEvidence = Readonly<{
   sandboxInstanceId: string;
   runtimeThreadId: string;
   evidenceDigest: string;
+  /** Trusted Host occurrence time; processing may happen after the open envelope expires. */
+  readyAt: Date;
 }>;
 
 export interface ReadyConversationAuthorityPort {
@@ -1414,6 +2075,14 @@ export type WorkerInvocationJournalTransactionContext = Readonly<{
       body: unknown;
     }>,
   ): DurableInvocationFactDelivery;
+  enqueueConversationReadyEvent(
+    input: Readonly<{
+      connectionId: string;
+      messageId: string;
+      correlationId: string;
+      body: unknown;
+    }>,
+  ): DurableConversationReadyDelivery | undefined;
   purgeInvocationPrepareTransportPayload(commandId: string): void;
   purgeInvocationCommandResponse(commandId: string): void;
   purgeInvocationDeliveryWire(deliveryMessageId: string): void;
@@ -1515,6 +2184,23 @@ export type OpaqueInvocationCloudAckReference = Readonly<{
   messageId: string;
   canonicalDigest: string;
   acknowledgedDeliveryMessageId: string;
+}>;
+
+export type PendingConversationReadyFactReference = Readonly<{
+  sourceEventId: string;
+  conversationId: string;
+  correlationId: string;
+  factDigest: string;
+}>;
+
+export type DurableConversationReadyDelivery = Readonly<{
+  deliveryMessageId: string;
+  sourceEventId: string;
+  conversationId: string;
+  connectionId: string;
+  sequence: string;
+  canonicalDigest: string;
+  factDigest: string;
 }>;
 
 type StoredCommand = Readonly<{
@@ -1644,17 +2330,72 @@ export class SqliteWorkerInvocationJournal {
     command: OpaqueInvocationCommandReference;
     evidence: unknown;
     signal: AbortSignal;
-  }): Promise<ReadyConversationExpectedBinding> {
+  }): Promise<DurableReadyConversation> {
     return this.host.transact(
       { ...input, name: 'invocation_bind_ready_conversation' },
       (context) => {
         const now = this.#cloudNow();
+        const terminal = context.database
+          .prepare(
+            `SELECT t.*, c.installation_id, c.deployment_id, c.lease_id,
+                    c.worker_session_id, c.fence, c.agent_version_id,
+                    c.agent_version_digest, c.snapshot_digest,
+                    c.sandbox_instance_id, c.runtime_thread_id, c.ready_evidence_digest,
+                    c.state AS conversation_state,
+                    c.ready_cloud_state AS conversation_cloud_state,
+                    consumed.connection_id AS open_connection_id,
+                    consumed.sequence AS open_sequence,
+                    consumed.canonical_digest AS open_canonical_digest,
+                    consumed.semantic_digest AS consumed_semantic_digest,
+                    consumed.command_type AS consumed_command_type
+             FROM local_conversation_ready_terminal_tombstones AS t
+             JOIN local_conversations AS c ON c.conversation_id = t.conversation_id
+             JOIN local_consumed_commands AS consumed ON consumed.command_id = t.open_command_id
+             WHERE t.open_command_id = ?`,
+          )
+          .get(input.command.messageId) as Record<string, unknown> | undefined;
+        if (terminal !== undefined) {
+          let storedReplay: StoredCommand | undefined;
+          try {
+            storedReplay = loadStoredCommand(context, input.installationId, input.command);
+          } catch (error) {
+            if (!(error instanceof WorkerInvocationJournalError)) throw error;
+          }
+          const exactOriginalReference =
+            input.command.connectionId === terminal.open_connection_id &&
+            input.command.sequence === terminal.open_sequence &&
+            input.command.canonicalDigest === terminal.open_canonical_digest;
+          let exactCurrentSemanticReplay = false;
+          if (storedReplay?.envelope.type === 'conversation.open') {
+            try {
+              assertCurrentTransportEnvelope(storedReplay, now);
+              exactCurrentSemanticReplay =
+                storedReplay.envelope.lease.deploymentId === terminal.deployment_id &&
+                workerInvocationCommandSemanticDigest(storedReplay.envelope) ===
+                  terminal.open_semantic_digest;
+            } catch (error) {
+              if (!(error instanceof WorkerInvocationJournalError)) throw error;
+            }
+          }
+          if (
+            input.installationId !== terminal.installation_id ||
+            input.command.type !== 'conversation.open' ||
+            (!exactOriginalReference && !exactCurrentSemanticReplay) ||
+            terminal.consumed_command_type !== 'conversation.open' ||
+            terminal.open_semantic_digest !== terminal.consumed_semantic_digest ||
+            terminal.source_event_id !== input.command.messageId
+          ) {
+            throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+          }
+          const durable = loadCompactedReadyConversation(terminal);
+          context.markTransportCommandApplied(input.command);
+          return durable;
+        }
         const stored = loadStoredCommand(context, input.installationId, input.command);
         if (stored.envelope.type !== 'conversation.open') {
           throw new WorkerInvocationJournalError('COMMAND_TYPE_INVALID');
         }
-        assertLiveCommand(stored, now);
-        const expected = Object.freeze({
+        const currentExpected = Object.freeze({
           installationId: input.installationId,
           deploymentId: stored.envelope.lease.deploymentId,
           leaseId: stored.envelope.lease.leaseId,
@@ -1666,57 +2407,57 @@ export class SqliteWorkerInvocationJournal {
           snapshotDigest: stored.envelope.body.snapshotDigest,
           openCommandId: stored.envelope.messageId,
         });
+        const existingRows = context.database
+          .prepare(
+            `SELECT * FROM local_conversations
+             WHERE conversation_id = ? OR open_command_id = ?
+             ORDER BY conversation_id`,
+          )
+          .all(currentExpected.conversationId, currentExpected.openCommandId) as Array<
+          Record<string, unknown>
+        >;
+        if (existingRows.length !== 0) {
+          if (existingRows.length !== 1) {
+            throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+          }
+          const existing = existingRows[0]!;
+          assertCurrentReadyReplay(context.database, stored, existing, input.installationId, now);
+          const durable = loadDurableReadyConversation(
+            context.database,
+            readyExpectedFromConversation(existing),
+          );
+          context.markTransportCommandApplied(input.command);
+          return durable;
+        }
         let evidence: VerifiedReadyConversationEvidence;
         try {
-          evidence = this.#readyConversationAuthority.verify(input.evidence, expected, now);
+          evidence = this.#readyConversationAuthority.verify(input.evidence, currentExpected, now);
           assertUuid(evidence.sandboxInstanceId);
           assertNonSecretIdentifier(evidence.runtimeThreadId);
           assertSha256Digest(evidence.evidenceDigest);
+          assertPersistedReadyEvidenceWindow(stored, evidence.readyAt);
         } catch {
           throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
         }
-        const existing = context.database
-          .prepare('SELECT * FROM local_conversations WHERE conversation_id = ?')
-          .get(expected.conversationId) as Record<string, unknown> | undefined;
-        if (existing !== undefined) {
-          if (
-            existing.installation_id !== expected.installationId ||
-            existing.deployment_id !== expected.deploymentId ||
-            existing.agent_version_id !== expected.agentVersionId ||
-            existing.agent_version_digest !== expected.agentVersionDigest ||
-            existing.snapshot_digest !== expected.snapshotDigest ||
-            existing.lease_id !== expected.leaseId ||
-            existing.worker_session_id !== expected.workerSessionId ||
-            existing.fence !== expected.fence ||
-            existing.open_command_id !== expected.openCommandId ||
-            existing.sandbox_instance_id !== evidence.sandboxInstanceId ||
-            existing.runtime_thread_id !== evidence.runtimeThreadId ||
-            existing.ready_evidence_digest !== evidence.evidenceDigest ||
-            existing.state !== 'READY'
-          ) {
-            throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
-          }
-          assertExactConsumedCommand(context.database, input.command, stored.envelope);
-          return expected;
-        }
         assertCommandPersisted(stored);
         const row = {
-          conversation_id: expected.conversationId,
-          installation_id: expected.installationId,
-          deployment_id: expected.deploymentId,
-          agent_version_id: expected.agentVersionId,
-          agent_version_digest: expected.agentVersionDigest,
-          snapshot_digest: expected.snapshotDigest,
-          lease_id: expected.leaseId,
-          worker_session_id: expected.workerSessionId,
-          fence: expected.fence,
-          open_command_id: expected.openCommandId,
+          conversation_id: currentExpected.conversationId,
+          installation_id: currentExpected.installationId,
+          deployment_id: currentExpected.deploymentId,
+          agent_version_id: currentExpected.agentVersionId,
+          agent_version_digest: currentExpected.agentVersionDigest,
+          snapshot_digest: currentExpected.snapshotDigest,
+          lease_id: currentExpected.leaseId,
+          worker_session_id: currentExpected.workerSessionId,
+          fence: currentExpected.fence,
+          open_command_id: currentExpected.openCommandId,
           open_connection_id: input.command.connectionId,
           open_sequence: input.command.sequence,
           sandbox_instance_id: evidence.sandboxInstanceId,
           runtime_thread_id: evidence.runtimeThreadId,
           ready_evidence_digest: evidence.evidenceDigest,
           state: 'READY',
+          ready_cloud_state: 'PENDING',
           created_at_ms: now.getTime(),
           updated_at_ms: now.getTime(),
         };
@@ -1726,18 +2467,256 @@ export class SqliteWorkerInvocationJournal {
                conversation_id, installation_id, deployment_id, agent_version_id,
                agent_version_digest, snapshot_digest, lease_id, worker_session_id, fence,
                open_command_id, open_connection_id, open_sequence, sandbox_instance_id,
-               runtime_thread_id, ready_evidence_digest, state, created_at_ms, updated_at_ms,
-               row_digest
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               runtime_thread_id, ready_evidence_digest, state, ready_cloud_state,
+               created_at_ms, updated_at_ms, row_digest
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(...Object.values(row), sqliteInvocationRowDigest('local_conversations', row));
+        const fact = WorkerConversationReadyFactSchema.parse({
+          protocol: 'combo.worker-conversation-ready-fact/1',
+          schemaVersion: 1,
+          type: 'conversation.ready',
+          sourceEventId: currentExpected.openCommandId,
+          conversationId: currentExpected.conversationId,
+          openCommandId: currentExpected.openCommandId,
+          deploymentId: currentExpected.deploymentId,
+          agentVersionId: currentExpected.agentVersionId,
+          agentVersionDigest: currentExpected.agentVersionDigest,
+          snapshotDigest: currentExpected.snapshotDigest,
+          installationId: currentExpected.installationId,
+          workerSessionId: currentExpected.workerSessionId,
+          leaseId: currentExpected.leaseId,
+          fence: currentExpected.fence,
+          sandboxInstanceId: evidence.sandboxInstanceId,
+          runtimeThreadId: evidence.runtimeThreadId,
+          readyEvidenceDigest: evidence.evidenceDigest,
+        });
+        const factDigest = workerConversationReadyFactDigest(fact);
+        const factJson = canonicalizeJson(fact);
+        const factRow = {
+          source_event_id: fact.sourceEventId,
+          conversation_id: fact.conversationId,
+          open_command_id: fact.openCommandId,
+          fact_digest: factDigest,
+          fact_json: factJson,
+          original_connection_id: input.command.connectionId,
+          original_sequence: input.command.sequence,
+          original_canonical_digest: input.command.canonicalDigest,
+          created_at_ms: now.getTime(),
+        };
+        context.database
+          .prepare(
+            `INSERT INTO local_conversation_ready_facts(
+               source_event_id, conversation_id, open_command_id, fact_digest, fact_json,
+               original_connection_id, original_sequence, original_canonical_digest,
+               created_at_ms, row_digest
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            ...Object.values(factRow),
+            sqliteInvocationRowDigest('local_conversation_ready_facts', factRow),
+          );
+        const outboxRow = {
+          source_event_id: fact.sourceEventId,
+          conversation_id: fact.conversationId,
+          correlation_id: fact.conversationId,
+          fact_digest: factDigest,
+          fact_json: factJson,
+          created_at_ms: now.getTime(),
+        };
+        context.database
+          .prepare(
+            `INSERT INTO local_conversation_ready_outbox(
+               source_event_id, conversation_id, correlation_id, fact_digest, fact_json,
+               created_at_ms, row_digest
+             ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            ...Object.values(outboxRow),
+            sqliteInvocationRowDigest('local_conversation_ready_outbox', outboxRow),
+          );
+        const activeConnection = context.database
+          .prepare(
+            `SELECT connection_id FROM transport_connections
+             WHERE installation_id = ? AND owner_epoch = ? AND status = 'ACTIVE'
+               AND lease_state = 'ACTIVE' AND lease_expires_at > ?
+               AND deployment_id = ?`,
+          )
+          .get(input.installationId, context.ownerEpoch, now.toISOString(), fact.deploymentId) as
+          | { connection_id: string }
+          | undefined;
+        if (activeConnection !== undefined) {
+          const connection = currentConnectionForDelivery(
+            context.database,
+            input.installationId,
+            activeConnection.connection_id,
+            context.ownerEpoch,
+            now,
+          );
+          const delivery = context.enqueueConversationReadyEvent({
+            connectionId: connection.connection_id,
+            messageId: uuidV7(),
+            correlationId: fact.conversationId,
+            body: { ...fact, factDigest },
+          });
+          if (delivery !== undefined) {
+            const deliveryRow = {
+              delivery_message_id: delivery.deliveryMessageId,
+              source_event_id: fact.sourceEventId,
+              conversation_id: fact.conversationId,
+              connection_id: delivery.connectionId,
+              deployment_id: connection.deployment_id,
+              worker_session_id: connection.worker_session_id,
+              lease_id: connection.lease_id,
+              fence: connection.fence,
+              sequence: delivery.sequence,
+              canonical_digest: delivery.canonicalDigest,
+              fact_digest: factDigest,
+              created_at_ms: now.getTime(),
+            };
+            context.database
+              .prepare(
+                `INSERT INTO local_conversation_ready_deliveries(
+                   delivery_message_id, source_event_id, conversation_id, connection_id,
+                   deployment_id, worker_session_id, lease_id, fence, sequence,
+                   canonical_digest, fact_digest, created_at_ms, row_digest
+                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              )
+              .run(
+                ...Object.values(deliveryRow),
+                sqliteInvocationRowDigest('local_conversation_ready_deliveries', deliveryRow),
+              );
+          }
+        }
         insertConsumedCommand(context.database, input.command, stored.envelope, {
-          conversationId: expected.conversationId,
+          conversationId: currentExpected.conversationId,
           disposition: 'APPLIED',
           consumedAtMs: now.getTime(),
         });
         context.markTransportCommandApplied(input.command);
-        return expected;
+        return Object.freeze({
+          ...currentExpected,
+          sourceEventId: fact.sourceEventId,
+          factDigest,
+          cloudState: 'PENDING' as const,
+        });
+      },
+    );
+  }
+
+  async readPendingConversationReadyFacts(input: {
+    installationId: string;
+    ownerToken: string;
+    limit: number;
+    signal: AbortSignal;
+  }): Promise<readonly PendingConversationReadyFactReference[]> {
+    const limit = boundedCapacity(input.limit, 1, 128);
+    return this.host.transact(
+      { ...input, name: 'conversation_ready_read_pending_facts' },
+      (context) => {
+        const rows = context.database
+          .prepare(
+            `SELECT o.source_event_id, o.conversation_id, o.correlation_id, o.fact_digest
+             FROM local_conversation_ready_outbox AS o
+             JOIN local_conversations AS c ON c.conversation_id = o.conversation_id
+             LEFT JOIN local_conversation_ready_outbox_receipts AS r
+               ON r.source_event_id = o.source_event_id
+             WHERE c.installation_id = ? AND r.source_event_id IS NULL
+             ORDER BY o.created_at_ms, o.source_event_id LIMIT ?`,
+          )
+          .all(input.installationId, limit) as Array<{
+          source_event_id: string;
+          conversation_id: string;
+          correlation_id: string;
+          fact_digest: string;
+        }>;
+        return rows.map((row) =>
+          Object.freeze({
+            sourceEventId: row.source_event_id,
+            conversationId: row.conversation_id,
+            correlationId: row.correlation_id,
+            factDigest: row.fact_digest,
+          }),
+        );
+      },
+    );
+  }
+
+  /** Re-envelopes the immutable READY fact only under the current transport authority. */
+  async enqueuePendingConversationReadyFact(input: {
+    installationId: string;
+    ownerToken: string;
+    reference: PendingConversationReadyFactReference;
+    connectionId: string;
+    deliveryMessageId: string;
+    signal: AbortSignal;
+  }): Promise<DurableConversationReadyDelivery> {
+    return this.host.transact(
+      { ...input, name: 'conversation_ready_enqueue_pending_fact' },
+      (context) => {
+        assertUuid(input.connectionId);
+        assertUuid(input.deliveryMessageId);
+        if (input.deliveryMessageId === input.reference.sourceEventId) {
+          throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
+        }
+        const outbox = loadExactPendingConversationReadyOutbox(
+          context.database,
+          input.installationId,
+          input.reference,
+        );
+        const active = activeConversationReadyDelivery(context.database, outbox.source_event_id);
+        if (active !== undefined) return active;
+        const fact = WorkerConversationReadyFactSchema.parse(JSON.parse(outbox.fact_json));
+        const cloudNow = this.#cloudNow();
+        const connection = currentConnectionForDelivery(
+          context.database,
+          input.installationId,
+          input.connectionId,
+          context.ownerEpoch,
+          cloudNow,
+        );
+        if (connection.deployment_id !== fact.deploymentId) {
+          throw new WorkerInvocationJournalError('STALE_LEASE');
+        }
+        const delivery = context.enqueueConversationReadyEvent({
+          connectionId: input.connectionId,
+          messageId: input.deliveryMessageId,
+          correlationId: outbox.correlation_id,
+          body: { ...fact, factDigest: outbox.fact_digest },
+        });
+        if (delivery === undefined) throw new WorkerInvocationJournalError('JOURNAL_CAPACITY');
+        const row = {
+          delivery_message_id: delivery.deliveryMessageId,
+          source_event_id: fact.sourceEventId,
+          conversation_id: fact.conversationId,
+          connection_id: delivery.connectionId,
+          deployment_id: connection.deployment_id,
+          worker_session_id: connection.worker_session_id,
+          lease_id: connection.lease_id,
+          fence: connection.fence,
+          sequence: delivery.sequence,
+          canonical_digest: delivery.canonicalDigest,
+          fact_digest: outbox.fact_digest,
+          created_at_ms: cloudNow.getTime(),
+        };
+        context.database
+          .prepare(
+            `INSERT INTO local_conversation_ready_deliveries(
+               delivery_message_id, source_event_id, conversation_id, connection_id,
+               deployment_id, worker_session_id, lease_id, fence, sequence,
+               canonical_digest, fact_digest, created_at_ms, row_digest
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            ...Object.values(row),
+            sqliteInvocationRowDigest('local_conversation_ready_deliveries', row),
+          );
+        return Object.freeze({
+          ...delivery,
+          sourceEventId: fact.sourceEventId,
+          conversationId: fact.conversationId,
+          factDigest: outbox.fact_digest,
+        });
       },
     );
   }
@@ -1813,6 +2792,7 @@ export class SqliteWorkerInvocationJournal {
         if (
           conversation === undefined ||
           conversation.state !== 'READY' ||
+          conversation.ready_cloud_state !== 'CLOUD_COMMITTED' ||
           conversation.installation_id !== input.installationId ||
           conversation.deployment_id !== command.lease.deploymentId ||
           conversation.agent_version_id !== command.body.agentVersionId ||
@@ -3535,6 +4515,19 @@ function assertLiveCommand(stored: StoredCommand, cloudNow: Date): void {
   }
 }
 
+function assertPersistedReadyEvidenceWindow(stored: StoredCommand, readyAt: Date): void {
+  if (!(readyAt instanceof Date) || !Number.isFinite(readyAt.getTime())) {
+    throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+  }
+  const readyAtMs = readyAt.getTime();
+  const sentAtMs = Date.parse(stored.envelope.sentAt);
+  const envelopeExpiresAtMs = Date.parse(stored.envelope.expiresAt);
+  const leaseExpiresAtMs = Date.parse(stored.connection.lease_expires_at);
+  if (readyAtMs < sentAtMs || readyAtMs >= envelopeExpiresAtMs || readyAtMs >= leaseExpiresAtMs) {
+    throw new WorkerInvocationJournalError('INVOCATION_DEADLINE_EXPIRED');
+  }
+}
+
 function assertCurrentTransportEnvelope(stored: StoredCommand, cloudNow: Date): void {
   const { envelope, connection } = stored;
   if (
@@ -3979,6 +4972,182 @@ function requireConversation(
     .get(conversationId) as Record<string, unknown> | undefined;
   if (row === undefined) throw new WorkerInvocationJournalError('CONVERSATION_NOT_READY');
   return row;
+}
+
+function assertCurrentReadyReplay(
+  database: DatabaseSync,
+  stored: StoredCommand,
+  existing: Record<string, unknown>,
+  installationId: string,
+  cloudNow: Date,
+): void {
+  assertCurrentTransportEnvelope(stored, cloudNow);
+  if (stored.envelope.type !== 'conversation.open') {
+    throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+  }
+  const consumed = database
+    .prepare(
+      `SELECT command_type, semantic_digest FROM local_consumed_commands
+       WHERE command_id = ?`,
+    )
+    .get(stored.envelope.messageId) as
+    | { command_type: string; semantic_digest: string }
+    | undefined;
+  if (
+    existing.installation_id !== installationId ||
+    existing.deployment_id !== stored.envelope.lease.deploymentId ||
+    existing.conversation_id !== stored.envelope.body.conversationId ||
+    existing.agent_version_id !== stored.envelope.body.agentVersionId ||
+    existing.agent_version_digest !== stored.envelope.body.agentVersionDigest ||
+    existing.snapshot_digest !== stored.envelope.body.snapshotDigest ||
+    existing.open_command_id !== stored.envelope.messageId ||
+    existing.state !== 'READY' ||
+    consumed?.command_type !== 'conversation.open' ||
+    consumed.semantic_digest !== workerInvocationCommandSemanticDigest(stored.envelope)
+  ) {
+    throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+  }
+}
+
+function readyExpectedFromConversation(
+  conversation: Record<string, unknown>,
+): ReadyConversationExpectedBinding {
+  return Object.freeze({
+    installationId: String(conversation.installation_id),
+    deploymentId: String(conversation.deployment_id),
+    leaseId: String(conversation.lease_id),
+    workerSessionId: String(conversation.worker_session_id),
+    fence: String(conversation.fence),
+    conversationId: String(conversation.conversation_id),
+    agentVersionId: String(conversation.agent_version_id),
+    agentVersionDigest: String(conversation.agent_version_digest),
+    snapshotDigest: String(conversation.snapshot_digest),
+    openCommandId: String(conversation.open_command_id),
+  });
+}
+
+function loadCompactedReadyConversation(
+  terminal: Record<string, unknown>,
+): DurableReadyConversation {
+  const expected = readyExpectedFromConversation(terminal);
+  const fact = WorkerConversationReadyFactSchema.parse({
+    protocol: 'combo.worker-conversation-ready-fact/1',
+    schemaVersion: 1,
+    type: 'conversation.ready',
+    sourceEventId: terminal.source_event_id,
+    conversationId: terminal.conversation_id,
+    openCommandId: terminal.open_command_id,
+    deploymentId: terminal.deployment_id,
+    agentVersionId: terminal.agent_version_id,
+    agentVersionDigest: terminal.agent_version_digest,
+    snapshotDigest: terminal.snapshot_digest,
+    installationId: terminal.installation_id,
+    workerSessionId: terminal.worker_session_id,
+    leaseId: terminal.lease_id,
+    fence: terminal.fence,
+    sandboxInstanceId: terminal.sandbox_instance_id,
+    runtimeThreadId: terminal.runtime_thread_id,
+    readyEvidenceDigest: terminal.ready_evidence_digest,
+  });
+  const cloudState = terminal.cloud_state;
+  if (
+    terminal.conversation_state !== 'READY' ||
+    terminal.conversation_cloud_state !== cloudState ||
+    terminal.source_event_id !== expected.openCommandId ||
+    workerConversationReadyFactDigest(fact) !== terminal.fact_digest ||
+    !(cloudState === 'CLOUD_COMMITTED' || cloudState === 'CLOUD_REJECTED') ||
+    (terminal.decision === 'SECURITY_BLOCK'
+      ? cloudState !== 'CLOUD_REJECTED'
+      : cloudState !== 'CLOUD_COMMITTED')
+  ) {
+    throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+  }
+  return Object.freeze({
+    ...expected,
+    sourceEventId: fact.sourceEventId,
+    factDigest: String(terminal.fact_digest),
+    cloudState,
+  });
+}
+
+function loadDurableReadyConversation(
+  database: DatabaseSync,
+  expected: ReadyConversationExpectedBinding,
+): DurableReadyConversation {
+  const row = database
+    .prepare(
+      `SELECT f.fact_json, f.fact_digest, c.ready_cloud_state, c.state,
+              c.installation_id, c.deployment_id, c.lease_id, c.worker_session_id, c.fence,
+              c.agent_version_id, c.agent_version_digest, c.snapshot_digest,
+              c.open_command_id, c.sandbox_instance_id, c.runtime_thread_id,
+              c.ready_evidence_digest
+       FROM local_conversation_ready_facts AS f
+       JOIN local_conversation_ready_outbox AS o
+         ON o.source_event_id = f.source_event_id
+        AND o.conversation_id = f.conversation_id
+        AND o.fact_digest = f.fact_digest
+        AND o.fact_json = f.fact_json
+       JOIN local_conversations AS c ON c.conversation_id = f.conversation_id
+       WHERE f.source_event_id = ? AND f.conversation_id = ?`,
+    )
+    .get(expected.openCommandId, expected.conversationId) as
+    | {
+        fact_json: string;
+        fact_digest: string;
+        ready_cloud_state: 'PENDING' | 'CLOUD_COMMITTED' | 'CLOUD_REJECTED';
+        state: string;
+        installation_id: string;
+        deployment_id: string;
+        lease_id: string;
+        worker_session_id: string;
+        fence: string;
+        agent_version_id: string;
+        agent_version_digest: string;
+        snapshot_digest: string;
+        open_command_id: string;
+        sandbox_instance_id: string;
+        runtime_thread_id: string | null;
+        ready_evidence_digest: string;
+      }
+    | undefined;
+  if (row === undefined) throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+  const fact = WorkerConversationReadyFactSchema.parse(JSON.parse(row.fact_json));
+  if (
+    canonicalizeJson(fact) !== row.fact_json ||
+    workerConversationReadyFactDigest(fact) !== row.fact_digest ||
+    fact.sourceEventId !== expected.openCommandId ||
+    fact.openCommandId !== expected.openCommandId ||
+    fact.conversationId !== expected.conversationId ||
+    fact.deploymentId !== expected.deploymentId ||
+    fact.agentVersionId !== expected.agentVersionId ||
+    fact.agentVersionDigest !== expected.agentVersionDigest ||
+    fact.snapshotDigest !== expected.snapshotDigest ||
+    fact.installationId !== expected.installationId ||
+    fact.workerSessionId !== expected.workerSessionId ||
+    fact.leaseId !== expected.leaseId ||
+    fact.fence !== expected.fence ||
+    fact.sandboxInstanceId !== row.sandbox_instance_id ||
+    fact.runtimeThreadId !== row.runtime_thread_id ||
+    fact.readyEvidenceDigest !== row.ready_evidence_digest ||
+    row.state !== 'READY' ||
+    row.installation_id !== expected.installationId ||
+    row.deployment_id !== expected.deploymentId ||
+    row.lease_id !== expected.leaseId ||
+    row.worker_session_id !== expected.workerSessionId ||
+    row.fence !== expected.fence ||
+    row.agent_version_id !== expected.agentVersionId ||
+    row.agent_version_digest !== expected.agentVersionDigest ||
+    row.snapshot_digest !== expected.snapshotDigest ||
+    row.open_command_id !== expected.openCommandId
+  ) {
+    throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+  }
+  return Object.freeze({
+    ...expected,
+    sourceEventId: fact.sourceEventId,
+    factDigest: row.fact_digest,
+    cloudState: row.ready_cloud_state,
+  });
 }
 
 function assertInvocationDeadline(invocation: InvocationRow, now: Date): void {

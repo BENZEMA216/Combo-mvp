@@ -99,6 +99,33 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(durable.releaseConnectionCalls).toBe(0);
   });
 
+  it('never enters READY when the required conversation.ready replay reducer fails', async () => {
+    const durable = new FakeDurablePort();
+    durable.failReadyReplay = true;
+    const broker = await startBroker();
+    const client = createClient(broker.url, durable);
+    await client.start();
+
+    await waitFor(() => client.status === 'BLOCKED');
+    expect(client.connected).toBe(false);
+    expect(durable.readyReplayCalls).toBe(1);
+  });
+
+  it('fills one bounded ready batch before READY without draining an unbounded backlog', async () => {
+    const durable = new FakeDurablePort();
+    durable.readyReplayResults.push(128, 1, 0);
+    const statuses: string[] = [];
+    const broker = await startBroker();
+    const client = createClient(broker.url, durable);
+    durable.onReadyReplay = () => statuses.push(client.status);
+    await client.start();
+
+    await waitFor(() => client.status === 'READY');
+    expect(durable.readyReplayCalls).toBe(1);
+    expect(durable.readyReplayResults).toEqual([1, 0]);
+    expect(statuses).toEqual(['AUTHENTICATING']);
+  });
+
   it('uses the exact outbound path, signs canonical handshake bytes, and owns one installation', async () => {
     const durable = new FakeDurablePort();
     const broker = await startBroker();
@@ -164,6 +191,7 @@ describe('Real Worker transport ↔ Fake Broker', () => {
       durable.outbox.some((item) => item.envelope.messageId === firstConnection.envelope.messageId),
     ).toBe(false);
     expect(broker.handshakes).toHaveLength(2);
+    expect(durable.readyReplayCalls).toBe(2);
   });
 
   it('rejects equal/lower replacement fences before accepting a strictly newer lease', async () => {
@@ -1031,6 +1059,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   owner?: string;
   current?: MutableConnection;
   acquireCalls = 0;
+  readyReplayCalls = 0;
   releaseConnectionCalls = 0;
   readonly retired = new Set<string>();
   readonly committed: BrokerEnvelope[] = [];
@@ -1041,6 +1070,9 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   readonly outbox: OutboxRecord[] = [];
   readonly #highestFenceByDeployment = new Map<string, bigint>();
   corruptActivationReturn = false;
+  failReadyReplay = false;
+  readonly readyReplayResults: number[] = [];
+  onReadyReplay?: () => void;
   corruptNextOutbound = false;
   holdOutbound = false;
   commitBarrier?: Promise<void>;
@@ -1178,6 +1210,19 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
       ...activated,
       workerSessionId: uuid(998),
     };
+  }
+
+  async replayPendingConversationReady(input: {
+    ownerToken: string;
+    connectionId: string;
+  }): Promise<Readonly<{ enqueued: number; remaining: boolean }>> {
+    this.assertOwner(input.ownerToken);
+    this.requireCurrent(input.connectionId);
+    this.readyReplayCalls += 1;
+    this.onReadyReplay?.();
+    if (this.failReadyReplay) throw new WorkerBrokerClientError('PORT_FAILED', true);
+    const enqueued = this.readyReplayResults.shift() ?? 0;
+    return { enqueued, remaining: this.readyReplayResults.length > 0 };
   }
 
   async loadConnection(input: {

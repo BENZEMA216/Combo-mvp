@@ -51,6 +51,7 @@ import {
   WORKER_TRANSPORT_APPLICATION_ID,
   WORKER_TRANSPORT_DEFAULT_MAX_DATABASE_BYTES,
   WORKER_TRANSPORT_DEFAULT_MAX_WAL_BYTES,
+  WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES,
   WORKER_TRANSPORT_RETENTION_MS,
   WORKER_TRANSPORT_SCHEMA_VERSION,
   type NewWorkerJournalAuthorization,
@@ -61,6 +62,11 @@ import {
   type DurableBrokerConnection,
   type WorkerBrokerDiagnosticEvent,
 } from './worker-broker-client.js';
+import {
+  sqliteInvocationRowDigest,
+  workerInvocationAuthorityRows,
+  workerInvocationCommandSemanticDigest,
+} from './sqlite-invocation-journal.js';
 
 const OWNER_A = 'owner-token-a-0123456789';
 const OWNER_B = 'owner-token-b-0123456789';
@@ -600,7 +606,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     reopened.close();
   }, 10_000);
 
-  it('validates an exact v1 DB and external watermark before forward-migrating it to v2', async () => {
+  it('validates an exact v1 DB and external watermark before forward-migrating it to v3', async () => {
     const migrated = temporaryJournal();
     createJournal(migrated.filename, MIGRATION_INSTALLATION_ID).close();
     downgradeToLegacyV1(migrated.filename);
@@ -615,7 +621,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).toBe(0);
 
     const reopened = new SqliteWorkerBrokerDurableTransport({ filename: migrated.filename });
-    expect(reopened.inspectPragmas().userVersion).toBe(2);
+    expect(reopened.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
     reopened.close();
     expect(
       queryScalar(
@@ -623,7 +629,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         `SELECT count(*) AS value FROM sqlite_master
          WHERE type = 'table' AND name LIKE 'local_%'`,
       ),
-    ).toBe(8);
+    ).toBe(13);
 
     const mismatched = temporaryJournal();
     createJournal(mismatched.filename, MIGRATION_INSTALLATION_ID).close();
@@ -665,7 +671,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         queryScalar(compensated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
       ).toBe(1);
       const recovered = new SqliteWorkerBrokerDurableTransport({ filename: compensated.filename });
-      expect(recovered.inspectPragmas().userVersion).toBe(2);
+      expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
       recovered.close();
     }
 
@@ -706,7 +712,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         queryScalar(killed.filename, 'SELECT user_version AS value FROM pragma_user_version'),
       ).toBe(faultPoint === 'migration.v1_to_v2.before_watermark' ? 1 : 2);
       const recovered = new SqliteWorkerBrokerDurableTransport({ filename: killed.filename });
-      expect(recovered.inspectPragmas().userVersion).toBe(2);
+      expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
       recovered.close();
     }
 
@@ -727,9 +733,488 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const committedReopen = new SqliteWorkerBrokerDurableTransport({
       filename: committed.filename,
     });
-    expect(committedReopen.inspectPragmas().userVersion).toBe(2);
+    expect(committedReopen.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
     committedReopen.close();
   }, 10_000);
+
+  it('migrates an exact v2 authority to v3 and compensates watermark faults', async () => {
+    const migrated = temporaryJournal();
+    const migrationFixture = createFixture(76_000, MIGRATION_INSTALLATION_ID);
+    const migrationAdapter = createJournal(migrated.filename, MIGRATION_INSTALLATION_ID);
+    const signal = new AbortController().signal;
+    await migrationAdapter.acquireInstallation(
+      ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal),
+    );
+    let migrationState = await activate(migrationAdapter, migrationFixture, OWNER_A, signal);
+    const open = conversationOpen(
+      migrationFixture,
+      migrationState,
+      uuid(760_001),
+      uuid(760_002),
+      SHA('a'),
+    );
+    migrationState = await commit(
+      migrationAdapter,
+      MIGRATION_INSTALLATION_ID,
+      OWNER_A,
+      migrationState,
+      open,
+      signal,
+    );
+    migrationAdapter.close();
+    seedLegacyReadyConversation(migrated.filename, migrationFixture, migrationState, open);
+    downgradeToLegacyV2(migrated.filename);
+    expect(
+      queryScalar(migrated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(2);
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT count(*) AS value FROM sqlite_master
+         WHERE type = 'table' AND name LIKE 'local_conversation_ready_%'`,
+      ),
+    ).toBe(0);
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: migrated.filename });
+    expect(reopened.inspectPragmas().userVersion).toBe(3);
+    reopened.close();
+    expect(
+      queryScalar(
+        migrated.filename,
+        'SELECT count(*) AS value FROM local_conversation_ready_facts',
+      ),
+    ).toBe(1);
+    expect(
+      queryScalar(
+        migrated.filename,
+        'SELECT count(*) AS value FROM local_conversation_ready_outbox',
+      ),
+    ).toBe(1);
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT count(*) AS value FROM sqlite_master
+         WHERE type = 'table' AND name LIKE 'local_conversation_ready_%'`,
+      ),
+    ).toBe(5);
+
+    for (const faultPoint of [
+      'migration.v2_to_v3.before_watermark',
+      'migration.v2_to_v3.after_watermark_fsync',
+    ] as const) {
+      const compensated = temporaryJournal();
+      createJournal(compensated.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV2(compensated.filename);
+      expect(
+        () =>
+          new SqliteWorkerBrokerDurableTransport({
+            filename: compensated.filename,
+            faultInjector(point) {
+              if (point === faultPoint) throw new Error('SIMULATED_V2_TO_V3_FAILURE');
+            },
+          }),
+      ).toThrow();
+      expect(
+        queryScalar(compensated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(2);
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: compensated.filename });
+      expect(recovered.inspectPragmas().userVersion).toBe(3);
+      recovered.close();
+    }
+
+    const killed = temporaryJournal();
+    createJournal(killed.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV2(killed.filename);
+    const child = spawnV2MigrationKillProcess(
+      killed.filename,
+      'migration.v2_to_v3.after_watermark_fsync',
+    );
+    expect(await nextChildMessage(child)).toEqual({
+      reached: 'migration.v2_to_v3.after_watermark_fsync',
+    });
+    child.kill('SIGKILL');
+    await waitForExit(child);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: killed.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+
+    const corrupt = temporaryJournal();
+    const corruptFixture = createFixture(76_100, MIGRATION_INSTALLATION_ID);
+    const corruptAdapter = createJournal(corrupt.filename, MIGRATION_INSTALLATION_ID);
+    await corruptAdapter.acquireInstallation(
+      ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal),
+    );
+    let corruptState = await activate(corruptAdapter, corruptFixture, OWNER_A, signal);
+    const corruptOpen = conversationOpen(
+      corruptFixture,
+      corruptState,
+      uuid(761_001),
+      uuid(761_002),
+      SHA('b'),
+    );
+    corruptState = await commit(
+      corruptAdapter,
+      MIGRATION_INSTALLATION_ID,
+      OWNER_A,
+      corruptState,
+      corruptOpen,
+      signal,
+    );
+    corruptAdapter.close();
+    seedLegacyReadyConversation(corrupt.filename, corruptFixture, corruptState, corruptOpen, '0');
+    downgradeToLegacyV2(corrupt.filename);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: corrupt.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    expect(
+      queryScalar(corrupt.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(2);
+  }, 10_000);
+
+  it('compacts an exact v2 READY whose seven-day PERSISTED open response was already pruned', async () => {
+    let transportNow = Date.now();
+    const target = temporaryJournal();
+    const fixture = createFixture(76_125, MIGRATION_INSTALLATION_ID);
+    const legacy = createJournal(target.filename, MIGRATION_INSTALLATION_ID, {
+      now: () => transportNow,
+    });
+    const signal = new AbortController().signal;
+    await legacy.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    let state = await activate(legacy, fixture, OWNER_A, signal);
+    const open = conversationOpen(fixture, state, uuid(761_251), uuid(761_252), SHA('c'));
+    state = await commit(legacy, MIGRATION_INSTALLATION_ID, OWNER_A, state, open, signal);
+    legacy.close();
+    seedLegacyReadyConversation(target.filename, fixture, state, open);
+    clearTransportOutboxForMigrationFixture(target.filename);
+    downgradeToLegacyV2(target.filename);
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT count(*) AS value FROM transport_outbox
+         WHERE response_to_message_id = '${open.messageId}'`,
+      ),
+    ).toBe(0);
+
+    const migrated = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      now: () => transportNow,
+    });
+    expect(migrated.inspectPragmas().userVersion).toBe(3);
+    await migrated.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    await expect(
+      migrated.replayPendingConversationReady({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 1, remaining: false });
+    const outbound = await migrated.readOutbound({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      limit: 16,
+      signal,
+    });
+    const ready = outbound.find((envelope) => envelope.type === 'conversation.ready');
+    if (ready === undefined) throw new Error('MISSING_MIGRATED_READY');
+    const ack = BrokerEnvelopeSchema.parse({
+      protocol: 'combo.creator-broker/1',
+      schemaVersion: 1,
+      kind: 'ack',
+      type: 'message.ack',
+      messageId: uuid(761_253),
+      correlationId: ready.messageId,
+      connectionId: state.connectionId,
+      sequence: restoreSequenceCursor(state.inboundCursor).nextExpected.toString(10),
+      sentAt: new Date(transportNow).toISOString(),
+      expiresAt: new Date(transportNow + 60_000).toISOString(),
+      lease: state.lease,
+      body: {
+        acknowledgedMessageId: ready.messageId,
+        level: 'CLOUD_COMMITTED',
+        decision: 'APPLIED',
+      },
+    });
+    state = await commit(migrated, MIGRATION_INSTALLATION_ID, OWNER_A, state, ack, signal);
+    expect(queryCount(target.filename, 'local_conversation_ready_outbox_receipts')).toBe(1);
+    await migrated.releaseConnection({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      signal,
+    });
+    transportNow += 8 * 24 * 60 * 60 * 1_000;
+    for (const table of [
+      'local_conversation_ready_facts',
+      'local_conversation_ready_outbox',
+      'local_conversation_ready_outbox_receipts',
+      'local_conversation_ready_deliveries',
+      'local_consumed_commands',
+    ]) {
+      expect(queryCount(target.filename, table), table).toBe(1);
+    }
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT count(*) AS value FROM transport_inbound_frames
+         WHERE connection_id = '${state.connectionId}' AND sequence = '${ack.sequence}'
+           AND message_id = '${ack.messageId}'`,
+      ),
+    ).toBe(1);
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT count(*) AS value FROM local_conversation_ready_outbox_receipts
+         WHERE cloud_decided_at_ms <= ${transportNow - WORKER_TRANSPORT_RETENTION_MS}`,
+      ),
+    ).toBe(1);
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT count(*) AS value
+         FROM local_conversation_ready_facts AS f
+         JOIN local_conversation_ready_outbox AS o ON o.source_event_id = f.source_event_id
+         JOIN local_conversation_ready_outbox_receipts AS r
+           ON r.source_event_id = f.source_event_id
+         JOIN local_conversation_ready_deliveries AS d
+           ON d.delivery_message_id = r.delivery_message_id
+         JOIN local_consumed_commands AS consumed ON consumed.command_id = f.open_command_id
+         JOIN transport_inbound_frames AS ack
+           ON ack.connection_id = r.ack_connection_id AND ack.sequence = r.ack_sequence
+          AND ack.message_id = r.ack_message_id
+         LEFT JOIN transport_outbox AS response
+           ON response.response_to_message_id = f.open_command_id
+         WHERE r.cloud_decided_at_ms <= ${transportNow - WORKER_TRANSPORT_RETENTION_MS}
+           AND o.fact_digest = f.fact_digest`,
+      ),
+    ).toBe(1);
+    await migrated.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    await migrated.pruneRetained({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      signal,
+    });
+    expect(queryCount(target.filename, 'local_conversation_ready_terminal_tombstones')).toBe(1);
+    expect(queryCount(target.filename, 'local_conversation_ready_facts')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_outbox')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_deliveries')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT count(*) AS value FROM transport_inbound_frames
+         WHERE message_id IN ('${open.messageId}', '${ack.messageId}')`,
+      ),
+    ).toBe(0);
+    expect(queryCount(target.filename, 'transport_connections')).toBe(0);
+    migrated.close();
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      now: () => transportNow,
+    });
+    expect(reopened.inspectPragmas()).toMatchObject({ userVersion: 3, quickCheck: 'ok' });
+    reopened.close();
+  }, 10_000);
+
+  it('keeps exact v2 and its watermark when migration preflight has no page budget', async () => {
+    const target = temporaryJournal();
+    const fixture = createFixture(76_150, MIGRATION_INSTALLATION_ID);
+    const signal = new AbortController().signal;
+    const adapter = createJournal(target.filename, MIGRATION_INSTALLATION_ID, {
+      maxDatabaseBytes: 8 * 1024 * 1024,
+    });
+    await adapter.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    let state = await activate(adapter, fixture, OWNER_A, signal);
+    const open = conversationOpen(fixture, state, uuid(761_501), uuid(761_502), SHA('a'));
+    state = await commit(adapter, MIGRATION_INSTALLATION_ID, OWNER_A, state, open, signal);
+    adapter.close();
+    clearTransportOutboxForMigrationFixture(target.filename);
+    seedLegacyReadyConversation(target.filename, fixture, state, open);
+    downgradeToLegacyV2(target.filename);
+    fillLegacyV2ToMigrationCapacity(target.filename);
+
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: target.filename,
+          maxDatabaseBytes: 8 * 1024 * 1024,
+          operationTimeoutMs: 30_000,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'CAPACITY_EXCEEDED' }));
+    expect(
+      queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(2);
+    const watermark = JSON.parse(readFileSync(`${target.filename}.watermark`, 'utf8')) as {
+      payload: { schemaVersion: number };
+    };
+    expect(watermark.payload.schemaVersion).toBe(2);
+
+    mutateDatabase(target.filename, 'DELETE FROM transport_sequence_gaps');
+    const recovered = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      maxDatabaseBytes: 8 * 1024 * 1024,
+      operationTimeoutMs: 30_000,
+    });
+    expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    recovered.close();
+  }, 30_000);
+
+  it('bounds v2 migration lock wait and late tail/watermark work by one end-to-end deadline', () => {
+    const locked = temporaryJournal();
+    createJournal(locked.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV2(locked.filename);
+    const blocker = new SqliteDatabase(locked.filename);
+    blocker.exec('BEGIN IMMEDIATE');
+    const lockStarted = performance.now();
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: locked.filename,
+          busyTimeoutMs: 1_000,
+          operationTimeoutMs: 50,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_ABORTED' }));
+    expect(performance.now() - lockStarted).toBeLessThan(500);
+    expect(
+      queryScalar(locked.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(2);
+    blocker.exec('ROLLBACK');
+    blocker.close();
+    const lockRecovered = new SqliteWorkerBrokerDurableTransport({ filename: locked.filename });
+    lockRecovered.close();
+
+    for (const faultPoint of [
+      'migration.v2_to_v3.before_authority_digest',
+      'migration.v2_to_v3.after_watermark_fsync',
+    ] as const) {
+      const target = temporaryJournal();
+      createJournal(target.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV2(target.filename);
+      expect(
+        () =>
+          new SqliteWorkerBrokerDurableTransport({
+            filename: target.filename,
+            operationTimeoutMs: 50,
+            faultInjector(point) {
+              if (point === faultPoint) {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+              }
+            },
+          }),
+      ).toThrowError(expect.objectContaining({ code: 'JOURNAL_ABORTED' }));
+      expect(
+        queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(2);
+      const watermark = JSON.parse(readFileSync(`${target.filename}.watermark`, 'utf8')) as {
+        payload: { schemaVersion: number };
+      };
+      expect(watermark.payload.schemaVersion).toBe(2);
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: target.filename });
+      recovered.close();
+    }
+  }, 10_000);
+
+  it('activates with more than 512 READY facts and refills bounded credit after exact ACKs', async () => {
+    const target = temporaryJournal();
+    const fixture = createFixture(76_200, MIGRATION_INSTALLATION_ID);
+    const adapter = createJournal(target.filename, MIGRATION_INSTALLATION_ID, {
+      maxInboundRows: 1_024,
+      maxOutboxRows: 1_024,
+    });
+    const signal = new AbortController().signal;
+    await adapter.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    let state = await activate(adapter, fixture, OWNER_A, signal);
+    const opens: BrokerEnvelope[] = [];
+    for (let index = 0; index < 513; index += 1) {
+      const open = conversationOpen(
+        fixture,
+        state,
+        uuid(762_001 + index * 2),
+        uuid(762_002 + index * 2),
+        SHA('a'),
+      );
+      state = await commit(adapter, MIGRATION_INSTALLATION_ID, OWNER_A, state, open, signal);
+      opens.push(open);
+    }
+    adapter.close();
+    clearTransportOutboxForMigrationFixture(target.filename);
+    seedLegacyReadyConversations(
+      target.filename,
+      fixture,
+      state,
+      opens.map((open) => ({ open })),
+    );
+    downgradeToLegacyV2(target.filename);
+
+    const migrated = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      maxInboundRows: 1_024,
+      operationTimeoutMs: 30_000,
+    });
+    await migrated.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    await expect(
+      migrated.replayPendingConversationReady({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 128, remaining: true });
+
+    let acknowledged = 0;
+    let lastRefill = { enqueued: 128, remaining: true };
+    while (acknowledged < opens.length) {
+      const outbound = await migrated.readOutbound({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        limit: 64,
+        signal,
+      });
+      const ready = outbound.filter((envelope) => envelope.type === 'conversation.ready');
+      if (ready.length === 0) throw new Error('READY_REFILL_STARVED');
+      for (const envelope of ready) {
+        state = await commit(
+          migrated,
+          MIGRATION_INSTALLATION_ID,
+          OWNER_A,
+          state,
+          ackFrame(state, envelope, 'CLOUD_COMMITTED', uuid(900_000 + acknowledged)),
+          signal,
+        );
+        acknowledged += 1;
+        lastRefill = await migrated.replayPendingConversationReady({
+          installationId: MIGRATION_INSTALLATION_ID,
+          ownerToken: OWNER_A,
+          connectionId: state.connectionId,
+          signal,
+        });
+        expect(
+          queryScalar(
+            target.filename,
+            `SELECT count(*) AS value FROM transport_outbox
+             WHERE state IN ('UNBOUND', 'PENDING', 'WRITTEN')`,
+          ),
+        ).toBeLessThanOrEqual(512);
+      }
+    }
+    expect(lastRefill).toEqual({ enqueued: 0, remaining: false });
+    expect(
+      queryScalar(
+        target.filename,
+        'SELECT count(*) AS value FROM local_conversation_ready_deliveries',
+      ),
+    ).toBe(513);
+    expect(
+      queryScalar(
+        target.filename,
+        'SELECT count(*) AS value FROM local_conversation_ready_outbox_receipts',
+      ),
+    ).toBe(513);
+    migrated.close();
+  }, 120_000);
 
   it('serializes barrier-synchronized concurrent first-open and lets exactly one owner win', async () => {
     for (let round = 0; round < 3; round += 1) {
@@ -2895,6 +3380,11 @@ function downgradeToLegacyV1(filename: string): void {
   database.exec(`
     PRAGMA foreign_keys = OFF;
     BEGIN EXCLUSIVE;
+    DROP TABLE local_conversation_ready_terminal_tombstones;
+    DROP TABLE local_conversation_ready_outbox_receipts;
+    DROP TABLE local_conversation_ready_deliveries;
+    DROP TABLE local_conversation_ready_outbox;
+    DROP TABLE local_conversation_ready_facts;
     DROP TABLE local_recovery_reserve_pages;
     DROP TABLE local_invocation_outbox_receipts;
     DROP TABLE local_invocation_deliveries;
@@ -2974,6 +3464,344 @@ function downgradeToLegacyV1(filename: string): void {
   writeWatermarkDocument(filename, payload);
 }
 
+function seedLegacyReadyConversation(
+  filename: string,
+  fixture: Fixture,
+  state: DurableBrokerConnection,
+  open: BrokerEnvelope,
+  originalSequence = open.sequence,
+): void {
+  seedLegacyReadyConversations(filename, fixture, state, [{ open, originalSequence }]);
+}
+
+function clearTransportOutboxForMigrationFixture(filename: string): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN EXCLUSIVE; DELETE FROM transport_outbox;');
+  database
+    .prepare(
+      `UPDATE transport_meta
+       SET outbox_evidence_count = 0, outbox_evidence_xor = ?
+       WHERE singleton = 1`,
+    )
+    .run(SHA('0'));
+  database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE);');
+  database.close();
+}
+
+function fillLegacyV2ToMigrationCapacity(filename: string): void {
+  const database = new SqliteDatabase(filename);
+  const meta = database
+    .prepare('SELECT max_database_bytes FROM transport_meta WHERE singleton = 1')
+    .get() as { max_database_bytes: number };
+  const page = database.prepare('PRAGMA page_size').get() as { page_size: number };
+  database.exec(`PRAGMA max_page_count = ${Math.floor(meta.max_database_bytes / page.page_size)}`);
+  const availablePages = (): number => {
+    const max = database.prepare('PRAGMA max_page_count').get() as { max_page_count: number };
+    const used = database.prepare('PRAGMA page_count').get() as { page_count: number };
+    const free = database.prepare('PRAGMA freelist_count').get() as { freelist_count: number };
+    return (
+      max.max_page_count -
+      used.page_count +
+      free.freelist_count -
+      WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES
+    );
+  };
+  const insert = database.prepare(
+    `INSERT INTO transport_sequence_gaps(
+       installation_id, connection_id, expected_sequence, received_sequence,
+       occurrence_count, first_seen_at_ms, last_seen_at_ms, retained_until_ms
+     ) SELECT installation_id, connection_id, ?, ?, 1, ?, ?, ?
+       FROM transport_connections LIMIT 1`,
+  );
+  let index = 0;
+  while (availablePages() >= 10) {
+    const prefix = String(index).padStart(8, '0');
+    const padding = availablePages() > 48 ? 'x'.repeat(8_192) : 'x'.repeat(256);
+    try {
+      insert.run(prefix + padding, prefix + 'y' + padding, index, index, index + 60_000);
+    } catch (error) {
+      if (!(error instanceof Error) || !/full/i.test(error.message)) throw error;
+      break;
+    }
+    index += 1;
+    if (index > 1_024) throw new Error('MIGRATION_CAPACITY_FILL_STALLED');
+  }
+  if (availablePages() >= 10) throw new Error('MIGRATION_CAPACITY_NOT_REACHED');
+  database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  database.close();
+}
+
+function seedLegacyReadyConversations(
+  filename: string,
+  fixture: Fixture,
+  state: DurableBrokerConnection,
+  entries: ReadonlyArray<{ open: BrokerEnvelope; originalSequence?: string }>,
+): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN');
+  try {
+    const insert = database.prepare(
+      `INSERT INTO local_conversations(
+         conversation_id, installation_id, deployment_id, agent_version_id,
+         agent_version_digest, snapshot_digest, lease_id, worker_session_id, fence,
+         open_command_id, open_connection_id, open_sequence, sandbox_instance_id,
+         runtime_thread_id, ready_evidence_digest, state, ready_cloud_state,
+         created_at_ms, updated_at_ms, row_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const [index, entry] of entries.entries()) {
+      const { open } = entry;
+      if (open.type !== 'conversation.open') throw new Error('INVALID_READY_OPEN');
+      const now = fixture.nowMs + 1_000 + index;
+      const row = {
+        conversation_id: open.body.conversationId,
+        installation_id: fixture.installationId,
+        deployment_id: open.lease.deploymentId,
+        agent_version_id: open.body.agentVersionId,
+        agent_version_digest: open.body.agentVersionDigest,
+        snapshot_digest: open.body.snapshotDigest,
+        lease_id: open.lease.leaseId,
+        worker_session_id: open.lease.workerSessionId,
+        fence: open.lease.fence,
+        open_command_id: open.messageId,
+        open_connection_id: state.connectionId,
+        open_sequence: entry.originalSequence ?? open.sequence,
+        sandbox_instance_id: uuid(fixture.seed * 1_000 + 2 + index),
+        runtime_thread_id: `thread-${fixture.seed}-${index}`,
+        ready_evidence_digest: `sha256:${SHA('7')}`,
+        state: 'READY',
+        ready_cloud_state: 'PENDING',
+        created_at_ms: now,
+        updated_at_ms: now,
+      };
+      insert.run(...Object.values(row), sqliteInvocationRowDigest('local_conversations', row));
+      const consumedRow = {
+        command_id: open.messageId,
+        connection_id: state.connectionId,
+        sequence: entry.originalSequence ?? open.sequence,
+        canonical_digest: canonicalSha256(open),
+        semantic_digest: workerInvocationCommandSemanticDigest(open),
+        command_type: 'conversation.open',
+        conversation_id: open.body.conversationId,
+        invocation_id: null,
+        disposition: 'APPLIED',
+        consumed_at_ms: now,
+      };
+      database
+        .prepare(
+          `INSERT INTO local_consumed_commands(
+             command_id, connection_id, sequence, canonical_digest, semantic_digest,
+             command_type, conversation_id, invocation_id, disposition, consumed_at_ms, row_digest
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ...Object.values(consumedRow),
+          sqliteInvocationRowDigest('local_consumed_commands', consumedRow),
+        );
+      const inbound = database
+        .prepare(
+          `SELECT connection_id, sequence, message_id, canonical_digest, replay_count,
+                  recorded_at_ms
+           FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?
+             AND message_id = ?`,
+        )
+        .get(state.connectionId, open.sequence, open.messageId) as {
+        connection_id: string;
+        sequence: string;
+        message_id: string;
+        canonical_digest: string;
+        replay_count: number;
+        recorded_at_ms: number;
+      };
+      const retainedUntilMs = now + WORKER_TRANSPORT_RETENTION_MS;
+      const effectDigest = createHash('sha256')
+        .update('combo:vnext:worker-inbound-effect:v1\0', 'utf8')
+        .update(
+          canonicalizeJson({
+            connectionId: inbound.connection_id,
+            sequence: inbound.sequence,
+            messageId: inbound.message_id,
+            canonicalDigest: inbound.canonical_digest,
+            effectState: 'APPLIED',
+            replayCount: inbound.replay_count,
+            recordedAtMs: inbound.recorded_at_ms,
+            appliedAtMs: now,
+            retainedUntilMs,
+          }),
+          'utf8',
+        )
+        .digest('hex');
+      database
+        .prepare(
+          `UPDATE transport_inbound_frames
+           SET effect_state = 'APPLIED', effect_digest = ?, applied_at_ms = ?, retained_until_ms = ?
+           WHERE connection_id = ? AND sequence = ? AND message_id = ?
+             AND effect_state = 'PERSISTED'`,
+        )
+        .run(
+          effectDigest,
+          now,
+          retainedUntilMs,
+          inbound.connection_id,
+          inbound.sequence,
+          inbound.message_id,
+        );
+      const effectEvent = {
+        connectionId: inbound.connection_id,
+        sequence: inbound.sequence,
+        messageId: inbound.message_id,
+        fromState: 'PERSISTED',
+        toState: 'APPLIED',
+        reason: 'RECORDED',
+        occurredAtMs: now,
+      };
+      database
+        .prepare(
+          `INSERT INTO transport_inbound_effect_events(
+             connection_id, sequence, message_id, from_state, to_state, reason,
+             occurred_at_ms, event_digest
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          ...Object.values(effectEvent),
+          createHash('sha256')
+            .update('combo:vnext:worker-inbound-effect-event:v1\0', 'utf8')
+            .update(canonicalizeJson(effectEvent), 'utf8')
+            .digest('hex'),
+        );
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close();
+  }
+}
+
+function downgradeToLegacyV2(filename: string): void {
+  const database = new SqliteDatabase(filename);
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN EXCLUSIVE;
+    DROP TABLE local_conversation_ready_terminal_tombstones;
+    DROP TABLE local_conversation_ready_outbox_receipts;
+    DROP TABLE local_conversation_ready_deliveries;
+    DROP TABLE local_conversation_ready_outbox;
+    DROP TABLE local_conversation_ready_facts;
+    ALTER TABLE local_conversations DROP COLUMN ready_cloud_state;
+    DROP INDEX local_conversation_installation_state;
+    CREATE TABLE local_conversations_v2 (
+      conversation_id TEXT PRIMARY KEY,
+      installation_id TEXT NOT NULL REFERENCES transport_installations(installation_id),
+      deployment_id TEXT NOT NULL,
+      agent_version_id TEXT NOT NULL,
+      agent_version_digest TEXT NOT NULL,
+      snapshot_digest TEXT NOT NULL,
+      lease_id TEXT NOT NULL,
+      worker_session_id TEXT NOT NULL,
+      fence TEXT NOT NULL,
+      open_command_id TEXT NOT NULL UNIQUE,
+      open_connection_id TEXT NOT NULL,
+      open_sequence TEXT NOT NULL,
+      sandbox_instance_id TEXT NOT NULL,
+      runtime_thread_id TEXT,
+      ready_evidence_digest TEXT NOT NULL,
+      state TEXT NOT NULL CHECK (state IN ('READY', 'CLOSED', 'UNCERTAIN')),
+      created_at_ms INTEGER NOT NULL,
+      updated_at_ms INTEGER NOT NULL,
+      row_digest TEXT NOT NULL,
+      FOREIGN KEY (open_connection_id, open_sequence)
+        REFERENCES transport_inbound_frames(connection_id, sequence)
+    ) STRICT;
+    INSERT INTO local_conversations_v2 SELECT * FROM local_conversations;
+    DROP TABLE local_conversations;
+    ALTER TABLE local_conversations_v2 RENAME TO local_conversations;
+    CREATE INDEX local_conversation_installation_state
+      ON local_conversations(installation_id, state, created_at_ms);
+    PRAGMA user_version = 2;
+  `);
+  const conversations = database.prepare('SELECT * FROM local_conversations').all() as Array<
+    Record<string, unknown>
+  >;
+  for (const conversation of conversations) {
+    const payload = { ...conversation };
+    delete payload.row_digest;
+    database
+      .prepare('UPDATE local_conversations SET row_digest = ? WHERE conversation_id = ?')
+      .run(
+        sqliteInvocationRowDigest('local_conversations', payload),
+        String(conversation.conversation_id),
+      );
+  }
+  const schemaRows = database
+    .prepare(
+      `SELECT type, name, sql FROM sqlite_master
+       WHERE (name LIKE 'transport_%' OR name LIKE 'local_%') AND sql IS NOT NULL
+       ORDER BY type, name`,
+    )
+    .all();
+  const installation = database
+    .prepare(
+      `SELECT installation_id, highest_owner_epoch FROM transport_installations
+       ORDER BY installation_id`,
+    )
+    .all();
+  const owners = database
+    .prepare(
+      `SELECT installation_id, owner_token_digest, owner_epoch, lease_expires_at_ms,
+              acquired_at_ms, updated_at_ms
+       FROM transport_installation_owners ORDER BY installation_id`,
+    )
+    .all();
+  const fences = database
+    .prepare(
+      `SELECT installation_id, deployment_id, highest_fence
+       FROM transport_deployment_fences ORDER BY installation_id, deployment_id`,
+    )
+    .all();
+  const local = workerInvocationAuthorityRows(database);
+  const schemaDigest = createHash('sha256').update(canonicalizeJson(schemaRows)).digest('hex');
+  const authorityDigest = createHash('sha256')
+    .update('combo:vnext:worker-authority:v1\0', 'utf8')
+    .update(canonicalizeJson({ installation, owners, fences, local }), 'utf8')
+    .digest('hex');
+  database
+    .prepare(
+      `UPDATE transport_meta SET schema_digest = ?, authority_digest = ? WHERE singleton = 1`,
+    )
+    .run(schemaDigest, authorityDigest);
+  database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE);');
+  const meta = database
+    .prepare(
+      `SELECT schema_digest, authority_digest, installation_id, journal_generation,
+              authorization_digest, commit_epoch, inbound_evidence_count,
+              inbound_evidence_xor, outbox_evidence_count, outbox_evidence_xor,
+              max_database_bytes, max_wal_bytes, min_free_bytes
+       FROM transport_meta WHERE singleton = 1`,
+    )
+    .get() as Record<string, string | number>;
+  database.close();
+  writeWatermarkDocument(filename, {
+    formatVersion: 1,
+    applicationId: WORKER_TRANSPORT_APPLICATION_ID,
+    schemaVersion: 2,
+    schemaDigest: meta.schema_digest,
+    authorityDigest: meta.authority_digest,
+    installationId: meta.installation_id,
+    journalGeneration: meta.journal_generation,
+    authorizationDigest: meta.authorization_digest,
+    commitEpoch: meta.commit_epoch,
+    inboundEvidenceCount: meta.inbound_evidence_count,
+    inboundEvidenceXor: meta.inbound_evidence_xor,
+    outboxEvidenceCount: meta.outbox_evidence_count,
+    outboxEvidenceXor: meta.outbox_evidence_xor,
+    maxDatabaseBytes: meta.max_database_bytes,
+    maxWalBytes: meta.max_wal_bytes,
+    minFreeBytes: meta.min_free_bytes,
+  });
+}
+
 function rewriteWatermark(
   filename: string,
   mutate: (payload: Record<string, unknown>) => Record<string, unknown>,
@@ -2997,7 +3825,7 @@ function writeWatermarkDocument(filename: string, payload: Record<string, unknow
 }
 
 function queryCount(filename: string, table: string): number {
-  if (!/^transport_[a-z_]+$/u.test(table)) throw new Error('INVALID_TEST_TABLE');
+  if (!/^(?:local|transport)_[a-z_]+$/u.test(table)) throw new Error('INVALID_TEST_TABLE');
   const database = new SqliteDatabase(filename, { readOnly: true });
   const row = database.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number };
   database.close();
@@ -3087,6 +3915,31 @@ function spawnLegacyMigrationKillProcess(
     | 'migration.v1_to_v2.before_watermark'
     | 'migration.v1_to_v2.after_watermark_fsync'
     | 'migration.v1_to_v2.after_commit',
+): ChildProcess {
+  const script = `
+    import { SqliteWorkerBrokerDurableTransport } from ${JSON.stringify(distEntry)};
+    new SqliteWorkerBrokerDurableTransport({
+      filename: process.env.TEST_FILENAME,
+      faultInjector(point) {
+        if (point === process.env.TEST_FAULT_POINT) {
+          process.send({ reached: point });
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+      },
+    });
+  `;
+  return trackedSpawn(script, {
+    TEST_FILENAME: filename,
+    TEST_FAULT_POINT: faultPoint,
+  });
+}
+
+function spawnV2MigrationKillProcess(
+  filename: string,
+  faultPoint:
+    | 'migration.v2_to_v3.before_watermark'
+    | 'migration.v2_to_v3.after_watermark_fsync'
+    | 'migration.v2_to_v3.after_commit',
 ): ChildProcess {
   const script = `
     import { SqliteWorkerBrokerDurableTransport } from ${JSON.stringify(distEntry)};

@@ -17,11 +17,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import {
   BrokerEnvelopeSchema,
   ExecutionCapabilitySchema,
+  WorkerConversationReadyFactSchema,
   brokerSensitiveMessageAadBytes,
   brokerSensitiveMessageAadDigest,
   brokerSensitiveMessageCipherDigest,
   canonicalSha256,
+  canonicalizeJson,
   executionCapabilitySigningBytes,
+  workerConversationReadyFactDigest,
   validateExecutionCapabilityBinding,
   type BrokerEnvelope,
   type BrokerSensitiveMessage,
@@ -44,6 +47,7 @@ import {
 } from './sqlite-durable-transport.js';
 import {
   type SqliteWorkerInvocationJournal,
+  assertWorkerConversationReadyIntegrity,
   assertWorkerInvocationIntegrity,
   localInvocationPromptAadBytes,
   localInvocationPromptAadDigest,
@@ -61,8 +65,10 @@ import {
   type LocalInvocationResultCiphertext,
   type LocalResultAeadAuthorityPort,
   type OpaqueInvocationCloudAckReference,
+  type PendingConversationReadyFactReference,
   type PendingInvocationFactReference,
   type ReadyConversationAuthorityPort,
+  type ReadyConversationExpectedBinding,
   type TrustedHostDispatchPort,
   type WorkerInvocationCapabilityAuthorityPort,
 } from './sqlite-invocation-journal.js';
@@ -81,7 +87,1104 @@ afterEach(() => {
   temporaryDirectories.clear();
 });
 
-describe('same-file SQLite Worker Invocation Journal v2', () => {
+describe('same-file SQLite Worker Invocation Journal v3', () => {
+  it('atomically binds READY, its immutable fact, and its logical outbox', async () => {
+    let failReadyCommit = true;
+    const fixture = await createInvocationFixture(99, {
+      faultInjector(point) {
+        if (failReadyCommit && point === 'invocation_bind_ready_conversation.before_commit') {
+          throw new Error('fault-ready-before-commit');
+        }
+      },
+    });
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const input = {
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal: new AbortController().signal,
+    };
+
+    await expect(journal.bindReadyConversation(input)).rejects.toThrow('fault-ready-before-commit');
+    expect(queryCount(fixture.filename, 'local_conversations')).toBe(0);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(0);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(0);
+
+    failReadyCommit = false;
+    const first = await journal.bindReadyConversation(input);
+    const replay = await journal.bindReadyConversation(input);
+    expect(first).toEqual(replay);
+    expect(first).toMatchObject({
+      sourceEventId: fixture.openReference.messageId,
+      openCommandId: fixture.openReference.messageId,
+      cloudState: 'PENDING',
+    });
+    expect(queryCount(fixture.filename, 'local_conversations')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(1);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'local_conversation_ready_facts',
+        `source_event_id = open_command_id AND source_event_id = '${fixture.openReference.messageId}'`,
+      ),
+    ).toBe(1);
+  });
+
+  it('commits logical READY at full wire capacity and pumps it after one exact credit release', async () => {
+    const fixture = await createInvocationFixture(98, { maxOutboxRows: 8 });
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const signal = new AbortController().signal;
+    let pingSeed = 0;
+    while (
+      queryCountWhere(
+        fixture.filename,
+        'transport_outbox',
+        `state IN ('UNBOUND', 'PENDING', 'WRITTEN')`,
+      ) < 7
+    ) {
+      const ping = BrokerEnvelopeSchema.parse({
+        protocol: 'combo.creator-broker/1',
+        schemaVersion: 1,
+        kind: 'command',
+        type: 'ping',
+        messageId: uuid(98_700 + pingSeed),
+        correlationId: fixture.state.connectionId,
+        connectionId: fixture.state.connectionId,
+        sequence: nextSequence(fixture.state),
+        sentAt: fixture.state.leaseGrantedAt,
+        expiresAt: fixture.state.leaseExpiresAt,
+        lease: fixture.state.lease,
+        body: { nonce: Buffer.alloc(16, pingSeed + 1).toString('base64url') },
+      });
+      fixture.state = await commitCommand(
+        fixture.adapter,
+        fixture.installationId,
+        fixture.state,
+        ping,
+      );
+      pingSeed += 1;
+      if (pingSeed > 8) throw new Error('wire-capacity-fill-stalled');
+    }
+    await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_deliveries')).toBe(0);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'local_consumed_commands',
+        `command_id = '${fixture.openReference.messageId}' AND disposition = 'APPLIED'`,
+      ),
+    ).toBe(1);
+    const outbound = await fixture.adapter.readOutbound({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      connectionId: fixture.state.connectionId,
+      limit: 16,
+      signal,
+    });
+    const released = outbound.find((envelope) => envelope.type === 'lease.accepted');
+    if (released === undefined) throw new Error('missing-credit-release-target');
+    fixture.state = await commitCommand(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      readyCloudAckEnvelope(fixture, released.messageId, 'APPLIED', 98_900),
+    );
+    await expect(
+      fixture.adapter.replayPendingConversationReady({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        connectionId: fixture.state.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 1, remaining: false });
+    expect(queryCount(fixture.filename, 'local_conversation_ready_deliveries')).toBe(1);
+  });
+
+  it.each(['APPLIED', 'IDEMPOTENT_REPLAY', 'SECURITY_BLOCK'] as const)(
+    're-envelopes one immutable READY fact and records only exact durable %s ACK evidence',
+    async (decision) => {
+      const fixture = await createInvocationFixture(
+        decision === 'APPLIED' ? 97 : decision === 'IDEMPOTENT_REPLAY' ? 96 : 95,
+      );
+      const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+      const signal = new AbortController().signal;
+      const ready = await journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        evidence: { token: 'sandbox-ready' },
+        signal,
+      });
+      const pending = await journal.readPendingConversationReadyFacts({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        limit: 10,
+        signal,
+      });
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        sourceEventId: fixture.openReference.messageId,
+        conversationId: fixture.conversationId,
+        factDigest: ready.factDigest,
+      });
+      await enqueueAndCommitReadyCloudAck(
+        fixture.adapter,
+        journal,
+        fixture,
+        pending[0]!,
+        decision,
+        decision === 'APPLIED' ? 97_000 : decision === 'IDEMPOTENT_REPLAY' ? 96_000 : 95_000,
+      );
+      const expectedState = decision === 'SECURITY_BLOCK' ? 'CLOUD_REJECTED' : 'CLOUD_COMMITTED';
+      expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(1);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(1);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(1);
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'local_conversations',
+          `ready_cloud_state = '${expectedState}'`,
+        ),
+      ).toBe(1);
+      expect(
+        await journal.readPendingConversationReadyFacts({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          limit: 10,
+          signal,
+        }),
+      ).toHaveLength(0);
+      if (decision === 'SECURITY_BLOCK') {
+        await expect(
+          journal.prepare({
+            installationId: fixture.installationId,
+            ownerToken: OWNER,
+            command: fixture.prepareReference,
+            signal,
+          }),
+        ).rejects.toMatchObject({ code: 'CONVERSATION_NOT_READY' });
+        expect(queryCount(fixture.filename, 'local_invocations')).toBe(0);
+        expect(queryCount(fixture.filename, 'local_invocation_events')).toBe(0);
+        expect(queryCount(fixture.filename, 'local_invocation_outbox')).toBe(0);
+        expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+        expect(fixture.authorities.hostReceiptCalls.count).toBe(0);
+      }
+      fixture.adapter.close();
+      const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+      expect(() => reopened.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+      reopened.close();
+    },
+  );
+
+  it.each([
+    { label: 'PENDING', decision: null, cloudState: 'PENDING', seed: 84 },
+    {
+      label: 'CLOUD_COMMITTED',
+      decision: 'APPLIED',
+      cloudState: 'CLOUD_COMMITTED',
+      seed: 83,
+    },
+    {
+      label: 'CLOUD_REJECTED',
+      decision: 'SECURITY_BLOCK',
+      cloudState: 'CLOUD_REJECTED',
+      seed: 82,
+    },
+  ] as const)(
+    'rebinds an exact $label READY on a same-Deployment replacement without replacing original authority',
+    async ({ decision, cloudState, seed }) => {
+      const fixture = await createInvocationFixture(seed);
+      let readyEvidenceVerifications = 0;
+      const journal = fixture.adapter.createInvocationJournal({
+        ...fixture.authorities.options,
+        readyConversationAuthority: {
+          verify(input, expected, now) {
+            readyEvidenceVerifications += 1;
+            return fixture.authorities.options.readyConversationAuthority.verify(
+              input,
+              expected,
+              now,
+            );
+          },
+        },
+      });
+      const signal = new AbortController().signal;
+      const originalReady = await journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        evidence: { token: 'sandbox-ready' },
+        signal,
+      });
+      if (decision !== null) {
+        const [pending] = await journal.readPendingConversationReadyFacts({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          limit: 1,
+          signal,
+        });
+        if (pending === undefined) throw new Error('missing-ready-for-terminal-replay');
+        fixture.state = await enqueueAndCommitReadyCloudAck(
+          fixture.adapter,
+          journal,
+          fixture,
+          pending,
+          decision,
+          seed * 10_000,
+        );
+      }
+      expect(queryCount(fixture.filename, 'local_conversation_ready_terminal_tombstones')).toBe(0);
+      expect(readyEvidenceVerifications).toBe(1);
+
+      const replacement = await activateReplacementLease(
+        fixture,
+        seed * 10_000 + 10,
+        fixture.openEnvelope.lease.deploymentId,
+      );
+      const replayedOpen = BrokerEnvelopeSchema.parse({
+        ...fixture.openEnvelope,
+        connectionId: replacement.connectionId,
+        sequence: nextSequence(replacement),
+        sentAt: replacement.leaseGrantedAt,
+        expiresAt: replacement.leaseExpiresAt,
+        lease: replacement.lease,
+      }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
+      const current = await commitCommand(
+        fixture.adapter,
+        fixture.installationId,
+        replacement,
+        replayedOpen,
+      );
+      const replayReference = await commandReference(
+        fixture.adapter,
+        fixture.installationId,
+        current,
+        'conversation.open',
+      );
+      const originalBusinessState = queryReadyBusinessStateSnapshot(fixture.filename);
+      await expect(
+        journal.bindReadyConversation({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          command: replayReference,
+          evidence: { token: 'must-not-be-verified-on-durable-replay' },
+          signal,
+        }),
+      ).resolves.toEqual({ ...originalReady, cloudState });
+      expect(queryReadyBusinessStateSnapshot(fixture.filename)).toEqual(originalBusinessState);
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_inbound_frames',
+          `connection_id = '${current.connectionId}' AND sequence = '${replayedOpen.sequence}' AND effect_state = 'APPLIED'`,
+        ),
+      ).toBe(1);
+      expect(readyEvidenceVerifications).toBe(1);
+      expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+
+      fixture.state = current;
+      const crossDeploymentId = uuid(seed * 10_000 + 20);
+      const crossDeployment = await activateReplacementLease(
+        fixture,
+        seed * 10_000 + 21,
+        crossDeploymentId,
+      );
+      const crossDeploymentOpen = BrokerEnvelopeSchema.parse({
+        ...fixture.openEnvelope,
+        connectionId: crossDeployment.connectionId,
+        sequence: nextSequence(crossDeployment),
+        sentAt: crossDeployment.leaseGrantedAt,
+        expiresAt: crossDeployment.leaseExpiresAt,
+        lease: crossDeployment.lease,
+      }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
+      const crossDeploymentState = await commitCommand(
+        fixture.adapter,
+        fixture.installationId,
+        crossDeployment,
+        crossDeploymentOpen,
+      );
+      const crossDeploymentReference = await commandReference(
+        fixture.adapter,
+        fixture.installationId,
+        crossDeploymentState,
+        'conversation.open',
+      );
+      const beforeCrossDeploymentRejection = queryDurableStateSnapshot(fixture.filename);
+      await expect(
+        journal.bindReadyConversation({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          command: crossDeploymentReference,
+          evidence: { token: 'must-not-be-verified-on-conflict' },
+          signal,
+        }),
+      ).rejects.toMatchObject({ code: 'CONVERSATION_CONFLICT' });
+      expect(queryDurableStateSnapshot(fixture.filename)).toEqual(beforeCrossDeploymentRejection);
+      expect(readyEvidenceVerifications).toBe(1);
+
+      const changedOpen = BrokerEnvelopeSchema.parse({
+        ...crossDeploymentOpen,
+        sequence: nextSequence(crossDeploymentState),
+        body: { ...crossDeploymentOpen.body, snapshotDigest: SHA('c') },
+      });
+      const beforeChangedBodyRejection = queryDurableStateSnapshot(fixture.filename);
+      await expect(
+        commitCommand(fixture.adapter, fixture.installationId, crossDeploymentState, changedOpen),
+      ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+      expect(queryDurableStateSnapshot(fixture.filename)).toEqual(beforeChangedBodyRejection);
+      expect(readyEvidenceVerifications).toBe(1);
+      expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+    },
+  );
+
+  it.each(['APPLIED', 'IDEMPOTENT_REPLAY', 'SECURITY_BLOCK'] as const)(
+    'compacts terminal READY %s evidence, accepts exact current-outer replays, and advances the cursor',
+    async (decision) => {
+      let transportNow = Date.now();
+      const seed = decision === 'APPLIED' ? 87 : decision === 'IDEMPOTENT_REPLAY' ? 86 : 85;
+      const fixture = await createInvocationFixture(
+        seed,
+        { maxConnections: 2, now: () => transportNow },
+        { readyOnly: true },
+      );
+      const signal = new AbortController().signal;
+      let readyEvidenceVerifications = 0;
+      const journalOptions = {
+        ...fixture.authorities.options,
+        readyConversationAuthority: {
+          verify(input: unknown, expected: ReadyConversationExpectedBinding, now: Date) {
+            readyEvidenceVerifications += 1;
+            return fixture.authorities.options.readyConversationAuthority.verify(
+              input,
+              expected,
+              now,
+            );
+          },
+        },
+      };
+      const journal = fixture.adapter.createInvocationJournal(journalOptions);
+      const ready = await journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        evidence: { token: 'sandbox-ready' },
+        signal,
+      });
+      expect(readyEvidenceVerifications).toBe(1);
+      const [pending] = await journal.readPendingConversationReadyFacts({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        limit: 1,
+        signal,
+      });
+      if (pending === undefined) throw new Error('missing-ready-pending');
+      const originalConnectionId = fixture.state.connectionId;
+      await fixture.adapter.releaseConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        connectionId: originalConnectionId,
+        signal,
+      });
+      const retainedConnection = queryConnectionSnapshot(fixture.filename, originalConnectionId);
+      const fillerConnection = await activateReplacementLease(
+        fixture,
+        seed * 10_000 + 3,
+        fixture.state.lease.deploymentId,
+        transportNow,
+      );
+      fixture.state = fillerConnection;
+      await expect(
+        fixture.adapter.replayPendingConversationReady({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          connectionId: fillerConnection.connectionId,
+          signal,
+        }),
+      ).resolves.toEqual({ enqueued: 1, remaining: false });
+      const fillerOutbound = await fixture.adapter.readOutbound({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        connectionId: fillerConnection.connectionId,
+        limit: 16,
+        signal,
+      });
+      const delivery = fillerOutbound.find((envelope) => envelope.type === 'conversation.ready');
+      if (delivery === undefined) throw new Error('missing-ready-filler-delivery');
+      const originalAck = readyCloudAckEnvelope(
+        fixture,
+        delivery.messageId,
+        decision,
+        seed * 10_000 + 2,
+      );
+      fixture.state = await commitCommand(
+        fixture.adapter,
+        fixture.installationId,
+        fixture.state,
+        originalAck,
+      );
+      expect(queryCount(fixture.filename, 'local_conversation_ready_terminal_tombstones')).toBe(0);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(1);
+      expect(queryCount(fixture.filename, 'local_invocations')).toBe(0);
+      expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+      const retainedFiller = queryConnectionSnapshot(
+        fixture.filename,
+        fillerConnection.connectionId,
+      );
+      const blockedReplacementSeed = seed * 10_000 + 5;
+      await expect(
+        activateReplacementLease(
+          fixture,
+          blockedReplacementSeed,
+          fixture.state.lease.deploymentId,
+          transportNow,
+          2n,
+        ),
+      ).rejects.toMatchObject({ code: 'CAPACITY_EXCEEDED' });
+      expect(queryConnectionSnapshot(fixture.filename, originalConnectionId)).toEqual(
+        retainedConnection,
+      );
+      expect(queryConnectionSnapshot(fixture.filename, fillerConnection.connectionId)).toEqual(
+        retainedFiller,
+      );
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_connections',
+          `connection_id = '${uuid(blockedReplacementSeed)}'`,
+        ),
+      ).toBe(0);
+      transportNow += 8 * 24 * 60 * 60 * 1_000;
+      await fixture.adapter.acquireInstallation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        signal,
+      });
+      await fixture.adapter.pruneRetained({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        signal,
+      });
+      expect(queryCount(fixture.filename, 'local_conversation_ready_terminal_tombstones')).toBe(1);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(0);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(0);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_deliveries')).toBe(0);
+      expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_inbound_frames',
+          `message_id IN ('${fixture.openEnvelope.messageId}', '${originalAck.messageId}')`,
+        ),
+      ).toBe(0);
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_outbox',
+          `response_to_message_id = '${fixture.openEnvelope.messageId}'`,
+        ),
+      ).toBe(0);
+      expect(queryCount(fixture.filename, 'transport_connections')).toBe(1);
+      const compactedDatabase = new SqliteDatabase(fixture.filename, { readOnly: true });
+      assertWorkerConversationReadyIntegrity(compactedDatabase);
+      compactedDatabase.close();
+
+      fixture.adapter.close();
+      const reopened = new SqliteWorkerBrokerDurableTransport({
+        filename: fixture.filename,
+        maxConnections: 2,
+        now: () => transportNow,
+      });
+      fixture.adapter = reopened;
+      await reopened.acquireInstallation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        signal,
+      });
+      expect(reopened.inspectPragmas().foreignKeys).toBe(1);
+      expect(queryForeignKeyTargets(fixture.filename, 'local_conversations')).not.toContain(
+        'transport_inbound_frames',
+      );
+      expect(queryForeignKeyTargets(fixture.filename, 'local_invocations')).toContain(
+        'local_conversations',
+      );
+      expect(
+        queryForeignKeyTargets(fixture.filename, 'local_conversation_ready_terminal_tombstones'),
+      ).toEqual(['local_conversations']);
+      const recoveredJournal = reopened.createInvocationJournal(journalOptions);
+      const replacement = await activateReplacementLease(
+        fixture,
+        seed * 10_000 + 10,
+        fixture.state.lease.deploymentId,
+        transportNow,
+        2n,
+      );
+      expect(queryCount(fixture.filename, 'transport_connections')).toBe(1);
+
+      const reusedOpenAsPing = BrokerEnvelopeSchema.parse({
+        protocol: 'combo.creator-broker/1',
+        schemaVersion: 1,
+        kind: 'command',
+        type: 'ping',
+        messageId: fixture.openEnvelope.messageId,
+        correlationId: replacement.connectionId,
+        connectionId: replacement.connectionId,
+        sequence: nextSequence(replacement),
+        sentAt: replacement.leaseGrantedAt,
+        expiresAt: replacement.leaseExpiresAt,
+        lease: replacement.lease,
+        body: { nonce: Buffer.alloc(16, seed + 1).toString('base64url') },
+      });
+      const reusedOpenAsAck = BrokerEnvelopeSchema.parse({
+        ...originalAck,
+        messageId: fixture.openEnvelope.messageId,
+        connectionId: replacement.connectionId,
+        sequence: nextSequence(replacement),
+        sentAt: replacement.leaseGrantedAt,
+        expiresAt: replacement.leaseExpiresAt,
+        lease: replacement.lease,
+      });
+      const reusedOpenAsRevoke = BrokerEnvelopeSchema.parse({
+        protocol: 'combo.creator-broker/1',
+        schemaVersion: 1,
+        kind: 'command',
+        type: 'lease.revoke',
+        messageId: fixture.openEnvelope.messageId,
+        correlationId: replacement.connectionId,
+        connectionId: replacement.connectionId,
+        sequence: nextSequence(replacement),
+        sentAt: replacement.leaseGrantedAt,
+        expiresAt: replacement.leaseExpiresAt,
+        lease: replacement.lease,
+        body: { reason: 'SECURITY', effectiveAt: replacement.leaseGrantedAt },
+      });
+      const reusedAckAsPing = BrokerEnvelopeSchema.parse({
+        ...reusedOpenAsPing,
+        messageId: originalAck.messageId,
+        body: { nonce: Buffer.alloc(16, seed + 2).toString('base64url') },
+      });
+      const reusedAckAsOpen = BrokerEnvelopeSchema.parse({
+        ...fixture.openEnvelope,
+        messageId: originalAck.messageId,
+        connectionId: replacement.connectionId,
+        sequence: nextSequence(replacement),
+        sentAt: replacement.leaseGrantedAt,
+        expiresAt: replacement.leaseExpiresAt,
+        lease: replacement.lease,
+      });
+      const reusedAckAsRevoke = BrokerEnvelopeSchema.parse({
+        ...reusedOpenAsRevoke,
+        messageId: originalAck.messageId,
+      });
+      const beforeIdentityConflicts = queryDurableStateSnapshot(fixture.filename);
+      for (const conflictingIdentity of [
+        reusedOpenAsPing,
+        reusedOpenAsAck,
+        reusedOpenAsRevoke,
+        reusedAckAsPing,
+        reusedAckAsOpen,
+        reusedAckAsRevoke,
+      ]) {
+        await expect(
+          commitCommand(reopened, fixture.installationId, replacement, conflictingIdentity),
+        ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+        expect(queryDurableStateSnapshot(fixture.filename)).toEqual(beforeIdentityConflicts);
+      }
+
+      const replayedOpen = BrokerEnvelopeSchema.parse({
+        ...fixture.openEnvelope,
+        connectionId: replacement.connectionId,
+        sequence: nextSequence(replacement),
+        sentAt: replacement.leaseGrantedAt,
+        expiresAt: replacement.leaseExpiresAt,
+        lease: replacement.lease,
+      }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
+      await expect(
+        reopened.replayInbound({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          connectionId: replacement.connectionId,
+          envelope: replayedOpen,
+          canonicalDigest: canonicalSha256(replayedOpen),
+          signal,
+        }),
+      ).resolves.toBe('NOT_FOUND');
+      let current = await commitCommand(
+        reopened,
+        fixture.installationId,
+        replacement,
+        replayedOpen,
+      );
+      const replayedOpenReference = await commandReference(
+        reopened,
+        fixture.installationId,
+        current,
+        'conversation.open',
+      );
+      await expect(
+        recoveredJournal.bindReadyConversation({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          command: replayedOpenReference,
+          evidence: { token: 'must-not-be-verified-on-compacted-replay' },
+          signal,
+        }),
+      ).resolves.toMatchObject({
+        sourceEventId: fixture.openEnvelope.messageId,
+        factDigest: ready.factDigest,
+        cloudState: decision === 'SECURITY_BLOCK' ? 'CLOUD_REJECTED' : 'CLOUD_COMMITTED',
+      });
+      expect(readyEvidenceVerifications).toBe(1);
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_inbound_frames',
+          `connection_id = '${current.connectionId}' AND sequence = '${replayedOpen.sequence}' AND effect_state = 'APPLIED'`,
+        ),
+      ).toBe(1);
+      expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+
+      const changedOpen = {
+        ...replayedOpen,
+        body: { ...replayedOpen.body, snapshotDigest: SHA('e') },
+      };
+      await expect(
+        reopened.replayInbound({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          connectionId: current.connectionId,
+          envelope: changedOpen,
+          canonicalDigest: canonicalSha256(changedOpen),
+          signal,
+        }),
+      ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+
+      const replayedAck = BrokerEnvelopeSchema.parse({
+        ...originalAck,
+        connectionId: current.connectionId,
+        sequence: nextSequence(current),
+        sentAt: current.leaseGrantedAt,
+        expiresAt: current.leaseExpiresAt,
+        lease: current.lease,
+      }) as Extract<BrokerEnvelope, { kind: 'ack'; type: 'message.ack' }>;
+      await expect(
+        reopened.replayInbound({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          connectionId: current.connectionId,
+          envelope: replayedAck,
+          canonicalDigest: canonicalSha256(replayedAck),
+          signal,
+        }),
+      ).resolves.toBe('NOT_FOUND');
+      current = await commitCommand(reopened, fixture.installationId, current, replayedAck);
+      const changedAck = BrokerEnvelopeSchema.parse({
+        ...replayedAck,
+        body: {
+          ...replayedAck.body,
+          decision: decision === 'APPLIED' ? 'IDEMPOTENT_REPLAY' : 'APPLIED',
+        },
+      });
+      await expect(
+        reopened.replayInbound({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          connectionId: current.connectionId,
+          envelope: changedAck,
+          canonicalDigest: canonicalSha256(changedAck),
+          signal,
+        }),
+      ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+
+      const ping = BrokerEnvelopeSchema.parse({
+        protocol: 'combo.creator-broker/1',
+        schemaVersion: 1,
+        kind: 'command',
+        type: 'ping',
+        messageId: uuid(seed * 10_000 + 20),
+        correlationId: current.connectionId,
+        connectionId: current.connectionId,
+        sequence: nextSequence(current),
+        sentAt: current.leaseGrantedAt,
+        expiresAt: current.leaseExpiresAt,
+        lease: current.lease,
+        body: { nonce: Buffer.alloc(16, seed).toString('base64url') },
+      });
+      current = await commitCommand(reopened, fixture.installationId, current, ping);
+      expect(current.connectionId).toBe(replacement.connectionId);
+
+      fixture.state = current;
+      const crossDeploymentId = uuid(seed * 10_000 + 30);
+      const crossDeployment = await activateReplacementLease(
+        fixture,
+        seed * 10_000 + 31,
+        crossDeploymentId,
+        transportNow,
+      );
+      const crossDeploymentOpen = BrokerEnvelopeSchema.parse({
+        ...fixture.openEnvelope,
+        connectionId: crossDeployment.connectionId,
+        sequence: nextSequence(crossDeployment),
+        sentAt: crossDeployment.leaseGrantedAt,
+        expiresAt: crossDeployment.leaseExpiresAt,
+        lease: crossDeployment.lease,
+      }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
+      const crossDeploymentState = await commitCommand(
+        reopened,
+        fixture.installationId,
+        crossDeployment,
+        crossDeploymentOpen,
+      );
+      const crossDeploymentOpenReference = await commandReference(
+        reopened,
+        fixture.installationId,
+        crossDeploymentState,
+        'conversation.open',
+      );
+      const beforeRejectedOpen = queryConnectionSnapshot(
+        fixture.filename,
+        crossDeployment.connectionId,
+      );
+      await expect(
+        recoveredJournal.bindReadyConversation({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          command: crossDeploymentOpenReference,
+          evidence: { token: 'sandbox-ready' },
+          signal,
+        }),
+      ).rejects.toMatchObject({ code: 'CONVERSATION_CONFLICT' });
+      expect(queryConnectionSnapshot(fixture.filename, crossDeployment.connectionId)).toEqual(
+        beforeRejectedOpen,
+      );
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_inbound_frames',
+          `connection_id = '${crossDeployment.connectionId}' AND sequence = '${crossDeploymentOpen.sequence}' AND effect_state = 'PERSISTED'`,
+        ),
+      ).toBe(1);
+
+      const crossDeploymentAck = BrokerEnvelopeSchema.parse({
+        ...originalAck,
+        connectionId: crossDeploymentState.connectionId,
+        sequence: nextSequence(crossDeploymentState),
+        sentAt: crossDeploymentState.leaseGrantedAt,
+        expiresAt: crossDeploymentState.leaseExpiresAt,
+        lease: crossDeploymentState.lease,
+      }) as Extract<BrokerEnvelope, { kind: 'ack'; type: 'message.ack' }>;
+      await expect(
+        reopened.replayInbound({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          connectionId: crossDeploymentState.connectionId,
+          envelope: crossDeploymentAck,
+          canonicalDigest: canonicalSha256(crossDeploymentAck),
+          signal,
+        }),
+      ).resolves.toBe('NOT_FOUND');
+      const beforeRejectedAck = queryConnectionSnapshot(
+        fixture.filename,
+        crossDeploymentState.connectionId,
+      );
+      await expect(
+        commitCommand(reopened, fixture.installationId, crossDeploymentState, crossDeploymentAck),
+      ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+      expect(queryConnectionSnapshot(fixture.filename, crossDeploymentState.connectionId)).toEqual(
+        beforeRejectedAck,
+      );
+      expect(
+        queryCountWhere(
+          fixture.filename,
+          'transport_inbound_frames',
+          `connection_id = '${crossDeploymentState.connectionId}' AND sequence = '${crossDeploymentAck.sequence}' AND message_id = '${crossDeploymentAck.messageId}'`,
+        ),
+      ).toBe(0);
+      expect(queryCount(fixture.filename, 'local_invocations')).toBe(0);
+      expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+      reopened.close();
+    },
+  );
+
+  it('commits the inbound READY ACK, receipt, state, and wire purge all-or-none', async () => {
+    let failAckCommit = false;
+    const fixture = await createInvocationFixture(94, {
+      faultInjector(point) {
+        if (failAckCommit && point === 'commit_inbound_reconciliation.before_commit') {
+          throw new Error('fault-ready-ack-before-commit');
+        }
+      },
+    });
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const signal = new AbortController().signal;
+    await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    const pending = await journal.readPendingConversationReadyFacts({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      limit: 1,
+      signal,
+    });
+    const delivery = await journal.enqueuePendingConversationReadyFact({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      reference: pending[0]!,
+      connectionId: fixture.state.connectionId,
+      deliveryMessageId: uuid(94_000),
+      signal,
+    });
+    const ack = readyCloudAckEnvelope(fixture, delivery.deliveryMessageId, 'APPLIED', 94_001);
+    const inboundBefore = queryCount(fixture.filename, 'transport_inbound_frames');
+
+    failAckCommit = true;
+    await expect(
+      commitCommand(fixture.adapter, fixture.installationId, fixture.state, ack),
+    ).rejects.toThrow('fault-ready-ack-before-commit');
+    expect(queryCount(fixture.filename, 'transport_inbound_frames')).toBe(inboundBefore);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+    expect(
+      queryCountWhere(fixture.filename, 'local_conversations', `ready_cloud_state = 'PENDING'`),
+    ).toBe(1);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'transport_outbox',
+        `message_id = '${delivery.deliveryMessageId}'`,
+      ),
+    ).toBe(1);
+
+    failAckCommit = false;
+    await commitCommand(fixture.adapter, fixture.installationId, fixture.state, ack);
+    expect(queryCount(fixture.filename, 'transport_inbound_frames')).toBe(inboundBefore + 1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(1);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'local_conversations',
+        `ready_cloud_state = 'CLOUD_COMMITTED'`,
+      ),
+    ).toBe(1);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'transport_outbox',
+        `message_id = '${delivery.deliveryMessageId}'`,
+      ),
+    ).toBe(0);
+  });
+
+  it('rejects a re-digested READY wire whose strict fact body differs from durable authority', async () => {
+    const fixture = await createInvocationFixture(93);
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const signal = new AbortController().signal;
+    await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    const [pending] = await journal.readPendingConversationReadyFacts({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      limit: 1,
+      signal,
+    });
+    const delivery = await journal.enqueuePendingConversationReadyFact({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      reference: pending!,
+      connectionId: fixture.state.connectionId,
+      deliveryMessageId: uuid(93_000),
+      signal,
+    });
+    redigestReadyWireWithMutation(fixture.filename, delivery.deliveryMessageId, {
+      runtimeThreadId: 'thread-tampered',
+    });
+    const ack = readyCloudAckEnvelope(fixture, delivery.deliveryMessageId, 'APPLIED', 93_001);
+    const inboundBefore = queryCount(fixture.filename, 'transport_inbound_frames');
+    await expect(
+      commitCommand(fixture.adapter, fixture.installationId, fixture.state, ack),
+    ).rejects.toThrow();
+    expect(queryCount(fixture.filename, 'transport_inbound_frames')).toBe(inboundBefore);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+    expect(
+      queryCountWhere(fixture.filename, 'local_conversations', `ready_cloud_state = 'PENDING'`),
+    ).toBe(1);
+  });
+
+  it('atomically rejects a READY wire with re-digested outer correlation and Deployment', async () => {
+    const fixture = await createInvocationFixture(89);
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const signal = new AbortController().signal;
+    await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    const [pending] = await journal.readPendingConversationReadyFacts({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      limit: 1,
+      signal,
+    });
+    const delivery = await journal.enqueuePendingConversationReadyFact({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      reference: pending!,
+      connectionId: fixture.state.connectionId,
+      deliveryMessageId: uuid(89_000),
+      signal,
+    });
+    redigestReadyWireOuterMutation(fixture.filename, delivery.deliveryMessageId, {
+      correlationId: uuid(89_001),
+      deploymentId: uuid(89_002),
+    });
+    const inboundBefore = queryCount(fixture.filename, 'transport_inbound_frames');
+    await expect(
+      commitCommand(
+        fixture.adapter,
+        fixture.installationId,
+        fixture.state,
+        readyCloudAckEnvelope(fixture, delivery.deliveryMessageId, 'APPLIED', 89_003),
+      ),
+    ).rejects.toThrow();
+    expect(queryCount(fixture.filename, 'transport_inbound_frames')).toBe(inboundBefore);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_terminal_tombstones')).toBe(0);
+  });
+
+  it('production reconnect pump re-envelopes READY under current Lease without changing original authority', async () => {
+    const fixture = await createInvocationFixture(92);
+    let readyEvidenceVerifications = 0;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      readyConversationAuthority: {
+        verify(input, expected, now) {
+          readyEvidenceVerifications += 1;
+          return fixture.authorities.options.readyConversationAuthority.verify(
+            input,
+            expected,
+            now,
+          );
+        },
+      },
+    });
+    const signal = new AbortController().signal;
+    const ready = await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    expect(queryCount(fixture.filename, 'local_conversation_ready_deliveries')).toBe(1);
+
+    const replacement = await activateReplacementLease(fixture, 92_000);
+    await expect(
+      fixture.adapter.replayPendingConversationReady({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        connectionId: replacement.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 1, remaining: false });
+    const outbound = await fixture.adapter.readOutbound({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      connectionId: replacement.connectionId,
+      limit: 16,
+      signal,
+    });
+    const wire = outbound.find((envelope) => envelope.type === 'conversation.ready');
+    if (wire === undefined || wire.type !== 'conversation.ready') throw new Error('missing-ready');
+    expect(wire.lease).toEqual(replacement.lease);
+    expect(wire.body).toMatchObject({
+      sourceEventId: fixture.openReference.messageId,
+      openCommandId: fixture.openReference.messageId,
+      conversationId: fixture.conversationId,
+      workerSessionId: fixture.state.lease.workerSessionId,
+      leaseId: fixture.state.lease.leaseId,
+      fence: fixture.state.lease.fence,
+      factDigest: ready.factDigest,
+    });
+    expect(wire.body.workerSessionId).not.toBe(wire.lease.workerSessionId);
+    expect(wire.body.fence).not.toBe(wire.lease.fence);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_deliveries')).toBe(1);
+    expect(readyEvidenceVerifications).toBe(1);
+  });
+
+  it('accepts late processing only when trusted READY evidence occurred inside the persisted open window', async () => {
+    const fixture = await createInvocationFixture(91);
+    fixture.authorities.cloudNow.value = Date.parse(fixture.prepareEnvelope.expiresAt) + 5_000;
+    const readyAt = new Date(Date.parse(fixture.prepareEnvelope.sentAt) + 500);
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      readyConversationAuthority: {
+        verify() {
+          return {
+            sandboxInstanceId: uuid(900_001),
+            runtimeThreadId: 'thread-ready-001',
+            evidenceDigest: `sha256:${SHA('7')}`,
+            readyAt,
+          };
+        },
+      },
+    });
+    await expect(
+      journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        evidence: { token: 'sandbox-ready' },
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ sourceEventId: fixture.openReference.messageId });
+    expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_deliveries')).toBe(0);
+  });
+
+  it('never prunes a pending READY fact or logical outbox', async () => {
+    const fixture = await createInvocationFixture(90);
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal: new AbortController().signal,
+    });
+    fixture.authorities.cloudNow.value += 8 * 24 * 60 * 60 * 1_000;
+    await expect(
+      journal.pruneCommittedRetention({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toBe(0);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox')).toBe(1);
+    expect(queryCount(fixture.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+  });
+
   it('atomically deduplicates 100 prepares, dispatches once, verifies AEAD, and survives ACK loss', async () => {
     const fixture = await createInvocationFixture(100);
     expect(() =>
@@ -97,13 +1200,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     });
     const signal = new AbortController().signal;
 
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     const prepared = await Promise.all(
       Array.from({ length: 100 }, () =>
         journal.prepare({
@@ -345,13 +1442,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const fixture = await createInvocationFixture(200);
     const signal = new AbortController().signal;
     let journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -405,13 +1496,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
         },
       },
     });
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -459,6 +1544,61 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     fixture.adapter.close();
   });
 
+  it('never lets a D2 activation consume a pending D1 READY fact and later sends it on D1', async () => {
+    const fixture = await createInvocationFixture(91);
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const signal = new AbortController().signal;
+    const ready = await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    const deploymentD1 = fixture.state.lease.deploymentId;
+    const deploymentD2 = uuid(91_900);
+    const d2 = await activateReplacementLease(fixture, 91_910, deploymentD2);
+    await expect(
+      fixture.adapter.replayPendingConversationReady({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        connectionId: d2.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 0, remaining: false });
+    const d2Outbound = await fixture.adapter.readOutbound({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      connectionId: d2.connectionId,
+      limit: 16,
+      signal,
+    });
+    expect(d2Outbound.some((envelope) => envelope.type === 'conversation.ready')).toBe(false);
+
+    const d1 = await activateReplacementLease(fixture, 91_920, deploymentD1);
+    await expect(
+      fixture.adapter.replayPendingConversationReady({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        connectionId: d1.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 1, remaining: false });
+    const d1Outbound = await fixture.adapter.readOutbound({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      connectionId: d1.connectionId,
+      limit: 16,
+      signal,
+    });
+    const wire = d1Outbound.find((envelope) => envelope.type === 'conversation.ready');
+    expect(wire).toMatchObject({
+      body: { sourceEventId: ready.sourceEventId, factDigest: ready.factDigest },
+      lease: { deploymentId: deploymentD1 },
+    });
+    fixture.adapter.close();
+  });
+
   it('rechecks durable capability, revocation, and deadline in the synchronous pre-Host boundary', async () => {
     const cases = [
       { mode: 'CAP_EXACT' as const, expectedCode: 'EXECUTION_CAPABILITY_INVALID' },
@@ -499,13 +1639,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
           },
         },
       });
-      await journal.bindReadyConversation({
-        installationId: fixture.installationId,
-        ownerToken: OWNER,
-        command: fixture.openReference,
-        evidence: { token: 'sandbox-ready' },
-        signal,
-      });
+      await bindCloudCommittedReady(journal, fixture, signal);
       await journal.prepare({
         installationId: fixture.installationId,
         ownerToken: OWNER,
@@ -589,13 +1723,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     filename = fixture.filename;
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -769,13 +1897,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     filename = fixture.filename;
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -920,13 +2042,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const fixture = await createInvocationFixture(275);
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
 
     const brokerPrompt = fixture.prepareEnvelope.body.userMessageCiphertext;
     const pinnedReader = new SqliteDatabase(fixture.filename, { readOnly: true });
@@ -987,13 +2103,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
         },
       },
     });
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -1249,13 +2359,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
         },
       },
     });
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await expect(
       journal.prepare({
         installationId: fixture.installationId,
@@ -1283,13 +2387,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const fixture = await createInvocationFixture(300);
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -1374,13 +2472,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
         },
       },
     });
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -1596,13 +2688,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const fixture = await createInvocationFixture(375);
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -1718,13 +2804,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const fixture = await createInvocationFixture(400);
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -1959,13 +3039,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const fixture = await createInvocationFixture(425);
     const signal = new AbortController().signal;
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      command: fixture.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, fixture, signal);
     await journal.prepare({
       installationId: fixture.installationId,
       ownerToken: OWNER,
@@ -2019,13 +3093,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
       const fixture = await createInvocationFixture(430 + index);
       const signal = new AbortController().signal;
       const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-      await journal.bindReadyConversation({
-        installationId: fixture.installationId,
-        ownerToken: OWNER,
-        command: fixture.openReference,
-        evidence: { token: 'sandbox-ready' },
-        signal,
-      });
+      await bindCloudCommittedReady(journal, fixture, signal);
       await journal.prepare({
         installationId: fixture.installationId,
         ownerToken: OWNER,
@@ -2075,13 +3143,7 @@ describe('same-file SQLite Worker Invocation Journal v2', () => {
     const stale = await createInvocationFixture(435);
     const signal = new AbortController().signal;
     const journal = stale.adapter.createInvocationJournal(stale.authorities.options);
-    await journal.bindReadyConversation({
-      installationId: stale.installationId,
-      ownerToken: OWNER,
-      command: stale.openReference,
-      evidence: { token: 'sandbox-ready' },
-      signal,
-    });
+    await bindCloudCommittedReady(journal, stale, signal);
     await journal.prepare({
       installationId: stale.installationId,
       ownerToken: OWNER,
@@ -2114,6 +3176,7 @@ type InvocationFixture = Awaited<ReturnType<typeof createInvocationFixture>>;
 async function createInvocationFixture(
   seed: number,
   transportOptions: Omit<SqliteWorkerTransportOptions, 'filename' | 'newJournalAuthorization'> = {},
+  fixtureOptions: Readonly<{ readyOnly?: boolean }> = {},
 ) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'combo-invocation-sqlite-')));
   temporaryDirectories.add(directory);
@@ -2259,7 +3322,9 @@ async function createInvocationFixture(
       executionCapability: capability,
     },
   }) as Extract<BrokerEnvelope, { type: 'invocation.prepare' }>;
-  state = await commitCommand(adapter, installationId, state, prepareEnvelope);
+  if (!fixtureOptions.readyOnly) {
+    state = await commitCommand(adapter, installationId, state, prepareEnvelope);
+  }
   const startEnvelope = BrokerEnvelopeSchema.parse({
     protocol: 'combo.creator-broker/1',
     schemaVersion: 1,
@@ -2278,7 +3343,9 @@ async function createInvocationFixture(
       executionCapabilityId: capability.capabilityId,
     },
   });
-  state = await commitCommand(adapter, installationId, state, startEnvelope);
+  if (!fixtureOptions.readyOnly) {
+    state = await commitCommand(adapter, installationId, state, startEnvelope);
+  }
   const authorities = createAuthorities(
     keyPair.publicKey,
     contentKey,
@@ -2298,11 +3365,16 @@ async function createInvocationFixture(
     localResultKey,
     localResultKeyId,
     resultHmacKey,
+    openEnvelope,
     prepareEnvelope,
     startEnvelope,
     openReference: await commandReference(adapter, installationId, state, 'conversation.open'),
-    prepareReference: await commandReference(adapter, installationId, state, 'invocation.prepare'),
-    startReference: await commandReference(adapter, installationId, state, 'invocation.start'),
+    prepareReference: fixtureOptions.readyOnly
+      ? commandReferenceFromEnvelope(prepareEnvelope)
+      : await commandReference(adapter, installationId, state, 'invocation.prepare'),
+    startReference: fixtureOptions.readyOnly
+      ? commandReferenceFromEnvelope(startEnvelope)
+      : await commandReference(adapter, installationId, state, 'invocation.start'),
     authorities,
   };
 }
@@ -2314,13 +3386,7 @@ async function createCompletedFixture(
   const fixture = await createInvocationFixture(seed, transportOptions);
   const signal = new AbortController().signal;
   const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
-  await journal.bindReadyConversation({
-    installationId: fixture.installationId,
-    ownerToken: OWNER,
-    command: fixture.openReference,
-    evidence: { token: 'sandbox-ready' },
-    signal,
-  });
+  await bindCloudCommittedReady(journal, fixture, signal);
   await journal.prepare({
     installationId: fixture.installationId,
     ownerToken: OWNER,
@@ -2450,6 +3516,7 @@ function createAuthorities(
         sandboxInstanceId: uuid(900_001),
         runtimeThreadId: 'thread-ready-001',
         evidenceDigest: `sha256:${SHA('7')}`,
+        readyAt: new Date(),
       };
     },
   };
@@ -2771,6 +3838,61 @@ async function persistReplacementStart(
   });
 }
 
+async function activateReplacementLease(
+  fixture: InvocationFixture,
+  seed: number,
+  deploymentId = fixture.state.lease.deploymentId,
+  atMs = Date.now(),
+  fenceIncrement = 1n,
+): Promise<DurableBrokerConnection> {
+  const connectionId = uuid(seed);
+  const lease = {
+    deploymentId,
+    leaseId: uuid(seed + 1),
+    workerSessionId: uuid(seed + 2),
+    fence: String(BigInt(fixture.state.lease.fence) + fenceIncrement),
+  };
+  const sentAt = new Date(atMs).toISOString();
+  const expiresAt = new Date(atMs + 60_000).toISOString();
+  const grant = BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    type: 'lease.grant',
+    messageId: uuid(seed + 3),
+    correlationId: lease.deploymentId,
+    connectionId,
+    sequence: '0',
+    sentAt,
+    expiresAt,
+    lease,
+    body: { leaseExpiresAt: expiresAt, workerSessionId: lease.workerSessionId, generation: '2' },
+  }) as Extract<BrokerEnvelope, { type: 'lease.grant' }>;
+  const digest = canonicalSha256(grant);
+  const decision = consumeSequence(initialSequenceCursor(connectionId), grant, digest, atMs);
+  if (decision.type !== 'ACCEPT') throw new Error('replacement-grant');
+  return fixture.adapter.activateConnection({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    envelope: grant,
+    canonicalDigest: digest,
+    inboundCursor: serializeSequenceCursor(decision.cursor),
+    signal: new AbortController().signal,
+  });
+}
+
+function commandReferenceFromEnvelope(command: BrokerEnvelope) {
+  if (command.kind !== 'command') throw new Error('not-command-reference');
+  return Object.freeze({
+    connectionId: command.connectionId,
+    sequence: command.sequence,
+    messageId: command.messageId,
+    type: command.type,
+    canonicalDigest: canonicalSha256(command),
+    effectState: 'PERSISTED' as const,
+  });
+}
+
 async function enqueueAndCommitCloudAck(
   adapter: SqliteWorkerBrokerDurableTransport,
   journal: SqliteWorkerInvocationJournal,
@@ -2822,6 +3944,140 @@ async function enqueueAndCommitCloudAck(
   );
   if (ack === undefined) throw new Error('missing-cloud-ack-reference');
   return { state, ack, ackEnvelope };
+}
+
+async function enqueueAndCommitReadyCloudAck(
+  adapter: SqliteWorkerBrokerDurableTransport,
+  journal: SqliteWorkerInvocationJournal,
+  fixture: InvocationFixture,
+  fact: PendingConversationReadyFactReference,
+  decision: 'APPLIED' | 'IDEMPOTENT_REPLAY' | 'SECURITY_BLOCK',
+  seed: number,
+): Promise<DurableBrokerConnection> {
+  const signal = new AbortController().signal;
+  const delivery = await journal.enqueuePendingConversationReadyFact({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    reference: fact,
+    connectionId: fixture.state.connectionId,
+    deliveryMessageId: uuid(seed),
+    signal,
+  });
+  const ackEnvelope = readyCloudAckEnvelope(
+    fixture,
+    delivery.deliveryMessageId,
+    decision,
+    seed + 1,
+  );
+  return commitCommand(adapter, fixture.installationId, fixture.state, ackEnvelope);
+}
+
+async function bindCloudCommittedReady(
+  journal: SqliteWorkerInvocationJournal,
+  fixture: InvocationFixture,
+  signal: AbortSignal,
+): Promise<void> {
+  await journal.bindReadyConversation({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    command: fixture.openReference,
+    evidence: { token: 'sandbox-ready' },
+    signal,
+  });
+  const [pending] = await journal.readPendingConversationReadyFacts({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    limit: 1,
+    signal,
+  });
+  if (pending === undefined) throw new Error('missing-pending-ready-fact');
+  fixture.state = await enqueueAndCommitReadyCloudAck(
+    fixture.adapter,
+    journal,
+    fixture,
+    pending,
+    'APPLIED',
+    9_990_000,
+  );
+}
+
+function readyCloudAckEnvelope(
+  fixture: InvocationFixture,
+  deliveryMessageId: string,
+  decision: 'APPLIED' | 'IDEMPOTENT_REPLAY' | 'SECURITY_BLOCK',
+  seed: number,
+): Extract<BrokerEnvelope, { kind: 'ack'; type: 'message.ack' }> {
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'ack',
+    type: 'message.ack',
+    messageId: uuid(seed),
+    correlationId: deliveryMessageId,
+    connectionId: fixture.state.connectionId,
+    sequence: nextSequence(fixture.state),
+    sentAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    lease: fixture.state.lease,
+    body: {
+      acknowledgedMessageId: deliveryMessageId,
+      level: 'CLOUD_COMMITTED',
+      decision,
+    },
+  }) as Extract<BrokerEnvelope, { kind: 'ack'; type: 'message.ack' }>;
+}
+
+function redigestReadyWireWithMutation(
+  filename: string,
+  deliveryMessageId: string,
+  bodyMutation: Readonly<Record<string, unknown>>,
+): void {
+  const database = new SqliteDatabase(filename);
+  const row = database
+    .prepare('SELECT envelope_json FROM transport_outbox WHERE message_id = ?')
+    .get(deliveryMessageId) as { envelope_json: string };
+  const original = BrokerEnvelopeSchema.parse(JSON.parse(row.envelope_json));
+  if (original.kind !== 'event' || original.type !== 'conversation.ready') {
+    database.close();
+    throw new Error('not-ready-wire');
+  }
+  const mutatedBody = { ...original.body, ...bodyMutation } as Record<string, unknown>;
+  delete mutatedBody.factDigest;
+  const mutatedFact = WorkerConversationReadyFactSchema.parse(mutatedBody);
+  const mutated = BrokerEnvelopeSchema.parse({
+    ...original,
+    body: { ...mutatedFact, factDigest: workerConversationReadyFactDigest(mutatedFact) },
+  });
+  database
+    .prepare(
+      'UPDATE transport_outbox SET envelope_json = ?, canonical_digest = ? WHERE message_id = ?',
+    )
+    .run(canonicalizeJson(mutated), canonicalSha256(mutated), deliveryMessageId);
+  database.close();
+}
+
+function redigestReadyWireOuterMutation(
+  filename: string,
+  deliveryMessageId: string,
+  mutation: Readonly<{ correlationId: string; deploymentId: string }>,
+): void {
+  const database = new SqliteDatabase(filename);
+  const row = database
+    .prepare('SELECT envelope_json FROM transport_outbox WHERE message_id = ?')
+    .get(deliveryMessageId) as { envelope_json: string };
+  const original = BrokerEnvelopeSchema.parse(JSON.parse(row.envelope_json));
+  if (original.type !== 'conversation.ready') throw new Error('not-ready-wire');
+  const mutated = {
+    ...original,
+    correlationId: mutation.correlationId,
+    lease: { ...original.lease, deploymentId: mutation.deploymentId },
+  };
+  database
+    .prepare(
+      'UPDATE transport_outbox SET envelope_json = ?, canonical_digest = ? WHERE message_id = ?',
+    )
+    .run(canonicalizeJson(mutated), canonicalSha256(mutated), deliveryMessageId);
+  database.close();
 }
 
 async function commitCommand(
@@ -2908,6 +4164,67 @@ function queryPragmaNumber(filename: string, pragma: string): number {
     throw new Error(`invalid-pragma:${pragma}`);
   }
   return value;
+}
+
+function queryForeignKeyTargets(filename: string, table: string): string[] {
+  const database = new SqliteDatabase(filename, { readOnly: true });
+  const rows = database.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+    table: string;
+  }>;
+  database.close();
+  return rows.map((row) => row.table).sort();
+}
+
+function queryConnectionSnapshot(filename: string, connectionId: string) {
+  const database = new SqliteDatabase(filename, { readOnly: true });
+  const row = database
+    .prepare(
+      `SELECT status, owner_epoch, inbound_cursor, connection_digest
+       FROM transport_connections WHERE connection_id = ?`,
+    )
+    .get(connectionId);
+  database.close();
+  return row;
+}
+
+function queryDurableStateSnapshot(filename: string): Record<string, readonly unknown[]> {
+  const database = new SqliteDatabase(filename, { readOnly: true });
+  const tables = database
+    .prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+       ORDER BY name`,
+    )
+    .all() as Array<{ name: string }>;
+  const snapshot = Object.fromEntries(
+    tables.map(({ name }) => [
+      name,
+      database.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all(),
+    ]),
+  );
+  database.close();
+  return snapshot;
+}
+
+function queryReadyBusinessStateSnapshot(filename: string): Record<string, readonly unknown[]> {
+  const database = new SqliteDatabase(filename, { readOnly: true });
+  const tables = [
+    'local_conversations',
+    'local_consumed_commands',
+    'local_conversation_ready_facts',
+    'local_conversation_ready_outbox',
+    'local_conversation_ready_deliveries',
+    'local_conversation_ready_outbox_receipts',
+    'local_conversation_ready_terminal_tombstones',
+  ] as const;
+  const snapshot = Object.fromEntries(
+    tables.map((table) => [
+      table,
+      database.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all(),
+    ]),
+  );
+  database.close();
+  return snapshot;
 }
 
 function queryScalar(filename: string, column: string): string | number {
