@@ -52,6 +52,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
   readonly challenges = new Set([CHALLENGE_A, CHALLENGE_B]);
   readonly accepted: GatewayDelivery[] = [];
   readonly replayed: GatewayDelivery[] = [];
+  durableConflicts = 0;
   readonly gaps: { expected: string; received: string }[] = [];
   readonly closed: GatewayDisconnectReason[] = [];
   readonly sessions: AuthenticatedWorkerSession[] = [];
@@ -64,11 +65,18 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
   abortedReplays = 0;
   abortedGaps = 0;
   authenticateBarrier?: Promise<void>;
+  openBarrier?: Promise<void>;
+  acceptBarrier?: Promise<void>;
+  authenticateCommitsAfterAbort = false;
+  openCommitsAfterAbort = false;
+  acceptCommitsAfterAbort = false;
   failAccept = false;
   hangAccept = false;
   hangOpen = false;
   duplicateConnection = false;
   duplicateWorkerSession = false;
+  oversizedAcceptResponse = false;
+  revokeReason?: 'SECURITY' | 'IMMEDIATE';
 
   async authenticate(input: {
     handshake: BrokerHandshake;
@@ -84,12 +92,15 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
       throw new BrokerAuthenticationError(BrokerAuthenticationFailureCode.AUTHENTICATION_REJECTED);
     }
     if (this.authenticateBarrier !== undefined) {
-      await Promise.race([
-        this.authenticateBarrier,
-        abortPromise(input.signal, () => {
-          this.abortedAuthentications += 1;
-        }),
-      ]);
+      if (this.authenticateCommitsAfterAbort) await this.authenticateBarrier;
+      else {
+        await Promise.race([
+          this.authenticateBarrier,
+          abortPromise(input.signal, () => {
+            this.abortedAuthentications += 1;
+          }),
+        ]);
+      }
     }
     const index = this.sessions.length;
     const session = Object.freeze({
@@ -114,6 +125,19 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
         this.lifecycleEvents.push('open-abort');
       });
     }
+    if (this.openBarrier !== undefined) {
+      if (this.openCommitsAfterAbort) await this.openBarrier;
+      else {
+        await Promise.race([
+          this.openBarrier,
+          abortPromise(signal, () => {
+            this.abortedOpens += 1;
+            this.lifecycleEvents.push('open-abort');
+          }),
+        ]);
+      }
+      this.lifecycleEvents.push('open-commit');
+    }
     return [];
   }
 
@@ -130,8 +154,25 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
         this.lifecycleEvents.push('accept-abort');
       });
     }
+    if (this.acceptBarrier !== undefined) {
+      if (this.acceptCommitsAfterAbort) await this.acceptBarrier;
+      else {
+        await Promise.race([
+          this.acceptBarrier,
+          abortPromise(signal, () => {
+            this.abortedAccepts += 1;
+            this.lifecycleEvents.push('accept-abort');
+          }),
+        ]);
+      }
+      this.lifecycleEvents.push('accept-commit');
+    }
     this.accepted.push(delivery);
-    return [ackFor(session, delivery.envelope)];
+    const response = ackFor(session, delivery.envelope);
+    if (this.oversizedAcceptResponse) return Array(1_001).fill(response);
+    return this.revokeReason === undefined
+      ? [response]
+      : [response, revokeFor(session, delivery.envelope, this.revokeReason)];
   }
 
   async replayEnvelope(
@@ -139,6 +180,13 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
     delivery: GatewayDelivery,
     _signal: AbortSignal,
   ): Promise<readonly BrokerEnvelope[]> {
+    const accepted = this.accepted.find(
+      (candidate) => candidate.envelope.sequence === delivery.envelope.sequence,
+    );
+    if (accepted === undefined || accepted.canonicalDigest !== delivery.canonicalDigest) {
+      this.durableConflicts += 1;
+      throw Object.assign(new Error('SEQUENCE_CONFLICT'), { code: 'SEQUENCE_CONFLICT' });
+    }
     this.replayed.push(delivery);
     return [ackFor(session, delivery.envelope)];
   }
@@ -163,6 +211,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
 describe('AgentGateway real WebSocket transport', () => {
   it('binds an exact path and rejects browser Origin, credentials, cookies, and query variants', async () => {
     const { gateway, url } = await startGateway(new FakeAuthority());
+    expect('dispatch' in gateway).toBe(false);
     const httpUrl = url.replace('ws://', 'http://').replace(WORKER_CONNECT_PATH, '/');
     const response = await fetch(httpUrl);
     expect(response.status).toBe(404);
@@ -222,6 +271,52 @@ describe('AgentGateway real WebSocket transport', () => {
       reason: 'PROTOCOL_ERROR',
     });
     expect(authority.accepted).toHaveLength(1);
+    expect(authority.durableConflicts).toBe(1);
+  });
+
+  it('delegates an exact replay older than the bounded memory cursor to durable authority', async () => {
+    const authority = new FakeAuthority();
+    const { gateway, url } = await startGateway(authority);
+    const socket = await connect(url);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => gateway.activeConnections === 1);
+
+    const first = heartbeat(CONNECTION_A, SESSION_A, '0', messageIdForSequence(0));
+    for (let sequence = 0; sequence <= 1_024; sequence += 1) {
+      const acknowledged = nextEnvelope(socket);
+      socket.send(
+        canonicalizeJson(
+          heartbeat(CONNECTION_A, SESSION_A, String(sequence), messageIdForSequence(sequence)),
+        ),
+      );
+      await acknowledged;
+    }
+    expect(authority.accepted).toHaveLength(1_025);
+
+    const replay = nextEnvelope(socket);
+    socket.send(canonicalizeJson(first));
+    expect(BrokerAckSchema.parse(await replay).body.acknowledgedMessageId).toBe(first.messageId);
+    expect(authority.replayed).toHaveLength(1);
+    expect(gateway.activeConnections).toBe(1);
+  });
+
+  it('delivers a durable security revoke and closes the Worker permanently', async () => {
+    const authority = new FakeAuthority();
+    authority.revokeReason = 'SECURITY';
+    const { gateway, url } = await startGateway(authority);
+    const socket = await connect(url);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => gateway.activeConnections === 1);
+
+    const frames = nextEnvelopes(socket, 2);
+    const closed = closeResult(socket);
+    socket.send(canonicalizeJson(heartbeat(CONNECTION_A, SESSION_A, '0', HEARTBEAT_A)));
+
+    const [ack, revoke] = await frames;
+    expect(ack).toMatchObject({ type: 'message.ack' });
+    expect(revoke).toMatchObject({ type: 'lease.revoke', body: { reason: 'SECURITY' } });
+    await expect(closed).resolves.toEqual({ code: 4003, reason: 'AUTHENTICATION_REJECTED' });
+    expect(gateway.activeConnections).toBe(0);
   });
 
   it('closes on a sequence gap without applying the later frame', async () => {
@@ -283,7 +378,6 @@ describe('AgentGateway real WebSocket transport', () => {
     }
     expect(authority.openCalls).toBe(0);
     expect(gateway.activeConnections).toBe(0);
-    expect(await gateway.dispatch(CONNECTION_A, [])).toBe(false);
   });
 
   it('rejects authority-issued connection or worker-session identifier reuse', async () => {
@@ -409,49 +503,16 @@ describe('AgentGateway real WebSocket transport', () => {
     }
   });
 
-  it('replays outbound durable frames and fails closed on an outbound sequence gap', async () => {
-    const authority = new FakeAuthority();
-    const { gateway, url } = await startGateway(authority);
-    const socket = await connect(url);
-    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
-    await waitFor(() => gateway.activeConnections === 1);
-
-    const outbound = ackFor(
-      authority.sessions[0]!,
-      heartbeat(CONNECTION_A, SESSION_A, '0', HEARTBEAT_A),
-    );
-    const first = nextEnvelope(socket);
-    await expect(gateway.dispatch(CONNECTION_A, [outbound])).resolves.toBe(true);
-    expect(await first).toEqual(outbound);
-
-    const replay = nextEnvelope(socket);
-    await expect(gateway.dispatch(CONNECTION_A, [outbound])).resolves.toBe(true);
-    expect(await replay).toEqual(outbound);
-
-    const close = closeResult(socket);
-    await expect(
-      gateway.dispatch(CONNECTION_A, [
-        BrokerAckSchema.parse({ ...outbound, messageId: HEARTBEAT_B, sequence: '2' }),
-      ]),
-    ).rejects.toThrow('OUTBOUND_SEQUENCE_GAP');
-    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'INTERNAL_ERROR' });
-  });
-
   it('bounds one outbound authority batch before parsing or writing its frames', async () => {
     const authority = new FakeAuthority();
+    authority.oversizedAcceptResponse = true;
     const { gateway, url } = await startGateway(authority);
     const socket = await connect(url);
     socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
     await waitFor(() => gateway.activeConnections === 1);
-    const outbound = ackFor(
-      authority.sessions[0]!,
-      heartbeat(CONNECTION_A, SESSION_A, '0', HEARTBEAT_A),
-    );
     const close = closeResult(socket);
-    await expect(gateway.dispatch(CONNECTION_A, Array(1_001).fill(outbound))).rejects.toThrow(
-      'OUTBOUND_BATCH_CAPACITY',
-    );
-    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'INTERNAL_ERROR' });
+    socket.send(canonicalizeJson(heartbeat(CONNECTION_A, SESSION_A, '0', HEARTBEAT_A)));
+    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'AUTHORITY_FAILED' });
   });
 
   it('does not let a diagnostic sink failure alter a valid connection', async () => {
@@ -542,6 +603,67 @@ describe('AgentGateway real WebSocket transport', () => {
     await expect(close).resolves.toMatchObject({ code: 1011, reason: 'AUTHORITY_FAILED' });
     expect(authority.abortedAuthentications).toBe(1);
     expect(authority.sessions).toHaveLength(0);
+    expect(gateway.activeConnections).toBe(0);
+  });
+
+  it('compensates a durable authentication that commits just after the hard deadline', async () => {
+    const authority = new FakeAuthority();
+    const barrier = deferred<void>();
+    authority.authenticateBarrier = barrier.promise;
+    authority.authenticateCommitsAfterAbort = true;
+    const { gateway, url } = await startGateway(authority, { authorityTimeoutMs: 20 });
+    const socket = await connect(url);
+    const close = closeResult(socket);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => authority.authenticateStarted === 1);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    barrier.resolve();
+
+    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'AUTHORITY_FAILED' });
+    await waitFor(() => authority.closed.includes('INTERNAL_ERROR'));
+    expect(authority.sessions).toHaveLength(1);
+    expect(authority.openCalls).toBe(0);
+    expect(gateway.activeConnections).toBe(0);
+  });
+
+  it('does not activate a Lease whose durable open commits just after its hard deadline', async () => {
+    const authority = new FakeAuthority();
+    const barrier = deferred<void>();
+    authority.openBarrier = barrier.promise;
+    authority.openCommitsAfterAbort = true;
+    const { gateway, url } = await startGateway(authority, { authorityTimeoutMs: 20 });
+    const socket = await connect(url);
+    const close = closeResult(socket);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => authority.openCalls === 1);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    barrier.resolve();
+
+    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'AUTHORITY_FAILED' });
+    await waitFor(() => authority.closed.includes('INTERNAL_ERROR'));
+    expect(authority.lifecycleEvents).toContain('open-commit');
+    expect(gateway.activeConnections).toBe(0);
+  });
+
+  it('closes without sending a late ACK when envelope persistence commits after its deadline', async () => {
+    const authority = new FakeAuthority();
+    const barrier = deferred<void>();
+    authority.acceptBarrier = barrier.promise;
+    authority.acceptCommitsAfterAbort = true;
+    const { gateway, url } = await startGateway(authority, { authorityTimeoutMs: 20 });
+    const socket = await connect(url);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => gateway.activeConnections === 1);
+    const close = closeResult(socket);
+    socket.send(canonicalizeJson(heartbeat(CONNECTION_A, SESSION_A, '0', HEARTBEAT_A)));
+    await waitFor(() => authority.lifecycleEvents.includes('accept-start'));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    barrier.resolve();
+
+    await expect(close).resolves.toMatchObject({ code: 1011, reason: 'AUTHORITY_FAILED' });
+    await waitFor(() => authority.closed.includes('INTERNAL_ERROR'));
+    expect(authority.lifecycleEvents).toContain('accept-commit');
+    expect(authority.accepted).toHaveLength(1);
     expect(gateway.activeConnections).toBe(0);
   });
 
@@ -660,6 +782,36 @@ function ackFor(session: AuthenticatedWorkerSession, inbound: BrokerEnvelope): B
   });
 }
 
+function revokeFor(
+  session: AuthenticatedWorkerSession,
+  inbound: BrokerEnvelope,
+  reason: 'SECURITY' | 'IMMEDIATE',
+): BrokerEnvelope {
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    messageId: '0198f00d-5000-7000-8000-00000000000f',
+    type: 'lease.revoke',
+    correlationId: inbound.correlationId,
+    connectionId: session.connectionId,
+    sequence: '1',
+    sentAt: '2026-08-13T08:00:00.000Z',
+    expiresAt: '2026-08-13T08:01:00.000Z',
+    lease: {
+      deploymentId: DEPLOYMENT,
+      leaseId: LEASE,
+      workerSessionId: session.workerSessionId,
+      fence: '1',
+    },
+    body: { reason, effectiveAt: '2026-08-13T08:00:00.000Z' },
+  });
+}
+
+function messageIdForSequence(sequence: number): string {
+  return `0198f00d-5000-7000-8000-${sequence.toString(16).padStart(12, '0')}`;
+}
+
 async function startGateway(
   authority: FakeAuthority,
   overrides: Partial<ConstructorParameters<typeof AgentGateway>[0]> = {},
@@ -689,6 +841,40 @@ async function nextEnvelope(socket: WebSocket): Promise<BrokerEnvelope> {
   const [data, isBinary] = (await once(socket, 'message')) as [Buffer, boolean];
   expect(isBinary).toBe(false);
   return BrokerEnvelopeSchema.parse(JSON.parse(data.toString('utf8')));
+}
+
+function nextEnvelopes(socket: WebSocket, count: number): Promise<BrokerEnvelope[]> {
+  return new Promise((resolve, reject) => {
+    const frames: BrokerEnvelope[] = [];
+    const onMessage = (data: WebSocket.RawData, isBinary: boolean): void => {
+      if (isBinary) {
+        cleanup();
+        reject(new Error('unexpected binary Gateway frame'));
+        return;
+      }
+      try {
+        frames.push(BrokerEnvelopeSchema.parse(JSON.parse(Buffer.from(data as Buffer).toString())));
+      } catch (error) {
+        cleanup();
+        reject(error);
+        return;
+      }
+      if (frames.length === count) {
+        cleanup();
+        resolve(frames);
+      }
+    };
+    const onClose = (): void => {
+      cleanup();
+      reject(new Error('Gateway socket closed before all frames arrived'));
+    };
+    const cleanup = (): void => {
+      socket.off('message', onMessage);
+      socket.off('close', onClose);
+    };
+    socket.on('message', onMessage);
+    socket.on('close', onClose);
+  });
 }
 
 function closeResult(socket: WebSocket): Promise<{ code: number; reason: string }> {

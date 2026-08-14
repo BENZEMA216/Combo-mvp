@@ -73,6 +73,14 @@ test('renders apps for all three environments into their namespaces', () => {
     assert.match(apps, new RegExp(`COMBO_ENVIRONMENT: ${environment}`));
     assert.ok(apps.includes(origin), `${environment} public origin`);
     assert.ok(apps.includes(redisQueue), `${environment} redis queue host`);
+    assert.ok(
+      apps.includes(`agent-gateway.${namespace}.svc.cluster.local`),
+      `${environment} Agent Gateway namespace host`,
+    );
+    assert.ok(
+      !apps.includes('agent-gateway.combo.svc.cluster.local'),
+      `${environment} must not retain the base namespace placeholder`,
+    );
     assert.ok(apps.includes(`ghcr.io/dangdang-tech/combo-api@sha256:${'1'.repeat(64)}`));
     assert.ok(
       apps.includes('combo.build/source-sha'),

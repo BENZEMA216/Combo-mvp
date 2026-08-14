@@ -129,6 +129,10 @@ function replaceScalars(value, environment) {
   return value
     .replaceAll('api.combo.svc.cluster.local', `api.${config.namespace}.svc.cluster.local`)
     .replaceAll('runtime.combo.svc.cluster.local', `runtime.${config.namespace}.svc.cluster.local`)
+    .replaceAll(
+      'agent-gateway.combo.svc.cluster.local',
+      `agent-gateway.${config.namespace}.svc.cluster.local`,
+    )
     .replaceAll('postgres:5432', `${config.postgresHost}:5432`)
     .replaceAll('redis-queue:6379', `${config.redisQueueHost}:6379`)
     .replaceAll('redis-hot:6379', `${config.redisHotHost}:6379`)

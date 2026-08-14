@@ -2,8 +2,12 @@
 
 本目录实现 Creator-hosted Agent VNext 的 Worker WebSocket Gateway。Gateway 只处理连接、握手授权、每连接严格顺序、重复帧重放、会话替换和有界传输；它不保存 Prompt、回答或权威终态，也不在内存中假装替代 PostgreSQL、Worker SQLite 或 Broker Outbox。
 
-`src/gateway.ts` 提供真实 WebSocket 服务和持久化端口。握手签名、Challenge 一次性消费、Worker allowlist、Outbox 领取以及 Event/ACK 的 PostgreSQL transaction 由端口实现，Gateway 在端口确认前不会激活连接。所有 authority 调用和发送操作都有硬超时；`authenticate` / `openSession` 实现必须把 `AbortSignal` 传到底层事务，并保证 abort 后不提交 Session、Lease 或 Outbox claim。同一实例是单次 start/stop 生命周期，滚动升级由进程编排创建新实例。公网 WSS 由 Test Ingress 终止 TLS；本包的本地测试使用真实回环 WebSocket socket，但不冒充 Test WSS、Redis 或 PostgreSQL E3 证据。
+`src/gateway.ts` 提供真实 WebSocket 服务和持久化端口。`src/postgres-authority.ts` 是真实 PostgreSQL authority：它一次性消费 P-256 Device Challenge，验证 Worker/Runtime/Protocol/Isolation allowlist，把已验证注册能力的 canonical digest 固定到短期 Session，并持久化 connection-bound Lease/Fence、严格 sequence receipt、Outbox ACK 和 Cloud-time Heartbeat。健康 Heartbeat 在同一事务续租并固定返回 `[lease.grant, CLOUD_COMMITTED ACK]`；Worker 必须先持久化 grant 才会看到 ACK。`lease.accepted`/`lease.renewed` 以原 grant messageId 为 correlationId，并把该 ID 与持久化的 exact leaseId、Fence、Lease expiry 一起校验后才把 grant 标记为 PERSISTED；它们只返回 ACK，不再次续租，避免反馈环。每个写事务在 mutation 前取得稳定 operation advisory lock，并在同一事务写入有界 operation receipt；COMMIT transport 不确定时只允许新连接取同一锁并读取 receipt，绝不在已提交 COMMIT 后发送 ROLLBACK 或用新 operation id 自动重做。Heartbeat 与 Version 安全撤销共享每个 Deployment 的事务锁序；安全撤销的写事务会在返回前原子撤销受影响 Lease/Session 并把 Deployment 标成 BLOCKED，而不向 Broker 授予跨 Consumer 的 Invocation UPDATE 权限。注册能力在握手后改变、Installation/Version 被撤销、Deployment 下线、Fence 过期、当前 Lease 上任一非终态 Invocation 固定的 Version 被安全撤销，或已有其他活跃 Lease 时，都不得续约或新授 Lease。业务事件必须注入同 transaction 的 projector；缺 projector 会 fail closed，不能用一条 receipt 冒充业务状态已提交。
 
-运行 `pnpm -F @cb/agent-gateway test` 执行传输契约测试。测试覆盖错误路由和 Origin、握手时限、一次性 Challenge、全局 Session ID 唯一性、严格 sequence、exact replay、gap、会话替换、过期/畸形/超限帧、authority 超时、端口失败以及有界关闭。
+Gateway 在事务确认前不会激活连接。所有 authority 调用和发送操作都有硬超时；调用方断开会 abort 底层事务，若 COMMIT 已经越过不可取消边界，Gateway 等待有界 authoritative outcome，随即补偿关闭 Session/Lease，绝不会在 deadline 后激活连接或发送 ACK。同一实例是单次 start/stop 生命周期，滚动升级由进程编排创建新实例。公网 WSS 由 Test Ingress 终止 TLS；Nginx 只把 exact `/v1/worker/connect` 交给 Gateway，不把 `/v1/worker/*` 广泛路由给 Runtime 或 Authoring。
 
-当前证据层仅为 `E3 Contract/Fake System` 的一侧：真实 socket + fake durable authority。它尚未证明公网 TLS、真实 PostgreSQL/Redis/Outbox、NAT 重连、两副本 rollout 或故障恢复。
+运行 `pnpm -F @cb/agent-gateway test` 执行传输契约测试。测试覆盖错误路由和 Origin、握手时限、一次性 Challenge、全局 Session ID 唯一性、严格 sequence、exact replay、gap、会话替换、过期/畸形/超限帧、authority 超时、COMMIT/断连竞态、端口失败以及有界关闭。显式设置 `CREATOR_AGENT_GATEWAY_PG_TEST=1` 与 disposable PostgreSQL 角色 URL 后，`src/postgres-authority.pg.test.ts` 还会运行真实 P-256 + PostgreSQL + 回环 WebSocket 纵向测试；普通 test 不把 skip 冒充 PG 证据。
+
+Gateway 不导出接受任意 Envelope 的直接 dispatch API；出站业务 command 必须来自后续 `broker_outbox` claim/projector 并再次验证当前 Lease/Fence。该 publisher 尚未实现，因此当前选择 fail closed，而不是用内存 send 冒充 Outbox authority。
+
+当前已证明本机 `E2 PostgreSQL authority + E3 loopback WebSocket` 的混合纵向链路；还没有证明 Redis presence、真实公网 TLS/NAT、K3s NetworkPolicy、两副本 rollout、Outbox publisher、完整 `conversation.ready`/Invocation projector 或云端故障恢复，因此不能据此宣布 Gate 3/4 完成。

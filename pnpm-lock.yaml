@@ -44,13 +44,22 @@ importers:
       '@cb/creator-agent-protocol':
         specifier: workspace:*
         version: link:../../packages/creator-agent-protocol
+      pg:
+        specifier: ^8.13.1
+        version: 8.21.0
       ws:
         specifier: 8.21.0
         version: 8.21.0
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.10.5
         version: 22.19.21
+      '@types/pg':
+        specifier: ^8.11.10
+        version: 8.20.0
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1

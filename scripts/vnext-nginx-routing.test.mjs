@@ -16,6 +16,13 @@ function locationBody(nginx, prefix) {
   return match[1];
 }
 
+function exactLocationBody(nginx, path) {
+  const escaped = path.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const match = nginx.match(new RegExp(`location = ${escaped} \\{([\\s\\S]*?)\\n  \\}`, 'u'));
+  assert.ok(match, `missing exact nginx location for ${path}`);
+  return match[1];
+}
+
 test('every frozen VNext OpenAPI path has one explicit service owner', async () => {
   const [nginx, openapiText] = await Promise.all([
     readFile(nginxPath, 'utf8'),
@@ -44,4 +51,18 @@ test('every frozen VNext OpenAPI path has one explicit service owner', async () 
       `${path} is routed to the wrong service`,
     );
   }
+});
+
+test('the frozen Worker WSS endpoint has one exact Gateway owner and upgrade contract', async () => {
+  const nginx = await readFile(nginxPath, 'utf8');
+  const workerPath = '/v1/worker/connect';
+  const body = exactLocationBody(nginx, workerPath);
+
+  assert.doesNotMatch(nginx, /location \^~ \/v1\/worker\//u);
+  assert.match(body, /proxy_pass http:\/\/\$agent_gateway_host:3300;/u);
+  assert.match(body, /proxy_http_version 1\.1;/u);
+  assert.match(body, /proxy_set_header Upgrade \$http_upgrade;/u);
+  assert.match(body, /proxy_set_header Connection "upgrade";/u);
+  assert.match(body, /proxy_buffering off;/u);
+  assert.match(body, /proxy_cache off;/u);
 });

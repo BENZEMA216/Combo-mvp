@@ -18,6 +18,7 @@ import {
   type BrokerHandshake,
 } from '@cb/creator-agent-protocol';
 import {
+  BrokerProtocolError,
   consumeSequence,
   initialSequenceCursor,
   type SequenceCursor,
@@ -233,31 +234,6 @@ export class AgentGateway {
       await this.#stopOnce();
     })();
     return this.#stopping;
-  }
-
-  async dispatch(connectionId: string, envelopes: readonly BrokerEnvelope[]): Promise<boolean> {
-    const parsedConnection = UuidSchema.safeParse(connectionId);
-    if (!parsedConnection.success) return false;
-    const session = this.#byConnection.get(parsedConnection.data);
-    if (
-      session === undefined ||
-      session.closed ||
-      !session.ready ||
-      session.context === undefined
-    ) {
-      return false;
-    }
-    const task = session.chain.then(() => this.#sendOutbound(session, envelopes));
-    session.chain = task.catch(() => {
-      this.#failSession(
-        session,
-        'INTERNAL_ERROR',
-        BrokerCloseCode.INTERNAL_ERROR,
-        BrokerCloseReason.INTERNAL_ERROR,
-      );
-    });
-    await task;
-    return true;
   }
 
   async #startOnce(): Promise<AgentGatewayAddress> {
@@ -498,6 +474,27 @@ export class AgentGateway {
       );
     } catch (error) {
       this.#diagnostic('handshake_rejected');
+      if (error instanceof AuthoritySettledAfterAbortError) {
+        try {
+          context = validateSessionContext(
+            error.value as AuthenticatedWorkerSession,
+            handshake.installationId,
+          );
+          // The hard transport deadline still wins. The durable transaction did,
+          // however, commit while abort was propagating, so retain its identity only
+          // long enough to compensate it with closeSession. Never activate or open it.
+          this.#failSession(
+            session,
+            'INTERNAL_ERROR',
+            BrokerCloseCode.INTERNAL_ERROR,
+            BrokerCloseReason.AUTHORITY_FAILED,
+          );
+          this.#abandonAuthenticatedSession(session, context);
+          return;
+        } catch {
+          // A malformed late result is treated as an ordinary authority failure.
+        }
+      }
       if (error instanceof BrokerAuthenticationError) {
         this.#failSession(session, 'AUTH_FAILED', BrokerCloseCode.AUTH_FAILED, error.code);
       } else {
@@ -596,7 +593,57 @@ export class AgentGateway {
       throw new Error('DIRECTION_OR_SESSION_MISMATCH');
     }
     const canonicalDigest = canonicalSha256(envelope);
-    const decision = consumeSequence(cursor, envelope, canonicalDigest, this.#now());
+    const sequence = BigInt(envelope.sequence);
+    let responses: readonly BrokerEnvelope[];
+
+    // PostgreSQL receipts, not this bounded transport cursor, are authoritative for
+    // any sequence that was already accepted. This also lets an exact durable replay
+    // survive message expiry and the in-memory 1,024-frame retention window. The
+    // authority rechecks the canonical digest and durably records any conflict.
+    if (sequence < cursor.nextExpected) {
+      try {
+        responses = await withAbortableTimeout(
+          (signal) =>
+            this.#authority.replayEnvelope(
+              context,
+              Object.freeze({ envelope, canonicalDigest }),
+              signal,
+            ),
+          this.#authorityTimeoutMs,
+          'AUTHORITY_TIMEOUT',
+          session.lifecycle.signal,
+        );
+        await this.#sendOutbound(session, responses);
+        if (this.#closeAfterLeaseRevoke(session, responses)) return;
+      } catch (error) {
+        this.#failSession(
+          session,
+          errorCodeIs(error, 'SEQUENCE_CONFLICT') ? 'PROTOCOL_ERROR' : 'INTERNAL_ERROR',
+          errorCodeIs(error, 'SEQUENCE_CONFLICT')
+            ? BrokerCloseCode.PROTOCOL_ERROR
+            : BrokerCloseCode.INTERNAL_ERROR,
+          errorCodeIs(error, 'SEQUENCE_CONFLICT')
+            ? BrokerCloseReason.PROTOCOL_ERROR
+            : BrokerCloseReason.AUTHORITY_FAILED,
+        );
+        return;
+      }
+      this.#diagnostic('frame_replayed');
+      return;
+    }
+
+    let decision: ReturnType<typeof consumeSequence>;
+    try {
+      decision = consumeSequence(cursor, envelope, canonicalDigest, this.#now());
+    } catch {
+      this.#failSession(
+        session,
+        'PROTOCOL_ERROR',
+        BrokerCloseCode.PROTOCOL_ERROR,
+        BrokerCloseReason.PROTOCOL_ERROR,
+      );
+      return;
+    }
     if (decision.type === 'REQUEST_REPLAY') {
       this.#diagnostic('sequence_gap');
       try {
@@ -631,35 +678,52 @@ export class AgentGateway {
       );
       return;
     }
-    session.inbound = decision.cursor;
     const delivery = Object.freeze({ envelope, canonicalDigest });
-    let responses: readonly BrokerEnvelope[];
     try {
-      responses =
-        decision.type === 'REPLAY'
-          ? await withAbortableTimeout(
-              (signal) => this.#authority.replayEnvelope(context, delivery, signal),
-              this.#authorityTimeoutMs,
-              'AUTHORITY_TIMEOUT',
-              session.lifecycle.signal,
-            )
-          : await withAbortableTimeout(
-              (signal) => this.#authority.acceptEnvelope(context, delivery, signal),
-              this.#authorityTimeoutMs,
-              'AUTHORITY_TIMEOUT',
-              session.lifecycle.signal,
-            );
+      responses = await withAbortableTimeout(
+        (signal) => this.#authority.acceptEnvelope(context, delivery, signal),
+        this.#authorityTimeoutMs,
+        'AUTHORITY_TIMEOUT',
+        session.lifecycle.signal,
+      );
       await this.#sendOutbound(session, responses);
-    } catch {
+      if (this.#closeAfterLeaseRevoke(session, responses)) return;
+    } catch (error) {
       this.#failSession(
         session,
-        'INTERNAL_ERROR',
-        BrokerCloseCode.INTERNAL_ERROR,
-        BrokerCloseReason.AUTHORITY_FAILED,
+        errorCodeIs(error, 'SEQUENCE_CONFLICT') ? 'PROTOCOL_ERROR' : 'INTERNAL_ERROR',
+        errorCodeIs(error, 'SEQUENCE_CONFLICT')
+          ? BrokerCloseCode.PROTOCOL_ERROR
+          : BrokerCloseCode.INTERNAL_ERROR,
+        errorCodeIs(error, 'SEQUENCE_CONFLICT')
+          ? BrokerCloseReason.PROTOCOL_ERROR
+          : BrokerCloseReason.AUTHORITY_FAILED,
       );
       return;
     }
-    this.#diagnostic(decision.type === 'REPLAY' ? 'frame_replayed' : 'frame_accepted');
+    session.inbound = decision.cursor;
+    this.#diagnostic('frame_accepted');
+  }
+
+  #closeAfterLeaseRevoke(session: Session, responses: readonly BrokerEnvelope[]): boolean {
+    const revoke = responses.find(
+      (envelope): envelope is Extract<BrokerEnvelope, { type: 'lease.revoke' }> =>
+        envelope.kind === 'command' && envelope.type === 'lease.revoke',
+    );
+    if (revoke === undefined) return false;
+    const permanent =
+      revoke.body.reason === 'SECURITY' || revoke.body.reason === 'INSTALLATION_REVOKED';
+    this.#failSession(
+      session,
+      permanent ? 'AUTH_FAILED' : 'REPLAY_REQUIRED',
+      permanent ? BrokerCloseCode.AUTH_FAILED : BrokerCloseCode.REPLAY_REQUIRED,
+      permanent
+        ? revoke.body.reason === 'INSTALLATION_REVOKED'
+          ? BrokerCloseReason.INSTALLATION_REVOKED
+          : BrokerCloseReason.AUTHENTICATION_REJECTED
+        : BrokerCloseReason.LEASE_EXPIRED,
+    );
+    return true;
   }
 
   async #sendOutbound(session: Session, inputs: readonly BrokerEnvelope[]): Promise<void> {
@@ -680,6 +744,14 @@ export class AgentGateway {
         throw new Error('OUTBOUND_DIRECTION_OR_SESSION_MISMATCH');
       }
       const digest = canonicalSha256(envelope);
+      const sequence = BigInt(envelope.sequence);
+      if (sequence < cursor.nextExpected) {
+        // Only authority-returned frames reach this method. A lower sequence is a
+        // durable ACK replay, not a new command, and must not be rejected by the
+        // bounded transport cursor or its original expiry.
+        await this.#write(session, canonicalizeJson(envelope));
+        continue;
+      }
       const decision = consumeSequence(cursor, envelope, digest, this.#now());
       if (decision.type === 'REQUEST_REPLAY') throw new Error('OUTBOUND_SEQUENCE_GAP');
       if (decision.type === 'REPLAY') {
@@ -879,12 +951,42 @@ async function withAbortableTimeout<T>(
   const abortFromParent = () => controller.abort(parentSignal?.reason);
   if (parentSignal?.aborted === true) abortFromParent();
   else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  const pending = Promise.resolve().then(() => operation(controller.signal));
   try {
-    return await withTimeout(operation(controller.signal), timeoutMs, label);
+    return await withTimeout(pending, timeoutMs, label);
   } catch (error) {
     controller.abort(error);
+    let late: { value: T } | undefined;
+    try {
+      // A PostgreSQL adapter may already have submitted COMMIT when the transport
+      // lifecycle closes. Wait for its bounded authoritative outcome: a committed
+      // authentication returns its context so the caller can compensate with
+      // closeSession; a rollback rejects. The original deadline still wins—late
+      // success must never reopen or send on an already-expired transport.
+      late = { value: await withTimeout(pending, timeoutMs, `${label}_CLEANUP`) };
+    } catch {
+      // Preserve the original transport/authority failure after rollback settles.
+    }
+    if (late !== undefined) throw new AuthoritySettledAfterAbortError(late.value, error);
     throw error;
   } finally {
     parentSignal?.removeEventListener('abort', abortFromParent);
   }
+}
+
+class AuthoritySettledAfterAbortError extends Error {
+  constructor(
+    readonly value: unknown,
+    readonly originalError: unknown,
+  ) {
+    super('AUTHORITY_SETTLED_AFTER_ABORT');
+    this.name = 'AuthoritySettledAfterAbortError';
+  }
+}
+
+function errorCodeIs(error: unknown, code: string): boolean {
+  return (
+    (error instanceof BrokerProtocolError && error.code === code) ||
+    (typeof error === 'object' && error !== null && 'code' in error && error.code === code)
+  );
 }
