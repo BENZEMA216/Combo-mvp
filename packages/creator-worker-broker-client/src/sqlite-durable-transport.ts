@@ -1,4 +1,4 @@
-import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   closeSync,
   fsyncSync,
@@ -42,6 +42,18 @@ import {
   type LeaseGrantCommand,
   type WorkerBrokerDurableTransportPort,
 } from './worker-broker-client.js';
+import {
+  WORKER_INVOCATION_SCHEMA_SQL,
+  WORKER_INVOCATION_SCHEMA_VERSION,
+  SqliteWorkerInvocationJournal,
+  assertWorkerInvocationIntegrity,
+  workerInvocationCommandSemanticDigest,
+  workerInvocationAuthorityRows,
+  workerInvocationTablesExist,
+  type OpaqueInvocationCommandReference,
+  type SqliteWorkerInvocationJournalOptions,
+  type WorkerInvocationJournalHost,
+} from './sqlite-invocation-journal.js';
 
 type NodeSqliteModule = Readonly<{ DatabaseSync: typeof DatabaseSync }>;
 
@@ -49,7 +61,7 @@ const loadNodeSqlite = (): NodeSqliteModule =>
   createRequire(import.meta.url)('node:sqlite') as NodeSqliteModule;
 
 export const WORKER_TRANSPORT_APPLICATION_ID = 0x43425754;
-export const WORKER_TRANSPORT_SCHEMA_VERSION = 1;
+export const WORKER_TRANSPORT_SCHEMA_VERSION = WORKER_INVOCATION_SCHEMA_VERSION;
 export const WORKER_TRANSPORT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const WORKER_TRANSPORT_SEQUENCE_RETENTION = 1_024;
 export const WORKER_TRANSPORT_DEFAULT_MAX_INBOUND_ROWS = 512;
@@ -59,6 +71,8 @@ export const WORKER_TRANSPORT_DEFAULT_MAX_RETAINED_OUTBOX_ROWS = 1_000_000;
 export const WORKER_TRANSPORT_DEFAULT_MAX_DATABASE_BYTES = 256 * 1024 * 1024;
 export const WORKER_TRANSPORT_DEFAULT_MAX_WAL_BYTES = 64 * 1024 * 1024;
 export const WORKER_TRANSPORT_DEFAULT_MIN_FREE_BYTES = 64 * 1024 * 1024;
+export const WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES = 128;
+export const WORKER_TRANSPORT_FILESYSTEM_RECOVERY_RESERVE_BYTES = 1024 * 1024;
 
 const ACK_RANK = Object.freeze({ RECEIVED: 0, PERSISTED: 1, CLOUD_COMMITTED: 2 });
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
@@ -67,10 +81,15 @@ const SQLITE_BUSY_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const ZERO_DIGEST = '0'.repeat(64);
 const PRUNE_BATCH_SIZE = 128;
 const WATERMARK_FORMAT_VERSION = 1;
+const WAL_ADMISSION_RECOVERY_HEADROOM_BYTES = 256 * 1024;
+const DATABASE_ADMISSION_HEADROOM_PAGES = 64;
 
 export type SqliteWorkerTransportFaultPoint =
   | 'migration.before_commit'
   | 'migration.after_commit'
+  | 'migration.v1_to_v2.before_watermark'
+  | 'migration.v1_to_v2.after_watermark_fsync'
+  | 'migration.v1_to_v2.after_commit'
   | `${string}.before_commit`
   | `${string}.after_watermark_fsync`
   | `${string}.after_commit`;
@@ -117,6 +136,8 @@ export type SqliteWorkerTransportOptions = Readonly<{
   maxDatabaseBytes?: number;
   maxWalBytes?: number;
   minFreeBytes?: number;
+  /** Deterministic capacity probe used only by storage-pressure tests. */
+  availableFilesystemBytesForTests?: () => number;
   now?: () => number;
   faultInjector?: (point: SqliteWorkerTransportFaultPoint) => void;
 }>;
@@ -138,6 +159,7 @@ export type WorkerTransportPragmas = Readonly<{
   journalMode: string;
   synchronous: number;
   foreignKeys: number;
+  secureDelete: number;
   busyTimeoutMs: number;
   pageSize: number;
   maxPageCount: number;
@@ -442,6 +464,7 @@ const SCHEMA_SQL = `
 export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTransportPort {
   readonly #filename: string;
   readonly #watermarkFilename: string;
+  readonly #recoveryReserveFilename: string;
   readonly #database: DatabaseSync;
   readonly #newJournalAuthorization?: NewWorkerJournalAuthorization;
   readonly #busyTimeoutMs: number;
@@ -456,16 +479,20 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
   readonly #maxDatabaseBytes: number;
   readonly #maxWalBytes: number;
   readonly #minFreeBytes: number;
+  readonly #availableFilesystemBytes: () => number;
   readonly #now: () => number;
   readonly #faultInjector?: (point: SqliteWorkerTransportFaultPoint) => void;
   #transactionDeadline = Number.POSITIVE_INFINITY;
   #walQuotaProtection = false;
+  #recoveryReserveReleased = false;
+  #sensitivePurgePending = false;
   #poisoned = false;
   #closed = false;
 
   constructor(options: SqliteWorkerTransportOptions) {
     this.#filename = validateJournalPath(options.filename);
     this.#watermarkFilename = `${this.#filename}.watermark`;
+    this.#recoveryReserveFilename = `${this.#filename}.recovery-reserve`;
     this.#newJournalAuthorization = parseNewJournalAuthorization(options.newJournalAuthorization);
     this.#busyTimeoutMs = bounded(options.busyTimeoutMs ?? 1_000, 1, 5_000);
     this.#operationTimeoutMs = bounded(
@@ -515,6 +542,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       0,
       Number.MAX_SAFE_INTEGER,
     );
+    this.#availableFilesystemBytes =
+      options.availableFilesystemBytesForTests ??
+      (() => availableFilesystemBytes(dirname(this.#filename)));
     this.#now = options.now ?? Date.now;
     this.#faultInjector = options.faultInjector;
 
@@ -523,10 +553,16 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       throw new SqliteWorkerTransportError('JOURNAL_MISSING');
     }
     ensureSafeParent(dirname(this.#filename));
-    assertSafeExistingAuxiliaryFiles(this.#filename);
-    if (!existed && journalEntryExists(this.#watermarkFilename)) {
-      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    if (!existed && safeRegularFileExists(this.#watermarkFilename, 0o600, 'JOURNAL_FILE_UNSAFE')) {
+      // A watermark with no database proves loss and must never authorize recreation. Re-sample
+      // the database once because a concurrent authorized first-open publishes the database before
+      // its watermark; seeing both means this opener should join validation as an existing file.
+      if (!safeRegularFileExists(this.#filename, 0o600, 'JOURNAL_FILE_UNSAFE')) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      existed = true;
     }
+    assertSafeExistingAuxiliaryFiles(this.#filename, this.#busyTimeoutMs);
     if (!existed) {
       try {
         closeSync(openSync(this.#filename, 'wx', 0o600));
@@ -550,6 +586,19 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     try {
       this.#configureWithBusyRetry(existed);
       this.#validateOpenSnapshot();
+      // Reserve provisioning has no durable logical rows: a fill/delete transaction leaves real
+      // SQLite freelist pages, while the private sidecar occupies filesystem blocks that can be
+      // released before a terminal/reconciliation transaction writes its WAL and watermark.
+      // It runs only after the existing authority/watermark is validated, so a corrupt journal is
+      // never modified in an attempt to manufacture reserve. Failure to replenish is not an open
+      // failure; it switches this adapter to reconciliation-only admission until capacity returns.
+      this.#ensureDatabaseRecoveryReserve();
+      this.#ensureFilesystemRecoveryReserve();
+      // A previous process can have committed a sensitive-row purge while a pinned reader kept
+      // the deleted Broker session ciphertext in WAL pages. Snapshot validation proves the
+      // logical state, but the adapter must not serve until those request-lifetime bytes are
+      // physically truncated. A still-pinned reader therefore makes open fail closed.
+      this.#forceSensitiveCheckpoint();
       this.#secureJournalFiles();
     } catch (error) {
       this.#database.close();
@@ -856,32 +905,36 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
     const digest = assertCanonicalDigest(envelope, input.canonicalDigest);
     assertCursorAdvance(input.expectedInboundCursor, input.nextInboundCursor, envelope, digest);
-    return this.#transaction('commit_inbound', input.signal, () => {
-      const { now, ownerEpoch } = this.#assertAndRefreshOwner(installationId, input.ownerToken);
-      const connection = this.#requireActiveConnection(installationId, connectionId, ownerEpoch);
-      if (connection.inbound_cursor !== input.expectedInboundCursor) {
-        throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
-      }
-      assertInboundLease(connection, envelope);
-      const duplicateEffect = this.#insertInbound(
-        envelope,
-        digest,
-        envelope.kind === 'ack' || isTransportControlCommand(envelope) ? 'APPLIED' : 'PERSISTED',
-        now,
-      );
-      this.#database
-        .prepare('UPDATE transport_connections SET inbound_cursor = ? WHERE connection_id = ?')
-        .run(input.nextInboundCursor, connectionId);
-      this.#refreshConnectionDigest(connectionId);
-      if (duplicateEffect) {
-        this.#reactivateReplayResponse(installationId, connectionId, envelope.messageId, now);
-      } else {
-        this.#applyInboundEffect(envelope, connection, now);
-      }
-      return durableConnection(
-        this.#requireActiveConnection(installationId, connectionId, ownerEpoch),
-      );
-    });
+    return this.#transaction(
+      envelope.kind === 'ack' ? 'commit_inbound_reconciliation' : 'commit_inbound',
+      input.signal,
+      () => {
+        const { now, ownerEpoch } = this.#assertAndRefreshOwner(installationId, input.ownerToken);
+        const connection = this.#requireActiveConnection(installationId, connectionId, ownerEpoch);
+        if (connection.inbound_cursor !== input.expectedInboundCursor) {
+          throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
+        }
+        assertInboundLease(connection, envelope);
+        const duplicateEffect = this.#insertInbound(
+          envelope,
+          digest,
+          envelope.kind === 'ack' || isTransportControlCommand(envelope) ? 'APPLIED' : 'PERSISTED',
+          now,
+        );
+        this.#database
+          .prepare('UPDATE transport_connections SET inbound_cursor = ? WHERE connection_id = ?')
+          .run(input.nextInboundCursor, connectionId);
+        this.#refreshConnectionDigest(connectionId);
+        if (duplicateEffect) {
+          this.#reactivateReplayResponse(installationId, connectionId, envelope.messageId, now);
+        } else {
+          this.#applyInboundEffect(envelope, connection, now);
+        }
+        return durableConnection(
+          this.#requireActiveConnection(installationId, connectionId, ownerEpoch),
+        );
+      },
+    );
   }
 
   async replayInbound(input: {
@@ -899,56 +952,60 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       throw permanentPortFailure();
     }
     const digest = assertCanonicalDigest(envelope, input.canonicalDigest);
-    return this.#transaction('replay_inbound', input.signal, () => {
-      const { now, ownerEpoch } = this.#assertAndRefreshOwner(installationId, input.ownerToken);
-      this.#requireActiveConnection(installationId, connectionId, ownerEpoch);
-      const existing = this.#database
-        .prepare(
-          `SELECT message_id, canonical_digest, logical_digest, envelope_json
-           FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
-        )
-        .get(connectionId, envelope.sequence) as
-        | {
-            message_id: string;
-            canonical_digest: string;
-            logical_digest: string;
-            envelope_json: string;
-          }
-        | undefined;
-      if (existing === undefined) {
-        const priorMessage = this.#database
+    return this.#transaction(
+      envelope.kind === 'ack' ? 'replay_inbound_reconciliation' : 'replay_inbound',
+      input.signal,
+      () => {
+        const { now, ownerEpoch } = this.#assertAndRefreshOwner(installationId, input.ownerToken);
+        this.#requireActiveConnection(installationId, connectionId, ownerEpoch);
+        const existing = this.#database
           .prepare(
-            `SELECT logical_digest FROM transport_inbound_frames
-             WHERE message_id = ? ORDER BY recorded_at_ms LIMIT 1`,
+            `SELECT message_id, canonical_digest, logical_digest, envelope_json
+           FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
           )
-          .get(envelope.messageId) as { logical_digest: string } | undefined;
+          .get(connectionId, envelope.sequence) as
+          | {
+              message_id: string;
+              canonical_digest: string;
+              logical_digest: string;
+              envelope_json: string;
+            }
+          | undefined;
+        if (existing === undefined) {
+          const priorMessage = this.#database
+            .prepare(
+              `SELECT logical_digest FROM transport_inbound_frames
+             WHERE message_id = ? ORDER BY recorded_at_ms LIMIT 1`,
+            )
+            .get(envelope.messageId) as { logical_digest: string } | undefined;
+          if (
+            priorMessage !== undefined &&
+            priorMessage.logical_digest !== logicalEnvelopeDigest(envelope)
+          ) {
+            throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
+          }
+          return 'NOT_FOUND';
+        }
         if (
-          priorMessage !== undefined &&
-          priorMessage.logical_digest !== logicalEnvelopeDigest(envelope)
+          existing.message_id !== envelope.messageId ||
+          existing.canonical_digest !== digest ||
+          existing.logical_digest !== logicalEnvelopeDigest(envelope) ||
+          existing.envelope_json !== canonicalizeJson(envelope)
         ) {
           throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
         }
-        return 'NOT_FOUND';
-      }
-      if (
-        existing.message_id !== envelope.messageId ||
-        existing.canonical_digest !== digest ||
-        existing.logical_digest !== logicalEnvelopeDigest(envelope) ||
-        existing.envelope_json !== canonicalizeJson(envelope)
-      ) {
-        throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
-      }
-      this.#database
-        .prepare(
-          `UPDATE transport_inbound_frames
+        this.#database
+          .prepare(
+            `UPDATE transport_inbound_frames
            SET replay_count = replay_count + 1, retained_until_ms = COALESCE(retained_until_ms, ?)
            WHERE connection_id = ? AND sequence = ?`,
-        )
-        .run(safeDeadline(now, WORKER_TRANSPORT_RETENTION_MS), connectionId, envelope.sequence);
-      this.#refreshInboundEffectDigest(connectionId, envelope.sequence);
-      this.#reactivateReplayResponse(installationId, connectionId, envelope.messageId, now);
-      return 'EXACT_REPLAY';
-    });
+          )
+          .run(safeDeadline(now, WORKER_TRANSPORT_RETENTION_MS), connectionId, envelope.sequence);
+        this.#refreshInboundEffectDigest(connectionId, envelope.sequence);
+        this.#reactivateReplayResponse(installationId, connectionId, envelope.messageId, now);
+        return 'EXACT_REPLAY';
+      },
+    );
   }
 
   async recordSequenceGap(input: {
@@ -1174,8 +1231,13 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
                   f.logical_digest, f.envelope_json, f.effect_state
            FROM transport_inbound_frames AS f
            JOIN transport_connections AS c ON c.connection_id = f.connection_id
+           LEFT JOIN local_consumed_commands AS lc ON lc.command_id = f.message_id
            WHERE c.installation_id = ? AND f.envelope_kind = 'command'
              AND c.owner_epoch = ? AND f.connection_id = ? AND f.effect_state = 'PERSISTED'
+             AND (
+               lc.command_id IS NULL OR
+               f.envelope_type IN ('invocation.prepare', 'invocation.start')
+             )
            ORDER BY f.recorded_at_ms, length(f.sequence), f.sequence LIMIT ?`,
         )
         .all(installationId, ownerEpoch, connectionId, limit) as Array<{
@@ -1222,6 +1284,90 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     });
   }
 
+  /**
+   * Creates the business-journal facade over this exact DatabaseSync connection. The facade is
+   * intentionally unavailable without all signature, Cloud-time, Host-receipt and AEAD ports.
+   */
+  createInvocationJournal(
+    options: SqliteWorkerInvocationJournalOptions,
+  ): SqliteWorkerInvocationJournal {
+    this.#assertOpen();
+    const host: WorkerInvocationJournalHost = {
+      transact: (input, operation) => {
+        const installationId = parseUuid(input.installationId);
+        return this.#transaction(input.name, input.signal, () => {
+          const { ownerEpoch, now } = this.#assertAndRefreshOwner(installationId, input.ownerToken);
+          return operation({
+            database: this.#database,
+            ownerEpoch,
+            localNowMs: now,
+            markTransportCommandApplied: (reference) =>
+              this.#markInvocationCommandApplied(reference, now),
+            enqueueInvocationEvent: (event) => {
+              this.#enqueueEnvelope(
+                event.connectionId,
+                {
+                  kind: 'event',
+                  type: event.type,
+                  messageId: event.messageId,
+                  correlationId: event.correlationId,
+                  body: event.body,
+                },
+                now,
+              );
+              const delivery = this.#outboxRow(event.messageId);
+              const body = event.body as Record<string, unknown>;
+              if (
+                delivery === undefined ||
+                delivery.connection_id === null ||
+                delivery.sequence === null ||
+                typeof body.sourceEventId !== 'string' ||
+                typeof body.invocationId !== 'string' ||
+                typeof body.factDigest !== 'string'
+              ) {
+                throw permanentPortFailure();
+              }
+              return Object.freeze({
+                deliveryMessageId: event.messageId,
+                sourceEventId: body.sourceEventId,
+                invocationId: body.invocationId,
+                eventType: event.type,
+                connectionId: delivery.connection_id,
+                sequence: delivery.sequence,
+                canonicalDigest: delivery.canonical_digest,
+                factDigest: body.factDigest,
+              });
+            },
+            purgeInvocationPrepareTransportPayload: (commandId) =>
+              this.#purgeInvocationPrepareTransportPayload(commandId),
+            purgeInvocationCommandResponse: (commandId) =>
+              this.#purgeInvocationCommandResponse(commandId),
+            purgeInvocationDeliveryWire: (deliveryMessageId) =>
+              this.#purgeInvocationDeliveryWire(deliveryMessageId),
+          });
+        });
+      },
+      inspect: (operation) => {
+        this.#assertOpen();
+        if (this.#database.isTransaction) {
+          throw new SqliteWorkerTransportError('JOURNAL_BUSY');
+        }
+        this.#database.exec('BEGIN');
+        let completed = false;
+        try {
+          const result = operation(this.#database);
+          this.#database.exec('COMMIT');
+          completed = true;
+          return result;
+        } finally {
+          if (!completed) safeRollback(this.#database);
+        }
+      },
+      checkpointSensitivePrune: () => this.#forceSensitiveCheckpoint(),
+    };
+    return new SqliteWorkerInvocationJournal(host, options);
+  }
+
   inspectPragmas(): WorkerTransportPragmas {
     this.#assertOpen();
     return Object.freeze({
@@ -1230,6 +1376,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       journalMode: pragmaText(this.#database, 'journal_mode'),
       synchronous: pragmaNumber(this.#database, 'synchronous'),
       foreignKeys: pragmaNumber(this.#database, 'foreign_keys'),
+      secureDelete: pragmaNumber(this.#database, 'secure_delete'),
       busyTimeoutMs: pragmaNumber(this.#database, 'busy_timeout', 'timeout'),
       pageSize: pragmaNumber(this.#database, 'page_size'),
       maxPageCount: pragmaNumber(this.#database, 'max_page_count'),
@@ -1249,7 +1396,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     this.#database.exec(`PRAGMA busy_timeout = ${this.#busyTimeoutMs};`);
     this.#assertDatabaseIntegrity();
     const applicationId = pragmaNumber(this.#database, 'application_id');
-    let userVersion = pragmaNumber(this.#database, 'user_version');
+    const userVersion = pragmaNumber(this.#database, 'user_version');
     if (
       (applicationId !== 0 && applicationId !== WORKER_TRANSPORT_APPLICATION_ID) ||
       userVersion > WORKER_TRANSPORT_SCHEMA_VERSION
@@ -1263,20 +1410,13 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       )
       .get() as CountRow;
     if (userVersion === 0 && tableCount.count > 0) {
-      userVersion = pragmaNumber(this.#database, 'user_version');
-      if (userVersion !== WORKER_TRANSPORT_SCHEMA_VERSION) {
-        throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
-      }
+      throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
     }
     if (userVersion === 0 && this.#newJournalAuthorization === undefined) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
     const existingJournalMode = pragmaText(this.#database, 'journal_mode').toLowerCase();
-    if (
-      existed &&
-      userVersion === WORKER_TRANSPORT_SCHEMA_VERSION &&
-      existingJournalMode !== 'wal'
-    ) {
+    if (existed && userVersion >= 1 && existingJournalMode !== 'wal') {
       throw new SqliteWorkerTransportError('JOURNAL_PRAGMA_MISMATCH');
     }
     const pageSize = pragmaNumber(this.#database, 'page_size');
@@ -1285,6 +1425,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       ${userVersion === 0 ? 'PRAGMA journal_mode = WAL;' : ''}
       PRAGMA synchronous = FULL;
       PRAGMA foreign_keys = ON;
+      PRAGMA secure_delete = ON;
       PRAGMA busy_timeout = ${this.#busyTimeoutMs};
       PRAGMA trusted_schema = OFF;
       PRAGMA max_page_count = ${maxPageCount};
@@ -1292,6 +1433,12 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       PRAGMA wal_autocheckpoint = 256;
     `);
     if (userVersion === WORKER_TRANSPORT_SCHEMA_VERSION) return;
+
+    if (userVersion === 1) {
+      this.#validateLegacyV1Snapshot();
+      this.#migrateLegacyV1ToV2();
+      return;
+    }
 
     this.#database.exec('BEGIN EXCLUSIVE');
     let committed = false;
@@ -1315,6 +1462,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
       }
       this.#database.exec(SCHEMA_SQL);
+      this.#database.exec(WORKER_INVOCATION_SCHEMA_SQL);
       this.#database.exec(`
         PRAGMA application_id = ${WORKER_TRANSPORT_APPLICATION_ID};
         PRAGMA user_version = ${WORKER_TRANSPORT_SCHEMA_VERSION};
@@ -1368,6 +1516,95 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
   }
 
+  /**
+   * Version 1 must be proven against its own DB and external watermark before any local_* DDL is
+   * attempted. Otherwise a corrupt/rolled-back v1 file could be blessed by the forward migration.
+   */
+  #validateLegacyV1Snapshot(): void {
+    this.#database.exec('BEGIN');
+    let completed = false;
+    try {
+      const pragmas = this.inspectPragmas();
+      if (
+        pragmas.applicationId !== WORKER_TRANSPORT_APPLICATION_ID ||
+        pragmas.userVersion !== 1 ||
+        pragmas.journalMode.toLowerCase() !== 'wal' ||
+        pragmas.synchronous !== 2 ||
+        pragmas.foreignKeys !== 1 ||
+        pragmas.secureDelete !== 1 ||
+        pragmas.busyTimeoutMs !== this.#busyTimeoutMs ||
+        pragmas.maxPageCount !== Math.floor(this.#maxDatabaseBytes / pragmas.pageSize) ||
+        pragmas.journalSizeLimit !== this.#maxWalBytes ||
+        pragmas.walAutocheckpoint !== 256 ||
+        pragmas.quickCheck.toLowerCase() !== 'ok'
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_PRAGMA_MISMATCH');
+      }
+      this.#assertDatabaseIntegrity();
+      this.#assertSchemaDigest();
+      this.#assertStoredEnvelopeIntegrity();
+      const watermark = this.#readDatabaseWatermark(1);
+      this.#database.exec('COMMIT');
+      completed = true;
+      this.#assertExternalWatermark(watermark);
+    } finally {
+      if (!completed) safeRollback(this.#database);
+    }
+  }
+
+  #migrateLegacyV1ToV2(): void {
+    this.#database.exec('BEGIN EXCLUSIVE');
+    let committed = false;
+    let watermarkWriteStarted = false;
+    let legacyWatermark: JournalCommitWatermark | undefined;
+    try {
+      if (pragmaNumber(this.#database, 'user_version') !== 1) {
+        throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
+      }
+      this.#assertDatabaseIntegrity();
+      this.#assertSchemaDigest();
+      this.#assertStoredEnvelopeIntegrity();
+      legacyWatermark = this.#readDatabaseWatermark(1);
+      this.#assertExternalWatermark(legacyWatermark);
+
+      this.#database.exec(WORKER_INVOCATION_SCHEMA_SQL);
+      this.#database.exec(`PRAGMA user_version = ${WORKER_TRANSPORT_SCHEMA_VERSION};`);
+      const updated = this.#database
+        .prepare(
+          `UPDATE transport_meta
+           SET schema_digest = ?, authority_digest = ?, commit_epoch = commit_epoch + 1
+           WHERE singleton = 1`,
+        )
+        .run(this.#actualSchemaDigest(), this.#actualAuthorityDigest());
+      if (Number(updated.changes) !== 1) throw permanentPortFailure();
+      this.#assertDatabaseIntegrity();
+      assertWorkerInvocationIntegrity(this.#database);
+      this.#faultInjector?.('migration.v1_to_v2.before_watermark');
+      watermarkWriteStarted = true;
+      this.#writeExternalWatermark(this.#readDatabaseWatermark());
+      this.#faultInjector?.('migration.v1_to_v2.after_watermark_fsync');
+      this.#database.exec('COMMIT');
+      committed = true;
+      this.#secureJournalFiles();
+      this.#faultInjector?.('migration.v1_to_v2.after_commit');
+    } catch (error) {
+      if (!committed) {
+        if (watermarkWriteStarted && legacyWatermark !== undefined) {
+          try {
+            this.#writeExternalWatermark(legacyWatermark);
+            this.#assertExternalWatermark(legacyWatermark);
+          } catch {
+            safeRollback(this.#database);
+            throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+          }
+        }
+        safeRollback(this.#database);
+      }
+      if (isSqliteCapacity(error)) throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+      throw error;
+    }
+  }
+
   #configureWithBusyRetry(existed: boolean): void {
     const deadline = performance.now() + this.#busyTimeoutMs;
     for (;;) {
@@ -1394,6 +1631,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       pragmas.journalMode.toLowerCase() !== 'wal' ||
       pragmas.synchronous !== 2 ||
       pragmas.foreignKeys !== 1 ||
+      pragmas.secureDelete !== 1 ||
       pragmas.busyTimeoutMs !== this.#busyTimeoutMs ||
       pragmas.maxPageCount !== Math.floor(this.#maxDatabaseBytes / pragmas.pageSize) ||
       pragmas.journalSizeLimit !== this.#maxWalBytes ||
@@ -1415,6 +1653,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         this.#assertDatabaseIntegrity();
         this.#assertSchemaDigest();
         this.#assertStoredEnvelopeIntegrity();
+        try {
+          assertWorkerInvocationIntegrity(this.#database);
+        } catch {
+          throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+        }
         databaseWatermark = this.#readDatabaseWatermark();
         this.#database.exec('COMMIT');
         completed = true;
@@ -1438,7 +1681,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
   }
 
-  #readDatabaseWatermark(): JournalCommitWatermark {
+  #readDatabaseWatermark(schemaVersion = WORKER_TRANSPORT_SCHEMA_VERSION): JournalCommitWatermark {
     const row = this.#database
       .prepare(
         `SELECT schema_digest, authority_digest, installation_id, journal_generation,
@@ -1484,7 +1727,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     return Object.freeze({
       formatVersion: WATERMARK_FORMAT_VERSION,
       applicationId: WORKER_TRANSPORT_APPLICATION_ID,
-      schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+      schemaVersion,
       schemaDigest: row.schema_digest,
       authorityDigest: row.authority_digest,
       installationId: row.installation_id,
@@ -1775,8 +2018,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           inboundEffectEventDigestFromRow(event) !== event.event_digest ||
           (previous === undefined
             ? event.from_state !== null
-            : event.from_state !== previous.to_state || event.message_id !== previous.message_id) ||
-          event.from_state !== null
+            : event.from_state !== previous.to_state || event.message_id !== previous.message_id)
         ) {
           throw new Error('invalid-effect-event');
         }
@@ -1790,6 +2032,18 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       let inboundEvidenceXor = ZERO_DIGEST;
       let inboundEvidenceCount = 0;
       let pendingInboundCount = 0;
+      const locallyConsumedCommandTypes = workerInvocationTablesExist(this.#database)
+        ? new Map(
+            (
+              this.#database
+                .prepare('SELECT command_id, command_type FROM local_consumed_commands')
+                .all() as Array<{
+                command_id: string;
+                command_type: BrokerCommand['type'];
+              }>
+            ).map((row) => [row.command_id, row.command_type] as const),
+          )
+        : new Map<string, BrokerCommand['type']>();
       const inboundRows = this.#database
         .prepare(
           `SELECT connection_id, sequence, message_id, canonical_digest, logical_digest,
@@ -1816,7 +2070,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id),
         );
         inboundEvidenceCount += 1;
-        if (row.effect_state === 'PERSISTED') pendingInboundCount += 1;
+        if (
+          row.effect_state === 'PERSISTED' &&
+          (!locallyConsumedCommandTypes.has(row.message_id) ||
+            row.envelope_type === 'invocation.prepare' ||
+            row.envelope_type === 'invocation.start')
+        ) {
+          pendingInboundCount += 1;
+        }
         const latestEffect = latestEffectEvents.get(inboundKey);
         const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
         const priorLogicalDigest = inboundMessageDigests.get(envelope.messageId);
@@ -1897,7 +2158,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         const responseCommandType =
           row.response_to_message_id === null
             ? undefined
-            : inboundCommandTypes.get(row.response_to_message_id);
+            : (inboundCommandTypes.get(row.response_to_message_id) ??
+              locallyConsumedCommandTypes.get(row.response_to_message_id));
         const responseBindingValid =
           envelope.kind === 'ack'
             ? envelope.body.acknowledgedMessageId === row.response_to_message_id &&
@@ -1940,7 +2202,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     const rows = this.#database
       .prepare(
         `SELECT type, name, sql FROM sqlite_master
-         WHERE name LIKE 'transport_%' AND sql IS NOT NULL
+         WHERE (name LIKE 'transport_%' OR name LIKE 'local_%') AND sql IS NOT NULL
          ORDER BY type, name`,
       )
       .all() as Array<{ type: string; name: string; sql: string }>;
@@ -1979,9 +2241,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       deployment_id: string;
       highest_fence: string;
     }>;
+    const local = workerInvocationAuthorityRows(this.#database);
+    const authority =
+      local === undefined
+        ? { installation, owners, fences }
+        : { installation, owners, fences, local };
     return createHash('sha256')
       .update('combo:vnext:worker-authority:v1\0', 'utf8')
-      .update(canonicalizeJson({ installation, owners, fences }), 'utf8')
+      .update(canonicalizeJson(authority), 'utf8')
       .digest('hex');
   }
 
@@ -1994,18 +2261,23 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
 
   #transaction<T>(name: string, signal: AbortSignal, operation: () => T): T {
     this.#assertOpen();
+    const recoveryTransaction = isRecoveryTransaction(name);
     const callerDeadline = durablePortDeadline(signal);
     const localDeadline = performance.now() + this.#operationTimeoutMs;
     const deadline = Math.min(callerDeadline ?? Number.POSITIVE_INFINITY, localDeadline);
     const previousDeadline = this.#transactionDeadline;
+    const previousRecoveryReserveReleased = this.#recoveryReserveReleased;
+    const previousSensitivePurge = this.#sensitivePurgePending;
     this.#transactionDeadline = deadline;
+    this.#recoveryReserveReleased = false;
+    this.#sensitivePurgePending = false;
     let began = false;
     let committed = false;
     let previousWatermark: JournalCommitWatermark | undefined;
     let watermarkWriteStarted = false;
     try {
       assertNotAborted(signal, deadline);
-      this.#assertStorageBudget(name);
+      this.#assertStorageBudget(name, recoveryTransaction);
       assertNotAborted(signal, deadline);
       try {
         this.#database.exec('BEGIN IMMEDIATE');
@@ -2018,6 +2290,12 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       previousWatermark = this.#readDatabaseWatermark();
       assertNotAborted(signal, deadline);
       const result = operation();
+      if (!recoveryTransaction || !this.#recoveryReserveReleased) {
+        this.#assertDatabaseRecoveryReserve();
+      }
+      // Invocation rows are part of the same journal authority. Refreshing unconditionally keeps
+      // every transport and Invocation transaction on one watermark linearization boundary.
+      this.#refreshAuthorityDigest();
       this.#faultInjector?.(`${name}.before_commit`);
       assertNotAborted(signal, deadline);
       const incremented = this.#database
@@ -2033,11 +2311,26 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       assertNotAborted(signal, deadline);
       this.#database.exec('COMMIT');
       committed = true;
-      // COMMIT is the operation's linearization point. A reader can pin WAL pages and make a
-      // post-COMMIT checkpoint unable to shrink the file; that must never turn a committed call
-      // into an apparent failure. Enter protection and reject the *next* mutation before BEGIN.
-      this.#checkpointWalIfNeeded();
+      // COMMIT is the logical linearization point. Ordinary WAL quota cleanup preserves committed
+      // success semantics, while request-lifetime Prompt/result deletion deliberately fails closed
+      // and poisons the live adapter until a reopen can prove physical WAL truncation.
+      if (
+        this.#sensitivePurgePending ||
+        name === 'invocation_prepare' ||
+        name === 'invocation_start' ||
+        name === 'invocation_recover_unconfirmed_start' ||
+        name === 'invocation_record_dispatch_unknown' ||
+        name === 'invocation_reject_host_dispatch' ||
+        name === 'invocation_confirm_host_dispatch' ||
+        name === 'invocation_mark_cloud_committed' ||
+        name === 'invocation_prune_committed_retention'
+      ) {
+        this.#forceSensitiveCheckpoint();
+      } else {
+        this.#checkpointWalIfNeeded();
+      }
       this.#secureJournalFiles();
+      if (recoveryTransaction) this.#replenishRecoveryReserveAfterCommit();
       this.#faultInjector?.(`${name}.after_commit`);
       return result;
     } catch (error) {
@@ -2072,6 +2365,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       throw error;
     } finally {
       this.#transactionDeadline = previousDeadline;
+      this.#recoveryReserveReleased = previousRecoveryReserveReleased;
+      this.#sensitivePurgePending = previousSensitivePurge;
     }
   }
 
@@ -2081,8 +2376,15 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
   }
 
-  #assertStorageBudget(operation: string): void {
+  #assertStorageBudget(operation: string, recoveryTransaction: boolean): void {
     this.#assertTransactionBudget();
+    if (!recoveryTransaction) {
+      const databaseReserveReady = this.#ensureDatabaseRecoveryReserve();
+      const filesystemReserveReady = this.#ensureFilesystemRecoveryReserve();
+      if (!databaseReserveReady || !filesystemReserveReady) {
+        throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+      }
+    }
     let databaseBytes: number;
     let walBytes: number;
     try {
@@ -2093,30 +2395,199 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     } catch {
       throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
     }
+    if (
+      recoveryTransaction &&
+      (this.#filesystemAvailableBytes() < this.#minFreeBytes ||
+        walBytes > this.#maxWalBytes - WAL_ADMISSION_RECOVERY_HEADROOM_BYTES ||
+        pragmaNumber(this.#database, 'freelist_count') < WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES)
+    ) {
+      // Removing a physically allocated file, rather than merely bypassing an operation check,
+      // makes its blocks available to SQLite WAL and the atomic watermark rewrite. Healthy
+      // reconciliation retains the file, avoiding repeated allocation churn.
+      this.#releaseFilesystemRecoveryReserve();
+      this.#recoveryReserveReleased = true;
+    }
     if (databaseBytes > this.#maxDatabaseBytes) {
       throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
     }
-    if (walBytes > this.#maxWalBytes || this.#walQuotaProtection) {
+    const admissionWalLimit = Math.max(
+      0,
+      this.#maxWalBytes - WAL_ADMISSION_RECOVERY_HEADROOM_BYTES,
+    );
+    if (
+      walBytes > (recoveryTransaction ? this.#maxWalBytes : admissionWalLimit) ||
+      this.#walQuotaProtection
+    ) {
       this.#tryCheckpointAndTruncateWal();
       this.#assertTransactionBudget();
       walBytes = journalEntryExists(`${this.#filename}-wal`)
         ? statSync(`${this.#filename}-wal`).size
         : 0;
-      if (walBytes > this.#maxWalBytes) {
+      if (walBytes > (recoveryTransaction ? this.#maxWalBytes : admissionWalLimit)) {
         this.#walQuotaProtection = true;
-        throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+        if (!recoveryTransaction) throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
       }
-      this.#walQuotaProtection = false;
+      if (walBytes <= this.#maxWalBytes) this.#walQuotaProtection = false;
     }
-    const emergencyOperation =
-      operation === 'release_connection' ||
-      operation === 'release_installation' ||
-      operation === 'prune_retained';
-    if (
-      !emergencyOperation &&
-      availableFilesystemBytes(dirname(this.#filename)) < this.#minFreeBytes
-    ) {
+    if (!recoveryTransaction && this.#filesystemAvailableBytes() < this.#minFreeBytes) {
       throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+    }
+  }
+
+  #assertDatabaseRecoveryReserve(): void {
+    if (pragmaNumber(this.#database, 'freelist_count') < WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES) {
+      // This check runs before COMMIT, so an admission that tried to consume the protected pages
+      // rolls back and leaves them available to the already-started lifecycle.
+      throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+    }
+  }
+
+  #ensureDatabaseRecoveryReserve(): boolean {
+    const admissionTargetPages =
+      WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES + DATABASE_ADMISSION_HEADROOM_PAGES;
+    if (pragmaNumber(this.#database, 'freelist_count') >= admissionTargetPages) {
+      return true;
+    }
+    if (this.#database.isTransaction) return false;
+    const deadline = performance.now() + this.#busyTimeoutMs;
+    for (;;) {
+      let began = false;
+      try {
+        this.#database.exec('BEGIN IMMEDIATE');
+        began = true;
+        const pageSize = pragmaNumber(this.#database, 'page_size');
+        const current = pragmaNumber(this.#database, 'freelist_count');
+        if (current < admissionTargetPages) {
+          const insert = this.#database.prepare(
+            'INSERT INTO local_recovery_reserve_pages(slot, payload) VALUES (?, zeroblob(?))',
+          );
+          const payloadBytes = Math.max(512, pageSize - 256);
+          // SQLite consumes existing freelist pages before extending the file. Fill through the
+          // whole current freelist *and* a new protected tranche, then delete the scratch rows;
+          // otherwise replenishing 191→192 pages would simply cycle the same 191 pages forever.
+          const rows = current + admissionTargetPages + 32;
+          for (let slot = 1; slot <= rows; slot += 1) insert.run(slot, payloadBytes);
+          this.#database.exec('DELETE FROM local_recovery_reserve_pages');
+        }
+        if (pragmaNumber(this.#database, 'freelist_count') < admissionTargetPages) {
+          throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+        }
+        this.#database.exec('COMMIT');
+        return true;
+      } catch (error) {
+        if (began) safeRollback(this.#database);
+        if (isSqliteCapacity(error) || isFilesystemCapacity(error)) return false;
+        if (!isSqliteBusy(error) || performance.now() >= deadline) {
+          if (error instanceof WorkerBrokerClientError) return false;
+          throw error;
+        }
+        Atomics.wait(
+          SQLITE_BUSY_WAIT,
+          0,
+          0,
+          Math.min(10, Math.max(1, deadline - performance.now())),
+        );
+      }
+    }
+  }
+
+  #ensureFilesystemRecoveryReserve(): boolean {
+    if (journalEntryExists(this.#recoveryReserveFilename)) {
+      ensureSafeRegularFile(this.#recoveryReserveFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
+      return recoveryReserveFileIsPhysical(this.#recoveryReserveFilename);
+    }
+    const parent = dirname(this.#recoveryReserveFilename);
+    const temporary = join(
+      parent,
+      `.${basename(this.#recoveryReserveFilename)}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    let descriptor: number | undefined;
+    try {
+      descriptor = openSync(temporary, 'wx', 0o600);
+      let remaining = WORKER_TRANSPORT_FILESYSTEM_RECOVERY_RESERVE_BYTES;
+      while (remaining > 0) {
+        const length = Math.min(64 * 1024, remaining);
+        // Incompressible bytes prevent APFS/ext4 from representing the reserve as a sparse or
+        // compressed logical file that would free no real blocks during ENOSPC recovery.
+        const block = randomBytes(length);
+        const written = writeSync(descriptor, block, 0, length);
+        if (written !== length) throw new Error('recovery-reserve-short-write');
+        remaining -= written;
+      }
+      fsyncSync(descriptor);
+      closeSync(descriptor);
+      descriptor = undefined;
+      renameSync(temporary, this.#recoveryReserveFilename);
+      ensureSafeRegularFile(this.#recoveryReserveFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
+      if (!recoveryReserveFileIsPhysical(this.#recoveryReserveFilename)) {
+        throw new Error('recovery-reserve-not-physical');
+      }
+      const parentDescriptor = openSync(parent, 'r');
+      try {
+        fsyncSync(parentDescriptor);
+      } finally {
+        closeSync(parentDescriptor);
+      }
+      return true;
+    } catch (error) {
+      if (descriptor !== undefined) {
+        try {
+          closeSync(descriptor);
+        } catch {
+          // Preserve the reserve-allocation failure.
+        }
+      }
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // The temporary name may never have been created or was already renamed.
+      }
+      if (isFilesystemCapacity(error)) return false;
+      if (
+        journalEntryExists(this.#recoveryReserveFilename) &&
+        recoveryReserveFileIsPhysical(this.#recoveryReserveFilename)
+      ) {
+        ensureSafeRegularFile(this.#recoveryReserveFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
+        return true;
+      }
+      throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
+    }
+  }
+
+  #releaseFilesystemRecoveryReserve(): void {
+    if (!journalEntryExists(this.#recoveryReserveFilename)) return;
+    ensureSafeRegularFile(this.#recoveryReserveFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
+    try {
+      unlinkSync(this.#recoveryReserveFilename);
+      const parentDescriptor = openSync(dirname(this.#recoveryReserveFilename), 'r');
+      try {
+        fsyncSync(parentDescriptor);
+      } finally {
+        closeSync(parentDescriptor);
+      }
+    } catch {
+      throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
+    }
+  }
+
+  #filesystemAvailableBytes(): number {
+    const available = this.#availableFilesystemBytes();
+    if (!Number.isSafeInteger(available) || available < 0) {
+      throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
+    }
+    return available;
+  }
+
+  #replenishRecoveryReserveAfterCommit(): void {
+    try {
+      const databaseReady = this.#ensureDatabaseRecoveryReserve();
+      const filesystemReady = this.#ensureFilesystemRecoveryReserve();
+      if (!databaseReady || !filesystemReady) this.#walQuotaProtection = true;
+    } catch {
+      // The lifecycle transaction is already durably committed. Preserve its success while
+      // switching subsequent ordinary admission to fail-closed until a reopen/retry can restore
+      // both reserves. Unsafe file topology is still revalidated on every open.
+      this.#walQuotaProtection = true;
     }
   }
 
@@ -2149,6 +2620,39 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       result.log > 0
     ) {
       this.#database.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get();
+    }
+  }
+
+  #forceSensitiveCheckpoint(): void {
+    this.#assertOpen();
+    if (this.#database.isTransaction) throw new SqliteWorkerTransportError('JOURNAL_BUSY');
+    const deadline = performance.now() + this.#busyTimeoutMs;
+    for (;;) {
+      let result: { busy: number; log: number; checkpointed: number } | undefined;
+      try {
+        result = this.#database.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get() as
+          | { busy: number; log: number; checkpointed: number }
+          | undefined;
+      } catch (error) {
+        if (!isSqliteBusy(error) || performance.now() >= deadline) {
+          this.#walQuotaProtection = true;
+          this.#poisoned = true;
+          throw new SqliteWorkerTransportError('JOURNAL_BUSY');
+        }
+      }
+      if (result !== undefined && result.busy === 0 && result.log === result.checkpointed) {
+        this.#walQuotaProtection = false;
+        this.#secureJournalFiles();
+        return;
+      }
+      if (performance.now() >= deadline) {
+        this.#walQuotaProtection = true;
+        this.#poisoned = true;
+        throw new SqliteWorkerTransportError('JOURNAL_BUSY');
+      }
+      // DatabaseSync is synchronous, so a bounded Atomics wait keeps the entire checkpoint/open
+      // barrier serialized without yielding a Host/Broker-capable adapter in between attempts.
+      Atomics.wait(SQLITE_BUSY_WAIT, 0, 0, Math.min(10, Math.max(1, deadline - performance.now())));
     }
   }
 
@@ -2200,17 +2704,50 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     const logicalDigest = logicalEnvelopeDigest(envelope);
     const prior = this.#database
       .prepare(
-        `SELECT logical_digest, effect_state FROM transport_inbound_frames
+        `SELECT connection_id, logical_digest, effect_state FROM transport_inbound_frames
          WHERE message_id = ? ORDER BY recorded_at_ms LIMIT 1`,
       )
       .get(envelope.messageId) as
-      | { logical_digest: string; effect_state: 'PERSISTED' | 'APPLIED' }
+      | {
+          connection_id: string;
+          logical_digest: string;
+          effect_state: 'PERSISTED' | 'APPLIED';
+        }
       | undefined;
-    if (prior !== undefined && prior.logical_digest !== logicalDigest) {
+    const consumed =
+      envelope.kind === 'command' && workerInvocationTablesExist(this.#database)
+        ? (this.#database
+            .prepare(
+              `SELECT semantic_digest AS logical_digest
+               FROM local_consumed_commands WHERE command_id = ? AND command_type = ?`,
+            )
+            .get(envelope.messageId, envelope.type) as { logical_digest: string } | undefined)
+        : undefined;
+    const retainedLogicalDigest = prior?.logical_digest ?? consumed?.logical_digest;
+    if (
+      (retainedLogicalDigest !== undefined && retainedLogicalDigest !== logicalDigest) ||
+      (consumed !== undefined && consumed.logical_digest !== logicalDigest)
+    ) {
       throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
     }
-    const duplicateEffect = prior !== undefined;
-    const storedEffectState = duplicateEffect ? 'APPLIED' : effectState;
+    const duplicateEffect = retainedLogicalDigest !== undefined;
+    // An explicit cross-connection retry transfers a not-yet-consumed command to the current
+    // connection. Prepare/start re-envelopes remain PERSISTED until the Invocation Journal
+    // revalidates current transport authority and exact logical replay; other already-applied
+    // commands do not need a second business effect.
+    const invocationReplayNeedsBusinessValidation =
+      consumed !== undefined &&
+      envelope.kind === 'command' &&
+      (envelope.type === 'invocation.prepare' || envelope.type === 'invocation.start');
+    const storedEffectState = invocationReplayNeedsBusinessValidation
+      ? effectState
+      : prior === undefined
+        ? consumed === undefined
+          ? effectState
+          : 'APPLIED'
+        : prior.connection_id === envelope.connectionId
+          ? 'APPLIED'
+          : prior.effect_state;
     if (storedEffectState === 'PERSISTED') {
       this.#assertCapacity('transport_inbound_frames', this.#maxInboundRows);
     }
@@ -2635,6 +3172,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           )
           .run(row.message_id);
         if (Number(removed.changes) === 1) {
+          if (row.envelope_type === 'invocation.succeeded') {
+            this.#sensitivePurgePending = true;
+          }
           this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(row.message_id), -1);
         }
       }
@@ -2710,6 +3250,191 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       .run(inboundEffectDigestFromRow(row), connectionId, sequence);
   }
 
+  #markInvocationCommandApplied(reference: OpaqueInvocationCommandReference, now: number): void {
+    const row = this.#database
+      .prepare(
+        `SELECT message_id, canonical_digest, logical_digest, envelope_kind, envelope_type,
+                effect_state
+         FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+      )
+      .get(reference.connectionId, reference.sequence) as
+      | {
+          message_id: string;
+          canonical_digest: string;
+          logical_digest: string;
+          envelope_kind: string;
+          envelope_type: string;
+          effect_state: 'PERSISTED' | 'APPLIED';
+        }
+      | undefined;
+    if (
+      row === undefined ||
+      row.message_id !== reference.messageId ||
+      row.canonical_digest !== reference.canonicalDigest ||
+      row.envelope_kind !== 'command' ||
+      row.envelope_type !== reference.type
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    const pendingCopies = this.#database
+      .prepare(
+        `SELECT connection_id, sequence, logical_digest
+         FROM transport_inbound_frames
+         WHERE message_id = ? AND envelope_kind = 'command' AND envelope_type = ?
+           AND effect_state = 'PERSISTED'
+         ORDER BY recorded_at_ms, connection_id, sequence`,
+      )
+      .all(reference.messageId, reference.type) as Array<{
+      connection_id: string;
+      sequence: string;
+      logical_digest: string;
+    }>;
+    for (const copy of pendingCopies) {
+      if (copy.logical_digest !== row.logical_digest) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      const updated = this.#database
+        .prepare(
+          `UPDATE transport_inbound_frames SET effect_state = 'APPLIED', applied_at_ms = ?,
+             retained_until_ms = ? WHERE connection_id = ? AND sequence = ?
+             AND effect_state = 'PERSISTED'`,
+        )
+        .run(
+          now,
+          safeDeadline(now, WORKER_TRANSPORT_RETENTION_MS),
+          copy.connection_id,
+          copy.sequence,
+        );
+      if (Number(updated.changes) !== 1) throw permanentPortFailure();
+      this.#refreshInboundEffectDigest(copy.connection_id, copy.sequence);
+      this.#appendInboundEffectEvent({
+        connectionId: copy.connection_id,
+        sequence: copy.sequence,
+        messageId: reference.messageId,
+        fromState: 'PERSISTED',
+        toState: 'APPLIED',
+        reason:
+          copy.connection_id === reference.connectionId && copy.sequence === reference.sequence
+            ? 'RECORDED'
+            : 'DEDUPLICATED',
+        occurredAtMs: now,
+      });
+    }
+  }
+
+  #purgeInvocationPrepareTransportPayload(commandId: string): void {
+    const consumed = this.#database
+      .prepare(
+        `SELECT semantic_digest FROM local_consumed_commands
+         WHERE command_id = ? AND command_type = 'invocation.prepare'`,
+      )
+      .get(commandId) as { semantic_digest: string } | undefined;
+    if (consumed === undefined) throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    const rows = this.#database
+      .prepare(
+        `SELECT connection_id, sequence, message_id, canonical_digest, envelope_json, effect_state
+         FROM transport_inbound_frames WHERE message_id = ?`,
+      )
+      .all(commandId) as Array<{
+      connection_id: string;
+      sequence: string;
+      message_id: string;
+      canonical_digest: string;
+      envelope_json: string;
+      effect_state: 'PERSISTED' | 'APPLIED';
+    }>;
+    for (const row of rows) {
+      const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
+      if (
+        envelope.kind !== 'command' ||
+        envelope.type !== 'invocation.prepare' ||
+        row.effect_state !== 'APPLIED' ||
+        workerInvocationCommandSemanticDigest(envelope) !== consumed.semantic_digest
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      this.#database
+        .prepare(
+          `DELETE FROM transport_inbound_effect_events
+           WHERE connection_id = ? AND sequence = ?`,
+        )
+        .run(row.connection_id, row.sequence);
+      const removed = this.#database
+        .prepare(
+          `DELETE FROM transport_inbound_frames
+           WHERE connection_id = ? AND sequence = ? AND message_id = ?`,
+        )
+        .run(row.connection_id, row.sequence, row.message_id);
+      if (Number(removed.changes) !== 1) throw permanentPortFailure();
+      this.#sensitivePurgePending = true;
+      this.#adjustEvidenceAccumulator(
+        'inbound',
+        inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id),
+        -1,
+      );
+    }
+  }
+
+  #purgeInvocationCommandResponse(commandId: string): void {
+    const rows = this.#database
+      .prepare(
+        `SELECT message_id, canonical_digest, envelope_json
+         FROM transport_outbox WHERE response_to_message_id = ?`,
+      )
+      .all(commandId) as Array<{
+      message_id: string;
+      canonical_digest: string;
+      envelope_json: string;
+    }>;
+    if (rows.length > 1) throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    for (const row of rows) {
+      const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
+      if (
+        envelope.kind !== 'ack' ||
+        envelope.type !== 'message.ack' ||
+        envelope.body.acknowledgedMessageId !== commandId ||
+        envelope.body.level !== 'PERSISTED'
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      const removed = this.#database
+        .prepare('DELETE FROM transport_outbox WHERE message_id = ? AND response_to_message_id = ?')
+        .run(row.message_id, commandId);
+      if (Number(removed.changes) !== 1) throw permanentPortFailure();
+      this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(row.message_id), -1);
+    }
+  }
+
+  #purgeInvocationDeliveryWire(deliveryMessageId: string): void {
+    const delivery = this.#database
+      .prepare(
+        `SELECT source_event_id FROM local_invocation_deliveries
+         WHERE delivery_message_id = ?`,
+      )
+      .get(deliveryMessageId) as { source_event_id: string } | undefined;
+    if (delivery === undefined) throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    const row = this.#outboxRow(deliveryMessageId);
+    if (row === undefined) return;
+    const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
+    if (
+      envelope.kind !== 'event' ||
+      !envelope.type.startsWith('invocation.') ||
+      row.state !== 'ACKED' ||
+      row.ack_level !== 'CLOUD_COMMITTED'
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    const removed = this.#database
+      .prepare(
+        `DELETE FROM transport_outbox
+         WHERE message_id = ? AND state = 'ACKED' AND ack_level = 'CLOUD_COMMITTED'`,
+      )
+      .run(deliveryMessageId);
+    if (Number(removed.changes) !== 1) throw permanentPortFailure();
+    if (envelope.type === 'invocation.succeeded') this.#sensitivePurgePending = true;
+    this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(deliveryMessageId), -1);
+  }
+
   #appendInboundEffectEvent(input: {
     connectionId: string;
     sequence: string;
@@ -2778,12 +3503,12 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     let pruned = 0;
     const expiredOutbox = this.#database
       .prepare(
-        `SELECT message_id FROM transport_outbox
+        `SELECT message_id, envelope_type FROM transport_outbox
          WHERE state IN ('ACKED', 'SUPERSEDED')
            AND retained_until_ms IS NOT NULL AND retained_until_ms <= ?
          ORDER BY retained_until_ms, message_id LIMIT ?`,
       )
-      .all(now, PRUNE_BATCH_SIZE) as Array<{ message_id: string }>;
+      .all(now, PRUNE_BATCH_SIZE) as Array<{ message_id: string; envelope_type: string }>;
     for (const row of expiredOutbox) {
       this.#assertTransactionBudget();
       const result = this.#database
@@ -2794,6 +3519,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         )
         .run(row.message_id, now);
       if (Number(result.changes) === 1) {
+        if (row.envelope_type === 'invocation.succeeded') {
+          this.#sensitivePurgePending = true;
+        }
         this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(row.message_id), -1);
         pruned += 1;
       }
@@ -2813,6 +3541,16 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
            AND NOT EXISTS (
              SELECT 1 FROM transport_outbox AS response
              WHERE response.response_to_message_id = transport_inbound_frames.message_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM local_consumed_commands AS consumed
+             WHERE consumed.command_id = transport_inbound_frames.message_id
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM local_invocation_outbox_receipts AS receipt
+             WHERE receipt.ack_connection_id = transport_inbound_frames.connection_id
+               AND receipt.ack_sequence = transport_inbound_frames.sequence
+               AND receipt.ack_message_id = transport_inbound_frames.message_id
            )
            AND (
              acknowledged_message_id IS NULL
@@ -2892,7 +3630,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     const sql =
       table === 'transport_inbound_frames'
         ? `SELECT count(*) AS count FROM transport_inbound_frames
-           WHERE effect_state = 'PERSISTED'`
+           WHERE effect_state = 'PERSISTED'
+             ${workerInvocationTablesExist(this.#database) ? `AND (message_id NOT IN (SELECT command_id FROM local_consumed_commands) OR envelope_type IN ('invocation.prepare', 'invocation.start'))` : ''}`
         : table === 'transport_outbox'
           ? `SELECT count(*) AS count FROM transport_outbox
              WHERE state IN ('UNBOUND', 'PENDING', 'WRITTEN')`
@@ -2977,7 +3716,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (journalEntryExists(`${this.#filename}-journal`)) {
       throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
     }
-    for (const suffix of ['-wal', '-shm', '.watermark']) {
+    for (const suffix of ['-wal', '-shm', '.watermark', '.recovery-reserve']) {
       const path = `${this.#filename}${suffix}`;
       if (journalEntryExists(path)) {
         ensureSafeRegularFile(path, 0o600, 'JOURNAL_FILE_UNSAFE');
@@ -3179,6 +3918,7 @@ function parseStoredEnvelope(serialized: string, expectedDigest: string): Broker
 }
 
 function logicalEnvelopeDigest(envelope: BrokerEnvelope): string {
+  if (envelope.kind === 'command') return workerInvocationCommandSemanticDigest(envelope);
   return canonicalSha256({
     protocol: envelope.protocol,
     schemaVersion: envelope.schemaVersion,
@@ -3380,15 +4120,27 @@ function ensurePrivateDirectory(parent: string): void {
   }
 }
 
-function assertSafeExistingAuxiliaryFiles(filename: string): void {
-  if (journalEntryExists(`${filename}-journal`)) {
-    throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
-  }
-  for (const suffix of ['-wal', '-shm', '.watermark']) {
-    const path = `${filename}${suffix}`;
-    if (journalEntryExists(path)) {
-      ensureSafeRegularFile(path, 0o600, 'JOURNAL_FILE_UNSAFE');
+function assertSafeExistingAuxiliaryFiles(filename: string, busyTimeoutMs: number): void {
+  const rollbackJournal = `${filename}-journal`;
+  const rollbackDeadline = performance.now() + busyTimeoutMs;
+  while (safeRegularFileExists(rollbackJournal, 0o600, 'JOURNAL_FILE_UNSAFE')) {
+    // A concurrent authorized first-open briefly uses SQLite's rollback journal while it installs
+    // the schema and switches the file to WAL. Treat only that private, single-link topology as a
+    // bounded serialization barrier; unsafe topology still fails immediately, and a persistent
+    // rollback journal fails closed when busy_timeout expires.
+    if (performance.now() >= rollbackDeadline) {
+      throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
     }
+    Atomics.wait(
+      SQLITE_BUSY_WAIT,
+      0,
+      0,
+      Math.min(10, Math.max(1, rollbackDeadline - performance.now())),
+    );
+  }
+  for (const suffix of ['-wal', '-shm', '.watermark', '.recovery-reserve']) {
+    const path = `${filename}${suffix}`;
+    safeRegularFileExists(path, 0o600, 'JOURNAL_FILE_UNSAFE');
   }
 }
 
@@ -3446,6 +4198,15 @@ function availableFilesystemBytes(path: string): number {
   }
 }
 
+function recoveryReserveFileIsPhysical(path: string): boolean {
+  const stats = statSync(path);
+  return (
+    stats.size === WORKER_TRANSPORT_FILESYSTEM_RECOVERY_RESERVE_BYTES &&
+    typeof stats.blocks === 'number' &&
+    stats.blocks * 512 >= WORKER_TRANSPORT_FILESYSTEM_RECOVERY_RESERVE_BYTES
+  );
+}
+
 function journalEntryExists(path: string): boolean {
   try {
     lstatSync(path);
@@ -3476,6 +4237,30 @@ function ensureSafeRegularFile(
   ) {
     throw new SqliteWorkerTransportError(code);
   }
+}
+
+function safeRegularFileExists(
+  path: string,
+  expectedMode: number,
+  code: 'JOURNAL_FILE_UNSAFE',
+): boolean {
+  let stats: Stats;
+  try {
+    stats = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw new SqliteWorkerTransportError(code);
+  }
+  if (
+    !stats.isFile() ||
+    stats.isSymbolicLink() ||
+    stats.nlink !== 1 ||
+    (stats.mode & 0o777) !== expectedMode ||
+    !ownedByCurrentUser(stats)
+  ) {
+    throw new SqliteWorkerTransportError(code);
+  }
+  return true;
 }
 
 function ownedByCurrentUser(stats: Stats): boolean {
@@ -3630,6 +4415,29 @@ function isSqliteCapacity(error: unknown): boolean {
       candidate.errcode === 18 ||
       candidate.message === 'database or disk is full' ||
       candidate.message === 'string or blob too big')
+  );
+}
+
+function isFilesystemCapacity(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === 'ENOSPC' || code === 'EDQUOT' || code === 'EFBIG';
+}
+
+function isRecoveryTransaction(operation: string): boolean {
+  return (
+    operation === 'release_connection' ||
+    operation === 'release_installation' ||
+    operation === 'prune_retained' ||
+    operation === 'invocation_reject_start_permanently' ||
+    operation === 'invocation_take_host_prompt' ||
+    operation === 'invocation_reject_host_dispatch' ||
+    operation === 'invocation_record_dispatch_unknown' ||
+    operation === 'invocation_recover_unconfirmed_start' ||
+    operation === 'invocation_confirm_host_dispatch' ||
+    operation === 'invocation_write_succeeded' ||
+    operation === 'invocation_mark_cloud_committed' ||
+    operation === 'invocation_prune_committed_retention'
   );
 }
 

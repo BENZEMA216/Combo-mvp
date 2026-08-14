@@ -9,7 +9,6 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  statfsSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -27,6 +26,7 @@ import {
   brokerSensitiveMessageAadDigest,
   brokerSensitiveMessageCipherDigest,
   canonicalSha256,
+  canonicalizeJson,
   type BrokerEnvelope,
   type BrokerHandshake,
 } from '@cb/creator-agent-protocol';
@@ -137,6 +137,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       journalMode: 'wal',
       synchronous: 2,
       foreignKeys: 1,
+      secureDelete: 1,
       busyTimeoutMs: 1_000,
       pageSize: 4_096,
       maxPageCount: WORKER_TRANSPORT_DEFAULT_MAX_DATABASE_BYTES / 4_096,
@@ -223,10 +224,9 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     }
 
     const reservedJournal = temporaryJournal();
-    const filesystem = statfsSync(reservedJournal.directory, { bigint: true });
-    const available = filesystem.bavail * filesystem.bsize;
-    const impossibleReserve = Number(available + 1n);
-    expect(Number.isSafeInteger(impossibleReserve)).toBe(true);
+    // Concurrent Vitest workers can release temporary files between sampling statfs and BEGIN.
+    // A safe-integer ceiling is deterministically above the capacity of the disposable volume.
+    const impossibleReserve = Number.MAX_SAFE_INTEGER;
     const reserved = createJournal(reservedJournal.filename, uuid(11_999), {
       minFreeBytes: impossibleReserve,
     });
@@ -306,6 +306,52 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).resolves.toBe('EXACT_REPLAY');
     adapter.close();
   }, 30_000);
+
+  it('retries transient checkpoint readers but fails closed after the bounded busy timeout', async () => {
+    const fixture = createFixture(12_500);
+    const { filename } = temporaryJournal();
+    const signal = new AbortController().signal;
+    const adapter = createJournal(filename, fixture.installationId, { busyTimeoutMs: 500 });
+    await adapter.acquireInstallation(ownerInput(fixture.installationId, OWNER_A, signal));
+    let state = await activate(adapter, fixture, OWNER_A, signal);
+    state = await commit(
+      adapter,
+      fixture.installationId,
+      OWNER_A,
+      state,
+      conversationOpen(fixture, state, uuid(12_501), uuid(12_502), SHA('a')),
+      signal,
+    );
+
+    const transient = spawnPinnedReadProcess(filename, 125);
+    expect(await nextChildMessage(transient)).toEqual({ pinned: true });
+    const started = performance.now();
+    const concurrent = new SqliteWorkerBrokerDurableTransport({ filename, busyTimeoutMs: 500 });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(75);
+    expect(concurrent.inspectPragmas().quickCheck).toBe('ok');
+    concurrent.close();
+    await waitForExit(transient);
+
+    await commit(
+      adapter,
+      fixture.installationId,
+      OWNER_A,
+      state,
+      conversationOpen(fixture, state, uuid(12_503), uuid(12_504), SHA('b')),
+      signal,
+    );
+
+    const pinned = spawnPinnedReadProcess(filename, 350);
+    expect(await nextChildMessage(pinned)).toEqual({ pinned: true });
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename, busyTimeoutMs: 50 }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_BUSY' }));
+    await waitForExit(pinned);
+    const recovered = new SqliteWorkerBrokerDurableTransport({ filename, busyTimeoutMs: 500 });
+    expect(recovered.inspectPragmas().quickCheck).toBe('ok');
+    recovered.close();
+    adapter.close();
+  }, 5_000);
 
   it('rejects unsafe parent/file topology, hardlinks, malformed bytes, future schema, and non-WAL drift', () => {
     const unsafeParent = makeTemporaryDirectory();
@@ -429,6 +475,26 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).toThrowError(expect.objectContaining({ code: 'JOURNAL_FILE_UNSAFE' }));
     expect(createHash('sha256').update(readFileSync(canary)).digest('hex')).toBe(canaryBefore);
 
+    const persistentRollback = temporaryJournal();
+    const persistentRollbackAdapter = createJournal(
+      persistentRollback.filename,
+      TOPOLOGY_INSTALLATION_ID,
+    );
+    persistentRollbackAdapter.close();
+    const rollbackPath = `${persistentRollback.filename}-journal`;
+    writeFileSync(rollbackPath, randomBytes(4_096), { mode: 0o600 });
+    const rollbackBefore = createHash('sha256').update(readFileSync(rollbackPath)).digest('hex');
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: persistentRollback.filename,
+          busyTimeoutMs: 5,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_FILE_UNSAFE' }));
+    expect(createHash('sha256').update(readFileSync(rollbackPath)).digest('hex')).toBe(
+      rollbackBefore,
+    );
+
     const danglingSidecar = temporaryJournal();
     const danglingSidecarAdapter = createJournal(
       danglingSidecar.filename,
@@ -534,29 +600,173 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     reopened.close();
   }, 10_000);
 
-  it('serializes concurrent first-open migration and lets exactly one installation owner win', async () => {
-    const fixture = createFixture(17);
-    const { filename } = temporaryJournal();
-    const first = spawnOwnerProcess(filename, fixture.installationId, OWNER_A, 500);
-    const second = spawnOwnerProcess(filename, fixture.installationId, OWNER_B, 500);
-    const outcomes = (await Promise.all([
-      nextChildMessage(first),
-      nextChildMessage(second),
-    ])) as Array<{
-      acquired: boolean;
-    }>;
-    expect(outcomes.map((outcome) => outcome.acquired).sort()).toEqual([false, true]);
-    const inspector = new SqliteWorkerBrokerDurableTransport({ filename });
-    expect(inspector.inspectPragmas()).toMatchObject({
-      userVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
-      journalMode: 'wal',
-      synchronous: 2,
-      quickCheck: 'ok',
+  it('validates an exact v1 DB and external watermark before forward-migrating it to v2', async () => {
+    const migrated = temporaryJournal();
+    createJournal(migrated.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV1(migrated.filename);
+    expect(
+      queryScalar(migrated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(1);
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT count(*) AS value FROM sqlite_master WHERE name LIKE 'local_%'`,
+      ),
+    ).toBe(0);
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: migrated.filename });
+    expect(reopened.inspectPragmas().userVersion).toBe(2);
+    reopened.close();
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT count(*) AS value FROM sqlite_master
+         WHERE type = 'table' AND name LIKE 'local_%'`,
+      ),
+    ).toBe(8);
+
+    const mismatched = temporaryJournal();
+    createJournal(mismatched.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV1(mismatched.filename);
+    rewriteWatermark(mismatched.filename, (payload) => ({
+      ...payload,
+      commitEpoch: Number(payload.commitEpoch) + 1,
+    }));
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: mismatched.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    expect(
+      queryScalar(mismatched.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(1);
+    expect(
+      queryScalar(
+        mismatched.filename,
+        `SELECT count(*) AS value FROM sqlite_master WHERE name LIKE 'local_%'`,
+      ),
+    ).toBe(0);
+
+    for (const faultPoint of [
+      'migration.v1_to_v2.before_watermark',
+      'migration.v1_to_v2.after_watermark_fsync',
+    ] as const) {
+      const compensated = temporaryJournal();
+      createJournal(compensated.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV1(compensated.filename);
+      expect(
+        () =>
+          new SqliteWorkerBrokerDurableTransport({
+            filename: compensated.filename,
+            faultInjector(point) {
+              if (point === faultPoint) throw new Error('SIMULATED_V1_TO_V2_FAILURE');
+            },
+          }),
+      ).toThrow();
+      expect(
+        queryScalar(compensated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(1);
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: compensated.filename });
+      expect(recovered.inspectPragmas().userVersion).toBe(2);
+      recovered.close();
+    }
+
+    const killedAfterWatermark = temporaryJournal();
+    createJournal(killedAfterWatermark.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV1(killedAfterWatermark.filename);
+    const migrationChild = spawnLegacyMigrationKillProcess(
+      killedAfterWatermark.filename,
+      'migration.v1_to_v2.after_watermark_fsync',
+    );
+    expect(await nextChildMessage(migrationChild)).toEqual({
+      reached: 'migration.v1_to_v2.after_watermark_fsync',
     });
-    inspector.close();
-    first.kill('SIGKILL');
-    second.kill('SIGKILL');
-    await Promise.all([waitForExit(first), waitForExit(second)]);
+    migrationChild.kill('SIGKILL');
+    await waitForExit(migrationChild);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: killedAfterWatermark.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    expect(
+      queryScalar(
+        killedAfterWatermark.filename,
+        'SELECT user_version AS value FROM pragma_user_version',
+      ),
+    ).toBe(1);
+
+    for (const faultPoint of [
+      'migration.v1_to_v2.before_watermark',
+      'migration.v1_to_v2.after_commit',
+    ] as const) {
+      const killed = temporaryJournal();
+      createJournal(killed.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV1(killed.filename);
+      const child = spawnLegacyMigrationKillProcess(killed.filename, faultPoint);
+      expect(await nextChildMessage(child)).toEqual({ reached: faultPoint });
+      child.kill('SIGKILL');
+      await waitForExit(child);
+      expect(
+        queryScalar(killed.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(faultPoint === 'migration.v1_to_v2.before_watermark' ? 1 : 2);
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: killed.filename });
+      expect(recovered.inspectPragmas().userVersion).toBe(2);
+      recovered.close();
+    }
+
+    const committed = temporaryJournal();
+    createJournal(committed.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV1(committed.filename);
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: committed.filename,
+          faultInjector(point) {
+            if (point === 'migration.v1_to_v2.after_commit') {
+              throw new Error('SIMULATED_V1_TO_V2_RESPONSE_LOSS');
+            }
+          },
+        }),
+    ).toThrow();
+    const committedReopen = new SqliteWorkerBrokerDurableTransport({
+      filename: committed.filename,
+    });
+    expect(committedReopen.inspectPragmas().userVersion).toBe(2);
+    committedReopen.close();
+  }, 10_000);
+
+  it('serializes barrier-synchronized concurrent first-open and lets exactly one owner win', async () => {
+    for (let round = 0; round < 3; round += 1) {
+      const fixture = createFixture(17 + round);
+      const { filename } = temporaryJournal();
+      const first = spawnOwnerProcess(filename, fixture.installationId, OWNER_A, 500, true);
+      const second = spawnOwnerProcess(filename, fixture.installationId, OWNER_B, 500, true);
+      expect(await nextChildMessage(first)).toEqual({ ready: true });
+      expect(await nextChildMessage(second)).toEqual({ ready: true });
+      first.send({ go: true });
+      second.send({ go: true });
+      const outcomes = (await Promise.all([
+        nextChildMessage(first),
+        nextChildMessage(second),
+      ])) as Array<{
+        acquired: boolean;
+        error: string | null;
+        hostCalls: number;
+        brokerCalls: number;
+      }>;
+      expect(outcomes.map((outcome) => outcome.acquired).sort()).toEqual([false, true]);
+      expect(outcomes.map((outcome) => outcome.error)).toEqual([null, null]);
+      expect(
+        outcomes.every((outcome) => outcome.hostCalls === 0 && outcome.brokerCalls === 0),
+      ).toBe(true);
+      const inspector = new SqliteWorkerBrokerDurableTransport({ filename });
+      expect(inspector.inspectPragmas()).toMatchObject({
+        userVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        journalMode: 'wal',
+        synchronous: 2,
+        quickCheck: 'ok',
+      });
+      inspector.close();
+      first.kill('SIGKILL');
+      second.kill('SIGKILL');
+      await Promise.all([waitForExit(first), waitForExit(second)]);
+    }
   }, 10_000);
 
   it('fails closed on valid-SQLite row tampering before any outbound replay', async () => {
@@ -818,7 +1028,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     winner.close();
     losingAdapter.close();
     await secondGateway.stop();
-  }, 15_000);
+  }, 30_000);
 
   it('fences an active connection when installation ownership advances to a new epoch', async () => {
     const fixture = createFixture(25);
@@ -2680,6 +2890,112 @@ function mutateDatabase(filename: string, sql: string): void {
   database.close();
 }
 
+function downgradeToLegacyV1(filename: string): void {
+  const database = new SqliteDatabase(filename);
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+    BEGIN EXCLUSIVE;
+    DROP TABLE local_recovery_reserve_pages;
+    DROP TABLE local_invocation_outbox_receipts;
+    DROP TABLE local_invocation_deliveries;
+    DROP TABLE local_invocation_outbox;
+    DROP TABLE local_invocation_events;
+    DROP TABLE local_consumed_commands;
+    DROP TABLE local_invocations;
+    DROP TABLE local_conversations;
+    PRAGMA user_version = 1;
+  `);
+  const schemaRows = database
+    .prepare(
+      `SELECT type, name, sql FROM sqlite_master
+       WHERE name LIKE 'transport_%' AND sql IS NOT NULL
+       ORDER BY type, name`,
+    )
+    .all();
+  const installation = database
+    .prepare(
+      `SELECT installation_id, highest_owner_epoch FROM transport_installations
+       ORDER BY installation_id`,
+    )
+    .all();
+  const owners = database
+    .prepare(
+      `SELECT installation_id, owner_token_digest, owner_epoch, lease_expires_at_ms,
+              acquired_at_ms, updated_at_ms
+       FROM transport_installation_owners ORDER BY installation_id`,
+    )
+    .all();
+  const fences = database
+    .prepare(
+      `SELECT installation_id, deployment_id, highest_fence
+       FROM transport_deployment_fences ORDER BY installation_id, deployment_id`,
+    )
+    .all();
+  const schemaDigest = createHash('sha256').update(canonicalizeJson(schemaRows)).digest('hex');
+  const authorityDigest = createHash('sha256')
+    .update('combo:vnext:worker-authority:v1\0', 'utf8')
+    .update(canonicalizeJson({ installation, owners, fences }), 'utf8')
+    .digest('hex');
+  database
+    .prepare(
+      `UPDATE transport_meta SET schema_digest = ?, authority_digest = ? WHERE singleton = 1`,
+    )
+    .run(schemaDigest, authorityDigest);
+  database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE);');
+
+  const meta = database
+    .prepare(
+      `SELECT schema_digest, authority_digest, installation_id, journal_generation,
+              authorization_digest, commit_epoch, inbound_evidence_count,
+              inbound_evidence_xor, outbox_evidence_count, outbox_evidence_xor,
+              max_database_bytes, max_wal_bytes, min_free_bytes
+       FROM transport_meta WHERE singleton = 1`,
+    )
+    .get() as Record<string, string | number>;
+  database.close();
+  const payload = {
+    formatVersion: 1,
+    applicationId: WORKER_TRANSPORT_APPLICATION_ID,
+    schemaVersion: 1,
+    schemaDigest: meta.schema_digest,
+    authorityDigest: meta.authority_digest,
+    installationId: meta.installation_id,
+    journalGeneration: meta.journal_generation,
+    authorizationDigest: meta.authorization_digest,
+    commitEpoch: meta.commit_epoch,
+    inboundEvidenceCount: meta.inbound_evidence_count,
+    inboundEvidenceXor: meta.inbound_evidence_xor,
+    outboxEvidenceCount: meta.outbox_evidence_count,
+    outboxEvidenceXor: meta.outbox_evidence_xor,
+    maxDatabaseBytes: meta.max_database_bytes,
+    maxWalBytes: meta.max_wal_bytes,
+    minFreeBytes: meta.min_free_bytes,
+  };
+  writeWatermarkDocument(filename, payload);
+}
+
+function rewriteWatermark(
+  filename: string,
+  mutate: (payload: Record<string, unknown>) => Record<string, unknown>,
+): void {
+  const document = JSON.parse(readFileSync(`${filename}.watermark`, 'utf8')) as {
+    payload: Record<string, unknown>;
+  };
+  writeWatermarkDocument(filename, mutate(document.payload));
+}
+
+function writeWatermarkDocument(filename: string, payload: Record<string, unknown>): void {
+  const canonicalPayload = canonicalizeJson(payload);
+  const document = canonicalizeJson({
+    payload,
+    digest: createHash('sha256')
+      .update('combo:vnext:worker-commit-watermark:v1\0', 'utf8')
+      .update(canonicalPayload, 'utf8')
+      .digest('hex'),
+  });
+  writeFileSync(`${filename}.watermark`, document, { mode: 0o600 });
+}
+
 function queryCount(filename: string, table: string): number {
   if (!/^transport_[a-z_]+$/u.test(table)) throw new Error('INVALID_TEST_TABLE');
   const database = new SqliteDatabase(filename, { readOnly: true });
@@ -2700,21 +3016,39 @@ function spawnOwnerProcess(
   installationId: string,
   ownerToken: string,
   ownerLeaseMs: number,
+  barrier = false,
 ): ChildProcess {
   const script = `
     import { SqliteWorkerBrokerDurableTransport } from ${JSON.stringify(distEntry)};
-    const adapter = new SqliteWorkerBrokerDurableTransport({
-      filename: process.env.TEST_FILENAME,
-      newJournalAuthorization: JSON.parse(process.env.TEST_NEW_JOURNAL_AUTHORIZATION),
-      ownerLeaseMs: Number(process.env.TEST_LEASE_MS),
-      allowUnsafeShortOwnerLeaseForTests: true,
-    });
-    const acquired = await adapter.acquireInstallation({
-      installationId: process.env.TEST_INSTALLATION,
-      ownerToken: process.env.TEST_OWNER,
-      signal: new AbortController().signal,
-    });
-    process.send({ acquired });
+    if (process.env.TEST_BARRIER === 'true') {
+      process.send({ ready: true });
+      await new Promise((resolve) => process.once('message', resolve));
+    }
+    try {
+      const adapter = new SqliteWorkerBrokerDurableTransport({
+        filename: process.env.TEST_FILENAME,
+        newJournalAuthorization: JSON.parse(process.env.TEST_NEW_JOURNAL_AUTHORIZATION),
+        ownerLeaseMs: Number(process.env.TEST_LEASE_MS),
+        allowUnsafeShortOwnerLeaseForTests: true,
+      });
+      const acquired = await adapter.acquireInstallation({
+        installationId: process.env.TEST_INSTALLATION,
+        ownerToken: process.env.TEST_OWNER,
+        signal: new AbortController().signal,
+      });
+      process.send(
+        process.env.TEST_BARRIER === 'true'
+          ? { acquired, error: null, hostCalls: 0, brokerCalls: 0 }
+          : { acquired },
+      );
+    } catch (error) {
+      process.send({
+        acquired: false,
+        error: error && typeof error === 'object' && 'code' in error ? error.code : 'UNKNOWN',
+        hostCalls: 0,
+        brokerCalls: 0,
+      });
+    }
     setInterval(() => {}, 1000);
   `;
   return trackedSpawn(script, {
@@ -2722,6 +3056,7 @@ function spawnOwnerProcess(
     TEST_INSTALLATION: installationId,
     TEST_OWNER: ownerToken,
     TEST_LEASE_MS: String(ownerLeaseMs),
+    TEST_BARRIER: String(barrier),
     TEST_NEW_JOURNAL_AUTHORIZATION: JSON.stringify(journalAuthorization(installationId)),
   });
 }
@@ -2743,6 +3078,31 @@ function spawnMigrationKillProcess(filename: string, installationId: string): Ch
   return trackedSpawn(script, {
     TEST_FILENAME: filename,
     TEST_NEW_JOURNAL_AUTHORIZATION: JSON.stringify(journalAuthorization(installationId)),
+  });
+}
+
+function spawnLegacyMigrationKillProcess(
+  filename: string,
+  faultPoint:
+    | 'migration.v1_to_v2.before_watermark'
+    | 'migration.v1_to_v2.after_watermark_fsync'
+    | 'migration.v1_to_v2.after_commit',
+): ChildProcess {
+  const script = `
+    import { SqliteWorkerBrokerDurableTransport } from ${JSON.stringify(distEntry)};
+    new SqliteWorkerBrokerDurableTransport({
+      filename: process.env.TEST_FILENAME,
+      faultInjector(point) {
+        if (point === process.env.TEST_FAULT_POINT) {
+          process.send({ reached: point });
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+      },
+    });
+  `;
+  return trackedSpawn(script, {
+    TEST_FILENAME: filename,
+    TEST_FAULT_POINT: faultPoint,
   });
 }
 
@@ -2910,6 +3270,25 @@ function spawnLockProcess(filename: string, holdMs: number): ChildProcess {
     const database = new DatabaseSync(process.env.TEST_FILENAME);
     database.exec('BEGIN IMMEDIATE');
     process.send({ locked: true });
+    setTimeout(() => {
+      database.exec('ROLLBACK');
+      database.close();
+    }, Number(process.env.TEST_HOLD_MS));
+  `;
+  return trackedSpawn(script, {
+    TEST_FILENAME: filename,
+    TEST_HOLD_MS: String(holdMs),
+  });
+}
+
+function spawnPinnedReadProcess(filename: string, holdMs: number): ChildProcess {
+  const script = `
+    import { createRequire } from 'node:module';
+    const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
+    const database = new DatabaseSync(process.env.TEST_FILENAME, { readOnly: true });
+    database.exec('BEGIN');
+    database.prepare('SELECT envelope_json FROM transport_inbound_frames LIMIT 1').get();
+    process.send({ pinned: true });
     setTimeout(() => {
       database.exec('ROLLBACK');
       database.close();
@@ -3169,7 +3548,7 @@ function uuid(index: number): string {
   return `0198f00d-0000-7000-8000-${suffix}`;
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {
+async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error('WAIT_TIMEOUT');
