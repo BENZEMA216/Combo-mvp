@@ -14,6 +14,10 @@ function digest(marker: string): string {
   return marker.repeat(64);
 }
 
+function hmac(marker: string): string {
+  return `hmac-sha256:${digest(marker)}`;
+}
+
 function databaseConnectionString(name: string): string {
   const url = new URL(databaseUrl!);
   url.pathname = `/${name}`;
@@ -33,8 +37,8 @@ async function applyMigration(client: Client, filename: string): Promise<void> {
   }
 }
 
-pgDescribe('0012 -> 0013 -> 0014 -> 0015 Creator Agent persistent upgrade', () => {
-  it('preserves active/terminal rows before adding open/ready and Gateway authority', async () => {
+pgDescribe('0012 -> 0013 -> 0014 -> 0015 -> 0016 Creator Agent persistent upgrade', () => {
+  it('preserves legacy commands, Invocations, and Gateway receipts through lifecycle authority', async () => {
     const admin = new Client({ connectionString: databaseUrl });
     const databaseName = `combo_vnext_upgrade_${randomUUID().replaceAll('-', '')}`;
     await admin.connect();
@@ -67,6 +71,23 @@ pgDescribe('0012 -> 0013 -> 0014 -> 0015 Creator Agent persistent upgrade', () =
         preexistingCommand: randomUUID(),
         idle: randomUUID(),
         closed: randomUUID(),
+        lease: randomUUID(),
+        connection: randomUUID(),
+        challenge: randomUUID(),
+        session: randomUUID(),
+        frameMessage: randomUUID(),
+        runningConversation: randomUUID(),
+        terminalConversation: randomUUID(),
+        runningUserMessage: randomUUID(),
+        terminalUserMessage: randomUUID(),
+        terminalAssistantMessage: randomUUID(),
+        runningInvocation: randomUUID(),
+        terminalInvocation: randomUUID(),
+        runningCapability: randomUUID(),
+        terminalCapability: randomUUID(),
+        pendingPrepare: randomUUID(),
+        sentPrepare: randomUUID(),
+        ackedCommand: randomUUID(),
       };
       await target.query(
         `INSERT INTO users (id, account)
@@ -299,11 +320,299 @@ pgDescribe('0012 -> 0013 -> 0014 -> 0015 Creator Agent persistent upgrade', () =
           { id: ids.idle, state: 'IDLE' },
         ],
       });
+
+      await target.query('BEGIN');
+      try {
+        await target.query(
+          `INSERT INTO agent_version_controls (version_id, creator_id)
+           VALUES ($1, $2)`,
+          [ids.version, ids.creator],
+        );
+        await target.query(
+          `INSERT INTO worker_auth_challenges (
+             id, creator_id, installation_id, deployment_id, deployment_generation,
+             state, issued_at, expires_at, consumed_at
+           ) VALUES (
+             $1, $2, $3, $4, 0, 'CONSUMED',
+             now(), now() + interval '1 hour', now()
+           )`,
+          [ids.challenge, ids.creator, ids.worker, ids.deployment],
+        );
+        await target.query(
+          `INSERT INTO worker_gateway_sessions (
+             id, creator_id, installation_id, challenge_id, connection_id,
+             registration_digest, state, inbound_next_seq, expires_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', 1, now() + interval '1 hour')`,
+          [ids.session, ids.creator, ids.worker, ids.challenge, ids.connection, digest('6')],
+        );
+        await target.query(
+          `INSERT INTO worker_leases (
+             id, deployment_id, creator_id, worker_id, connection_id, fence, expires_at
+           ) VALUES ($1, $2, $3, $4, $5, 1, now() + interval '1 hour')`,
+          [ids.lease, ids.deployment, ids.creator, ids.worker, ids.connection],
+        );
+        await target.query(
+          `INSERT INTO agent_conversations (
+             id, agent_id, deployment_id, agent_version_id, creator_id,
+             consumer_subject_id, idempotency_key, request_digest, version_digest,
+             state, assigned_worker_id, expires_at
+           ) VALUES
+             ($1, $3, $4, $5, $6, $7, gen_uuid_v7(), $8, $9,
+              'BUSY', $10, now() + interval '1 hour'),
+             ($2, $3, $4, $5, $6, $7, gen_uuid_v7(), $8, $9,
+              'IDLE', $10, now() + interval '1 hour')`,
+          [
+            ids.runningConversation,
+            ids.terminalConversation,
+            ids.agent,
+            ids.deployment,
+            ids.version,
+            ids.creator,
+            ids.consumer,
+            digest('5'),
+            digest('7'),
+            ids.worker,
+          ],
+        );
+        await target.query(
+          `INSERT INTO agent_messages (
+             id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+             client_message_id, content_algorithm, content_key_id, content_nonce,
+             content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
+             content_aad_version, invocation_id
+           ) VALUES
+             ($1, $4, $6, $7, 1, 'USER', $8, 'aes-256-gcm/v1', $9, $10,
+              $11, $12, $13, $14, 1, $15),
+             ($2, $5, $6, $7, 1, 'USER', $16, 'aes-256-gcm/v1', $17, $18,
+              $19, $20, $21, $22, 1, $23),
+             ($3, $5, $6, $7, 1, 'ASSISTANT', NULL, 'aes-256-gcm/v1', $24, $25,
+              $26, $27, $28, $29, 1, $23)`,
+          [
+            ids.runningUserMessage,
+            ids.terminalUserMessage,
+            ids.terminalAssistantMessage,
+            ids.runningConversation,
+            ids.terminalConversation,
+            ids.creator,
+            ids.consumer,
+            `upgrade-running-${ids.runningInvocation}`,
+            `upgrade-key-${ids.runningUserMessage}`,
+            Buffer.alloc(12, 1),
+            Buffer.from('running-user'),
+            Buffer.alloc(16, 1),
+            digest('1'),
+            hmac('1'),
+            ids.runningInvocation,
+            `upgrade-terminal-${ids.terminalInvocation}`,
+            `upgrade-key-${ids.terminalUserMessage}`,
+            Buffer.alloc(12, 2),
+            Buffer.from('terminal-user'),
+            Buffer.alloc(16, 2),
+            digest('2'),
+            hmac('2'),
+            ids.terminalInvocation,
+            `upgrade-key-${ids.terminalAssistantMessage}`,
+            Buffer.alloc(12, 3),
+            Buffer.from('terminal-assistant'),
+            Buffer.alloc(16, 3),
+            digest('3'),
+            hmac('3'),
+          ],
+        );
+        await target.query(
+          `INSERT INTO agent_invocations (
+             id, conversation_id, creator_id, consumer_subject_id, agent_version_id,
+             user_message_id, client_message_id, request_digest, state,
+             assigned_worker_id, assignment_lease_id, assignment_fence,
+             execution_capability_id, deadline_at, runtime_thread_id, runtime_turn_id,
+             result_message_id, result_digest, started_at, terminal_at
+           ) VALUES
+             ($1, $3, $5, $6, $7, $8, $9, $10, 'RUNNING',
+              $11, $12, 1, $13, now() + interval '1 hour', 'legacy-thread-running',
+              'legacy-turn-running', NULL, NULL, now(), NULL),
+             ($2, $4, $5, $6, $7, $14, $15, $16, 'SUCCEEDED',
+              $11, $12, 1, $17, now() + interval '1 hour', 'legacy-thread-terminal',
+              'legacy-turn-terminal', $18, $19, now(), now())`,
+          [
+            ids.runningInvocation,
+            ids.terminalInvocation,
+            ids.runningConversation,
+            ids.terminalConversation,
+            ids.creator,
+            ids.consumer,
+            ids.version,
+            ids.runningUserMessage,
+            `upgrade-running-${ids.runningInvocation}`,
+            hmac('4'),
+            ids.worker,
+            ids.lease,
+            ids.runningCapability,
+            ids.terminalUserMessage,
+            `upgrade-terminal-${ids.terminalInvocation}`,
+            hmac('5'),
+            ids.terminalCapability,
+            ids.terminalAssistantMessage,
+            hmac('6'),
+          ],
+        );
+        await target.query(
+          `INSERT INTO broker_outbox (
+             command_id, creator_id, target_worker_id, invocation_id,
+             consumer_subject_id, command_type, dedupe_key, state,
+             attempt_count, next_attempt_at, expires_at, acked_at
+           ) VALUES
+             ($1, $4, $5, $6, $7, 'invocation.prepare', $8, 'PENDING',
+              0, now(), now() + interval '1 hour', NULL),
+             ($2, $4, $5, $9, $7, 'invocation.prepare', $10, 'SENT',
+              1, now(), now() + interval '1 hour', NULL),
+             ($3, $4, $5, NULL, NULL, 'deployment.prepare', $11, 'ACKED',
+              1, now(), now() + interval '1 hour', now())`,
+          [
+            ids.pendingPrepare,
+            ids.sentPrepare,
+            ids.ackedCommand,
+            ids.creator,
+            ids.worker,
+            ids.runningInvocation,
+            ids.consumer,
+            `upgrade-pending-${ids.pendingPrepare}`,
+            ids.terminalInvocation,
+            `upgrade-sent-${ids.sentPrepare}`,
+            `upgrade-acked-${ids.ackedCommand}`,
+          ],
+        );
+        await target.query(
+          `INSERT INTO worker_gateway_operation_receipts (
+             creator_id, operation_kind, operation_key, request_digest,
+             result_value, result_digest
+           ) VALUES ($1, 'SEQUENCE_GAP', $2, $3, 'null'::jsonb, $4)`,
+          [ids.creator, `upgrade-gap-${ids.session}`, digest('8'), digest('9')],
+        );
+        await target.query(
+          `INSERT INTO worker_gateway_frame_receipts (
+             session_id, creator_id, sequence, message_id, canonical_digest,
+             envelope_type, response_frames
+           ) VALUES ($1, $2, 0, $3, $4, 'invocation.started', '[]'::jsonb)`,
+          [ids.session, ids.creator, ids.frameMessage, digest('a')],
+        );
+        await target.query('COMMIT');
+      } catch (error) {
+        await target.query('ROLLBACK');
+        throw error;
+      }
+
+      for (let run = 1; run <= 2; run += 1) {
+        const alreadyApplied = await target.query(
+          `SELECT 1 FROM schema_migrations
+            WHERE filename = '0016_creator_agent_invocation_lifecycle.sql'`,
+        );
+        if (alreadyApplied.rowCount === 0) {
+          await applyMigration(target, '0016_creator_agent_invocation_lifecycle.sql');
+        }
+      }
+
+      await expect(
+        target.query(
+          `SELECT command_id, state, conversation_id, deployment_id,
+                  assignment_lease_id, assignment_fence, predecessor_command_id,
+                  execution_capability_id, execution_capability_digest
+             FROM broker_outbox
+            WHERE command_id = ANY($1::uuid[])
+            ORDER BY state, command_id`,
+          [[ids.pendingPrepare, ids.sentPrepare, ids.ackedCommand]],
+        ),
+      ).resolves.toMatchObject({
+        rows: expect.arrayContaining([
+          expect.objectContaining({ command_id: ids.pendingPrepare, state: 'PENDING' }),
+          expect.objectContaining({ command_id: ids.sentPrepare, state: 'SENT' }),
+          expect.objectContaining({ command_id: ids.ackedCommand, state: 'ACKED' }),
+        ]),
+      });
+      const invocationRows = await target.query<{
+        id: string;
+        state: string;
+        execution_capability_id: string;
+        execution_capability_digest: string | null;
+        execution_capability_expires_at: Date | null;
+        execution_capability_revoked_at: Date | null;
+      }>(
+        `SELECT id, state, execution_capability_id,
+                execution_capability_digest, execution_capability_expires_at,
+                execution_capability_revoked_at
+           FROM agent_invocations
+          WHERE id = ANY($1::uuid[])
+          ORDER BY state`,
+        [[ids.runningInvocation, ids.terminalInvocation]],
+      );
+      expect(invocationRows.rows).toEqual([
+        {
+          id: ids.runningInvocation,
+          state: 'RUNNING',
+          execution_capability_id: ids.runningCapability,
+          execution_capability_digest: null,
+          execution_capability_expires_at: null,
+          execution_capability_revoked_at: null,
+        },
+        {
+          id: ids.terminalInvocation,
+          state: 'SUCCEEDED',
+          execution_capability_id: ids.terminalCapability,
+          execution_capability_digest: null,
+          execution_capability_expires_at: null,
+          execution_capability_revoked_at: null,
+        },
+      ]);
+      await expect(
+        target.query<{ revoked: string }>(
+          `SELECT creator_agent_security_revoke_deployment_capabilities($1, $2)::text AS revoked`,
+          [ids.creator, ids.deployment],
+        ),
+      ).resolves.toMatchObject({ rows: [{ revoked: '1' }] });
+      await expect(
+        target.query(
+          `SELECT id, execution_capability_revoked_at IS NOT NULL AS revoked
+             FROM agent_invocations
+            WHERE id = ANY($1::uuid[])
+            ORDER BY state`,
+          [[ids.runningInvocation, ids.terminalInvocation]],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          { id: ids.runningInvocation, revoked: true },
+          { id: ids.terminalInvocation, revoked: false },
+        ],
+      });
+      await expect(
+        target.query(
+          `SELECT
+             (SELECT count(*) FROM worker_gateway_sessions WHERE id = $1)::text AS sessions,
+             (SELECT count(*) FROM worker_gateway_operation_receipts
+               WHERE creator_id = $2)::text AS operation_receipts,
+             (SELECT count(*) FROM worker_gateway_frame_receipts
+               WHERE session_id = $1)::text AS frame_receipts`,
+          [ids.session, ids.creator],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ sessions: '1', operation_receipts: '1', frame_receipts: '1' }],
+      });
+      await expect(
+        target.query(
+          `UPDATE broker_outbox SET attempt_count = attempt_count + 1 WHERE command_id = $1`,
+          [ids.ackedCommand],
+        ),
+      ).rejects.toMatchObject({ code: '55000' });
       await expect(
         target.query(`SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1`),
       ).resolves.toMatchObject({
-        rows: [{ filename: '0015_creator_agent_gateway_authority.sql' }],
+        rows: [{ filename: '0016_creator_agent_invocation_lifecycle.sql' }],
       });
+      await expect(
+        target.query(
+          `SELECT count(*)::text AS applied
+             FROM schema_migrations
+            WHERE filename = '0016_creator_agent_invocation_lifecycle.sql'`,
+        ),
+      ).resolves.toMatchObject({ rows: [{ applied: '1' }] });
     } finally {
       await target?.end().catch(() => undefined);
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
