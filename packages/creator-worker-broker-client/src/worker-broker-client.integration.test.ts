@@ -128,51 +128,110 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(accepted?.envelope.correlationId).toBe(uuid(300));
   });
 
-  it('reconnects and retransmits only the durable unacknowledged outbox', async () => {
+  it('supersedes an old lease confirmation and confirms only the replacement grant', async () => {
     const durable = new FakeDurablePort();
     const broker = await startBroker({ closeFirstWorkerFrame: true });
     const client = createClient(broker.url, durable);
     await client.start();
 
-    await waitFor(() => broker.connectionCount >= 2 && broker.received.length >= 2, 2_000);
-    const firstConnection = broker.received.find((item) => item.connectionIndex === 0)!;
-    const replay = broker.received.find(
-      (item) =>
-        item.connectionIndex === 1 &&
-        item.envelope.messageId === firstConnection.envelope.messageId,
+    await waitFor(
+      () =>
+        broker.connectionCount >= 2 &&
+        broker.received.some(
+          (item) => item.connectionIndex === 1 && item.envelope.type === 'lease.accepted',
+        ),
+      2_000,
     );
-    expect(replay).toBeDefined();
-    expect(replay!.envelope.connectionId).not.toBe(firstConnection.envelope.connectionId);
+    const firstConnection = broker.received.find((item) => item.connectionIndex === 0)!;
     expect(firstConnection.envelope).toMatchObject({
       type: 'lease.accepted',
       correlationId: uuid(300),
     });
-    expect(replay!.envelope.correlationId).toBe(uuid(300));
-    await waitFor(() =>
-      broker.received.some(
-        (item) =>
-          item.connectionIndex === 1 &&
-          item.envelope.type === 'lease.accepted' &&
-          item.envelope.messageId !== firstConnection.envelope.messageId,
-      ),
-    );
-    const replacementConfirmation = broker.received.find(
-      (item) =>
-        item.connectionIndex === 1 &&
-        item.envelope.type === 'lease.accepted' &&
-        item.envelope.messageId !== firstConnection.envelope.messageId,
-    );
-    expect(replacementConfirmation?.envelope.correlationId).toBe(uuid(301));
     expect(
       broker.received.some(
         (item) =>
-          item.envelope.messageId === firstConnection.envelope.messageId &&
-          item.envelope.correlationId === uuid(301),
+          item.connectionIndex === 1 &&
+          item.envelope.messageId === firstConnection.envelope.messageId,
       ),
     ).toBe(false);
+    const replacementConfirmation = broker.received.find(
+      (item) => item.connectionIndex === 1 && item.envelope.type === 'lease.accepted',
+    );
+    expect(replacementConfirmation?.envelope.correlationId).toBe(uuid(301));
     expect(durable.releaseConnectionCalls).toBeGreaterThanOrEqual(1);
-    expect(durable.reboundMessageIds).toContain(firstConnection.envelope.messageId);
+    expect(durable.reboundMessageIds).not.toContain(firstConnection.envelope.messageId);
+    expect(
+      durable.outbox.some((item) => item.envelope.messageId === firstConnection.envelope.messageId),
+    ).toBe(false);
     expect(broker.handshakes).toHaveLength(2);
+  });
+
+  it('rejects equal/lower replacement fences before accepting a strictly newer lease', async () => {
+    const durable = new FakeDurablePort();
+    const ownerToken = 'fake-owner-a';
+    await durable.acquireInstallation({ installationId: INSTALLATION, ownerToken });
+    const firstGrant = leaseGrant({
+      connectionId: uuid(320),
+      sequence: '0',
+      lease: leaseBinding(LEASE_A, '7'),
+      messageId: uuid(321),
+      sentAt: SENT_AT,
+      leaseExpiresAt: FRAME_EXPIRES_AT,
+    });
+    const first = await durable.activateConnection(fakeActivationInput(ownerToken, firstGrant));
+    const firstConfirmation = durable.outbox[0]!.envelope;
+
+    const staleGrant = leaseGrant({
+      connectionId: uuid(322),
+      sequence: '0',
+      lease: leaseBinding(LEASE_A, '7'),
+      messageId: uuid(323),
+      sentAt: SENT_AT,
+      leaseExpiresAt: FRAME_EXPIRES_AT,
+    });
+    await expect(
+      durable.activateConnection(fakeActivationInput(ownerToken, staleGrant)),
+    ).rejects.toMatchObject({ code: 'STALE_FENCE' });
+    expect(durable.current?.connectionId).toBe(first.connectionId);
+    expect(durable.retired).not.toContain(first.connectionId);
+    expect(durable.outbox.map((item) => item.envelope)).toEqual([firstConfirmation]);
+
+    const lowerGrant = BrokerEnvelopeSchema.parse({
+      ...staleGrant,
+      connectionId: uuid(325),
+      messageId: uuid(326),
+      lease: { ...staleGrant.lease, fence: '6' },
+    }) as LeaseGrantCommand;
+    await expect(
+      durable.activateConnection(fakeActivationInput(ownerToken, lowerGrant)),
+    ).rejects.toMatchObject({ code: 'STALE_FENCE' });
+    expect(durable.current?.connectionId).toBe(first.connectionId);
+    expect(durable.retired).not.toContain(first.connectionId);
+    expect(durable.outbox.map((item) => item.envelope)).toEqual([firstConfirmation]);
+
+    const replacementLease = {
+      ...staleGrant.lease,
+      leaseId: uuid(327),
+      workerSessionId: uuid(328),
+      fence: '8',
+    };
+    const replacementGrant = BrokerEnvelopeSchema.parse({
+      ...staleGrant,
+      messageId: uuid(329),
+      lease: replacementLease,
+      body: { ...staleGrant.body, workerSessionId: replacementLease.workerSessionId },
+    }) as LeaseGrantCommand;
+    const replacement = await durable.activateConnection(
+      fakeActivationInput(ownerToken, replacementGrant),
+    );
+    expect(replacement.connectionId).toBe(staleGrant.connectionId);
+    expect(durable.retired).toContain(first.connectionId);
+    expect(durable.outbox).toHaveLength(1);
+    expect(durable.outbox[0]!.envelope).toMatchObject({
+      type: 'lease.accepted',
+      correlationId: replacementGrant.messageId,
+    });
+    expect(durable.outbox[0]!.envelope.messageId).not.toBe(firstConfirmation.messageId);
   });
 
   it('does not reconnect or release installation ownership when durable disconnect recovery fails', async () => {
@@ -450,7 +509,7 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(durable.committed).toHaveLength(1);
     expect(
       durable.outbox.find((item) => item.envelope.messageId === acknowledged.messageId)?.state,
-    ).toBe('PENDING');
+    ).toBeUndefined();
   });
 
   it('persists revocation, stops heartbeats, and rejects later business commands', async () => {
@@ -768,7 +827,7 @@ describe('Real Worker transport ↔ Real Gateway close authority', () => {
     }
   });
 
-  it('retries Gateway transport capacity and restores only from the durable outbox', async () => {
+  it('drops connection-scoped overflow before retrying Gateway transport capacity', async () => {
     const authority = new InteropGatewayAuthority();
     const url = await startAgentGateway(authority);
     const durable = new FakeDurablePort();
@@ -783,7 +842,7 @@ describe('Real Worker transport ↔ Real Gateway close authority', () => {
     );
 
     authority.hangAccept = true;
-    durable.seedPongs(12);
+    const stalePongIds = durable.seedPongs(12);
     void client.flush().catch(() => undefined);
     await waitFor(
       () => durable.releaseConnectionCalls >= 1 && authority.closed.includes('CAPACITY'),
@@ -793,7 +852,14 @@ describe('Real Worker transport ↔ Real Gateway close authority', () => {
 
     await waitFor(() => client.status === 'READY' && authority.sessions.length >= 2, 3_000);
     expect(client.status).not.toBe('BLOCKED');
-    expect(durable.reboundMessageIds.length).toBeGreaterThan(0);
+    expect(stalePongIds.some((messageId) => durable.reboundMessageIds.includes(messageId))).toBe(
+      false,
+    );
+    expect(
+      stalePongIds.some((messageId) =>
+        durable.outbox.some((item) => item.envelope.messageId === messageId),
+      ),
+    ).toBe(false);
   });
 
   it('blocks a Gateway SESSION_REPLACED close instead of reconnect oscillation', async () => {
@@ -927,10 +993,15 @@ class FakeBroker {
           socket.close(BrokerCloseCode.AUTH_FAILED, BrokerCloseReason.INSTALLATION_REVOKED);
           return;
         }
+        const fence = (BigInt(this.#options.initialFence ?? '7') + BigInt(index)).toString(10);
+        const lease = leaseBinding(index === 0 ? LEASE_A : uuid(400 + index), fence);
         const grant = leaseGrant({
           connectionId: connection.connectionId,
           sequence: '0',
-          lease: leaseBinding(LEASE_A, this.#options.initialFence ?? '7'),
+          lease: {
+            ...lease,
+            workerSessionId: index === 0 ? WORKER_SESSION : uuid(500 + index),
+          },
           messageId: uuid(300 + index),
           sentAt: new Date(this.#baseNow + index * 1_000).toISOString(),
           leaseExpiresAt: this.leaseExpiresAt(index),
@@ -968,6 +1039,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   readonly heartbeatCalls: string[] = [];
   readonly reboundMessageIds: string[] = [];
   readonly outbox: OutboxRecord[] = [];
+  readonly #highestFenceByDeployment = new Map<string, bigint>();
   corruptActivationReturn = false;
   corruptNextOutbound = false;
   holdOutbound = false;
@@ -976,19 +1048,22 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   hangInstallationRelease = false;
   #nextMessage = 500;
 
-  seedPongs(count: number): void {
+  seedPongs(count: number): readonly string[] {
     if (!Number.isSafeInteger(count) || count < 1 || count > 32) {
       throw new Error('INVALID_SEED_COUNT');
     }
     const current = this.requireCurrent(this.current!.connectionId);
+    const messageIds: string[] = [];
     for (let index = 0; index < count; index += 1) {
+      const messageId = uuid(this.#nextMessage++);
+      messageIds.push(messageId);
       this.enqueue(
         BrokerEnvelopeSchema.parse({
           protocol: 'combo.creator-broker/1',
           schemaVersion: 1,
           kind: 'event',
           type: 'pong',
-          messageId: uuid(this.#nextMessage++),
+          messageId,
           correlationId: CORRELATION,
           connectionId: current.connectionId,
           sequence: this.nextOutboundSequence(),
@@ -999,6 +1074,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
         }),
       );
     }
+    return messageIds;
   }
 
   advanceOutboundCursor(count: number): void {
@@ -1056,6 +1132,18 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     if (canonicalSha256(input.envelope) !== input.canonicalDigest) {
       throw new WorkerBrokerClientError('PORT_FAILED', true);
     }
+    const deploymentId = input.envelope.lease.deploymentId;
+    const nextFence = BigInt(input.envelope.lease.fence);
+    const highestFence = this.#highestFenceByDeployment.get(deploymentId);
+    if (
+      highestFence !== undefined &&
+      (nextFence < highestFence ||
+        (nextFence === highestFence &&
+          (this.current?.connectionId !== input.envelope.connectionId ||
+            !sameLease(this.current.lease, input.envelope.lease))))
+    ) {
+      throw new WorkerBrokerClientError('STALE_FENCE', true);
+    }
     if (this.current !== undefined && this.current.connectionId !== input.envelope.connectionId) {
       this.retired.add(this.current.connectionId);
     }
@@ -1073,6 +1161,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     };
     this.committed.push(input.envelope);
 
+    this.discardConnectionScopedOutbound();
     const pending = this.outbox.filter((item) => item.state !== 'ACKED');
     for (const item of pending) {
       item.envelope = this.reframe(item.envelope, this.current);
@@ -1082,6 +1171,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
       this.acceptOutbound(item.envelope);
     }
     this.enqueueLeaseEvent('lease.accepted', input.envelope.messageId);
+    this.#highestFenceByDeployment.set(deploymentId, nextFence);
     const activated = cloneConnection(this.current);
     if (!this.corruptActivationReturn) return activated;
     return {
@@ -1118,15 +1208,30 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     ) {
       throw new WorkerBrokerClientError('PORT_FAILED', true);
     }
+    if (input.envelope.kind === 'command' && input.envelope.type === 'lease.grant') {
+      const highestFence = this.#highestFenceByDeployment.get(input.envelope.lease.deploymentId);
+      const nextFence = BigInt(input.envelope.lease.fence);
+      if (
+        input.envelope.lease.deploymentId !== current.lease.deploymentId ||
+        highestFence === undefined ||
+        nextFence < highestFence ||
+        (nextFence === highestFence && !sameLease(current.lease, input.envelope.lease))
+      ) {
+        throw new WorkerBrokerClientError('STALE_FENCE', true);
+      }
+    }
     current.inboundCursor = input.nextInboundCursor;
     this.committed.push(input.envelope);
     if (input.envelope.kind === 'command' && input.envelope.type === 'lease.grant') {
+      const deploymentId = input.envelope.lease.deploymentId;
+      const nextFence = BigInt(input.envelope.lease.fence);
       current.lease = { ...input.envelope.lease };
       current.workerSessionId = input.envelope.lease.workerSessionId;
       current.leaseState = 'ACTIVE';
       current.leaseGrantedAt = input.envelope.sentAt;
       current.leaseExpiresAt = input.envelope.body.leaseExpiresAt;
       this.enqueueLeaseEvent('lease.renewed', input.envelope.messageId);
+      this.#highestFenceByDeployment.set(deploymentId, nextFence);
     } else if (input.envelope.kind === 'command' && input.envelope.type === 'lease.revoke') {
       current.leaseState = 'REVOKED';
     } else if (input.envelope.kind === 'ack') {
@@ -1256,10 +1361,20 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     if (this.hangConnectionRelease) await new Promise<void>(() => undefined);
     if (this.current?.connectionId !== input.connectionId) return;
     this.retired.add(input.connectionId);
-    for (const item of this.outbox) {
-      if (item.state === 'WRITTEN') item.state = 'PENDING';
-    }
+    this.discardConnectionScopedOutbound();
     this.current = undefined;
+  }
+
+  private discardConnectionScopedOutbound(): void {
+    for (let index = this.outbox.length - 1; index >= 0; index -= 1) {
+      const item = this.outbox[index]!;
+      if (item.state === 'ACKED') continue;
+      if (item.envelope.kind !== 'ack' || item.envelope.type !== 'message.ack') {
+        this.outbox.splice(index, 1);
+        continue;
+      }
+      item.state = 'PENDING';
+    }
   }
 
   private enqueueLeaseEvent(
@@ -1317,6 +1432,9 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   }
 
   private reframe(envelope: BrokerEnvelope, current: MutableConnection): BrokerEnvelope {
+    if (envelope.kind !== 'ack' || envelope.type !== 'message.ack') {
+      throw new WorkerBrokerClientError('PORT_FAILED', true);
+    }
     return BrokerEnvelopeSchema.parse({
       ...envelope,
       connectionId: current.connectionId,
@@ -1324,10 +1442,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
       sentAt: current.leaseGrantedAt,
       expiresAt: current.leaseExpiresAt,
       lease: current.lease,
-      body:
-        envelope.type === 'lease.accepted' || envelope.type === 'lease.renewed'
-          ? { leaseExpiresAt: current.leaseExpiresAt }
-          : envelope.body,
+      body: envelope.body,
     });
   }
 
@@ -1401,7 +1516,8 @@ class InteropGatewayAuthority implements AgentGatewayAuthorityPort {
     signal: AbortSignal,
   ): Promise<readonly BrokerEnvelope[]> {
     if (signal.aborted) throw signal.reason;
-    const index = this.sessions.indexOf(session);
+    const index = this.sessions.findIndex((item) => item.connectionId === session.connectionId);
+    if (index < 0) throw new Error('MISSING_SESSION');
     const lease = leaseBinding(uuid(2_300 + index), String(7 + index));
     const boundLease = Object.freeze({ ...lease, workerSessionId: session.workerSessionId });
     this.#leases.set(session.connectionId, boundLease);
@@ -1602,6 +1718,24 @@ function leaseGrant(input: {
       generation: '1',
     },
   }) as LeaseGrantCommand;
+}
+
+function fakeActivationInput(ownerToken: string, envelope: LeaseGrantCommand) {
+  const canonicalDigest = canonicalSha256(envelope);
+  const decision = consumeSequence(
+    initialSequenceCursor(envelope.connectionId),
+    envelope,
+    canonicalDigest,
+    Date.parse(envelope.sentAt),
+  );
+  if (decision.type !== 'ACCEPT') throw new Error('INVALID_FAKE_GRANT');
+  return {
+    installationId: INSTALLATION,
+    ownerToken,
+    envelope,
+    canonicalDigest,
+    inboundCursor: serializeSequenceCursor(decision.cursor),
+  };
 }
 
 function pingCommand(input: {
