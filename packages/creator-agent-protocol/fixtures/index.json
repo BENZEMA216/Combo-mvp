@@ -8,6 +8,11 @@
       "digest": "sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
     },
     {
+      "path": "broker-conversation-ready.v1.json",
+      "bytes": 1743,
+      "digest": "sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889"
+    },
+    {
       "path": "broker-handshake.v1.json",
       "bytes": 671,
       "digest": "sha256:b842b397216a5f71fa41c5112b6718cbe4614bb38cb2b0995a75c2a169d74058"

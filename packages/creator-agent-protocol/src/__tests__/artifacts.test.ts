@@ -31,6 +31,7 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'ConsumerEventOutboxRecord',
       'ConsumerEventStream',
       'WorkerInvocationFact',
+      'WorkerConversationReadyFact',
     ]) {
       expect(bundle.schemas[required], required).toBeDefined();
     }
@@ -162,6 +163,9 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'x-combo-runtime-constraints': expect.arrayContaining([
         'sensitive.aad.conversationId == body.conversationId',
         'sensitive.aad.workerSessionId == lease.workerSessionId',
+        'conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))',
+        'conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId',
+        'conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping',
         'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
         'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
         'prepared/started commandId == correlationId; delta and terminal correlationId == invocationId',
@@ -174,6 +178,14 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
         'started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest',
         'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
         'all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation',
+      ]),
+    });
+    expect(bundle.schemas.WorkerConversationReadyFact).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'sourceEventId == openCommandId and remains stable across Broker reconnection/re-enveloping',
+        'installationId/workerSessionId/leaseId/fence bind the original conversation.open authority and remain immutable',
+        'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
+        'all Worker Conversation Ready facts MUST pass the authoritative runtime WorkerConversationReadyFactSchema parser after structural JSON Schema validation',
       ]),
     });
   });
@@ -189,6 +201,29 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
 
     expect(validateFact(fact)).toBe(true);
     expect(validateFact({ ...fact, fence: '9223372036854775808' })).toBe(false);
+  });
+
+  it('AJV and runtime enforce the ready fact uint63/source boundary at their respective layers', async () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    const validateFact = ajv.compile(bundle.schemas.WorkerConversationReadyFact as AnySchema);
+    const envelope = (await readFixture('broker-conversation-ready.v1.json')) as {
+      body: Record<string, unknown>;
+    };
+    const { factDigest: _factDigest, ...fact } = envelope.body;
+
+    expect(validateFact(fact)).toBe(true);
+    expect(validateFact({ ...fact, fence: '9223372036854775808' })).toBe(false);
+    const wrongSource = {
+      ...fact,
+      sourceEventId: '0198f00d-5000-7000-8000-000000000099',
+    };
+    expect(validateFact(wrongSource)).toBe(true);
+    expect(
+      (await import('../conversation-ready-facts.js')).WorkerConversationReadyFactSchema.safeParse(
+        wrongSource,
+      ).success,
+    ).toBe(false);
   });
 
   it('OpenAPI 3.1 暴露 Creator/Consumer 核心路径与共享组件', () => {

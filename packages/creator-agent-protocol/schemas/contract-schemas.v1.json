@@ -2181,14 +2181,81 @@
                     "body": {
                       "type": "object",
                       "properties": {
+                        "protocol": {
+                          "type": "string",
+                          "const": "combo.worker-conversation-ready-fact/1"
+                        },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "type": { "type": "string", "const": "conversation.ready" },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
                         "conversationId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
+                        "openCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "deploymentId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "installationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
                         "sandboxInstanceId": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "runtimeThreadId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "pattern": "^[A-Za-z0-9._:-]+$"
+                        },
+                        "readyEvidenceDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
                         }
                       },
-                      "required": ["conversationId", "sandboxInstanceId"],
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "sourceEventId",
+                        "conversationId",
+                        "openCommandId",
+                        "deploymentId",
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "installationId",
+                        "workerSessionId",
+                        "leaseId",
+                        "fence",
+                        "sandboxInstanceId",
+                        "runtimeThreadId",
+                        "readyEvidenceDigest",
+                        "factDigest"
+                      ],
                       "additionalProperties": false
                     }
                   },
@@ -2378,13 +2445,10 @@
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
                         "runtimeThreadId": {
-                          "type": "string",
-                          "minLength": 1,
-                          "maxLength": 256,
-                          "pattern": "^[A-Za-z0-9._:-]+$"
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
                         },
                         "runtimeTurnId": {
-                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/6/properties/body/properties/runtimeThreadId"
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
                         },
                         "dispatchReceiptDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
@@ -2570,10 +2634,10 @@
                         },
                         "type": { "type": "string", "const": "invocation.succeeded" },
                         "runtimeThreadId": {
-                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/6/properties/body/properties/runtimeThreadId"
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
                         },
                         "runtimeTurnId": {
-                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/6/properties/body/properties/runtimeThreadId"
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
                         },
                         "startedFactDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
@@ -3174,6 +3238,9 @@
         "sensitive.aad.invocationId == body.invocationId",
         "sensitive.aad.workerSessionId == lease.workerSessionId",
         "sensitive.aad.role == USER for invocation.prepare, ASSISTANT otherwise",
+        "conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))",
+        "conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId",
+        "conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping",
         "Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))",
         "Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId",
         "Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping",
@@ -3798,6 +3865,90 @@
         "started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest",
         "fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807",
         "all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation"
+      ]
+    },
+    "WorkerConversationReadyFact": {
+      "$ref": "#/definitions/WorkerConversationReadyFact",
+      "definitions": {
+        "WorkerConversationReadyFact": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.worker-conversation-ready-fact/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "type": { "type": "string", "const": "conversation.ready" },
+            "sourceEventId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "conversationId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "openCommandId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "deploymentId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "agentVersionId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "snapshotDigest": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/agentVersionDigest"
+            },
+            "installationId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "workerSessionId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "leaseId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "fence": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+            },
+            "sandboxInstanceId": {
+              "$ref": "#/definitions/WorkerConversationReadyFact/properties/sourceEventId"
+            },
+            "runtimeThreadId": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9._:-]+$"
+            },
+            "readyEvidenceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "type",
+            "sourceEventId",
+            "conversationId",
+            "openCommandId",
+            "deploymentId",
+            "agentVersionId",
+            "agentVersionDigest",
+            "snapshotDigest",
+            "installationId",
+            "workerSessionId",
+            "leaseId",
+            "fence",
+            "sandboxInstanceId",
+            "runtimeThreadId",
+            "readyEvidenceDigest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "sourceEventId == openCommandId and remains stable across Broker reconnection/re-enveloping",
+        "installationId/workerSessionId/leaseId/fence bind the original conversation.open authority and remain immutable",
+        "fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807",
+        "all Worker Conversation Ready facts MUST pass the authoritative runtime WorkerConversationReadyFactSchema parser after structural JSON Schema validation"
       ]
     },
     "VnextErrorResponse": {

@@ -426,6 +426,7 @@ describe('六类共享协议运行时 schema', () => {
     expect(parseBrokerHandshake(handshakeText).installationId).toMatch(/^[a-f0-9-]{36}$/u);
 
     for (const fixture of [
+      'broker-conversation-ready.v1.json',
       'broker-invocation-prepare.v1.json',
       'broker-invocation-prepared.v1.json',
       'broker-invocation-started.v1.json',
@@ -573,6 +574,63 @@ describe('六类共享协议运行时 schema', () => {
     const wrongTerminalCorrelation = structuredClone(succeeded);
     wrongTerminalCorrelation.correlationId = '0198f00d-9999-7999-8999-999999999995';
     expect(BrokerEnvelopeSchema.safeParse(wrongTerminalCorrelation).success).toBe(false);
+  });
+
+  it('Broker conversation.ready preserves one durable fact across current-authority re-enveloping', async () => {
+    const ready = (await readFixture('broker-conversation-ready.v1.json')) as {
+      messageId: string;
+      correlationId: string;
+      connectionId: string;
+      sequence: string;
+      lease: { leaseId: string; workerSessionId: string; fence: string };
+      body: {
+        sourceEventId: string;
+        conversationId: string;
+        openCommandId: string;
+        workerSessionId: string;
+        leaseId: string;
+        fence: string;
+        factDigest: string;
+      };
+    };
+
+    expect(BrokerEnvelopeSchema.safeParse(ready).success).toBe(true);
+    expect(ready.body.sourceEventId).toBe(ready.body.openCommandId);
+    expect(ready.body.sourceEventId).not.toBe(ready.messageId);
+    expect(ready.correlationId).toBe(ready.body.conversationId);
+    expect(ready.lease.workerSessionId).not.toBe(ready.body.workerSessionId);
+    expect(ready.lease.leaseId).not.toBe(ready.body.leaseId);
+    expect(ready.lease.fence).not.toBe(ready.body.fence);
+
+    const changedDigest = structuredClone(ready);
+    changedDigest.body.factDigest = '0'.repeat(64);
+    expect(BrokerEnvelopeSchema.safeParse(changedDigest).success).toBe(false);
+
+    const changedFact = structuredClone(ready);
+    changedFact.body.fence = '44';
+    expect(BrokerEnvelopeSchema.safeParse(changedFact).success).toBe(false);
+
+    const unstableSource = structuredClone(ready);
+    unstableSource.body.sourceEventId = '0198f00d-5000-7000-8000-000000000099';
+    expect(BrokerEnvelopeSchema.safeParse(unstableSource).success).toBe(false);
+
+    const transportDerivedSource = structuredClone(ready);
+    transportDerivedSource.messageId = transportDerivedSource.body.sourceEventId;
+    expect(BrokerEnvelopeSchema.safeParse(transportDerivedSource).success).toBe(false);
+
+    const wrongCorrelation = structuredClone(ready);
+    wrongCorrelation.correlationId = '0198f00d-5000-7000-8000-000000000098';
+    expect(BrokerEnvelopeSchema.safeParse(wrongCorrelation).success).toBe(false);
+
+    const reEnveloped = structuredClone(ready);
+    reEnveloped.messageId = '0198f00d-5000-7000-8000-000000000090';
+    reEnveloped.connectionId = '0198f00d-5000-7000-8000-000000000091';
+    reEnveloped.sequence = '9223372036854775807';
+    reEnveloped.lease.leaseId = '0198f00d-5000-7000-8000-000000000092';
+    reEnveloped.lease.workerSessionId = '0198f00d-5000-7000-8000-000000000093';
+    reEnveloped.lease.fence = '99';
+    expect(BrokerEnvelopeSchema.safeParse(reEnveloped).success).toBe(true);
+    expect(reEnveloped.body).toEqual(ready.body);
   });
 
   it('Broker exact keys、重复 JSON key、unknown protocol 与 frame size fail closed', async () => {

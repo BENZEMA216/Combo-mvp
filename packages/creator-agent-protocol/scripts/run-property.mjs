@@ -15,7 +15,13 @@ if (!/^\d+$/u.test(seed) || !/^\d+$/u.test(runs) || Number(runs) < 1) {
 
 const result = spawnSync(
   'pnpm',
-  ['exec', 'vitest', 'run', 'src/__tests__/invocation.property.test.ts'],
+  [
+    'exec',
+    'vitest',
+    'run',
+    'src/__tests__/invocation.property.test.ts',
+    'src/__tests__/conversation-ready-facts.property.test.ts',
+  ],
   {
     cwd: process.cwd(),
     env: { ...process.env, VNEXT_PROPERTY_SEED: seed, VNEXT_PROPERTY_RUNS: runs },

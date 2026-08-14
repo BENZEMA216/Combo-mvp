@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { canonicalizeJson, canonicalSha256, parseJsonNoDuplicateKeys } from './canonical.js';
 import {
+  WorkerConversationReadyFactObjectSchema,
+  WorkerConversationReadyFactSchema,
+  workerConversationReadyFactDigest,
+  type WorkerConversationReadyFact,
+} from './conversation-ready-facts.js';
+import {
   WorkerInvocationCancelledFactObjectSchema,
   WorkerInvocationCancelledFactSchema,
   WorkerInvocationFailedFactObjectSchema,
@@ -518,6 +524,27 @@ function exactWorkerFactBody<Extra extends z.ZodRawShape>(
     });
 }
 
+const WorkerConversationReadyFactBodySchema = z
+  .object({
+    ...WorkerConversationReadyFactObjectSchema.shape,
+    factDigest: Sha256HexSchema,
+  })
+  .strict()
+  .superRefine((body, context) => {
+    const { factDigest, ...factInput } = body;
+    const parsed = WorkerConversationReadyFactSchema.safeParse(factInput);
+    if (
+      !parsed.success ||
+      workerConversationReadyFactDigest(parsed.data as WorkerConversationReadyFact) !== factDigest
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['factDigest'],
+        message: 'factDigest 必须绑定 exact canonical Worker Conversation Ready fact',
+      });
+    }
+  });
+
 const EmptyBodySchema = z.object({}).strict();
 const GenerationSchema = Uint63StringSchema;
 export const BrokerSensitiveMessageAadSchema = z
@@ -752,10 +779,7 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
     'version.rejected',
     z.object({ generation: GenerationSchema, errorCode: Utf8TextSchema(128) }).strict(),
   ),
-  event(
-    'conversation.ready',
-    z.object({ conversationId: UuidSchema, sandboxInstanceId: UuidSchema }).strict(),
-  ),
+  event('conversation.ready', WorkerConversationReadyFactBodySchema),
   event(
     'invocation.prepared',
     exactWorkerFactBody(
@@ -903,7 +927,8 @@ export const BrokerEnvelopeSchema = z
       });
     }
     if (
-      (envelope.type === 'invocation.prepared' ||
+      (envelope.type === 'conversation.ready' ||
+        envelope.type === 'invocation.prepared' ||
         envelope.type === 'invocation.started' ||
         envelope.type === 'invocation.succeeded' ||
         envelope.type === 'invocation.failed' ||
@@ -915,6 +940,16 @@ export const BrokerEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ['body', 'sourceEventId'],
         message: 'durable sourceEventId 不能复用可重封装的 Broker messageId',
+      });
+    }
+    if (
+      envelope.type === 'conversation.ready' &&
+      envelope.body.conversationId !== envelope.correlationId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['correlationId'],
+        message: 'conversation.ready correlationId 必须绑定 conversationId',
       });
     }
     if (

@@ -43,6 +43,7 @@ import {
 } from './http.js';
 import { InvocationTransitionSchema, VnextErrorResponseSchema } from './invocation.js';
 import { WorkerInvocationFactSchema } from './invocation-facts.js';
+import { WorkerConversationReadyFactSchema } from './conversation-ready-facts.js';
 import {
   ConsumerEventOutboxRecordSchema,
   ConsumerEventStreamSchema,
@@ -83,6 +84,7 @@ export const ContractSchemaDefinitions = {
   ExecutionCapabilityUseRecord: ExecutionCapabilityUseRecordSchema,
   InvocationTransition: InvocationTransitionSchema,
   WorkerInvocationFact: WorkerInvocationFactSchema,
+  WorkerConversationReadyFact: WorkerConversationReadyFactSchema,
   VnextErrorResponse: VnextErrorResponseSchema,
   SandboxSpec: SandboxSpecSchema,
   SandboxAttestationUnsigned: SandboxAttestationUnsignedSchema,
@@ -192,6 +194,9 @@ const RuntimeSemanticConstraints: Partial<
     'sensitive.aad.invocationId == body.invocationId',
     'sensitive.aad.workerSessionId == lease.workerSessionId',
     'sensitive.aad.role == USER for invocation.prepare, ASSISTANT otherwise',
+    'conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))',
+    'conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId',
+    'conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping',
     'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
     'Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId',
     'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
@@ -204,6 +209,12 @@ const RuntimeSemanticConstraints: Partial<
     'started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest',
     'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
     'all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation',
+  ],
+  WorkerConversationReadyFact: [
+    'sourceEventId == openCommandId and remains stable across Broker reconnection/re-enveloping',
+    'installationId/workerSessionId/leaseId/fence bind the original conversation.open authority and remain immutable',
+    'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
+    'all Worker Conversation Ready facts MUST pass the authoritative runtime WorkerConversationReadyFactSchema parser after structural JSON Schema validation',
   ],
   ConsumerEventOutboxRecord: [
     'payload.conversationId == conversationId',

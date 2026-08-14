@@ -3,6 +3,7 @@ export * from './artifacts.js';
 export * from './broker.js';
 export * from './canonical.js';
 export * from './consumer-events.js';
+export * from './conversation-ready-facts.js';
 export * from './evidence.js';
 export * from './http.js';
 export * from './invocation.js';
