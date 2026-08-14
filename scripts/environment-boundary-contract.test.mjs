@@ -252,6 +252,21 @@ test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite verti
     assert.match(source, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
     assert.match(source, /run: pnpm -F @cb\/agent-gateway test/);
     assert.equal(
+      (source.match(/Creator Agent conversation\.ready fact PostgreSQL gate/g) ?? []).length,
+      1,
+      `${workflow} must define exactly one durable conversation.ready PostgreSQL gate`,
+    );
+    const readyFactStep = capture(
+      source,
+      /\n {6}- name: Creator Agent conversation\.ready fact PostgreSQL gate\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} conversation.ready fact step`,
+    );
+    assert.match(readyFactStep, /CREATOR_AGENT_READY_FACT_PG_TEST: '1'/);
+    assert.match(
+      readyFactStep,
+      /pnpm --dir db exec vitest run __tests__\/creator-agent-conversation-ready-fact\.pg\.test\.ts/,
+    );
+    assert.equal(
       (source.match(/Creator Agent Gateway to Worker SQLite vertical gate/g) ?? []).length,
       1,
       `${workflow} must define exactly one Worker SQLite vertical gate`,
@@ -271,7 +286,9 @@ test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite verti
     assert.match(verticalStep, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
     assert.match(verticalStep, /CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'/);
     assert.match(verticalStep, /run: pnpm -F @cb\/creator-worker-broker-client test:pg-vertical/);
-    assert.match(source, /Creator Agent persistent 0012 to 0015 upgrade gate/);
+    assert.match(source, /Creator Agent persistent 0012 to 0017 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0016 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0015 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0013 upgrade gate/);
     assert.ok(
@@ -281,7 +298,12 @@ test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite verti
     );
     assert.ok(
       source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate') <
-        source.indexOf('Creator Agent persistent 0012 to 0015 upgrade gate'),
+        source.indexOf('Creator Agent conversation.ready fact PostgreSQL gate'),
+      `${workflow} must run every role-login vertical before the role-mutating ready gate`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent conversation.ready fact PostgreSQL gate') <
+        source.indexOf('Creator Agent persistent 0012 to 0017 upgrade gate'),
       `${workflow} must run the vertical gate before the role-mutating upgrade gate`,
     );
   }

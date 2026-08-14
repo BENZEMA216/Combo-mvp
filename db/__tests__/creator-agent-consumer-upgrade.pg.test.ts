@@ -37,7 +37,7 @@ async function applyMigration(client: Client, filename: string): Promise<void> {
   }
 }
 
-pgDescribe('0012 -> 0013 -> 0014 -> 0015 -> 0016 Creator Agent persistent upgrade', () => {
+pgDescribe('0012 -> 0013 -> 0014 -> 0015 -> 0016 -> 0017 Creator Agent persistent upgrade', () => {
   it('preserves legacy commands, Invocations, and Gateway receipts through lifecycle authority', async () => {
     const admin = new Client({ connectionString: databaseUrl });
     const databaseName = `combo_vnext_upgrade_${randomUUID().replaceAll('-', '')}`;
@@ -502,14 +502,49 @@ pgDescribe('0012 -> 0013 -> 0014 -> 0015 -> 0016 Creator Agent persistent upgrad
       }
 
       for (let run = 1; run <= 2; run += 1) {
-        const alreadyApplied = await target.query(
-          `SELECT 1 FROM schema_migrations
-            WHERE filename = '0016_creator_agent_invocation_lifecycle.sql'`,
-        );
-        if (alreadyApplied.rowCount === 0) {
-          await applyMigration(target, '0016_creator_agent_invocation_lifecycle.sql');
+        for (const filename of [
+          '0016_creator_agent_invocation_lifecycle.sql',
+          '0017_creator_agent_conversation_ready_fact.sql',
+        ]) {
+          const alreadyApplied = await target.query(
+            `SELECT 1 FROM schema_migrations WHERE filename = $1`,
+            [filename],
+          );
+          if (alreadyApplied.rowCount === 0) {
+            await applyMigration(target, filename);
+          }
         }
       }
+
+      await expect(
+        target.query(
+          `SELECT
+             to_regclass('public.conversation_ready_fact_receipts')::text AS receipts,
+             to_regprocedure(
+               'public.creator_agent_commit_conversation_ready_fact(uuid,text,uuid,uuid,uuid,uuid,uuid,text,text,uuid,uuid,uuid,bigint,uuid,text,text)'
+             )::text AS ready_function,
+             has_function_privilege(
+               'combo_agent_broker',
+               'public.creator_agent_commit_conversation_ready_fact(uuid,text,uuid,uuid,uuid,uuid,uuid,text,text,uuid,uuid,uuid,bigint,uuid,text,text)',
+               'EXECUTE'
+             ) AS broker_execute,
+             has_function_privilege(
+               'combo_agent_broker',
+               'public.creator_agent_commit_conversation_ready(uuid,uuid,uuid,uuid,uuid,uuid,bigint,uuid)',
+               'EXECUTE'
+             ) AS legacy_execute`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            receipts: 'conversation_ready_fact_receipts',
+            ready_function:
+              'creator_agent_commit_conversation_ready_fact(uuid,text,uuid,uuid,uuid,uuid,uuid,text,text,uuid,uuid,uuid,bigint,uuid,text,text)',
+            broker_execute: true,
+            legacy_execute: false,
+          },
+        ],
+      });
 
       await expect(
         target.query(
@@ -604,15 +639,21 @@ pgDescribe('0012 -> 0013 -> 0014 -> 0015 -> 0016 Creator Agent persistent upgrad
       await expect(
         target.query(`SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1`),
       ).resolves.toMatchObject({
-        rows: [{ filename: '0016_creator_agent_invocation_lifecycle.sql' }],
+        rows: [{ filename: '0017_creator_agent_conversation_ready_fact.sql' }],
       });
       await expect(
         target.query(
           `SELECT count(*)::text AS applied
              FROM schema_migrations
-            WHERE filename = '0016_creator_agent_invocation_lifecycle.sql'`,
+            WHERE filename = ANY($1::text[])`,
+          [
+            [
+              '0016_creator_agent_invocation_lifecycle.sql',
+              '0017_creator_agent_conversation_ready_fact.sql',
+            ],
+          ],
         ),
-      ).resolves.toMatchObject({ rows: [{ applied: '1' }] });
+      ).resolves.toMatchObject({ rows: [{ applied: '2' }] });
     } finally {
       await target?.end().catch(() => undefined);
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);

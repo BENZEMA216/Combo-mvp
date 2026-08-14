@@ -115,6 +115,7 @@ describe('migrations', () => {
         'broker_outbox',
         'consumer_event_streams',
         'consumer_event_outbox',
+        'conversation_ready_fact_receipts',
         'conversation_ready_receipts',
         'worker_auth_challenges',
         'worker_gateway_sessions',
@@ -211,7 +212,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-10)).toEqual([
+    expect(list.slice(-11)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -222,6 +223,7 @@ describe('migrations', () => {
       '0014_creator_agent_consumer_open_ready.sql',
       '0015_creator_agent_gateway_authority.sql',
       '0016_creator_agent_invocation_lifecycle.sql',
+      '0017_creator_agent_conversation_ready_fact.sql',
     ]);
   });
 

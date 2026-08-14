@@ -205,8 +205,15 @@ jobs:
           BILLING_RUNTIME_TEST_DATABASE_URL: postgres://combo_runtime:ci-runtime-role-password@localhost:5432/agora
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts
 
-      # Replaying 0008/0012 mutates cluster-global role attributes; keep this last in the PG job.
-      - name: Creator Agent persistent 0012 to 0015 upgrade gate
+      # Both remaining gates replay role DDL in child databases, which is cluster-global. Keep
+      # them after every suite that logs in as a combo_* application role.
+      - name: Creator Agent conversation.ready fact PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_READY_FACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-conversation-ready-fact.pg.test.ts
+
+      - name: Creator Agent persistent 0012 to 0017 upgrade gate
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           CREATOR_AGENT_UPGRADE_PG_TEST: '1'

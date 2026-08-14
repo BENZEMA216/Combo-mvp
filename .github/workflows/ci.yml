@@ -303,9 +303,15 @@ jobs:
       - name: First-party email authentication integration
         run: bash scripts/integration/resend-auth-e2e.sh
 
-      # The child database replays role DDL which is cluster-global. This must remain the final
-      # PostgreSQL step so no later suite attempts a combo_* application login.
-      - name: Creator Agent persistent 0012 to 0015 upgrade gate
+      # Both remaining gates replay role DDL in child databases, which is cluster-global. Keep
+      # them after every suite that logs in as a combo_* application role.
+      - name: Creator Agent conversation.ready fact PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_READY_FACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-conversation-ready-fact.pg.test.ts
+
+      - name: Creator Agent persistent 0012 to 0017 upgrade gate
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           CREATOR_AGENT_UPGRADE_PG_TEST: '1'
