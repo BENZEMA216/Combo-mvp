@@ -233,7 +233,7 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
   );
 });
 
-test('PR and Main CI run the non-skipping Consumer PostgreSQL gates with the exact credential', () => {
+test('PR and Main CI run non-skipping Consumer and Gateway PostgreSQL gates', () => {
   for (const workflow of ['.github/workflows/pr-ci.yml', '.github/workflows/ci.yml']) {
     const source = text(workflow);
     assert.equal(
@@ -246,7 +246,18 @@ test('PR and Main CI run the non-skipping Consumer PostgreSQL gates with the exa
       `${workflow} must pass the Consumer credential to migration and Conversation PG gates`,
     );
     assert.match(source, /CREATOR_AGENT_CONVERSATION_PG_TEST: '1'/);
-    assert.match(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
+    assert.match(source, /Creator Agent Gateway PostgreSQL authority gate/);
+    assert.match(source, /CREATOR_AGENT_GATEWAY_PG_TEST: '1'/);
+    assert.match(source, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
+    assert.match(source, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
+    assert.match(source, /run: pnpm -F @cb\/agent-gateway test/);
+    assert.match(source, /Creator Agent persistent 0012 to 0015 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0013 upgrade gate/);
+    assert.ok(
+      source.indexOf('Creator Agent Gateway PostgreSQL authority gate') <
+        source.indexOf('Creator Agent persistent 0012 to 0015 upgrade gate'),
+      `${workflow} must run the Gateway gate before the role-mutating upgrade gate`,
+    );
   }
 });

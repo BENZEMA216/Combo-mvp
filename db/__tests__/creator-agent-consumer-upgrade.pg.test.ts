@@ -33,8 +33,8 @@ async function applyMigration(client: Client, filename: string): Promise<void> {
   }
 }
 
-pgDescribe('0012 -> 0013 -> 0014 Creator Agent persistent upgrade', () => {
-  it('preserves active/terminal rows before adding fail-closed open/ready authority', async () => {
+pgDescribe('0012 -> 0013 -> 0014 -> 0015 Creator Agent persistent upgrade', () => {
+  it('preserves active/terminal rows before adding open/ready and Gateway authority', async () => {
     const admin = new Client({ connectionString: databaseUrl });
     const databaseName = `combo_vnext_upgrade_${randomUUID().replaceAll('-', '')}`;
     await admin.connect();
@@ -250,10 +250,59 @@ pgDescribe('0012 -> 0013 -> 0014 Creator Agent persistent upgrade', () => {
           },
         ],
       });
+
+      await applyMigration(target, '0015_creator_agent_gateway_authority.sql');
+
+      await expect(
+        target.query<{ table_name: string }>(
+          `SELECT table_name
+             FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = ANY($1::text[])
+            ORDER BY table_name`,
+          [
+            [
+              'worker_auth_challenges',
+              'worker_auth_security_events',
+              'worker_gateway_frame_receipts',
+              'worker_gateway_operation_receipts',
+              'worker_gateway_outbound_frames',
+              'worker_gateway_security_events',
+              'worker_gateway_sequence_gaps',
+              'worker_gateway_sessions',
+            ],
+          ],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          { table_name: 'worker_auth_challenges' },
+          { table_name: 'worker_auth_security_events' },
+          { table_name: 'worker_gateway_frame_receipts' },
+          { table_name: 'worker_gateway_operation_receipts' },
+          { table_name: 'worker_gateway_outbound_frames' },
+          { table_name: 'worker_gateway_security_events' },
+          { table_name: 'worker_gateway_sequence_gaps' },
+          { table_name: 'worker_gateway_sessions' },
+        ],
+      });
+      await expect(
+        target.query<{ id: string; state: string }>(
+          `SELECT id, state
+             FROM agent_conversations
+            WHERE id = ANY($1::uuid[])
+            ORDER BY state`,
+          [[ids.idle, ids.closed]],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          { id: ids.closed, state: 'CLOSED' },
+          { id: ids.idle, state: 'IDLE' },
+        ],
+      });
       await expect(
         target.query(`SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1`),
       ).resolves.toMatchObject({
-        rows: [{ filename: '0014_creator_agent_consumer_open_ready.sql' }],
+        rows: [{ filename: '0015_creator_agent_gateway_authority.sql' }],
       });
     } finally {
       await target?.end().catch(() => undefined);

@@ -116,6 +116,14 @@ describe('migrations', () => {
         'consumer_event_streams',
         'consumer_event_outbox',
         'conversation_ready_receipts',
+        'worker_auth_challenges',
+        'worker_gateway_sessions',
+        'worker_auth_security_events',
+        'worker_gateway_operation_receipts',
+        'worker_gateway_frame_receipts',
+        'worker_gateway_security_events',
+        'worker_gateway_outbound_frames',
+        'worker_gateway_sequence_gaps',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -203,7 +211,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-8)).toEqual([
+    expect(list.slice(-9)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -212,6 +220,7 @@ describe('migrations', () => {
       '0012_creator_hosted_agent_vnext.sql',
       '0013_creator_agent_consumer_create.sql',
       '0014_creator_agent_consumer_open_ready.sql',
+      '0015_creator_agent_gateway_authority.sql',
     ]);
   });
 

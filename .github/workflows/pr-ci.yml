@@ -175,6 +175,14 @@ jobs:
           pnpm --dir apps/runtime exec vitest run \
             src/modules/creator-agent-conversation/repo.pg.test.ts
 
+      - name: Creator Agent Gateway PostgreSQL authority gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          CREATOR_AGENT_GATEWAY_PG_TEST: '1'
+        run: pnpm -F @cb/agent-gateway test
+
       - name: Authoring billing PostgreSQL invariants
         env:
           BILLING_PG_TEST: '1'
@@ -190,7 +198,7 @@ jobs:
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts
 
       # Replaying 0008/0012 mutates cluster-global role attributes; keep this last in the PG job.
-      - name: Creator Agent persistent 0012 to 0014 upgrade gate
+      - name: Creator Agent persistent 0012 to 0015 upgrade gate
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           CREATOR_AGENT_UPGRADE_PG_TEST: '1'

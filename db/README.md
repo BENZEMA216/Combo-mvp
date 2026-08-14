@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0014`，已经执行的迁移保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费与 Creator-hosted Agent VNext 只通过后续迁移追加。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0015`，已经执行的迁移保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费与 Creator-hosted Agent VNext 只通过后续迁移追加。
 
 ## 迁移文件
 
@@ -19,6 +19,7 @@
 - `0012_creator_hosted_agent_vnext.sql` 创建不可变 Context Snapshot 与 AgentVersion、Deployment/Worker Lease、版本固定的 Consumer Conversation、消息级 AEAD 对话、Invocation/Event Journal 和事务 Outbox，并为 VNext API、Broker 与 Reconciler 创建相互隔离的数据库角色和强制租户 RLS。
 - `0013_creator_agent_consumer_create.sql` 以 expand-only 升级加入邀请制 Agent Access Grant、Conversation create 幂等键、exact Lease/Fence definer 与 Consumer 最窄 RLS；它不会启用公网路由。
 - `0014_creator_agent_consumer_open_ready.sql` 新增独立 `combo_agent_consumer_api` 登录边界，并以窄 definer 原子写入 `OPENING + conversation.open`、只接受 exact current Lease/Fence/Worker 的 durable `conversation.ready` 后转 `IDLE`。
+- `0015_creator_agent_gateway_authority.sql` 增加一次性 Worker Challenge、持久 Session/sequence/ACK/outbound receipt、安全事件、短 Lease 与 exact grant correlation，并以窄 API/Broker authority、强制 RLS 和事务 receipt 支撑 Gateway 崩溃恢复。
 
 `users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。VNext 表把 Snapshot 密文对象索引、AgentVersion、邀请授权、在线 Deployment、短租约、Consumer 多轮消息和执行 Journal 分开；Conversation 在创建事务中固定 serving Version 与 Worker，`(consumer_subject_id, idempotency_key)` 防止重复创建。消息只保存 AEAD 密文与 HMAC 摘要，Event payload 明确拒绝 Prompt、答案、Token、路径和 Reasoning。成功终态同时写入独立 Consumer Event Outbox 与 stream cursor，Redis/SSE 只能在 PostgreSQL commit 后投影；七天回放保留期由 Reconciler 原子推进过期 cursor。
 
@@ -40,7 +41,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0014_creator_agent_consumer_open_ready.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_creator_agent_gateway_authority.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
