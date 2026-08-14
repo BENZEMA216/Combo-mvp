@@ -33,6 +33,13 @@ import WebSocket, { type RawData } from 'ws';
 
 export const WORKER_BROKER_CONNECT_PATH = BROKER_WORKER_CONNECT_PATH;
 
+const durablePortDeadlines = new WeakMap<AbortSignal, number>();
+
+/** @internal Allows a synchronous durable adapter to enforce the caller's monotonic deadline. */
+export function durablePortDeadline(signal: AbortSignal): number | undefined {
+  return durablePortDeadlines.get(signal);
+}
+
 export type WorkerBrokerClientStatus =
   | 'IDLE'
   | 'ACQUIRING_INSTALLATION'
@@ -93,7 +100,7 @@ export class WorkerBrokerClientError extends Error {
   }
 }
 
-export type BrokerChallenge = Readonly<{ challengeId: string }>;
+export type BrokerChallenge = Readonly<{ challengeId: string; cloudTime?: string }>;
 
 /** OAuth/session exchange remains a cloud-facing port; transport never receives bearer tokens. */
 export interface BrokerChallengePort {
@@ -175,7 +182,7 @@ export interface WorkerBrokerDurableTransportPort {
     envelope: BrokerEnvelope;
     canonicalDigest: string;
     signal: AbortSignal;
-  }): Promise<void>;
+  }): Promise<'EXACT_REPLAY' | 'NOT_FOUND'>;
   recordSequenceGap(input: {
     installationId: string;
     ownerToken: string;
@@ -248,6 +255,11 @@ type LeaseWindow = Readonly<{
   deadlineMonotonicMs: number;
 }>;
 
+type CloudTimeAnchor = Readonly<{
+  cloudTimeUpperBoundMs: number;
+  monotonicAtReceiptMs: number;
+}>;
+
 type LiveConnection = {
   readonly socket: WebSocket;
   readonly lifecycle: AbortController;
@@ -289,6 +301,7 @@ export class WorkerBrokerClient {
   readonly #stopTimeoutMs: number;
   readonly #monotonicNow: () => number;
   readonly #diagnosticSink?: (event: WorkerBrokerDiagnosticEvent) => void;
+  readonly #allowUnanchoredCloudTimeForTests: boolean;
   readonly #ownerToken = randomBytes(24).toString('base64url');
   readonly #lifecycle = new AbortController();
 
@@ -299,9 +312,11 @@ export class WorkerBrokerClient {
   #installationAcquired = false;
   #durableConnectionReleaseBlocked = false;
   #stopPromise?: Promise<void>;
+  #cloudTimeAnchor?: CloudTimeAnchor;
 
   constructor(options: WorkerBrokerClientOptions) {
     this.#url = validateBrokerUrl(options.url, options.allowInsecureLoopbackForTests === true);
+    this.#allowUnanchoredCloudTimeForTests = options.allowInsecureLoopbackForTests === true;
     const unsigned = BrokerHandshakeUnsignedSchema.parse({
       protocol: 'combo.creator-broker/1',
       schemaVersion: 1,
@@ -324,10 +339,22 @@ export class WorkerBrokerClient {
     this.#durablePort = options.durablePort;
     this.#handshakeTimeoutMs = bounded(options.handshakeTimeoutMs ?? 5_000, 50, 30_000);
     this.#portTimeoutMs = bounded(options.portTimeoutMs ?? 5_000, 50, 30_000);
-    this.#heartbeatIntervalMs = bounded(options.heartbeatIntervalMs ?? 10_000, 10, 30_000);
+    this.#heartbeatIntervalMs = bounded(
+      options.heartbeatIntervalMs ?? 10_000,
+      options.allowInsecureLoopbackForTests === true ? 10 : 10_000,
+      30_000,
+    );
     this.#maximumLeaseGrantMs = bounded(options.maximumLeaseGrantMs ?? 60_000, 1_000, 120_000);
-    this.#reconnectInitialMs = bounded(options.reconnectInitialMs ?? 250, 10, 30_000);
-    this.#reconnectMaximumMs = bounded(options.reconnectMaximumMs ?? 10_000, 10, 60_000);
+    this.#reconnectInitialMs = bounded(
+      options.reconnectInitialMs ?? 250,
+      options.allowInsecureLoopbackForTests === true ? 10 : 250,
+      30_000,
+    );
+    this.#reconnectMaximumMs = bounded(
+      options.reconnectMaximumMs ?? 10_000,
+      options.allowInsecureLoopbackForTests === true ? 10 : 250,
+      options.allowInsecureLoopbackForTests === true ? 60_000 : 30_000,
+    );
     if (this.#reconnectMaximumMs < this.#reconnectInitialMs) {
       throw new WorkerBrokerClientError('INVALID_OPTIONS', true);
     }
@@ -370,18 +397,7 @@ export class WorkerBrokerClient {
 
   async #startOnce(): Promise<void> {
     this.#status = 'ACQUIRING_INSTALLATION';
-    const acquired = await this.#callPort((signal) =>
-      this.#durablePort.acquireInstallation({
-        installationId: this.#installationId,
-        ownerToken: this.#ownerToken,
-        signal,
-      }),
-    );
-    if (!acquired) {
-      this.#status = 'BLOCKED';
-      throw new WorkerBrokerClientError('INSTALLATION_ALREADY_ACTIVE', true);
-    }
-    this.#installationAcquired = true;
+    await this.#renewInstallationOwnership();
     if (this.#lifecycle.signal.aborted) {
       throw new WorkerBrokerClientError('CLIENT_ALREADY_STOPPED', true);
     }
@@ -450,10 +466,16 @@ export class WorkerBrokerClient {
 
   async #runReconnectLoop(): Promise<void> {
     let attempt = 0;
+    let ownershipFresh = true;
     while (!this.#lifecycle.signal.aborted) {
-      this.#status = 'CONNECTING';
-      this.#diagnostic('connection_attempted');
       try {
+        if (!ownershipFresh) {
+          this.#status = 'ACQUIRING_INSTALLATION';
+          await this.#renewInstallationOwnership();
+        }
+        ownershipFresh = false;
+        this.#status = 'CONNECTING';
+        this.#diagnostic('connection_attempted');
         const outcome = await this.#connectOnce();
         if (outcome.permanent) {
           this.#status = 'BLOCKED';
@@ -482,8 +504,26 @@ export class WorkerBrokerClient {
     }
   }
 
+  async #renewInstallationOwnership(): Promise<void> {
+    const acquired = await this.#callPort((signal) =>
+      this.#durablePort.acquireInstallation({
+        installationId: this.#installationId,
+        ownerToken: this.#ownerToken,
+        signal,
+      }),
+    );
+    if (!acquired) {
+      this.#installationAcquired = false;
+      throw new WorkerBrokerClientError('INSTALLATION_ALREADY_ACTIVE', true);
+    }
+    this.#installationAcquired = true;
+  }
+
   async #connectOnce(): Promise<{ everReady: boolean; permanent: boolean }> {
     const handshake = await this.#createHandshake();
+    // Challenge/signing may outlive the local ownership lease. Revalidate immediately before any
+    // network connection so a replacement process fences this client before it contacts Broker.
+    await this.#renewInstallationOwnership();
     const socket = await openSocket(this.#url, this.#handshakeTimeoutMs, this.#lifecycle.signal);
     const live: LiveConnection = {
       socket,
@@ -584,6 +624,7 @@ export class WorkerBrokerClient {
 
   async #createHandshake(): Promise<BrokerHandshake> {
     let challenge: BrokerChallenge;
+    const challengeStartedAt = this.#monotonicNow();
     try {
       challenge = await withAbortableTimeout(
         (signal) =>
@@ -596,6 +637,25 @@ export class WorkerBrokerClient {
       );
     } catch {
       throw new WorkerBrokerClientError('CHALLENGE_FAILED');
+    }
+    const challengeReceivedAt = this.#monotonicNow();
+    const cloudTime =
+      challenge.cloudTime === undefined ? Number.NaN : Date.parse(challenge.cloudTime);
+    if (!Number.isFinite(cloudTime)) {
+      if (!this.#allowUnanchoredCloudTimeForTests) {
+        throw new WorkerBrokerClientError('CHALLENGE_FAILED', true);
+      }
+      this.#cloudTimeAnchor = undefined;
+    } else {
+      const roundTripMs = Math.max(0, challengeReceivedAt - challengeStartedAt);
+      const upperBound = cloudTime + Math.ceil(roundTripMs);
+      if (!Number.isSafeInteger(upperBound)) {
+        throw new WorkerBrokerClientError('CHALLENGE_FAILED', true);
+      }
+      this.#cloudTimeAnchor = Object.freeze({
+        cloudTimeUpperBoundMs: upperBound,
+        monotonicAtReceiptMs: challengeReceivedAt,
+      });
     }
     let unsigned: BrokerHandshakeUnsigned;
     try {
@@ -676,10 +736,11 @@ export class WorkerBrokerClient {
     ) {
       throw new WorkerBrokerClientError('HANDSHAKE_REJECTED', true);
     }
-    validateLeaseGrant(envelope, this.#maximumLeaseGrantMs);
+    const cloudNowAtReceipt = this.#estimatedCloudNow(live, envelope);
+    validateLeaseGrant(envelope, this.#maximumLeaseGrantMs, cloudNowAtReceipt);
     const initial = initialSequenceCursor(envelope.connectionId);
     const digest = canonicalSha256(envelope);
-    const decision = consumeSequence(initial, envelope, digest, Date.parse(envelope.sentAt));
+    const decision = consumeSequence(initial, envelope, digest, cloudNowAtReceipt);
     if (decision.type !== 'ACCEPT') {
       throw new WorkerBrokerClientError('HANDSHAKE_REJECTED', true);
     }
@@ -705,8 +766,10 @@ export class WorkerBrokerClient {
     ) {
       throw new WorkerBrokerClientError('STALE_LEASE', true);
     }
+    const monotonicAfterCommit = this.#monotonicNow();
+    const cloudNowAfterCommit = this.#estimatedCloudNow(live, envelope);
     live.connection = state;
-    live.leaseWindow = leaseWindowFor(envelope, this.#monotonicNow());
+    live.leaseWindow = leaseWindowFor(envelope, monotonicAfterCommit, cloudNowAfterCommit);
     live.ready = true;
     live.everReady = true;
     clearTimeout(live.grantTimer);
@@ -726,13 +789,32 @@ export class WorkerBrokerClient {
     }
     const durable = await this.#loadConnection(live, current.connectionId);
     validateConnectionState(durable, this.#installationId, current.connectionId);
-    const cursor = restoreSequenceCursor(durable.inboundCursor);
     const digest = canonicalSha256(envelope);
+    // SQLite facts are authoritative beyond the bounded cursor's digest window.
+    const durableReplay = await this.#callLivePort(live, (signal) =>
+      this.#durablePort.replayInbound({
+        installationId: this.#installationId,
+        ownerToken: this.#ownerToken,
+        connectionId: current.connectionId,
+        envelope,
+        canonicalDigest: digest,
+        signal,
+      }),
+    );
+    if (durableReplay === 'EXACT_REPLAY') {
+      this.#diagnostic('frame_replayed');
+      await this.#queueFlush(live);
+      return;
+    }
+    const cursor = restoreSequenceCursor(durable.inboundCursor);
     let decision: ReturnType<typeof consumeSequence>;
     try {
       decision = consumeSequence(cursor, envelope, digest, this.#estimatedCloudNow(live, envelope));
     } catch (error) {
-      if (error instanceof BrokerProtocolError && error.code === 'SEQUENCE_CONFLICT') {
+      if (
+        error instanceof BrokerProtocolError &&
+        (error.code === 'SEQUENCE_CONFLICT' || error.code === 'CURSOR_EXPIRED')
+      ) {
         throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
       }
       throw new WorkerBrokerClientError('PROTOCOL_ERROR', true);
@@ -751,24 +833,17 @@ export class WorkerBrokerClient {
       );
       throw new WorkerBrokerClientError('SEQUENCE_GAP');
     }
+    // A cursor replay without its SQLite fact is evidence loss, not replay authority.
     if (decision.type === 'REPLAY') {
-      await this.#callLivePort(live, (signal) =>
-        this.#durablePort.replayInbound({
-          installationId: this.#installationId,
-          ownerToken: this.#ownerToken,
-          connectionId: current.connectionId,
-          envelope,
-          canonicalDigest: digest,
-          signal,
-        }),
-      );
-      this.#diagnostic('frame_replayed');
-      await this.#queueFlush(live);
-      return;
+      throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
     }
 
     if (envelope.kind === 'command' && envelope.type === 'lease.grant') {
-      validateLeaseGrant(envelope, this.#maximumLeaseGrantMs);
+      validateLeaseGrant(
+        envelope,
+        this.#maximumLeaseGrantMs,
+        this.#estimatedCloudNow(live, envelope),
+      );
     }
     validateInboundLeaseAuthority(durable, envelope, live, this.#monotonicNow());
     const nextCursor = serializeSequenceCursor(decision.cursor);
@@ -816,8 +891,10 @@ export class WorkerBrokerClient {
   ): void {
     if (envelope.kind !== 'command') return;
     if (envelope.type === 'lease.grant') {
-      validateLeaseGrant(envelope, this.#maximumLeaseGrantMs);
-      live.leaseWindow = leaseWindowFor(envelope, this.#monotonicNow());
+      const monotonicNow = this.#monotonicNow();
+      const cloudNow = this.#estimatedCloudNow(live, envelope);
+      validateLeaseGrant(envelope, this.#maximumLeaseGrantMs, cloudNow);
+      live.leaseWindow = leaseWindowFor(envelope, monotonicNow, cloudNow);
       this.#diagnostic('lease_renewed');
       this.#scheduleHeartbeat(live);
       return;
@@ -940,18 +1017,9 @@ export class WorkerBrokerClient {
         }
         previousSequence = frame.sequence;
         const digest = canonicalSha256(frame);
-        let decision: ReturnType<typeof consumeSequence>;
-        try {
-          decision = consumeSequence(
-            outboundCursor,
-            frame,
-            digest,
-            this.#estimatedCloudNow(live, frame),
-          );
-        } catch {
-          throw new WorkerBrokerClientError('PORT_FAILED', true);
-        }
-        if (decision.type !== 'REPLAY') {
+        // readOutbound is a durable-fact API. A PENDING row remains sendable after its sequence
+        // digest ages out of the cursor, but it must still precede the durable nextExpected value.
+        if (compareUint63(frame.sequence, outboundCursor.nextExpected.toString(10)) >= 0) {
           throw new WorkerBrokerClientError('PORT_FAILED', true);
         }
         const payload = canonicalizeJson(frame);
@@ -995,6 +1063,13 @@ export class WorkerBrokerClient {
   }
 
   #estimatedCloudNow(live: LiveConnection, envelope: BrokerEnvelope): number {
+    const anchor = this.#cloudTimeAnchor;
+    if (anchor !== undefined) {
+      return (
+        anchor.cloudTimeUpperBoundMs +
+        Math.max(0, this.#monotonicNow() - anchor.monotonicAtReceiptMs)
+      );
+    }
     const window = live.leaseWindow;
     if (window === undefined) return Date.parse(envelope.sentAt);
     const elapsed = Math.max(
@@ -1130,25 +1205,42 @@ function validateInboundLeaseAuthority(
   }
 }
 
-function validateLeaseGrant(envelope: LeaseGrantCommand, maximumLeaseGrantMs: number): void {
+function validateLeaseGrant(
+  envelope: LeaseGrantCommand,
+  maximumLeaseGrantMs: number,
+  cloudNow: number,
+): void {
   if (envelope.body.workerSessionId !== envelope.lease.workerSessionId) {
     throw new WorkerBrokerClientError('LEASE_GRANT_INVALID', true);
   }
   const sentAt = Date.parse(envelope.sentAt);
   const expiresAt = Date.parse(envelope.body.leaseExpiresAt);
   const duration = expiresAt - sentAt;
-  if (!Number.isSafeInteger(duration) || duration <= 0 || duration > maximumLeaseGrantMs) {
+  if (
+    !Number.isSafeInteger(duration) ||
+    duration <= 0 ||
+    duration > maximumLeaseGrantMs ||
+    expiresAt <= cloudNow
+  ) {
     throw new WorkerBrokerClientError('LEASE_GRANT_INVALID', true);
   }
 }
 
-function leaseWindowFor(envelope: LeaseGrantCommand, monotonicNow: number): LeaseWindow {
+function leaseWindowFor(
+  envelope: LeaseGrantCommand,
+  monotonicNow: number,
+  cloudNow: number,
+): LeaseWindow {
   const cloudSentAtMs = Date.parse(envelope.sentAt);
+  const remainingMs = Date.parse(envelope.body.leaseExpiresAt) - cloudNow;
+  if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+    throw new WorkerBrokerClientError('STALE_LEASE', true);
+  }
   return Object.freeze({
     lease: Object.freeze({ ...envelope.lease }),
     cloudSentAtMs,
     cloudExpiresAt: envelope.body.leaseExpiresAt,
-    deadlineMonotonicMs: monotonicNow + (Date.parse(envelope.body.leaseExpiresAt) - cloudSentAtMs),
+    deadlineMonotonicMs: monotonicNow + remainingMs,
   });
 }
 
@@ -1343,6 +1435,8 @@ async function withAbortableTimeout<T>(
   const abort = () => controller.abort(parent?.reason);
   if (parent?.aborted) abort();
   else parent?.addEventListener('abort', abort, { once: true });
+  const deadline = performance.now() + timeoutMs;
+  durablePortDeadlines.set(controller.signal, deadline);
   const timer = setTimeout(() => controller.abort(new Error('TIMEOUT')), timeoutMs);
   timer.unref();
   try {
@@ -1355,6 +1449,7 @@ async function withAbortableTimeout<T>(
       }),
     ]);
   } finally {
+    durablePortDeadlines.delete(controller.signal);
     clearTimeout(timer);
     parent?.removeEventListener('abort', abort);
   }

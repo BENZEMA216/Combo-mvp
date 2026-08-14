@@ -121,7 +121,7 @@ describe('Real Worker transport ↔ Fake Broker', () => {
       brokerHandshakeSigningBytes(BrokerHandshakeUnsignedSchema.parse(unsigned)),
     );
     expect(broker.handshakes[0]!.challengeSignature).toBe(SIGNATURE);
-    expect(durable.acquireCalls).toBe(2);
+    expect(durable.acquireCalls).toBe(3);
     expect(broker.connectionCount).toBe(1);
     await waitFor(() => broker.received.length >= 1);
     expect(broker.received.some((item) => item.envelope.type === 'lease.accepted')).toBe(true);
@@ -185,6 +185,63 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     await waitFor(() => client.status === 'BLOCKED');
     expect(broker.received).toHaveLength(0);
   });
+
+  it('prioritizes durable inbound and outbound facts after 1024 cursor digests expire', async () => {
+    const durable = new FakeDurablePort();
+    durable.holdOutbound = true;
+    const broker = await startBroker({ leaseDurationMs: 60_000 });
+    const client = createClient(broker.url, durable, { heartbeatIntervalMs: 100 });
+    await client.start();
+    await waitFor(() => client.status === 'READY');
+    const connection = broker.connections[0]!;
+    const ancientOutboundId = durable.outbox[0]!.envelope.messageId;
+    durable.advanceOutboundCursor(1_025);
+    durable.holdOutbound = false;
+    await waitFor(() =>
+      broker.received.some((item) => item.envelope.messageId === ancientOutboundId),
+    );
+    expect(client.status).toBe('READY');
+
+    const ancientInbound = pingCommand({
+      connectionId: connection.connectionId,
+      sequence: '1',
+      lease: leaseBinding(LEASE_A, '7'),
+      messageId: uuid(17_100),
+      nonce: Buffer.alloc(16, 1).toString('base64url'),
+    });
+    broker.send(connection.socket, ancientInbound);
+    await waitFor(() => durable.committed.length === 2);
+    for (let start = 2; start <= 1_026; start += 16) {
+      const end = Math.min(1_026, start + 15);
+      for (let sequence = start; sequence <= end; sequence += 1) {
+        broker.send(
+          connection.socket,
+          pingCommand({
+            connectionId: connection.connectionId,
+            sequence: String(sequence),
+            lease: leaseBinding(LEASE_A, '7'),
+            messageId: uuid(17_100 + sequence),
+            nonce: Buffer.alloc(16, sequence % 255).toString('base64url'),
+          }),
+        );
+      }
+      await waitFor(() => durable.committed.length >= end + 1);
+    }
+    broker.send(connection.socket, ancientInbound);
+    await waitFor(() => durable.replayed.includes(ancientInbound.messageId));
+    expect(client.status).toBe('READY');
+    broker.send(
+      connection.socket,
+      pingCommand({
+        connectionId: connection.connectionId,
+        sequence: '1',
+        lease: leaseBinding(LEASE_A, '7'),
+        messageId: ancientInbound.messageId,
+        nonce: Buffer.alloc(16, 2).toString('base64url'),
+      }),
+    );
+    await waitFor(() => client.status === 'BLOCKED');
+  }, 30_000);
 
   it('permanently blocks unknown, wrong-direction, and binary established frames', async () => {
     for (const invalid of ['unknown-type', 'wrong-direction', 'binary'] as const) {
@@ -523,6 +580,20 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     );
   });
 
+  it('subtracts transport delay from an initial lease using the Cloud challenge time anchor', async () => {
+    const durable = new FakeDurablePort();
+    const broker = await startBroker({ leaseDurationMs: 80, initialGrantDelayMs: 120 });
+    const client = createClient(broker.url, durable, {
+      challengeCloudTime: SENT_AT,
+      reconnectInitialMs: 200,
+      reconnectMaximumMs: 200,
+    });
+    await client.start();
+    await waitFor(() => client.status === 'BLOCKED', 1_000);
+    expect(durable.committed).toHaveLength(0);
+    expect(durable.releaseConnectionCalls).toBe(0);
+  });
+
   it('moves the heartbeat deadline only after a later Cloud lease grant commits', async () => {
     const durable = new FakeDurablePort();
     const broker = await startBroker({ leaseDurationMs: 120 });
@@ -719,6 +790,7 @@ type FakeBrokerOptions = Readonly<{
   leaseDurationMs?: number;
   malformedFirstFrame?: boolean;
   rejectInstallationBeforeGrant?: boolean;
+  initialGrantDelayMs?: number;
 }>;
 
 type BrokerConnection = {
@@ -821,17 +893,23 @@ class FakeBroker {
           socket.close(BrokerCloseCode.AUTH_FAILED, BrokerCloseReason.INSTALLATION_REVOKED);
           return;
         }
-        this.send(
-          socket,
-          leaseGrant({
-            connectionId: connection.connectionId,
-            sequence: '0',
-            lease: leaseBinding(LEASE_A, this.#options.initialFence ?? '7'),
-            messageId: uuid(300 + index),
-            sentAt: new Date(this.#baseNow + index * 1_000).toISOString(),
-            leaseExpiresAt: this.leaseExpiresAt(index),
-          }),
-        );
+        const grant = leaseGrant({
+          connectionId: connection.connectionId,
+          sequence: '0',
+          lease: leaseBinding(LEASE_A, this.#options.initialFence ?? '7'),
+          messageId: uuid(300 + index),
+          sentAt: new Date(this.#baseNow + index * 1_000).toISOString(),
+          leaseExpiresAt: this.leaseExpiresAt(index),
+        });
+        if ((this.#options.initialGrantDelayMs ?? 0) > 0) {
+          const timer = setTimeout(
+            () => this.send(socket, grant),
+            this.#options.initialGrantDelayMs,
+          );
+          timer.unref();
+        } else {
+          this.send(socket, grant);
+        }
         return;
       }
       const envelope = parseBrokerFrame(rawDataBytes(data));
@@ -858,6 +936,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   readonly outbox: OutboxRecord[] = [];
   corruptActivationReturn = false;
   corruptNextOutbound = false;
+  holdOutbound = false;
   commitBarrier?: Promise<void>;
   hangConnectionRelease = false;
   hangInstallationRelease = false;
@@ -883,6 +962,31 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
           expiresAt: current.leaseExpiresAt,
           lease: current.lease,
           body: { nonce: Buffer.alloc(16, index + 1).toString('base64url') },
+        }),
+      );
+    }
+  }
+
+  advanceOutboundCursor(count: number): void {
+    if (!Number.isSafeInteger(count) || count < 1 || count > 2_048) {
+      throw new Error('INVALID_ADVANCE_COUNT');
+    }
+    const current = this.requireCurrent(this.current!.connectionId);
+    for (let index = 0; index < count; index += 1) {
+      this.acceptOutbound(
+        BrokerEnvelopeSchema.parse({
+          protocol: 'combo.creator-broker/1',
+          schemaVersion: 1,
+          kind: 'event',
+          type: 'pong',
+          messageId: uuid(this.#nextMessage++),
+          correlationId: CORRELATION,
+          connectionId: current.connectionId,
+          sequence: this.nextOutboundSequence(),
+          sentAt: current.leaseGrantedAt,
+          expiresAt: current.leaseExpiresAt,
+          lease: current.lease,
+          body: { nonce: Buffer.alloc(16, (index % 254) + 1).toString('base64url') },
         }),
       );
     }
@@ -992,9 +1096,8 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     } else if (input.envelope.kind === 'command' && input.envelope.type === 'lease.revoke') {
       current.leaseState = 'REVOKED';
     } else if (input.envelope.kind === 'ack') {
-      const record = this.outbox.find(
-        (item) => item.envelope.messageId === input.envelope.body.acknowledgedMessageId,
-      );
+      const acknowledgedMessageId = input.envelope.body.acknowledgedMessageId;
+      const record = this.outbox.find((item) => item.envelope.messageId === acknowledgedMessageId);
       if (record !== undefined && input.envelope.body.level === 'CLOUD_COMMITTED') {
         record.state = 'ACKED';
       }
@@ -1007,14 +1110,31 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     connectionId: string;
     envelope: BrokerEnvelope;
     canonicalDigest: string;
-  }): Promise<void> {
+  }): Promise<'EXACT_REPLAY' | 'NOT_FOUND'> {
     this.assertOwner(input.ownerToken);
     this.requireCurrent(input.connectionId);
-    const original = this.committed.find((item) => item.messageId === input.envelope.messageId);
-    if (original === undefined || canonicalSha256(original) !== input.canonicalDigest) {
-      throw new WorkerBrokerClientError('PORT_FAILED', true);
+    const sameSequence = this.committed.find(
+      (item) =>
+        item.connectionId === input.envelope.connectionId &&
+        item.sequence === input.envelope.sequence,
+    );
+    if (sameSequence === undefined) {
+      const sameMessage = this.committed.find(
+        (item) => item.messageId === input.envelope.messageId,
+      );
+      if (sameMessage !== undefined && canonicalSha256(sameMessage) !== input.canonicalDigest) {
+        throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
+      }
+      return 'NOT_FOUND';
+    }
+    if (
+      sameSequence.messageId !== input.envelope.messageId ||
+      canonicalSha256(sameSequence) !== input.canonicalDigest
+    ) {
+      throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
     }
     this.replayed.push(input.envelope.messageId);
+    return 'EXACT_REPLAY';
   }
 
   async recordSequenceGap(input: {
@@ -1074,6 +1194,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   }): Promise<readonly BrokerEnvelope[]> {
     this.assertOwner(input.ownerToken);
     this.requireCurrent(input.connectionId);
+    if (this.holdOutbound) return [];
     return this.outbox
       .filter((item) => item.state === 'PENDING')
       .slice(0, input.limit)
@@ -1364,12 +1485,18 @@ function createClient(
     maxPendingInboundFrames?: number;
     portTimeoutMs?: number;
     diagnosticSink?: (event: WorkerBrokerDiagnosticEvent) => void;
+    challengeCloudTime?: string;
   } = {},
 ): WorkerBrokerClient {
   let challenge = 700;
   const challengePort: BrokerChallengePort = {
     async requestChallenge() {
-      return { challengeId: uuid(challenge++) };
+      return {
+        challengeId: uuid(challenge++),
+        ...(options.challengeCloudTime === undefined
+          ? {}
+          : { cloudTime: options.challengeCloudTime }),
+      };
     },
   };
   const deviceSigner: DeviceSignerPort = {
