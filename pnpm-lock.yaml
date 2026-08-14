@@ -41,6 +41,9 @@ importers:
       '@cb/creator-agent-broker-journal':
         specifier: workspace:*
         version: link:../../packages/creator-agent-broker-journal
+      '@cb/creator-agent-persistence':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-persistence
       '@cb/creator-agent-protocol':
         specifier: workspace:*
         version: link:../../packages/creator-agent-protocol

@@ -18,12 +18,13 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
-    "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-broker-journal build",
+    "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-agent-persistence build",
     "test": "vitest run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
     "@cb/creator-agent-broker-journal": "workspace:*",
+    "@cb/creator-agent-persistence": "workspace:*",
     "@cb/creator-agent-protocol": "workspace:*",
     "pg": "^8.13.1",
     "ws": "8.21.0",

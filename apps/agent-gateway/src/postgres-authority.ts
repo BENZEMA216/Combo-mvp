@@ -185,14 +185,35 @@ export type GatewayProjectionDecision =
   | 'SECURITY_BLOCK';
 
 /**
+ * Authority for the connection carrying a business event. This is deliberately
+ * separate from the original Invocation execution authority embedded in an
+ * Invocation fact. A reconnect may replace every field below while the fact's
+ * original Lease/Fence remains immutable.
+ */
+export interface GatewayCurrentTransportAuthority {
+  creatorId: string;
+  installationId: string;
+  workerSessionId: string;
+  connectionId: string;
+  deploymentId: string;
+  leaseId: string;
+  fence: string;
+}
+
+/**
  * Business event projection is an explicit port. It executes inside the same PostgreSQL
  * transaction as sequence advancement and the CLOUD_COMMITTED ACK. A missing projector
  * rejects business events; the Gateway never stores raw frames or pretends an event committed.
+ * The Gateway verifies `transport` and only routes an Invocation event when the durable
+ * Invocation belongs to the same Creator, Deployment, and Installation. The projector must
+ * still validate the event body's original Lease/Fence, capability, Version, Snapshot, and
+ * fact digest against Cloud authority before it mutates a business projection.
  */
 export interface GatewayBusinessEventProjector {
   project(input: {
     transaction: GatewayTransaction;
     session: AuthenticatedWorkerSession;
+    transport: GatewayCurrentTransportAuthority;
     event: ProjectableWorkerEvent;
     signal: AbortSignal;
   }): Promise<GatewayProjectionDecision>;
@@ -1302,6 +1323,15 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
       decision: await this.projector.project({
         transaction,
         session,
+        transport: Object.freeze({
+          creatorId: session.ownerId,
+          installationId: session.installationId,
+          workerSessionId: session.workerSessionId,
+          connectionId: session.connectionId,
+          deploymentId: lease.deployment_id,
+          leaseId: lease.lease_id,
+          fence: parseUint63(lease.lease_fence),
+        }),
         event: envelope as ProjectableWorkerEvent,
         signal,
       }),
@@ -1974,7 +2004,8 @@ async function lockSessionAndLease(
   envelope: BrokerEnvelope,
   signal: AbortSignal,
 ): Promise<SessionLeaseRow> {
-  const invocationId = envelopeInvocationId(envelope);
+  const invocationRoute = envelopeInvocationRoute(envelope);
+  const invocationId = invocationRoute?.invocationId;
   const found = await transaction.query<SessionLeaseDatabaseRow>(
     `SELECT gateway.id::text, gateway.creator_id::text, gateway.installation_id::text,
             gateway.challenge_id::text,
@@ -2025,9 +2056,22 @@ async function lockSessionAndLease(
        LEFT JOIN agent_invocations AS invocation
          ON invocation.id = $8
         AND invocation.creator_id = deployment.creator_id
-        AND invocation.assignment_lease_id = lease.id
-        AND invocation.assigned_worker_id = lease.worker_id
-        AND invocation.assignment_fence = lease.fence
+        AND invocation.assigned_worker_id = gateway.installation_id
+        AND EXISTS (
+          SELECT 1
+            FROM agent_conversations AS invocation_conversation
+           WHERE invocation_conversation.id = invocation.conversation_id
+             AND invocation_conversation.creator_id = invocation.creator_id
+             AND invocation_conversation.consumer_subject_id = invocation.consumer_subject_id
+             AND invocation_conversation.deployment_id = deployment.id
+        )
+        AND (
+          NOT $9::boolean
+          OR (
+            invocation.assignment_lease_id = lease.id
+            AND invocation.assignment_fence = lease.fence
+          )
+        )
        LEFT JOIN agent_version_controls AS pinned_control
          ON pinned_control.version_id = invocation.agent_version_id
         AND pinned_control.creator_id = invocation.creator_id
@@ -2044,6 +2088,7 @@ async function lockSessionAndLease(
       envelope.lease.deploymentId,
       parseUint63(envelope.lease.fence),
       invocationId ?? null,
+      invocationRoute?.requiresCurrentAssignment ?? false,
     ],
     signal,
   );
@@ -2089,13 +2134,28 @@ async function lockSessionAndLease(
   return { ...row, active_pinned_version_blocked: activePinnedVersionBlocked };
 }
 
-function envelopeInvocationId(envelope: BrokerEnvelope): string | undefined {
+type EnvelopeInvocationRoute = Readonly<{
+  invocationId: string;
+  requiresCurrentAssignment: boolean;
+}>;
+
+function envelopeInvocationRoute(envelope: BrokerEnvelope): EnvelopeInvocationRoute | undefined {
   if (envelope.type === 'heartbeat') {
-    return envelope.body.activeInvocationId ?? undefined;
+    return envelope.body.activeInvocationId === null
+      ? undefined
+      : {
+          invocationId: envelope.body.activeInvocationId,
+          requiresCurrentAssignment: true,
+        };
   }
   if (envelope.kind === 'event' && envelope.type.startsWith('invocation.')) {
     const body = envelope.body as { invocationId?: unknown };
-    return body.invocationId === undefined ? undefined : UuidSchema.parse(body.invocationId);
+    return body.invocationId === undefined
+      ? undefined
+      : {
+          invocationId: UuidSchema.parse(body.invocationId),
+          requiresCurrentAssignment: false,
+        };
   }
   return undefined;
 }
@@ -2170,6 +2230,21 @@ async function revokeLeaseAuthority(
     signal,
   );
   if (revoked.rowCount !== 1) throw new PostgresGatewayAuthorityError('LEASE_UNAVAILABLE');
+  // The migration-owned definer holds the same Deployment advisory lock as
+  // capability issuance and performs one cross-Consumer UPDATE. Do not rebuild
+  // that authority with application-side Consumer enumeration.
+  const capabilityRevocation = await transaction.query<{
+    revoked_count: string | number | bigint;
+  }>(
+    `SELECT public.creator_agent_security_revoke_deployment_capabilities(
+       $1::uuid, $2::uuid
+     ) AS revoked_count`,
+    [session.ownerId, lease.deployment_id],
+    signal,
+  );
+  const revokedCapabilities = capabilityRevocation.rows[0]?.revoked_count;
+  if (revokedCapabilities === undefined) throw persistenceFailure();
+  parseUint63(revokedCapabilities);
   const observed = await transaction.query(
     `UPDATE deployments
         SET observed_state = $4, observed_generation = generation,
