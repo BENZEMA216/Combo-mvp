@@ -233,7 +233,7 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
   );
 });
 
-test('PR and Main CI run non-skipping Consumer and Gateway PostgreSQL gates', () => {
+test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite vertical gates', () => {
   for (const workflow of ['.github/workflows/pr-ci.yml', '.github/workflows/ci.yml']) {
     const source = text(workflow);
     assert.equal(
@@ -251,13 +251,38 @@ test('PR and Main CI run non-skipping Consumer and Gateway PostgreSQL gates', ()
     assert.match(source, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
     assert.match(source, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
     assert.match(source, /run: pnpm -F @cb\/agent-gateway test/);
+    assert.equal(
+      (source.match(/Creator Agent Gateway to Worker SQLite vertical gate/g) ?? []).length,
+      1,
+      `${workflow} must define exactly one Worker SQLite vertical gate`,
+    );
+    assert.equal(
+      (source.match(/CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'/g) ?? []).length,
+      1,
+      `${workflow} must enable the real vertical suite in exactly one step`,
+    );
+    const verticalStep = capture(
+      source,
+      /\n {6}- name: Creator Agent Gateway to Worker SQLite vertical gate\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} Worker SQLite vertical step`,
+    );
+    assert.match(verticalStep, /DATABASE_URL: postgres:\/\/agora:agora@localhost:5432\/agora/);
+    assert.match(verticalStep, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
+    assert.match(verticalStep, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
+    assert.match(verticalStep, /CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'/);
+    assert.match(verticalStep, /run: pnpm -F @cb\/creator-worker-broker-client test:pg-vertical/);
     assert.match(source, /Creator Agent persistent 0012 to 0015 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0013 upgrade gate/);
     assert.ok(
       source.indexOf('Creator Agent Gateway PostgreSQL authority gate') <
+        source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate'),
+      `${workflow} must run the Gateway authority gate before the vertical gate`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate') <
         source.indexOf('Creator Agent persistent 0012 to 0015 upgrade gate'),
-      `${workflow} must run the Gateway gate before the role-mutating upgrade gate`,
+      `${workflow} must run the vertical gate before the role-mutating upgrade gate`,
     );
   }
 });

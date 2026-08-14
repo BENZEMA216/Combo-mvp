@@ -9,6 +9,7 @@
 - `src/index.ts` 导出客户端、DeviceSigner、Challenge 与 durable transport 端口。
 - `src/worker-broker-client.integration.test.ts` 通过真实回环 WebSocket socket 和 Fake Broker 验证 `Real Worker transport ↔ Fake Broker` 契约。
 - `src/sqlite-durable-transport.test.ts` 使用真实 SQLite 文件、独立子进程和真实回环 `AgentGateway` 验证 WAL/FULL 回读、文件权限、owner CAS、事务/abort、SIGKILL 窗口、WAL 单独丢失、opaque command references、迁移重入、最大 backlog 重组、bounded retention、字节配额及 AEAD-only 落盘。
+- `src/postgres-sqlite-vertical.pg.test.ts` 在显式测试开关下连接 disposable PostgreSQL，以真实 P-256 握手、真实 Gateway、真实 Worker 客户端和真实文件 SQLite 验证 Cloud-time Lease 续约、Gateway 重启重连、Fence 提升、Journal 重开、双向 message ID/digest 对账、WebSocket payload 原字节重复与 PostgreSQL COMMIT-response-loss 恢复。
 
 ## 必需端口
 
@@ -41,6 +42,8 @@ Journal 默认把活跃 inbound/outbox admission 分别限制为 512 行；outbo
 ```bash
 pnpm -F @cb/creator-worker-broker-client typecheck:test
 pnpm -F @cb/creator-worker-broker-client test
+CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST=1 \
+  pnpm -F @cb/creator-worker-broker-client test:pg-vertical
 ```
 
 标准 `test` 入口会先按依赖顺序构建 Protocol、Broker Journal 与 Gateway，避免 fresh
@@ -49,3 +52,5 @@ worktree 或刚集成提交时读取旧 `dist` 产生假绿/假红。
 `worker-broker-client.integration.test.ts` 属于 `E3 Contract/Fake System`：WebSocket 客户端与回环 socket 是真实实现，Broker、Challenge、DeviceSigner 和 durable port 是测试替身。
 
 `sqlite-durable-transport.test.ts` 提供本机 `E2 SQLite` 证据，并覆盖真实 Worker client ↔ 真实回环 Gateway 的纵向切片；Challenge、DeviceSigner 和 Gateway authority 仍是测试端口。它能证明真实文件上的 PRAGMA/事务/CAS、两进程竞争、1,050 次 clean reconnect、retained connection 总上限、512-row 最大 backlog、1,024+ 古老 durable replay、opaque command reference、owner/revoke isolation、重启、SIGKILL、同 connection 丢失 response 后 exact replay/重发/Cloud commit 终止、WAL 单独移除、pinned-reader WAL protection、row deletion 与 state tamper fail-closed、bounded prune、DB/WAL admission 配额和 AEAD-only bytes。`synchronous=FULL` 与 checkpoint 回读仍不等于真实断电/磁盘固件测试；同盘 watermark 也不等于 Cloud reconciliation 或异机备份恢复。它不证明 Secure Enclave、真实 OAuth、Cloud Execution Capability、完整 Invocation Journal/Host result reconciliation、加密备份恢复、PostgreSQL/Redis/MinIO Cloud Journal、公网 TLS、NAT、真实 Linux/Mac VM、Test Cloud、24h soak 或 Gate 3/4。
+
+`postgres-sqlite-vertical.pg.test.ts` 提供本机 `E2 PostgreSQL + E2 SQLite + E3 loopback` 混合纵向证据。它使用真实 PostgreSQL authority 和数据库时钟、真实 P-256 签名、真实 WebSocket Gateway、真实 Worker 客户端与真实文件 SQLite，验证 Lease 续约越过初始 TTL、Gateway listener 重启后的新 Session/Fence、同一 Journal 重开，以及 Cloud/Local 双向 receipt 的 exact message ID/canonical digest。测试 relay 只重复完全相同的 WebSocket message payload bytes，不宣称 TCP 分片或 masking key 相同；定向 Pool fault 在目标 `ACCEPT_ENVELOPE` 已真实 COMMIT 后丢失响应，并验证 operation/frame receipt 各一、SQLite 最终 `CLOUD_COMMITTED` 且 transport 不重连。Challenge 仍通过进程内端口调用而不是 OAuth HTTP，P-256 私钥仍在测试进程内存中，连接仍是回环 `ws://`；该 Gate 不证明公网 TLS/NAT、Secure Enclave、Cloud Outbox publisher、完整 Invocation Journal/Host dispatch、真实 Creator Worker 或 Gate 3/4。
