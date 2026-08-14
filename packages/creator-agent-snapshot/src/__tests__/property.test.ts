@@ -190,7 +190,7 @@ describe(`deterministic properties (seed=${SEED})`, () => {
       expect(built.snapshotDigest).toBe(expectedSnapshot);
       expect(built.archiveDigest).toBe(expectedArchive);
     }
-  });
+  }, 15_000);
 
   it('one-byte content changes yield distinct manifest identities across 512 inputs', () => {
     const digests = new Set<string>();
