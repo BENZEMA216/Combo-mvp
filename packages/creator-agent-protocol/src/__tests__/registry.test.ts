@@ -161,6 +161,38 @@ describe('VNext machine-readable contract registries', () => {
           field.field === 'content_ciphertext',
       ),
     ).toBe(true);
+    const localPrompt = allowlist.fields.find(
+      (field) => field.fieldId === 'prompt.worker-sqlite.local-invocations-prompt-ciphertext',
+    );
+    expect(localPrompt).toMatchObject({
+      fieldClass: 'prompt',
+      contentKind: 'real',
+      system: 'worker-sqlite',
+      container: 'local_invocations',
+      field: 'prompt_ciphertext',
+      protection: 'application-aead',
+      algorithm: 'aes-256-gcm/v1',
+      keyOwner: 'worker-keychain',
+      aadBindings: [
+        'agentVersionDigest',
+        'conversationId',
+        'installationId',
+        'invocationId',
+        'role',
+        'schemaVersion',
+      ],
+      retention: 'request-lifetime',
+    });
+    if (localPrompt === undefined) throw new Error('missing local prompt data-flow authority');
+    const {
+      fieldId: _localPromptId,
+      retention: _localPromptRetention,
+      deletionOrHold: _localPromptDeletion,
+      ...localPromptObservation
+    } = localPrompt;
+    expect(
+      decideDataFlowObservation({ ...localPromptObservation, system: 'worker-backup' }, allowlist),
+    ).toEqual({ decision: 'SECURITY_LEAK' });
     expect(
       allowlist.fields.some(
         (field) =>

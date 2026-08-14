@@ -359,4 +359,17 @@ fields:
     aadBindings: [conversationId, messageId, ownerId, role, schemaVersion]
     retention: conversation-30-days
     deletionOrHold: Conversation 删除或30天到期清理；合法 hold 仅在独立审计层记录。
+  - fieldId: prompt.worker-sqlite.local-invocations-prompt-ciphertext
+    fieldClass: prompt
+    contentKind: real
+    system: worker-sqlite
+    container: local_invocations
+    field: prompt_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: worker-keychain
+    aadBindings:
+      [agentVersionDigest, conversationId, installationId, invocationId, role, schemaVersion]
+    retention: request-lifetime
+    deletionOrHold: invocation.prepare 与 Broker session AEAD 解密验证后必须在同一 SQLite 事务转封装为 Worker Keychain application AEAD；只允许受审 Host Adapter 凭一次性 dispatch permit 在内部精确解密，公开 API 不返回 Prompt 或密文。Host receipt 确认或 Invocation 进入 UNCERTAIN/CANCELLED 后立即删除并 checkpoint WAL，禁止进入 Worker backup。
 updatedAt: 2026-08-14T00:00:00.000Z
