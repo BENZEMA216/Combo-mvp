@@ -712,13 +712,13 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
   it('serializes installation ownership across processes and recovers only after a killed owner expires', async () => {
     const fixture = createFixture(20);
     const { filename } = temporaryJournal();
-    const child = spawnOwnerProcess(filename, fixture.installationId, OWNER_A, 150);
+    const child = spawnOwnerProcess(filename, fixture.installationId, OWNER_A, 2_000);
     const message = await nextChildMessage(child);
     expect(message).toEqual({ acquired: true });
 
     const competing = new SqliteWorkerBrokerDurableTransport({
       filename,
-      ownerLeaseMs: 150,
+      ownerLeaseMs: 2_000,
       allowUnsafeShortOwnerLeaseForTests: true,
     });
     const signal = new AbortController().signal;
@@ -727,7 +727,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).toBe(false);
     child.kill('SIGKILL');
     await waitForExit(child);
-    await delay(180);
+    await delay(2_100);
     expect(
       await competing.acquireInstallation(ownerInput(fixture.installationId, OWNER_B, signal)),
     ).toBe(true);
@@ -741,7 +741,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const firstGateway = new AgentGateway({ authority: firstAuthority, authorityTimeoutMs: 1_000 });
     const firstAddress = await firstGateway.start();
     const firstAdapter = createJournal(firstJournal.filename, fixture.installationId, {
-      ownerLeaseMs: 100,
+      ownerLeaseMs: 500,
     });
     let firstChallengeRequested = false;
     let releaseFirstChallenge!: () => void;
@@ -762,7 +762,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     );
     await firstClient.start();
     await waitFor(() => firstChallengeRequested);
-    await delay(130);
+    await delay(650);
     releaseFirstChallenge();
     await waitFor(() => firstClient.status === 'READY');
     expect(firstAuthority.sessions).toHaveLength(1);
@@ -779,7 +779,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     });
     const secondAddress = await secondGateway.start();
     const losingAdapter = createJournal(secondJournal.filename, secondFixture.installationId, {
-      ownerLeaseMs: 100,
+      ownerLeaseMs: 500,
     });
     let losingChallengeRequested = false;
     let releaseLosingChallenge!: () => void;
@@ -800,10 +800,10 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     );
     await losingClient.start();
     await waitFor(() => losingChallengeRequested);
-    await delay(130);
+    await delay(650);
     const winner = new SqliteWorkerBrokerDurableTransport({
       filename: secondJournal.filename,
-      ownerLeaseMs: 100,
+      ownerLeaseMs: 500,
       allowUnsafeShortOwnerLeaseForTests: true,
     });
     const signal = new AbortController().signal;
@@ -2194,9 +2194,9 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const adapter = createJournal(filename, fixture.installationId);
     const diagnostics: WorkerBrokerDiagnosticEvent[] = [];
     const client = createClient(url, fixture.installationId, adapter, {
-      // Keep this proof focused on the command response. A 100ms heartbeat would intentionally
-      // introduce unrelated Cloud frames and make a hand-authored Cloud ACK race its sequence.
-      heartbeatIntervalMs: 10_000,
+      // Commands are released by the authority on the next Worker event. This exercises the
+      // production authority-returned send path without reopening Gateway's removed dispatch API.
+      heartbeatIntervalMs: 250,
       diagnosticSink: (event) => diagnostics.push(event),
     });
     await client.start();
@@ -2204,7 +2204,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     await waitFor(() => authority.accepted.some((item) => item.type === 'lease.accepted'));
     const session = authority.sessions.at(-1)!;
     const command = authority.conversationOpen(session, uuid(890_001));
-    expect(await gateway.dispatch(session.connectionId, [command])).toBe(true);
+    authority.enqueueOutbound(session, command);
     const responses = () =>
       authority.accepted.filter(
         (item) => item.kind === 'ack' && item.body.acknowledgedMessageId === command.messageId,
@@ -2219,7 +2219,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         ) === 'WRITTEN',
     );
 
-    expect(await gateway.dispatch(session.connectionId, [command])).toBe(true);
+    authority.enqueueOutbound(session, command);
     await waitFor(() => responses().length === 2);
     expect(responses()[1]).toEqual(response);
     expect(
@@ -2230,8 +2230,14 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).toBe('WRITTEN');
 
     const cloudCommit = authority.cloudCommit(session, response);
-    expect(await gateway.dispatch(session.connectionId, [cloudCommit])).toBe(true);
-    await delay(200);
+    authority.enqueueOutbound(session, cloudCommit);
+    await waitFor(
+      () =>
+        queryScalar(
+          filename,
+          `SELECT state AS value FROM transport_outbox WHERE message_id = '${response.messageId}'`,
+        ) === 'ACKED',
+    );
     expect(client.status, diagnostics.join(',')).toBe('READY');
     expect(
       queryScalar(
@@ -2239,7 +2245,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         `SELECT state AS value FROM transport_outbox WHERE message_id = '${response.messageId}'`,
       ),
     ).toBe('ACKED');
-    expect(await gateway.dispatch(session.connectionId, [command])).toBe(true);
+    authority.enqueueOutbound(session, command);
     await waitFor(
       () =>
         queryScalar(
@@ -2270,7 +2276,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     await waitFor(() => authority.accepted.some((item) => item.type === 'lease.accepted'));
     const firstSession = authority.sessions.at(-1)!;
     const command = authority.conversationOpen(firstSession, uuid(901));
-    expect(await gateway.dispatch(firstSession.connectionId, [command])).toBe(true);
+    authority.enqueueOutbound(firstSession, command);
     await waitFor(() =>
       authority.accepted.some(
         (item) => item.kind === 'ack' && item.body.acknowledgedMessageId === command.messageId,
@@ -2995,6 +3001,7 @@ class LoopbackAuthority implements AgentGatewayAuthorityPort {
   readonly #leases = new Map<string, DurableBrokerConnection['lease']>();
   readonly #expiry = new Map<string, string>();
   readonly #nextOutbound = new Map<string, bigint>();
+  readonly #pendingOutbound = new Map<string, BrokerEnvelope[]>();
   readonly #fixture: Fixture;
 
   constructor(fixture: Fixture) {
@@ -3067,7 +3074,9 @@ class LoopbackAuthority implements AgentGatewayAuthorityPort {
     if (signal.aborted) throw signal.reason;
     this.accepted.push(delivery.envelope);
     if (delivery.envelope.kind === 'ack') return [];
-    return [this.acknowledge(session, delivery.envelope)];
+    const queued = this.#pendingOutbound.get(session.connectionId) ?? [];
+    this.#pendingOutbound.delete(session.connectionId);
+    return [...queued, this.acknowledge(session, delivery.envelope)];
   }
 
   async replayEnvelope(
@@ -3112,6 +3121,13 @@ class LoopbackAuthority implements AgentGatewayAuthorityPort {
 
   cloudCommit(session: AuthenticatedWorkerSession, envelope: BrokerEnvelope): BrokerEnvelope {
     return this.acknowledge(session, envelope);
+  }
+
+  enqueueOutbound(session: AuthenticatedWorkerSession, envelope: BrokerEnvelope): void {
+    if (envelope.connectionId !== session.connectionId) throw new Error('SESSION_MISMATCH');
+    const queued = this.#pendingOutbound.get(session.connectionId) ?? [];
+    queued.push(envelope);
+    this.#pendingOutbound.set(session.connectionId, queued);
   }
 
   private acknowledge(
