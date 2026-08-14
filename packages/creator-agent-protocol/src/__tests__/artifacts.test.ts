@@ -30,6 +30,7 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'ConsumerTerminalEventPayload',
       'ConsumerEventOutboxRecord',
       'ConsumerEventStream',
+      'WorkerInvocationFact',
     ]) {
       expect(bundle.schemas[required], required).toBeDefined();
     }
@@ -161,9 +162,33 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'x-combo-runtime-constraints': expect.arrayContaining([
         'sensitive.aad.conversationId == body.conversationId',
         'sensitive.aad.workerSessionId == lease.workerSessionId',
+        'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
+        'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
+        'prepared/started commandId == correlationId; delta and terminal correlationId == invocationId',
         'all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation',
       ]),
     });
+    expect(bundle.schemas.WorkerInvocationFact).toMatchObject({
+      'x-combo-runtime-constraints': expect.arrayContaining([
+        'sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for succeeded/failed/cancelled/uncertain',
+        'started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest',
+        'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
+        'all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation',
+      ]),
+    });
+  });
+
+  it('standard JSON Schema rejects Worker fact uint63 overflow before mandatory runtime parsing', async () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    const validateFact = ajv.compile(bundle.schemas.WorkerInvocationFact as AnySchema);
+    const envelope = (await readFixture('broker-invocation-prepared.v1.json')) as {
+      body: Record<string, unknown>;
+    };
+    const { factDigest: _factDigest, ...fact } = envelope.body;
+
+    expect(validateFact(fact)).toBe(true);
+    expect(validateFact({ ...fact, fence: '9223372036854775808' })).toBe(false);
   });
 
   it('OpenAPI 3.1 暴露 Creator/Consumer 核心路径与共享组件', () => {

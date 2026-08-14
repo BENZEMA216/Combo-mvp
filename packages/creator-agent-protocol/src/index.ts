@@ -6,6 +6,7 @@ export * from './consumer-events.js';
 export * from './evidence.js';
 export * from './http.js';
 export * from './invocation.js';
+export * from './invocation-facts.js';
 export * from './primitives.js';
 export * from './registry.js';
 export * from './sandbox.js';

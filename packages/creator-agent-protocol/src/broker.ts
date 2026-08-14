@@ -1,6 +1,22 @@
 import { z } from 'zod';
 import { canonicalizeJson, canonicalSha256, parseJsonNoDuplicateKeys } from './canonical.js';
 import {
+  WorkerInvocationCancelledFactObjectSchema,
+  WorkerInvocationCancelledFactSchema,
+  WorkerInvocationFailedFactObjectSchema,
+  WorkerInvocationFailedFactSchema,
+  WorkerInvocationPreparedFactObjectSchema,
+  WorkerInvocationPreparedFactSchema,
+  WorkerInvocationStartedFactObjectSchema,
+  WorkerInvocationStartedFactSchema,
+  WorkerInvocationSucceededFactObjectSchema,
+  WorkerInvocationSucceededFactSchema,
+  WorkerInvocationUncertainFactObjectSchema,
+  WorkerInvocationUncertainFactSchema,
+  workerInvocationFactDigest,
+  type WorkerInvocationFact,
+} from './invocation-facts.js';
+import {
   Base64UrlSchema,
   CanonicalBase64UrlBytesSchema,
   HmacSha256DigestSchema,
@@ -476,6 +492,32 @@ function event<const Type extends string, Schema extends z.ZodTypeAny>(type: Typ
     .strict();
 }
 
+function exactWorkerFactBody<Extra extends z.ZodRawShape>(
+  factObjectSchema: z.AnyZodObject,
+  factSchema: z.ZodTypeAny,
+  extra: Extra,
+) {
+  return z
+    .object({ ...factObjectSchema.shape, ...extra, factDigest: Sha256HexSchema })
+    .strict()
+    .superRefine((body, context) => {
+      const factInput = Object.fromEntries(
+        Object.keys(factObjectSchema.shape).map((key) => [key, body[key]]),
+      );
+      const parsed = factSchema.safeParse(factInput);
+      if (
+        !parsed.success ||
+        workerInvocationFactDigest(parsed.data as WorkerInvocationFact) !== body.factDigest
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['factDigest'],
+          message: 'factDigest 必须绑定 exact canonical Worker Invocation fact',
+        });
+      }
+    });
+}
+
 const EmptyBodySchema = z.object({}).strict();
 const GenerationSchema = Uint63StringSchema;
 export const BrokerSensitiveMessageAadSchema = z
@@ -716,23 +758,19 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
   ),
   event(
     'invocation.prepared',
-    z
-      .object({
-        invocationId: UuidSchema,
-        requestDigest: HmacSha256DigestSchema,
-        prepareCommandId: UuidSchema,
-      })
-      .strict(),
+    exactWorkerFactBody(
+      WorkerInvocationPreparedFactObjectSchema,
+      WorkerInvocationPreparedFactSchema,
+      {},
+    ),
   ),
   event(
     'invocation.started',
-    z
-      .object({
-        invocationId: UuidSchema,
-        dispatchReceiptDigest: Sha256DigestSchema,
-        sandboxAttestationDigest: Sha256DigestSchema,
-      })
-      .strict(),
+    exactWorkerFactBody(
+      WorkerInvocationStartedFactObjectSchema,
+      WorkerInvocationStartedFactSchema,
+      {},
+    ),
   ),
   event(
     'invocation.delta',
@@ -747,51 +785,38 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
   ),
   event(
     'invocation.succeeded',
-    z
-      .object({
-        invocationId: UuidSchema,
+    exactWorkerFactBody(
+      WorkerInvocationSucceededFactObjectSchema,
+      WorkerInvocationSucceededFactSchema,
+      {
         conversationId: UuidSchema,
-        resultDigest: HmacSha256DigestSchema,
         resultCiphertext: BrokerSensitiveMessageSchema,
-        sourceEventId: UuidSchema,
-      })
-      .strict(),
+      },
+    ),
   ),
   event(
     'invocation.failed',
-    z
-      .object({
-        invocationId: UuidSchema,
-        errorCode: Utf8TextSchema(128),
-        sourceEventId: UuidSchema,
-      })
-      .strict(),
+    exactWorkerFactBody(
+      WorkerInvocationFailedFactObjectSchema,
+      WorkerInvocationFailedFactSchema,
+      {},
+    ),
   ),
   event(
     'invocation.cancelled',
-    z
-      .object({
-        invocationId: UuidSchema,
-        interruptReceiptDigest: Sha256DigestSchema,
-        sourceEventId: UuidSchema,
-      })
-      .strict(),
+    exactWorkerFactBody(
+      WorkerInvocationCancelledFactObjectSchema,
+      WorkerInvocationCancelledFactSchema,
+      {},
+    ),
   ),
   event(
     'invocation.uncertain',
-    z
-      .object({
-        invocationId: UuidSchema,
-        reason: z.enum([
-          'START_DISPATCH_UNKNOWN',
-          'HOST_EVIDENCE_LOST',
-          'MODEL_ATTEMPT_UNKNOWN',
-          'CANCEL_NOT_CONFIRMED',
-          'JOURNAL_LOST',
-        ]),
-        sourceEventId: UuidSchema,
-      })
-      .strict(),
+    exactWorkerFactBody(
+      WorkerInvocationUncertainFactObjectSchema,
+      WorkerInvocationUncertainFactSchema,
+      {},
+    ),
   ),
   event(
     'heartbeat',
@@ -875,6 +900,55 @@ export const BrokerEnvelopeSchema = z
         code: z.ZodIssueCode.custom,
         path: ['body'],
         message: '敏感 Broker payload 的 AEAD AAD 必须绑定 exact envelope/message/context/role',
+      });
+    }
+    if (
+      (envelope.type === 'invocation.prepared' ||
+        envelope.type === 'invocation.started' ||
+        envelope.type === 'invocation.succeeded' ||
+        envelope.type === 'invocation.failed' ||
+        envelope.type === 'invocation.cancelled' ||
+        envelope.type === 'invocation.uncertain') &&
+      envelope.body.sourceEventId === envelope.messageId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['body', 'sourceEventId'],
+        message: 'durable sourceEventId 不能复用可重封装的 Broker messageId',
+      });
+    }
+    if (
+      envelope.type === 'invocation.prepared' &&
+      envelope.body.prepareCommandId !== envelope.correlationId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['correlationId'],
+        message: 'prepared fact 必须绑定 exact prepare command',
+      });
+    }
+    if (
+      envelope.type === 'invocation.started' &&
+      envelope.body.startCommandId !== envelope.correlationId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['correlationId'],
+        message: 'started fact 必须绑定 exact start command',
+      });
+    }
+    if (
+      (envelope.type === 'invocation.delta' ||
+        envelope.type === 'invocation.succeeded' ||
+        envelope.type === 'invocation.failed' ||
+        envelope.type === 'invocation.cancelled' ||
+        envelope.type === 'invocation.uncertain') &&
+      envelope.body.invocationId !== envelope.correlationId
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['correlationId'],
+        message: 'Invocation response/event correlationId 必须绑定 invocationId',
       });
     }
   });

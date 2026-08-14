@@ -42,6 +42,7 @@ import {
   SnapshotUploadViewSchema,
 } from './http.js';
 import { InvocationTransitionSchema, VnextErrorResponseSchema } from './invocation.js';
+import { WorkerInvocationFactSchema } from './invocation-facts.js';
 import {
   ConsumerEventOutboxRecordSchema,
   ConsumerEventStreamSchema,
@@ -81,6 +82,7 @@ export const ContractSchemaDefinitions = {
   ExecutionCapability: ExecutionCapabilitySchema,
   ExecutionCapabilityUseRecord: ExecutionCapabilityUseRecordSchema,
   InvocationTransition: InvocationTransitionSchema,
+  WorkerInvocationFact: WorkerInvocationFactSchema,
   VnextErrorResponse: VnextErrorResponseSchema,
   SandboxSpec: SandboxSpecSchema,
   SandboxAttestationUnsigned: SandboxAttestationUnsignedSchema,
@@ -190,7 +192,18 @@ const RuntimeSemanticConstraints: Partial<
     'sensitive.aad.invocationId == body.invocationId',
     'sensitive.aad.workerSessionId == lease.workerSessionId',
     'sensitive.aad.role == USER for invocation.prepare, ASSISTANT otherwise',
+    'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
+    'Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId',
+    'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
+    'prepared/started commandId == correlationId; delta and terminal correlationId == invocationId',
     'all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation',
+  ],
+  WorkerInvocationFact: [
+    'sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for succeeded/failed/cancelled/uncertain',
+    'leaseId/fence bind the original execution authority and remain immutable across Broker reconnection/re-enveloping',
+    'started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest',
+    'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
+    'all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation',
   ],
   ConsumerEventOutboxRecord: [
     'payload.conversationId == conversationId',

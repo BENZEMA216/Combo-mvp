@@ -337,6 +337,8 @@ cases:
       - packages/creator-agent-protocol/fixtures/agent-version-manifest.v1.json
       - packages/creator-agent-protocol/fixtures/broker-handshake.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-prepare.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-invocation-prepared.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-invocation-started.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-succeeded.v1.json
       - packages/creator-agent-protocol/fixtures/canonical-vectors.v1.json
       - packages/creator-agent-protocol/fixtures/consumer-terminal-event-outbox.v1.json
@@ -368,13 +370,16 @@ cases:
         - packages/creator-agent-protocol/src/__tests__/schemas.test.ts
         - packages/creator-agent-protocol/src/__tests__/canonical.test.ts
         - packages/creator-agent-protocol/src/__tests__/consumer-events.test.ts
+        - packages/creator-agent-protocol/src/__tests__/invocation-facts.test.ts
         - packages/creator-agent-protocol/src/__tests__/invocation.test.ts
     releaseTuple: [creator-agent-protocol@0.1.0]
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
       - sha256:b842b397216a5f71fa41c5112b6718cbe4614bb38cb2b0995a75c2a169d74058
       - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
-      - sha256:6168976d7cd541e26f740583f4d1c22704116a2284f520f8acf4a1c0dd0f2267
+      - sha256:fa98d56ca62e234788668df4cf53a384251ff3e2eca8c1140c18db6ed358dc81
+      - sha256:da5d2ec27b581e76ac76a3936f497779b472f7ecea9d8a04e14c7c9f0d837c9f
+      - sha256:9ba0722d26c12c76f5ccfbd2b546427bc896aaa4adb7067b8f05b7344f88e371
       - sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184
       - sha256:627ee0c59c91edfb067bdf534c4ef9e24d4d0279835cc934fd174b52c9702d4a
       - sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb
@@ -445,8 +450,8 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:6f2b3f2268cd8601b9e2747bd91c03cd522fe85e698570fb62860e45c765fb31
-      - sha256:079fadef4841e665841ab4b82fa56cf15f3d5bfacb11949d69cab85fd6186cd8
+      - sha256:99bea7b78f9dc474856d108c110e77a8a7ffe2c5fd26dbe0c34bbd567c2e9fa4
+      - sha256:0fbcdea35a3cdd1922f48123babdf6d1ebf69b0f9579a72de09f851879820f89
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest

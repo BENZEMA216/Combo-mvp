@@ -18,9 +18,19 @@
       "digest": "sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7"
     },
     {
+      "path": "broker-invocation-prepared.v1.json",
+      "bytes": 1463,
+      "digest": "sha256:fa98d56ca62e234788668df4cf53a384251ff3e2eca8c1140c18db6ed358dc81"
+    },
+    {
+      "path": "broker-invocation-started.v1.json",
+      "bytes": 1657,
+      "digest": "sha256:da5d2ec27b581e76ac76a3936f497779b472f7ecea9d8a04e14c7c9f0d837c9f"
+    },
+    {
       "path": "broker-invocation-succeeded.v1.json",
-      "bytes": 1852,
-      "digest": "sha256:6168976d7cd541e26f740583f4d1c22704116a2284f520f8acf4a1c0dd0f2267"
+      "bytes": 2687,
+      "digest": "sha256:9ba0722d26c12c76f5ccfbd2b546427bc896aaa4adb7067b8f05b7344f88e371"
     },
     {
       "path": "canonical-vectors.v1.json",

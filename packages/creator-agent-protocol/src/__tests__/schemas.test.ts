@@ -427,6 +427,8 @@ describe('六类共享协议运行时 schema', () => {
 
     for (const fixture of [
       'broker-invocation-prepare.v1.json',
+      'broker-invocation-prepared.v1.json',
+      'broker-invocation-started.v1.json',
       'broker-invocation-succeeded.v1.json',
     ]) {
       const text = await readFixtureText(fixture);
@@ -520,6 +522,57 @@ describe('六类共享协议运行时 schema', () => {
     const wrongWorkerSession = structuredClone(succeeded);
     wrongWorkerSession.lease.workerSessionId = '0198f00d-9999-7999-8999-999999999997';
     expect(BrokerEnvelopeSchema.safeParse(wrongWorkerSession).success).toBe(false);
+  });
+
+  it('Broker Worker facts reject digest mutation and keep source identity separate from messageId', async () => {
+    const prepared = (await readFixture('broker-invocation-prepared.v1.json')) as {
+      messageId: string;
+      correlationId: string;
+      connectionId: string;
+      sequence: string;
+      lease: { leaseId: string; workerSessionId: string; fence: string };
+      body: {
+        sourceEventId: string;
+        factDigest: string;
+        fence: string;
+        prepareCommandId: string;
+      };
+    };
+    expect(prepared.body.sourceEventId).not.toBe(prepared.messageId);
+
+    const changedDigest = structuredClone(prepared);
+    changedDigest.body.factDigest = '0'.repeat(64);
+    expect(BrokerEnvelopeSchema.safeParse(changedDigest).success).toBe(false);
+
+    const changedFact = structuredClone(prepared);
+    changedFact.body.fence = '43';
+    expect(BrokerEnvelopeSchema.safeParse(changedFact).success).toBe(false);
+
+    const changedCorrelation = structuredClone(prepared);
+    changedCorrelation.correlationId = '0198f00d-9999-7999-8999-999999999996';
+    expect(BrokerEnvelopeSchema.safeParse(changedCorrelation).success).toBe(false);
+
+    const transportDerivedSource = structuredClone(prepared);
+    transportDerivedSource.messageId = transportDerivedSource.body.sourceEventId;
+    expect(BrokerEnvelopeSchema.safeParse(transportDerivedSource).success).toBe(false);
+
+    const reEnveloped = structuredClone(prepared);
+    reEnveloped.messageId = '0198f00d-9999-7999-8999-999999999991';
+    reEnveloped.connectionId = '0198f00d-9999-7999-8999-999999999992';
+    reEnveloped.sequence = '9007199254740992';
+    reEnveloped.lease.leaseId = '0198f00d-9999-7999-8999-999999999993';
+    reEnveloped.lease.workerSessionId = '0198f00d-9999-7999-8999-999999999994';
+    reEnveloped.lease.fence = '43';
+    expect(BrokerEnvelopeSchema.safeParse(reEnveloped).success).toBe(true);
+    expect(reEnveloped.body).toEqual(prepared.body);
+
+    const succeeded = (await readFixture('broker-invocation-succeeded.v1.json')) as {
+      correlationId: string;
+      body: { invocationId: string };
+    };
+    const wrongTerminalCorrelation = structuredClone(succeeded);
+    wrongTerminalCorrelation.correlationId = '0198f00d-9999-7999-8999-999999999995';
+    expect(BrokerEnvelopeSchema.safeParse(wrongTerminalCorrelation).success).toBe(false);
   });
 
   it('Broker exact keys、重复 JSON key、unknown protocol 与 frame size fail closed', async () => {

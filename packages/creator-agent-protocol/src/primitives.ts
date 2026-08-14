@@ -2,6 +2,33 @@ import { z } from 'zod';
 
 export const MAX_UINT63 = 9_223_372_036_854_775_807n;
 
+function exactUnsignedDecimalPattern(maximum: bigint): RegExp {
+  const maximumDigits = maximum.toString(10);
+  const alternatives = ['0'];
+  if (maximumDigits.length > 1) {
+    alternatives.push(`[1-9]\\d{0,${maximumDigits.length - 2}}`);
+  }
+  let exactPrefix = '';
+  for (let index = 0; index < maximumDigits.length; index += 1) {
+    const digit = Number(maximumDigits[index]);
+    const minimum = index === 0 ? 1 : 0;
+    if (digit > minimum) {
+      const lower = digit - 1;
+      const digitPattern = minimum === lower ? `${minimum}` : `[${minimum}-${lower}]`;
+      const remaining = maximumDigits.length - index - 1;
+      alternatives.push(
+        `${exactPrefix}${digitPattern}${remaining === 0 ? '' : `\\d{${remaining}}`}`,
+      );
+    }
+    exactPrefix += maximumDigits[index];
+  }
+  alternatives.push(maximumDigits);
+  return new RegExp(`^(?:${alternatives.join('|')})$`, 'u');
+}
+
+/** Enforceable in both Zod and generated standard JSON Schema, not a refine-only hint. */
+export const UINT63_DECIMAL_PATTERN = exactUnsignedDecimalPattern(MAX_UINT63);
+
 export const UuidSchema = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
@@ -56,9 +83,9 @@ export const P256P1363SignatureSchema = Base64UrlSchema.refine((value) => {
 
 export const Uint63StringSchema = z
   .string()
-  .regex(/^(0|[1-9]\d*)$/)
+  .regex(UINT63_DECIMAL_PATTERN)
   .refine(
-    (value) => !/^(0|[1-9]\d*)$/u.test(value) || BigInt(value) <= MAX_UINT63,
+    (value) => !UINT63_DECIMAL_PATTERN.test(value) || BigInt(value) <= MAX_UINT63,
     '必须在 uint63 范围内',
   );
 export type Uint63String = z.infer<typeof Uint63StringSchema>;

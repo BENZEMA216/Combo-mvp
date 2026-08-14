@@ -16,9 +16,22 @@
     "fence": "42"
   },
   "body": {
+    "protocol": "combo.worker-invocation-fact/1",
+    "schemaVersion": 1,
+    "type": "invocation.succeeded",
+    "sourceEventId": "0198f00d-3000-7000-8000-000000000002",
     "invocationId": "0198f00d-3000-7000-8000-000000000002",
+    "agentVersionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "snapshotDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "executionCapabilityDigest": "fcfae100c0789f255f3265d99e6a496343c0564a07641da73c185a1e5de3ee45",
+    "leaseId": "0198f00d-3000-7000-8000-000000000005",
+    "fence": "42",
     "conversationId": "0198f00d-3000-7000-8000-000000000006",
+    "runtimeThreadId": "thread-vertical-001",
+    "runtimeTurnId": "turn-vertical-001",
+    "startedFactDigest": "c53f57281264b765fbd1c7c04267edb00bb3bc49f6f9d2b9327a4559f4725b81",
     "resultDigest": "hmac-sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "localResultCipherDigest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "resultCiphertext": {
       "algorithm": "aes-256-gcm/v1",
       "keyScope": "worker-session",
@@ -41,6 +54,6 @@
       "aadDigest": "6642c4fd56c771b2d63259540b90c7832f7978dc6614e81bbb621f81e694ece2",
       "aadVersion": 1
     },
-    "sourceEventId": "0198f00d-4000-7000-8000-000000000011"
+    "factDigest": "f669b0dfb2abe26f969295ceeb4d00604a1e3fb883641f3cf03affa84f099697"
   }
 }

@@ -16,6 +16,8 @@
 
 `requestDigest`、`contentDigest` 和 `resultDigest` 使用按租户或版本密钥计算的 domain-separated HMAC-SHA-256；Snapshot 与公开构建产物继续使用普通 SHA-256 内容寻址。这些 digest 不代替 AEAD、签名、Lease 或 Execution Capability。
 
+Worker 的 `prepared/started/succeeded/failed/cancelled/uncertain` 事实使用 `combo.worker-invocation-fact/1`。事实 ID 不是调用方任选值：prepared 固定使用 `prepareCommandId`，started 固定使用 `startCommandId`，全部 terminal fact 固定使用 `invocationId`；它不能复用会随 connection 重封装的 WebSocket `messageId`。事实内的 Lease/Fence 表示最初执行权威，重连后可以由新的外层传输 Lease/Fence 承载同一事实，但事实本身和 `factDigest` 不得改变。started 必须保存可查询的 Host `runtimeThreadId/runtimeTurnId`，succeeded 必须重复这两个 handle 并绑定 `startedFactDigest`。`factDigest` 对 Version、Snapshot、Execution Capability、原执行 Lease/Fence 及事件专属非敏感字段做 canonical SHA-256。Worker SQLite 与 PostgreSQL 必须分别重算并保存同一 digest，同 ID 不同 digest 只能 security-block，不能猜测或覆盖。
+
 ## 验证
 
 ```bash
