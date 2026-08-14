@@ -1903,7 +1903,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
             ? envelope.body.acknowledgedMessageId === row.response_to_message_id &&
               responseCommandType !== undefined
             : envelope.type === 'lease.accepted' || envelope.type === 'lease.renewed'
-              ? responseCommandType === 'lease.grant'
+              ? responseCommandType === 'lease.grant' &&
+                envelope.correlationId === row.response_to_message_id
               : envelope.type === 'pong'
                 ? responseCommandType === 'ping'
                 : row.response_to_message_id === null;
@@ -2400,7 +2401,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         kind: 'event',
         type,
         messageId: uuidV7(),
-        correlationId: connection.deployment_id,
+        correlationId: responseToMessageId,
         body: { leaseExpiresAt: connection.lease_expires_at },
         responseToMessageId,
       },

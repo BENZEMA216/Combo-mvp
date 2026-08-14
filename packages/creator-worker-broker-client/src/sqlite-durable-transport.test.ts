@@ -1338,7 +1338,10 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const [leaseAccepted] = await adapter.readOutbound(
       outboundInput(fixture, state, OWNER_A, signal),
     );
-    expect(leaseAccepted?.type).toBe('lease.accepted');
+    expect(leaseAccepted).toMatchObject({
+      type: 'lease.accepted',
+      correlationId: grant.messageId,
+    });
     await adapter.markOutboundWritten({
       installationId: fixture.installationId,
       ownerToken: OWNER_A,
@@ -1405,6 +1408,103 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       ),
     ).toBe('ACKED');
     adapter.close();
+  });
+
+  it('binds accepted and renewed events to only their exact lease grant across replay and reopen', async () => {
+    const fixture = createFixture(139);
+    const { filename } = temporaryJournal();
+    let adapter = createJournal(filename, fixture.installationId);
+    const signal = new AbortController().signal;
+    await adapter.acquireInstallation(ownerInput(fixture.installationId, OWNER_A, signal));
+    let state = await activate(adapter, fixture, OWNER_A, signal);
+    const initialGrant = leaseGrant(fixture);
+    const [accepted] = await adapter.readOutbound(outboundInput(fixture, state, OWNER_A, signal));
+    expect(accepted).toMatchObject({
+      type: 'lease.accepted',
+      correlationId: initialGrant.messageId,
+    });
+    await adapter.markOutboundWritten({
+      installationId: fixture.installationId,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      messageId: accepted!.messageId,
+      canonicalDigest: canonicalSha256(accepted!),
+      signal,
+    });
+
+    const renewal = renewalGrant(state, uuid(139_900));
+    state = await commit(adapter, fixture.installationId, OWNER_A, state, renewal, signal);
+    const [renewed] = await adapter.readOutbound(outboundInput(fixture, state, OWNER_A, signal));
+    expect(renewed).toMatchObject({
+      type: 'lease.renewed',
+      correlationId: renewal.messageId,
+    });
+    await adapter.markOutboundWritten({
+      installationId: fixture.installationId,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      messageId: renewed!.messageId,
+      canonicalDigest: canonicalSha256(renewed!),
+      signal,
+    });
+
+    await expect(
+      adapter.replayInbound({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        envelope: renewal,
+        canonicalDigest: canonicalSha256(renewal),
+        signal,
+      }),
+    ).resolves.toBe('EXACT_REPLAY');
+    expect(await adapter.readOutbound(outboundInput(fixture, state, OWNER_A, signal))).toEqual([
+      renewed,
+    ]);
+
+    adapter.close();
+    adapter = new SqliteWorkerBrokerDurableTransport({ filename });
+    expect(await adapter.readOutbound(outboundInput(fixture, state, OWNER_A, signal))).toEqual([
+      renewed,
+    ]);
+    await adapter.markOutboundWritten({
+      installationId: fixture.installationId,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      messageId: renewed!.messageId,
+      canonicalDigest: canonicalSha256(renewed!),
+      signal,
+    });
+
+    await expect(
+      adapter.replayInbound({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        envelope: initialGrant,
+        canonicalDigest: canonicalSha256(initialGrant),
+        signal,
+      }),
+    ).resolves.toBe('EXACT_REPLAY');
+    expect(await adapter.readOutbound(outboundInput(fixture, state, OWNER_A, signal))).toEqual([
+      accepted,
+    ]);
+    expect(accepted!.correlationId).not.toBe(renewal.messageId);
+    adapter.close();
+
+    const temporaryBinding = uuid(139_901);
+    mutateDatabase(
+      filename,
+      `UPDATE transport_outbox SET response_to_message_id = '${temporaryBinding}'
+         WHERE envelope_type = 'lease.accepted';
+       UPDATE transport_outbox SET response_to_message_id = '${initialGrant.messageId}'
+         WHERE envelope_type = 'lease.renewed';
+       UPDATE transport_outbox SET response_to_message_id = '${renewal.messageId}'
+         WHERE envelope_type = 'lease.accepted';`,
+    );
+    expect(() => new SqliteWorkerBrokerDurableTransport({ filename })).toThrowError(
+      expect.objectContaining({ code: 'JOURNAL_CORRUPT' }),
+    );
   });
 
   it('rolls back when AbortSignal wins before COMMIT and preserves a committed activation after response loss', async () => {
@@ -1663,6 +1763,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const [leaseAccepted, persistedAck] = await first.readOutbound(
       outboundInput(fixture, firstState, OWNER_A, signal),
     );
+    expect(leaseAccepted).toMatchObject({ correlationId: fixture.grantMessageId });
     expect(persistedAck).toMatchObject({
       type: 'message.ack',
       body: { acknowledgedMessageId: command.messageId },
@@ -1697,7 +1798,12 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       body: persistedAck!.body,
     });
     expect(rebound.some((item) => item.messageId === leaseAccepted!.messageId)).toBe(false);
-    expect(rebound[1]).toMatchObject({ type: 'lease.accepted', sequence: '1' });
+    expect(rebound[1]).toMatchObject({
+      type: 'lease.accepted',
+      sequence: '1',
+      correlationId: secondFixture.grantMessageId,
+    });
+    expect(rebound.some((item) => item.correlationId === fixture.grantMessageId)).toBe(false);
 
     second.close();
     second = new SqliteWorkerBrokerDurableTransport({ filename });
@@ -2250,6 +2356,32 @@ function leaseGrant(fixture: Fixture): Extract<BrokerEnvelope, { type: 'lease.gr
     body: {
       leaseExpiresAt: fixture.expiresAt,
       workerSessionId: fixture.workerSessionId,
+      generation: '1',
+    },
+  }) as Extract<BrokerEnvelope, { type: 'lease.grant' }>;
+}
+
+function renewalGrant(
+  state: DurableBrokerConnection,
+  messageId: string,
+): Extract<BrokerEnvelope, { type: 'lease.grant' }> {
+  const sentAt = new Date(Date.parse(state.leaseGrantedAt) + 1_000).toISOString();
+  const leaseExpiresAt = new Date(Date.parse(state.leaseExpiresAt) + 30_000).toISOString();
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    type: 'lease.grant',
+    messageId,
+    correlationId: state.lease.deploymentId,
+    connectionId: state.connectionId,
+    sequence: restoreSequenceCursor(state.inboundCursor).nextExpected.toString(10),
+    sentAt,
+    expiresAt: leaseExpiresAt,
+    lease: state.lease,
+    body: {
+      leaseExpiresAt,
+      workerSessionId: state.workerSessionId,
       generation: '1',
     },
   }) as Extract<BrokerEnvelope, { type: 'lease.grant' }>;

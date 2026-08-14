@@ -124,7 +124,8 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(durable.acquireCalls).toBe(3);
     expect(broker.connectionCount).toBe(1);
     await waitFor(() => broker.received.length >= 1);
-    expect(broker.received.some((item) => item.envelope.type === 'lease.accepted')).toBe(true);
+    const accepted = broker.received.find((item) => item.envelope.type === 'lease.accepted');
+    expect(accepted?.envelope.correlationId).toBe(uuid(300));
   });
 
   it('reconnects and retransmits only the durable unacknowledged outbox', async () => {
@@ -142,6 +143,33 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     );
     expect(replay).toBeDefined();
     expect(replay!.envelope.connectionId).not.toBe(firstConnection.envelope.connectionId);
+    expect(firstConnection.envelope).toMatchObject({
+      type: 'lease.accepted',
+      correlationId: uuid(300),
+    });
+    expect(replay!.envelope.correlationId).toBe(uuid(300));
+    await waitFor(() =>
+      broker.received.some(
+        (item) =>
+          item.connectionIndex === 1 &&
+          item.envelope.type === 'lease.accepted' &&
+          item.envelope.messageId !== firstConnection.envelope.messageId,
+      ),
+    );
+    const replacementConfirmation = broker.received.find(
+      (item) =>
+        item.connectionIndex === 1 &&
+        item.envelope.type === 'lease.accepted' &&
+        item.envelope.messageId !== firstConnection.envelope.messageId,
+    );
+    expect(replacementConfirmation?.envelope.correlationId).toBe(uuid(301));
+    expect(
+      broker.received.some(
+        (item) =>
+          item.envelope.messageId === firstConnection.envelope.messageId &&
+          item.envelope.correlationId === uuid(301),
+      ),
+    ).toBe(false);
     expect(durable.releaseConnectionCalls).toBeGreaterThanOrEqual(1);
     expect(durable.reboundMessageIds).toContain(firstConnection.envelope.messageId);
     expect(broker.handshakes).toHaveLength(2);
@@ -603,19 +631,25 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     const connection = broker.connections[0]!;
     const renewedSentAt = new Date(Date.parse(SENT_AT) + 60).toISOString();
     const renewedExpiry = new Date(Date.parse(SENT_AT) + 180).toISOString();
+    const renewalGrantMessageId = uuid(135);
     broker.send(
       connection.socket,
       leaseGrant({
         connectionId: connection.connectionId,
         sequence: '1',
         lease: leaseBinding(LEASE_A, '7'),
-        messageId: uuid(135),
+        messageId: renewalGrantMessageId,
         sentAt: renewedSentAt,
         leaseExpiresAt: renewedExpiry,
       }),
     );
     await waitFor(() => durable.current?.leaseExpiresAt === renewedExpiry);
     await waitFor(() => durable.heartbeatCalls.includes(renewedExpiry));
+    await waitFor(() => broker.received.some((item) => item.envelope.type === 'lease.renewed'));
+    expect(
+      broker.received.find((item) => item.envelope.type === 'lease.renewed')?.envelope
+        .correlationId,
+    ).toBe(renewalGrantMessageId);
     expect(durable.heartbeatCalls[0]).toBe(broker.leaseExpiresAt(0));
   });
 
@@ -1047,7 +1081,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
       this.reboundMessageIds.push(item.envelope.messageId);
       this.acceptOutbound(item.envelope);
     }
-    this.enqueueLeaseEvent('lease.accepted');
+    this.enqueueLeaseEvent('lease.accepted', input.envelope.messageId);
     const activated = cloneConnection(this.current);
     if (!this.corruptActivationReturn) return activated;
     return {
@@ -1092,7 +1126,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
       current.leaseState = 'ACTIVE';
       current.leaseGrantedAt = input.envelope.sentAt;
       current.leaseExpiresAt = input.envelope.body.leaseExpiresAt;
-      this.enqueueLeaseEvent('lease.renewed');
+      this.enqueueLeaseEvent('lease.renewed', input.envelope.messageId);
     } else if (input.envelope.kind === 'command' && input.envelope.type === 'lease.revoke') {
       current.leaseState = 'REVOKED';
     } else if (input.envelope.kind === 'ack') {
@@ -1228,7 +1262,10 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     this.current = undefined;
   }
 
-  private enqueueLeaseEvent(type: 'lease.accepted' | 'lease.renewed'): void {
+  private enqueueLeaseEvent(
+    type: 'lease.accepted' | 'lease.renewed',
+    grantMessageId: string,
+  ): void {
     const current = this.requireCurrent(this.current!.connectionId);
     this.enqueue(
       BrokerEnvelopeSchema.parse({
@@ -1237,7 +1274,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
         kind: 'event',
         type,
         messageId: uuid(this.#nextMessage++),
-        correlationId: CORRELATION,
+        correlationId: grantMessageId,
         connectionId: current.connectionId,
         sequence: this.nextOutboundSequence(),
         sentAt: current.leaseGrantedAt,
