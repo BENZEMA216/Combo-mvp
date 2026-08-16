@@ -10,6 +10,7 @@ import {
   domainSeparatedHmacSha256,
   workerInvocationFactDigest,
   type BrokerSensitiveMessage,
+  type WorkerInvocationFailedFact,
   type WorkerInvocationPreparedFact,
   type WorkerInvocationStartedFact,
   type WorkerInvocationSucceededFact,
@@ -22,6 +23,7 @@ import {
   type AssistantMessageSealer,
   type CloudJournalError,
   type CloudJournalStep,
+  type CommitFailedInput,
   type CommitPreparedInput,
   type CommitStartedInput,
   type CommitSuccessInput,
@@ -61,6 +63,13 @@ function digest(character: string): string {
 
 function hmac(character: string): `hmac-sha256:${string}` {
   return `hmac-sha256:${character.repeat(64)}`;
+}
+
+function account(): string {
+  return `creator-${randomUUID()
+    .replaceAll(/[^a-z2-7]/gu, 'a')
+    .slice(0, 8)
+    .padEnd(8, 'a')}`;
 }
 
 pgDescribe('PostgresCloudJournal real transactions', () => {
@@ -531,6 +540,32 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     };
   }
 
+  function failedInput(
+    accepted: AcceptInvocationInput,
+    authority: ExecutionAuthority,
+    errorCode = 'TURN_FAILED',
+  ): CommitFailedInput {
+    const fact: WorkerInvocationFailedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.failed',
+      sourceEventId: accepted.invocationId,
+      invocationId: accepted.invocationId,
+      agentVersionDigest: digest('7'),
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: authority.executionCapabilityDigest,
+      leaseId: authority.leaseId,
+      fence: authority.fence,
+      errorCode,
+    };
+    return {
+      creatorId: ids.creatorId,
+      installationId: authority.workerId,
+      fact,
+      factDigest: workerInvocationFactDigest(fact),
+    };
+  }
+
   async function counts(conversationId: string) {
     const result = await owner.query<{
       messages: string;
@@ -634,7 +669,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     await owner.connect();
     const users = await owner.query<{ id: string }>(
       `INSERT INTO users (account) VALUES ($1), ($2) RETURNING id`,
-      ['creator-eeeeeeee', 'creator-ffffffff'],
+      [account(), account()],
     );
     ids.creatorId = users.rows[0]!.id;
     ids.consumerId = users.rows[1]!.id;
@@ -2218,6 +2253,429 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
   });
 
+  it('commits a confirmed failure atomically without an Assistant Message and exact replay never duplicates it', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const failed = failedInput(accepted, authority);
+
+    const committed = await journal.commitFailed(failed);
+    expect(committed).toEqual({
+      invocationId: accepted.invocationId,
+      state: 'FAILED',
+      errorCode: 'TURN_FAILED',
+      consumerEventCursor: expect.any(String),
+      replayed: false,
+    });
+    await expect(journal.commitFailed(failed)).resolves.toEqual({
+      ...committed,
+      replayed: true,
+    });
+
+    const state = await owner.query<{
+      messages: string;
+      failed_events: string;
+      state: string;
+      result_message_id: string | null;
+      result_digest: string | null;
+      error_code: string;
+      terminal_at: Date;
+      conversation_state: string;
+      consumer_events: string;
+      latest_cursor: string;
+      payload_digest: string;
+      payload: unknown;
+      terminal_payload: unknown;
+      terminal_source: string;
+      terminal_source_event_id: string;
+      terminal_fact_digest: string;
+      terminal_occurred_at: Date;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
+         (SELECT count(*) FROM agent_invocation_events
+           WHERE invocation_id = $1 AND event_type = 'invocation.failed')::text AS failed_events,
+         invocation.state, invocation.result_message_id, invocation.result_digest,
+         invocation.error_code, invocation.terminal_at,
+         conversation.state AS conversation_state,
+         (SELECT count(*) FROM consumer_event_outbox
+           WHERE invocation_id = $1)::text AS consumer_events,
+         (SELECT latest_cursor::text FROM consumer_event_streams
+           WHERE conversation_id = invocation.conversation_id) AS latest_cursor,
+         terminal_outbox.payload_digest, terminal_outbox.payload,
+         terminal_event.payload AS terminal_payload,
+         terminal_event.source AS terminal_source,
+         terminal_event.source_event_id AS terminal_source_event_id,
+         terminal_event.source_fact_digest AS terminal_fact_digest,
+         terminal_event.occurred_at AS terminal_occurred_at
+       FROM agent_invocations AS invocation
+       JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
+       JOIN agent_invocation_events AS terminal_event
+         ON terminal_event.invocation_id = invocation.id
+        AND terminal_event.event_type = 'invocation.failed'
+       JOIN consumer_event_outbox AS terminal_outbox
+         ON terminal_outbox.invocation_id = invocation.id
+        AND terminal_outbox.source_event_id = terminal_event.id
+        AND terminal_outbox.event_type = 'invocation.terminal'
+       WHERE invocation.id = $1`,
+      [accepted.invocationId],
+    );
+    const terminalPayload = ConsumerTerminalEventPayloadSchema.parse(state.rows[0]!.payload);
+    expect(terminalPayload).toMatchObject({
+      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.terminal',
+      conversationId,
+      invocationId: accepted.invocationId,
+      terminalState: 'FAILED',
+      assistantMessageId: null,
+      resultDigest: null,
+      errorCode: 'TURN_FAILED',
+    });
+    expect(state.rows[0]).toEqual({
+      messages: '1',
+      failed_events: '1',
+      state: 'FAILED',
+      result_message_id: null,
+      result_digest: null,
+      error_code: 'TURN_FAILED',
+      terminal_at: expect.any(Date),
+      conversation_state: 'IDLE',
+      consumer_events: '1',
+      latest_cursor: committed.consumerEventCursor,
+      payload_digest: consumerEventPayloadDigest(terminalPayload),
+      payload: terminalPayload,
+      terminal_payload: { state: 'FAILED', errorCode: 'TURN_FAILED' },
+      terminal_source: 'WORKER',
+      terminal_source_event_id: accepted.invocationId,
+      terminal_fact_digest: failed.factDigest,
+      terminal_occurred_at: expect.any(Date),
+    });
+    expect(state.rows[0]!.terminal_occurred_at.toISOString()).toBe(
+      state.rows[0]!.terminal_at.toISOString(),
+    );
+    expect(terminalPayload.occurredAt).toBe(state.rows[0]!.terminal_at.toISOString());
+
+    if (committed.consumerEventCursor === null) {
+      throw new Error('expected retained failed Consumer event');
+    }
+    await publishAndPruneTerminalEvent(journal, {
+      conversationId,
+      cursor: committed.consumerEventCursor,
+    });
+    await expect(journal.commitFailed(failed)).resolves.toEqual({
+      ...committed,
+      consumerEventCursor: null,
+      replayed: true,
+    });
+    await expect(
+      journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: randomUuidV7(),
+        reason: 'JOURNAL_LOST',
+      }),
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'TERMINAL_CONFLICT' });
+    await expect(
+      journal.commitSuccess(successInput(accepted, authority), sealAssistantMessage),
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'TERMINAL_CONFLICT' });
+    await expect(
+      owner.query(
+        `SELECT
+           (SELECT count(*) FROM agent_invocation_events
+             WHERE invocation_id = $1 AND event_type = 'invocation.failed')::text
+             AS failed_events,
+           (SELECT count(*) FROM agent_invocation_events
+             WHERE invocation_id = $1 AND event_type = 'invocation.succeeded')::text
+             AS succeeded_events,
+           (SELECT count(*) FROM consumer_event_outbox
+             WHERE invocation_id = $1)::text AS retained_consumer_events
+         FROM agent_invocations WHERE id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ failed_events: '1', succeeded_events: '0', retained_consumer_events: '0' }],
+    });
+  });
+
+  it.each(['CANCEL_REQUESTED', 'RECONCILING'] as const)(
+    'commits a confirmed failure from %s without weakening the running authority chain',
+    async (preterminalState) => {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const journal = new PostgresCloudJournal(journalPools);
+      await journal.acceptInvocation(accepted);
+      const authority = await assignRunning(accepted);
+
+      if (preterminalState === 'CANCEL_REQUESTED') {
+        await owner.query(
+          `UPDATE agent_invocations
+              SET state = 'CANCEL_REQUESTED', cancel_requested_at = clock_timestamp()
+            WHERE id = $1`,
+          [accepted.invocationId],
+        );
+      } else {
+        await journal.beginReconciliation({
+          creatorId: ids.creatorId,
+          consumerId: ids.consumerId,
+          conversationId,
+          invocationId: accepted.invocationId,
+          sourceEventId: randomUuidV7(),
+          reason: 'JOURNAL_LOST',
+        });
+      }
+
+      await expect(journal.commitFailed(failedInput(accepted, authority))).resolves.toMatchObject({
+        invocationId: accepted.invocationId,
+        state: 'FAILED',
+        errorCode: 'TURN_FAILED',
+        replayed: false,
+      });
+      await expect(
+        owner.query(
+          `SELECT invocation.state, invocation.error_code,
+                  conversation.state AS conversation_state,
+                  (SELECT count(*) FROM agent_invocation_events
+                    WHERE invocation_id = invocation.id
+                      AND event_type = 'invocation.failed')::text AS failed_events
+             FROM agent_invocations AS invocation
+             JOIN agent_conversations AS conversation
+               ON conversation.id = invocation.conversation_id
+            WHERE invocation.id = $1`,
+          [accepted.invocationId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            state: 'FAILED',
+            error_code: 'TURN_FAILED',
+            conversation_state: 'IDLE',
+            failed_events: '1',
+          },
+        ],
+      });
+    },
+  );
+
+  it.each(['EXPIRED', 'REVOKED'] as const)(
+    'rejects a fresh confirmed failure after its Execution Capability is %s',
+    async (capabilityState) => {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const journal = new PostgresCloudJournal(journalPools);
+      await journal.acceptInvocation(accepted);
+      const authority = await assignRunning(accepted);
+      if (capabilityState === 'EXPIRED') {
+        await timeWarpCapabilityExpiry(accepted.invocationId, '-1 second');
+      } else {
+        await owner.query(
+          `UPDATE agent_invocations
+              SET execution_capability_revoked_at = clock_timestamp()
+            WHERE id = $1`,
+          [accepted.invocationId],
+        );
+      }
+
+      await expect(journal.commitFailed(failedInput(accepted, authority))).rejects.toMatchObject<
+        Partial<CloudJournalError>
+      >({
+        code: 'EXECUTION_AUTHORITY_MISMATCH',
+      });
+      await expect(
+        owner.query(
+          `SELECT state, error_code, terminal_at,
+                  (SELECT count(*) FROM agent_invocation_events
+                    WHERE invocation_id = $1
+                      AND event_type = 'invocation.failed')::text AS failed_events,
+                  (SELECT count(*) FROM consumer_event_outbox
+                    WHERE invocation_id = $1)::text AS consumer_events
+             FROM agent_invocations WHERE id = $1`,
+          [accepted.invocationId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            state: 'RUNNING',
+            error_code: null,
+            terminal_at: null,
+            failed_events: '0',
+            consumer_events: '0',
+          },
+        ],
+      });
+    },
+  );
+
+  it('rejects non-canonical, unknown, pre-dispatch, and pre-RUNNING failure facts with zero terminal mutation', async () => {
+    const runningConversationId = await createConversation();
+    const runningAccepted = acceptInput(runningConversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(runningAccepted);
+    const runningAuthority = await assignRunning(runningAccepted);
+    const failed = failedInput(runningAccepted, runningAuthority);
+
+    await expect(
+      journal.commitFailed({ ...failed, factDigest: digest('0') }),
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    for (const errorCode of ['UNKNOWN_FAILURE', 'INVOCATION_DEADLINE_EXPIRED']) {
+      const rejectedFact: WorkerInvocationFailedFact = { ...failed.fact, errorCode };
+      await expect(
+        journal.commitFailed({
+          ...failed,
+          fact: rejectedFact,
+          factDigest: workerInvocationFactDigest(rejectedFact),
+        }),
+      ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    }
+    for (const factPatch of [
+      { snapshotDigest: digest('9') },
+      { agentVersionDigest: digest('8') },
+      { executionCapabilityDigest: digest('6') },
+      { leaseId: randomUuidV7() },
+      { fence: '9223372036854775807' },
+    ] satisfies readonly Partial<WorkerInvocationFailedFact>[]) {
+      const rejectedFact: WorkerInvocationFailedFact = { ...failed.fact, ...factPatch };
+      await expect(
+        journal.commitFailed({
+          ...failed,
+          fact: rejectedFact,
+          factDigest: workerInvocationFactDigest(rejectedFact),
+        }),
+      ).rejects.toMatchObject<Partial<CloudJournalError>>({
+        code: 'EXECUTION_AUTHORITY_MISMATCH',
+      });
+    }
+    await expect(
+      journal.commitFailed({ ...failed, installationId: randomUuidV7() }),
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({
+      code: 'EXECUTION_AUTHORITY_MISMATCH',
+    });
+    await expect(
+      owner.query(
+        `SELECT state, result_message_id, result_digest, error_code, terminal_at,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = $1
+                    AND event_type = 'invocation.failed')::text AS failed_events,
+                (SELECT count(*) FROM consumer_event_outbox
+                  WHERE invocation_id = $1)::text AS consumer_events
+           FROM agent_invocations WHERE id = $1`,
+        [runningAccepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: 'RUNNING',
+          result_message_id: null,
+          result_digest: null,
+          error_code: null,
+          terminal_at: null,
+          failed_events: '0',
+          consumer_events: '0',
+        },
+      ],
+    });
+
+    const persistedConversationId = await createConversation();
+    const persistedAccepted = acceptInput(persistedConversationId);
+    await journal.acceptInvocation(persistedAccepted);
+    const persistedAuthority = await assignDispatchPending(persistedAccepted);
+    await journal.commitPrepared(preparedInput(persistedAccepted, persistedAuthority));
+    await expect(
+      journal.commitFailed(failedInput(persistedAccepted, persistedAuthority)),
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({
+      code: 'EXECUTION_AUTHORITY_MISMATCH',
+    });
+    expect(await counts(persistedConversationId)).toMatchObject({
+      messages: '1',
+      events: '2',
+      consumer_events: '0',
+      consumer_streams: '0',
+      conversation_state: 'BUSY',
+    });
+    await expect(
+      owner.query(`SELECT state, error_code, terminal_at FROM agent_invocations WHERE id = $1`, [
+        persistedAccepted.invocationId,
+      ]),
+    ).resolves.toMatchObject({
+      rows: [{ state: 'PERSISTED', error_code: null, terminal_at: null }],
+    });
+  });
+
+  it('rolls back every confirmed failure crash window to the original RUNNING projection', async () => {
+    for (const target of [
+      'INVOCATION_FAILED',
+      'FAILED_EVENT',
+      'CONSUMER_EVENT_OUTBOX',
+      'CONSUMER_EVENT_STREAM',
+      'CONVERSATION_IDLE',
+    ] satisfies CloudJournalStep[]) {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const baseJournal = new PostgresCloudJournal(journalPools);
+      await baseJournal.acceptInvocation(accepted);
+      const authority = await assignRunning(accepted);
+      const failed = failedInput(accepted, authority);
+      const failing = new PostgresCloudJournal(journalPools, (step) => {
+        if (step === target) throw new Error(`FAILPOINT:${target}`);
+      });
+
+      await expect(failing.commitFailed(failed)).rejects.toThrow(`FAILPOINT:${target}`);
+      const state = await owner.query<{
+        messages: string;
+        events: string;
+        failed_events: string;
+        state: string;
+        result_message_id: string | null;
+        result_digest: string | null;
+        error_code: string | null;
+        terminal_at: Date | null;
+        conversation_state: string;
+        consumer_events: string;
+        consumer_streams: string;
+      }>(
+        `SELECT
+           (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
+           (SELECT count(*) FROM agent_invocation_events
+             WHERE invocation_id = $1)::text AS events,
+           (SELECT count(*) FROM agent_invocation_events
+             WHERE invocation_id = $1
+               AND event_type = 'invocation.failed')::text AS failed_events,
+           invocation.state, invocation.result_message_id, invocation.result_digest,
+           invocation.error_code, invocation.terminal_at,
+           conversation.state AS conversation_state,
+           (SELECT count(*) FROM consumer_event_outbox
+             WHERE invocation_id = $1)::text AS consumer_events,
+           (SELECT count(*) FROM consumer_event_streams
+             WHERE conversation_id = invocation.conversation_id)::text AS consumer_streams
+         FROM agent_invocations AS invocation
+         JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
+         WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      );
+      expect(state.rows[0], target).toEqual({
+        messages: '1',
+        events: '3',
+        failed_events: '0',
+        state: 'RUNNING',
+        result_message_id: null,
+        result_digest: null,
+        error_code: null,
+        terminal_at: null,
+        conversation_state: 'BUSY',
+        consumer_events: '0',
+        consumer_streams: '0',
+      });
+      await expect(baseJournal.commitFailed(failed)).resolves.toMatchObject({
+        state: 'FAILED',
+        replayed: false,
+      });
+    }
+  });
+
   it('commits an exact-authority final atomically and exact replay never duplicates it', async () => {
     const conversationId = await createConversation();
     const accepted = acceptInput(conversationId);
@@ -3527,7 +3985,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     const securityLeaseId = randomUuidV7();
     const secondConsumer = await owner.query<{ id: string }>(
       `INSERT INTO users (account) VALUES ($1) RETURNING id`,
-      ['creator-gggggggg'],
+      [account()],
     );
     const secondConsumerId = secondConsumer.rows[0]!.id;
     await owner.query(

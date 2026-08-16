@@ -5,7 +5,10 @@ import {
   Sha256HexSchema,
   Uint63StringSchema,
   UuidSchema,
+  VnextErrorCodeSchema,
   WorkerConversationReadyFactSchema,
+  type WorkerInvocationFailedFact,
+  WorkerInvocationFailedFactSchema,
   type WorkerInvocationPreparedFact,
   WorkerInvocationPreparedFactSchema,
   type WorkerInvocationStartedFact,
@@ -15,6 +18,7 @@ import {
 } from '@cb/creator-agent-protocol';
 import {
   type AssistantMessageSealer,
+  type CommittedFailed,
   type CommittedPrepared,
   type CommittedStarted,
   type CommittedSuccess,
@@ -31,7 +35,7 @@ import {
 
 type InvocationLifecycleProjector = Pick<
   PostgresCloudJournal,
-  'projectPrepared' | 'projectStarted' | 'projectSuccess'
+  'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed'
 >;
 
 type ConversationReadyRow = Readonly<{
@@ -185,10 +189,40 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
         assertCommittedSuccess(committed, fact);
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
       }
+      case 'invocation.failed': {
+        const lifecycle = this.#requireInvocationLifecycle();
+        await clearConsumerContext(input.transaction, input.signal);
+        const body = input.event.body;
+        const fact = WorkerInvocationFailedFactSchema.parse({
+          protocol: body.protocol,
+          schemaVersion: body.schemaVersion,
+          type: body.type,
+          sourceEventId: body.sourceEventId,
+          invocationId: body.invocationId,
+          agentVersionDigest: body.agentVersionDigest,
+          snapshotDigest: body.snapshotDigest,
+          executionCapabilityDigest: body.executionCapabilityDigest,
+          leaseId: body.leaseId,
+          fence: body.fence,
+          errorCode: body.errorCode,
+        });
+        VnextErrorCodeSchema.parse(fact.errorCode);
+        const committed = await lifecycle.projectFailed(
+          input.transaction,
+          {
+            creatorId: input.transport.creatorId,
+            installationId: input.transport.installationId,
+            fact,
+            factDigest: body.factDigest,
+          },
+          input.signal,
+        );
+        assertCommittedFailed(committed, fact);
+        return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
+      }
       case 'version.ready':
       case 'version.rejected':
       case 'invocation.delta':
-      case 'invocation.failed':
       case 'invocation.cancelled':
       case 'invocation.uncertain':
         throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
@@ -434,6 +468,20 @@ function assertCommittedSuccess(
     !HmacSha256DigestSchema.safeParse(committed.resultDigest).success ||
     !UuidSchema.safeParse(committed.assistantMessageId).success ||
     !Uint63StringSchema.safeParse(committed.consumerEventCursor).success ||
+    typeof committed.replayed !== 'boolean'
+  ) {
+    throw persistenceFailure();
+  }
+}
+
+function assertCommittedFailed(committed: CommittedFailed, fact: WorkerInvocationFailedFact): void {
+  if (
+    committed.invocationId !== fact.invocationId ||
+    committed.state !== 'FAILED' ||
+    !VnextErrorCodeSchema.safeParse(committed.errorCode).success ||
+    committed.errorCode !== fact.errorCode ||
+    (committed.consumerEventCursor !== null &&
+      !Uint63StringSchema.safeParse(committed.consumerEventCursor).success) ||
     typeof committed.replayed !== 'boolean'
   ) {
     throw persistenceFailure();

@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs';
 import {
   BrokerEnvelopeSchema,
   workerConversationReadyFactDigest,
+  workerInvocationFactDigest,
   type BrokerEnvelope,
+  type WorkerInvocationFailedFact,
 } from '@cb/creator-agent-protocol';
 import {
   type AssistantMessageSealer,
+  type CommittedFailed,
   type CommittedPrepared,
   type CommittedStarted,
   type CommittedSuccess,
@@ -35,10 +38,12 @@ const READY_MESSAGE_ID = '0198f00d-3000-7000-8000-000000000018';
 const SANDBOX_ID = '0198f00d-3000-7000-8000-000000000019';
 const OPEN_COMMAND_ID = '0198f00d-3000-7000-8000-000000000020';
 const AGENT_VERSION_ID = '0198f00d-3000-7000-8000-000000000021';
+const INVOCATION_ID = '0198f00d-3000-7000-8000-000000000002';
+const FAILED_MESSAGE_ID = '0198f00d-4000-7000-8000-000000000042';
 
 type Lifecycle = Pick<
   PostgresCloudJournal,
-  'projectPrepared' | 'projectStarted' | 'projectSuccess'
+  'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed'
 >;
 
 describe('PostgresGatewayBusinessEventProjector', () => {
@@ -47,12 +52,16 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const projector = new PostgresGatewayBusinessEventProjector();
     const prepared = fixture('broker-invocation-prepared.v1.json');
     const succeeded = fixture('broker-invocation-succeeded.v1.json');
+    const failed = failedEvent();
 
     await expect(
       projector.project(projectorInput(transaction, prepared, AbortSignal.timeout(5_000))),
     ).rejects.toMatchObject({ code: 'BUSINESS_PROJECTOR_UNAVAILABLE' });
     await expect(
       projector.project(projectorInput(transaction, succeeded, AbortSignal.timeout(5_000))),
+    ).rejects.toMatchObject({ code: 'BUSINESS_PROJECTOR_UNAVAILABLE' });
+    await expect(
+      projector.project(projectorInput(transaction, failed, AbortSignal.timeout(5_000))),
     ).rejects.toMatchObject({ code: 'BUSINESS_PROJECTOR_UNAVAILABLE' });
     expect(transaction.calls).toEqual([]);
   });
@@ -147,6 +156,67 @@ describe('PostgresGatewayBusinessEventProjector', () => {
       factDigest: succeeded.body.factDigest,
       resultCiphertext: succeeded.body.resultCiphertext,
     });
+  });
+
+  it('projects a confirmed failure through the exact Gateway transaction and signal', async () => {
+    const transaction = emptyTransaction();
+    const signal = AbortSignal.timeout(5_000);
+    const lifecycle = lifecycleFixture();
+    const sealer = vi.fn<AssistantMessageSealer>();
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle, sealer);
+    const failed = failedEvent();
+    lifecycle.projectFailed
+      .mockResolvedValueOnce(failedResult(failed, false))
+      .mockResolvedValueOnce(failedResult(failed, true));
+
+    await expect(projector.project(projectorInput(transaction, failed, signal))).resolves.toBe(
+      'APPLIED',
+    );
+    await expect(projector.project(projectorInput(transaction, failed, signal))).resolves.toBe(
+      'IDEMPOTENT_REPLAY',
+    );
+
+    const call = lifecycle.projectFailed.mock.calls[0]!;
+    expect(call[0]).toBe(transaction);
+    expect(call[2]).toBe(signal);
+    expect(call[1]).toEqual({
+      creatorId: CREATOR_ID,
+      installationId: INSTALLATION_ID,
+      fact: {
+        protocol: failed.body.protocol,
+        schemaVersion: failed.body.schemaVersion,
+        type: failed.body.type,
+        sourceEventId: failed.body.sourceEventId,
+        invocationId: failed.body.invocationId,
+        agentVersionDigest: failed.body.agentVersionDigest,
+        snapshotDigest: failed.body.snapshotDigest,
+        executionCapabilityDigest: failed.body.executionCapabilityDigest,
+        leaseId: failed.body.leaseId,
+        fence: failed.body.fence,
+        errorCode: failed.body.errorCode,
+      },
+      factDigest: failed.body.factDigest,
+    });
+    expect(transaction.calls).toEqual([
+      [`SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`, [], signal],
+      [`SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`, [], signal],
+    ]);
+    expect(sealer).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before Cloud projection for an unregistered failed error code', async () => {
+    const transaction = emptyTransaction();
+    const lifecycle = lifecycleFixture();
+    const signal = AbortSignal.timeout(5_000);
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle, unavailableSealer);
+
+    await expect(
+      projector.project(projectorInput(transaction, failedEvent('UNREGISTERED_FAILURE'), signal)),
+    ).rejects.toThrow();
+    expect(lifecycle.projectFailed).not.toHaveBeenCalled();
+    expect(transaction.calls).toEqual([
+      [`SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`, [], signal],
+    ]);
   });
 
   it.each([
@@ -303,6 +373,7 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     expect(lifecycle.projectPrepared).not.toHaveBeenCalled();
     expect(lifecycle.projectStarted).not.toHaveBeenCalled();
     expect(lifecycle.projectSuccess).not.toHaveBeenCalled();
+    expect(lifecycle.projectFailed).not.toHaveBeenCalled();
     expect(sealer).not.toHaveBeenCalled();
   });
 
@@ -342,6 +413,18 @@ describe('PostgresGatewayBusinessEventProjector', () => {
         projectorInput(emptyTransaction(), succeeded, AbortSignal.timeout(5_000)),
       ),
     ).rejects.toMatchObject({ code: 'PERSISTENCE_INVARIANT_FAILED' });
+
+    const failed = failedEvent();
+    const failedLifecycle = lifecycleFixture();
+    failedLifecycle.projectFailed.mockResolvedValue({
+      ...failedResult(failed, false),
+      errorCode: 'TURN_TIMEOUT',
+    });
+    await expect(
+      new PostgresGatewayBusinessEventProjector(failedLifecycle, unavailableSealer).project(
+        projectorInput(emptyTransaction(), failed, AbortSignal.timeout(5_000)),
+      ),
+    ).rejects.toMatchObject({ code: 'PERSISTENCE_INVARIANT_FAILED' });
   });
 
   it('fails closed for every event whose durable projector is not implemented', async () => {
@@ -370,7 +453,6 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     'version.ready',
     'version.rejected',
     'invocation.delta',
-    'invocation.failed',
     'invocation.cancelled',
     'invocation.uncertain',
   ] as const)('fails closed for unsupported %s events before calling Cloud', async (type) => {
@@ -386,6 +468,7 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     expect(lifecycle.projectPrepared).not.toHaveBeenCalled();
     expect(lifecycle.projectStarted).not.toHaveBeenCalled();
     expect(lifecycle.projectSuccess).not.toHaveBeenCalled();
+    expect(lifecycle.projectFailed).not.toHaveBeenCalled();
     expect(sealer).not.toHaveBeenCalled();
   });
 
@@ -478,6 +561,43 @@ function conversationReady(): Extract<BrokerEnvelope, { type: 'conversation.read
   }) as Extract<BrokerEnvelope, { type: 'conversation.ready' }>;
 }
 
+function failedEvent(
+  errorCode = 'TURN_FAILED',
+): Extract<BrokerEnvelope, { type: 'invocation.failed' }> {
+  const fact = {
+    protocol: 'combo.worker-invocation-fact/1',
+    schemaVersion: 1,
+    type: 'invocation.failed',
+    sourceEventId: INVOCATION_ID,
+    invocationId: INVOCATION_ID,
+    agentVersionDigest: 'e'.repeat(64),
+    snapshotDigest: 'a'.repeat(64),
+    executionCapabilityDigest: 'f'.repeat(64),
+    leaseId: LEASE_ID,
+    fence: '2',
+    errorCode,
+  } as const satisfies WorkerInvocationFailedFact;
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'event',
+    type: 'invocation.failed',
+    messageId: FAILED_MESSAGE_ID,
+    correlationId: INVOCATION_ID,
+    connectionId: CURRENT_CONNECTION_ID,
+    sequence: '4',
+    sentAt: '2026-08-14T01:00:04.000Z',
+    expiresAt: '2026-08-14T01:00:34.000Z',
+    lease: {
+      deploymentId: DEPLOYMENT_ID,
+      leaseId: CURRENT_LEASE_ID,
+      workerSessionId: CURRENT_SESSION_ID,
+      fence: '3',
+    },
+    body: { ...fact, factDigest: workerInvocationFactDigest(fact) },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.failed' }>;
+}
+
 function projectorInput(
   transaction: GatewayTransaction,
   event: Parameters<PostgresGatewayBusinessEventProjector['project']>[0]['event'],
@@ -544,6 +664,7 @@ function lifecycleFixture() {
     projectPrepared: vi.fn<Lifecycle['projectPrepared']>(),
     projectStarted: vi.fn<Lifecycle['projectStarted']>(),
     projectSuccess: vi.fn<Lifecycle['projectSuccess']>(),
+    projectFailed: vi.fn<Lifecycle['projectFailed']>(),
   };
 }
 
@@ -586,6 +707,19 @@ function successResult(
     assistantMessageId: OPEN_COMMAND_ID,
     resultDigest: event.body.resultDigest,
     consumerEventCursor: '1',
+    replayed,
+  };
+}
+
+function failedResult(
+  event: Extract<BrokerEnvelope, { type: 'invocation.failed' }>,
+  replayed: boolean,
+): CommittedFailed {
+  return {
+    invocationId: event.body.invocationId,
+    state: 'FAILED',
+    errorCode: 'TURN_FAILED',
+    consumerEventCursor: '2',
     replayed,
   };
 }
