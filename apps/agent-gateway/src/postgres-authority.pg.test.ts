@@ -1,11 +1,13 @@
 import { generateKeyPairSync, randomBytes, randomUUID, sign, type KeyObject } from 'node:crypto';
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 
 import {
   BrokerAuthenticationError,
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
   BrokerHandshakeUnsignedSchema,
+  ProtocolVersionCorpusSchema,
   brokerHandshakeSigningBytes,
   canonicalSha256,
   canonicalizeJson,
@@ -42,6 +44,13 @@ const WORKER_VERSION = 'combo-worker-gateway-pg/1';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
 const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
+const compatibilityCorpus = readFile(
+  new URL(
+    '../../../packages/creator-agent-protocol/fixtures/protocol-compatibility.v1.json',
+    import.meta.url,
+  ),
+  'utf8',
+).then((text) => ProtocolVersionCorpusSchema.parse(JSON.parse(text)));
 const TEST_RUNTIME_POLICY = Object.freeze({
   schemaVersion: 1,
   isolation: 'conversation-vm-required',
@@ -1939,6 +1948,126 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
         WHERE id = $1`,
       [ids.deploymentId],
     );
+  });
+
+  // Sub-evidence for planned VNext registry cases SCH-010 and BRK-005. The fixture
+  // seeds the trusted registration projection directly; a Creator OAuth registration
+  // entrypoint is not implemented here and remains part of the planned vertical gate.
+  it('durably blocks signed future protocol Codex isolation and unknown-capability registrations', async () => {
+    const corpus = await compatibilityCorpus;
+    expect(corpus.current).toMatchObject({
+      wireProtocol: 'combo.creator-broker/1',
+      wireSchemaVersion: 1,
+      supportedProtocolVersions: [1],
+      brokerContractDigest: BROKER_CONTRACT_DIGEST,
+    });
+    expect(corpus.declaredPrevious).toEqual([]);
+
+    for (const testCase of corpus.rejectedRegistrations) {
+      const testKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+      const installationId = randomUuidV7();
+      const capabilities: Record<string, unknown> = {
+        codexRuntimeArtifacts: [RUNTIME_DIGEST],
+        codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
+        isolationModes: ['apple-container-v1'],
+        brokerContractDigest: BROKER_CONTRACT_DIGEST,
+      };
+      switch (testCase.id) {
+        case 'future-protocol-v2':
+          break;
+        case 'unknown-capability-key':
+          capabilities.futureCapability = testCase.advertisedValue;
+          break;
+        case 'unaccepted-codex-runtime':
+          capabilities.codexRuntimeArtifacts = [testCase.advertisedValue];
+          break;
+        case 'unaccepted-codex-protocol':
+          capabilities.codexProtocolSchemaDigests = [testCase.advertisedValue];
+          break;
+        case 'unaccepted-isolation':
+          capabilities.isolationModes = [testCase.advertisedValue];
+          break;
+      }
+      await owner.query(
+        `INSERT INTO worker_installations (
+           id, creator_id, installation_key_id, device_public_key,
+           worker_version, protocol_versions, capabilities
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb)`,
+        [
+          installationId,
+          ids.creatorId,
+          `gateway-compatibility-key-${installationId}`,
+          publicPoint(testKeyPair.publicKey),
+          WORKER_VERSION,
+          JSON.stringify(testCase.protocolVersions),
+          JSON.stringify(capabilities),
+        ],
+      );
+      const challenge = await authority.issueChallenge({
+        creatorId: ids.creatorId,
+        installationId,
+        ...challengeTarget,
+        operationId: randomUuidV7(),
+        signal: AbortSignal.timeout(5_000),
+      });
+      const handshake = signedHandshake(
+        testKeyPair.privateKey,
+        installationId,
+        challenge.challengeId,
+      );
+
+      await expect(
+        authority.authenticate({
+          handshake,
+          connectedAt: new Date().toISOString(),
+          signal: AbortSignal.timeout(5_000),
+        }),
+        testCase.id,
+      ).rejects.toMatchObject({ code: 'WORKER_INCOMPATIBLE' });
+
+      const facts = await owner.query<{
+        challenge_state: string;
+        deployment_state: string;
+        last_error_code: string | null;
+        sessions: string;
+        leases: string;
+        reasons: string[];
+      }>(
+        `SELECT challenge.state AS challenge_state,
+                deployment.observed_state AS deployment_state,
+                deployment.last_error_code,
+                (SELECT count(*)::text FROM worker_gateway_sessions
+                  WHERE challenge_id = challenge.id) AS sessions,
+                (SELECT count(*)::text FROM worker_leases
+                  WHERE deployment_id = challenge.deployment_id AND state = 'ACTIVE') AS leases,
+                ARRAY(
+                  SELECT reason_code FROM worker_auth_security_events
+                   WHERE challenge_id = challenge.id ORDER BY id
+                ) AS reasons
+           FROM worker_auth_challenges AS challenge
+           JOIN deployments AS deployment ON deployment.id = challenge.deployment_id
+          WHERE challenge.id = $1`,
+        [challenge.challengeId],
+      );
+      expect(facts.rows, testCase.id).toEqual([
+        {
+          challenge_state: 'CONSUMED',
+          deployment_state: 'BLOCKED',
+          last_error_code: testCase.expectedError,
+          sessions: '0',
+          leases: '0',
+          reasons: [testCase.expectedError],
+        },
+      ]);
+
+      await owner.query(
+        `UPDATE deployments
+            SET observed_state = 'OFFLINE', observed_worker_id = NULL,
+                last_error_code = NULL, updated_at = statement_timestamp()
+          WHERE id = $1`,
+        [ids.deploymentId],
+      );
+    }
   });
 
   it('durably blocks every signed Broker contract mismatch before Session or Lease', async () => {

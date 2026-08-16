@@ -2,6 +2,7 @@ export * from './agent-version.js';
 export * from './artifacts.js';
 export * from './broker.js';
 export * from './canonical.js';
+export * from './compatibility.js';
 export * from './consumer-events.js';
 export * from './conversation-ready-facts.js';
 export * from './evidence.js';

@@ -7,7 +7,7 @@ import {
   type KeyObject,
 } from 'node:crypto';
 import { once } from 'node:events';
-import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -25,6 +25,7 @@ import {
 } from '@cb/agent-gateway';
 import {
   BrokerEnvelopeSchema,
+  ProtocolVersionCorpusSchema,
   brokerConversationOpenLogicalCommand,
   brokerConversationOpenLogicalDigest,
   canonicalSha256,
@@ -64,6 +65,17 @@ const WORKER_VERSION = 'combo-worker-vertical/1';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
 const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const COMPATIBILITY_CORPUS = ProtocolVersionCorpusSchema.parse(
+  JSON.parse(
+    readFileSync(
+      new URL(
+        '../../creator-agent-protocol/fixtures/protocol-compatibility.v1.json',
+        import.meta.url,
+      ),
+      'utf8',
+    ),
+  ),
+);
 const TEST_RUNTIME_POLICY = Object.freeze({
   schemaVersion: 1,
   isolation: 'conversation-vm-required',
@@ -766,6 +778,187 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 40_000);
+
+  // Sub-evidence for planned VNext registry cases SCH-010 and BRK-005. The fixture
+  // seeds the trusted registration projection directly and the transport is loopback
+  // ws://; Creator registration, public WSS, and Native Host composition remain planned.
+  it('blocks incompatible registrations through real PG loopback WS Worker and file SQLite before Session or delivery', async () => {
+    const owner = new Pool({ connectionString: databaseUrl, max: 4 });
+    const apiPool = new Pool({
+      connectionString: roleUrl('combo_agent_api', apiPassword ?? 'invalid'),
+      max: 2,
+    });
+    const brokerPool = new Pool({
+      connectionString: roleUrl('combo_agent_broker', brokerPassword ?? 'invalid'),
+      max: 4,
+    });
+    const authority = new PostgresAgentGatewayAuthority(
+      { api: toGatewayPool(apiPool), broker: toGatewayPool(brokerPool) },
+      {
+        acceptedWorkerVersions: [WORKER_VERSION],
+        acceptedCodexRuntimeArtifacts: [RUNTIME_DIGEST],
+        acceptedCodexProtocolSchemaDigests: [PROTOCOL_DIGEST],
+        acceptedIsolationModes: ['apple-container-v1'],
+        acceptedBrokerContractDigests: [BROKER_CONTRACT_DIGEST],
+        sessionTtlMs: 60_000,
+        leaseTtlMs: 10_000,
+        responseTtlMs: 5_000,
+        transactionTimeoutMs: 2_000,
+      },
+    );
+    const gateway = new AgentGateway({
+      authority,
+      authorityTimeoutMs: 3_000,
+      stopTimeoutMs: 3_000,
+    });
+    const address = await gateway.start();
+    const url = `ws://${address.host}:${address.port}${address.path}`;
+
+    try {
+      expect(COMPATIBILITY_CORPUS.current).toMatchObject({
+        wireProtocol: 'combo.creator-broker/1',
+        wireSchemaVersion: 1,
+        supportedProtocolVersions: [1],
+        brokerContractDigest: BROKER_CONTRACT_DIGEST,
+      });
+      expect(COMPATIBILITY_CORPUS.declaredPrevious).toEqual([]);
+
+      for (const testCase of COMPATIBILITY_CORPUS.rejectedRegistrations) {
+        const keyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+        const fixture = await seedFixture(owner, keyPair.publicKey);
+        const registration = await owner.query<{ capabilities: Record<string, unknown> }>(
+          `SELECT capabilities FROM worker_installations WHERE id = $1 AND creator_id = $2`,
+          [fixture.installationId, fixture.creatorId],
+        );
+        const capabilities = registration.rows[0]?.capabilities;
+        if (capabilities === undefined) throw new Error('COMPATIBILITY_REGISTRATION_MISSING');
+        switch (testCase.id) {
+          case 'future-protocol-v2':
+            break;
+          case 'unknown-capability-key':
+            capabilities.futureCapability = testCase.advertisedValue;
+            break;
+          case 'unaccepted-codex-runtime':
+            capabilities.codexRuntimeArtifacts = [testCase.advertisedValue];
+            break;
+          case 'unaccepted-codex-protocol':
+            capabilities.codexProtocolSchemaDigests = [testCase.advertisedValue];
+            break;
+          case 'unaccepted-isolation':
+            capabilities.isolationModes = [testCase.advertisedValue];
+            break;
+        }
+        await owner.query(
+          `UPDATE worker_installations
+              SET protocol_versions = $3::jsonb,
+                  capabilities = $4::jsonb
+            WHERE id = $1 AND creator_id = $2`,
+          [
+            fixture.installationId,
+            fixture.creatorId,
+            JSON.stringify(testCase.protocolVersions),
+            JSON.stringify(capabilities),
+          ],
+        );
+
+        const directory = realpathSync(mkdtempSync(join(tmpdir(), 'combo-compat-vertical-')));
+        const filename = join(directory, 'journal.sqlite');
+        const diagnostics: WorkerBrokerDiagnosticEvent[] = [];
+        const adapter = new SqliteWorkerBrokerDurableTransport({
+          filename,
+          newJournalAuthorization: newJournalAuthorization(fixture.installationId),
+        });
+        const basePorts = workerPorts(authority, owner, fixture, keyPair.privateKey);
+        let signatureCalls = 0;
+        const ports = Object.freeze({
+          challengePort: basePorts.challengePort,
+          deviceSigner: {
+            async signCanonicalHandshake(
+              input: Parameters<typeof basePorts.deviceSigner.signCanonicalHandshake>[0],
+            ) {
+              signatureCalls += 1;
+              return basePorts.deviceSigner.signCanonicalHandshake(input);
+            },
+          },
+        });
+        const client = createWorkerClient(url, fixture.installationId, adapter, ports, diagnostics);
+
+        try {
+          await client.start();
+          await waitFor(
+            () => client.status === 'BLOCKED',
+            8_000,
+            `COMPATIBILITY_WORKER_NOT_BLOCKED_${testCase.id}`,
+          );
+          await new Promise<void>((resolve) => setTimeout(resolve, 500));
+          expect(signatureCalls, testCase.id).toBe(1);
+          expect(diagnostics.filter((event) => event === 'connection_attempted')).toHaveLength(1);
+          expect(diagnostics.filter((event) => event === 'handshake_sent')).toHaveLength(1);
+          expect(diagnostics.filter((event) => event === 'security_block')).toHaveLength(1);
+          expect(diagnostics).not.toContain('reconnect_scheduled');
+          expect(diagnostics).not.toContain('lease_activated');
+
+          const facts = await owner.query<{
+            challenge_state: string;
+            deployment_state: string;
+            observed_worker_id: string | null;
+            observed_generation: string | null;
+            last_error_code: string | null;
+            sessions: string;
+            leases: string;
+            security_events: string;
+          }>(
+            `SELECT challenge.state AS challenge_state,
+                    deployment.observed_state AS deployment_state,
+                    deployment.observed_worker_id::text,
+                    deployment.observed_generation::text,
+                    deployment.last_error_code,
+                    (SELECT count(*)::text FROM worker_gateway_sessions
+                      WHERE challenge_id = challenge.id) AS sessions,
+                    (SELECT count(*)::text FROM worker_leases
+                      WHERE deployment_id = challenge.deployment_id AND state = 'ACTIVE') AS leases,
+                    (SELECT count(*)::text FROM worker_auth_security_events
+                      WHERE challenge_id = challenge.id
+                        AND event_type = 'WORKER_INCOMPATIBLE'
+                        AND reason_code = $3) AS security_events
+               FROM worker_auth_challenges AS challenge
+               JOIN deployments AS deployment ON deployment.id = challenge.deployment_id
+              WHERE challenge.installation_id = $1 AND challenge.creator_id = $2`,
+            [fixture.installationId, fixture.creatorId, testCase.expectedError],
+          );
+          expect(facts.rows, testCase.id).toEqual([
+            {
+              challenge_state: 'CONSUMED',
+              deployment_state: 'BLOCKED',
+              observed_worker_id: fixture.installationId,
+              observed_generation: '1',
+              last_error_code: testCase.expectedError,
+              sessions: '0',
+              leases: '0',
+              security_events: '1',
+            },
+          ]);
+
+          expect(
+            sqliteOne<{ connections: number; inbound: number; outbound: number }>(
+              filename,
+              `SELECT
+                 (SELECT count(*) FROM transport_connections) AS connections,
+                 (SELECT count(*) FROM transport_inbound_frames) AS inbound,
+                 (SELECT count(*) FROM transport_outbox) AS outbound`,
+            ),
+          ).toEqual({ connections: 0, inbound: 0, outbound: 0 });
+        } finally {
+          await client.stop().catch(() => undefined);
+          adapter.close();
+          rmSync(directory, { recursive: true, force: true });
+        }
+      }
+    } finally {
+      await gateway.stop().catch(() => undefined);
+      await Promise.all([owner.end(), apiPool.end(), brokerPool.end()]);
+    }
+  }, 30_000);
 });
 
 function roleUrl(role: 'combo_agent_api' | 'combo_agent_broker', password: string): string {

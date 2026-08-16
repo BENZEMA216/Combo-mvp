@@ -858,7 +858,8 @@ describe('Real Worker transport ↔ Real Gateway close authority', () => {
     expect(durable.committed.map((item) => item.type)).toContain('lease.grant');
   });
 
-  it('blocks machine-readable revoked and incompatible authentication failures', async () => {
+  // Sub-evidence for planned VNext registry cases SCH-010 and BRK-005.
+  it('blocks machine-readable revoked and incompatible authentication failures without reconnect', async () => {
     for (const failure of [
       BrokerAuthenticationFailureCode.INSTALLATION_REVOKED,
       BrokerAuthenticationFailureCode.WORKER_INCOMPATIBLE,
@@ -877,8 +878,11 @@ describe('Real Worker transport ↔ Real Gateway close authority', () => {
 
       await client.start();
       await waitFor(() => client.status === 'BLOCKED');
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(client.status).toBe('BLOCKED');
       expect(authority.handshakes).toHaveLength(1);
+      expect(authority.sessions).toHaveLength(0);
+      expect(authority.accepted).toHaveLength(0);
       expect(durable.committed).toHaveLength(0);
 
       await client.stop();

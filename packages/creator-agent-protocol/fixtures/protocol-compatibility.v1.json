@@ -1,0 +1,50 @@
+{
+  "protocol": "combo.protocol-version-corpus/1",
+  "schemaVersion": 1,
+  "current": {
+    "wireProtocol": "combo.creator-broker/1",
+    "wireSchemaVersion": 1,
+    "supportedProtocolVersions": [1],
+    "brokerContractDigest": "sha256:db755ca1a8920ca1b9efa723a09d36a5459358da33a0b5f842fae60190261bf0",
+    "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.v1.json",
+    "handshakeFixtureDigest": "sha256:948a82150e8bb219607d454ce9d2456f0b8dc8675d7c2794fd709ee4c0fddbd1"
+  },
+  "declaredPrevious": [],
+  "rejectedRegistrations": [
+    {
+      "id": "future-protocol-v2",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [2],
+      "advertisedValue": null,
+      "expectedError": "WORKER_REGISTRATION_INCOMPATIBLE"
+    },
+    {
+      "id": "unknown-capability-key",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "future-v2",
+      "expectedError": "WORKER_REGISTRATION_INCOMPATIBLE"
+    },
+    {
+      "id": "unaccepted-codex-runtime",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expectedError": "CODEX_RUNTIME_INCOMPATIBLE"
+    },
+    {
+      "id": "unaccepted-codex-protocol",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expectedError": "CODEX_PROTOCOL_INCOMPATIBLE"
+    },
+    {
+      "id": "unaccepted-isolation",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "lima-vz-v1",
+      "expectedError": "ISOLATION_INCOMPATIBLE"
+    }
+  ]
+}

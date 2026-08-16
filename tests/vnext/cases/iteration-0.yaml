@@ -113,8 +113,11 @@ cases:
   - <<: *brk
     id: BRK-005
     title: Incompatible Worker capability is blocked
+    fixture: [packages/creator-agent-protocol/fixtures/protocol-compatibility.v1.json]
     fault: [Advertise unsupported protocol Codex or isolation capability]
     assertions: [Deployment is BLOCKED with no downgrade and no Native runtime]
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: [sha256:09a1a3d35bf144faaa56e835ed3a5f56fa733ccf25520007db3629c01203da60]
   - <<: *brk
     id: BRK-006
     title: Only current connection epoch owns an installation
@@ -490,11 +493,11 @@ cases:
   - <<: *sch
     id: SCH-010
     title: N plus one or unknown capability blocks
-    fixture: [protocol-version-corpus]
+    fixture: [packages/creator-agent-protocol/fixtures/protocol-compatibility.v1.json]
     steps: [Advertise an unknown future protocol or capability, Attempt readiness]
     assertions: [Deployment becomes BLOCKED without guessing or Native fallback]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: []
+    fixtureDigests: [sha256:09a1a3d35bf144faaa56e835ed3a5f56fa733ccf25520007db3629c01203da60]
 
   - &snp
     id: SNP-001

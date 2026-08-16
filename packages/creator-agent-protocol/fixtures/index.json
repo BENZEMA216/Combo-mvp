@@ -93,6 +93,11 @@
       "digest": "sha256:ce3711d8e99c371c7c4b360a0f7673ac7bf1e299e0d452ce177a4ba7d7103cf2"
     },
     {
+      "path": "protocol-compatibility.v1.json",
+      "bytes": 1841,
+      "digest": "sha256:09a1a3d35bf144faaa56e835ed3a5f56fa733ccf25520007db3629c01203da60"
+    },
+    {
       "path": "sandbox-attestation.v1.json",
       "bytes": 1889,
       "digest": "sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91"

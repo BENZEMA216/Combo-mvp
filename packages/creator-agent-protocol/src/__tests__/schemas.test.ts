@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { AgentVersionManifestSchema, computeAgentVersionDigests } from '../agent-version.js';
 import { currentBrokerContractDigest } from '../artifacts.js';
 import { canonicalSha256, canonicalizeJson } from '../canonical.js';
+import { ProtocolVersionCorpusSchema } from '../compatibility.js';
 import {
   BrokerConversationOpenCommandSchema,
   BrokerEnvelopeSchema,
@@ -441,6 +442,63 @@ describe('六类共享协议运行时 schema', () => {
       const text = await readFixtureText(fixture);
       expect(BrokerEnvelopeSchema.safeParse(JSON.parse(text)).success, fixture).toBe(true);
       expect(parseBrokerFrame(text).protocol, fixture).toBe('combo.creator-broker/1');
+    }
+  });
+
+  it('binds the compatibility corpus to the current signed fixture and trusted registration rejects', async () => {
+    const corpus = ProtocolVersionCorpusSchema.parse(
+      await readFixture('protocol-compatibility.v1.json'),
+    );
+    const handshakeText = await readFixtureText('broker-handshake.v1.json');
+    const handshake = BrokerHandshakeSchema.parse(JSON.parse(handshakeText));
+    expect(corpus.current).toMatchObject({
+      wireProtocol: handshake.protocol,
+      wireSchemaVersion: handshake.schemaVersion,
+      supportedProtocolVersions: handshake.supportedProtocolVersions,
+      brokerContractDigest: currentBrokerContractDigest(),
+    });
+    expect(corpus.current.handshakeFixtureDigest).toBe(
+      `sha256:${createHash('sha256').update(handshakeText).digest('hex')}`,
+    );
+    expect(corpus.declaredPrevious).toEqual([]);
+
+    const currentRegistration = {
+      codexRuntimeArtifacts: handshake.codexRuntimeArtifacts,
+      codexProtocolSchemaDigests: handshake.codexProtocolSchemaDigests,
+      isolationModes: handshake.isolationModes,
+      brokerContractDigest: handshake.brokerContractDigest,
+    };
+    expect(BrokerRegistrationCapabilitiesSchema.safeParse(currentRegistration).success).toBe(true);
+    for (const rejected of corpus.rejectedRegistrations) {
+      expect(rejected.advertisementLocus).toBe('creator-oauth-registration');
+      if (rejected.id === 'future-protocol-v2') {
+        expect(
+          BrokerHandshakeUnsignedSchema.safeParse({
+            ...handshake,
+            supportedProtocolVersions: rejected.protocolVersions,
+          }).success,
+        ).toBe(false);
+      } else if (rejected.id === 'unknown-capability-key') {
+        expect(
+          BrokerRegistrationCapabilitiesSchema.safeParse({
+            ...currentRegistration,
+            futureCapability: rejected.advertisedValue,
+          }).success,
+        ).toBe(false);
+      } else {
+        const mutation =
+          rejected.id === 'unaccepted-codex-runtime'
+            ? { codexRuntimeArtifacts: [rejected.advertisedValue] }
+            : rejected.id === 'unaccepted-codex-protocol'
+              ? { codexProtocolSchemaDigests: [rejected.advertisedValue] }
+              : { isolationModes: [rejected.advertisedValue] };
+        expect(
+          BrokerRegistrationCapabilitiesSchema.safeParse({
+            ...currentRegistration,
+            ...mutation,
+          }).success,
+        ).toBe(true);
+      }
     }
   });
 
