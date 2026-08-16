@@ -13,6 +13,6 @@
   "isolationModes": ["apple-container-v1"],
   "capacity": { "maxActiveConversations": 1, "maxActiveTurns": 1 },
   "challengeId": "0198f00d-2222-7222-8222-222222222222",
-  "challengeSignature": "ZXhhbXBsZS1wMjU2LXNpZ25hdHVyZS1ieXRlcw",
-  "brokerContractDigest": "sha256:f8345b1aa89468ebe72b6043ffee8366f9b9e4bcaac5fd2d82bd622e21481c15"
+  "challengeSignature": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg",
+  "brokerContractDigest": "sha256:14deefe39aeb0fe9921d104dc8f98d0d89ef4fb91388bd224c3f4c3e2a4830ab"
 }

@@ -25,6 +25,21 @@ const Utf8BoundarySchema = z
   })
   .strict();
 
+const Utf8OwnerBoundarySchema = z
+  .object({
+    id: z.literal('snapshot-manifest-path'),
+    maxBytes: z.literal(512),
+    runtimeParser: z.literal('SnapshotManifestSchema'),
+    fixturePath: z.literal('snapshot-manifest.v1.json'),
+    fixtureDigest: Sha256DigestSchema,
+    instancePointer: z.literal('/files/0/path'),
+    artifactPointer: z.literal(
+      '/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path',
+    ),
+    generators: z.tuple([z.literal('ascii'), z.literal('cjk'), z.literal('emoji')]),
+  })
+  .strict();
+
 /**
  * Independent, digest-bound evidence inventory for the UTF-8-byte subset of SCH-004.
  * It deliberately does not claim array, decoded-byte, whole-wire, or canonical-byte coverage.
@@ -42,6 +57,7 @@ export const ProtocolUtf8BoundaryCorpusSchema = z
       })
       .strict(),
     boundaries: z.array(Utf8BoundarySchema).min(1),
+    ownerCases: z.tuple([Utf8OwnerBoundarySchema]),
     remainingBoundaryClasses: z.tuple([
       z.literal('structural-string-length'),
       z.literal('array-count'),

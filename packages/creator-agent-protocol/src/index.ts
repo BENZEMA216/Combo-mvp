@@ -5,6 +5,7 @@ export * from './canonical.js';
 export * from './compatibility.js';
 export * from './consumer-events.js';
 export * from './conversation-ready-facts.js';
+export * from './decoded-boundaries.js';
 export * from './evidence.js';
 export * from './http.js';
 export * from './invocation.js';

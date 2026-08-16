@@ -5,6 +5,7 @@ import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
 
 import { Utf8TextSchema } from '../primitives.js';
+import { SnapshotManifestSchema } from '../snapshot.js';
 import { ProtocolUtf8BoundaryCorpusSchema } from '../utf8-boundaries.js';
 
 type CheckedArtifactName = 'contract-schemas' | 'broker-contract' | 'openapi';
@@ -167,6 +168,56 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
         expect([...above].length).toBeLessThanOrEqual(boundary.maxBytes);
         expect(validate(above), `${boundary.maxBytes}:${generator}:N+1`).toBe(false);
         expect(validate(exactUtf8Bytes(boundary.maxBytes, generator))).toBe(true);
+      }
+    }
+  });
+
+  it('drives the actual Snapshot manifest path parser and advertised schema with one fixture', async () => {
+    const fixture = ProtocolUtf8BoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const owner = fixture.ownerCases[0];
+    const ownerFixtureUrl = new URL(`../../fixtures/${owner.fixturePath}`, import.meta.url);
+    const ownerFixtureBytes = await readFile(ownerFixtureUrl);
+    expect(sha256(ownerFixtureBytes)).toBe(owner.fixtureDigest);
+    const manifest = JSON.parse(ownerFixtureBytes.toString('utf8')) as {
+      files: Array<{ path: string; size: number }>;
+      totals: { fileCount: number; expandedBytes: number };
+    };
+    const contractSchemas = JSON.parse(
+      await readFile(artifactUrls['contract-schemas'], 'utf8'),
+    ) as unknown;
+    const node = lookupPointer(contractSchemas, owner.artifactPointer);
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    ajv.addKeyword({
+      keyword: 'x-combo-maxUtf8Bytes',
+      type: 'string',
+      schemaType: 'number',
+      errors: false,
+      validate(maximumBytes: number, value: string): boolean {
+        return Buffer.byteLength(value, 'utf8') <= maximumBytes;
+      },
+    });
+    const validateAdvertisedPath = ajv.compile(node as AnySchema);
+
+    for (const generator of owner.generators) {
+      for (const delta of [-1, 0, 1] as const) {
+        const path = exactUtf8Bytes(owner.maxBytes + delta, generator);
+        const singleFile = { ...manifest.files[0]!, path };
+        const candidate = {
+          ...manifest,
+          files: [singleFile],
+          totals: { fileCount: 1, expandedBytes: singleFile.size },
+        };
+        const expected = delta <= 0;
+        expect(
+          SnapshotManifestSchema.safeParse(candidate).success,
+          `${owner.runtimeParser}:${generator}:${delta}`,
+        ).toBe(expected);
+        expect(
+          validateAdvertisedPath(path),
+          `advertised:${generator}:${delta}:${JSON.stringify(validateAdvertisedPath.errors)}`,
+        ).toBe(expected);
       }
     }
   });

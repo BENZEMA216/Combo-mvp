@@ -593,19 +593,25 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]+$",
                     "minLength": 16,
-                    "maxLength": 16
+                    "maxLength": 16,
+                    "description": "Canonical base64url encoding of exactly 12 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 12, "maximum": 12 }
                   },
                   "authTag": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]+$",
                     "minLength": 22,
-                    "maxLength": 22
+                    "maxLength": 22,
+                    "description": "Canonical base64url encoding of exactly 16 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 16, "maximum": 16 }
                   },
                   "wrappedDek": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]+$",
                     "minLength": 54,
-                    "maxLength": 54
+                    "maxLength": 54,
+                    "description": "Canonical base64url encoding of exactly 40 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 40, "maximum": 40 }
                   },
                   "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                   "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 }
@@ -684,19 +690,25 @@
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]+$",
                     "minLength": 16,
-                    "maxLength": 16
+                    "maxLength": 16,
+                    "description": "Canonical base64url encoding of exactly 12 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 12, "maximum": 12 }
                   },
                   "authTag": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]+$",
                     "minLength": 22,
-                    "maxLength": 22
+                    "maxLength": 22,
+                    "description": "Canonical base64url encoding of exactly 16 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 16, "maximum": 16 }
                   },
                   "wrappedDek": {
                     "type": "string",
                     "pattern": "^[A-Za-z0-9_-]+$",
                     "minLength": 54,
-                    "maxLength": 54
+                    "maxLength": 54,
+                    "description": "Canonical base64url encoding of exactly 40 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 40, "maximum": 40 }
                   },
                   "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                   "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 4194340 }

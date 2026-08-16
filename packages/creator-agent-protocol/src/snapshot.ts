@@ -4,6 +4,7 @@ import {
   CanonicalBase64UrlBytesSchema,
   containsForbiddenControl,
   Sha256HexSchema,
+  UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX,
   UuidSchema,
 } from './primitives.js';
 
@@ -277,6 +278,7 @@ export function parseSnapshotManifestCipherObject(
 export const SnapshotPathSchema = z
   .string()
   .min(1)
+  .max(SNAPSHOT_MAX_PATH_BYTES)
   .refine((value) => Buffer.byteLength(value, 'utf8') <= SNAPSHOT_MAX_PATH_BYTES, {
     message: `路径不得超过 ${SNAPSHOT_MAX_PATH_BYTES} UTF-8 bytes`,
   })
@@ -297,7 +299,8 @@ export const SnapshotPathSchema = z
       const folded = segment.toLowerCase();
       return FORBIDDEN_SEGMENTS.has(folded) || folded.startsWith('.env');
     });
-  }, '路径属于 Alpha 禁止发布目录或文件');
+  }, '路径属于 Alpha 禁止发布目录或文件')
+  .describe(`${UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX}${SNAPSHOT_MAX_PATH_BYTES}`);
 
 export const SnapshotFileSchema = z
   .object({

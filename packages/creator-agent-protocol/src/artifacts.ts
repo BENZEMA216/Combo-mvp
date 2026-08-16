@@ -66,7 +66,10 @@ import {
   InvariantRegistrySchema,
   TestCaseRegistrySchema,
 } from './registry.js';
-import { UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX } from './primitives.js';
+import {
+  CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX,
+  UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX,
+} from './primitives.js';
 import {
   SandboxAttestationSchema,
   SandboxAttestationUnsignedSchema,
@@ -297,6 +300,33 @@ function attachPublicBoundaryKeywords(value: unknown): unknown {
     }
     output.description = `UTF-8 text with a maximum of ${maximumBytes} bytes`;
     output['x-combo-maxUtf8Bytes'] = maximumBytes;
+  } else if (
+    typeof description === 'string' &&
+    description.startsWith(CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX)
+  ) {
+    const boundary = description
+      .slice(CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX.length)
+      .split(':');
+    if (boundary.length !== 2) {
+      throw new TypeError('canonical base64url public boundary marker 无效');
+    }
+    const [minimumBytes, maximumBytes] = boundary.map(Number);
+    if (
+      !Number.isSafeInteger(minimumBytes) ||
+      !Number.isSafeInteger(maximumBytes) ||
+      minimumBytes! < 0 ||
+      maximumBytes! < minimumBytes!
+    ) {
+      throw new TypeError('canonical base64url public boundary marker 无效');
+    }
+    output.description =
+      minimumBytes === maximumBytes
+        ? `Canonical base64url encoding of exactly ${minimumBytes} bytes`
+        : `Canonical base64url encoding of ${minimumBytes} to ${maximumBytes} bytes`;
+    output['x-combo-canonicalBase64UrlBytes'] = {
+      minimum: minimumBytes,
+      maximum: maximumBytes,
+    };
   }
   return output;
 }

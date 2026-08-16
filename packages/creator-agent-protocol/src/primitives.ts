@@ -56,6 +56,8 @@ export const CanonicalSha256Base64Schema = z
 export const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 
 export const UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX = 'combo:utf8-bytes:' as const;
+export const CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX =
+  'combo:canonical-base64url-bytes:' as const;
 
 export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) => {
   if (
@@ -75,13 +77,13 @@ export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes
         bytes.byteLength <= maximumBytes &&
         bytes.toString('base64url') === value
       );
-    }, `必须是 ${minimumBytes}..${maximumBytes} bytes canonical base64url`);
+    }, `必须是 ${minimumBytes}..${maximumBytes} bytes canonical base64url`)
+    .describe(
+      `${CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX}${minimumBytes}:${maximumBytes}`,
+    );
 };
 
-export const P256P1363SignatureSchema = Base64UrlSchema.refine((value) => {
-  const bytes = Buffer.from(value, 'base64url');
-  return bytes.byteLength === 64 && bytes.toString('base64url') === value;
-}, 'P-256 IEEE-P1363 signature 必须是 64 bytes');
+export const P256P1363SignatureSchema = CanonicalBase64UrlBytesSchema(64, 64);
 
 export const Uint63StringSchema = z
   .string()

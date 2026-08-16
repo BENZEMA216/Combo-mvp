@@ -3,9 +3,9 @@
   "schemaVersion": 1,
   "scope": "utf8-byte-limits-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:11348208d82ef38e493537d1ef0d6371e7626727cb2948613e4f68c70ee9273e",
-    "brokerContract": "sha256:6b47abca02bd70f62a1e713e67a9c3a60db267c1e5883dee6c7ab97c05f39384",
-    "openApi": "sha256:fde6fb0a7c62c3701ac4122a2fb49191d9253abef70825268f46b483b72f1d23"
+    "contractSchemas": "sha256:2ca28a86bc03d4f9154ff23f2826bdeee0b1d4f34c514271fe4efe7a2c9c6191",
+    "brokerContract": "sha256:917929b6b89b7c2dbcb06a0e7ae3dd6663663c077cf2bc4dc1ccd7faba16064f",
+    "openApi": "sha256:02f21b7cae986658f13e25f196920d94a65565903f5a7b44d51425cdc2a717e2"
   },
   "boundaries": [
     {
@@ -134,6 +134,10 @@
         },
         {
           "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path"
+        },
+        {
+          "artifact": "contract-schemas",
           "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/role"
         },
         {
@@ -243,6 +247,18 @@
           "pointer": "/components/schemas/ConsumerEvent/anyOf/2/properties/message/properties/text"
         }
       ]
+    }
+  ],
+  "ownerCases": [
+    {
+      "id": "snapshot-manifest-path",
+      "maxBytes": 512,
+      "runtimeParser": "SnapshotManifestSchema",
+      "fixturePath": "snapshot-manifest.v1.json",
+      "fixtureDigest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088",
+      "instancePointer": "/files/0/path",
+      "artifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path",
+      "generators": ["ascii", "cjk", "emoji"]
     }
   ],
   "remainingBoundaryClasses": [

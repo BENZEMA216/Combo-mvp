@@ -5,9 +5,9 @@
     "wireProtocol": "combo.creator-broker/1",
     "wireSchemaVersion": 1,
     "supportedProtocolVersions": [1],
-    "brokerContractDigest": "sha256:f8345b1aa89468ebe72b6043ffee8366f9b9e4bcaac5fd2d82bd622e21481c15",
+    "brokerContractDigest": "sha256:14deefe39aeb0fe9921d104dc8f98d0d89ef4fb91388bd224c3f4c3e2a4830ab",
     "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.v1.json",
-    "handshakeFixtureDigest": "sha256:bf0d090db2b4dde27ecdd3dacf315ab8ae4550d9d083d79a13303f0cb8eec34e"
+    "handshakeFixtureDigest": "sha256:cade643e26ace002be5957a3f905e5498ee8df25fd257b3948d5ca7ef56595a3"
   },
   "declaredPrevious": [],
   "rejectedRegistrations": [

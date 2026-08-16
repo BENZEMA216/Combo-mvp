@@ -381,7 +381,7 @@ cases:
     releaseTuple: [creator-agent-protocol@0.1.0]
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
-      - sha256:bf0d090db2b4dde27ecdd3dacf315ab8ae4550d9d083d79a13303f0cb8eec34e
+      - sha256:cade643e26ace002be5957a3f905e5498ee8df25fd257b3948d5ca7ef56595a3
       - sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4
       - sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889
       - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
@@ -426,11 +426,15 @@ cases:
   - <<: *sch
     id: SCH-004
     title: Every protocol length boundary is exact
-    fixture: [packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:ed3f33f4476d096b8122094185e210c94eab357323b6328a1bb7918bf51c4b05]
+    fixtureDigests:
+      - sha256:d9a410f6f4872e37168a406097bb75498a932d734f4fd9cf79ba784632221009
+      - sha256:510fd36858ec557a2d7956e33cc8b5421e6783a0f7a62eb6ab4bd9ad655d0d6d
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
@@ -459,9 +463,9 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:11348208d82ef38e493537d1ef0d6371e7626727cb2948613e4f68c70ee9273e
-      - sha256:6b47abca02bd70f62a1e713e67a9c3a60db267c1e5883dee6c7ab97c05f39384
-      - sha256:fde6fb0a7c62c3701ac4122a2fb49191d9253abef70825268f46b483b72f1d23
+      - sha256:2ca28a86bc03d4f9154ff23f2826bdeee0b1d4f34c514271fe4efe7a2c9c6191
+      - sha256:917929b6b89b7c2dbcb06a0e7ae3dd6663663c077cf2bc4dc1ccd7faba16064f
+      - sha256:02f21b7cae986658f13e25f196920d94a65565903f5a7b44d51425cdc2a717e2
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest

@@ -169,7 +169,7 @@ export type BrokerHandshakeUnsigned = z.infer<typeof BrokerHandshakeUnsignedSche
 export const BrokerHandshakeSchema = z
   .object({
     ...BrokerHandshakeUnsignedShape,
-    challengeSignature: Base64UrlSchema.min(32).max(256),
+    challengeSignature: P256P1363SignatureSchema,
   })
   .strict();
 export type BrokerHandshake = z.infer<typeof BrokerHandshakeSchema>;
@@ -612,16 +612,24 @@ export function brokerSensitiveMessageAadDigest(aad: BrokerSensitiveMessageAad):
   return canonicalSha256(BrokerSensitiveMessageAadSchema.parse(aad));
 }
 
+const BrokerSensitiveNonceSchema = CanonicalBase64UrlBytesSchema(12, 12);
+const BrokerSensitiveCiphertextSchema = CanonicalBase64UrlBytesSchema(
+  1,
+  BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES,
+);
+const BrokerSensitiveAuthTagSchema = CanonicalBase64UrlBytesSchema(16, 16);
+const BrokerSensitiveCipherFieldsSchema = z.tuple([
+  BrokerSensitiveNonceSchema,
+  BrokerSensitiveCiphertextSchema,
+  BrokerSensitiveAuthTagSchema,
+]);
+
 export function brokerSensitiveMessageCipherDigest(
   nonce: string,
   ciphertext: string,
   authTag: string,
 ): string {
-  const fields = [
-    CanonicalBase64UrlBytesSchema(12, 12).parse(nonce),
-    CanonicalBase64UrlBytesSchema(1, BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES).parse(ciphertext),
-    CanonicalBase64UrlBytesSchema(16, 16).parse(authTag),
-  ];
+  const fields = BrokerSensitiveCipherFieldsSchema.parse([nonce, ciphertext, authTag]);
   return canonicalSha256({
     protocol: CREATOR_BROKER_PROTOCOL,
     schemaVersion: 1,
@@ -640,9 +648,9 @@ export const BrokerSensitiveMessageSchema = z
     algorithm: z.literal('aes-256-gcm/v1'),
     keyScope: z.literal('worker-session'),
     keyId: z.string().regex(/^[a-z0-9][a-z0-9._:-]{2,127}$/u),
-    nonce: CanonicalBase64UrlBytesSchema(12, 12),
-    ciphertext: CanonicalBase64UrlBytesSchema(1, BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES),
-    authTag: CanonicalBase64UrlBytesSchema(16, 16),
+    nonce: BrokerSensitiveNonceSchema,
+    ciphertext: BrokerSensitiveCiphertextSchema,
+    authTag: BrokerSensitiveAuthTagSchema,
     cipherDigest: Sha256HexSchema,
     aad: BrokerSensitiveMessageAadSchema,
     aadDigest: Sha256HexSchema,
@@ -650,9 +658,19 @@ export const BrokerSensitiveMessageSchema = z
   })
   .strict()
   .superRefine((message, context) => {
+    const cipherFields = BrokerSensitiveCipherFieldsSchema.safeParse([
+      message.nonce,
+      message.ciphertext,
+      message.authTag,
+    ]);
     if (
+      cipherFields.success &&
       message.cipherDigest !==
-      brokerSensitiveMessageCipherDigest(message.nonce, message.ciphertext, message.authTag)
+        brokerSensitiveMessageCipherDigest(
+          cipherFields.data[0],
+          cipherFields.data[1],
+          cipherFields.data[2],
+        )
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -660,7 +678,8 @@ export const BrokerSensitiveMessageSchema = z
         message: 'cipherDigest 必须绑定 nonce/ciphertext/authTag canonical bytes',
       });
     }
-    if (message.aadDigest !== brokerSensitiveMessageAadDigest(message.aad)) {
+    const aad = BrokerSensitiveMessageAadSchema.safeParse(message.aad);
+    if (aad.success && message.aadDigest !== canonicalSha256(aad.data)) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['aadDigest'],

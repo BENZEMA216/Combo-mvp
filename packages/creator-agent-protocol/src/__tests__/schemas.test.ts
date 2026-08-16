@@ -720,6 +720,11 @@ describe('六类共享协议运行时 schema', () => {
     }${originalCiphertext.slice(1)}`;
     expect(BrokerEnvelopeSchema.safeParse(changedCiphertext).success).toBe(false);
 
+    const malformedAad = structuredClone(prepare);
+    malformedAad.body.userMessageCiphertext.aad.invocationId = 'not-a-uuid';
+    expect(() => BrokerEnvelopeSchema.safeParse(malformedAad)).not.toThrow();
+    expect(BrokerEnvelopeSchema.safeParse(malformedAad).success).toBe(false);
+
     const crossEnvelopeReplay = structuredClone(succeeded);
     crossEnvelopeReplay.body.resultCiphertext = structuredClone(prepare.body.userMessageCiphertext);
     expect(BrokerEnvelopeSchema.safeParse(crossEnvelopeReplay).success).toBe(false);

@@ -139,8 +139,10 @@
             "challengeSignature": {
               "type": "string",
               "pattern": "^[A-Za-z0-9_-]+$",
-              "minLength": 32,
-              "maxLength": 256
+              "minLength": 86,
+              "maxLength": 86,
+              "description": "Canonical base64url encoding of exactly 64 bytes",
+              "x-combo-canonicalBase64UrlBytes": { "minimum": 64, "maximum": 64 }
             }
           },
           "required": [
@@ -684,19 +686,25 @@
                               "type": "string",
                               "pattern": "^[A-Za-z0-9_-]+$",
                               "minLength": 16,
-                              "maxLength": 16
+                              "maxLength": 16,
+                              "description": "Canonical base64url encoding of exactly 12 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 12, "maximum": 12 }
                             },
                             "ciphertext": {
                               "type": "string",
                               "pattern": "^[A-Za-z0-9_-]+$",
                               "minLength": 2,
-                              "maxLength": 61440
+                              "maxLength": 61440,
+                              "description": "Canonical base64url encoding of 1 to 46080 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 1, "maximum": 46080 }
                             },
                             "authTag": {
                               "type": "string",
                               "pattern": "^[A-Za-z0-9_-]+$",
                               "minLength": 22,
-                              "maxLength": 22
+                              "maxLength": 22,
+                              "description": "Canonical base64url encoding of exactly 16 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 16, "maximum": 16 }
                             },
                             "cipherDigest": {
                               "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
@@ -864,7 +872,14 @@
                             },
                             "signatureAlgorithm": { "type": "string", "const": "ES256" },
                             "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
-                            "signature": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" }
+                            "signature": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 86,
+                              "maxLength": 86,
+                              "description": "Canonical base64url encoding of exactly 64 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 64, "maximum": 64 }
+                            }
                           },
                           "required": [
                             "protocol",
