@@ -10,6 +10,8 @@ import {
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
   BrokerHandshakeUnsignedSchema,
+  BROKER_MAX_FRAME_BYTES,
+  BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES,
   BrokerRegistrationCapabilitiesSchema,
   BrokerAuthenticationError,
   BrokerAuthenticationFailureCode,
@@ -18,6 +20,8 @@ import {
   ExecutionCapabilitySchema,
   ExecutionCapabilityUseRecordSchema,
   decideExecutionCapabilityUse,
+  brokerSensitiveMessageAadDigest,
+  brokerSensitiveMessageCipherDigest,
   brokerConversationOpenLogicalCommand,
   brokerConversationOpenLogicalDigest,
   brokerHandshakeSigningBytes,
@@ -49,6 +53,10 @@ import {
   validateEvidenceReviewerSignoff,
   type EvidenceReviewerSignoff,
 } from '../evidence.js';
+import {
+  WorkerInvocationSucceededFactObjectSchema,
+  workerInvocationFactDigest,
+} from '../invocation-facts.js';
 import {
   SnapshotPublicationCommitMarkerSchema,
   SnapshotPublicationPreparationMarkerSchema,
@@ -321,7 +329,39 @@ describe('六类共享协议运行时 schema', () => {
         },
       }).success,
     ).toBe(false);
-    const oversizedManifestBytes = 4 * 1024 * 1024 + 37;
+    const archiveCipherMaximum = 50 * 1024 * 1024 + 36;
+    const manifestCipherMaximum = 4 * 1024 * 1024 + 36;
+    const exactBoundaryResponse = {
+      protocol: 'combo.creator-agent-http/1',
+      uploadId: '0198f00d-8000-7000-8000-000000000011',
+      state: 'CREATED',
+      uploads: {
+        archive: target('archive', archiveCipherMaximum, archive.cipherDigest, archiveChecksum),
+        manifest: target(
+          'manifest',
+          manifestCipherMaximum,
+          manifest.cipherDigest,
+          manifestChecksum,
+        ),
+      },
+      expiresAt: '2026-08-13T08:15:00.000Z',
+    };
+    expect(SnapshotUploadCreateResponseSchema.safeParse(exactBoundaryResponse).success).toBe(true);
+    expect(
+      SnapshotUploadCreateResponseSchema.safeParse({
+        ...exactBoundaryResponse,
+        uploads: {
+          ...exactBoundaryResponse.uploads,
+          archive: target(
+            'archive',
+            archiveCipherMaximum + 1,
+            archive.cipherDigest,
+            archiveChecksum,
+          ),
+        },
+      }).success,
+    ).toBe(false);
+    const oversizedManifestBytes = manifestCipherMaximum + 1;
     expect(
       SnapshotUploadCreateResponseSchema.safeParse({
         protocol: 'combo.creator-agent-http/1',
@@ -810,6 +850,101 @@ describe('六类共享协议运行时 schema', () => {
     expect(BrokerEnvelopeSchema.safeParse({ ...command, schemaVersion: 2 }).success).toBe(false);
     expect(() => parseBrokerFrame('{"protocol":"x","protocol":"y"}')).toThrow(/重复 JSON key/u);
     expect(() => parseBrokerFrame(' '.repeat(65_537))).toThrow(/65536/u);
+  });
+
+  it('Broker AEAD ciphertext maximum is attainable in maximal prepare/succeeded envelopes and at the exact whole-frame boundary', async () => {
+    const parsed = BrokerEnvelopeSchema.parse(
+      await readFixture('broker-invocation-prepare.v1.json'),
+    );
+    if (parsed.type !== 'invocation.prepare') throw new TypeError('EXPECTED_INVOCATION_PREPARE');
+
+    const atCiphertextMaximum = structuredClone(parsed);
+    const maximumUint63 = '9223372036854775807';
+    atCiphertextMaximum.sequence = maximumUint63;
+    atCiphertextMaximum.lease.fence = maximumUint63;
+    const sensitive = atCiphertextMaximum.body.userMessageCiphertext;
+    sensitive.keyId = `a${'z'.repeat(127)}`;
+    sensitive.aad.keyId = sensitive.keyId;
+    sensitive.ciphertext = Buffer.alloc(BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES, 0xa5).toString(
+      'base64url',
+    );
+    sensitive.cipherDigest = brokerSensitiveMessageCipherDigest(
+      sensitive.nonce,
+      sensitive.ciphertext,
+      sensitive.authTag,
+    );
+    sensitive.aadDigest = brokerSensitiveMessageAadDigest(sensitive.aad);
+    const capability = atCiphertextMaximum.body.executionCapability;
+    capability.fence = maximumUint63;
+    capability.model = '\\'.repeat(128);
+    capability.reasoningEffort = 'medium';
+    capability.budget = {
+      maxInputTokens: 200_000,
+      maxOutputTokens: 32_768,
+      maxCostMicros: 100_000_000,
+    };
+    capability.nonce = 'A'.repeat(128);
+    const attainableFrame = JSON.stringify(atCiphertextMaximum);
+    expect(Buffer.byteLength(attainableFrame, 'utf8')).toBeLessThan(BROKER_MAX_FRAME_BYTES);
+    expect(parseBrokerFrame(attainableFrame)).toEqual(atCiphertextMaximum);
+
+    const parsedSucceeded = BrokerEnvelopeSchema.parse(
+      await readFixture('broker-invocation-succeeded.v1.json'),
+    );
+    if (parsedSucceeded.type !== 'invocation.succeeded') {
+      throw new TypeError('EXPECTED_INVOCATION_SUCCEEDED');
+    }
+    const maximalSucceeded = structuredClone(parsedSucceeded);
+    maximalSucceeded.sequence = maximumUint63;
+    maximalSucceeded.lease.fence = maximumUint63;
+    maximalSucceeded.body.fence = maximumUint63;
+    maximalSucceeded.body.runtimeThreadId = 'A'.repeat(256);
+    maximalSucceeded.body.runtimeTurnId = 'A'.repeat(256);
+    const result = maximalSucceeded.body.resultCiphertext;
+    result.keyId = `a${'z'.repeat(127)}`;
+    result.aad.keyId = result.keyId;
+    result.ciphertext = Buffer.alloc(BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES, 0x5a).toString(
+      'base64url',
+    );
+    result.cipherDigest = brokerSensitiveMessageCipherDigest(
+      result.nonce,
+      result.ciphertext,
+      result.authTag,
+    );
+    result.aadDigest = brokerSensitiveMessageAadDigest(result.aad);
+    const {
+      conversationId: _conversationId,
+      resultCiphertext: _resultCiphertext,
+      factDigest: _factDigest,
+      ...succeededFact
+    } = maximalSucceeded.body;
+    maximalSucceeded.body.factDigest = workerInvocationFactDigest(
+      WorkerInvocationSucceededFactObjectSchema.parse(succeededFact),
+    );
+    const maximalSucceededFrame = JSON.stringify(maximalSucceeded);
+    expect(Buffer.byteLength(maximalSucceededFrame, 'utf8')).toBeLessThan(BROKER_MAX_FRAME_BYTES);
+    expect(parseBrokerFrame(maximalSucceededFrame)).toEqual(maximalSucceeded);
+
+    const exactWholeFrame = attainableFrame.padEnd(BROKER_MAX_FRAME_BYTES, ' ');
+    expect(Buffer.byteLength(exactWholeFrame, 'utf8')).toBe(BROKER_MAX_FRAME_BYTES);
+    expect(parseBrokerFrame(exactWholeFrame)).toEqual(atCiphertextMaximum);
+    expect(() => parseBrokerFrame(`${exactWholeFrame} `)).toThrow(/65536/u);
+
+    const aboveCiphertextMaximum = structuredClone(atCiphertextMaximum);
+    aboveCiphertextMaximum.body.userMessageCiphertext.ciphertext = Buffer.alloc(
+      BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES + 1,
+      0xa5,
+    ).toString('base64url');
+    const stillInsideWholeFrame = JSON.stringify(aboveCiphertextMaximum);
+    expect(Buffer.byteLength(stillInsideWholeFrame, 'utf8')).toBeLessThan(BROKER_MAX_FRAME_BYTES);
+    expect(() =>
+      brokerSensitiveMessageCipherDigest(
+        aboveCiphertextMaximum.body.userMessageCiphertext.nonce,
+        aboveCiphertextMaximum.body.userMessageCiphertext.ciphertext,
+        aboveCiphertextMaximum.body.userMessageCiphertext.authTag,
+      ),
+    ).toThrow();
+    expect(() => parseBrokerFrame(stillInsideWholeFrame)).toThrow();
   });
 
   it('uint63 wire boundary 精确拒绝 number、前导零、符号、exponent 和 overflow', () => {

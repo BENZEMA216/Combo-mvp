@@ -24,6 +24,7 @@ import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 
 import {
+  BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES,
   BrokerEnvelopeSchema,
   ExecutionCapabilitySchema,
   WorkerConversationReadyFactSchema,
@@ -59,6 +60,8 @@ import {
   type SqliteWorkerInvocationJournal,
   assertWorkerConversationReadyIntegrity,
   assertWorkerInvocationIntegrity,
+  LocalInvocationPromptCiphertextSchema,
+  LocalInvocationResultCiphertextSchema,
   localInvocationPromptAadBytes,
   localInvocationPromptAadDigest,
   localInvocationPromptCipherDigest,
@@ -101,6 +104,78 @@ afterEach(() => {
 });
 
 describe('same-file SQLite Worker Invocation Journal v3', () => {
+  it('shares the exact Broker ciphertext byte authority with local Prompt and Result storage', () => {
+    const nonce = Buffer.alloc(12, 0x11).toString('base64url');
+    const authTag = Buffer.alloc(16, 0x22).toString('base64url');
+    const ciphertext = Buffer.alloc(BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES, 0x33).toString(
+      'base64url',
+    );
+    const promptAad: LocalInvocationPromptAad = {
+      schemaVersion: 1,
+      installationId: uuid(70_001),
+      invocationId: uuid(70_002),
+      conversationId: uuid(70_003),
+      agentVersionDigest: SHA('a'),
+      role: 'USER',
+    };
+    const prompt = {
+      algorithm: 'aes-256-gcm/v1' as const,
+      keyScope: 'worker-keychain' as const,
+      keyId: 'worker-keychain-prompt-001',
+      nonce,
+      ciphertext,
+      authTag,
+      cipherDigest: localInvocationPromptCipherDigest(nonce, ciphertext, authTag),
+      requestDigest: HMAC('d'),
+      aad: promptAad,
+      aadDigest: localInvocationPromptAadDigest(promptAad),
+      aadVersion: 1 as const,
+    };
+    expect(LocalInvocationPromptCiphertextSchema.parse(prompt)).toEqual(prompt);
+
+    const resultAad: LocalInvocationResultAad = {
+      schemaVersion: 1,
+      installationId: promptAad.installationId,
+      invocationId: promptAad.invocationId,
+      conversationId: promptAad.conversationId,
+      agentVersionDigest: promptAad.agentVersionDigest,
+      role: 'ASSISTANT',
+    };
+    const result = {
+      algorithm: 'aes-256-gcm/v1' as const,
+      keyScope: 'worker-keychain' as const,
+      keyId: 'worker-keychain-result-001',
+      nonce,
+      ciphertext,
+      authTag,
+      cipherDigest: localInvocationResultCipherDigest(nonce, ciphertext, authTag),
+      resultDigest: HMAC('e'),
+      aad: resultAad,
+      aadDigest: localInvocationResultAadDigest(resultAad),
+      aadVersion: 1 as const,
+    };
+    expect(LocalInvocationResultCiphertextSchema.parse(result)).toEqual(result);
+
+    const oversizedCiphertext = Buffer.alloc(
+      BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES + 1,
+      0x33,
+    ).toString('base64url');
+    expect(() => localInvocationPromptCipherDigest(nonce, oversizedCiphertext, authTag)).toThrow();
+    expect(() => localInvocationResultCipherDigest(nonce, oversizedCiphertext, authTag)).toThrow();
+    expect(() =>
+      LocalInvocationPromptCiphertextSchema.parse({
+        ...prompt,
+        ciphertext: oversizedCiphertext,
+      }),
+    ).toThrow();
+    expect(() =>
+      LocalInvocationResultCiphertextSchema.parse({
+        ...result,
+        ciphertext: oversizedCiphertext,
+      }),
+    ).toThrow();
+  });
+
   it('atomically binds READY, its immutable fact, and its logical outbox', async () => {
     let failReadyCommit = true;
     const fixture = await createInvocationFixture(99, {
@@ -3665,7 +3740,10 @@ async function createCompletedFixture(
 function pressurePrepareEnvelope(fixture: InvocationFixture, seed: number): BrokerEnvelope {
   const messageId = uuid(seed);
   const invocationId = uuid(seed + 1);
-  const plaintext = Buffer.from(`pressure-${seed}-`.repeat(3_000), 'utf8');
+  const plaintext = Buffer.from(
+    `pressure-${seed}-`.padEnd(BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES - 256, 'p'),
+    'utf8',
+  );
   const requestDigest = requestDomainDigest(plaintext, fixture.resultHmacKey);
   const brokerAad: BrokerSensitiveMessage['aad'] = {
     protocol: 'combo.creator-broker/1',

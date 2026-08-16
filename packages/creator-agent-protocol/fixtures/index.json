@@ -20,7 +20,7 @@
     {
       "path": "broker-handshake.v1.json",
       "bytes": 762,
-      "digest": "sha256:948a82150e8bb219607d454ce9d2456f0b8dc8675d7c2794fd709ee4c0fddbd1"
+      "digest": "sha256:bf0d090db2b4dde27ecdd3dacf315ab8ae4550d9d083d79a13303f0cb8eec34e"
     },
     {
       "path": "broker-invocation-prepare.v1.json",
@@ -95,7 +95,12 @@
     {
       "path": "protocol-compatibility.v1.json",
       "bytes": 1841,
-      "digest": "sha256:09a1a3d35bf144faaa56e835ed3a5f56fa733ccf25520007db3629c01203da60"
+      "digest": "sha256:51dae71f7e60ac9901fe65472479841f70fb09eae2511b01af4671228ba7fd65"
+    },
+    {
+      "path": "protocol-utf8-boundaries.v1.json",
+      "bytes": 10093,
+      "digest": "sha256:ed3f33f4476d096b8122094185e210c94eab357323b6328a1bb7918bf51c4b05"
     },
     {
       "path": "sandbox-attestation.v1.json",

@@ -90,7 +90,13 @@
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "format": "uuid"
             },
-            "workerVersion": { "type": "string", "minLength": 1 },
+            "workerVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "supportedProtocolVersions": {
               "type": "array",
               "minItems": 1,
@@ -684,7 +690,7 @@
                               "type": "string",
                               "pattern": "^[A-Za-z0-9_-]+$",
                               "minLength": 2,
-                              "maxLength": 65536
+                              "maxLength": 61440
                             },
                             "authTag": {
                               "type": "string",
@@ -811,7 +817,13 @@
                             "requestDigest": {
                               "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
                             },
-                            "model": { "type": "string", "minLength": 1 },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "description": "UTF-8 text with a maximum of 128 bytes",
+                              "x-combo-maxUtf8Bytes": 128
+                            },
                             "reasoningEffort": {
                               "type": "string",
                               "enum": ["low", "medium", "high", "xhigh"]
@@ -1408,7 +1420,13 @@
                         "generation": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
                         },
-                        "errorCode": { "type": "string", "minLength": 1 }
+                        "errorCode": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "description": "UTF-8 text with a maximum of 128 bytes",
+                          "x-combo-maxUtf8Bytes": 128
+                        }
                       },
                       "required": ["generation", "errorCode"],
                       "additionalProperties": false

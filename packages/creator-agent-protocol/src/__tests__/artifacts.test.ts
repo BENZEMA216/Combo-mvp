@@ -209,6 +209,32 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       ]),
     });
     expect(bundle.schemas.SnapshotUploadCreateResponse).toMatchObject({
+      definitions: {
+        SnapshotUploadCreateResponse: {
+          properties: {
+            uploads: {
+              properties: {
+                archive: {
+                  properties: {
+                    cipherBytes: { maximum: 50 * 1024 * 1024 + 36 },
+                    requiredHeaders: {
+                      properties: { 'x-amz-meta-object-kind': { const: 'archive' } },
+                    },
+                  },
+                },
+                manifest: {
+                  properties: {
+                    cipherBytes: { maximum: 4 * 1024 * 1024 + 36 },
+                    requiredHeaders: {
+                      properties: { 'x-amz-meta-object-kind': { const: 'manifest' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
       'x-combo-runtime-constraints': expect.arrayContaining([
         'each target requiredHeaders MUST bind exact cipherBytes/cipherDigest/checksum/object-kind and include no unknown header',
         'public Authoring responses MUST use HTTPS; insecure loopback is only an explicit disposable component-test authority',
@@ -393,6 +419,30 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       expect(openapi.paths[path], path).toBeDefined();
     }
     expect(openapi.components.schemas.VnextErrorResponse).toBeDefined();
+    expect(openapi.components.schemas.SnapshotUploadCreateResponse).toMatchObject({
+      properties: {
+        uploads: {
+          properties: {
+            archive: {
+              properties: {
+                cipherBytes: { maximum: 50 * 1024 * 1024 + 36 },
+                requiredHeaders: {
+                  properties: { 'x-amz-meta-object-kind': { enum: ['archive'] } },
+                },
+              },
+            },
+            manifest: {
+              properties: {
+                cipherBytes: { maximum: 4 * 1024 * 1024 + 36 },
+                requiredHeaders: {
+                  properties: { 'x-amz-meta-object-kind': { enum: ['manifest'] } },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
   });
 });
 

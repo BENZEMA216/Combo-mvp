@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import {
+  BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES,
   CanonicalBase64UrlBytesSchema,
   BrokerEnvelopeSchema,
   BrokerSensitiveMessageSchema,
@@ -104,7 +105,9 @@ export function localInvocationPromptCipherDigest(
     protocol: LOCAL_INVOCATION_PROMPT_PROTOCOL,
     schemaVersion: 1,
     nonce: CanonicalBase64UrlBytesSchema(12, 12).parse(nonce),
-    ciphertext: CanonicalBase64UrlBytesSchema(1, 49_152).parse(ciphertext),
+    ciphertext: CanonicalBase64UrlBytesSchema(1, BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES).parse(
+      ciphertext,
+    ),
     authTag: CanonicalBase64UrlBytesSchema(16, 16).parse(authTag),
   });
 }
@@ -134,7 +137,10 @@ export const LocalInvocationPromptCiphertextSchema = Object.freeze({
       throw new Error('local-prompt-metadata');
     }
     const nonce = CanonicalBase64UrlBytesSchema(12, 12).parse(row.nonce);
-    const ciphertext = CanonicalBase64UrlBytesSchema(1, 49_152).parse(row.ciphertext);
+    const ciphertext = CanonicalBase64UrlBytesSchema(
+      1,
+      BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES,
+    ).parse(row.ciphertext);
     const authTag = CanonicalBase64UrlBytesSchema(16, 16).parse(row.authTag);
     const aad = LocalInvocationPromptAadSchema.parse(row.aad);
     const parsed = Object.freeze({
@@ -223,7 +229,9 @@ export function localInvocationResultCipherDigest(
     protocol: LOCAL_INVOCATION_RESULT_PROTOCOL,
     schemaVersion: 1,
     nonce: CanonicalBase64UrlBytesSchema(12, 12).parse(nonce),
-    ciphertext: CanonicalBase64UrlBytesSchema(1, 49_152).parse(ciphertext),
+    ciphertext: CanonicalBase64UrlBytesSchema(1, BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES).parse(
+      ciphertext,
+    ),
     authTag: CanonicalBase64UrlBytesSchema(16, 16).parse(authTag),
   });
 }
@@ -253,7 +261,10 @@ export const LocalInvocationResultCiphertextSchema = Object.freeze({
       throw new Error('local-result-metadata');
     }
     const nonce = CanonicalBase64UrlBytesSchema(12, 12).parse(row.nonce);
-    const ciphertext = CanonicalBase64UrlBytesSchema(1, 49_152).parse(row.ciphertext);
+    const ciphertext = CanonicalBase64UrlBytesSchema(
+      1,
+      BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES,
+    ).parse(row.ciphertext);
     const authTag = CanonicalBase64UrlBytesSchema(16, 16).parse(row.authTag);
     const aad = LocalInvocationResultAadSchema.parse(row.aad);
     const parsed = Object.freeze({

@@ -117,7 +117,7 @@ cases:
     fault: [Advertise unsupported protocol Codex or isolation capability]
     assertions: [Deployment is BLOCKED with no downgrade and no Native runtime]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:09a1a3d35bf144faaa56e835ed3a5f56fa733ccf25520007db3629c01203da60]
+    fixtureDigests: [sha256:51dae71f7e60ac9901fe65472479841f70fb09eae2511b01af4671228ba7fd65]
   - <<: *brk
     id: BRK-006
     title: Only current connection epoch owns an installation
@@ -381,7 +381,7 @@ cases:
     releaseTuple: [creator-agent-protocol@0.1.0]
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
-      - sha256:948a82150e8bb219607d454ce9d2456f0b8dc8675d7c2794fd709ee4c0fddbd1
+      - sha256:bf0d090db2b4dde27ecdd3dacf315ab8ae4550d9d083d79a13303f0cb8eec34e
       - sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4
       - sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889
       - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
@@ -426,11 +426,11 @@ cases:
   - <<: *sch
     id: SCH-004
     title: Every protocol length boundary is exact
-    fixture: [project-size-limits]
+    fixture: [packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json]
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: []
+    fixtureDigests: [sha256:ed3f33f4476d096b8122094185e210c94eab357323b6328a1bb7918bf51c4b05]
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
@@ -459,9 +459,9 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:0d617e005fba64ad7123fc571048e8521a6a6f3f93befcf1ebb9807cca7eea99
-      - sha256:b149284ac60b07cb4e3d2227f2ea3bf48441568ebadd0432fd3198930be67a8f
-      - sha256:0fbcdea35a3cdd1922f48123babdf6d1ebf69b0f9579a72de09f851879820f89
+      - sha256:11348208d82ef38e493537d1ef0d6371e7626727cb2948613e4f68c70ee9273e
+      - sha256:6b47abca02bd70f62a1e713e67a9c3a60db267c1e5883dee6c7ab97c05f39384
+      - sha256:fde6fb0a7c62c3701ac4122a2fb49191d9253abef70825268f46b483b72f1d23
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest
@@ -497,7 +497,7 @@ cases:
     steps: [Advertise an unknown future protocol or capability, Attempt readiness]
     assertions: [Deployment becomes BLOCKED without guessing or Native fallback]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:09a1a3d35bf144faaa56e835ed3a5f56fa733ccf25520007db3629c01203da60]
+    fixtureDigests: [sha256:51dae71f7e60ac9901fe65472479841f70fb09eae2511b01af4671228ba7fd65]
 
   - &snp
     id: SNP-001

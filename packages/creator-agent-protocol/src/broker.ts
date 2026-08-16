@@ -39,6 +39,12 @@ import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.
 export const CREATOR_BROKER_PROTOCOL = 'combo.creator-broker/1' as const;
 export const EXECUTION_CAPABILITY_PROTOCOL = 'combo.execution-capability/1' as const;
 export const BROKER_MAX_FRAME_BYTES = 65_536;
+/**
+ * Reduces the encoded ciphertext by 4 KiB relative to the impossible 49,152-byte value,
+ * which alone expanded to 65,536 base64url characters. The largest current prepare and
+ * succeeded envelopes remain attainable inside the 65,536-byte Broker frame authority.
+ */
+export const BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES = 45 * 1_024;
 export const BROKER_WORKER_CONNECT_PATH = '/v1/worker/connect' as const;
 
 /** Worker and Gateway must consume this single wire authority; do not duplicate numeric codes. */
@@ -613,7 +619,7 @@ export function brokerSensitiveMessageCipherDigest(
 ): string {
   const fields = [
     CanonicalBase64UrlBytesSchema(12, 12).parse(nonce),
-    CanonicalBase64UrlBytesSchema(1, 49_152).parse(ciphertext),
+    CanonicalBase64UrlBytesSchema(1, BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES).parse(ciphertext),
     CanonicalBase64UrlBytesSchema(16, 16).parse(authTag),
   ];
   return canonicalSha256({
@@ -635,7 +641,7 @@ export const BrokerSensitiveMessageSchema = z
     keyScope: z.literal('worker-session'),
     keyId: z.string().regex(/^[a-z0-9][a-z0-9._:-]{2,127}$/u),
     nonce: CanonicalBase64UrlBytesSchema(12, 12),
-    ciphertext: CanonicalBase64UrlBytesSchema(1, 49_152),
+    ciphertext: CanonicalBase64UrlBytesSchema(1, BROKER_MAX_SENSITIVE_CIPHERTEXT_BYTES),
     authTag: CanonicalBase64UrlBytesSchema(16, 16),
     cipherDigest: Sha256HexSchema,
     aad: BrokerSensitiveMessageAadSchema,

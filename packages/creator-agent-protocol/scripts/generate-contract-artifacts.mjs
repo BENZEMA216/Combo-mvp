@@ -57,6 +57,20 @@ await writeFile(
   handshakePath,
   await render({ ...handshake, brokerContractDigest: currentBrokerContractDigest() }),
 );
+const compatibilityPath = join(fixtureDirectory, 'protocol-compatibility.v1.json');
+const compatibility = JSON.parse(await readFile(compatibilityPath, 'utf8'));
+const renderedHandshake = await readFile(handshakePath);
+await writeFile(
+  compatibilityPath,
+  await render({
+    ...compatibility,
+    current: {
+      ...compatibility.current,
+      brokerContractDigest: currentBrokerContractDigest(),
+      handshakeFixtureDigest: sha256(renderedHandshake),
+    },
+  }),
+);
 const fixtureFiles = (await readdir(fixtureDirectory))
   .filter((name) => name.endsWith('.json') && name !== 'index.json')
   .sort();

@@ -66,6 +66,7 @@ import {
   InvariantRegistrySchema,
   TestCaseRegistrySchema,
 } from './registry.js';
+import { UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX } from './primitives.js';
 import {
   SandboxAttestationSchema,
   SandboxAttestationUnsignedSchema,
@@ -278,6 +279,32 @@ function attachRuntimeSemanticConstraints(
     : { ...schema, 'x-combo-runtime-constraints': [...constraints] };
 }
 
+function attachPublicBoundaryKeywords(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => attachPublicBoundaryKeywords(item));
+  if (value === null || typeof value !== 'object') return value;
+
+  const output = Object.fromEntries(
+    Object.entries(value).map(([key, item]) => [key, attachPublicBoundaryKeywords(item)]),
+  ) as Record<string, unknown>;
+  const description = output.description;
+  if (
+    typeof description === 'string' &&
+    description.startsWith(UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX)
+  ) {
+    const maximumBytes = Number(description.slice(UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX.length));
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+      throw new TypeError('Utf8Text public boundary marker 无效');
+    }
+    output.description = `UTF-8 text with a maximum of ${maximumBytes} bytes`;
+    output['x-combo-maxUtf8Bytes'] = maximumBytes;
+  }
+  return output;
+}
+
+function publicContractSchema(value: Record<string, unknown>): Record<string, unknown> {
+  return attachPublicBoundaryKeywords(value) as Record<string, unknown>;
+}
+
 export function createJsonSchemaBundle(): Record<string, unknown> {
   return {
     protocol: 'combo.creator-agent-contract-schemas/1',
@@ -287,11 +314,13 @@ export function createJsonSchemaBundle(): Record<string, unknown> {
         name,
         attachRuntimeSemanticConstraints(
           name as keyof typeof ContractSchemaDefinitions,
-          zodToJsonSchema(schema, {
-            name,
-            target: 'jsonSchema7',
-            $refStrategy: 'root',
-          }) as Record<string, unknown>,
+          publicContractSchema(
+            zodToJsonSchema(schema, {
+              name,
+              target: 'jsonSchema7',
+              $refStrategy: 'root',
+            }) as Record<string, unknown>,
+          ),
         ),
       ]),
     ),
@@ -323,11 +352,13 @@ export function createBrokerContractArtifact(): Record<string, unknown> {
     schemas: Object.fromEntries(
       BrokerContractSchemaNames.map((name) => [
         name,
-        zodToJsonSchema(ContractSchemaDefinitions[name], {
-          name,
-          target: 'jsonSchema7',
-          $refStrategy: 'root',
-        }) as Record<string, unknown>,
+        publicContractSchema(
+          zodToJsonSchema(ContractSchemaDefinitions[name], {
+            name,
+            target: 'jsonSchema7',
+            $refStrategy: 'root',
+          }) as Record<string, unknown>,
+        ),
       ]),
     ),
     runtimeConstraints: Object.fromEntries(
@@ -347,10 +378,12 @@ export function currentBrokerContractDigest(): `sha256:${string}` {
 function openApiSchema(name: keyof typeof ContractSchemaDefinitions): Record<string, unknown> {
   const converted = attachRuntimeSemanticConstraints(
     name,
-    zodToJsonSchema(ContractSchemaDefinitions[name], {
-      target: 'openApi3',
-      $refStrategy: 'none',
-    }) as Record<string, unknown>,
+    publicContractSchema(
+      zodToJsonSchema(ContractSchemaDefinitions[name], {
+        target: 'openApi3',
+        $refStrategy: 'none',
+      }) as Record<string, unknown>,
+    ),
   );
   delete converted.$schema;
   return converted;

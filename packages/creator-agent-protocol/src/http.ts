@@ -105,61 +105,68 @@ export const SnapshotSignedPutHeadersSchema = z
   })
   .strict();
 
-export const SnapshotSignedPutTargetSchema = z
-  .object({
-    method: z.literal('PUT'),
-    putUrl: SnapshotHttpsSignedPutUrlSchema,
-    cipherBytes: z
-      .number()
-      .int()
-      .min(37)
-      .max(SNAPSHOT_MAX_COMPRESSED_BYTES + 36),
-    cipherDigest: Sha256HexSchema,
-    requiredHeaders: SnapshotSignedPutHeadersSchema,
-  })
-  .strict()
-  .superRefine((target, context) => {
-    if (
-      target.requiredHeaders['x-amz-meta-object-kind'] === 'manifest' &&
-      target.cipherBytes > SNAPSHOT_MAX_MANIFEST_BYTES + 36
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['cipherBytes'],
-        message: 'manifest cipherBytes 超过冻结上限',
-      });
-    }
-    if (target.requiredHeaders['content-length'] !== String(target.cipherBytes)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['requiredHeaders', 'content-length'],
-        message: 'content-length 必须绑定 exact cipherBytes',
-      });
-    }
-    if (target.requiredHeaders['x-amz-meta-cipher-bytes'] !== String(target.cipherBytes)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['requiredHeaders', 'x-amz-meta-cipher-bytes'],
-        message: 'metadata cipher bytes 必须绑定 exact cipherBytes',
-      });
-    }
-    if (target.requiredHeaders['x-amz-meta-cipher-digest'] !== target.cipherDigest) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['requiredHeaders', 'x-amz-meta-cipher-digest'],
-        message: 'metadata cipher digest 必须绑定 exact cipherDigest',
-      });
-    }
-    if (
-      target.requiredHeaders['x-amz-checksum-sha256'] !== checksumForHexDigest(target.cipherDigest)
-    ) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['requiredHeaders', 'x-amz-checksum-sha256'],
-        message: 'S3 checksum 必须绑定 exact cipherDigest',
-      });
-    }
-  });
+function createSnapshotSignedPutTargetSchema(
+  kind: 'archive' | 'manifest',
+  maximumCipherBytes: number,
+) {
+  return z
+    .object({
+      method: z.literal('PUT'),
+      putUrl: SnapshotHttpsSignedPutUrlSchema,
+      cipherBytes: z.number().int().min(37).max(maximumCipherBytes),
+      cipherDigest: Sha256HexSchema,
+      requiredHeaders: SnapshotSignedPutHeadersSchema.extend({
+        'x-amz-meta-object-kind': z.literal(kind),
+      }),
+    })
+    .strict()
+    .superRefine((target, context) => {
+      if (target.requiredHeaders['content-length'] !== String(target.cipherBytes)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requiredHeaders', 'content-length'],
+          message: 'content-length 必须绑定 exact cipherBytes',
+        });
+      }
+      if (target.requiredHeaders['x-amz-meta-cipher-bytes'] !== String(target.cipherBytes)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requiredHeaders', 'x-amz-meta-cipher-bytes'],
+          message: 'metadata cipher bytes 必须绑定 exact cipherBytes',
+        });
+      }
+      if (target.requiredHeaders['x-amz-meta-cipher-digest'] !== target.cipherDigest) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requiredHeaders', 'x-amz-meta-cipher-digest'],
+          message: 'metadata cipher digest 必须绑定 exact cipherDigest',
+        });
+      }
+      if (
+        target.requiredHeaders['x-amz-checksum-sha256'] !==
+        checksumForHexDigest(target.cipherDigest)
+      ) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requiredHeaders', 'x-amz-checksum-sha256'],
+          message: 'S3 checksum 必须绑定 exact cipherDigest',
+        });
+      }
+    });
+}
+
+export const SnapshotArchiveSignedPutTargetSchema = createSnapshotSignedPutTargetSchema(
+  'archive',
+  SNAPSHOT_MAX_COMPRESSED_BYTES + 36,
+);
+export const SnapshotManifestSignedPutTargetSchema = createSnapshotSignedPutTargetSchema(
+  'manifest',
+  SNAPSHOT_MAX_MANIFEST_BYTES + 36,
+);
+export const SnapshotSignedPutTargetSchema = z.union([
+  SnapshotArchiveSignedPutTargetSchema,
+  SnapshotManifestSignedPutTargetSchema,
+]);
 export type SnapshotSignedPutTarget = z.infer<typeof SnapshotSignedPutTargetSchema>;
 
 export const SnapshotUploadCreateRequestSchema = z
@@ -322,26 +329,10 @@ export const SnapshotUploadCreateResponseSchema = z
     state: z.literal('CREATED'),
     uploads: z
       .object({
-        archive: SnapshotSignedPutTargetSchema,
-        manifest: SnapshotSignedPutTargetSchema,
+        archive: SnapshotArchiveSignedPutTargetSchema,
+        manifest: SnapshotManifestSignedPutTargetSchema,
       })
-      .strict()
-      .superRefine((uploads, context) => {
-        if (uploads.archive.requiredHeaders['x-amz-meta-object-kind'] !== 'archive') {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['archive', 'requiredHeaders', 'x-amz-meta-object-kind'],
-            message: 'archive target 必须绑定 archive kind',
-          });
-        }
-        if (uploads.manifest.requiredHeaders['x-amz-meta-object-kind'] !== 'manifest') {
-          context.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ['manifest', 'requiredHeaders', 'x-amz-meta-object-kind'],
-            message: 'manifest target 必须绑定 manifest kind',
-          });
-        }
-      }),
+      .strict(),
     expiresAt: IsoDateTimeSchema,
   })
   .strict()

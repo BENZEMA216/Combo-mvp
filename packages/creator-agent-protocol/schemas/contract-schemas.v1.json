@@ -15,11 +15,29 @@
               "type": "object",
               "properties": {
                 "schemaVersion": { "type": "number", "const": 1 },
-                "role": { "type": "string", "minLength": 1 },
-                "objective": { "type": "string", "minLength": 1 },
+                "role": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 512,
+                  "description": "UTF-8 text with a maximum of 512 bytes",
+                  "x-combo-maxUtf8Bytes": 512
+                },
+                "objective": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "description": "UTF-8 text with a maximum of 2048 bytes",
+                  "x-combo-maxUtf8Bytes": 2048
+                },
                 "developerInstructions": {
                   "type": "array",
-                  "items": { "type": "string", "minLength": 1 },
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "description": "UTF-8 text with a maximum of 2048 bytes",
+                    "x-combo-maxUtf8Bytes": 2048
+                  },
                   "minItems": 1,
                   "maxItems": 32
                 },
@@ -74,7 +92,13 @@
                 "maxConversationTurns": { "type": "integer", "minimum": 1, "maximum": 20 },
                 "maxVisibleHistoryBytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
                 "maxActiveTurns": { "type": "number", "const": 1 },
-                "resolvedModel": { "type": "string", "minLength": 1 },
+                "resolvedModel": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "UTF-8 text with a maximum of 128 bytes",
+                  "x-combo-maxUtf8Bytes": 128
+                },
                 "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] }
               },
               "required": [
@@ -127,7 +151,13 @@
             "codexRuntime": {
               "type": "object",
               "properties": {
-                "version": { "type": "string", "minLength": 1 },
+                "version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "UTF-8 text with a maximum of 128 bytes",
+                  "x-combo-maxUtf8Bytes": 128
+                },
                 "artifactDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
                 "protocolSchemaDigest": {
                   "$ref": "#/definitions/AgentVersionManifest/properties/codexRuntime/properties/artifactDigest"
@@ -141,7 +171,13 @@
               "type": "object",
               "properties": {
                 "schemaVersion": { "type": "number", "const": 1 },
-                "model": { "type": "string", "minLength": 1 },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "description": "UTF-8 text with a maximum of 128 bytes",
+                  "x-combo-maxUtf8Bytes": 128
+                },
                 "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
                 "creatorFunded": { "type": "boolean", "const": true }
               },
@@ -884,7 +920,13 @@
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "format": "uuid"
             },
-            "workerVersion": { "type": "string", "minLength": 1 },
+            "workerVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "supportedProtocolVersions": {
               "type": "array",
               "minItems": 1,
@@ -1483,7 +1525,7 @@
                               "type": "string",
                               "pattern": "^[A-Za-z0-9_-]+$",
                               "minLength": 2,
-                              "maxLength": 65536
+                              "maxLength": 61440
                             },
                             "authTag": {
                               "type": "string",
@@ -1610,7 +1652,13 @@
                             "requestDigest": {
                               "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
                             },
-                            "model": { "type": "string", "minLength": 1 },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "description": "UTF-8 text with a maximum of 128 bytes",
+                              "x-combo-maxUtf8Bytes": 128
+                            },
                             "reasoningEffort": {
                               "type": "string",
                               "enum": ["low", "medium", "high", "xhigh"]
@@ -2207,7 +2255,13 @@
                         "generation": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
                         },
-                        "errorCode": { "type": "string", "minLength": 1 }
+                        "errorCode": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "description": "UTF-8 text with a maximum of 128 bytes",
+                          "x-combo-maxUtf8Bytes": 128
+                        }
                       },
                       "required": ["generation", "errorCode"],
                       "additionalProperties": false
@@ -3634,7 +3688,13 @@
               "$ref": "#/definitions/ExecutionCapabilityUnsigned/properties/capabilityId"
             },
             "requestDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
-            "model": { "type": "string", "minLength": 1 },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
             "budget": {
               "type": "object",
@@ -3725,7 +3785,13 @@
               "$ref": "#/definitions/ExecutionCapability/properties/capabilityId"
             },
             "requestDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
-            "model": { "type": "string", "minLength": 1 },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "reasoningEffort": { "type": "string", "enum": ["low", "medium", "high", "xhigh"] },
             "budget": {
               "type": "object",
@@ -4368,7 +4434,13 @@
             "protocol": { "type": "string", "const": "combo.sandbox-spec/1" },
             "schemaVersion": { "type": "number", "const": 1 },
             "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
-            "adapterVersion": { "type": "string", "minLength": 1 },
+            "adapterVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "imageDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
             "codexArtifactDigest": { "$ref": "#/definitions/SandboxSpec/properties/imageDigest" },
             "codexProtocolSchemaDigest": {
@@ -4492,7 +4564,13 @@
             "protocol": { "type": "string", "const": "combo.sandbox-attestation/1" },
             "schemaVersion": { "type": "number", "const": 1 },
             "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
-            "adapterVersion": { "type": "string", "minLength": 1 },
+            "adapterVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "sandboxInstanceId": {
               "type": "string",
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -4524,7 +4602,13 @@
             "codexImageDigest": {
               "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxImageDigest"
             },
-            "codexVersion": { "type": "string", "minLength": 1 },
+            "codexVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "protocolSchemaDigest": {
               "$ref": "#/definitions/SandboxAttestationUnsigned/properties/sandboxImageDigest"
             },
@@ -4613,7 +4697,13 @@
             "protocol": { "type": "string", "const": "combo.sandbox-attestation/1" },
             "schemaVersion": { "type": "number", "const": 1 },
             "adapter": { "type": "string", "enum": ["apple-container", "lima-vz"] },
-            "adapterVersion": { "type": "string", "minLength": 1 },
+            "adapterVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "sandboxInstanceId": {
               "type": "string",
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
@@ -4643,7 +4733,13 @@
             "codexImageDigest": {
               "$ref": "#/definitions/SandboxAttestation/properties/sandboxImageDigest"
             },
-            "codexVersion": { "type": "string", "minLength": 1 },
+            "codexVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
             "protocolSchemaDigest": {
               "$ref": "#/definitions/SandboxAttestation/properties/sandboxImageDigest"
             },
@@ -4979,10 +5075,7 @@
                         "x-amz-meta-cipher-digest": {
                           "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/cipherDigest"
                         },
-                        "x-amz-meta-object-kind": {
-                          "type": "string",
-                          "enum": ["archive", "manifest"]
-                        },
+                        "x-amz-meta-object-kind": { "type": "string", "const": "archive" },
                         "x-amz-meta-object-state": { "type": "string", "const": "upload" },
                         "x-amz-meta-protocol": {
                           "type": "string",
@@ -5019,7 +5112,79 @@
                   "additionalProperties": false
                 },
                 "manifest": {
-                  "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive"
+                  "type": "object",
+                  "properties": {
+                    "method": { "type": "string", "const": "PUT" },
+                    "putUrl": {
+                      "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+                    },
+                    "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 4194340 },
+                    "cipherDigest": {
+                      "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/cipherDigest"
+                    },
+                    "requiredHeaders": {
+                      "type": "object",
+                      "properties": {
+                        "cache-control": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/cache-control"
+                        },
+                        "content-length": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/content-length"
+                        },
+                        "content-type": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/content-type"
+                        },
+                        "if-none-match": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/if-none-match"
+                        },
+                        "x-amz-checksum-sha256": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/x-amz-checksum-sha256"
+                        },
+                        "x-amz-meta-archive-digest": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/cipherDigest"
+                        },
+                        "x-amz-meta-cipher-bytes": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/x-amz-meta-cipher-bytes"
+                        },
+                        "x-amz-meta-cipher-digest": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/cipherDigest"
+                        },
+                        "x-amz-meta-object-kind": { "type": "string", "const": "manifest" },
+                        "x-amz-meta-object-state": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/x-amz-meta-object-state"
+                        },
+                        "x-amz-meta-protocol": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/requiredHeaders/properties/x-amz-meta-protocol"
+                        },
+                        "x-amz-meta-snapshot-digest": {
+                          "$ref": "#/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/cipherDigest"
+                        }
+                      },
+                      "required": [
+                        "cache-control",
+                        "content-length",
+                        "content-type",
+                        "if-none-match",
+                        "x-amz-checksum-sha256",
+                        "x-amz-meta-archive-digest",
+                        "x-amz-meta-cipher-bytes",
+                        "x-amz-meta-cipher-digest",
+                        "x-amz-meta-object-kind",
+                        "x-amz-meta-object-state",
+                        "x-amz-meta-protocol",
+                        "x-amz-meta-snapshot-digest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "method",
+                    "putUrl",
+                    "cipherBytes",
+                    "cipherDigest",
+                    "requiredHeaders"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": ["archive", "manifest"],
@@ -5105,8 +5270,20 @@
         "CreateAgentRequest": {
           "type": "object",
           "properties": {
-            "name": { "type": "string", "minLength": 1 },
-            "description": { "type": "string", "minLength": 1 }
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "UTF-8 text with a maximum of 120 bytes",
+              "x-combo-maxUtf8Bytes": 120
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "UTF-8 text with a maximum of 1024 bytes",
+              "x-combo-maxUtf8Bytes": 1024
+            }
           },
           "required": ["name", "description"],
           "additionalProperties": false
@@ -5127,8 +5304,20 @@
               "format": "uuid"
             },
             "publicSlug": { "type": "string", "pattern": "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$" },
-            "name": { "type": "string", "minLength": 1 },
-            "description": { "type": "string", "minLength": 1 },
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120,
+              "description": "UTF-8 text with a maximum of 120 bytes",
+              "x-combo-maxUtf8Bytes": 120
+            },
+            "description": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024,
+              "description": "UTF-8 text with a maximum of 1024 bytes",
+              "x-combo-maxUtf8Bytes": 1024
+            },
             "lifecycle": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
             "createdAt": {
               "type": "string",
@@ -5171,11 +5360,29 @@
                   "type": "object",
                   "properties": {
                     "schemaVersion": { "type": "number", "const": 1 },
-                    "role": { "type": "string", "minLength": 1 },
-                    "objective": { "type": "string", "minLength": 1 },
+                    "role": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512,
+                      "description": "UTF-8 text with a maximum of 512 bytes",
+                      "x-combo-maxUtf8Bytes": 512
+                    },
+                    "objective": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048,
+                      "description": "UTF-8 text with a maximum of 2048 bytes",
+                      "x-combo-maxUtf8Bytes": 2048
+                    },
                     "developerInstructions": {
                       "type": "array",
-                      "items": { "type": "string", "minLength": 1 },
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "description": "UTF-8 text with a maximum of 2048 bytes",
+                        "x-combo-maxUtf8Bytes": 2048
+                      },
                       "minItems": 1,
                       "maxItems": 32
                     },
@@ -5233,7 +5440,13 @@
                     "maxConversationTurns": { "type": "integer", "minimum": 1, "maximum": 20 },
                     "maxVisibleHistoryBytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
                     "maxActiveTurns": { "type": "number", "const": 1 },
-                    "resolvedModel": { "type": "string", "minLength": 1 },
+                    "resolvedModel": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "description": "UTF-8 text with a maximum of 128 bytes",
+                      "x-combo-maxUtf8Bytes": 128
+                    },
                     "reasoningEffort": {
                       "type": "string",
                       "enum": ["low", "medium", "high", "xhigh"]
@@ -5296,7 +5509,13 @@
                 "codexRuntime": {
                   "type": "object",
                   "properties": {
-                    "version": { "type": "string", "minLength": 1 },
+                    "version": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "description": "UTF-8 text with a maximum of 128 bytes",
+                      "x-combo-maxUtf8Bytes": 128
+                    },
                     "artifactDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
                     "protocolSchemaDigest": {
                       "$ref": "#/definitions/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/artifactDigest"
@@ -5310,7 +5529,13 @@
                   "type": "object",
                   "properties": {
                     "schemaVersion": { "type": "number", "const": 1 },
-                    "model": { "type": "string", "minLength": 1 },
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 128,
+                      "description": "UTF-8 text with a maximum of 128 bytes",
+                      "x-combo-maxUtf8Bytes": 128
+                    },
                     "reasoningEffort": {
                       "type": "string",
                       "enum": ["low", "medium", "high", "xhigh"]
@@ -5550,7 +5775,13 @@
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "format": "uuid"
             },
-            "text": { "type": "string", "minLength": 1 }
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384,
+              "description": "UTF-8 text with a maximum of 16384 bytes",
+              "x-combo-maxUtf8Bytes": 16384
+            }
           },
           "required": ["clientMessageId", "text"],
           "additionalProperties": false
@@ -5814,7 +6045,13 @@
                   },
                   "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
                   "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
-                  "text": { "type": "string", "minLength": 1 },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32768,
+                    "description": "UTF-8 text with a maximum of 32768 bytes",
+                    "x-combo-maxUtf8Bytes": 32768
+                  },
                   "createdAt": {
                     "$ref": "#/definitions/ConversationTranscript/properties/conversation/properties/createdAt"
                   }
@@ -5888,7 +6125,13 @@
                 "invocationId": {
                   "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/invocationId"
                 },
-                "text": { "type": "string", "minLength": 1 },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 8192,
+                  "description": "UTF-8 text with a maximum of 8192 bytes",
+                  "x-combo-maxUtf8Bytes": 8192
+                },
                 "occurredAt": {
                   "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
                 }
@@ -5915,7 +6158,13 @@
                     },
                     "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
                     "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
-                    "text": { "type": "string", "minLength": 1 },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 32768,
+                      "description": "UTF-8 text with a maximum of 32768 bytes",
+                      "x-combo-maxUtf8Bytes": 32768
+                    },
                     "createdAt": {
                       "$ref": "#/definitions/ConsumerEvent/anyOf/0/properties/occurredAt"
                     }

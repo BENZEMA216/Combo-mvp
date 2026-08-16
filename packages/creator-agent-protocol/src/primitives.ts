@@ -55,6 +55,8 @@ export const CanonicalSha256Base64Schema = z
 
 export const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 
+export const UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX = 'combo:utf8-bytes:' as const;
+
 export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) => {
   if (
     !Number.isSafeInteger(minimumBytes) ||
@@ -94,6 +96,10 @@ export const Utf8TextSchema = (maxBytes: number) =>
   z
     .string()
     .min(1)
+    // Every Unicode scalar requires at least one UTF-8 byte, so this is a safe structural
+    // upper bound for standard JSON Schema validators. The exact byte authority remains
+    // the refine below and is published as x-combo-maxUtf8Bytes in checked artifacts.
+    .max(maxBytes)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes, {
       message: `UTF-8 内容不得超过 ${maxBytes} bytes`,
     })
@@ -101,7 +107,8 @@ export const Utf8TextSchema = (maxBytes: number) =>
     .refine(
       (value) => !containsForbiddenControl(value, true),
       '除 TAB、LF、CR 外不接受 C0/C1 控制字符',
-    );
+    )
+    .describe(`${UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX}${maxBytes}`);
 
 /**
  * C0/C1 都是协议文字里的非法控制字符；普通多行文字仅允许 TAB/LF/CR，
