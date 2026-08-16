@@ -30,6 +30,7 @@ export const WORKER_CONNECT_PATH = BROKER_WORKER_CONNECT_PATH;
 const MAX_BUFFERED_BYTES = 256 * 1024;
 const MAX_PENDING_FRAMES_PER_SESSION = 8;
 const MAX_OUTBOUND_BATCH = 1_000;
+const PUBLISHER_RETRY_DELAY_MS = 1_000;
 
 export type GatewayDisconnectReason =
   | 'CLIENT_CLOSED'
@@ -79,6 +80,14 @@ export interface AgentGatewayAuthorityPort {
     delivery: GatewayDelivery,
     signal: AbortSignal,
   ): Promise<readonly BrokerEnvelope[]>;
+  /**
+   * Claims at most one durable Test-only Broker command for this authenticated current Session.
+   * Implementations must commit the Outbox/delivery transaction before returning the wire frame.
+   */
+  claimBrokerCommand?(
+    session: AuthenticatedWorkerSession,
+    signal: AbortSignal,
+  ): Promise<BrokerEnvelope | undefined>;
   sequenceGap(
     session: AuthenticatedWorkerSession,
     input: { expected: string; received: string },
@@ -109,6 +118,10 @@ export type AgentGatewayOptions = Readonly<{
   stopTimeoutMs?: number;
   now?: () => number;
   diagnosticSink?: (event: GatewayDiagnosticEvent) => void;
+  /** Disabled by default; Phase A enables only the durable TEST conversation.open publisher. */
+  publisherEnabled?: boolean;
+  /** Poll cadence after an idle durable claim. It has no effect while the publisher is disabled. */
+  publisherPollIntervalMs?: number;
 }>;
 
 export type AgentGatewayAddress = Readonly<{
@@ -132,6 +145,8 @@ type Session = {
   disconnectReported: boolean;
   disconnectReason: GatewayDisconnectReason;
   pendingFrames: number;
+  publisherQueued: boolean;
+  publisherTimer?: NodeJS.Timeout;
 };
 
 export class AgentGateway {
@@ -143,6 +158,8 @@ export class AgentGateway {
   readonly #authorityTimeoutMs: number;
   readonly #sendTimeoutMs: number;
   readonly #stopTimeoutMs: number;
+  readonly #publisherEnabled: boolean;
+  readonly #publisherPollIntervalMs: number;
   readonly #now: () => number;
   readonly #diagnosticSink?: (event: GatewayDiagnosticEvent) => void;
   readonly #webSockets: WebSocketServer;
@@ -187,6 +204,16 @@ export class AgentGateway {
       30_000,
       'stopTimeoutMs',
     );
+    this.#publisherEnabled = options.publisherEnabled ?? false;
+    this.#publisherPollIntervalMs = boundedInteger(
+      options.publisherPollIntervalMs ?? 1_000,
+      10,
+      30_000,
+      'publisherPollIntervalMs',
+    );
+    if (this.#publisherEnabled && this.#authority.claimBrokerCommand === undefined) {
+      throw new TypeError('PUBLISHER_AUTHORITY_REQUIRED');
+    }
     this.#now = options.now ?? Date.now;
     this.#diagnosticSink = options.diagnosticSink;
     this.#webSockets = new WebSocketServer({
@@ -375,6 +402,7 @@ export class AgentGateway {
       disconnectReported: false,
       disconnectReason: 'CLIENT_CLOSED',
       pendingFrames: 0,
+      publisherQueued: false,
     };
     session.handshakeTimer.unref();
     this.#sessions.add(session);
@@ -575,6 +603,7 @@ export class AgentGateway {
     }
     session.ready = true;
     this.#diagnostic('handshake_accepted');
+    this.#schedulePublisher(session, 0);
   }
 
   async #acceptEnvelope(session: Session, bytes: Buffer): Promise<void> {
@@ -629,6 +658,7 @@ export class AgentGateway {
         return;
       }
       this.#diagnostic('frame_replayed');
+      this.#schedulePublisher(session, 0);
       return;
     }
 
@@ -703,6 +733,80 @@ export class AgentGateway {
     }
     session.inbound = decision.cursor;
     this.#diagnostic('frame_accepted');
+    this.#schedulePublisher(session, 0);
+  }
+
+  #schedulePublisher(session: Session, delayMs: number): void {
+    if (!this.#publisherEnabled || !this.#publisherSessionIsCurrent(session)) return;
+    if (session.publisherQueued) return;
+    if (session.publisherTimer !== undefined) {
+      if (delayMs !== 0) return;
+      clearTimeout(session.publisherTimer);
+      session.publisherTimer = undefined;
+    }
+    session.publisherTimer = setTimeout(() => {
+      session.publisherTimer = undefined;
+      if (!this.#publisherSessionIsCurrent(session) || session.publisherQueued) return;
+      session.publisherQueued = true;
+      const task = session.chain.then(() => this.#pumpPublisher(session));
+      session.chain = task
+        .catch(() => {
+          this.#failSession(
+            session,
+            'INTERNAL_ERROR',
+            BrokerCloseCode.INTERNAL_ERROR,
+            BrokerCloseReason.AUTHORITY_FAILED,
+          );
+          return false;
+        })
+        .then((claimed) => {
+          session.publisherQueued = false;
+          this.#schedulePublisher(
+            session,
+            claimed ? PUBLISHER_RETRY_DELAY_MS : this.#publisherPollIntervalMs,
+          );
+        });
+    }, delayMs);
+    session.publisherTimer.unref();
+  }
+
+  async #pumpPublisher(session: Session): Promise<boolean> {
+    if (!this.#publisherSessionIsCurrent(session)) return false;
+    const context = session.context;
+    const claim = this.#authority.claimBrokerCommand;
+    if (context === undefined || claim === undefined) throw new Error('PUBLISHER_NOT_CONFIGURED');
+    const command = await withAbortableTimeout(
+      (signal) => claim.call(this.#authority, context, signal),
+      this.#authorityTimeoutMs,
+      'AUTHORITY_TIMEOUT',
+      session.lifecycle.signal,
+    );
+    if (command === undefined || !this.#publisherSessionIsCurrent(session)) return false;
+    // The authority contract returns only after Outbox + delivery COMMIT. Therefore a process or
+    // socket loss here can lose only this send opportunity; a reconnect claims the durable row.
+    await this.#sendOutbound(session, [command]);
+    return true;
+  }
+
+  #publisherSessionIsCurrent(session: Session): boolean {
+    const context = session.context;
+    return (
+      this.#accepting &&
+      session.ready &&
+      !session.closed &&
+      !session.cleaned &&
+      session.socket.readyState === WebSocket.OPEN &&
+      context !== undefined &&
+      this.#byConnection.get(context.connectionId) === session &&
+      this.#byInstallation.get(context.installationId) === session &&
+      this.#byWorkerSession.get(context.workerSessionId) === session
+    );
+  }
+
+  #clearPublisherTimer(session: Session): void {
+    if (session.publisherTimer === undefined) return;
+    clearTimeout(session.publisherTimer);
+    session.publisherTimer = undefined;
   }
 
   #closeAfterLeaseRevoke(session: Session, responses: readonly BrokerEnvelope[]): boolean {
@@ -797,6 +901,7 @@ export class AgentGateway {
     session.disconnectReason = reason;
     session.lifecycle.abort(new Error(reason));
     clearTimeout(session.handshakeTimer);
+    this.#clearPublisherTimer(session);
     if (session.socket.readyState === WebSocket.OPEN) {
       session.socket.close(closeCode, closeReason);
     } else if (session.socket.readyState === WebSocket.CONNECTING) {
@@ -815,6 +920,7 @@ export class AgentGateway {
     }
     session.lifecycle.abort(new Error(session.disconnectReason));
     clearTimeout(session.handshakeTimer);
+    this.#clearPublisherTimer(session);
     this.#sessions.delete(session);
     const context = session.context;
     if (context !== undefined) {

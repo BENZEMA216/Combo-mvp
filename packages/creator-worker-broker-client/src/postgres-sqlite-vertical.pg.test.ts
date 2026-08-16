@@ -16,6 +16,7 @@ import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 import {
   AgentGateway,
   PostgresAgentGatewayAuthority,
+  PostgresGatewayBusinessEventProjector,
   toGatewayPool,
   type GatewayCompatibilityPolicy,
   type GatewayConnection,
@@ -24,6 +25,8 @@ import {
 } from '@cb/agent-gateway';
 import {
   BrokerEnvelopeSchema,
+  brokerConversationOpenLogicalCommand,
+  brokerConversationOpenLogicalDigest,
   canonicalSha256,
   currentBrokerContractDigest,
   parseBrokerFrame,
@@ -37,7 +40,12 @@ import {
   SqliteWorkerBrokerDurableTransport,
   type NewWorkerJournalAuthorization,
 } from './sqlite-durable-transport.js';
-import { WorkerBrokerClient, type WorkerBrokerDiagnosticEvent } from './worker-broker-client.js';
+import type { SqliteWorkerInvocationJournalOptions } from './sqlite-invocation-journal.js';
+import {
+  WorkerBrokerClient,
+  type WorkerBrokerDiagnosticEvent,
+  type WorkerBrokerDurableTransportPort,
+} from './worker-broker-client.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const apiPassword = process.env.POSTGRES_AGENT_API_PASSWORD;
@@ -79,6 +87,7 @@ const TEST_RUNTIME_POLICY = Object.freeze({
 
 type FixtureIds = Readonly<{
   creatorId: string;
+  consumerId: string;
   snapshotId: string;
   agentId: string;
   versionId: string;
@@ -169,6 +178,18 @@ type CommitLossTarget = Readonly<{
   connectionId: string;
   workerSessionId: string;
   sequence: string;
+}>;
+
+type PublisherDeliveryFact = Readonly<{
+  state: string;
+  attempt_count: number;
+  session_id: string;
+  connection_id: string;
+  sequence: string;
+  canonical_digest: string;
+  durable_ack_level: string | null;
+  wire_sent_at: Date | string;
+  wire_expires_at: Date | string;
 }>;
 
 pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
@@ -501,6 +522,247 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       rmSync(directory, { recursive: true, force: true });
     }
   }, 55_000);
+
+  it('publishes a real Consumer open through WSS and file SQLite, then recovers on replacement', async () => {
+    const owner = new Pool({ connectionString: databaseUrl, max: 4 });
+    const apiPool = new Pool({
+      connectionString: roleUrl('combo_agent_api', apiPassword ?? 'invalid'),
+      max: 2,
+    });
+    const brokerPool = new Pool({
+      connectionString: roleUrl('combo_agent_broker', brokerPassword ?? 'invalid'),
+      max: 6,
+    });
+    const policy: GatewayCompatibilityPolicy = {
+      acceptedWorkerVersions: [WORKER_VERSION],
+      acceptedCodexRuntimeArtifacts: [RUNTIME_DIGEST],
+      acceptedCodexProtocolSchemaDigests: [PROTOCOL_DIGEST],
+      acceptedIsolationModes: ['apple-container-v1'],
+      acceptedBrokerContractDigests: [BROKER_CONTRACT_DIGEST],
+      sessionTtlMs: 60_000,
+      leaseTtlMs: 20_000,
+      responseTtlMs: 5_000,
+      transactionTimeoutMs: 2_000,
+    };
+    const projector = new PostgresGatewayBusinessEventProjector(
+      {
+        projectPrepared: async () => {
+          throw new Error('publisher vertical must not project invocation.prepare');
+        },
+        projectStarted: async () => {
+          throw new Error('publisher vertical must not project invocation.started');
+        },
+        projectSuccess: async () => {
+          throw new Error('publisher vertical must not project invocation.succeeded');
+        },
+      },
+      () => {
+        throw new Error('publisher vertical must not seal an assistant message');
+      },
+    );
+    const authority = new PostgresAgentGatewayAuthority(
+      { api: toGatewayPool(apiPool), broker: toGatewayPool(brokerPool) },
+      policy,
+      projector,
+    );
+    const keyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const fixture = await seedFixture(owner, keyPair.publicKey);
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), 'combo-publisher-vertical-')));
+    const filename = join(directory, 'journal.sqlite');
+    const diagnostics: WorkerBrokerDiagnosticEvent[] = [];
+    const observedOwnerToken: { value?: string } = {};
+    let gateway: AgentGateway | undefined;
+    let client: WorkerBrokerClient | undefined;
+    let adapter: SqliteWorkerBrokerDurableTransport | undefined;
+
+    try {
+      gateway = new AgentGateway({
+        authority,
+        authorityTimeoutMs: 3_000,
+        stopTimeoutMs: 3_000,
+        publisherEnabled: true,
+        publisherPollIntervalMs: 50,
+      });
+      const initialAddress = await gateway.start();
+      const url = `ws://${initialAddress.host}:${initialAddress.port}${initialAddress.path}`;
+      adapter = new SqliteWorkerBrokerDurableTransport({
+        filename,
+        newJournalAuthorization: newJournalAuthorization(fixture.installationId),
+      });
+      const ports = workerPorts(authority, owner, fixture, keyPair.privateKey);
+      client = createWorkerClient(
+        url,
+        fixture.installationId,
+        observeOwnerToken(adapter, observedOwnerToken),
+        ports,
+        diagnostics,
+      );
+      await client.start();
+      await waitFor(() => client?.status === 'READY', 8_000, 'PUBLISHER_WORKER_READY_TIMEOUT');
+      await waitFor(
+        async () => (await persistedGrantCount(owner, fixture)) >= 1,
+        8_000,
+        'PUBLISHER_INITIAL_GRANT_TIMEOUT',
+      );
+      const originalLease = await activeLease(owner, fixture);
+      await owner.query(
+        `UPDATE deployments
+            SET serving_version_id = desired_version_id,
+                observed_state = 'ONLINE', observed_worker_id = $2,
+                observed_generation = generation, updated_at = clock_timestamp()
+          WHERE id = $1 AND creator_id = $3`,
+        [fixture.deploymentId, fixture.installationId, fixture.creatorId],
+      );
+
+      const created = await createOpeningConversation(owner, fixture, originalLease);
+      await waitFor(
+        async () => {
+          const deliveries = await publisherDeliveries(owner, fixture, created.commandId);
+          return (
+            deliveries.length === 1 &&
+            deliveries[0]?.state === 'SENT' &&
+            deliveries[0].durable_ack_level === 'PERSISTED' &&
+            sqlitePublisherEnvelope(filename, created.commandId) !== undefined
+          );
+        },
+        8_000,
+        'PUBLISHER_FIRST_PERSISTED_TIMEOUT',
+      );
+      const firstDelivery = (await publisherDeliveries(owner, fixture, created.commandId))[0]!;
+      const firstEnvelope = sqlitePublisherEnvelope(filename, created.commandId);
+      if (firstEnvelope?.type !== 'conversation.open') {
+        throw new Error('PUBLISHER_FIRST_SQLITE_OPEN_MISSING');
+      }
+      expect(firstDelivery).toMatchObject({
+        state: 'SENT',
+        attempt_count: 1,
+        session_id: originalLease.worker_session_id,
+        connection_id: originalLease.connection_id,
+        durable_ack_level: 'PERSISTED',
+      });
+      expect(firstDelivery.canonical_digest).toBe(canonicalSha256(firstEnvelope));
+      expect(new Date(firstDelivery.wire_expires_at).getTime()).toBeGreaterThan(
+        new Date(firstDelivery.wire_sent_at).getTime(),
+      );
+
+      const firstPort = initialAddress.port;
+      await gateway.stop();
+      await waitFor(
+        () => diagnostics.includes('connection_lost'),
+        5_000,
+        'PUBLISHER_DISCONNECT_NOT_OBSERVED',
+      );
+      gateway = new AgentGateway({
+        authority,
+        port: firstPort,
+        authorityTimeoutMs: 3_000,
+        stopTimeoutMs: 3_000,
+        publisherEnabled: true,
+        publisherPollIntervalMs: 50,
+      });
+      await gateway.start();
+      await waitFor(
+        async () => {
+          const deliveries = await publisherDeliveries(owner, fixture, created.commandId);
+          return (
+            deliveries.length === 2 &&
+            deliveries[1]?.durable_ack_level === 'PERSISTED' &&
+            deliveries[1].session_id !== originalLease.worker_session_id
+          );
+        },
+        12_000,
+        'PUBLISHER_REPLACEMENT_PERSISTED_TIMEOUT',
+      );
+      const deliveries = await publisherDeliveries(owner, fixture, created.commandId);
+      const replacementDelivery = deliveries[1]!;
+      const replacementEnvelope = sqlitePublisherEnvelope(
+        filename,
+        created.commandId,
+        replacementDelivery.connection_id,
+      );
+      if (replacementEnvelope?.type !== 'conversation.open') {
+        throw new Error('PUBLISHER_REPLACEMENT_SQLITE_OPEN_MISSING');
+      }
+      expect(replacementDelivery.attempt_count).toBe(2);
+      expect(replacementEnvelope.messageId).toBe(firstEnvelope.messageId);
+      expect(replacementEnvelope.body).toEqual(firstEnvelope.body);
+      expect(replacementEnvelope.connectionId).not.toBe(firstEnvelope.connectionId);
+      expect(replacementEnvelope.lease.workerSessionId).not.toBe(
+        firstEnvelope.lease.workerSessionId,
+      );
+      expect(
+        brokerConversationOpenLogicalDigest(
+          brokerConversationOpenLogicalCommand(replacementEnvelope),
+        ),
+      ).toBe(
+        brokerConversationOpenLogicalDigest(brokerConversationOpenLogicalCommand(firstEnvelope)),
+      );
+
+      const ownerToken = observedOwnerToken.value;
+      if (ownerToken === undefined) throw new Error('PUBLISHER_WORKER_OWNER_TOKEN_MISSING');
+      const pending = await adapter.readPendingCommands({
+        installationId: fixture.installationId,
+        ownerToken,
+        connectionId: replacementDelivery.connection_id,
+        limit: 8,
+        signal: AbortSignal.timeout(2_000),
+      });
+      const openReference = pending.find(
+        (candidate) =>
+          candidate.type === 'conversation.open' && candidate.messageId === created.commandId,
+      );
+      if (openReference === undefined) throw new Error('PUBLISHER_OPEN_REFERENCE_MISSING');
+      expect(openReference).toMatchObject({
+        connectionId: replacementDelivery.connection_id,
+        canonicalDigest: replacementDelivery.canonical_digest,
+        effectState: 'PERSISTED',
+      });
+      const readyAt = new Date(Math.max(Date.now(), Date.parse(replacementEnvelope.sentAt)));
+      const readyWindow = sqliteMaybeOne<{
+        status: string;
+        lease_state: string;
+        lease_expires_at: string;
+      }>(
+        filename,
+        `SELECT status, lease_state, lease_expires_at
+           FROM transport_connections WHERE connection_id = ?`,
+        replacementDelivery.connection_id,
+      );
+      expect(readyWindow).toMatchObject({ status: 'ACTIVE', lease_state: 'ACTIVE' });
+      expect(readyAt.getTime()).toBeLessThan(Date.parse(replacementEnvelope.expiresAt));
+      expect(readyAt.getTime()).toBeLessThan(Date.parse(readyWindow!.lease_expires_at));
+      const journal = adapter.createInvocationJournal(publisherReadyJournalOptions(readyAt));
+      await journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken,
+        command: openReference,
+        evidence: { token: 'publisher-sandbox-ready' },
+        signal: AbortSignal.timeout(2_000),
+      });
+      await waitFor(
+        async () => {
+          const cloud = await publisherTerminal(owner, fixture, created.commandId);
+          return (
+            cloud?.outbox_state === 'ACKED' &&
+            cloud.conversation_state === 'IDLE' &&
+            sqliteReadyCloudCommitted(filename, created.conversationId)
+          );
+        },
+        10_000,
+        'PUBLISHER_READY_DID_NOT_CONVERGE',
+      );
+      expect(await publisherTerminal(owner, fixture, created.commandId)).toEqual({
+        outbox_state: 'ACKED',
+        conversation_state: 'IDLE',
+      });
+    } finally {
+      await client?.stop().catch(() => undefined);
+      adapter?.close();
+      await gateway?.stop().catch(() => undefined);
+      await Promise.all([owner.end(), apiPool.end(), brokerPool.end()]);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 40_000);
 });
 
 function roleUrl(role: 'combo_agent_api' | 'combo_agent_broker', password: string): string {
@@ -538,19 +800,23 @@ function publicPoint(publicKey: KeyObject): Buffer {
 async function seedFixture(owner: Pool, publicKey: KeyObject): Promise<FixtureIds> {
   const ids = {
     creatorId: '',
+    consumerId: '',
     snapshotId: randomUuidV7(),
     agentId: randomUuidV7(),
     versionId: randomUuidV7(),
     deploymentId: randomUuidV7(),
     installationId: randomUuidV7(),
   };
-  const creator = await owner.query<{ id: string }>(
-    'INSERT INTO users (account) VALUES ($1) RETURNING id::text',
-    [creatorAccount()],
+  const people = await owner.query<{ id: string }>(
+    'INSERT INTO users (account) VALUES ($1), ($2) RETURNING id::text',
+    [creatorAccount(), creatorAccount()],
   );
-  const creatorId = creator.rows[0]?.id;
+  const creatorId = people.rows[0]?.id;
+  const consumerId = people.rows[1]?.id;
   if (creatorId === undefined) throw new Error('VERTICAL_FIXTURE_CREATOR_FAILED');
+  if (consumerId === undefined) throw new Error('VERTICAL_FIXTURE_CONSUMER_FAILED');
   ids.creatorId = creatorId;
+  ids.consumerId = consumerId;
   await owner.query(
     `INSERT INTO context_snapshots (
        id, creator_id, snapshot_digest, archive_digest, cipher_digest,
@@ -572,6 +838,11 @@ async function seedFixture(owner: Pool, publicKey: KeyObject): Promise<FixtureId
     `INSERT INTO agents (id, creator_id, public_slug, name)
      VALUES ($1, $2, $3, 'PG SQLite Vertical Agent')`,
     [ids.agentId, ids.creatorId, `vertical-${ids.agentId.slice(0, 8)}`],
+  );
+  await owner.query(
+    `INSERT INTO agent_access_grants (agent_id, creator_id, consumer_subject_id)
+     VALUES ($1, $2, $3)`,
+    [ids.agentId, ids.creatorId, ids.consumerId],
   );
   await owner.query(
     `INSERT INTO agent_versions (
@@ -682,7 +953,7 @@ function workerPorts(
 function createWorkerClient(
   url: string,
   installationId: string,
-  durablePort: SqliteWorkerBrokerDurableTransport,
+  durablePort: WorkerBrokerDurableTransportPort,
   ports: ReturnType<typeof workerPorts>,
   diagnostics: WorkerBrokerDiagnosticEvent[],
 ): WorkerBrokerClient {
@@ -716,6 +987,180 @@ function newJournalAuthorization(installationId: string): NewWorkerJournalAuthor
       .update(`vertical-new-worker-journal:${installationId}`, 'utf8')
       .digest('hex'),
   });
+}
+
+function observeOwnerToken(
+  port: WorkerBrokerDurableTransportPort,
+  observed: { value?: string },
+): WorkerBrokerDurableTransportPort {
+  return new Proxy(port, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target) as unknown;
+      if (typeof value !== 'function') return value;
+      return (input: unknown) => {
+        if (
+          typeof input === 'object' &&
+          input !== null &&
+          'ownerToken' in input &&
+          typeof input.ownerToken === 'string'
+        ) {
+          if (observed.value !== undefined && observed.value !== input.ownerToken) {
+            throw new Error('PUBLISHER_WORKER_OWNER_TOKEN_CHANGED');
+          }
+          observed.value = input.ownerToken;
+        }
+        return Reflect.apply(value, target, [input]);
+      };
+    },
+  });
+}
+
+async function createOpeningConversation(
+  owner: Pool,
+  fixture: FixtureIds,
+  lease: PgLeaseFact,
+): Promise<{ conversationId: string; commandId: string }> {
+  const connection = await owner.connect();
+  try {
+    await connection.query('BEGIN');
+    await connection.query('SET LOCAL ROLE combo_agent_consumer_api');
+    await connection.query(`SELECT set_config('app.creator_id', $1, true)`, [fixture.creatorId]);
+    await connection.query(`SELECT set_config('app.consumer_id', $1, true)`, [fixture.consumerId]);
+    const created = await connection.query<{
+      conversation_id: string;
+      open_command_id: string;
+    }>(
+      `SELECT conversation_id::text, open_command_id::text
+         FROM creator_agent_create_opening_conversation_v2(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 3600,
+           $11, $12, 7, $13
+         )`,
+      [
+        fixture.agentId,
+        fixture.deploymentId,
+        fixture.versionId,
+        fixture.creatorId,
+        fixture.consumerId,
+        randomUuidV7(),
+        digest('9'),
+        digest('7'),
+        fixture.installationId,
+        lease.fence,
+        `hmac-sha256:${digest('a')}`,
+        'publisher-vertical-visible-key',
+        'kms://publisher-vertical/visible-key@7',
+      ],
+    );
+    const row = created.rows[0];
+    if (row === undefined) throw new Error('PUBLISHER_CONSUMER_CREATE_FAILED');
+    await connection.query('COMMIT');
+    return { conversationId: row.conversation_id, commandId: row.open_command_id };
+  } catch (error) {
+    await connection.query('ROLLBACK').catch(() => undefined);
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function publisherDeliveries(
+  owner: Pool,
+  fixture: FixtureIds,
+  commandId: string,
+): Promise<PublisherDeliveryFact[]> {
+  const result = await owner.query<PublisherDeliveryFact>(
+    `SELECT command.state, command.attempt_count,
+            delivery.session_id::text, delivery.claim_connection_id::text AS connection_id,
+            delivery.sequence::text, delivery.canonical_digest,
+            delivery.durable_ack_level, delivery.wire_sent_at, delivery.wire_expires_at
+       FROM broker_outbox AS command
+       JOIN worker_gateway_outbound_frames AS delivery
+         ON delivery.broker_command_id = command.command_id
+        AND delivery.creator_id = command.creator_id
+      WHERE command.command_id = $1 AND command.creator_id = $2
+      ORDER BY delivery.created_at, delivery.session_id`,
+    [commandId, fixture.creatorId],
+  );
+  return result.rows;
+}
+
+function sqlitePublisherEnvelope(
+  filename: string,
+  commandId: string,
+  connectionId?: string,
+): BrokerEnvelope | undefined {
+  const parameters: SQLInputValue[] = [commandId];
+  let connectionClause = '';
+  if (connectionId !== undefined) {
+    parameters.push(connectionId);
+    connectionClause = 'AND connection_id = ?';
+  }
+  const row = sqliteMaybeOne<{ envelope_json: string }>(
+    filename,
+    `SELECT envelope_json FROM transport_inbound_frames
+      WHERE message_id = ? AND envelope_type = 'conversation.open' ${connectionClause}
+      ORDER BY recorded_at_ms DESC LIMIT 1`,
+    ...parameters,
+  );
+  return row === undefined ? undefined : BrokerEnvelopeSchema.parse(JSON.parse(row.envelope_json));
+}
+
+function publisherReadyJournalOptions(readyAt: Date): SqliteWorkerInvocationJournalOptions {
+  const unsupported = (): never => {
+    throw new Error('PUBLISHER_READY_ONLY_AUTHORITY');
+  };
+  return {
+    capabilityAuthority: {
+      verify: unsupported,
+      verifyPreviouslyCommitted: unsupported,
+    },
+    readyConversationAuthority: {
+      verify(input) {
+        if ((input as { token?: unknown }).token !== 'publisher-sandbox-ready') {
+          throw new Error('PUBLISHER_READY_EVIDENCE_INVALID');
+        }
+        return {
+          sandboxInstanceId: randomUuidV7(),
+          runtimeThreadId: 'publisher-vertical-thread',
+          evidenceDigest: `sha256:${digest('e')}`,
+          readyAt,
+        };
+      },
+    },
+    hostDispatchPort: { dispatchOnce: unsupported },
+    hostDispatchReceiptAuthority: { verify: unsupported },
+    localPromptAeadAuthority: { rewrap: unsupported, open: unsupported },
+    localResultAeadAuthority: { verify: unsupported },
+    brokerResultReencryptAuthority: { reencrypt: unsupported },
+    cloudAckAuthority: { verify: unsupported },
+    cloudClock: { now: () => new Date() },
+  };
+}
+
+async function publisherTerminal(
+  owner: Pool,
+  fixture: FixtureIds,
+  commandId: string,
+): Promise<{ outbox_state: string; conversation_state: string } | undefined> {
+  const result = await owner.query<{ outbox_state: string; conversation_state: string }>(
+    `SELECT command.state AS outbox_state, conversation.state AS conversation_state
+       FROM broker_outbox AS command
+       JOIN agent_conversations AS conversation
+         ON conversation.id = command.conversation_id
+        AND conversation.creator_id = command.creator_id
+      WHERE command.command_id = $1 AND command.creator_id = $2`,
+    [commandId, fixture.creatorId],
+  );
+  return result.rows[0];
+}
+
+function sqliteReadyCloudCommitted(filename: string, conversationId: string): boolean {
+  const row = sqliteMaybeOne<{ state: string; ready_cloud_state: string }>(
+    filename,
+    `SELECT state, ready_cloud_state FROM local_conversations WHERE conversation_id = ?`,
+    conversationId,
+  );
+  return row?.state === 'READY' && row.ready_cloud_state === 'CLOUD_COMMITTED';
 }
 
 async function activeLease(owner: Pool, fixture: FixtureIds): Promise<PgLeaseFact> {

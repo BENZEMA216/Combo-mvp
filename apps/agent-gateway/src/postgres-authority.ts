@@ -1,9 +1,10 @@
-import { createPublicKey } from 'node:crypto';
+import { createPublicKey, randomUUID } from 'node:crypto';
 
 import {
   BrokerAckSchema,
   BrokerAuthenticationError,
   BrokerAuthenticationFailureCode,
+  BrokerConversationOpenCommandSchema,
   BrokerEnvelopeSchema,
   BrokerHandshakeUnsignedSchema,
   BrokerRegistrationCapabilitiesSchema,
@@ -44,6 +45,7 @@ const GatewayOperationKindSchema = z.enum([
   'ACCEPT_ENVELOPE',
   'SEQUENCE_GAP',
   'CLOSE_SESSION',
+  'CLAIM_BROKER_COMMAND',
 ]);
 
 const ChallengeResultSchema = z.object({ challengeId: UuidSchema }).strict();
@@ -212,6 +214,7 @@ export type GatewayAuthorityStep =
   | 'SESSION_INSERTED'
   | 'LEASE_INSERTED'
   | 'EVENT_PROJECTED'
+  | 'BROKER_COMMAND_CLAIMED'
   | 'RECEIPT_INSERTED'
   | 'BEFORE_COMMIT';
 
@@ -236,6 +239,13 @@ export class PostgresGatewayAuthorityError extends Error {
   ) {
     super(code);
     this.name = 'PostgresGatewayAuthorityError';
+  }
+}
+
+class NoBrokerCommandAvailable extends Error {
+  public constructor() {
+    super('NO_BROKER_COMMAND_AVAILABLE');
+    this.name = 'NoBrokerCommandAvailable';
   }
 }
 
@@ -299,6 +309,47 @@ interface OperationReceiptRow {
   request_digest: string;
   result_value: unknown;
   result_digest: string;
+}
+
+interface BrokerCommandCandidateRow {
+  command_id: string;
+  deployment_id: string;
+}
+
+interface BrokerPublisherCurrentAuthorityRow extends InstallationRegistrationRow {
+  registration_digest: string;
+  outbound_next_seq: string | number | bigint;
+  session_expires_at: Date | string;
+  lease_id: string;
+  lease_fence: string | number | bigint;
+  lease_expires_at: Date | string;
+}
+
+interface BrokerConversationOpenRow {
+  command_id: string;
+  conversation_id: string;
+  agent_version_id: string;
+  agent_version_digest: string;
+  snapshot_digest: string;
+  visible_transcript_digest: string;
+  original_worker_session_id: string;
+  assignment_lease_id: string;
+  assignment_fence: string | number | bigint;
+  wire_sent_at: Date | string;
+  wire_expires_at: Date | string;
+}
+
+interface ExistingBrokerDeliveryRow {
+  sequence: string | number | bigint;
+  canonical_digest: string;
+  durable_ack_level: string | null;
+  wire_sent_at: Date | string;
+  wire_expires_at: Date | string;
+  wire_retryable: boolean;
+}
+
+interface BrokerPersistedAckReceiptRow {
+  committed_at: Date | string;
 }
 
 type GatewayOperationKind = z.infer<typeof GatewayOperationKindSchema>;
@@ -852,6 +903,155 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     );
   }
 
+  async claimBrokerCommand(
+    session: AuthenticatedWorkerSession,
+    signal: AbortSignal,
+  ): Promise<BrokerEnvelope | undefined> {
+    const parsedSession = parseSession(session);
+    const candidate = await findNextBrokerCommandCandidate(
+      this.pools.broker,
+      parsedSession,
+      this.#policy.transactionTimeoutMs,
+      signal,
+    );
+    if (candidate === undefined) return undefined;
+
+    const operation = gatewayOperation<BrokerEnvelope>(
+      'CLAIM_BROKER_COMMAND',
+      { session: parsedSession, candidate },
+      BrokerConversationOpenCommandSchema,
+      `${parsedSession.workerSessionId}:${candidate.command_id}:${randomUUID()}`,
+    );
+    try {
+      return await withGatewayTransaction(
+        this.pools.broker,
+        {
+          creatorId: parsedSession.ownerId,
+          signal,
+          timeoutMs: this.#policy.transactionTimeoutMs,
+          operation,
+          beforeCommit: () => this.#inject('BEFORE_COMMIT'),
+        },
+        async (transaction) => {
+          // Reuse the durable per-Session serialization domain used by inbound accepts. This
+          // keeps response frames and publisher frames on one outbound sequence without taking a
+          // Session row before the Deployment security advisory.
+          await transaction.query(
+            `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1::text, 0))`,
+            [`combo.gateway.accept/v1:${parsedSession.workerSessionId}`],
+            signal,
+          );
+          // Alpha permits one live Creator command across every Deployment/Installation. This
+          // advisory serializes otherwise independent Deployment publishers before either takes
+          // current authority or Outbox row locks.
+          await transaction.query(
+            `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1::text, 0))`,
+            [`combo.gateway.publisher-wip/v1:${parsedSession.ownerId}`],
+            signal,
+          );
+          await transaction.query(
+            `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1::text, 0))`,
+            [`combo.gateway.deployment/v1:${parsedSession.ownerId}:${candidate.deployment_id}`],
+            signal,
+          );
+          const current = await lockPublisherCurrentAuthority(
+            transaction,
+            parsedSession,
+            candidate.deployment_id,
+            signal,
+          );
+          const command = await lockConversationOpenCommand(
+            transaction,
+            parsedSession,
+            candidate,
+            current,
+            signal,
+          );
+          const existing = await lockExistingBrokerDelivery(
+            transaction,
+            parsedSession,
+            command.command_id,
+            signal,
+          );
+          if (
+            existing?.durable_ack_level === 'PERSISTED' ||
+            existing?.durable_ack_level === 'CLOUD_COMMITTED'
+          ) {
+            throw new NoBrokerCommandAvailable();
+          }
+          const persistedAck =
+            existing === undefined
+              ? await findCurrentBrokerPersistedAckReceipt(
+                  transaction,
+                  parsedSession,
+                  command.command_id,
+                  signal,
+                )
+              : undefined;
+
+          const sequence =
+            existing === undefined
+              ? parseUint63(current.outbound_next_seq)
+              : parseUint63(existing.sequence);
+          const sentAt = isoDate(existing?.wire_sent_at ?? command.wire_sent_at);
+          const expiresAt = isoDate(existing?.wire_expires_at ?? command.wire_expires_at);
+          // PostgreSQL is the Lease/command clock authority. A retry may use only an exact wire
+          // expiry that PostgreSQL still considers live; Gateway host clock skew cannot extend or
+          // prematurely suppress a durable delivery.
+          if (existing?.wire_retryable === false) throw new NoBrokerCommandAvailable();
+          const envelope = materializeConversationOpenEnvelope({
+            session: parsedSession,
+            deploymentId: candidate.deployment_id,
+            current,
+            command,
+            sequence,
+            sentAt,
+            expiresAt,
+          });
+          const canonicalDigest = canonicalSha256(envelope);
+          if (existing !== undefined && existing.canonical_digest !== canonicalDigest) {
+            throw persistenceFailure();
+          }
+
+          if (existing === undefined) {
+            await persistBrokerConversationOpen(
+              transaction,
+              parsedSession,
+              current,
+              command,
+              envelope,
+              canonicalDigest,
+              persistedAck,
+              signal,
+            );
+            await advanceOutbound(transaction, parsedSession, current.outbound_next_seq, signal);
+          }
+          const attempted = await transaction.query(
+            `UPDATE broker_outbox
+                SET state = 'SENT', attempt_count = attempt_count + 1,
+                    next_attempt_at = LEAST(
+                      expires_at,
+                      transaction_timestamp() + interval '1 second'
+                    )
+              WHERE command_id = $1 AND creator_id = $2
+                AND state IN ('PENDING', 'SENT')
+                AND attempt_count < 100
+                AND next_attempt_at <= transaction_timestamp()
+                AND expires_at > clock_timestamp()`,
+            [command.command_id, parsedSession.ownerId],
+            signal,
+          );
+          if (attempted.rowCount !== 1) throw new NoBrokerCommandAvailable();
+          await this.#inject('BROKER_COMMAND_CLAIMED');
+          return envelope;
+        },
+      );
+    } catch (error) {
+      if (error instanceof NoBrokerCommandAvailable) return undefined;
+      throw error;
+    }
+  }
+
   async acceptEnvelope(
     session: AuthenticatedWorkerSession,
     delivery: GatewayDelivery,
@@ -1084,7 +1284,7 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
         const responses: BrokerEnvelope[] = [];
         let projection: ProjectionOutcome | undefined;
         if (envelope.type === 'message.ack') {
-          await this.#acceptOutboundAck(transaction, session, envelope, signal);
+          await this.#acceptOutboundAck(transaction, session, envelope, current, signal);
           const blocked = leaseBlockDisposition(current);
           if (blocked !== undefined) {
             await revokeLeaseAuthority(transaction, session, current, blocked, signal);
@@ -1175,8 +1375,9 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
         const insertedReceipt = await transaction.query(
           `INSERT INTO worker_gateway_frame_receipts (
              session_id, creator_id, sequence, message_id, canonical_digest,
-             envelope_type, response_frames
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+             envelope_type, response_frames, broker_acknowledged_message_id,
+             broker_ack_level, broker_ack_decision
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10)`,
           [
             session.workerSessionId,
             session.ownerId,
@@ -1185,6 +1386,9 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
             digest,
             envelope.type,
             JSON.stringify(responses),
+            envelope.type === 'message.ack' ? envelope.body.acknowledgedMessageId : null,
+            envelope.type === 'message.ack' ? envelope.body.level : null,
+            envelope.type === 'message.ack' ? envelope.body.decision : null,
           ],
           signal,
         );
@@ -1329,6 +1533,7 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     transaction: GatewayTransaction,
     session: AuthenticatedWorkerSession,
     envelope: Extract<BrokerEnvelope, { type: 'message.ack' }>,
+    currentLease: SessionLeaseRow,
     signal: AbortSignal,
   ): Promise<void> {
     const found = await transaction.query<{
@@ -1344,7 +1549,43 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     );
     const current = found.rows[0];
     if (current === undefined) {
-      throw new PostgresGatewayAuthorityError('OUTBOUND_ACK_CONFLICT');
+      // SQLite reframes a durable ACK before it asks Cloud to replay the business command on a
+      // replacement transport. Accept only an exact prior PERSISTED/APPLIED v1 command binding as
+      // a no-op. The current Session still has no delivery, so the publisher must re-envelope the
+      // command; critically, this path never ACKs broker_outbox.
+      if (envelope.body.level !== 'PERSISTED' || envelope.body.decision !== 'APPLIED') {
+        throw new PostgresGatewayAuthorityError('OUTBOUND_ACK_CONFLICT');
+      }
+      const prior = await transaction.query<{ present: boolean }>(
+        `SELECT true AS present
+           FROM worker_gateway_outbound_frames AS delivery
+           JOIN broker_outbox AS command
+             ON command.command_id = delivery.broker_command_id
+            AND command.creator_id = delivery.creator_id
+          WHERE delivery.message_id = $1 AND delivery.creator_id = $2
+            AND delivery.delivery_contract_version = 1
+            AND delivery.envelope_type = 'conversation.open'
+            AND delivery.durable_ack_level IN ('PERSISTED', 'CLOUD_COMMITTED')
+            AND delivery.ack_decision = 'APPLIED'
+            AND command.command_id = $1
+            AND command.target_worker_id = $3
+            AND command.deployment_id = $4
+            AND command.state IN ('SENT', 'ACKED')
+          ORDER BY delivery.created_at
+          LIMIT 1
+          FOR UPDATE OF command, delivery`,
+        [
+          envelope.body.acknowledgedMessageId,
+          session.ownerId,
+          session.installationId,
+          currentLease.deployment_id,
+        ],
+        signal,
+      );
+      if (prior.rows[0]?.present !== true) {
+        throw new PostgresGatewayAuthorityError('OUTBOUND_ACK_CONFLICT');
+      }
+      return;
     }
     if (current.ack_decision !== null && current.ack_decision !== envelope.body.decision) {
       throw new PostgresGatewayAuthorityError('OUTBOUND_ACK_CONFLICT');
@@ -1939,6 +2180,434 @@ async function resolveConsumedChallengeCreator(
   } finally {
     connection.release(signal.aborted);
   }
+}
+
+async function findNextBrokerCommandCandidate(
+  pool: GatewayPool,
+  session: AuthenticatedWorkerSession,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<BrokerCommandCandidateRow | undefined> {
+  const connection = await connectWithSignal(pool, signal);
+  let transactionOpen = false;
+  let destroy = false;
+  try {
+    await connection.query('BEGIN', undefined, signal);
+    transactionOpen = true;
+    await connection.query(
+      `SELECT set_config('lock_timeout', $1, true),
+              set_config('statement_timeout', $1, true),
+              set_config('app.creator_id', $2, true)`,
+      [`${timeoutMs}ms`, session.ownerId],
+      signal,
+    );
+    // This is deliberately a non-authoritative pre-read. The exact candidate is rechecked only
+    // after the per-Deployment advisory and current Session/Lease locks in the claim transaction.
+    const result = await connection.query<BrokerCommandCandidateRow>(
+      `SELECT command.command_id::text, command.deployment_id::text
+         FROM worker_gateway_sessions AS gateway
+         JOIN worker_auth_challenges AS challenge
+           ON challenge.id = gateway.challenge_id
+          AND challenge.creator_id = gateway.creator_id
+          AND challenge.installation_id = gateway.installation_id
+         JOIN broker_outbox AS command
+           ON command.creator_id = gateway.creator_id
+          AND command.target_worker_id = gateway.installation_id
+          AND command.deployment_id = challenge.deployment_id
+         JOIN deployments AS deployment
+           ON deployment.id = command.deployment_id
+          AND deployment.creator_id = command.creator_id
+         JOIN worker_leases AS lease
+           ON lease.deployment_id = deployment.id
+          AND lease.creator_id = deployment.creator_id
+          AND lease.worker_id = gateway.installation_id
+          AND lease.connection_id = gateway.connection_id
+        WHERE gateway.id = $1 AND gateway.creator_id = $2
+          AND gateway.installation_id = $3 AND gateway.connection_id = $4
+          AND gateway.state = 'ACTIVE'
+          AND gateway.expires_at > clock_timestamp() + interval '3 seconds'
+          AND challenge.state = 'CONSUMED'
+          AND deployment.environment = 'TEST'
+          AND deployment.desired_state = 'ONLINE'
+          AND deployment.observed_state = 'ONLINE'
+          AND deployment.observed_worker_id = gateway.installation_id
+          AND deployment.observed_generation = deployment.generation
+          AND deployment.lease_fence = lease.fence
+          AND lease.state = 'ACTIVE'
+          AND lease.expires_at > clock_timestamp() + interval '3 seconds'
+          AND command.payload_contract_version = 1
+          AND command.command_type = 'conversation.open'
+          AND command.state IN ('PENDING', 'SENT')
+          AND command.attempt_count < 100
+          AND command.next_attempt_at <= transaction_timestamp()
+          AND command.expires_at > clock_timestamp() + interval '3 seconds'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM broker_outbox AS competing_command
+              JOIN agent_conversations AS competing_conversation
+                ON competing_conversation.id = competing_command.conversation_id
+               AND competing_conversation.creator_id = competing_command.creator_id
+               AND competing_conversation.consumer_subject_id = competing_command.consumer_subject_id
+             WHERE competing_command.creator_id = command.creator_id
+               AND competing_command.command_id <> command.command_id
+               AND competing_command.payload_contract_version = 1
+               AND competing_command.command_type = 'conversation.open'
+               AND competing_command.state IN ('PENDING', 'SENT')
+               AND competing_command.expires_at > clock_timestamp()
+               AND competing_conversation.state = 'OPENING'
+               AND (
+                 competing_command.state = 'SENT'
+                 OR EXISTS (
+                   SELECT 1
+                     FROM worker_gateway_outbound_frames AS competing_delivery
+                    WHERE competing_delivery.creator_id = competing_command.creator_id
+                      AND competing_delivery.broker_command_id = competing_command.command_id
+                      AND competing_delivery.delivery_contract_version = 1
+                      AND competing_delivery.durable_ack_level IS DISTINCT FROM 'CLOUD_COMMITTED'
+                 )
+                 OR (
+                   command.state = 'PENDING'
+                   AND competing_command.state = 'PENDING'
+                   AND (competing_command.created_at, competing_command.command_id)
+                       < (command.created_at, command.command_id)
+                 )
+               )
+          )
+          AND NOT EXISTS (
+            SELECT 1
+              FROM worker_gateway_outbound_frames AS delivery
+             WHERE delivery.session_id = gateway.id
+               AND delivery.creator_id = gateway.creator_id
+               AND delivery.broker_command_id = command.command_id
+               AND delivery.delivery_contract_version = 1
+               AND delivery.durable_ack_level IN ('PERSISTED', 'CLOUD_COMMITTED')
+          )
+        ORDER BY command.next_attempt_at, command.command_id
+        LIMIT 1`,
+      [session.workerSessionId, session.ownerId, session.installationId, session.connectionId],
+      signal,
+    );
+    await connection.query('ROLLBACK', undefined, AbortSignal.timeout(Math.min(timeoutMs, 2_000)));
+    transactionOpen = false;
+    const row = result.rows[0];
+    if (row === undefined) return undefined;
+    return {
+      command_id: UuidSchema.parse(row.command_id),
+      deployment_id: UuidSchema.parse(row.deployment_id),
+    };
+  } catch (error) {
+    destroy = true;
+    throw error;
+  } finally {
+    if (transactionOpen && !destroy) {
+      await connection
+        .query('ROLLBACK', undefined, AbortSignal.timeout(Math.min(timeoutMs, 2_000)))
+        .catch(() => {
+          destroy = true;
+        });
+    }
+    connection.release(destroy || signal.aborted);
+  }
+}
+
+async function lockPublisherCurrentAuthority(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  deploymentId: string,
+  signal: AbortSignal,
+): Promise<BrokerPublisherCurrentAuthorityRow> {
+  const found = await transaction.query<BrokerPublisherCurrentAuthorityRow>(
+    `SELECT gateway.registration_digest, gateway.outbound_next_seq,
+            gateway.expires_at AS session_expires_at,
+            lease.id::text AS lease_id, lease.fence AS lease_fence,
+            lease.expires_at AS lease_expires_at,
+            installation.worker_version, installation.protocol_versions,
+            installation.capabilities, installation.revoked_at
+       FROM worker_gateway_sessions AS gateway
+       JOIN worker_auth_challenges AS challenge
+         ON challenge.id = gateway.challenge_id
+        AND challenge.creator_id = gateway.creator_id
+        AND challenge.installation_id = gateway.installation_id
+        AND challenge.deployment_id = $5
+       JOIN deployments AS deployment
+         ON deployment.id = challenge.deployment_id
+        AND deployment.creator_id = challenge.creator_id
+       JOIN worker_leases AS lease
+         ON lease.deployment_id = deployment.id
+        AND lease.creator_id = deployment.creator_id
+        AND lease.worker_id = gateway.installation_id
+        AND lease.connection_id = gateway.connection_id
+       JOIN worker_installations AS installation
+         ON installation.id = gateway.installation_id
+        AND installation.creator_id = gateway.creator_id
+      WHERE gateway.id = $1 AND gateway.creator_id = $2
+        AND gateway.installation_id = $3 AND gateway.connection_id = $4
+        AND gateway.state = 'ACTIVE'
+        AND gateway.expires_at > clock_timestamp() + interval '3 seconds'
+        AND challenge.state = 'CONSUMED'
+        AND deployment.environment = 'TEST'
+        AND deployment.desired_state = 'ONLINE'
+        AND deployment.observed_state = 'ONLINE'
+        AND deployment.observed_worker_id = gateway.installation_id
+        AND deployment.observed_generation = deployment.generation
+        AND deployment.lease_fence = lease.fence
+        AND lease.state = 'ACTIVE'
+        AND lease.expires_at > clock_timestamp() + interval '3 seconds'
+        AND installation.revoked_at IS NULL
+      FOR UPDATE OF gateway, lease, deployment, installation`,
+    [
+      session.workerSessionId,
+      session.ownerId,
+      session.installationId,
+      session.connectionId,
+      deploymentId,
+    ],
+    signal,
+  );
+  const row = found.rows[0];
+  if (row === undefined || registrationDigest(row) !== row.registration_digest) {
+    throw new PostgresGatewayAuthorityError('LEASE_UNAVAILABLE');
+  }
+  return row;
+}
+
+async function lockConversationOpenCommand(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  candidate: BrokerCommandCandidateRow,
+  current: BrokerPublisherCurrentAuthorityRow,
+  signal: AbortSignal,
+): Promise<BrokerConversationOpenRow> {
+  const found = await transaction.query<BrokerConversationOpenRow>(
+    `SELECT command.command_id::text, conversation.id::text AS conversation_id,
+            conversation.agent_version_id::text,
+            conversation.version_digest AS agent_version_digest,
+            snapshot.snapshot_digest,
+            command.visible_transcript_digest,
+            command.original_worker_session_id::text,
+            command.assignment_lease_id::text,
+            command.assignment_fence,
+            date_trunc('milliseconds', transaction_timestamp()) AS wire_sent_at,
+            date_trunc(
+              'milliseconds',
+              LEAST(
+                command.expires_at,
+                $5::timestamptz,
+                $6::timestamptz
+              )
+            ) AS wire_expires_at
+       FROM broker_outbox AS command
+       JOIN agent_conversations AS conversation
+         ON conversation.id = command.conversation_id
+        AND conversation.creator_id = command.creator_id
+        AND conversation.consumer_subject_id = command.consumer_subject_id
+        AND conversation.deployment_id = command.deployment_id
+        AND conversation.assigned_worker_id = command.target_worker_id
+       JOIN agent_versions AS version
+         ON version.id = conversation.agent_version_id
+        AND version.creator_id = conversation.creator_id
+        AND version.version_digest = conversation.version_digest
+       JOIN context_snapshots AS snapshot
+         ON snapshot.id = version.snapshot_id
+        AND snapshot.creator_id = version.creator_id
+       JOIN worker_gateway_sessions AS original_session
+         ON original_session.id = command.original_worker_session_id
+        AND original_session.creator_id = command.creator_id
+        AND original_session.installation_id = command.target_worker_id
+        AND original_session.connection_id = command.original_connection_id
+       JOIN worker_leases AS original_lease
+         ON original_lease.id = command.assignment_lease_id
+        AND original_lease.deployment_id = command.deployment_id
+        AND original_lease.creator_id = command.creator_id
+        AND original_lease.worker_id = command.target_worker_id
+        AND original_lease.connection_id = command.original_connection_id
+        AND original_lease.fence = command.assignment_fence
+      WHERE command.command_id = $1 AND command.creator_id = $2
+        AND command.target_worker_id = $3 AND command.deployment_id = $4
+        AND command.payload_contract_version = 1
+        AND command.command_type = 'conversation.open'
+        AND command.state IN ('PENDING', 'SENT')
+        AND command.attempt_count < 100
+        AND command.next_attempt_at <= transaction_timestamp()
+        AND command.expires_at > clock_timestamp()
+        AND LEAST(command.expires_at, $5::timestamptz, $6::timestamptz)
+            > clock_timestamp() + interval '3 seconds'
+        AND conversation.state = 'OPENING'
+        AND NOT EXISTS (
+          SELECT 1
+            FROM broker_outbox AS competing_command
+            JOIN agent_conversations AS competing_conversation
+              ON competing_conversation.id = competing_command.conversation_id
+             AND competing_conversation.creator_id = competing_command.creator_id
+             AND competing_conversation.consumer_subject_id = competing_command.consumer_subject_id
+           WHERE competing_command.creator_id = command.creator_id
+             AND competing_command.command_id <> command.command_id
+             AND competing_command.payload_contract_version = 1
+             AND competing_command.command_type = 'conversation.open'
+             AND competing_command.state IN ('PENDING', 'SENT')
+             AND competing_command.expires_at > clock_timestamp()
+             AND competing_conversation.state = 'OPENING'
+             AND (
+               competing_command.state = 'SENT'
+               OR EXISTS (
+                 SELECT 1
+                   FROM worker_gateway_outbound_frames AS competing_delivery
+                  WHERE competing_delivery.creator_id = competing_command.creator_id
+                    AND competing_delivery.broker_command_id = competing_command.command_id
+                    AND competing_delivery.delivery_contract_version = 1
+                    AND competing_delivery.durable_ack_level IS DISTINCT FROM 'CLOUD_COMMITTED'
+               )
+               OR (
+                 command.state = 'PENDING'
+                 AND competing_command.state = 'PENDING'
+                 AND (competing_command.created_at, competing_command.command_id)
+                     < (command.created_at, command.command_id)
+               )
+             )
+        )
+      FOR UPDATE OF command`,
+    [
+      candidate.command_id,
+      session.ownerId,
+      session.installationId,
+      candidate.deployment_id,
+      isoDate(current.session_expires_at),
+      isoDate(current.lease_expires_at),
+    ],
+    signal,
+  );
+  const row = found.rows[0];
+  if (row === undefined) throw new NoBrokerCommandAvailable();
+  return row;
+}
+
+async function lockExistingBrokerDelivery(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  commandId: string,
+  signal: AbortSignal,
+): Promise<ExistingBrokerDeliveryRow | undefined> {
+  const found = await transaction.query<ExistingBrokerDeliveryRow>(
+    `SELECT sequence, canonical_digest, durable_ack_level, wire_sent_at, wire_expires_at,
+            wire_expires_at > clock_timestamp() + interval '1 second' AS wire_retryable
+       FROM worker_gateway_outbound_frames
+      WHERE session_id = $1 AND creator_id = $2 AND broker_command_id = $3
+        AND delivery_contract_version = 1
+      FOR UPDATE`,
+    [session.workerSessionId, session.ownerId, commandId],
+    signal,
+  );
+  return found.rows[0];
+}
+
+async function findCurrentBrokerPersistedAckReceipt(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  commandId: string,
+  signal: AbortSignal,
+): Promise<BrokerPersistedAckReceiptRow | undefined> {
+  const found = await transaction.query<BrokerPersistedAckReceiptRow>(
+    `SELECT committed_at
+       FROM worker_gateway_frame_receipts
+      WHERE session_id = $1 AND creator_id = $2
+        AND broker_acknowledged_message_id = $3
+        AND envelope_type = 'message.ack'
+        AND broker_ack_level = 'PERSISTED'
+        AND broker_ack_decision = 'APPLIED'
+      ORDER BY committed_at
+      LIMIT 1`,
+    [session.workerSessionId, session.ownerId, commandId],
+    signal,
+  );
+  return found.rows[0];
+}
+
+function materializeConversationOpenEnvelope(input: {
+  session: AuthenticatedWorkerSession;
+  deploymentId: string;
+  current: BrokerPublisherCurrentAuthorityRow;
+  command: BrokerConversationOpenRow;
+  sequence: string;
+  sentAt: string;
+  expiresAt: string;
+}): BrokerEnvelope {
+  return BrokerConversationOpenCommandSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    type: 'conversation.open',
+    messageId: input.command.command_id,
+    correlationId: input.command.conversation_id,
+    connectionId: input.session.connectionId,
+    sequence: input.sequence,
+    sentAt: input.sentAt,
+    expiresAt: input.expiresAt,
+    lease: {
+      deploymentId: input.deploymentId,
+      leaseId: input.current.lease_id,
+      workerSessionId: input.session.workerSessionId,
+      fence: parseUint63(input.current.lease_fence),
+    },
+    body: {
+      conversationId: input.command.conversation_id,
+      agentVersionId: input.command.agent_version_id,
+      agentVersionDigest: input.command.agent_version_digest,
+      snapshotDigest: input.command.snapshot_digest,
+      visibleTranscriptDigest: input.command.visible_transcript_digest,
+      openAuthority: {
+        deploymentId: input.deploymentId,
+        installationId: input.session.installationId,
+        workerSessionId: input.command.original_worker_session_id,
+        leaseId: input.command.assignment_lease_id,
+        fence: parseUint63(input.command.assignment_fence),
+      },
+    },
+  });
+}
+
+async function persistBrokerConversationOpen(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  current: BrokerPublisherCurrentAuthorityRow,
+  command: BrokerConversationOpenRow,
+  envelope: BrokerEnvelope,
+  canonicalDigest: string,
+  persistedAck: BrokerPersistedAckReceiptRow | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  if (envelope.type !== 'conversation.open') throw persistenceFailure();
+  const inserted = await transaction.query(
+    `INSERT INTO worker_gateway_outbound_frames (
+       session_id, creator_id, sequence, message_id, canonical_digest, envelope_type,
+       delivery_contract_version, broker_command_id, broker_target_worker_id,
+       broker_deployment_id, claim_session_id, claim_connection_id,
+       current_delivery_lease_id, current_delivery_fence, wire_sent_at, wire_expires_at,
+       durable_ack_level, ack_decision, acked_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, 'conversation.open',
+       1, $4, $6, $7, $1, $8, $9, $10, $11::timestamptz, $12::timestamptz,
+       $13, $14, $15::timestamptz
+     )`,
+    [
+      session.workerSessionId,
+      session.ownerId,
+      parseUint63(envelope.sequence),
+      command.command_id,
+      canonicalDigest,
+      session.installationId,
+      envelope.lease.deploymentId,
+      session.connectionId,
+      current.lease_id,
+      parseUint63(current.lease_fence),
+      envelope.sentAt,
+      envelope.expiresAt,
+      persistedAck === undefined ? null : 'PERSISTED',
+      persistedAck === undefined ? null : 'APPLIED',
+      persistedAck === undefined ? null : isoDate(persistedAck.committed_at),
+    ],
+    signal,
+  );
+  if (inserted.rowCount !== 1) throw persistenceFailure();
 }
 
 async function acknowledgeLeaseGrant(

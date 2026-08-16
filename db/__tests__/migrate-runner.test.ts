@@ -15,7 +15,7 @@ describe('migration runner contract', () => {
 
     expect(plan.applied).toEqual([]);
     expect(plan.pending).toEqual(migrations);
-    expect(plan.head).toBe('0018_creator_agent_broker_delivery_contract.sql');
+    expect(plan.head).toBe('0019_creator_agent_broker_outbox_publisher.sql');
   });
 
   it('is idempotent when the ledger already reaches the current head', () => {
@@ -54,7 +54,7 @@ describe('migration runner contract', () => {
 
   it('rejects a release whose expected migration head differs from source', () => {
     expect(() => planMigrations(migrations, [], '0006_one_running_turn_per_session.sql')).toThrow(
-      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0018_creator_agent_broker_delivery_contract\.sql/,
+      /migration head mismatch: expected 0006_one_running_turn_per_session\.sql, source is 0019_creator_agent_broker_outbox_publisher\.sql/,
     );
   });
 

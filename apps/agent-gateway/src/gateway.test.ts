@@ -40,6 +40,10 @@ const HEARTBEAT_A = '0198f00d-5000-7000-8000-00000000000b';
 const HEARTBEAT_B = '0198f00d-5000-7000-8000-00000000000c';
 const ACK_A = '0198f00d-5000-7000-8000-00000000000d';
 const CORRELATION = '0198f00d-5000-7000-8000-00000000000e';
+const OPEN_COMMAND = '0198f00d-5000-7000-8000-000000000010';
+const AGENT_VERSION = '0198f00d-5000-7000-8000-000000000011';
+const ORIGINAL_LEASE = '0198f00d-5000-7000-8000-000000000012';
+const REPLACEMENT_LEASE = '0198f00d-5000-7000-8000-000000000013';
 const SIGNATURE = Buffer.alloc(64, 7).toString('base64url');
 
 const activeGateways = new Set<AgentGateway>();
@@ -65,12 +69,16 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
   abortedAccepts = 0;
   abortedReplays = 0;
   abortedGaps = 0;
+  abortedClaims = 0;
+  claimCalls = 0;
   authenticateBarrier?: Promise<void>;
   openBarrier?: Promise<void>;
   acceptBarrier?: Promise<void>;
+  claimBarrier?: Promise<void>;
   authenticateCommitsAfterAbort = false;
   openCommitsAfterAbort = false;
   acceptCommitsAfterAbort = false;
+  claimCommitsAfterAbort = false;
   failAccept = false;
   hangAccept = false;
   hangOpen = false;
@@ -78,6 +86,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
   duplicateWorkerSession = false;
   oversizedAcceptResponse = false;
   revokeReason?: 'SECURITY' | 'IMMEDIATE';
+  readonly claimFrames: BrokerEnvelope[] = [];
 
   async authenticate(input: {
     handshake: BrokerHandshake;
@@ -192,6 +201,32 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
     return [ackFor(session, delivery.envelope)];
   }
 
+  async claimBrokerCommand(
+    session: AuthenticatedWorkerSession,
+    signal: AbortSignal,
+  ): Promise<BrokerEnvelope | undefined> {
+    this.claimCalls += 1;
+    this.lifecycleEvents.push('claim-start');
+    if (this.claimBarrier !== undefined) {
+      if (this.claimCommitsAfterAbort) await this.claimBarrier;
+      else {
+        await Promise.race([
+          this.claimBarrier,
+          abortPromise(signal, () => {
+            this.abortedClaims += 1;
+            this.lifecycleEvents.push('claim-abort');
+          }),
+        ]);
+      }
+    }
+    this.lifecycleEvents.push('claim-commit');
+    const frame = this.claimFrames.shift();
+    if (frame === undefined) return undefined;
+    expect(frame.connectionId).toBe(session.connectionId);
+    expect(frame.lease.workerSessionId).toBe(session.workerSessionId);
+    return frame;
+  }
+
   async sequenceGap(
     _session: AuthenticatedWorkerSession,
     input: { expected: string; received: string },
@@ -231,6 +266,110 @@ describe('AgentGateway real WebSocket transport', () => {
     const first = await connect(url);
     await expectUpgradeStatus(url, {}, 503);
     first.terminate();
+  });
+
+  it('keeps the durable publisher disabled by default', async () => {
+    const authority = new FakeAuthority();
+    authority.claimFrames.push(conversationOpen(CONNECTION_A, SESSION_A, ORIGINAL_LEASE, '1'));
+    const { gateway, url } = await startGateway(authority);
+    const socket = await connect(url);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => gateway.activeConnections === 1);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(authority.claimCalls).toBe(0);
+  });
+
+  it('writes a publisher frame only after the durable claim resolves', async () => {
+    const authority = new FakeAuthority();
+    const claim = deferred<void>();
+    authority.claimBarrier = claim.promise;
+    authority.claimFrames.push(conversationOpen(CONNECTION_A, SESSION_A, ORIGINAL_LEASE, '1'));
+    const { gateway, url } = await startGateway(authority, {
+      publisherEnabled: true,
+      publisherPollIntervalMs: 30_000,
+    });
+    const socket = await connect(url);
+    const frame = nextEnvelope(socket);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => authority.lifecycleEvents.includes('claim-start'));
+    const premature = await Promise.race([
+      frame.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 25)),
+    ]);
+    expect(premature).toBe(false);
+
+    claim.resolve();
+    await expect(frame).resolves.toMatchObject({
+      type: 'conversation.open',
+      messageId: OPEN_COMMAND,
+      connectionId: CONNECTION_A,
+      lease: { workerSessionId: SESSION_A, leaseId: ORIGINAL_LEASE },
+    });
+    expect(authority.lifecycleEvents).toContain('claim-commit');
+    expect(authority.claimCalls).toBe(1);
+    expect(gateway.activeConnections).toBe(1);
+  });
+
+  it('retries a claimed exact frame before a long idle poll interval', async () => {
+    const authority = new FakeAuthority();
+    const command = conversationOpen(CONNECTION_A, SESSION_A, ORIGINAL_LEASE, '1');
+    authority.claimFrames.push(command, command);
+    const { url } = await startGateway(authority, {
+      publisherEnabled: true,
+      publisherPollIntervalMs: 30_000,
+    });
+    const socket = await connect(url);
+    const firstFrame = nextEnvelope(socket);
+    socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await expect(within('FIRST_PUBLISH_TIMEOUT', firstFrame)).resolves.toEqual(command);
+
+    const retryFrame = nextEnvelope(socket);
+    await expect(within('NATURAL_PUBLISH_RETRY_TIMEOUT', retryFrame, 2_000)).resolves.toEqual(
+      command,
+    );
+    expect(authority.claimCalls).toBe(2);
+  });
+
+  it('drops only the send opportunity on disconnect and reclaims on a replacement Session', async () => {
+    const authority = new FakeAuthority();
+    const claim = deferred<void>();
+    authority.claimBarrier = claim.promise;
+    authority.claimCommitsAfterAbort = true;
+    const original = conversationOpen(CONNECTION_A, SESSION_A, ORIGINAL_LEASE, '1');
+    const replacement = conversationOpen(CONNECTION_B, SESSION_B, REPLACEMENT_LEASE, '2');
+    authority.claimFrames.push(original, replacement);
+    const { url } = await startGateway(authority, {
+      publisherEnabled: true,
+      publisherPollIntervalMs: 30_000,
+    });
+    const first = await connect(url);
+    const firstFrames: BrokerEnvelope[] = [];
+    first.on('message', (data) => {
+      firstFrames.push(
+        BrokerEnvelopeSchema.parse(JSON.parse(Buffer.from(data as Buffer).toString())),
+      );
+    });
+    first.send(canonicalizeJson(handshake(CHALLENGE_A)));
+    await waitFor(() => authority.lifecycleEvents.includes('claim-start'));
+    const firstClosed = once(first, 'close');
+    first.close();
+    await firstClosed;
+    claim.resolve();
+    await waitFor(() => authority.lifecycleEvents.includes('claim-commit'));
+    expect(firstFrames).toEqual([]);
+
+    const second = await connect(url);
+    const replacementFrame = nextEnvelope(second);
+    second.send(canonicalizeJson(handshake(CHALLENGE_B)));
+    const delivered = await within('REPLACEMENT_PUBLISH_TIMEOUT', replacementFrame);
+    expect(delivered.messageId).toBe(original.messageId);
+    expect(delivered).toMatchObject({
+      type: 'conversation.open',
+      connectionId: CONNECTION_B,
+      lease: { workerSessionId: SESSION_B, leaseId: REPLACEMENT_LEASE, fence: '2' },
+      body: original.body,
+    });
+    expect(authority.claimCalls).toBe(2);
   });
 
   it('rejects a legacy handshake without a Broker contract digest before authority', async () => {
@@ -774,6 +913,41 @@ function heartbeat(
       proxyReady: true,
       journalReady: true,
       activeInvocationId: null,
+    },
+  });
+}
+
+function conversationOpen(
+  connectionId: string,
+  workerSessionId: string,
+  leaseId: string,
+  fence: string,
+): BrokerEnvelope {
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    type: 'conversation.open',
+    messageId: OPEN_COMMAND,
+    correlationId: CORRELATION,
+    connectionId,
+    sequence: '0',
+    sentAt: '2026-08-13T08:00:00.000Z',
+    expiresAt: '2026-08-13T08:01:00.000Z',
+    lease: { deploymentId: DEPLOYMENT, leaseId, workerSessionId, fence },
+    body: {
+      conversationId: CORRELATION,
+      agentVersionId: AGENT_VERSION,
+      agentVersionDigest: '3'.repeat(64),
+      snapshotDigest: '4'.repeat(64),
+      visibleTranscriptDigest: `hmac-sha256:${'5'.repeat(64)}`,
+      openAuthority: {
+        deploymentId: DEPLOYMENT,
+        installationId: INSTALLATION,
+        workerSessionId: SESSION_A,
+        leaseId: ORIGINAL_LEASE,
+        fence: '1',
+      },
     },
   });
 }
