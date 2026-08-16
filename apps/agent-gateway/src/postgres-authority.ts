@@ -118,6 +118,13 @@ const CompatibilityPolicySchema = z
       .min(1)
       .max(2),
     acceptedBrokerContractDigests: z.array(Sha256DigestSchema).min(1).max(32),
+    /**
+     * Optional rollout fence for the Test-only publisher. A deployment uniquely binds its
+     * Creator and Agent, so a non-empty exact allowlist is the narrowest three-level rollout
+     * control. Library callers may omit it while the publisher remains disabled; the executable
+     * bootstrap requires it whenever publishing is enabled.
+     */
+    publisherDeploymentAllowlist: z.array(UuidSchema).min(1).max(32).optional(),
     sessionTtlMs: z
       .number()
       .int()
@@ -915,6 +922,12 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
       signal,
     );
     if (candidate === undefined) return undefined;
+    if (
+      this.#policy.publisherDeploymentAllowlist !== undefined &&
+      !this.#policy.publisherDeploymentAllowlist.includes(candidate.deployment_id)
+    ) {
+      return undefined;
+    }
 
     const operation = gatewayOperation<BrokerEnvelope>(
       'CLAIM_BROKER_COMMAND',

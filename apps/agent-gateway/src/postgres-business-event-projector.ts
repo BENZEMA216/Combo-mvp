@@ -61,8 +61,8 @@ const CONVERSATION_STATES = new Set([
  */
 export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEventProjector {
   public constructor(
-    private readonly lifecycle: InvocationLifecycleProjector,
-    private readonly sealAssistantMessage: AssistantMessageSealer,
+    private readonly lifecycle?: InvocationLifecycleProjector,
+    private readonly sealAssistantMessage?: AssistantMessageSealer,
   ) {}
 
   public async project(input: {
@@ -82,6 +82,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           signal: input.signal,
         });
       case 'invocation.prepared': {
+        const lifecycle = this.#requireInvocationLifecycle();
         await clearConsumerContext(input.transaction, input.signal);
         const body = input.event.body;
         const fact = WorkerInvocationPreparedFactSchema.parse({
@@ -98,7 +99,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           requestDigest: body.requestDigest,
           prepareCommandId: body.prepareCommandId,
         });
-        const committed = await this.lifecycle.projectPrepared(
+        const committed = await lifecycle.projectPrepared(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -113,6 +114,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
       }
       case 'invocation.started': {
+        const lifecycle = this.#requireInvocationLifecycle();
         await clearConsumerContext(input.transaction, input.signal);
         const body = input.event.body;
         const fact = WorkerInvocationStartedFactSchema.parse({
@@ -132,7 +134,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           dispatchReceiptDigest: body.dispatchReceiptDigest,
           sandboxAttestationDigest: body.sandboxAttestationDigest,
         });
-        const committed = await this.lifecycle.projectStarted(
+        const committed = await lifecycle.projectStarted(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -147,6 +149,8 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
       }
       case 'invocation.succeeded': {
+        const lifecycle = this.#requireInvocationLifecycle();
+        const sealAssistantMessage = this.#requireAssistantMessageSealer();
         await clearConsumerContext(input.transaction, input.signal);
         const body = input.event.body;
         const fact = WorkerInvocationSucceededFactSchema.parse({
@@ -166,7 +170,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           resultDigest: body.resultDigest,
           localResultCipherDigest: body.localResultCipherDigest,
         });
-        const committed = await this.lifecycle.projectSuccess(
+        const committed = await lifecycle.projectSuccess(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -175,7 +179,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
             factDigest: body.factDigest,
             resultCiphertext: body.resultCiphertext,
           },
-          this.sealAssistantMessage,
+          sealAssistantMessage,
           input.signal,
         );
         assertCommittedSuccess(committed, fact);
@@ -191,6 +195,20 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
       default:
         throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
     }
+  }
+
+  #requireInvocationLifecycle(): InvocationLifecycleProjector {
+    if (this.lifecycle === undefined) {
+      throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
+    }
+    return this.lifecycle;
+  }
+
+  #requireAssistantMessageSealer(): AssistantMessageSealer {
+    if (this.sealAssistantMessage === undefined) {
+      throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
+    }
+    return this.sealAssistantMessage;
   }
 
   async #projectConversationReady(input: {

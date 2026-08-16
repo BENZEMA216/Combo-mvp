@@ -105,6 +105,7 @@ export type GatewayDiagnosticEvent =
   | 'sequence_gap'
   | 'session_replaced'
   | 'session_closed'
+  | 'database_idle_client_error'
   | 'transport_error';
 
 export type AgentGatewayOptions = Readonly<{

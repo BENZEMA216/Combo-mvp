@@ -16,6 +16,7 @@
   ],
   "scripts": {
     "build": "tsc -b",
+    "start": "node dist/processes/gateway.js",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-agent-persistence build",

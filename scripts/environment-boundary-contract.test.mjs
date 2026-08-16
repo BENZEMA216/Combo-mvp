@@ -342,3 +342,64 @@ test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLi
     );
   }
 });
+
+test('release CI builds and binds an independent fourth Agent Gateway image', () => {
+  const workflow = text('.github/workflows/ci.yml');
+  const imageJob = capture(workflow, /\n {2}image:\n([\s\S]*?)\n {2}release:\n/, 'image job');
+  assert.match(
+    imageJob,
+    /- key: agent-gateway\s+repository: ghcr\.io\/dangdang-tech\/combo-agent-gateway\s+dockerfile: infra\/Dockerfile\.agent-gateway/u,
+  );
+  assert.equal(
+    (imageJob.match(/\n\s+- key: (?:api|agent-gateway|runtime|web)\n/gu) ?? []).length,
+    4,
+  );
+  assert.match(workflow, /agent_gateway_image=.*agent-gateway\.image/u);
+  assert.match(workflow, /--agent-gateway-image "\$agent_gateway_image"/u);
+
+  const dockerfile = text('infra/Dockerfile.agent-gateway');
+  assert.match(dockerfile, /pnpm -F @cb\/agent-gateway build/u);
+  assert.match(dockerfile, /RUN pnpm install --prod --frozen-lockfile/u);
+  assert.match(dockerfile, /USER node/u);
+  assert.match(dockerfile, /CMD \["node", "dist\/processes\/gateway\.js"\]/u);
+  assert.doesNotMatch(dockerfile, /COPY (?:--from=build )?\.?(?:\/app\/)?db(?:\s|\/)/u);
+});
+
+test('Agent Gateway release resources and role provisioning remain Test-only', () => {
+  const testGateway = text('infra/k8s/release/overlays/test/apps-v2/agent-gateway.yaml');
+  const testMigration = text(
+    'infra/k8s/release/overlays/test/migrate/vnext-role-passwords.patch.yaml',
+  );
+  const baseApps = text('infra/k8s/release/base/apps/kustomization.yaml');
+  const baseMigration = text('infra/k8s/job-migrate.yaml');
+  const previewApps = text('infra/k8s/release/overlays/preview/apps/kustomization.yaml');
+  const productionApps = text('infra/k8s/release/overlays/production/apps/kustomization.yaml');
+
+  assert.match(testGateway, /replicas: 2/u);
+  assert.match(testGateway, /automountServiceAccountToken: false/u);
+  assert.match(testGateway, /readOnlyRootFilesystem: true/u);
+  assert.match(testGateway, /name: AGENT_GATEWAY_PUBLISHER_ENABLED\s+value: 'false'/u);
+  assert.match(testGateway, /name: POSTGRES_AGENT_BROKER_PASSWORD/u);
+  assert.doesNotMatch(testGateway, /name: PGPASSWORD/u);
+  assert.match(testGateway, /path: \/health\s+port: health/u);
+  assert.match(testGateway, /path: \/ready\s+port: health/u);
+  assert.match(testGateway, /type: ClusterIP/u);
+  assert.doesNotMatch(testGateway, /nodePort:/u);
+
+  for (const role of ['API', 'BROKER', 'RECONCILER']) {
+    assert.match(
+      testMigration,
+      new RegExp(`name: POSTGRES_AGENT_${role}_PASSWORD[\\s\\S]*?optional: true`, 'u'),
+    );
+  }
+  for (const source of [baseApps, baseMigration, previewApps, productionApps]) {
+    assert.doesNotMatch(source, /combo-agent-gateway|POSTGRES_AGENT_BROKER_PASSWORD/u);
+  }
+
+  const deploy = text('scripts/deploy-env.sh');
+  assert.match(deploy, /apply --dry-run=client -f "\$WORK\/apps\.yaml" -o name/u);
+  assert.match(deploy, /deployments\+=\(agent-gateway\)/u);
+  assert.match(deploy, /\[\[ "\$ENVIRONMENT" == test \]\] \|\| return 0/u);
+  assert.match(deploy, /managed_by.*release-v2/u);
+  assert.match(deploy, /delete "\$\{existing\[@\]\}" --wait=true --timeout=60s/u);
+});

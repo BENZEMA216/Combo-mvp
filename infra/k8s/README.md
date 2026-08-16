@@ -14,9 +14,15 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## 应用清单
 
-`api.yaml`、`worker.yaml`、`runtime.yaml`、`web.yaml` 是四业务面的基础清单，引用 `combo-env` Secret（凭证）与 `ghcr-pull`（镜像拉取）并带环境占位符。`release/base/apps/` 与 `release/base/migrate/` 提供发布专用补丁（`envFrom: combo-release` ConfigMap、迁移 PGHOST），`release/overlays/{test,preview,production}/` 按环境设置 namespace。发布渲染由 `scripts/render-env.mjs` 完成，把占位符替换为每环境实际主机名、公开入口与 Secret 名。
+`api.yaml`、`worker.yaml`、`runtime.yaml`、`web.yaml` 是四个共享业务面的基础清单，引用 `combo-env` Secret（凭证）与 `ghcr-pull`（镜像拉取）并带环境占位符。`release/base/apps/` 与 `release/base/migrate/` 提供发布专用补丁（`envFrom: combo-release` ConfigMap、迁移 PGHOST），`release/overlays/{test,preview,production}/` 按环境设置 namespace。schema v2 的 `release/overlays/test/apps-v2/` 额外加入独立 Agent Gateway 镜像、ClusterIP Service 和两个 hardened Deployment 副本；Preview、Production 与 legacy schema v1 不含该资源。发布渲染由 `scripts/render-env.mjs` 完成，把占位符替换为每环境实际主机名、公开入口与 Secret 名。
 
-所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建。
+所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只允许在受信任运维边界原位轮换，不删除重建；现有 helper 尚不生成 VNext Gateway 键，部署前必须另行以不回显方式预置。
+
+### Test-only Agent Gateway
+
+schema v2 Test 清单要求 `POSTGRES_AGENT_API_PASSWORD`、`POSTGRES_AGENT_BROKER_PASSWORD`、`POSTGRES_AGENT_RECONCILER_PASSWORD` 成组存在。Test migration 的三个引用均为 optional，以便旧 Test Secret 在三键全缺时继续迁移并保留 NOLOGIN；部分键存在会由角色 provision 脚本拒绝，三键齐全才原子 provision。Gateway Pod 只读取 `POSTGRES_AGENT_BROKER_PASSWORD`，不读取 API/Reconciler 密码或管理员 `PGPASSWORD`。
+
+四个 compatibility policy 键 `AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS`、`AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS`、`AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS`、`AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES` 必须是应用契约接受的非空 JSON 数组；缺键会让 Pod fail closed。publisher 显式为 false，publisher Deployment allowlist 可缺；未来打开 publisher 时必须同时提供非空的 `AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST`。Service 仅暴露集群内 3300 WebSocket，3301 只供 Pod `/health` 与 `/ready` 探针，Preview/Production 不创建 Gateway Service 或 Deployment。
 
 ### Test-only visible transcript keyring
 

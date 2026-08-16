@@ -1,0 +1,145 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-gateway
+  labels:
+    app: agent-gateway
+    combo.build/managed-by: release-v2
+spec:
+  type: ClusterIP
+  selector:
+    app: agent-gateway
+  ports:
+    - name: websocket
+      port: 3300
+      targetPort: websocket
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-gateway
+  labels:
+    app: agent-gateway
+    combo.build/managed-by: release-v2
+spec:
+  replicas: 2
+  revisionHistoryLimit: 2
+  minReadySeconds: 5
+  progressDeadlineSeconds: 300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app: agent-gateway
+  template:
+    metadata:
+      labels:
+        app: agent-gateway
+      annotations:
+        combo.build/release-contract: v2
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 30
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: agent-gateway
+          image: ghcr.io/dangdang-tech/combo-agent-gateway:latest
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          envFrom:
+            - configMapRef:
+                name: combo-release
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: AGENT_GATEWAY_ENABLED
+              value: 'true'
+            - name: AGENT_GATEWAY_PUBLISHER_ENABLED
+              value: 'false'
+            - name: AGENT_GATEWAY_HOST
+              value: 0.0.0.0
+            - name: AGENT_GATEWAY_PORT
+              value: '3300'
+            - name: AGENT_GATEWAY_HEALTH_HOST
+              value: 0.0.0.0
+            - name: AGENT_GATEWAY_HEALTH_PORT
+              value: '3301'
+            - name: PGHOST
+              value: combo-postgres-host
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_agent_broker
+            - name: POSTGRES_AGENT_BROKER_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_AGENT_BROKER_PASSWORD }
+            - name: AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS }
+            - name: AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS
+              valueFrom:
+                secretKeyRef:
+                  { name: combo-env, key: AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS }
+            - name: AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS
+              valueFrom:
+                secretKeyRef:
+                  { name: combo-env, key: AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS }
+            - name: AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES }
+            - name: AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST
+              valueFrom:
+                secretKeyRef:
+                  name: combo-env
+                  key: AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST
+                  optional: true
+          ports:
+            - name: websocket
+              containerPort: 3300
+              protocol: TCP
+            - name: health
+              containerPort: 3301
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+              ephemeral-storage: 16Mi
+            limits:
+              cpu: 500m
+              memory: 384Mi
+              ephemeral-storage: 64Mi

@@ -371,6 +371,9 @@ jobs:
           - key: api
             repository: ghcr.io/dangdang-tech/combo-api
             dockerfile: infra/Dockerfile.api
+          - key: agent-gateway
+            repository: ghcr.io/dangdang-tech/combo-agent-gateway
+            dockerfile: infra/Dockerfile.agent-gateway
           - key: runtime
             repository: ghcr.io/dangdang-tech/combo-runtime
             dockerfile: infra/Dockerfile.runtime
@@ -551,7 +554,7 @@ jobs:
       - name: Install the release tooling dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Download the three image digests from this run
+      - name: Download the four image digests from this run
         uses: actions/download-artifact@v4
         with:
           pattern: combo-image-digest-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}-*
@@ -578,9 +581,11 @@ jobs:
           mkdir -p "$bundle/metadata"
 
           api_image=$(<"$RUNNER_TEMP/image-digests/api.image")
+          agent_gateway_image=$(<"$RUNNER_TEMP/image-digests/agent-gateway.image")
           runtime_image=$(<"$RUNNER_TEMP/image-digests/runtime.image")
           web_image=$(<"$RUNNER_TEMP/image-digests/web.image")
           [[ "$api_image" =~ ^ghcr\.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$ ]]
+          [[ "$agent_gateway_image" =~ ^ghcr\.io/dangdang-tech/combo-agent-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "$runtime_image" =~ ^ghcr\.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$ ]]
           [[ "$web_image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
 
@@ -614,6 +619,7 @@ jobs:
             --output "$bundle/metadata/release.json" \
             --source-sha "$SOURCE_SHA" \
             --api-image "$api_image" \
+            --agent-gateway-image "$agent_gateway_image" \
             --runtime-image "$runtime_image" \
             --web-image "$web_image" \
             --migration-head "$migration_head" \

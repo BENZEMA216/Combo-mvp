@@ -1,0 +1,41 @@
+# Creator-hosted Agent VNext Test Gateway. This is an independent image so the
+# long-lived WebSocket authority does not inherit API/Worker entrypoints or their
+# wider credential/dependency surface.
+FROM node:24-slim AS build
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfig.json ./
+COPY packages/creator-agent-protocol ./packages/creator-agent-protocol
+COPY packages/creator-agent-broker-journal ./packages/creator-agent-broker-journal
+COPY packages/creator-agent-persistence ./packages/creator-agent-persistence
+COPY apps/agent-gateway ./apps/agent-gateway
+RUN pnpm install --frozen-lockfile
+RUN pnpm -F @cb/creator-agent-protocol build \
+    && pnpm -F @cb/creator-agent-broker-journal build \
+    && pnpm -F @cb/creator-agent-persistence build \
+    && pnpm -F @cb/agent-gateway build
+
+FROM node:24-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
+COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
+COPY --from=build /app/packages/creator-agent-protocol/package.json \
+  ./packages/creator-agent-protocol/package.json
+COPY --from=build /app/packages/creator-agent-broker-journal/package.json \
+  ./packages/creator-agent-broker-journal/package.json
+COPY --from=build /app/packages/creator-agent-persistence/package.json \
+  ./packages/creator-agent-persistence/package.json
+COPY --from=build /app/apps/agent-gateway/package.json ./apps/agent-gateway/package.json
+RUN pnpm install --prod --frozen-lockfile
+COPY --from=build /app/packages/creator-agent-protocol/dist \
+  ./packages/creator-agent-protocol/dist
+COPY --from=build /app/packages/creator-agent-broker-journal/dist \
+  ./packages/creator-agent-broker-journal/dist
+COPY --from=build /app/packages/creator-agent-persistence/dist \
+  ./packages/creator-agent-persistence/dist
+COPY --from=build /app/apps/agent-gateway/dist ./apps/agent-gateway/dist
+USER node
+EXPOSE 3300 3301
+WORKDIR /app/apps/agent-gateway
+CMD ["node", "dist/processes/gateway.js"]

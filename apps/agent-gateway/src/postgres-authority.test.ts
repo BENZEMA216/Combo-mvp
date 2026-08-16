@@ -123,6 +123,27 @@ class CommitOutcomePool implements GatewayPool {
   }
 }
 
+class PublisherCandidatePool implements GatewayPool {
+  public readonly queries: string[] = [];
+  public readonly commandId = randomUuidV7();
+  public readonly deploymentId = randomUuidV7();
+
+  public async connect(): Promise<GatewayConnection> {
+    return {
+      query: <Row>(sql: string) => {
+        this.queries.push(sql.trim().replace(/\s+/gu, ' '));
+        if (sql.includes('SELECT command.command_id::text, command.deployment_id::text')) {
+          return Promise.resolve(
+            result([{ command_id: this.commandId, deployment_id: this.deploymentId }] as Row[]),
+          );
+        }
+        return Promise.resolve(result([]));
+      },
+      release: () => undefined,
+    };
+  }
+}
+
 function result<Row>(rows: Row[], rowCount = rows.length): GatewayQueryResult<Row> {
   return { rows, rowCount };
 }
@@ -137,6 +158,31 @@ describe('PostgresAgentGatewayAuthority compatibility policy', () => {
           { ...POLICY, acceptedBrokerContractDigests: [] },
         ),
     ).toThrow();
+  });
+
+  it('does not mutate an otherwise eligible Test command outside the Deployment rollout fence', async () => {
+    const pool = new PublisherCandidatePool();
+    const authority = new PostgresAgentGatewayAuthority(
+      { api: pool, broker: pool },
+      { ...POLICY, publisherDeploymentAllowlist: [randomUuidV7()] },
+    );
+
+    await expect(
+      authority.claimBrokerCommand(
+        {
+          ownerId: randomUuidV7(),
+          installationId: randomUuidV7(),
+          connectionId: randomUuidV7(),
+          workerSessionId: randomUuidV7(),
+        },
+        AbortSignal.timeout(2_000),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(pool.queries.some((sql) => sql.startsWith('UPDATE broker_outbox'))).toBe(false);
+    expect(
+      pool.queries.some((sql) => sql.includes('INSERT INTO worker_gateway_operation_receipts')),
+    ).toBe(false);
   });
 });
 

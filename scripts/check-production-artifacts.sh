@@ -16,14 +16,14 @@ fi
 
 if grep -Eq 'resend-mock|/__test/' \
   infra/docker-compose.yml infra/docker-compose.prod.yml \
-  infra/Dockerfile.api infra/Dockerfile.runtime infra/Dockerfile.web; then
+  infra/Dockerfile.api infra/Dockerfile.agent-gateway infra/Dockerfile.runtime infra/Dockerfile.web; then
   echo 'Test mail infrastructure is referenced by a production artifact.' >&2
   exit 1
 fi
 
 if grep -Eq \
   'COPY --from=build[[:space:]]+/app/db[[:space:]]+\./db([[:space:]]|$)|COPY --from=build.*(__tests__|/tests/)' \
-  infra/Dockerfile.api infra/Dockerfile.runtime infra/Dockerfile.web; then
+  infra/Dockerfile.api infra/Dockerfile.agent-gateway infra/Dockerfile.runtime infra/Dockerfile.web; then
   echo 'A production runtime stage copies a project test tree or the complete database source tree.' >&2
   exit 1
 fi

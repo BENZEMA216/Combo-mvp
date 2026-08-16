@@ -16,7 +16,7 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## 部署脚本
 
-`render-env.mjs` 按环境渲染 k8s 清单。它读取 canonical 发布清单（`release-manifest.mjs` 生成），把镜像 digest、`combo-release` ConfigMap（release 元数据）和每环境占位符注入应用 overlay。占位符包括 `combo-env`、`ghcr-pull`、`combo-postgres-host`、`combo-public-app-origin`、`combo-session-cookie-secure`，以及 `postgres:5432`、`redis-queue:6379`、`redis-hot:6379`、`minio:9000` 主机名。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。支持三个 phase：`apps`、`migrate`、`foundation`。渲染结果只含 Service、Deployment、Job 与允许的 ConfigMap，绝不含 Secret。
+`render-env.mjs` 按环境渲染 k8s 清单。它读取 canonical 发布清单（`release-manifest.mjs` 生成），把镜像 digest、`combo-release` ConfigMap（release 元数据）和每环境占位符注入应用 overlay。占位符包括 `combo-env`、`ghcr-pull`、`combo-postgres-host`、`combo-public-app-origin`、`combo-session-cookie-secure`，以及 `postgres:5432`、`redis-queue:6379`、`redis-hot:6379`、`minio:9000` 主机名。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。支持三个 phase：`apps`、`migrate`、`foundation`。schema v2 只在 Test 渲染 Agent Gateway Service 与双副本 Deployment；Preview/Production 以及 legacy schema v1 都渲染零个 Gateway 资源。渲染结果只含 Service、Deployment、Job 与允许的 ConfigMap，绝不含 Secret。
 
 apps render 还强制 visible transcript provider 的环境边界：Test 必须是 `test-k8s-secret-file`、公开 flag=false、精确非敏感 policy/path 和 optional `0400` read-only Secret volume；Preview/Production 出现 provider、keyring path 或 volume 会直接 render 失败。render 与测试只检查 Secret 名称/键名/文件权限，不读取或输出 Secret 值，也不证明 production KMS 或真实腾讯云 provider。
 
@@ -28,7 +28,9 @@ apps render 还强制 visible transcript provider 的环境边界：Test 必须�
 
 `deploy-env.sh` 支持 `--render-dir`：workflow 在 runner 上先渲染 YAML，再上传到主机用预渲染文件执行。
 
-`release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。清单把一个完整源码 SHA 唯一映射到 API、Runtime、Web 三个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。
+`release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。新建清单使用 schema v2，把一个完整源码 SHA 唯一映射到 API、Agent Gateway、Runtime、Web 四个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。校验器继续接受 canonical schema v1；旧清单不含 Gateway 镜像，并安全渲染为零 Gateway 资源。
+
+Agent Gateway 目前是严格 Test-only：`combo-env` 必须预置三个 VNext 角色密码及四个非空 JSON compatibility allowlist。Test migration 对三个角色密码使用 `optional: true` 以兼容旧 Secret：三键全缺时保留 NOLOGIN，部分提供时迁移失败关闭，三键齐全才 provision 可登录最小角色。Gateway Pod 只读取 broker 密码；publisher 默认关闭，`AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST` 因而可缺，只有显式启用 publisher 时才必须是非空精确 Deployment UUID allowlist。仓库清单只引用键名，不包含或输出任何值。
 
 `web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。正式 CI 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。
 

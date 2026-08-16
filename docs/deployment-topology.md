@@ -29,11 +29,11 @@
 
 ## 3. workflow 清单
 
-| workflow                       | 显示名        | 触发                                  | 作用                                                                                                                                                        |
-| ------------------------------ | ------------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/pr-ci.yml`  | PR checks     | pull_request                          | 合并前质量门禁：依赖安装、shared 构建、format、lint、typecheck、无容器快速测试、ShellCheck；不构建或发布镜像                                                |
-| `.github/workflows/ci.yml`     | Release build | main push、workflow_call              | 全量构建：集成测试、容器契约、三个镜像（api/runtime/web），并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>-<attempt>` 构建清单；也是分支构建的可复用入口 |
-| `.github/workflows/deploy.yml` | Deploy        | Release build 完成、workflow_dispatch | 统一部署三环境，执行晋级链                                                                                                                                  |
+| workflow                       | 显示名        | 触发                                  | 作用                                                                                                                                                                      |
+| ------------------------------ | ------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/pr-ci.yml`  | PR checks     | pull_request                          | 合并前质量门禁：依赖安装、shared 构建、format、lint、typecheck、无容器快速测试、ShellCheck；不构建或发布镜像                                                              |
+| `.github/workflows/ci.yml`     | Release build | main push、workflow_call              | 全量构建：集成测试、容器契约、四个镜像（api/agent-gateway/runtime/web），并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>-<attempt>` 构建清单；也是分支构建的可复用入口 |
+| `.github/workflows/deploy.yml` | Deploy        | Release build 完成、workflow_dispatch | 统一部署三环境，执行晋级链                                                                                                                                                |
 
 `deploy.yml` 的 `workflow_run` 触发器必须引用 `Release build` 显示名；重命名 ci.yml 时需要同步。
 
@@ -62,15 +62,16 @@
 - `migrate`：删除旧迁移 Job 后应用新迁移 Job 并等待完成（幂等，per-foundation 锁串行）。
 - `apps`：应用应用清单（含 `combo-release` ConfigMap）并等待 rollout。
 
-`scripts/render-env.mjs` 按环境渲染 apps / migrate / foundation 三份清单，替换镜像 digest 与每环境占位符（Secret 名、Postgres/Redis/MinIO 主机、公开入口、Cookie 安全标志）。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。
+`scripts/render-env.mjs` 按环境渲染 apps / migrate / foundation 三份清单，替换镜像 digest 与每环境占位符（Secret 名、Postgres/Redis/MinIO 主机、公开入口、Cookie 安全标志）。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。release schema v2 仅在 Test 加入 Agent Gateway；Preview/Production 和 schema v1 始终渲染零 Gateway 资源。
 
 ## 7. 凭证规范
 
 - 各应用 namespace 必须存在 `combo-env` Secret（Postgres/S3/Resend/OTP/LLM 配置）与 `ghcr-pull`（镜像拉取）。
 - 共享 foundation（`combo-foundation`）的 Postgres/S3 凭证必须与 `combo-preview`、`combo-prod` 的凭证一致；否则应用无法连接共享数据库。
-- 凭证只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建；轮换目标是各应用 namespace 的 `combo-env`（test→`combo-test`、preview→`combo-preview`、production→`combo-prod`）。
+- 凭证只在受信任运维边界原位轮换，不删除重建；现有 `scripts/configure-first-party-auth-secrets.sh` 负责 legacy 键，VNext Test Gateway 键需另行以不回显方式预置到 `combo-test/combo-env`。
 - 部署脚本不得输出、落盘、复制或提交任何 Secret 值。
 - Test 可额外预置 `combo-visible-transcript-test-keyring`，只供 Runtime 的 `test-k8s-secret-file` adapter 以 `0400` 只读 volume 使用。清单不创建或填充该 Secret；Preview 与 Production 禁止渲染此 provider、path 或 volume。它不是 production KMS，不能作为腾讯云真实 provider 验证。
+- Test schema v2 还要求 `combo-env` 成组预置三个 VNext 角色密码和四个 Gateway compatibility JSON allowlist。migration 对角色键 optional 是旧环境 expand compatibility，不代表 Gateway 可无凭据运行；Pod 只持 broker 密码且默认关闭 publisher。Preview/Production 不接受这些 Gateway 资源，当前 helper 也不会生成这些值。
 
 ## 8. 更新流程
 

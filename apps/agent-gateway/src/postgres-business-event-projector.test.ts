@@ -42,6 +42,21 @@ type Lifecycle = Pick<
 >;
 
 describe('PostgresGatewayBusinessEventProjector', () => {
+  it('keeps the Test conversation.ready-only bootstrap fail closed for Invocation events', async () => {
+    const transaction = emptyTransaction();
+    const projector = new PostgresGatewayBusinessEventProjector();
+    const prepared = fixture('broker-invocation-prepared.v1.json');
+    const succeeded = fixture('broker-invocation-succeeded.v1.json');
+
+    await expect(
+      projector.project(projectorInput(transaction, prepared, AbortSignal.timeout(5_000))),
+    ).rejects.toMatchObject({ code: 'BUSINESS_PROJECTOR_UNAVAILABLE' });
+    await expect(
+      projector.project(projectorInput(transaction, succeeded, AbortSignal.timeout(5_000))),
+    ).rejects.toMatchObject({ code: 'BUSINESS_PROJECTOR_UNAVAILABLE' });
+    expect(transaction.calls).toEqual([]);
+  });
+
   it('passes the exact Gateway transaction and signal to prepared/started projectors', async () => {
     const transaction = emptyTransaction();
     const signal = AbortSignal.timeout(5_000);
