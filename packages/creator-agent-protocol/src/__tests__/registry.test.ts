@@ -26,6 +26,16 @@ const testPlanPath = join(
   'vnext',
   'creator-hosted-agent-vnext-test-plan.md',
 );
+const frozenPlanMirrors = [
+  {
+    path: join(repositoryRoot, 'docs', 'vnext', 'creator-hosted-agent-vnext-architecture.md'),
+    sourceSha256: '523b4637733b505570d091633f5aecca979c6ca3b344f1dcaec2c0f6487c09b8',
+  },
+  {
+    path: testPlanPath,
+    sourceSha256: 'b548c9d9d05fa912de19e4cde053222ea08fdb04f326f368bf12ade614be9404',
+  },
+] as const;
 
 async function readYaml(path: string): Promise<unknown> {
   return parseVnextRegistryYaml(await readFile(path, 'utf8'));
@@ -43,6 +53,17 @@ const sha256Digest = (bytes: Uint8Array) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
 describe('VNext machine-readable contract registries', () => {
+  it('keeps both repository plan mirrors byte-exact with their frozen authority digests', async () => {
+    const readme = await readFile(join(repositoryRoot, 'docs', 'vnext', 'README.md'), 'utf8');
+    for (const mirror of frozenPlanMirrors) {
+      const digest = createHash('sha256')
+        .update(await readFile(mirror.path))
+        .digest('hex');
+      expect(digest, mirror.path).toBe(mirror.sourceSha256);
+      expect(readme).toContain(`来源 SHA-256：\`${mirror.sourceSha256}\``);
+    }
+  });
+
   it('binds the broker registry to the exact standalone JCS contract artifact', async () => {
     const registry = BrokerContractRegistrySchema.parse(
       await readYaml(join(vnextDirectory, 'registries.yaml')),
@@ -55,7 +76,6 @@ describe('VNext machine-readable contract registries', () => {
     expect(contract.contractDigest).toBe(currentBrokerContractDigest());
     expect(contract.contractDigest).toBe(`sha256:${canonicalSha256(artifact)}`);
   });
-
   it('parses exactly 25 invariants, 20 decisions, field-level data-flow locations and 66 cases', async () => {
     const invariants = InvariantRegistrySchema.parse(
       await readYaml(join(vnextDirectory, 'invariants.yaml')),
