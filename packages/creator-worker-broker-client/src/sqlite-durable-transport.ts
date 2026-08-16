@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
@@ -48,9 +49,12 @@ import {
 } from './worker-broker-client.js';
 import {
   WORKER_INVOCATION_SCHEMA_SQL,
+  WORKER_INVOCATION_SCHEMA_V4_SQL,
   WORKER_INVOCATION_SCHEMA_VERSION,
   WORKER_CONVERSATION_READY_SCHEMA_SQL,
+  WORKER_CONVERSATION_READY_SCHEMA_V4_SQL,
   WORKER_CONVERSATION_READY_SCHEMA_VERSION,
+  WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION,
   SqliteWorkerInvocationJournal,
   assertWorkerConversationReadyIntegrity,
   assertWorkerInvocationIntegrity,
@@ -63,6 +67,13 @@ import {
   type SqliteWorkerInvocationJournalOptions,
   type WorkerInvocationJournalHost,
 } from './sqlite-invocation-journal.js';
+import {
+  decodeStoredBrokerEnvelope,
+  materializeStoredBrokerEnvelope,
+  type DecodedStoredBrokerEnvelope,
+  type StoredBrokerConversationAuthority,
+  type StoredBrokerTransportAuthority,
+} from './stored-broker-envelope.js';
 
 type NodeSqliteModule = Readonly<{ DatabaseSync: typeof DatabaseSync }>;
 
@@ -70,7 +81,7 @@ const loadNodeSqlite = (): NodeSqliteModule =>
   createRequire(import.meta.url)('node:sqlite') as NodeSqliteModule;
 
 export const WORKER_TRANSPORT_APPLICATION_ID = 0x43425754;
-export const WORKER_TRANSPORT_SCHEMA_VERSION = WORKER_CONVERSATION_READY_SCHEMA_VERSION;
+export const WORKER_TRANSPORT_SCHEMA_VERSION = WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION;
 export const WORKER_TRANSPORT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const WORKER_TRANSPORT_SEQUENCE_RETENTION = 1_024;
 export const WORKER_TRANSPORT_DEFAULT_MAX_INBOUND_ROWS = 512;
@@ -89,9 +100,39 @@ const UUID_V7_VERSION_INDEX = 14;
 const SQLITE_BUSY_WAIT = new Int32Array(new SharedArrayBuffer(4));
 const ZERO_DIGEST = '0'.repeat(64);
 const PRUNE_BATCH_SIZE = 128;
-const WATERMARK_FORMAT_VERSION = 1;
+const LEGACY_WATERMARK_FORMAT_VERSION = 1;
+const WATERMARK_FORMAT_VERSION = 2;
+const WATERMARK_EVIDENCE_VERSION = 2;
+const LEGACY_WATERMARK_DIGEST_DOMAIN = 'combo:vnext:worker-commit-watermark:v1\0';
+const WATERMARK_DIGEST_DOMAIN = 'combo:vnext:worker-commit-watermark:v2\0';
+const MIGRATION_RECOVERY_FORMAT_VERSION = 1;
+const MIGRATION_RECOVERY_DIGEST_DOMAIN = 'combo:vnext:worker-migration-recovery-manifest:v1\0';
+const MIGRATION_RECOVERY_CANDIDATE_DIGEST_DOMAIN =
+  'combo:vnext:worker-migration-recovery-candidate:v1\0';
 const WAL_ADMISSION_RECOVERY_HEADROOM_BYTES = 256 * 1024;
-const DATABASE_ADMISSION_HEADROOM_PAGES = 64;
+// A single bounded refill can atomically materialize 128 transport envelopes plus their local
+// delivery rows and content evidence. Keep enough disposable pages above the protected recovery
+// reserve for that maximum healthy batch; otherwise a large READY refill can roll back with
+// CAPACITY_EXCEEDED despite ample max_page_count and free filesystem space.
+const DATABASE_ADMISSION_HEADROOM_PAGES = 256;
+
+const LEGACY_V3_COMMAND_MIGRATION_CLASS = Object.freeze({
+  'lease.grant': 'TRANSPORT_CONTROL',
+  'lease.revoke': 'TRANSPORT_CONTROL',
+  'version.prepare': 'BUSINESS',
+  'deployment.drain': 'BUSINESS',
+  'conversation.open': 'BUSINESS',
+  'conversation.close': 'BUSINESS',
+  'invocation.prepare': 'BUSINESS',
+  'invocation.start': 'BUSINESS',
+  'invocation.cancel': 'BUSINESS',
+  'invocation.reconcile': 'BUSINESS',
+  ping: 'TRANSPORT_CONTROL',
+} as const satisfies Record<BrokerCommand['type'], 'TRANSPORT_CONTROL' | 'BUSINESS'>);
+const LEGACY_V3_TRANSPORT_CONTROL_SQL = Object.entries(LEGACY_V3_COMMAND_MIGRATION_CLASS)
+  .filter(([, classification]) => classification === 'TRANSPORT_CONTROL')
+  .map(([type]) => `'${type}'`)
+  .join(', ');
 
 export type SqliteWorkerTransportFaultPoint =
   | 'migration.before_commit'
@@ -103,6 +144,11 @@ export type SqliteWorkerTransportFaultPoint =
   | 'migration.v2_to_v3.before_authority_digest'
   | 'migration.v2_to_v3.after_watermark_fsync'
   | 'migration.v2_to_v3.after_commit'
+  | 'migration.v3_to_v4.before_watermark'
+  | 'migration.v3_to_v4.after_watermark_fsync'
+  | 'migration.v3_to_v4.after_commit'
+  | 'migration.v3_to_v4.after_local_projection'
+  | 'migration.v3_to_v4.before_authority_digest'
   | `${string}.before_commit`
   | `${string}.after_watermark_fsync`
   | `${string}.after_commit`;
@@ -117,6 +163,7 @@ export type SqliteWorkerTransportErrorCode =
   | 'JOURNAL_PRAGMA_MISMATCH'
   | 'JOURNAL_BUSY'
   | 'JOURNAL_CAPACITY'
+  | 'JOURNAL_RECONCILIATION_REQUIRED'
   | 'JOURNAL_ABORTED'
   | 'JOURNAL_CLOSED';
 
@@ -181,8 +228,7 @@ export type WorkerTransportPragmas = Readonly<{
   quickCheck: string;
 }>;
 
-type JournalCommitWatermark = Readonly<{
-  formatVersion: 1;
+type JournalCommitWatermarkBase = Readonly<{
   applicationId: number;
   schemaVersion: number;
   schemaDigest: string;
@@ -198,6 +244,47 @@ type JournalCommitWatermark = Readonly<{
   maxDatabaseBytes: number;
   maxWalBytes: number;
   minFreeBytes: number;
+}>;
+
+type LegacyJournalCommitWatermark = JournalCommitWatermarkBase &
+  Readonly<{
+    formatVersion: 1;
+  }>;
+
+type CurrentConnectionAuthority = Readonly<{
+  installationId: string;
+  connectionId: string;
+  connectionDigest: string;
+}>;
+
+type JournalCommitWatermark = JournalCommitWatermarkBase &
+  Readonly<{
+    formatVersion: 2;
+    evidenceVersion: 2;
+    schemaVersion: 4;
+    currentConnectionAuthority: CurrentConnectionAuthority | null;
+  }>;
+
+type AnyJournalCommitWatermark = LegacyJournalCommitWatermark | JournalCommitWatermark;
+
+type MigrationRecoveryManifest = Readonly<{
+  formatVersion: 1;
+  nonce: string;
+  legacySlot: Readonly<{
+    schemaVersion: 3;
+    commitEpoch: number;
+    watermark: LegacyJournalCommitWatermark;
+  }>;
+  candidateSlot: Readonly<{
+    schemaVersion: 4;
+    commitEpoch: number;
+    watermark: JournalCommitWatermark;
+  }> | null;
+  finalizedSlot: Readonly<{
+    schemaVersion: 4;
+    commitEpoch: number;
+    candidateDigest: string;
+  }> | null;
 }>;
 
 export type DurableInboundCommandCandidate = Readonly<{
@@ -230,6 +317,11 @@ type ConnectionRow = {
   released_at_ms: number | null;
 };
 
+type StoredConnectionAuthorityRow = Pick<
+  ConnectionRow,
+  'installation_id' | 'connection_id' | 'deployment_id' | 'worker_session_id' | 'lease_id' | 'fence'
+>;
+
 type OutboxRow = {
   message_id: string;
   installation_id: string;
@@ -237,7 +329,10 @@ type OutboxRow = {
   sequence: string | null;
   canonical_digest: string;
   envelope_json: string;
+  envelope_type: string;
+  response_to_message_id: string | null;
   state: 'UNBOUND' | 'PENDING' | 'WRITTEN' | 'ACKED' | 'SUPERSEDED';
+  delivery_digest: string;
   ack_level: 'RECEIVED' | 'PERSISTED' | 'CLOUD_COMMITTED' | null;
 };
 
@@ -248,6 +343,7 @@ type InboundEffectRow = {
   sequence: string;
   message_id: string;
   canonical_digest: string;
+  logical_digest: string;
   effect_state: 'PERSISTED' | 'APPLIED';
   effect_digest: string;
   replay_count: number;
@@ -477,6 +573,7 @@ const SCHEMA_SQL = `
 export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTransportPort {
   readonly #filename: string;
   readonly #watermarkFilename: string;
+  readonly #migrationRecoveryFilename: string;
   readonly #recoveryReserveFilename: string;
   readonly #database: DatabaseSync;
   readonly #newJournalAuthorization?: NewWorkerJournalAuthorization;
@@ -505,6 +602,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
   constructor(options: SqliteWorkerTransportOptions) {
     this.#filename = validateJournalPath(options.filename);
     this.#watermarkFilename = `${this.#filename}.watermark`;
+    this.#migrationRecoveryFilename = `${this.#filename}.migration-recovery`;
     this.#recoveryReserveFilename = `${this.#filename}.recovery-reserve`;
     this.#newJournalAuthorization = parseNewJournalAuthorization(options.newJournalAuthorization);
     this.#busyTimeoutMs = bounded(options.busyTimeoutMs ?? 1_000, 1, 5_000);
@@ -561,11 +659,16 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     this.#now = options.now ?? Date.now;
     this.#faultInjector = options.faultInjector;
 
+    ensureSafeParent(dirname(this.#filename));
+    cleanupSafeAtomicTemps(this.#migrationRecoveryFilename);
     let existed = journalEntryExists(this.#filename);
+    if (!existed && journalEntryExists(this.#migrationRecoveryFilename)) {
+      ensureSafeRegularFile(this.#migrationRecoveryFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
     if (!existed && this.#newJournalAuthorization === undefined) {
       throw new SqliteWorkerTransportError('JOURNAL_MISSING');
     }
-    ensureSafeParent(dirname(this.#filename));
     if (!existed && safeRegularFileExists(this.#watermarkFilename, 0o600, 'JOURNAL_FILE_UNSAFE')) {
       // A watermark with no database proves loss and must never authorize recreation. Re-sample
       // the database once because a concurrent authorized first-open publishes the database before
@@ -1019,6 +1122,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         ) {
           throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
         }
+        const previousEffect = this.#inboundEffectRow(connectionId, envelope.sequence);
+        if (previousEffect === undefined) throw permanentPortFailure();
         this.#database
           .prepare(
             `UPDATE transport_inbound_frames
@@ -1026,7 +1131,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
            WHERE connection_id = ? AND sequence = ?`,
           )
           .run(safeDeadline(now, WORKER_TRANSPORT_RETENTION_MS), connectionId, envelope.sequence);
-        this.#refreshInboundEffectDigest(connectionId, envelope.sequence);
+        this.#refreshInboundEffectDigest(connectionId, envelope.sequence, previousEffect);
         this.#reactivateReplayResponse(installationId, connectionId, envelope.messageId, now);
         return 'EXACT_REPLAY';
       },
@@ -1203,7 +1308,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
              WHERE message_id = ? AND state = 'PENDING'`,
           )
           .run(now, messageId);
-        this.#refreshOutboxDeliveryDigest(messageId);
+        this.#refreshOutboxDeliveryDigest(messageId, row);
       }
     });
   }
@@ -1253,7 +1358,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       const rows = this.#database
         .prepare(
           `SELECT f.connection_id, f.sequence, f.message_id, f.canonical_digest,
-                  f.logical_digest, f.envelope_json, f.effect_state
+                  f.logical_digest, f.envelope_json, f.effect_state,
+                  lc.semantic_digest AS consumed_semantic_digest
            FROM transport_inbound_frames AS f
            JOIN transport_connections AS c ON c.connection_id = f.connection_id
            LEFT JOIN local_consumed_commands AS lc ON lc.command_id = f.message_id
@@ -1273,15 +1379,37 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         logical_digest: string;
         envelope_json: string;
         effect_state: 'PERSISTED';
+        consumed_semantic_digest: string | null;
       }>;
       return rows.map((row) => {
-        const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
+        const stored = decodeStoredBrokerEnvelope(row.envelope_json, row.canonical_digest);
+        const conversations =
+          stored.envelope.type === 'conversation.open'
+            ? (this.#database
+                .prepare(
+                  `SELECT * FROM local_conversations
+                   WHERE conversation_id = ? OR open_command_id = ?
+                   ORDER BY conversation_id`,
+                )
+                .all(stored.envelope.body.conversationId, stored.envelope.messageId) as Array<
+                Record<string, unknown>
+              >)
+            : [];
+        if (conversations.length > 1) {
+          throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+        }
+        const envelope = materializeStoredInboundEnvelope(
+          stored,
+          connection,
+          conversations[0],
+          row.consumed_semantic_digest ?? undefined,
+        );
         if (
           envelope.kind !== 'command' ||
           envelope.connectionId !== row.connection_id ||
           envelope.sequence !== row.sequence ||
           envelope.messageId !== row.message_id ||
-          logicalEnvelopeDigest(envelope) !== row.logical_digest
+          stored.logicalDigest !== row.logical_digest
         ) {
           throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
         }
@@ -1639,6 +1767,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (migratedVersion === WORKER_INVOCATION_SCHEMA_VERSION) {
       this.#validateLegacyV2Snapshot();
       this.#migrateLegacyV2ToV3();
+      migratedVersion = WORKER_CONVERSATION_READY_SCHEMA_VERSION;
+    }
+    if (migratedVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION) {
+      this.#validateLegacyV3Snapshot();
+      // The v3 -> v4 defensive-integrity migration is installed below as one exclusive
+      // transaction. Keep this branch explicit so the legacy format-1 watermark is always
+      // validated before any v4 bytes are published.
+      this.#migrateLegacyV3ToV4();
       return;
     }
 
@@ -1665,11 +1801,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
       }
       this.#database.exec(SCHEMA_SQL);
-      this.#database.exec(WORKER_INVOCATION_SCHEMA_SQL);
+      this.#database.exec(WORKER_INVOCATION_SCHEMA_V4_SQL);
       this.#rebuildLegacyConversationsWithoutTransportForeignKey(
         performance.now() + this.#operationTimeoutMs,
       );
-      this.#database.exec(WORKER_CONVERSATION_READY_SCHEMA_SQL);
+      this.#database.exec(WORKER_CONVERSATION_READY_SCHEMA_V4_SQL);
       this.#database.exec(`
         PRAGMA application_id = ${WORKER_TRANSPORT_APPLICATION_ID};
         PRAGMA user_version = ${WORKER_TRANSPORT_SCHEMA_VERSION};
@@ -1765,7 +1901,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     this.#database.exec('BEGIN EXCLUSIVE');
     let committed = false;
     let watermarkWriteStarted = false;
-    let legacyWatermark: JournalCommitWatermark | undefined;
+    let legacyWatermark: LegacyJournalCommitWatermark | undefined;
     try {
       if (pragmaNumber(this.#database, 'user_version') !== 1) {
         throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
@@ -1853,7 +1989,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     let began = false;
     let committed = false;
     let watermarkWriteStarted = false;
-    let legacyWatermark: JournalCommitWatermark | undefined;
+    let legacyWatermark: LegacyJournalCommitWatermark | undefined;
     try {
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec('PRAGMA foreign_keys = OFF;');
@@ -1888,7 +2024,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#rebuildLegacyConversationsWithoutTransportForeignKey(migrationDeadline);
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec(WORKER_CONVERSATION_READY_SCHEMA_SQL);
-      this.#database.exec(`PRAGMA user_version = ${WORKER_TRANSPORT_SCHEMA_VERSION};`);
+      this.#database.exec(`PRAGMA user_version = ${WORKER_CONVERSATION_READY_SCHEMA_VERSION};`);
       this.#assertMigrationDeadline(migrationDeadline);
       this.#backfillConversationReadyAuthority(migrationDeadline);
       this.#refreshMigratedConversationDigests(migrationDeadline);
@@ -1920,7 +2056,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#assertMigrationDeadline(migrationDeadline);
       this.#faultInjector?.('migration.v2_to_v3.before_watermark');
       watermarkWriteStarted = true;
-      this.#writeExternalWatermark(this.#readDatabaseWatermark());
+      this.#writeExternalWatermark(
+        this.#readDatabaseWatermark(WORKER_CONVERSATION_READY_SCHEMA_VERSION),
+      );
       this.#faultInjector?.('migration.v2_to_v3.after_watermark_fsync');
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec('COMMIT');
@@ -1946,6 +2084,596 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
       if (isSqliteCapacity(error)) throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
       throw error;
+    }
+  }
+
+  #validateLegacyV3Snapshot(): void {
+    this.#database.exec('BEGIN');
+    let completed = false;
+    try {
+      const pragmas = this.inspectPragmas();
+      if (
+        pragmas.applicationId !== WORKER_TRANSPORT_APPLICATION_ID ||
+        pragmas.userVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION ||
+        pragmas.journalMode.toLowerCase() !== 'wal' ||
+        pragmas.synchronous !== 2 ||
+        pragmas.foreignKeys !== 1 ||
+        pragmas.secureDelete !== 1 ||
+        pragmas.busyTimeoutMs !== this.#busyTimeoutMs ||
+        pragmas.maxPageCount !== Math.floor(this.#maxDatabaseBytes / pragmas.pageSize) ||
+        pragmas.journalSizeLimit !== this.#maxWalBytes ||
+        pragmas.walAutocheckpoint !== 256 ||
+        pragmas.quickCheck.toLowerCase() !== 'ok'
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_PRAGMA_MISMATCH');
+      }
+      this.#assertDatabaseIntegrity();
+      this.#assertSchemaDigest();
+      this.#assertStoredEnvelopeIntegrity();
+      assertWorkerInvocationIntegrity(this.#database);
+      assertWorkerConversationReadyIntegrity(this.#database);
+      const watermark = this.#readDatabaseWatermark(WORKER_CONVERSATION_READY_SCHEMA_VERSION);
+      this.#database.exec('COMMIT');
+      completed = true;
+      this.#recoverMigrationWatermarkIfNeeded(watermark);
+      this.#assertExternalWatermark(watermark);
+    } finally {
+      if (!completed) safeRollback(this.#database);
+    }
+  }
+
+  #migrateLegacyV3ToV4(): void {
+    const migrationDeadline = performance.now() + this.#operationTimeoutMs;
+    const previousBusyTimeout = pragmaNumber(this.#database, 'busy_timeout', 'timeout');
+    let began = false;
+    let committed = false;
+    let legacyWatermark: LegacyJournalCommitWatermark | undefined;
+    let recoveryManifest: MigrationRecoveryManifest | undefined;
+    let candidateWatermark: JournalCommitWatermark | undefined;
+    try {
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec('PRAGMA foreign_keys = OFF;');
+      const remaining = Math.max(1, Math.floor(migrationDeadline - performance.now()));
+      this.#database.exec(`PRAGMA busy_timeout = ${Math.min(previousBusyTimeout, remaining)};`);
+      try {
+        this.#database.exec('BEGIN EXCLUSIVE');
+        began = true;
+      } catch {
+        this.#assertMigrationDeadline(migrationDeadline);
+        throw new SqliteWorkerTransportError('JOURNAL_BUSY');
+      }
+      this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
+      this.#assertMigrationDeadline(migrationDeadline);
+      const lockedVersion = pragmaNumber(this.#database, 'user_version');
+      if (lockedVersion === WORKER_TRANSPORT_SCHEMA_VERSION) {
+        this.#database.exec('COMMIT');
+        committed = true;
+        this.#database.exec('PRAGMA foreign_keys = ON;');
+        return;
+      }
+      if (lockedVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION) {
+        throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
+      }
+
+      // The format-1 authority and all legacy local/transport relations are re-proven while the
+      // exclusive lock is held. No migration write is allowed before the business classification
+      // and ACK receipt projections below complete.
+      this.#assertDatabaseIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertSchemaDigest();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertStoredEnvelopeIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerInvocationIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerConversationReadyIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      legacyWatermark = this.#readDatabaseWatermark(WORKER_CONVERSATION_READY_SCHEMA_VERSION);
+      this.#assertExternalWatermark(legacyWatermark);
+      this.#assertMigrationDeadline(migrationDeadline);
+
+      this.#assertLegacyV3BusinessRowsReconciled();
+      this.#assertLegacyInvocationReceipts(migrationDeadline);
+      this.#assertLegacyConversationReadyReceipts(migrationDeadline);
+      this.#assertLegacyV3MigrationCapacity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      const transientSchema = this.#captureTransientTransportSchema();
+      this.#assertMigrationDeadline(migrationDeadline);
+      recoveryManifest = this.#prepareMigrationRecoveryManifest(legacyWatermark);
+      this.#assertMigrationDeadline(migrationDeadline);
+
+      this.#database.exec(
+        migrationCreateTableSql(
+          WORKER_INVOCATION_SCHEMA_V4_SQL,
+          'local_invocations',
+          'local_invocations_v4',
+        ),
+      );
+      this.#database.exec(
+        migrationCreateTableSql(
+          WORKER_INVOCATION_SCHEMA_V4_SQL,
+          'local_invocation_outbox_receipts',
+          'local_invocation_outbox_receipts_v4',
+        ),
+      );
+      this.#database.exec(
+        migrationCreateTableSql(
+          WORKER_CONVERSATION_READY_SCHEMA_V4_SQL,
+          'local_conversation_ready_outbox_receipts',
+          'local_conversation_ready_outbox_receipts_v4',
+        ),
+      );
+      this.#assertMigrationDeadline(migrationDeadline);
+
+      this.#copyLegacyInvocations(migrationDeadline);
+      this.#copyLegacyInvocationReceipts(migrationDeadline);
+      this.#copyLegacyConversationReadyReceipts(migrationDeadline);
+      this.#faultInjector?.('migration.v3_to_v4.after_local_projection');
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertMigrationTableCount('local_invocations', 'local_invocations_v4');
+      this.#assertMigrationTableCount(
+        'local_invocation_outbox_receipts',
+        'local_invocation_outbox_receipts_v4',
+      );
+      this.#assertMigrationTableCount(
+        'local_conversation_ready_outbox_receipts',
+        'local_conversation_ready_outbox_receipts_v4',
+      );
+
+      this.#database.exec(`
+        DROP TABLE local_conversation_ready_outbox_receipts;
+        DROP TABLE local_invocation_outbox_receipts;
+        DROP TABLE local_invocations;
+        ALTER TABLE local_invocations_v4 RENAME TO local_invocations;
+        ALTER TABLE local_invocation_outbox_receipts_v4
+          RENAME TO local_invocation_outbox_receipts;
+        ALTER TABLE local_conversation_ready_outbox_receipts_v4
+          RENAME TO local_conversation_ready_outbox_receipts;
+
+        CREATE UNIQUE INDEX local_one_active_invocation
+          ON local_invocations(installation_id)
+          WHERE state IN ('PREPARED', 'STARTING', 'RUNNING', 'FINAL_READY');
+        CREATE INDEX local_invocation_conversation_state
+          ON local_invocations(conversation_id, state, created_at_ms);
+        CREATE TRIGGER local_invocation_outbox_receipts_no_update
+          BEFORE UPDATE ON local_invocation_outbox_receipts BEGIN
+            SELECT RAISE(ABORT, 'local_invocation_outbox_receipts is append-only');
+          END;
+        CREATE TRIGGER local_conversation_ready_outbox_receipts_no_update
+          BEFORE UPDATE ON local_conversation_ready_outbox_receipts BEGIN
+            SELECT RAISE(ABORT, 'local_conversation_ready_outbox_receipts is append-only');
+          END;
+      `);
+      this.#assertNoLocalTransportForeignKeys();
+      this.#assertMigrationDeadline(migrationDeadline);
+
+      this.#database.exec(`
+        DROP TABLE transport_sequence_gaps;
+        DROP TABLE transport_outbox;
+        DROP TABLE transport_inbound_effect_events;
+        DROP TABLE transport_inbound_frames;
+        DROP TABLE transport_connections;
+      `);
+      for (const sql of transientSchema.tables) this.#database.exec(sql);
+      for (const sql of transientSchema.indexes) this.#database.exec(sql);
+      this.#assertMigrationDeadline(migrationDeadline);
+
+      this.#database.exec(`PRAGMA user_version = ${WORKER_TRANSPORT_SCHEMA_VERSION};`);
+      this.#assertMigrationDeadline(migrationDeadline);
+      const schemaDigest = this.#actualSchemaDigest();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#faultInjector?.('migration.v3_to_v4.before_authority_digest');
+      this.#assertMigrationDeadline(migrationDeadline);
+      const authorityDigest = this.#actualAuthorityDigest();
+      this.#assertMigrationDeadline(migrationDeadline);
+      const updated = this.#database
+        .prepare(
+          `UPDATE transport_meta
+           SET schema_digest = ?, authority_digest = ?,
+               inbound_evidence_count = 0, inbound_evidence_xor = ?,
+               outbox_evidence_count = 0, outbox_evidence_xor = ?,
+               commit_epoch = commit_epoch + 1
+           WHERE singleton = 1`,
+        )
+        .run(schemaDigest, authorityDigest, ZERO_DIGEST, ZERO_DIGEST);
+      if (Number(updated.changes) !== 1) throw permanentPortFailure();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertDatabaseIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerInvocationIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerConversationReadyIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertStoredEnvelopeIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+
+      candidateWatermark = this.#readDatabaseWatermark();
+      recoveryManifest = this.#recordMigrationRecoveryCandidate(
+        recoveryManifest,
+        candidateWatermark,
+      );
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#faultInjector?.('migration.v3_to_v4.before_watermark');
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#writeExternalWatermark(candidateWatermark);
+      this.#faultInjector?.('migration.v3_to_v4.after_watermark_fsync');
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec('COMMIT');
+      committed = true;
+      this.#database.exec('PRAGMA foreign_keys = ON;');
+      this.#faultInjector?.('migration.v3_to_v4.after_commit');
+      this.#finalizeMigrationRecoveryManifest(recoveryManifest, candidateWatermark);
+      this.#secureJournalFiles();
+    } catch (error) {
+      if (!committed) {
+        if (began) safeRollback(this.#database);
+        if (recoveryManifest !== undefined && legacyWatermark !== undefined) {
+          try {
+            this.#writeExternalWatermark(legacyWatermark);
+            this.#assertExternalWatermark(legacyWatermark);
+            this.#writeMigrationRecoveryManifest(
+              Object.freeze({
+                ...recoveryManifest,
+                candidateSlot: null,
+                finalizedSlot: null,
+              }),
+            );
+          } catch {
+            this.#database.exec('PRAGMA foreign_keys = ON;');
+            this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
+            throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+          }
+        }
+      }
+      this.#database.exec('PRAGMA foreign_keys = ON;');
+      this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
+      if (isSqliteCapacity(error)) throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+      throw error;
+    }
+  }
+
+  #assertLegacyV3BusinessRowsReconciled(): void {
+    const missingApplied = this.#database
+      .prepare(
+        `SELECT 1 AS present
+         FROM transport_inbound_frames AS f
+         WHERE f.envelope_kind = 'command'
+           AND f.envelope_type NOT IN (${LEGACY_V3_TRANSPORT_CONTROL_SQL})
+           AND f.effect_state = 'APPLIED'
+           AND NOT EXISTS (
+             SELECT 1 FROM local_consumed_commands AS c
+             WHERE c.command_id = f.message_id AND c.command_type = f.envelope_type
+           )
+         LIMIT 1`,
+      )
+      .get();
+    if (missingApplied !== undefined) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    const unresolved = this.#database
+      .prepare(
+        `SELECT 1 AS present
+         FROM transport_inbound_frames AS f
+         WHERE f.envelope_kind = 'command'
+           AND f.envelope_type NOT IN (${LEGACY_V3_TRANSPORT_CONTROL_SQL})
+           AND f.effect_state = 'PERSISTED'
+           AND NOT EXISTS (
+             SELECT 1 FROM local_consumed_commands AS c
+             WHERE c.command_id = f.message_id AND c.command_type = f.envelope_type
+           )
+         LIMIT 1`,
+      )
+      .get();
+    if (unresolved !== undefined) {
+      throw new SqliteWorkerTransportError('JOURNAL_RECONCILIATION_REQUIRED');
+    }
+  }
+
+  #assertLegacyV3MigrationCapacity(): void {
+    const counts = this.#database
+      .prepare(
+        `SELECT
+           (SELECT count(*) FROM local_invocations) AS invocations,
+           (SELECT count(*) FROM local_invocation_outbox_receipts) AS invocation_receipts,
+           (SELECT count(*) FROM local_conversation_ready_outbox_receipts) AS ready_receipts`,
+      )
+      .get() as {
+      invocations: number;
+      invocation_receipts: number;
+      ready_receipts: number;
+    };
+    const receiptLimit = Math.min(this.#maxRetainedInboundRows, this.#maxRetainedOutboxRows);
+    if (
+      counts.invocations > this.#maxRetainedInboundRows ||
+      counts.invocation_receipts > receiptLimit ||
+      counts.ready_receipts > receiptLimit
+    ) {
+      throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+    }
+
+    const pageCount = pragmaNumber(this.#database, 'page_count');
+    const freelistCount = pragmaNumber(this.#database, 'freelist_count');
+    const maxPageCount = pragmaNumber(this.#database, 'max_page_count');
+    const usedPages = pageCount - freelistCount;
+    const availablePages = maxPageCount - usedPages;
+    // Until the transient tables can be dropped, the migration must be able to duplicate the
+    // three rebuilt local tables and their indexes. Treat every currently used page as possibly
+    // owned by those tables, add fixed root/index overhead, and preserve the terminal reserve.
+    // This deliberately conservative preflight happens before the first CREATE/INSERT write.
+    const worstCaseCopyPages = usedPages + 32;
+    const requiredPages = worstCaseCopyPages + WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES;
+    if (
+      pageCount < 0 ||
+      freelistCount < 0 ||
+      freelistCount > pageCount ||
+      maxPageCount < pageCount ||
+      availablePages < requiredPages
+    ) {
+      throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+    }
+  }
+
+  #copyLegacyInvocations(migrationDeadline: number): void {
+    let afterInvocationId = '';
+    for (;;) {
+      this.#assertMigrationDeadline(migrationDeadline);
+      const keys = this.#database
+        .prepare(
+          `SELECT invocation_id FROM local_invocations
+           WHERE invocation_id > ? ORDER BY invocation_id LIMIT 128`,
+        )
+        .all(afterInvocationId) as Array<{ invocation_id: string }>;
+      this.#assertMigrationDeadline(migrationDeadline);
+      if (keys.length === 0) return;
+      const last = keys.at(-1)?.invocation_id;
+      if (last === undefined || last <= afterInvocationId) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      this.#database
+        .prepare(
+          `INSERT INTO local_invocations_v4
+           SELECT * FROM local_invocations
+           WHERE invocation_id > ? AND invocation_id <= ?
+           ORDER BY invocation_id`,
+        )
+        .run(afterInvocationId, last);
+      this.#assertMigrationDeadline(migrationDeadline);
+      afterInvocationId = last;
+    }
+  }
+
+  #legacyInvocationReceiptRows(): Iterable<Record<string, unknown>> {
+    return this.#database
+      .prepare(
+        `SELECT r.*, f.message_id AS frame_message_id,
+                f.canonical_digest AS frame_canonical_digest,
+                f.logical_digest AS frame_logical_digest,
+                f.envelope_json AS frame_envelope_json,
+                f.acknowledged_message_id AS frame_acknowledged_message_id,
+                f.effect_state AS frame_effect_state
+         FROM local_invocation_outbox_receipts AS r
+         LEFT JOIN transport_inbound_frames AS f
+           ON f.connection_id = r.ack_connection_id AND f.sequence = r.ack_sequence
+         ORDER BY r.receipt_id`,
+      )
+      .iterate() as Iterable<Record<string, unknown>>;
+  }
+
+  #assertLegacyInvocationReceipts(deadline: number): void {
+    for (const row of this.#legacyInvocationReceiptRows()) {
+      this.#assertMigrationDeadline(deadline);
+      this.#strictLegacyCloudAck(row, false);
+    }
+  }
+
+  #copyLegacyInvocationReceipts(deadline: number): void {
+    const insert = this.#database.prepare(
+      `INSERT INTO local_invocation_outbox_receipts_v4(
+         receipt_id, source_event_id, fact_digest, delivery_message_id, ack_message_id,
+         ack_connection_id, ack_sequence, ack_canonical_digest, ack_decision,
+         ack_logical_digest, cloud_evidence_digest, cloud_committed_at_ms, row_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of this.#legacyInvocationReceiptRows()) {
+      this.#assertMigrationDeadline(deadline);
+      const ack = this.#strictLegacyCloudAck(row, false);
+      const receipt = {
+        source_event_id: String(row.source_event_id),
+        fact_digest: String(row.fact_digest),
+        delivery_message_id: String(row.delivery_message_id),
+        ack_message_id: String(row.ack_message_id),
+        ack_connection_id: String(row.ack_connection_id),
+        ack_sequence: String(row.ack_sequence),
+        ack_canonical_digest: String(row.ack_canonical_digest),
+        ack_decision: ack.decision,
+        ack_logical_digest: ack.logicalDigest,
+        cloud_evidence_digest: String(row.cloud_evidence_digest),
+        cloud_committed_at_ms: Number(row.cloud_committed_at_ms),
+      };
+      const migrated = {
+        receipt_id: Number(row.receipt_id),
+        ...receipt,
+        row_digest: sqliteInvocationRowDigest('local_invocation_outbox_receipts', receipt),
+      };
+      insert.run(...(Object.values(migrated) as Array<string | number>));
+    }
+  }
+
+  #legacyConversationReadyReceiptRows(): Iterable<Record<string, unknown>> {
+    return this.#database
+      .prepare(
+        `SELECT r.*, f.message_id AS frame_message_id,
+                f.canonical_digest AS frame_canonical_digest,
+                f.logical_digest AS frame_logical_digest,
+                f.envelope_json AS frame_envelope_json,
+                f.acknowledged_message_id AS frame_acknowledged_message_id,
+                f.effect_state AS frame_effect_state
+         FROM local_conversation_ready_outbox_receipts AS r
+         LEFT JOIN transport_inbound_frames AS f
+           ON f.connection_id = r.ack_connection_id AND f.sequence = r.ack_sequence
+         ORDER BY r.receipt_id`,
+      )
+      .iterate() as Iterable<Record<string, unknown>>;
+  }
+
+  #assertLegacyConversationReadyReceipts(deadline: number): void {
+    for (const row of this.#legacyConversationReadyReceiptRows()) {
+      this.#assertMigrationDeadline(deadline);
+      const ack = this.#strictLegacyCloudAck(row, true);
+      if (ack.decision !== row.decision) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+    }
+  }
+
+  #copyLegacyConversationReadyReceipts(deadline: number): void {
+    const insert = this.#database.prepare(
+      `INSERT INTO local_conversation_ready_outbox_receipts_v4(
+         receipt_id, source_event_id, conversation_id, fact_digest, delivery_message_id,
+         ack_message_id, ack_connection_id, ack_sequence, ack_canonical_digest,
+         ack_logical_digest, decision, cloud_decided_at_ms, row_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const row of this.#legacyConversationReadyReceiptRows()) {
+      this.#assertMigrationDeadline(deadline);
+      const ack = this.#strictLegacyCloudAck(row, true);
+      if (ack.decision !== row.decision) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      const receipt = {
+        source_event_id: String(row.source_event_id),
+        conversation_id: String(row.conversation_id),
+        fact_digest: String(row.fact_digest),
+        delivery_message_id: String(row.delivery_message_id),
+        ack_message_id: String(row.ack_message_id),
+        ack_connection_id: String(row.ack_connection_id),
+        ack_sequence: String(row.ack_sequence),
+        ack_canonical_digest: String(row.ack_canonical_digest),
+        ack_logical_digest: ack.logicalDigest,
+        decision: ack.decision,
+        cloud_decided_at_ms: Number(row.cloud_decided_at_ms),
+      };
+      const migrated = {
+        receipt_id: Number(row.receipt_id),
+        ...receipt,
+        row_digest: sqliteInvocationRowDigest('local_conversation_ready_outbox_receipts', receipt),
+      };
+      insert.run(...(Object.values(migrated) as Array<string | number>));
+    }
+  }
+
+  #strictLegacyCloudAck(
+    row: Record<string, unknown>,
+    allowSecurityBlock: boolean,
+  ): Readonly<{
+    decision: 'APPLIED' | 'IDEMPOTENT_REPLAY' | 'SECURITY_BLOCK';
+    logicalDigest: string;
+  }> {
+    try {
+      const envelope = BrokerEnvelopeSchema.parse(JSON.parse(String(row.frame_envelope_json)));
+      const decision = envelope.kind === 'ack' ? envelope.body.decision : undefined;
+      if (
+        row.frame_effect_state !== 'APPLIED' ||
+        row.frame_message_id !== row.ack_message_id ||
+        row.frame_canonical_digest !== row.ack_canonical_digest ||
+        row.frame_acknowledged_message_id !== row.delivery_message_id ||
+        canonicalizeJson(envelope) !== row.frame_envelope_json ||
+        canonicalSha256(envelope) !== row.frame_canonical_digest ||
+        envelope.kind !== 'ack' ||
+        envelope.type !== 'message.ack' ||
+        envelope.messageId !== row.ack_message_id ||
+        envelope.connectionId !== row.ack_connection_id ||
+        envelope.sequence !== row.ack_sequence ||
+        envelope.body.acknowledgedMessageId !== row.delivery_message_id ||
+        envelope.body.level !== 'CLOUD_COMMITTED' ||
+        !(
+          decision === 'APPLIED' ||
+          decision === 'IDEMPOTENT_REPLAY' ||
+          (allowSecurityBlock && decision === 'SECURITY_BLOCK')
+        )
+      ) {
+        throw new Error('invalid-legacy-cloud-ack');
+      }
+      return Object.freeze({ decision, logicalDigest: logicalEnvelopeDigest(envelope) });
+    } catch {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+  }
+
+  #assertMigrationTableCount(source: string, target: string): void {
+    const sourceCount = this.#database
+      .prepare(`SELECT count(*) AS count FROM ${source}`)
+      .get() as CountRow;
+    const targetCount = this.#database
+      .prepare(`SELECT count(*) AS count FROM ${target}`)
+      .get() as CountRow;
+    if (sourceCount.count !== targetCount.count) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+  }
+
+  #captureTransientTransportSchema(): Readonly<{
+    tables: readonly string[];
+    indexes: readonly string[];
+  }> {
+    const tableNames = [
+      'transport_connections',
+      'transport_inbound_frames',
+      'transport_inbound_effect_events',
+      'transport_outbox',
+      'transport_sequence_gaps',
+    ] as const;
+    const indexNames = [
+      'transport_one_active_connection',
+      'transport_connection_retention',
+      'transport_pending_inbound',
+      'transport_inbound_retention',
+      'transport_inbound_message',
+      'transport_inbound_acknowledged_message',
+      'transport_inbound_effect_event_order',
+      'transport_outbox_connection_sequence',
+      'transport_outbox_persisted_response',
+      'transport_outbox_delivery',
+      'transport_outbox_retention',
+      'transport_sequence_gap_retention',
+    ] as const;
+    const load = (type: 'table' | 'index', name: string): string => {
+      const row = this.#database
+        .prepare('SELECT sql FROM sqlite_master WHERE type = ? AND name = ?')
+        .get(type, name) as { sql: string | null } | undefined;
+      if (row?.sql === null || row?.sql === undefined) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      return row.sql;
+    };
+    return Object.freeze({
+      tables: Object.freeze(tableNames.map((name) => load('table', name))),
+      indexes: Object.freeze(indexNames.map((name) => load('index', name))),
+    });
+  }
+
+  #assertNoLocalTransportForeignKeys(): void {
+    const transientTransportTables = new Set([
+      'transport_connections',
+      'transport_inbound_frames',
+      'transport_inbound_effect_events',
+      'transport_outbox',
+      'transport_sequence_gaps',
+    ]);
+    const localTables = this.#database
+      .prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name LIKE 'local_%'
+         ORDER BY name`,
+      )
+      .all() as Array<{ name: string }>;
+    for (const table of localTables) {
+      const foreignKeys = this.#database
+        .prepare(`PRAGMA foreign_key_list(${table.name})`)
+        .all() as Array<{ table: string }>;
+      if (foreignKeys.some((foreignKey) => transientTransportTables.has(foreignKey.table))) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
     }
   }
 
@@ -2058,16 +2786,29 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       for (const conversation of conversations) {
         const inbound = this.#database
           .prepare(
-            `SELECT message_id, canonical_digest, envelope_json, envelope_kind, envelope_type
-           FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+            `SELECT f.message_id, f.canonical_digest, f.envelope_json,
+                    f.envelope_kind, f.envelope_type,
+                    c.installation_id, c.connection_id, c.deployment_id,
+                    c.worker_session_id, c.lease_id, c.fence,
+                    consumed.semantic_digest AS open_semantic_digest
+             FROM transport_inbound_frames AS f
+             JOIN transport_connections AS c ON c.connection_id = f.connection_id
+             JOIN local_consumed_commands AS consumed ON consumed.command_id = f.message_id
+             WHERE f.connection_id = ? AND f.sequence = ?`,
           )
           .get(String(conversation.open_connection_id), String(conversation.open_sequence)) as
-          | Record<string, unknown>
+          | (StoredConnectionAuthorityRow & Record<string, unknown>)
           | undefined;
         if (inbound === undefined) throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
-        const envelope = parseStoredEnvelope(
+        const stored = decodeStoredBrokerEnvelope(
           String(inbound.envelope_json),
           String(inbound.canonical_digest),
+        );
+        const envelope = materializeStoredInboundEnvelope(
+          stored,
+          inbound,
+          conversation,
+          String(inbound.open_semantic_digest),
         );
         if (
           conversation.state !== 'READY' ||
@@ -2081,10 +2822,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           envelope.body.agentVersionId !== conversation.agent_version_id ||
           envelope.body.agentVersionDigest !== conversation.agent_version_digest ||
           envelope.body.snapshotDigest !== conversation.snapshot_digest ||
-          envelope.lease.deploymentId !== conversation.deployment_id ||
-          envelope.lease.workerSessionId !== conversation.worker_session_id ||
-          envelope.lease.leaseId !== conversation.lease_id ||
-          envelope.lease.fence !== conversation.fence
+          envelope.body.openAuthority.installationId !== conversation.installation_id ||
+          envelope.body.openAuthority.deploymentId !== conversation.deployment_id ||
+          envelope.body.openAuthority.workerSessionId !== conversation.worker_session_id ||
+          envelope.body.openAuthority.leaseId !== conversation.lease_id ||
+          envelope.body.openAuthority.fence !== conversation.fence
         ) {
           throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
         }
@@ -2097,14 +2839,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
             sourceEventId: envelope.messageId,
             conversationId: envelope.body.conversationId,
             openCommandId: envelope.messageId,
-            deploymentId: envelope.lease.deploymentId,
+            deploymentId: envelope.body.openAuthority.deploymentId,
             agentVersionId: envelope.body.agentVersionId,
             agentVersionDigest: envelope.body.agentVersionDigest,
             snapshotDigest: envelope.body.snapshotDigest,
-            installationId: conversation.installation_id,
-            workerSessionId: envelope.lease.workerSessionId,
-            leaseId: envelope.lease.leaseId,
-            fence: envelope.lease.fence,
+            installationId: envelope.body.openAuthority.installationId,
+            workerSessionId: envelope.body.openAuthority.workerSessionId,
+            leaseId: envelope.body.openAuthority.leaseId,
+            fence: envelope.body.openAuthority.fence,
             sandboxInstanceId: conversation.sandbox_instance_id,
             runtimeThreadId: conversation.runtime_thread_id,
             readyEvidenceDigest: conversation.ready_evidence_digest,
@@ -2222,6 +2964,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         if (!completed) safeRollback(this.#database);
       }
       try {
+        this.#recoverMigrationWatermarkIfNeeded(databaseWatermark);
         this.#assertExternalWatermark(databaseWatermark);
         return;
       } catch (error) {
@@ -2238,7 +2981,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
   }
 
-  #readDatabaseWatermark(schemaVersion = WORKER_TRANSPORT_SCHEMA_VERSION): JournalCommitWatermark {
+  #readDatabaseWatermark(): JournalCommitWatermark;
+  #readDatabaseWatermark(schemaVersion: 1 | 2 | 3): LegacyJournalCommitWatermark;
+  #readDatabaseWatermark(schemaVersion?: 1 | 2 | 3): AnyJournalCommitWatermark {
     const row = this.#database
       .prepare(
         `SELECT schema_digest, authority_digest, installation_id, journal_generation,
@@ -2281,10 +3026,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     ) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
-    return Object.freeze({
-      formatVersion: WATERMARK_FORMAT_VERSION,
+    const common = {
       applicationId: WORKER_TRANSPORT_APPLICATION_ID,
-      schemaVersion,
       schemaDigest: row.schema_digest,
       authorityDigest: row.authority_digest,
       installationId: row.installation_id,
@@ -2298,17 +3041,53 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       maxDatabaseBytes: row.max_database_bytes,
       maxWalBytes: row.max_wal_bytes,
       minFreeBytes: row.min_free_bytes,
+    };
+    if (schemaVersion !== undefined) {
+      return Object.freeze({
+        ...common,
+        formatVersion: LEGACY_WATERMARK_FORMAT_VERSION,
+        schemaVersion,
+      });
+    }
+    return Object.freeze({
+      ...common,
+      formatVersion: WATERMARK_FORMAT_VERSION,
+      evidenceVersion: WATERMARK_EVIDENCE_VERSION,
+      schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+      currentConnectionAuthority: this.#currentConnectionAuthority(row.installation_id),
     });
   }
 
-  #writeExternalWatermark(watermark: JournalCommitWatermark): void {
+  #currentConnectionAuthority(installationId: string): CurrentConnectionAuthority | null {
+    const rows = this.#database
+      .prepare(`SELECT * FROM transport_connections WHERE status = 'ACTIVE' LIMIT 2`)
+      .all() as ConnectionRow[];
+    if (rows.length === 0) return null;
+    const connection = rows[0];
+    if (
+      rows.length !== 1 ||
+      connection === undefined ||
+      connection.installation_id !== installationId ||
+      connectionStateDigestFromRow(connection) !== connection.connection_digest
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    return Object.freeze({
+      installationId: connection.installation_id,
+      connectionId: connection.connection_id,
+      connectionDigest: connection.connection_digest,
+    });
+  }
+
+  #writeExternalWatermark(watermark: AnyJournalCommitWatermark): void {
     const payload = canonicalizeJson(watermark);
+    const domain =
+      watermark.formatVersion === LEGACY_WATERMARK_FORMAT_VERSION
+        ? LEGACY_WATERMARK_DIGEST_DOMAIN
+        : WATERMARK_DIGEST_DOMAIN;
     const document = canonicalizeJson({
       payload: watermark,
-      digest: createHash('sha256')
-        .update('combo:vnext:worker-commit-watermark:v1\0', 'utf8')
-        .update(payload, 'utf8')
-        .digest('hex'),
+      digest: createHash('sha256').update(domain, 'utf8').update(payload, 'utf8').digest('hex'),
     });
     if (journalEntryExists(this.#watermarkFilename)) {
       ensureSafeRegularFile(this.#watermarkFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
@@ -2316,7 +3095,172 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     atomicWritePrivateFile(this.#watermarkFilename, document);
   }
 
-  #assertExternalWatermark(expected: JournalCommitWatermark): void {
+  #prepareMigrationRecoveryManifest(
+    legacyWatermark: LegacyJournalCommitWatermark,
+  ): MigrationRecoveryManifest {
+    if (
+      legacyWatermark.schemaVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION ||
+      legacyWatermark.formatVersion !== LEGACY_WATERMARK_FORMAT_VERSION
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    const manifest = Object.freeze({
+      formatVersion: MIGRATION_RECOVERY_FORMAT_VERSION,
+      nonce: uuidV7(),
+      legacySlot: Object.freeze({
+        schemaVersion: WORKER_CONVERSATION_READY_SCHEMA_VERSION,
+        commitEpoch: legacyWatermark.commitEpoch,
+        watermark: legacyWatermark,
+      }),
+      candidateSlot: null,
+      finalizedSlot: null,
+    }) satisfies MigrationRecoveryManifest;
+    this.#writeMigrationRecoveryManifest(manifest);
+    return manifest;
+  }
+
+  #recordMigrationRecoveryCandidate(
+    manifest: MigrationRecoveryManifest,
+    candidateWatermark: JournalCommitWatermark,
+  ): MigrationRecoveryManifest {
+    if (
+      candidateWatermark.commitEpoch !== manifest.legacySlot.commitEpoch + 1 ||
+      candidateWatermark.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION ||
+      candidateWatermark.currentConnectionAuthority !== null ||
+      candidateWatermark.applicationId !== manifest.legacySlot.watermark.applicationId ||
+      candidateWatermark.installationId !== manifest.legacySlot.watermark.installationId ||
+      candidateWatermark.journalGeneration !== manifest.legacySlot.watermark.journalGeneration ||
+      candidateWatermark.authorizationDigest !==
+        manifest.legacySlot.watermark.authorizationDigest ||
+      candidateWatermark.maxDatabaseBytes !== manifest.legacySlot.watermark.maxDatabaseBytes ||
+      candidateWatermark.maxWalBytes !== manifest.legacySlot.watermark.maxWalBytes ||
+      candidateWatermark.minFreeBytes !== manifest.legacySlot.watermark.minFreeBytes ||
+      candidateWatermark.inboundEvidenceCount !== 0 ||
+      candidateWatermark.inboundEvidenceXor !== ZERO_DIGEST ||
+      candidateWatermark.outboxEvidenceCount !== 0 ||
+      candidateWatermark.outboxEvidenceXor !== ZERO_DIGEST
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    const candidate = Object.freeze({
+      ...manifest,
+      candidateSlot: Object.freeze({
+        schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        commitEpoch: candidateWatermark.commitEpoch,
+        watermark: candidateWatermark,
+      }),
+      finalizedSlot: null,
+    });
+    this.#writeMigrationRecoveryManifest(candidate);
+    return candidate;
+  }
+
+  #finalizeMigrationRecoveryManifest(
+    manifest: MigrationRecoveryManifest,
+    candidateWatermark: JournalCommitWatermark,
+  ): void {
+    if (
+      manifest.candidateSlot === null ||
+      canonicalizeJson(manifest.candidateSlot.watermark) !== canonicalizeJson(candidateWatermark)
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    this.#writeMigrationRecoveryManifest(
+      Object.freeze({
+        ...manifest,
+        candidateSlot: null,
+        finalizedSlot: Object.freeze({
+          schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+          commitEpoch: candidateWatermark.commitEpoch,
+          candidateDigest: migrationRecoveryCandidateDigest(candidateWatermark),
+        }),
+      }),
+    );
+  }
+
+  #recoverMigrationWatermarkIfNeeded(expected: AnyJournalCommitWatermark): void {
+    if (!journalEntryExists(this.#migrationRecoveryFilename)) return;
+    const manifest = readMigrationRecoveryManifest(this.#migrationRecoveryFilename);
+    const legacy = manifest.legacySlot;
+    if (
+      legacy.watermark.installationId !== expected.installationId ||
+      legacy.watermark.journalGeneration !== expected.journalGeneration ||
+      legacy.watermark.authorizationDigest !== expected.authorizationDigest ||
+      legacy.watermark.maxDatabaseBytes !== expected.maxDatabaseBytes ||
+      legacy.watermark.maxWalBytes !== expected.maxWalBytes ||
+      legacy.watermark.minFreeBytes !== expected.minFreeBytes
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    if (expected.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION) {
+      if (
+        expected.formatVersion !== LEGACY_WATERMARK_FORMAT_VERSION ||
+        legacy.commitEpoch !== expected.commitEpoch ||
+        canonicalizeJson(legacy.watermark) !== canonicalizeJson(expected) ||
+        manifest.finalizedSlot !== null
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      this.#writeExternalWatermark(expected);
+      if (manifest.candidateSlot !== null) {
+        this.#writeMigrationRecoveryManifest(
+          Object.freeze({
+            ...manifest,
+            candidateSlot: null,
+            finalizedSlot: null,
+          }),
+        );
+      }
+      return;
+    }
+    if (
+      expected.formatVersion !== WATERMARK_FORMAT_VERSION ||
+      expected.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    if (manifest.candidateSlot !== null) {
+      if (
+        manifest.finalizedSlot !== null ||
+        manifest.candidateSlot.commitEpoch !== expected.commitEpoch ||
+        canonicalizeJson(manifest.candidateSlot.watermark) !== canonicalizeJson(expected)
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+      }
+      this.#writeExternalWatermark(expected);
+      this.#finalizeMigrationRecoveryManifest(manifest, expected);
+      return;
+    }
+    const finalized = manifest.finalizedSlot;
+    if (
+      finalized === null ||
+      expected.commitEpoch < finalized.commitEpoch ||
+      (expected.commitEpoch === finalized.commitEpoch &&
+        migrationRecoveryCandidateDigest(expected) !== finalized.candidateDigest)
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+    }
+    // A finalized recovery point is audit-only. In particular, it never recreates a missing or
+    // modified current watermark; the normal external-watermark assertion below remains the sole
+    // authority for all post-migration commits.
+  }
+
+  #writeMigrationRecoveryManifest(manifest: MigrationRecoveryManifest): void {
+    const payload = canonicalizeJson(manifest);
+    const document = canonicalizeJson({
+      payload: manifest,
+      digest: createHash('sha256')
+        .update(MIGRATION_RECOVERY_DIGEST_DOMAIN, 'utf8')
+        .update(payload, 'utf8')
+        .digest('hex'),
+    });
+    if (journalEntryExists(this.#migrationRecoveryFilename)) {
+      ensureSafeRegularFile(this.#migrationRecoveryFilename, 0o600, 'JOURNAL_FILE_UNSAFE');
+    }
+    atomicWritePrivateFile(this.#migrationRecoveryFilename, document);
+  }
+
+  #assertExternalWatermark(expected: AnyJournalCommitWatermark): void {
     if (!journalEntryExists(this.#watermarkFilename)) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
@@ -2324,10 +3268,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     try {
       const raw = readFileSync(this.#watermarkFilename, 'utf8');
       const parsed = JSON.parse(raw) as { payload?: unknown; digest?: unknown };
-      const payload = parsed.payload as JournalCommitWatermark;
+      const payload = parsed.payload as AnyJournalCommitWatermark;
       const canonicalPayload = canonicalizeJson(payload);
+      const domain =
+        expected.formatVersion === LEGACY_WATERMARK_FORMAT_VERSION
+          ? LEGACY_WATERMARK_DIGEST_DOMAIN
+          : WATERMARK_DIGEST_DOMAIN;
       const expectedDigest = createHash('sha256')
-        .update('combo:vnext:worker-commit-watermark:v1\0', 'utf8')
+        .update(domain, 'utf8')
         .update(canonicalPayload, 'utf8')
         .digest('hex');
       if (parsed.digest !== expectedDigest || canonicalizeJson(parsed) !== raw) {
@@ -2395,6 +3343,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
 
   #assertStoredEnvelopeIntegrity(): void {
     try {
+      const defensiveIntegrityV4 =
+        pragmaNumber(this.#database, 'user_version') >= WORKER_TRANSPORT_SCHEMA_VERSION;
       const provisioned = this.#database
         .prepare(
           `SELECT installation_id, inbound_evidence_count, inbound_evidence_xor,
@@ -2500,6 +3450,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         }
       }
 
+      const connectionAuthorities = new Map<string, ConnectionRow>();
       const connections = this.#database
         .prepare(
           `SELECT installation_id, connection_id, owner_epoch, worker_session_id, deployment_id,
@@ -2512,6 +3463,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       let totalConnectionCount = 0;
       for (const connection of connections) {
         totalConnectionCount += 1;
+        connectionAuthorities.set(connection.connection_id, connection);
         if (
           !Number.isSafeInteger(connection.owner_epoch) ||
           connection.owner_epoch < 1 ||
@@ -2589,18 +3541,36 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       let inboundEvidenceXor = ZERO_DIGEST;
       let inboundEvidenceCount = 0;
       let pendingInboundCount = 0;
-      const locallyConsumedCommandTypes = workerInvocationTablesExist(this.#database)
+      const locallyConsumedCommands = workerInvocationTablesExist(this.#database)
         ? new Map(
             (
               this.#database
-                .prepare('SELECT command_id, command_type FROM local_consumed_commands')
+                .prepare(
+                  'SELECT command_id, command_type, semantic_digest FROM local_consumed_commands',
+                )
                 .all() as Array<{
                 command_id: string;
                 command_type: BrokerCommand['type'];
+                semantic_digest: string;
               }>
-            ).map((row) => [row.command_id, row.command_type] as const),
+            ).map(
+              (row) =>
+                [
+                  row.command_id,
+                  { type: row.command_type, semanticDigest: row.semantic_digest },
+                ] as const,
+            ),
           )
-        : new Map<string, BrokerCommand['type']>();
+        : new Map<string, Readonly<{ type: BrokerCommand['type']; semanticDigest: string }>>();
+      const localConversationsByOpenCommand = workerInvocationTablesExist(this.#database)
+        ? new Map(
+            (
+              this.#database.prepare('SELECT * FROM local_conversations').all() as Array<
+                Record<string, unknown>
+              >
+            ).map((row) => [String(row.open_command_id), row] as const),
+          )
+        : new Map<string, Record<string, unknown>>();
       const inboundRows = this.#database
         .prepare(
           `SELECT connection_id, sequence, message_id, canonical_digest, logical_digest,
@@ -2624,19 +3594,30 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         inboundKeys.add(inboundKey);
         inboundEvidenceXor = xorDigest(
           inboundEvidenceXor,
-          inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id),
+          defensiveIntegrityV4
+            ? inboundEvidenceDigestV2(inboundContentEvidenceFromRow(row))
+            : inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id),
         );
         inboundEvidenceCount += 1;
         if (
           row.effect_state === 'PERSISTED' &&
-          (!locallyConsumedCommandTypes.has(row.message_id) ||
+          (!locallyConsumedCommands.has(row.message_id) ||
+            row.envelope_type === 'conversation.open' ||
             row.envelope_type === 'invocation.prepare' ||
             row.envelope_type === 'invocation.start')
         ) {
           pendingInboundCount += 1;
         }
         const latestEffect = latestEffectEvents.get(inboundKey);
-        const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
+        const connection = connectionAuthorities.get(row.connection_id);
+        if (connection === undefined) throw new Error('missing-inbound-connection');
+        const stored = decodeStoredBrokerEnvelope(row.envelope_json, row.canonical_digest);
+        const envelope = materializeStoredInboundEnvelope(
+          stored,
+          connection,
+          localConversationsByOpenCommand.get(row.message_id),
+          locallyConsumedCommands.get(row.message_id)?.semanticDigest,
+        );
         const priorLogicalDigest = inboundMessageDigests.get(envelope.messageId);
         if (
           envelope.kind === 'event' ||
@@ -2645,7 +3626,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           envelope.connectionId !== row.connection_id ||
           envelope.sequence !== row.sequence ||
           envelope.messageId !== row.message_id ||
-          logicalEnvelopeDigest(envelope) !== row.logical_digest ||
+          stored.logicalDigest !== row.logical_digest ||
           inboundEffectDigestFromRow(row) !== row.effect_digest ||
           latestEffect === undefined ||
           latestEffect.message_id !== row.message_id ||
@@ -2726,7 +3707,12 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         }
       >;
       for (const row of outboxRows) {
-        outboxEvidenceXor = xorDigest(outboxEvidenceXor, outboxEvidenceDigest(row.message_id));
+        outboxEvidenceXor = xorDigest(
+          outboxEvidenceXor,
+          defensiveIntegrityV4
+            ? outboxEvidenceDigestV2(outboxContentEvidenceFromRow(row))
+            : outboxEvidenceDigest(row.message_id),
+        );
         outboxEvidenceCount += 1;
         if (row.state === 'UNBOUND' || row.state === 'PENDING' || row.state === 'WRITTEN') {
           activeOutboxCount += 1;
@@ -2737,7 +3723,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           row.response_to_message_id === null
             ? undefined
             : (inboundCommandTypes.get(row.response_to_message_id) ??
-              locallyConsumedCommandTypes.get(row.response_to_message_id));
+              locallyConsumedCommands.get(row.response_to_message_id)?.type);
         const responseBindingValid =
           envelope.kind === 'ack'
             ? envelope.body.acknowledgedMessageId === row.response_to_message_id &&
@@ -3317,6 +4303,31 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           logical_digest: string;
         }>)
       : [];
+    const durableOpenConversation =
+      envelope.kind === 'command' &&
+      envelope.type === 'conversation.open' &&
+      workerInvocationTablesExist(this.#database)
+        ? (this.#database
+            .prepare('SELECT * FROM local_conversations WHERE open_command_id = ?')
+            .get(envelope.messageId) as Record<string, unknown> | undefined)
+        : undefined;
+    const legacyOpenLogicalDigest =
+      envelope.kind === 'command' && envelope.type === 'conversation.open'
+        ? legacyConversationOpenLogicalDigest(envelope)
+        : undefined;
+    const legacyOpenAuthorityMatches =
+      envelope.kind === 'command' &&
+      envelope.type === 'conversation.open' &&
+      durableOpenConversation !== undefined &&
+      envelope.body.conversationId === durableOpenConversation.conversation_id &&
+      envelope.body.agentVersionId === durableOpenConversation.agent_version_id &&
+      envelope.body.agentVersionDigest === durableOpenConversation.agent_version_digest &&
+      envelope.body.snapshotDigest === durableOpenConversation.snapshot_digest &&
+      envelope.body.openAuthority.installationId === durableOpenConversation.installation_id &&
+      envelope.body.openAuthority.deploymentId === durableOpenConversation.deployment_id &&
+      envelope.body.openAuthority.workerSessionId === durableOpenConversation.worker_session_id &&
+      envelope.body.openAuthority.leaseId === durableOpenConversation.lease_id &&
+      envelope.body.openAuthority.fence === durableOpenConversation.fence;
     const permanentIdentities: Array<{
       envelope_kind: 'command' | 'ack';
       envelope_type: string;
@@ -3336,16 +4347,16 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       if (
         envelope.kind !== identity.envelope_kind ||
         envelope.type !== identity.envelope_type ||
-        logicalDigest !== identity.logical_digest
+        (logicalDigest !== identity.logical_digest &&
+          !(legacyOpenAuthorityMatches && legacyOpenLogicalDigest === identity.logical_digest))
       ) {
         throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
       }
     }
-    const retainedLogicalDigest = prior?.logical_digest ?? permanentIdentities[0]?.logical_digest;
-    if (retainedLogicalDigest !== undefined && retainedLogicalDigest !== logicalDigest) {
+    if (prior !== undefined && prior.logical_digest !== logicalDigest) {
       throw new WorkerBrokerClientError('SEQUENCE_CONFLICT', true);
     }
-    const duplicateEffect = retainedLogicalDigest !== undefined;
+    const duplicateEffect = prior !== undefined || permanentIdentities.length > 0;
     // An explicit cross-connection retry transfers a not-yet-consumed command to the current
     // connection. Ready-open/prepare/start re-envelopes remain PERSISTED until the business journal
     // revalidates current transport authority and exact logical replay; other already-applied
@@ -3409,7 +4420,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       );
     this.#adjustEvidenceAccumulator(
       'inbound',
-      inboundEvidenceDigest(envelope.connectionId, envelope.sequence, envelope.messageId),
+      inboundEvidenceDigestV2({
+        connectionId: envelope.connectionId,
+        sequence: envelope.sequence,
+        messageId: envelope.messageId,
+        canonicalDigest,
+        logicalDigest,
+        effectDigest,
+      }),
       1,
     );
     this.#appendInboundEffectEvent({
@@ -3633,6 +4651,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       ack_connection_id: envelope.connectionId,
       ack_sequence: envelope.sequence,
       ack_canonical_digest: inbound.canonical_digest,
+      ack_logical_digest: logicalEnvelopeDigest(envelope),
       decision: envelope.body.decision,
       cloud_decided_at_ms: now,
     };
@@ -3641,8 +4660,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         `INSERT INTO local_conversation_ready_outbox_receipts(
            source_event_id, conversation_id, fact_digest, delivery_message_id,
            ack_message_id, ack_connection_id, ack_sequence, ack_canonical_digest,
-           decision, cloud_decided_at_ms, row_digest
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ack_logical_digest, decision, cloud_decided_at_ms, row_digest
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         ...Object.values(receipt),
@@ -3670,6 +4689,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         sqliteInvocationRowDigest('local_conversations', conversationPayload),
         String(delivery.conversation_id),
       );
+    const transportDelivery = this.#outboxRow(String(delivery.delivery_message_id));
+    if (transportDelivery === undefined) throw permanentPortFailure();
     const removed = this.#database
       .prepare(
         `DELETE FROM transport_outbox WHERE message_id = ?
@@ -3679,7 +4700,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (Number(removed.changes) !== 1) throw permanentPortFailure();
     this.#adjustEvidenceAccumulator(
       'outbox',
-      outboxEvidenceDigest(String(delivery.delivery_message_id)),
+      outboxEvidenceDigestV2(outboxContentEvidenceFromRow(transportDelivery)),
       -1,
     );
   }
@@ -3755,6 +4776,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (row === undefined || row.state !== 'WRITTEN' || row.ack_level === 'CLOUD_COMMITTED') {
       return;
     }
+    const previous = this.#outboxRow(row.message_id);
+    if (previous === undefined) throw permanentPortFailure();
     const changed = this.#database
       .prepare(
         `UPDATE transport_outbox SET state = 'PENDING', updated_at_ms = ?
@@ -3764,7 +4787,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       )
       .run(now, row.message_id, installationId, connectionId, responseToMessageId);
     if (Number(changed.changes) !== 1) throw permanentPortFailure();
-    this.#refreshOutboxDeliveryDigest(row.message_id);
+    this.#refreshOutboxDeliveryDigest(row.message_id, previous);
   }
 
   #enqueueEnvelope(
@@ -3836,7 +4859,17 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         now,
         now,
       );
-    this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(frame.messageId), 1);
+    this.#adjustEvidenceAccumulator(
+      'outbox',
+      outboxEvidenceDigestV2({
+        messageId: frame.messageId,
+        canonicalDigest: digest,
+        envelopeType: frame.type,
+        responseToMessageId: logical.responseToMessageId ?? null,
+        deliveryDigest,
+      }),
+      1,
+    );
     this.#database
       .prepare('UPDATE transport_connections SET outbound_cursor = ? WHERE connection_id = ?')
       .run(serializeSequenceCursor(decision.cursor), connectionId);
@@ -3870,13 +4903,13 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
            WHERE message_id = ?`,
         )
         .run(now, now, safeDeadline(now, WORKER_TRANSPORT_RETENTION_MS), messageId);
-      this.#refreshOutboxDeliveryDigest(messageId);
+      this.#refreshOutboxDeliveryDigest(messageId, row);
       return;
     }
     this.#database
       .prepare(`UPDATE transport_outbox SET ack_level = ?, updated_at_ms = ? WHERE message_id = ?`)
       .run(level, now, messageId);
-    this.#refreshOutboxDeliveryDigest(messageId);
+    this.#refreshOutboxDeliveryDigest(messageId, row);
   }
 
   #reframeUnacknowledged(installationId: string, connectionId: string, now: number): void {
@@ -3895,6 +4928,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     let cursor = restoreSequenceCursor(connection.outbound_cursor);
     for (const row of rows) {
       this.#assertTransactionBudget();
+      const previousDelivery = this.#outboxRow(row.message_id);
+      if (previousDelivery === undefined) throw permanentPortFailure();
       const previous = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
       if (previous.kind === 'command') throw permanentPortFailure();
       const frame = reframe(previous, connection, cursor.nextExpected.toString(10));
@@ -3909,7 +4944,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
            WHERE message_id = ? AND state = 'UNBOUND'`,
         )
         .run(connectionId, frame.sequence, digest, canonicalizeJson(frame), now, row.message_id);
-      this.#refreshOutboxDeliveryDigest(row.message_id);
+      this.#refreshOutboxDeliveryDigest(row.message_id, previousDelivery);
       cursor = decision.cursor;
     }
     if (rows.length > 0) {
@@ -3929,6 +4964,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       .all(connectionId) as Array<{ message_id: string; envelope_type: string }>;
     for (const row of rebound) {
       this.#assertTransactionBudget();
+      const previous = this.#outboxRow(row.message_id);
+      if (previous === undefined) throw permanentPortFailure();
       if (row.envelope_type === 'message.ack') {
         this.#database
           .prepare(
@@ -3946,7 +4983,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           )
           .run(now, safeDeadline(now, WORKER_TRANSPORT_RETENTION_MS), row.message_id);
       }
-      this.#refreshOutboxDeliveryDigest(row.message_id);
+      const current = this.#refreshOutboxDeliveryDigest(row.message_id, previous);
       if (row.envelope_type !== 'message.ack') {
         const removed = this.#database
           .prepare(
@@ -3958,7 +4995,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           if (row.envelope_type === 'invocation.succeeded') {
             this.#sensitivePurgePending = true;
           }
-          this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(row.message_id), -1);
+          this.#adjustEvidenceAccumulator(
+            'outbox',
+            outboxEvidenceDigestV2(outboxContentEvidenceFromRow(current)),
+            -1,
+          );
         }
       }
     }
@@ -3997,6 +5038,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       | { sequence: string; message_id: string }
       | undefined;
     if (activation === undefined) throw permanentPortFailure();
+    const activationEvidence = this.#inboundEffectRow(connectionId, activation.sequence);
+    if (activationEvidence === undefined) throw permanentPortFailure();
     const deletedActivation = this.#database
       .prepare(
         `DELETE FROM transport_inbound_frames
@@ -4006,7 +5049,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (Number(deletedActivation.changes) !== 1) throw permanentPortFailure();
     this.#adjustEvidenceAccumulator(
       'inbound',
-      inboundEvidenceDigest(connectionId, activation.sequence, activation.message_id),
+      inboundEvidenceDigestV2(inboundContentEvidenceFromRow(activationEvidence)),
       -1,
     );
     const deletedConnection = this.#database
@@ -4016,21 +5059,56 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     return 2;
   }
 
-  #refreshInboundEffectDigest(connectionId: string, sequence: string): void {
-    const row = this.#database
+  #inboundEffectRow(connectionId: string, sequence: string): InboundEffectRow | undefined {
+    return this.#database
       .prepare(
-        `SELECT connection_id, sequence, message_id, canonical_digest, effect_state,
-                effect_digest, replay_count, recorded_at_ms, applied_at_ms, retained_until_ms
+        `SELECT connection_id, sequence, message_id, canonical_digest, logical_digest,
+                effect_state, effect_digest, replay_count, recorded_at_ms, applied_at_ms,
+                retained_until_ms
          FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
       )
       .get(connectionId, sequence) as InboundEffectRow | undefined;
-    if (row === undefined) throw permanentPortFailure();
-    this.#database
+  }
+
+  #refreshInboundEffectDigest(
+    connectionId: string,
+    sequence: string,
+    previous: InboundEffectRow,
+  ): InboundEffectRow {
+    const row = this.#database
+      .prepare(
+        `SELECT connection_id, sequence, message_id, canonical_digest, logical_digest,
+                effect_state, effect_digest, replay_count, recorded_at_ms, applied_at_ms,
+                retained_until_ms
+         FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+      )
+      .get(connectionId, sequence) as InboundEffectRow | undefined;
+    if (
+      row === undefined ||
+      previous.connection_id !== row.connection_id ||
+      previous.sequence !== row.sequence ||
+      previous.message_id !== row.message_id ||
+      previous.canonical_digest !== row.canonical_digest ||
+      previous.logical_digest !== row.logical_digest ||
+      previous.effect_digest !== inboundEffectDigestFromRow(previous)
+    ) {
+      throw permanentPortFailure();
+    }
+    const effectDigest = inboundEffectDigestFromRow(row);
+    const updated = this.#database
       .prepare(
         `UPDATE transport_inbound_frames SET effect_digest = ?
          WHERE connection_id = ? AND sequence = ?`,
       )
-      .run(inboundEffectDigestFromRow(row), connectionId, sequence);
+      .run(effectDigest, connectionId, sequence);
+    if (Number(updated.changes) !== 1) throw permanentPortFailure();
+    const current = { ...row, effect_digest: effectDigest };
+    this.#replaceEvidenceAccumulator(
+      'inbound',
+      inboundEvidenceDigestV2(inboundContentEvidenceFromRow(previous)),
+      inboundEvidenceDigestV2(inboundContentEvidenceFromRow(current)),
+    );
+    return current;
   }
 
   #markInvocationCommandApplied(reference: OpaqueInvocationCommandReference, now: number): void {
@@ -4076,6 +5154,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       if (copy.logical_digest !== row.logical_digest) {
         throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
       }
+      const previous = this.#inboundEffectRow(copy.connection_id, copy.sequence);
+      if (previous === undefined) throw permanentPortFailure();
       const updated = this.#database
         .prepare(
           `UPDATE transport_inbound_frames SET effect_state = 'APPLIED', applied_at_ms = ?,
@@ -4089,7 +5169,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           copy.sequence,
         );
       if (Number(updated.changes) !== 1) throw permanentPortFailure();
-      this.#refreshInboundEffectDigest(copy.connection_id, copy.sequence);
+      this.#refreshInboundEffectDigest(copy.connection_id, copy.sequence, previous);
       this.#appendInboundEffectEvent({
         connectionId: copy.connection_id,
         sequence: copy.sequence,
@@ -4127,6 +5207,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       effect_state: 'PERSISTED' | 'APPLIED';
     }>;
     for (const row of rows) {
+      const evidence = this.#inboundEffectRow(row.connection_id, row.sequence);
+      if (evidence === undefined) throw permanentPortFailure();
       const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
       if (
         envelope.kind !== 'command' ||
@@ -4152,7 +5234,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#sensitivePurgePending = true;
       this.#adjustEvidenceAccumulator(
         'inbound',
-        inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id),
+        inboundEvidenceDigestV2(inboundContentEvidenceFromRow(evidence)),
         -1,
       );
     }
@@ -4171,6 +5253,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }>;
     if (rows.length > 1) throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     for (const row of rows) {
+      const evidence = this.#outboxRow(row.message_id);
+      if (evidence === undefined) throw permanentPortFailure();
       const envelope = parseStoredEnvelope(row.envelope_json, row.canonical_digest);
       if (
         envelope.kind !== 'ack' ||
@@ -4184,7 +5268,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         .prepare('DELETE FROM transport_outbox WHERE message_id = ? AND response_to_message_id = ?')
         .run(row.message_id, commandId);
       if (Number(removed.changes) !== 1) throw permanentPortFailure();
-      this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(row.message_id), -1);
+      this.#adjustEvidenceAccumulator(
+        'outbox',
+        outboxEvidenceDigestV2(outboxContentEvidenceFromRow(evidence)),
+        -1,
+      );
     }
   }
 
@@ -4215,7 +5303,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       .run(deliveryMessageId);
     if (Number(removed.changes) !== 1) throw permanentPortFailure();
     if (envelope.type === 'invocation.succeeded') this.#sensitivePurgePending = true;
-    this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(deliveryMessageId), -1);
+    this.#adjustEvidenceAccumulator(
+      'outbox',
+      outboxEvidenceDigestV2(outboxContentEvidenceFromRow(row)),
+      -1,
+    );
   }
 
   #appendInboundEffectEvent(input: {
@@ -4247,19 +5339,34 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       );
   }
 
-  #refreshOutboxDeliveryDigest(messageId: string): void {
+  #refreshOutboxDeliveryDigest(messageId: string, previous: OutboxDeliveryRow): OutboxDeliveryRow {
     const row = this.#database
       .prepare(
         `SELECT message_id, installation_id, connection_id, sequence, canonical_digest,
-                envelope_json, state, ack_level, delivery_digest, created_at_ms, updated_at_ms,
-                acked_at_ms, retained_until_ms
+                envelope_json, envelope_type, response_to_message_id, state, ack_level,
+                delivery_digest, created_at_ms, updated_at_ms, acked_at_ms, retained_until_ms
          FROM transport_outbox WHERE message_id = ?`,
       )
       .get(messageId) as OutboxDeliveryRow | undefined;
-    if (row === undefined) throw permanentPortFailure();
-    this.#database
+    if (
+      row === undefined ||
+      previous.message_id !== row.message_id ||
+      previous.delivery_digest !== outboxDeliveryDigestFromRow(previous)
+    ) {
+      throw permanentPortFailure();
+    }
+    const deliveryDigest = outboxDeliveryDigestFromRow(row);
+    const updated = this.#database
       .prepare('UPDATE transport_outbox SET delivery_digest = ? WHERE message_id = ?')
-      .run(outboxDeliveryDigestFromRow(row), messageId);
+      .run(deliveryDigest, messageId);
+    if (Number(updated.changes) !== 1) throw permanentPortFailure();
+    const current = { ...row, delivery_digest: deliveryDigest };
+    this.#replaceEvidenceAccumulator(
+      'outbox',
+      outboxEvidenceDigestV2(outboxContentEvidenceFromRow(previous)),
+      outboxEvidenceDigestV2(outboxContentEvidenceFromRow(current)),
+    );
+    return current;
   }
 
   #adjustEvidenceAccumulator(kind: 'inbound' | 'outbox', itemDigest: string, delta: -1 | 1): void {
@@ -4282,6 +5389,30 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (Number(result.changes) !== 1) throw permanentPortFailure();
   }
 
+  #replaceEvidenceAccumulator(
+    kind: 'inbound' | 'outbox',
+    previousItemDigest: string,
+    currentItemDigest: string,
+  ): void {
+    const xorColumn = kind === 'inbound' ? 'inbound_evidence_xor' : 'outbox_evidence_xor';
+    const row = this.#database
+      .prepare(`SELECT ${xorColumn} AS digest FROM transport_meta WHERE singleton = 1`)
+      .get() as { digest: string } | undefined;
+    if (
+      row === undefined ||
+      !SHA256_HEX.test(row.digest) ||
+      !SHA256_HEX.test(previousItemDigest) ||
+      !SHA256_HEX.test(currentItemDigest)
+    ) {
+      throw permanentPortFailure();
+    }
+    const digest = xorDigest(xorDigest(row.digest, previousItemDigest), currentItemDigest);
+    const result = this.#database
+      .prepare(`UPDATE transport_meta SET ${xorColumn} = ? WHERE singleton = 1`)
+      .run(digest);
+    if (Number(result.changes) !== 1) throw permanentPortFailure();
+  }
+
   #pruneExpiredRows(now: number): number {
     let pruned = 0;
     const expiredOutbox = this.#database
@@ -4298,6 +5429,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       .all(now, PRUNE_BATCH_SIZE) as Array<{ message_id: string; envelope_type: string }>;
     for (const row of expiredOutbox) {
       this.#assertTransactionBudget();
+      const evidence = this.#outboxRow(row.message_id);
+      if (evidence === undefined) throw permanentPortFailure();
       const result = this.#database
         .prepare(
           `DELETE FROM transport_outbox
@@ -4309,7 +5442,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         if (row.envelope_type === 'invocation.succeeded') {
           this.#sensitivePurgePending = true;
         }
-        this.#adjustEvidenceAccumulator('outbox', outboxEvidenceDigest(row.message_id), -1);
+        this.#adjustEvidenceAccumulator(
+          'outbox',
+          outboxEvidenceDigestV2(outboxContentEvidenceFromRow(evidence)),
+          -1,
+        );
         pruned += 1;
       }
     }
@@ -4320,7 +5457,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           `SELECT f.source_event_id, f.conversation_id, f.open_command_id,
                   f.fact_digest, consumed.semantic_digest AS open_semantic_digest,
                   d.delivery_message_id, d.canonical_digest AS delivery_canonical_digest,
-                  r.ack_message_id, r.ack_canonical_digest, ack.logical_digest AS ack_logical_digest,
+                  r.ack_message_id, r.ack_canonical_digest, r.ack_logical_digest,
                   r.decision, r.cloud_decided_at_ms,
                   (SELECT count(*) FROM transport_outbox AS response_count
                     WHERE response_count.response_to_message_id = f.open_command_id
@@ -4335,9 +5472,6 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
            JOIN local_conversation_ready_deliveries AS d
              ON d.delivery_message_id = r.delivery_message_id
            JOIN local_consumed_commands AS consumed ON consumed.command_id = f.open_command_id
-           JOIN transport_inbound_frames AS ack
-             ON ack.connection_id = r.ack_connection_id AND ack.sequence = r.ack_sequence
-            AND ack.message_id = r.ack_message_id
            LEFT JOIN transport_outbox AS response
              ON response.response_to_message_id = f.open_command_id
            WHERE r.cloud_decided_at_ms <= ? AND o.fact_digest = f.fact_digest
@@ -4401,6 +5535,10 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
             sqliteInvocationRowDigest('local_conversation_ready_terminal_tombstones', tombstone),
           );
         if (response !== undefined) {
+          const responseEvidence = this.#outboxRow(String(ready.response_message_id));
+          if (responseEvidence === undefined) {
+            throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+          }
           const removedResponse = this.#database
             .prepare(
               `DELETE FROM transport_outbox
@@ -4412,7 +5550,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           }
           this.#adjustEvidenceAccumulator(
             'outbox',
-            outboxEvidenceDigest(String(ready.response_message_id)),
+            outboxEvidenceDigestV2(outboxContentEvidenceFromRow(responseEvidence)),
             -1,
           );
         }
@@ -4508,6 +5646,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }>;
     for (const row of expiredInbound) {
       this.#assertTransactionBudget();
+      const evidence = this.#inboundEffectRow(row.connection_id, row.sequence);
+      if (evidence === undefined) throw permanentPortFailure();
       const result = this.#database
         .prepare(
           `DELETE FROM transport_inbound_frames
@@ -4519,7 +5659,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       if (Number(result.changes) === 1) {
         this.#adjustEvidenceAccumulator(
           'inbound',
-          inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id),
+          inboundEvidenceDigestV2(inboundContentEvidenceFromRow(evidence)),
           -1,
         );
         pruned += 1;
@@ -4640,14 +5780,15 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (Number(result.changes) !== 1) throw permanentPortFailure();
   }
 
-  #outboxRow(messageId: string): OutboxRow | undefined {
+  #outboxRow(messageId: string): OutboxDeliveryRow | undefined {
     return this.#database
       .prepare(
         `SELECT message_id, installation_id, connection_id, sequence, canonical_digest,
-                envelope_json, state, ack_level
+                envelope_json, envelope_type, response_to_message_id, state, delivery_digest,
+                ack_level, created_at_ms, updated_at_ms, acked_at_ms, retained_until_ms
          FROM transport_outbox WHERE message_id = ?`,
       )
-      .get(messageId) as OutboxRow | undefined;
+      .get(messageId) as OutboxDeliveryRow | undefined;
   }
 
   #secureJournalFiles(): void {
@@ -4656,7 +5797,13 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     if (journalEntryExists(`${this.#filename}-journal`)) {
       throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
     }
-    for (const suffix of ['-wal', '-shm', '.watermark', '.recovery-reserve']) {
+    for (const suffix of [
+      '-wal',
+      '-shm',
+      '.watermark',
+      '.recovery-reserve',
+      '.migration-recovery',
+    ]) {
       const path = `${this.#filename}${suffix}`;
       if (journalEntryExists(path)) {
         ensureSafeRegularFile(path, 0o600, 'JOURNAL_FILE_UNSAFE');
@@ -4857,6 +6004,52 @@ function parseStoredEnvelope(serialized: string, expectedDigest: string): Broker
   }
 }
 
+function storedTransportAuthority(
+  connection: StoredConnectionAuthorityRow,
+): StoredBrokerTransportAuthority {
+  return Object.freeze({
+    installationId: connection.installation_id,
+    connectionId: connection.connection_id,
+    deploymentId: connection.deployment_id,
+    workerSessionId: connection.worker_session_id,
+    leaseId: connection.lease_id,
+    fence: connection.fence,
+  });
+}
+
+function storedConversationAuthority(
+  conversation: Record<string, unknown>,
+): StoredBrokerConversationAuthority {
+  return Object.freeze({
+    conversationId: String(conversation.conversation_id),
+    installationId: String(conversation.installation_id),
+    deploymentId: String(conversation.deployment_id),
+    workerSessionId: String(conversation.worker_session_id),
+    leaseId: String(conversation.lease_id),
+    fence: String(conversation.fence),
+    agentVersionId: String(conversation.agent_version_id),
+    agentVersionDigest: String(conversation.agent_version_digest),
+    snapshotDigest: String(conversation.snapshot_digest),
+    openCommandId: String(conversation.open_command_id),
+    openConnectionId: String(conversation.open_connection_id),
+    openSequence: String(conversation.open_sequence),
+  });
+}
+
+function materializeStoredInboundEnvelope(
+  stored: DecodedStoredBrokerEnvelope,
+  connection: StoredConnectionAuthorityRow,
+  conversation?: Record<string, unknown>,
+  expectedLegacyLogicalDigest?: string,
+): BrokerEnvelope {
+  return materializeStoredBrokerEnvelope(
+    stored,
+    storedTransportAuthority(connection),
+    conversation === undefined ? undefined : storedConversationAuthority(conversation),
+    expectedLegacyLogicalDigest,
+  );
+}
+
 function logicalEnvelopeDigest(envelope: BrokerEnvelope): string {
   if (envelope.kind === 'command') return workerInvocationCommandSemanticDigest(envelope);
   return canonicalSha256({
@@ -4868,6 +6061,38 @@ function logicalEnvelopeDigest(envelope: BrokerEnvelope): string {
     correlationId: envelope.correlationId,
     body: envelope.body,
   });
+}
+
+function legacyConversationOpenLogicalDigest(
+  envelope: Extract<BrokerCommand, { type: 'conversation.open' }>,
+): string {
+  const { openAuthority: _currentAuthority, ...legacyBody } = envelope.body;
+  return canonicalSha256({
+    protocol: envelope.protocol,
+    schemaVersion: envelope.schemaVersion,
+    kind: envelope.kind,
+    type: envelope.type,
+    messageId: envelope.messageId,
+    correlationId: envelope.correlationId,
+    body: legacyBody,
+  });
+}
+
+function migrationCreateTableSql(
+  schemaSql: string,
+  sourceName: string,
+  targetName: string,
+): string {
+  const marker = `CREATE TABLE ${sourceName} (`;
+  const start = schemaSql.indexOf(marker);
+  const endMarker = '\n  ) STRICT;';
+  const end = start < 0 ? -1 : schemaSql.indexOf(endMarker, start);
+  if (start < 0 || end < 0) {
+    throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+  }
+  return `${schemaSql
+    .slice(start, end + endMarker.length)
+    .replace(marker, `CREATE TABLE ${targetName} (`)}`;
 }
 
 function inboundEffectDigest(input: {
@@ -4970,11 +6195,82 @@ function inboundEvidenceDigest(connectionId: string, sequence: string, messageId
     .digest('hex');
 }
 
+type InboundContentEvidence = Readonly<{
+  connectionId: string;
+  sequence: string;
+  messageId: string;
+  canonicalDigest: string;
+  logicalDigest: string;
+  effectDigest: string;
+}>;
+
+function inboundEvidenceDigestV2(input: InboundContentEvidence): string {
+  return createHash('sha256')
+    .update('combo:vnext:worker-inbound-row:v2\0', 'utf8')
+    .update(canonicalizeJson(input), 'utf8')
+    .digest('hex');
+}
+
+function inboundContentEvidenceFromRow(
+  row: Pick<
+    InboundEffectRow,
+    | 'connection_id'
+    | 'sequence'
+    | 'message_id'
+    | 'canonical_digest'
+    | 'logical_digest'
+    | 'effect_digest'
+  >,
+): InboundContentEvidence {
+  return Object.freeze({
+    connectionId: row.connection_id,
+    sequence: row.sequence,
+    messageId: row.message_id,
+    canonicalDigest: row.canonical_digest,
+    logicalDigest: row.logical_digest,
+    effectDigest: row.effect_digest,
+  });
+}
+
 function outboxEvidenceDigest(messageId: string): string {
   return createHash('sha256')
     .update('combo:vnext:worker-outbox-row:v1\0', 'utf8')
     .update(messageId, 'utf8')
     .digest('hex');
+}
+
+type OutboxContentEvidence = Readonly<{
+  messageId: string;
+  canonicalDigest: string;
+  envelopeType: string;
+  responseToMessageId: string | null;
+  deliveryDigest: string;
+}>;
+
+function outboxEvidenceDigestV2(input: OutboxContentEvidence): string {
+  return createHash('sha256')
+    .update('combo:vnext:worker-outbox-row:v2\0', 'utf8')
+    .update(canonicalizeJson(input), 'utf8')
+    .digest('hex');
+}
+
+function outboxContentEvidenceFromRow(
+  row: Pick<
+    OutboxDeliveryRow,
+    | 'message_id'
+    | 'canonical_digest'
+    | 'envelope_type'
+    | 'response_to_message_id'
+    | 'delivery_digest'
+  >,
+): OutboxContentEvidence {
+  return Object.freeze({
+    messageId: row.message_id,
+    canonicalDigest: row.canonical_digest,
+    envelopeType: row.envelope_type,
+    responseToMessageId: row.response_to_message_id,
+    deliveryDigest: row.delivery_digest,
+  });
 }
 
 function xorDigest(left: string, right: string): string {
@@ -5078,9 +6374,271 @@ function assertSafeExistingAuxiliaryFiles(filename: string, busyTimeoutMs: numbe
       Math.min(10, Math.max(1, rollbackDeadline - performance.now())),
     );
   }
-  for (const suffix of ['-wal', '-shm', '.watermark', '.recovery-reserve']) {
+  cleanupSafeAtomicTemps(`${filename}.migration-recovery`);
+  for (const suffix of ['-wal', '-shm', '.watermark', '.recovery-reserve', '.migration-recovery']) {
     const path = `${filename}${suffix}`;
     safeRegularFileExists(path, 0o600, 'JOURNAL_FILE_UNSAFE');
+  }
+}
+
+function migrationRecoveryCandidateDigest(watermark: JournalCommitWatermark): string {
+  return createHash('sha256')
+    .update(MIGRATION_RECOVERY_CANDIDATE_DIGEST_DOMAIN, 'utf8')
+    .update(canonicalizeJson(watermark), 'utf8')
+    .digest('hex');
+}
+
+function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManifest {
+  ensureSafeRegularFile(filename, 0o600, 'JOURNAL_FILE_UNSAFE');
+  try {
+    const raw = readFileSync(filename, 'utf8');
+    if (Buffer.byteLength(raw, 'utf8') > 64 * 1024) {
+      throw new Error('migration-recovery-size');
+    }
+    const document = JSON.parse(raw) as unknown;
+    const outer = exactRecord(document, ['digest', 'payload']);
+    if (canonicalizeJson(outer) !== raw || typeof outer.digest !== 'string') {
+      throw new Error('migration-recovery-document');
+    }
+    const payload = exactRecord(outer.payload, [
+      'candidateSlot',
+      'finalizedSlot',
+      'formatVersion',
+      'legacySlot',
+      'nonce',
+    ]);
+    const canonicalPayload = canonicalizeJson(payload);
+    const digest = createHash('sha256')
+      .update(MIGRATION_RECOVERY_DIGEST_DOMAIN, 'utf8')
+      .update(canonicalPayload, 'utf8')
+      .digest('hex');
+    if (outer.digest !== digest || payload.formatVersion !== MIGRATION_RECOVERY_FORMAT_VERSION) {
+      throw new Error('migration-recovery-digest');
+    }
+    const nonce = UuidSchema.safeParse(payload.nonce);
+    if (!nonce.success) throw new Error('migration-recovery-nonce');
+    const legacySlot = exactRecord(payload.legacySlot, [
+      'commitEpoch',
+      'schemaVersion',
+      'watermark',
+    ]);
+    const legacyWatermark = parseRecoveryWatermark(legacySlot.watermark, 3);
+    if (
+      legacySlot.schemaVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION ||
+      legacySlot.commitEpoch !== legacyWatermark.commitEpoch
+    ) {
+      throw new Error('migration-recovery-legacy');
+    }
+    let candidateSlot: MigrationRecoveryManifest['candidateSlot'] = null;
+    if (payload.candidateSlot !== null) {
+      const candidate = exactRecord(payload.candidateSlot, [
+        'commitEpoch',
+        'schemaVersion',
+        'watermark',
+      ]);
+      const watermark = parseRecoveryWatermark(candidate.watermark, 4);
+      if (
+        candidate.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION ||
+        candidate.commitEpoch !== watermark.commitEpoch ||
+        candidate.commitEpoch !== legacyWatermark.commitEpoch + 1 ||
+        watermark.applicationId !== legacyWatermark.applicationId ||
+        watermark.installationId !== legacyWatermark.installationId ||
+        watermark.journalGeneration !== legacyWatermark.journalGeneration ||
+        watermark.authorizationDigest !== legacyWatermark.authorizationDigest ||
+        watermark.maxDatabaseBytes !== legacyWatermark.maxDatabaseBytes ||
+        watermark.maxWalBytes !== legacyWatermark.maxWalBytes ||
+        watermark.minFreeBytes !== legacyWatermark.minFreeBytes ||
+        watermark.inboundEvidenceCount !== 0 ||
+        watermark.inboundEvidenceXor !== ZERO_DIGEST ||
+        watermark.outboxEvidenceCount !== 0 ||
+        watermark.outboxEvidenceXor !== ZERO_DIGEST
+      ) {
+        throw new Error('migration-recovery-candidate');
+      }
+      candidateSlot = Object.freeze({
+        schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        commitEpoch: watermark.commitEpoch,
+        watermark,
+      });
+    }
+    let finalizedSlot: MigrationRecoveryManifest['finalizedSlot'] = null;
+    if (payload.finalizedSlot !== null) {
+      const finalized = exactRecord(payload.finalizedSlot, [
+        'candidateDigest',
+        'commitEpoch',
+        'schemaVersion',
+      ]);
+      if (
+        finalized.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION ||
+        !Number.isSafeInteger(finalized.commitEpoch) ||
+        Number(finalized.commitEpoch) !== legacyWatermark.commitEpoch + 1 ||
+        typeof finalized.candidateDigest !== 'string' ||
+        !SHA256_HEX.test(finalized.candidateDigest)
+      ) {
+        throw new Error('migration-recovery-finalized');
+      }
+      finalizedSlot = Object.freeze({
+        schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        commitEpoch: Number(finalized.commitEpoch),
+        candidateDigest: finalized.candidateDigest,
+      });
+    }
+    if (candidateSlot !== null && finalizedSlot !== null) {
+      throw new Error('migration-recovery-double-candidate');
+    }
+    return Object.freeze({
+      formatVersion: MIGRATION_RECOVERY_FORMAT_VERSION,
+      nonce: nonce.data,
+      legacySlot: Object.freeze({
+        schemaVersion: WORKER_CONVERSATION_READY_SCHEMA_VERSION,
+        commitEpoch: legacyWatermark.commitEpoch,
+        watermark: legacyWatermark,
+      }),
+      candidateSlot,
+      finalizedSlot,
+    });
+  } catch (error) {
+    if (error instanceof SqliteWorkerTransportError) throw error;
+    throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+  }
+}
+
+function parseRecoveryWatermark(input: unknown, schemaVersion: 3): LegacyJournalCommitWatermark;
+function parseRecoveryWatermark(input: unknown, schemaVersion: 4): JournalCommitWatermark;
+function parseRecoveryWatermark(input: unknown, schemaVersion: 3 | 4): AnyJournalCommitWatermark {
+  const baseKeys = [
+    'applicationId',
+    'authorityDigest',
+    'authorizationDigest',
+    'commitEpoch',
+    'formatVersion',
+    'inboundEvidenceCount',
+    'inboundEvidenceXor',
+    'installationId',
+    'journalGeneration',
+    'maxDatabaseBytes',
+    'maxWalBytes',
+    'minFreeBytes',
+    'outboxEvidenceCount',
+    'outboxEvidenceXor',
+    'schemaDigest',
+    'schemaVersion',
+  ];
+  const row = exactRecord(
+    input,
+    schemaVersion === 3 ? baseKeys : [...baseKeys, 'currentConnectionAuthority', 'evidenceVersion'],
+  );
+  const installation = UuidSchema.safeParse(row.installationId);
+  const generation = UuidSchema.safeParse(row.journalGeneration);
+  if (
+    !installation.success ||
+    !generation.success ||
+    row.applicationId !== WORKER_TRANSPORT_APPLICATION_ID ||
+    row.schemaVersion !== schemaVersion ||
+    !Number.isSafeInteger(row.commitEpoch) ||
+    Number(row.commitEpoch) < 1 ||
+    !Number.isSafeInteger(row.inboundEvidenceCount) ||
+    Number(row.inboundEvidenceCount) < 0 ||
+    !Number.isSafeInteger(row.outboxEvidenceCount) ||
+    Number(row.outboxEvidenceCount) < 0 ||
+    !Number.isSafeInteger(row.maxDatabaseBytes) ||
+    Number(row.maxDatabaseBytes) < 8 * 1024 * 1024 ||
+    !Number.isSafeInteger(row.maxWalBytes) ||
+    Number(row.maxWalBytes) < 1024 * 1024 ||
+    !Number.isSafeInteger(row.minFreeBytes) ||
+    Number(row.minFreeBytes) < 0 ||
+    typeof row.schemaDigest !== 'string' ||
+    !SHA256_HEX.test(row.schemaDigest) ||
+    typeof row.authorityDigest !== 'string' ||
+    !SHA256_HEX.test(row.authorityDigest) ||
+    typeof row.authorizationDigest !== 'string' ||
+    !SHA256_HEX.test(row.authorizationDigest) ||
+    typeof row.inboundEvidenceXor !== 'string' ||
+    !SHA256_HEX.test(row.inboundEvidenceXor) ||
+    typeof row.outboxEvidenceXor !== 'string' ||
+    !SHA256_HEX.test(row.outboxEvidenceXor)
+  ) {
+    throw new Error('migration-recovery-watermark');
+  }
+  const common: JournalCommitWatermarkBase = Object.freeze({
+    applicationId: WORKER_TRANSPORT_APPLICATION_ID,
+    schemaVersion,
+    schemaDigest: row.schemaDigest,
+    authorityDigest: row.authorityDigest,
+    installationId: installation.data,
+    journalGeneration: generation.data,
+    authorizationDigest: row.authorizationDigest,
+    commitEpoch: Number(row.commitEpoch),
+    inboundEvidenceCount: Number(row.inboundEvidenceCount),
+    inboundEvidenceXor: row.inboundEvidenceXor,
+    outboxEvidenceCount: Number(row.outboxEvidenceCount),
+    outboxEvidenceXor: row.outboxEvidenceXor,
+    maxDatabaseBytes: Number(row.maxDatabaseBytes),
+    maxWalBytes: Number(row.maxWalBytes),
+    minFreeBytes: Number(row.minFreeBytes),
+  });
+  if (schemaVersion === 3) {
+    if (row.formatVersion !== LEGACY_WATERMARK_FORMAT_VERSION) {
+      throw new Error('migration-recovery-legacy-format');
+    }
+    return Object.freeze({ ...common, formatVersion: LEGACY_WATERMARK_FORMAT_VERSION });
+  }
+  if (
+    row.formatVersion !== WATERMARK_FORMAT_VERSION ||
+    row.evidenceVersion !== WATERMARK_EVIDENCE_VERSION ||
+    row.currentConnectionAuthority !== null
+  ) {
+    throw new Error('migration-recovery-current-format');
+  }
+  return Object.freeze({
+    ...common,
+    formatVersion: WATERMARK_FORMAT_VERSION,
+    evidenceVersion: WATERMARK_EVIDENCE_VERSION,
+    schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+    currentConnectionAuthority: null,
+  });
+}
+
+function exactRecord(input: unknown, expectedKeys: readonly string[]): Record<string, unknown> {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('migration-recovery-record');
+  }
+  const row = input as Record<string, unknown>;
+  const actualKeys = Object.keys(row).sort();
+  const sortedExpected = [...expectedKeys].sort();
+  if (
+    actualKeys.length !== sortedExpected.length ||
+    actualKeys.some((key, index) => key !== sortedExpected[index])
+  ) {
+    throw new Error('migration-recovery-keys');
+  }
+  return row;
+}
+
+function cleanupSafeAtomicTemps(filename: string): void {
+  const parent = dirname(filename);
+  const prefix = `.${basename(filename)}.`;
+  let removed = false;
+  for (const name of readdirSync(parent)) {
+    if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+    if (
+      !/^\.[^.]+(?:\.[^.]+)*\.\d+\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/u.test(
+        name,
+      )
+    ) {
+      throw new SqliteWorkerTransportError('JOURNAL_FILE_UNSAFE');
+    }
+    const path = join(parent, name);
+    ensureSafeRegularFile(path, 0o600, 'JOURNAL_FILE_UNSAFE');
+    unlinkSync(path);
+    removed = true;
+  }
+  if (!removed) return;
+  const parentDescriptor = openSync(parent, 'r');
+  try {
+    fsyncSync(parentDescriptor);
+  } finally {
+    closeSync(parentDescriptor);
   }
 }
 

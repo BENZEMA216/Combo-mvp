@@ -2,11 +2,14 @@ import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:cryp
 // VNext registry cases: SCH-001 SCH-002 SCH-003 SCH-005 SCH-008
 import { describe, expect, it } from 'vitest';
 import { AgentVersionManifestSchema, computeAgentVersionDigests } from '../agent-version.js';
+import { currentBrokerContractDigest } from '../artifacts.js';
 import { canonicalSha256, canonicalizeJson } from '../canonical.js';
 import {
+  BrokerConversationOpenCommandSchema,
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
   BrokerHandshakeUnsignedSchema,
+  BrokerRegistrationCapabilitiesSchema,
   BrokerAuthenticationError,
   BrokerAuthenticationFailureCode,
   BrokerCloseCode,
@@ -14,6 +17,8 @@ import {
   ExecutionCapabilitySchema,
   ExecutionCapabilityUseRecordSchema,
   decideExecutionCapabilityUse,
+  brokerConversationOpenLogicalCommand,
+  brokerConversationOpenLogicalDigest,
   brokerHandshakeSigningBytes,
   classifyBrokerRemoteClose,
   executionCapabilityDigest,
@@ -426,6 +431,7 @@ describe('六类共享协议运行时 schema', () => {
     expect(parseBrokerHandshake(handshakeText).installationId).toMatch(/^[a-f0-9-]{36}$/u);
 
     for (const fixture of [
+      'broker-conversation-open.v1.json',
       'broker-conversation-ready.v1.json',
       'broker-invocation-prepare.v1.json',
       'broker-invocation-prepared.v1.json',
@@ -445,6 +451,7 @@ describe('六类共享协议运行时 schema', () => {
     const reordered = BrokerHandshakeUnsignedSchema.parse({
       challengeId: unsigned.challengeId,
       capacity: unsigned.capacity,
+      brokerContractDigest: unsigned.brokerContractDigest,
       isolationModes: unsigned.isolationModes,
       codexProtocolSchemaDigests: unsigned.codexProtocolSchemaDigests,
       codexRuntimeArtifacts: unsigned.codexRuntimeArtifacts,
@@ -458,6 +465,109 @@ describe('六类共享协议运行时 schema', () => {
     expect(brokerHandshakeSigningBytes(unsigned).toString('utf8')).not.toContain(
       handshake.challengeSignature,
     );
+    expect(unsigned.brokerContractDigest).toBe(currentBrokerContractDigest());
+    expect(brokerHandshakeSigningBytes(unsigned).toString('utf8')).toContain(
+      unsigned.brokerContractDigest,
+    );
+    expect(
+      brokerHandshakeSigningBytes({
+        ...unsigned,
+        brokerContractDigest: `sha256:${'0'.repeat(64)}`,
+      }),
+    ).not.toEqual(brokerHandshakeSigningBytes(unsigned));
+
+    const missingDigest = { ...handshake } as Record<string, unknown>;
+    delete missingDigest.brokerContractDigest;
+    expect(BrokerHandshakeSchema.safeParse(missingDigest).success).toBe(false);
+
+    const registration = BrokerRegistrationCapabilitiesSchema.parse({
+      codexRuntimeArtifacts: unsigned.codexRuntimeArtifacts,
+      codexProtocolSchemaDigests: unsigned.codexProtocolSchemaDigests,
+      isolationModes: unsigned.isolationModes,
+      brokerContractDigest: unsigned.brokerContractDigest,
+    });
+    expect(registration.brokerContractDigest).toBe(currentBrokerContractDigest());
+    expect(
+      BrokerRegistrationCapabilitiesSchema.safeParse({ ...registration, unexpected: true }).success,
+    ).toBe(false);
+  });
+
+  it('conversation.open freezes original authority and causally binds conversation.ready', async () => {
+    const open = BrokerConversationOpenCommandSchema.parse(
+      await readFixture('broker-conversation-open.v1.json'),
+    );
+    const ready = (await readFixture('broker-conversation-ready.v1.json')) as {
+      correlationId: string;
+      body: {
+        sourceEventId: string;
+        openCommandId: string;
+        conversationId: string;
+        deploymentId: string;
+        agentVersionId: string;
+        agentVersionDigest: string;
+        snapshotDigest: string;
+        installationId: string;
+        workerSessionId: string;
+        leaseId: string;
+        fence: string;
+      };
+    };
+
+    expect(open.messageId).not.toBe(open.correlationId);
+    expect(open.correlationId).toBe(open.body.conversationId);
+    expect(open.lease.deploymentId).toBe(open.body.openAuthority.deploymentId);
+    expect(open.lease.workerSessionId).not.toBe(open.body.openAuthority.workerSessionId);
+    expect(open.lease.leaseId).not.toBe(open.body.openAuthority.leaseId);
+    expect(open.lease.fence).not.toBe(open.body.openAuthority.fence);
+    expect(ready.body).toMatchObject({
+      sourceEventId: open.messageId,
+      openCommandId: open.messageId,
+      conversationId: open.body.conversationId,
+      deploymentId: open.body.openAuthority.deploymentId,
+      agentVersionId: open.body.agentVersionId,
+      agentVersionDigest: open.body.agentVersionDigest,
+      snapshotDigest: open.body.snapshotDigest,
+      installationId: open.body.openAuthority.installationId,
+      workerSessionId: open.body.openAuthority.workerSessionId,
+      leaseId: open.body.openAuthority.leaseId,
+      fence: open.body.openAuthority.fence,
+    });
+    expect(ready.correlationId).toBe(open.correlationId);
+
+    const baseline = brokerConversationOpenLogicalDigest(
+      brokerConversationOpenLogicalCommand(open),
+    );
+    expect(
+      brokerConversationOpenLogicalDigest(
+        brokerConversationOpenLogicalCommand({
+          ...open,
+          connectionId: '0198f00d-4000-7000-8000-000000000091',
+          sequence: '9223372036854775807',
+          sentAt: '2026-08-13T08:00:02.000Z',
+          expiresAt: '2026-08-13T08:00:32.000Z',
+          lease: {
+            ...open.lease,
+            workerSessionId: '0198f00d-4000-7000-8000-000000000092',
+            leaseId: '0198f00d-4000-7000-8000-000000000093',
+            fence: '99',
+          },
+        }),
+      ),
+    ).toBe(baseline);
+
+    expect(
+      BrokerConversationOpenCommandSchema.safeParse({ ...open, correlationId: open.messageId })
+        .success,
+    ).toBe(false);
+    expect(
+      BrokerConversationOpenCommandSchema.safeParse({
+        ...open,
+        lease: {
+          ...open.lease,
+          deploymentId: '0198f00d-4000-7000-8000-000000000094',
+        },
+      }).success,
+    ).toBe(false);
   });
 
   it('shares one machine-readable Broker close authority across Gateway and Worker', () => {

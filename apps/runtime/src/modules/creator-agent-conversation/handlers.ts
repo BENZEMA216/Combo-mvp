@@ -7,6 +7,7 @@ import {
   type DeploymentEnvironment,
 } from './repo.js';
 import { sendVnextError } from './http-boundary.js';
+import type { VisibleTranscriptDigester } from './visible-transcript-digester.js';
 
 function deploymentEnvironment(value: string): DeploymentEnvironment | null {
   if (value === 'development' || value === 'test') return 'TEST';
@@ -24,7 +25,11 @@ function sendKnownError(
 }
 
 /** POST /v1/public/agents/:slug/conversations. */
-export function createConsumerConversationHandler(): RouteHandlerMethod {
+export function createConsumerConversationHandler(
+  options: {
+    visibleTranscriptDigester?: VisibleTranscriptDigester;
+  } = {},
+): RouteHandlerMethod {
   return async function (req: FastifyRequest, reply: FastifyReply) {
     const consumerId = req.auth?.userId;
     if (!consumerId) {
@@ -46,12 +51,18 @@ export function createConsumerConversationHandler(): RouteHandlerMethod {
     }
 
     try {
-      const result = await createConsumerConversation(creatorAgentDb, {
-        consumerId,
-        publicSlug: parsedSlug.data,
-        idempotencyKey: parsedKey.data,
-        environment,
-      });
+      const result = await createConsumerConversation(
+        creatorAgentDb,
+        {
+          consumerId,
+          publicSlug: parsedSlug.data,
+          idempotencyKey: parsedKey.data,
+          environment,
+        },
+        {
+          visibleTranscriptDigester: options.visibleTranscriptDigester,
+        },
+      );
       // The frozen OpenAPI surface returns the same 201 resource representation for both the
       // first commit and an exact Idempotency-Key replay; replay is an internal storage fact.
       reply.code(201).send(result.conversation);

@@ -8,7 +8,16 @@ import {
   sign,
   type KeyObject,
 } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -41,6 +50,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   SqliteWorkerBrokerDurableTransport,
+  WORKER_TRANSPORT_SCHEMA_VERSION,
   type DurableInboundCommandCandidate,
   type NewWorkerJournalAuthorization,
   type SqliteWorkerTransportOptions,
@@ -55,6 +65,8 @@ import {
   localInvocationResultAadBytes,
   localInvocationResultAadDigest,
   localInvocationResultCipherDigest,
+  sqliteInvocationRowDigest,
+  workerInvocationAuthorityRows,
   type BrokerResultReencryptAuthorityPort,
   type CloudInvocationAckAuthorityPort,
   type HostDispatchReceiptAuthorityPort,
@@ -73,6 +85,7 @@ import {
   type WorkerInvocationCapabilityAuthorityPort,
 } from './sqlite-invocation-journal.js';
 import type { DurableBrokerConnection } from './worker-broker-client.js';
+import { downgradeToLegacyV3 } from '../test-support/sqlite-legacy-v3.js';
 
 const { DatabaseSync: SqliteDatabase } = createRequire(import.meta.url)('node:sqlite') as {
   readonly DatabaseSync: typeof DatabaseSync;
@@ -286,6 +299,95 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
     },
   );
 
+  it('rejects a wrong original installation before Sandbox READY authority or Host', async () => {
+    const fixture = await createInvocationFixture(89, {}, { readyOnly: true });
+    let readyEvidenceVerifications = 0;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      readyConversationAuthority: {
+        verify(input, expected, now) {
+          readyEvidenceVerifications += 1;
+          return fixture.authorities.options.readyConversationAuthority.verify(
+            input,
+            expected,
+            now,
+          );
+        },
+      },
+    });
+    const signal = new AbortController().signal;
+    const conversationId = uuid(89_900);
+    const wrongInstallationOpen = BrokerEnvelopeSchema.parse({
+      ...fixture.openEnvelope,
+      messageId: uuid(89_901),
+      correlationId: conversationId,
+      sequence: nextSequence(fixture.state),
+      body: {
+        ...fixture.openEnvelope.body,
+        conversationId,
+        openAuthority: {
+          ...fixture.openEnvelope.body.openAuthority,
+          installationId: uuid(89_902),
+        },
+      },
+    });
+    fixture.state = await commitCommand(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      wrongInstallationOpen,
+    );
+    const reference = commandReferenceFromEnvelope(wrongInstallationOpen);
+    const before = queryDurableStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: reference,
+        evidence: { token: 'must-not-reach-ready-authority' },
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'CONVERSATION_CONFLICT' });
+    expect(queryDurableStateSnapshot(fixture.filename)).toEqual(before);
+    expect(readyEvidenceVerifications).toBe(0);
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+  });
+
+  it('rejects a stale outer transport before Sandbox READY authority or Host', async () => {
+    const fixture = await createInvocationFixture(90, {}, { readyOnly: true });
+    let readyEvidenceVerifications = 0;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      readyConversationAuthority: {
+        verify(input, expected, now) {
+          readyEvidenceVerifications += 1;
+          return fixture.authorities.options.readyConversationAuthority.verify(
+            input,
+            expected,
+            now,
+          );
+        },
+      },
+    });
+    const signal = new AbortController().signal;
+    await activateReplacementLease(fixture, 90_900);
+    const before = queryDurableStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        evidence: { token: 'must-not-reach-ready-authority' },
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_LEASE' });
+    expect(queryDurableStateSnapshot(fixture.filename)).toEqual(before);
+    expect(readyEvidenceVerifications).toBe(0);
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+  });
+
   it.each([
     { label: 'PENDING', decision: null, cloudState: 'PENDING', seed: 84 },
     {
@@ -326,6 +428,7 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
         evidence: { token: 'sandbox-ready' },
         signal,
       });
+      expect(originalReady).toMatchObject(fixture.openEnvelope.body.openAuthority);
       if (decision !== null) {
         const [pending] = await journal.readPendingConversationReadyFacts({
           installationId: fixture.installationId,
@@ -406,40 +509,34 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
         sentAt: crossDeployment.leaseGrantedAt,
         expiresAt: crossDeployment.leaseExpiresAt,
         lease: crossDeployment.lease,
+        body: {
+          ...fixture.openEnvelope.body,
+          openAuthority: {
+            ...fixture.openEnvelope.body.openAuthority,
+            deploymentId: crossDeploymentId,
+          },
+        },
       }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
-      const crossDeploymentState = await commitCommand(
-        fixture.adapter,
-        fixture.installationId,
-        crossDeployment,
-        crossDeploymentOpen,
-      );
-      const crossDeploymentReference = await commandReference(
-        fixture.adapter,
-        fixture.installationId,
-        crossDeploymentState,
-        'conversation.open',
-      );
       const beforeCrossDeploymentRejection = queryDurableStateSnapshot(fixture.filename);
       await expect(
-        journal.bindReadyConversation({
-          installationId: fixture.installationId,
-          ownerToken: OWNER,
-          command: crossDeploymentReference,
-          evidence: { token: 'must-not-be-verified-on-conflict' },
-          signal,
-        }),
-      ).rejects.toMatchObject({ code: 'CONVERSATION_CONFLICT' });
+        commitCommand(
+          fixture.adapter,
+          fixture.installationId,
+          crossDeployment,
+          crossDeploymentOpen,
+        ),
+      ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
       expect(queryDurableStateSnapshot(fixture.filename)).toEqual(beforeCrossDeploymentRejection);
       expect(readyEvidenceVerifications).toBe(1);
 
       const changedOpen = BrokerEnvelopeSchema.parse({
         ...crossDeploymentOpen,
-        sequence: nextSequence(crossDeploymentState),
+        sequence: nextSequence(crossDeployment),
         body: { ...crossDeploymentOpen.body, snapshotDigest: SHA('c') },
       });
       const beforeChangedBodyRejection = queryDurableStateSnapshot(fixture.filename);
       await expect(
-        commitCommand(fixture.adapter, fixture.installationId, crossDeploymentState, changedOpen),
+        commitCommand(fixture.adapter, fixture.installationId, crossDeployment, changedOpen),
       ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
       expect(queryDurableStateSnapshot(fixture.filename)).toEqual(beforeChangedBodyRejection);
       expect(readyEvidenceVerifications).toBe(1);
@@ -837,32 +934,21 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
         sentAt: crossDeployment.leaseGrantedAt,
         expiresAt: crossDeployment.leaseExpiresAt,
         lease: crossDeployment.lease,
+        body: {
+          ...fixture.openEnvelope.body,
+          openAuthority: {
+            ...fixture.openEnvelope.body.openAuthority,
+            deploymentId: crossDeploymentId,
+          },
+        },
       }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
-      const crossDeploymentState = await commitCommand(
-        reopened,
-        fixture.installationId,
-        crossDeployment,
-        crossDeploymentOpen,
-      );
-      const crossDeploymentOpenReference = await commandReference(
-        reopened,
-        fixture.installationId,
-        crossDeploymentState,
-        'conversation.open',
-      );
       const beforeRejectedOpen = queryConnectionSnapshot(
         fixture.filename,
         crossDeployment.connectionId,
       );
       await expect(
-        recoveredJournal.bindReadyConversation({
-          installationId: fixture.installationId,
-          ownerToken: OWNER,
-          command: crossDeploymentOpenReference,
-          evidence: { token: 'sandbox-ready' },
-          signal,
-        }),
-      ).rejects.toMatchObject({ code: 'CONVERSATION_CONFLICT' });
+        commitCommand(reopened, fixture.installationId, crossDeployment, crossDeploymentOpen),
+      ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
       expect(queryConnectionSnapshot(fixture.filename, crossDeployment.connectionId)).toEqual(
         beforeRejectedOpen,
       );
@@ -872,21 +958,21 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
           'transport_inbound_frames',
           `connection_id = '${crossDeployment.connectionId}' AND sequence = '${crossDeploymentOpen.sequence}' AND effect_state = 'PERSISTED'`,
         ),
-      ).toBe(1);
+      ).toBe(0);
 
       const crossDeploymentAck = BrokerEnvelopeSchema.parse({
         ...originalAck,
-        connectionId: crossDeploymentState.connectionId,
-        sequence: nextSequence(crossDeploymentState),
-        sentAt: crossDeploymentState.leaseGrantedAt,
-        expiresAt: crossDeploymentState.leaseExpiresAt,
-        lease: crossDeploymentState.lease,
+        connectionId: crossDeployment.connectionId,
+        sequence: nextSequence(crossDeployment),
+        sentAt: crossDeployment.leaseGrantedAt,
+        expiresAt: crossDeployment.leaseExpiresAt,
+        lease: crossDeployment.lease,
       }) as Extract<BrokerEnvelope, { kind: 'ack'; type: 'message.ack' }>;
       await expect(
         reopened.replayInbound({
           installationId: fixture.installationId,
           ownerToken: OWNER,
-          connectionId: crossDeploymentState.connectionId,
+          connectionId: crossDeployment.connectionId,
           envelope: crossDeploymentAck,
           canonicalDigest: canonicalSha256(crossDeploymentAck),
           signal,
@@ -894,19 +980,19 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
       ).resolves.toBe('NOT_FOUND');
       const beforeRejectedAck = queryConnectionSnapshot(
         fixture.filename,
-        crossDeploymentState.connectionId,
+        crossDeployment.connectionId,
       );
       await expect(
-        commitCommand(reopened, fixture.installationId, crossDeploymentState, crossDeploymentAck),
+        commitCommand(reopened, fixture.installationId, crossDeployment, crossDeploymentAck),
       ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
-      expect(queryConnectionSnapshot(fixture.filename, crossDeploymentState.connectionId)).toEqual(
+      expect(queryConnectionSnapshot(fixture.filename, crossDeployment.connectionId)).toEqual(
         beforeRejectedAck,
       );
       expect(
         queryCountWhere(
           fixture.filename,
           'transport_inbound_frames',
-          `connection_id = '${crossDeploymentState.connectionId}' AND sequence = '${crossDeploymentAck.sequence}' AND message_id = '${crossDeploymentAck.messageId}'`,
+          `connection_id = '${crossDeployment.connectionId}' AND sequence = '${crossDeploymentAck.sequence}' AND message_id = '${crossDeploymentAck.messageId}'`,
         ),
       ).toBe(0);
       expect(queryCount(fixture.filename, 'local_invocations')).toBe(0);
@@ -2243,6 +2329,143 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
     reopened.close();
   });
 
+  it('projects an exact v3 Invocation ACK receipt into self-contained v4 authority', async () => {
+    const fixture = await createCompletedFixture(291);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const terminal = (
+      await journal.readPendingFacts({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        limit: 10,
+        signal,
+      })
+    ).find((fact) => fact.eventType === 'invocation.succeeded');
+    if (terminal === undefined) throw new Error('missing-v3-migration-terminal-fact');
+    const committed = await enqueueAndCommitCloudAck(
+      fixture.adapter,
+      journal,
+      fixture,
+      terminal,
+      291_700,
+      'IDEMPOTENT_REPLAY',
+    );
+    await journal.markCloudCommitted({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      ack: committed.ack,
+      evidence: { token: 'cloud-committed' },
+      signal,
+    });
+    fixture.adapter.close();
+
+    downgradeToLegacyV3(fixture.filename);
+    expect(queryPragmaNumber(fixture.filename, 'user_version')).toBe(3);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        `pragma_table_info('local_invocation_outbox_receipts')`,
+        `name IN ('ack_decision', 'ack_logical_digest')`,
+      ),
+    ).toBe(0);
+    const legacyDatabase = new SqliteDatabase(fixture.filename, { readOnly: true });
+    expect(() => assertWorkerInvocationIntegrity(legacyDatabase)).not.toThrow();
+    legacyDatabase.close();
+
+    const migrated = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(migrated.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    expect(queryCount(fixture.filename, 'transport_connections')).toBe(0);
+    expect(queryCount(fixture.filename, 'transport_inbound_frames')).toBe(0);
+    expect(queryCount(fixture.filename, 'transport_outbox')).toBe(0);
+    expect(queryCount(fixture.filename, 'local_invocation_outbox_receipts')).toBe(1);
+    expect(
+      queryScalarFrom(fixture.filename, 'local_invocation_outbox_receipts', 'ack_decision'),
+    ).toBe('IDEMPOTENT_REPLAY');
+    expect(
+      queryScalarFrom(fixture.filename, 'local_invocation_outbox_receipts', 'ack_logical_digest'),
+    ).toBe(
+      canonicalSha256({
+        protocol: committed.ackEnvelope.protocol,
+        schemaVersion: committed.ackEnvelope.schemaVersion,
+        kind: committed.ackEnvelope.kind,
+        type: committed.ackEnvelope.type,
+        messageId: committed.ackEnvelope.messageId,
+        correlationId: committed.ackEnvelope.correlationId,
+        body: committed.ackEnvelope.body,
+      }),
+    );
+    const migratedDatabase = new SqliteDatabase(fixture.filename, { readOnly: true });
+    expect(() => assertWorkerInvocationIntegrity(migratedDatabase)).not.toThrow();
+    migratedDatabase.close();
+    expect(() => migrated.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+    migrated.close();
+
+    const contentDrift = cloneClosedJournal(fixture.filename);
+    rewriteAppendOnlyAuthorityRow(
+      contentDrift,
+      'local_invocation_outbox_receipts',
+      'ack_decision',
+      'APPLIED',
+    );
+    assertLocallyConsistentWorkerJournal(contentDrift);
+    expect(() => new SqliteWorkerBrokerDurableTransport({ filename: contentDrift })).toThrowError(
+      expect.objectContaining({ code: 'JOURNAL_CORRUPT' }),
+    );
+
+    const deletedReceipt = cloneClosedJournal(fixture.filename);
+    deleteAppendOnlyAuthorityRow(deletedReceipt, 'local_invocation_outbox_receipts');
+    assertLocallyConsistentWorkerJournal(deletedReceipt);
+    expect(() => new SqliteWorkerBrokerDurableTransport({ filename: deletedReceipt })).toThrowError(
+      expect.objectContaining({ code: 'JOURNAL_CORRUPT' }),
+    );
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(() => reopened.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+    reopened.close();
+  });
+
+  it('keeps retained local Prompt ciphertext out of the v3 migration recovery manifest', async () => {
+    const fixture = await createInvocationFixture(291_500);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    expect(start.action).toBe('DISPATCH_ONCE');
+    const retainedPrompt = queryScalar(fixture.filename, 'prompt_ciphertext') as string;
+    const retainedPromptFields = JSON.parse(retainedPrompt) as LocalInvocationPromptCiphertext;
+    fixture.adapter.close();
+    downgradeToLegacyV3(fixture.filename);
+
+    const migrated = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(migrated.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    expect(() => migrated.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+    migrated.close();
+    const manifestPath = `${fixture.filename}.migration-recovery`;
+    const manifestBytes = readFileSync(manifestPath);
+    for (const forbidden of [
+      retainedPrompt,
+      retainedPromptFields.nonce,
+      retainedPromptFields.ciphertext,
+      retainedPromptFields.authTag,
+      'secret prompt',
+    ]) {
+      expect(manifestBytes.includes(Buffer.from(forbidden, 'utf8')), forbidden).toBe(false);
+    }
+    expect(statSync(manifestPath).mode & 0o777).toBe(0o600);
+    expect(queryScalar(fixture.filename, 'prompt_ciphertext')).toBe(retainedPrompt);
+  });
+
   it('purges a retired Session result wire and re-encrypts the same fact for the new Session', async () => {
     const fixture = await createCompletedFixture(292);
     const signal = new AbortController().signal;
@@ -3254,8 +3477,15 @@ async function createInvocationFixture(
       agentVersionDigest: SHA('a'),
       snapshotDigest: SHA('b'),
       visibleTranscriptDigest: HMAC('c'),
+      openAuthority: {
+        deploymentId,
+        installationId,
+        workerSessionId,
+        leaseId,
+        fence: lease.fence,
+      },
     },
-  });
+  }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
   state = await commitCommand(adapter, installationId, state, openEnvelope);
   const keyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
   const capability = signedCapability(
@@ -3899,6 +4129,7 @@ async function enqueueAndCommitCloudAck(
   fixture: InvocationFixture,
   fact: PendingInvocationFactReference,
   seed: number,
+  decision: 'APPLIED' | 'IDEMPOTENT_REPLAY' = 'APPLIED',
 ): Promise<{
   state: DurableBrokerConnection;
   ack: OpaqueInvocationCloudAckReference;
@@ -3929,7 +4160,7 @@ async function enqueueAndCommitCloudAck(
     body: {
       acknowledgedMessageId: delivery.deliveryMessageId,
       level: 'CLOUD_COMMITTED',
-      decision: 'APPLIED',
+      decision,
     },
   });
   const state = await commitCommand(adapter, fixture.installationId, fixture.state, ackEnvelope);
@@ -4135,6 +4366,181 @@ function authorization(installationId: string): NewWorkerJournalAuthorization {
     journalGeneration: uuid(999_998),
     authorizationDigest: createHash('sha256').update(`journal:${installationId}`).digest('hex'),
   };
+}
+
+function cloneClosedJournal(filename: string): string {
+  const checkpoint = new SqliteDatabase(filename);
+  checkpoint.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  checkpoint.close();
+  const directory = realpathSync(mkdtempSync(join(tmpdir(), 'combo-invocation-clone-')));
+  temporaryDirectories.add(directory);
+  const clone = join(directory, 'journal-v4.sqlite');
+  for (const suffix of ['', '.watermark']) {
+    const source = `${filename}${suffix}`;
+    if (!existsSync(source)) continue;
+    copyFileSync(source, `${clone}${suffix}`);
+    chmodSync(`${clone}${suffix}`, 0o600);
+  }
+  return clone;
+}
+
+function rewriteAppendOnlyAuthorityRow(
+  filename: string,
+  table: 'local_invocation_outbox_receipts',
+  column: 'ack_decision',
+  value: 'APPLIED',
+): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare(`SELECT * FROM ${table} LIMIT 1`).get() as
+      | Record<string, unknown>
+      | undefined;
+    if (row === undefined || typeof row.receipt_id !== 'number') {
+      throw new Error('MISSING_APPEND_ONLY_AUTHORITY_ROW');
+    }
+    const triggers = database
+      .prepare(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND tbl_name = ? ORDER BY name`,
+      )
+      .all(table) as Array<{ name: string; sql: string }>;
+    for (const trigger of triggers) database.exec(`DROP TRIGGER "${trigger.name}"`);
+    const payload: Record<string, unknown> = { ...row, [column]: value };
+    delete payload.receipt_id;
+    delete payload.row_digest;
+    const rowDigest = sqliteInvocationRowDigest(table, payload);
+    database
+      .prepare(`UPDATE ${table} SET ${column} = ?, row_digest = ? WHERE receipt_id = ?`)
+      .run(value, rowDigest, row.receipt_id);
+    for (const trigger of triggers) database.exec(trigger.sql);
+    refreshTestAuthorityDigest(database);
+    database.exec('COMMIT');
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    database.close();
+    throw error;
+  }
+  database.close();
+}
+
+function deleteAppendOnlyAuthorityRow(
+  filename: string,
+  table: 'local_invocation_outbox_receipts',
+): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const triggers = database
+      .prepare(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND tbl_name = ? ORDER BY name`,
+      )
+      .all(table) as Array<{ name: string; sql: string }>;
+    for (const trigger of triggers) database.exec(`DROP TRIGGER "${trigger.name}"`);
+    const removed = database.prepare(`DELETE FROM ${table}`).run();
+    if (Number(removed.changes) !== 1) throw new Error('MISSING_APPEND_ONLY_AUTHORITY_ROW');
+    for (const trigger of triggers) database.exec(trigger.sql);
+    refreshTestAuthorityDigest(database);
+    database.exec('COMMIT');
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    database.close();
+    throw error;
+  }
+  database.close();
+}
+
+function refreshTestAuthorityDigest(database: InstanceType<typeof SqliteDatabase>): void {
+  const installation = database
+    .prepare(
+      `SELECT installation_id, highest_owner_epoch FROM transport_installations
+       ORDER BY installation_id`,
+    )
+    .all();
+  const owners = database
+    .prepare(
+      `SELECT installation_id, owner_token_digest, owner_epoch, lease_expires_at_ms,
+              acquired_at_ms, updated_at_ms
+       FROM transport_installation_owners ORDER BY installation_id`,
+    )
+    .all();
+  const fences = database
+    .prepare(
+      `SELECT installation_id, deployment_id, highest_fence
+       FROM transport_deployment_fences ORDER BY installation_id, deployment_id`,
+    )
+    .all();
+  const authorityDigest = createHash('sha256')
+    .update('combo:vnext:worker-authority:v1\0', 'utf8')
+    .update(
+      canonicalizeJson({
+        installation,
+        owners,
+        fences,
+        local: workerInvocationAuthorityRows(database),
+      }),
+      'utf8',
+    )
+    .digest('hex');
+  database
+    .prepare('UPDATE transport_meta SET authority_digest = ? WHERE singleton = 1')
+    .run(authorityDigest);
+}
+
+function assertLocallyConsistentWorkerJournal(filename: string): void {
+  const database = new SqliteDatabase(filename, { readOnly: true });
+  const schemaRows = database
+    .prepare(
+      `SELECT type, name, sql FROM sqlite_master
+       WHERE (name LIKE 'transport_%' OR name LIKE 'local_%') AND sql IS NOT NULL
+       ORDER BY type, name`,
+    )
+    .all();
+  const meta = database
+    .prepare('SELECT schema_digest, authority_digest FROM transport_meta WHERE singleton = 1')
+    .get() as { schema_digest: string; authority_digest: string };
+  expect(createHash('sha256').update(canonicalizeJson(schemaRows)).digest('hex')).toBe(
+    meta.schema_digest,
+  );
+  const installation = database
+    .prepare(
+      `SELECT installation_id, highest_owner_epoch FROM transport_installations
+       ORDER BY installation_id`,
+    )
+    .all();
+  const owners = database
+    .prepare(
+      `SELECT installation_id, owner_token_digest, owner_epoch, lease_expires_at_ms,
+              acquired_at_ms, updated_at_ms
+       FROM transport_installation_owners ORDER BY installation_id`,
+    )
+    .all();
+  const fences = database
+    .prepare(
+      `SELECT installation_id, deployment_id, highest_fence
+       FROM transport_deployment_fences ORDER BY installation_id, deployment_id`,
+    )
+    .all();
+  expect(
+    createHash('sha256')
+      .update('combo:vnext:worker-authority:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          installation,
+          owners,
+          fences,
+          local: workerInvocationAuthorityRows(database),
+        }),
+        'utf8',
+      )
+      .digest('hex'),
+  ).toBe(meta.authority_digest);
+  expect(() => assertWorkerInvocationIntegrity(database)).not.toThrow();
+  expect(() => assertWorkerConversationReadyIntegrity(database)).not.toThrow();
+  database.close();
 }
 
 function queryCount(filename: string, table: string): number {

@@ -3,9 +3,16 @@ import { readdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { format } from 'prettier';
-import { createJsonSchemaBundle, createOpenApiDocument } from '../dist/artifacts.js';
+import { stringify } from 'yaml';
+import {
+  createBrokerContractArtifact,
+  createJsonSchemaBundle,
+  createOpenApiDocument,
+  currentBrokerContractDigest,
+} from '../dist/artifacts.js';
 
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+const repositoryRoot = join(packageRoot, '../..');
 const render = (value) =>
   format(JSON.stringify(value), { parser: 'json', printWidth: 100, tabWidth: 2, endOfLine: 'lf' });
 const sha256 = (bytes) => `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -16,10 +23,38 @@ const check = async (path, expected) => {
   if (actual !== expected) differences.push(path);
 };
 
+const checkRepository = async (path, expected) => {
+  const actual = await readFile(join(repositoryRoot, path), 'utf8');
+  if (actual !== expected) differences.push(path);
+};
+
 await check('schemas/contract-schemas.v1.json', await render(createJsonSchemaBundle()));
+await check('schemas/broker-contract.v1.json', await render(createBrokerContractArtifact()));
 await check('openapi/creator-agent-v1.openapi.json', await render(createOpenApiDocument()));
+await checkRepository(
+  'tests/vnext/registries.yaml',
+  stringify(
+    {
+      protocol: 'combo.vnext-broker-contract-registry/1',
+      schemaVersion: 1,
+      contracts: [
+        {
+          wireProtocol: 'combo.creator-broker/1',
+          artifactPath: 'packages/creator-agent-protocol/schemas/broker-contract.v1.json',
+          contractDigest: currentBrokerContractDigest(),
+        },
+      ],
+    },
+    { lineWidth: 0 },
+  ),
+);
 
 const fixtureDirectory = join(packageRoot, 'fixtures');
+const handshakeText = await readFile(join(fixtureDirectory, 'broker-handshake.v1.json'), 'utf8');
+const handshake = JSON.parse(handshakeText);
+if (handshake.brokerContractDigest !== currentBrokerContractDigest()) {
+  differences.push('fixtures/broker-handshake.v1.json#brokerContractDigest');
+}
 const fixtureFiles = (await readdir(fixtureDirectory))
   .filter((name) => name.endsWith('.json') && name !== 'index.json')
   .sort();

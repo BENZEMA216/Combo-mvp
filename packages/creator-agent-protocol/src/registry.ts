@@ -6,6 +6,26 @@ export const TEST_REGISTRY_PROTOCOL = 'combo.vnext-test-registry/1' as const;
 export const INVARIANT_REGISTRY_PROTOCOL = 'combo.vnext-invariant-registry/1' as const;
 export const DECISION_REGISTRY_PROTOCOL = 'combo.vnext-decision-registry/1' as const;
 export const DATA_FLOW_ALLOWLIST_PROTOCOL = 'combo.vnext-data-flow-allowlist/1' as const;
+export const BROKER_CONTRACT_REGISTRY_PROTOCOL = 'combo.vnext-broker-contract-registry/1' as const;
+
+export const BrokerContractRegistrySchema = z
+  .object({
+    protocol: z.literal(BROKER_CONTRACT_REGISTRY_PROTOCOL),
+    schemaVersion: z.literal(1),
+    contracts: z.tuple([
+      z
+        .object({
+          wireProtocol: z.literal('combo.creator-broker/1'),
+          artifactPath: z.literal(
+            'packages/creator-agent-protocol/schemas/broker-contract.v1.json',
+          ),
+          contractDigest: Sha256DigestSchema,
+        })
+        .strict(),
+    ]),
+  })
+  .strict();
+export type BrokerContractRegistry = z.infer<typeof BrokerContractRegistrySchema>;
 
 export const InvariantIdSchema = z.string().regex(/^INV-\d{3}$/u);
 export const TestCaseIdSchema = z

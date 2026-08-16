@@ -4,7 +4,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Env } from '../../platform/config/env.js';
 import { closeDb, pingCreatorAgentDb, toRuntimeDb } from '../../platform/infra/db.js';
 import type { ConsumerConversationError } from './repo.js';
-import { createConsumerConversation } from './repo.js';
+import {
+  createConsumerConversation as createConsumerConversationWithAuthority,
+  type CreateConsumerConversationInput,
+  type CreateConsumerConversationOptions,
+} from './repo.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const consumerPassword = process.env.POSTGRES_AGENT_CONSUMER_API_PASSWORD;
@@ -51,6 +55,22 @@ function controlPlaneDatabaseUrl(): string {
   return url.toString();
 }
 
+function createConsumerConversation(
+  db: Parameters<typeof createConsumerConversationWithAuthority>[0],
+  input: CreateConsumerConversationInput,
+  options: Omit<CreateConsumerConversationOptions, 'visibleTranscriptDigester'> = {},
+) {
+  return createConsumerConversationWithAuthority(db, input, {
+    ...options,
+    visibleTranscriptDigester: async ({ creatorId, agentVersionId }) => ({
+      digest: `hmac-sha256:${digest('8')}`,
+      keyId: `visible-${creatorId}`,
+      keyVersion: 7n,
+      keyRef: `kms://combo/visible/${creatorId}/${agentVersionId}@7`,
+    }),
+  });
+}
+
 pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', () => {
   const owner = new Client({ connectionString: databaseUrl });
   const api = new Pool({ connectionString: apiDatabaseUrl(), max: 20 });
@@ -66,6 +86,9 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     versionId: randomUuidV7(),
     deploymentId: randomUuidV7(),
     workerId: randomUuidV7(),
+    challengeId: randomUuidV7(),
+    workerSessionId: randomUuidV7(),
+    connectionId: randomUuidV7(),
     leaseId: randomUuidV7(),
     grantId: randomUuidV7(),
   };
@@ -179,10 +202,35 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
       [ids.deploymentId, ids.versionId, ids.workerId],
     );
     await owner.query(
+      `INSERT INTO worker_auth_challenges (
+         id, creator_id, installation_id, deployment_id, deployment_generation,
+         state, issued_at, expires_at, consumed_at
+       ) VALUES (
+         $1, $2, $3, $4, 1, 'CONSUMED',
+         statement_timestamp(), statement_timestamp() + interval '10 minutes',
+         statement_timestamp()
+       )`,
+      [ids.challengeId, ids.creatorId, ids.workerId, ids.deploymentId],
+    );
+    await owner.query(
+      `INSERT INTO worker_gateway_sessions (
+         id, creator_id, installation_id, challenge_id, connection_id,
+         registration_digest, state, expires_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, 'ACTIVE', now() + interval '10 minutes')`,
+      [
+        ids.workerSessionId,
+        ids.creatorId,
+        ids.workerId,
+        ids.challengeId,
+        ids.connectionId,
+        digest('6'),
+      ],
+    );
+    await owner.query(
       `INSERT INTO worker_leases (
          id, deployment_id, creator_id, worker_id, connection_id, fence, expires_at
        ) VALUES ($1, $2, $3, $4, $5, 1, now() + interval '10 minutes')`,
-      [ids.leaseId, ids.deploymentId, ids.creatorId, ids.workerId, randomUuidV7()],
+      [ids.leaseId, ids.deploymentId, ids.creatorId, ids.workerId, ids.connectionId],
     );
   });
 
@@ -256,6 +304,30 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     });
   }
 
+  async function findOpenCommand(conversationId: string): Promise<{
+    commandId: string;
+    leaseId: string;
+    fence: string;
+  }> {
+    const result = await owner.query<{
+      command_id: string;
+      assignment_lease_id: string;
+      assignment_fence: string;
+    }>(
+      `SELECT command_id, assignment_lease_id, assignment_fence::text
+         FROM broker_outbox
+        WHERE conversation_id = $1 AND command_type = 'conversation.open'`,
+      [conversationId],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error('conversation.open command is missing');
+    return {
+      commandId: row.command_id,
+      leaseId: row.assignment_lease_id,
+      fence: row.assignment_fence,
+    };
+  }
+
   async function commitReady(input: {
     sourceEventId: string;
     conversationId: string;
@@ -268,6 +340,30 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     conversation_state: string | null;
     open_command_id: string | null;
   }> {
+    const runtimeThreadId = `thread-${input.sandboxInstanceId}`;
+    const readyEvidenceDigest = `sha256:${digest('9')}`;
+    const fact = await owner.query<{ fact_digest: string }>(
+      `SELECT creator_agent_conversation_ready_fact_digest(
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
+       ) AS fact_digest`,
+      [
+        input.sourceEventId,
+        input.conversationId,
+        ids.deploymentId,
+        ids.versionId,
+        digest('7'),
+        digest('1'),
+        input.workerId ?? ids.workerId,
+        ids.workerSessionId,
+        input.leaseId,
+        input.fence,
+        input.sandboxInstanceId,
+        runtimeThreadId,
+        readyEvidenceDigest,
+      ],
+    );
+    const factDigest = fact.rows[0]?.fact_digest;
+    if (!factDigest) throw new Error('conversation.ready fact digest is missing');
     return brokerTransaction(ids.consumerId, async (connection) => {
       const result = await connection.query<{
         outcome: string;
@@ -275,16 +371,27 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
         open_command_id: string | null;
       }>(
         `SELECT outcome, conversation_state, open_command_id
-           FROM creator_agent_commit_conversation_ready($1, $2, $3, $4, $5, $6, $7, $8)`,
+           FROM creator_agent_commit_conversation_ready_fact(
+             $1, $2, $3, $4, $5, $6, $7, $8,
+             $9, $10, $11, $12, $13, $14, $15, $16
+           )`,
         [
           input.sourceEventId,
+          factDigest,
           input.conversationId,
           ids.creatorId,
           ids.consumerId,
+          ids.deploymentId,
+          ids.versionId,
+          digest('7'),
+          digest('1'),
           input.workerId ?? ids.workerId,
+          ids.workerSessionId,
           input.leaseId,
           input.fence,
           input.sandboxInstanceId,
+          runtimeThreadId,
+          readyEvidenceDigest,
         ],
       );
       const row = result.rows[0];
@@ -293,7 +400,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     });
   }
 
-  it('logs in as the exact non-bypass Consumer role with no direct write authority', async () => {
+  it('logs in as the exact non-bypass Consumer role with only create-open-v2 authority', async () => {
     await expect(
       pingCreatorAgentDb({
         CREATOR_AGENT_PUBLIC_ENABLED: true,
@@ -343,6 +450,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
         'agent_conversations',
         'broker_outbox',
         'conversation_ready_receipts',
+        'conversation_ready_fact_receipts',
       ]) {
         await expect(
           connection.query<{ allowed: boolean }>(
@@ -394,6 +502,55 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
         bypassConversationId,
       ]),
     ).resolves.toMatchObject({ rows: [{ count: '0' }] });
+  });
+
+  it('fails readiness closed for v0, missing v2, or any extra SECURITY DEFINER', async () => {
+    const env = {
+      CREATOR_AGENT_PUBLIC_ENABLED: true,
+      CREATOR_AGENT_DATABASE_URL: apiDatabaseUrl(),
+    } as Env;
+    const v0Signature = `public.creator_agent_create_opening_conversation(
+      uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer
+    )`;
+    const v2Signature = `public.creator_agent_create_opening_conversation_v2(
+      uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text
+    )`;
+
+    await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
+
+    await owner.query(`GRANT EXECUTE ON FUNCTION ${v0Signature} TO combo_agent_consumer_api`);
+    try {
+      await expect(pingCreatorAgentDb(env)).resolves.toBe(false);
+    } finally {
+      await owner.query(`REVOKE EXECUTE ON FUNCTION ${v0Signature} FROM combo_agent_consumer_api`);
+    }
+    await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
+
+    await owner.query(`
+      CREATE FUNCTION public.creator_agent_consumer_readiness_probe()
+      RETURNS integer
+      SECURITY DEFINER
+      SET search_path = pg_catalog
+      LANGUAGE sql
+      AS 'SELECT 1';
+      REVOKE ALL ON FUNCTION public.creator_agent_consumer_readiness_probe() FROM PUBLIC;
+      GRANT EXECUTE ON FUNCTION public.creator_agent_consumer_readiness_probe()
+        TO combo_agent_consumer_api;
+    `);
+    try {
+      await expect(pingCreatorAgentDb(env)).resolves.toBe(false);
+    } finally {
+      await owner.query(`DROP FUNCTION public.creator_agent_consumer_readiness_probe()`);
+    }
+    await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
+
+    await owner.query(`REVOKE EXECUTE ON FUNCTION ${v2Signature} FROM combo_agent_consumer_api`);
+    try {
+      await expect(pingCreatorAgentDb(env)).resolves.toBe(false);
+    } finally {
+      await owner.query(`GRANT EXECUTE ON FUNCTION ${v2Signature} TO combo_agent_consumer_api`);
+    }
+    await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
   });
 
   it('fails readiness closed when the Consumer role gains one unapproved column', async () => {
@@ -602,13 +759,24 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
       command_type: string;
       assignment_lease_id: string;
       assignment_fence: string;
+      payload_contract_version: number;
+      visible_transcript_digest: string;
+      visible_transcript_key_id: string;
+      visible_transcript_key_version: string;
+      visible_transcript_key_ref: string;
+      original_worker_session_id: string;
+      original_connection_id: string;
     }>(
       `SELECT count(*) OVER ()::text AS rows,
               conversation.agent_version_id, conversation.assigned_worker_id,
               conversation.version_digest, conversation.state,
               count(command.command_id) OVER ()::text AS commands,
               command.command_type, command.assignment_lease_id,
-              command.assignment_fence::text
+              command.assignment_fence::text, command.payload_contract_version,
+              command.visible_transcript_digest, command.visible_transcript_key_id,
+              command.visible_transcript_key_version::text,
+              command.visible_transcript_key_ref, command.original_worker_session_id,
+              command.original_connection_id
          FROM agent_conversations AS conversation
          JOIN broker_outbox AS command
            ON command.conversation_id = conversation.id
@@ -628,6 +796,13 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
         command_type: 'conversation.open',
         assignment_lease_id: ids.leaseId,
         assignment_fence: '1',
+        payload_contract_version: 1,
+        visible_transcript_digest: `hmac-sha256:${digest('8')}`,
+        visible_transcript_key_id: `visible-${ids.creatorId}`,
+        visible_transcript_key_version: '7',
+        visible_transcript_key_ref: `kms://combo/visible/${ids.creatorId}/${ids.versionId}@7`,
+        original_worker_session_id: ids.workerSessionId,
+        original_connection_id: ids.connectionId,
       },
     ]);
   });
@@ -661,7 +836,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     expect(created.replayed).toBe(false);
   });
 
-  it('requires a SENT exact current Lease/Fence/Worker ready and makes exact replay immutable', async () => {
+  it('requires a SENT exact original ready fact and makes exact replay immutable', async () => {
     const created = await createConsumerConversation(runtimeDb, {
       consumerId: ids.consumerId,
       publicSlug,
@@ -669,14 +844,14 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
       environment: 'TEST',
     });
     expect(created.conversation.state).toBe('OPENING');
-    const sourceEventId = randomUuidV7();
     const sandboxInstanceId = randomUuidV7();
+    const pendingCommand = await findOpenCommand(created.conversation.conversationId);
 
     const beforeSent = await commitReady({
-      sourceEventId,
+      sourceEventId: pendingCommand.commandId,
       conversationId: created.conversation.conversationId,
-      leaseId: ids.leaseId,
-      fence: '1',
+      leaseId: pendingCommand.leaseId,
+      fence: pendingCommand.fence,
       sandboxInstanceId,
     });
     expect(beforeSent).toEqual({
@@ -688,14 +863,14 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     const command = await markOpenCommandSent(created.conversation.conversationId);
     const concurrent = await Promise.all([
       commitReady({
-        sourceEventId,
+        sourceEventId: command.commandId,
         conversationId: created.conversation.conversationId,
         leaseId: command.leaseId,
         fence: command.fence,
         sandboxInstanceId,
       }),
       commitReady({
-        sourceEventId,
+        sourceEventId: command.commandId,
         conversationId: created.conversation.conversationId,
         leaseId: command.leaseId,
         fence: command.fence,
@@ -717,7 +892,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
 
     await expect(
       commitReady({
-        sourceEventId,
+        sourceEventId: command.commandId,
         conversationId: created.conversation.conversationId,
         leaseId: command.leaseId,
         fence: command.fence,
@@ -731,7 +906,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
 
     await expect(
       commitReady({
-        sourceEventId,
+        sourceEventId: command.commandId,
         conversationId: created.conversation.conversationId,
         leaseId: command.leaseId,
         fence: command.fence,
@@ -766,7 +941,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
                 count(receipt.source_event_id)::text AS receipts
            FROM agent_conversations AS conversation
            JOIN broker_outbox AS command ON command.conversation_id = conversation.id
-           LEFT JOIN conversation_ready_receipts AS receipt
+           LEFT JOIN conversation_ready_fact_receipts AS receipt
              ON receipt.conversation_id = conversation.id
           WHERE conversation.id = $1
           GROUP BY conversation.state, command.state`,
@@ -788,7 +963,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
 
     await expect(
       commitReady({
-        sourceEventId: randomUuidV7(),
+        sourceEventId: command.commandId,
         conversationId: created.conversation.conversationId,
         leaseId: command.leaseId,
         fence: '2',
@@ -820,7 +995,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     await expect(
       owner.query(
         `SELECT state,
-                (SELECT count(*)::text FROM conversation_ready_receipts
+                (SELECT count(*)::text FROM conversation_ready_fact_receipts
                   WHERE conversation_id = $1) AS receipts,
                 (SELECT state FROM broker_outbox
                   WHERE command_id = $2) AS command_state

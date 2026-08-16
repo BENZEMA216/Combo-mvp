@@ -312,8 +312,11 @@ pgDescribe('0017 conversation.ready durable fact real PostgreSQL authority', () 
     const migrations = readdirSync(migrationsDirectory)
       .filter((filename) => /^\d{4}_.+\.sql$/u.test(filename))
       .sort();
-    expect(migrations.at(-1)).toBe('0017_creator_agent_conversation_ready_fact.sql');
-    for (const filename of migrations.filter((filename) => filename < '0017_')) {
+    expect(migrations.at(-1)).toBe('0018_creator_agent_broker_delivery_contract.sql');
+    const pre0017 = migrations.filter((filename) => filename < '0017_');
+    expect(pre0017.at(-1)).toBe('0016_creator_agent_invocation_lifecycle.sql');
+    expect(pre0017).not.toContain('0018_creator_agent_broker_delivery_contract.sql');
+    for (const filename of pre0017) {
       await applyMigration(target, filename);
     }
 
@@ -470,6 +473,26 @@ pgDescribe('0017 conversation.ready durable fact real PostgreSQL authority', () 
       ],
     );
     await applyMigration(target, '0017_creator_agent_conversation_ready_fact.sql');
+    await expect(
+      target.query(
+        `SELECT
+           (SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1) AS head,
+           EXISTS (
+             SELECT 1
+               FROM information_schema.columns
+              WHERE table_schema = 'public'
+                AND table_name = 'broker_outbox'
+                AND column_name = 'payload_contract_version'
+           ) AS applied_0018`,
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          head: '0017_creator_agent_conversation_ready_fact.sql',
+          applied_0018: false,
+        },
+      ],
+    });
   }, 60_000);
 
   afterAll(async () => {

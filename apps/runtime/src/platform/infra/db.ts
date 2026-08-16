@@ -438,6 +438,11 @@ export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
                   )
                   AND has_function_privilege(
                     current_user,
+                    'creator_agent_create_opening_conversation_v2(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text)',
+                    'EXECUTE'
+                  )
+                  AND NOT has_function_privilege(
+                    current_user,
                     'creator_agent_create_opening_conversation(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer)',
                     'EXECUTE'
                   )
@@ -449,7 +454,7 @@ export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
                        AND procedure.prosecdef
                        AND has_function_privilege(current_user, procedure.oid, 'EXECUTE')
                        AND procedure.oid NOT IN (
-                         'public.creator_agent_create_opening_conversation(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer)'::regprocedure
+                         'public.creator_agent_create_opening_conversation_v2(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text)'::regprocedure
                        )
                   )
                 ) AS exact_capabilities

@@ -336,6 +336,8 @@ cases:
     fixture:
       - packages/creator-agent-protocol/fixtures/agent-version-manifest.v1.json
       - packages/creator-agent-protocol/fixtures/broker-handshake.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-conversation-open.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-conversation-ready.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-prepare.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-prepared.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-started.v1.json
@@ -368,6 +370,7 @@ cases:
       status: implemented
       testFiles:
         - packages/creator-agent-protocol/src/__tests__/schemas.test.ts
+        - packages/creator-agent-protocol/src/__tests__/broker-contract.property.test.ts
         - packages/creator-agent-protocol/src/__tests__/canonical.test.ts
         - packages/creator-agent-protocol/src/__tests__/consumer-events.test.ts
         - packages/creator-agent-protocol/src/__tests__/invocation-facts.test.ts
@@ -375,7 +378,9 @@ cases:
     releaseTuple: [creator-agent-protocol@0.1.0]
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
-      - sha256:b842b397216a5f71fa41c5112b6718cbe4614bb38cb2b0995a75c2a169d74058
+      - sha256:948a82150e8bb219607d454ce9d2456f0b8dc8675d7c2794fd709ee4c0fddbd1
+      - sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4
+      - sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889
       - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
       - sha256:fa98d56ca62e234788668df4cf53a384251ff3e2eca8c1140c18db6ed358dc81
       - sha256:da5d2ec27b581e76ac76a3936f497779b472f7ecea9d8a04e14c7c9f0d837c9f
@@ -439,6 +444,7 @@ cases:
     level: E0
     fixture:
       - packages/creator-agent-protocol/schemas/contract-schemas.v1.json
+      - packages/creator-agent-protocol/schemas/broker-contract.v1.json
       - packages/creator-agent-protocol/openapi/creator-agent-v1.openapi.json
     steps:
       [
@@ -450,7 +456,8 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:69f58e22cf5ea92bd21d8bbc1dc4a4bd6ae96ea0e34c599e7b7e2a36229e7c8e
+      - sha256:0d617e005fba64ad7123fc571048e8521a6a6f3f93befcf1ebb9807cca7eea99
+      - sha256:b149284ac60b07cb4e3d2227f2ea3bf48441568ebadd0432fd3198930be67a8f
       - sha256:0fbcdea35a3cdd1922f48123babdf6d1ebf69b0f9579a72de09f851879820f89
   - <<: *sch
     id: SCH-007

@@ -233,7 +233,7 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
   );
 });
 
-test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite vertical gates', () => {
+test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLite gates', () => {
   for (const workflow of ['.github/workflows/pr-ci.yml', '.github/workflows/ci.yml']) {
     const source = text(workflow);
     assert.equal(
@@ -251,6 +251,35 @@ test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite verti
     assert.match(source, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
     assert.match(source, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
     assert.match(source, /run: pnpm -F @cb\/agent-gateway test/);
+    assert.equal(
+      (source.match(/Creator Agent Broker delivery contract PostgreSQL gate/g) ?? []).length,
+      1,
+      `${workflow} must define exactly one 0018 Broker delivery PostgreSQL gate`,
+    );
+    assert.equal(
+      (source.match(/CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'/g) ?? []).length,
+      1,
+      `${workflow} must enable the real 0018 Broker delivery suite exactly once`,
+    );
+    const brokerContractStep = capture(
+      source,
+      /\n {6}- name: Creator Agent Broker delivery contract PostgreSQL gate\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} 0018 Broker delivery step`,
+    );
+    assert.match(
+      brokerContractStep,
+      /DATABASE_URL: postgres:\/\/agora:agora@localhost:5432\/agora/,
+    );
+    assert.match(brokerContractStep, /CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'/);
+    assert.match(
+      brokerContractStep,
+      /run: pnpm --dir db exec vitest run __tests__\/creator-agent-broker-delivery-contract\.pg\.test\.ts/,
+    );
+    assert.doesNotMatch(
+      brokerContractStep,
+      /POSTGRES_[A-Z_]+_PASSWORD/,
+      `${workflow} 0018 child-database gate must not receive application-role credentials`,
+    );
     assert.equal(
       (source.match(/Creator Agent conversation\.ready fact PostgreSQL gate/g) ?? []).length,
       1,
@@ -298,8 +327,13 @@ test('PR and Main CI run non-skipping Consumer, Gateway, and Worker SQLite verti
     );
     assert.ok(
       source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate') <
+        source.indexOf('Creator Agent Broker delivery contract PostgreSQL gate'),
+      `${workflow} must run every role-login vertical before role-mutating child DB gates`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent Broker delivery contract PostgreSQL gate') <
         source.indexOf('Creator Agent conversation.ready fact PostgreSQL gate'),
-      `${workflow} must run every role-login vertical before the role-mutating ready gate`,
+      `${workflow} must run the 0018 gate before the durable ready gate`,
     );
     assert.ok(
       source.indexOf('Creator Agent conversation.ready fact PostgreSQL gate') <

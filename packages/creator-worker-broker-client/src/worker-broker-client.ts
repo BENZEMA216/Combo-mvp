@@ -15,6 +15,7 @@ import {
   canonicalizeJson,
   classifyBrokerRemoteClose,
   compareUint63,
+  currentBrokerContractDigest,
   parseBrokerFrame,
   type BrokerCommand,
   type BrokerEnvelope,
@@ -338,6 +339,7 @@ export class WorkerBrokerClient {
       codexRuntimeArtifacts: options.codexRuntimeArtifacts,
       codexProtocolSchemaDigests: options.codexProtocolSchemaDigests,
       isolationModes: options.isolationModes,
+      brokerContractDigest: currentBrokerContractDigest(),
       capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
       challengeId: '00000000-0000-7000-8000-000000000000',
     });
@@ -680,6 +682,7 @@ export class WorkerBrokerClient {
         codexRuntimeArtifacts: this.#codexRuntimeArtifacts,
         codexProtocolSchemaDigests: this.#codexProtocolSchemaDigests,
         isolationModes: this.#isolationModes,
+        brokerContractDigest: currentBrokerContractDigest(),
         capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
         challengeId: challenge.challengeId,
       });

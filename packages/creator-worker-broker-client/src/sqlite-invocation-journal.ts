@@ -27,8 +27,17 @@ import {
   type WorkerInvocationFact,
 } from '@cb/creator-agent-protocol';
 
+import {
+  decodeStoredBrokerEnvelope,
+  materializeStoredBrokerEnvelope,
+  type DecodedStoredBrokerEnvelope,
+  type StoredBrokerConversationAuthority,
+  type StoredBrokerTransportAuthority,
+} from './stored-broker-envelope.js';
+
 export const WORKER_INVOCATION_SCHEMA_VERSION = 2;
 export const WORKER_CONVERSATION_READY_SCHEMA_VERSION = 3;
+export const WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION = 4;
 export const WORKER_INVOCATION_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const LOCAL_INVOCATION_PROMPT_PROTOCOL = 'combo.local-invocation-prompt/1' as const;
 export const LOCAL_INVOCATION_RESULT_PROTOCOL = 'combo.local-invocation-result/1' as const;
@@ -274,7 +283,8 @@ export const LocalInvocationResultCiphertextSchema = Object.freeze({
  * Invocation facts live in the Broker transport database. Keeping these tables in the same
  * physical WAL is what makes command consumption and the corresponding local fact one commit.
  */
-export const WORKER_INVOCATION_SCHEMA_SQL = `
+function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
+  return `
   -- This table is intentionally empty at every logical boundary. The transport temporarily fills
   -- and deletes it to leave real freelist pages that only terminal/reconciliation transactions
   -- may consume when max_page_count or the filesystem is under pressure.
@@ -373,8 +383,12 @@ export const WORKER_INVOCATION_SCHEMA_SQL = `
     updated_at_ms INTEGER NOT NULL,
     row_digest TEXT NOT NULL,
     UNIQUE (conversation_id, client_message_id),
-    FOREIGN KEY (start_connection_id, start_sequence)
-      REFERENCES transport_inbound_frames(connection_id, sequence),
+    ${
+      defensiveIntegrityV4
+        ? ''
+        : `FOREIGN KEY (start_connection_id, start_sequence)
+      REFERENCES transport_inbound_frames(connection_id, sequence),`
+    }
     CHECK (
       (start_command_id IS NULL AND start_connection_id IS NULL AND start_sequence IS NULL
         AND start_canonical_digest IS NULL AND dispatch_nonce IS NULL
@@ -516,6 +530,14 @@ export const WORKER_INVOCATION_SCHEMA_SQL = `
     ack_connection_id TEXT NOT NULL,
     ack_sequence TEXT NOT NULL,
     ack_canonical_digest TEXT NOT NULL,
+    ${
+      defensiveIntegrityV4
+        ? `ack_decision TEXT NOT NULL CHECK (
+      ack_decision IN ('APPLIED', 'IDEMPOTENT_REPLAY')
+    ),
+    ack_logical_digest TEXT NOT NULL,`
+        : ''
+    }
     cloud_evidence_digest TEXT NOT NULL,
     cloud_committed_at_ms INTEGER NOT NULL,
     row_digest TEXT NOT NULL
@@ -547,9 +569,17 @@ export const WORKER_INVOCATION_SCHEMA_SQL = `
       SELECT RAISE(ABORT, 'local_invocation_outbox_receipts is append-only');
     END;
 `;
+}
+
+/** Exact v2 local authority schema retained for v1/v2/v3 migration verification. */
+export const WORKER_INVOCATION_SCHEMA_SQL = workerInvocationSchemaSql(false);
+
+/** Fresh v4 local authority schema with self-contained ACK evidence. */
+export const WORKER_INVOCATION_SCHEMA_V4_SQL = workerInvocationSchemaSql(true);
 
 /** Additive v2 -> v3 authority for one durable conversation.ready business fact. */
-export const WORKER_CONVERSATION_READY_SCHEMA_SQL = `
+function workerConversationReadySchemaSql(defensiveIntegrityV4: boolean): string {
+  return `
   ALTER TABLE local_conversations
     ADD COLUMN ready_cloud_state TEXT NOT NULL DEFAULT 'PENDING'
       CHECK (ready_cloud_state IN ('PENDING', 'CLOUD_COMMITTED', 'CLOUD_REJECTED'));
@@ -611,6 +641,7 @@ export const WORKER_CONVERSATION_READY_SCHEMA_SQL = `
     ack_connection_id TEXT NOT NULL,
     ack_sequence TEXT NOT NULL,
     ack_canonical_digest TEXT NOT NULL,
+    ${defensiveIntegrityV4 ? 'ack_logical_digest TEXT NOT NULL,' : ''}
     decision TEXT NOT NULL CHECK (
       decision IN ('APPLIED', 'IDEMPOTENT_REPLAY', 'SECURITY_BLOCK')
     ),
@@ -678,6 +709,13 @@ export const WORKER_CONVERSATION_READY_SCHEMA_SQL = `
       SELECT RAISE(ABORT, 'local_conversation_ready_terminal_tombstones is immutable');
     END;
 `;
+}
+
+/** Exact v3 READY authority schema retained for legacy migration verification. */
+export const WORKER_CONVERSATION_READY_SCHEMA_SQL = workerConversationReadySchemaSql(false);
+
+/** Fresh v4 READY authority schema with self-contained ACK logical identity. */
+export const WORKER_CONVERSATION_READY_SCHEMA_V4_SQL = workerConversationReadySchemaSql(true);
 
 const LOCAL_AUTHORITY_TABLES = [
   ['local_conversations', 'conversation_id'],
@@ -757,6 +795,8 @@ export function assertWorkerConversationReadyIntegrity(database: DatabaseSync): 
   if (!workerConversationReadyTablesExist(database)) {
     throw new Error('missing-local-conversation-ready-schema');
   }
+  const defensiveIntegrityV4 =
+    workerSchemaVersion(database) >= WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION;
   const conversations = new Map(
     (
       database.prepare('SELECT * FROM local_conversations').all() as Array<Record<string, unknown>>
@@ -819,36 +859,62 @@ export function assertWorkerConversationReadyIntegrity(database: DatabaseSync): 
               .prepare('SELECT * FROM local_consumed_commands WHERE command_id = ?')
               .get(String(row.open_command_id)) as Record<string, unknown> | undefined;
             if (
-              tombstone === undefined ||
               consumed === undefined ||
-              tombstone.open_command_id !== row.open_command_id ||
-              tombstone.fact_digest !== row.fact_digest ||
+              consumed.command_type !== 'conversation.open' ||
+              consumed.conversation_id !== row.conversation_id ||
               consumed.connection_id !== row.original_connection_id ||
               consumed.sequence !== row.original_sequence ||
               consumed.canonical_digest !== row.original_canonical_digest ||
-              consumed.semantic_digest !== tombstone.open_semantic_digest
+              (!defensiveIntegrityV4 && tombstone === undefined) ||
+              (tombstone !== undefined &&
+                (tombstone.open_command_id !== row.open_command_id ||
+                  tombstone.fact_digest !== row.fact_digest ||
+                  consumed.semantic_digest !== tombstone.open_semantic_digest))
             ) {
               throw new Error('missing-ready-original-inbound');
             }
           } else {
-            const envelope = BrokerEnvelopeSchema.parse(JSON.parse(String(inbound.envelope_json)));
+            const connection = database
+              .prepare(
+                `SELECT installation_id, connection_id, owner_epoch, deployment_id,
+                        lease_id, worker_session_id, fence, lease_state,
+                        lease_expires_at, status
+                 FROM transport_connections WHERE connection_id = ?`,
+              )
+              .get(String(row.original_connection_id)) as ConnectionAuthorityRow | undefined;
+            if (connection === undefined) throw new Error('missing-ready-original-connection');
+            const stored = decodeStoredBrokerEnvelope(
+              String(inbound.envelope_json),
+              String(inbound.canonical_digest),
+            );
+            const consumedOpen = database
+              .prepare(
+                `SELECT semantic_digest FROM local_consumed_commands
+                 WHERE command_id = ? AND command_type = 'conversation.open'`,
+              )
+              .get(String(row.open_command_id)) as { semantic_digest: string } | undefined;
+            const envelope = materializeStoredCommandEnvelope(
+              stored,
+              connection,
+              conversation,
+              consumedOpen?.semantic_digest,
+            );
             if (
               inbound.message_id !== row.source_event_id ||
               inbound.canonical_digest !== row.original_canonical_digest ||
               inbound.envelope_kind !== 'command' ||
               inbound.envelope_type !== 'conversation.open' ||
-              canonicalizeJson(envelope) !== inbound.envelope_json ||
-              canonicalSha256(envelope) !== inbound.canonical_digest ||
               envelope.kind !== 'command' ||
               envelope.type !== 'conversation.open' ||
               envelope.body.conversationId !== fact.conversationId ||
               envelope.body.agentVersionId !== fact.agentVersionId ||
               envelope.body.agentVersionDigest !== fact.agentVersionDigest ||
               envelope.body.snapshotDigest !== fact.snapshotDigest ||
-              envelope.lease.deploymentId !== fact.deploymentId ||
-              envelope.lease.workerSessionId !== fact.workerSessionId ||
-              envelope.lease.leaseId !== fact.leaseId ||
-              envelope.lease.fence !== fact.fence
+              envelope.body.openAuthority.installationId !== fact.installationId ||
+              envelope.body.openAuthority.deploymentId !== fact.deploymentId ||
+              envelope.body.openAuthority.workerSessionId !== fact.workerSessionId ||
+              envelope.body.openAuthority.leaseId !== fact.leaseId ||
+              envelope.body.openAuthority.fence !== fact.fence
             ) {
               throw new Error('invalid-ready-original-inbound');
             }
@@ -910,15 +976,46 @@ export function assertWorkerConversationReadyIntegrity(database: DatabaseSync): 
           delivery === undefined ||
           delivery.source_event_id !== row.source_event_id ||
           delivery.conversation_id !== row.conversation_id ||
-          delivery.fact_digest !== row.fact_digest ||
-          inbound === undefined ||
-          inbound.effect_state !== 'APPLIED' ||
-          inbound.message_id !== row.ack_message_id ||
-          inbound.canonical_digest !== row.ack_canonical_digest
+          delivery.fact_digest !== row.fact_digest
         ) {
           throw new Error('invalid-local-conversation-ready-receipt');
         }
-        if (
+        if (defensiveIntegrityV4) {
+          if (
+            !SHA256_HEX.test(String(row.ack_logical_digest)) ||
+            !(
+              row.decision === 'APPLIED' ||
+              row.decision === 'IDEMPOTENT_REPLAY' ||
+              row.decision === 'SECURITY_BLOCK'
+            )
+          ) {
+            throw new Error('invalid-local-conversation-ready-receipt-evidence');
+          }
+          if (inbound !== undefined) {
+            const storedAck = decodeStoredBrokerEnvelope(
+              String(inbound.envelope_json),
+              String(inbound.canonical_digest),
+            );
+            const ack = exactConversationReadyAckEnvelope(
+              inbound.envelope_json,
+              inbound.canonical_digest,
+              String(row.delivery_message_id),
+            );
+            if (
+              inbound.effect_state !== 'APPLIED' ||
+              inbound.message_id !== row.ack_message_id ||
+              inbound.canonical_digest !== row.ack_canonical_digest ||
+              ack.body.decision !== row.decision ||
+              storedAck.logicalDigest !== row.ack_logical_digest
+            ) {
+              throw new Error('invalid-local-conversation-ready-receipt-wire');
+            }
+          }
+        } else if (
+          inbound === undefined ||
+          inbound.effect_state !== 'APPLIED' ||
+          inbound.message_id !== row.ack_message_id ||
+          inbound.canonical_digest !== row.ack_canonical_digest ||
           exactConversationReadyAckEnvelope(
             inbound.envelope_json,
             inbound.canonical_digest,
@@ -1134,6 +1231,8 @@ export function workerInvocationCommandSemanticDigest(command: BrokerCommand): s
 /** Open-time validation is deliberately independent from transport_meta.authority_digest. */
 export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
   if (!workerInvocationTablesExist(database)) throw new Error('missing-local-invocation-schema');
+  const defensiveIntegrityV4 =
+    workerSchemaVersion(database) >= WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION;
   const reserveRows = database
     .prepare('SELECT count(*) AS count FROM local_recovery_reserve_pages')
     .get() as { count: number };
@@ -1256,16 +1355,52 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
           | undefined;
         const ack = database
           .prepare(
-            `SELECT message_id, canonical_digest, envelope_json FROM transport_inbound_frames
+            `SELECT message_id, canonical_digest, envelope_json, effect_state
+             FROM transport_inbound_frames
              WHERE connection_id = ? AND sequence = ?`,
           )
           .get(String(row.ack_connection_id), String(row.ack_sequence)) as
-          | { message_id: string; canonical_digest: string; envelope_json: string }
+          | {
+              message_id: string;
+              canonical_digest: string;
+              envelope_json: string;
+              effect_state: string;
+            }
           | undefined;
         if (
           delivery === undefined ||
           delivery.source_event_id !== row.source_event_id ||
-          delivery.fact_digest !== row.fact_digest ||
+          delivery.fact_digest !== row.fact_digest
+        ) {
+          throw new Error('invalid-local-invocation-outbox-receipt');
+        }
+        if (defensiveIntegrityV4) {
+          if (
+            !(row.ack_decision === 'APPLIED' || row.ack_decision === 'IDEMPOTENT_REPLAY') ||
+            !SHA256_HEX.test(String(row.ack_logical_digest))
+          ) {
+            throw new Error('invalid-local-invocation-outbox-receipt-evidence');
+          }
+          if (ack !== undefined) {
+            const storedAck = decodeStoredBrokerEnvelope(ack.envelope_json, ack.canonical_digest);
+            if (
+              ack.effect_state !== 'APPLIED' ||
+              ack.message_id !== row.ack_message_id ||
+              ack.canonical_digest !== row.ack_canonical_digest ||
+              !cloudAckEnvelopeMatches(
+                ack.envelope_json,
+                ack.canonical_digest,
+                String(row.delivery_message_id),
+              ) ||
+              storedAck.envelope.kind !== 'ack' ||
+              storedAck.envelope.type !== 'message.ack' ||
+              storedAck.envelope.body.decision !== row.ack_decision ||
+              storedAck.logicalDigest !== row.ack_logical_digest
+            ) {
+              throw new Error('invalid-local-invocation-outbox-receipt-wire');
+            }
+          }
+        } else if (
           ack === undefined ||
           ack.message_id !== row.ack_message_id ||
           ack.canonical_digest !== row.ack_canonical_digest ||
@@ -1275,27 +1410,46 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
             String(row.delivery_message_id),
           )
         ) {
-          throw new Error('invalid-local-invocation-outbox-receipt');
+          throw new Error('invalid-local-invocation-outbox-receipt-wire');
         }
       }
       if (table === 'local_consumed_commands') {
         const transport = database
           .prepare(
-            `SELECT message_id, canonical_digest, envelope_json, envelope_kind, envelope_type
-             FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+            `SELECT f.message_id, f.canonical_digest, f.envelope_json,
+                    f.envelope_kind, f.envelope_type,
+                    c.installation_id, c.connection_id, c.owner_epoch, c.deployment_id,
+                    c.lease_id, c.worker_session_id, c.fence, c.lease_state,
+                    c.lease_expires_at, c.status
+             FROM transport_inbound_frames AS f
+             JOIN transport_connections AS c ON c.connection_id = f.connection_id
+             WHERE f.connection_id = ? AND f.sequence = ?`,
           )
           .get(String(row.connection_id), String(row.sequence)) as
-          | {
+          | (ConnectionAuthorityRow & {
               message_id: string;
               canonical_digest: string;
               envelope_json: string;
               envelope_kind: string;
               envelope_type: string;
-            }
+            })
           | undefined;
         if (transport === undefined) {
           const invocation =
             row.invocation_id === null ? undefined : invocations.get(String(row.invocation_id));
+          const readyOpenFact =
+            row.command_type === 'conversation.open'
+              ? (database
+                  .prepare(
+                    `SELECT original_connection_id, original_sequence,
+                            original_canonical_digest
+                     FROM local_conversation_ready_facts
+                     WHERE open_command_id = ? AND conversation_id = ?`,
+                  )
+                  .get(String(row.command_id), String(row.conversation_id)) as
+                  | Record<string, unknown>
+                  | undefined)
+              : undefined;
           const compactReadyOpen =
             row.command_type === 'conversation.open'
               ? database
@@ -1311,17 +1465,66 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
                     String(row.semantic_digest),
                   )
               : undefined;
-          if (
-            compactReadyOpen === undefined &&
-            (row.command_type !== 'invocation.prepare' ||
+          const conversation =
+            row.conversation_id === null
+              ? undefined
+              : conversations.get(String(row.conversation_id));
+          const v4ReadyOpen =
+            defensiveIntegrityV4 &&
+            row.command_type === 'conversation.open' &&
+            (row.disposition === 'APPLIED' || row.disposition === 'IDEMPOTENT_REPLAY') &&
+            conversation !== undefined &&
+            conversation.open_command_id === row.command_id &&
+            conversation.open_connection_id === row.connection_id &&
+            conversation.open_sequence === row.sequence &&
+            ((readyOpenFact !== undefined &&
+              readyOpenFact.original_connection_id === row.connection_id &&
+              readyOpenFact.original_sequence === row.sequence &&
+              readyOpenFact.original_canonical_digest === row.canonical_digest) ||
+              compactReadyOpen !== undefined);
+          const v4Prepare =
+            defensiveIntegrityV4 &&
+            row.command_type === 'invocation.prepare' &&
+            invocation !== undefined &&
+            invocation.prepare_command_id === row.command_id &&
+            invocation.prepare_connection_id === row.connection_id &&
+            invocation.prepare_sequence === row.sequence &&
+            invocation.prepare_canonical_digest === row.canonical_digest &&
+            invocation.prepare_semantic_digest === row.semantic_digest &&
+            invocation.conversation_id === row.conversation_id;
+          const v4Start =
+            defensiveIntegrityV4 &&
+            row.command_type === 'invocation.start' &&
+            invocation !== undefined &&
+            invocation.start_command_id === row.command_id &&
+            invocation.start_connection_id === row.connection_id &&
+            invocation.start_sequence === row.sequence &&
+            invocation.start_canonical_digest === row.canonical_digest &&
+            invocation.conversation_id === row.conversation_id;
+          const v4Terminal =
+            defensiveIntegrityV4 &&
+            (row.disposition === 'SECURITY_BLOCK' || row.disposition === 'EXPIRED') &&
+            ((row.command_type === 'invocation.prepare' &&
+              row.invocation_id !== null &&
+              row.conversation_id !== null &&
+              (invocation === undefined || invocation.conversation_id === row.conversation_id)) ||
+              (row.command_type === 'invocation.start' &&
+                row.invocation_id !== null &&
+                row.conversation_id === null));
+          const legacyBinding =
+            compactReadyOpen !== undefined ||
+            (row.command_type === 'invocation.prepare' &&
               (row.disposition === 'SECURITY_BLOCK'
-                ? row.invocation_id === null || row.conversation_id === null
-                : invocation === undefined ||
-                  invocation.prepare_command_id !== row.command_id ||
-                  invocation.prepare_connection_id !== row.connection_id ||
-                  invocation.prepare_sequence !== row.sequence ||
-                  invocation.prepare_canonical_digest !== row.canonical_digest ||
-                  invocation.prepare_semantic_digest !== row.semantic_digest))
+                ? row.invocation_id !== null && row.conversation_id !== null
+                : invocation !== undefined &&
+                  invocation.prepare_command_id === row.command_id &&
+                  invocation.prepare_connection_id === row.connection_id &&
+                  invocation.prepare_sequence === row.sequence &&
+                  invocation.prepare_canonical_digest === row.canonical_digest &&
+                  invocation.prepare_semantic_digest === row.semantic_digest));
+          if (
+            !(v4ReadyOpen || v4Prepare || v4Start || v4Terminal) &&
+            (defensiveIntegrityV4 || !legacyBinding)
           ) {
             throw new Error('invalid-local-consumed-command-binding');
           }
@@ -1335,12 +1538,19 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
         ) {
           throw new Error('invalid-local-consumed-command-binding');
         }
-        const envelope = BrokerEnvelopeSchema.parse(JSON.parse(transport.envelope_json));
+        const stored = decodeStoredBrokerEnvelope(
+          transport.envelope_json,
+          transport.canonical_digest,
+        );
+        const envelope = materializeStoredCommandEnvelope(
+          stored,
+          transport,
+          row.conversation_id === null ? undefined : conversations.get(String(row.conversation_id)),
+          String(row.semantic_digest),
+        );
         if (
-          canonicalizeJson(envelope) !== transport.envelope_json ||
-          canonicalSha256(envelope) !== transport.canonical_digest ||
           envelope.kind !== 'command' ||
-          workerInvocationCommandSemanticDigest(envelope) !== row.semantic_digest ||
+          stored.logicalDigest !== row.semantic_digest ||
           (row.invocation_id !== null &&
             (!('invocationId' in envelope.body) ||
               envelope.body.invocationId !== row.invocation_id)) ||
@@ -1754,7 +1964,12 @@ function loadExactCloudAck(
   database: DatabaseSync,
   installationId: string,
   reference: OpaqueInvocationCloudAckReference,
-): Readonly<{ messageId: string; canonicalDigest: string }> {
+): Readonly<{
+  messageId: string;
+  canonicalDigest: string;
+  decision: 'APPLIED' | 'IDEMPOTENT_REPLAY';
+  logicalDigest: string;
+}> {
   const row = database
     .prepare(
       `SELECT f.message_id, f.canonical_digest, f.envelope_json, f.acknowledged_message_id
@@ -1770,20 +1985,32 @@ function loadExactCloudAck(
         acknowledged_message_id: string;
       }
     | undefined;
+  let stored: DecodedStoredBrokerEnvelope;
+  try {
+    stored = decodeStoredBrokerEnvelope(row?.envelope_json ?? '', row?.canonical_digest ?? '');
+  } catch {
+    throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
+  }
+  const envelope = stored.envelope;
   if (
     row === undefined ||
     row.message_id !== reference.messageId ||
     row.canonical_digest !== reference.canonicalDigest ||
     row.acknowledged_message_id !== reference.acknowledgedDeliveryMessageId ||
-    !cloudAckEnvelopeMatches(
-      row.envelope_json,
-      row.canonical_digest,
-      reference.acknowledgedDeliveryMessageId,
-    )
+    envelope.kind !== 'ack' ||
+    envelope.type !== 'message.ack' ||
+    envelope.body.acknowledgedMessageId !== reference.acknowledgedDeliveryMessageId ||
+    envelope.body.level !== 'CLOUD_COMMITTED' ||
+    (envelope.body.decision !== 'APPLIED' && envelope.body.decision !== 'IDEMPOTENT_REPLAY')
   ) {
     throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
   }
-  return Object.freeze({ messageId: row.message_id, canonicalDigest: row.canonical_digest });
+  return Object.freeze({
+    messageId: row.message_id,
+    canonicalDigest: row.canonical_digest,
+    decision: envelope.body.decision,
+    logicalDigest: stored.logicalDigest,
+  });
 }
 
 function invocationStateColumnsAreValid(row: InvocationRow): boolean {
@@ -2205,6 +2432,8 @@ export type DurableConversationReadyDelivery = Readonly<{
 
 type StoredCommand = Readonly<{
   envelope: BrokerCommand;
+  semanticDigest: string;
+  storageFormat: DecodedStoredBrokerEnvelope['format'];
   effectState: 'PERSISTED' | 'APPLIED';
   connection: ConnectionAuthorityRow;
 }>;
@@ -2221,6 +2450,52 @@ type ConnectionAuthorityRow = Readonly<{
   lease_expires_at: string;
   status: 'ACTIVE' | 'RELEASED';
 }>;
+
+function storedTransportAuthority(
+  connection: ConnectionAuthorityRow,
+): StoredBrokerTransportAuthority {
+  return Object.freeze({
+    installationId: connection.installation_id,
+    connectionId: connection.connection_id,
+    deploymentId: connection.deployment_id,
+    workerSessionId: connection.worker_session_id,
+    leaseId: connection.lease_id,
+    fence: connection.fence,
+  });
+}
+
+function storedConversationAuthority(
+  conversation: Record<string, unknown>,
+): StoredBrokerConversationAuthority {
+  return Object.freeze({
+    conversationId: String(conversation.conversation_id),
+    installationId: String(conversation.installation_id),
+    deploymentId: String(conversation.deployment_id),
+    workerSessionId: String(conversation.worker_session_id),
+    leaseId: String(conversation.lease_id),
+    fence: String(conversation.fence),
+    agentVersionId: String(conversation.agent_version_id),
+    agentVersionDigest: String(conversation.agent_version_digest),
+    snapshotDigest: String(conversation.snapshot_digest),
+    openCommandId: String(conversation.open_command_id),
+    openConnectionId: String(conversation.open_connection_id),
+    openSequence: String(conversation.open_sequence),
+  });
+}
+
+function materializeStoredCommandEnvelope(
+  stored: DecodedStoredBrokerEnvelope,
+  connection: ConnectionAuthorityRow,
+  conversation?: Record<string, unknown>,
+  expectedLegacyLogicalDigest?: string,
+): BrokerEnvelope {
+  return materializeStoredBrokerEnvelope(
+    stored,
+    storedTransportAuthority(connection),
+    conversation === undefined ? undefined : storedConversationAuthority(conversation),
+    expectedLegacyLogicalDigest,
+  );
+}
 
 type InvocationRow = Record<string, unknown> & {
   invocation_id: string;
@@ -2370,9 +2645,10 @@ export class SqliteWorkerInvocationJournal {
             try {
               assertCurrentTransportEnvelope(storedReplay, now);
               exactCurrentSemanticReplay =
-                storedReplay.envelope.lease.deploymentId === terminal.deployment_id &&
-                workerInvocationCommandSemanticDigest(storedReplay.envelope) ===
-                  terminal.open_semantic_digest;
+                storedReplay.envelope.body.openAuthority.installationId ===
+                  terminal.installation_id &&
+                storedReplay.envelope.body.openAuthority.deploymentId === terminal.deployment_id &&
+                storedReplay.semanticDigest === terminal.open_semantic_digest;
             } catch (error) {
               if (!(error instanceof WorkerInvocationJournalError)) throw error;
             }
@@ -2395,12 +2671,17 @@ export class SqliteWorkerInvocationJournal {
         if (stored.envelope.type !== 'conversation.open') {
           throw new WorkerInvocationJournalError('COMMAND_TYPE_INVALID');
         }
+        assertCurrentTransportBinding(stored);
+        const openAuthority = stored.envelope.body.openAuthority;
+        if (openAuthority.installationId !== input.installationId) {
+          throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+        }
         const currentExpected = Object.freeze({
-          installationId: input.installationId,
-          deploymentId: stored.envelope.lease.deploymentId,
-          leaseId: stored.envelope.lease.leaseId,
-          workerSessionId: stored.envelope.lease.workerSessionId,
-          fence: stored.envelope.lease.fence,
+          installationId: openAuthority.installationId,
+          deploymentId: openAuthority.deploymentId,
+          leaseId: openAuthority.leaseId,
+          workerSessionId: openAuthority.workerSessionId,
+          fence: openAuthority.fence,
           conversationId: stored.envelope.body.conversationId,
           agentVersionId: stored.envelope.body.agentVersionId,
           agentVersionDigest: stored.envelope.body.agentVersionDigest,
@@ -3907,6 +4188,8 @@ export class SqliteWorkerInvocationJournal {
           existing.ack_connection_id !== input.ack.connectionId ||
           existing.ack_sequence !== input.ack.sequence ||
           existing.ack_canonical_digest !== input.ack.canonicalDigest ||
+          existing.ack_decision !== ack.decision ||
+          existing.ack_logical_digest !== ack.logicalDigest ||
           existing.cloud_evidence_digest !== evidenceDigest
         ) {
           throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
@@ -3921,6 +4204,8 @@ export class SqliteWorkerInvocationJournal {
         ack_connection_id: input.ack.connectionId,
         ack_sequence: input.ack.sequence,
         ack_canonical_digest: input.ack.canonicalDigest,
+        ack_decision: ack.decision,
+        ack_logical_digest: ack.logicalDigest,
         cloud_evidence_digest: evidenceDigest,
         cloud_committed_at_ms: now.getTime(),
       };
@@ -3928,9 +4213,9 @@ export class SqliteWorkerInvocationJournal {
         .prepare(
           `INSERT INTO local_invocation_outbox_receipts(
              source_event_id, fact_digest, delivery_message_id, ack_message_id,
-             ack_connection_id, ack_sequence, ack_canonical_digest, cloud_evidence_digest,
-             cloud_committed_at_ms, row_digest
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             ack_connection_id, ack_sequence, ack_canonical_digest, ack_decision,
+             ack_logical_digest, cloud_evidence_digest, cloud_committed_at_ms, row_digest
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           ...Object.values(receipt),
@@ -4414,11 +4699,37 @@ function loadStoredCommand(
     throw new WorkerInvocationJournalError('COMMAND_REFERENCE_INVALID');
   }
   try {
-    const envelope = BrokerEnvelopeSchema.parse(JSON.parse(row.envelope_json));
+    const stored = decodeStoredBrokerEnvelope(row.envelope_json, row.canonical_digest);
+    const matchingConversations =
+      stored.envelope.type === 'conversation.open'
+        ? (context.database
+            .prepare(
+              `SELECT * FROM local_conversations
+               WHERE conversation_id = ? OR open_command_id = ?
+               ORDER BY conversation_id`,
+            )
+            .all(stored.envelope.body.conversationId, stored.envelope.messageId) as Array<
+            Record<string, unknown>
+          >)
+        : [];
+    if (matchingConversations.length > 1) throw new Error('stored-command-conversation-conflict');
+    const consumedOpen =
+      stored.envelope.type === 'conversation.open'
+        ? (context.database
+            .prepare(
+              `SELECT semantic_digest FROM local_consumed_commands
+               WHERE command_id = ? AND command_type = 'conversation.open'`,
+            )
+            .get(stored.envelope.messageId) as { semantic_digest: string } | undefined)
+        : undefined;
+    const envelope = materializeStoredCommandEnvelope(
+      stored,
+      row,
+      matchingConversations[0],
+      consumedOpen?.semantic_digest,
+    );
     if (
       envelope.kind !== 'command' ||
-      canonicalizeJson(envelope) !== row.envelope_json ||
-      canonicalSha256(envelope) !== row.canonical_digest ||
       envelope.connectionId !== reference.connectionId ||
       envelope.sequence !== reference.sequence ||
       envelope.messageId !== reference.messageId ||
@@ -4428,6 +4739,8 @@ function loadStoredCommand(
     }
     return Object.freeze({
       envelope,
+      semanticDigest: stored.logicalDigest,
+      storageFormat: stored.format,
       effectState: row.effect_state,
       connection: Object.freeze({
         installation_id: row.installation_id,
@@ -4444,6 +4757,9 @@ function loadStoredCommand(
     });
   } catch (error) {
     if (error instanceof WorkerInvocationJournalError) throw error;
+    if (error instanceof Error && error.message === 'stored-envelope-installation-mismatch') {
+      throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+    }
     throw new WorkerInvocationJournalError('COMMAND_REFERENCE_INVALID');
   }
 }
@@ -4529,6 +4845,15 @@ function assertPersistedReadyEvidenceWindow(stored: StoredCommand, readyAt: Date
 }
 
 function assertCurrentTransportEnvelope(stored: StoredCommand, cloudNow: Date): void {
+  assertCurrentTransportBinding(stored);
+  const { envelope, connection } = stored;
+  const nowMs = cloudNow.getTime();
+  if (Date.parse(connection.lease_expires_at) <= nowMs || Date.parse(envelope.expiresAt) <= nowMs) {
+    throw new WorkerInvocationJournalError('INVOCATION_DEADLINE_EXPIRED');
+  }
+}
+
+function assertCurrentTransportBinding(stored: StoredCommand): void {
   const { envelope, connection } = stored;
   if (
     connection.status !== 'ACTIVE' ||
@@ -4541,10 +4866,6 @@ function assertCurrentTransportEnvelope(stored: StoredCommand, cloudNow: Date): 
   }
   if (envelope.lease.fence !== connection.fence) {
     throw new WorkerInvocationJournalError('STALE_FENCE');
-  }
-  const nowMs = cloudNow.getTime();
-  if (Date.parse(connection.lease_expires_at) <= nowMs || Date.parse(envelope.expiresAt) <= nowMs) {
-    throw new WorkerInvocationJournalError('INVOCATION_DEADLINE_EXPIRED');
   }
 }
 
@@ -4993,9 +5314,14 @@ function assertCurrentReadyReplay(
     .get(stored.envelope.messageId) as
     | { command_type: string; semantic_digest: string }
     | undefined;
+  const legacySemanticDigest = legacyConversationOpenSemanticDigest(stored.envelope);
   if (
     existing.installation_id !== installationId ||
-    existing.deployment_id !== stored.envelope.lease.deploymentId ||
+    stored.envelope.body.openAuthority.installationId !== installationId ||
+    existing.deployment_id !== stored.envelope.body.openAuthority.deploymentId ||
+    existing.worker_session_id !== stored.envelope.body.openAuthority.workerSessionId ||
+    existing.lease_id !== stored.envelope.body.openAuthority.leaseId ||
+    existing.fence !== stored.envelope.body.openAuthority.fence ||
     existing.conversation_id !== stored.envelope.body.conversationId ||
     existing.agent_version_id !== stored.envelope.body.agentVersionId ||
     existing.agent_version_digest !== stored.envelope.body.agentVersionDigest ||
@@ -5003,10 +5329,26 @@ function assertCurrentReadyReplay(
     existing.open_command_id !== stored.envelope.messageId ||
     existing.state !== 'READY' ||
     consumed?.command_type !== 'conversation.open' ||
-    consumed.semantic_digest !== workerInvocationCommandSemanticDigest(stored.envelope)
+    (consumed.semantic_digest !== stored.semanticDigest &&
+      consumed.semantic_digest !== legacySemanticDigest)
   ) {
     throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
   }
+}
+
+function legacyConversationOpenSemanticDigest(
+  command: Extract<BrokerCommand, { type: 'conversation.open' }>,
+): string {
+  const { openAuthority: _currentAuthority, ...legacyBody } = command.body;
+  return canonicalSha256({
+    protocol: command.protocol,
+    schemaVersion: command.schemaVersion,
+    kind: command.kind,
+    type: command.type,
+    messageId: command.messageId,
+    correlationId: command.correlationId,
+    body: legacyBody,
+  });
 }
 
 function readyExpectedFromConversation(
@@ -5211,6 +5553,14 @@ function strictObject(input: unknown, keys: readonly string[]): Record<string, u
     throw new Error('strict-object-keys');
   }
   return row;
+}
+
+function workerSchemaVersion(database: DatabaseSync): number {
+  const row = database.prepare('PRAGMA user_version').get() as { user_version: number } | undefined;
+  if (row === undefined || !Number.isSafeInteger(row.user_version) || row.user_version < 1) {
+    throw new Error('worker-schema-version');
+  }
+  return row.user_version;
 }
 
 function parseSha256Hex(input: unknown): string {

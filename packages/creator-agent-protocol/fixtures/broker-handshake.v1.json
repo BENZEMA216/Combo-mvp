@@ -11,10 +11,8 @@
     "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   ],
   "isolationModes": ["apple-container-v1"],
-  "capacity": {
-    "maxActiveConversations": 1,
-    "maxActiveTurns": 1
-  },
+  "capacity": { "maxActiveConversations": 1, "maxActiveTurns": 1 },
   "challengeId": "0198f00d-2222-7222-8222-222222222222",
-  "challengeSignature": "ZXhhbXBsZS1wMjU2LXNpZ25hdHVyZS1ieXRlcw"
+  "challengeSignature": "ZXhhbXBsZS1wMjU2LXNpZ25hdHVyZS1ieXRlcw",
+  "brokerContractDigest": "sha256:db755ca1a8920ca1b9efa723a09d36a5459358da33a0b5f842fae60190261bf0"
 }

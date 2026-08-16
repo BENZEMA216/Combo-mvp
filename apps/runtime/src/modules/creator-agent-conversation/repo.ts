@@ -7,6 +7,7 @@ import {
 } from '@cb/creator-agent-protocol';
 import { z } from 'zod';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
+import type { VisibleTranscriptDigester } from './visible-transcript-digester.js';
 
 export const CONSUMER_CONVERSATION_TTL_SECONDS = 30 * 24 * 60 * 60;
 
@@ -32,9 +33,11 @@ const CreateConversationInputSchema = z
 
 export type CreateConsumerConversationInput = z.input<typeof CreateConversationInputSchema>;
 
-interface CreateConsumerConversationOptions {
+export interface CreateConsumerConversationOptions {
   /** Internal deterministic-test seam; production always uses the 2-second default. */
   transactionDeadlineMs?: number;
+  /** Trusted KMS authority. A fresh create fails closed when no adapter is injected. */
+  visibleTranscriptDigester?: VisibleTranscriptDigester;
 }
 
 export class ConsumerConversationError extends Error {
@@ -241,6 +244,16 @@ export async function createConsumerConversation(
         throw new ConsumerConversationError('VERSION_UNAVAILABLE', 'Agent Version 当前不可用');
       }
 
+      const visibleTranscriptDigester = options.visibleTranscriptDigester;
+      if (!visibleTranscriptDigester) {
+        throw new Error('Visible transcript KMS authority is unavailable');
+      }
+      const visibleTranscript = await visibleTranscriptDigester({
+        creatorId: agent.creator_id,
+        agentVersionId: deployment.serving_version_id,
+        signal: transactionDeadline,
+      });
+
       const inserted = await tx.query<InsertedConversationRow>(
         `SELECT conversation_id AS id,
                 agent_id,
@@ -252,8 +265,9 @@ export async function createConsumerConversation(
                 open_command_id,
                 assignment_lease_id,
                 assignment_fence
-           FROM creator_agent_create_opening_conversation(
-             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
+           FROM creator_agent_create_opening_conversation_v2(
+             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+             $12, $13, $14, $15
            )`,
         [
           agent.agent_id,
@@ -267,6 +281,10 @@ export async function createConsumerConversation(
           deployment.observed_worker_id,
           deployment.lease_fence,
           input.ttlSeconds,
+          visibleTranscript.digest,
+          visibleTranscript.keyId,
+          visibleTranscript.keyVersion,
+          visibleTranscript.keyRef,
         ],
       );
       const conversation = inserted.rows[0];

@@ -54,6 +54,28 @@ const EnvSchema = z
     // VNext Consumer API remains unreachable until the complete authorization/revoke and
     // Conversation open/ready chain is explicitly enabled for a disposable environment.
     CREATOR_AGENT_PUBLIC_ENABLED: booleanFromString,
+    // Non-secret routing policy for the injected visible-transcript KMS HMAC port. Runtime never
+    // accepts a raw HMAC key or a local fallback key through env.
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9._:/-]{0,127}$/u)
+        .optional(),
+    ),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}$/u)
+        .optional(),
+    ),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .default(1),
     REDIS_URL: z.string().trim().min(1).default('redis://localhost:6379'),
 
     // ObjectStore（MinIO/S3）：按 capabilities.storage_key 读能力定义 + 读写产物内容。
@@ -129,6 +151,23 @@ const EnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ['CREATOR_AGENT_DATABASE_URL'],
         message: 'CREATOR_AGENT_DATABASE_URL is required when the VNext public API is enabled',
+      });
+    }
+    if (env.CREATOR_AGENT_PUBLIC_ENABLED && !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE'],
+        message: 'a non-secret KMS namespace is required when the VNext public API is enabled',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_PUBLIC_ENABLED &&
+      !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX'],
+        message: 'a KMS keyRef prefix is required when the VNext public API is enabled',
       });
     }
     if (!env.SANDBOX_TOOLS_ENABLED) return;

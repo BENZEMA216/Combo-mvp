@@ -303,8 +303,14 @@ jobs:
       - name: First-party email authentication integration
         run: bash scripts/integration/resend-auth-e2e.sh
 
-      # Both remaining gates replay role DDL in child databases, which is cluster-global. Keep
+      # All remaining gates replay role DDL in child databases, which is cluster-global. Keep
       # them after every suite that logs in as a combo_* application role.
+      - name: Creator Agent Broker delivery contract PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-broker-delivery-contract.pg.test.ts
+
       - name: Creator Agent conversation.ready fact PostgreSQL gate
         env:
           DATABASE_URL: postgres://agora:agora@localhost:5432/agora

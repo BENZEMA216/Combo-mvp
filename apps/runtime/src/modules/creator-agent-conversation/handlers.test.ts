@@ -3,6 +3,7 @@ import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { QueryResultLike, RuntimeDb, TxConn } from '../../platform/infra/db.js';
 import { createConversationRequestDigest } from './repo.js';
 import { createConsumerConversationHandler } from './handlers.js';
+import type { VisibleTranscriptDigester } from './visible-transcript-digester.js';
 
 const CONSUMER = '01900000-0000-7000-8000-000000000001';
 const CREATOR = '01900000-0000-7000-8000-000000000002';
@@ -13,6 +14,12 @@ const WORKER = '01900000-0000-7000-8000-000000000006';
 const CONVERSATION = '01900000-0000-7000-8000-000000000007';
 const IDEMPOTENCY = '01900000-0000-7000-8000-000000000008';
 const VERSION_DIGEST = 'a'.repeat(64);
+const visibleTranscriptDigester: VisibleTranscriptDigester = async () => ({
+  digest: `hmac-sha256:${'b'.repeat(64)}`,
+  keyId: 'visible-key-a',
+  keyVersion: 7n,
+  keyRef: 'kms://combo/visible/creator/version/key-a@7',
+});
 
 interface HandlerDbOptions {
   existingDigest?: string;
@@ -153,13 +160,12 @@ function reply(): CapturedReply {
   return value;
 }
 
-async function call(input: Parameters<typeof request>[0]) {
+async function call(input: Parameters<typeof request>[0], injectDigester = true) {
   const response = reply();
   await (
-    createConsumerConversationHandler() as unknown as (
-      req: FastifyRequest,
-      reply: FastifyReply,
-    ) => Promise<unknown>
+    createConsumerConversationHandler(
+      injectDigester ? { visibleTranscriptDigester } : {},
+    ) as unknown as (req: FastifyRequest, reply: FastifyReply) => Promise<unknown>
   )(request(input), response as unknown as FastifyReply);
   return response;
 }
@@ -216,6 +222,14 @@ describe('POST /v1/public/agents/:slug/conversations handler', () => {
 
     expect(response.statusCode).toBe(201);
     expect(response.body).toMatchObject({ conversationId: CONVERSATION });
+  });
+
+  it('fails closed when a fresh create has no injected KMS HMAC authority', async () => {
+    const db = new HandlerDb();
+    const response = await call({ db, userId: CONSUMER, idempotencyKey: IDEMPOTENCY }, false);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.body).toMatchObject({ code: 'AGENT_OFFLINE' });
   });
 
   it.each([

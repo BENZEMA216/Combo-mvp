@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
+import { currentBrokerContractDigest } from '@cb/creator-agent-protocol';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -16,6 +17,7 @@ const POLICY: GatewayCompatibilityPolicy = {
   acceptedCodexRuntimeArtifacts: [`sha256:${'a'.repeat(64)}`],
   acceptedCodexProtocolSchemaDigests: [`sha256:${'b'.repeat(64)}`],
   acceptedIsolationModes: ['apple-container-v1'],
+  acceptedBrokerContractDigests: [currentBrokerContractDigest()],
   sessionTtlMs: 60_000,
   leaseTtlMs: 10_000,
   responseTtlMs: 5_000,
@@ -124,6 +126,19 @@ class CommitOutcomePool implements GatewayPool {
 function result<Row>(rows: Row[], rowCount = rows.length): GatewayQueryResult<Row> {
   return { rows, rowCount };
 }
+
+describe('PostgresAgentGatewayAuthority compatibility policy', () => {
+  it('requires at least one accepted Broker contract digest', () => {
+    const pool = new CommitOutcomePool('UNKNOWN');
+    expect(
+      () =>
+        new PostgresAgentGatewayAuthority(
+          { api: pool, broker: pool },
+          { ...POLICY, acceptedBrokerContractDigests: [] },
+        ),
+    ).toThrow();
+  });
+});
 
 describe('PostgresAgentGatewayAuthority COMMIT recovery', () => {
   it('returns the exact durable result after the COMMIT transport times out', async () => {

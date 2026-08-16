@@ -6,8 +6,10 @@ import {
   BrokerAuthenticationFailureCode,
   BrokerEnvelopeSchema,
   BrokerHandshakeUnsignedSchema,
+  BrokerRegistrationCapabilitiesSchema,
   IsoDateTimeSchema,
   RuntimePolicySchema,
+  Sha256DigestSchema,
   UuidSchema,
   brokerHandshakeSigningBytes,
   canonicalSha256,
@@ -31,23 +33,6 @@ const P256_UNCOMPRESSED_SPKI_PREFIX = Buffer.from(
   '3059301306072a8648ce3d020106082a8648ce3d030107034200',
   'hex',
 );
-
-const RegisteredCapabilitiesSchema = z
-  .object({
-    codexRuntimeArtifacts: z
-      .array(z.string().regex(/^sha256:[a-f0-9]{64}$/u))
-      .min(1)
-      .max(8),
-    codexProtocolSchemaDigests: z
-      .array(z.string().regex(/^sha256:[a-f0-9]{64}$/u))
-      .min(1)
-      .max(8),
-    isolationModes: z
-      .array(z.enum(['apple-container-v1', 'lima-vz-v1']))
-      .min(1)
-      .max(2),
-  })
-  .strict();
 
 const RegisteredProtocolVersionsSchema = z.array(z.literal(1)).min(1).max(1);
 
@@ -130,6 +115,7 @@ const CompatibilityPolicySchema = z
       .array(z.enum(['apple-container-v1', 'lima-vz-v1']))
       .min(1)
       .max(2),
+    acceptedBrokerContractDigests: z.array(Sha256DigestSchema).min(1).max(32),
     sessionTtlMs: z
       .number()
       .int()
@@ -386,7 +372,8 @@ type WorkerCompatibilityErrorCode =
   | 'PROTOCOL_INCOMPATIBLE'
   | 'CODEX_RUNTIME_INCOMPATIBLE'
   | 'CODEX_PROTOCOL_INCOMPATIBLE'
-  | 'ISOLATION_INCOMPATIBLE';
+  | 'ISOLATION_INCOMPATIBLE'
+  | 'BROKER_CONTRACT_INCOMPATIBLE';
 
 export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort {
   readonly #policy: z.output<typeof CompatibilityPolicySchema>;
@@ -1391,12 +1378,23 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     const registeredProtocols = RegisteredProtocolVersionsSchema.safeParse(
       installation.protocol_versions,
     );
-    const registeredCapabilities = RegisteredCapabilitiesSchema.safeParse(
+    const registeredCapabilities = BrokerRegistrationCapabilitiesSchema.safeParse(
       installation.capabilities,
     );
     const runtimePolicy = RuntimePolicySchema.safeParse(installation.runtime_policy);
-    if (!registeredProtocols.success || !registeredCapabilities.success) {
+    if (!registeredProtocols.success) {
       return 'WORKER_REGISTRATION_INCOMPATIBLE';
+    }
+    if (!registeredCapabilities.success) {
+      return hasInvalidOrMissingBrokerContractDigest(installation.capabilities)
+        ? 'BROKER_CONTRACT_INCOMPATIBLE'
+        : 'WORKER_REGISTRATION_INCOMPATIBLE';
+    }
+    if (
+      handshake.brokerContractDigest !== registeredCapabilities.data.brokerContractDigest ||
+      !this.#policy.acceptedBrokerContractDigests.includes(handshake.brokerContractDigest)
+    ) {
+      return 'BROKER_CONTRACT_INCOMPATIBLE';
     }
     if (
       handshake.workerVersion !== installation.worker_version ||
@@ -2465,12 +2463,20 @@ function rowVersionIsReady(row: SessionLeaseRow): boolean {
 
 function registrationDigest(row: InstallationRegistrationRow): string {
   const protocolVersions = RegisteredProtocolVersionsSchema.parse(row.protocol_versions);
-  const capabilities = RegisteredCapabilitiesSchema.parse(row.capabilities);
+  const capabilities = BrokerRegistrationCapabilitiesSchema.parse(row.capabilities);
   return canonicalSha256({
     workerVersion: z.string().min(1).max(128).parse(row.worker_version),
     protocolVersions,
     capabilities,
   });
+}
+
+function hasInvalidOrMissingBrokerContractDigest(capabilities: unknown): boolean {
+  return (
+    typeof capabilities !== 'object' ||
+    capabilities === null ||
+    !Sha256DigestSchema.safeParse(Reflect.get(capabilities, 'brokerContractDigest')).success
+  );
 }
 
 function p256PublicKeyFromUncompressedPoint(point: Buffer) {

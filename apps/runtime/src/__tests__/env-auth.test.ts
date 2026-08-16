@@ -5,6 +5,9 @@ const MANAGED_KEYS = [
   'DATABASE_URL',
   'CREATOR_AGENT_DATABASE_URL',
   'CREATOR_AGENT_PUBLIC_ENABLED',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION',
   'REDIS_URL',
   'S3_ENDPOINT',
   'S3_ACCESS_KEY',
@@ -149,6 +152,34 @@ describe('runtime authentication configuration', () => {
     process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'true';
     loaded = await import('../platform/config/env.js');
     expect(() => loaded.loadEnv()).toThrowError('CREATOR_AGENT_DATABASE_URL');
+  });
+
+  it('allows only non-secret KMS routing metadata when the VNext public API is enabled', async () => {
+    setProductionInfrastructure();
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'true';
+    process.env.CREATOR_AGENT_DATABASE_URL =
+      'postgres://consumer:consumer@database.invalid/runtime';
+    vi.resetModules();
+
+    let loaded = await import('../platform/config/env.js');
+    expect(() => loaded.loadEnv()).toThrowError('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE');
+
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE = 'combo/visible-transcript';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX = 'kms://combo/visible/';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION = '7';
+    vi.resetModules();
+    loaded = await import('../platform/config/env.js');
+    const env = loaded.loadEnv() as unknown as Record<string, unknown>;
+    expect(env).toMatchObject({
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: 'combo/visible-transcript',
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX: 'kms://combo/visible/',
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION: 7,
+    });
+    expect(
+      Object.keys(env).some((key) =>
+        /^CREATOR_AGENT_VISIBLE_TRANSCRIPT.*(?:SECRET|RAW|KEY_BYTES)$/iu.test(key),
+      ),
+    ).toBe(false);
   });
 
   it('validates configurable free uses and integer cent price', async () => {

@@ -8,6 +8,7 @@ import {
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
   canonicalizeJson,
+  currentBrokerContractDigest,
   type BrokerAck,
   type BrokerEnvelope,
   type BrokerHandshake,
@@ -230,6 +231,26 @@ describe('AgentGateway real WebSocket transport', () => {
     const first = await connect(url);
     await expectUpgradeStatus(url, {}, 503);
     first.terminate();
+  });
+
+  it('rejects a legacy handshake without a Broker contract digest before authority', async () => {
+    const authority = new FakeAuthority();
+    const { gateway, url } = await startGateway(authority);
+    const socket = await connect(url);
+    const legacyHandshake: Record<string, unknown> = { ...handshake(CHALLENGE_A) };
+    delete legacyHandshake.brokerContractDigest;
+    const close = closeResult(socket);
+
+    socket.send(canonicalizeJson(legacyHandshake));
+
+    await expect(close).resolves.toMatchObject({
+      code: 4003,
+      reason: 'AUTHENTICATION_REJECTED',
+    });
+    expect(authority.authenticateStarted).toBe(0);
+    expect(authority.sessions).toHaveLength(0);
+    expect(authority.openCalls).toBe(0);
+    expect(gateway.activeConnections).toBe(0);
   });
 
   it('authenticates one challenge, commits one frame, and replays the exact durable ACK', async () => {
@@ -722,6 +743,7 @@ function handshake(challengeId: string): BrokerHandshake {
     codexRuntimeArtifacts: [`sha256:${'1'.repeat(64)}`],
     codexProtocolSchemaDigests: [`sha256:${'2'.repeat(64)}`],
     isolationModes: ['apple-container-v1'],
+    brokerContractDigest: currentBrokerContractDigest(),
     capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
     challengeId,
     challengeSignature: SIGNATURE,

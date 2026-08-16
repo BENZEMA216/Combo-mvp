@@ -826,6 +826,51 @@
         "readers MUST treat absence of this marker as unpublished even when preparation or final objects exist"
       ]
     },
+    "BrokerRegistrationCapabilities": {
+      "$ref": "#/definitions/BrokerRegistrationCapabilities",
+      "definitions": {
+        "BrokerRegistrationCapabilities": {
+          "type": "object",
+          "properties": {
+            "codexRuntimeArtifacts": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "codexProtocolSchemaDigests": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/BrokerRegistrationCapabilities/properties/codexRuntimeArtifacts/items"
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "isolationModes": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["apple-container-v1", "lima-vz-v1"] },
+              "minItems": 1,
+              "maxItems": 2
+            },
+            "brokerContractDigest": {
+              "$ref": "#/definitions/BrokerRegistrationCapabilities/properties/codexRuntimeArtifacts/items"
+            }
+          },
+          "required": [
+            "codexRuntimeArtifacts",
+            "codexProtocolSchemaDigests",
+            "isolationModes",
+            "brokerContractDigest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "brokerContractDigest is singular, required, and MUST equal currentBrokerContractDigest()",
+        "registration capabilities MUST pass BrokerRegistrationCapabilitiesSchema with no unknown key"
+      ]
+    },
     "BrokerHandshake": {
       "$ref": "#/definitions/BrokerHandshake",
       "definitions": {
@@ -866,6 +911,9 @@
               "minItems": 1,
               "maxItems": 2
             },
+            "brokerContractDigest": {
+              "$ref": "#/definitions/BrokerHandshake/properties/codexRuntimeArtifacts/items"
+            },
             "capacity": {
               "type": "object",
               "properties": {
@@ -892,6 +940,7 @@
             "codexRuntimeArtifacts",
             "codexProtocolSchemaDigests",
             "isolationModes",
+            "brokerContractDigest",
             "capacity",
             "challengeId",
             "challengeSignature"
@@ -899,7 +948,12 @@
           "additionalProperties": false
         }
       },
-      "$schema": "http://json-schema.org/draft-07/schema#"
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "brokerContractDigest is part of brokerHandshakeSigningBytes and MUST equal currentBrokerContractDigest()",
+        "codexRuntimeArtifacts/codexProtocolSchemaDigests/isolationModes/brokerContractDigest MUST exactly match the registered BrokerRegistrationCapabilities",
+        "all Broker handshakes MUST pass the authoritative runtime BrokerHandshakeSchema parser after structural JSON Schema validation"
+      ]
     },
     "BrokerEnvelope": {
       "$ref": "#/definitions/BrokerEnvelope",
@@ -1243,6 +1297,34 @@
                         "visibleTranscriptDigest": {
                           "type": "string",
                           "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                        },
+                        "openAuthority": {
+                          "type": "object",
+                          "properties": {
+                            "deploymentId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "installationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "workerSessionId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "leaseId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "fence": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                            }
+                          },
+                          "required": [
+                            "deploymentId",
+                            "installationId",
+                            "workerSessionId",
+                            "leaseId",
+                            "fence"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
@@ -1250,7 +1332,8 @@
                         "agentVersionId",
                         "agentVersionDigest",
                         "snapshotDigest",
-                        "visibleTranscriptDigest"
+                        "visibleTranscriptDigest",
+                        "openAuthority"
                       ],
                       "additionalProperties": false
                     }
@@ -3229,7 +3312,7 @@
       },
       "$schema": "http://json-schema.org/draft-07/schema#",
       "x-combo-runtime-constraints": [
-        "sensitive.cipherDigest == sha256(JCS(nonce,ciphertext,authTag))",
+        "sensitive.cipherDigest == sha256(JCS({protocol:\"combo.creator-broker/1\",schemaVersion:1,nonce,ciphertext,authTag}))",
         "sensitive.aadDigest == sha256(JCS(sensitive.aad))",
         "sensitive.keyId == sensitive.aad.keyId",
         "sensitive.aad.envelopeType == type",
@@ -3241,11 +3324,274 @@
         "conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))",
         "conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId",
         "conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping",
+        "conversation.open correlationId == body.conversationId and messageId != correlationId",
+        "conversation.open lease.deploymentId == body.openAuthority.deploymentId",
+        "conversation.open body.openAuthority is immutable while outer connection/sequence/time/session/lease/fence MAY change after authorized re-enveloping",
         "Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))",
         "Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId",
         "Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping",
         "prepared/started commandId == correlationId; delta and terminal correlationId == invocationId",
         "all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation"
+      ]
+    },
+    "BrokerConversationOpenAuthority": {
+      "$ref": "#/definitions/BrokerConversationOpenAuthority",
+      "definitions": {
+        "BrokerConversationOpenAuthority": {
+          "type": "object",
+          "properties": {
+            "deploymentId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "installationId": {
+              "$ref": "#/definitions/BrokerConversationOpenAuthority/properties/deploymentId"
+            },
+            "workerSessionId": {
+              "$ref": "#/definitions/BrokerConversationOpenAuthority/properties/deploymentId"
+            },
+            "leaseId": {
+              "$ref": "#/definitions/BrokerConversationOpenAuthority/properties/deploymentId"
+            },
+            "fence": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+            }
+          },
+          "required": ["deploymentId", "installationId", "workerSessionId", "leaseId", "fence"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerConversationOpenCommand": {
+      "$ref": "#/definitions/BrokerConversationOpenCommand",
+      "definitions": {
+        "BrokerConversationOpenCommand": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "messageId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "correlationId": {
+              "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+            },
+            "connectionId": {
+              "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+            },
+            "sequence": {
+              "type": "string",
+              "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+            },
+            "sentAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
+            "expiresAt": {
+              "$ref": "#/definitions/BrokerConversationOpenCommand/properties/sentAt"
+            },
+            "kind": { "type": "string", "const": "command" },
+            "type": { "type": "string", "const": "conversation.open" },
+            "lease": {
+              "type": "object",
+              "properties": {
+                "deploymentId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "leaseId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "workerSessionId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "fence": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/sequence"
+                }
+              },
+              "required": ["deploymentId", "leaseId", "workerSessionId", "fence"],
+              "additionalProperties": false
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "conversationId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/body/properties/agentVersionDigest"
+                },
+                "visibleTranscriptDigest": {
+                  "type": "string",
+                  "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                },
+                "openAuthority": {
+                  "type": "object",
+                  "properties": {
+                    "deploymentId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "installationId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "workerSessionId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "leaseId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "fence": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/sequence"
+                    }
+                  },
+                  "required": [
+                    "deploymentId",
+                    "installationId",
+                    "workerSessionId",
+                    "leaseId",
+                    "fence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "visibleTranscriptDigest",
+                "openAuthority"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "messageId",
+            "correlationId",
+            "connectionId",
+            "sequence",
+            "sentAt",
+            "expiresAt",
+            "kind",
+            "type",
+            "lease",
+            "body"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "correlationId == body.conversationId and messageId != correlationId",
+        "lease.deploymentId == body.openAuthority.deploymentId",
+        "body.openAuthority binds the original deployment/installation/session/lease/fence authority",
+        "outer connectionId/sequence/sentAt/expiresAt/leaseId/workerSessionId/fence MAY change after authorized re-enveloping",
+        "all conversation.open commands MUST pass BrokerConversationOpenCommandSchema"
+      ]
+    },
+    "BrokerConversationOpenLogicalCommand": {
+      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand",
+      "definitions": {
+        "BrokerConversationOpenLogicalCommand": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "kind": { "type": "string", "const": "command" },
+            "type": { "type": "string", "const": "conversation.open" },
+            "messageId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "correlationId": {
+              "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "conversationId": {
+                  "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                },
+                "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/body/properties/agentVersionDigest"
+                },
+                "visibleTranscriptDigest": {
+                  "type": "string",
+                  "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                },
+                "openAuthority": {
+                  "type": "object",
+                  "properties": {
+                    "deploymentId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "installationId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "workerSessionId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "leaseId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "fence": {
+                      "type": "string",
+                      "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+                    }
+                  },
+                  "required": [
+                    "deploymentId",
+                    "installationId",
+                    "workerSessionId",
+                    "leaseId",
+                    "fence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "visibleTranscriptDigest",
+                "openAuthority"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "kind",
+            "type",
+            "messageId",
+            "correlationId",
+            "body"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "logical digest preimage contains only protocol/schemaVersion/kind/type/messageId/correlationId/body",
+        "connectionId/sequence/sentAt/expiresAt/current outer lease are excluded from the logical digest"
       ]
     },
     "ExecutionCapabilityUnsigned": {
@@ -7244,6 +7590,45 @@
         }
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerContractRegistry": {
+      "$ref": "#/definitions/BrokerContractRegistry",
+      "definitions": {
+        "BrokerContractRegistry": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.vnext-broker-contract-registry/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "contracts": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "wireProtocol": { "type": "string", "const": "combo.creator-broker/1" },
+                    "artifactPath": {
+                      "type": "string",
+                      "const": "packages/creator-agent-protocol/schemas/broker-contract.v1.json"
+                    },
+                    "contractDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+                  },
+                  "required": ["wireProtocol", "artifactPath", "contractDigest"],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "required": ["protocol", "schemaVersion", "contracts"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "contracts[0].contractDigest == currentBrokerContractDigest()",
+        "contracts[0].artifactPath identifies the checked standalone Broker contract artifact"
+      ]
     },
     "InvariantRegistry": {
       "$ref": "#/definitions/InvariantRegistry",

@@ -4,6 +4,8 @@
 
 浏览器认证只读取 PostgreSQL 中的共享不透明会话，不配置远端身份提供商、JWT 用户验签、开发登录或会话签名密钥。发布身份来自 `COMBO_ENVIRONMENT`、`COMBO_SOURCE_SHA`、`COMBO_RELEASE_ID`、`COMBO_BUILT_AT`、`COMBO_RELEASE_MANIFEST_DIGEST` 和 `COMBO_WEB_ASSET_MANIFEST`。
 
+Creator Agent visible transcript 只配置非敏感的 KMS namespace、允许的 keyRef prefix 与最低 key version policy。Runtime 环境变量不接受 raw HMAC key、secret fallback 或本地默认 key；公开 flag 开启但未注入真实 KMS HMAC port 时 create 必须 fail closed。
+
 `SESSION_COOKIE_SECURE` 独立于 `NODE_ENV`。Test、Preview 与 Production 发布身份都必须选择 Secure Cookie 和 HTTPS origin；非 production 的本地开发仍可显式选择非 Secure Cookie 和 HTTP origin。Runtime 与 authoring 对这两个配置使用相同语义。
 
 消费计费由 `RUNTIME_BILLING_FREE_USES` 和 `RUNTIME_BILLING_UNIT_PRICE_CENTS` 控制。开发和测试默认分别为三次和一百分，生产必须显式配置；每笔用量会保存当时的额度与单价快照。

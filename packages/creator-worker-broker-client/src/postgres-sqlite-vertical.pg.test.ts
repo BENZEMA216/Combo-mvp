@@ -25,6 +25,7 @@ import {
 import {
   BrokerEnvelopeSchema,
   canonicalSha256,
+  currentBrokerContractDigest,
   parseBrokerFrame,
   type BrokerEnvelope,
 } from '@cb/creator-agent-protocol';
@@ -53,6 +54,7 @@ const { DatabaseSync: SqliteDatabase } = createRequire(import.meta.url)('node:sq
 };
 const WORKER_VERSION = 'combo-worker-vertical/1';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
 const TEST_RUNTIME_POLICY = Object.freeze({
   schemaVersion: 1,
@@ -105,6 +107,27 @@ type PgOutboundFact = Readonly<{
   durable_ack_level: string | null;
   ack_decision: string | null;
 }>;
+
+type PgActiveGrantSnapshotRow = PgLeaseFact &
+  Readonly<{
+    message_id: string | null;
+    canonical_digest: string | null;
+    envelope_type: string | null;
+    grant_lease_id: string | null;
+    grant_fence: string | null;
+    grant_expires_at_ms: string | null;
+    durable_ack_level: string | null;
+    ack_decision: string | null;
+    persisted_grant_count: string;
+  }>;
+
+type PgActiveGrantSnapshot = Readonly<{
+  lease: PgLeaseFact;
+  grant: PgOutboundFact;
+  persistedGrantCount: number;
+}>;
+
+type LeaseGrantEnvelope = Extract<BrokerEnvelope, { type: 'lease.grant' }>;
 
 type SqliteConnectionFact = Readonly<{
   connection_id: string;
@@ -164,6 +187,7 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       acceptedCodexRuntimeArtifacts: [RUNTIME_DIGEST],
       acceptedCodexProtocolSchemaDigests: [PROTOCOL_DIGEST],
       acceptedIsolationModes: ['apple-container-v1'],
+      acceptedBrokerContractDigests: [BROKER_CONTRACT_DIGEST],
       sessionTtlMs: 60_000,
       leaseTtlMs: 10_000,
       responseTtlMs: 5_000,
@@ -230,27 +254,35 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       );
 
       const initialLease = await activeLease(owner, fixture);
-      const initialExpiryMs = Number(initialLease.lease_expires_at_ms);
       const initialGrant = await firstPersistedGrant(
         owner,
         fixture,
         initialLease.worker_session_id,
       );
-      assertGrantBinding(initialGrant, initialLease);
+      const duplicatedInitialGrant = relay.firstDuplicatedCloudLeaseGrant;
+      if (duplicatedInitialGrant === undefined) {
+        throw new Error('VERTICAL_DUPLICATED_INITIAL_GRANT_MISSING');
+      }
+      assertHistoricalGrantBinding(initialGrant, initialLease);
+      assertGrantEnvelopeBinding(duplicatedInitialGrant, initialGrant, initialLease, fixture);
+      const initialExpiryMs = Number(initialGrant.grant_expires_at_ms);
       await waitFor(
         () => diagnostics.includes('frame_replayed'),
         3_000,
         'WORKER_DURABLE_REPLAY_NOT_OBSERVED',
       );
-      expect(
-        sqliteInboundReplayCount(filename, initialLease.connection_id, initialGrant.message_id),
-      ).toBe(1);
+      await waitForSqliteGrantBinding(
+        filename,
+        fixture,
+        initialLease,
+        initialGrant,
+        duplicatedInitialGrant,
+        1,
+      );
       expect(
         sqliteOutboxResponseCount(filename, initialLease.connection_id, initialGrant.message_id),
       ).toBe(1);
-      expect(sqliteConnection(filename, initialLease.connection_id)).toEqual(
-        sqliteLeaseProjection(initialLease, fixture.deploymentId),
-      );
+      assertSqliteLeaseAtLeast(filename, fixture, initialLease, initialExpiryMs);
 
       await waitFor(
         async () => {
@@ -333,16 +365,17 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       expect(firstClient.connected).toBe(true);
       expect(diagnostics.filter((event) => event === 'connection_lost')).toHaveLength(0);
 
-      const renewedLease = await activeLease(owner, fixture);
+      const renewedLease = await assertTwoJournalBindings(
+        owner,
+        filename,
+        fixture,
+        initialExpiryMs,
+      );
       expect(firstClient.status).toBe('READY');
       expect(firstClient.connected).toBe(true);
       expect(renewedLease.lease_id).toBe(initialLease.lease_id);
       expect(renewedLease.fence).toBe(initialLease.fence);
       expect(Number(renewedLease.lease_expires_at_ms)).toBeGreaterThan(initialExpiryMs);
-      expect(sqliteConnection(filename, renewedLease.connection_id)).toEqual(
-        sqliteLeaseProjection(renewedLease, fixture.deploymentId),
-      );
-      await assertTwoJournalBindings(owner, filename, fixture, renewedLease);
 
       const firstPort = firstAddress.port;
       await gateway.stop();
@@ -369,12 +402,29 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         'GATEWAY_RESTART_RECONNECT_TIMEOUT',
       );
 
-      const reconnectedLease = await activeLease(owner, fixture);
+      const reconnectedSnapshot = await waitForActivePersistedGrantSnapshot(
+        owner,
+        fixture,
+        (snapshot) => BigInt(snapshot.lease.fence) > BigInt(renewedLease.fence),
+        8_000,
+        'GATEWAY_RESTART_PERSISTED_GRANT_TIMEOUT',
+      );
+      const reconnectedLease = reconnectedSnapshot.lease;
+      assertGrantBinding(reconnectedSnapshot.grant, reconnectedLease);
+      await waitForSqliteGrantBinding(
+        filename,
+        fixture,
+        reconnectedLease,
+        reconnectedSnapshot.grant,
+      );
+      assertSqliteLeaseAtLeast(
+        filename,
+        fixture,
+        reconnectedLease,
+        Number(reconnectedSnapshot.grant.grant_expires_at_ms),
+      );
       expect(BigInt(reconnectedLease.fence)).toBeGreaterThan(BigInt(renewedLease.fence));
       expect(await activeLeaseCount(owner, fixture)).toBe(1);
-      expect(sqliteConnection(filename, reconnectedLease.connection_id)).toEqual(
-        sqliteLeaseProjection(reconnectedLease, fixture.deploymentId),
-      );
       expect(sqliteReleasedConnection(filename, renewedLease.connection_id)?.status).toBe(
         'RELEASED',
       );
@@ -412,7 +462,22 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         'JOURNAL_REOPEN_RECONNECT_TIMEOUT',
       );
 
-      const reopenedLease = await activeLease(owner, fixture);
+      const reopenedSnapshot = await waitForActivePersistedGrantSnapshot(
+        owner,
+        fixture,
+        (snapshot) => BigInt(snapshot.lease.fence) > BigInt(reconnectedLease.fence),
+        8_000,
+        'JOURNAL_REOPEN_PERSISTED_GRANT_TIMEOUT',
+      );
+      const reopenedLease = reopenedSnapshot.lease;
+      assertGrantBinding(reopenedSnapshot.grant, reopenedLease);
+      await waitForSqliteGrantBinding(filename, fixture, reopenedLease, reopenedSnapshot.grant);
+      assertSqliteLeaseAtLeast(
+        filename,
+        fixture,
+        reopenedLease,
+        Number(reopenedSnapshot.grant.grant_expires_at_ms),
+      );
       const metaAfterReopen = sqliteMeta(filename);
       expect(metaAfterReopen.journal_generation).toBe(metaBeforeReopen.journal_generation);
       expect(metaAfterReopen.authorization_digest).toBe(metaBeforeReopen.authorization_digest);
@@ -420,9 +485,6 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       expect(metaAfterReopen.commit_epoch).toBeGreaterThan(metaBeforeReopen.commit_epoch);
       expect(BigInt(reopenedLease.fence)).toBeGreaterThan(BigInt(reconnectedLease.fence));
       expect(sqliteActiveConnectionCount(filename)).toBe(1);
-      expect(sqliteConnection(filename, reopenedLease.connection_id)).toEqual(
-        sqliteLeaseProjection(reopenedLease, fixture.deploymentId),
-      );
       expect(await activeLeaseCount(owner, fixture)).toBe(1);
       expect(await securityAndGapCounts(owner, fixture)).toEqual({
         security_events: '0',
@@ -562,6 +624,7 @@ async function seedFixture(owner: Pool, publicKey: KeyObject): Promise<FixtureId
         codexRuntimeArtifacts: [RUNTIME_DIGEST],
         codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
         isolationModes: ['apple-container-v1'],
+        brokerContractDigest: BROKER_CONTRACT_DIGEST,
       }),
     ],
   );
@@ -683,6 +746,124 @@ async function activeLease(owner: Pool, fixture: FixtureIds): Promise<PgLeaseFac
     throw new Error(`VERTICAL_ACTIVE_LEASE_COUNT_${result.rows.length}`);
   }
   return result.rows[0];
+}
+
+async function activePersistedGrantSnapshot(
+  owner: Pool,
+  fixture: FixtureIds,
+): Promise<PgActiveGrantSnapshot | undefined> {
+  const result = await owner.query<PgActiveGrantSnapshotRow>(
+    `WITH active AS (
+       SELECT gateway.id::text AS worker_session_id,
+              gateway.connection_id::text,
+              gateway.state AS session_state,
+              lease.id::text AS lease_id,
+              lease.fence::text,
+              lease.state AS lease_state,
+              lease.expires_at AS lease_expires_at,
+              floor(extract(epoch FROM lease.expires_at) * 1000)::bigint::text
+                AS lease_expires_at_ms,
+              deployment.lease_fence::text AS deployment_fence
+         FROM worker_gateway_sessions AS gateway
+         JOIN worker_leases AS lease
+           ON lease.connection_id = gateway.connection_id
+          AND lease.worker_id = gateway.installation_id
+          AND lease.creator_id = gateway.creator_id
+         JOIN deployments AS deployment
+           ON deployment.id = lease.deployment_id
+          AND deployment.creator_id = lease.creator_id
+        WHERE gateway.creator_id = $1 AND gateway.installation_id = $2
+          AND gateway.state = 'ACTIVE' AND lease.state = 'ACTIVE'
+     )
+     SELECT active.worker_session_id, active.connection_id, active.session_state,
+            active.lease_id, active.fence, active.lease_state,
+            active.lease_expires_at_ms, active.deployment_fence,
+            matched.message_id::text, matched.canonical_digest, matched.envelope_type,
+            matched.grant_lease_id::text, matched.grant_fence::text,
+            floor(extract(epoch FROM matched.grant_expires_at) * 1000)::bigint::text
+              AS grant_expires_at_ms,
+            matched.durable_ack_level, matched.ack_decision,
+            grant_count.persisted_grant_count
+       FROM active
+       LEFT JOIN LATERAL (
+         SELECT outbound.*
+           FROM worker_gateway_outbound_frames AS outbound
+          WHERE outbound.creator_id = $1
+            AND outbound.session_id = active.worker_session_id::uuid
+            AND outbound.envelope_type = 'lease.grant'
+            AND outbound.grant_lease_id = active.lease_id::uuid
+            AND outbound.grant_fence = active.fence::bigint
+            AND floor(extract(epoch FROM outbound.grant_expires_at) * 1000)::bigint =
+                floor(extract(epoch FROM active.lease_expires_at) * 1000)::bigint
+            AND outbound.durable_ack_level = 'PERSISTED'
+            AND outbound.ack_decision = 'APPLIED'
+          ORDER BY outbound.sequence DESC
+          LIMIT 1
+       ) AS matched ON TRUE
+       CROSS JOIN LATERAL (
+         SELECT count(*)::text AS persisted_grant_count
+           FROM worker_gateway_outbound_frames AS outbound
+          WHERE outbound.creator_id = $1
+            AND outbound.session_id = active.worker_session_id::uuid
+            AND outbound.envelope_type = 'lease.grant'
+            AND outbound.durable_ack_level = 'PERSISTED'
+            AND outbound.ack_decision = 'APPLIED'
+       ) AS grant_count`,
+    [fixture.creatorId, fixture.installationId],
+  );
+  if (result.rows.length === 0) return undefined;
+  if (result.rows.length !== 1 || result.rows[0] === undefined) {
+    throw new Error(`VERTICAL_ACTIVE_LEASE_COUNT_${result.rows.length}`);
+  }
+  const row = result.rows[0];
+  if (row.message_id === null || row.canonical_digest === null || row.envelope_type === null) {
+    return undefined;
+  }
+  return Object.freeze({
+    lease: Object.freeze({
+      worker_session_id: row.worker_session_id,
+      connection_id: row.connection_id,
+      session_state: row.session_state,
+      lease_id: row.lease_id,
+      fence: row.fence,
+      lease_state: row.lease_state,
+      lease_expires_at_ms: row.lease_expires_at_ms,
+      deployment_fence: row.deployment_fence,
+    }),
+    grant: Object.freeze({
+      message_id: row.message_id,
+      canonical_digest: row.canonical_digest,
+      envelope_type: row.envelope_type,
+      grant_lease_id: row.grant_lease_id,
+      grant_fence: row.grant_fence,
+      grant_expires_at_ms: row.grant_expires_at_ms,
+      durable_ack_level: row.durable_ack_level,
+      ack_decision: row.ack_decision,
+    }),
+    persistedGrantCount: Number(row.persisted_grant_count),
+  });
+}
+
+async function waitForActivePersistedGrantSnapshot(
+  owner: Pool,
+  fixture: FixtureIds,
+  predicate: (snapshot: PgActiveGrantSnapshot) => boolean,
+  timeoutMs: number,
+  code: string,
+): Promise<PgActiveGrantSnapshot> {
+  let accepted: PgActiveGrantSnapshot | undefined;
+  await waitFor(
+    async () => {
+      const snapshot = await activePersistedGrantSnapshot(owner, fixture);
+      if (snapshot === undefined || !predicate(snapshot)) return false;
+      accepted = snapshot;
+      return true;
+    },
+    timeoutMs,
+    code,
+  );
+  if (accepted === undefined) throw new Error(`${code}_RESULT_MISSING`);
+  return accepted;
 }
 
 async function activeLeaseCount(owner: Pool, fixture: FixtureIds): Promise<number> {
@@ -852,6 +1033,7 @@ async function firstPersistedGrant(
 }
 
 function assertGrantBinding(grant: PgOutboundFact, lease: PgLeaseFact): void {
+  expect(grant.envelope_type).toBe('lease.grant');
   expect(grant.grant_lease_id).toBe(lease.lease_id);
   expect(grant.grant_fence).toBe(lease.fence);
   expect(grant.grant_expires_at_ms).toBe(lease.lease_expires_at_ms);
@@ -859,40 +1041,126 @@ function assertGrantBinding(grant: PgOutboundFact, lease: PgLeaseFact): void {
   expect(grant.ack_decision).toBe('APPLIED');
 }
 
+function assertHistoricalGrantBinding(grant: PgOutboundFact, lease: PgLeaseFact): void {
+  expect(grant.envelope_type).toBe('lease.grant');
+  expect(grant.grant_lease_id).toBe(lease.lease_id);
+  expect(grant.grant_fence).toBe(lease.fence);
+  expect(Number(lease.lease_expires_at_ms)).toBeGreaterThanOrEqual(grantExpiryMs(grant));
+  expect(grant.durable_ack_level).toBe('PERSISTED');
+  expect(grant.ack_decision).toBe('APPLIED');
+}
+
+function assertGrantEnvelopeBinding(
+  envelope: LeaseGrantEnvelope,
+  grant: PgOutboundFact,
+  lease: PgLeaseFact,
+  fixture: FixtureIds,
+): void {
+  expect(envelope.messageId).toBe(grant.message_id);
+  expect(canonicalSha256(envelope)).toBe(grant.canonical_digest);
+  expect(envelope.connectionId).toBe(lease.connection_id);
+  expect(envelope.lease).toEqual({
+    deploymentId: fixture.deploymentId,
+    leaseId: grant.grant_lease_id,
+    workerSessionId: lease.worker_session_id,
+    fence: grant.grant_fence,
+  });
+  expect(envelope.body).toEqual({
+    leaseExpiresAt: new Date(grantExpiryMs(grant)).toISOString(),
+    workerSessionId: lease.worker_session_id,
+    generation: '1',
+  });
+}
+
+function grantExpiryMs(grant: PgOutboundFact): number {
+  if (grant.grant_expires_at_ms === null) throw new Error('VERTICAL_GRANT_EXPIRY_MISSING');
+  const expiry = Number(grant.grant_expires_at_ms);
+  if (!Number.isSafeInteger(expiry)) throw new Error('VERTICAL_GRANT_EXPIRY_INVALID');
+  return expiry;
+}
+
+async function waitForSqliteGrantBinding(
+  filename: string,
+  fixture: FixtureIds,
+  lease: PgLeaseFact,
+  grant: PgOutboundFact,
+  expectedEnvelope?: LeaseGrantEnvelope,
+  expectedReplayCount?: number,
+): Promise<void> {
+  await waitFor(
+    () => {
+      const row = sqliteMaybeOne<{
+        message_id: string;
+        canonical_digest: string;
+        envelope_json: string;
+        effect_state: string;
+        replay_count: number;
+      }>(
+        filename,
+        `SELECT message_id, canonical_digest, envelope_json, effect_state, replay_count
+           FROM transport_inbound_frames
+          WHERE connection_id = ? AND message_id = ? AND envelope_type = 'lease.grant'`,
+        lease.connection_id,
+        grant.message_id,
+      );
+      if (row === undefined) return false;
+      expect(row.message_id).toBe(grant.message_id);
+      expect(row.canonical_digest).toBe(grant.canonical_digest);
+      const parsed = BrokerEnvelopeSchema.parse(JSON.parse(row.envelope_json));
+      if (parsed.type !== 'lease.grant') throw new Error('VERTICAL_SQLITE_GRANT_TYPE_INVALID');
+      assertGrantEnvelopeBinding(parsed, grant, lease, fixture);
+      if (expectedEnvelope !== undefined) expect(parsed).toEqual(expectedEnvelope);
+      if (row.effect_state !== 'APPLIED') return false;
+      if (expectedReplayCount !== undefined && row.replay_count < expectedReplayCount) return false;
+      expect(row.effect_state).toBe('APPLIED');
+      if (expectedReplayCount !== undefined) expect(row.replay_count).toBe(expectedReplayCount);
+      return true;
+    },
+    5_000,
+    'VERTICAL_SQLITE_GRANT_BINDING_TIMEOUT',
+  );
+}
+
+function assertSqliteLeaseAtLeast(
+  filename: string,
+  fixture: FixtureIds,
+  lease: PgLeaseFact,
+  targetExpiryMs: number,
+): void {
+  const local = sqliteConnection(filename, lease.connection_id);
+  expect(local).toMatchObject({
+    connection_id: lease.connection_id,
+    worker_session_id: lease.worker_session_id,
+    deployment_id: fixture.deploymentId,
+    lease_id: lease.lease_id,
+    fence: lease.fence,
+    lease_state: 'ACTIVE',
+    status: 'ACTIVE',
+  });
+  expect(Date.parse(local.lease_expires_at)).toBeGreaterThanOrEqual(targetExpiryMs);
+}
+
 async function assertTwoJournalBindings(
   owner: Pool,
   filename: string,
   fixture: FixtureIds,
-  lease: PgLeaseFact,
-): Promise<void> {
-  const grants = await owner.query<PgOutboundFact>(
-    `SELECT message_id::text, canonical_digest, envelope_type,
-            grant_lease_id::text, grant_fence::text,
-            floor(extract(epoch FROM grant_expires_at) * 1000)::bigint::text
-              AS grant_expires_at_ms,
-            durable_ack_level, ack_decision
-       FROM worker_gateway_outbound_frames
-      WHERE creator_id = $1 AND session_id = $2 AND envelope_type = 'lease.grant'
-        AND durable_ack_level = 'PERSISTED' AND ack_decision = 'APPLIED'
-      ORDER BY sequence`,
-    [fixture.creatorId, lease.worker_session_id],
+  initialExpiryMs: number,
+): Promise<PgLeaseFact> {
+  const snapshot = await waitForActivePersistedGrantSnapshot(
+    owner,
+    fixture,
+    (candidate) =>
+      candidate.persistedGrantCount >= 2 &&
+      grantExpiryMs(candidate.grant) > initialExpiryMs &&
+      candidate.lease.lease_expires_at_ms === candidate.grant.grant_expires_at_ms,
+    8_000,
+    'VERTICAL_CURRENT_PERSISTED_GRANT_TIMEOUT',
   );
-  expect(grants.rows.length).toBeGreaterThanOrEqual(2);
-  const renewal = grants.rows.at(-1);
-  if (renewal === undefined) throw new Error('VERTICAL_RENEWAL_GRANT_MISSING');
+  const { lease, grant: renewal } = snapshot;
+  expect(snapshot.persistedGrantCount).toBeGreaterThanOrEqual(2);
   assertGrantBinding(renewal, lease);
-  const localGrant = sqliteOne<{ message_id: string; canonical_digest: string }>(
-    filename,
-    `SELECT message_id, canonical_digest
-       FROM transport_inbound_frames
-      WHERE connection_id = ? AND message_id = ? AND envelope_type = 'lease.grant'`,
-    lease.connection_id,
-    renewal.message_id,
-  );
-  expect(localGrant).toEqual({
-    message_id: renewal.message_id,
-    canonical_digest: renewal.canonical_digest,
-  });
+  await waitForSqliteGrantBinding(filename, fixture, lease, renewal);
+  assertSqliteLeaseAtLeast(filename, fixture, lease, grantExpiryMs(renewal));
 
   const renewed = sqliteOne<{
     message_id: string;
@@ -951,6 +1219,7 @@ async function assertTwoJournalBindings(
       envelope_type: 'heartbeat',
     },
   ]);
+  return lease;
 }
 
 function sqliteConnection(filename: string, connectionId: string): SqliteConnectionFact {
@@ -976,19 +1245,6 @@ function sqliteReleasedConnection(
   );
 }
 
-function sqliteLeaseProjection(lease: PgLeaseFact, deploymentId: string): SqliteConnectionFact {
-  return {
-    connection_id: lease.connection_id,
-    worker_session_id: lease.worker_session_id,
-    deployment_id: deploymentId,
-    lease_id: lease.lease_id,
-    fence: lease.fence,
-    lease_state: 'ACTIVE',
-    lease_expires_at: new Date(Number(lease.lease_expires_at_ms)).toISOString(),
-    status: 'ACTIVE',
-  };
-}
-
 function sqliteMeta(filename: string): SqliteMetaFact {
   return sqliteOne<SqliteMetaFact>(
     filename,
@@ -1002,20 +1258,6 @@ function sqliteActiveConnectionCount(filename: string): number {
     filename,
     `SELECT count(*) AS count FROM transport_connections WHERE status = 'ACTIVE'`,
   ).count;
-}
-
-function sqliteInboundReplayCount(
-  filename: string,
-  connectionId: string,
-  messageId: string,
-): number {
-  return sqliteOne<{ replay_count: number }>(
-    filename,
-    `SELECT replay_count FROM transport_inbound_frames
-      WHERE connection_id = ? AND message_id = ?`,
-    connectionId,
-    messageId,
-  ).replay_count;
 }
 
 function sqliteOutboxResponseCount(
@@ -1189,6 +1431,7 @@ class RawWebSocketRelay {
   #workerHeartbeatCount = 0;
   #cloudDuplicates = 0;
   #workerDuplicates = 0;
+  #firstDuplicatedCloudLeaseGrant: LeaseGrantEnvelope | undefined;
   readonly #cloudPayloadHashes: string[] = [];
   readonly #workerPayloadHashes: string[] = [];
 
@@ -1224,6 +1467,10 @@ class RawWebSocketRelay {
       cloudToWorker: [...this.#cloudPayloadHashes],
       workerToCloud: [...this.#workerPayloadHashes],
     };
+  }
+
+  get firstDuplicatedCloudLeaseGrant(): LeaseGrantEnvelope | undefined {
+    return this.#firstDuplicatedCloudLeaseGrant;
   }
 
   async start(): Promise<string> {
@@ -1271,8 +1518,10 @@ class RawWebSocketRelay {
       if (downstream.readyState !== WebSocket.OPEN) return;
       const bytes = rawDataBytes(data);
       downstream.send(bytes, { binary, compress: false });
-      if (!binary && this.#duplicateCloudLeaseGrant && brokerFrameType(bytes) === 'lease.grant') {
+      const frame = binary ? undefined : brokerFrame(bytes);
+      if (!binary && this.#duplicateCloudLeaseGrant && frame?.type === 'lease.grant') {
         this.#duplicateCloudLeaseGrant = false;
+        this.#firstDuplicatedCloudLeaseGrant = frame;
         this.#cloudDuplicates += 1;
         this.#cloudPayloadHashes.push(createHash('sha256').update(bytes).digest('hex'));
         downstream.send(Buffer.from(bytes), { binary: false, compress: false });
@@ -1319,10 +1568,6 @@ function brokerFrame(bytes: Buffer): ReturnType<typeof parseBrokerFrame> | undef
   } catch {
     return undefined;
   }
-}
-
-function brokerFrameType(bytes: Buffer): string | undefined {
-  return brokerFrame(bytes)?.type;
 }
 
 function rawDataBytes(data: RawData): Buffer {

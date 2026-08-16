@@ -130,18 +130,29 @@ export const BrokerCapacitySchema = z
   })
   .strict();
 
-const BrokerHandshakeUnsignedShape = {
-  protocol: z.literal(CREATOR_BROKER_PROTOCOL),
-  schemaVersion: z.literal(1),
-  installationId: UuidSchema,
-  workerVersion: Utf8TextSchema(128),
-  supportedProtocolVersions: z.tuple([z.literal(1)]),
+const BrokerRegistrationCapabilitiesShape = {
   codexRuntimeArtifacts: z.array(Sha256DigestSchema).min(1).max(8),
   codexProtocolSchemaDigests: z.array(Sha256DigestSchema).min(1).max(8),
   isolationModes: z
     .array(z.enum(['apple-container-v1', 'lima-vz-v1']))
     .min(1)
     .max(2),
+  brokerContractDigest: Sha256DigestSchema,
+} as const;
+
+/** Installation registration and Broker handshake share one exact compatibility shape. */
+export const BrokerRegistrationCapabilitiesSchema = z
+  .object(BrokerRegistrationCapabilitiesShape)
+  .strict();
+export type BrokerRegistrationCapabilities = z.infer<typeof BrokerRegistrationCapabilitiesSchema>;
+
+const BrokerHandshakeUnsignedShape = {
+  protocol: z.literal(CREATOR_BROKER_PROTOCOL),
+  schemaVersion: z.literal(1),
+  installationId: UuidSchema,
+  workerVersion: Utf8TextSchema(128),
+  supportedProtocolVersions: z.tuple([z.literal(1)]),
+  ...BrokerRegistrationCapabilitiesShape,
   capacity: BrokerCapacitySchema,
   challengeId: UuidSchema,
 };
@@ -547,6 +558,31 @@ const WorkerConversationReadyFactBodySchema = z
 
 const EmptyBodySchema = z.object({}).strict();
 const GenerationSchema = Uint63StringSchema;
+
+/** Immutable Cloud authority of the exact conversation.open command. */
+export const BrokerConversationOpenAuthoritySchema = z
+  .object({
+    deploymentId: UuidSchema,
+    installationId: UuidSchema,
+    workerSessionId: UuidSchema,
+    leaseId: UuidSchema,
+    fence: Uint63StringSchema,
+  })
+  .strict();
+export type BrokerConversationOpenAuthority = z.infer<typeof BrokerConversationOpenAuthoritySchema>;
+
+export const BrokerConversationOpenBodySchema = z
+  .object({
+    conversationId: UuidSchema,
+    agentVersionId: UuidSchema,
+    agentVersionDigest: Sha256HexSchema,
+    snapshotDigest: Sha256HexSchema,
+    visibleTranscriptDigest: HmacSha256DigestSchema,
+    openAuthority: BrokerConversationOpenAuthoritySchema,
+  })
+  .strict();
+export type BrokerConversationOpenBody = z.infer<typeof BrokerConversationOpenBodySchema>;
+
 export const BrokerSensitiveMessageAadSchema = z
   .object({
     protocol: z.literal(CREATOR_BROKER_PROTOCOL),
@@ -635,6 +671,84 @@ export const BrokerSensitiveMessageSchema = z
   });
 export type BrokerSensitiveMessage = z.infer<typeof BrokerSensitiveMessageSchema>;
 
+const BrokerConversationOpenCommandObjectSchema = command(
+  'conversation.open',
+  BrokerConversationOpenBodySchema,
+);
+
+function refineBrokerConversationOpenCommand(
+  envelope: z.infer<typeof BrokerConversationOpenCommandObjectSchema>,
+  context: z.RefinementCtx,
+): void {
+  if (envelope.correlationId !== envelope.body.conversationId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['correlationId'],
+      message: 'conversation.open correlationId 必须绑定 conversationId',
+    });
+  }
+  if (envelope.messageId === envelope.correlationId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['messageId'],
+      message: 'conversation.open command messageId 不能复用 conversationId',
+    });
+  }
+  if (envelope.lease.deploymentId !== envelope.body.openAuthority.deploymentId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['lease', 'deploymentId'],
+      message: 'conversation.open current transport deployment 必须绑定原始 open authority',
+    });
+  }
+}
+
+/** Exact wire command; current outer Session/Lease/Fence may differ from body.openAuthority. */
+export const BrokerConversationOpenCommandSchema =
+  BrokerConversationOpenCommandObjectSchema.superRefine(refineBrokerConversationOpenCommand);
+export type BrokerConversationOpenCommand = z.infer<typeof BrokerConversationOpenCommandSchema>;
+
+export const BrokerConversationOpenLogicalCommandSchema = z
+  .object({
+    protocol: z.literal(CREATOR_BROKER_PROTOCOL),
+    schemaVersion: z.literal(1),
+    kind: z.literal('command'),
+    type: z.literal('conversation.open'),
+    messageId: UuidSchema,
+    correlationId: UuidSchema,
+    body: BrokerConversationOpenBodySchema,
+  })
+  .strict();
+export type BrokerConversationOpenLogicalCommand = z.infer<
+  typeof BrokerConversationOpenLogicalCommandSchema
+>;
+
+/**
+ * Project an exact wire command into its stable logical identity. Current transport fields are
+ * validated before they are deliberately omitted.
+ */
+export function brokerConversationOpenLogicalCommand(
+  input: BrokerConversationOpenCommand,
+): BrokerConversationOpenLogicalCommand {
+  const command = BrokerConversationOpenCommandSchema.parse(input);
+  return BrokerConversationOpenLogicalCommandSchema.parse({
+    protocol: command.protocol,
+    schemaVersion: command.schemaVersion,
+    kind: command.kind,
+    type: command.type,
+    messageId: command.messageId,
+    correlationId: command.correlationId,
+    body: command.body,
+  });
+}
+
+/** Stable SHA-256 over only protocol/schema/kind/type/messageId/correlationId/body. */
+export function brokerConversationOpenLogicalDigest(
+  input: BrokerConversationOpenLogicalCommand,
+): string {
+  return canonicalSha256(BrokerConversationOpenLogicalCommandSchema.parse(input));
+}
+
 export const BrokerCommandSchema = z.discriminatedUnion('type', [
   command(
     'lease.grant',
@@ -682,18 +796,7 @@ export const BrokerCommandSchema = z.discriminatedUnion('type', [
       })
       .strict(),
   ),
-  command(
-    'conversation.open',
-    z
-      .object({
-        conversationId: UuidSchema,
-        agentVersionId: UuidSchema,
-        agentVersionDigest: Sha256HexSchema,
-        snapshotDigest: Sha256HexSchema,
-        visibleTranscriptDigest: HmacSha256DigestSchema,
-      })
-      .strict(),
-  ),
+  BrokerConversationOpenCommandObjectSchema,
   command(
     'conversation.close',
     z
@@ -951,6 +1054,9 @@ export const BrokerEnvelopeSchema = z
         path: ['correlationId'],
         message: 'conversation.ready correlationId 必须绑定 conversationId',
       });
+    }
+    if (envelope.type === 'conversation.open') {
+      refineBrokerConversationOpenCommand(envelope, context);
     }
     if (
       envelope.type === 'invocation.prepared' &&

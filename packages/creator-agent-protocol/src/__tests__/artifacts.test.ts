@@ -1,7 +1,21 @@
 import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
 // VNext registry case: SCH-006
-import { createJsonSchemaBundle, createOpenApiDocument } from '../artifacts.js';
+import {
+  createBrokerContractArtifact,
+  createJsonSchemaBundle,
+  createOpenApiDocument,
+  currentBrokerContractDigest,
+} from '../artifacts.js';
+import {
+  BROKER_MAX_FRAME_BYTES,
+  BROKER_WORKER_CONNECT_PATH,
+  CREATOR_BROKER_PROTOCOL,
+  BrokerCloseCode,
+  BrokerCloseReason,
+  brokerSensitiveMessageCipherDigest,
+} from '../broker.js';
+import { CANONICAL_JSON_IMPLEMENTATION, canonicalSha256, canonicalizeJson } from '../canonical.js';
 import { readFixture } from './fixture-helpers.js';
 
 describe('生成的 JSON Schema 与 OpenAPI', () => {
@@ -16,8 +30,12 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'SnapshotManifestEnvelope',
       'SnapshotPublicationPreparationMarker',
       'SnapshotPublicationCommitMarker',
+      'BrokerRegistrationCapabilities',
       'BrokerHandshake',
       'BrokerEnvelope',
+      'BrokerConversationOpenAuthority',
+      'BrokerConversationOpenCommand',
+      'BrokerConversationOpenLogicalCommand',
       'InvocationTransition',
       'VnextErrorResponse',
       'SandboxSpec',
@@ -35,6 +53,132 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     ]) {
       expect(bundle.schemas[required], required).toBeDefined();
     }
+  });
+
+  it('publishes one non-self-referential Broker contract artifact and stable JCS digest', () => {
+    const artifact = createBrokerContractArtifact() as {
+      protocol: string;
+      wireProtocol: string;
+      canonicalization: string;
+      connectPath: string;
+      maxFrameBytes: number;
+      closeCodes: Record<string, number>;
+      closeReasons: Record<string, string>;
+      schemas: Record<string, unknown>;
+      runtimeConstraints: Record<string, string[]>;
+    };
+    const digest = currentBrokerContractDigest();
+
+    expect(artifact.protocol).toBe('combo.creator-broker-contract/1');
+    expect(artifact.wireProtocol).toBe('combo.creator-broker/1');
+    expect(Object.keys(artifact).sort()).toEqual(
+      [
+        'protocol',
+        'schemaVersion',
+        'wireProtocol',
+        'canonicalization',
+        'connectPath',
+        'maxFrameBytes',
+        'closeCodes',
+        'closeReasons',
+        'schemas',
+        'runtimeConstraints',
+      ].sort(),
+    );
+    expect(artifact.canonicalization).toBe(CANONICAL_JSON_IMPLEMENTATION);
+    expect(artifact.connectPath).toBe(BROKER_WORKER_CONNECT_PATH);
+    expect(artifact.maxFrameBytes).toBe(BROKER_MAX_FRAME_BYTES);
+    expect(artifact.closeCodes).toEqual(BrokerCloseCode);
+    expect(artifact.closeReasons).toEqual(BrokerCloseReason);
+    expect(Object.keys(artifact.schemas).sort()).toEqual(
+      [
+        'BrokerRegistrationCapabilities',
+        'BrokerHandshake',
+        'BrokerEnvelope',
+        'BrokerConversationOpenAuthority',
+        'BrokerConversationOpenCommand',
+        'BrokerConversationOpenLogicalCommand',
+      ].sort(),
+    );
+    expect(artifact.runtimeConstraints.BrokerHandshake).toContain(
+      'brokerContractDigest is part of brokerHandshakeSigningBytes and MUST equal currentBrokerContractDigest()',
+    );
+    expect(artifact.runtimeConstraints.BrokerConversationOpenCommand).toContain(
+      'outer connectionId/sequence/sentAt/expiresAt/leaseId/workerSessionId/fence MAY change after authorized re-enveloping',
+    );
+    expect(digest).toBe(`sha256:${canonicalSha256(artifact)}`);
+    expect(canonicalizeJson(artifact)).not.toContain(digest);
+  });
+
+  it('publishes the exact five-field Broker cipher digest preimage used by runtime', async () => {
+    const artifact = createBrokerContractArtifact() as {
+      runtimeConstraints: Record<string, string[]>;
+    };
+    const prepare = (await readFixture('broker-invocation-prepare.v1.json')) as {
+      body: {
+        userMessageCiphertext: {
+          nonce: string;
+          ciphertext: string;
+          authTag: string;
+          cipherDigest: string;
+        };
+      };
+    };
+    const cipher = prepare.body.userMessageCiphertext;
+    const runtimeDigest = brokerSensitiveMessageCipherDigest(
+      cipher.nonce,
+      cipher.ciphertext,
+      cipher.authTag,
+    );
+    const advertisedDigest = canonicalSha256({
+      protocol: CREATOR_BROKER_PROTOCOL,
+      schemaVersion: 1,
+      nonce: cipher.nonce,
+      ciphertext: cipher.ciphertext,
+      authTag: cipher.authTag,
+    });
+    const obsoleteThreeFieldDigest = canonicalSha256({
+      nonce: cipher.nonce,
+      ciphertext: cipher.ciphertext,
+      authTag: cipher.authTag,
+    });
+
+    expect(artifact.runtimeConstraints.BrokerEnvelope).toContain(
+      'sensitive.cipherDigest == sha256(JCS({protocol:"combo.creator-broker/1",schemaVersion:1,nonce,ciphertext,authTag}))',
+    );
+    expect(advertisedDigest).toBe(runtimeDigest);
+    expect(cipher.cipherDigest).toBe(runtimeDigest);
+    expect(obsoleteThreeFieldDigest).not.toBe(runtimeDigest);
+  });
+
+  it('generated Broker schemas require registration/handshake digest and open authority', async () => {
+    const bundle = createJsonSchemaBundle() as { schemas: Record<string, unknown> };
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    const validateRegistration = ajv.compile(
+      bundle.schemas.BrokerRegistrationCapabilities as AnySchema,
+    );
+    const validateHandshake = ajv.compile(bundle.schemas.BrokerHandshake as AnySchema);
+    const validateOpen = ajv.compile(bundle.schemas.BrokerConversationOpenCommand as AnySchema);
+    const handshake = (await readFixture('broker-handshake.v1.json')) as Record<string, unknown>;
+    const open = (await readFixture('broker-conversation-open.v1.json')) as Record<string, unknown>;
+    const registration = {
+      codexRuntimeArtifacts: handshake.codexRuntimeArtifacts,
+      codexProtocolSchemaDigests: handshake.codexProtocolSchemaDigests,
+      isolationModes: handshake.isolationModes,
+      brokerContractDigest: handshake.brokerContractDigest,
+    };
+
+    expect(validateRegistration(registration)).toBe(true);
+    expect(validateRegistration({ ...registration, brokerContractDigest: undefined })).toBe(false);
+    expect(validateRegistration({ ...registration, unknown: true })).toBe(false);
+    expect(validateHandshake(handshake)).toBe(true);
+    const missingDigest = { ...handshake };
+    delete missingDigest.brokerContractDigest;
+    expect(validateHandshake(missingDigest)).toBe(false);
+    expect(validateOpen(open)).toBe(true);
+    const body = { ...(open.body as Record<string, unknown>) };
+    delete body.openAuthority;
+    expect(validateOpen({ ...open, body })).toBe(false);
   });
 
   it('publishes Snapshot archive Envelope semantic bindings beside structural JSON Schema', () => {
@@ -166,6 +310,9 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
         'conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))',
         'conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId',
         'conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping',
+        'conversation.open correlationId == body.conversationId and messageId != correlationId',
+        'conversation.open lease.deploymentId == body.openAuthority.deploymentId',
+        'conversation.open body.openAuthority is immutable while outer connection/sequence/time/session/lease/fence MAY change after authorized re-enveloping',
         'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
         'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
         'prepared/started commandId == correlationId; delta and terminal correlationId == invocationId',

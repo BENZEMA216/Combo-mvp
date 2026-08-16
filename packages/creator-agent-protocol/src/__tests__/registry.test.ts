@@ -3,7 +3,10 @@ import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { currentBrokerContractDigest } from '../artifacts.js';
+import { canonicalSha256 } from '../canonical.js';
 import {
+  BrokerContractRegistrySchema,
   DataFlowAllowlistSchema,
   decideDataFlowObservation,
   DecisionRegistrySchema,
@@ -40,6 +43,19 @@ const sha256Digest = (bytes: Uint8Array) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
 describe('VNext machine-readable contract registries', () => {
+  it('binds the broker registry to the exact standalone JCS contract artifact', async () => {
+    const registry = BrokerContractRegistrySchema.parse(
+      await readYaml(join(vnextDirectory, 'registries.yaml')),
+    );
+    const contract = registry.contracts[0];
+    const artifact = JSON.parse(
+      await readFile(join(repositoryRoot, contract.artifactPath), 'utf8'),
+    ) as unknown;
+
+    expect(contract.contractDigest).toBe(currentBrokerContractDigest());
+    expect(contract.contractDigest).toBe(`sha256:${canonicalSha256(artifact)}`);
+  });
+
   it('parses exactly 25 invariants, 20 decisions, field-level data-flow locations and 66 cases', async () => {
     const invariants = InvariantRegistrySchema.parse(
       await readYaml(join(vnextDirectory, 'invariants.yaml')),

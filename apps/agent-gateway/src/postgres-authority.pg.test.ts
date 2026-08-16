@@ -9,6 +9,7 @@ import {
   brokerHandshakeSigningBytes,
   canonicalSha256,
   canonicalizeJson,
+  currentBrokerContractDigest,
   parseBrokerFrame,
   workerInvocationFactDigest,
   type BrokerEnvelope,
@@ -40,6 +41,7 @@ const pgDescribe = enabled ? describe.sequential : describe.skip;
 const WORKER_VERSION = 'combo-worker-gateway-pg/1';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const TEST_RUNTIME_POLICY = Object.freeze({
   schemaVersion: 1,
   isolation: 'conversation-vm-required',
@@ -132,6 +134,7 @@ function signedHandshake(
   challengeId: string,
   overrides: Partial<{
     workerVersion: string;
+    brokerContractDigest: string;
     challengeSignature: string;
   }> = {},
 ): BrokerHandshake {
@@ -144,6 +147,7 @@ function signedHandshake(
     codexRuntimeArtifacts: [RUNTIME_DIGEST],
     codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
     isolationModes: ['apple-container-v1'],
+    brokerContractDigest: overrides.brokerContractDigest ?? BROKER_CONTRACT_DIGEST,
     capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
     challengeId,
   });
@@ -302,6 +306,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
     acceptedCodexRuntimeArtifacts: [RUNTIME_DIGEST],
     acceptedCodexProtocolSchemaDigests: [PROTOCOL_DIGEST],
     acceptedIsolationModes: ['apple-container-v1'],
+    acceptedBrokerContractDigests: [BROKER_CONTRACT_DIGEST],
     sessionTtlMs: 15 * 60_000,
     leaseTtlMs: 30_000,
     responseTtlMs: 30_000,
@@ -416,6 +421,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
           codexRuntimeArtifacts: [RUNTIME_DIGEST],
           codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
           isolationModes: ['apple-container-v1'],
+          brokerContractDigest: BROKER_CONTRACT_DIGEST,
         }),
       ],
     );
@@ -881,6 +887,31 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
     const invalid = signedHandshake(keyPair.privateKey, ids.installationId, challenge.challengeId, {
       challengeSignature: Buffer.alloc(64, 0x55).toString('base64url'),
     });
+    const readInvalidFacts = () =>
+      owner.query<{
+        challenge_state: string;
+        deployment_state: string;
+        security_events: string;
+        sessions: string;
+        leases: string;
+      }>(
+        `SELECT challenge.state AS challenge_state,
+                deployment.observed_state AS deployment_state,
+                (SELECT count(*)::text FROM worker_auth_security_events
+                  WHERE challenge_id = challenge.id) AS security_events,
+                (SELECT count(*)::text FROM worker_gateway_sessions
+                  WHERE challenge_id = challenge.id) AS sessions,
+                (SELECT count(*)::text FROM worker_leases
+                  WHERE worker_id = challenge.installation_id AND state = 'ACTIVE') AS leases
+           FROM worker_auth_challenges AS challenge
+           JOIN deployments AS deployment ON deployment.id = challenge.deployment_id
+          WHERE challenge.id = $1`,
+        [challenge.challengeId],
+      );
+    const invalidFactsBefore = await readInvalidFacts();
+    expect(invalidFactsBefore.rows).toMatchObject([
+      { challenge_state: 'ISSUED', security_events: '0', sessions: '0' },
+    ]);
     await expect(
       authority.authenticate({
         handshake: invalid,
@@ -888,23 +919,8 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
         signal: AbortSignal.timeout(5_000),
       }),
     ).rejects.toBeInstanceOf(BrokerAuthenticationError);
-    const invalidFacts = await owner.query<{
-      challenge_state: string;
-      deployment_state: string;
-      security_events: string;
-    }>(
-      `SELECT challenge.state AS challenge_state,
-              deployment.observed_state AS deployment_state,
-              (SELECT count(*)::text FROM worker_auth_security_events
-                WHERE challenge_id = challenge.id) AS security_events
-         FROM worker_auth_challenges AS challenge
-         JOIN deployments AS deployment ON deployment.id = challenge.deployment_id
-        WHERE challenge.id = $1`,
-      [challenge.challengeId],
-    );
-    expect(invalidFacts.rows).toEqual([
-      { challenge_state: 'ISSUED', deployment_state: 'PREPARING', security_events: '0' },
-    ]);
+    const invalidFactsAfter = await readInvalidFacts();
+    expect(invalidFactsAfter.rows).toEqual(invalidFactsBefore.rows);
 
     let entered!: () => void;
     let release!: () => void;
@@ -965,6 +981,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
           codexRuntimeArtifacts: [RUNTIME_DIGEST],
           codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
           isolationModes: ['apple-container-v1'],
+          brokerContractDigest: BROKER_CONTRACT_DIGEST,
         }),
       ],
     );
@@ -1090,6 +1107,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
       codexRuntimeArtifacts: [RUNTIME_DIGEST],
       codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
       isolationModes: ['apple-container-v1'],
+      brokerContractDigest: BROKER_CONTRACT_DIGEST,
     });
     const secondaryConsumer = await owner.query<{ id: string }>(
       `INSERT INTO users (account) VALUES ($1) RETURNING id::text`,
@@ -1840,6 +1858,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
           codexRuntimeArtifacts: [RUNTIME_DIGEST],
           codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
           isolationModes: ['lima-vz-v1'],
+          brokerContractDigest: BROKER_CONTRACT_DIGEST,
         }),
       ],
     );
@@ -1922,11 +1941,124 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
     );
   });
 
+  it('durably blocks every signed Broker contract mismatch before Session or Lease', async () => {
+    const staleDigest = `sha256:${'c'.repeat(64)}`;
+    const cases = [
+      {
+        name: 'stale signed handshake',
+        registeredDigest: BROKER_CONTRACT_DIGEST,
+        handshakeDigest: staleDigest,
+      },
+      {
+        name: 'registration mismatch',
+        registeredDigest: staleDigest,
+        handshakeDigest: BROKER_CONTRACT_DIGEST,
+      },
+      {
+        name: 'missing registration digest',
+        registeredDigest: undefined,
+        handshakeDigest: BROKER_CONTRACT_DIGEST,
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const testKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+      const installationId = randomUuidV7();
+      const capabilities: Record<string, unknown> = {
+        codexRuntimeArtifacts: [RUNTIME_DIGEST],
+        codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
+        isolationModes: ['apple-container-v1'],
+      };
+      if (testCase.registeredDigest !== undefined) {
+        capabilities.brokerContractDigest = testCase.registeredDigest;
+      }
+      await owner.query(
+        `INSERT INTO worker_installations (
+           id, creator_id, installation_key_id, device_public_key,
+           worker_version, protocol_versions, capabilities
+         ) VALUES ($1, $2, $3, $4, $5, '[1]'::jsonb, $6::jsonb)`,
+        [
+          installationId,
+          ids.creatorId,
+          `gateway-contract-key-${installationId}`,
+          publicPoint(testKeyPair.publicKey),
+          WORKER_VERSION,
+          JSON.stringify(capabilities),
+        ],
+      );
+      const challenge = await authority.issueChallenge({
+        creatorId: ids.creatorId,
+        installationId,
+        ...challengeTarget,
+        operationId: randomUuidV7(),
+        signal: AbortSignal.timeout(5_000),
+      });
+      const handshake = signedHandshake(
+        testKeyPair.privateKey,
+        installationId,
+        challenge.challengeId,
+        { brokerContractDigest: testCase.handshakeDigest },
+      );
+
+      await expect(
+        authority.authenticate({
+          handshake,
+          connectedAt: new Date().toISOString(),
+          signal: AbortSignal.timeout(5_000),
+        }),
+        testCase.name,
+      ).rejects.toMatchObject({ code: 'WORKER_INCOMPATIBLE' });
+
+      const facts = await owner.query<{
+        challenge_state: string;
+        deployment_state: string;
+        last_error_code: string | null;
+        sessions: string;
+        leases: string;
+        reasons: string[];
+      }>(
+        `SELECT challenge.state AS challenge_state,
+                deployment.observed_state AS deployment_state,
+                deployment.last_error_code,
+                (SELECT count(*)::text FROM worker_gateway_sessions
+                  WHERE challenge_id = challenge.id) AS sessions,
+                (SELECT count(*)::text FROM worker_leases
+                  WHERE worker_id = challenge.installation_id AND state = 'ACTIVE') AS leases,
+                ARRAY(
+                  SELECT reason_code FROM worker_auth_security_events
+                   WHERE challenge_id = challenge.id ORDER BY id
+                ) AS reasons
+           FROM worker_auth_challenges AS challenge
+           JOIN deployments AS deployment ON deployment.id = challenge.deployment_id
+          WHERE challenge.id = $1`,
+        [challenge.challengeId],
+      );
+      expect(facts.rows, testCase.name).toEqual([
+        {
+          challenge_state: 'CONSUMED',
+          deployment_state: 'BLOCKED',
+          last_error_code: 'BROKER_CONTRACT_INCOMPATIBLE',
+          sessions: '0',
+          leases: '0',
+          reasons: ['BROKER_CONTRACT_INCOMPATIBLE'],
+        },
+      ]);
+      await owner.query(
+        `UPDATE deployments
+            SET observed_state = 'OFFLINE', observed_worker_id = NULL,
+                last_error_code = NULL, updated_at = statement_timestamp()
+          WHERE id = $1`,
+        [ids.deploymentId],
+      );
+    }
+  });
+
   it('refuses incompatible, concurrently leased, offline, and revoked deployment authority', async () => {
     const matchingCapabilities = JSON.stringify({
       codexRuntimeArtifacts: [RUNTIME_DIGEST],
       codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
       isolationModes: ['apple-container-v1'],
+      brokerContractDigest: BROKER_CONTRACT_DIGEST,
     });
     let primarySession: AuthenticatedWorkerSession | undefined;
     let competingSession: AuthenticatedWorkerSession | undefined;
@@ -1962,6 +2094,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
           codexRuntimeArtifacts: [RUNTIME_DIGEST],
           codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
           isolationModes: ['lima-vz-v1'],
+          brokerContractDigest: BROKER_CONTRACT_DIGEST,
         }),
       ]);
       await expect(
@@ -2059,6 +2192,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
           codexRuntimeArtifacts: [RUNTIME_DIGEST],
           codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
           isolationModes: ['lima-vz-v1'],
+          brokerContractDigest: BROKER_CONTRACT_DIGEST,
         }),
       ]);
       await expect(
@@ -2516,6 +2650,7 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
       codexRuntimeArtifacts: [RUNTIME_DIGEST],
       codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
       isolationModes: ['apple-container-v1'],
+      brokerContractDigest: BROKER_CONTRACT_DIGEST,
     });
     await owner.query(
       `INSERT INTO agents (id, creator_id, public_slug, name)

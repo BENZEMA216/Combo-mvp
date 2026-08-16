@@ -1,11 +1,13 @@
 import { createCipheriv, createHash, randomBytes } from 'node:crypto';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
@@ -14,7 +16,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { createRequire } from 'node:module';
 import type { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -63,10 +65,14 @@ import {
   type WorkerBrokerDiagnosticEvent,
 } from './worker-broker-client.js';
 import {
+  assertWorkerConversationReadyIntegrity,
+  assertWorkerInvocationIntegrity,
   sqliteInvocationRowDigest,
   workerInvocationAuthorityRows,
   workerInvocationCommandSemanticDigest,
+  type SqliteWorkerInvocationJournalOptions,
 } from './sqlite-invocation-journal.js';
+import { downgradeToLegacyV3 } from '../test-support/sqlite-legacy-v3.js';
 
 const OWNER_A = 'owner-token-a-0123456789';
 const OWNER_B = 'owner-token-b-0123456789';
@@ -93,6 +99,163 @@ afterEach(async () => {
 });
 
 describe('SqliteWorkerBrokerDurableTransport', () => {
+  it('keeps legacy identity-only evidence fenced to the pre-v4 integrity scanner', () => {
+    const source = readFileSync(join(packageRoot, 'src', 'sqlite-durable-transport.ts'), 'utf8');
+    expect(source.match(/inboundEvidenceDigest\(/gu)).toHaveLength(2);
+    expect(source.match(/outboxEvidenceDigest\(/gu)).toHaveLength(2);
+    const scannerStart = source.indexOf('#assertStoredEnvelopeIntegrity(): void');
+    const scannerEnd = source.indexOf('#actualSchemaDigest(): string', scannerStart);
+    expect(scannerStart).toBeGreaterThan(0);
+    expect(scannerEnd).toBeGreaterThan(scannerStart);
+    const scanner = source.slice(scannerStart, scannerEnd);
+    expect(scanner).toContain(
+      '? inboundEvidenceDigestV2(inboundContentEvidenceFromRow(row))\n' +
+        '            : inboundEvidenceDigest(row.connection_id, row.sequence, row.message_id)',
+    );
+    expect(scanner).toContain(
+      '? outboxEvidenceDigestV2(outboxContentEvidenceFromRow(row))\n' +
+        '            : outboxEvidenceDigest(row.message_id)',
+    );
+  });
+
+  it('keeps all mutable transport table DML owned by the defensive transport adapter', () => {
+    const sourceDirectory = join(packageRoot, 'src');
+    const transportDml =
+      /(?:INSERT INTO|UPDATE|DELETE FROM) transport_(?:connections|inbound_frames|outbox)\b/gu;
+    const productionSources = readdirSync(sourceDirectory)
+      .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
+      .map((name) => ({ name, source: readFileSync(join(sourceDirectory, name), 'utf8') }));
+    const owners = productionSources
+      .filter(({ source }) => {
+        transportDml.lastIndex = 0;
+        return transportDml.test(source);
+      })
+      .map(({ name }) => name);
+    expect(owners).toEqual(['sqlite-durable-transport.ts']);
+    const owner = productionSources.find(({ name }) => name === 'sqlite-durable-transport.ts');
+    if (owner === undefined) throw new Error('MISSING_TRANSPORT_DML_OWNER');
+    const methodStarts = [
+      ...owner.source.matchAll(/^ {2}(?:async )?(#[A-Za-z0-9_]+|[A-Za-z0-9_]+)\(/gmu),
+    ]
+      .map((match) => ({ name: match[1]!, offset: match.index }))
+      .sort((left, right) => left.offset - right.offset);
+    const methodAt = (offset: number): string => {
+      const method = methodStarts.findLast((candidate) => candidate.offset <= offset);
+      if (method === undefined) throw new Error('MISSING_TRANSPORT_DML_METHOD');
+      return method.name;
+    };
+    const methodBody = (name: string): string => {
+      const index = methodStarts.findIndex((candidate) => candidate.name === name);
+      if (index < 0) throw new Error(`MISSING_TRANSPORT_METHOD:${name}`);
+      return owner.source.slice(
+        methodStarts[index]!.offset,
+        methodStarts[index + 1]?.offset ?? owner.source.length,
+      );
+    };
+    const inventory = [...owner.source.matchAll(transportDml)].map((match) => {
+      const statement = match[0];
+      const verb = statement.startsWith('INSERT')
+        ? 'INSERT'
+        : statement.startsWith('UPDATE')
+          ? 'UPDATE'
+          : 'DELETE';
+      const table = /transport_(connections|inbound_frames|outbox)/u.exec(statement)?.[1];
+      return `${verb}:${table}:${methodAt(match.index)}`;
+    });
+    expect(inventory).toEqual([
+      'INSERT:connections:activateConnection',
+      'UPDATE:connections:commitInbound',
+      'UPDATE:inbound_frames:replayInbound',
+      'UPDATE:outbox:markOutboundWritten',
+      'INSERT:inbound_frames:#insertInbound',
+      'UPDATE:connections:#applyInboundEffect',
+      'UPDATE:connections:#applyInboundEffect',
+      'DELETE:outbox:#applyConversationReadyCloudAck',
+      'UPDATE:outbox:#reactivateReplayResponse',
+      'INSERT:outbox:#enqueueEnvelope',
+      'UPDATE:connections:#enqueueEnvelope',
+      'UPDATE:outbox:#applyAck',
+      'UPDATE:outbox:#applyAck',
+      'UPDATE:outbox:#reframeUnacknowledged',
+      'UPDATE:connections:#reframeUnacknowledged',
+      'UPDATE:outbox:#retireConnection',
+      'UPDATE:outbox:#retireConnection',
+      'DELETE:outbox:#retireConnection',
+      'UPDATE:connections:#retireConnection',
+      'DELETE:inbound_frames:#deleteReleasedConnectionIfEmpty',
+      'DELETE:connections:#deleteReleasedConnectionIfEmpty',
+      'UPDATE:inbound_frames:#refreshInboundEffectDigest',
+      'UPDATE:inbound_frames:#markInvocationCommandApplied',
+      'DELETE:inbound_frames:#purgeInvocationPrepareTransportPayload',
+      'DELETE:outbox:#purgeInvocationCommandResponse',
+      'DELETE:outbox:#purgeInvocationDeliveryWire',
+      'UPDATE:outbox:#refreshOutboxDeliveryDigest',
+      'DELETE:outbox:#pruneExpiredRows',
+      'DELETE:outbox:#pruneExpiredRows',
+      'DELETE:inbound_frames:#pruneExpiredRows',
+      'UPDATE:connections:#refreshConnectionDigest',
+    ]);
+    const contracts: Readonly<Record<string, readonly string[]>> = {
+      activateConnection: ['const connectionDigest = connectionStateDigest({'],
+      commitInbound: ['#refreshConnectionDigest(connectionId)'],
+      replayInbound: [
+        '#refreshInboundEffectDigest(connectionId, envelope.sequence, previousEffect)',
+      ],
+      markOutboundWritten: ['#refreshOutboxDeliveryDigest(messageId, row)'],
+      '#insertInbound': [
+        "#adjustEvidenceAccumulator(\n      'inbound'",
+        'inboundEvidenceDigestV2({',
+      ],
+      '#applyInboundEffect': ['#refreshConnectionDigest(envelope.connectionId)'],
+      '#applyConversationReadyCloudAck': [
+        "#adjustEvidenceAccumulator(\n      'outbox'",
+        'outboxEvidenceDigestV2(outboxContentEvidenceFromRow(transportDelivery))',
+      ],
+      '#reactivateReplayResponse': ['#refreshOutboxDeliveryDigest(row.message_id, previous)'],
+      '#enqueueEnvelope': [
+        "#adjustEvidenceAccumulator(\n      'outbox'",
+        'outboxEvidenceDigestV2({',
+        '#refreshConnectionDigest(connectionId)',
+      ],
+      '#applyAck': ['#refreshOutboxDeliveryDigest(messageId, row)'],
+      '#reframeUnacknowledged': [
+        '#refreshOutboxDeliveryDigest(row.message_id, previousDelivery)',
+        '#refreshConnectionDigest(connectionId)',
+      ],
+      '#retireConnection': [
+        '#refreshOutboxDeliveryDigest(row.message_id, previous)',
+        'outboxEvidenceDigestV2(outboxContentEvidenceFromRow(current))',
+        '#refreshConnectionDigest(connectionId)',
+      ],
+      '#deleteReleasedConnectionIfEmpty': [
+        "connection.status !== 'RELEASED'",
+        'inboundEvidenceDigestV2(inboundContentEvidenceFromRow(activationEvidence))',
+      ],
+      '#refreshInboundEffectDigest': ["#replaceEvidenceAccumulator(\n      'inbound'"],
+      '#markInvocationCommandApplied': [
+        '#refreshInboundEffectDigest(copy.connection_id, copy.sequence, previous)',
+      ],
+      '#purgeInvocationPrepareTransportPayload': [
+        'inboundEvidenceDigestV2(inboundContentEvidenceFromRow(evidence))',
+      ],
+      '#purgeInvocationCommandResponse': [
+        'outboxEvidenceDigestV2(outboxContentEvidenceFromRow(evidence))',
+      ],
+      '#purgeInvocationDeliveryWire': ['outboxEvidenceDigestV2(outboxContentEvidenceFromRow(row))'],
+      '#refreshOutboxDeliveryDigest': ["#replaceEvidenceAccumulator(\n      'outbox'"],
+      '#pruneExpiredRows': [
+        'outboxEvidenceDigestV2(outboxContentEvidenceFromRow(evidence))',
+        'outboxEvidenceDigestV2(outboxContentEvidenceFromRow(responseEvidence))',
+        'inboundEvidenceDigestV2(inboundContentEvidenceFromRow(evidence))',
+      ],
+      '#refreshConnectionDigest': ['connectionStateDigestFromRow(row)'],
+    };
+    for (const [method, tokens] of Object.entries(contracts)) {
+      const body = methodBody(method);
+      for (const token of tokens) expect(body, `${method}:${token}`).toContain(token);
+    }
+  });
+
   it('requires explicit fresh-generation authority and never recreates a missing or lost journal', async () => {
     const fixture = createFixture(9);
     const missing = temporaryJournal();
@@ -737,7 +900,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     committedReopen.close();
   }, 10_000);
 
-  it('migrates an exact v2 authority to v3 and compensates watermark faults', async () => {
+  it('migrates exact v2 authority through v3 to defensive v4 and compensates watermark faults', async () => {
     const migrated = temporaryJournal();
     const migrationFixture = createFixture(76_000, MIGRATION_INSTALLATION_ID);
     const migrationAdapter = createJournal(migrated.filename, MIGRATION_INSTALLATION_ID);
@@ -753,6 +916,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       uuid(760_002),
       SHA('a'),
     );
+    if (open.type !== 'conversation.open') throw new Error('INVALID_MIGRATION_OPEN');
     migrationState = await commit(
       migrationAdapter,
       MIGRATION_INSTALLATION_ID,
@@ -761,8 +925,47 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       open,
       signal,
     );
+    const originalState = migrationState;
+    await migrationAdapter.releaseConnection({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      connectionId: originalState.connectionId,
+      signal,
+    });
+    const replacementFixture = createFixture(
+      76_010,
+      MIGRATION_INSTALLATION_ID,
+      migrationFixture.deploymentId,
+    );
+    let replacementState = await activate(migrationAdapter, replacementFixture, OWNER_A, signal);
+    const replayedOpen = BrokerEnvelopeSchema.parse({
+      ...open,
+      connectionId: replacementState.connectionId,
+      sequence: restoreSequenceCursor(replacementState.inboundCursor).nextExpected.toString(10),
+      sentAt: replacementState.leaseGrantedAt,
+      expiresAt: replacementState.leaseExpiresAt,
+      lease: replacementState.lease,
+    });
+    replacementState = await commit(
+      migrationAdapter,
+      MIGRATION_INSTALLATION_ID,
+      OWNER_A,
+      replacementState,
+      replayedOpen,
+      signal,
+    );
+    migrationState = replacementState;
     migrationAdapter.close();
-    seedLegacyReadyConversation(migrated.filename, migrationFixture, migrationState, open);
+    const storedLegacyOpen = rewritePersistedOpenAsC687Legacy(migrated.filename, open);
+    rewritePersistedOpenAsC687Legacy(migrated.filename, replayedOpen);
+    seedLegacyReadyConversation(
+      migrated.filename,
+      migrationFixture,
+      originalState,
+      open,
+      open.sequence,
+      storedLegacyOpen,
+    );
     downgradeToLegacyV2(migrated.filename);
     expect(
       queryScalar(migrated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
@@ -774,9 +977,114 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
          WHERE type = 'table' AND name LIKE 'local_conversation_ready_%'`,
       ),
     ).toBe(0);
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT envelope_json AS value FROM transport_inbound_frames
+         WHERE message_id = '${open.messageId}'`,
+      ),
+    ).toBe(storedLegacyOpen.envelopeJson);
+    expect(storedLegacyOpen.envelopeJson).not.toContain('openAuthority');
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT canonical_digest AS value FROM transport_inbound_frames
+         WHERE message_id = '${open.messageId}'`,
+      ),
+    ).toBe(storedLegacyOpen.canonicalDigest);
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT logical_digest AS value FROM transport_inbound_frames
+         WHERE message_id = '${open.messageId}'`,
+      ),
+    ).toBe(storedLegacyOpen.semanticDigest);
 
     const reopened = new SqliteWorkerBrokerDurableTransport({ filename: migrated.filename });
-    expect(reopened.inspectPragmas().userVersion).toBe(3);
+    expect(reopened.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    expect(queryCount(migrated.filename, 'transport_connections')).toBe(0);
+    expect(queryCount(migrated.filename, 'transport_inbound_frames')).toBe(0);
+    expect(queryCount(migrated.filename, 'transport_outbox')).toBe(0);
+    expect(queryCount(migrated.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(migrated.filename, 'local_consumed_commands')).toBe(1);
+    await reopened.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    const currentFixture = createFixture(
+      76_020,
+      MIGRATION_INSTALLATION_ID,
+      migrationFixture.deploymentId,
+    );
+    let currentState = await activate(reopened, currentFixture, OWNER_A, signal);
+    const strictReplay = BrokerEnvelopeSchema.parse({
+      ...open,
+      connectionId: currentState.connectionId,
+      sequence: restoreSequenceCursor(currentState.inboundCursor).nextExpected.toString(10),
+      sentAt: currentState.leaseGrantedAt,
+      expiresAt: currentState.leaseExpiresAt,
+      lease: currentState.lease,
+    });
+    currentState = await commit(
+      reopened,
+      MIGRATION_INSTALLATION_ID,
+      OWNER_A,
+      currentState,
+      strictReplay,
+      signal,
+    );
+    const [currentReplayReference] = await reopened.readPendingCommands({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      connectionId: currentState.connectionId,
+      limit: 16,
+      signal,
+    });
+    expect([currentReplayReference]).toEqual([
+      {
+        connectionId: strictReplay.connectionId,
+        sequence: strictReplay.sequence,
+        messageId: strictReplay.messageId,
+        type: 'conversation.open',
+        canonicalDigest: canonicalSha256(strictReplay),
+        effectState: 'PERSISTED',
+      },
+    ]);
+    if (currentReplayReference === undefined) throw new Error('MISSING_CURRENT_REPLAY_REFERENCE');
+    const replayCalls = { readyAuthority: 0, hostDispatch: 0 };
+    const replayJournal = reopened.createInvocationJournal(
+      replayOnlyJournalOptions(new Date(strictReplay.sentAt), replayCalls),
+    );
+    await expect(
+      replayJournal.bindReadyConversation({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        command: currentReplayReference,
+        evidence: { token: 'must-not-be-used-for-consumed-redelivery' },
+        signal,
+      }),
+    ).resolves.toMatchObject({
+      ...open.body.openAuthority,
+      conversationId: open.body.conversationId,
+      openCommandId: open.messageId,
+      sourceEventId: open.messageId,
+      cloudState: 'PENDING',
+    });
+    expect(replayCalls).toEqual({ readyAuthority: 0, hostDispatch: 0 });
+    expect(
+      queryScalar(
+        migrated.filename,
+        `SELECT count(*) AS value FROM transport_inbound_frames
+         WHERE connection_id = '${strictReplay.connectionId}'
+           AND sequence = '${strictReplay.sequence}' AND effect_state = 'APPLIED'`,
+      ),
+    ).toBe(1);
+    await expect(
+      reopened.readPendingCommands({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: currentState.connectionId,
+        limit: 16,
+        signal,
+      }),
+    ).resolves.toEqual([]);
     reopened.close();
     expect(
       queryScalar(
@@ -818,7 +1126,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         queryScalar(compensated.filename, 'SELECT user_version AS value FROM pragma_user_version'),
       ).toBe(2);
       const recovered = new SqliteWorkerBrokerDurableTransport({ filename: compensated.filename });
-      expect(recovered.inspectPragmas().userVersion).toBe(3);
+      expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
       recovered.close();
     }
 
@@ -871,7 +1179,234 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).toBe(2);
   }, 10_000);
 
-  it('compacts an exact v2 READY whose seven-day PERSISTED open response was already pruned', async () => {
+  it('compensates v3 to v4 faults and makes each SIGKILL watermark boundary explicit', async () => {
+    for (const faultPoint of [
+      'migration.v3_to_v4.before_watermark',
+      'migration.v3_to_v4.after_watermark_fsync',
+    ] as const) {
+      const target = temporaryJournal();
+      createJournal(target.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV3(target.filename);
+      const watermarkBefore = readFileSync(`${target.filename}.watermark`);
+      expect(
+        () =>
+          new SqliteWorkerBrokerDurableTransport({
+            filename: target.filename,
+            faultInjector(point) {
+              if (point === faultPoint) throw new Error('SIMULATED_V3_TO_V4_FAILURE');
+            },
+          }),
+      ).toThrow();
+      expect(
+        queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(3);
+      expect(readFileSync(`${target.filename}.watermark`)).toEqual(watermarkBefore);
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: target.filename });
+      expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+      recovered.close();
+    }
+
+    const committed = temporaryJournal();
+    createJournal(committed.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV3(committed.filename);
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: committed.filename,
+          faultInjector(point) {
+            if (point === 'migration.v3_to_v4.after_commit') {
+              throw new Error('SIMULATED_V3_TO_V4_RESPONSE_LOSS');
+            }
+          },
+        }),
+    ).toThrow();
+    expect(
+      queryScalar(committed.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    const committedReopen = new SqliteWorkerBrokerDurableTransport({
+      filename: committed.filename,
+    });
+    committedReopen.close();
+
+    for (const faultPoint of [
+      'migration.v3_to_v4.before_watermark',
+      'migration.v3_to_v4.after_watermark_fsync',
+      'migration.v3_to_v4.after_commit',
+    ] as const) {
+      const target = temporaryJournal();
+      createJournal(target.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV3(target.filename);
+      const child = spawnV3MigrationKillProcess(target.filename, faultPoint);
+      expect(await nextChildMessage(child)).toEqual({ reached: faultPoint });
+      child.kill('SIGKILL');
+      await waitForExit(child);
+
+      const committedBoundary = faultPoint === 'migration.v3_to_v4.after_commit';
+      expect(
+        queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(committedBoundary ? WORKER_TRANSPORT_SCHEMA_VERSION : 3);
+      const watermark = JSON.parse(readFileSync(`${target.filename}.watermark`, 'utf8')) as {
+        payload: { formatVersion: number; schemaVersion: number };
+      };
+      expect(watermark.payload.formatVersion).toBe(
+        faultPoint === 'migration.v3_to_v4.before_watermark' ? 1 : 2,
+      );
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: target.filename });
+      expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+      recovered.close();
+      const recovery = JSON.parse(
+        readFileSync(`${target.filename}.migration-recovery`, 'utf8'),
+      ) as {
+        payload: { candidateSlot: unknown; finalizedSlot: { schemaVersion: number } | null };
+      };
+      expect(recovery.payload.candidateSlot).toBeNull();
+      expect(recovery.payload.finalizedSlot?.schemaVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+      expect(statSync(`${target.filename}.migration-recovery`).mode & 0o777).toBe(0o600);
+    }
+  }, 15_000);
+
+  it('keeps the v3 recovery manifest private, metadata-only, and non-authoritative', () => {
+    const migratedJournal = () => {
+      const target = temporaryJournal();
+      createJournal(target.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV3(target.filename);
+      new SqliteWorkerBrokerDurableTransport({ filename: target.filename }).close();
+      return target;
+    };
+
+    const safeTemporary = migratedJournal();
+    const safeManifest = `${safeTemporary.filename}.migration-recovery`;
+    const safeTemporaryPath = join(
+      safeTemporary.directory,
+      `.${basename(safeManifest)}.123.00000000-0000-4000-8000-000000000123.tmp`,
+    );
+    writeFileSync(safeTemporaryPath, 'interrupted manifest write', { mode: 0o600 });
+    new SqliteWorkerBrokerDurableTransport({ filename: safeTemporary.filename }).close();
+    expect(existsSync(safeTemporaryPath)).toBe(false);
+
+    const readable = migratedJournal();
+    chmodSync(`${readable.filename}.migration-recovery`, 0o644);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: readable.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_FILE_UNSAFE' }));
+
+    const linked = migratedJournal();
+    linkSync(
+      `${linked.filename}.migration-recovery`,
+      join(linked.directory, 'migration-recovery-hardlink'),
+    );
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: linked.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_FILE_UNSAFE' }));
+
+    const symlinked = migratedJournal();
+    const symlinkManifest = `${symlinked.filename}.migration-recovery`;
+    const symlinkTarget = join(symlinked.directory, 'migration-recovery-target');
+    rmSync(symlinkManifest);
+    writeFileSync(symlinkTarget, '{}', { mode: 0o600 });
+    symlinkSync(symlinkTarget, symlinkManifest);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: symlinked.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_FILE_UNSAFE' }));
+
+    const malformed = migratedJournal();
+    const malformedPath = `${malformed.filename}.migration-recovery`;
+    const malformedDocument = JSON.parse(readFileSync(malformedPath, 'utf8')) as {
+      payload: Record<string, unknown>;
+    };
+    malformedDocument.payload.unexpected = true;
+    writeFileSync(malformedPath, canonicalizeJson(malformedDocument), { mode: 0o600 });
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: malformed.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+
+    const lostWatermark = migratedJournal();
+    rmSync(`${lostWatermark.filename}.watermark`);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: lostWatermark.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    expect(existsSync(`${lostWatermark.filename}.watermark`)).toBe(false);
+
+    const lostDatabase = migratedJournal();
+    for (const suffix of ['', '-wal', '-shm'])
+      rmSync(`${lostDatabase.filename}${suffix}`, { force: true });
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: lostDatabase.filename,
+          newJournalAuthorization: journalAuthorization(MIGRATION_INSTALLATION_ID),
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    expect(existsSync(lostDatabase.filename)).toBe(false);
+
+    const source = readFileSync(join(packageRoot, 'src', 'sqlite-durable-transport.ts'), 'utf8');
+    expect(source).not.toMatch(/VACUUM\s+INTO|copyFile|backup\s*\(/iu);
+  });
+
+  it('counts every consumed c687 replacement open against startup pending capacity', async () => {
+    const target = temporaryJournal();
+    const fixture = createFixture(76_200, MIGRATION_INSTALLATION_ID);
+    const adapter = createJournal(target.filename, MIGRATION_INSTALLATION_ID);
+    const signal = new AbortController().signal;
+    await adapter.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    let current = await activate(adapter, fixture, OWNER_A, signal);
+    const open = conversationOpen(fixture, current, uuid(762_001), uuid(762_002), SHA('e'));
+    if (open.type !== 'conversation.open') throw new Error('INVALID_CAPACITY_OPEN');
+    current = await commit(adapter, MIGRATION_INSTALLATION_ID, OWNER_A, current, open, signal);
+    const original = current;
+    const replacementOpens: BrokerEnvelope[] = [];
+    for (let index = 0; index < 17; index += 1) {
+      await adapter.releaseConnection({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: current.connectionId,
+        signal,
+      });
+      const replacementFixture = createFixture(
+        76_300 + index,
+        MIGRATION_INSTALLATION_ID,
+        fixture.deploymentId,
+      );
+      current = await activate(adapter, replacementFixture, OWNER_A, signal);
+      const replay = BrokerEnvelopeSchema.parse({
+        ...open,
+        connectionId: current.connectionId,
+        sequence: restoreSequenceCursor(current.inboundCursor).nextExpected.toString(10),
+        sentAt: current.leaseGrantedAt,
+        expiresAt: current.leaseExpiresAt,
+        lease: current.lease,
+      });
+      current = await commit(adapter, MIGRATION_INSTALLATION_ID, OWNER_A, current, replay, signal);
+      replacementOpens.push(replay);
+    }
+    adapter.close();
+    const originalIdentity = rewritePersistedOpenAsC687Legacy(target.filename, open);
+    for (const replay of replacementOpens) {
+      rewritePersistedOpenAsC687Legacy(target.filename, replay);
+    }
+    seedLegacyReadyConversation(
+      target.filename,
+      fixture,
+      original,
+      open,
+      open.sequence,
+      originalIdentity,
+    );
+    downgradeToLegacyV2(target.filename);
+
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: target.filename,
+          maxInboundRows: 16,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    expect(
+      queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(2);
+  }, 10_000);
+
+  it('migrates and compacts an exact c687 v3 READY from self-contained v4 authority', async () => {
     let transportNow = Date.now();
     const target = temporaryJournal();
     const fixture = createFixture(76_125, MIGRATION_INSTALLATION_ID);
@@ -884,23 +1419,54 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const open = conversationOpen(fixture, state, uuid(761_251), uuid(761_252), SHA('c'));
     state = await commit(legacy, MIGRATION_INSTALLATION_ID, OWNER_A, state, open, signal);
     legacy.close();
-    seedLegacyReadyConversation(target.filename, fixture, state, open);
+    const storedLegacyOpen = rewritePersistedOpenAsC687Legacy(target.filename, open);
+    state = Object.freeze({ ...state, inboundCursor: storedLegacyOpen.inboundCursor });
+    seedLegacyReadyConversation(
+      target.filename,
+      fixture,
+      state,
+      open,
+      open.sequence,
+      storedLegacyOpen,
+    );
     clearTransportOutboxForMigrationFixture(target.filename);
     downgradeToLegacyV2(target.filename);
+    promoteLegacyV2FixtureToV3(target.filename);
+    expect(
+      queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(3);
     expect(
       queryScalar(
         target.filename,
-        `SELECT count(*) AS value FROM transport_outbox
-         WHERE response_to_message_id = '${open.messageId}'`,
+        `SELECT envelope_json AS value FROM transport_inbound_frames
+         WHERE message_id = '${open.messageId}'`,
       ),
-    ).toBe(0);
+    ).toBe(storedLegacyOpen.envelopeJson);
+    const legacyDatabase = new SqliteDatabase(target.filename, { readOnly: true });
+    expect(() => assertWorkerInvocationIntegrity(legacyDatabase)).not.toThrow();
+    expect(() => assertWorkerConversationReadyIntegrity(legacyDatabase)).not.toThrow();
+    legacyDatabase.close();
+
+    const migratedOnce = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      now: () => transportNow,
+    });
+    expect(migratedOnce.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    expect(queryCount(target.filename, 'transport_connections')).toBe(0);
+    expect(queryCount(target.filename, 'transport_inbound_frames')).toBe(0);
+    expect(queryCount(target.filename, 'transport_outbox')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_facts')).toBe(1);
+    expect(queryCount(target.filename, 'local_consumed_commands')).toBe(1);
+    migratedOnce.close();
 
     const migrated = new SqliteWorkerBrokerDurableTransport({
       filename: target.filename,
       now: () => transportNow,
     });
-    expect(migrated.inspectPragmas().userVersion).toBe(3);
+    expect(migrated.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
     await migrated.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    const currentFixture = createFixture(76_126, MIGRATION_INSTALLATION_ID, fixture.deploymentId);
+    state = await activate(migrated, currentFixture, OWNER_A, signal);
     await expect(
       migrated.replayPendingConversationReady({
         installationId: MIGRATION_INSTALLATION_ID,
@@ -1014,9 +1580,302 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       filename: target.filename,
       now: () => transportNow,
     });
-    expect(reopened.inspectPragmas()).toMatchObject({ userVersion: 3, quickCheck: 'ok' });
+    expect(reopened.inspectPragmas()).toMatchObject({
+      userVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+      quickCheck: 'ok',
+    });
     reopened.close();
   }, 10_000);
+
+  it('projects a terminal-full v3 READY ACK receipt and compacts without transport replay', async () => {
+    let transportNow = Date.now();
+    const target = temporaryJournal();
+    const fixture = createFixture(76_130, MIGRATION_INSTALLATION_ID);
+    const signal = new AbortController().signal;
+    const legacy = createJournal(target.filename, MIGRATION_INSTALLATION_ID, {
+      now: () => transportNow,
+    });
+    await legacy.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    let state = await activate(legacy, fixture, OWNER_A, signal);
+    const open = conversationOpen(fixture, state, uuid(761_301), uuid(761_302), SHA('d'));
+    state = await commit(legacy, MIGRATION_INSTALLATION_ID, OWNER_A, state, open, signal);
+    const [openReference] = await legacy.readPendingCommands({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      limit: 16,
+      signal,
+    });
+    if (openReference === undefined) throw new Error('MISSING_TERMINAL_READY_OPEN');
+    const journal = legacy.createInvocationJournal(readyJournalOptions(new Date(open.sentAt)));
+    await journal.bindReadyConversation({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      command: openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    await expect(
+      legacy.replayPendingConversationReady({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        signal,
+      }),
+    ).resolves.toEqual({ enqueued: 0, remaining: false });
+    const ready = (
+      await legacy.readOutbound({
+        installationId: MIGRATION_INSTALLATION_ID,
+        ownerToken: OWNER_A,
+        connectionId: state.connectionId,
+        limit: 16,
+        signal,
+      })
+    ).find((envelope) => envelope.type === 'conversation.ready');
+    if (ready === undefined) throw new Error('MISSING_TERMINAL_READY_DELIVERY');
+    const ack = ackFrame(state, ready, 'CLOUD_COMMITTED', uuid(761_303));
+    state = await commit(legacy, MIGRATION_INSTALLATION_ID, OWNER_A, state, ack, signal);
+    expect(queryCount(target.filename, 'local_conversation_ready_outbox_receipts')).toBe(1);
+    legacy.close();
+
+    downgradeToLegacyV3(target.filename);
+    expect(
+      queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(3);
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT count(*) AS value FROM pragma_table_info(
+           'local_conversation_ready_outbox_receipts'
+         ) WHERE name = 'ack_logical_digest'`,
+      ),
+    ).toBe(0);
+    const legacyDatabase = new SqliteDatabase(target.filename, { readOnly: true });
+    expect(() => assertWorkerConversationReadyIntegrity(legacyDatabase)).not.toThrow();
+    legacyDatabase.close();
+
+    const migrated = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      now: () => transportNow,
+    });
+    expect(migrated.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    expect(queryCount(target.filename, 'transport_connections')).toBe(0);
+    expect(queryCount(target.filename, 'transport_inbound_frames')).toBe(0);
+    expect(queryCount(target.filename, 'transport_outbox')).toBe(0);
+    expect(
+      queryScalar(
+        target.filename,
+        `SELECT ack_logical_digest AS value
+         FROM local_conversation_ready_outbox_receipts`,
+      ),
+    ).toBe(
+      canonicalSha256({
+        protocol: ack.protocol,
+        schemaVersion: ack.schemaVersion,
+        kind: ack.kind,
+        type: ack.type,
+        messageId: ack.messageId,
+        correlationId: ack.correlationId,
+        body: ack.body,
+      }),
+    );
+    migrated.close();
+
+    const fullContentDrift = cloneClosedWorkerJournal(target.filename);
+    rewriteReadyAuthorityDecision(fullContentDrift, 'local_conversation_ready_outbox_receipts');
+    assertLocallyConsistentWorkerJournal(fullContentDrift);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: fullContentDrift }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    const fullDeleted = cloneClosedWorkerJournal(target.filename);
+    deleteReadyAuthorityRow(fullDeleted, 'local_conversation_ready_outbox_receipts');
+    assertLocallyConsistentWorkerJournal(fullDeleted);
+    expect(() => new SqliteWorkerBrokerDurableTransport({ filename: fullDeleted })).toThrowError(
+      expect.objectContaining({ code: 'JOURNAL_CORRUPT' }),
+    );
+
+    transportNow += 8 * 24 * 60 * 60 * 1_000;
+    const compactor = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      now: () => transportNow,
+    });
+    await compactor.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    await compactor.pruneRetained({
+      installationId: MIGRATION_INSTALLATION_ID,
+      ownerToken: OWNER_A,
+      signal,
+    });
+    expect(queryCount(target.filename, 'local_conversation_ready_terminal_tombstones')).toBe(1);
+    expect(queryCount(target.filename, 'local_conversation_ready_facts')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_outbox')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_deliveries')).toBe(0);
+    expect(queryCount(target.filename, 'local_conversation_ready_outbox_receipts')).toBe(0);
+    compactor.close();
+
+    const tombstoneContentDrift = cloneClosedWorkerJournal(target.filename);
+    rewriteReadyAuthorityDecision(
+      tombstoneContentDrift,
+      'local_conversation_ready_terminal_tombstones',
+    );
+    assertLocallyConsistentWorkerJournal(tombstoneContentDrift);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: tombstoneContentDrift }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    const tombstoneDeleted = cloneClosedWorkerJournal(target.filename);
+    deleteReadyAuthorityRow(tombstoneDeleted, 'local_conversation_ready_terminal_tombstones');
+    assertLocallyConsistentWorkerJournal(tombstoneDeleted);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: tombstoneDeleted }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({
+      filename: target.filename,
+      now: () => transportNow,
+    });
+    expect(reopened.inspectPragmas()).toMatchObject({
+      userVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+      quickCheck: 'ok',
+    });
+    reopened.close();
+  }, 10_000);
+
+  it('leaves exact v3 bytes unchanged when non-control business rows require reconciliation', async () => {
+    const signal = new AbortController().signal;
+    for (const effectState of ['PERSISTED', 'APPLIED'] as const) {
+      const target = temporaryJournal();
+      const fixture = createFixture(
+        effectState === 'PERSISTED' ? 76_140 : 76_150,
+        MIGRATION_INSTALLATION_ID,
+      );
+      const legacy = createJournal(target.filename, MIGRATION_INSTALLATION_ID);
+      await legacy.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+      let state = await activate(legacy, fixture, OWNER_A, signal);
+      const command = versionPrepare(fixture, state, uuid(fixture.seed * 100 + 1));
+      state = await commit(legacy, MIGRATION_INSTALLATION_ID, OWNER_A, state, command, signal);
+      legacy.close();
+      if (effectState === 'APPLIED') {
+        markInboundAppliedForMigrationFixture(target.filename, command, fixture.nowMs + 1_000);
+      }
+      downgradeToLegacyV3(target.filename);
+      const databaseBefore = readFileSync(target.filename);
+      const watermarkBefore = readFileSync(`${target.filename}.watermark`);
+
+      expect(
+        () => new SqliteWorkerBrokerDurableTransport({ filename: target.filename }),
+      ).toThrowError(
+        expect.objectContaining({
+          code: effectState === 'PERSISTED' ? 'JOURNAL_RECONCILIATION_REQUIRED' : 'JOURNAL_CORRUPT',
+        }),
+      );
+      expect(
+        queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(3);
+      expect(readFileSync(target.filename)).toEqual(databaseBefore);
+      expect(readFileSync(`${target.filename}.watermark`)).toEqual(watermarkBefore);
+      expect(
+        queryScalar(
+          target.filename,
+          `SELECT effect_state AS value FROM transport_inbound_frames
+           WHERE message_id = '${command.messageId}'`,
+        ),
+      ).toBe(effectState);
+    }
+  });
+
+  it('preflights v3 local projection counts at the configured receipt boundary', async () => {
+    const signal = new AbortController().signal;
+    for (const receiptCount of [16, 17] as const) {
+      const target = temporaryJournal();
+      const fixture = createFixture(76_160 + receiptCount, MIGRATION_INSTALLATION_ID);
+      const legacy = createJournal(target.filename, MIGRATION_INSTALLATION_ID);
+      await legacy.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+      let state = await activate(legacy, fixture, OWNER_A, signal);
+      const journal = legacy.createInvocationJournal(readyJournalOptions(new Date(fixture.sentAt)));
+      for (let index = 0; index < receiptCount; index += 1) {
+        const conversationId = uuid(7_616_001 + receiptCount * 100 + index * 3);
+        const open = conversationOpen(
+          fixture,
+          state,
+          uuid(7_616_000 + receiptCount * 100 + index * 3),
+          conversationId,
+          SHA('d'),
+        );
+        state = await commit(legacy, MIGRATION_INSTALLATION_ID, OWNER_A, state, open, signal);
+        const openReference = (
+          await legacy.readPendingCommands({
+            installationId: MIGRATION_INSTALLATION_ID,
+            ownerToken: OWNER_A,
+            connectionId: state.connectionId,
+            limit: 64,
+            signal,
+          })
+        ).find((candidate) => candidate.messageId === open.messageId);
+        if (openReference === undefined) throw new Error('MISSING_RECEIPT_BOUNDARY_OPEN');
+        await journal.bindReadyConversation({
+          installationId: MIGRATION_INSTALLATION_ID,
+          ownerToken: OWNER_A,
+          command: openReference,
+          evidence: { token: 'sandbox-ready' },
+          signal,
+        });
+        await legacy.replayPendingConversationReady({
+          installationId: MIGRATION_INSTALLATION_ID,
+          ownerToken: OWNER_A,
+          connectionId: state.connectionId,
+          signal,
+        });
+        const ready = (
+          await legacy.readOutbound({
+            installationId: MIGRATION_INSTALLATION_ID,
+            ownerToken: OWNER_A,
+            connectionId: state.connectionId,
+            limit: 64,
+            signal,
+          })
+        ).find((envelope) => envelope.type === 'conversation.ready');
+        if (ready === undefined) throw new Error('MISSING_RECEIPT_BOUNDARY_READY');
+        state = await commit(
+          legacy,
+          MIGRATION_INSTALLATION_ID,
+          OWNER_A,
+          state,
+          ackFrame(
+            state,
+            ready,
+            'CLOUD_COMMITTED',
+            uuid(7_616_002 + receiptCount * 100 + index * 3),
+          ),
+          signal,
+        );
+      }
+      legacy.close();
+      clearTransportOutboxForMigrationFixture(target.filename);
+      downgradeToLegacyV3(target.filename);
+      const databaseBefore = readFileSync(target.filename);
+      const watermarkBefore = readFileSync(`${target.filename}.watermark`);
+      const options = {
+        filename: target.filename,
+        maxInboundRows: 16,
+        maxOutboxRows: 8,
+        maxRetainedInboundRows: 64,
+        maxRetainedOutboxRows: 16,
+      } as const;
+      if (receiptCount === 16) {
+        const migrated = new SqliteWorkerBrokerDurableTransport(options);
+        expect(migrated.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+        migrated.close();
+      } else {
+        expect(() => new SqliteWorkerBrokerDurableTransport(options)).toThrowError(
+          expect.objectContaining({ code: 'CAPACITY_EXCEEDED' }),
+        );
+        expect(
+          queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+        ).toBe(3);
+        expect(readFileSync(target.filename)).toEqual(databaseBefore);
+        expect(readFileSync(`${target.filename}.watermark`)).toEqual(watermarkBefore);
+      }
+    }
+  }, 30_000);
 
   it('keeps exact v2 and its watermark when migration preflight has no page budget', async () => {
     const target = temporaryJournal();
@@ -1116,6 +1975,169 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     }
   }, 10_000);
 
+  it('keeps v3 and its old watermark under no-page, lock, and late-fsync migration failure', async () => {
+    const signal = new AbortController().signal;
+    const capacity = temporaryJournal();
+    const capacityFixture = createFixture(76_190, MIGRATION_INSTALLATION_ID);
+    const capacityAdapter = createJournal(capacity.filename, MIGRATION_INSTALLATION_ID, {
+      maxDatabaseBytes: 8 * 1024 * 1024,
+    });
+    await capacityAdapter.acquireInstallation(
+      ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal),
+    );
+    await activate(capacityAdapter, capacityFixture, OWNER_A, signal);
+    capacityAdapter.close();
+    downgradeToLegacyV3(capacity.filename);
+    fillLegacyV2ToMigrationCapacity(capacity.filename, 0);
+    const capacityDatabase = readFileSync(capacity.filename);
+    const capacityWatermark = readFileSync(`${capacity.filename}.watermark`);
+    const capacityEpoch = queryScalar(
+      capacity.filename,
+      'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+    );
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: capacity.filename,
+          maxDatabaseBytes: 8 * 1024 * 1024,
+          operationTimeoutMs: 30_000,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'CAPACITY_EXCEEDED' }));
+    expect(
+      queryScalar(capacity.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(3);
+    expect(readFileSync(capacity.filename)).toEqual(capacityDatabase);
+    expect(readFileSync(`${capacity.filename}.watermark`)).toEqual(capacityWatermark);
+    expect(
+      queryScalar(
+        capacity.filename,
+        'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+      ),
+    ).toBe(capacityEpoch);
+    mutateDatabase(capacity.filename, 'DELETE FROM transport_sequence_gaps');
+    const capacityRecovered = new SqliteWorkerBrokerDurableTransport({
+      filename: capacity.filename,
+      maxDatabaseBytes: 8 * 1024 * 1024,
+      operationTimeoutMs: 30_000,
+    });
+    capacityRecovered.close();
+
+    const locked = temporaryJournal();
+    createJournal(locked.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV3(locked.filename);
+    const lockedDatabase = readFileSync(locked.filename);
+    const lockedWatermark = readFileSync(`${locked.filename}.watermark`);
+    const lockedEpoch = queryScalar(
+      locked.filename,
+      'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+    );
+    const blocker = new SqliteDatabase(locked.filename);
+    blocker.exec('BEGIN IMMEDIATE');
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: locked.filename,
+          busyTimeoutMs: 1_000,
+          operationTimeoutMs: 50,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_ABORTED' }));
+    expect(
+      queryScalar(locked.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(3);
+    expect(readFileSync(locked.filename)).toEqual(lockedDatabase);
+    expect(readFileSync(`${locked.filename}.watermark`)).toEqual(lockedWatermark);
+    expect(
+      queryScalar(
+        locked.filename,
+        'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+      ),
+    ).toBe(lockedEpoch);
+    blocker.exec('ROLLBACK');
+    blocker.close();
+    const lockRecovered = new SqliteWorkerBrokerDurableTransport({ filename: locked.filename });
+    lockRecovered.close();
+
+    const lateFsync = temporaryJournal();
+    createJournal(lateFsync.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV3(lateFsync.filename);
+    const lateDatabase = readFileSync(lateFsync.filename);
+    const lateWatermark = readFileSync(`${lateFsync.filename}.watermark`);
+    const lateEpoch = queryScalar(
+      lateFsync.filename,
+      'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+    );
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: lateFsync.filename,
+          operationTimeoutMs: 50,
+          faultInjector(point) {
+            if (point === 'migration.v3_to_v4.after_watermark_fsync') {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+            }
+          },
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_ABORTED' }));
+    expect(
+      queryScalar(lateFsync.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(3);
+    expect(readFileSync(lateFsync.filename)).toEqual(lateDatabase);
+    expect(readFileSync(`${lateFsync.filename}.watermark`)).toEqual(lateWatermark);
+    expect(
+      queryScalar(
+        lateFsync.filename,
+        'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+      ),
+    ).toBe(lateEpoch);
+    const lateRecovered = new SqliteWorkerBrokerDurableTransport({
+      filename: lateFsync.filename,
+    });
+    lateRecovered.close();
+
+    for (const faultPoint of [
+      'migration.v3_to_v4.after_local_projection',
+      'migration.v3_to_v4.before_authority_digest',
+      'migration.v3_to_v4.before_watermark',
+    ] as const) {
+      const target = temporaryJournal();
+      createJournal(target.filename, MIGRATION_INSTALLATION_ID).close();
+      downgradeToLegacyV3(target.filename);
+      const databaseBefore = readFileSync(target.filename);
+      const watermarkBefore = readFileSync(`${target.filename}.watermark`);
+      const epochBefore = queryScalar(
+        target.filename,
+        'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+      );
+      const startedAt = performance.now();
+      expect(
+        () =>
+          new SqliteWorkerBrokerDurableTransport({
+            filename: target.filename,
+            operationTimeoutMs: 50,
+            faultInjector(point) {
+              if (point === faultPoint) {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+              }
+            },
+          }),
+      ).toThrowError(expect.objectContaining({ code: 'JOURNAL_ABORTED' }));
+      expect(performance.now() - startedAt).toBeLessThan(500);
+      expect(
+        queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+      ).toBe(3);
+      expect(readFileSync(target.filename)).toEqual(databaseBefore);
+      expect(readFileSync(`${target.filename}.watermark`)).toEqual(watermarkBefore);
+      expect(
+        queryScalar(
+          target.filename,
+          'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+        ),
+      ).toBe(epochBefore);
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: target.filename });
+      recovered.close();
+    }
+  }, 30_000);
+
   it('activates with more than 512 READY facts and refills bounded credit after exact ACKs', async () => {
     const target = temporaryJournal();
     const fixture = createFixture(76_200, MIGRATION_INSTALLATION_ID);
@@ -1151,9 +2173,13 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     const migrated = new SqliteWorkerBrokerDurableTransport({
       filename: target.filename,
       maxInboundRows: 1_024,
+      maxOutboxRows: 1_024,
       operationTimeoutMs: 30_000,
     });
     await migrated.acquireInstallation(ownerInput(MIGRATION_INSTALLATION_ID, OWNER_A, signal));
+    expect(queryCount(target.filename, 'transport_connections')).toBe(0);
+    const currentFixture = createFixture(76_800, MIGRATION_INSTALLATION_ID, fixture.deploymentId);
+    state = await activate(migrated, currentFixture, OWNER_A, signal);
     await expect(
       migrated.replayPendingConversationReady({
         installationId: MIGRATION_INSTALLATION_ID,
@@ -1401,6 +2427,172 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     mutateDatabase(deletedOutbox.filename, 'DELETE FROM transport_outbox');
     expect(
       () => new SqliteWorkerBrokerDurableTransport({ filename: deletedOutbox.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+  });
+
+  it('externally binds inbound/outbox content and the current ACTIVE connection authority', async () => {
+    const signal = new AbortController().signal;
+
+    const outboxTarget = temporaryJournal();
+    const outboxFixture = createFixture(18_100);
+    const outboxAdapter = createJournal(outboxTarget.filename, outboxFixture.installationId);
+    await outboxAdapter.acquireInstallation(
+      ownerInput(outboxFixture.installationId, OWNER_A, signal),
+    );
+    await activate(outboxAdapter, outboxFixture, OWNER_A, signal);
+    outboxAdapter.close();
+    const outboxDatabase = new SqliteDatabase(outboxTarget.filename);
+    const outbox = outboxDatabase
+      .prepare('SELECT * FROM transport_outbox ORDER BY message_id LIMIT 1')
+      .get() as Record<string, unknown>;
+    const outboxUpdatedAt = Number(outbox.updated_at_ms) + 1;
+    const outboxDeliveryDigest = createHash('sha256')
+      .update('combo:vnext:worker-outbox-delivery:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          messageId: String(outbox.message_id),
+          installationId: String(outbox.installation_id),
+          connectionId: outbox.connection_id === null ? null : String(outbox.connection_id),
+          sequence: outbox.sequence === null ? null : String(outbox.sequence),
+          canonicalDigest: String(outbox.canonical_digest),
+          state: String(outbox.state),
+          ackLevel: outbox.ack_level === null ? null : String(outbox.ack_level),
+          createdAtMs: Number(outbox.created_at_ms),
+          updatedAtMs: outboxUpdatedAt,
+          ackedAtMs: outbox.acked_at_ms === null ? null : Number(outbox.acked_at_ms),
+          retainedUntilMs:
+            outbox.retained_until_ms === null ? null : Number(outbox.retained_until_ms),
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    outboxDatabase
+      .prepare(
+        `UPDATE transport_outbox SET updated_at_ms = ?, delivery_digest = ?
+         WHERE message_id = ?`,
+      )
+      .run(outboxUpdatedAt, outboxDeliveryDigest, String(outbox.message_id));
+    outboxDatabase.close();
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: outboxTarget.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+
+    const inboundTarget = temporaryJournal();
+    const inboundFixture = createFixture(18_200);
+    const inboundAdapter = createJournal(inboundTarget.filename, inboundFixture.installationId);
+    await inboundAdapter.acquireInstallation(
+      ownerInput(inboundFixture.installationId, OWNER_A, signal),
+    );
+    const inboundConnection = await activate(inboundAdapter, inboundFixture, OWNER_A, signal);
+    const open = conversationOpen(
+      inboundFixture,
+      inboundConnection,
+      uuid(18_201_001),
+      uuid(18_201_002),
+      SHA('c'),
+    );
+    await commit(
+      inboundAdapter,
+      inboundFixture.installationId,
+      OWNER_A,
+      inboundConnection,
+      open,
+      signal,
+    );
+    inboundAdapter.close();
+    const inboundDatabase = new SqliteDatabase(inboundTarget.filename);
+    const inbound = inboundDatabase
+      .prepare(
+        `SELECT * FROM transport_inbound_frames
+         WHERE message_id = ? AND envelope_type = 'conversation.open'`,
+      )
+      .get(open.messageId) as Record<string, unknown>;
+    const replayCount = Number(inbound.replay_count) + 1;
+    const inboundEffectDigest = createHash('sha256')
+      .update('combo:vnext:worker-inbound-effect:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          connectionId: String(inbound.connection_id),
+          sequence: String(inbound.sequence),
+          messageId: String(inbound.message_id),
+          canonicalDigest: String(inbound.canonical_digest),
+          effectState: String(inbound.effect_state),
+          replayCount,
+          recordedAtMs: Number(inbound.recorded_at_ms),
+          appliedAtMs: inbound.applied_at_ms === null ? null : Number(inbound.applied_at_ms),
+          retainedUntilMs:
+            inbound.retained_until_ms === null ? null : Number(inbound.retained_until_ms),
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    inboundDatabase
+      .prepare(
+        `UPDATE transport_inbound_frames SET replay_count = ?, effect_digest = ?
+         WHERE connection_id = ? AND sequence = ?`,
+      )
+      .run(
+        replayCount,
+        inboundEffectDigest,
+        String(inbound.connection_id),
+        String(inbound.sequence),
+      );
+    inboundDatabase.close();
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: inboundTarget.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+
+    const connectionTarget = temporaryJournal();
+    const connectionFixture = createFixture(18_300);
+    const connectionAdapter = createJournal(
+      connectionTarget.filename,
+      connectionFixture.installationId,
+    );
+    await connectionAdapter.acquireInstallation(
+      ownerInput(connectionFixture.installationId, OWNER_A, signal),
+    );
+    await activate(connectionAdapter, connectionFixture, OWNER_A, signal);
+    connectionAdapter.close();
+    const connectionDatabase = new SqliteDatabase(connectionTarget.filename);
+    const connection = connectionDatabase
+      .prepare(`SELECT * FROM transport_connections WHERE status = 'ACTIVE'`)
+      .get() as Record<string, unknown>;
+    const createdAtMs = Number(connection.created_at_ms) + 1;
+    const connectionDigest = createHash('sha256')
+      .update('combo:vnext:worker-connection-state:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          installationId: String(connection.installation_id),
+          connectionId: String(connection.connection_id),
+          ownerEpoch: Number(connection.owner_epoch),
+          workerSessionId: String(connection.worker_session_id),
+          deploymentId: String(connection.deployment_id),
+          leaseId: String(connection.lease_id),
+          fence: String(connection.fence),
+          leaseState: String(connection.lease_state),
+          leaseGrantedAt: String(connection.lease_granted_at),
+          leaseExpiresAt: String(connection.lease_expires_at),
+          inboundCursor: String(connection.inbound_cursor),
+          outboundCursor: String(connection.outbound_cursor),
+          status: String(connection.status),
+          activationMessageId: String(connection.activation_message_id),
+          activationDigest: String(connection.activation_digest),
+          createdAtMs,
+          releasedAtMs:
+            connection.released_at_ms === null ? null : Number(connection.released_at_ms),
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    connectionDatabase
+      .prepare(
+        `UPDATE transport_connections SET created_at_ms = ?, connection_digest = ?
+         WHERE connection_id = ?`,
+      )
+      .run(createdAtMs, connectionDigest, String(connection.connection_id));
+    connectionDatabase.close();
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: connectionTarget.filename }),
     ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
   });
 
@@ -2202,6 +3394,182 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     );
   });
 
+  it('reopens historical frames after a same-connection higher-fence renewal and blocks stale pending business dispatch', async () => {
+    const fixture = createFixture(139_100);
+    const { filename } = temporaryJournal();
+    let adapter = createJournal(filename, fixture.installationId);
+    const signal = new AbortController().signal;
+    await adapter.acquireInstallation(ownerInput(fixture.installationId, OWNER_A, signal));
+    let state = await activate(adapter, fixture, OWNER_A, signal);
+    const open = conversationOpen(fixture, state, uuid(1_391_001), uuid(1_391_002), SHA('d'));
+    state = await commit(adapter, fixture.installationId, OWNER_A, state, open, signal);
+    const renewalTemplate = renewalGrant(state, uuid(1_391_003));
+    const renewedWorkerSessionId = uuid(1_391_004);
+    const renewal = BrokerEnvelopeSchema.parse({
+      ...renewalTemplate,
+      lease: {
+        ...renewalTemplate.lease,
+        leaseId: uuid(1_391_005),
+        workerSessionId: renewedWorkerSessionId,
+        fence: (BigInt(renewalTemplate.lease.fence) + 1n).toString(10),
+      },
+      body: { ...renewalTemplate.body, workerSessionId: renewedWorkerSessionId },
+    });
+    state = await commit(adapter, fixture.installationId, OWNER_A, state, renewal, signal);
+    adapter.close();
+
+    adapter = new SqliteWorkerBrokerDurableTransport({ filename });
+    await adapter.acquireInstallation(ownerInput(fixture.installationId, OWNER_A, signal));
+    const [staleOpen] = await adapter.readPendingCommands({
+      installationId: fixture.installationId,
+      ownerToken: OWNER_A,
+      connectionId: state.connectionId,
+      limit: 16,
+      signal,
+    });
+    expect(staleOpen).toMatchObject({
+      messageId: open.messageId,
+      type: 'conversation.open',
+      effectState: 'PERSISTED',
+    });
+    if (staleOpen === undefined) throw new Error('MISSING_STALE_OPEN');
+    const calls = { readyAuthority: 0, hostDispatch: 0 };
+    const journal = adapter.createInvocationJournal(
+      replayOnlyJournalOptions(new Date(renewal.sentAt), calls),
+    );
+    await expect(
+      journal.bindReadyConversation({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        command: staleOpen,
+        evidence: { token: 'must-not-be-verified' },
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_LEASE' });
+    expect(calls).toEqual({ readyAuthority: 0, hostDispatch: 0 });
+    adapter.close();
+  });
+
+  it('rejects historical outer content drift recanonicalized to a higher-fence current lease', async () => {
+    const fixture = createFixture(139_200);
+    const { filename } = temporaryJournal();
+    const adapter = createJournal(filename, fixture.installationId);
+    const signal = new AbortController().signal;
+    await adapter.acquireInstallation(ownerInput(fixture.installationId, OWNER_A, signal));
+    let state = await activate(adapter, fixture, OWNER_A, signal);
+    const open = conversationOpen(fixture, state, uuid(1_392_001), uuid(1_392_002), SHA('d'));
+    state = await commit(adapter, fixture.installationId, OWNER_A, state, open, signal);
+    const renewalTemplate = renewalGrant(state, uuid(1_392_003));
+    const renewedWorkerSessionId = uuid(1_392_004);
+    const renewal = BrokerEnvelopeSchema.parse({
+      ...renewalTemplate,
+      lease: {
+        ...renewalTemplate.lease,
+        leaseId: uuid(1_392_005),
+        workerSessionId: renewedWorkerSessionId,
+        fence: (BigInt(renewalTemplate.lease.fence) + 1n).toString(10),
+      },
+      body: { ...renewalTemplate.body, workerSessionId: renewedWorkerSessionId },
+    });
+    state = await commit(adapter, fixture.installationId, OWNER_A, state, renewal, signal);
+    adapter.close();
+
+    const database = new SqliteDatabase(filename);
+    database.exec('BEGIN EXCLUSIVE');
+    try {
+      const inbound = database
+        .prepare(
+          `SELECT * FROM transport_inbound_frames
+           WHERE connection_id = ? AND sequence = ? AND message_id = ?`,
+        )
+        .get(open.connectionId, open.sequence, open.messageId) as Record<string, unknown>;
+      const connection = database
+        .prepare('SELECT * FROM transport_connections WHERE connection_id = ?')
+        .get(open.connectionId) as Record<string, unknown>;
+      const forged = BrokerEnvelopeSchema.parse({ ...open, lease: state.lease });
+      const canonicalDigest = canonicalSha256(forged);
+      const effectDigest = createHash('sha256')
+        .update('combo:vnext:worker-inbound-effect:v1\0', 'utf8')
+        .update(
+          canonicalizeJson({
+            connectionId: String(inbound.connection_id),
+            sequence: String(inbound.sequence),
+            messageId: String(inbound.message_id),
+            canonicalDigest,
+            effectState: String(inbound.effect_state),
+            replayCount: Number(inbound.replay_count),
+            recordedAtMs: Number(inbound.recorded_at_ms),
+            appliedAtMs: inbound.applied_at_ms === null ? null : Number(inbound.applied_at_ms),
+            retainedUntilMs:
+              inbound.retained_until_ms === null ? null : Number(inbound.retained_until_ms),
+          }),
+          'utf8',
+        )
+        .digest('hex');
+      database
+        .prepare(
+          `UPDATE transport_inbound_frames
+           SET canonical_digest = ?, envelope_json = ?, effect_digest = ?
+           WHERE connection_id = ? AND sequence = ? AND message_id = ?`,
+        )
+        .run(
+          canonicalDigest,
+          canonicalizeJson(forged),
+          effectDigest,
+          open.connectionId,
+          open.sequence,
+          open.messageId,
+        );
+
+      const cursor = restoreSequenceCursor(String(connection.inbound_cursor));
+      const accepted = new Map(cursor.accepted);
+      accepted.set(open.sequence, canonicalDigest);
+      const inboundCursor = serializeSequenceCursor({ ...cursor, accepted });
+      const connectionDigest = createHash('sha256')
+        .update('combo:vnext:worker-connection-state:v1\0', 'utf8')
+        .update(
+          canonicalizeJson({
+            installationId: String(connection.installation_id),
+            connectionId: String(connection.connection_id),
+            ownerEpoch: Number(connection.owner_epoch),
+            workerSessionId: String(connection.worker_session_id),
+            deploymentId: String(connection.deployment_id),
+            leaseId: String(connection.lease_id),
+            fence: String(connection.fence),
+            leaseState: String(connection.lease_state),
+            leaseGrantedAt: String(connection.lease_granted_at),
+            leaseExpiresAt: String(connection.lease_expires_at),
+            inboundCursor,
+            outboundCursor: String(connection.outbound_cursor),
+            status: String(connection.status),
+            activationMessageId: String(connection.activation_message_id),
+            activationDigest: String(connection.activation_digest),
+            createdAtMs: Number(connection.created_at_ms),
+            releasedAtMs:
+              connection.released_at_ms === null ? null : Number(connection.released_at_ms),
+          }),
+          'utf8',
+        )
+        .digest('hex');
+      database
+        .prepare(
+          `UPDATE transport_connections SET inbound_cursor = ?, connection_digest = ?
+           WHERE connection_id = ?`,
+        )
+        .run(inboundCursor, connectionDigest, open.connectionId);
+      database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE)');
+    } catch (error) {
+      database.exec('ROLLBACK');
+      throw error;
+    } finally {
+      database.close();
+    }
+
+    expect(() => new SqliteWorkerBrokerDurableTransport({ filename })).toThrowError(
+      expect.objectContaining({ code: 'JOURNAL_CORRUPT' }),
+    );
+  });
+
   it('rolls back when AbortSignal wins before COMMIT and preserves a committed activation after response loss', async () => {
     const fixture = createFixture(40);
     const { filename } = temporaryJournal();
@@ -2274,7 +3642,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       busyTimeoutMs: 500,
       operationTimeoutMs: 1_000,
     });
-    const blocker = spawnLockProcess(filename, 250);
+    const blocker = spawnLockProcess(filename);
     expect(await nextChildMessage(blocker)).toEqual({ locked: true });
     const client = createClient(
       'ws://127.0.0.1:1/v1/worker/connect',
@@ -2283,13 +3651,24 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       { portTimeoutMs: 50 },
     );
     const started = performance.now();
-    await expect(client.start()).rejects.toMatchObject({ code: 'PORT_FAILED' });
-    expect(performance.now() - started).toBeGreaterThanOrEqual(200);
+    let startError: unknown;
+    try {
+      await client.start();
+    } catch (error) {
+      startError = error;
+    }
+    const elapsedMs = performance.now() - started;
+    if (!blocker.connected) throw new Error('LOCK_PROCESS_IPC_CLOSED_BEFORE_RELEASE');
+    blocker.send({ release: true });
     await waitForExit(blocker);
+    expect(blocker.exitCode).toBe(0);
     await delay(25);
-    expect(queryCount(filename, 'transport_installation_owners')).toBe(0);
+    const ownerRows = queryCount(filename, 'transport_installation_owners');
     await client.stop();
     adapter.close();
+    expect(startError).toMatchObject({ code: 'PORT_FAILED' });
+    expect(elapsedMs).toBeGreaterThanOrEqual(200);
+    expect(ownerRows).toBe(0);
   });
 
   it('rolls back and restores the external watermark when fsync crosses the caller deadline', async () => {
@@ -3167,6 +4546,39 @@ function conversationOpen(
       agentVersionDigest: SHA('e'),
       snapshotDigest,
       visibleTranscriptDigest: HMAC('d'),
+      openAuthority: {
+        deploymentId: lease.deploymentId,
+        installationId: fixture.installationId,
+        workerSessionId: lease.workerSessionId,
+        leaseId: lease.leaseId,
+        fence: lease.fence,
+      },
+    },
+  });
+}
+
+function versionPrepare(
+  fixture: Fixture,
+  state: DurableBrokerConnection,
+  messageId: string,
+): BrokerEnvelope {
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    type: 'version.prepare',
+    messageId,
+    correlationId: fixture.deploymentId,
+    connectionId: state.connectionId,
+    sequence: restoreSequenceCursor(state.inboundCursor).nextExpected.toString(10),
+    sentAt: state.leaseGrantedAt,
+    expiresAt: state.leaseExpiresAt,
+    lease: state.lease,
+    body: {
+      agentVersionId: uuid(fixture.seed * 100 + 2),
+      agentVersionDigest: SHA('e'),
+      snapshotDigest: SHA('f'),
+      generation: '1',
     },
   });
 }
@@ -3312,6 +4724,71 @@ function ownerInput(installationId: string, ownerToken: string, signal: AbortSig
   return { installationId, ownerToken, signal };
 }
 
+function replayOnlyJournalOptions(
+  now: Date,
+  calls: { readyAuthority: number; hostDispatch: number },
+): SqliteWorkerInvocationJournalOptions {
+  const unavailable = (): never => {
+    throw new Error('UNEXPECTED_REPLAY_AUTHORITY_CALL');
+  };
+  return {
+    capabilityAuthority: {
+      verify: unavailable,
+      verifyPreviouslyCommitted: unavailable,
+    },
+    readyConversationAuthority: {
+      verify() {
+        calls.readyAuthority += 1;
+        return unavailable();
+      },
+    },
+    hostDispatchPort: {
+      async dispatchOnce() {
+        calls.hostDispatch += 1;
+        return unavailable();
+      },
+    },
+    hostDispatchReceiptAuthority: { verify: unavailable },
+    localPromptAeadAuthority: { rewrap: unavailable, open: unavailable },
+    localResultAeadAuthority: { verify: unavailable },
+    brokerResultReencryptAuthority: { reencrypt: unavailable },
+    cloudAckAuthority: { verify: unavailable },
+    cloudClock: { now: () => new Date(now) },
+  };
+}
+
+function readyJournalOptions(now: Date): SqliteWorkerInvocationJournalOptions {
+  const unavailable = (): never => {
+    throw new Error('UNEXPECTED_READY_FIXTURE_AUTHORITY_CALL');
+  };
+  return {
+    capabilityAuthority: {
+      verify: unavailable,
+      verifyPreviouslyCommitted: unavailable,
+    },
+    readyConversationAuthority: {
+      verify(input) {
+        if ((input as { token?: string }).token !== 'sandbox-ready') {
+          throw new Error('INVALID_READY_FIXTURE_EVIDENCE');
+        }
+        return {
+          sandboxInstanceId: uuid(9_001_001),
+          runtimeThreadId: 'thread-ready-migration',
+          evidenceDigest: `sha256:${SHA('7')}`,
+          readyAt: new Date(now),
+        };
+      },
+    },
+    hostDispatchPort: { dispatchOnce: unavailable },
+    hostDispatchReceiptAuthority: { verify: unavailable },
+    localPromptAeadAuthority: { rewrap: unavailable, open: unavailable },
+    localResultAeadAuthority: { verify: unavailable },
+    brokerResultReencryptAuthority: { reencrypt: unavailable },
+    cloudAckAuthority: { verify: unavailable },
+    cloudClock: { now: () => new Date(now) },
+  };
+}
+
 function outboundInput(
   fixture: Fixture,
   state: DurableBrokerConnection,
@@ -3426,6 +4903,7 @@ function downgradeToLegacyV1(filename: string): void {
     .update('combo:vnext:worker-authority:v1\0', 'utf8')
     .update(canonicalizeJson({ installation, owners, fences }), 'utf8')
     .digest('hex');
+  rewriteLegacyEvidenceAccumulators(database);
   database
     .prepare(
       `UPDATE transport_meta SET schema_digest = ?, authority_digest = ? WHERE singleton = 1`,
@@ -3470,8 +4948,218 @@ function seedLegacyReadyConversation(
   state: DurableBrokerConnection,
   open: BrokerEnvelope,
   originalSequence = open.sequence,
+  storedIdentity?: StoredConversationOpenIdentity,
 ): void {
-  seedLegacyReadyConversations(filename, fixture, state, [{ open, originalSequence }]);
+  seedLegacyReadyConversations(filename, fixture, state, [
+    { open, originalSequence, storedIdentity },
+  ]);
+}
+
+type StoredConversationOpenIdentity = Readonly<{
+  envelopeJson: string;
+  canonicalDigest: string;
+  semanticDigest: string;
+  inboundCursor: string;
+}>;
+
+function rewritePersistedOpenAsC687Legacy(
+  filename: string,
+  open: BrokerEnvelope,
+): StoredConversationOpenIdentity {
+  if (open.kind !== 'command' || open.type !== 'conversation.open') {
+    throw new Error('INVALID_C687_OPEN_FIXTURE');
+  }
+  const { openAuthority: _currentOnly, ...legacyBody } = open.body;
+  const legacy = { ...open, body: legacyBody };
+  const envelopeJson = canonicalizeJson(legacy);
+  const canonicalDigest = canonicalSha256(legacy);
+  const semanticDigest = canonicalSha256({
+    protocol: legacy.protocol,
+    schemaVersion: legacy.schemaVersion,
+    kind: legacy.kind,
+    type: legacy.type,
+    messageId: legacy.messageId,
+    correlationId: legacy.correlationId,
+    body: legacy.body,
+  });
+
+  const database = new SqliteDatabase(filename);
+  let inboundCursor = '';
+  database.exec('BEGIN EXCLUSIVE');
+  try {
+    const inbound = database
+      .prepare(
+        `SELECT connection_id, sequence, message_id, replay_count, recorded_at_ms,
+                effect_state, applied_at_ms, retained_until_ms
+         FROM transport_inbound_frames WHERE connection_id = ? AND sequence = ?`,
+      )
+      .get(open.connectionId, open.sequence) as Record<string, unknown> | undefined;
+    const connection = database
+      .prepare('SELECT * FROM transport_connections WHERE connection_id = ?')
+      .get(open.connectionId) as Record<string, unknown> | undefined;
+    if (
+      inbound === undefined ||
+      connection === undefined ||
+      inbound.message_id !== open.messageId
+    ) {
+      throw new Error('MISSING_C687_OPEN_FIXTURE');
+    }
+    const effectDigest = createHash('sha256')
+      .update('combo:vnext:worker-inbound-effect:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          connectionId: String(inbound.connection_id),
+          sequence: String(inbound.sequence),
+          messageId: String(inbound.message_id),
+          canonicalDigest,
+          effectState: String(inbound.effect_state),
+          replayCount: Number(inbound.replay_count),
+          recordedAtMs: Number(inbound.recorded_at_ms),
+          appliedAtMs: inbound.applied_at_ms === null ? null : Number(inbound.applied_at_ms),
+          retainedUntilMs:
+            inbound.retained_until_ms === null ? null : Number(inbound.retained_until_ms),
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    database
+      .prepare(
+        `UPDATE transport_inbound_frames
+         SET canonical_digest = ?, logical_digest = ?, envelope_json = ?, effect_digest = ?
+         WHERE connection_id = ? AND sequence = ? AND message_id = ?`,
+      )
+      .run(
+        canonicalDigest,
+        semanticDigest,
+        envelopeJson,
+        effectDigest,
+        open.connectionId,
+        open.sequence,
+        open.messageId,
+      );
+
+    const cursor = restoreSequenceCursor(String(connection.inbound_cursor));
+    const accepted = new Map(cursor.accepted);
+    accepted.set(open.sequence, canonicalDigest);
+    inboundCursor = serializeSequenceCursor({ ...cursor, accepted });
+    const connectionDigest = createHash('sha256')
+      .update('combo:vnext:worker-connection-state:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          installationId: String(connection.installation_id),
+          connectionId: String(connection.connection_id),
+          ownerEpoch: Number(connection.owner_epoch),
+          workerSessionId: String(connection.worker_session_id),
+          deploymentId: String(connection.deployment_id),
+          leaseId: String(connection.lease_id),
+          fence: String(connection.fence),
+          leaseState: String(connection.lease_state),
+          leaseGrantedAt: String(connection.lease_granted_at),
+          leaseExpiresAt: String(connection.lease_expires_at),
+          inboundCursor,
+          outboundCursor: String(connection.outbound_cursor),
+          status: String(connection.status),
+          activationMessageId: String(connection.activation_message_id),
+          activationDigest: String(connection.activation_digest),
+          createdAtMs: Number(connection.created_at_ms),
+          releasedAtMs:
+            connection.released_at_ms === null ? null : Number(connection.released_at_ms),
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    database
+      .prepare(
+        `UPDATE transport_connections SET inbound_cursor = ?, connection_digest = ?
+         WHERE connection_id = ?`,
+      )
+      .run(inboundCursor, connectionDigest, open.connectionId);
+    database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close();
+  }
+  return Object.freeze({ envelopeJson, canonicalDigest, semanticDigest, inboundCursor });
+}
+
+function markInboundAppliedForMigrationFixture(
+  filename: string,
+  envelope: BrokerEnvelope,
+  appliedAtMs: number,
+): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN EXCLUSIVE');
+  try {
+    const row = database
+      .prepare(
+        `SELECT * FROM transport_inbound_frames
+         WHERE connection_id = ? AND sequence = ? AND message_id = ?`,
+      )
+      .get(envelope.connectionId, envelope.sequence, envelope.messageId) as Record<string, unknown>;
+    const retainedUntilMs = appliedAtMs + WORKER_TRANSPORT_RETENTION_MS;
+    const effectDigest = createHash('sha256')
+      .update('combo:vnext:worker-inbound-effect:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          connectionId: String(row.connection_id),
+          sequence: String(row.sequence),
+          messageId: String(row.message_id),
+          canonicalDigest: String(row.canonical_digest),
+          effectState: 'APPLIED',
+          replayCount: Number(row.replay_count),
+          recordedAtMs: Number(row.recorded_at_ms),
+          appliedAtMs,
+          retainedUntilMs,
+        }),
+        'utf8',
+      )
+      .digest('hex');
+    database
+      .prepare(
+        `UPDATE transport_inbound_frames
+         SET effect_state = 'APPLIED', effect_digest = ?, applied_at_ms = ?, retained_until_ms = ?
+         WHERE connection_id = ? AND sequence = ? AND message_id = ?`,
+      )
+      .run(
+        effectDigest,
+        appliedAtMs,
+        retainedUntilMs,
+        envelope.connectionId,
+        envelope.sequence,
+        envelope.messageId,
+      );
+    const event = {
+      connectionId: envelope.connectionId,
+      sequence: envelope.sequence,
+      messageId: envelope.messageId,
+      fromState: 'PERSISTED',
+      toState: 'APPLIED',
+      reason: 'RECORDED',
+      occurredAtMs: appliedAtMs,
+    };
+    database
+      .prepare(
+        `INSERT INTO transport_inbound_effect_events(
+           connection_id, sequence, message_id, from_state, to_state, reason,
+           occurred_at_ms, event_digest
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        ...Object.values(event),
+        createHash('sha256')
+          .update('combo:vnext:worker-inbound-effect-event:v1\0', 'utf8')
+          .update(canonicalizeJson(event), 'utf8')
+          .digest('hex'),
+      );
+    database.exec('COMMIT; PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  } finally {
+    database.close();
+  }
 }
 
 function clearTransportOutboxForMigrationFixture(filename: string): void {
@@ -3488,7 +5176,10 @@ function clearTransportOutboxForMigrationFixture(filename: string): void {
   database.close();
 }
 
-function fillLegacyV2ToMigrationCapacity(filename: string): void {
+function fillLegacyV2ToMigrationCapacity(
+  filename: string,
+  protectedPages = WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES,
+): void {
   const database = new SqliteDatabase(filename);
   const meta = database
     .prepare('SELECT max_database_bytes FROM transport_meta WHERE singleton = 1')
@@ -3499,12 +5190,7 @@ function fillLegacyV2ToMigrationCapacity(filename: string): void {
     const max = database.prepare('PRAGMA max_page_count').get() as { max_page_count: number };
     const used = database.prepare('PRAGMA page_count').get() as { page_count: number };
     const free = database.prepare('PRAGMA freelist_count').get() as { freelist_count: number };
-    return (
-      max.max_page_count -
-      used.page_count +
-      free.freelist_count -
-      WORKER_TRANSPORT_RECOVERY_RESERVE_PAGES
-    );
+    return max.max_page_count - used.page_count + free.freelist_count - protectedPages;
   };
   const insert = database.prepare(
     `INSERT INTO transport_sequence_gaps(
@@ -3535,7 +5221,11 @@ function seedLegacyReadyConversations(
   filename: string,
   fixture: Fixture,
   state: DurableBrokerConnection,
-  entries: ReadonlyArray<{ open: BrokerEnvelope; originalSequence?: string }>,
+  entries: ReadonlyArray<{
+    open: BrokerEnvelope;
+    originalSequence?: string;
+    storedIdentity?: StoredConversationOpenIdentity;
+  }>,
 ): void {
   const database = new SqliteDatabase(filename);
   database.exec('BEGIN');
@@ -3550,7 +5240,7 @@ function seedLegacyReadyConversations(
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const [index, entry] of entries.entries()) {
-      const { open } = entry;
+      const { open, storedIdentity } = entry;
       if (open.type !== 'conversation.open') throw new Error('INVALID_READY_OPEN');
       const now = fixture.nowMs + 1_000 + index;
       const row = {
@@ -3579,8 +5269,9 @@ function seedLegacyReadyConversations(
         command_id: open.messageId,
         connection_id: state.connectionId,
         sequence: entry.originalSequence ?? open.sequence,
-        canonical_digest: canonicalSha256(open),
-        semantic_digest: workerInvocationCommandSemanticDigest(open),
+        canonical_digest: storedIdentity?.canonicalDigest ?? canonicalSha256(open),
+        semantic_digest:
+          storedIdentity?.semanticDigest ?? workerInvocationCommandSemanticDigest(open),
         command_type: 'conversation.open',
         conversation_id: open.body.conversationId,
         invocation_id: null,
@@ -3680,6 +5371,7 @@ function seedLegacyReadyConversations(
 }
 
 function downgradeToLegacyV2(filename: string): void {
+  downgradeToLegacyV3(filename);
   const database = new SqliteDatabase(filename);
   database.exec(`
     PRAGMA foreign_keys = OFF;
@@ -3766,6 +5458,7 @@ function downgradeToLegacyV2(filename: string): void {
     .update('combo:vnext:worker-authority:v1\0', 'utf8')
     .update(canonicalizeJson({ installation, owners, fences, local }), 'utf8')
     .digest('hex');
+  rewriteLegacyEvidenceAccumulators(database);
   database
     .prepare(
       `UPDATE transport_meta SET schema_digest = ?, authority_digest = ? WHERE singleton = 1`,
@@ -3802,6 +5495,32 @@ function downgradeToLegacyV2(filename: string): void {
   });
 }
 
+function promoteLegacyV2FixtureToV3(filename: string): void {
+  let halted = false;
+  try {
+    new SqliteWorkerBrokerDurableTransport({
+      filename,
+      faultInjector(point) {
+        if (point === 'migration.v3_to_v4.before_watermark') {
+          halted = true;
+          throw new Error('HALT_AFTER_EXACT_V3_COMMIT');
+        }
+      },
+    });
+  } catch (error) {
+    if (!halted) throw error;
+  }
+  if (queryScalar(filename, 'SELECT user_version AS value FROM pragma_user_version') !== 3) {
+    throw new Error('MISSING_EXACT_V3_FIXTURE');
+  }
+  const watermark = JSON.parse(readFileSync(`${filename}.watermark`, 'utf8')) as {
+    payload?: { formatVersion?: number; schemaVersion?: number };
+  };
+  if (watermark.payload?.formatVersion !== 1 || watermark.payload.schemaVersion !== 3) {
+    throw new Error('INVALID_EXACT_V3_WATERMARK');
+  }
+}
+
 function rewriteWatermark(
   filename: string,
   mutate: (payload: Record<string, unknown>) => Record<string, unknown>,
@@ -3822,6 +5541,269 @@ function writeWatermarkDocument(filename: string, payload: Record<string, unknow
       .digest('hex'),
   });
   writeFileSync(`${filename}.watermark`, document, { mode: 0o600 });
+}
+
+function rewriteLegacyEvidenceAccumulators(database: InstanceType<typeof SqliteDatabase>): void {
+  let inboundXor = Buffer.alloc(32);
+  const inboundRows = database
+    .prepare(
+      `SELECT connection_id, sequence, message_id
+       FROM transport_inbound_frames ORDER BY connection_id, sequence`,
+    )
+    .all() as Array<{ connection_id: string; sequence: string; message_id: string }>;
+  for (const row of inboundRows) {
+    const digest = createHash('sha256')
+      .update('combo:vnext:worker-inbound-row:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          connectionId: row.connection_id,
+          sequence: row.sequence,
+          messageId: row.message_id,
+        }),
+        'utf8',
+      )
+      .digest();
+    inboundXor = Buffer.from(inboundXor.map((byte, index) => byte ^ (digest[index] ?? 0)));
+  }
+  let outboxXor = Buffer.alloc(32);
+  const outboxRows = database
+    .prepare('SELECT message_id FROM transport_outbox ORDER BY message_id')
+    .all() as Array<{ message_id: string }>;
+  for (const row of outboxRows) {
+    const digest = createHash('sha256')
+      .update('combo:vnext:worker-outbox-row:v1\0', 'utf8')
+      .update(row.message_id, 'utf8')
+      .digest();
+    outboxXor = Buffer.from(outboxXor.map((byte, index) => byte ^ (digest[index] ?? 0)));
+  }
+  database
+    .prepare(
+      `UPDATE transport_meta SET
+         inbound_evidence_count = ?, inbound_evidence_xor = ?,
+         outbox_evidence_count = ?, outbox_evidence_xor = ?
+       WHERE singleton = 1`,
+    )
+    .run(
+      inboundRows.length,
+      inboundXor.toString('hex'),
+      outboxRows.length,
+      outboxXor.toString('hex'),
+    );
+}
+
+type ReadyAuthorityTable =
+  | 'local_conversation_ready_outbox_receipts'
+  | 'local_conversation_ready_terminal_tombstones';
+
+function cloneClosedWorkerJournal(filename: string): string {
+  const checkpoint = new SqliteDatabase(filename);
+  checkpoint.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  checkpoint.close();
+  const directory = makeTemporaryDirectory();
+  const clone = join(directory, 'journal-v4.sqlite');
+  for (const suffix of ['', '.watermark']) {
+    const source = `${filename}${suffix}`;
+    if (!existsSync(source)) continue;
+    copyFileSync(source, `${clone}${suffix}`);
+    chmodSync(`${clone}${suffix}`, 0o600);
+  }
+  return clone;
+}
+
+function rewriteReadyAuthorityDecision(filename: string, table: ReadyAuthorityTable): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const row = database.prepare(`SELECT * FROM ${table} LIMIT 1`).get() as
+      | Record<string, unknown>
+      | undefined;
+    if (row === undefined) throw new Error('MISSING_READY_AUTHORITY_ROW');
+    const triggers = database
+      .prepare(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND tbl_name = ? ORDER BY name`,
+      )
+      .all(table) as Array<{ name: string; sql: string }>;
+    for (const trigger of triggers) database.exec(`DROP TRIGGER "${trigger.name}"`);
+    const payload: Record<string, unknown> = { ...row, decision: 'IDEMPOTENT_REPLAY' };
+    delete payload.row_digest;
+    if (table === 'local_conversation_ready_outbox_receipts') delete payload.receipt_id;
+    const rowDigest = sqliteInvocationRowDigest(table, payload);
+    const keyColumn =
+      table === 'local_conversation_ready_outbox_receipts' ? 'receipt_id' : 'source_event_id';
+    const key = row[keyColumn];
+    if (typeof key !== 'string' && typeof key !== 'number') {
+      throw new Error('INVALID_READY_AUTHORITY_KEY');
+    }
+    database
+      .prepare(
+        `UPDATE ${table} SET decision = 'IDEMPOTENT_REPLAY', row_digest = ? WHERE ${keyColumn} = ?`,
+      )
+      .run(rowDigest, key);
+    for (const trigger of triggers) database.exec(trigger.sql);
+    refreshTestAuthorityDigest(database);
+    database.exec('COMMIT');
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    database.close();
+    throw error;
+  }
+  database.close();
+}
+
+function deleteReadyAuthorityRow(filename: string, table: ReadyAuthorityTable): void {
+  const database = new SqliteDatabase(filename);
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const triggers = database
+      .prepare(
+        `SELECT name, sql FROM sqlite_master
+         WHERE type = 'trigger' AND tbl_name = ? ORDER BY name`,
+      )
+      .all(table) as Array<{ name: string; sql: string }>;
+    for (const trigger of triggers) database.exec(`DROP TRIGGER "${trigger.name}"`);
+    const removed = database.prepare(`DELETE FROM ${table}`).run();
+    if (Number(removed.changes) !== 1) throw new Error('MISSING_READY_AUTHORITY_ROW');
+    if (table === 'local_conversation_ready_outbox_receipts') {
+      const conversation = database.prepare('SELECT * FROM local_conversations LIMIT 1').get() as
+        | Record<string, unknown>
+        | undefined;
+      if (conversation === undefined || typeof conversation.conversation_id !== 'string') {
+        throw new Error('MISSING_READY_CONVERSATION');
+      }
+      const payload: Record<string, unknown> = {
+        ...conversation,
+        ready_cloud_state: 'PENDING',
+      };
+      delete payload.row_digest;
+      database
+        .prepare(
+          `UPDATE local_conversations SET ready_cloud_state = 'PENDING', row_digest = ?
+           WHERE conversation_id = ?`,
+        )
+        .run(
+          sqliteInvocationRowDigest('local_conversations', payload),
+          conversation.conversation_id,
+        );
+    } else {
+      const consumedTrigger = database
+        .prepare(
+          `SELECT name, sql FROM sqlite_master
+           WHERE type = 'trigger' AND name = 'local_consumed_conversation_open_no_delete'`,
+        )
+        .get() as { name: string; sql: string } | undefined;
+      if (consumedTrigger === undefined) throw new Error('MISSING_CONSUMED_OPEN_TRIGGER');
+      database.exec(`DROP TRIGGER "${consumedTrigger.name}"`);
+      const consumed = database
+        .prepare(`DELETE FROM local_consumed_commands WHERE command_type = 'conversation.open'`)
+        .run();
+      const conversation = database.prepare('DELETE FROM local_conversations').run();
+      if (Number(consumed.changes) !== 1 || Number(conversation.changes) !== 1) {
+        throw new Error('MISSING_COMPACT_READY_AUTHORITY');
+      }
+      database.exec(consumedTrigger.sql);
+    }
+    for (const trigger of triggers) database.exec(trigger.sql);
+    refreshTestAuthorityDigest(database);
+    database.exec('COMMIT');
+    database.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    database.close();
+    throw error;
+  }
+  database.close();
+}
+
+function refreshTestAuthorityDigest(database: InstanceType<typeof SqliteDatabase>): void {
+  const installation = database
+    .prepare(
+      `SELECT installation_id, highest_owner_epoch FROM transport_installations
+       ORDER BY installation_id`,
+    )
+    .all();
+  const owners = database
+    .prepare(
+      `SELECT installation_id, owner_token_digest, owner_epoch, lease_expires_at_ms,
+              acquired_at_ms, updated_at_ms
+       FROM transport_installation_owners ORDER BY installation_id`,
+    )
+    .all();
+  const fences = database
+    .prepare(
+      `SELECT installation_id, deployment_id, highest_fence
+       FROM transport_deployment_fences ORDER BY installation_id, deployment_id`,
+    )
+    .all();
+  const authorityDigest = createHash('sha256')
+    .update('combo:vnext:worker-authority:v1\0', 'utf8')
+    .update(
+      canonicalizeJson({
+        installation,
+        owners,
+        fences,
+        local: workerInvocationAuthorityRows(database),
+      }),
+      'utf8',
+    )
+    .digest('hex');
+  database
+    .prepare('UPDATE transport_meta SET authority_digest = ? WHERE singleton = 1')
+    .run(authorityDigest);
+}
+
+function assertLocallyConsistentWorkerJournal(filename: string): void {
+  const database = new SqliteDatabase(filename, { readOnly: true });
+  const schemaRows = database
+    .prepare(
+      `SELECT type, name, sql FROM sqlite_master
+       WHERE (name LIKE 'transport_%' OR name LIKE 'local_%') AND sql IS NOT NULL
+       ORDER BY type, name`,
+    )
+    .all();
+  const meta = database
+    .prepare('SELECT schema_digest, authority_digest FROM transport_meta WHERE singleton = 1')
+    .get() as { schema_digest: string; authority_digest: string };
+  expect(createHash('sha256').update(canonicalizeJson(schemaRows)).digest('hex')).toBe(
+    meta.schema_digest,
+  );
+  const installation = database
+    .prepare(
+      `SELECT installation_id, highest_owner_epoch FROM transport_installations
+       ORDER BY installation_id`,
+    )
+    .all();
+  const owners = database
+    .prepare(
+      `SELECT installation_id, owner_token_digest, owner_epoch, lease_expires_at_ms,
+              acquired_at_ms, updated_at_ms
+       FROM transport_installation_owners ORDER BY installation_id`,
+    )
+    .all();
+  const fences = database
+    .prepare(
+      `SELECT installation_id, deployment_id, highest_fence
+       FROM transport_deployment_fences ORDER BY installation_id, deployment_id`,
+    )
+    .all();
+  expect(
+    createHash('sha256')
+      .update('combo:vnext:worker-authority:v1\0', 'utf8')
+      .update(
+        canonicalizeJson({
+          installation,
+          owners,
+          fences,
+          local: workerInvocationAuthorityRows(database),
+        }),
+        'utf8',
+      )
+      .digest('hex'),
+  ).toBe(meta.authority_digest);
+  expect(() => assertWorkerInvocationIntegrity(database)).not.toThrow();
+  expect(() => assertWorkerConversationReadyIntegrity(database)).not.toThrow();
+  database.close();
 }
 
 function queryCount(filename: string, table: string): number {
@@ -3940,6 +5922,31 @@ function spawnV2MigrationKillProcess(
     | 'migration.v2_to_v3.before_watermark'
     | 'migration.v2_to_v3.after_watermark_fsync'
     | 'migration.v2_to_v3.after_commit',
+): ChildProcess {
+  const script = `
+    import { SqliteWorkerBrokerDurableTransport } from ${JSON.stringify(distEntry)};
+    new SqliteWorkerBrokerDurableTransport({
+      filename: process.env.TEST_FILENAME,
+      faultInjector(point) {
+        if (point === process.env.TEST_FAULT_POINT) {
+          process.send({ reached: point });
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+        }
+      },
+    });
+  `;
+  return trackedSpawn(script, {
+    TEST_FILENAME: filename,
+    TEST_FAULT_POINT: faultPoint,
+  });
+}
+
+function spawnV3MigrationKillProcess(
+  filename: string,
+  faultPoint:
+    | 'migration.v3_to_v4.before_watermark'
+    | 'migration.v3_to_v4.after_watermark_fsync'
+    | 'migration.v3_to_v4.after_commit',
 ): ChildProcess {
   const script = `
     import { SqliteWorkerBrokerDurableTransport } from ${JSON.stringify(distEntry)};
@@ -4116,21 +6123,34 @@ function spawnPersistedCommandKillProcess(
   };
 }
 
-function spawnLockProcess(filename: string, holdMs: number): ChildProcess {
+function spawnLockProcess(filename: string): ChildProcess {
   const script = `
     import { createRequire } from 'node:module';
     const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
     const database = new DatabaseSync(process.env.TEST_FILENAME);
     database.exec('BEGIN IMMEDIATE');
+    let released = false;
+    let fallback;
+    const release = () => {
+      if (released) return;
+      released = true;
+      clearTimeout(fallback);
+      try {
+        database.exec('ROLLBACK');
+      } finally {
+        database.close();
+      }
+      process.exit(0);
+    };
+    process.once('message', (message) => {
+      if (message?.release === true) release();
+    });
+    process.once('disconnect', release);
+    fallback = setTimeout(release, 5_000);
     process.send({ locked: true });
-    setTimeout(() => {
-      database.exec('ROLLBACK');
-      database.close();
-    }, Number(process.env.TEST_HOLD_MS));
   `;
   return trackedSpawn(script, {
     TEST_FILENAME: filename,
-    TEST_HOLD_MS: String(holdMs),
   });
 }
 
@@ -4347,6 +6367,13 @@ class LoopbackAuthority implements AgentGatewayAuthorityPort {
         agentVersionDigest: SHA('e'),
         snapshotDigest: SHA('a'),
         visibleTranscriptDigest: HMAC('d'),
+        openAuthority: {
+          deploymentId: lease.deploymentId,
+          installationId: session.installationId,
+          workerSessionId: lease.workerSessionId,
+          leaseId: lease.leaseId,
+          fence: lease.fence,
+        },
       },
     });
   }

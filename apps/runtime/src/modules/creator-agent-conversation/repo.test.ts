@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { QueryResultLike, RuntimeDb, TxConn } from '../../platform/infra/db.js';
 import type { ConsumerConversationError } from './repo.js';
-import { createConsumerConversation, createConversationRequestDigest } from './repo.js';
+import {
+  createConsumerConversation as createConsumerConversationWithAuthority,
+  createConversationRequestDigest,
+  type CreateConsumerConversationInput,
+  type CreateConsumerConversationOptions,
+} from './repo.js';
 
 const CONSUMER = '01900000-0000-7000-8000-000000000001';
 const CREATOR = '01900000-0000-7000-8000-000000000002';
@@ -14,6 +19,29 @@ const IDEMPOTENCY = '01900000-0000-7000-8000-000000000008';
 const VERSION_DIGEST = 'a'.repeat(64);
 const CREATED_AT = new Date('2026-08-14T00:00:00.000Z');
 const EXPIRES_AT = new Date('2026-08-15T00:00:00.000Z');
+const VISIBLE_TRANSCRIPT_DIGEST = `hmac-sha256:${'b'.repeat(64)}`;
+
+function createConsumerConversation(
+  db: RuntimeDb,
+  input: CreateConsumerConversationInput,
+  options: Omit<CreateConsumerConversationOptions, 'visibleTranscriptDigester'> = {},
+) {
+  return createConsumerConversationWithAuthority(db, input, {
+    ...options,
+    visibleTranscriptDigester: async ({ creatorId, agentVersionId }) => {
+      expect({ creatorId, agentVersionId }).toEqual({
+        creatorId: CREATOR,
+        agentVersionId: VERSION,
+      });
+      return {
+        digest: VISIBLE_TRANSCRIPT_DIGEST,
+        keyId: 'visible-key-a',
+        keyVersion: 7n,
+        keyRef: 'kms://combo/visible/creator/version/key-a@7',
+      };
+    },
+  });
+}
 
 interface FakeOptions {
   existingDigest?: string;
@@ -161,6 +189,9 @@ describe('Creator-hosted Consumer Conversation repository', () => {
     expect(
       db.statements.filter((sql) => sql.includes('creator_agent_create_opening_conversation')),
     ).toHaveLength(1);
+    expect(
+      db.statements.some((sql) => sql.includes('creator_agent_create_opening_conversation_v2')),
+    ).toBe(true);
     expect(db.released).toBe(true);
   });
 
@@ -251,5 +282,17 @@ describe('Creator-hosted Consumer Conversation repository', () => {
     expect(db.statements).toContain('ROLLBACK');
     expect(db.statements).not.toContain('COMMIT');
     expect(db.released).toBe(true);
+  });
+
+  it('fails closed before create-open-v2 when no KMS digester is injected', async () => {
+    const db = new CreatorConversationFakeDb();
+
+    await expect(createConsumerConversationWithAuthority(db, input())).rejects.toThrow(
+      'Visible transcript KMS authority is unavailable',
+    );
+    expect(
+      db.statements.some((sql) => sql.includes('creator_agent_create_opening_conversation_v2')),
+    ).toBe(false);
+    expect(db.statements).toContain('ROLLBACK');
   });
 });

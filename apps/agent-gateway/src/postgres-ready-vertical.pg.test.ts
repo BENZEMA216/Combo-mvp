@@ -5,6 +5,7 @@ import {
   BrokerHandshakeUnsignedSchema,
   brokerHandshakeSigningBytes,
   canonicalSha256,
+  currentBrokerContractDigest,
   workerConversationReadyFactDigest,
   type BrokerEnvelope,
   type BrokerHandshake,
@@ -35,6 +36,7 @@ const pgDescribe = enabled ? describe.sequential : describe.skip;
 const WORKER_VERSION = 'combo-worker-ready-vertical/1';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const TEST_RUNTIME_POLICY = Object.freeze({
   schemaVersion: 1,
   isolation: 'conversation-vm-required',
@@ -102,6 +104,7 @@ function signedHandshake(
     codexRuntimeArtifacts: [RUNTIME_DIGEST],
     codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
     isolationModes: ['apple-container-v1'],
+    brokerContractDigest: BROKER_CONTRACT_DIGEST,
     capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
     challengeId,
   });
@@ -133,6 +136,7 @@ pgDescribe('Gateway -> Cloud conversation.ready reconnect vertical', () => {
     acceptedCodexRuntimeArtifacts: [RUNTIME_DIGEST],
     acceptedCodexProtocolSchemaDigests: [PROTOCOL_DIGEST],
     acceptedIsolationModes: ['apple-container-v1'],
+    acceptedBrokerContractDigests: [BROKER_CONTRACT_DIGEST],
     sessionTtlMs: 15 * 60_000,
     leaseTtlMs: 30_000,
     responseTtlMs: 30_000,
@@ -338,6 +342,7 @@ pgDescribe('Gateway -> Cloud conversation.ready reconnect vertical', () => {
           codexRuntimeArtifacts: [RUNTIME_DIGEST],
           codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
           isolationModes: ['apple-container-v1'],
+          brokerContractDigest: BROKER_CONTRACT_DIGEST,
         }),
       ],
     );

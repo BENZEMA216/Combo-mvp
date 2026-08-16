@@ -1,12 +1,22 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { AgentVersionManifestSchema } from './agent-version.js';
 import {
+  BROKER_MAX_FRAME_BYTES,
+  BROKER_WORKER_CONNECT_PATH,
+  CREATOR_BROKER_PROTOCOL,
+  BrokerCloseCode,
+  BrokerCloseReason,
+  BrokerConversationOpenAuthoritySchema,
+  BrokerConversationOpenCommandSchema,
+  BrokerConversationOpenLogicalCommandSchema,
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
+  BrokerRegistrationCapabilitiesSchema,
   ExecutionCapabilitySchema,
   ExecutionCapabilityUnsignedSchema,
   ExecutionCapabilityUseRecordSchema,
 } from './broker.js';
+import { CANONICAL_JSON_IMPLEMENTATION, canonicalSha256 } from './canonical.js';
 import {
   EvidenceCaseResultSchema,
   EvidenceCaseResultsSchema,
@@ -50,6 +60,7 @@ import {
   ConsumerTerminalEventPayloadSchema,
 } from './consumer-events.js';
 import {
+  BrokerContractRegistrySchema,
   DataFlowAllowlistSchema,
   DecisionRegistrySchema,
   InvariantRegistrySchema,
@@ -77,8 +88,12 @@ export const ContractSchemaDefinitions = {
   SnapshotManifestEnvelope: SnapshotManifestEnvelopeSchema,
   SnapshotPublicationPreparationMarker: SnapshotPublicationPreparationMarkerSchema,
   SnapshotPublicationCommitMarker: SnapshotPublicationCommitMarkerSchema,
+  BrokerRegistrationCapabilities: BrokerRegistrationCapabilitiesSchema,
   BrokerHandshake: BrokerHandshakeSchema,
   BrokerEnvelope: BrokerEnvelopeSchema,
+  BrokerConversationOpenAuthority: BrokerConversationOpenAuthoritySchema,
+  BrokerConversationOpenCommand: BrokerConversationOpenCommandSchema,
+  BrokerConversationOpenLogicalCommand: BrokerConversationOpenLogicalCommandSchema,
   ExecutionCapabilityUnsigned: ExecutionCapabilityUnsignedSchema,
   ExecutionCapability: ExecutionCapabilitySchema,
   ExecutionCapabilityUseRecord: ExecutionCapabilityUseRecordSchema,
@@ -120,6 +135,7 @@ export const ContractSchemaDefinitions = {
   EvidenceCaseResult: EvidenceCaseResultSchema,
   EvidenceCaseResults: EvidenceCaseResultsSchema,
   EvidenceReviewerSignoff: EvidenceReviewerSignoffSchema,
+  BrokerContractRegistry: BrokerContractRegistrySchema,
   InvariantRegistry: InvariantRegistrySchema,
   TestCaseRegistry: TestCaseRegistrySchema,
   DecisionRegistry: DecisionRegistrySchema,
@@ -184,8 +200,17 @@ const RuntimeSemanticConstraints: Partial<
     'the commit marker MUST be written with If-None-Match only after both selected final objects read back and verify',
     'readers MUST treat absence of this marker as unpublished even when preparation or final objects exist',
   ],
+  BrokerRegistrationCapabilities: [
+    'brokerContractDigest is singular, required, and MUST equal currentBrokerContractDigest()',
+    'registration capabilities MUST pass BrokerRegistrationCapabilitiesSchema with no unknown key',
+  ],
+  BrokerHandshake: [
+    'brokerContractDigest is part of brokerHandshakeSigningBytes and MUST equal currentBrokerContractDigest()',
+    'codexRuntimeArtifacts/codexProtocolSchemaDigests/isolationModes/brokerContractDigest MUST exactly match the registered BrokerRegistrationCapabilities',
+    'all Broker handshakes MUST pass the authoritative runtime BrokerHandshakeSchema parser after structural JSON Schema validation',
+  ],
   BrokerEnvelope: [
-    'sensitive.cipherDigest == sha256(JCS(nonce,ciphertext,authTag))',
+    `sensitive.cipherDigest == sha256(JCS({protocol:"${CREATOR_BROKER_PROTOCOL}",schemaVersion:1,nonce,ciphertext,authTag}))`,
     'sensitive.aadDigest == sha256(JCS(sensitive.aad))',
     'sensitive.keyId == sensitive.aad.keyId',
     'sensitive.aad.envelopeType == type',
@@ -197,11 +222,29 @@ const RuntimeSemanticConstraints: Partial<
     'conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))',
     'conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId',
     'conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping',
+    'conversation.open correlationId == body.conversationId and messageId != correlationId',
+    'conversation.open lease.deploymentId == body.openAuthority.deploymentId',
+    'conversation.open body.openAuthority is immutable while outer connection/sequence/time/session/lease/fence MAY change after authorized re-enveloping',
     'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
     'Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId',
     'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
     'prepared/started commandId == correlationId; delta and terminal correlationId == invocationId',
     'all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation',
+  ],
+  BrokerConversationOpenCommand: [
+    'correlationId == body.conversationId and messageId != correlationId',
+    'lease.deploymentId == body.openAuthority.deploymentId',
+    'body.openAuthority binds the original deployment/installation/session/lease/fence authority',
+    'outer connectionId/sequence/sentAt/expiresAt/leaseId/workerSessionId/fence MAY change after authorized re-enveloping',
+    'all conversation.open commands MUST pass BrokerConversationOpenCommandSchema',
+  ],
+  BrokerConversationOpenLogicalCommand: [
+    'logical digest preimage contains only protocol/schemaVersion/kind/type/messageId/correlationId/body',
+    'connectionId/sequence/sentAt/expiresAt/current outer lease are excluded from the logical digest',
+  ],
+  BrokerContractRegistry: [
+    'contracts[0].contractDigest == currentBrokerContractDigest()',
+    'contracts[0].artifactPath identifies the checked standalone Broker contract artifact',
   ],
   WorkerInvocationFact: [
     'sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for succeeded/failed/cancelled/uncertain',
@@ -253,6 +296,52 @@ export function createJsonSchemaBundle(): Record<string, unknown> {
       ]),
     ),
   };
+}
+
+export const CREATOR_BROKER_CONTRACT_PROTOCOL = 'combo.creator-broker-contract/1' as const;
+
+const BrokerContractSchemaNames = [
+  'BrokerRegistrationCapabilities',
+  'BrokerHandshake',
+  'BrokerEnvelope',
+  'BrokerConversationOpenAuthority',
+  'BrokerConversationOpenCommand',
+  'BrokerConversationOpenLogicalCommand',
+] as const satisfies readonly (keyof typeof ContractSchemaDefinitions)[];
+
+/** Standalone Broker wire contract. It intentionally contains no current digest value. */
+export function createBrokerContractArtifact(): Record<string, unknown> {
+  return {
+    protocol: CREATOR_BROKER_CONTRACT_PROTOCOL,
+    schemaVersion: 1,
+    wireProtocol: CREATOR_BROKER_PROTOCOL,
+    canonicalization: CANONICAL_JSON_IMPLEMENTATION,
+    connectPath: BROKER_WORKER_CONNECT_PATH,
+    maxFrameBytes: BROKER_MAX_FRAME_BYTES,
+    closeCodes: { ...BrokerCloseCode },
+    closeReasons: { ...BrokerCloseReason },
+    schemas: Object.fromEntries(
+      BrokerContractSchemaNames.map((name) => [
+        name,
+        zodToJsonSchema(ContractSchemaDefinitions[name], {
+          name,
+          target: 'jsonSchema7',
+          $refStrategy: 'root',
+        }) as Record<string, unknown>,
+      ]),
+    ),
+    runtimeConstraints: Object.fromEntries(
+      BrokerContractSchemaNames.map((name) => [
+        name,
+        [...(RuntimeSemanticConstraints[name] ?? [])],
+      ]),
+    ),
+  };
+}
+
+/** RFC 8785 digest advertised by registration and signed Broker handshakes. */
+export function currentBrokerContractDigest(): `sha256:${string}` {
+  return `sha256:${canonicalSha256(createBrokerContractArtifact())}`;
 }
 
 function openApiSchema(name: keyof typeof ContractSchemaDefinitions): Record<string, unknown> {

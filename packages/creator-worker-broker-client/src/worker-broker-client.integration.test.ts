@@ -19,6 +19,7 @@ import {
   brokerHandshakeSigningBytes,
   canonicalSha256,
   canonicalizeJson,
+  currentBrokerContractDigest,
   parseBrokerFrame,
   parseBrokerHandshake,
   type BrokerEnvelope,
@@ -148,6 +149,7 @@ describe('Real Worker transport ↔ Fake Broker', () => {
       brokerHandshakeSigningBytes(BrokerHandshakeUnsignedSchema.parse(unsigned)),
     );
     expect(broker.handshakes[0]!.challengeSignature).toBe(SIGNATURE);
+    expect(broker.handshakes[0]!.brokerContractDigest).toBe(currentBrokerContractDigest());
     expect(durable.acquireCalls).toBe(3);
     expect(broker.connectionCount).toBe(1);
     await waitFor(() => broker.received.length >= 1);
@@ -358,8 +360,13 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     await waitFor(() => client.status === 'BLOCKED');
   }, 30_000);
 
-  it('permanently blocks unknown, wrong-direction, and binary established frames', async () => {
-    for (const invalid of ['unknown-type', 'wrong-direction', 'binary'] as const) {
+  it('permanently blocks unknown, wrong-direction, legacy-open, and binary established frames before durable storage', async () => {
+    for (const invalid of [
+      'unknown-type',
+      'wrong-direction',
+      'legacy-conversation-open',
+      'binary',
+    ] as const) {
       const durable = new FakeDurablePort();
       const broker = await startBroker();
       const client = createClient(broker.url, durable);
@@ -387,6 +394,25 @@ describe('Real Worker transport ↔ Fake Broker', () => {
             messageId: uuid(81),
           }),
         );
+      } else if (invalid === 'legacy-conversation-open') {
+        const conversationId = uuid(82);
+        broker.sendRaw(connection.socket, {
+          ...pingCommand({
+            connectionId: connection.connectionId,
+            sequence: '1',
+            lease: leaseBinding(LEASE_A, '7'),
+            messageId: uuid(83),
+          }),
+          type: 'conversation.open',
+          correlationId: conversationId,
+          body: {
+            conversationId,
+            agentVersionId: uuid(84),
+            agentVersionDigest: 'a'.repeat(64),
+            snapshotDigest: 'b'.repeat(64),
+            visibleTranscriptDigest: `hmac-sha256:${'c'.repeat(64)}`,
+          },
+        });
       } else {
         connection.socket.send(Buffer.from('binary-is-not-json'), { binary: true });
       }
@@ -395,6 +421,13 @@ describe('Real Worker transport ↔ Fake Broker', () => {
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(broker.connectionCount).toBe(1);
       expect(durable.committed).toHaveLength(1);
+      if (invalid === 'legacy-conversation-open') {
+        expect(durable.commitInboundCalls).toBe(0);
+        expect(durable.inboundCursorAdvanceCalls).toBe(0);
+        expect(durable.committed.slice(1)).toEqual([]);
+        expect(durable.replayed).toEqual([]);
+        expect(durable.gaps).toEqual([]);
+      }
 
       await client.stop();
       activeClients.delete(client);
@@ -1059,6 +1092,8 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
   owner?: string;
   current?: MutableConnection;
   acquireCalls = 0;
+  commitInboundCalls = 0;
+  inboundCursorAdvanceCalls = 0;
   readyReplayCalls = 0;
   releaseConnectionCalls = 0;
   readonly retired = new Set<string>();
@@ -1242,6 +1277,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     canonicalDigest: string;
     signal: AbortSignal;
   }): Promise<DurableBrokerConnection> {
+    this.commitInboundCalls += 1;
     this.assertOwner(input.ownerToken);
     if (this.commitBarrier !== undefined) {
       await Promise.race([this.commitBarrier, abortPromise(input.signal)]);
@@ -1265,6 +1301,7 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
         throw new WorkerBrokerClientError('STALE_FENCE', true);
       }
     }
+    this.inboundCursorAdvanceCalls += 1;
     current.inboundCursor = input.nextInboundCursor;
     this.committed.push(input.envelope);
     if (input.envelope.kind === 'command' && input.envelope.type === 'lease.grant') {
@@ -1664,6 +1701,7 @@ function gatewayHandshake(challengeId: string): BrokerHandshake {
       codexRuntimeArtifacts: [`sha256:${'1'.repeat(64)}`],
       codexProtocolSchemaDigests: [`sha256:${'2'.repeat(64)}`],
       isolationModes: ['apple-container-v1'],
+      brokerContractDigest: currentBrokerContractDigest(),
       capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
       challengeId,
       challengeSignature: SIGNATURE,

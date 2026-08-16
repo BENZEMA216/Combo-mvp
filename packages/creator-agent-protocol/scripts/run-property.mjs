@@ -21,6 +21,7 @@ const result = spawnSync(
     'run',
     'src/__tests__/invocation.property.test.ts',
     'src/__tests__/conversation-ready-facts.property.test.ts',
+    'src/__tests__/broker-contract.property.test.ts',
   ],
   {
     cwd: process.cwd(),
