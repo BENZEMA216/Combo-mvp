@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: runtime
+spec:
+  template:
+    spec:
+      containers:
+        - name: runtime
+          env:
+            # Test-only adapter configuration. The public surface stays disabled until its
+            # remaining VNext gates are complete, so Runtime performs zero keyring reads.
+            - name: CREATOR_AGENT_PUBLIC_ENABLED
+              value: 'false'
+            - name: CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER
+              value: test-k8s-secret-file
+            - name: CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE
+              value: combo/visible-transcript
+            - name: CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX
+              value: k8s-secret://combo-test/visible-transcript/
+            - name: CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION
+              value: '1'
+            - name: CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE
+              value: /var/run/secrets/combo/visible-transcript/keyring.json
+          volumeMounts:
+            - name: visible-transcript-test-keyring
+              mountPath: /var/run/secrets/combo/visible-transcript
+              readOnly: true
+      volumes:
+        - name: visible-transcript-test-keyring
+          secret:
+            secretName: combo-visible-transcript-test-keyring
+            optional: true
+            defaultMode: 0400
+            items:
+              - key: keyring.json
+                path: keyring.json
+                mode: 0400

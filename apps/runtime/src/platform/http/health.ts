@@ -14,14 +14,25 @@ import { pingObjectStore } from '../infra/object-store.js';
 import { hasLlmCredential } from '../infra/llm.js';
 import { pingRedis } from '../infra/redis.js';
 
+async function checkVisibleTranscriptKms(app: FastifyInstance): Promise<boolean> {
+  const binding = app.infra.visibleTranscriptKms;
+  if (!binding) return false;
+  try {
+    return await binding.checkReady(AbortSignal.timeout(500));
+  } catch {
+    return false;
+  }
+}
+
 export async function registerHealthRoutes(app: FastifyInstance): Promise<void> {
   app.get(HEALTH_PATH, async () => ({ status: 'ok' as const }));
 
   app.get(READY_PATH, async (req, reply) => {
     const { env } = app.infra;
-    const [db, creatorAgentDb, minio, redis] = await Promise.all([
+    const [db, creatorAgentDb, visibleTranscriptKms, minio, redis] = await Promise.all([
       pingDb(env),
       env.CREATOR_AGENT_PUBLIC_ENABLED ? pingCreatorAgentDb(env) : Promise.resolve(true),
+      env.CREATOR_AGENT_PUBLIC_ENABLED ? checkVisibleTranscriptKms(app) : Promise.resolve(true),
       pingObjectStore(env),
       pingRedis(env),
     ]);
@@ -33,6 +44,15 @@ export async function registerHealthRoutes(app: FastifyInstance): Promise<void> 
       ...(env.CREATOR_AGENT_PUBLIC_ENABLED
         ? ([
             { name: 'creator_agent_db', status: toStatus(creatorAgentDb), required: true },
+          ] satisfies DependencyHealth[])
+        : []),
+      ...(env.CREATOR_AGENT_PUBLIC_ENABLED
+        ? ([
+            {
+              name: 'visible_transcript_kms',
+              status: toStatus(visibleTranscriptKms),
+              required: true,
+            },
           ] satisfies DependencyHealth[])
         : []),
       { name: 'minio', status: toStatus(minio), required: true },

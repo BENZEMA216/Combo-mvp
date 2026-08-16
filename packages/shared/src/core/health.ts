@@ -8,6 +8,7 @@ export type HealthStatus = z.infer<typeof HealthStatusSchema>;
 export const DependencyNameSchema = z.enum([
   'db',
   'creator_agent_db',
+  'visible_transcript_kms',
   'redis_queue',
   'redis_hot',
   'minio',

@@ -60,7 +60,8 @@ export function createConsumerConversationHandler(
           environment,
         },
         {
-          visibleTranscriptDigester: options.visibleTranscriptDigester,
+          visibleTranscriptDigester:
+            options.visibleTranscriptDigester ?? req.server.infra.visibleTranscriptKms?.digester,
         },
       );
       // The frozen OpenAPI surface returns the same 201 resource representation for both the

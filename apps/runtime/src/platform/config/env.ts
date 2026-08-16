@@ -56,6 +56,9 @@ const EnvSchema = z
     CREATOR_AGENT_PUBLIC_ENABLED: booleanFromString,
     // Non-secret routing policy for the injected visible-transcript KMS HMAC port. Runtime never
     // accepts a raw HMAC key or a local fallback key through env.
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER: z
+      .enum(['disabled', 'test-k8s-secret-file'])
+      .default('disabled'),
     CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: z.preprocess(
       emptyToUndefined,
       z
@@ -76,6 +79,17 @@ const EnvSchema = z
       .positive()
       .max(Number.MAX_SAFE_INTEGER)
       .default(1),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .min(2)
+        .max(1_024)
+        .refine((value) => value.startsWith('/') && !containsControlCharacter(value), {
+          message: 'the Test keyring file must use an absolute path without control characters',
+        })
+        .optional(),
+    ),
     REDIS_URL: z.string().trim().min(1).default('redis://localhost:6379'),
 
     // ObjectStore（MinIO/S3）：按 capabilities.storage_key 读能力定义 + 读写产物内容。
@@ -151,6 +165,37 @@ const EnvSchema = z
         code: z.ZodIssueCode.custom,
         path: ['CREATOR_AGENT_DATABASE_URL'],
         message: 'CREATOR_AGENT_DATABASE_URL is required when the VNext public API is enabled',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER === 'test-k8s-secret-file' &&
+      env.COMBO_ENVIRONMENT !== 'test'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER'],
+        message: 'the Kubernetes Secret file provider is restricted to the Test environment',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER === 'test-k8s-secret-file' &&
+      !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE'],
+        message: 'a read-only keyring file is required for the Test provider',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_PUBLIC_ENABLED &&
+      env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER === 'disabled'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER'],
+        message:
+          'a visible transcript key provider is required when the VNext public API is enabled',
       });
     }
     if (env.CREATOR_AGENT_PUBLIC_ENABLED && !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE) {
@@ -315,7 +360,12 @@ export function loadEnv(): Env {
     const sandboxSetting = process.env.SANDBOX_TOOLS_ENABLED?.trim();
     const sandboxWasRequested =
       sandboxSetting !== undefined && sandboxSetting !== '' && sandboxSetting !== 'false';
-    if (isProduction || sandboxWasRequested) {
+    const creatorAgentSetting = process.env.CREATOR_AGENT_PUBLIC_ENABLED?.trim();
+    const creatorAgentWasRequested =
+      creatorAgentSetting !== undefined &&
+      creatorAgentSetting !== '' &&
+      creatorAgentSetting !== 'false';
+    if (isProduction || sandboxWasRequested || creatorAgentWasRequested) {
       throw new Error(
         `[env] 环境变量校验失败：${Object.keys(parsed.error.flatten().fieldErrors).join(', ')}`,
       );

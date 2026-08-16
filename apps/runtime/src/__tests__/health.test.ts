@@ -9,6 +9,7 @@ const probes = vi.hoisted(() => ({
   minio: vi.fn(),
   redis: vi.fn(),
   llm: vi.fn(),
+  visibleTranscriptKms: vi.fn(),
 }));
 
 vi.mock('../platform/infra/db.js', () => ({
@@ -21,10 +22,18 @@ vi.mock('../platform/infra/llm.js', () => ({ hasLlmCredential: probes.llm }));
 
 async function readyResponse(
   creatorAgentPublicEnabled = false,
+  withVisibleTranscriptKms = true,
 ): Promise<{ statusCode: number; view: ReadyView }> {
   const app = Fastify({ logger: false });
   app.decorate('infra', {
     env: { CREATOR_AGENT_PUBLIC_ENABLED: creatorAgentPublicEnabled },
+    visibleTranscriptKms:
+      creatorAgentPublicEnabled && withVisibleTranscriptKms
+        ? {
+            digester: vi.fn(),
+            checkReady: probes.visibleTranscriptKms,
+          }
+        : null,
   } as never);
   await registerHealthRoutes(app);
   const response = await app.inject({ method: 'GET', url: '/ready' });
@@ -41,6 +50,7 @@ beforeEach(() => {
   probes.minio.mockResolvedValue(true);
   probes.redis.mockResolvedValue(true);
   probes.llm.mockReturnValue(true);
+  probes.visibleTranscriptKms.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -72,6 +82,42 @@ describe('runtime readiness dependencies', () => {
       status: 'down',
       required: true,
     });
+    expect(response.view.dependencies).toContainEqual({
+      name: 'visible_transcript_kms',
+      status: 'ok',
+      required: true,
+    });
+  });
+
+  it('fails readiness when the public API has no usable visible-transcript key binding', async () => {
+    probes.visibleTranscriptKms.mockResolvedValue(false);
+
+    const response = await readyResponse(true);
+
+    expect(response.statusCode).toBe(503);
+    expect(response.view.dependencies).toContainEqual({
+      name: 'visible_transcript_kms',
+      status: 'down',
+      required: true,
+    });
+  });
+
+  it('fails readiness if the public API binding is absent and never probes it while disabled', async () => {
+    const enabled = await readyResponse(true, false);
+    expect(enabled.statusCode).toBe(503);
+    expect(enabled.view.dependencies).toContainEqual({
+      name: 'visible_transcript_kms',
+      status: 'down',
+      required: true,
+    });
+
+    probes.visibleTranscriptKms.mockClear();
+    const disabled = await readyResponse(false, true);
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.view.dependencies.map((dependency) => dependency.name)).not.toContain(
+      'visible_transcript_kms',
+    );
+    expect(probes.visibleTranscriptKms).not.toHaveBeenCalled();
   });
 
   it('still fails readiness when the PostgreSQL session fact source is unavailable', async () => {

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { parseAllDocuments } from 'yaml';
 import { releaseManifestDigest, serializeReleaseManifest } from './release-manifest.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +45,13 @@ function render(environment, phase, manifestPath, digest) {
   const content = readFileSync(output, 'utf8');
   rmSync(dirname(output), { recursive: true, force: true });
   return content;
+}
+
+function resources(content) {
+  return parseAllDocuments(content).map((document) => {
+    assert.equal(document.errors.length, 0);
+    return document.toJS();
+  });
 }
 
 test('renders apps for all three environments into their namespaces', () => {
@@ -132,5 +140,50 @@ test('renders the billing payment wiring into api and the fixed policy into runt
   }
   assert.match(apps, /name: RUNTIME_BILLING_FREE_USES\s*\n\s+value: "3"/);
   assert.match(apps, /name: RUNTIME_BILLING_UNIT_PRICE_CENTS\s*\n\s+value: "1"/);
+  rmSync(dirname(path), { recursive: true, force: true });
+});
+
+test('renders the read-only visible transcript keyring provider only in Test', () => {
+  const manifest = fixtureManifest();
+  const path = join(mkdtempSync(join(tmpdir(), 'render-env-visible-transcript-')), 'release.json');
+  writeFileSync(path, serializeReleaseManifest(manifest));
+  const digest = releaseManifestDigest(manifest);
+
+  const testResources = resources(render('test', 'apps', path, digest));
+  const runtime = testResources.find(
+    (resource) => resource.kind === 'Deployment' && resource.metadata?.name === 'runtime',
+  );
+  const runtimeContainer = runtime.spec.template.spec.containers.find(
+    (container) => container.name === 'runtime',
+  );
+  const values = new Map(runtimeContainer.env.map((entry) => [entry.name, entry.value]));
+  assert.equal(values.get('CREATOR_AGENT_PUBLIC_ENABLED'), 'false');
+  assert.equal(values.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER'), 'test-k8s-secret-file');
+  assert.equal(
+    values.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE'),
+    '/var/run/secrets/combo/visible-transcript/keyring.json',
+  );
+  const mount = runtimeContainer.volumeMounts.find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+  assert.equal(mount.readOnly, true);
+  const volume = runtime.spec.template.spec.volumes.find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+  assert.equal(volume.secret.secretName, 'combo-visible-transcript-test-keyring');
+  assert.equal(volume.secret.optional, true);
+  assert.equal(volume.secret.defaultMode, 0o400);
+  assert.equal(volume.secret.items[0].mode, 0o400);
+  assert.equal(
+    testResources.some((resource) => resource.kind === 'Secret'),
+    false,
+  );
+
+  for (const environment of ['preview', 'production']) {
+    const rendered = render(environment, 'apps', path, digest);
+    assert.doesNotMatch(rendered, /CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER/);
+    assert.doesNotMatch(rendered, /CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE/);
+    assert.doesNotMatch(rendered, /visible-transcript-test-keyring/);
+  }
   rmSync(dirname(path), { recursive: true, force: true });
 });

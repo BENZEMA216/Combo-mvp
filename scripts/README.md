@@ -18,6 +18,8 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 `render-env.mjs` 按环境渲染 k8s 清单。它读取 canonical 发布清单（`release-manifest.mjs` 生成），把镜像 digest、`combo-release` ConfigMap（release 元数据）和每环境占位符注入应用 overlay。占位符包括 `combo-env`、`ghcr-pull`、`combo-postgres-host`、`combo-public-app-origin`、`combo-session-cookie-secure`，以及 `postgres:5432`、`redis-queue:6379`、`redis-hot:6379`、`minio:9000` 主机名。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。支持三个 phase：`apps`、`migrate`、`foundation`。渲染结果只含 Service、Deployment、Job 与允许的 ConfigMap，绝不含 Secret。
 
+apps render 还强制 visible transcript provider 的环境边界：Test 必须是 `test-k8s-secret-file`、公开 flag=false、精确非敏感 policy/path 和 optional `0400` read-only Secret volume；Preview/Production 出现 provider、keyring path 或 volume 会直接 render 失败。render 与测试只检查 Secret 名称/键名/文件权限，不读取或输出 Secret 值，也不证明 production KMS 或真实腾讯云 provider。
+
 `deploy-env.sh` 在主机上执行部署，三个子命令：
 
 - `foundation` —— 确保 foundation namespace 存在、应用 foundation 清单并等待就绪。持 per-foundation 锁（`test` / `shared`），幂等，不重建不重置。

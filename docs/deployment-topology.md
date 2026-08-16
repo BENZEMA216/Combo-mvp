@@ -70,6 +70,7 @@
 - 共享 foundation（`combo-foundation`）的 Postgres/S3 凭证必须与 `combo-preview`、`combo-prod` 的凭证一致；否则应用无法连接共享数据库。
 - 凭证只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建；轮换目标是各应用 namespace 的 `combo-env`（test→`combo-test`、preview→`combo-preview`、production→`combo-prod`）。
 - 部署脚本不得输出、落盘、复制或提交任何 Secret 值。
+- Test 可额外预置 `combo-visible-transcript-test-keyring`，只供 Runtime 的 `test-k8s-secret-file` adapter 以 `0400` 只读 volume 使用。清单不创建或填充该 Secret；Preview 与 Production 禁止渲染此 provider、path 或 volume。它不是 production KMS，不能作为腾讯云真实 provider 验证。
 
 ## 8. 更新流程
 
@@ -83,3 +84,4 @@
 2. Test 有独立 foundation，数据常驻，不做销毁重建。
 3. 生产正式域名是 `buildwithcombo.com`，部署验证以此为准。
 4. 三环境应用部署互不阻塞；共享 foundation 的迁移串行。
+5. visible transcript Secret 文件 provider 只属于 Test；生产无 raw-key fallback，真实外部 HMAC authority 未验证前保持 BLOCKED。

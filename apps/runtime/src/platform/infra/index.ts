@@ -7,6 +7,7 @@ import { createRedisSessionEventBus, type SessionEventBus } from './event-bus.js
 import { createRedisSessionEventLog } from './redis-event-log.js';
 import type { SessionEventLog } from '../../modules/agent/event-log.js';
 import { createDisabledSandboxBackend, type SandboxBackend } from './sandbox-backend.js';
+import type { VisibleTranscriptKmsBinding } from './visible-transcript-test-kms.js';
 
 interface InfraLogger {
   info(fields: Record<string, unknown>, message: string): void;
@@ -23,6 +24,34 @@ export interface InfraContext {
   bus: SessionEventBus;
   eventLog: SessionEventLog;
   sandbox: SandboxBackend;
+  /** Test-only visible-transcript key binding; absent while the public feature remains disabled. */
+  visibleTranscriptKms: VisibleTranscriptKmsBinding | null;
+}
+
+/** Feature-off avoids even loading the Test adapter module or reading its mounted keyring. */
+export async function createVisibleTranscriptKmsForEnv(
+  env: Env,
+): Promise<VisibleTranscriptKmsBinding | null> {
+  if (!env.CREATOR_AGENT_PUBLIC_ENABLED) return null;
+  if (
+    env.COMBO_ENVIRONMENT !== 'test' ||
+    env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER !== 'test-k8s-secret-file' ||
+    !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE ||
+    !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX ||
+    !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE
+  ) {
+    throw new Error('[infra] visible transcript Test key provider configuration is invalid');
+  }
+  const { createVisibleTranscriptTestKmsBinding } =
+    await import('./visible-transcript-test-kms.js');
+  return createVisibleTranscriptTestKmsBinding(
+    {
+      keyNamespace: env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE,
+      keyRefPrefix: env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX,
+      minimumKeyVersion: BigInt(env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION),
+    },
+    { keyringFile: env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE },
+  );
 }
 
 /** 组装基础设施上下文。沙箱关闭时连 Kubernetes 客户端模块都不加载。 */
@@ -36,6 +65,7 @@ export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraCont
         log,
       })
     : createDisabledSandboxBackend();
+  const visibleTranscriptKms = await createVisibleTranscriptKmsForEnv(env);
   return {
     env,
     db,
@@ -44,6 +74,7 @@ export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraCont
     bus: createRedisSessionEventBus(env),
     eventLog: createRedisSessionEventLog(env),
     sandbox,
+    visibleTranscriptKms,
   };
 }
 

@@ -115,6 +115,7 @@ function request(input: {
   body?: unknown;
   idempotencyKey?: string | string[];
   environment?: string;
+  infraVisibleTranscriptDigester?: VisibleTranscriptDigester;
 }): FastifyRequest {
   return {
     id: 'trace-consumer-create-0001',
@@ -132,6 +133,12 @@ function request(input: {
         db: input.db,
         creatorAgentDb: input.db,
         env: { COMBO_ENVIRONMENT: input.environment ?? 'test' },
+        visibleTranscriptKms: input.infraVisibleTranscriptDigester
+          ? {
+              digester: input.infraVisibleTranscriptDigester,
+              checkReady: async () => true,
+            }
+          : null,
       },
     },
   } as unknown as FastifyRequest;
@@ -230,6 +237,22 @@ describe('POST /v1/public/agents/:slug/conversations handler', () => {
 
     expect(response.statusCode).toBe(503);
     expect(response.body).toMatchObject({ code: 'AGENT_OFFLINE' });
+  });
+
+  it('uses the Runtime infrastructure binding when the route has no test injection', async () => {
+    const db = new HandlerDb();
+    const response = await call(
+      {
+        db,
+        userId: CONSUMER,
+        idempotencyKey: IDEMPOTENCY,
+        infraVisibleTranscriptDigester: visibleTranscriptDigester,
+      },
+      false,
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(response.body).toMatchObject({ conversationId: CONVERSATION });
   });
 
   it.each([

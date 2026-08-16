@@ -161,6 +161,61 @@ function containerImage(resource, name) {
   return container.image;
 }
 
+function validateVisibleTranscriptTestProvider(runtime, environment) {
+  const podSpec = podTemplate(runtime)?.spec;
+  const container = podSpec?.containers?.find((item) => item.name === 'runtime');
+  if (!container) fail('Deployment/runtime lacks container runtime');
+  const environmentVariables = new Map(
+    (container.env ?? []).map((entry) => [entry.name, entry.value]),
+  );
+  const provider = environmentVariables.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER');
+  const keyringFile = environmentVariables.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE');
+  const mount = (container.volumeMounts ?? []).find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+  const volume = (podSpec?.volumes ?? []).find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+
+  if (environment !== 'test') {
+    if (provider !== undefined || keyringFile !== undefined || mount || volume) {
+      fail('Preview and Production must not render the visible transcript Test key provider');
+    }
+    return;
+  }
+
+  const expected = {
+    CREATOR_AGENT_PUBLIC_ENABLED: 'false',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER: 'test-k8s-secret-file',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: 'combo/visible-transcript',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX:
+      'k8s-secret://combo-test/visible-transcript/',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION: '1',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE:
+      '/var/run/secrets/combo/visible-transcript/keyring.json',
+  };
+  for (const [name, value] of Object.entries(expected)) {
+    if (environmentVariables.get(name) !== value) fail(`Test Runtime lacks exact ${name}`);
+  }
+  if (
+    !mount ||
+    mount.mountPath !== '/var/run/secrets/combo/visible-transcript' ||
+    mount.readOnly !== true
+  ) {
+    fail('Test visible transcript keyring mount must be read-only');
+  }
+  const item = volume?.secret?.items?.find((entry) => entry.key === 'keyring.json');
+  if (
+    volume?.secret?.secretName !== 'combo-visible-transcript-test-keyring' ||
+    volume.secret.optional !== true ||
+    volume.secret.defaultMode !== 0o400 ||
+    item?.path !== 'keyring.json' ||
+    item.mode !== 0o400
+  ) {
+    fail('Test visible transcript keyring must use the optional 0400 Secret volume item');
+  }
+}
+
 function assertNames(resources, expected, kind) {
   const actual = resources.map((resource) => resource.metadata?.name).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -230,6 +285,7 @@ function validateApps(resources, environment, manifest) {
   if (containerImage(deployment('runtime'), 'runtime') !== manifest.images.runtime) {
     fail('Runtime image mismatch');
   }
+  validateVisibleTranscriptTestProvider(deployment('runtime'), environment);
   if (containerImage(deployment('web'), 'web') !== manifest.images.web) fail('Web image mismatch');
   validateServices(services);
 }

@@ -4,7 +4,9 @@
 
 公开 slug 只用于定位 Agent。没有有效 `agent_access_grants` 行、Deployment 未真正 ONLINE、版本不可用或 Lease/Fence 不匹配时不会创建 Conversation。当前目录只实现默认关闭的 Conversation create groundwork；发送消息、读取 transcript、SSE、取消和重试由后续同一 VNext 模块补齐。
 
-fresh create 还必须显式注入 `VisibleTranscriptDigester`。它把 RFC 8785 JCS `{protocol:'combo.visible-transcript/1',schemaVersion:1,agentVersionId,messages:[]}` 的 bytes 加在 exact domain `combo:vnext:visible-transcript:v1\0` 后交给 Creator + AgentVersion scoped KMS HMAC port；只接受 KMS 返回的 32-byte MAC、`keyId`、`keyVersion` 和 `keyRef`，并把格式化 digest 与 key metadata 传给同一 transaction 内的 v2 definer。公网 body 没有 digest 字段，数据库不存 key。Runtime 没有 production KMS adapter 时 fresh create fail-closed；不存在 env raw key、默认 key 或本地 fallback。当前 in-memory KMS 测试只证明 E2 primitive、domain/JCS、rotation 与 tamper rejection，不是 production adapter 或上线证明。可配置项仅限非敏感 namespace、keyRef prefix 和最低 key version。
+fresh create 还必须从 Runtime infrastructure 取得 `VisibleTranscriptDigester`。它把 RFC 8785 JCS `{protocol:'combo.visible-transcript/1',schemaVersion:1,agentVersionId,messages:[]}` 的 bytes 加在 exact domain `combo:vnext:visible-transcript:v1\0` 后交给 Creator + AgentVersion scoped KMS HMAC port；只接受 port 返回的 32-byte MAC、`keyId`、`keyVersion` 和 `keyRef`，并把格式化 digest 与 key metadata 传给同一 transaction 内的 v2 definer。公网 body 没有 digest 字段，数据库不存 key。
+
+Runtime 目前只为 `COMBO_ENVIRONMENT=test` 接入 `test-k8s-secret-file`：它从只读 Secret volume 加载 versioned root key，并以独立 KDF domain 派生 Creator + AgentVersion scoped key。500ms 超时、严格 keyring、最低版本、keyRef prefix 和 readiness 都失败关闭；flag 关闭时零 keyring 读取。它不是 production KMS 或真实云 provider，因为 root key 仍进入 Runtime 内存。Preview/Production 无 provider；生产 HMAC authority 与真实凭据 contract test 仍然 BLOCKED，不能用本 adapter 或内存 fake 冒充上线证明。不存在 env raw key、默认 key或本地 fallback。
 
 当前创建 `expires_at` 初值为 30 天，与 ADR-VNEXT-012 的「最后活动后 30 天」在线保留上限一致；参数只供内部测试注入，不来自 HTTP。发送消息模块仍须在同一事务里更新活动时间与到期时间，并在 Alpha 前补充独立 authority 决策，明确「可继续对话」与「只读保留」何时分界。
 
