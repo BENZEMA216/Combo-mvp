@@ -100,17 +100,17 @@
     {
       "path": "protocol-decoded-boundaries.v1.json",
       "bytes": 13901,
-      "digest": "sha256:a52c882af9e2162bb50abd0eec6f70382c6302a8bfdbb6fc41856f00d213198d"
+      "digest": "sha256:48922a7bbb1c0edf60de17577e019a285232e4b8a89488b9fd2ba9ef0ffa9751"
     },
     {
       "path": "protocol-structural-boundaries.v1.json",
-      "bytes": 11202,
-      "digest": "sha256:4e988fe3f185d24a5b19d10260e689b92f87c0817ddb1cb11c639b2f597f43f9"
+      "bytes": 14494,
+      "digest": "sha256:abd194b1d44598ad589d149e75d97fedca5e01479067e3221fdb3e6eff803baf"
     },
     {
       "path": "protocol-utf8-boundaries.v1.json",
       "bytes": 10776,
-      "digest": "sha256:bb3f31715aee920285f121e7d30a7fdfde7ffa526878d983ba127ac6437d6ee9"
+      "digest": "sha256:e32f1aec64a5df25929c8e603ebf0f29c4f975fc30da9bfe98784c5395212c9e"
     },
     {
       "path": "protocol-wire-boundaries.v1.json",

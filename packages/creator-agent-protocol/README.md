@@ -19,6 +19,8 @@ Worker registration capability 与 Broker handshake 复用同一份 strict schem
 
 `requestDigest`、`contentDigest` 和 `resultDigest` 使用按租户或版本密钥计算的 domain-separated HMAC-SHA-256；Snapshot 与公开构建产物继续使用普通 SHA-256 内容寻址。这些 digest 不代替 AEAD、签名、Lease 或 Execution Capability。
 
+Creator/Consumer OpenAPI 中 11 个由服务端分配 ID 的路径参数统一引用 `ServerId`，其运行时与公开 Schema 都只接受 36 字符小写 UUIDv7。9 个公开 `Idempotency-Key` header 保持既有 generic UUID 契约；运行时 alias 的 UUID 版本语义仍需独立 ADR，本次边界收口不宣称二者已对齐。Evidence reviewer signoff 和不变量注册表的 Gate 集合最多包含 9 个且不得重复；reviewer signoff 继续要求词法递增，不变量注册表继续保留仅唯一、不强制排序的既有语义。
+
 Worker 的 `prepared/started/succeeded/failed/cancelled/uncertain` 事实使用 `combo.worker-invocation-fact/1`。事实 ID 不是调用方任选值：prepared 固定使用 `prepareCommandId`，started 固定使用 `startCommandId`，全部 terminal fact 固定使用 `invocationId`；它不能复用会随 connection 重封装的 WebSocket `messageId`。事实内的 Lease/Fence 表示最初执行权威，重连后可以由新的外层传输 Lease/Fence 承载同一事实，但事实本身和 `factDigest` 不得改变。started 必须保存可查询的 Host `runtimeThreadId/runtimeTurnId`，succeeded 必须重复这两个 handle 并绑定 `startedFactDigest`。`factDigest` 对 Version、Snapshot、Execution Capability、原执行 Lease/Fence 及事件专属非敏感字段做 canonical SHA-256。Worker SQLite 与 PostgreSQL 必须分别重算并保存同一 digest，同 ID 不同 digest 只能 security-block，不能猜测或覆盖。
 
 Worker 的 `conversation.ready` 事实使用独立且严格的 `combo.worker-conversation-ready-fact/1`。`sourceEventId` 固定等于产生该事实的 durable `openCommandId`；fact 同时冻结 Conversation、Deployment、AgentVersion ID/digest、Snapshot digest、原 Worker installation/session/Lease/Fence、Sandbox、Host runtime thread 与 ready evidence digest。Broker body 必须是这些 exact fact 字段加 canonical `factDigest`，不能加入 transport receipt 等旁路字段。外层 `messageId` 必须与 source 不同，`correlationId` 固定等于 `conversationId`；授权重连可以更换外层 connection/message/sequence/session/Lease/Fence，但不能改写原 fact 或强制原 Lease 等于当前外层 Lease。

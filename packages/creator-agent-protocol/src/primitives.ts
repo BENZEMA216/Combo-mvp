@@ -36,6 +36,9 @@ export const UuidSchema = z
   .uuid();
 export type Uuid = z.infer<typeof UuidSchema>;
 
+/** Public HTTP server IDs reuse UUIDv7 semantics and advertise the implied exact length. */
+export const ServerIdSchema = UuidSchema.length(36);
+
 export const IsoDateTimeSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u)
@@ -61,6 +64,7 @@ export const CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX =
   'combo:canonical-base64url-bytes:' as const;
 export const UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX =
   'combo:unicode-code-points:' as const;
+export const UNIQUE_ARRAY_SCHEMA_DESCRIPTION = 'combo:unique-items' as const;
 
 /**
  * JSON Schema minLength/maxLength count Unicode code points, while Zod's native string

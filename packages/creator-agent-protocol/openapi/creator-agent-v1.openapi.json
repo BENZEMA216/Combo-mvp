@@ -55,7 +55,7 @@
             "name": "uploadId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Idempotency-Key",
@@ -135,7 +135,7 @@
             "name": "agentId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Idempotency-Key",
@@ -178,13 +178,13 @@
             "name": "agentId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "versionId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           }
         ],
         "responses": {
@@ -213,7 +213,7 @@
             "name": "agentId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Idempotency-Key",
@@ -305,7 +305,7 @@
             "name": "conversationId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           }
         ],
         "responses": {
@@ -337,7 +337,7 @@
             "name": "conversationId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Idempotency-Key",
@@ -383,7 +383,7 @@
             "name": "conversationId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Last-Event-ID",
@@ -419,7 +419,7 @@
             "name": "invocationId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           }
         ],
         "responses": {
@@ -449,7 +449,7 @@
             "name": "invocationId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Idempotency-Key",
@@ -493,7 +493,7 @@
             "name": "invocationId",
             "in": "path",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/ServerId" }
           },
           {
             "name": "Idempotency-Key",
@@ -2466,6 +2466,13 @@
         "minLength": 1,
         "maxLength": 19,
         "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+      },
+      "ServerId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "format": "uuid",
+        "minLength": 36,
+        "maxLength": 36
       }
     }
   }

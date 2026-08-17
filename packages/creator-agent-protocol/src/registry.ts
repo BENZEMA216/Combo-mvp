@@ -3,6 +3,7 @@ import { parse } from 'yaml';
 import {
   IsoDateTimeSchema,
   Sha256DigestSchema,
+  UNIQUE_ARRAY_SCHEMA_DESCRIPTION,
   UnicodeCodePointStringSchema,
 } from './primitives.js';
 
@@ -49,7 +50,11 @@ export const InvariantRegistrySchema = z
             id: InvariantIdSchema,
             statement: UnicodeCodePointStringSchema(1, 1_024),
             severity: z.enum(['P0', 'P1']),
-            gates: z.array(z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8'])).min(1),
+            gates: z
+              .array(z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8']))
+              .min(1)
+              .max(9)
+              .describe(UNIQUE_ARRAY_SCHEMA_DESCRIPTION),
             owners: z.array(UnicodeCodePointStringSchema(1, 64)).min(1),
           })
           .strict()

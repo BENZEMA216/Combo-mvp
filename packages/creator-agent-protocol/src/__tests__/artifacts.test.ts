@@ -16,6 +16,7 @@ import {
   brokerSensitiveMessageCipherDigest,
 } from '../broker.js';
 import { CANONICAL_JSON_IMPLEMENTATION, canonicalSha256, canonicalizeJson } from '../canonical.js';
+import { ServerIdSchema } from '../primitives.js';
 import { readFixture } from './fixture-helpers.js';
 
 describe('生成的 JSON Schema 与 OpenAPI', () => {
@@ -132,6 +133,94 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     expect(eventParameters.find(({ name }) => name === 'Last-Event-ID')?.schema).toEqual({
       $ref: '#/components/schemas/LastEventId',
     });
+  });
+
+  it('publishes one exact UUIDv7 server-ID schema for all 11 path parameters only', () => {
+    const bundle = createJsonSchemaBundle() as {
+      schemas: Record<string, Record<string, unknown>>;
+    };
+    const openapi = createOpenApiDocument() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+      paths: Record<
+        string,
+        Record<string, { parameters?: Array<{ name: string; in: string; schema: unknown }> }>
+      >;
+    };
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    const contractServerId = ajv.compile(bundle.schemas.ServerId as AnySchema);
+    const openApiServerId = ajv.compile(openapi.components.schemas.ServerId as AnySchema);
+    const values = {
+      nMinusOne: '0198f00d-6000-7000-8000-00000000001',
+      n: '0198f00d-6000-7000-8000-000000000001',
+      nPlusOne: '0198f00d-6000-7000-8000-0000000000010',
+      uuidV4: '550e8400-e29b-41d4-a716-446655440000',
+      uuidV8: '0198f00d-6000-8000-8000-000000000001',
+      uppercase: '0198F00D-6000-7000-8000-000000000001',
+    } as const;
+
+    for (const [name, value] of Object.entries(values)) {
+      const expected = name === 'n';
+      expect(ServerIdSchema.safeParse(value).success, `runtime:${name}`).toBe(expected);
+      expect(contractServerId(value), `contract:${name}`).toBe(expected);
+      expect(openApiServerId(value), `openapi:${name}`).toBe(expected);
+    }
+    expect(bundle.schemas.ServerId).toMatchObject({
+      definitions: {
+        ServerId: {
+          type: 'string',
+          minLength: 36,
+          maxLength: 36,
+          format: 'uuid',
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+        },
+      },
+    });
+    expect(openapi.components.schemas.ServerId).toMatchObject({
+      type: 'string',
+      minLength: 36,
+      maxLength: 36,
+      format: 'uuid',
+      pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+    });
+
+    const pathParameters = Object.values(openapi.paths).flatMap((pathItem) =>
+      Object.values(pathItem).flatMap((operation) => operation.parameters ?? []),
+    );
+    const serverIdParameters = pathParameters.filter(
+      ({ in: location, name }) => location === 'path' && name !== 'slug',
+    );
+    expect(serverIdParameters).toHaveLength(11);
+    expect(serverIdParameters.map(({ schema }) => schema)).toEqual(
+      Array.from({ length: 11 }, () => ({ $ref: '#/components/schemas/ServerId' })),
+    );
+
+    const idempotencyParameters = pathParameters.filter(
+      ({ in: location, name }) => location === 'header' && name === 'Idempotency-Key',
+    );
+    expect(idempotencyParameters).toHaveLength(9);
+    expect(idempotencyParameters.map(({ schema }) => schema)).toEqual(
+      Array.from({ length: 9 }, () => ({ type: 'string', format: 'uuid' })),
+    );
+  });
+
+  it('advertises the frozen nine-gate cardinality and uniqueness constraints', () => {
+    const bundle = createJsonSchemaBundle() as {
+      schemas: Record<
+        string,
+        { definitions: Record<string, { properties: Record<string, unknown> }> }
+      >;
+    };
+    const signoffGates =
+      bundle.schemas.EvidenceReviewerSignoff!.definitions.EvidenceReviewerSignoff!.properties
+        .reviewedGates;
+    const invariantGates = (
+      bundle.schemas.InvariantRegistry!.definitions.InvariantRegistry!.properties.invariants as {
+        items: { properties: Record<string, unknown> };
+      }
+    ).items.properties.gates;
+
+    expect(signoffGates).toMatchObject({ minItems: 1, maxItems: 9, uniqueItems: true });
+    expect(invariantGates).toMatchObject({ minItems: 1, maxItems: 9, uniqueItems: true });
   });
 
   it('publishes one non-self-referential Broker contract artifact and stable JCS digest', () => {

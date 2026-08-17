@@ -44,15 +44,58 @@ const HttpBoundarySchema = z
   })
   .strict();
 
+const OwnerFixtureSchema = z
+  .object({
+    path: z.string().min(1).max(512),
+    format: z.enum(['json', 'yaml']),
+    valuePointer: z
+      .string()
+      .min(1)
+      .max(512)
+      .regex(/^\/(?:[^~]|~[01])*$/u),
+  })
+  .strict();
+
+const ServerIdBoundarySchema = z
+  .object({
+    id: z.literal('server-id-path-uuidv7'),
+    runtimeParser: z.literal('ServerIdSchema'),
+    contractSchema: z.literal('ServerId'),
+    openApiComponent: z.literal('ServerId'),
+    ownerFixture: OwnerFixtureSchema,
+    minimumLength: z.literal(36),
+    maximumLength: z.literal(36),
+    pathParameterPointers: z.array(ArtifactPointerSchema).length(11),
+  })
+  .strict();
+
+const GateSetBoundarySchema = z
+  .object({
+    id: z.enum(['evidence-reviewer-signoff-reviewed-gates', 'invariant-registry-gates']),
+    runtimeParser: z.enum(['EvidenceReviewerSignoffSchema', 'InvariantRegistrySchema']),
+    contractSchema: z.enum(['EvidenceReviewerSignoff', 'InvariantRegistry']),
+    ownerFixture: OwnerFixtureSchema,
+    contractPointer: z
+      .string()
+      .min(1)
+      .max(2_048)
+      .regex(/^\/(?:[^~]|~[01])*$/u),
+    minimumItems: z.literal(1),
+    maximumItems: z.literal(9),
+    uniqueItems: z.literal(true),
+    reverseSemantics: z.enum(['runtime-rejects', 'runtime-accepts']),
+  })
+  .strict();
+
 /**
- * Digest-bound subset of SCH-004 covering structural Unicode-count alignment and the three
- * public path/header values that previously bypassed their runtime parser constraints.
+ * Digest-bound subset of SCH-004 covering structural Unicode-count alignment, bounded public
+ * path/header values, exact server UUIDv7 paths, and frozen nine-gate resource sets.
  */
 export const ProtocolStructuralBoundaryCorpusSchema = z
   .object({
     protocol: z.literal(PROTOCOL_STRUCTURAL_BOUNDARY_CORPUS),
     schemaVersion: z.literal(1),
-    scope: z.literal('unicode-code-point-and-http-path-header-limits-only'),
+    scope: z.literal('unicode-http-and-frozen-resource-boundaries-only'),
     checkedArtifactDigests: z
       .object({
         contractSchemas: Sha256DigestSchema,
@@ -62,12 +105,29 @@ export const ProtocolStructuralBoundaryCorpusSchema = z
       .strict(),
     unicodeBoundaries: z.array(UnicodeBoundarySchema).length(8),
     httpBoundaries: z.array(HttpBoundarySchema).length(3),
+    serverIdBoundary: ServerIdBoundarySchema,
+    gateSetBoundaries: z.tuple([
+      GateSetBoundarySchema.extend({
+        id: z.literal('evidence-reviewer-signoff-reviewed-gates'),
+        runtimeParser: z.literal('EvidenceReviewerSignoffSchema'),
+        contractSchema: z.literal('EvidenceReviewerSignoff'),
+        reverseSemantics: z.literal('runtime-rejects'),
+      }),
+      GateSetBoundarySchema.extend({
+        id: z.literal('invariant-registry-gates'),
+        runtimeParser: z.literal('InvariantRegistrySchema'),
+        contractSchema: z.literal('InvariantRegistry'),
+        reverseSemantics: z.literal('runtime-accepts'),
+      }),
+    ]),
     ownerCases: z.tuple([
       z.literal('vnext-error-response'),
       z.literal('invariant-registry'),
+      z.literal('evidence-reviewer-signoff'),
       z.literal('public-agent-slug'),
       z.literal('deployment-generation-etag'),
       z.literal('last-event-id'),
+      z.literal('server-id-path-uuidv7'),
     ]),
     remainingBoundaryClasses: z.tuple([
       z.literal('other-structural-string-patterns'),
@@ -106,6 +166,16 @@ export const ProtocolStructuralBoundaryCorpusSchema = z
         code: z.ZodIssueCode.custom,
         path: ['httpBoundaries'],
         message: 'HTTP boundary IDs must be unique',
+      });
+    }
+    const pathPointers = corpus.serverIdBoundary.pathParameterPointers.map(
+      ({ artifact, pointer }) => `${artifact}:${pointer}`,
+    );
+    if (new Set(pathPointers).size !== pathPointers.length) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['serverIdBoundary', 'pathParameterPointers'],
+        message: 'Server-ID path parameter pointers must be unique',
       });
     }
   });

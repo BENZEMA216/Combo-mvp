@@ -3,9 +3,9 @@
   "schemaVersion": 1,
   "scope": "utf8-byte-limits-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:22b36f02a8ed726a4873765d4cff1fcece92e9a0f8353abd530e6372e4f8e70f",
+    "contractSchemas": "sha256:cdb668bec40b14f6e44719456e583592e9a158d7ecbab72c44838024fdb1949a",
     "brokerContract": "sha256:728e9ff2ba1a60b313feef3380d8ef6f94949c554dbef3de7c631e0b1e21530d",
-    "openApi": "sha256:9214d0397309747c901cfad3c22c2a88e463f49403dd699544d4d9848d650b67"
+    "openApi": "sha256:5d2ffd6ecc0b42f91cd477814c05e298071828fc22795da008ab7c13536cc912"
   },
   "boundaries": [
     {

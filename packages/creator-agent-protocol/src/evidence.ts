@@ -7,6 +7,7 @@ import {
   P256P1363SignatureSchema,
   Sha256DigestSchema,
   Sha256HexSchema,
+  UNIQUE_ARRAY_SCHEMA_DESCRIPTION,
 } from './primitives.js';
 import { TestCaseIdSchema, TestCaseRegistrySchema } from './registry.js';
 import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.js';
@@ -509,7 +510,11 @@ export const EvidenceReviewerSignoffSchema = z
     reviewerKeyId: z.string().regex(/^[a-z0-9][a-z0-9._:-]{2,127}$/u),
     reviewerRole: z.literal('independent-security-release-reviewer'),
     verdict: z.enum(['PASS', 'FAIL', 'BLOCKED']),
-    reviewedGates: z.array(z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8'])).min(1),
+    reviewedGates: z
+      .array(z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8']))
+      .min(1)
+      .max(9)
+      .describe(UNIQUE_ARRAY_SCHEMA_DESCRIPTION),
     reviewedAt: IsoDateTimeSchema,
     nonce: Base64UrlSchema.min(22).max(128),
     signatureAlgorithm: z.literal('ES256'),

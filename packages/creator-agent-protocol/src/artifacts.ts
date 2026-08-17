@@ -71,6 +71,8 @@ import {
 } from './registry.js';
 import {
   CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX,
+  ServerIdSchema,
+  UNIQUE_ARRAY_SCHEMA_DESCRIPTION,
   UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX,
   UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX,
 } from './primitives.js';
@@ -112,6 +114,7 @@ export const ContractSchemaDefinitions = {
   PublicAgentSlug: PublicAgentSlugSchema,
   DeploymentGenerationEtag: DeploymentGenerationEtagSchema,
   LastEventId: LastEventIdSchema,
+  ServerId: ServerIdSchema,
   SandboxSpec: SandboxSpecSchema,
   SandboxAttestationUnsigned: SandboxAttestationUnsignedSchema,
   SandboxAttestation: SandboxAttestationSchema,
@@ -297,7 +300,10 @@ function attachPublicBoundaryKeywords(value: unknown): unknown {
     Object.entries(value).map(([key, item]) => [key, attachPublicBoundaryKeywords(item)]),
   ) as Record<string, unknown>;
   const description = output.description;
-  if (
+  if (description === UNIQUE_ARRAY_SCHEMA_DESCRIPTION) {
+    delete output.description;
+    output.uniqueItems = true;
+  } else if (
     typeof description === 'string' &&
     description.startsWith(UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX)
   ) {
@@ -470,6 +476,13 @@ const idempotencyHeader = {
   schema: { type: 'string', format: 'uuid' },
 };
 
+const serverIdPathParameter = (name: string) => ({
+  name,
+  in: 'path',
+  required: true,
+  schema: { $ref: '#/components/schemas/ServerId' },
+});
+
 export function createOpenApiDocument(): Record<string, unknown> {
   const componentNames = [
     'SnapshotUploadCreateRequest',
@@ -496,6 +509,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
     'PublicAgentSlug',
     'DeploymentGenerationEtag',
     'LastEventId',
+    'ServerId',
   ] as const;
 
   return {
@@ -524,15 +538,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
       '/v1/creator/snapshot-uploads/{uploadId}:complete': {
         post: {
           operationId: 'completeSnapshotUpload',
-          parameters: [
-            {
-              name: 'uploadId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-            idempotencyHeader,
-          ],
+          parameters: [serverIdPathParameter('uploadId'), idempotencyHeader],
           requestBody: requestBody('SnapshotUploadCompleteRequest'),
           responses: response('上传进入 VERIFYING', 'SnapshotUploadView', '202'),
         },
@@ -548,15 +554,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
       '/v1/creator/agents/{agentId}/versions': {
         post: {
           operationId: 'createAgentVersion',
-          parameters: [
-            {
-              name: 'agentId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-            idempotencyHeader,
-          ],
+          parameters: [serverIdPathParameter('agentId'), idempotencyHeader],
           requestBody: requestBody('CreateAgentVersionRequest'),
           responses: response('已创建或复用不可变 AgentVersion', 'AgentVersionView', '201'),
         },
@@ -564,20 +562,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
       '/v1/creator/agents/{agentId}/versions/{versionId}': {
         get: {
           operationId: 'getAgentVersion',
-          parameters: [
-            {
-              name: 'agentId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-            {
-              name: 'versionId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-          ],
+          parameters: [serverIdPathParameter('agentId'), serverIdPathParameter('versionId')],
           responses: response('不可变 AgentVersion 视图', 'AgentVersionView'),
         },
       },
@@ -585,12 +570,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
         put: {
           operationId: 'updateAgentDeployment',
           parameters: [
-            {
-              name: 'agentId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
+            serverIdPathParameter('agentId'),
             idempotencyHeader,
             {
               name: 'If-Match',
@@ -632,14 +612,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
         get: {
           operationId: 'getConversationTranscript',
           security: [{ consumerSession: [] }],
-          parameters: [
-            {
-              name: 'conversationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-          ],
+          parameters: [serverIdPathParameter('conversationId')],
           responses: response('权威 transcript 与最新 durable cursor', 'ConversationTranscript'),
         },
       },
@@ -647,15 +620,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
         post: {
           operationId: 'sendConversationMessage',
           security: [{ consumerSession: [] }],
-          parameters: [
-            {
-              name: 'conversationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-            idempotencyHeader,
-          ],
+          parameters: [serverIdPathParameter('conversationId'), idempotencyHeader],
           requestBody: requestBody('SendConversationMessageRequest'),
           responses: response(
             '请求与 Outbox 已在 PostgreSQL 原子提交',
@@ -669,12 +634,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
           operationId: 'streamConversationEvents',
           security: [{ consumerSession: [] }],
           parameters: [
-            {
-              name: 'conversationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
+            serverIdPathParameter('conversationId'),
             {
               name: 'Last-Event-ID',
               in: 'header',
@@ -697,14 +657,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
         get: {
           operationId: 'getInvocation',
           security: [{ consumerSession: [] }],
-          parameters: [
-            {
-              name: 'invocationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-          ],
+          parameters: [serverIdPathParameter('invocationId')],
           responses: response('Invocation 当前权威状态', 'InvocationView'),
         },
       },
@@ -712,15 +665,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
         post: {
           operationId: 'cancelInvocation',
           security: [{ consumerSession: [] }],
-          parameters: [
-            {
-              name: 'invocationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-            idempotencyHeader,
-          ],
+          parameters: [serverIdPathParameter('invocationId'), idempotencyHeader],
           requestBody: requestBody('CancelInvocationRequest'),
           responses: response('已记录取消请求；不等同于已取消', 'InvocationView', '202'),
         },
@@ -729,15 +674,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
         post: {
           operationId: 'retryInvocation',
           security: [{ consumerSession: [] }],
-          parameters: [
-            {
-              name: 'invocationId',
-              in: 'path',
-              required: true,
-              schema: { type: 'string', format: 'uuid' },
-            },
-            idempotencyHeader,
-          ],
+          parameters: [serverIdPathParameter('invocationId'), idempotencyHeader],
           requestBody: requestBody('RetryInvocationRequest'),
           responses: response('已创建关联的新 Invocation', 'InvocationAcceptedResponse', '202'),
         },
