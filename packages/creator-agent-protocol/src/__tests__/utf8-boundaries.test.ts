@@ -45,6 +45,7 @@ const artifactUrls = {
   'broker-contract': new URL('../../schemas/broker-contract.v1.json', import.meta.url),
   openapi: new URL('../../openapi/creator-agent-v1.openapi.json', import.meta.url),
 } as const satisfies Record<CheckedArtifactName, URL>;
+const UTF8_BYTE_BOUNDARY_CANARY = 'UTF8_BYTE_BOUNDARY_CANARY_';
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -55,6 +56,42 @@ function exactUtf8Bytes(targetBytes: number, generator: 'ascii' | 'cjk' | 'emoji
   const symbolBytes = Buffer.byteLength(symbol, 'utf8');
   const repeats = Math.floor(targetBytes / symbolBytes);
   return symbol.repeat(repeats) + 'a'.repeat(targetBytes - repeats * symbolBytes);
+}
+
+function exactUtf8BytesWithCanary(
+  targetBytes: number,
+  generator: 'ascii' | 'cjk' | 'emoji',
+): string {
+  const canaryBytes = Buffer.byteLength(UTF8_BYTE_BOUNDARY_CANARY, 'utf8');
+  if (targetBytes < canaryBytes) {
+    throw new Error(`UTF8_BYTE_BOUNDARY_TARGET_TOO_SMALL:${targetBytes}`);
+  }
+  return UTF8_BYTE_BOUNDARY_CANARY + exactUtf8Bytes(targetBytes - canaryBytes, generator);
+}
+
+function pointerIssuePath(pointer: string): string {
+  return pointer
+    .slice(1)
+    .split('/')
+    .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))
+    .join('/');
+}
+
+function hasRuntimeByteBoundaryIssue(
+  issues: readonly unknown[],
+  pointer: string,
+  maxBytes: number,
+): boolean {
+  return issues.some((issue) => {
+    if (issue === null || typeof issue !== 'object') return false;
+    const candidate = issue as { code?: unknown; message?: unknown; path?: unknown };
+    return (
+      candidate.code === 'custom' &&
+      candidate.message === `UTF-8 内容不得超过 ${maxBytes} bytes` &&
+      Array.isArray(candidate.path) &&
+      candidate.path.map(String).join('/') === pointerIssuePath(pointer)
+    );
+  });
 }
 
 function signedPutTarget(kind: 'archive' | 'manifest', putUrl: string): unknown {
@@ -490,6 +527,190 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
       }
     }
     expect(outcomes).toBe(660);
+  });
+
+  it('drives exact UTF-8 byte boundaries through all actual runtime owners', async () => {
+    const fixture = ProtocolUtf8BoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const runtimeCases = await runtimeOwnerCases();
+    expect(Object.keys(runtimeCases).sort()).toEqual(
+      fixture.scalarControlParity.runtimeOwners.map(({ id }) => id).sort(),
+    );
+
+    let outcomes = 0;
+    let accepted = 0;
+    let rejected = 0;
+    let targetIssues = 0;
+    let noCanaryChecks = 0;
+    for (const owner of fixture.scalarControlParity.runtimeOwners) {
+      const runtime = runtimeCases[owner.id];
+      if (runtime === undefined) throw new Error(`UTF8_RUNTIME_OWNER_MISSING:${owner.id}`);
+      expect(runtime.runtimeParser, owner.id).toBe(owner.runtimeParser);
+      expect(runtime.schema.safeParse(runtime.base).success, `base:${owner.id}`).toBe(true);
+      const boundary = fixture.boundaries.find(({ maxBytes }) => maxBytes === owner.maxBytes);
+      if (boundary === undefined) {
+        throw new Error(`UTF8_RUNTIME_OWNER_BOUNDARY_MISSING:${owner.id}:${owner.maxBytes}`);
+      }
+
+      for (const generator of boundary.generators) {
+        for (const delta of [-1, 0, 1] as const) {
+          const targetBytes = owner.maxBytes + delta;
+          const value = exactUtf8BytesWithCanary(targetBytes, generator);
+          expect(Buffer.byteLength(value, 'utf8'), `${owner.id}:${generator}:${delta}:bytes`).toBe(
+            targetBytes,
+          );
+          const result = runtime.schema.safeParse(
+            replacePointer(runtime.base, owner.instancePointer, value),
+          );
+          const expected = delta <= 0;
+          expect(result.success, `${owner.id}:${generator}:${delta}`).toBe(expected);
+          if (result.success) accepted += 1;
+          else rejected += 1;
+
+          if (!expected) {
+            if (result.success) {
+              throw new Error(`UTF8_RUNTIME_OWNER_N_PLUS_ONE_ACCEPTED:${owner.id}:${generator}`);
+            }
+            const targetIssue = hasRuntimeByteBoundaryIssue(
+              result.error.issues,
+              owner.instancePointer,
+              owner.maxBytes,
+            );
+            expect(targetIssue, `${owner.id}:${generator}:target-issue`).toBe(true);
+            if (targetIssue) targetIssues += 1;
+            const noCanary = !JSON.stringify(result.error.issues).includes(
+              UTF8_BYTE_BOUNDARY_CANARY,
+            );
+            expect(noCanary, `${owner.id}:${generator}:no-canary`).toBe(true);
+            if (noCanary) noCanaryChecks += 1;
+          }
+          outcomes += 1;
+        }
+      }
+    }
+
+    expect({ outcomes, accepted, rejected, targetIssues, noCanaryChecks }).toEqual({
+      outcomes: 171,
+      accepted: 114,
+      rejected: 57,
+      targetIssues: 57,
+      noCanaryChecks: 57,
+    });
+  });
+
+  it('drives exact UTF-8 byte boundaries through all advertised public nodes', async () => {
+    const fixture = ProtocolUtf8BoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const artifactBytes = {
+      contractSchemas: await readFile(artifactUrls['contract-schemas']),
+      brokerContract: await readFile(artifactUrls['broker-contract']),
+      openApi: await readFile(artifactUrls.openapi),
+    };
+    expect(fixture.checkedArtifactDigests).toEqual({
+      contractSchemas: sha256(artifactBytes.contractSchemas),
+      brokerContract: sha256(artifactBytes.brokerContract),
+      openApi: sha256(artifactBytes.openApi),
+    });
+    const documents = {
+      'contract-schemas': JSON.parse(artifactBytes.contractSchemas.toString('utf8')),
+      'broker-contract': JSON.parse(artifactBytes.brokerContract.toString('utf8')),
+      openapi: JSON.parse(artifactBytes.openApi.toString('utf8')),
+    } as const satisfies Record<CheckedArtifactName, unknown>;
+    const excludedPointers = new Set(
+      fixture.scalarControlParity.artifactCoverage.excludedPointers.map(
+        ({ artifact, pointer }) => `${artifact}:${pointer}`,
+      ),
+    );
+    const publicOwners = fixture.boundaries.flatMap((boundary) =>
+      boundary.artifactPointers
+        .filter(({ artifact, pointer }) => !excludedPointers.has(`${artifact}:${pointer}`))
+        .map(({ artifact, pointer }) => ({
+          artifact,
+          pointer,
+          maxBytes: boundary.maxBytes,
+          generators: boundary.generators,
+        })),
+    );
+    const coverage = publicOwners.reduce(
+      (counts, { artifact }) => {
+        if (artifact === 'contract-schemas') counts.contractSchemas += 1;
+        if (artifact === 'broker-contract') counts.brokerContract += 1;
+        if (artifact === 'openapi') counts.openApi += 1;
+        return counts;
+      },
+      { contractSchemas: 0, brokerContract: 0, openApi: 0 },
+    );
+    expect({ ...coverage, total: publicOwners.length }).toEqual(
+      fixture.scalarControlParity.artifactCoverage.expectedCounts,
+    );
+
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    ajv.addKeyword({
+      keyword: 'x-combo-maxUtf8Bytes',
+      type: 'string',
+      schemaType: 'number',
+      errors: false,
+      validate(maximumBytes: number, value: string): boolean {
+        return Buffer.byteLength(value, 'utf8') <= maximumBytes;
+      },
+    });
+    let outcomes = 0;
+    let accepted = 0;
+    let rejected = 0;
+    let targetIssues = 0;
+    let noCanaryChecks = 0;
+    for (const owner of publicOwners) {
+      const validate = ajv.compile(
+        lookupPointer(documents[owner.artifact], owner.pointer) as AnySchema,
+      );
+      for (const generator of owner.generators) {
+        for (const delta of [-1, 0, 1] as const) {
+          const targetBytes = owner.maxBytes + delta;
+          const value = exactUtf8BytesWithCanary(targetBytes, generator);
+          expect(
+            Buffer.byteLength(value, 'utf8'),
+            `${owner.artifact}:${owner.pointer}:${generator}:${delta}:bytes`,
+          ).toBe(targetBytes);
+          const expected = delta <= 0;
+          const result = validate(value);
+          expect(
+            result,
+            `${owner.artifact}:${owner.pointer}:${generator}:${delta}:${JSON.stringify(validate.errors)}`,
+          ).toBe(expected);
+          if (result) accepted += 1;
+          else rejected += 1;
+
+          if (!expected) {
+            const targetIssue =
+              validate.errors?.some(
+                ({ keyword, instancePath }) =>
+                  keyword === 'x-combo-maxUtf8Bytes' && instancePath === '',
+              ) === true;
+            expect(
+              targetIssue,
+              `${owner.artifact}:${owner.pointer}:${generator}:target-issue`,
+            ).toBe(true);
+            if (targetIssue) targetIssues += 1;
+            const noCanary = !JSON.stringify(validate.errors).includes(UTF8_BYTE_BOUNDARY_CANARY);
+            expect(noCanary, `${owner.artifact}:${owner.pointer}:${generator}:no-canary`).toBe(
+              true,
+            );
+            if (noCanary) noCanaryChecks += 1;
+          }
+          outcomes += 1;
+        }
+      }
+    }
+
+    expect({ outcomes, accepted, rejected, targetIssues, noCanaryChecks }).toEqual({
+      outcomes: 423,
+      accepted: 282,
+      rejected: 141,
+      targetIssues: 141,
+      noCanaryChecks: 141,
+    });
   });
 
   it('keeps Signed PUT URL scalar/control parity before URL normalization', async () => {

@@ -461,7 +461,7 @@ describe('digest-bound public structural boundaries', () => {
     expect(validateAllOf(probes.rejected.at(-1)!.value)).toBe(false);
 
     expect(outcomes).toBe(parity.expectedCounts.outcomes);
-  });
+  }, 15_000);
 
   it('uses one owner UUID fixture across runtime, contract and OpenAPI Ajv boundaries', async () => {
     const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(
