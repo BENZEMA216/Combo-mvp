@@ -8,6 +8,11 @@
       "digest": "sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
     },
     {
+      "path": "agent-version-resource-boundaries.v1.json",
+      "bytes": 4309,
+      "digest": "sha256:04fbf72022791a377f2b8952e4037eed4a2c4f4c71dc6fc60eef53067e4f00fc"
+    },
+    {
       "path": "broker-conversation-open.v1.json",
       "bytes": 1353,
       "digest": "sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4"

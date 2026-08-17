@@ -12,6 +12,7 @@ export * from './invocation.js';
 export * from './invocation-facts.js';
 export * from './primitives.js';
 export * from './registry.js';
+export * from './resource-boundaries.js';
 export * from './sandbox.js';
 export * from './signatures.js';
 export * from './snapshot.js';

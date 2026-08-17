@@ -4,8 +4,8 @@
 
 ## 目录职责
 
-- `src/` 定义共享协议（包括 Snapshot Manifest、archive/manifest 两类加密 Envelope、AgentVersion、Broker、Worker Conversation Ready/Invocation durable facts、Sandbox 与 HTTP）、RFC 8785 JSON 规范化、Invocation 状态机、稳定错误和重试策略、Evidence Bundle、不变量与测试注册表。
-- `fixtures/` 保存 Schema、WSS、状态机、canonical digest 和 Evidence Bundle 的 golden vectors；`index.json` 绑定每个 fixture 的 SHA-256。
+- `src/` 定义共享协议（包括 Snapshot Manifest、archive/manifest 两类加密 Envelope、AgentVersion、Broker、Worker Conversation Ready/Invocation durable facts、Sandbox 与 HTTP）、RFC 8785 JSON 规范化、Invocation 状态机、稳定错误和重试策略、Evidence Bundle、不变量、测试注册表和独立的边界证据目录。
+- `fixtures/` 保存 Schema、WSS、状态机、canonical digest、AgentVersion 资源边界和 Evidence Bundle 的 golden vectors；`index.json` 绑定每个 fixture 的 SHA-256。
 - `schemas/contract-schemas.v1.json` 是从运行时 Zod 真源生成的 JSON Schema bundle。
 - `schemas/broker-contract.v1.json` 独立冻结 Broker handshake、registration、wire Envelope、Conversation Open authority、逻辑命令摘要、JCS canonicalization、WSS connect path/frame 上限与完整 close code/reason map；注册与握手携带它的 RFC 8785 SHA-256，但该产物自身不写入 digest 值。
 - `openapi/creator-agent-v1.openapi.json` 是 Creator 与 Consumer HTTP API 的 OpenAPI 3.1 契约。
