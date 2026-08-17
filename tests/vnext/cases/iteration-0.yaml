@@ -467,6 +467,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json
     steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
     assertions: [Invalid text is rejected and no error echoes source content]
     implementation: { status: planned, testFiles: [] }
@@ -475,6 +476,7 @@ cases:
       - sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca
       - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
       - sha256:3982e6c2f365f83f5af8896147ad12ddd6d977fa33be2a052ee2d21fe3cd77ad
+      - sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca
   - <<: *sch
     id: SCH-006
     title: Runtime and generated schemas cannot drift
@@ -588,5 +590,8 @@ cases:
   - <<: *snp
     id: SNP-010
     title: Malformed Snapshot path bytes are rejected
-    fixture: [project-hostile-paths]
+    fixture:
+      - project-hostile-paths
+      - packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json
     assertions: [Malformed UTF-8 NUL and every C0 C1 path fail before VERIFIED]
+    fixtureDigests: [sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca]

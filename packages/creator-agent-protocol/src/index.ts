@@ -14,6 +14,7 @@ export * from './http.js';
 export * from './invocation.js';
 export * from './invocation-facts.js';
 export * from './primitives.js';
+export * from './raw-ingress-hostile-boundaries.js';
 export * from './registry.js';
 export * from './resource-boundaries.js';
 export * from './sandbox.js';

@@ -603,7 +603,11 @@ function parseEvidenceJsonArtifact(bytes: Uint8Array): unknown {
   if (bytes.byteLength > EVIDENCE_MAX_STRUCTURED_JSON_BYTES) {
     throw new RangeError('structured Evidence artifact 超过 1 MiB');
   }
-  return parseJsonNoDuplicateKeys(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  // Preserve a leading BOM as U+FEFF so the JSON scanner rejects it instead of silently
+  // normalizing distinct wire bytes before digest/signature validation.
+  return parseJsonNoDuplicateKeys(
+    new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes),
+  );
 }
 
 export function validateEvidenceBundleChain(

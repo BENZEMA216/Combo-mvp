@@ -123,6 +123,11 @@
       "digest": "sha256:6387ea7f8c48c05978d6f22b4ddf6175bced448c4a403cba5e105fe5c2731350"
     },
     {
+      "path": "protocol-raw-ingress-hostile-boundaries.v1.json",
+      "bytes": 7050,
+      "digest": "sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca"
+    },
+    {
       "path": "protocol-structural-boundaries.v1.json",
       "bytes": 28925,
       "digest": "sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7"

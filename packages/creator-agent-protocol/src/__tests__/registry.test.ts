@@ -239,6 +239,24 @@ describe('VNext machine-readable contract registries', () => {
       'INV-024',
     ]);
     expect(cases.find(({ id }) => id === 'SCH-005')?.invariants).toEqual(['INV-002', 'INV-019']);
+    expect(cases.find(({ id }) => id === 'SCH-005')).toMatchObject({
+      implementation: { status: 'planned', testFiles: [] },
+      fixture: expect.arrayContaining([
+        'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
+      ]),
+      fixtureDigests: expect.arrayContaining([
+        'sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca',
+      ]),
+    });
+    expect(cases.find(({ id }) => id === 'SNP-010')).toMatchObject({
+      implementation: { status: 'planned', testFiles: [] },
+      fixture: expect.arrayContaining([
+        'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
+      ]),
+      fixtureDigests: expect.arrayContaining([
+        'sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca',
+      ]),
+    });
     expect(cases.find(({ id }) => id === 'SCH-010')?.invariants).toEqual([
       'INV-001',
       'INV-002',

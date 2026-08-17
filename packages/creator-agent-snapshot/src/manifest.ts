@@ -14,7 +14,7 @@ import { fail } from './errors.js';
 import { SnapshotPathRegistry, utf8ByteCompare } from './path-policy.js';
 import { ALPHA_SNAPSHOT_POLICY, SNAPSHOT_MANIFEST_MAX_BYTES } from './policy.js';
 
-const decoder = new TextDecoder('utf-8', { fatal: true });
+const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export type SnapshotManifestFile = ProtocolSnapshotFile;
 export type SnapshotManifest = ProtocolSnapshotManifest;
@@ -144,16 +144,16 @@ export function parseSnapshotManifest(bytes: Uint8Array): SnapshotManifest {
   try {
     text = decoder.decode(bytes);
     parsed = parseJsonNoDuplicateKeys(text);
-  } catch (error) {
-    fail('SNAPSHOT_ARCHIVE_INVALID', error);
+  } catch {
+    fail('SNAPSHOT_ARCHIVE_INVALID');
   }
 
   let manifest: SnapshotManifest;
   try {
     manifest = SnapshotManifestSchema.parse(parsed);
     if (protocolCanonicalizeJson(manifest) !== text) fail('SNAPSHOT_ARCHIVE_INVALID');
-  } catch (error) {
-    fail('SNAPSHOT_ARCHIVE_INVALID', error);
+  } catch {
+    fail('SNAPSHOT_ARCHIVE_INVALID');
   }
   validateSnapshotManifestFiles(manifest.files);
   return freezeManifest(manifest);
