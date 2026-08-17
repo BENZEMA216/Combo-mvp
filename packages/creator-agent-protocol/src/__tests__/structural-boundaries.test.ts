@@ -5,17 +5,38 @@ import { fileURLToPath } from 'node:url';
 
 import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
+import type { ZodIssue } from 'zod';
 
 import { ConsumerEventStreamSchema, decideConsumerEventReplay } from '../consumer-events.js';
 import { EvidenceReviewerSignoffSchema } from '../evidence.js';
 import {
+  DeploymentViewSchema,
   DeploymentGenerationEtagSchema,
   LastEventIdSchema,
   PublicAgentSlugSchema,
+  SnapshotPublicationCommitMarkerSchema,
+  SnapshotUploadViewSchema,
 } from '../http.js';
 import { VnextErrorResponseSchema, errorResponseFor } from '../invocation.js';
-import { ServerIdSchema, UnicodeCodePointStringSchema } from '../primitives.js';
-import { InvariantRegistrySchema, parseVnextRegistryYaml } from '../registry.js';
+import {
+  ServerIdSchema,
+  UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE,
+  UTF8_TEXT_PORTABLE_PATTERN_SOURCE,
+  UnicodeCodePointStringSchema,
+} from '../primitives.js';
+import {
+  ArchitectureDecisionSchema,
+  DataFlowAllowlistSchema,
+  DecisionRegistrySchema,
+  InvariantRegistrySchema,
+  TestCaseRegistrySchema,
+  parseVnextRegistryYaml,
+} from '../registry.js';
+import {
+  SnapshotArchiveEnvelopeAadSchema,
+  SnapshotManifestEnvelopeAadSchema,
+  snapshotPublicationPreparationObjectKey,
+} from '../snapshot.js';
 import { ProtocolStructuralBoundaryCorpusSchema } from '../structural-boundaries.js';
 
 type CheckedArtifactName = 'contractSchemas' | 'brokerContract' | 'openApi';
@@ -59,6 +80,18 @@ function collectUnicodePointers(
   for (const [key, item] of Object.entries(record)) {
     collectUnicodePointers(artifact, item, [...path, key], output);
   }
+  return output;
+}
+
+function collectPatternSources(value: unknown, output: string[] = []): string[] {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectPatternSources(item, output));
+    return output;
+  }
+  if (value === null || typeof value !== 'object') return output;
+  const record = value as Record<string, unknown>;
+  if (typeof record.pattern === 'string') output.push(record.pattern);
+  Object.values(record).forEach((item) => collectPatternSources(item, output));
   return output;
 }
 
@@ -109,12 +142,133 @@ function replacePointer(document: unknown, pointer: string, replacement: unknown
   return clone;
 }
 
+function pointerIssuePath(pointer: string): string {
+  return pointer
+    .slice(1)
+    .split('/')
+    .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'))
+    .join('/');
+}
+
+function flattenZodIssues(issues: readonly ZodIssue[]): ZodIssue[] {
+  return issues.flatMap((issue) =>
+    issue.code === 'invalid_union'
+      ? [issue, ...issue.unionErrors.flatMap((error) => flattenZodIssues(error.issues))]
+      : [issue],
+  );
+}
+
 async function readOwnerFixture(ownerFixture: {
   path: string;
   format: 'json' | 'yaml';
 }): Promise<unknown> {
   const source = await readFile(join(repositoryRoot, ownerFixture.path), 'utf8');
   return ownerFixture.format === 'json' ? JSON.parse(source) : parseVnextRegistryYaml(source);
+}
+
+function inlineUnicodeOwnerFixture(source: string): unknown {
+  const creatorId = '0198f00d-8000-7000-8000-000000000001';
+  const snapshotDigest = '05b3abf2579a5eb66403cd78be557fd860633a1fe2103c7642030defe32c657f';
+  switch (source) {
+    case 'inline:vnext-error-response':
+      return errorResponseFor('INVALID_INPUT', 'request-1234');
+    case 'inline:snapshot-publication-commit-marker':
+      return {
+        protocol: 'combo.snapshot-publication-commit/1',
+        schemaVersion: 1,
+        creatorId,
+        snapshotDigest,
+        preparationKey: snapshotPublicationPreparationObjectKey(creatorId, snapshotDigest),
+        preparationDigest: '0'.repeat(64),
+      };
+    case 'inline:snapshot-upload-view':
+      return {
+        protocol: 'combo.creator-agent-http/1',
+        uploadId: '0198f00d-8000-7000-8000-000000000002',
+        state: 'REJECTED',
+        snapshotId: null,
+        snapshotDigest,
+        errorCode: 'SNAPSHOT_REJECTED',
+        updatedAt: '2026-08-20T08:00:10.000Z',
+      };
+    case 'inline:deployment-view':
+      return {
+        protocol: 'combo.creator-agent-http/1',
+        agentId: '0198f00d-8000-7000-8000-000000000003',
+        desiredState: 'OFFLINE',
+        desiredVersionId: null,
+        servingVersionId: null,
+        observedState: 'BLOCKED',
+        generation: '1',
+        lastErrorCode: 'MODEL_QUOTA_EXHAUSTED',
+        updatedAt: '2026-08-20T08:00:10.000Z',
+      };
+    default:
+      throw new Error(`STRUCTURAL_INLINE_FIXTURE_UNKNOWN:${source}`);
+  }
+}
+
+function parseUnicodeRuntimeOwner(parser: string, input: unknown) {
+  switch (parser) {
+    case 'InvariantRegistrySchema':
+      return InvariantRegistrySchema.safeParse(input);
+    case 'TestCaseRegistrySchema':
+      return TestCaseRegistrySchema.safeParse(input);
+    case 'DecisionRegistrySchema':
+      return DecisionRegistrySchema.safeParse(input);
+    case 'ArchitectureDecisionSchema':
+      return ArchitectureDecisionSchema.safeParse(input);
+    case 'DataFlowAllowlistSchema':
+      return DataFlowAllowlistSchema.safeParse(input);
+    case 'VnextErrorResponseSchema':
+      return VnextErrorResponseSchema.safeParse(input);
+    case 'SnapshotPublicationCommitMarkerSchema':
+      return SnapshotPublicationCommitMarkerSchema.safeParse(input);
+    case 'SnapshotUploadViewSchema':
+      return SnapshotUploadViewSchema.safeParse(input);
+    case 'DeploymentViewSchema':
+      return DeploymentViewSchema.safeParse(input);
+    case 'SnapshotArchiveEnvelopeAadSchema':
+      return SnapshotArchiveEnvelopeAadSchema.safeParse(input);
+    case 'SnapshotManifestEnvelopeAadSchema':
+      return SnapshotManifestEnvelopeAadSchema.safeParse(input);
+    default:
+      throw new Error(`STRUCTURAL_RUNTIME_PARSER_UNKNOWN:${parser}`);
+  }
+}
+
+function unicodeScalarProbes(parity: {
+  canaryPrefix: string;
+  probeRecipe: {
+    accepted: readonly { id: string; codeUnits: readonly number[] }[];
+    forbiddenControlRanges: readonly { id: string; start: number; end: number }[];
+    allowedControlCodeUnits: readonly number[];
+    loneSurrogates: readonly { id: string; codeUnit: number }[];
+  };
+}) {
+  const value = (codeUnits: readonly number[]) =>
+    parity.canaryPrefix + String.fromCharCode(...codeUnits);
+  const accepted = parity.probeRecipe.accepted.map((probe) => ({
+    id: probe.id,
+    value: value(probe.codeUnits),
+  }));
+  const allowed = new Set(parity.probeRecipe.allowedControlCodeUnits);
+  const controls = parity.probeRecipe.forbiddenControlRanges.flatMap((range) =>
+    Array.from({ length: range.end - range.start + 1 }, (_, offset) => range.start + offset)
+      .filter((codeUnit) => !allowed.has(codeUnit))
+      .map((codeUnit) => ({
+        id: `${range.id}-${codeUnit.toString(16).padStart(2, '0')}`,
+        value: value([codeUnit]),
+      })),
+  );
+  const rejected = [
+    ...controls,
+    ...parity.probeRecipe.loneSurrogates.map((probe) => ({
+      id: probe.id,
+      value: value([probe.codeUnit]),
+    })),
+  ];
+  return { accepted, rejected, all: [...accepted, ...rejected] };
 }
 
 describe('digest-bound public structural boundaries', () => {
@@ -158,6 +312,155 @@ describe('digest-bound public structural boundaries', () => {
         });
       }
     }
+  });
+
+  it('binds every Unicode code-point runtime owner to the compact scalar-control matrix', async () => {
+    const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const parity = corpus.unicodeScalarParity;
+    const probes = unicodeScalarProbes(parity);
+    expect(probes.accepted).toHaveLength(parity.probeRecipe.expectedCounts.accepted);
+    expect(probes.rejected).toHaveLength(parity.probeRecipe.expectedCounts.rejected);
+    expect(probes.all).toHaveLength(parity.probeRecipe.expectedCounts.total);
+
+    let outcomes = 0;
+    for (const owner of parity.runtimeOwners) {
+      const fixture =
+        owner.fixtureFormat === 'inline'
+          ? inlineUnicodeOwnerFixture(owner.fixtureSource)
+          : await readOwnerFixture({
+              path: owner.fixtureSource,
+              format: owner.fixtureFormat,
+            });
+      const extractsOwner =
+        owner.runtimeParser === 'ArchitectureDecisionSchema' ||
+        owner.runtimeParser === 'SnapshotArchiveEnvelopeAadSchema' ||
+        owner.runtimeParser === 'SnapshotManifestEnvelopeAadSchema';
+      const parserInput = extractsOwner ? lookupValue(fixture, owner.ownerPointer) : fixture;
+      const valuePointer = extractsOwner
+        ? owner.instancePointer
+        : `${owner.ownerPointer}${owner.instancePointer}`;
+      expect(
+        parseUnicodeRuntimeOwner(owner.runtimeParser, parserInput).success,
+        `runtime:${owner.id}:fixture`,
+      ).toBe(true);
+
+      if (owner.kind === 'ordinary') {
+        for (const probe of probes.accepted) {
+          const result = parseUnicodeRuntimeOwner(
+            owner.runtimeParser,
+            replacePointer(parserInput, valuePointer, probe.value),
+          );
+          expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(true);
+          outcomes += 1;
+        }
+      }
+      for (const probe of probes.rejected) {
+        const result = parseUnicodeRuntimeOwner(
+          owner.runtimeParser,
+          replacePointer(parserInput, valuePointer, probe.value),
+        );
+        expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(false);
+        if (!result.success) {
+          expect(
+            flattenZodIssues(result.error.issues).some(
+              (issue) =>
+                issue.code === 'invalid_string' &&
+                issue.validation === 'regex' &&
+                issue.path.map(String).join('/') === pointerIssuePath(valuePointer),
+            ),
+            `runtime-regex:${owner.id}:${probe.id}`,
+          ).toBe(true);
+          expect(JSON.stringify(result.error.issues)).not.toContain(parity.canaryPrefix);
+        }
+        outcomes += 1;
+      }
+    }
+
+    const documents = Object.fromEntries(
+      await Promise.all(
+        Object.entries(artifactUrls).map(async ([name, url]) => [
+          name,
+          JSON.parse(await readFile(url, 'utf8')),
+        ]),
+      ),
+    ) as Record<CheckedArtifactName, unknown>;
+    const publicPointers = corpus.unicodeBoundaries.flatMap(
+      ({ minimumCodePoints, artifactPointers }) =>
+        artifactPointers.map(({ artifact, pointer }) => ({
+          artifact,
+          pointer,
+          minimumCodePoints,
+        })),
+    );
+    expect(publicPointers).toHaveLength(parity.expectedCounts.publicNodes);
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    for (const { artifact, pointer, minimumCodePoints } of publicPointers) {
+      const publicNode = lookupPointer(documents[artifact], pointer);
+      const expectedPattern =
+        minimumCodePoints === 0
+          ? UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE
+          : UTF8_TEXT_PORTABLE_PATTERN_SOURCE;
+      expect(
+        [...new Set(collectPatternSources(publicNode))],
+        `pattern:${artifact}:${pointer}`,
+      ).toEqual([expectedPattern]);
+      const validate = ajv.compile(publicNode as AnySchema);
+      for (const probe of probes.accepted) {
+        expect(validate(probe.value), `public:${artifact}:${pointer}:${probe.id}`).toBe(true);
+        outcomes += 1;
+      }
+      for (const probe of probes.rejected) {
+        expect(validate(probe.value), `public:${artifact}:${pointer}:${probe.id}`).toBe(false);
+        expect(JSON.stringify(validate.errors)).not.toContain(parity.canaryPrefix);
+        outcomes += 1;
+      }
+    }
+
+    expect(corpus.unicodeBoundaries).toHaveLength(parity.expectedCounts.helperBoundaries);
+    for (const boundary of corpus.unicodeBoundaries) {
+      const helper = UnicodeCodePointStringSchema(
+        boundary.minimumCodePoints,
+        boundary.maximumCodePoints,
+      );
+      for (const probe of probes.accepted) {
+        expect(helper.safeParse(probe.value).success, `helper:${probe.id}`).toBe(true);
+        outcomes += 1;
+      }
+      for (const probe of probes.rejected) {
+        const result = helper.safeParse(probe.value);
+        expect(result.success, `helper:${probe.id}`).toBe(false);
+        if (!result.success) {
+          expect(JSON.stringify(result.error.issues)).not.toContain(parity.canaryPrefix);
+        }
+        outcomes += 1;
+      }
+    }
+
+    for (const wrapper of parity.nullableWrappers) {
+      const validate = ajv.compile(
+        lookupPointer(documents[wrapper.artifact], wrapper.pointer) as AnySchema,
+      );
+      expect(validate(null), `nullable:${wrapper.id}:null`).toBe(true);
+      expect(validate(probes.accepted[0]!.value), `nullable:${wrapper.id}:scalar`).toBe(true);
+      expect(validate(probes.rejected.at(-1)!.value), `nullable:${wrapper.id}:surrogate`).toBe(
+        false,
+      );
+    }
+
+    const messageNode = lookupPointer(
+      documents.contractSchemas,
+      '/schemas/VnextErrorResponse/definitions/VnextErrorResponse/properties/message',
+    );
+    const validateAllOf = ajv.compile({
+      allOf: [{ type: 'string', pattern: parity.syntheticBasePatternSource }, messageNode],
+    });
+    expect(validateAllOf('base-alpha')).toBe(true);
+    expect(validateAllOf('other')).toBe(false);
+    expect(validateAllOf(probes.rejected.at(-1)!.value)).toBe(false);
+
+    expect(outcomes).toBe(parity.expectedCounts.outcomes);
   });
 
   it('uses one owner UUID fixture across runtime, contract and OpenAPI Ajv boundaries', async () => {

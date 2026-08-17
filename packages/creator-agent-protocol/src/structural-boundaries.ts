@@ -30,6 +30,145 @@ const UnicodeBoundarySchema = z
     message: 'Unicode code-point minimum must not exceed maximum',
   });
 
+const UnicodeRuntimeOwnerIdSchema = z.enum([
+  'invariant-statement',
+  'invariant-owner',
+  'testcase-title',
+  'testcase-fixture',
+  'testcase-fault',
+  'testcase-step',
+  'testcase-assertion',
+  'testcase-evidence',
+  'testcase-owner',
+  'testcase-reviewer',
+  'testcase-test-file',
+  'testcase-release-tuple',
+  'decision-title',
+  'decision-owner',
+  'decision-body',
+  'decision-alternative',
+  'decision-evidence',
+  'decision-security-impact',
+  'decision-reversal-trigger',
+  'decision-protocol-version',
+  'architecture-decision-summary',
+  'data-flow-deletion-or-hold',
+  'vnext-error-message',
+  'vnext-error-request-id',
+  'snapshot-publication-preparation-key',
+  'snapshot-upload-error-code',
+  'deployment-last-error-code',
+  'snapshot-archive-object-key',
+  'snapshot-manifest-object-key',
+]);
+
+const UnicodeRuntimeOwnerSchema = z
+  .object({
+    id: UnicodeRuntimeOwnerIdSchema,
+    source: z.string().min(1).max(180),
+    runtimeParser: z.string().min(1).max(96),
+    fixtureSource: z.string().min(1).max(180),
+    fixtureFormat: z.enum(['json', 'yaml', 'inline']),
+    ownerPointer: z
+      .string()
+      .max(512)
+      .regex(/^(?:|\/(?:[^~]|~[01])*)$/u),
+    instancePointer: z
+      .string()
+      .min(1)
+      .max(512)
+      .regex(/^\/(?:[^~]|~[01])*$/u),
+    minimumCodePoints: z.number().int().nonnegative(),
+    maximumCodePoints: z.number().int().positive(),
+    kind: z.enum(['ordinary', 'exact-derived']),
+  })
+  .strict();
+
+const UnicodeScalarParitySchema = z
+  .object({
+    canaryPrefix: z.literal('UNICODE_SCALAR_CANARY_'),
+    runtimeOwners: z.array(UnicodeRuntimeOwnerSchema).length(29),
+    probeRecipe: z
+      .object({
+        accepted: z.tuple([
+          z.object({ id: z.literal('tab'), codeUnits: z.tuple([z.literal(0x09)]) }).strict(),
+          z.object({ id: z.literal('lf'), codeUnits: z.tuple([z.literal(0x0a)]) }).strict(),
+          z.object({ id: z.literal('cr'), codeUnits: z.tuple([z.literal(0x0d)]) }).strict(),
+          z
+            .object({
+              id: z.literal('astral'),
+              codeUnits: z.tuple([z.literal(0xd83d), z.literal(0xde00)]),
+            })
+            .strict(),
+        ]),
+        forbiddenControlRanges: z.tuple([
+          z.object({ id: z.literal('c0'), start: z.literal(0x00), end: z.literal(0x1f) }).strict(),
+          z.object({ id: z.literal('c1'), start: z.literal(0x7f), end: z.literal(0x9f) }).strict(),
+        ]),
+        allowedControlCodeUnits: z.tuple([z.literal(0x09), z.literal(0x0a), z.literal(0x0d)]),
+        loneSurrogates: z.tuple([
+          z.object({ id: z.literal('high-surrogate'), codeUnit: z.literal(0xd800) }).strict(),
+          z.object({ id: z.literal('low-surrogate'), codeUnit: z.literal(0xdc00) }).strict(),
+        ]),
+        expectedCounts: z
+          .object({
+            accepted: z.literal(4),
+            rejected: z.literal(64),
+            total: z.literal(68),
+          })
+          .strict(),
+      })
+      .strict(),
+    nullableWrappers: z.tuple([
+      z
+        .object({
+          id: z.literal('snapshot-upload-error-code'),
+          artifact: z.literal('contractSchemas'),
+          pointer: z.literal(
+            '/schemas/SnapshotUploadView/definitions/SnapshotUploadView/properties/errorCode',
+          ),
+        })
+        .strict(),
+      z
+        .object({
+          id: z.literal('deployment-last-error-code'),
+          artifact: z.literal('contractSchemas'),
+          pointer: z.literal(
+            '/schemas/DeploymentView/definitions/DeploymentView/properties/lastErrorCode',
+          ),
+        })
+        .strict(),
+    ]),
+    syntheticBasePatternSource: z.literal('^base-[a-z]+$'),
+    expectedCounts: z
+      .object({
+        runtimeOwners: z.literal(29),
+        ordinaryOwners: z.literal(26),
+        exactDerivedOwners: z.literal(3),
+        publicNodes: z.literal(47),
+        helperBoundaries: z.literal(8),
+        outcomes: z.literal(5_700),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((parity, context) => {
+    const ids = parity.runtimeOwners.map(({ id }) => id);
+    const ordinary = parity.runtimeOwners.filter(({ kind }) => kind === 'ordinary').length;
+    const derived = parity.runtimeOwners.filter(({ kind }) => kind === 'exact-derived').length;
+    if (
+      new Set(ids).size !== parity.expectedCounts.runtimeOwners ||
+      ordinary !== parity.expectedCounts.ordinaryOwners ||
+      derived !== parity.expectedCounts.exactDerivedOwners
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['runtimeOwners'],
+        message: 'Unicode scalar runtime-owner coverage must remain exact',
+      });
+    }
+  });
+
 const HttpBoundarySchema = z
   .object({
     id: z.enum(['public-agent-slug', 'deployment-generation-etag', 'last-event-id']),
@@ -104,6 +243,7 @@ export const ProtocolStructuralBoundaryCorpusSchema = z
       })
       .strict(),
     unicodeBoundaries: z.array(UnicodeBoundarySchema).length(8),
+    unicodeScalarParity: UnicodeScalarParitySchema,
     httpBoundaries: z.array(HttpBoundarySchema).length(3),
     serverIdBoundary: ServerIdBoundarySchema,
     gateSetBoundaries: z.tuple([

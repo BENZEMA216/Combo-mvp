@@ -85,6 +85,7 @@ export const UnicodeCodePointStringSchema = (
     throw new TypeError('Unicode code-point boundary 无效');
   }
   return baseSchema
+    .regex(minimumCodePoints > 0 ? UTF8_TEXT_PORTABLE_PATTERN : UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN)
     .superRefine((value, context) => {
       let codePoints = 0;
       for (const _character of value) {
@@ -132,6 +133,12 @@ export const P256P1363SignatureSchema = CanonicalBase64UrlBytesSchema(64, 64);
 export const UTF8_TEXT_PORTABLE_PATTERN_SOURCE =
   '^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$';
 export const UTF8_TEXT_PORTABLE_PATTERN = new RegExp(UTF8_TEXT_PORTABLE_PATTERN_SOURCE, 'u');
+export const UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE =
+  '^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$';
+export const UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN = new RegExp(
+  UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE,
+  'u',
+);
 export const UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE =
   '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$';
 export const UNICODE_SCALAR_NO_CONTROL_PATTERN = new RegExp(

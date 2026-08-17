@@ -441,14 +441,14 @@ cases:
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
-      - sha256:41430bdada817ccf6eff494f79a05453e60c74f2ddb67bab108d466a5abb566f
-      - sha256:aeb1486f2ebefa8f0bb7b090112feef41eb19d1ef5b28dcf6f61dd67b76bc99b
-      - sha256:66ac6eb62e1018170256a0aa6600b406d2d459772564677f17fea3117d5f951b
-      - sha256:f2df1af19c47321932dddbb9b42f8d686469d7f3aef0c9b4c825a0bb6e89b9f7
-      - sha256:1e9b43575b3571b41afc287517544d1413d728a7da80f27402e785e754321155
-      - sha256:ce28cadddcb73c41017096cfff572de6f81cc0b7016946883aaf955929e17eac
-      - sha256:6ca1575b7a1cf9aadc42aeeca6ba9c6557b5790e6915d33da9aebc985417bf92
-      - sha256:68e57cf1af5384ef03bdce785e355caf9e3c8f166506b9c56d85e312a9f53901
+      - sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca
+      - sha256:6387ea7f8c48c05978d6f22b4ddf6175bced448c4a403cba5e105fe5c2731350
+      - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
+      - sha256:d19a89c7abb5f16883ac55ad9709ce54e027fffa40fe7bc9bd603626c3840ca2
+      - sha256:dfe25e6e244468dec22366ea37bd68d34667a9452fffe1651ed0896858e5cac2
+      - sha256:36e05cdbaedb0eb0dc885c976be4f71a781530684da72b5b471a6dc97cea64bf
+      - sha256:19223bcfda15eaa0d7fcf485ecd27ae176edd960a2a172074d38802e2f8a1f9c
+      - sha256:3f59901e004372afafa698bb497edcb1deeefb01654a1eca543dc3b4cf925862
       - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
   - <<: *sch
     id: SCH-005
@@ -456,13 +456,15 @@ cases:
     fixture:
       - packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
     assertions: [Invalid text is rejected and no error echoes source content]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
-      - sha256:41430bdada817ccf6eff494f79a05453e60c74f2ddb67bab108d466a5abb566f
+      - sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca
+      - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
       - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
   - <<: *sch
     id: SCH-006
@@ -482,9 +484,9 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:4d951179996a10916f504307c7a28864385eba245c1fc8eada469e7382c04cf2
+      - sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb
       - sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f
-      - sha256:96d2c05fa60881e31f493023d2fe134f4a711ff1855e6aa2e41f86d4fbe5dd82
+      - sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest

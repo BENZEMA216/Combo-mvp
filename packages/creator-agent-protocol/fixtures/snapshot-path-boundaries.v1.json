@@ -10,13 +10,13 @@
   "checkedDependencies": {
     "utf8BoundaryCorpus": {
       "path": "protocol-utf8-boundaries.v1.json",
-      "digest": "sha256:41430bdada817ccf6eff494f79a05453e60c74f2ddb67bab108d466a5abb566f"
+      "digest": "sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca"
     },
     "baseManifest": {
       "path": "snapshot-manifest.v1.json",
       "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
     },
-    "contractSchemas": "sha256:4d951179996a10916f504307c7a28864385eba245c1fc8eada469e7382c04cf2"
+    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb"
   },
   "pathRecipe": {
     "algorithm": "segmented-ascii-cjk-astral/1",

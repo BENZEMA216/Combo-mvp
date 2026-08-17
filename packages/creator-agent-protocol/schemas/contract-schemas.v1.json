@@ -325,6 +325,7 @@
             },
             "objectKey": {
               "type": "string",
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -381,6 +382,7 @@
                 },
                 "objectKey": {
                   "type": "string",
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "String containing 1 to 512 Unicode code points",
                   "minLength": 1,
                   "maxLength": 512,
@@ -480,6 +482,7 @@
             "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "objectKey": {
               "type": "string",
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -535,6 +538,7 @@
                 "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                 "objectKey": {
                   "type": "string",
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "String containing 1 to 512 Unicode code points",
                   "minLength": 1,
                   "maxLength": 512,
@@ -671,6 +675,7 @@
                             },
                             "objectKey": {
                               "type": "string",
+                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "String containing 1 to 512 Unicode code points",
                               "minLength": 1,
                               "maxLength": 512,
@@ -789,6 +794,7 @@
                             },
                             "objectKey": {
                               "type": "string",
+                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "String containing 1 to 512 Unicode code points",
                               "minLength": 1,
                               "maxLength": 512,
@@ -913,6 +919,7 @@
             "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "preparationKey": {
               "type": "string",
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -4540,6 +4547,7 @@
             },
             "message": {
               "type": "string",
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -4547,6 +4555,7 @@
             },
             "requestId": {
               "type": "string",
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 8 to 128 Unicode code points",
               "minLength": 8,
               "maxLength": 128,
@@ -5055,6 +5064,7 @@
                         },
                         "objectKey": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -5163,6 +5173,7 @@
                         },
                         "objectKey": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -5474,6 +5485,7 @@
               "anyOf": [
                 {
                   "type": "string",
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
                   "description": "String containing 0 to 128 Unicode code points",
                   "minLength": 0,
                   "maxLength": 128,
@@ -5939,6 +5951,7 @@
               "anyOf": [
                 {
                   "type": "string",
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
                   "description": "String containing 0 to 128 Unicode code points",
                   "minLength": 0,
                   "maxLength": 128,
@@ -6173,6 +6186,7 @@
                     },
                     "message": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 512 Unicode code points",
                       "minLength": 1,
                       "maxLength": 512,
@@ -6180,6 +6194,7 @@
                     },
                     "requestId": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 8 to 128 Unicode code points",
                       "minLength": 8,
                       "maxLength": 128,
@@ -8200,6 +8215,7 @@
                   "id": { "type": "string", "pattern": "^INV-\\d{3}$" },
                   "statement": {
                     "type": "string",
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 1024 Unicode code points",
                     "minLength": 1,
                     "maxLength": 1024,
@@ -8220,6 +8236,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 64 Unicode code points",
                       "minLength": 1,
                       "maxLength": 64,
@@ -8260,6 +8277,7 @@
                   },
                   "title": {
                     "type": "string",
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 256 Unicode code points",
                     "minLength": 1,
                     "maxLength": 256,
@@ -8291,6 +8309,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 256 Unicode code points",
                       "minLength": 1,
                       "maxLength": 256,
@@ -8302,6 +8321,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 256 Unicode code points",
                       "minLength": 1,
                       "maxLength": 256,
@@ -8312,6 +8332,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 512 Unicode code points",
                       "minLength": 1,
                       "maxLength": 512,
@@ -8322,6 +8343,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 512 Unicode code points",
                       "minLength": 1,
                       "maxLength": 512,
@@ -8333,6 +8355,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 256 Unicode code points",
                       "minLength": 1,
                       "maxLength": 256,
@@ -8353,6 +8376,7 @@
                   },
                   "owner": {
                     "type": "string",
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 64 Unicode code points",
                     "minLength": 1,
                     "maxLength": 64,
@@ -8360,6 +8384,7 @@
                   },
                   "reviewer": {
                     "type": "string",
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 64 Unicode code points",
                     "minLength": 1,
                     "maxLength": 64,
@@ -8377,6 +8402,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -8391,6 +8417,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 128 Unicode code points",
                       "minLength": 1,
                       "maxLength": 128,
@@ -8451,6 +8478,7 @@
                       "id": { "type": "string", "pattern": "^ADR-VNEXT-(?:00[1-9]|01\\d|020)$" },
                       "title": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 256 Unicode code points",
                         "minLength": 1,
                         "maxLength": 256,
@@ -8459,6 +8487,7 @@
                       "status": { "type": "string", "const": "accepted" },
                       "owner": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 64 Unicode code points",
                         "minLength": 1,
                         "maxLength": 64,
@@ -8467,6 +8496,7 @@
                       "decidedAt": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
                       "decision": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 2048 Unicode code points",
                         "minLength": 1,
                         "maxLength": 2048,
@@ -8476,6 +8506,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 1024 Unicode code points",
                           "minLength": 1,
                           "maxLength": 1024,
@@ -8487,6 +8518,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -8496,6 +8528,7 @@
                       },
                       "securityImpact": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 2048 Unicode code points",
                         "minLength": 1,
                         "maxLength": 2048,
@@ -8505,6 +8538,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 1024 Unicode code points",
                           "minLength": 1,
                           "maxLength": 1024,
@@ -8516,6 +8550,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 128 Unicode code points",
                           "minLength": 1,
                           "maxLength": 128,
@@ -8554,6 +8589,7 @@
                       },
                       "architectureDecisionSummary": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 256 Unicode code points",
                         "minLength": 1,
                         "maxLength": 256,
@@ -8745,6 +8781,7 @@
                   },
                   "deletionOrHold": {
                     "type": "string",
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 1024 Unicode code points",
                     "minLength": 1,
                     "maxLength": 1024,

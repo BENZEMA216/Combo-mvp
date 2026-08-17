@@ -578,6 +578,7 @@
                       "archiveDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                       "objectKey": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 512 Unicode code points",
                         "minLength": 1,
                         "maxLength": 512,
@@ -682,6 +683,7 @@
                       "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                       "objectKey": {
                         "type": "string",
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 512 Unicode code points",
                         "minLength": 1,
                         "maxLength": 512,
@@ -948,6 +950,7 @@
           "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "errorCode": {
             "type": "string",
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
             "description": "String containing 0 to 128 Unicode code points",
             "nullable": true,
             "minLength": 0,
@@ -1368,6 +1371,7 @@
           },
           "lastErrorCode": {
             "type": "string",
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
             "description": "String containing 0 to 128 Unicode code points",
             "nullable": true,
             "minLength": 0,
@@ -1577,6 +1581,7 @@
               },
               "message": {
                 "type": "string",
+                "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                 "description": "String containing 1 to 512 Unicode code points",
                 "minLength": 1,
                 "maxLength": 512,
@@ -1584,6 +1589,7 @@
               },
               "requestId": {
                 "type": "string",
+                "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                 "description": "String containing 8 to 128 Unicode code points",
                 "minLength": 8,
                 "maxLength": 128,
@@ -2455,6 +2461,7 @@
           },
           "message": {
             "type": "string",
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
             "description": "String containing 1 to 512 Unicode code points",
             "minLength": 1,
             "maxLength": 512,
@@ -2462,6 +2469,7 @@
           },
           "requestId": {
             "type": "string",
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
             "description": "String containing 8 to 128 Unicode code points",
             "minLength": 8,
             "maxLength": 128,

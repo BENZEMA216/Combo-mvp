@@ -3,9 +3,9 @@
   "schemaVersion": 1,
   "scope": "unicode-http-and-frozen-resource-boundaries-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:4d951179996a10916f504307c7a28864385eba245c1fc8eada469e7382c04cf2",
+    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb",
     "brokerContract": "sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f",
-    "openApi": "sha256:96d2c05fa60881e31f493023d2fe134f4a711ff1855e6aa2e41f86d4fbe5dd82"
+    "openApi": "sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce"
   },
   "unicodeBoundaries": [
     {
@@ -245,6 +245,398 @@
       ]
     }
   ],
+  "unicodeScalarParity": {
+    "canaryPrefix": "UNICODE_SCALAR_CANARY_",
+    "runtimeOwners": [
+      {
+        "id": "invariant-statement",
+        "source": "src/registry.ts:InvariantRegistrySchema.invariants[].statement",
+        "runtimeParser": "InvariantRegistrySchema",
+        "fixtureSource": "tests/vnext/invariants.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/invariants/0",
+        "instancePointer": "/statement",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 1024,
+        "kind": "ordinary"
+      },
+      {
+        "id": "invariant-owner",
+        "source": "src/registry.ts:InvariantRegistrySchema.invariants[].owners[]",
+        "runtimeParser": "InvariantRegistrySchema",
+        "fixtureSource": "tests/vnext/invariants.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/invariants/0",
+        "instancePointer": "/owners/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 64,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-title",
+        "source": "src/registry.ts:TestCaseSchema.title",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/title",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 256,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-fixture",
+        "source": "src/registry.ts:TestCaseSchema.fixture[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/fixture/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 256,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-fault",
+        "source": "src/registry.ts:TestCaseSchema.fault[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/fault/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 256,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-step",
+        "source": "src/registry.ts:TestCaseSchema.steps[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/steps/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-assertion",
+        "source": "src/registry.ts:TestCaseSchema.assertions[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/assertions/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-evidence",
+        "source": "src/registry.ts:TestCaseSchema.evidence[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/evidence/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 256,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-owner",
+        "source": "src/registry.ts:TestCaseSchema.owner",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/owner",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 64,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-reviewer",
+        "source": "src/registry.ts:TestCaseSchema.reviewer",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/reviewer",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 64,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-test-file",
+        "source": "src/registry.ts:TestCaseSchema.implementation.testFiles[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/46",
+        "instancePointer": "/implementation/testFiles/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "ordinary"
+      },
+      {
+        "id": "testcase-release-tuple",
+        "source": "src/registry.ts:TestCaseSchema.releaseTuple[]",
+        "runtimeParser": "TestCaseRegistrySchema",
+        "fixtureSource": "tests/vnext/cases/iteration-0.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/cases/0",
+        "instancePointer": "/releaseTuple/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 128,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-title",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.title",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/title",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 256,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-owner",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.owner",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/owner",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 64,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-body",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.decision",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/decision",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 2048,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-alternative",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.alternatives[]",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/alternatives/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 1024,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-evidence",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.evidence[]",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/evidence/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-security-impact",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.securityImpact",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/securityImpact",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 2048,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-reversal-trigger",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.reversalTriggers[]",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/reversalTriggers/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 1024,
+        "kind": "ordinary"
+      },
+      {
+        "id": "decision-protocol-version",
+        "source": "src/registry.ts:DecisionRegistryCommonShape.protocolVersions[]",
+        "runtimeParser": "DecisionRegistrySchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/0",
+        "instancePointer": "/protocolVersions/0",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 128,
+        "kind": "ordinary"
+      },
+      {
+        "id": "architecture-decision-summary",
+        "source": "src/registry.ts:ArchitectureDecisionSchema.architectureDecisionSummary",
+        "runtimeParser": "ArchitectureDecisionSchema",
+        "fixtureSource": "tests/vnext/decisions.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/decisions/20",
+        "instancePointer": "/architectureDecisionSummary",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 256,
+        "kind": "ordinary"
+      },
+      {
+        "id": "data-flow-deletion-or-hold",
+        "source": "src/registry.ts:DataFlowFieldSchema.deletionOrHold",
+        "runtimeParser": "DataFlowAllowlistSchema",
+        "fixtureSource": "tests/vnext/data-flow-allowlist.yaml",
+        "fixtureFormat": "yaml",
+        "ownerPointer": "/fields/0",
+        "instancePointer": "/deletionOrHold",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 1024,
+        "kind": "ordinary"
+      },
+      {
+        "id": "vnext-error-message",
+        "source": "src/invocation.ts:VnextErrorResponseSchema.message",
+        "runtimeParser": "VnextErrorResponseSchema",
+        "fixtureSource": "inline:vnext-error-response",
+        "fixtureFormat": "inline",
+        "ownerPointer": "",
+        "instancePointer": "/message",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "ordinary"
+      },
+      {
+        "id": "vnext-error-request-id",
+        "source": "src/invocation.ts:VnextErrorResponseSchema.requestId",
+        "runtimeParser": "VnextErrorResponseSchema",
+        "fixtureSource": "inline:vnext-error-response",
+        "fixtureFormat": "inline",
+        "ownerPointer": "",
+        "instancePointer": "/requestId",
+        "minimumCodePoints": 8,
+        "maximumCodePoints": 128,
+        "kind": "ordinary"
+      },
+      {
+        "id": "snapshot-publication-preparation-key",
+        "source": "src/http.ts:SnapshotPublicationCommitMarkerSchema.preparationKey",
+        "runtimeParser": "SnapshotPublicationCommitMarkerSchema",
+        "fixtureSource": "inline:snapshot-publication-commit-marker",
+        "fixtureFormat": "inline",
+        "ownerPointer": "",
+        "instancePointer": "/preparationKey",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "exact-derived"
+      },
+      {
+        "id": "snapshot-upload-error-code",
+        "source": "src/http.ts:SnapshotUploadViewSchema.errorCode",
+        "runtimeParser": "SnapshotUploadViewSchema",
+        "fixtureSource": "inline:snapshot-upload-view",
+        "fixtureFormat": "inline",
+        "ownerPointer": "",
+        "instancePointer": "/errorCode",
+        "minimumCodePoints": 0,
+        "maximumCodePoints": 128,
+        "kind": "ordinary"
+      },
+      {
+        "id": "deployment-last-error-code",
+        "source": "src/http.ts:DeploymentViewSchema.lastErrorCode",
+        "runtimeParser": "DeploymentViewSchema",
+        "fixtureSource": "inline:deployment-view",
+        "fixtureFormat": "inline",
+        "ownerPointer": "",
+        "instancePointer": "/lastErrorCode",
+        "minimumCodePoints": 0,
+        "maximumCodePoints": 128,
+        "kind": "ordinary"
+      },
+      {
+        "id": "snapshot-archive-object-key",
+        "source": "src/snapshot.ts:SnapshotArchiveEnvelopeAadSchema.objectKey",
+        "runtimeParser": "SnapshotArchiveEnvelopeAadSchema",
+        "fixtureSource": "packages/creator-agent-protocol/fixtures/snapshot-envelope.v1.json",
+        "fixtureFormat": "json",
+        "ownerPointer": "/aad",
+        "instancePointer": "/objectKey",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "exact-derived"
+      },
+      {
+        "id": "snapshot-manifest-object-key",
+        "source": "src/snapshot.ts:SnapshotManifestEnvelopeAadSchema.objectKey",
+        "runtimeParser": "SnapshotManifestEnvelopeAadSchema",
+        "fixtureSource": "packages/creator-agent-protocol/fixtures/snapshot-manifest-envelope.v1.json",
+        "fixtureFormat": "json",
+        "ownerPointer": "/aad",
+        "instancePointer": "/objectKey",
+        "minimumCodePoints": 1,
+        "maximumCodePoints": 512,
+        "kind": "exact-derived"
+      }
+    ],
+    "probeRecipe": {
+      "accepted": [
+        { "id": "tab", "codeUnits": [9] },
+        { "id": "lf", "codeUnits": [10] },
+        { "id": "cr", "codeUnits": [13] },
+        { "id": "astral", "codeUnits": [55357, 56832] }
+      ],
+      "forbiddenControlRanges": [
+        { "id": "c0", "start": 0, "end": 31 },
+        { "id": "c1", "start": 127, "end": 159 }
+      ],
+      "allowedControlCodeUnits": [9, 10, 13],
+      "loneSurrogates": [
+        { "id": "high-surrogate", "codeUnit": 55296 },
+        { "id": "low-surrogate", "codeUnit": 56320 }
+      ],
+      "expectedCounts": { "accepted": 4, "rejected": 64, "total": 68 }
+    },
+    "nullableWrappers": [
+      {
+        "id": "snapshot-upload-error-code",
+        "artifact": "contractSchemas",
+        "pointer": "/schemas/SnapshotUploadView/definitions/SnapshotUploadView/properties/errorCode"
+      },
+      {
+        "id": "deployment-last-error-code",
+        "artifact": "contractSchemas",
+        "pointer": "/schemas/DeploymentView/definitions/DeploymentView/properties/lastErrorCode"
+      }
+    ],
+    "syntheticBasePatternSource": "^base-[a-z]+$",
+    "expectedCounts": {
+      "runtimeOwners": 29,
+      "ordinaryOwners": 26,
+      "exactDerivedOwners": 3,
+      "publicNodes": 47,
+      "helperBoundaries": 8,
+      "outcomes": 5700
+    }
+  },
   "httpBoundaries": [
     {
       "id": "public-agent-slug",

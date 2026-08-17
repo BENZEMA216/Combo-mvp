@@ -210,7 +210,7 @@ const LegacyDecisionSchema = z
   .strict()
   .superRefine(refineDecisionLists);
 
-const ArchitectureDecisionSchema = z
+export const ArchitectureDecisionSchema = z
   .object({
     id: z.string().regex(/^ADR-VNEXT-(?:02[1-9]|03[0-2])$/u),
     architectureDecisionId: z.string().regex(/^D(?:00[1-9]|01[0-2])$/u),
