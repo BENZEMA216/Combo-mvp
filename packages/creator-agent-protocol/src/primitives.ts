@@ -129,6 +129,10 @@ export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes
 
 export const P256P1363SignatureSchema = CanonicalBase64UrlBytesSchema(64, 64);
 
+export const UTF8_TEXT_PORTABLE_PATTERN_SOURCE =
+  '^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$';
+export const UTF8_TEXT_PORTABLE_PATTERN = new RegExp(UTF8_TEXT_PORTABLE_PATTERN_SOURCE, 'u');
+
 export const Uint63StringSchema = z
   .string()
   .min(1)
@@ -148,6 +152,7 @@ export const Utf8TextSchema = (maxBytes: number) =>
     // upper bound for standard JSON Schema validators. The exact byte authority remains
     // the refine below and is published as x-combo-maxUtf8Bytes in checked artifacts.
     .max(maxBytes)
+    .regex(UTF8_TEXT_PORTABLE_PATTERN)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes, {
       message: `UTF-8 内容不得超过 ${maxBytes} bytes`,
     })

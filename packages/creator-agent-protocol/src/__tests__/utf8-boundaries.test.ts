@@ -4,13 +4,37 @@ import { readFile } from 'node:fs/promises';
 import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
 
-import { Utf8TextSchema } from '../primitives.js';
+import {
+  AgentVersionManifestSchema,
+  BehaviorContractSchema,
+  ModelPolicySchema,
+  RuntimePolicySchema,
+} from '../agent-version.js';
+import {
+  BrokerEventSchema,
+  BrokerHandshakeUnsignedSchema,
+  ExecutionCapabilityUnsignedSchema,
+} from '../broker.js';
+import {
+  AgentViewSchema,
+  ConsumerEventSchema,
+  ConsumerMessageSchema,
+  CreateAgentRequestSchema,
+  SendConversationMessageRequestSchema,
+} from '../http.js';
+import {
+  UTF8_TEXT_PORTABLE_PATTERN,
+  UTF8_TEXT_PORTABLE_PATTERN_SOURCE,
+  Utf8TextSchema,
+} from '../primitives.js';
+import { SandboxAttestationUnsignedSchema, SandboxSpecSchema } from '../sandbox.js';
 import { SnapshotManifestSchema } from '../snapshot.js';
 import { ProtocolUtf8BoundaryCorpusSchema } from '../utf8-boundaries.js';
 
 type CheckedArtifactName = 'contract-schemas' | 'broker-contract' | 'openapi';
 
 const fixtureUrl = new URL('../../fixtures/protocol-utf8-boundaries.v1.json', import.meta.url);
+const fixtureDirectoryUrl = new URL('../../fixtures/', import.meta.url);
 const artifactUrls = {
   'contract-schemas': new URL('../../schemas/contract-schemas.v1.json', import.meta.url),
   'broker-contract': new URL('../../schemas/broker-contract.v1.json', import.meta.url),
@@ -70,6 +94,216 @@ function lookupPointer(document: unknown, pointer: string): Record<string, unkno
   return current as Record<string, unknown>;
 }
 
+function replacePointer(document: unknown, pointer: string, value: string): unknown {
+  const clone = structuredClone(document) as unknown;
+  const segments = pointer
+    .slice(1)
+    .split('/')
+    .map((segment) => segment.replaceAll('~1', '/').replaceAll('~0', '~'));
+  let current = clone;
+  for (const segment of segments.slice(0, -1)) {
+    if (current === null || typeof current !== 'object' || !(segment in current)) {
+      throw new Error(`UTF8_RUNTIME_OWNER_POINTER_MISSING:${pointer}`);
+    }
+    current = (current as Record<string, unknown>)[segment];
+  }
+  const final = segments.at(-1);
+  if (final === undefined || current === null || typeof current !== 'object') {
+    throw new Error(`UTF8_RUNTIME_OWNER_POINTER_INVALID:${pointer}`);
+  }
+  (current as Record<string, unknown>)[final] = value;
+  return clone;
+}
+
+type RuntimeSchema = Readonly<{
+  safeParse(
+    value: unknown,
+  ): { success: true; data: unknown } | { success: false; error: { issues: readonly unknown[] } };
+}>;
+
+type RuntimeOwnerCase = Readonly<{
+  runtimeParser: string;
+  schema: RuntimeSchema;
+  base: unknown;
+}>;
+
+async function runtimeOwnerCases(): Promise<Record<string, RuntimeOwnerCase>> {
+  const [agentVersion, sandboxSpec, signedAttestation, signedHandshake, prepareEnvelope] =
+    (await Promise.all(
+      [
+        'agent-version-manifest.v1.json',
+        'sandbox-spec.v1.json',
+        'sandbox-attestation.v1.json',
+        'broker-handshake.v1.json',
+        'broker-invocation-prepare.v1.json',
+      ].map(async (path) => JSON.parse(await readFile(new URL(path, fixtureDirectoryUrl), 'utf8'))),
+    )) as [
+      {
+        behaviorContract: unknown;
+        runtimePolicy: unknown;
+        modelPolicy: unknown;
+        codexRuntime: unknown;
+      },
+      unknown,
+      Record<string, unknown>,
+      Record<string, unknown>,
+      { body: { executionCapability: Record<string, unknown> } },
+    ];
+  const unsignedAttestation = { ...signedAttestation };
+  delete unsignedAttestation.supervisorSignature;
+  const unsignedHandshake = { ...signedHandshake };
+  delete unsignedHandshake.challengeSignature;
+  const unsignedCapability = { ...prepareEnvelope.body.executionCapability };
+  delete unsignedCapability.signature;
+  const uuid = '0198f00d-6000-7000-8000-000000000001';
+  const timestamp = '2026-08-13T08:00:00.000Z';
+
+  return {
+    'behavior-role': {
+      runtimeParser: 'BehaviorContractSchema',
+      schema: BehaviorContractSchema,
+      base: agentVersion.behaviorContract,
+    },
+    'behavior-objective': {
+      runtimeParser: 'BehaviorContractSchema',
+      schema: BehaviorContractSchema,
+      base: agentVersion.behaviorContract,
+    },
+    'behavior-developer-instruction': {
+      runtimeParser: 'BehaviorContractSchema',
+      schema: BehaviorContractSchema,
+      base: agentVersion.behaviorContract,
+    },
+    'runtime-resolved-model': {
+      runtimeParser: 'RuntimePolicySchema',
+      schema: RuntimePolicySchema,
+      base: agentVersion.runtimePolicy,
+    },
+    'model-policy-model': {
+      runtimeParser: 'ModelPolicySchema',
+      schema: ModelPolicySchema,
+      base: agentVersion.modelPolicy,
+    },
+    'codex-runtime-version': {
+      runtimeParser: 'AgentVersionManifestSchema',
+      schema: AgentVersionManifestSchema,
+      base: agentVersion,
+    },
+    'sandbox-spec-adapter-version': {
+      runtimeParser: 'SandboxSpecSchema',
+      schema: SandboxSpecSchema,
+      base: sandboxSpec,
+    },
+    'sandbox-attestation-adapter-version': {
+      runtimeParser: 'SandboxAttestationUnsignedSchema',
+      schema: SandboxAttestationUnsignedSchema,
+      base: unsignedAttestation,
+    },
+    'sandbox-attestation-codex-version': {
+      runtimeParser: 'SandboxAttestationUnsignedSchema',
+      schema: SandboxAttestationUnsignedSchema,
+      base: unsignedAttestation,
+    },
+    'create-agent-name': {
+      runtimeParser: 'CreateAgentRequestSchema',
+      schema: CreateAgentRequestSchema,
+      base: { name: 'Safe agent', description: 'Safe description' },
+    },
+    'create-agent-description': {
+      runtimeParser: 'CreateAgentRequestSchema',
+      schema: CreateAgentRequestSchema,
+      base: { name: 'Safe agent', description: 'Safe description' },
+    },
+    'agent-view-name': {
+      runtimeParser: 'AgentViewSchema',
+      schema: AgentViewSchema,
+      base: {
+        protocol: 'combo.creator-agent-http/1',
+        agentId: uuid,
+        publicSlug: 'safe-agent',
+        name: 'Safe agent',
+        description: 'Safe description',
+        lifecycle: 'ACTIVE',
+        createdAt: timestamp,
+      },
+    },
+    'agent-view-description': {
+      runtimeParser: 'AgentViewSchema',
+      schema: AgentViewSchema,
+      base: {
+        protocol: 'combo.creator-agent-http/1',
+        agentId: uuid,
+        publicSlug: 'safe-agent',
+        name: 'Safe agent',
+        description: 'Safe description',
+        lifecycle: 'ACTIVE',
+        createdAt: timestamp,
+      },
+    },
+    'send-conversation-message-text': {
+      runtimeParser: 'SendConversationMessageRequestSchema',
+      schema: SendConversationMessageRequestSchema,
+      base: { clientMessageId: uuid, text: 'Safe message' },
+    },
+    'consumer-message-text': {
+      runtimeParser: 'ConsumerMessageSchema',
+      schema: ConsumerMessageSchema,
+      base: {
+        messageId: uuid,
+        invocationId: null,
+        turnNo: 1,
+        role: 'USER',
+        text: 'Safe message',
+        createdAt: timestamp,
+      },
+    },
+    'consumer-delta-text': {
+      runtimeParser: 'ConsumerEventSchema',
+      schema: ConsumerEventSchema,
+      base: {
+        id: '1',
+        type: 'invocation.delta',
+        invocationId: uuid,
+        text: 'Safe delta',
+        occurredAt: timestamp,
+      },
+    },
+    'broker-handshake-worker-version': {
+      runtimeParser: 'BrokerHandshakeUnsignedSchema',
+      schema: BrokerHandshakeUnsignedSchema,
+      base: unsignedHandshake,
+    },
+    'execution-capability-model': {
+      runtimeParser: 'ExecutionCapabilityUnsignedSchema',
+      schema: ExecutionCapabilityUnsignedSchema,
+      base: unsignedCapability,
+    },
+    'version-rejected-error-code': {
+      runtimeParser: 'BrokerEventSchema',
+      schema: BrokerEventSchema,
+      base: {
+        protocol: 'combo.creator-broker/1',
+        schemaVersion: 1,
+        kind: 'event',
+        messageId: '0198f00d-4000-7000-8000-000000000031',
+        type: 'version.rejected',
+        correlationId: '0198f00d-3000-7000-8000-000000000032',
+        connectionId: '0198f00d-3000-7000-8000-000000000033',
+        sequence: '1',
+        sentAt: '2026-08-13T08:00:01.000Z',
+        expiresAt: '2026-08-13T08:00:31.000Z',
+        lease: {
+          deploymentId: '0198f00d-3000-7000-8000-000000000034',
+          leaseId: '0198f00d-3000-7000-8000-000000000035',
+          workerSessionId: '0198f00d-1111-7111-8111-111111111112',
+          fence: '42',
+        },
+        body: { generation: '1', errorCode: 'SAFE_ERROR' },
+      },
+    },
+  };
+}
+
 describe('digest-bound public UTF-8 byte boundaries', () => {
   it('pins every advertised UTF-8 keyword in all three checked artifacts', async () => {
     const fixture = ProtocolUtf8BoundaryCorpusSchema.parse(
@@ -115,6 +349,104 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
         );
       }
     }
+  });
+
+  it('keeps the portable scalar-control probes aligned at every advertised UTF-8 node', async () => {
+    const fixture = ProtocolUtf8BoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const documents = Object.fromEntries(
+      await Promise.all(
+        Object.entries(artifactUrls).map(async ([name, url]) => [
+          name,
+          JSON.parse(await readFile(url, 'utf8')),
+        ]),
+      ),
+    ) as Record<CheckedArtifactName, unknown>;
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    ajv.addKeyword({
+      keyword: 'x-combo-maxUtf8Bytes',
+      type: 'string',
+      schemaType: 'number',
+      errors: false,
+      validate(maximumBytes: number, value: string): boolean {
+        return Buffer.byteLength(value, 'utf8') <= maximumBytes;
+      },
+    });
+    expect(fixture.scalarControlParity.portablePatternSource).toBe(
+      UTF8_TEXT_PORTABLE_PATTERN_SOURCE,
+    );
+    expect(UTF8_TEXT_PORTABLE_PATTERN.source).toBe(UTF8_TEXT_PORTABLE_PATTERN_SOURCE);
+    const excludedPointers = new Set(
+      fixture.scalarControlParity.artifactCoverage.excludedPointers.map(
+        ({ artifact, pointer }) => `${artifact}:${pointer}`,
+      ),
+    );
+    const publicOwners = fixture.boundaries
+      .flatMap(({ artifactPointers }) => artifactPointers)
+      .filter(({ artifact, pointer }) => !excludedPointers.has(`${artifact}:${pointer}`));
+    const coverage = publicOwners.reduce(
+      (counts, { artifact }) => {
+        if (artifact === 'contract-schemas') counts.contractSchemas += 1;
+        if (artifact === 'broker-contract') counts.brokerContract += 1;
+        if (artifact === 'openapi') counts.openApi += 1;
+        return counts;
+      },
+      { contractSchemas: 0, brokerContract: 0, openApi: 0 },
+    );
+    expect({ ...coverage, total: publicOwners.length }).toEqual(
+      fixture.scalarControlParity.artifactCoverage.expectedCounts,
+    );
+
+    const runtimeCases = await runtimeOwnerCases();
+    expect(Object.keys(runtimeCases).sort()).toEqual(
+      fixture.scalarControlParity.runtimeOwners.map(({ id }) => id).sort(),
+    );
+    let outcomes = 0;
+    for (const owner of fixture.scalarControlParity.runtimeOwners) {
+      const runtime = runtimeCases[owner.id];
+      if (runtime === undefined) throw new Error(`UTF8_RUNTIME_OWNER_MISSING:${owner.id}`);
+      expect(runtime.runtimeParser, owner.id).toBe(owner.runtimeParser);
+      expect(runtime.schema.safeParse(runtime.base).success, `base:${owner.id}`).toBe(true);
+      for (const probe of fixture.scalarControlParity.probes) {
+        const value =
+          fixture.scalarControlParity.canaryPrefix + String.fromCharCode(...probe.codeUnits);
+        const expected = probe.expected === 'accepted';
+        const result = runtime.schema.safeParse(
+          replacePointer(runtime.base, owner.instancePointer, value),
+        );
+        expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(expected);
+        if (!expected && !result.success) {
+          expect(JSON.stringify(result.error.issues)).not.toContain(
+            fixture.scalarControlParity.canaryPrefix,
+          );
+        }
+        outcomes += 1;
+      }
+    }
+
+    const advertisedValidators = publicOwners.map(({ artifact, pointer }) => {
+      const node = lookupPointer(documents[artifact], pointer);
+      expect(node.pattern, `${artifact}:${pointer}`).toBe(
+        fixture.scalarControlParity.portablePatternSource,
+      );
+      return { artifact, pointer, validate: ajv.compile(node as AnySchema) };
+    });
+    for (const { artifact, pointer, validate } of advertisedValidators) {
+      for (const probe of fixture.scalarControlParity.probes) {
+        const value =
+          fixture.scalarControlParity.canaryPrefix + String.fromCharCode(...probe.codeUnits);
+        const expected = probe.expected === 'accepted';
+        expect(validate(value), `${artifact}:${pointer}:${probe.id}`).toBe(expected);
+        if (!expected) {
+          expect(JSON.stringify(validate.errors)).not.toContain(
+            fixture.scalarControlParity.canaryPrefix,
+          );
+        }
+        outcomes += 1;
+      }
+    }
+    expect(outcomes).toBe(660);
   });
 
   it('enforces max minus one, max, and max plus one for ASCII CJK and emoji', async () => {

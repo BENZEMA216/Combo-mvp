@@ -562,6 +562,17 @@ describe('六类共享协议运行时 schema', () => {
             futureCapability: rejected.advertisedValue,
           }).success,
         ).toBe(false);
+      } else if (rejected.id === 'stale-broker-contract') {
+        expect(rejected.advertisedValue).toBe(
+          'sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73',
+        );
+        expect(rejected.advertisedValue).not.toBe(currentBrokerContractDigest());
+        expect(
+          BrokerRegistrationCapabilitiesSchema.safeParse({
+            ...currentRegistration,
+            brokerContractDigest: rejected.advertisedValue,
+          }).success,
+        ).toBe(true);
       } else {
         const mutation =
           rejected.id === 'unaccepted-codex-runtime'

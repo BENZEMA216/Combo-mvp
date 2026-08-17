@@ -45,6 +45,8 @@ const AGENT_VERSION = '0198f00d-5000-7000-8000-000000000011';
 const ORIGINAL_LEASE = '0198f00d-5000-7000-8000-000000000012';
 const REPLACEMENT_LEASE = '0198f00d-5000-7000-8000-000000000013';
 const SIGNATURE = Buffer.alloc(64, 7).toString('base64url');
+const PREVIOUS_BROKER_CONTRACT_DIGEST =
+  'sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73';
 
 const activeGateways = new Set<AgentGateway>();
 
@@ -61,6 +63,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
   readonly gaps: { expected: string; received: string }[] = [];
   readonly closed: GatewayDisconnectReason[] = [];
   readonly sessions: AuthenticatedWorkerSession[] = [];
+  readonly leases: string[] = [];
   readonly lifecycleEvents: string[] = [];
   authenticateStarted = 0;
   openCalls = 0;
@@ -94,6 +97,9 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
     signal: AbortSignal;
   }): Promise<AuthenticatedWorkerSession> {
     this.authenticateStarted += 1;
+    if (input.handshake.brokerContractDigest !== currentBrokerContractDigest()) {
+      throw new BrokerAuthenticationError(BrokerAuthenticationFailureCode.WORKER_INCOMPATIBLE);
+    }
     if (
       input.connectedAt !== '2026-08-13T08:00:00.000Z' ||
       input.handshake.challengeSignature !== SIGNATURE ||
@@ -120,6 +126,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
       workerSessionId: index === 0 || this.duplicateWorkerSession ? SESSION_A : SESSION_B,
     });
     this.sessions.push(session);
+    this.leases.push(LEASE);
     return session;
   }
 
@@ -388,6 +395,27 @@ describe('AgentGateway real WebSocket transport', () => {
     });
     expect(authority.authenticateStarted).toBe(0);
     expect(authority.sessions).toHaveLength(0);
+    expect(authority.openCalls).toBe(0);
+    expect(gateway.activeConnections).toBe(0);
+  });
+
+  it('rejects the exact previous Broker digest before allocating a Session or Lease', async () => {
+    const authority = new FakeAuthority();
+    const { gateway, url } = await startGateway(authority);
+    const socket = await connect(url);
+    const close = closeResult(socket);
+    const stale = BrokerHandshakeSchema.parse({
+      ...handshake(CHALLENGE_A),
+      brokerContractDigest: PREVIOUS_BROKER_CONTRACT_DIGEST,
+    });
+    expect(PREVIOUS_BROKER_CONTRACT_DIGEST).not.toBe(currentBrokerContractDigest());
+
+    socket.send(canonicalizeJson(stale));
+
+    await expect(close).resolves.toEqual({ code: 4003, reason: 'WORKER_INCOMPATIBLE' });
+    expect(authority.authenticateStarted).toBe(1);
+    expect(authority.sessions).toHaveLength(0);
+    expect(authority.leases).toHaveLength(0);
     expect(authority.openCalls).toBe(0);
     expect(gateway.activeConnections).toBe(0);
   });

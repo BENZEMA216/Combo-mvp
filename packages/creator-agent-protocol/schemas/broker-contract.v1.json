@@ -94,6 +94,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -831,6 +832,7 @@
                               "type": "string",
                               "minLength": 1,
                               "maxLength": 128,
+                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "UTF-8 text with a maximum of 128 bytes",
                               "x-combo-maxUtf8Bytes": 128
                             },
@@ -1441,6 +1443,7 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 128,
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "UTF-8 text with a maximum of 128 bytes",
                           "x-combo-maxUtf8Bytes": 128
                         }

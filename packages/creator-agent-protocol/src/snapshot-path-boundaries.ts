@@ -50,7 +50,7 @@ export const SnapshotPathBoundaryCorpusSchema = z
           .object({
             path: z.literal('protocol-utf8-boundaries.v1.json'),
             digest: z.literal(
-              'sha256:4c7a4cce5f24f39d0e7f19d3d4481f34a5c62fe16eb2d8852c19938237de8471',
+              'sha256:b2d7d67e69c05074c69c2d39a84ff83b56ecbafe0f9902c39d5283166595aec1',
             ),
           })
           .strict(),
@@ -63,7 +63,7 @@ export const SnapshotPathBoundaryCorpusSchema = z
           })
           .strict(),
         contractSchemas: z.literal(
-          'sha256:9ea67d7cbb190dd91de0d6b4b8e7335f8eaba938205cf0fbcbf05d647974318a',
+          'sha256:34bf5033e0ea32482af4f299aefe26c22936a1beea345f3a573708dd505d60e3',
         ),
       })
       .strict(),

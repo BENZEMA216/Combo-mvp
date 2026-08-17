@@ -5,9 +5,9 @@
     "wireProtocol": "combo.creator-broker/1",
     "wireSchemaVersion": 1,
     "supportedProtocolVersions": [1],
-    "brokerContractDigest": "sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73",
+    "brokerContractDigest": "sha256:347769d71019a3707611d8a9be365b735e2aefcb35f53c55be53787ae98c131f",
     "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.v1.json",
-    "handshakeFixtureDigest": "sha256:4f08b64e568b94aec16515a08fb9201818cb755ce1868f1ae61ee1226cd2015a"
+    "handshakeFixtureDigest": "sha256:c87cec938a3be231a97feca8eec8e1595022f9880893022607c815607f5ab016"
   },
   "declaredPrevious": [],
   "rejectedRegistrations": [
@@ -24,6 +24,13 @@
       "protocolVersions": [1],
       "advertisedValue": "future-v2",
       "expectedError": "WORKER_REGISTRATION_INCOMPATIBLE"
+    },
+    {
+      "id": "stale-broker-contract",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73",
+      "expectedError": "BROKER_CONTRACT_INCOMPATIBLE"
     },
     {
       "id": "unaccepted-codex-runtime",

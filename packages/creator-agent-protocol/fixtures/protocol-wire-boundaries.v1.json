@@ -10,7 +10,7 @@
     {
       "parser": "parseBrokerHandshake",
       "path": "broker-handshake.v1.json",
-      "digest": "sha256:4f08b64e568b94aec16515a08fb9201818cb755ce1868f1ae61ee1226cd2015a"
+      "digest": "sha256:c87cec938a3be231a97feca8eec8e1595022f9880893022607c815607f5ab016"
     },
     {
       "parser": "parseBrokerFrame",

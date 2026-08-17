@@ -3,8 +3,8 @@
   "schemaVersion": 1,
   "scope": "agent-version-variable-cardinality-and-numeric-maximums-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:9ea67d7cbb190dd91de0d6b4b8e7335f8eaba938205cf0fbcbf05d647974318a",
-    "openApi": "sha256:5d2ffd6ecc0b42f91cd477814c05e298071828fc22795da008ab7c13536cc912"
+    "contractSchemas": "sha256:34bf5033e0ea32482af4f299aefe26c22936a1beea345f3a573708dd505d60e3",
+    "openApi": "sha256:80dadfcf5cff29da1e0a70f37cf467e9a840d75b993d94783ca720b43fcc2f61"
   },
   "baseFixture": {
     "path": "agent-version-manifest.v1.json",

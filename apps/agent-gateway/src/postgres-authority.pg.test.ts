@@ -1978,6 +1978,9 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
         case 'unknown-capability-key':
           capabilities.futureCapability = testCase.advertisedValue;
           break;
+        case 'stale-broker-contract':
+          capabilities.brokerContractDigest = testCase.advertisedValue;
+          break;
         case 'unaccepted-codex-runtime':
           capabilities.codexRuntimeArtifacts = [testCase.advertisedValue];
           break;
@@ -2071,7 +2074,8 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
   });
 
   it('durably blocks every signed Broker contract mismatch before Session or Lease', async () => {
-    const staleDigest = `sha256:${'c'.repeat(64)}`;
+    const staleDigest = 'sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73';
+    expect(staleDigest).not.toBe(BROKER_CONTRACT_DIGEST);
     const cases = [
       {
         name: 'stale signed handshake',

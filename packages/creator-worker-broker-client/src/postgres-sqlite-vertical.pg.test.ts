@@ -838,6 +838,9 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
           case 'unknown-capability-key':
             capabilities.futureCapability = testCase.advertisedValue;
             break;
+          case 'stale-broker-contract':
+            capabilities.brokerContractDigest = testCase.advertisedValue;
+            break;
           case 'unaccepted-codex-runtime':
             capabilities.codexRuntimeArtifacts = [testCase.advertisedValue];
             break;

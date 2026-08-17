@@ -18,6 +18,7 @@ const DeclaredProtocolVersionSchema = z
 const RejectedRegistrationIdSchema = z.enum([
   'future-protocol-v2',
   'unknown-capability-key',
+  'stale-broker-contract',
   'unaccepted-codex-runtime',
   'unaccepted-codex-protocol',
   'unaccepted-isolation',
@@ -31,6 +32,7 @@ const RejectedRegistrationSchema = z
     advertisedValue: z.string().nullable(),
     expectedError: z.enum([
       'WORKER_REGISTRATION_INCOMPATIBLE',
+      'BROKER_CONTRACT_INCOMPATIBLE',
       'CODEX_RUNTIME_INCOMPATIBLE',
       'CODEX_PROTOCOL_INCOMPATIBLE',
       'ISOLATION_INCOMPATIBLE',
@@ -48,7 +50,7 @@ export const ProtocolVersionCorpusSchema = z
     schemaVersion: z.literal(1),
     current: DeclaredProtocolVersionSchema,
     declaredPrevious: z.array(DeclaredProtocolVersionSchema).max(8),
-    rejectedRegistrations: z.array(RejectedRegistrationSchema).length(5),
+    rejectedRegistrations: z.array(RejectedRegistrationSchema).length(6),
   })
   .strict()
   .superRefine((corpus, context) => {
@@ -63,6 +65,7 @@ export const ProtocolVersionCorpusSchema = z
     const expected = {
       'future-protocol-v2': 'WORKER_REGISTRATION_INCOMPATIBLE',
       'unknown-capability-key': 'WORKER_REGISTRATION_INCOMPATIBLE',
+      'stale-broker-contract': 'BROKER_CONTRACT_INCOMPATIBLE',
       'unaccepted-codex-runtime': 'CODEX_RUNTIME_INCOMPATIBLE',
       'unaccepted-codex-protocol': 'CODEX_PROTOCOL_INCOMPATIBLE',
       'unaccepted-isolation': 'ISOLATION_INCOMPATIBLE',

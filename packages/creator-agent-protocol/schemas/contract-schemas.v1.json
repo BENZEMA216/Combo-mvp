@@ -19,6 +19,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 512,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 512 bytes",
                   "x-combo-maxUtf8Bytes": 512
                 },
@@ -26,6 +27,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 2048,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 2048 bytes",
                   "x-combo-maxUtf8Bytes": 2048
                 },
@@ -35,6 +37,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 2048,
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "UTF-8 text with a maximum of 2048 bytes",
                     "x-combo-maxUtf8Bytes": 2048
                   },
@@ -96,6 +99,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 128 bytes",
                   "x-combo-maxUtf8Bytes": 128
                 },
@@ -155,6 +159,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 128 bytes",
                   "x-combo-maxUtf8Bytes": 128
                 },
@@ -175,6 +180,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 128 bytes",
                   "x-combo-maxUtf8Bytes": 128
                 },
@@ -997,6 +1003,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -1739,6 +1746,7 @@
                               "type": "string",
                               "minLength": 1,
                               "maxLength": 128,
+                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "UTF-8 text with a maximum of 128 bytes",
                               "x-combo-maxUtf8Bytes": 128
                             },
@@ -2349,6 +2357,7 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 128,
+                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "UTF-8 text with a maximum of 128 bytes",
                           "x-combo-maxUtf8Bytes": 128
                         }
@@ -3790,6 +3799,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -3889,6 +3899,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4610,6 +4621,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4740,6 +4752,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4780,6 +4793,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4875,6 +4889,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4913,6 +4928,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -5496,6 +5512,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 120,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 120 bytes",
               "x-combo-maxUtf8Bytes": 120
             },
@@ -5503,6 +5520,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 1024 bytes",
               "x-combo-maxUtf8Bytes": 1024
             }
@@ -5535,6 +5553,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 120,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 120 bytes",
               "x-combo-maxUtf8Bytes": 120
             },
@@ -5542,6 +5561,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 1024,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 1024 bytes",
               "x-combo-maxUtf8Bytes": 1024
             },
@@ -5591,6 +5611,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 512,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 512 bytes",
                       "x-combo-maxUtf8Bytes": 512
                     },
@@ -5598,6 +5619,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 2048,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 2048 bytes",
                       "x-combo-maxUtf8Bytes": 2048
                     },
@@ -5607,6 +5629,7 @@
                         "type": "string",
                         "minLength": 1,
                         "maxLength": 2048,
+                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "UTF-8 text with a maximum of 2048 bytes",
                         "x-combo-maxUtf8Bytes": 2048
                       },
@@ -5671,6 +5694,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 128,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 128 bytes",
                       "x-combo-maxUtf8Bytes": 128
                     },
@@ -5740,6 +5764,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 128,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 128 bytes",
                       "x-combo-maxUtf8Bytes": 128
                     },
@@ -5760,6 +5785,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 128,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 128 bytes",
                       "x-combo-maxUtf8Bytes": 128
                     },
@@ -6021,6 +6047,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 16384,
+              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 16384 bytes",
               "x-combo-maxUtf8Bytes": 16384
             }
@@ -6303,6 +6330,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 32768,
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "UTF-8 text with a maximum of 32768 bytes",
                     "x-combo-maxUtf8Bytes": 32768
                   },
@@ -6387,6 +6415,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 8192,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 8192 bytes",
                   "x-combo-maxUtf8Bytes": 8192
                 },
@@ -6420,6 +6449,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 32768,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 32768 bytes",
                       "x-combo-maxUtf8Bytes": 32768
                     },

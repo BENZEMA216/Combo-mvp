@@ -47,7 +47,7 @@ export const SnapshotSingleFileBoundaryCorpusSchema = z
     checkedArtifactDigests: z
       .object({
         contractSchemas: z.literal(
-          'sha256:9ea67d7cbb190dd91de0d6b4b8e7335f8eaba938205cf0fbcbf05d647974318a',
+          'sha256:34bf5033e0ea32482af4f299aefe26c22936a1beea345f3a573708dd505d60e3',
         ),
       })
       .strict(),
