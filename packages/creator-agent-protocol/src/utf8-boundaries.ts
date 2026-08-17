@@ -58,6 +58,14 @@ const ScalarControlRuntimeOwnerSchema = z
   })
   .strict();
 
+const StrictStructuralProbeSchema = z
+  .object({
+    id: z.string().min(1).max(64),
+    codeUnits: z.array(z.number().int().min(0).max(0xffff)).min(1).max(2),
+    expected: z.enum(['accepted', 'rejected']),
+  })
+  .strict();
+
 /**
  * Independent, digest-bound evidence inventory for the UTF-8-byte subset of SCH-004.
  * It deliberately does not claim array, decoded-byte, whole-wire, or canonical-byte coverage.
@@ -289,6 +297,172 @@ export const ProtocolUtf8BoundaryCorpusSchema = z
             expected: z.literal('rejected'),
           }),
           ScalarControlProbeSchema.extend({
+            id: z.literal('c1'),
+            codeUnits: z.tuple([z.literal(0x9f)]),
+            expected: z.literal('rejected'),
+          }),
+        ]),
+      })
+      .strict(),
+    strictStructuralParity: z
+      .object({
+        canaryPrefix: z.literal('SIGNED_PUT_URL_CANARY_'),
+        patternSource: z.literal(
+          '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$',
+        ),
+        runtimeTargetOwners: z.tuple([
+          z
+            .object({
+              id: z.literal('archive-signed-put-target'),
+              runtimeParser: z.literal('SnapshotArchiveSignedPutTargetSchema'),
+              responseInstancePointer: z.literal('/uploads/archive/putUrl'),
+            })
+            .strict(),
+          z
+            .object({
+              id: z.literal('manifest-signed-put-target'),
+              runtimeParser: z.literal('SnapshotManifestSignedPutTargetSchema'),
+              responseInstancePointer: z.literal('/uploads/manifest/putUrl'),
+            })
+            .strict(),
+        ]),
+        physicalPublicNodes: z.tuple([
+          z
+            .object({
+              artifact: z.literal('contract-schemas'),
+              pointer: z.literal(
+                '/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+            })
+            .strict(),
+          z
+            .object({
+              artifact: z.literal('openapi'),
+              pointer: z.literal(
+                '/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+            })
+            .strict(),
+          z
+            .object({
+              artifact: z.literal('openapi'),
+              pointer: z.literal(
+                '/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl',
+              ),
+            })
+            .strict(),
+        ]),
+        semanticResponseOwners: z.tuple([
+          z
+            .object({
+              id: z.literal('contract-archive-put-url'),
+              artifact: z.literal('contract-schemas'),
+              semanticPointer: z.literal(
+                '/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+              responseInstancePointer: z.literal('/uploads/archive/putUrl'),
+              physicalPointer: z.literal(
+                '/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+            })
+            .strict(),
+          z
+            .object({
+              id: z.literal('contract-manifest-put-url'),
+              artifact: z.literal('contract-schemas'),
+              semanticPointer: z.literal(
+                '/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl',
+              ),
+              responseInstancePointer: z.literal('/uploads/manifest/putUrl'),
+              physicalPointer: z.literal(
+                '/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+            })
+            .strict(),
+          z
+            .object({
+              id: z.literal('openapi-archive-put-url'),
+              artifact: z.literal('openapi'),
+              semanticPointer: z.literal(
+                '/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+              responseInstancePointer: z.literal('/uploads/archive/putUrl'),
+              physicalPointer: z.literal(
+                '/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl',
+              ),
+            })
+            .strict(),
+          z
+            .object({
+              id: z.literal('openapi-manifest-put-url'),
+              artifact: z.literal('openapi'),
+              semanticPointer: z.literal(
+                '/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl',
+              ),
+              responseInstancePointer: z.literal('/uploads/manifest/putUrl'),
+              physicalPointer: z.literal(
+                '/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl',
+              ),
+            })
+            .strict(),
+        ]),
+        probes: z.tuple([
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('ascii'),
+            codeUnits: z.tuple([z.literal(0x41)]),
+            expected: z.literal('accepted'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('cjk'),
+            codeUnits: z.tuple([z.literal(0x754c)]),
+            expected: z.literal('accepted'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('astral'),
+            codeUnits: z.tuple([z.literal(0xd83d), z.literal(0xde00)]),
+            expected: z.literal('accepted'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('high-surrogate'),
+            codeUnits: z.tuple([z.literal(0xd800)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('low-surrogate'),
+            codeUnits: z.tuple([z.literal(0xdc00)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('nul'),
+            codeUnits: z.tuple([z.literal(0x00)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('tab'),
+            codeUnits: z.tuple([z.literal(0x09)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('lf'),
+            codeUnits: z.tuple([z.literal(0x0a)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('cr'),
+            codeUnits: z.tuple([z.literal(0x0d)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('other-c0'),
+            codeUnits: z.tuple([z.literal(0x1f)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
+            id: z.literal('del'),
+            codeUnits: z.tuple([z.literal(0x7f)]),
+            expected: z.literal('rejected'),
+          }),
+          StrictStructuralProbeSchema.extend({
             id: z.literal('c1'),
             codeUnits: z.tuple([z.literal(0x9f)]),
             expected: z.literal('rejected'),

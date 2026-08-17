@@ -3,9 +3,9 @@
   "schemaVersion": 1,
   "scope": "utf8-byte-limits-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:34bf5033e0ea32482af4f299aefe26c22936a1beea345f3a573708dd505d60e3",
+    "contractSchemas": "sha256:4d951179996a10916f504307c7a28864385eba245c1fc8eada469e7382c04cf2",
     "brokerContract": "sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f",
-    "openApi": "sha256:80dadfcf5cff29da1e0a70f37cf467e9a840d75b993d94783ca720b43fcc2f61"
+    "openApi": "sha256:96d2c05fa60881e31f493023d2fe134f4a711ff1855e6aa2e41f86d4fbe5dd82"
   },
   "scalarControlParity": {
     "canaryPrefix": "UTF8_SCALAR_CONTROL_CANARY_",
@@ -194,6 +194,128 @@
       {
         "id": "nul",
         "codeUnits": [0],
+        "expected": "rejected"
+      },
+      {
+        "id": "other-c0",
+        "codeUnits": [31],
+        "expected": "rejected"
+      },
+      {
+        "id": "del",
+        "codeUnits": [127],
+        "expected": "rejected"
+      },
+      {
+        "id": "c1",
+        "codeUnits": [159],
+        "expected": "rejected"
+      }
+    ]
+  },
+  "strictStructuralParity": {
+    "canaryPrefix": "SIGNED_PUT_URL_CANARY_",
+    "patternSource": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+    "runtimeTargetOwners": [
+      {
+        "id": "archive-signed-put-target",
+        "runtimeParser": "SnapshotArchiveSignedPutTargetSchema",
+        "responseInstancePointer": "/uploads/archive/putUrl"
+      },
+      {
+        "id": "manifest-signed-put-target",
+        "runtimeParser": "SnapshotManifestSignedPutTargetSchema",
+        "responseInstancePointer": "/uploads/manifest/putUrl"
+      }
+    ],
+    "physicalPublicNodes": [
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl"
+      }
+    ],
+    "semanticResponseOwners": [
+      {
+        "id": "contract-archive-put-url",
+        "artifact": "contract-schemas",
+        "semanticPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl",
+        "responseInstancePointer": "/uploads/archive/putUrl",
+        "physicalPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "id": "contract-manifest-put-url",
+        "artifact": "contract-schemas",
+        "semanticPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl",
+        "responseInstancePointer": "/uploads/manifest/putUrl",
+        "physicalPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "id": "openapi-archive-put-url",
+        "artifact": "openapi",
+        "semanticPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl",
+        "responseInstancePointer": "/uploads/archive/putUrl",
+        "physicalPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "id": "openapi-manifest-put-url",
+        "artifact": "openapi",
+        "semanticPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl",
+        "responseInstancePointer": "/uploads/manifest/putUrl",
+        "physicalPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl"
+      }
+    ],
+    "probes": [
+      {
+        "id": "ascii",
+        "codeUnits": [65],
+        "expected": "accepted"
+      },
+      {
+        "id": "cjk",
+        "codeUnits": [30028],
+        "expected": "accepted"
+      },
+      {
+        "id": "astral",
+        "codeUnits": [55357, 56832],
+        "expected": "accepted"
+      },
+      {
+        "id": "high-surrogate",
+        "codeUnits": [55296],
+        "expected": "rejected"
+      },
+      {
+        "id": "low-surrogate",
+        "codeUnits": [56320],
+        "expected": "rejected"
+      },
+      {
+        "id": "nul",
+        "codeUnits": [0],
+        "expected": "rejected"
+      },
+      {
+        "id": "tab",
+        "codeUnits": [9],
+        "expected": "rejected"
+      },
+      {
+        "id": "lf",
+        "codeUnits": [10],
+        "expected": "rejected"
+      },
+      {
+        "id": "cr",
+        "codeUnits": [13],
         "expected": "rejected"
       },
       {

@@ -441,26 +441,28 @@ cases:
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
-      - sha256:b2d7d67e69c05074c69c2d39a84ff83b56ecbafe0f9902c39d5283166595aec1
-      - sha256:74c9781c8fa032a9ec2c85c4fd624247c4839d999e3ae4d5827b7be8643278ec
-      - sha256:4e68879d13c1d909f3a02430a6f0e8996559f78b7bc9b600b133de30ecc2a08a
-      - sha256:1ef24dfcdca5882e235a1f7e6867b6e98e78c993d11436a7e0cfe04ffedb2db4
-      - sha256:a8ba13927973e581e965f98a288dfaa2ec357bfd6e75e712117bf6e86ed9f38b
-      - sha256:926081270471ea8e8ca516109662df4bf6c7d1457428e7075a87bbe3af64127b
-      - sha256:62717c4fee0127405d7c3c1d5c750ed5669e9010b604f92c64eca63ce5b44e17
-      - sha256:d6a827941de130db9e7210915be6a629395f200f4a97f9fa7e82928a230cf72c
+      - sha256:41430bdada817ccf6eff494f79a05453e60c74f2ddb67bab108d466a5abb566f
+      - sha256:aeb1486f2ebefa8f0bb7b090112feef41eb19d1ef5b28dcf6f61dd67b76bc99b
+      - sha256:66ac6eb62e1018170256a0aa6600b406d2d459772564677f17fea3117d5f951b
+      - sha256:f2df1af19c47321932dddbb9b42f8d686469d7f3aef0c9b4c825a0bb6e89b9f7
+      - sha256:1e9b43575b3571b41afc287517544d1413d728a7da80f27402e785e754321155
+      - sha256:ce28cadddcb73c41017096cfff572de6f81cc0b7016946883aaf955929e17eac
+      - sha256:6ca1575b7a1cf9aadc42aeeca6ba9c6557b5790e6915d33da9aebc985417bf92
+      - sha256:68e57cf1af5384ef03bdce785e355caf9e3c8f166506b9c56d85e312a9f53901
       - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
     fixture:
       - packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
     assertions: [Invalid text is rejected and no error echoes source content]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
+      - sha256:41430bdada817ccf6eff494f79a05453e60c74f2ddb67bab108d466a5abb566f
       - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
   - <<: *sch
     id: SCH-006
@@ -480,9 +482,9 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:34bf5033e0ea32482af4f299aefe26c22936a1beea345f3a573708dd505d60e3
+      - sha256:4d951179996a10916f504307c7a28864385eba245c1fc8eada469e7382c04cf2
       - sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f
-      - sha256:80dadfcf5cff29da1e0a70f37cf467e9a840d75b993d94783ca720b43fcc2f61
+      - sha256:96d2c05fa60881e31f493023d2fe134f4a711ff1855e6aa2e41f86d4fbe5dd82
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest

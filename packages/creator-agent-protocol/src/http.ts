@@ -9,6 +9,7 @@ import {
   IsoDateTimeSchema,
   Sha256HexSchema,
   UINT63_DECIMAL_PATTERN_SOURCE,
+  UNICODE_SCALAR_NO_CONTROL_PATTERN,
   UnicodeCodePointStringSchema,
   Uint63StringSchema,
   Utf8TextSchema,
@@ -80,6 +81,7 @@ const SnapshotManifestUploadDescriptorSchema = z
 
 const SnapshotHttpsSignedPutUrlSchema = z
   .string()
+  .regex(UNICODE_SCALAR_NO_CONTROL_PATTERN)
   .url()
   .superRefine((value, context) => {
     const url = new URL(value);

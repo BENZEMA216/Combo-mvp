@@ -21,8 +21,13 @@ import {
   ConsumerMessageSchema,
   CreateAgentRequestSchema,
   SendConversationMessageRequestSchema,
+  SnapshotArchiveSignedPutTargetSchema,
+  SnapshotManifestSignedPutTargetSchema,
+  SnapshotUploadCreateResponseSchema,
 } from '../http.js';
 import {
+  UNICODE_SCALAR_NO_CONTROL_PATTERN,
+  UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE,
   UTF8_TEXT_PORTABLE_PATTERN,
   UTF8_TEXT_PORTABLE_PATTERN_SOURCE,
   Utf8TextSchema,
@@ -50,6 +55,44 @@ function exactUtf8Bytes(targetBytes: number, generator: 'ascii' | 'cjk' | 'emoji
   const symbolBytes = Buffer.byteLength(symbol, 'utf8');
   const repeats = Math.floor(targetBytes / symbolBytes);
   return symbol.repeat(repeats) + 'a'.repeat(targetBytes - repeats * symbolBytes);
+}
+
+function signedPutTarget(kind: 'archive' | 'manifest', putUrl: string): unknown {
+  const cipherDigest = 'a'.repeat(64);
+  const cipherBytes = 73;
+  return {
+    method: 'PUT',
+    putUrl,
+    cipherBytes,
+    cipherDigest,
+    requiredHeaders: {
+      'cache-control': 'no-store',
+      'content-length': String(cipherBytes),
+      'content-type': 'application/octet-stream',
+      'if-none-match': '*',
+      'x-amz-checksum-sha256': Buffer.from(cipherDigest, 'hex').toString('base64'),
+      'x-amz-meta-archive-digest': 'b'.repeat(64),
+      'x-amz-meta-cipher-bytes': String(cipherBytes),
+      'x-amz-meta-cipher-digest': cipherDigest,
+      'x-amz-meta-object-kind': kind,
+      'x-amz-meta-object-state': 'upload',
+      'x-amz-meta-protocol': 'combo.snapshot-object-storage/1',
+      'x-amz-meta-snapshot-digest': 'c'.repeat(64),
+    },
+  };
+}
+
+function signedPutResponse(): unknown {
+  return {
+    protocol: 'combo.creator-agent-http/1',
+    uploadId: '0198f00d-8000-7000-8000-000000000011',
+    state: 'CREATED',
+    uploads: {
+      archive: signedPutTarget('archive', 'https://uploads.example.invalid/archive'),
+      manifest: signedPutTarget('manifest', 'https://uploads.example.invalid/manifest'),
+    },
+    expiresAt: '2026-08-13T08:15:00.000Z',
+  };
 }
 
 function escapePointerSegment(value: string): string {
@@ -447,6 +490,94 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
       }
     }
     expect(outcomes).toBe(660);
+  });
+
+  it('keeps Signed PUT URL scalar/control parity before URL normalization', async () => {
+    const fixture = ProtocolUtf8BoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const parity = fixture.strictStructuralParity;
+    expect(parity.patternSource).toBe(UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE);
+    expect(UNICODE_SCALAR_NO_CONTROL_PATTERN.source).toBe(UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE);
+    const runtimeOwners = {
+      'archive-signed-put-target': SnapshotArchiveSignedPutTargetSchema,
+      'manifest-signed-put-target': SnapshotManifestSignedPutTargetSchema,
+    } as const;
+
+    const documents = {
+      'contract-schemas': JSON.parse(await readFile(artifactUrls['contract-schemas'], 'utf8')),
+      openapi: JSON.parse(await readFile(artifactUrls.openapi, 'utf8')),
+    } as const;
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    const physicalValidators = parity.physicalPublicNodes.map((node) => {
+      const schema = lookupPointer(documents[node.artifact], node.pointer);
+      expect(schema.pattern, `${node.artifact}:${node.pointer}`).toBe(parity.patternSource);
+      expect(schema.maxLength, `${node.artifact}:${node.pointer}`).toBeUndefined();
+      return { ...node, validate: ajv.compile(schema as AnySchema) };
+    });
+    const fullResponseValidators = {
+      'contract-schemas': ajv.compile(
+        lookupPointer(
+          documents['contract-schemas'],
+          '/schemas/SnapshotUploadCreateResponse',
+        ) as AnySchema,
+      ),
+      openapi: ajv.compile(
+        lookupPointer(
+          documents.openapi,
+          '/components/schemas/SnapshotUploadCreateResponse',
+        ) as AnySchema,
+      ),
+    } as const;
+    const baseResponse = signedPutResponse();
+    expect(SnapshotUploadCreateResponseSchema.safeParse(baseResponse).success).toBe(true);
+    expect(fullResponseValidators['contract-schemas'](baseResponse)).toBe(true);
+    expect(fullResponseValidators.openapi(baseResponse)).toBe(true);
+    let outcomes = 0;
+
+    for (const probe of parity.probes) {
+      const value = `https://uploads.example.invalid/${parity.canaryPrefix}${String.fromCharCode(
+        ...probe.codeUnits,
+      )}/object`;
+      const expected = probe.expected === 'accepted';
+      for (const owner of parity.runtimeTargetOwners) {
+        const result = runtimeOwners[owner.id].safeParse(
+          signedPutTarget(owner.id === 'archive-signed-put-target' ? 'archive' : 'manifest', value),
+        );
+        expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(expected);
+        if (!expected && !result.success) {
+          expect(JSON.stringify(result.error.issues)).not.toContain(parity.canaryPrefix);
+        }
+        outcomes += 1;
+      }
+      for (const node of physicalValidators) {
+        expect(node.validate(value), `${node.artifact}:${node.pointer}:${probe.id}`).toBe(expected);
+        if (!expected) {
+          expect(JSON.stringify(node.validate.errors)).not.toContain(parity.canaryPrefix);
+        }
+        outcomes += 1;
+      }
+      for (const owner of parity.runtimeTargetOwners) {
+        const result = SnapshotUploadCreateResponseSchema.safeParse(
+          replacePointer(baseResponse, owner.responseInstancePointer, value),
+        );
+        expect(result.success, `runtime-response:${owner.id}:${probe.id}`).toBe(expected);
+        if (!expected && !result.success) {
+          expect(JSON.stringify(result.error.issues)).not.toContain(parity.canaryPrefix);
+        }
+        outcomes += 1;
+      }
+      for (const owner of parity.semanticResponseOwners) {
+        const response = replacePointer(baseResponse, owner.responseInstancePointer, value);
+        const validate = fullResponseValidators[owner.artifact];
+        expect(validate(response), `response:${owner.id}:${probe.id}`).toBe(expected);
+        if (!expected) {
+          expect(JSON.stringify(validate.errors)).not.toContain(parity.canaryPrefix);
+        }
+        outcomes += 1;
+      }
+    }
+    expect(outcomes).toBe(132);
   });
 
   it('enforces max minus one, max, and max plus one for ASCII CJK and emoji', async () => {

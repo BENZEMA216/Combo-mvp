@@ -5274,7 +5274,11 @@
                   "type": "object",
                   "properties": {
                     "method": { "type": "string", "const": "PUT" },
-                    "putUrl": { "type": "string", "format": "uri" },
+                    "putUrl": {
+                      "type": "string",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "format": "uri"
+                    },
                     "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 },
                     "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                     "requiredHeaders": {
