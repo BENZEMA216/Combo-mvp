@@ -6,6 +6,8 @@ Cloud/Worker Journal 和 side-effect recording adapters 都是明确标注的 Mo
 
 Cloud 与 Worker 都使用 `@cb/creator-agent-protocol` 的正式 P-256/ES256 Execution Capability verifier；one-use reducer 只位于 Provider dispatch Gate。Journal 不接收 caller 提供的 `executionCapabilityValid` 布尔值，也不信任 caller 提供的 capability digest；它们从已签名 full-wire capability 重新计算 digest，并精确绑定 Invocation、Conversation、Deployment、AgentVersion、Worker Installation、Lease/Fence、Provider Request、request digest、model、reasoning effort、budget、有效期和 nonce。Provider dispatch 对外只暴露组合后的 `SqliteVerifiedExecutionCapabilityGate`：它先验签并核对完整绑定，再用 `BEGIN IMMEDIATE`、WAL 和 `synchronous=FULL` 在返回 `DISPATCH_ONCE` 前原子提交 one-use row。底层 verifier/CAS half 不从 package entrypoint 暴露；这是真实 SQLite 持久化证据，但尚不是 Provider/WSS 的 E2 集成证据。
 
+Execution Capability 上游计数边界测试复用 Protocol 的 digest-bound `0/1/2` corpus。真实文件 SQLite 接受并在重启后逐字读回 `UNUSED=0` 和 `DISPATCHED=1`，package-public Gate 在返回首次 dispatch 前提交 `1` 且重启后 exact replay 不产生第二次 dispatch；绕过运行时 Schema 的直接 `2` 更新由表级 `CHECK` 拒绝且原 row 不变。该三结果只补充 P0 数值持久化边界，不是实际 Provider sink、并发、crash/network fault、10k 序列、E4 或 E6 证据。
+
 ## 协议迁移边界
 
 `src/protocol.ts` 直接调用 `@cb/creator-agent-protocol` 的 `parseBrokerFrame` 作为唯一 Envelope parser；本包只保留 sequence cursor、ACK fact、Lease/Fence 等执行语义。真实 WSS ingress 必须沿用同一权威 parser，不能复制或放宽 wire contract。

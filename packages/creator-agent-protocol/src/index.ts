@@ -8,6 +8,7 @@ export * from './consumer-events.js';
 export * from './conversation-ready-facts.js';
 export * from './decoded-boundaries.js';
 export * from './evidence.js';
+export * from './execution-capability-upstream-count-boundaries.js';
 export * from './http.js';
 export * from './invocation.js';
 export * from './invocation-facts.js';

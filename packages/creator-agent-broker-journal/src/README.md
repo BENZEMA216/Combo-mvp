@@ -13,7 +13,8 @@
 - `fault-model.ts` 完整分类二十个 failpoint；只对九个可由本适配器真正序列化和重建的窗口执行 simulated recovery，其余明确为 model-only 或 blocked。
 - `index.ts` 是包的公开入口。
 - `scripts/generate-reconciliation-golden.mjs` 维护不导入 production reducer 的独立 oracle；生成的 `test-fixtures/reconciliation-golden.json` 覆盖完整 13 Cloud × 10 Local × 6 Host × 3 Lease × 2 Capability × 2 Digest-binding = 9,360 行输入笛卡尔积（SHA-256 `844cc8f916a6b63c0b8558ee7ec865c3045c0e5ec1607987a8f54a44550e663c`）。
-- `*.test.ts` 验证协议、状态机、签名能力、双 Journal、对账、fault model 和固定 seed 的随机不变量。
+- `capability-upstream-count-boundaries.test.ts` 使用真实文件 SQLite 验证 Provider 上游计数 `0/1/2` 的接受、重启读取、公开 Gate 提交和表级拒绝边界。
+- 其余 `*.test.ts` 验证协议、状态机、签名能力、双 Journal、对账、fault model 和固定 seed 的随机不变量。
 
 ## 安全边界
 

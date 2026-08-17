@@ -433,6 +433,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/agent-version-resource-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/execution-capability-upstream-count-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-resource-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-single-file-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-compressed-boundaries.v1.json
@@ -448,6 +449,7 @@ cases:
       - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
       - sha256:d19a89c7abb5f16883ac55ad9709ce54e027fffa40fe7bc9bd603626c3840ca2
       - sha256:53666da428d43bfecbb2156d72152730dc8a8112fd24541d42eb508290530a1c
+      - sha256:356ff59d5f9223fc886f27b4e52a54c88c59820c43fdab6f3e83df26cb7a4b86
       - sha256:dfe25e6e244468dec22366ea37bd68d34667a9452fffe1651ed0896858e5cac2
       - sha256:36e05cdbaedb0eb0dc885c976be4f71a781530684da72b5b471a6dc97cea64bf
       - sha256:19223bcfda15eaa0d7fcf485ecd27ae176edd960a2a172074d38802e2f8a1f9c
