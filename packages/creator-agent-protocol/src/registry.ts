@@ -168,36 +168,58 @@ export const TestCaseRegistrySchema = z
   });
 export type TestCaseRegistry = z.infer<typeof TestCaseRegistrySchema>;
 
+const DecisionRegistryCommonShape = {
+  title: UnicodeCodePointStringSchema(1, 256),
+  status: z.literal('accepted'),
+  owner: UnicodeCodePointStringSchema(1, 64),
+  decidedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
+  decision: UnicodeCodePointStringSchema(1, 2_048),
+  alternatives: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
+  evidence: z.array(UnicodeCodePointStringSchema(1, 512)).min(1),
+  securityImpact: UnicodeCodePointStringSchema(1, 2_048),
+  reversalTriggers: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
+  protocolVersions: z.array(UnicodeCodePointStringSchema(1, 128)).min(1),
+  document: z.string().regex(/^docs\/vnext\/adr\/ADR-VNEXT-\d{3}\.md$/u),
+} as const;
+
+function refineDecisionLists(
+  decision: {
+    alternatives: string[];
+    evidence: string[];
+    reversalTriggers: string[];
+    protocolVersions: string[];
+  },
+  context: z.RefinementCtx,
+): void {
+  assertUniqueValues(decision.alternatives, context, ['alternatives']);
+  assertUniqueValues(decision.evidence, context, ['evidence']);
+  assertUniqueValues(decision.reversalTriggers, context, ['reversalTriggers']);
+  assertUniqueValues(decision.protocolVersions, context, ['protocolVersions']);
+}
+
+const LegacyDecisionSchema = z
+  .object({
+    id: z.string().regex(/^ADR-VNEXT-(?:00[1-9]|01\d|020)$/u),
+    ...DecisionRegistryCommonShape,
+  })
+  .strict()
+  .superRefine(refineDecisionLists);
+
+const ArchitectureDecisionSchema = z
+  .object({
+    id: z.string().regex(/^ADR-VNEXT-(?:02[1-9]|03[0-2])$/u),
+    architectureDecisionId: z.string().regex(/^D(?:00[1-9]|01[0-2])$/u),
+    architectureDecisionSummary: UnicodeCodePointStringSchema(1, 256),
+    ...DecisionRegistryCommonShape,
+  })
+  .strict()
+  .superRefine(refineDecisionLists);
+
 export const DecisionRegistrySchema = z
   .object({
     protocol: z.literal(DECISION_REGISTRY_PROTOCOL),
     schemaVersion: z.literal(1),
-    decisions: z
-      .array(
-        z
-          .object({
-            id: z.string().regex(/^ADR-VNEXT-\d{3}$/u),
-            title: UnicodeCodePointStringSchema(1, 256),
-            status: z.literal('accepted'),
-            owner: UnicodeCodePointStringSchema(1, 64),
-            decidedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
-            decision: UnicodeCodePointStringSchema(1, 2_048),
-            alternatives: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
-            evidence: z.array(UnicodeCodePointStringSchema(1, 512)).min(1),
-            securityImpact: UnicodeCodePointStringSchema(1, 2_048),
-            reversalTriggers: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
-            protocolVersions: z.array(UnicodeCodePointStringSchema(1, 128)).min(1),
-            document: z.string().regex(/^docs\/vnext\/adr\/ADR-VNEXT-\d{3}\.md$/u),
-          })
-          .strict()
-          .superRefine((decision, context) => {
-            assertUniqueValues(decision.alternatives, context, ['alternatives']);
-            assertUniqueValues(decision.evidence, context, ['evidence']);
-            assertUniqueValues(decision.reversalTriggers, context, ['reversalTriggers']);
-            assertUniqueValues(decision.protocolVersions, context, ['protocolVersions']);
-          }),
-      )
-      .length(20),
+    decisions: z.array(z.union([LegacyDecisionSchema, ArchitectureDecisionSchema])).length(32),
   })
   .strict()
   .superRefine((registry, context) => {
@@ -206,6 +228,37 @@ export const DecisionRegistrySchema = z
       context,
       ['decisions'],
     );
+    const expectedDecisionIds = Array.from(
+      { length: 32 },
+      (_, index) => `ADR-VNEXT-${String(index + 1).padStart(3, '0')}`,
+    );
+    if (registry.decisions.some((decision, index) => decision.id !== expectedDecisionIds[index])) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['decisions'],
+        message: 'ADR catalog 必须逐项覆盖 ADR-VNEXT-001..032',
+      });
+    }
+    const architectureDecisions = registry.decisions.filter(
+      (decision): decision is z.infer<typeof ArchitectureDecisionSchema> =>
+        'architectureDecisionId' in decision,
+    );
+    const expectedArchitectureIds = Array.from(
+      { length: 12 },
+      (_, index) => `D${String(index + 1).padStart(3, '0')}`,
+    );
+    if (
+      architectureDecisions.length !== expectedArchitectureIds.length ||
+      architectureDecisions.some(
+        (decision, index) => decision.architectureDecisionId !== expectedArchitectureIds[index],
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['decisions'],
+        message: 'ADR-VNEXT-021..032 必须唯一且顺序映射 D001..D012',
+      });
+    }
   });
 export type DecisionRegistry = z.infer<typeof DecisionRegistrySchema>;
 

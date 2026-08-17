@@ -119,7 +119,7 @@ invariants:
   - id: INV-024
     statement: 所有资源均有 size、time、count 上限并可回收。
     severity: P1
-    gates: [G1, G2, G3, G4, G7]
+    gates: [G0, G1, G2, G3, G4, G7]
     owners: [Independent Verifier/SRE]
   - id: INV-025
     statement: 已接受的 Snapshot 和 Journal 可以从异机备份恢复。

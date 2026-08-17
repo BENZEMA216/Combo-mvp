@@ -380,3 +380,258 @@ decisions:
       - 节点/磁盘拓扑、备份 RPO 或容量模型变化，需真实阈值 probe 重新定标。
     protocolVersions: [combo.creator-agent-http/1, combo.vnext-evidence-bundle/1]
     document: docs/vnext/adr/ADR-VNEXT-020.md
+
+  - id: ADR-VNEXT-021
+    architectureDecisionId: D001
+    architectureDecisionSummary: 推理运行在 Creator Codex，Combo 不运行 Creator Runtime
+    title: 推理运行在 Creator Codex，Combo 不运行 Creator Runtime
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: 消费者消息由 Combo Broker 转发到 Creator Mac；Creator Worker 在每个 Conversation 独占的隔离环境中运行固定 Codex app-server，真正的模型推理由 OpenAI 模型服务完成。Combo 云负责身份、AgentVersion、Snapshot、Broker、Journal 和聊天记录，不运行 Creator 的 Codex Runtime。
+    alternatives:
+      - Combo 自建云端 Creator Runtime；拒绝，因为本版本产品定义是 Creator-hosted，Cloud K3s Sandbox 明确不采用。
+      - 把 Creator Worker 绑定在某个 Codex 对话内；拒绝，因为 Worker 是独立本地守护进程。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §0.1-0.4
+      - creator-hosted-agent-vnext-architecture.md §3
+    securityImpact: Creator Mac 不开放公网入站；Combo 云不能被描述成 Creator Runtime，Creator-hosted 也不等于 24×7 托管服务。
+    reversalTriggers:
+      - 产品明确转向 managed runtime 时，重新评审运行位置、凭据、隔离、费用和 SLA，不能沿用本 ADR 宣称等价。
+    protocolVersions: [combo.agent-version-manifest/1, combo.creator-broker/1, combo.sandbox-spec/1]
+    document: docs/vnext/adr/ADR-VNEXT-021.md
+
+  - id: ADR-VNEXT-022
+    architectureDecisionId: D002
+    architectureDecisionSummary: 云端保存 Creator 明确确认的不可变 Snapshot
+    title: 云端保存 Creator 明确确认的不可变 Snapshot
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: Creator 先预览文件数量、大小、阻断项和公开边界并明确确认；Worker 从一致 staging 生成 deterministic manifest/archive 和 digest，经私有加密对象上传及云端重新校验后形成不可覆盖的 Snapshot。只有 VERIFIED Snapshot 能创建不可变 AgentVersion，活 Project 后续变化不改变旧版本。
+    alternatives:
+      - 运行时直接读取 Creator 活 Project；拒绝，因为会产生版本漂移和扫描/运行 TOCTOU。
+      - 让 Codex 充当 Context 长期存储；拒绝，因为 Context、Runtime 和 Model 必须分离。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §3.1
+      - creator-hosted-agent-vnext-architecture.md §5.1-5.5
+      - creator-hosted-agent-vnext-architecture.md §14.1
+    securityImpact: Snapshot 不可覆盖、按 digest 校验并限制路径、类型和大小；Creator 必须看见 Context 会上传 Combo 云且内容可能出现在回答中。
+    reversalTriggers:
+      - 若不再由云端保存权威 Snapshot，必须重新证明不可变身份、恢复、回滚和运行时不读取活 Project。
+    protocolVersions:
+      [combo.snapshot-manifest/1, combo.snapshot-envelope/1, combo.agent-version-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-022.md
+
+  - id: ADR-VNEXT-023
+    architectureDecisionId: D003
+    architectureDecisionSummary: Alpha 中 Combo 可解密 Context 和聊天正文；明示且限制保留
+    title: Alpha 中 Combo 可解密 Context 和聊天正文；明示且限制保留
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: Alpha 使用 Combo 管理的 envelope encryption；这能防普通磁盘、对象和备份泄露，但不能防 Combo 特权运维读取 Context。Consumer 聊天正文默认保留 30 天，日志禁止记录 Prompt、答案、Project 正文、Signed URL、Token、绝对路径、Host stderr 和隐藏 reasoning；产品必须明示模型服务仍会收到回答所需 Context。
+    alternatives:
+      - 把当前方案描述成零知识或端到端加密；拒绝，因为 Alpha 的 Combo 管理密钥允许特权运维解密。
+      - Alpha 使用 Creator-held Context key；后置，因为设备迁移和恢复协议尚未设计。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §5.6
+      - creator-hosted-agent-vnext-architecture.md §16.5-16.6
+      - creator-hosted-agent-vnext-architecture.md §22.1
+    securityImpact: 明确 Combo 的隐私责任、正文保留和删除边界；不得以磁盘加密扩大为 Combo 无法读取，也不得把正文写入普通日志。
+    reversalTriggers:
+      - 未来承诺 Combo 看不到 Context 时，必须另做 Creator-held key、设备迁移和恢复协议。
+    protocolVersions:
+      [combo.snapshot-envelope/1, combo.message-envelope/1, combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-023.md
+
+  - id: ADR-VNEXT-024
+    architectureDecisionId: D004
+    architectureDecisionSummary: External Alpha 要求每 Conversation OS/VM 隔离
+    title: External Alpha 要求每 Conversation OS/VM 隔离
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: 每个 AgentVersion 共享不可变 Context image；每个 Conversation 独占 Sandbox、Codex thread、scratch 和 tmp，实例只在活跃期存在。Sandbox 不得挂载 Creator HOME、活 Project、其他 Project、长期凭据或其他 Conversation state；External Alpha 禁止 Native macOS 运行路径。
+    alternatives:
+      - 每 Agent 共享 VM；拒绝，因为不同消费者会共享进程、scratch 和潜在残留。
+      - 每 Turn 新 VM；拒绝，因为会破坏多轮并增加冷启动和恢复复杂度。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §2.2
+      - creator-hosted-agent-vnext-architecture.md §7.1-7.5
+      - creator-hosted-agent-vnext-architecture.md §22.2
+    securityImpact: OS/VM 边界强制阻断 Prompt 读取 Snapshot 外的 Creator 文件、长期凭据和其他会话；软件 Attestation 不能被描述成硬件远程证明。
+    reversalTriggers:
+      - 替换 Sandbox adapter 前必须通过同一真实 Isolation Gate；安全 Gate 失败不得回退 Native unisolated Runtime。
+    protocolVersions: [combo.sandbox-spec/1, combo.sandbox-attestation/1]
+    document: docs/vnext/adr/ADR-VNEXT-024.md
+
+  - id: ADR-VNEXT-025
+    architectureDecisionId: D005
+    architectureDecisionSummary: 采用至少一次传输、幂等、Fence、UNCERTAIN，不宣称 exactly once
+    title: 采用至少一次传输、幂等、Fence、UNCERTAIN，不宣称 exactly once
+    status: accepted
+    owner: Protocol
+    decidedAt: 2026-08-13
+    decision: Codex dispatch 前采用 at-least-once delivery 和幂等处理；dispatch 后只允许 at-most-once automatic execution。Lease/Fence 阻断 stale Worker；无法证明是否越过 dispatch 或无法确认终态时进入 UNCERTAIN，不自动二次执行。Codex/模型 Provider 未证明按平台 idempotency key 去重，因此不宣称 exactly-once inference。
+    alternatives:
+      - 宣称 exactly-once inference；拒绝，因为 Host/Provider 没有可验证的端到端去重保证。
+      - 将超时或断线直接视为可重试失败；拒绝，因为可能覆盖已经发生的真实执行和费用。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §2.4
+      - creator-hosted-agent-vnext-architecture.md §11.5
+      - creator-hosted-agent-vnext-architecture.md §12.1-12.7
+    securityImpact: 幂等、Lease/Fence 和两本 Durable Journal 限制重放与 stale 写入；UNCERTAIN 防止故障恢复导致重复推理、重复 final 和重复收费。
+    reversalTriggers:
+      - 只有 Codex 与模型 Provider 提供可验证的端到端 idempotency receipt 后，才可重新评审 exactly-once 表述。
+    protocolVersions:
+      [combo.invocation-state-machine/1, combo.creator-broker/1, combo.worker-journal/1]
+    document: docs/vnext/adr/ADR-VNEXT-025.md
+
+  - id: ADR-VNEXT-026
+    architectureDecisionId: D006
+    architectureDecisionSummary: Alpha 模型额度由 Creator 承担
+    title: Alpha 模型额度由 Creator 承担
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha 的真实模型调用使用 Creator 的 OpenAI/Codex 凭据与额度；发布 Preview 必须明确展示该费用边界。邀请、配额、WIP、速率限制和一次性 Execution Capability 用于限制滥用；本版本不提供精细计费或 Marketplace。
+    alternatives:
+      - Alpha 由 Combo 提供模型额度和精细计费；后置，因为精细计费和 Marketplace 明确不在本版本范围。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §14.1
+      - creator-hosted-agent-vnext-architecture.md §20.3
+      - creator-hosted-agent-vnext-architecture.md §22.1 and §24
+    securityImpact: Creator 模型额度是主要资产；Capability、邀请、限流和 WIP 必须防止消费者或重放路径产生未授权费用。
+    reversalTriggers:
+      - Creator 不接受承担模型额度和机器在线成本时触发 Product Kill/Pivot；新的付费方或计费模型须另行决策。
+    protocolVersions: [combo.execution-capability/1, combo.agent-version-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-026.md
+
+  - id: ADR-VNEXT-027
+    architectureDecisionId: D007
+    architectureDecisionSummary: Codex Runtime、artifact 和 schema exact pin
+    title: Codex Runtime、artifact 和 schema exact pin
+    status: accepted
+    owner: Protocol
+    decidedAt: 2026-08-13
+    decision: AgentVersion 身份包含 Codex Runtime artifact digest 和 app-server schema digest；每个受支持的 Codex、image 和 Sandbox adapter 使用精确版本及 digest，并通过真实 app-server conformance、三轮多轮、interrupt、Proxy、隔离和资源证据后才能进入 Runtime RC。缺登录、版本不符或安全 probe 失败均为 BLOCKED。
+    alternatives:
+      - 自动兼容任意 Codex 版本；拒绝，因为任意版本自动兼容是 Alpha 非目标，experimental protocol 升级可能破坏契约。
+      - 只固定版本字符串而不固定 artifact/schema digest；拒绝，因为不能阻断供应链替换和 schema 漂移。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §4.1
+      - creator-hosted-agent-vnext-architecture.md §7.6-7.7
+      - creator-hosted-agent-vnext-architecture.md §19.4 and §21.1
+    securityImpact: exact digest、SBOM、签名和 allowlist 限制 Runtime 供应链替换；未验证版本不得被 skip 或 fallback 冒充通过。
+    reversalTriggers:
+      - Codex 提供新的正式稳定接口时可以升级协议，但仍须形成新 pin 并重跑 conformance 与 Isolation Gate。
+    protocolVersions:
+      [combo.agent-version-manifest/1, combo.sandbox-attestation/1, combo.creator-broker/1]
+    document: docs/vnext/adr/ADR-VNEXT-027.md
+
+  - id: ADR-VNEXT-028
+    architectureDecisionId: D008
+    architectureDecisionSummary: Worker offline 时快速失败；online busy 时 bounded queue
+    title: Worker offline 时快速失败；online busy 时 bounded queue
+    status: accepted
+    owner: Cloud/Broker
+    decidedAt: 2026-08-13
+    decision: Worker 离线时不接受新队列，直接向消费者返回 Agent offline。Worker online 且 busy 时使用有界队列：Deployment 最多 10 个 queued Invocation、每 Consumer 最多 1 个、Conversation 内 WIP=1、Queue TTL 120 秒，并按 Conversation round-robin；到期在 dispatch 前进入 EXPIRED。
+    alternatives:
+      - Worker 离线时继续积压请求；拒绝，因为 Creator-hosted Alpha 不承诺 24×7 且必须准确显示 offline。
+      - online busy 时使用无界队列；拒绝，因为会扩大费用、等待时间和资源 DoS。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §12.8
+      - creator-hosted-agent-vnext-architecture.md §15.2
+      - creator-hosted-agent-vnext-architecture.md §18.4
+    securityImpact: 有界 queue、TTL、WIP 和公平调度限制资源/费用 DoS；offline 不能显示假在线或在无 Worker 时积压隐藏工作。
+    reversalTriggers:
+      - 转向 managed runtime、多 Creator 自动调度或新的容量模型时，重新冻结 presence、queue 和费用边界。
+    protocolVersions: [combo.creator-agent-http/1, combo.invocation-state-machine/1]
+    document: docs/vnext/adr/ADR-VNEXT-028.md
+
+  - id: ADR-VNEXT-029
+    architectureDecisionId: D009
+    architectureDecisionSummary: Model 和 reasoning effort 固定在 AgentVersion
+    title: Model 和 reasoning effort 固定在 AgentVersion
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: ModelPolicy 是 AgentVersion 的不可变组成，model 和 reasoning effort 均 pinned-by-version，并与 RuntimePolicy 的 resolvedModel/reasoningEffort 一致。模型或 effort 任一变化都会改变 versionDigest 并创建新 AgentVersion；Deployment 更新只影响新 Conversation。
+    alternatives:
+      - 在不创建新 Version 的情况下动态切换 model 或 effort；拒绝，因为会改变费用和推理语义却保留旧执行身份。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §0.3
+      - creator-hosted-agent-vnext-architecture.md §4.1-4.3
+      - creator-hosted-agent-vnext-architecture.md §15.3
+    securityImpact: 固定 model/effort 防止静默模型替换、费用漂移和同一 Version 下不可审计的语义变化；Capability 仍须绑定同一模型与预算。
+    reversalTriggers:
+      - 若产品引入动态模型路由，必须定义新的版本身份、消费者披露、费用和可复现性契约。
+    protocolVersions: [combo.agent-version-manifest/1, combo.execution-capability/1]
+    document: docs/vnext/adr/ADR-VNEXT-029.md
+
+  - id: ADR-VNEXT-030
+    architectureDecisionId: D010
+    architectureDecisionSummary: Consumer 必须登录且受邀
+    title: Consumer 必须登录且受邀
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha Consumer 必须登录 Combo，并被 Creator 邀请或拥有 Agent access grant；只能读取自己的 Conversation。分享 URL slug 只定位 Agent，不是授权凭证；账号、IP、Agent 和 Conversation 四层限流与 WIP=1 同时执行。
+    alternatives:
+      - 匿名无限公开聊天；拒绝，因为它是 Alpha 明确非目标且会扩大授权、费用与滥用风险。
+      - 把分享 slug 当作 bearer credential；拒绝，因为定位符不能替代登录、grant 和 owner authorization。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §1.2-1.3
+      - creator-hosted-agent-vnext-architecture.md §13.4
+      - creator-hosted-agent-vnext-architecture.md §15.4
+    securityImpact: 登录、grant、owner authorization 和限流共同防止未授权读取、跨 Consumer 访问及 Creator 额度滥用；slug 泄漏不授予访问权。
+    reversalTriggers:
+      - 支持匿名公开访问前必须新增长期滥用、费用、隐私、内容安全和授权 Gate。
+    protocolVersions: [combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-030.md
+
+  - id: ADR-VNEXT-031
+    architectureDecisionId: D011
+    architectureDecisionSummary: Alpha 仅 text-in/text-out、无外部 Action
+    title: Alpha 仅 text-in/text-out、无外部 Action
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha IOContract 只允许 UTF-8 text input/output，files=false、actions=false、rawReasoning=false；RuntimePolicy 禁用 external tools、Project execution、任意网络和 Host credentials。Guest 仅有闭世界 read_context/list_context/search_context，只读 Snapshot 且不执行 Project bytes。
+    alternatives:
+      - 支持文件、多模态、外部写操作或第三方工具；后置，因为这些能力明确不在 Alpha 范围且需要新的权限与安全协议。
+      - 提供通用 shell、解释器或任意 exec；拒绝，因为 Project bytes 必须 noexec 且安全不能依赖 Prompt。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §1.3
+      - creator-hosted-agent-vnext-architecture.md §4.3-4.4
+      - creator-hosted-agent-vnext-architecture.md §7.8 and §23.2
+    securityImpact: text-only 和无 Action 限制 Prompt 注入造成外部副作用；闭世界 Context Reader、noexec 和 model-proxy-only 缩小文件与网络能力。
+    reversalTriggers:
+      - 引入文件、多模态、外部工具或写操作前，必须新增独立 capability、数据流、授权、审计和安全 Gate。
+    protocolVersions:
+      [combo.agent-version-manifest/1, combo.creator-agent-http/1, combo.sandbox-spec/1]
+    document: docs/vnext/adr/ADR-VNEXT-031.md
+
+  - id: ADR-VNEXT-032
+    architectureDecisionId: D012
+    architectureDecisionSummary: Apple Container 为首选候选，Lima/VZ 为备选；均需 Gate
+    title: Apple Container 为首选候选，Lima/VZ 为备选；均需 Gate
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: External Alpha 首选候选是精确 pin 的 Apple container；Lima/VZ 是 Linux Codex 兼容性和独立 VM 备选，并必须关闭默认 mounts/forwarding。Spike A 验证 Linux arm64 Codex 可运行，Spike B 验证 Apple Container 隔离；任一支持组合都必须通过真实 Runtime 与 Isolation Gate，失败不得回退 Native macOS。
+    alternatives:
+      - Colima 或 Docker；仅用于 trusted internal prototype，不能作为 External Alpha 隔离证明。
+      - 自研 Virtualization.framework VMM；只有 Apple Container 失败且确有必要时再投资。
+      - Native macOS Runtime；外部消费者路径禁止。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §0.3
+      - creator-hosted-agent-vnext-architecture.md §7.6-7.7
+      - creator-hosted-agent-vnext-architecture.md §19.4 and §22.2
+    securityImpact: adapter 名称不等于隔离证据；必须真实验证 Host mount、Credential、网络、跨会话和资源边界，Apple container 1.0 前还必须 exact pin。
+    reversalTriggers:
+      - Apple Container Gate 失败时只能评估已冻结的 Lima/VZ 备选；若候选均未通过，External Alpha 不上线而不是回退 Native。
+    protocolVersions: [combo.sandbox-spec/1, combo.sandbox-attestation/1]
+    document: docs/vnext/adr/ADR-VNEXT-032.md

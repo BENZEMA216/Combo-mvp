@@ -426,6 +426,7 @@ cases:
   - <<: *sch
     id: SCH-004
     title: Every protocol length boundary is exact
+    invariants: [INV-001, INV-002, INV-024]
     fixture:
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json
@@ -435,9 +436,9 @@ cases:
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
-      - sha256:665679044f165b9718eedb26c9d3c787d3d2127d88dc2a33c01f7bc89be32158
-      - sha256:6b35409cc32986b853796844a944e5195ee7c332eb955fe7dcc889a6cd3a9d48
-      - sha256:a4fcbd32ef75d0d2f63dd90a138c28160d6628e4403757bf0358c546190463ae
+      - sha256:bb3f31715aee920285f121e7d30a7fdfde7ffa526878d983ba127ac6437d6ee9
+      - sha256:a52c882af9e2162bb50abd0eec6f70382c6302a8bfdbb6fc41856f00d213198d
+      - sha256:4e988fe3f185d24a5b19d10260e689b92f87c0817ddb1cb11c639b2f597f43f9
       - sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f
   - <<: *sch
     id: SCH-005
@@ -473,7 +474,7 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:d5f55cf14d2ce4309b28e57f51a2ee420327ba90609fc1f03c550eae5f7a1407
+      - sha256:22b36f02a8ed726a4873765d4cff1fcece92e9a0f8353abd530e6372e4f8e70f
       - sha256:728e9ff2ba1a60b313feef3380d8ef6f94949c554dbef3de7c631e0b1e21530d
       - sha256:9214d0397309747c901cfad3c22c2a88e463f49403dd699544d4d9848d650b67
   - <<: *sch
@@ -507,6 +508,7 @@ cases:
   - <<: *sch
     id: SCH-010
     title: N plus one or unknown capability blocks
+    invariants: [INV-001, INV-002, INV-021]
     fixture: [packages/creator-agent-protocol/fixtures/protocol-compatibility.v1.json]
     steps: [Advertise an unknown future protocol or capability, Attempt readiness]
     assertions: [Deployment becomes BLOCKED without guessing or Native fallback]

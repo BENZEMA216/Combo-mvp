@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
 import { currentBrokerContractDigest } from '../artifacts.js';
 import { canonicalSha256 } from '../canonical.js';
@@ -49,6 +50,18 @@ async function readCaseRegistries(): Promise<TestCaseRegistry[]> {
   );
 }
 
+function extractArchitectureDecisionCatalog(markdown: string): Array<{
+  architectureDecisionId: string;
+  architectureDecisionSummary: string;
+}> {
+  const section = markdown.match(/^## 25\. ADR 清单\n([\s\S]*?)^---$/mu)?.[1];
+  if (section === undefined) throw new Error('frozen architecture mirror missing §25 ADR catalog');
+  return [...section.matchAll(/^\| (D\d{3}) \| (.+) \|$/gmu)].map((match) => ({
+    architectureDecisionId: match[1]!,
+    architectureDecisionSummary: match[2]!,
+  }));
+}
+
 const sha256Digest = (bytes: Uint8Array) =>
   `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 
@@ -76,7 +89,7 @@ describe('VNext machine-readable contract registries', () => {
     expect(contract.contractDigest).toBe(currentBrokerContractDigest());
     expect(contract.contractDigest).toBe(`sha256:${canonicalSha256(artifact)}`);
   });
-  it('parses exactly 25 invariants, 20 decisions, field-level data-flow locations and 66 cases', async () => {
+  it('parses exactly 25 invariants, 32 decisions, field-level data-flow locations and 66 cases', async () => {
     const invariants = InvariantRegistrySchema.parse(
       await readYaml(join(vnextDirectory, 'invariants.yaml')),
     );
@@ -89,10 +102,79 @@ describe('VNext machine-readable contract registries', () => {
     const cases = (await readCaseRegistries()).flatMap((registry) => registry.cases);
 
     expect(invariants.invariants).toHaveLength(25);
-    expect(decisions.decisions).toHaveLength(20);
+    expect(decisions.decisions).toHaveLength(32);
     expect(allowlist.fields.length).toBeGreaterThanOrEqual(18);
     expect(cases).toHaveLength(66);
     expect(new Set(cases.map((testCase) => testCase.id)).size).toBe(66);
+  });
+
+  it('maps ADR-VNEXT-021..032 bidirectionally to frozen architecture D001..D012', async () => {
+    const architecture = await readFile(frozenPlanMirrors[0].path, 'utf8');
+    const frozenCatalog = extractArchitectureDecisionCatalog(architecture);
+    expect(frozenCatalog).toHaveLength(12);
+
+    const rawRegistry = (await readYaml(join(vnextDirectory, 'decisions.yaml'))) as {
+      decisions: Array<Record<string, unknown>>;
+    };
+    const registry = DecisionRegistrySchema.parse(rawRegistry);
+    const mappedCatalog = registry.decisions.slice(20).map((decision, index) => {
+      if (!('architectureDecisionId' in decision)) {
+        throw new Error(`${decision.id} missing architecture decision mapping`);
+      }
+      expect(decision.id).toBe(`ADR-VNEXT-${String(index + 21).padStart(3, '0')}`);
+      return {
+        architectureDecisionId: decision.architectureDecisionId,
+        architectureDecisionSummary: decision.architectureDecisionSummary,
+      };
+    });
+    expect(mappedCatalog).toEqual(frozenCatalog);
+    for (const decision of registry.decisions.slice(0, 20)) {
+      expect('architectureDecisionId' in decision, decision.id).toBe(false);
+      expect('architectureDecisionSummary' in decision, decision.id).toBe(false);
+    }
+
+    const legacyWithMapping = structuredClone(rawRegistry);
+    legacyWithMapping.decisions[0]!.architectureDecisionId = 'D001';
+    legacyWithMapping.decisions[0]!.architectureDecisionSummary =
+      frozenCatalog[0]!.architectureDecisionSummary;
+    expect(DecisionRegistrySchema.safeParse(legacyWithMapping).success).toBe(false);
+
+    const missingSummary = structuredClone(rawRegistry);
+    delete missingSummary.decisions[20]!.architectureDecisionSummary;
+    expect(DecisionRegistrySchema.safeParse(missingSummary).success).toBe(false);
+
+    const duplicateMapping = structuredClone(rawRegistry);
+    duplicateMapping.decisions[21]!.architectureDecisionId = 'D001';
+    expect(DecisionRegistrySchema.safeParse(duplicateMapping).success).toBe(false);
+
+    const contractBundle = JSON.parse(
+      await readFile(
+        join(
+          repositoryRoot,
+          'packages',
+          'creator-agent-protocol',
+          'schemas',
+          'contract-schemas.v1.json',
+        ),
+        'utf8',
+      ),
+    ) as { schemas: Record<string, unknown> };
+    const validateAdvertised = new Ajv({
+      allErrors: true,
+      strict: false,
+      validateFormats: false,
+    }).compile(contractBundle.schemas.DecisionRegistry as AnySchema);
+    expect(validateAdvertised(rawRegistry)).toBe(true);
+    const oversizedArchitectureTitle = structuredClone(rawRegistry);
+    oversizedArchitectureTitle.decisions[20]!.title = '😀'.repeat(257);
+    expect(DecisionRegistrySchema.safeParse(oversizedArchitectureTitle).success).toBe(false);
+    expect(validateAdvertised(oversizedArchitectureTitle)).toBe(false);
+    expect(
+      validateAdvertised.errors?.some(
+        ({ instancePath, keyword }) =>
+          instancePath === '/decisions/20/title' && keyword === 'maxLength',
+      ),
+    ).toBe(true);
   });
 
   it('counts structural registry text limits in Unicode code points', async () => {
@@ -138,6 +220,31 @@ describe('VNext machine-readable contract registries', () => {
     }
   });
 
+  it('binds Gate 0 resource and no-native-fallback traceability explicitly', async () => {
+    const invariantRegistry = InvariantRegistrySchema.parse(
+      await readYaml(join(vnextDirectory, 'invariants.yaml')),
+    );
+    expect(invariantRegistry.invariants.find(({ id }) => id === 'INV-024')?.gates).toEqual([
+      'G0',
+      'G1',
+      'G2',
+      'G3',
+      'G4',
+      'G7',
+    ]);
+    const cases = (await readCaseRegistries()).flatMap((registry) => registry.cases);
+    expect(cases.find(({ id }) => id === 'SCH-004')?.invariants).toEqual([
+      'INV-001',
+      'INV-002',
+      'INV-024',
+    ]);
+    expect(cases.find(({ id }) => id === 'SCH-010')?.invariants).toEqual([
+      'INV-001',
+      'INV-002',
+      'INV-021',
+    ]);
+  });
+
   it('requires implemented cases to name real tests containing the case ID and exact fixtures', async () => {
     const cases = (await readCaseRegistries()).flatMap((registry) => registry.cases);
     const implemented = cases.filter(
@@ -168,6 +275,13 @@ describe('VNext machine-readable contract registries', () => {
       expect(document).toContain(`# ${decision.id}: ${decision.title}`);
       expect(document).toContain(`- Owner: ${decision.owner}`);
       expect(document).toContain(`- Decision date: ${decision.decidedAt}`);
+      if ('architectureDecisionId' in decision) {
+        expect(document).toContain(
+          `- Architecture decision: ${decision.architectureDecisionId} — ${decision.architectureDecisionSummary}`,
+        );
+      } else {
+        expect(document).not.toContain('- Architecture decision:');
+      }
       for (const heading of [
         '## Decision',
         '## Alternatives considered',
@@ -179,6 +293,11 @@ describe('VNext machine-readable contract registries', () => {
         expect(document, `${decision.id} missing ${heading}`).toContain(heading);
       }
     }
+    expect(
+      (await readdir(join(repositoryRoot, 'docs', 'vnext', 'adr'))).filter((name) =>
+        /^ADR-VNEXT-\d{3}\.md$/u.test(name),
+      ),
+    ).toHaveLength(32);
 
     const databaseDecision = registry.decisions.find(
       (decision) => decision.id === 'ADR-VNEXT-018',

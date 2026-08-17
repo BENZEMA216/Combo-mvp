@@ -15,14 +15,19 @@ const checkOnly = process.argv.includes('--check');
 const registry = DecisionRegistrySchema.parse(parse(await readFile(registryPath, 'utf8')));
 
 const list = (values) => values.map((value) => `- ${value}`).join('\n');
-const render = (decision) =>
-  format(
+const render = (decision) => {
+  const architectureDecision =
+    decision.architectureDecisionId === undefined
+      ? ''
+      : `- Architecture decision: ${decision.architectureDecisionId} — ${decision.architectureDecisionSummary}\n`;
+  return format(
     `<!-- Generated from tests/vnext/decisions.yaml; do not hand edit. -->
 # ${decision.id}: ${decision.title}
 
 - Status: ${decision.status}
 - Owner: ${decision.owner}
 - Decision date: ${decision.decidedAt}
+${architectureDecision}
 
 ## Decision
 
@@ -50,6 +55,7 @@ ${list(decision.protocolVersions)}
 `,
     { parser: 'markdown', proseWrap: 'preserve', endOfLine: 'lf' },
   );
+};
 
 await mkdir(adrDirectory, { recursive: true });
 for (const decision of registry.decisions) {
