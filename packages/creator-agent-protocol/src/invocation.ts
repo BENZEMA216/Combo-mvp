@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { UnicodeCodePointStringSchema } from './primitives.js';
+
 export const InvocationStateSchema = z.enum([
   'ACCEPTED',
   'QUEUED',
@@ -393,8 +395,8 @@ export const VnextErrorResponseSchema = z
   .object({
     code: VnextErrorCodeSchema,
     retryPolicy: RetryPolicySchema,
-    message: z.string().min(1).max(512),
-    requestId: z.string().min(8).max(128),
+    message: UnicodeCodePointStringSchema(1, 512),
+    requestId: UnicodeCodePointStringSchema(8, 128),
   })
   .strict()
   .superRefine((response, context) => {

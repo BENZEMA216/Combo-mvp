@@ -117,7 +117,7 @@ cases:
     fault: [Advertise unsupported protocol Codex or isolation capability]
     assertions: [Deployment is BLOCKED with no downgrade and no Native runtime]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:51dae71f7e60ac9901fe65472479841f70fb09eae2511b01af4671228ba7fd65]
+    fixtureDigests: [sha256:1d1d8777b973b2052fa7ac5b5221c712198f8fd2fc6a15efce8af7c244065581]
   - <<: *brk
     id: BRK-006
     title: Only current connection epoch owns an installation
@@ -381,7 +381,7 @@ cases:
     releaseTuple: [creator-agent-protocol@0.1.0]
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
-      - sha256:cade643e26ace002be5957a3f905e5498ee8df25fd257b3948d5ca7ef56595a3
+      - sha256:4f08b64e568b94aec16515a08fb9201818cb755ce1868f1ae61ee1226cd2015a
       - sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4
       - sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889
       - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
@@ -429,12 +429,14 @@ cases:
     fixture:
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
-      - sha256:d9a410f6f4872e37168a406097bb75498a932d734f4fd9cf79ba784632221009
-      - sha256:510fd36858ec557a2d7956e33cc8b5421e6783a0f7a62eb6ab4bd9ad655d0d6d
+      - sha256:665679044f165b9718eedb26c9d3c787d3d2127d88dc2a33c01f7bc89be32158
+      - sha256:6b35409cc32986b853796844a944e5195ee7c332eb955fe7dcc889a6cd3a9d48
+      - sha256:a4fcbd32ef75d0d2f63dd90a138c28160d6628e4403757bf0358c546190463ae
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
@@ -463,9 +465,9 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:2ca28a86bc03d4f9154ff23f2826bdeee0b1d4f34c514271fe4efe7a2c9c6191
-      - sha256:917929b6b89b7c2dbcb06a0e7ae3dd6663663c077cf2bc4dc1ccd7faba16064f
-      - sha256:02f21b7cae986658f13e25f196920d94a65565903f5a7b44d51425cdc2a717e2
+      - sha256:d5f55cf14d2ce4309b28e57f51a2ee420327ba90609fc1f03c550eae5f7a1407
+      - sha256:728e9ff2ba1a60b313feef3380d8ef6f94949c554dbef3de7c631e0b1e21530d
+      - sha256:9214d0397309747c901cfad3c22c2a88e463f49403dd699544d4d9848d650b67
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest
@@ -501,7 +503,7 @@ cases:
     steps: [Advertise an unknown future protocol or capability, Attempt readiness]
     assertions: [Deployment becomes BLOCKED without guessing or Native fallback]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:51dae71f7e60ac9901fe65472479841f70fb09eae2511b01af4671228ba7fd65]
+    fixtureDigests: [sha256:1d1d8777b973b2052fa7ac5b5221c712198f8fd2fc6a15efce8af7c244065581]
 
   - &snp
     id: SNP-001

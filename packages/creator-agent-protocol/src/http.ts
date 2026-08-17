@@ -8,6 +8,8 @@ import {
   HmacSha256DigestSchema,
   IsoDateTimeSchema,
   Sha256HexSchema,
+  UINT63_DECIMAL_PATTERN_SOURCE,
+  UnicodeCodePointStringSchema,
   Uint63StringSchema,
   Utf8TextSchema,
   UuidSchema,
@@ -28,6 +30,17 @@ import {
 
 export const CREATOR_AGENT_HTTP_PROTOCOL = 'combo.creator-agent-http/1' as const;
 export const IdempotencyKeySchema = UuidSchema;
+export const PublicAgentSlugSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u);
+export const LastEventIdSchema = Uint63StringSchema;
+export const DeploymentGenerationEtagSchema = z
+  .string()
+  .min(14)
+  .max(32)
+  .regex(new RegExp(`^"generation-(?:${UINT63_DECIMAL_PATTERN_SOURCE})"$`, 'u'));
 
 function checksumForHexDigest(digest: string): string {
   return Buffer.from(digest, 'hex').toString('base64');
@@ -247,7 +260,7 @@ export const SnapshotPublicationCommitMarkerSchema = z
     schemaVersion: z.literal(1),
     creatorId: UuidSchema,
     snapshotDigest: Sha256HexSchema,
-    preparationKey: z.string().min(1).max(512),
+    preparationKey: UnicodeCodePointStringSchema(1, 512),
     preparationDigest: Sha256HexSchema,
   })
   .strict()
@@ -379,7 +392,7 @@ export const SnapshotUploadViewSchema = z
     state: SnapshotUploadStateSchema,
     snapshotId: UuidSchema.nullable(),
     snapshotDigest: Sha256HexSchema,
-    errorCode: z.string().max(128).nullable(),
+    errorCode: UnicodeCodePointStringSchema(0, 128).nullable(),
     updatedAt: IsoDateTimeSchema,
   })
   .strict();
@@ -392,7 +405,7 @@ export const AgentViewSchema = z
   .object({
     protocol: z.literal(CREATOR_AGENT_HTTP_PROTOCOL),
     agentId: UuidSchema,
-    publicSlug: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u),
+    publicSlug: PublicAgentSlugSchema,
     name: Utf8TextSchema(120),
     description: Utf8TextSchema(1_024),
     lifecycle: z.enum(['ACTIVE', 'ARCHIVED']),
@@ -452,7 +465,7 @@ export const DeploymentViewSchema = z
       'BLOCKED',
     ]),
     generation: Uint63StringSchema,
-    lastErrorCode: z.string().max(128).nullable(),
+    lastErrorCode: UnicodeCodePointStringSchema(0, 128).nullable(),
     updatedAt: IsoDateTimeSchema,
   })
   .strict();

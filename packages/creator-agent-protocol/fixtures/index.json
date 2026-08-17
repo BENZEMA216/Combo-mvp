@@ -20,7 +20,7 @@
     {
       "path": "broker-handshake.v1.json",
       "bytes": 810,
-      "digest": "sha256:cade643e26ace002be5957a3f905e5498ee8df25fd257b3948d5ca7ef56595a3"
+      "digest": "sha256:4f08b64e568b94aec16515a08fb9201818cb755ce1868f1ae61ee1226cd2015a"
     },
     {
       "path": "broker-invocation-prepare.v1.json",
@@ -95,17 +95,22 @@
     {
       "path": "protocol-compatibility.v1.json",
       "bytes": 1841,
-      "digest": "sha256:628c911ef689340e582ef139098da4d76c19a86a4e422e1257beb292fb64f6a1"
+      "digest": "sha256:1d1d8777b973b2052fa7ac5b5221c712198f8fd2fc6a15efce8af7c244065581"
     },
     {
       "path": "protocol-decoded-boundaries.v1.json",
       "bytes": 13901,
-      "digest": "sha256:510fd36858ec557a2d7956e33cc8b5421e6783a0f7a62eb6ab4bd9ad655d0d6d"
+      "digest": "sha256:6b35409cc32986b853796844a944e5195ee7c332eb955fe7dcc889a6cd3a9d48"
+    },
+    {
+      "path": "protocol-structural-boundaries.v1.json",
+      "bytes": 10924,
+      "digest": "sha256:a4fcbd32ef75d0d2f63dd90a138c28160d6628e4403757bf0358c546190463ae"
     },
     {
       "path": "protocol-utf8-boundaries.v1.json",
       "bytes": 10776,
-      "digest": "sha256:d9a410f6f4872e37168a406097bb75498a932d734f4fd9cf79ba784632221009"
+      "digest": "sha256:665679044f165b9718eedb26c9d3c787d3d2127d88dc2a33c01f7bc89be32158"
     },
     {
       "path": "sandbox-attestation.v1.json",

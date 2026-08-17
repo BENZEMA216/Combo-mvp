@@ -95,6 +95,27 @@ describe('VNext machine-readable contract registries', () => {
     expect(new Set(cases.map((testCase) => testCase.id)).size).toBe(66);
   });
 
+  it('counts structural registry text limits in Unicode code points', async () => {
+    const input = (await readYaml(join(vnextDirectory, 'invariants.yaml'))) as {
+      invariants: Array<{ statement: string; owners: string[] }>;
+    };
+    const exactStatement = structuredClone(input);
+    exactStatement.invariants[0]!.statement = '😀'.repeat(1_024);
+    expect(InvariantRegistrySchema.safeParse(exactStatement).success).toBe(true);
+
+    const oversizedStatement = structuredClone(input);
+    oversizedStatement.invariants[0]!.statement = '😀'.repeat(1_025);
+    expect(InvariantRegistrySchema.safeParse(oversizedStatement).success).toBe(false);
+
+    const exactOwner = structuredClone(input);
+    exactOwner.invariants[0]!.owners = ['😀'.repeat(64)];
+    expect(InvariantRegistrySchema.safeParse(exactOwner).success).toBe(true);
+
+    const oversizedOwner = structuredClone(input);
+    oversizedOwner.invariants[0]!.owners = ['😀'.repeat(65)];
+    expect(InvariantRegistrySchema.safeParse(oversizedOwner).success).toBe(false);
+  });
+
   it('keeps test-plan IDs, registry IDs and invariant references bidirectionally exact', async () => {
     const plan = await readFile(testPlanPath, 'utf8');
     const documentedIds = [...plan.matchAll(/`((?:SCH|SNP|AVR|DEP|BRK|FLT)-[A-Z0-9-]+)`/gu)]

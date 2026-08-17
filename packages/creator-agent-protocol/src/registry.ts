@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { parse } from 'yaml';
-import { IsoDateTimeSchema, Sha256DigestSchema } from './primitives.js';
+import {
+  IsoDateTimeSchema,
+  Sha256DigestSchema,
+  UnicodeCodePointStringSchema,
+} from './primitives.js';
 
 export const TEST_REGISTRY_PROTOCOL = 'combo.vnext-test-registry/1' as const;
 export const INVARIANT_REGISTRY_PROTOCOL = 'combo.vnext-invariant-registry/1' as const;
@@ -43,10 +47,10 @@ export const InvariantRegistrySchema = z
         z
           .object({
             id: InvariantIdSchema,
-            statement: z.string().min(1).max(1_024),
+            statement: UnicodeCodePointStringSchema(1, 1_024),
             severity: z.enum(['P0', 'P1']),
             gates: z.array(z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8'])).min(1),
-            owners: z.array(z.string().min(1).max(64)).min(1),
+            owners: z.array(UnicodeCodePointStringSchema(1, 64)).min(1),
           })
           .strict()
           .superRefine((invariant, context) => {
@@ -69,7 +73,7 @@ export type InvariantRegistry = z.infer<typeof InvariantRegistrySchema>;
 export const TestCaseSchema = z
   .object({
     id: TestCaseIdSchema,
-    title: z.string().min(1).max(256),
+    title: UnicodeCodePointStringSchema(1, 256),
     level: z.enum(['E0', 'E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8']),
     environment: z.enum([
       'T0-LINUX-CI',
@@ -82,11 +86,11 @@ export const TestCaseSchema = z
       'T7-DR',
     ]),
     invariants: z.array(InvariantIdSchema).min(1),
-    fixture: z.array(z.string().min(1).max(256)).min(1),
-    fault: z.array(z.string().min(1).max(256)),
-    steps: z.array(z.string().min(1).max(512)),
-    assertions: z.array(z.string().min(1).max(512)).min(1),
-    evidence: z.array(z.string().min(1).max(256)).min(1),
+    fixture: z.array(UnicodeCodePointStringSchema(1, 256)).min(1),
+    fault: z.array(UnicodeCodePointStringSchema(1, 256)),
+    steps: z.array(UnicodeCodePointStringSchema(1, 512)),
+    assertions: z.array(UnicodeCodePointStringSchema(1, 512)).min(1),
+    evidence: z.array(UnicodeCodePointStringSchema(1, 256)).min(1),
     frequency: z.enum([
       'every-pr',
       'merge-integration',
@@ -95,16 +99,16 @@ export const TestCaseSchema = z
       'cloud-rc',
       'alpha-release',
     ]),
-    owner: z.string().min(1).max(64),
-    reviewer: z.string().min(1).max(64),
+    owner: UnicodeCodePointStringSchema(1, 64),
+    reviewer: UnicodeCodePointStringSchema(1, 64),
     gate: z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8']),
     implementation: z
       .object({
         status: z.enum(['implemented', 'planned']),
-        testFiles: z.array(z.string().min(1).max(512)),
+        testFiles: z.array(UnicodeCodePointStringSchema(1, 512)),
       })
       .strict(),
-    releaseTuple: z.array(z.string().min(1).max(128)).min(1),
+    releaseTuple: z.array(UnicodeCodePointStringSchema(1, 128)).min(1),
     fixtureDigests: z.array(Sha256DigestSchema),
   })
   .strict()
@@ -173,16 +177,16 @@ export const DecisionRegistrySchema = z
         z
           .object({
             id: z.string().regex(/^ADR-VNEXT-\d{3}$/u),
-            title: z.string().min(1).max(256),
+            title: UnicodeCodePointStringSchema(1, 256),
             status: z.literal('accepted'),
-            owner: z.string().min(1).max(64),
+            owner: UnicodeCodePointStringSchema(1, 64),
             decidedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
-            decision: z.string().min(1).max(2_048),
-            alternatives: z.array(z.string().min(1).max(1_024)).min(1),
-            evidence: z.array(z.string().min(1).max(512)).min(1),
-            securityImpact: z.string().min(1).max(2_048),
-            reversalTriggers: z.array(z.string().min(1).max(1_024)).min(1),
-            protocolVersions: z.array(z.string().min(1).max(128)).min(1),
+            decision: UnicodeCodePointStringSchema(1, 2_048),
+            alternatives: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
+            evidence: z.array(UnicodeCodePointStringSchema(1, 512)).min(1),
+            securityImpact: UnicodeCodePointStringSchema(1, 2_048),
+            reversalTriggers: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
+            protocolVersions: z.array(UnicodeCodePointStringSchema(1, 128)).min(1),
             document: z.string().regex(/^docs\/vnext\/adr\/ADR-VNEXT-\d{3}\.md$/u),
           })
           .strict()
@@ -293,7 +297,7 @@ export const DataFlowFieldSchema = z
       'referenced-plus-30-days',
       'evidence-vault-7-days',
     ]),
-    deletionOrHold: z.string().min(1).max(1_024),
+    deletionOrHold: UnicodeCodePointStringSchema(1, 1_024),
   })
   .strict()
   .superRefine((field, context) => {

@@ -4,6 +4,7 @@ import {
   CanonicalBase64UrlBytesSchema,
   containsForbiddenControl,
   Sha256HexSchema,
+  UnicodeCodePointStringSchema,
   UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX,
   UuidSchema,
 } from './primitives.js';
@@ -78,7 +79,7 @@ export const SnapshotArchiveEnvelopeAadSchema = z
     creatorId: UuidSchema,
     snapshotDigest: Sha256HexSchema,
     archiveDigest: Sha256HexSchema,
-    objectKey: z.string().min(1).max(512),
+    objectKey: UnicodeCodePointStringSchema(1, 512),
     plaintextBytes: z.number().int().min(1).max(SNAPSHOT_MAX_COMPRESSED_BYTES),
     keyId: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{0,255}$/u),
   })
@@ -180,7 +181,7 @@ export const SnapshotManifestEnvelopeAadSchema = z
     cipherObjectFormat: z.literal(SNAPSHOT_MANIFEST_OBJECT_FORMAT),
     creatorId: UuidSchema,
     snapshotDigest: Sha256HexSchema,
-    objectKey: z.string().min(1).max(512),
+    objectKey: UnicodeCodePointStringSchema(1, 512),
     plaintextBytes: z.number().int().min(1).max(SNAPSHOT_MAX_MANIFEST_BYTES),
     keyId: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{0,255}$/u),
   })

@@ -39,9 +39,12 @@ import {
   CreateAgentVersionRequestSchema,
   CreateConversationRequestSchema,
   DeploymentMutationSchema,
+  DeploymentGenerationEtagSchema,
   DeploymentViewSchema,
   InvocationAcceptedResponseSchema,
   InvocationViewSchema,
+  LastEventIdSchema,
+  PublicAgentSlugSchema,
   RetryInvocationRequestSchema,
   SendConversationMessageRequestSchema,
   SnapshotPublicationCommitMarkerSchema,
@@ -68,6 +71,7 @@ import {
 } from './registry.js';
 import {
   CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX,
+  UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX,
   UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX,
 } from './primitives.js';
 import {
@@ -105,6 +109,9 @@ export const ContractSchemaDefinitions = {
   WorkerInvocationFact: WorkerInvocationFactSchema,
   WorkerConversationReadyFact: WorkerConversationReadyFactSchema,
   VnextErrorResponse: VnextErrorResponseSchema,
+  PublicAgentSlug: PublicAgentSlugSchema,
+  DeploymentGenerationEtag: DeploymentGenerationEtagSchema,
+  LastEventId: LastEventIdSchema,
   SandboxSpec: SandboxSpecSchema,
   SandboxAttestationUnsigned: SandboxAttestationUnsignedSchema,
   SandboxAttestation: SandboxAttestationSchema,
@@ -292,6 +299,32 @@ function attachPublicBoundaryKeywords(value: unknown): unknown {
   const description = output.description;
   if (
     typeof description === 'string' &&
+    description.startsWith(UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX)
+  ) {
+    const boundary = description
+      .slice(UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX.length)
+      .split(':');
+    if (boundary.length !== 2) {
+      throw new TypeError('Unicode code-point public boundary marker 无效');
+    }
+    const [minimumCodePoints, maximumCodePoints] = boundary.map(Number);
+    if (
+      !Number.isSafeInteger(minimumCodePoints) ||
+      !Number.isSafeInteger(maximumCodePoints) ||
+      minimumCodePoints! < 0 ||
+      maximumCodePoints! < minimumCodePoints!
+    ) {
+      throw new TypeError('Unicode code-point public boundary marker 无效');
+    }
+    output.minLength = minimumCodePoints;
+    output.maxLength = maximumCodePoints;
+    output.description = `String containing ${minimumCodePoints} to ${maximumCodePoints} Unicode code points`;
+    output['x-combo-unicodeCodePoints'] = {
+      minimum: minimumCodePoints,
+      maximum: maximumCodePoints,
+    };
+  } else if (
+    typeof description === 'string' &&
     description.startsWith(UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX)
   ) {
     const maximumBytes = Number(description.slice(UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX.length));
@@ -460,6 +493,9 @@ export function createOpenApiDocument(): Record<string, unknown> {
     'ConsumerEvent',
     'ConsumerTerminalEventPayload',
     'VnextErrorResponse',
+    'PublicAgentSlug',
+    'DeploymentGenerationEtag',
+    'LastEventId',
   ] as const;
 
   return {
@@ -560,7 +596,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
               name: 'If-Match',
               in: 'header',
               required: true,
-              schema: { type: 'string', pattern: '^"generation-[0-9]+"$' },
+              schema: { $ref: '#/components/schemas/DeploymentGenerationEtag' },
             },
           ],
           requestBody: requestBody('DeploymentMutation'),
@@ -576,7 +612,12 @@ export function createOpenApiDocument(): Record<string, unknown> {
           operationId: 'createConversation',
           security: [{ consumerSession: [] }],
           parameters: [
-            { name: 'slug', in: 'path', required: true, schema: { type: 'string' } },
+            {
+              name: 'slug',
+              in: 'path',
+              required: true,
+              schema: { $ref: '#/components/schemas/PublicAgentSlug' },
+            },
             idempotencyHeader,
           ],
           requestBody: requestBody('CreateConversationRequest'),
@@ -638,7 +679,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
               name: 'Last-Event-ID',
               in: 'header',
               required: false,
-              schema: { type: 'string', pattern: '^(0|[1-9][0-9]*)$' },
+              schema: { $ref: '#/components/schemas/LastEventId' },
             },
           ],
           responses: {

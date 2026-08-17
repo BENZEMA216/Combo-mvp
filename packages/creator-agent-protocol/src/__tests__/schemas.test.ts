@@ -60,6 +60,9 @@ import {
 import {
   SnapshotPublicationCommitMarkerSchema,
   SnapshotPublicationPreparationMarkerSchema,
+  DeploymentGenerationEtagSchema,
+  LastEventIdSchema,
+  PublicAgentSlugSchema,
   SnapshotUploadCreateRequestSchema,
   SnapshotUploadCreateResponseSchema,
   parseSnapshotPublicationCommitMarker,
@@ -68,8 +71,10 @@ import {
   snapshotPublicationPreparationDigest,
   snapshotPublicationPreparationMarkerBytes,
 } from '../http.js';
+import { VnextErrorResponseSchema, errorResponseFor } from '../invocation.js';
 import {
   IsoDateTimeSchema,
+  UnicodeCodePointStringSchema,
   Uint63StringSchema,
   Utf8TextSchema,
   UuidSchema,
@@ -958,6 +963,52 @@ describe('六类共享协议运行时 schema', () => {
     }
     for (const rejected of [-1, 42, '-1', '+1', '01', '1e3', '', '9223372036854775808']) {
       expect(Uint63StringSchema.safeParse(rejected).success, String(rejected)).toBe(false);
+    }
+  });
+
+  it('aligns Unicode code-point boundaries with JSON Schema length semantics', () => {
+    const schema = UnicodeCodePointStringSchema(8, 128);
+    expect(schema.safeParse('😀'.repeat(7)).success).toBe(false);
+    expect(schema.safeParse('😀'.repeat(8)).success).toBe(true);
+    expect(schema.safeParse('😀'.repeat(128)).success).toBe(true);
+    expect(schema.safeParse('😀'.repeat(129)).success).toBe(false);
+
+    const base = errorResponseFor('INVALID_INPUT', 'request-1234');
+    expect(VnextErrorResponseSchema.safeParse({ ...base, message: '😀'.repeat(512) }).success).toBe(
+      true,
+    );
+    expect(VnextErrorResponseSchema.safeParse({ ...base, message: '😀'.repeat(513) }).success).toBe(
+      false,
+    );
+    expect(VnextErrorResponseSchema.safeParse({ ...base, requestId: '😀'.repeat(8) }).success).toBe(
+      true,
+    );
+    expect(VnextErrorResponseSchema.safeParse({ ...base, requestId: '😀'.repeat(7) }).success).toBe(
+      false,
+    );
+  });
+
+  it('bounds public slug, Last-Event-ID and deployment If-Match with runtime schemas', () => {
+    for (const accepted of ['a', 'agent-1', `a${'b'.repeat(62)}c`]) {
+      expect(PublicAgentSlugSchema.safeParse(accepted).success, accepted).toBe(true);
+    }
+    for (const rejected of ['', 'A', 'a-', `a${'b'.repeat(64)}`]) {
+      expect(PublicAgentSlugSchema.safeParse(rejected).success, rejected).toBe(false);
+    }
+
+    for (const accepted of ['0', '9223372036854775807']) {
+      expect(LastEventIdSchema.safeParse(accepted).success, accepted).toBe(true);
+      expect(
+        DeploymentGenerationEtagSchema.safeParse(`"generation-${accepted}"`).success,
+        accepted,
+      ).toBe(true);
+    }
+    for (const rejected of ['9223372036854775808', '0'.repeat(100_000)]) {
+      expect(LastEventIdSchema.safeParse(rejected).success, rejected.slice(0, 32)).toBe(false);
+      expect(
+        DeploymentGenerationEtagSchema.safeParse(`"generation-${rejected}"`).success,
+        rejected.slice(0, 32),
+      ).toBe(false);
     }
   });
 

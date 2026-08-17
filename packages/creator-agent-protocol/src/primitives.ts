@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const MAX_UINT63 = 9_223_372_036_854_775_807n;
 
-function exactUnsignedDecimalPattern(maximum: bigint): RegExp {
+function exactUnsignedDecimalPatternSource(maximum: bigint): string {
   const maximumDigits = maximum.toString(10);
   const alternatives = ['0'];
   if (maximumDigits.length > 1) {
@@ -23,11 +23,12 @@ function exactUnsignedDecimalPattern(maximum: bigint): RegExp {
     exactPrefix += maximumDigits[index];
   }
   alternatives.push(maximumDigits);
-  return new RegExp(`^(?:${alternatives.join('|')})$`, 'u');
+  return alternatives.join('|');
 }
 
 /** Enforceable in both Zod and generated standard JSON Schema, not a refine-only hint. */
-export const UINT63_DECIMAL_PATTERN = exactUnsignedDecimalPattern(MAX_UINT63);
+export const UINT63_DECIMAL_PATTERN_SOURCE = exactUnsignedDecimalPatternSource(MAX_UINT63);
+export const UINT63_DECIMAL_PATTERN = new RegExp(`^(?:${UINT63_DECIMAL_PATTERN_SOURCE})$`, 'u');
 
 export const UuidSchema = z
   .string()
@@ -58,6 +59,45 @@ export const Base64UrlSchema = z.string().regex(/^[A-Za-z0-9_-]+$/);
 export const UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX = 'combo:utf8-bytes:' as const;
 export const CANONICAL_BASE64URL_BYTES_SCHEMA_DESCRIPTION_PREFIX =
   'combo:canonical-base64url-bytes:' as const;
+export const UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX =
+  'combo:unicode-code-points:' as const;
+
+/**
+ * JSON Schema minLength/maxLength count Unicode code points, while Zod's native string
+ * min/max count UTF-16 code units. Public schemas use this helper so runtime and advertised
+ * validators accept the same supplementary-plane characters at every structural boundary.
+ */
+export const UnicodeCodePointStringSchema = (
+  minimumCodePoints: number,
+  maximumCodePoints: number,
+  baseSchema: z.ZodString = z.string(),
+) => {
+  if (
+    !Number.isSafeInteger(minimumCodePoints) ||
+    !Number.isSafeInteger(maximumCodePoints) ||
+    minimumCodePoints < 0 ||
+    maximumCodePoints < minimumCodePoints
+  ) {
+    throw new TypeError('Unicode code-point boundary 无效');
+  }
+  return baseSchema
+    .superRefine((value, context) => {
+      let codePoints = 0;
+      for (const _character of value) {
+        codePoints += 1;
+        if (codePoints > maximumCodePoints) break;
+      }
+      if (codePoints < minimumCodePoints || codePoints > maximumCodePoints) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Unicode code points 必须在 ${minimumCodePoints}..${maximumCodePoints} 范围内`,
+        });
+      }
+    })
+    .describe(
+      `${UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX}${minimumCodePoints}:${maximumCodePoints}`,
+    );
+};
 
 export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) => {
   if (
@@ -87,6 +127,8 @@ export const P256P1363SignatureSchema = CanonicalBase64UrlBytesSchema(64, 64);
 
 export const Uint63StringSchema = z
   .string()
+  .min(1)
+  .max(19)
   .regex(UINT63_DECIMAL_PATTERN)
   .refine(
     (value) => !UINT63_DECIMAL_PATTERN.test(value) || BigInt(value) <= MAX_UINT63,

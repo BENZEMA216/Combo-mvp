@@ -1,0 +1,282 @@
+{
+  "protocol": "combo.protocol-structural-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "unicode-code-point-and-http-path-header-limits-only",
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:d5f55cf14d2ce4309b28e57f51a2ee420327ba90609fc1f03c550eae5f7a1407",
+    "brokerContract": "sha256:728e9ff2ba1a60b313feef3380d8ef6f94949c554dbef3de7c631e0b1e21530d",
+    "openApi": "sha256:9214d0397309747c901cfad3c22c2a88e463f49403dd699544d4d9848d650b67"
+  },
+  "unicodeBoundaries": [
+    {
+      "minimumCodePoints": 1,
+      "maximumCodePoints": 64,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/InvariantRegistry/definitions/InvariantRegistry/properties/invariants/items/properties/owners/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/owner"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/reviewer"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/owner"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 0,
+      "maximumCodePoints": 128,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotUploadView/definitions/SnapshotUploadView/properties/errorCode"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotUploadView/definitions/SnapshotUploadView/properties/errorCode/anyOf/0"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DeploymentView/definitions/DeploymentView/properties/lastErrorCode"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DeploymentView/definitions/DeploymentView/properties/lastErrorCode/anyOf/0"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/SnapshotUploadView/properties/errorCode"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/DeploymentView/properties/lastErrorCode"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 1,
+      "maximumCodePoints": 128,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/releaseTuple/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/protocolVersions/items"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 8,
+      "maximumCodePoints": 128,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/VnextErrorResponse/definitions/VnextErrorResponse/properties/requestId"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/InvocationView/definitions/InvocationView/properties/error/anyOf/0/properties/requestId"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/InvocationView/properties/error/properties/requestId"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/VnextErrorResponse/properties/requestId"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 1,
+      "maximumCodePoints": 256,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/title"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/fixture/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/fault/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/evidence/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/title"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 1,
+      "maximumCodePoints": 512,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotArchiveEnvelopeAad/definitions/SnapshotArchiveEnvelopeAad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotArchiveEnvelope/definitions/SnapshotArchiveEnvelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotManifestEnvelopeAad/definitions/SnapshotManifestEnvelopeAad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotManifestEnvelope/definitions/SnapshotManifestEnvelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/archive/properties/envelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/manifest/properties/envelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotPublicationCommitMarker/definitions/SnapshotPublicationCommitMarker/properties/preparationKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/VnextErrorResponse/definitions/VnextErrorResponse/properties/message"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/InvocationView/definitions/InvocationView/properties/error/anyOf/0/properties/message"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/steps/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/assertions/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/TestCaseRegistry/definitions/TestCaseRegistry/properties/cases/items/properties/implementation/properties/testFiles/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/evidence/items"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/aad/properties/objectKey"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/InvocationView/properties/error/properties/message"
+        },
+        {
+          "artifact": "openApi",
+          "pointer": "/components/schemas/VnextErrorResponse/properties/message"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 1,
+      "maximumCodePoints": 1024,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/InvariantRegistry/definitions/InvariantRegistry/properties/invariants/items/properties/statement"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/alternatives/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/reversalTriggers/items"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DataFlowAllowlist/definitions/DataFlowAllowlist/properties/fields/items/properties/deletionOrHold"
+        }
+      ]
+    },
+    {
+      "minimumCodePoints": 1,
+      "maximumCodePoints": 2048,
+      "artifactPointers": [
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/decision"
+        },
+        {
+          "artifact": "contractSchemas",
+          "pointer": "/schemas/DecisionRegistry/definitions/DecisionRegistry/properties/decisions/items/properties/securityImpact"
+        }
+      ]
+    }
+  ],
+  "httpBoundaries": [
+    {
+      "id": "public-agent-slug",
+      "runtimeParser": "PublicAgentSlugSchema",
+      "openApiComponent": "PublicAgentSlug",
+      "minimumLength": 1,
+      "maximumLength": 64
+    },
+    {
+      "id": "deployment-generation-etag",
+      "runtimeParser": "DeploymentGenerationEtagSchema",
+      "openApiComponent": "DeploymentGenerationEtag",
+      "minimumLength": 14,
+      "maximumLength": 32
+    },
+    {
+      "id": "last-event-id",
+      "runtimeParser": "LastEventIdSchema",
+      "openApiComponent": "LastEventId",
+      "minimumLength": 1,
+      "maximumLength": 19
+    }
+  ],
+  "ownerCases": [
+    "vnext-error-response",
+    "invariant-registry",
+    "public-agent-slug",
+    "deployment-generation-etag",
+    "last-event-id"
+  ],
+  "remainingBoundaryClasses": [
+    "other-structural-string-patterns",
+    "array-count",
+    "map-property-count",
+    "numeric-maximum",
+    "evidence-json-bytes",
+    "canonical-json-bytes"
+  ]
+}

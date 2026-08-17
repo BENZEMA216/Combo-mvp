@@ -38,6 +38,9 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
       'BrokerConversationOpenLogicalCommand',
       'InvocationTransition',
       'VnextErrorResponse',
+      'PublicAgentSlug',
+      'DeploymentGenerationEtag',
+      'LastEventId',
       'SandboxSpec',
       'SandboxAttestation',
       'TestCaseRegistry',
@@ -53,6 +56,82 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     ]) {
       expect(bundle.schemas[required], required).toBeDefined();
     }
+  });
+
+  it('publishes Unicode code-point limits and bounded HTTP path/header schemas', () => {
+    const bundle = createJsonSchemaBundle() as {
+      schemas: Record<string, Record<string, unknown>>;
+    };
+    const openapi = createOpenApiDocument() as {
+      components: { schemas: Record<string, Record<string, unknown>> };
+      paths: Record<string, Record<string, unknown>>;
+    };
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+
+    const errorSchema = bundle.schemas.VnextErrorResponse! as {
+      definitions: { VnextErrorResponse: { properties: Record<string, Record<string, unknown>> } };
+    };
+    const message = errorSchema.definitions.VnextErrorResponse.properties.message!;
+    const requestId = errorSchema.definitions.VnextErrorResponse.properties.requestId!;
+    expect(message).toMatchObject({
+      minLength: 1,
+      maxLength: 512,
+      'x-combo-unicodeCodePoints': { minimum: 1, maximum: 512 },
+    });
+    expect(requestId).toMatchObject({
+      minLength: 8,
+      maxLength: 128,
+      'x-combo-unicodeCodePoints': { minimum: 8, maximum: 128 },
+    });
+    const validateMessage = ajv.compile(message as AnySchema);
+    const validateRequestId = ajv.compile(requestId as AnySchema);
+    expect(validateMessage('😀'.repeat(512))).toBe(true);
+    expect(validateMessage('😀'.repeat(513))).toBe(false);
+    expect(validateRequestId('😀'.repeat(7))).toBe(false);
+    expect(validateRequestId('😀'.repeat(8))).toBe(true);
+    expect(validateRequestId('😀'.repeat(128))).toBe(true);
+    expect(validateRequestId('😀'.repeat(129))).toBe(false);
+
+    const slugSchema = openapi.components.schemas.PublicAgentSlug!;
+    const ifMatchSchema = openapi.components.schemas.DeploymentGenerationEtag!;
+    const lastEventIdSchema = openapi.components.schemas.LastEventId!;
+    expect(slugSchema).toMatchObject({ minLength: 1, maxLength: 64 });
+    expect(ifMatchSchema).toMatchObject({ minLength: 14, maxLength: 32 });
+    expect(lastEventIdSchema).toMatchObject({ minLength: 1, maxLength: 19 });
+    const validateSlug = ajv.compile(slugSchema as AnySchema);
+    const validateIfMatch = ajv.compile(ifMatchSchema as AnySchema);
+    const validateLastEventId = ajv.compile(lastEventIdSchema as AnySchema);
+    expect(validateSlug(`a${'b'.repeat(62)}c`)).toBe(true);
+    expect(validateSlug(`a${'b'.repeat(64)}`)).toBe(false);
+    expect(validateIfMatch('"generation-9223372036854775807"')).toBe(true);
+    expect(validateIfMatch('"generation-9223372036854775808"')).toBe(false);
+    expect(validateLastEventId('9223372036854775807')).toBe(true);
+    expect(validateLastEventId('9223372036854775808')).toBe(false);
+
+    const deploymentParameters = (
+      openapi.paths['/v1/creator/agents/{agentId}/deployment']!.put as {
+        parameters: Array<{ name: string; schema: Record<string, unknown> }>;
+      }
+    ).parameters;
+    const conversationParameters = (
+      openapi.paths['/v1/public/agents/{slug}/conversations']!.post as {
+        parameters: Array<{ name: string; schema: Record<string, unknown> }>;
+      }
+    ).parameters;
+    const eventParameters = (
+      openapi.paths['/v1/conversations/{conversationId}/events']!.get as {
+        parameters: Array<{ name: string; schema: Record<string, unknown> }>;
+      }
+    ).parameters;
+    expect(deploymentParameters.find(({ name }) => name === 'If-Match')?.schema).toEqual({
+      $ref: '#/components/schemas/DeploymentGenerationEtag',
+    });
+    expect(conversationParameters.find(({ name }) => name === 'slug')?.schema).toEqual({
+      $ref: '#/components/schemas/PublicAgentSlug',
+    });
+    expect(eventParameters.find(({ name }) => name === 'Last-Event-ID')?.schema).toEqual({
+      $ref: '#/components/schemas/LastEventId',
+    });
   });
 
   it('publishes one non-self-referential Broker contract artifact and stable JCS digest', () => {

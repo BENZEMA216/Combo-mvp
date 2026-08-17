@@ -3,6 +3,7 @@ import {
   canonicalizeJson,
   ConversationViewSchema,
   IdempotencyKeySchema,
+  PublicAgentSlugSchema,
   type VnextErrorCode,
 } from '@cb/creator-agent-protocol';
 import { z } from 'zod';
@@ -11,7 +12,7 @@ import type { VisibleTranscriptDigester } from './visible-transcript-digester.js
 
 export const CONSUMER_CONVERSATION_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-export const AgentPublicSlugSchema = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$/u);
+export const AgentPublicSlugSchema = PublicAgentSlugSchema;
 
 export const DeploymentEnvironmentSchema = z.enum(['TEST', 'PREVIEW', 'PROD']);
 export type DeploymentEnvironment = z.infer<typeof DeploymentEnvironmentSchema>;
