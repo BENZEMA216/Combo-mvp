@@ -1,7 +1,12 @@
 import { TextDecoder } from 'node:util';
 
 import { z } from 'zod';
-import { canonicalizeJson, canonicalSha256, parseJsonNoDuplicateKeys } from './canonical.js';
+import {
+  ProtocolRawInputError,
+  canonicalizeJson,
+  canonicalSha256,
+  parseJsonNoDuplicateKeys,
+} from './canonical.js';
 import {
   WorkerConversationReadyFactObjectSchema,
   WorkerConversationReadyFactSchema,
@@ -1136,27 +1141,43 @@ export function parseBrokerFrame(frame: string | Uint8Array): BrokerEnvelope {
   if (typeof frame === 'string') {
     if (Buffer.byteLength(frame, 'utf8') > BROKER_MAX_FRAME_BYTES)
       throw new RangeError('Broker frame 超过 65536 bytes');
-    return BrokerEnvelopeSchema.parse(parseJsonNoDuplicateKeys(frame));
+    try {
+      return BrokerEnvelopeSchema.parse(parseJsonNoDuplicateKeys(frame));
+    } catch {
+      throw new ProtocolRawInputError('BROKER_FRAME_INVALID');
+    }
   }
   const bytes = Buffer.from(frame);
   if (bytes.byteLength > BROKER_MAX_FRAME_BYTES)
     throw new RangeError('Broker frame 超过 65536 bytes');
-  return BrokerEnvelopeSchema.parse(
-    parseJsonNoDuplicateKeys(decodeBrokerBinaryJson(bytes, 'frame')),
-  );
+  try {
+    return BrokerEnvelopeSchema.parse(
+      parseJsonNoDuplicateKeys(decodeBrokerBinaryJson(bytes, 'frame')),
+    );
+  } catch {
+    throw new ProtocolRawInputError('BROKER_FRAME_INVALID');
+  }
 }
 
 export function parseBrokerHandshake(frame: string | Uint8Array): BrokerHandshake {
   if (typeof frame === 'string') {
     if (Buffer.byteLength(frame, 'utf8') > BROKER_MAX_FRAME_BYTES)
       throw new RangeError('Broker handshake 超过上限');
-    return BrokerHandshakeSchema.parse(parseJsonNoDuplicateKeys(frame));
+    try {
+      return BrokerHandshakeSchema.parse(parseJsonNoDuplicateKeys(frame));
+    } catch {
+      throw new ProtocolRawInputError('BROKER_HANDSHAKE_INVALID');
+    }
   }
   const bytes = Buffer.from(frame);
   if (bytes.byteLength > BROKER_MAX_FRAME_BYTES) throw new RangeError('Broker handshake 超过上限');
-  return BrokerHandshakeSchema.parse(
-    parseJsonNoDuplicateKeys(decodeBrokerBinaryJson(bytes, 'handshake')),
-  );
+  try {
+    return BrokerHandshakeSchema.parse(
+      parseJsonNoDuplicateKeys(decodeBrokerBinaryJson(bytes, 'handshake')),
+    );
+  } catch {
+    throw new ProtocolRawInputError('BROKER_HANDSHAKE_INVALID');
+  }
 }
 
 export const BrokerEmptyBodySchema = EmptyBodySchema;

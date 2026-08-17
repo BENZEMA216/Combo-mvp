@@ -13,6 +13,7 @@ import {
   SnapshotArchiveEnvelopeSchema,
   SnapshotCompressedBoundaryCorpusSchema,
   SnapshotManifestEnvelopeSchema,
+  SnapshotPublicationPreparationMarkerSchema,
   canonicalizeJson,
   isCompressionRatioAllowed,
   parseSnapshotPublicationPreparationMarker,
@@ -290,10 +291,15 @@ describe('production Snapshot compressed numeric owners', () => {
       outcomes += 1;
 
       const preparationBytes = Buffer.from(canonicalizeJson(documents.preparation), 'utf8');
+      const preparationSchema = SnapshotPublicationPreparationMarkerSchema.safeParse(
+        documents.preparation,
+      );
+      expect(preparationSchema.success, `preparation-schema:${probe.delta}`).toBe(expected);
       const parseError = caught(() => parseSnapshotPublicationPreparationMarker(preparationBytes));
       expect(parseError === undefined, `preparation:${probe.delta}`).toBe(expected);
       if (!expected) {
-        const issues = (parseError as { issues?: unknown[] }).issues;
+        if (preparationSchema.success) throw new Error('EXPECTED_PREPARATION_SCHEMA_FAILURE');
+        const issues = preparationSchema.error.issues;
         expect(issues).toHaveLength(2);
         expect(issues).toEqual(
           expect.arrayContaining([
@@ -309,6 +315,14 @@ describe('production Snapshot compressed numeric owners', () => {
             }),
           ]),
         );
+        expect(parseError).toMatchObject({
+          name: 'ProtocolRawInputError',
+          message: 'SNAPSHOT_PREPARATION_MARKER_INVALID',
+          code: 'SNAPSHOT_PREPARATION_MARKER_INVALID',
+        });
+        expect(parseError).not.toHaveProperty('cause');
+        expect(parseError).not.toHaveProperty('issues');
+        expect(parseError).not.toHaveProperty('input');
       }
       outcomes += 1;
 

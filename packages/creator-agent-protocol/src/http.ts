@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { AgentVersionManifestSchema } from './agent-version.js';
-import { canonicalizeJson, parseJsonNoDuplicateKeys, sha256Hex } from './canonical.js';
+import {
+  ProtocolRawInputError,
+  canonicalizeJson,
+  parseJsonNoDuplicateKeys,
+  sha256Hex,
+} from './canonical.js';
 import { ConsumerTerminalEventPayloadSchema } from './consumer-events.js';
 import { InvocationStateSchema, VnextErrorResponseSchema } from './invocation.js';
 import {
@@ -320,9 +325,13 @@ export function snapshotPublicationPreparationDigest(
 export function parseSnapshotPublicationPreparationMarker(
   bytes: Uint8Array,
 ): SnapshotPublicationPreparationMarker {
-  return SnapshotPublicationPreparationMarkerSchema.parse(
-    parseCanonicalPublicationMarkerJson(bytes),
-  );
+  try {
+    return SnapshotPublicationPreparationMarkerSchema.parse(
+      parseCanonicalPublicationMarkerJson(bytes),
+    );
+  } catch {
+    throw new ProtocolRawInputError('SNAPSHOT_PREPARATION_MARKER_INVALID');
+  }
 }
 
 export function snapshotPublicationCommitMarkerBytes(
@@ -334,7 +343,11 @@ export function snapshotPublicationCommitMarkerBytes(
 export function parseSnapshotPublicationCommitMarker(
   bytes: Uint8Array,
 ): SnapshotPublicationCommitMarker {
-  return SnapshotPublicationCommitMarkerSchema.parse(parseCanonicalPublicationMarkerJson(bytes));
+  try {
+    return SnapshotPublicationCommitMarkerSchema.parse(parseCanonicalPublicationMarkerJson(bytes));
+  } catch {
+    throw new ProtocolRawInputError('SNAPSHOT_COMMIT_MARKER_INVALID');
+  }
 }
 
 export const SnapshotUploadCreateResponseSchema = z

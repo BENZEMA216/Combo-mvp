@@ -41,6 +41,29 @@ function replaceUtf8SentinelWithBytes(json: string, replacement: readonly number
   ]);
 }
 
+function expectStableBrokerRawInputError(
+  action: () => unknown,
+  expectedCode: 'BROKER_HANDSHAKE_INVALID' | 'BROKER_FRAME_INVALID',
+  canary?: string,
+): void {
+  let thrown: unknown;
+  try {
+    action();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toMatchObject({
+    name: 'ProtocolRawInputError',
+    message: expectedCode,
+    code: expectedCode,
+  });
+  const surface = `${String((thrown as { message?: unknown }).message)}\n${JSON.stringify(thrown)}`;
+  if (canary !== undefined) expect(surface).not.toContain(canary);
+  expect(thrown).not.toHaveProperty('cause');
+  expect(thrown).not.toHaveProperty('issues');
+  expect(thrown).not.toHaveProperty('input');
+}
+
 function versionRejectedFrame(errorCode: string): Record<string, unknown> {
   return {
     protocol: 'combo.creator-broker/1',
@@ -118,26 +141,17 @@ describe('Broker wire byte boundaries', () => {
     };
     const frame = versionRejectedFrame(UTF8_SENTINEL);
     const corpus = await readCorpus();
-    const malformedLabels = [
-      'lone continuation',
-      'overlong encoding',
-      'truncated sequence',
-      'encoded surrogate',
-      'above Unicode maximum',
-    ] as const;
-
-    for (const [index, malformedHex] of corpus.malformedUtf8Hex.entries()) {
-      const label = malformedLabels[index]!;
+    for (const malformedHex of corpus.malformedUtf8Hex) {
       const malformed = [...Buffer.from(malformedHex, 'hex')];
-      expect(
+      expectStableBrokerRawInputError(
         () =>
           parseBrokerHandshake(replaceUtf8SentinelWithBytes(JSON.stringify(handshake), malformed)),
-        label,
-      ).toThrow(/Broker handshake 包含 malformed UTF-8/u);
-      expect(
+        'BROKER_HANDSHAKE_INVALID',
+      );
+      expectStableBrokerRawInputError(
         () => parseBrokerFrame(replaceUtf8SentinelWithBytes(JSON.stringify(frame), malformed)),
-        label,
-      ).toThrow(/Broker frame 包含 malformed UTF-8/u);
+        'BROKER_FRAME_INVALID',
+      );
     }
   });
 
@@ -154,29 +168,61 @@ describe('Broker wire byte boundaries', () => {
       parseBrokerHandshake(handshakeJson),
     );
     expect(parseBrokerFrame(Buffer.from(frameJson, 'utf8'))).toEqual(parseBrokerFrame(frameJson));
-    expect(() => parseBrokerFrame(Buffer.from('{"protocol":"x","protocol":"y"}', 'utf8'))).toThrow(
-      /重复 JSON key/u,
+    expectStableBrokerRawInputError(
+      () => parseBrokerFrame(Buffer.from('{"protocol":"x","protocol":"y"}', 'utf8')),
+      'BROKER_FRAME_INVALID',
     );
     const nestedDuplicateFrame = frameJson.replace(
       '"generation":"1"',
       '"generation":"1","generation":"2"',
     );
     expect(nestedDuplicateFrame).not.toBe(frameJson);
-    expect(() => parseBrokerFrame(nestedDuplicateFrame)).toThrow(/重复 JSON key/u);
+    expectStableBrokerRawInputError(
+      () => parseBrokerFrame(nestedDuplicateFrame),
+      'BROKER_FRAME_INVALID',
+    );
+    const duplicateHandshake = handshakeJson.replace(
+      '"schemaVersion":1',
+      '"schemaVersion":1,"schemaVersion":1',
+    );
+    expect(duplicateHandshake).not.toBe(handshakeJson);
+    expectStableBrokerRawInputError(
+      () => parseBrokerHandshake(duplicateHandshake),
+      'BROKER_HANDSHAKE_INVALID',
+    );
     expect(() => parseBrokerFrame(new Uint8Array(BROKER_MAX_FRAME_BYTES + 1))).toThrow(/65536/u);
 
     const handshakeStringWithUnpairedSurrogate = handshakeJson.replace(UTF8_SENTINEL, '\ud800');
-    expect(() => parseBrokerHandshake(handshakeStringWithUnpairedSurrogate)).toThrow(
-      /未配对的 Unicode surrogate/u,
+    expectStableBrokerRawInputError(
+      () => parseBrokerHandshake(handshakeStringWithUnpairedSurrogate),
+      'BROKER_HANDSHAKE_INVALID',
     );
     const frameStringWithUnpairedSurrogate = frameJson.replace(UTF8_SENTINEL, '\ud800');
-    expect(() => parseBrokerFrame(frameStringWithUnpairedSurrogate)).toThrow(
-      /未配对的 Unicode surrogate/u,
+    expectStableBrokerRawInputError(
+      () => parseBrokerFrame(frameStringWithUnpairedSurrogate),
+      'BROKER_FRAME_INVALID',
     );
 
-    expect(() => parseBrokerHandshake(`\ufeff${handshakeJson}`)).toThrow();
-    expect(() => parseBrokerHandshake(Buffer.from(`\ufeff${handshakeJson}`, 'utf8'))).toThrow();
-    expect(() => parseBrokerFrame(`\ufeff${frameJson}`)).toThrow();
-    expect(() => parseBrokerFrame(Buffer.from(`\ufeff${frameJson}`, 'utf8'))).toThrow();
+    for (const input of [`\ufeff${handshakeJson}`, Buffer.from(`\ufeff${handshakeJson}`, 'utf8')]) {
+      expectStableBrokerRawInputError(
+        () => parseBrokerHandshake(input),
+        'BROKER_HANDSHAKE_INVALID',
+      );
+    }
+    for (const input of [`\ufeff${frameJson}`, Buffer.from(`\ufeff${frameJson}`, 'utf8')]) {
+      expectStableBrokerRawInputError(() => parseBrokerFrame(input), 'BROKER_FRAME_INVALID');
+    }
+
+    const syntaxCanary = 'BROKER_SYNTAX_CANARY_DO_NOT_ECHO';
+    expectStableBrokerRawInputError(
+      () => parseBrokerHandshake(`{"${syntaxCanary}":`),
+      'BROKER_HANDSHAKE_INVALID',
+      syntaxCanary,
+    );
+    expectStableBrokerRawInputError(
+      () => parseBrokerFrame(`{"${syntaxCanary}":`),
+      'BROKER_FRAME_INVALID',
+      syntaxCanary,
+    );
   });
 });

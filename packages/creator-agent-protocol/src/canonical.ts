@@ -5,6 +5,23 @@ export type CanonicalJson = null | boolean | number | string | CanonicalJson[] |
 export type CanonicalObject = { [key: string]: CanonicalJson };
 export const CANONICAL_JSON_IMPLEMENTATION = 'combo-rfc8785-jcs/1' as const;
 
+export type ProtocolRawInputErrorCode =
+  | 'BROKER_HANDSHAKE_INVALID'
+  | 'BROKER_FRAME_INVALID'
+  | 'SNAPSHOT_PREPARATION_MARKER_INVALID'
+  | 'SNAPSHOT_COMMIT_MARKER_INVALID';
+
+/** Public raw-byte/string ingress failure with no parser issue, input, or cause surface. */
+export class ProtocolRawInputError extends Error {
+  readonly code: ProtocolRawInputErrorCode;
+
+  constructor(code: ProtocolRawInputErrorCode) {
+    super(code);
+    this.name = 'ProtocolRawInputError';
+    this.code = code;
+  }
+}
+
 /** RFC 8785 JCS：I-JSON 输入、ECMAScript 数字序列化、UTF-16 code-unit key 排序。 */
 export function canonicalizeJson(value: unknown): string {
   assertCanonicalValue(value, '$');

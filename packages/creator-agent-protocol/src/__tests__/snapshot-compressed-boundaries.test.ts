@@ -342,6 +342,8 @@ describe('digest-bound Snapshot compressed numeric owners', () => {
         );
       }
 
+      // Numeric owner evidence deliberately uses direct Schema.safeParse so exact Zod maximum
+      // issues remain inspectable; public raw parsers expose only ProtocolRawInputError.
       const runtime = {
         aad: SnapshotArchiveEnvelopeAadSchema.safeParse(documents.aad),
         envelope: SnapshotArchiveEnvelopeSchema.safeParse(documents.envelope),

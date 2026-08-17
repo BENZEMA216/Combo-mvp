@@ -164,6 +164,34 @@ function evidenceBundleChainBytes(input: EvidenceBundleChainObjectInput): Eviden
   };
 }
 
+function expectStableRawInputError(
+  action: () => unknown,
+  expectedCode:
+    | 'BROKER_HANDSHAKE_INVALID'
+    | 'BROKER_FRAME_INVALID'
+    | 'SNAPSHOT_PREPARATION_MARKER_INVALID'
+    | 'SNAPSHOT_COMMIT_MARKER_INVALID',
+  canary?: string,
+): void {
+  let thrown: unknown;
+  try {
+    action();
+  } catch (error) {
+    thrown = error;
+  }
+  expect(thrown).toBeDefined();
+  const surface = `${String((thrown as { message?: unknown }).message)}\n${JSON.stringify(thrown)}`;
+  if (canary !== undefined) expect(surface).not.toContain(canary);
+  expect(thrown).toMatchObject({
+    name: 'ProtocolRawInputError',
+    message: expectedCode,
+    code: expectedCode,
+  });
+  expect(thrown).not.toHaveProperty('cause');
+  expect(thrown).not.toHaveProperty('issues');
+  expect(thrown).not.toHaveProperty('input');
+}
+
 function validateEvidenceBundleChainObjects(input: EvidenceBundleChainObjectInput) {
   return validateEvidenceBundleChain(evidenceBundleChainBytes(input));
 }
@@ -427,21 +455,51 @@ describe('六类共享协议运行时 schema', () => {
     });
     const preparationBytes = snapshotPublicationPreparationMarkerBytes(preparation);
     expect(parseSnapshotPublicationPreparationMarker(preparationBytes)).toEqual(preparation);
-    expect(() =>
-      parseSnapshotPublicationPreparationMarker(
-        Buffer.from(` ${preparationBytes.toString('utf8')}`, 'utf8'),
-      ),
-    ).toThrowError();
-    expect(() =>
-      parseSnapshotPublicationPreparationMarker(
-        Buffer.from(
-          preparationBytes
-            .toString('utf8')
-            .replace('"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1'),
-          'utf8',
+    for (const [scope, candidate] of [
+      ['top', { ...preparation, SNAPSHOT_PREPARATION_TOP_CANARY_DO_NOT_ECHO: true }],
+      [
+        'nested',
+        {
+          ...preparation,
+          request: {
+            ...preparation.request,
+            SNAPSHOT_PREPARATION_NESTED_CANARY_DO_NOT_ECHO: true,
+          },
+        },
+      ],
+    ] as const) {
+      expectStableRawInputError(
+        () =>
+          parseSnapshotPublicationPreparationMarker(
+            Buffer.from(canonicalizeJson(candidate), 'utf8'),
+          ),
+        'SNAPSHOT_PREPARATION_MARKER_INVALID',
+        `SNAPSHOT_PREPARATION_${scope.toUpperCase()}_CANARY_DO_NOT_ECHO`,
+      );
+    }
+    expectStableRawInputError(
+      () =>
+        parseSnapshotPublicationPreparationMarker(
+          Buffer.from(` ${preparationBytes.toString('utf8')}`, 'utf8'),
         ),
-      ),
-    ).toThrowError();
+      'SNAPSHOT_PREPARATION_MARKER_INVALID',
+    );
+    expectStableRawInputError(
+      () =>
+        parseSnapshotPublicationPreparationMarker(
+          Buffer.from(
+            preparationBytes
+              .toString('utf8')
+              .replace('"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1'),
+            'utf8',
+          ),
+        ),
+      'SNAPSHOT_PREPARATION_MARKER_INVALID',
+    );
+    expectStableRawInputError(
+      () => parseSnapshotPublicationPreparationMarker(Buffer.from([0x7b, 0x22, 0xc3, 0x28])),
+      'SNAPSHOT_PREPARATION_MARKER_INVALID',
+    );
 
     const commit = SnapshotPublicationCommitMarkerSchema.parse({
       protocol: 'combo.snapshot-publication-commit/1',
@@ -457,6 +515,55 @@ describe('六类共享协议运行时 schema', () => {
     expect(
       parseSnapshotPublicationCommitMarker(snapshotPublicationCommitMarkerBytes(commit)),
     ).toEqual(commit);
+    expectStableRawInputError(
+      () =>
+        parseSnapshotPublicationCommitMarker(
+          Buffer.from(
+            canonicalizeJson({ ...commit, SNAPSHOT_COMMIT_TOP_CANARY_DO_NOT_ECHO: true }),
+            'utf8',
+          ),
+        ),
+      'SNAPSHOT_COMMIT_MARKER_INVALID',
+      'SNAPSHOT_COMMIT_TOP_CANARY_DO_NOT_ECHO',
+    );
+    // The frozen commit marker has no nested object owner. This nested-shaped invalid value proves
+    // the catch-all surface without mislabelling it as a nested unknown-key schema rejection.
+    expectStableRawInputError(
+      () =>
+        parseSnapshotPublicationCommitMarker(
+          Buffer.from(
+            canonicalizeJson({
+              ...commit,
+              preparationKey: {
+                value: commit.preparationKey,
+                SNAPSHOT_COMMIT_NESTED_SHAPE_CANARY_DO_NOT_ECHO: true,
+              },
+            }),
+            'utf8',
+          ),
+        ),
+      'SNAPSHOT_COMMIT_MARKER_INVALID',
+      'SNAPSHOT_COMMIT_NESTED_SHAPE_CANARY_DO_NOT_ECHO',
+    );
+    expectStableRawInputError(
+      () =>
+        parseSnapshotPublicationCommitMarker(
+          Buffer.from(`{"SNAPSHOT_COMMIT_SYNTAX_CANARY_DO_NOT_ECHO":`, 'utf8'),
+        ),
+      'SNAPSHOT_COMMIT_MARKER_INVALID',
+      'SNAPSHOT_COMMIT_SYNTAX_CANARY_DO_NOT_ECHO',
+    );
+    const duplicateCommit = snapshotPublicationCommitMarkerBytes(commit)
+      .toString('utf8')
+      .replace('"schemaVersion":1', '"schemaVersion":1,"schemaVersion":1');
+    expectStableRawInputError(
+      () => parseSnapshotPublicationCommitMarker(Buffer.from(duplicateCommit, 'utf8')),
+      'SNAPSHOT_COMMIT_MARKER_INVALID',
+    );
+    expectStableRawInputError(
+      () => parseSnapshotPublicationCommitMarker(Buffer.from([0x7b, 0x22, 0xc3, 0x28])),
+      'SNAPSHOT_COMMIT_MARKER_INVALID',
+    );
     expect(
       SnapshotPublicationCommitMarkerSchema.safeParse({
         ...commit,
@@ -503,10 +610,29 @@ describe('六类共享协议运行时 schema', () => {
 
   it('Broker handshake、command、event golden fixtures 都严格解析', async () => {
     const handshakeText = await readFixtureText('broker-handshake.v1.json');
-    expect(BrokerHandshakeSchema.parse(JSON.parse(handshakeText)).protocol).toBe(
-      'combo.creator-broker/1',
-    );
+    const handshake = BrokerHandshakeSchema.parse(JSON.parse(handshakeText));
+    expect(handshake.protocol).toBe('combo.creator-broker/1');
     expect(parseBrokerHandshake(handshakeText).installationId).toMatch(/^[a-f0-9-]{36}$/u);
+
+    for (const [scope, candidate] of [
+      ['top', { ...handshake, BROKER_HANDSHAKE_TOP_CANARY_DO_NOT_ECHO: true }],
+      [
+        'nested',
+        {
+          ...handshake,
+          capacity: {
+            ...handshake.capacity,
+            BROKER_HANDSHAKE_NESTED_CANARY_DO_NOT_ECHO: true,
+          },
+        },
+      ],
+    ] as const) {
+      expectStableRawInputError(
+        () => parseBrokerHandshake(JSON.stringify(candidate)),
+        'BROKER_HANDSHAKE_INVALID',
+        `BROKER_HANDSHAKE_${scope.toUpperCase()}_CANARY_DO_NOT_ECHO`,
+      );
+    }
 
     for (const fixture of [
       'broker-conversation-open.v1.json',
@@ -519,6 +645,26 @@ describe('六类共享协议运行时 schema', () => {
       const text = await readFixtureText(fixture);
       expect(BrokerEnvelopeSchema.safeParse(JSON.parse(text)).success, fixture).toBe(true);
       expect(parseBrokerFrame(text).protocol, fixture).toBe('combo.creator-broker/1');
+    }
+
+    const frame = BrokerEnvelopeSchema.parse(
+      await readFixture('broker-invocation-prepared.v1.json'),
+    );
+    for (const [scope, candidate] of [
+      ['top', { ...frame, BROKER_FRAME_TOP_CANARY_DO_NOT_ECHO: true }],
+      [
+        'nested',
+        {
+          ...frame,
+          body: { ...frame.body, BROKER_FRAME_NESTED_CANARY_DO_NOT_ECHO: true },
+        },
+      ],
+    ] as const) {
+      expectStableRawInputError(
+        () => parseBrokerFrame(JSON.stringify(candidate)),
+        'BROKER_FRAME_INVALID',
+        `BROKER_FRAME_${scope.toUpperCase()}_CANARY_DO_NOT_ECHO`,
+      );
     }
   });
 
@@ -901,7 +1047,10 @@ describe('六类共享协议运行时 schema', () => {
     >;
     expect(BrokerEnvelopeSchema.safeParse({ ...command, unexpected: true }).success).toBe(false);
     expect(BrokerEnvelopeSchema.safeParse({ ...command, schemaVersion: 2 }).success).toBe(false);
-    expect(() => parseBrokerFrame('{"protocol":"x","protocol":"y"}')).toThrow(/重复 JSON key/u);
+    expectStableRawInputError(
+      () => parseBrokerFrame('{"protocol":"x","protocol":"y"}'),
+      'BROKER_FRAME_INVALID',
+    );
     expect(() => parseBrokerFrame(' '.repeat(65_537))).toThrow(/65536/u);
   });
 
