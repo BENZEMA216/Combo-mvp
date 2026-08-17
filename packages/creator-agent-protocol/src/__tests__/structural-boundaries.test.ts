@@ -51,6 +51,7 @@ const artifactUrls = {
   openApi: new URL('../../openapi/creator-agent-v1.openapi.json', import.meta.url),
 } as const satisfies Record<CheckedArtifactName, URL>;
 const repositoryRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+const UNICODE_CODE_POINT_BOUNDARY_CANARY = 'UNICODE_CODE_POINT_BOUNDARY_CANARY_';
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -155,6 +156,55 @@ function flattenZodIssues(issues: readonly ZodIssue[]): ZodIssue[] {
     issue.code === 'invalid_union'
       ? [issue, ...issue.unionErrors.flatMap((error) => flattenZodIssues(error.issues))]
       : [issue],
+  );
+}
+
+function exactUnicodeCodePointsWithCanary(targetCodePoints: number): string {
+  const canaryCodePoints = [...UNICODE_CODE_POINT_BOUNDARY_CANARY].length;
+  if (targetCodePoints < canaryCodePoints) {
+    throw new Error(`UNICODE_CODE_POINT_BOUNDARY_TARGET_TOO_SMALL:${targetCodePoints}`);
+  }
+  return UNICODE_CODE_POINT_BOUNDARY_CANARY + '😀'.repeat(targetCodePoints - canaryCodePoints);
+}
+
+function hasRuntimeCodePointBoundaryIssue(
+  issues: readonly ZodIssue[],
+  pointer: string,
+  minimumCodePoints: number,
+  maximumCodePoints: number,
+): boolean {
+  return flattenZodIssues(issues).some(
+    (issue) =>
+      issue.code === 'custom' &&
+      issue.message ===
+        `Unicode code points 必须在 ${minimumCodePoints}..${maximumCodePoints} 范围内` &&
+      issue.path.map(String).join('/') === pointerIssuePath(pointer),
+  );
+}
+
+function exactDerivedIssueMessage(ownerId: string): string {
+  switch (ownerId) {
+    case 'snapshot-publication-preparation-key':
+      return 'commit preparationKey 必须由 creatorId 和 snapshotDigest 精确派生';
+    case 'snapshot-archive-object-key':
+      return 'objectKey 必须由 creatorId 和 snapshotDigest 精确派生';
+    case 'snapshot-manifest-object-key':
+      return 'manifest objectKey 必须由 creatorId 和 snapshotDigest 精确派生';
+    default:
+      throw new Error(`STRUCTURAL_EXACT_DERIVED_OWNER_UNKNOWN:${ownerId}`);
+  }
+}
+
+function hasRuntimeCustomIssue(
+  issues: readonly ZodIssue[],
+  pointer: string,
+  message: string,
+): boolean {
+  return flattenZodIssues(issues).some(
+    (issue) =>
+      issue.code === 'custom' &&
+      issue.message === message &&
+      issue.path.map(String).join('/') === pointerIssuePath(pointer),
   );
 }
 
@@ -461,6 +511,214 @@ describe('digest-bound public structural boundaries', () => {
     expect(validateAllOf(probes.rejected.at(-1)!.value)).toBe(false);
 
     expect(outcomes).toBe(parity.expectedCounts.outcomes);
+  }, 15_000);
+
+  it('drives exact Unicode code-point maxima through all actual runtime owners', async () => {
+    const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const parity = corpus.unicodeScalarParity;
+    const nullableOwnerIds = new Set<string>(parity.nullableWrappers.map(({ id }) => id));
+    let baselines = 0;
+    let exactDerivedBaselines = 0;
+    let outcomes = 0;
+    let accepted = 0;
+    let rejected = 0;
+    let targetIssues = 0;
+    let exactDerivedIssues = 0;
+    let noCanaryChecks = 0;
+    let nullableRuntimeChecks = 0;
+
+    for (const owner of parity.runtimeOwners) {
+      const fixture =
+        owner.fixtureFormat === 'inline'
+          ? inlineUnicodeOwnerFixture(owner.fixtureSource)
+          : await readOwnerFixture({
+              path: owner.fixtureSource,
+              format: owner.fixtureFormat,
+            });
+      const extractsOwner =
+        owner.runtimeParser === 'ArchitectureDecisionSchema' ||
+        owner.runtimeParser === 'SnapshotArchiveEnvelopeAadSchema' ||
+        owner.runtimeParser === 'SnapshotManifestEnvelopeAadSchema';
+      const parserInput = extractsOwner ? lookupValue(fixture, owner.ownerPointer) : fixture;
+      const valuePointer = extractsOwner
+        ? owner.instancePointer
+        : `${owner.ownerPointer}${owner.instancePointer}`;
+      expect(
+        parseUnicodeRuntimeOwner(owner.runtimeParser, parserInput).success,
+        `baseline:${owner.id}`,
+      ).toBe(true);
+      baselines += 1;
+      if (owner.kind === 'exact-derived') exactDerivedBaselines += 1;
+
+      for (const delta of [-1, 0, 1] as const) {
+        const targetCodePoints = owner.maximumCodePoints + delta;
+        const value = exactUnicodeCodePointsWithCanary(targetCodePoints);
+        expect([...value].length, `${owner.id}:${delta}:code-points`).toBe(targetCodePoints);
+        expect(value.length, `${owner.id}:${delta}:utf16-code-units`).toBeGreaterThan(
+          targetCodePoints,
+        );
+        const result = parseUnicodeRuntimeOwner(
+          owner.runtimeParser,
+          replacePointer(parserInput, valuePointer, value),
+        );
+        const expected = owner.kind === 'ordinary' && delta <= 0;
+        expect(result.success, `runtime-max:${owner.id}:${delta}`).toBe(expected);
+        if (result.success) accepted += 1;
+        else rejected += 1;
+
+        if (!result.success) {
+          const hasLengthIssue = hasRuntimeCodePointBoundaryIssue(
+            result.error.issues,
+            valuePointer,
+            owner.minimumCodePoints,
+            owner.maximumCodePoints,
+          );
+          expect(hasLengthIssue, `runtime-max-issue:${owner.id}:${delta}`).toBe(delta === 1);
+          if (hasLengthIssue) targetIssues += 1;
+
+          if (owner.kind === 'exact-derived') {
+            const hasDerivedIssue = hasRuntimeCustomIssue(
+              result.error.issues,
+              valuePointer,
+              exactDerivedIssueMessage(owner.id),
+            );
+            expect(hasDerivedIssue, `runtime-derived-issue:${owner.id}:${delta}`).toBe(true);
+            if (hasDerivedIssue) exactDerivedIssues += 1;
+          }
+
+          const noCanary = !JSON.stringify(result.error.issues).includes(
+            UNICODE_CODE_POINT_BOUNDARY_CANARY,
+          );
+          expect(noCanary, `runtime-max-no-canary:${owner.id}:${delta}`).toBe(true);
+          if (noCanary) noCanaryChecks += 1;
+        }
+        outcomes += 1;
+      }
+
+      if (nullableOwnerIds.has(owner.id)) {
+        expect(
+          parseUnicodeRuntimeOwner(
+            owner.runtimeParser,
+            replacePointer(parserInput, valuePointer, null),
+          ).success,
+          `runtime-nullable:${owner.id}`,
+        ).toBe(true);
+        nullableRuntimeChecks += 1;
+      }
+    }
+
+    expect({
+      baselines,
+      exactDerivedBaselines,
+      outcomes,
+      accepted,
+      rejected,
+      targetIssues,
+      exactDerivedIssues,
+      noCanaryChecks,
+      nullableRuntimeChecks,
+    }).toEqual({
+      baselines: 29,
+      exactDerivedBaselines: 3,
+      outcomes: 87,
+      accepted: 52,
+      rejected: 35,
+      targetIssues: 29,
+      exactDerivedIssues: 9,
+      noCanaryChecks: 35,
+      nullableRuntimeChecks: 2,
+    });
+  }, 15_000);
+
+  it('drives exact Unicode code-point maxima through all advertised public nodes', async () => {
+    const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(fixtureUrl, 'utf8')),
+    );
+    const documents = Object.fromEntries(
+      await Promise.all(
+        Object.entries(artifactUrls).map(async ([name, url]) => [
+          name,
+          JSON.parse(await readFile(url, 'utf8')),
+        ]),
+      ),
+    ) as Record<CheckedArtifactName, unknown>;
+    const publicNodes = corpus.unicodeBoundaries.flatMap((boundary) =>
+      boundary.artifactPointers.map(({ artifact, pointer }) => ({
+        artifact,
+        pointer,
+        maximumCodePoints: boundary.maximumCodePoints,
+      })),
+    );
+    expect(publicNodes).toHaveLength(corpus.unicodeScalarParity.expectedCounts.publicNodes);
+    const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
+    let outcomes = 0;
+    let accepted = 0;
+    let rejected = 0;
+    let targetIssues = 0;
+    let noCanaryChecks = 0;
+    let nullableContractChecks = 0;
+
+    for (const { artifact, pointer, maximumCodePoints } of publicNodes) {
+      const validate = ajv.compile(lookupPointer(documents[artifact], pointer) as AnySchema);
+      for (const delta of [-1, 0, 1] as const) {
+        const targetCodePoints = maximumCodePoints + delta;
+        const value = exactUnicodeCodePointsWithCanary(targetCodePoints);
+        expect([...value].length, `${artifact}:${pointer}:${delta}:code-points`).toBe(
+          targetCodePoints,
+        );
+        expect(value.length, `${artifact}:${pointer}:${delta}:utf16-code-units`).toBeGreaterThan(
+          targetCodePoints,
+        );
+        const expected = delta <= 0;
+        const valid = validate(value);
+        expect(valid, `public-max:${artifact}:${pointer}:${delta}`).toBe(expected);
+        if (valid) accepted += 1;
+        else rejected += 1;
+
+        if (!expected) {
+          const hasTargetIssue = validate.errors?.some(
+            (issue) =>
+              issue.instancePath === '' &&
+              issue.keyword === 'maxLength' &&
+              issue.params.limit === maximumCodePoints,
+          );
+          expect(hasTargetIssue, `public-max-issue:${artifact}:${pointer}`).toBe(true);
+          if (hasTargetIssue) targetIssues += 1;
+          const noCanary = !JSON.stringify(validate.errors).includes(
+            UNICODE_CODE_POINT_BOUNDARY_CANARY,
+          );
+          expect(noCanary, `public-max-no-canary:${artifact}:${pointer}`).toBe(true);
+          if (noCanary) noCanaryChecks += 1;
+        }
+        outcomes += 1;
+      }
+    }
+
+    for (const wrapper of corpus.unicodeScalarParity.nullableWrappers) {
+      const validate = ajv.compile(
+        lookupPointer(documents[wrapper.artifact], wrapper.pointer) as AnySchema,
+      );
+      expect(validate(null), `contract-nullable:${wrapper.id}`).toBe(true);
+      nullableContractChecks += 1;
+    }
+
+    expect({
+      outcomes,
+      accepted,
+      rejected,
+      targetIssues,
+      noCanaryChecks,
+      nullableContractChecks,
+    }).toEqual({
+      outcomes: 141,
+      accepted: 94,
+      rejected: 47,
+      targetIssues: 47,
+      noCanaryChecks: 47,
+      nullableContractChecks: 2,
+    });
   }, 15_000);
 
   it('uses one owner UUID fixture across runtime, contract and OpenAPI Ajv boundaries', async () => {
