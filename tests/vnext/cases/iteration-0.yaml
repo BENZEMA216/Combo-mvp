@@ -436,6 +436,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/snapshot-resource-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-single-file-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-compressed-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/snapshot-compression-ratio-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
@@ -450,6 +451,7 @@ cases:
       - sha256:dfe25e6e244468dec22366ea37bd68d34667a9452fffe1651ed0896858e5cac2
       - sha256:36e05cdbaedb0eb0dc885c976be4f71a781530684da72b5b471a6dc97cea64bf
       - sha256:19223bcfda15eaa0d7fcf485ecd27ae176edd960a2a172074d38802e2f8a1f9c
+      - sha256:47dcc8a01fac526e0a52b58989a0067123fe7f1289e338c0a24ace2098e2047b
       - sha256:3f59901e004372afafa698bb497edcb1deeefb01654a1eca543dc3b4cf925862
       - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
   - <<: *sch

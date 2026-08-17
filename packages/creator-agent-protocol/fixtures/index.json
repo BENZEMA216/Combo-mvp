@@ -143,6 +143,11 @@
       "digest": "sha256:19223bcfda15eaa0d7fcf485ecd27ae176edd960a2a172074d38802e2f8a1f9c"
     },
     {
+      "path": "snapshot-compression-ratio-boundaries.v1.json",
+      "bytes": 4560,
+      "digest": "sha256:47dcc8a01fac526e0a52b58989a0067123fe7f1289e338c0a24ace2098e2047b"
+    },
+    {
       "path": "snapshot-envelope.v1.json",
       "bytes": 1134,
       "digest": "sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9"

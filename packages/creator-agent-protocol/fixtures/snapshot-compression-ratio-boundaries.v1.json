@@ -1,0 +1,125 @@
+{
+  "protocol": "combo.snapshot-compression-ratio-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "snapshot-expanded-to-compressed-ratio-only",
+  "evidenceClass": "local-deterministic-only",
+  "authority": {
+    "technicalPlanSection": "技术方案 §5.2 Alpha 输入边界",
+    "testPlanSection": "测试方案 §8.3 危险文件与路径",
+    "decisionRegistryId": "ADR-VNEXT-003",
+    "additiveRegistryCaseId": "SCH-004"
+  },
+  "generatorRuntime": {
+    "observedPlatform": "darwin-arm64",
+    "nodeVersion": "v25.6.1",
+    "zstdVersion": "1.5.7",
+    "tarImplementation": "combo-ustar-pax/1",
+    "zstdLevel": 9,
+    "zstdChecksum": true,
+    "zstdContentSize": true,
+    "zstdDictionaryId": false,
+    "zstdWorkers": 0
+  },
+  "numericBoundary": {
+    "comparison": "expandedBytes <= compressedBytes * maximumRatio",
+    "maximumRatio": 100,
+    "probes": [
+      {
+        "ratio": 99,
+        "compressedBytes": 1,
+        "expandedBytes": 99,
+        "expected": "accepted",
+        "canonicalInputDigest": "sha256:a92698072412c7c19618bff315cbf61de85378baa7c49913acc78dad33091f90"
+      },
+      {
+        "ratio": 100,
+        "compressedBytes": 1,
+        "expandedBytes": 100,
+        "expected": "accepted",
+        "canonicalInputDigest": "sha256:87d65f0287b8a0dc00219fc0cfc2a4c2ef6185ab7b84cb3471255621a79b7f18"
+      },
+      {
+        "ratio": 101,
+        "compressedBytes": 1,
+        "expandedBytes": 101,
+        "expected": "rejected",
+        "canonicalInputDigest": "sha256:dc824361af537441ea7f2d71d51c117678106f5c0a342e51f23f191bf22cf430"
+      }
+    ]
+  },
+  "mechanism": {
+    "mediaType": "text/plain; charset=utf-8",
+    "acceptedRecipe": {
+      "algorithm": "sha256-counter-lowercase-hex/1",
+      "seedUtf8": "combo:snapshot-compression-ratio:accepted:v1",
+      "counterEncoding": "uint32be",
+      "digestEncoding": "lowercase-hex",
+      "contentBytes": 1048576
+    },
+    "bombRecipe": {
+      "algorithm": "ascii-byte-repeat/1",
+      "byteHex": "61",
+      "character": "a",
+      "contentBytes": 1048576
+    },
+    "vectors": [
+      {
+        "id": "accepted-counter-hex",
+        "expected": "accepted",
+        "filePath": "ratio-accepted.txt",
+        "contentBytes": 1048576,
+        "manifestBytes": 720,
+        "tarBytes": 1050112,
+        "archiveBytes": 557990,
+        "ratioNumerator": 1048576,
+        "ratioDenominator": 557990,
+        "ratioDecimal": "1.8792021362390008",
+        "digests": {
+          "content": "sha256:87fa9e7bc1ebd053bac7930a65c21f9cfa5e21eade2a878ddff0c7f4d71a8230",
+          "manifest": "sha256:ef94bbb51e6fa4d16179c6ab4730e112c3f0d6673b61c88dfdc26943a0bc8227",
+          "snapshot": "sha256:ef94bbb51e6fa4d16179c6ab4730e112c3f0d6673b61c88dfdc26943a0bc8227",
+          "tar": "sha256:a57a33255228551cae882a5449450d40f4f921d4a97f58fe064478d9a7ffedc0",
+          "archive": "sha256:72ba9ad10435bdda55f10ca5779fb8eab473463ded5be053e0150f19dc9a70c4"
+        },
+        "canonicalArchiveRoundTrip": true,
+        "fullVerify": "accepted"
+      },
+      {
+        "id": "bomb-ascii-a",
+        "expected": "rejected",
+        "expectedError": "SNAPSHOT_COMPRESSION_RATIO_EXCEEDED",
+        "filePath": "ratio-bomb.txt",
+        "contentBytes": 1048576,
+        "manifestBytes": 716,
+        "tarBytes": 1050112,
+        "archiveBytes": 128,
+        "ratioNumerator": 1048576,
+        "ratioDenominator": 128,
+        "ratioDecimal": "8192",
+        "digests": {
+          "content": "sha256:9bc1b2a288b26af7257a36277ae3816a7d4f16e89c1e7e77d0a5c48bad62b360",
+          "manifest": "sha256:2dbbda349ad67c2ce972883d4c0358597d6d1c5891b75965273a7b52bd8b92e0",
+          "snapshot": "sha256:2dbbda349ad67c2ce972883d4c0358597d6d1c5891b75965273a7b52bd8b92e0",
+          "tar": "sha256:913acc574979fc891caf86fd71a24689c599a844e3f983cb719dde12f4e92651",
+          "archive": "sha256:9107b77bd4cc889cd6a6b30f469cd0b3145e0e6c0f7fbc5dbea97e3ef12d6890"
+        },
+        "canonicalArchiveRoundTrip": true,
+        "fullVerify": "rejected-before-verified"
+      }
+    ]
+  },
+  "productionOwners": [
+    "isCompressionRatioAllowed",
+    "assertCompressedArchiveLimits",
+    "verifySnapshotArchive",
+    "S3ImmutableSnapshotObjectStore.finalizeUpload"
+  ],
+  "exclusions": [
+    "accepted-real-vector-is-not-an-exact-100-to-1-archive",
+    "does-not-cover-SNP-008-real-50MiB-compressed-boundary",
+    "does-not-observe-decompressor-call-count",
+    "does-not-prove-T0-LINUX-CI-or-formal-E1",
+    "does-not-prove-E2-MinIO-PostgreSQL-or-cloud-state",
+    "generated-large-bytes-are-not-committed"
+  ]
+}

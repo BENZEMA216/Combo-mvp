@@ -421,5 +421,5 @@ export function isCompressionRatioAllowed(compressedBytes: number, expandedBytes
   if (!Number.isSafeInteger(compressedBytes) || !Number.isSafeInteger(expandedBytes)) return false;
   if (compressedBytes <= 0 || compressedBytes > SNAPSHOT_MAX_COMPRESSED_BYTES) return false;
   if (expandedBytes < 0 || expandedBytes > SNAPSHOT_MAX_EXPANDED_BYTES) return false;
-  return expandedBytes / compressedBytes <= SNAPSHOT_MAX_COMPRESSION_RATIO;
+  return expandedBytes <= compressedBytes * SNAPSHOT_MAX_COMPRESSION_RATIO;
 }

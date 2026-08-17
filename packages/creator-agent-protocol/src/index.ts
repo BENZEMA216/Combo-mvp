@@ -18,6 +18,7 @@ export * from './sandbox.js';
 export * from './signatures.js';
 export * from './snapshot.js';
 export * from './snapshot-compressed-boundaries.js';
+export * from './snapshot-compression-ratio-boundaries.js';
 export * from './snapshot-path-boundaries.js';
 export * from './snapshot-resource-boundaries.js';
 export * from './snapshot-single-file-boundaries.js';

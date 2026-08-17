@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import {
   PutObjectCommand,
@@ -11,6 +12,7 @@ import {
   SNAPSHOT_ENVELOPE_PROTOCOL,
   SNAPSHOT_MANIFEST_ENVELOPE_PROTOCOL,
   SNAPSHOT_MANIFEST_OBJECT_FORMAT,
+  SnapshotCompressionRatioBoundaryCorpusSchema,
   SnapshotUploadCreateResponseSchema,
   snapshotArchiveObjectKey,
   snapshotManifestObjectKey,
@@ -162,6 +164,10 @@ const UPLOAD_B = '0198f00d-6000-7000-8000-000000000012';
 const KEY_ID = 'test-key:v1';
 const WRAPPED_DEK = Buffer.alloc(40, 9);
 const DATA_KEY = Buffer.alloc(32, 7);
+const compressionRatioCorpusUrl = new URL(
+  '../../../creator-agent-protocol/fixtures/snapshot-compression-ratio-boundaries.v1.json',
+  import.meta.url,
+);
 
 function checksum(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('base64');
@@ -187,6 +193,9 @@ function uploadFixture(
     keyId: string;
     wrappedDek: Buffer;
     dataKey: Buffer;
+    filePath: string;
+    fileBytes: Buffer;
+    mediaType: string;
   }> = {},
 ): UploadFixture {
   const creatorId = options.creatorId ?? CREATOR_A;
@@ -195,18 +204,20 @@ function uploadFixture(
   const keyId = options.keyId ?? KEY_ID;
   const wrappedDek = Buffer.from(options.wrappedDek ?? WRAPPED_DEK);
   const dataKey = Buffer.from(options.dataKey ?? DATA_KEY);
-  const fileBytes = Buffer.from(`# Synthetic facts\nmarker=${marker}\n`);
+  const filePath = options.filePath ?? 'FACTS.md';
+  const fileBytes = options.fileBytes ?? Buffer.from(`# Synthetic facts\nmarker=${marker}\n`);
+  const mediaType = options.mediaType ?? 'text/markdown; charset=utf-8';
   const manifest = createSnapshotManifest([
     {
-      path: 'FACTS.md',
+      path: filePath,
       size: fileBytes.byteLength,
-      mediaType: 'text/markdown; charset=utf-8',
+      mediaType,
       sha256: sha256Hex(fileBytes),
     },
   ]);
   const manifestBytes = snapshotManifestBytes(manifest);
   const archiveBytes = compressDeterministicTar(
-    createDeterministicTar([{ path: 'FACTS.md', bytes: fileBytes }]),
+    createDeterministicTar([{ path: filePath, bytes: fileBytes }]),
   );
   const snapshotDigest = sha256Hex(manifestBytes);
   const archive = encryptSnapshotArchiveTestOnly(
@@ -428,6 +439,53 @@ describe('S3 immutable Snapshot signed upload and verifier', () => {
       ),
       immutableSnapshotObjectKey(CREATOR_A, fixture.request.archive.envelope.aad.snapshotDigest),
     ]);
+    expect(fixture.dataKeyResult.value).toEqual(Buffer.alloc(32));
+  });
+
+  it('rejects the digest-bound canonical compression bomb before preparation or publication', async () => {
+    const corpus = SnapshotCompressionRatioBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(compressionRatioCorpusUrl, 'utf8')),
+    );
+    const vector = corpus.mechanism.vectors[1];
+    const bombBytes = Buffer.alloc(
+      corpus.mechanism.bombRecipe.contentBytes,
+      Number.parseInt(corpus.mechanism.bombRecipe.byteHex, 16),
+    );
+    expect(`sha256:${sha256Hex(bombBytes)}`).toBe(vector.digests.content);
+    const fixture = uploadFixture({
+      filePath: vector.filePath,
+      fileBytes: bombBytes,
+      mediaType: corpus.mechanism.mediaType,
+      archiveNonceByte: 0x31,
+      manifestNonceByte: 0x32,
+    });
+    expect(fixture.request).toMatchObject({ expandedBytes: vector.contentBytes, fileCount: 1 });
+    expect(fixture.request.archive.envelope.aad).toMatchObject({
+      plaintextBytes: vector.archiveBytes,
+      archiveDigest: vector.digests.archive.slice('sha256:'.length),
+      snapshotDigest: vector.digests.snapshot.slice('sha256:'.length),
+    });
+
+    const client = new FakeSnapshotS3Client();
+    const store = tenantStore(client);
+    await store.putUpload(fixture.bundle);
+    await expect(
+      store.finalizeUpload({
+        uploadId: fixture.bundle.uploadId,
+        request: fixture.request,
+        keyEnvelope: fixture.keyEnvelope,
+      }),
+    ).rejects.toSatisfy((error: unknown) =>
+      isSnapshotError(error, 'SNAPSHOT_COMPRESSION_RATIO_EXCEEDED'),
+    );
+
+    const digest = fixture.request.archive.envelope.aad.snapshotDigest;
+    expect(client.objects.has(snapshotPublicationPreparationKey(CREATOR_A, digest))).toBe(false);
+    expect(client.objects.has(immutableSnapshotObjectKey(CREATOR_A, digest))).toBe(false);
+    expect(client.objects.has(immutableSnapshotManifestObjectKey(CREATOR_A, digest))).toBe(false);
+    expect(client.objects.has(snapshotPublicationCommitKey(CREATOR_A, digest))).toBe(false);
+    expect(await store.readFinalBundle(fixture.request)).toBeUndefined();
+    expect([...client.objects.keys()].filter((key) => key.startsWith('uploads/'))).toHaveLength(2);
     expect(fixture.dataKeyResult.value).toEqual(Buffer.alloc(32));
   });
 

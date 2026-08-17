@@ -189,10 +189,13 @@ export function assertCompressedArchiveLimits(
   if (compressedBytes > ALPHA_SNAPSHOT_POLICY.maxCompressedBytes) {
     fail('SNAPSHOT_COMPRESSED_TOO_LARGE');
   }
-  if (
-    expandedFileBytes > 0 &&
-    expandedFileBytes / compressedBytes > ALPHA_SNAPSHOT_POLICY.maxCompressionRatio
-  ) {
+  if (!Number.isSafeInteger(expandedFileBytes) || expandedFileBytes < 0) {
+    fail('SNAPSHOT_ARCHIVE_INVALID');
+  }
+  if (expandedFileBytes > ALPHA_SNAPSHOT_POLICY.maxExpandedBytes) {
+    fail('SNAPSHOT_EXPANDED_TOO_LARGE');
+  }
+  if (expandedFileBytes > compressedBytes * ALPHA_SNAPSHOT_POLICY.maxCompressionRatio) {
     fail('SNAPSHOT_COMPRESSION_RATIO_EXCEEDED');
   }
 }
