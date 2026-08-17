@@ -113,6 +113,11 @@
       "digest": "sha256:665679044f165b9718eedb26c9d3c787d3d2127d88dc2a33c01f7bc89be32158"
     },
     {
+      "path": "protocol-wire-boundaries.v1.json",
+      "bytes": 1707,
+      "digest": "sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f"
+    },
+    {
       "path": "sandbox-attestation.v1.json",
       "bytes": 1889,
       "digest": "sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91"

@@ -17,3 +17,4 @@ export * from './signatures.js';
 export * from './snapshot.js';
 export * from './structural-boundaries.js';
 export * from './utf8-boundaries.js';
+export * from './wire-boundaries.js';

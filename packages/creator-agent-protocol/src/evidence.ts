@@ -13,6 +13,7 @@ import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.
 
 export const EVIDENCE_BUNDLE_PROTOCOL = 'combo.vnext-evidence-bundle/1' as const;
 export const EVIDENCE_RELEASE_TUPLE_PROTOCOL = 'combo.vnext-release-tuple/1' as const;
+export const EVIDENCE_MAX_STRUCTURED_JSON_BYTES = 1_048_576;
 const EvidenceTokenSchema = (maximum: number) =>
   z.string().regex(new RegExp(`^[A-Za-z0-9][A-Za-z0-9._+()-]{0,${maximum - 1}}$`, 'u'));
 export const EvidenceEnvironmentIdSchema = z.enum([
@@ -577,32 +578,65 @@ export function validateEvidenceReviewerSignoff(
 }
 
 export interface EvidenceBundleChainInput {
-  readonly index: unknown;
+  readonly index: Uint8Array;
   readonly supportingArtifacts: Readonly<
     Partial<Record<EvidenceSupportingArtifactPath, Uint8Array>>
   >;
-  readonly caseResults: unknown;
-  readonly testCaseRegistry: unknown;
-  readonly manifest: unknown;
-  readonly signoff: unknown;
+  readonly caseResults: Uint8Array;
+  readonly testCaseRegistry: Uint8Array;
+  readonly manifest: Uint8Array;
+  readonly signoff: Uint8Array;
   readonly expected: EvidenceReviewerSignoffExpectedBinding;
   readonly registeredReviewerPublicKey: P256PublicKeyInput;
   readonly revokedReviewerKeyIds: ReadonlySet<string>;
 }
 
 function parseEvidenceJsonArtifact(bytes: Uint8Array): unknown {
-  if (bytes.byteLength > 1_048_576) throw new RangeError('structured Evidence artifact 超过 1 MiB');
+  if (!(bytes instanceof Uint8Array)) {
+    throw new TypeError('structured Evidence artifact 必须是 raw bytes');
+  }
+  if (bytes.byteLength > EVIDENCE_MAX_STRUCTURED_JSON_BYTES) {
+    throw new RangeError('structured Evidence artifact 超过 1 MiB');
+  }
   return parseJsonNoDuplicateKeys(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
 }
 
 export function validateEvidenceBundleChain(
   input: EvidenceBundleChainInput,
 ): { ok: true } | { ok: false; reasons: string[] } {
-  const index = EvidenceBundleIndexSchema.safeParse(input.index);
-  const caseResults = EvidenceCaseResultsSchema.safeParse(input.caseResults);
-  const testCaseRegistry = TestCaseRegistrySchema.safeParse(input.testCaseRegistry);
-  const manifest = EvidenceBundleManifestSchema.safeParse(input.manifest);
-  const signoff = EvidenceReviewerSignoffSchema.safeParse(input.signoff);
+  const rawReasons: string[] = [];
+  const parseRawJson = (bytes: Uint8Array, reason: string): unknown => {
+    try {
+      return parseEvidenceJsonArtifact(bytes);
+    } catch {
+      rawReasons.push(reason);
+      return undefined;
+    }
+  };
+  const rawIndex = parseRawJson(input.index, 'index-json');
+  const rawCaseResults = parseRawJson(input.caseResults, 'case-results-json');
+  const rawTestCaseRegistry = parseRawJson(input.testCaseRegistry, 'test-case-registry-json');
+  const rawManifest = parseRawJson(input.manifest, 'manifest-json');
+  const rawSignoff = parseRawJson(input.signoff, 'signoff-json');
+  const rawSupportingArtifacts: Partial<Record<EvidenceSupportingArtifactPath, unknown>> = {};
+  // 其余 7 个 supporting artifacts 是 opaque digest-bound bytes，不属于 structured JSON ingress。
+  for (const path of ['environment.json', 'privacy-scan.json'] as const) {
+    const bytes = input.supportingArtifacts[path];
+    if (!(bytes instanceof Uint8Array)) {
+      rawReasons.push(`artifact:${path}:missing`);
+      continue;
+    }
+    rawSupportingArtifacts[path] = parseRawJson(bytes, `artifact:${path}:json`);
+  }
+  if (rawReasons.length > 0) {
+    return { ok: false, reasons: [...new Set(rawReasons)] };
+  }
+
+  const index = EvidenceBundleIndexSchema.safeParse(rawIndex);
+  const caseResults = EvidenceCaseResultsSchema.safeParse(rawCaseResults);
+  const testCaseRegistry = TestCaseRegistrySchema.safeParse(rawTestCaseRegistry);
+  const manifest = EvidenceBundleManifestSchema.safeParse(rawManifest);
+  const signoff = EvidenceReviewerSignoffSchema.safeParse(rawSignoff);
   const schemaReasons = [
     ...(index.success ? [] : ['index-schema']),
     ...(caseResults.success ? [] : ['case-results-schema']),
@@ -684,18 +718,11 @@ export function validateEvidenceBundleChain(
     if (digest !== artifact.digest) reasons.push(`artifact:${artifact.path}:digest`);
   }
   let environments: z.infer<typeof EvidenceEnvironmentsSchema> | null = null;
-  const environmentBytes = input.supportingArtifacts['environment.json'];
-  if (environmentBytes instanceof Uint8Array) {
-    try {
-      const parsed = EvidenceEnvironmentsSchema.safeParse(
-        parseEvidenceJsonArtifact(environmentBytes),
-      );
-      if (parsed.success) environments = parsed.data;
-      else reasons.push('environment-schema');
-    } catch {
-      reasons.push('environment-schema');
-    }
-  }
+  const parsedEnvironments = EvidenceEnvironmentsSchema.safeParse(
+    rawSupportingArtifacts['environment.json'],
+  );
+  if (parsedEnvironments.success) environments = parsedEnvironments.data;
+  else reasons.push('environment-schema');
   if (environments !== null) {
     const environmentIds = new Set(
       environments.environments.map((environment) => environment.environmentId),
@@ -708,18 +735,11 @@ export function validateEvidenceBundleChain(
   }
 
   let privacyScan: EvidencePrivacyScan | null = null;
-  const privacyScanBytes = input.supportingArtifacts['privacy-scan.json'];
-  if (privacyScanBytes instanceof Uint8Array) {
-    try {
-      const parsed = EvidencePrivacyScanSchema.safeParse(
-        parseEvidenceJsonArtifact(privacyScanBytes),
-      );
-      if (parsed.success) privacyScan = parsed.data;
-      else reasons.push('privacy-scan-schema');
-    } catch {
-      reasons.push('privacy-scan-schema');
-    }
-  }
+  const parsedPrivacyScan = EvidencePrivacyScanSchema.safeParse(
+    rawSupportingArtifacts['privacy-scan.json'],
+  );
+  if (parsedPrivacyScan.success) privacyScan = parsedPrivacyScan.data;
+  else reasons.push('privacy-scan-schema');
   if (privacyScan !== null) {
     if (privacyScan.rcId !== manifest.data.rcId) reasons.push('privacy-scan-rcId');
     const expectedScannedArtifacts = index.data.artifacts

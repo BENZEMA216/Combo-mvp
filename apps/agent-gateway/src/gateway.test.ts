@@ -644,6 +644,7 @@ describe('AgentGateway real WebSocket transport', () => {
       (socket) =>
         socket.send(Buffer.from(canonicalizeJson(handshake(CHALLENGE_A))), { binary: true }),
       (socket) => socket.send('{not-json'),
+      (socket) => socket.send(Buffer.from([0x22, 0x80, 0x22]), { binary: false }),
       (socket) => {
         const value = canonicalizeJson(handshake(CHALLENGE_A));
         socket.send(`${value}${value}`);
@@ -661,6 +662,28 @@ describe('AgentGateway real WebSocket transport', () => {
       await started.gateway.stop();
       activeGateways.delete(started.gateway);
     }
+  });
+
+  it('accepts an exact maximum-size handshake and rejects malformed UTF-8 after authentication without authority mutation', async () => {
+    const authority = new FakeAuthority();
+    const started = await startGateway(authority);
+    const socket = await connect(started.url);
+    const handshakeJson = canonicalizeJson(handshake(CHALLENGE_A));
+    const paddingBytes = BROKER_MAX_FRAME_BYTES - Buffer.byteLength(handshakeJson, 'utf8');
+    expect(paddingBytes).toBeGreaterThanOrEqual(0);
+    socket.send(`${handshakeJson}${' '.repeat(paddingBytes)}`);
+    await waitFor(() => started.gateway.activeConnections === 1);
+
+    const close = closeResult(socket);
+    socket.send(Buffer.from([0x22, 0x80, 0x22]), { binary: false });
+    await within('INVALID_UTF8_ESTABLISHED_CLOSE_TIMEOUT', close);
+
+    expect(authority.authenticateStarted).toBe(1);
+    expect(authority.sessions).toHaveLength(1);
+    expect(authority.openCalls).toBe(1);
+    expect(authority.accepted).toHaveLength(0);
+    expect(authority.replayed).toHaveLength(0);
+    expect(authority.gaps).toHaveLength(0);
   });
 
   it('bounds one outbound authority batch before parsing or writing its frames', async () => {

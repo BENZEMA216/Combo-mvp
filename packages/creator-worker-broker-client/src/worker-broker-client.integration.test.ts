@@ -9,6 +9,7 @@ import {
   type GatewayDisconnectReason,
 } from '@cb/agent-gateway';
 import {
+  BROKER_MAX_FRAME_BYTES,
   BrokerAckSchema,
   BrokerAuthenticationError,
   BrokerAuthenticationFailureCode,
@@ -98,6 +99,30 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(broker.connectionCount).toBe(1);
     expect(durable.committed).toHaveLength(0);
     expect(durable.releaseConnectionCalls).toBe(0);
+  });
+
+  it('permanently blocks malformed UTF-8 before the first lease without reconnect or durable activation', async () => {
+    const durable = new FakeDurablePort();
+    const broker = await startBroker({ invalidUtf8FirstFrame: true });
+    const client = createClient(broker.url, durable);
+    await client.start();
+
+    await waitFor(() => client.status === 'BLOCKED');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(broker.connectionCount).toBe(1);
+    expect(durable.committed).toHaveLength(0);
+    expect(durable.releaseConnectionCalls).toBe(0);
+  });
+
+  it('accepts an exact maximum-size valid first lease text frame', async () => {
+    const durable = new FakeDurablePort();
+    const broker = await startBroker({ maximumSizeInitialGrant: true });
+    const client = createClient(broker.url, durable);
+    await client.start();
+
+    await waitFor(() => client.status === 'READY');
+    expect(broker.connectionCount).toBe(1);
+    expect(durable.committed).toHaveLength(1);
   });
 
   it('never enters READY when the required conversation.ready replay reducer fails', async () => {
@@ -434,6 +459,24 @@ describe('Real Worker transport ↔ Fake Broker', () => {
       await broker.stop();
       activeBrokers.delete(broker);
     }
+  });
+
+  it('permanently blocks malformed UTF-8 after READY without advancing durable state', async () => {
+    const durable = new FakeDurablePort();
+    const broker = await startBroker();
+    const client = createClient(broker.url, durable);
+    await client.start();
+    await waitFor(() => client.status === 'READY');
+    const before = durable.committed.length;
+
+    broker.connections[0]!.socket.send(Buffer.from([0x22, 0x80, 0x22]), { binary: false });
+
+    await waitFor(() => client.status === 'BLOCKED');
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(broker.connectionCount).toBe(1);
+    expect(durable.committed).toHaveLength(before);
+    expect(durable.replayed).toHaveLength(0);
+    expect(durable.gaps).toHaveLength(0);
   });
 
   it('fails the live connection when an explicit flush finds a corrupted durable outbox', async () => {
@@ -954,6 +997,8 @@ type FakeBrokerOptions = Readonly<{
   initialFence?: string;
   leaseDurationMs?: number;
   malformedFirstFrame?: boolean;
+  invalidUtf8FirstFrame?: boolean;
+  maximumSizeInitialGrant?: boolean;
   rejectInstallationBeforeGrant?: boolean;
   initialGrantDelayMs?: number;
 }>;
@@ -1054,6 +1099,10 @@ class FakeBroker {
           socket.send('{not-json');
           return;
         }
+        if (this.#options.invalidUtf8FirstFrame) {
+          socket.send(Buffer.from([0x22, 0x80, 0x22]), { binary: false });
+          return;
+        }
         if (this.#options.rejectInstallationBeforeGrant) {
           socket.close(BrokerCloseCode.AUTH_FAILED, BrokerCloseReason.INSTALLATION_REVOKED);
           return;
@@ -1071,7 +1120,12 @@ class FakeBroker {
           sentAt: new Date(this.#baseNow + index * 1_000).toISOString(),
           leaseExpiresAt: this.leaseExpiresAt(index),
         });
-        if ((this.#options.initialGrantDelayMs ?? 0) > 0) {
+        if (this.#options.maximumSizeInitialGrant) {
+          const json = canonicalizeJson(grant);
+          const paddingBytes = BROKER_MAX_FRAME_BYTES - Buffer.byteLength(json, 'utf8');
+          if (paddingBytes < 0) throw new TypeError('INITIAL_GRANT_EXCEEDS_BROKER_MAX_FRAME_BYTES');
+          socket.send(`${json}${' '.repeat(paddingBytes)}`);
+        } else if ((this.#options.initialGrantDelayMs ?? 0) > 0) {
           const timer = setTimeout(
             () => this.send(socket, grant),
             this.#options.initialGrantDelayMs,

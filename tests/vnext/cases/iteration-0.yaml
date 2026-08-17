@@ -430,6 +430,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
@@ -437,16 +438,23 @@ cases:
       - sha256:665679044f165b9718eedb26c9d3c787d3d2127d88dc2a33c01f7bc89be32158
       - sha256:6b35409cc32986b853796844a944e5195ee7c332eb955fe7dcc889a6cd3a9d48
       - sha256:a4fcbd32ef75d0d2f63dd90a138c28160d6628e4403757bf0358c546190463ae
+      - sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
-    fixture: [packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json
+      - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
     assertions: [Invalid text is rejected and no error echoes source content]
     implementation:
       status: implemented
-      testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
-    fixtureDigests: [sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088]
+      testFiles:
+        - packages/creator-agent-protocol/src/__tests__/schemas.test.ts
+        - packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts
+    fixtureDigests:
+      - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
+      - sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f
   - <<: *sch
     id: SCH-006
     title: Runtime and generated schemas cannot drift

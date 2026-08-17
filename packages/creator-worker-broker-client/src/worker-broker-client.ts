@@ -579,9 +579,13 @@ export class WorkerBrokerClient {
         resolve();
       });
     });
-    socket.on('error', () =>
-      this.#closeLive(live, BrokerCloseCode.INTERNAL_ERROR, BrokerCloseReason.TRANSPORT_ERROR),
-    );
+    socket.on('error', (error) => {
+      if (isInvalidUtf8WebSocketError(error)) {
+        this.#failLive(live, new WorkerBrokerClientError('PROTOCOL_ERROR', true));
+        return;
+      }
+      this.#closeLive(live, BrokerCloseCode.INTERNAL_ERROR, BrokerCloseReason.TRANSPORT_ERROR);
+    });
     socket.on('message', (data, isBinary) => this.#queueInbound(live, data, isBinary));
 
     live.grantTimer = setTimeout(() => {
@@ -1404,6 +1408,10 @@ function normalizeClientError(error: unknown): WorkerBrokerClientError {
   return error instanceof WorkerBrokerClientError
     ? error
     : new WorkerBrokerClientError('TRANSPORT_FAILED');
+}
+
+function isInvalidUtf8WebSocketError(error: Error): boolean {
+  return (error as Error & { readonly code?: unknown }).code === 'WS_ERR_INVALID_UTF8';
 }
 
 function rawDataBytes(data: RawData): Buffer {

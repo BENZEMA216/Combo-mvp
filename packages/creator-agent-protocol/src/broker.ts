@@ -1,3 +1,5 @@
+import { TextDecoder } from 'node:util';
+
 import { z } from 'zod';
 import { canonicalizeJson, canonicalSha256, parseJsonNoDuplicateKeys } from './canonical.js';
 import {
@@ -1120,18 +1122,41 @@ export const BrokerEnvelopeSchema = z
   });
 export type BrokerEnvelope = z.infer<typeof BrokerEnvelopeSchema>;
 
+function decodeBrokerBinaryJson(bytes: Buffer, inputKind: 'frame' | 'handshake'): string {
+  try {
+    // `ignoreBOM` preserves Buffer#toString's treatment of a leading BOM while `fatal`
+    // prevents malformed wire bytes from being normalized to U+FFFD before JSON/schema checks.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new TypeError(`Broker ${inputKind} 包含 malformed UTF-8`);
+  }
+}
+
 export function parseBrokerFrame(frame: string | Uint8Array): BrokerEnvelope {
-  const bytes = typeof frame === 'string' ? Buffer.from(frame, 'utf8') : Buffer.from(frame);
+  if (typeof frame === 'string') {
+    if (Buffer.byteLength(frame, 'utf8') > BROKER_MAX_FRAME_BYTES)
+      throw new RangeError('Broker frame 超过 65536 bytes');
+    return BrokerEnvelopeSchema.parse(parseJsonNoDuplicateKeys(frame));
+  }
+  const bytes = Buffer.from(frame);
   if (bytes.byteLength > BROKER_MAX_FRAME_BYTES)
     throw new RangeError('Broker frame 超过 65536 bytes');
-  const json = bytes.toString('utf8');
-  return BrokerEnvelopeSchema.parse(parseJsonNoDuplicateKeys(json));
+  return BrokerEnvelopeSchema.parse(
+    parseJsonNoDuplicateKeys(decodeBrokerBinaryJson(bytes, 'frame')),
+  );
 }
 
 export function parseBrokerHandshake(frame: string | Uint8Array): BrokerHandshake {
-  const bytes = typeof frame === 'string' ? Buffer.from(frame, 'utf8') : Buffer.from(frame);
+  if (typeof frame === 'string') {
+    if (Buffer.byteLength(frame, 'utf8') > BROKER_MAX_FRAME_BYTES)
+      throw new RangeError('Broker handshake 超过上限');
+    return BrokerHandshakeSchema.parse(parseJsonNoDuplicateKeys(frame));
+  }
+  const bytes = Buffer.from(frame);
   if (bytes.byteLength > BROKER_MAX_FRAME_BYTES) throw new RangeError('Broker handshake 超过上限');
-  return BrokerHandshakeSchema.parse(parseJsonNoDuplicateKeys(bytes.toString('utf8')));
+  return BrokerHandshakeSchema.parse(
+    parseJsonNoDuplicateKeys(decodeBrokerBinaryJson(bytes, 'handshake')),
+  );
 }
 
 export const BrokerEmptyBodySchema = EmptyBodySchema;

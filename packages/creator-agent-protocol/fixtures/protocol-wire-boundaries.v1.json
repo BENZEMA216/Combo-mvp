@@ -1,0 +1,56 @@
+{
+  "protocol": "combo.protocol-wire-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "broker-wire-and-parsed-evidence-json-bytes-only",
+  "authorities": {
+    "brokerFrameBytes": 65536,
+    "structuredEvidenceJsonBytes": 1048576
+  },
+  "baseFixtures": [
+    {
+      "parser": "parseBrokerHandshake",
+      "path": "broker-handshake.v1.json",
+      "digest": "sha256:4f08b64e568b94aec16515a08fb9201818cb755ce1868f1ae61ee1226cd2015a"
+    },
+    {
+      "parser": "parseBrokerFrame",
+      "path": "broker-invocation-prepare.v1.json",
+      "digest": "sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7"
+    },
+    {
+      "parser": "validateEvidenceBundleChain",
+      "path": "evidence-environments.v1.json",
+      "digest": "sha256:6a3a489eadf43ca092c7cfe65e148f0fc986033f7b5adfc59889d58fc26ef168"
+    },
+    {
+      "parser": "validateEvidenceBundleChain",
+      "path": "evidence-privacy-scan.v1.json",
+      "digest": "sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0"
+    }
+  ],
+  "structuredEvidenceOwners": [
+    "index",
+    "caseResults",
+    "testCaseRegistry",
+    "manifest",
+    "signoff",
+    "supportingArtifacts.environment.json",
+    "supportingArtifacts.privacy-scan.json"
+  ],
+  "sizeOffsets": [-1, 0, 1],
+  "paddingByteHex": "20",
+  "malformedUtf8Hex": ["80", "c0af", "e282", "eda080", "f4908080"],
+  "duplicateKeyOwners": ["root", "nested"],
+  "ingressOwners": [
+    "protocol",
+    "agent-gateway-loopback-websocket",
+    "worker-broker-client-loopback-websocket"
+  ],
+  "remainingBoundaryClasses": [
+    "other-structural-string-patterns",
+    "array-count",
+    "map-property-count",
+    "numeric-maximum",
+    "canonical-json-bytes"
+  ]
+}

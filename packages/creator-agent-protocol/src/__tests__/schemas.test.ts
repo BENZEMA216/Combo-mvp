@@ -35,6 +35,7 @@ import {
   type ExecutionCapability,
 } from '../broker.js';
 import {
+  EVIDENCE_MAX_STRUCTURED_JSON_BYTES,
   EvidenceBundleIndexSchema,
   EvidenceBundleManifestSchema,
   EvidenceCaseResultSchema,
@@ -51,6 +52,7 @@ import {
   evidenceTestSuiteDigest,
   validateEvidenceBundleChain,
   validateEvidenceReviewerSignoff,
+  type EvidenceBundleChainInput,
   type EvidenceReviewerSignoff,
 } from '../evidence.js';
 import {
@@ -134,6 +136,36 @@ function signEvidenceReview(
     dsaEncoding: 'ieee-p1363',
   }).toString('base64url');
   return EvidenceReviewerSignoffSchema.parse({ ...review, signature });
+}
+
+type EvidenceBundleChainObjectInput = Omit<
+  EvidenceBundleChainInput,
+  'index' | 'caseResults' | 'testCaseRegistry' | 'manifest' | 'signoff'
+> & {
+  readonly index: unknown;
+  readonly caseResults: unknown;
+  readonly testCaseRegistry: unknown;
+  readonly manifest: unknown;
+  readonly signoff: unknown;
+};
+
+function evidenceJsonBytes(value: unknown): Buffer {
+  return Buffer.from(canonicalizeJson(value), 'utf8');
+}
+
+function evidenceBundleChainBytes(input: EvidenceBundleChainObjectInput): EvidenceBundleChainInput {
+  return {
+    ...input,
+    index: evidenceJsonBytes(input.index),
+    caseResults: evidenceJsonBytes(input.caseResults),
+    testCaseRegistry: evidenceJsonBytes(input.testCaseRegistry),
+    manifest: evidenceJsonBytes(input.manifest),
+    signoff: evidenceJsonBytes(input.signoff),
+  };
+}
+
+function validateEvidenceBundleChainObjects(input: EvidenceBundleChainObjectInput) {
+  return validateEvidenceBundleChain(evidenceBundleChainBytes(input));
 }
 
 describe('六类共享协议运行时 schema', () => {
@@ -1464,22 +1496,145 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       reviewerKeyId: liveSignoff.reviewerKeyId,
       reviewedGates: liveSignoff.reviewedGates,
     };
+    const liveChainInput = {
+      index: liveIndex,
+      supportingArtifacts,
+      caseResults: [liveResult],
+      testCaseRegistry: liveTestCaseRegistry,
+      manifest: liveManifest,
+      signoff: liveSignoff,
+      expected: liveExpected,
+      registeredReviewerPublicKey: liveReviewerKeys.publicKey,
+      revokedReviewerKeyIds: new Set<string>(),
+    } satisfies EvidenceBundleChainObjectInput;
+    const liveRawChainInput = evidenceBundleChainBytes(liveChainInput);
+    expect(validateEvidenceBundleChain(liveRawChainInput)).toEqual({ ok: true });
+
+    const coreRawFields = [
+      ['index', 'index-json'],
+      ['caseResults', 'case-results-json'],
+      ['testCaseRegistry', 'test-case-registry-json'],
+      ['manifest', 'manifest-json'],
+      ['signoff', 'signoff-json'],
+    ] as const;
+    for (const [field, reason] of coreRawFields) {
+      const rawBytes = liveRawChainInput[field];
+      for (const offset of [-1, 0] as const) {
+        const boundaryBytes = Buffer.concat([
+          Buffer.from(rawBytes),
+          Buffer.alloc(EVIDENCE_MAX_STRUCTURED_JSON_BYTES + offset - rawBytes.byteLength, 0x20),
+        ]);
+        expect(boundaryBytes.byteLength).toBe(EVIDENCE_MAX_STRUCTURED_JSON_BYTES + offset);
+        expect(
+          validateEvidenceBundleChain({ ...liveRawChainInput, [field]: boundaryBytes }),
+          `${field}:${offset}`,
+        ).toEqual({ ok: true });
+      }
+      const oversized = Buffer.concat([
+        Buffer.from(rawBytes),
+        Buffer.alloc(EVIDENCE_MAX_STRUCTURED_JSON_BYTES - rawBytes.byteLength + 1, 0x20),
+      ]);
+      const oversizedBefore = Buffer.from(oversized);
+      expect(validateEvidenceBundleChain({ ...liveRawChainInput, [field]: oversized })).toEqual({
+        ok: false,
+        reasons: [reason],
+      });
+      expect(oversized).toEqual(oversizedBefore);
+    }
+
+    const invalidUtf8 = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
+    const duplicateManifestKeys = Buffer.from(
+      canonicalizeJson(liveManifest).replace(
+        '"schemaVersion":1',
+        '"schemaVersion":1,"schemaVersion":1',
+      ),
+      'utf8',
+    );
+    const duplicatePrivacyScanKeys = Buffer.from(
+      canonicalizeJson(privacyScan).replace(
+        '"schemaVersion":1',
+        '"schemaVersion":1,"schemaVersion":1',
+      ),
+      'utf8',
+    );
+    for (const [field, bytes, reason] of [
+      ['caseResults', invalidUtf8, 'case-results-json'],
+      ['manifest', duplicateManifestKeys, 'manifest-json'],
+    ] as const) {
+      const bytesBefore = Buffer.from(bytes);
+      expect(validateEvidenceBundleChain({ ...liveRawChainInput, [field]: bytes })).toEqual({
+        ok: false,
+        reasons: [reason],
+      });
+      expect(bytes).toEqual(bytesBefore);
+    }
+    for (const [path, bytes] of [
+      ['environment.json', invalidUtf8],
+      ['privacy-scan.json', duplicatePrivacyScanKeys],
+    ] as const) {
+      const bytesBefore = Buffer.from(bytes);
+      expect(
+        validateEvidenceBundleChain({
+          ...liveRawChainInput,
+          supportingArtifacts: { ...supportingArtifacts, [path]: bytes },
+        }),
+      ).toEqual({ ok: false, reasons: [`artifact:${path}:json`] });
+      expect(bytes).toEqual(bytesBefore);
+    }
+
+    for (const path of ['environment.json', 'privacy-scan.json'] as const) {
+      const rawBytes = supportingArtifacts[path];
+      for (const offset of [-1, 0] as const) {
+        const boundaryBytes = Buffer.concat([
+          Buffer.from(rawBytes),
+          Buffer.alloc(EVIDENCE_MAX_STRUCTURED_JSON_BYTES + offset - rawBytes.byteLength, 0x20),
+        ]);
+        const result = validateEvidenceBundleChain({
+          ...liveRawChainInput,
+          supportingArtifacts: { ...supportingArtifacts, [path]: boundaryBytes },
+        });
+        expect(result.ok, `${path}:${offset}`).toBe(false);
+        if (result.ok) throw new TypeError('EXPECTED_SUPPORTING_ARTIFACT_DIGEST_MISMATCH');
+        expect(result.reasons).not.toContain(`artifact:${path}:json`);
+      }
+      const oversized = Buffer.concat([
+        Buffer.from(rawBytes),
+        Buffer.alloc(EVIDENCE_MAX_STRUCTURED_JSON_BYTES - rawBytes.byteLength + 1, 0x20),
+      ]);
+      expect(
+        validateEvidenceBundleChain({
+          ...liveRawChainInput,
+          supportingArtifacts: { ...supportingArtifacts, [path]: oversized },
+        }),
+      ).toEqual({ ok: false, reasons: [`artifact:${path}:json`] });
+    }
+
+    const opaqueLargeBytes = Buffer.alloc(EVIDENCE_MAX_STRUCTURED_JSON_BYTES + 1, 0xff);
+    expect(
+      EvidenceBundleIndexSchema.safeParse({
+        ...liveIndex,
+        artifacts: liveIndex.artifacts.map((artifact) =>
+          artifact.path === 'metrics-summary.json'
+            ? { ...artifact, bytes: opaqueLargeBytes.byteLength }
+            : artifact,
+        ),
+      }).success,
+    ).toBe(true);
     expect(
       validateEvidenceBundleChain({
-        index: liveIndex,
-        supportingArtifacts,
-        caseResults: [liveResult],
-        testCaseRegistry: liveTestCaseRegistry,
-        manifest: liveManifest,
-        signoff: liveSignoff,
-        expected: liveExpected,
-        registeredReviewerPublicKey: liveReviewerKeys.publicKey,
-        revokedReviewerKeyIds: new Set(),
+        ...liveRawChainInput,
+        supportingArtifacts: {
+          ...supportingArtifacts,
+          'metrics-summary.json': opaqueLargeBytes,
+        },
       }),
-    ).toEqual({ ok: true });
+    ).toEqual({
+      ok: false,
+      reasons: ['artifact:metrics-summary.json:bytes', 'artifact:metrics-summary.json:digest'],
+    });
 
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [{ ...liveResult, evidenceLevel: 'E0' }],
@@ -1496,7 +1651,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
     });
 
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [{ ...liveResult, releaseTupleDigest: `sha256:${'0'.repeat(64)}` }],
@@ -1517,7 +1672,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       cases: [{ ...liveTestCaseRegistry.cases[0]!, gate: 'G8' }],
     });
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [liveResult],
@@ -1543,7 +1698,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       ],
     });
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [liveResult],
@@ -1586,7 +1741,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
     });
     const uncleanSignoff = signEvidenceReview(unsignedUncleanSignoff, liveReviewerKeys.privateKey);
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: uncleanIndex,
         supportingArtifacts: {
           ...supportingArtifacts,
@@ -1613,7 +1768,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       cases: [...liveTestCaseRegistry.cases, { ...liveTestCaseRegistry.cases[0]!, id: 'SCH-002' }],
     });
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [liveResult],
@@ -1635,7 +1790,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
     };
     replacedSummary['metrics-summary.json'][0] = replacedSummary['metrics-summary.json'][0]! ^ 0xff;
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts: replacedSummary,
         caseResults: [liveResult],
@@ -1649,7 +1804,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
     ).toMatchObject({ ok: false, reasons: ['artifact:metrics-summary.json:digest'] });
 
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [{ ...liveResult, assertionCount: liveResult.assertionCount + 1 }],
@@ -1663,7 +1818,7 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
     ).toMatchObject({ ok: false, reasons: ['testSuiteDigest'] });
 
     expect(
-      validateEvidenceBundleChain({
+      validateEvidenceBundleChainObjects({
         index: liveIndex,
         supportingArtifacts,
         caseResults: [liveResult],
