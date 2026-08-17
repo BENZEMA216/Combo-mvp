@@ -41,6 +41,10 @@ const FORBIDDEN_SEGMENTS = new Set([
   'thumbs.db',
 ]);
 
+const SNAPSHOT_PATH_PORTABLE_PATTERN_SOURCE =
+  '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$';
+const SNAPSHOT_PATH_PORTABLE_PATTERN = new RegExp(SNAPSHOT_PATH_PORTABLE_PATTERN_SOURCE, 'u');
+
 export function snapshotArchiveObjectKey(creatorId: string, snapshotDigest: string): string {
   const creator = UuidSchema.parse(creatorId);
   const digest = Sha256HexSchema.parse(snapshotDigest);
@@ -280,6 +284,7 @@ export const SnapshotPathSchema = z
   .string()
   .min(1)
   .max(SNAPSHOT_MAX_PATH_BYTES)
+  .regex(SNAPSHOT_PATH_PORTABLE_PATTERN)
   .refine((value) => Buffer.byteLength(value, 'utf8') <= SNAPSHOT_MAX_PATH_BYTES, {
     message: `路径不得超过 ${SNAPSHOT_MAX_PATH_BYTES} UTF-8 bytes`,
   })

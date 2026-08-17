@@ -18,6 +18,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   buildSnapshotFromProject,
+  canonicalizeSnapshotPath,
   compressDeterministicTar,
   createDeterministicTar,
   createSnapshotManifest,
@@ -28,6 +29,7 @@ import {
   snapshotDigest,
   snapshotManifestBytes,
   parseSnapshotManifest,
+  parseDeterministicTar,
   stageProject,
   verifySnapshotArchive,
   type CreatorSnapshotErrorCode,
@@ -61,7 +63,85 @@ async function expectReject(
   }
 }
 
+async function expectRejectWithoutEcho(
+  action: () => Promise<unknown> | unknown,
+  code: CreatorSnapshotErrorCode,
+  forbidden: string,
+): Promise<void> {
+  try {
+    await action();
+    expect.fail(`expected ${code}`);
+  } catch (error) {
+    expect(isSnapshotError(error, code)).toBe(true);
+    expect(`${String(error)} ${JSON.stringify(error)}`).not.toContain(forbidden);
+  }
+}
+
 describe('hostile filesystem corpus', () => {
+  it.each([
+    ['high', `surrogate-canary-\ud800.txt`],
+    ['low', `surrogate-canary-\udc00.txt`],
+  ] as const)(
+    'rejects %s lone surrogate before manifest or tar bytes exist',
+    async (_kind, path) => {
+      await expectRejectWithoutEcho(
+        () => canonicalizeSnapshotPath(path),
+        'SNAPSHOT_INVALID_PATH',
+        'surrogate-canary',
+      );
+      await expectRejectWithoutEcho(
+        () => createSnapshotManifest([manifestFile(path)]),
+        'SNAPSHOT_INVALID_PATH',
+        'surrogate-canary',
+      );
+      await expectRejectWithoutEcho(
+        () => createDeterministicTar([{ path, bytes: Buffer.from('safe\n') }]),
+        'SNAPSHOT_INVALID_PATH',
+        'surrogate-canary',
+      );
+    },
+  );
+
+  it('rejects escaped surrogates and malformed UTF-8 in direct and PAX paths without echo', async () => {
+    const manifest = snapshotManifestBytes(createSnapshotManifest([manifestFile('safe.txt')]))
+      .toString('utf8')
+      .replace('"path":"safe.txt"', '"path":"escaped-surrogate-canary-\\ud800.txt"');
+    await expectRejectWithoutEcho(
+      () => parseSnapshotManifest(Buffer.from(manifest, 'utf8')),
+      'SNAPSHOT_ARCHIVE_INVALID',
+      'escaped-surrogate-canary',
+    );
+
+    const direct = createDeterministicTar([
+      { path: 'direct-safe.txt', bytes: Buffer.from('safe\n') },
+    ]);
+    const directHeader = direct.subarray(0, 512);
+    directHeader.fill(0, 0, 100);
+    const directPrefix = Buffer.from('raw-direct-canary-', 'ascii');
+    directPrefix.copy(directHeader, 0);
+    Buffer.from([0xed, 0xa0, 0x80]).copy(directHeader, directPrefix.byteLength);
+    rewriteTarChecksum(directHeader);
+    await expectRejectWithoutEcho(
+      () => parseDeterministicTar(direct),
+      'SNAPSHOT_ARCHIVE_INVALID',
+      'raw-direct-canary',
+    );
+
+    const paxPath = `raw-pax-canary-${'p'.repeat(90)}`;
+    const pax = createDeterministicTar([{ path: paxPath, bytes: Buffer.from('safe\n') }]);
+    const paxHeader = pax.subarray(0, 512);
+    const paxSize = Number.parseInt(paxHeader.subarray(124, 135).toString('ascii'), 8);
+    const paxData = pax.subarray(512, 512 + paxSize);
+    const pathOffset = paxData.indexOf(Buffer.from('path=', 'ascii')) + 5;
+    expect(pathOffset).toBeGreaterThan(4);
+    Buffer.from([0xed, 0xa0, 0x80]).copy(paxData, pathOffset);
+    await expectRejectWithoutEcho(
+      () => parseDeterministicTar(pax),
+      'SNAPSHOT_ARCHIVE_INVALID',
+      'raw-pax-canary',
+    );
+  });
+
   it('rejects symlinks before reading their targets', async () => {
     const root = await temporaryProject();
     const outside = await temporaryProject();

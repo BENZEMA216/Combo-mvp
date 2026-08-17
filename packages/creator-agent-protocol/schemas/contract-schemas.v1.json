@@ -266,6 +266,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 512,
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "UTF-8 text with a maximum of 512 bytes",
                     "x-combo-maxUtf8Bytes": 512
                   },

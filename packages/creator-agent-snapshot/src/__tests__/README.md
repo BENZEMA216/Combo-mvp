@@ -3,8 +3,8 @@
 本目录覆盖 `INV-001`、`INV-002`、`INV-003`、`INV-006`、`INV-022` 相关的 E1 证据。
 
 - canonical JSON 测试检查对象顺序、Unicode、数字和非法值。
-- Snapshot 测试检查创建顺序、mtime、mode、单 byte 变化、长路径、文件数和大小边界；独立资源边界测试把同一份 digest-bound Manifest fixture 的文件数与展开字节 N-1/N/N+1 送入生产 `parseSnapshotManifest`，并把真实非稀疏 UTF-8 单文件的 10 MiB N-1/N/N+1 送入 `buildSnapshotFromProject`，对两个合法边界完整执行 `verifySnapshotArchive`。压缩对象边界测试把 digest-bound metadata 的 50 MiB N-1/N/N+1 送入四个生产数值 owner，并证明 N+1 在 S3 client 与 presigner 调用前拒绝；它不构造真实 50 MiB tar/zstd archive，`SNP-008` 仍为 `planned`。
-- hostile corpus 测试使用真实 symlink、hardlink、sparse file、Secret、NUL、二进制，以及手工构造的 traversal、link 和特殊 tar header。
+- Snapshot 测试检查创建顺序、mtime、mode、单 byte 变化、长路径、文件数和大小边界；独立资源边界测试把同一份 digest-bound Manifest fixture 的文件数与展开字节 N-1/N/N+1 送入生产 `parseSnapshotManifest`，并把真实非稀疏 UTF-8 单文件的 10 MiB N-1/N/N+1 送入 `buildSnapshotFromProject`，对两个合法边界完整执行 `verifySnapshotArchive`。压缩对象边界测试把 digest-bound metadata 的 50 MiB N-1/N/N+1 送入四个生产数值 owner，并证明 N+1 在 S3 client 与 presigner 调用前拒绝；它不构造真实 50 MiB tar/zstd archive，`SNP-008` 仍为 `planned`。相对路径边界测试使用真实 ASCII/CJK/astral 混合目录，把 511/512/513 UTF-8 bytes 三个 digest-bound probe 送入 `buildSnapshotFromProject`；前两个完整执行 `verifySnapshotArchive`，513 bytes 以 `SNAPSHOT_PATH_TOO_LONG` 在 verifier 前拒绝。该本机证据不冒充 T0 Linux/E1，component 255-byte 政策仍未冻结，`SNP-009` 保持 `planned`。
+- hostile corpus 测试使用真实 symlink、hardlink、sparse file、Secret、NUL、二进制，以及手工构造的 traversal、link 和特殊 tar header；lone surrogate 在 manifest/tar 产生 bytes 前拒绝，escaped surrogate 与 direct-header/PAX malformed UTF-8 均 fail closed 且错误不回显输入。
 - encryption 测试包含 NIST AES-256-GCM 已知答案向量、冻结 `CSNPENC1` binary golden、权威 Envelope/AAD 逐字段绑定、canonical base64url/长度边界、随机生产 nonce 和 bit flip 失败。
 - AgentVersion 测试检查显示元数据不进入摘要、可变执行语义会改变摘要、冻结的 Alpha IO 之外输入直接拒绝、仓库不可覆盖和 Conversation 固定版本。
 - property 测试记录 seed，并对目录顺序、JSON key 顺序、内容 mutation 和 collision 运行重复生成检查。

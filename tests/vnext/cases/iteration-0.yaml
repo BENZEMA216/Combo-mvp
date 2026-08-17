@@ -435,18 +435,20 @@ cases:
       - packages/creator-agent-protocol/fixtures/snapshot-resource-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-single-file-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-compressed-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
     implementation: { status: planned, testFiles: [] }
     fixtureDigests:
-      - sha256:e32f1aec64a5df25929c8e603ebf0f29c4f975fc30da9bfe98784c5395212c9e
-      - sha256:48922a7bbb1c0edf60de17577e019a285232e4b8a89488b9fd2ba9ef0ffa9751
-      - sha256:abd194b1d44598ad589d149e75d97fedca5e01479067e3221fdb3e6eff803baf
-      - sha256:04fbf72022791a377f2b8952e4037eed4a2c4f4c71dc6fc60eef53067e4f00fc
-      - sha256:eeab4e490e20189d73e31887e490765dcc9c1c796d76eab41acd997fbc8b2960
-      - sha256:66280cb036a03de5a761fd066b61ec250cdd5bf7857f7ca055e9952b3738c484
-      - sha256:5df07323f6ee03f63eb4a6bb5e204bbd6478297edc713a17dd44629d1344539d
+      - sha256:4c7a4cce5f24f39d0e7f19d3d4481f34a5c62fe16eb2d8852c19938237de8471
+      - sha256:1d1d781043f0870925bbcf0ca751fe98560fe6436694b3c92bea50287d6222e2
+      - sha256:c91fc2b5e9bfd9fe9bcfe579a18d54a39b7a02feb78b4d82e4a7d14e550ccf1d
+      - sha256:9c94904a178aecc6893cd4826137d412cf299f439bb6bec4d16eb8adc35479ec
+      - sha256:1d1d83c21b19fc38b77f11147518b7818d551c61662731332fc3cc54c3e306a8
+      - sha256:e0d162bd314680216f4b41b4a2e6e608fe25508117463ee6cb48dcf0a3872b85
+      - sha256:8deb64c59e0c2c89fd16406c2959da05e96ba3adcfcc147d033b20c1dfd8ef28
+      - sha256:80b6fc3f82df2990c2d12ac1acf539aea441dc6b5e32b94c99d9e4920f11acb3
       - sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f
   - <<: *sch
     id: SCH-005
@@ -456,11 +458,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
     assertions: [Invalid text is rejected and no error echoes source content]
-    implementation:
-      status: implemented
-      testFiles:
-        - packages/creator-agent-protocol/src/__tests__/schemas.test.ts
-        - packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts
+    implementation: { status: planned, testFiles: [] }
     fixtureDigests:
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
       - sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f
@@ -482,7 +480,7 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:cdb668bec40b14f6e44719456e583592e9a158d7ecbab72c44838024fdb1949a
+      - sha256:9ea67d7cbb190dd91de0d6b4b8e7335f8eaba938205cf0fbcbf05d647974318a
       - sha256:728e9ff2ba1a60b313feef3380d8ef6f94949c554dbef3de7c631e0b1e21530d
       - sha256:5d2ffd6ecc0b42f91cd477814c05e298071828fc22795da008ab7c13536cc912
   - <<: *sch

@@ -58,7 +58,7 @@ export const SnapshotCompressedBoundaryCorpusSchema = z
     checkedArtifactDigests: z
       .object({
         contractSchemas: z.literal(
-          'sha256:cdb668bec40b14f6e44719456e583592e9a158d7ecbab72c44838024fdb1949a',
+          'sha256:9ea67d7cbb190dd91de0d6b4b8e7335f8eaba938205cf0fbcbf05d647974318a',
         ),
         openApi: z.literal(
           'sha256:5d2ffd6ecc0b42f91cd477814c05e298071828fc22795da008ab7c13536cc912',

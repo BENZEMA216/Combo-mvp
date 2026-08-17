@@ -10,7 +10,7 @@
     {
       "path": "agent-version-resource-boundaries.v1.json",
       "bytes": 4309,
-      "digest": "sha256:04fbf72022791a377f2b8952e4037eed4a2c4f4c71dc6fc60eef53067e4f00fc"
+      "digest": "sha256:9c94904a178aecc6893cd4826137d412cf299f439bb6bec4d16eb8adc35479ec"
     },
     {
       "path": "broker-conversation-open.v1.json",
@@ -105,17 +105,17 @@
     {
       "path": "protocol-decoded-boundaries.v1.json",
       "bytes": 13901,
-      "digest": "sha256:48922a7bbb1c0edf60de17577e019a285232e4b8a89488b9fd2ba9ef0ffa9751"
+      "digest": "sha256:1d1d781043f0870925bbcf0ca751fe98560fe6436694b3c92bea50287d6222e2"
     },
     {
       "path": "protocol-structural-boundaries.v1.json",
       "bytes": 14494,
-      "digest": "sha256:abd194b1d44598ad589d149e75d97fedca5e01479067e3221fdb3e6eff803baf"
+      "digest": "sha256:c91fc2b5e9bfd9fe9bcfe579a18d54a39b7a02feb78b4d82e4a7d14e550ccf1d"
     },
     {
       "path": "protocol-utf8-boundaries.v1.json",
       "bytes": 10776,
-      "digest": "sha256:e32f1aec64a5df25929c8e603ebf0f29c4f975fc30da9bfe98784c5395212c9e"
+      "digest": "sha256:4c7a4cce5f24f39d0e7f19d3d4481f34a5c62fe16eb2d8852c19938237de8471"
     },
     {
       "path": "protocol-wire-boundaries.v1.json",
@@ -135,7 +135,7 @@
     {
       "path": "snapshot-compressed-boundaries.v1.json",
       "bytes": 7951,
-      "digest": "sha256:5df07323f6ee03f63eb4a6bb5e204bbd6478297edc713a17dd44629d1344539d"
+      "digest": "sha256:8deb64c59e0c2c89fd16406c2959da05e96ba3adcfcc147d033b20c1dfd8ef28"
     },
     {
       "path": "snapshot-envelope.v1.json",
@@ -153,14 +153,19 @@
       "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
     },
     {
+      "path": "snapshot-path-boundaries.v1.json",
+      "bytes": 3210,
+      "digest": "sha256:80b6fc3f82df2990c2d12ac1acf539aea441dc6b5e32b94c99d9e4920f11acb3"
+    },
+    {
       "path": "snapshot-resource-boundaries.v1.json",
       "bytes": 3685,
-      "digest": "sha256:eeab4e490e20189d73e31887e490765dcc9c1c796d76eab41acd997fbc8b2960"
+      "digest": "sha256:1d1d83c21b19fc38b77f11147518b7818d551c61662731332fc3cc54c3e306a8"
     },
     {
       "path": "snapshot-single-file-boundaries.v1.json",
       "bytes": 2592,
-      "digest": "sha256:66280cb036a03de5a761fd066b61ec250cdd5bf7857f7ca055e9952b3738c484"
+      "digest": "sha256:e0d162bd314680216f4b41b4a2e6e608fe25508117463ee6cb48dcf0a3872b85"
     }
   ]
 }

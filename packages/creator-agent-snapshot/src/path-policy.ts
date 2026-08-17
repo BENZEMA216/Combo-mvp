@@ -1,5 +1,7 @@
 import { posix } from 'node:path';
 
+import { containsLoneSurrogate } from '@cb/creator-agent-protocol';
+
 import { fail } from './errors.js';
 import { ALPHA_SNAPSHOT_POLICY } from './policy.js';
 
@@ -45,6 +47,7 @@ export function canonicalizeSnapshotPath(input: string): string {
     input.includes('\\') ||
     input.startsWith('/') ||
     WINDOWS_ABSOLUTE.test(input) ||
+    containsLoneSurrogate(input) ||
     hasControlCharacter(input)
   ) {
     fail('SNAPSHOT_INVALID_PATH');
