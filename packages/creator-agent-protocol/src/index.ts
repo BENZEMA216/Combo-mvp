@@ -1,6 +1,7 @@
 export * from './agent-version.js';
 export * from './artifacts.js';
 export * from './broker.js';
+export * from './broker-capacity-boundaries.js';
 export * from './canonical.js';
 export * from './compatibility.js';
 export * from './consumer-events.js';

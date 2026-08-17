@@ -1,5 +1,6 @@
 import { createServer, type Server as HttpServer } from 'node:http';
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 
 import {
   AgentGateway,
@@ -10,6 +11,7 @@ import {
 } from '@cb/agent-gateway';
 import {
   BROKER_MAX_FRAME_BYTES,
+  BrokerCapacityBoundaryCorpusSchema,
   BrokerAckSchema,
   BrokerAuthenticationError,
   BrokerAuthenticationFailureCode,
@@ -58,6 +60,10 @@ const CORRELATION = uuid(6);
 const SIGNATURE = Buffer.alloc(64, 9).toString('base64url');
 const SENT_AT = '2026-08-13T08:00:00.000Z';
 const FRAME_EXPIRES_AT = '2026-08-13T08:01:00.000Z';
+const brokerCapacityCorpusUrl = new URL(
+  '../../creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json',
+  import.meta.url,
+);
 
 const activeClients = new Set<WorkerBrokerClient>();
 const activeBrokers = new Set<FakeBroker>();
@@ -175,6 +181,15 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     );
     expect(broker.handshakes[0]!.challengeSignature).toBe(SIGNATURE);
     expect(broker.handshakes[0]!.brokerContractDigest).toBe(currentBrokerContractDigest());
+    const capacityCorpus = BrokerCapacityBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(brokerCapacityCorpusUrl, 'utf8')),
+    );
+    let capacityOutcomes = 0;
+    for (const boundary of capacityCorpus.boundaries) {
+      expect(broker.handshakes[0]!.capacity[boundary.field], boundary.field).toBe(boundary.maximum);
+      capacityOutcomes += 1;
+    }
+    expect(capacityOutcomes).toBe(capacityCorpus.outcomeCounts.workerTransport);
     expect(durable.acquireCalls).toBe(3);
     expect(broker.connectionCount).toBe(1);
     await waitFor(() => broker.received.length >= 1);

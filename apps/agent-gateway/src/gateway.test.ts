@@ -1,7 +1,9 @@
 import { once } from 'node:events';
+import { readFile } from 'node:fs/promises';
 
 import {
   BROKER_MAX_FRAME_BYTES,
+  BrokerCapacityBoundaryCorpusSchema,
   BrokerAuthenticationError,
   BrokerAuthenticationFailureCode,
   BrokerAckSchema,
@@ -47,6 +49,10 @@ const REPLACEMENT_LEASE = '0198f00d-5000-7000-8000-000000000013';
 const SIGNATURE = Buffer.alloc(64, 7).toString('base64url');
 const PREVIOUS_BROKER_CONTRACT_DIGEST =
   'sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73';
+const brokerCapacityCorpusUrl = new URL(
+  '../../../packages/creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json',
+  import.meta.url,
+);
 
 const activeGateways = new Set<AgentGateway>();
 
@@ -63,6 +69,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
   readonly gaps: { expected: string; received: string }[] = [];
   readonly closed: GatewayDisconnectReason[] = [];
   readonly sessions: AuthenticatedWorkerSession[] = [];
+  readonly handshakes: BrokerHandshake[] = [];
   readonly leases: string[] = [];
   readonly lifecycleEvents: string[] = [];
   authenticateStarted = 0;
@@ -97,6 +104,7 @@ class FakeAuthority implements AgentGatewayAuthorityPort {
     signal: AbortSignal;
   }): Promise<AuthenticatedWorkerSession> {
     this.authenticateStarted += 1;
+    this.handshakes.push(input.handshake);
     if (input.handshake.brokerContractDigest !== currentBrokerContractDigest()) {
       throw new BrokerAuthenticationError(BrokerAuthenticationFailureCode.WORKER_INCOMPATIBLE);
     }
@@ -273,6 +281,51 @@ describe('AgentGateway real WebSocket transport', () => {
     const first = await connect(url);
     await expectUpgradeStatus(url, {}, 503);
     first.terminate();
+  });
+
+  it('enforces both digest-bound Broker capacity singleton fields before authority', async () => {
+    const corpus = BrokerCapacityBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(brokerCapacityCorpusUrl, 'utf8')),
+    );
+    let outcomes = 0;
+
+    for (const boundary of corpus.boundaries) {
+      for (const probe of boundary.probes) {
+        const authority = new FakeAuthority();
+        const { gateway, url } = await startGateway(authority);
+        try {
+          const socket = await connect(url);
+          const close = closeResult(socket);
+          const valid = handshake(CHALLENGE_A);
+          socket.send(
+            canonicalizeJson({
+              ...valid,
+              capacity: { ...valid.capacity, [boundary.field]: probe.value },
+            }),
+          );
+
+          if (probe.expected === 'accepted') {
+            await waitFor(() => authority.authenticateStarted === 1);
+            expect(authority.handshakes).toHaveLength(1);
+            expect(authority.handshakes[0]!.capacity[boundary.field]).toBe(probe.value);
+            expect(gateway.activeConnections).toBe(1);
+          } else {
+            await expect(close).resolves.toEqual({
+              code: 4003,
+              reason: 'AUTHENTICATION_REJECTED',
+            });
+            expect(authority.authenticateStarted).toBe(0);
+            expect(authority.handshakes).toHaveLength(0);
+            expect(gateway.activeConnections).toBe(0);
+          }
+          outcomes += 1;
+        } finally {
+          await gateway.stop();
+          activeGateways.delete(gateway);
+        }
+      }
+    }
+    expect(outcomes).toBe(corpus.outcomeCounts.gatewayTransport);
   });
 
   it('keeps the durable publisher disabled by default', async () => {
