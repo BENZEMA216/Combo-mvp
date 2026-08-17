@@ -7,6 +7,7 @@
 - hostile corpus 测试使用真实 symlink、hardlink、sparse file、Secret、NUL、二进制，以及手工构造的 traversal、link 和特殊 tar header；lone surrogate 在 manifest/tar 产生 bytes 前拒绝，escaped surrogate 与 direct-header/PAX malformed UTF-8 均 fail closed 且错误不回显输入。
 - encryption 测试包含 NIST AES-256-GCM 已知答案向量、冻结 `CSNPENC1` binary golden、权威 Envelope/AAD 逐字段绑定、canonical base64url/长度边界、随机生产 nonce 和 bit flip 失败。
 - AgentVersion 测试检查显示元数据不进入摘要、可变执行语义会改变摘要、冻结的 Alpha IO 之外输入直接拒绝、仓库不可覆盖和 Conversation 固定版本。
+- Context Tools 闭世界测试把 Protocol 的七个 digest-bound tuple 变体送入生产 `buildAgentVersion`，只把 exact 三工具顺序计为接受，并验证拒绝错误不回显 canary。
 - property 测试记录 seed，并对目录顺序、JSON key 顺序、内容 mutation 和 collision 运行重复生成检查。
 - `cross-process-golden.mjs` 由独立 Node 进程加载构建后的包，复核 tar/zstd golden digest。macOS 本地和 Linux CI 设计为运行同一向量，任一平台或 zstd 版本漂移都会失败；只有 CI 实际产出 Linux 结果后才形成跨平台证据，本机通过不能代替该结果。
 - `object-storage.test.ts` 使用可观测 fake S3 验证两条 exact Signed PUT、完整 header 绑定、100 路 finalize、verify-before-prepare、commit 前不可见、archive final 后 manifest 故障、原 temp 重放、原 temp 丢失后新 DEK/nonce exact replay、commit 存在但 final 缺失与 selected temp 损坏时的 fail-closed/read-repair、不同 cipher generation 并发收敛、损坏 temp 后同 digest 重试、body/size/checksum/metadata hostile mutation、跨 Creator 调用和 key unwrap 后清零。

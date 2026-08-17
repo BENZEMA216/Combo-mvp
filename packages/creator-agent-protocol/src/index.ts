@@ -4,6 +4,7 @@ export * from './broker.js';
 export * from './broker-capacity-boundaries.js';
 export * from './canonical.js';
 export * from './compatibility.js';
+export * from './context-tools-closed-world-boundaries.js';
 export * from './consumer-events.js';
 export * from './conversation-ready-facts.js';
 export * from './decoded-boundaries.js';

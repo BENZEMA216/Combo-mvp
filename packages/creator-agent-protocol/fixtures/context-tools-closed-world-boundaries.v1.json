@@ -1,0 +1,168 @@
+{
+  "protocol": "combo.context-tools-closed-world-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "context-tools-exact-closed-world-only",
+  "evidenceClass": "schema-contract-and-local-build-owner-only",
+  "authority": {
+    "technicalPlanSection": "技术方案 §7.8 Context 读取闭世界",
+    "decisionRegistryIds": ["ADR-VNEXT-013", "ADR-VNEXT-031"],
+    "testPlanSection": "测试方案 §15.6 noexec 不是不执行 Project 代码",
+    "additiveRegistryCaseId": "SCH-004"
+  },
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb",
+    "openApi": "sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce"
+  },
+  "baseFixtures": [
+    {
+      "owner": "AgentVersionManifestSchema",
+      "path": "agent-version-manifest.v1.json",
+      "digest": "sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
+    },
+    {
+      "owner": "SandboxSpecSchema",
+      "path": "sandbox-spec.v1.json",
+      "digest": "sha256:e4b9749843a479a2669950a6c33cd9be4f90ddea8dd00c2436bf7dbdc6fb9a0a"
+    }
+  ],
+  "canary": "CTX_TOOL_CANARY_DO_NOT_ECHO",
+  "exactTools": ["read_context", "list_context", "search_context"],
+  "runtimeOwners": [
+    { "owner": "RuntimePolicySchema", "contextToolsPath": "/contextTools" },
+    {
+      "owner": "AgentVersionManifestSchema",
+      "contextToolsPath": "/runtimePolicy/contextTools"
+    },
+    {
+      "owner": "CreateAgentVersionRequestSchema",
+      "contextToolsPath": "/manifest/runtimePolicy/contextTools"
+    },
+    {
+      "owner": "SandboxSpecSchema",
+      "contextToolsPath": "/runtimeCapabilities/contextTools"
+    }
+  ],
+  "advertisedOwners": [
+    {
+      "artifact": "contractSchemas",
+      "owner": "AgentVersionManifest",
+      "contextToolsInstancePath": "/runtimePolicy/contextTools",
+      "artifactPointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/contextTools"
+    },
+    {
+      "artifact": "contractSchemas",
+      "owner": "CreateAgentVersionRequest",
+      "contextToolsInstancePath": "/manifest/runtimePolicy/contextTools",
+      "artifactPointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/contextTools"
+    },
+    {
+      "artifact": "contractSchemas",
+      "owner": "SandboxSpec",
+      "contextToolsInstancePath": "/runtimeCapabilities/contextTools",
+      "artifactPointer": "/schemas/SandboxSpec/definitions/SandboxSpec/properties/runtimeCapabilities/properties/contextTools"
+    },
+    {
+      "artifact": "openApi",
+      "owner": "CreateAgentVersionRequest",
+      "contextToolsInstancePath": "/manifest/runtimePolicy/contextTools",
+      "artifactPointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/contextTools"
+    }
+  ],
+  "actualOwner": {
+    "owner": "buildAgentVersion",
+    "contextToolsPath": "/runtimePolicy/contextTools"
+  },
+  "outcomeCounts": { "runtime": 28, "advertised": 28, "buildAgentVersion": 7, "total": 63 },
+  "exclusions": [
+    "real-linux-codex-tool-calls",
+    "guest-tool-implementation",
+    "root-fd-confinement",
+    "path-and-symlink-escape",
+    "g2-isolated-runtime",
+    "e4-real-linux-codex",
+    "e5-real-isolation",
+    "does-not-complete-sch-004",
+    "does-not-complete-sch-009",
+    "does-not-complete-sch-010"
+  ],
+  "variants": [
+    {
+      "id": "exact",
+      "tools": ["read_context", "list_context", "search_context"],
+      "canonicalToolsDigest": "sha256:54dd3ddd694ed6a397215a0a776a17d7b9f502585c486c13b4def40c579935c7",
+      "expected": "accepted"
+    },
+    {
+      "id": "empty",
+      "tools": [],
+      "canonicalToolsDigest": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "expected": "rejected",
+      "runtimeIssue": { "code": "too_small", "relativePath": [] },
+      "advertisedIssue": {
+        "contractKeyword": "minItems",
+        "openApiKeyword": "minItems",
+        "relativeInstancePath": "/contextTools"
+      }
+    },
+    {
+      "id": "missing-one",
+      "tools": ["read_context", "list_context"],
+      "canonicalToolsDigest": "sha256:a7247f1a5466a17bc6e2d9823d17d0570f79cc6bac140f2e70895dccfeaedcb0",
+      "expected": "rejected",
+      "runtimeIssue": { "code": "too_small", "relativePath": [] },
+      "advertisedIssue": {
+        "contractKeyword": "minItems",
+        "openApiKeyword": "minItems",
+        "relativeInstancePath": "/contextTools"
+      }
+    },
+    {
+      "id": "reordered",
+      "tools": ["list_context", "read_context", "search_context"],
+      "canonicalToolsDigest": "sha256:de6744080e053d3797bd71b1fd7f74458d49553b99beccdd43c7b2dc3e4cf98d",
+      "expected": "rejected",
+      "runtimeIssue": { "code": "invalid_literal", "relativePath": [0] },
+      "advertisedIssue": {
+        "contractKeyword": "const",
+        "openApiKeyword": "enum",
+        "relativeInstancePath": "/contextTools/0"
+      }
+    },
+    {
+      "id": "duplicate",
+      "tools": ["read_context", "read_context", "search_context"],
+      "canonicalToolsDigest": "sha256:fe904b616edae82de10d8acb602e7a06aafb534c6120ec83c3ec184fdaeff400",
+      "expected": "rejected",
+      "runtimeIssue": { "code": "invalid_literal", "relativePath": [1] },
+      "advertisedIssue": {
+        "contractKeyword": "const",
+        "openApiKeyword": "enum",
+        "relativeInstancePath": "/contextTools/1"
+      }
+    },
+    {
+      "id": "unknown-replacement",
+      "tools": ["read_context", "list_context", "CTX_TOOL_CANARY_DO_NOT_ECHO"],
+      "canonicalToolsDigest": "sha256:e2c85f28ca0274ce4f464c28131ed3bc8a8a351a6dd1063193c2f283dae6176f",
+      "expected": "rejected",
+      "runtimeIssue": { "code": "invalid_literal", "relativePath": [2] },
+      "advertisedIssue": {
+        "contractKeyword": "const",
+        "openApiKeyword": "enum",
+        "relativeInstancePath": "/contextTools/2"
+      }
+    },
+    {
+      "id": "unknown-extra",
+      "tools": ["read_context", "list_context", "search_context", "CTX_TOOL_CANARY_DO_NOT_ECHO"],
+      "canonicalToolsDigest": "sha256:889028323155028acc12ca21c085485d720142c1552ae66b99d74d1981ebaf69",
+      "expected": "rejected",
+      "runtimeIssue": { "code": "too_big", "relativePath": [] },
+      "advertisedIssue": {
+        "contractKeyword": "maxItems",
+        "openApiKeyword": "maxItems",
+        "relativeInstancePath": "/contextTools"
+      }
+    }
+  ]
+}

@@ -63,6 +63,11 @@
       "digest": "sha256:627ee0c59c91edfb067bdf534c4ef9e24d4d0279835cc934fd174b52c9702d4a"
     },
     {
+      "path": "context-tools-closed-world-boundaries.v1.json",
+      "bytes": 6493,
+      "digest": "sha256:63e1ff4d5694d4247fe2eed312c56535831df6521342b7caa14bdc3a1c45ffd7"
+    },
+    {
       "path": "evidence-bundle-index.v1.json",
       "bytes": 1541,
       "digest": "sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb"
