@@ -16,6 +16,7 @@ export * from './resource-boundaries.js';
 export * from './sandbox.js';
 export * from './signatures.js';
 export * from './snapshot.js';
+export * from './snapshot-resource-boundaries.js';
 export * from './structural-boundaries.js';
 export * from './utf8-boundaries.js';
 export * from './wire-boundaries.js';

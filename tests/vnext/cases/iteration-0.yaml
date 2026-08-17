@@ -432,6 +432,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/agent-version-resource-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/snapshot-resource-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
@@ -441,6 +442,7 @@ cases:
       - sha256:48922a7bbb1c0edf60de17577e019a285232e4b8a89488b9fd2ba9ef0ffa9751
       - sha256:abd194b1d44598ad589d149e75d97fedca5e01479067e3221fdb3e6eff803baf
       - sha256:04fbf72022791a377f2b8952e4037eed4a2c4f4c71dc6fc60eef53067e4f00fc
+      - sha256:eeab4e490e20189d73e31887e490765dcc9c1c796d76eab41acd997fbc8b2960
       - sha256:7cd42b648a49b707fccb8eab7e7950067f3a1ae16aafd1027bdb0be368fa7c9f
   - <<: *sch
     id: SCH-005

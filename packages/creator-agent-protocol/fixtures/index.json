@@ -146,6 +146,11 @@
       "path": "snapshot-manifest.v1.json",
       "bytes": 1296,
       "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
+    },
+    {
+      "path": "snapshot-resource-boundaries.v1.json",
+      "bytes": 3685,
+      "digest": "sha256:eeab4e490e20189d73e31887e490765dcc9c1c796d76eab41acd997fbc8b2960"
     }
   ]
 }
