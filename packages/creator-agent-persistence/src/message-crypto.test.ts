@@ -71,6 +71,21 @@ describe('message-level AEAD', () => {
     expect(second.contentDigest).toBe(first.contentDigest);
   });
 
+  it.each(['ASCII', '你好', '😀', 'A界😀\n'])(
+    'keeps AES-GCM ciphertext octets equal to %s UTF-8 plaintext bytes with a separate tag',
+    (plaintext) => {
+      const encrypted = encryptMessage({
+        plaintext,
+        encryptionKey,
+        digestKey,
+        keyId: 'kms:test:v1',
+        aad: aad(),
+      });
+      expect(encrypted.ciphertext.byteLength).toBe(Buffer.byteLength(plaintext, 'utf8'));
+      expect(encrypted.authTag).toHaveLength(16);
+    },
+  );
+
   it.each([
     ['owner', (binding: MessageAad) => ({ ...binding, ownerId: randomUuidV7() })],
     ['conversation', (binding: MessageAad) => ({ ...binding, conversationId: randomUuidV7() })],

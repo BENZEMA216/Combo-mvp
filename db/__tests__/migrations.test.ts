@@ -212,7 +212,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-14)).toEqual([
+    expect(list.slice(-15)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -227,6 +227,7 @@ describe('migrations', () => {
       '0018_creator_agent_broker_delivery_contract.sql',
       '0019_creator_agent_broker_outbox_publisher.sql',
       '0020_creator_agent_confirmed_failure_fact.sql',
+      '0021_creator_agent_context_admission.sql',
     ]);
   });
 

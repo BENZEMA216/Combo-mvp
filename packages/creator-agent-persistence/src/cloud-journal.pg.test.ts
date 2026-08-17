@@ -6,6 +6,7 @@ import {
   brokerSensitiveMessageAadBytes,
   brokerSensitiveMessageAadDigest,
   brokerSensitiveMessageCipherDigest,
+  canonicalSha256,
   consumerEventPayloadDigest,
   domainSeparatedHmacSha256,
   workerInvocationFactDigest,
@@ -63,6 +64,35 @@ function digest(character: string): string {
 
 function hmac(character: string): `hmac-sha256:${string}` {
   return `hmac-sha256:${character.repeat(64)}`;
+}
+
+const BASE_RUNTIME_POLICY = Object.freeze({
+  schemaVersion: 1,
+  isolation: 'conversation-vm-required',
+  filesystem: {
+    context: 'read-only-noexec',
+    scratch: 'conversation-only',
+    hostMounts: 'forbidden',
+  },
+  contextTools: ['read_context', 'list_context', 'search_context'],
+  projectExecution: 'forbidden',
+  network: 'model-proxy-only',
+  externalTools: 'disabled',
+  hostCredentials: 'forbidden',
+  maxTurnSeconds: 120,
+  maxConversationTurns: 20,
+  maxVisibleHistoryBytes: 65_536,
+  maxActiveTurns: 1,
+  resolvedModel: 'gpt-5.6',
+  reasoningEffort: 'high',
+});
+
+function runtimePolicyJson(
+  overrides: Partial<
+    Pick<typeof BASE_RUNTIME_POLICY, 'maxConversationTurns' | 'maxVisibleHistoryBytes'>
+  > = {},
+): string {
+  return JSON.stringify({ ...BASE_RUNTIME_POLICY, ...overrides });
 }
 
 function account(): string {
@@ -132,6 +162,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       workerId: string;
       agentId: string;
       agentVersionId: string;
+      versionDigest: string;
+      nextTurnNo: number;
     }> = {},
   ): Promise<string> {
     const conversationId = randomUuidV7();
@@ -139,8 +171,11 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       `INSERT INTO agent_conversations (
          id, agent_id, deployment_id, agent_version_id, creator_id,
          consumer_subject_id, idempotency_key, request_digest,
-         version_digest, state, assigned_worker_id, expires_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, gen_uuid_v7(), $7, $8, 'IDLE', $9, now() + interval '1 hour')`,
+         version_digest, state, assigned_worker_id, next_turn_no, expires_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, gen_uuid_v7(), $7, $8, 'IDLE', $9, $10,
+         now() + interval '1 hour'
+       )`,
       [
         conversationId,
         options.agentId ?? ids.agentId,
@@ -149,11 +184,57 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         ids.creatorId,
         options.consumerId ?? ids.consumerId,
         digest('c'),
-        digest('7'),
+        options.versionDigest ?? digest('7'),
         options.workerId ?? ids.workerId,
+        options.nextTurnNo ?? 1,
       ],
     );
     return conversationId;
+  }
+
+  async function createPinnedContextVersion(input: {
+    maxConversationTurns: number;
+    maxVisibleHistoryBytes: number;
+    runtimePolicy?: unknown;
+  }): Promise<{ id: string; digest: string }> {
+    const id = randomUuidV7();
+    const versionDigest = randomBytes(32).toString('hex');
+    const policy =
+      input.runtimePolicy ??
+      ({
+        ...BASE_RUNTIME_POLICY,
+        maxConversationTurns: input.maxConversationTurns,
+        maxVisibleHistoryBytes: input.maxVisibleHistoryBytes,
+      } as const);
+    await owner.query(
+      `INSERT INTO agent_versions (
+         id, agent_id, creator_id, ordinal, schema_version, version_digest, snapshot_id,
+         behavior_contract, behavior_contract_digest, runtime_policy, runtime_policy_digest,
+         io_contract, io_contract_digest, model_policy, model_policy_digest,
+         codex_runtime_version, codex_runtime_artifact_digest, codex_protocol_schema_digest
+       ) VALUES (
+         $1, $2, $3,
+         (SELECT COALESCE(max(ordinal), 0) + 1 FROM agent_versions WHERE agent_id = $2),
+         1, $4, $5,
+         '{}'::jsonb, $6, $7::jsonb, $8, '{}'::jsonb, $9, '{}'::jsonb, $10,
+         '0.147.0-alpha.6.5', $11, $12
+       )`,
+      [
+        id,
+        ids.agentId,
+        ids.creatorId,
+        versionDigest,
+        ids.snapshotId,
+        digest('a'),
+        JSON.stringify(policy),
+        canonicalSha256(policy),
+        digest('c'),
+        digest('d'),
+        `sha256:${digest('e')}`,
+        `sha256:${digest('f')}`,
+      ],
+    );
+    return { id, digest: versionDigest };
   }
 
   function encrypted(
@@ -178,6 +259,19 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       },
       nonce,
     });
+  }
+
+  function encryptedParametersForTest(message: ReturnType<typeof encrypted>): readonly unknown[] {
+    return [
+      message.algorithm,
+      message.keyId,
+      message.nonce,
+      message.ciphertext,
+      message.authTag,
+      message.cipherDigest,
+      message.contentDigest,
+      message.aadVersion,
+    ];
   }
 
   function transportEncryptedAssistant(
@@ -258,6 +352,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumerId?: string;
       targetWorkerId?: string;
       agentVersionId?: string;
+      agentVersionDigest?: string;
+      text?: string;
     } = {},
   ): AcceptInvocationInput {
     const userMessageId = randomUuidV7();
@@ -267,7 +363,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumerId: options.consumerId ?? ids.consumerId,
       conversationId,
       agentVersionId: options.agentVersionId ?? ids.agentVersionId,
-      agentVersionDigest: digest('7'),
+      agentVersionDigest: options.agentVersionDigest ?? digest('7'),
       targetWorkerId: options.targetWorkerId ?? ids.workerId,
       userMessageId,
       invocationId: randomUuidV7(),
@@ -281,10 +377,45 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         conversationId,
         userMessageId,
         'USER',
-        'consumer secret',
+        options.text ?? 'consumer secret',
         options,
       ),
     };
+  }
+
+  function userAdmissionParameters(
+    input: AcceptInvocationInput,
+    encryptedOverride = input.encryptedUserMessage,
+  ): unknown[] {
+    return [
+      input.userMessageId,
+      input.conversationId,
+      input.creatorId,
+      input.consumerId,
+      input.agentVersionId,
+      input.agentVersionDigest,
+      input.targetWorkerId,
+      input.turnNo,
+      input.deadlineAt,
+      input.clientMessageId,
+      ...encryptedParametersForTest(encryptedOverride),
+      input.invocationId,
+    ];
+  }
+
+  async function callUserAdmission(
+    connection: Pick<PoolClient, 'query'> | Client,
+    input: AcceptInvocationInput,
+    parameters = userAdmissionParameters(input),
+  ) {
+    return connection.query<{ admission_outcome: string }>(
+      `SELECT admission_outcome
+         FROM creator_agent_admit_user_message_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+           $11, $12, $13, $14, $15, $16, $17, $18, $19
+         )`,
+      parameters,
+    );
   }
 
   async function assignRunning(
@@ -400,7 +531,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       type: 'invocation.prepared',
       sourceEventId: accepted.outboxCommandId,
       invocationId: accepted.invocationId,
-      agentVersionDigest: digest('7'),
+      agentVersionDigest: accepted.agentVersionDigest,
       snapshotDigest: digest('1'),
       executionCapabilityDigest: authority.executionCapabilityDigest,
       leaseId: authority.leaseId,
@@ -520,7 +651,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       type: 'invocation.succeeded',
       sourceEventId,
       invocationId: accepted.invocationId,
-      agentVersionDigest: digest('7'),
+      agentVersionDigest: accepted.agentVersionDigest,
       snapshotDigest: digest('1'),
       executionCapabilityDigest: capability.executionCapabilityDigest,
       leaseId: capability.leaseId,
@@ -551,7 +682,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       type: 'invocation.failed',
       sourceEventId: accepted.invocationId,
       invocationId: accepted.invocationId,
-      agentVersionDigest: digest('7'),
+      agentVersionDigest: accepted.agentVersionDigest,
       snapshotDigest: digest('1'),
       executionCapabilityDigest: authority.executionCapabilityDigest,
       leaseId: authority.leaseId,
@@ -595,6 +726,110 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       [conversationId],
     );
     return result.rows[0]!;
+  }
+
+  async function seedVisibleHistory(conversationId: string, plaintextBytes: number): Promise<void> {
+    if (!Number.isSafeInteger(plaintextBytes) || plaintextBytes < 0 || plaintextBytes > 65_536) {
+      throw new Error('invalid visible-history fixture size');
+    }
+    let remaining = plaintextBytes;
+    let turnNo = 1;
+    while (remaining > 0) {
+      const chunkBytes = Math.min(remaining, 32_768);
+      const messageId = randomUuidV7();
+      const sealed = encrypted(conversationId, messageId, 'ASSISTANT', 'a'.repeat(chunkBytes));
+      await owner.query(
+        `INSERT INTO agent_messages (
+           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+           client_message_id, content_algorithm, content_key_id, content_nonce,
+           content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
+           content_aad_version, invocation_id
+         ) VALUES (
+           $1, $2, $3, $4, $5, 'ASSISTANT', NULL,
+           $6, $7, $8, $9, $10, $11, $12, $13, NULL
+         )`,
+        [
+          messageId,
+          conversationId,
+          ids.creatorId,
+          ids.consumerId,
+          turnNo,
+          ...encryptedParametersForTest(sealed),
+        ],
+      );
+      remaining -= chunkBytes;
+      turnNo += 1;
+    }
+  }
+
+  async function contextAdmissionSnapshot(conversationId: string) {
+    const result = await owner.query<{
+      messages: string;
+      invocations: string;
+      events: string;
+      commands: string;
+      consumer_events: string;
+      consumer_streams: string;
+      visible_history_bytes: string;
+      conversation_state: string;
+      next_turn_no: number;
+      context_limit_reached_at: Date | null;
+      last_activity_at: Date;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM agent_messages WHERE conversation_id = $1)::text AS messages,
+         (SELECT count(*) FROM agent_invocations WHERE conversation_id = $1)::text AS invocations,
+         (SELECT count(*) FROM agent_invocation_events AS event
+            JOIN agent_invocations AS invocation ON invocation.id = event.invocation_id
+           WHERE invocation.conversation_id = $1)::text AS events,
+         (SELECT count(*) FROM broker_outbox AS command
+            JOIN agent_invocations AS invocation ON invocation.id = command.invocation_id
+           WHERE invocation.conversation_id = $1)::text AS commands,
+         (SELECT count(*) FROM consumer_event_outbox
+           WHERE conversation_id = $1)::text AS consumer_events,
+         (SELECT count(*) FROM consumer_event_streams
+           WHERE conversation_id = $1)::text AS consumer_streams,
+         (SELECT COALESCE(sum(octet_length(content_ciphertext)), 0)
+            FROM agent_messages WHERE conversation_id = $1)::text AS visible_history_bytes,
+         state AS conversation_state, next_turn_no, context_limit_reached_at, last_activity_at
+       FROM agent_conversations WHERE id = $1`,
+      [conversationId],
+    );
+    return result.rows[0]!;
+  }
+
+  async function candidateFootprint(input: AcceptInvocationInput) {
+    const result = await owner.query<{
+      messages: string;
+      invocations: string;
+      events: string;
+      commands: string;
+      consumer_events: string;
+    }>(
+      `SELECT
+         (SELECT count(*) FROM agent_messages WHERE id = $1)::text AS messages,
+         (SELECT count(*) FROM agent_invocations WHERE id = $2)::text AS invocations,
+         (SELECT count(*) FROM agent_invocation_events WHERE invocation_id = $2)::text AS events,
+         (SELECT count(*) FROM broker_outbox
+           WHERE command_id = $3 OR invocation_id = $2)::text AS commands,
+         (SELECT count(*) FROM consumer_event_outbox WHERE invocation_id = $2)::text
+           AS consumer_events`,
+      [input.userMessageId, input.invocationId, input.outboxCommandId],
+    );
+    return result.rows[0]!;
+  }
+
+  function expectOnlyContextSuspension(
+    before: Awaited<ReturnType<typeof contextAdmissionSnapshot>>,
+    after: Awaited<ReturnType<typeof contextAdmissionSnapshot>>,
+  ): void {
+    expect({
+      ...after,
+      conversation_state: before.conversation_state,
+      context_limit_reached_at: before.context_limit_reached_at,
+    }).toEqual(before);
+    expect(after.conversation_state).toBe('SUSPENDED');
+    expect(after.context_limit_reached_at).toBeInstanceOf(Date);
   }
 
   async function publishAndPruneTerminalEvent(
@@ -702,10 +937,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
          behavior_contract, behavior_contract_digest, runtime_policy, runtime_policy_digest,
          io_contract, io_contract_digest, model_policy, model_policy_digest,
          codex_runtime_version, codex_runtime_artifact_digest, codex_protocol_schema_digest
-       ) VALUES (
+      ) VALUES (
          $1, $2, $3, 1, 1, $4, $5,
-         '{}'::jsonb, $6, '{}'::jsonb, $7, '{}'::jsonb, $8, '{}'::jsonb, $9,
-         '0.147.0-alpha.6.5', $10, $11
+         '{}'::jsonb, $6, $7::jsonb, $8, '{}'::jsonb, $9, '{}'::jsonb, $10,
+         '0.147.0-alpha.6.5', $11, $12
        )`,
       [
         ids.agentVersionId,
@@ -714,6 +949,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         digest('7'),
         ids.snapshotId,
         digest('a'),
+        runtimePolicyJson(),
         digest('b'),
         digest('c'),
         digest('d'),
@@ -778,6 +1014,604 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'IDEMPOTENCY_CONFLICT' });
   });
 
+  it('enforces pinned twenty-USER-turn N-1, N, and N+1 admission', async () => {
+    const journal = new PostgresCloudJournal(journalPools);
+    const conversationId = await createConversation();
+    for (let turnNo = 1; turnNo <= 18; turnNo += 1) {
+      const input = acceptInput(conversationId, { turnNo, text: 'u' });
+      await journal.acceptInvocation(input);
+      const authority = await assignRunning(input);
+      await journal.commitSuccess(successInput(input, authority), sealAssistantMessage);
+    }
+
+    for (const turnNo of [19, 20]) {
+      const input = acceptInput(conversationId, { turnNo, text: 'u' });
+      await expect(journal.acceptInvocation(input), `real-turn-${turnNo}`).resolves.toMatchObject({
+        invocationId: input.invocationId,
+        replayed: false,
+      });
+      await expect(contextAdmissionSnapshot(conversationId)).resolves.toMatchObject({
+        messages: String((turnNo - 1) * 2 + 1),
+        invocations: String(turnNo),
+        conversation_state: 'BUSY',
+        next_turn_no: turnNo + 1,
+        context_limit_reached_at: null,
+      });
+      const authority = await assignRunning(input);
+      await journal.commitSuccess(successInput(input, authority), sealAssistantMessage);
+    }
+
+    const input = acceptInput(conversationId, { turnNo: 21, text: 'u' });
+    const before = await contextAdmissionSnapshot(conversationId);
+    const beforeClock = await owner.query<{ now: Date }>(`SELECT clock_timestamp() AS now`);
+    await expect(journal.acceptInvocation(input)).rejects.toMatchObject<Partial<CloudJournalError>>(
+      {
+        code: 'CONVERSATION_CONTEXT_LIMIT',
+      },
+    );
+    const afterClock = await owner.query<{ now: Date }>(`SELECT clock_timestamp() AS now`);
+    const after = await contextAdmissionSnapshot(conversationId);
+    expectOnlyContextSuspension(before, after);
+    expect(after.next_turn_no).toBe(21);
+    expect(after.context_limit_reached_at!.valueOf()).toBeGreaterThanOrEqual(
+      beforeClock.rows[0]!.now.valueOf(),
+    );
+    expect(after.context_limit_reached_at!.valueOf()).toBeLessThanOrEqual(
+      afterClock.rows[0]!.now.valueOf(),
+    );
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('enforces pinned 65536 visible UTF-8 bytes at N-1, N, and N+1', async () => {
+    const journal = new PostgresCloudJournal(journalPools);
+    for (const existingBytes of [65_534, 65_535]) {
+      const conversationId = await createConversation();
+      await seedVisibleHistory(conversationId, existingBytes);
+      const input = acceptInput(conversationId, { text: 'u' });
+      await expect(
+        journal.acceptInvocation(input),
+        `bytes-${existingBytes + 1}`,
+      ).resolves.toMatchObject({ invocationId: input.invocationId, replayed: false });
+      await expect(contextAdmissionSnapshot(conversationId)).resolves.toMatchObject({
+        visible_history_bytes: String(existingBytes + 1),
+        conversation_state: 'BUSY',
+        next_turn_no: 2,
+        context_limit_reached_at: null,
+      });
+    }
+
+    const conversationId = await createConversation();
+    await seedVisibleHistory(conversationId, 65_536);
+    const input = acceptInput(conversationId, { text: 'u' });
+    const before = await contextAdmissionSnapshot(conversationId);
+    await expect(journal.acceptInvocation(input)).rejects.toMatchObject<Partial<CloudJournalError>>(
+      {
+        code: 'CONVERSATION_CONTEXT_LIMIT',
+      },
+    );
+    const after = await contextAdmissionSnapshot(conversationId);
+    expectOnlyContextSuspension(before, after);
+    expect(after).toMatchObject({ next_turn_no: 1, visible_history_bytes: '65536' });
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('uses a secondary AgentVersion pinned policy instead of hard-coded global maxima', async () => {
+    const version = await createPinnedContextVersion({
+      maxConversationTurns: 1,
+      maxVisibleHistoryBytes: 64,
+    });
+    const journal = new PostgresCloudJournal(journalPools);
+
+    const turnConversationId = await createConversation({
+      agentVersionId: version.id,
+      versionDigest: version.digest,
+    });
+    const first = acceptInput(turnConversationId, {
+      agentVersionId: version.id,
+      agentVersionDigest: version.digest,
+      turnNo: 1,
+      text: 'u',
+    });
+    await expect(journal.acceptInvocation(first)).resolves.toMatchObject({ replayed: false });
+    await owner.query(
+      `UPDATE agent_conversations SET state = 'IDLE' WHERE id = $1 AND state = 'BUSY'`,
+      [turnConversationId],
+    );
+    const second = acceptInput(turnConversationId, {
+      agentVersionId: version.id,
+      agentVersionDigest: version.digest,
+      turnNo: 2,
+      text: 'u',
+    });
+    await expect(journal.acceptInvocation(second)).rejects.toMatchObject({
+      code: 'CONVERSATION_CONTEXT_LIMIT',
+    });
+    expect(await candidateFootprint(second)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+
+    const byteConversationId = await createConversation({
+      agentVersionId: version.id,
+      versionDigest: version.digest,
+    });
+    await seedVisibleHistory(byteConversationId, 64);
+    const byteCandidate = acceptInput(byteConversationId, {
+      agentVersionId: version.id,
+      agentVersionDigest: version.digest,
+      text: 'u',
+    });
+    await expect(journal.acceptInvocation(byteCandidate)).rejects.toMatchObject({
+      code: 'CONVERSATION_CONTEXT_LIMIT',
+    });
+    expect(await candidateFootprint(byteCandidate)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('rejects a pinned policy whose numeric limits are JSON strings', async () => {
+    const invalidPolicy = {
+      ...BASE_RUNTIME_POLICY,
+      maxConversationTurns: '20',
+      maxVisibleHistoryBytes: '65536',
+    };
+    const version = await createPinnedContextVersion({
+      maxConversationTurns: 20,
+      maxVisibleHistoryBytes: 65_536,
+      runtimePolicy: invalidPolicy,
+    });
+    const conversationId = await createConversation({
+      agentVersionId: version.id,
+      versionDigest: version.digest,
+    });
+    const input = acceptInput(conversationId, {
+      agentVersionId: version.id,
+      agentVersionDigest: version.digest,
+      text: 'u',
+    });
+    const before = await contextAdmissionSnapshot(conversationId);
+    await expect(
+      new PostgresCloudJournal(journalPools).acceptInvocation(input),
+    ).rejects.toMatchObject({
+      code: '23514',
+      message: 'pinned AgentVersion context policy is invalid',
+    });
+    expect(await contextAdmissionSnapshot(conversationId)).toEqual(before);
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('serializes ten distinct N+1 candidates to one monotonic suspension with zero facts', async () => {
+    const conversationId = await createConversation();
+    await seedVisibleHistory(conversationId, 65_536);
+    const before = await contextAdmissionSnapshot(conversationId);
+    const inputs = Array.from({ length: 10 }, () => acceptInput(conversationId, { text: 'u' }));
+    const results = await Promise.allSettled(
+      inputs.map((input) => new PostgresCloudJournal(journalPools).acceptInvocation(input)),
+    );
+    expect(results).toHaveLength(10);
+    for (const result of results) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'fulfilled') throw new Error('context N+1 unexpectedly committed');
+      expect(result.reason).toMatchObject({ code: 'CONVERSATION_CONTEXT_LIMIT' });
+    }
+    const after = await contextAdmissionSnapshot(conversationId);
+    expectOnlyContextSuspension(before, after);
+    for (const input of inputs) {
+      expect(await candidateFootprint(input)).toEqual({
+        messages: '0',
+        invocations: '0',
+        events: '0',
+        commands: '0',
+        consumer_events: '0',
+      });
+    }
+  });
+
+  it('fails closed on BUSY, wrong-turn, and corrupted next-turn projections', async () => {
+    const journal = new PostgresCloudJournal(journalPools);
+
+    const wrongTurnConversation = await createConversation();
+    const wrongTurn = acceptInput(wrongTurnConversation, { turnNo: 2, text: 'u' });
+    const wrongTurnBefore = await contextAdmissionSnapshot(wrongTurnConversation);
+    await expect(journal.acceptInvocation(wrongTurn)).rejects.toMatchObject({
+      code: 'CONVERSATION_UNAVAILABLE',
+    });
+    expect(await contextAdmissionSnapshot(wrongTurnConversation)).toEqual(wrongTurnBefore);
+    expect(await candidateFootprint(wrongTurn)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+
+    const busyConversation = await createConversation();
+    const first = acceptInput(busyConversation, { turnNo: 1, text: 'u' });
+    await journal.acceptInvocation(first);
+    const busyCandidate = acceptInput(busyConversation, { turnNo: 2, text: 'u' });
+    const busyBefore = await contextAdmissionSnapshot(busyConversation);
+    await expect(journal.acceptInvocation(busyCandidate)).rejects.toMatchObject({
+      code: 'CONVERSATION_UNAVAILABLE',
+    });
+    expect(await contextAdmissionSnapshot(busyConversation)).toEqual(busyBefore);
+    expect(await candidateFootprint(busyCandidate)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+
+    const corruptedConversation = await createConversation();
+    await owner.query(`UPDATE agent_conversations SET next_turn_no = 2 WHERE id = $1`, [
+      corruptedConversation,
+    ]);
+    const corrupted = acceptInput(corruptedConversation, { turnNo: 2, text: 'u' });
+    const corruptedBefore = await contextAdmissionSnapshot(corruptedConversation);
+    await expect(journal.acceptInvocation(corrupted)).rejects.toMatchObject({ code: '55000' });
+    expect(await contextAdmissionSnapshot(corruptedConversation)).toEqual(corruptedBefore);
+    expect(await candidateFootprint(corrupted)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+
+    const gappedConversation = await createConversation({ nextTurnNo: 3 });
+    for (const turnNo of [1, 3]) {
+      const messageId = randomUuidV7();
+      const sealed = encrypted(gappedConversation, messageId, 'USER', 'u');
+      await owner.query(
+        `INSERT INTO agent_messages (
+           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+           client_message_id, content_algorithm, content_key_id, content_nonce,
+           content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
+           content_aad_version, invocation_id
+         ) VALUES (
+           $1, $2, $3, $4, $5, 'USER', $6,
+           $7, $8, $9, $10, $11, $12, $13, $14, NULL
+         )`,
+        [
+          messageId,
+          gappedConversation,
+          ids.creatorId,
+          ids.consumerId,
+          turnNo,
+          randomUuidV7(),
+          ...encryptedParametersForTest(sealed),
+        ],
+      );
+    }
+    const gapped = acceptInput(gappedConversation, { turnNo: 3, text: 'u' });
+    const gappedBefore = await contextAdmissionSnapshot(gappedConversation);
+    await expect(journal.acceptInvocation(gapped)).rejects.toMatchObject({ code: '55000' });
+    expect(await contextAdmissionSnapshot(gappedConversation)).toEqual(gappedBefore);
+    expect(await candidateFootprint(gapped)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('rejects malformed or stale direct-function candidates before a full Conversation can suspend', async () => {
+    const conversationId = await createConversation();
+    await seedVisibleHistory(conversationId, 65_536);
+    const input = acceptInput(conversationId, { text: 'u' });
+    const base = userAdmissionParameters(input);
+    const wrongCipherDigest =
+      input.encryptedUserMessage.cipherDigest === digest('f') ? digest('e') : digest('f');
+    expect(wrongCipherDigest).not.toBe(input.encryptedUserMessage.cipherDigest);
+    const mutate = (index: number, value: unknown): unknown[] => {
+      const candidate = [...base];
+      candidate[index] = value;
+      return candidate;
+    };
+    const cases: Array<{ id: string; parameters: unknown[]; code: string }> = [
+      { id: 'null-message-id', parameters: mutate(0, null), code: '23514' },
+      { id: 'turn-zero', parameters: mutate(7, 0), code: '23514' },
+      { id: 'turn-twenty-two', parameters: mutate(7, 22), code: '23514' },
+      { id: 'future-algorithm', parameters: mutate(10, 'future-aead/v2'), code: '23514' },
+      { id: 'bad-key-id', parameters: mutate(11, 'bad key id'), code: '23514' },
+      { id: 'bad-nonce', parameters: mutate(12, Buffer.alloc(11)), code: '23514' },
+      { id: 'oversized-cipher', parameters: mutate(13, Buffer.alloc(65_537)), code: '23514' },
+      { id: 'bad-tag', parameters: mutate(14, Buffer.alloc(15)), code: '23514' },
+      { id: 'bad-cipher-digest', parameters: mutate(15, 'bad'), code: '23514' },
+      { id: 'wrong-cipher-digest', parameters: mutate(15, wrongCipherDigest), code: '23514' },
+      { id: 'bad-content-digest', parameters: mutate(16, 'bad'), code: '23514' },
+      { id: 'bad-aad-version', parameters: mutate(17, 2), code: '23514' },
+      { id: 'wrong-version', parameters: mutate(4, randomUuidV7()), code: '55000' },
+      { id: 'wrong-version-digest', parameters: mutate(5, digest('6')), code: '55000' },
+      { id: 'wrong-worker', parameters: mutate(6, randomUuidV7()), code: '55000' },
+      {
+        id: 'expired-deadline',
+        parameters: mutate(8, new Date(Date.now() - 1_000)),
+        code: '55000',
+      },
+      {
+        id: 'deadline-over-120s',
+        parameters: mutate(8, new Date(Date.now() + 130_000)),
+        code: '55000',
+      },
+    ];
+    const before = await contextAdmissionSnapshot(conversationId);
+    for (const testCase of cases) {
+      const api = await apiPool.connect();
+      try {
+        await api.query('BEGIN');
+        await api.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+        await api.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+        await expect(
+          callUserAdmission(api, input, testCase.parameters),
+          testCase.id,
+        ).rejects.toMatchObject({ code: testCase.code });
+      } finally {
+        await api.query('ROLLBACK').catch(() => undefined);
+        api.release();
+      }
+      expect(await contextAdmissionSnapshot(conversationId), testCase.id).toEqual(before);
+      expect(await candidateFootprint(input), testCase.id).toEqual({
+        messages: '0',
+        invocations: '0',
+        events: '0',
+        commands: '0',
+        consumer_events: '0',
+      });
+    }
+  });
+
+  it('fails closed if durable visible history contains a future content algorithm', async () => {
+    const conversationId = await createConversation();
+    await seedVisibleHistory(conversationId, 1);
+    const input = acceptInput(conversationId, { text: 'u' });
+    const before = await contextAdmissionSnapshot(conversationId);
+    const constraint = await owner.query<{ conname: string }>(
+      `SELECT conname
+         FROM pg_catalog.pg_constraint
+        WHERE conrelid = 'agent_messages'::regclass
+          AND contype = 'c'
+          AND pg_catalog.pg_get_constraintdef(oid) LIKE '%content_algorithm%'
+        ORDER BY conname`,
+    );
+    expect(constraint.rows).toHaveLength(1);
+    const constraintName = constraint.rows[0]!.conname;
+    await owner.query(`ALTER TABLE agent_messages DROP CONSTRAINT "${constraintName}"`);
+    try {
+      await owner.query(`ALTER TABLE agent_messages DISABLE TRIGGER agent_messages_immutable`);
+      try {
+        await owner.query(
+          `UPDATE agent_messages SET content_algorithm = 'future-aead/v2'
+            WHERE conversation_id = $1`,
+          [conversationId],
+        );
+      } finally {
+        await owner.query(`ALTER TABLE agent_messages ENABLE TRIGGER agent_messages_immutable`);
+      }
+      await expect(
+        new PostgresCloudJournal(journalPools).acceptInvocation(input),
+      ).rejects.toMatchObject({
+        code: '23514',
+        message: 'visible history contains an unsupported content algorithm',
+      });
+      const rejected = await contextAdmissionSnapshot(conversationId);
+      expect(rejected).toMatchObject({
+        ...before,
+        context_limit_reached_at: null,
+        conversation_state: 'IDLE',
+      });
+      expect(await candidateFootprint(input)).toEqual({
+        messages: '0',
+        invocations: '0',
+        events: '0',
+        commands: '0',
+        consumer_events: '0',
+      });
+    } finally {
+      await owner.query(`ALTER TABLE agent_messages DISABLE TRIGGER agent_messages_immutable`);
+      try {
+        await owner.query(
+          `UPDATE agent_messages SET content_algorithm = 'aes-256-gcm/v1'
+            WHERE conversation_id = $1`,
+          [conversationId],
+        );
+      } finally {
+        await owner.query(`ALTER TABLE agent_messages ENABLE TRIGGER agent_messages_immutable`);
+      }
+      await owner.query(
+        `ALTER TABLE agent_messages
+           ADD CONSTRAINT "${constraintName}"
+           CHECK (content_algorithm = 'aes-256-gcm/v1')`,
+      );
+    }
+  });
+
+  it('rechecks the Cloud deadline after waiting on the Conversation row lock', async () => {
+    const conversationId = await createConversation();
+    const input = acceptInput(conversationId, { text: 'u' });
+    input.deadlineAt = new Date(Date.now() + 1_000);
+    const before = await contextAdmissionSnapshot(conversationId);
+    const locker = new Client({ connectionString: databaseUrl });
+    const api = await apiPool.connect();
+    await locker.connect();
+    try {
+      await locker.query('BEGIN');
+      await locker.query(`SELECT id FROM agent_conversations WHERE id = $1 FOR UPDATE`, [
+        conversationId,
+      ]);
+      await api.query('BEGIN');
+      await api.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await api.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      const pending = callUserAdmission(api, input).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (error: unknown) => ({ status: 'rejected' as const, error }),
+      );
+      const early = await Promise.race([
+        pending,
+        new Promise<{ status: 'blocked' }>((resolve) => {
+          setTimeout(() => resolve({ status: 'blocked' }), 100);
+        }),
+      ]);
+      expect(early).toEqual({ status: 'blocked' });
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 1_100);
+      });
+      await locker.query('COMMIT');
+      const result = await pending;
+      expect(result.status).toBe('rejected');
+      if (result.status === 'fulfilled') throw new Error('expired lock waiter was admitted');
+      expect(result.error).toMatchObject({ code: '55000' });
+    } finally {
+      await locker.query('ROLLBACK').catch(() => undefined);
+      await api.query('ROLLBACK').catch(() => undefined);
+      api.release();
+      await locker.end();
+    }
+    expect(await contextAdmissionSnapshot(conversationId)).toEqual(before);
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('keeps an exact accepted replay ahead of a later context-limit suspension', async () => {
+    const conversationId = await createConversation();
+    const journal = new PostgresCloudJournal(journalPools);
+    const accepted = acceptInput(conversationId, { text: 'first' });
+    const first = await journal.acceptInvocation(accepted);
+    await owner.query(
+      `UPDATE agent_conversations SET state = 'IDLE' WHERE id = $1 AND state = 'BUSY'`,
+      [conversationId],
+    );
+    await seedVisibleHistory(conversationId, 65_536 - Buffer.byteLength('first', 'utf8'));
+    const rejected = acceptInput(conversationId, { turnNo: 2, text: 'u' });
+    await expect(journal.acceptInvocation(rejected)).rejects.toMatchObject({
+      code: 'CONVERSATION_CONTEXT_LIMIT',
+    });
+    const marker = (await contextAdmissionSnapshot(conversationId)).context_limit_reached_at;
+    const wrongAuthority = acceptInput(conversationId, {
+      agentVersionId: randomUuidV7(),
+      turnNo: 2,
+      text: 'u',
+    });
+    await expect(journal.acceptInvocation(wrongAuthority)).rejects.toMatchObject({
+      code: 'CONVERSATION_UNAVAILABLE',
+    });
+    expect((await contextAdmissionSnapshot(conversationId)).context_limit_reached_at).toEqual(
+      marker,
+    );
+    expect(await candidateFootprint(wrongAuthority)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+    await expect(journal.acceptInvocation(accepted)).resolves.toEqual({
+      ...first,
+      replayed: true,
+    });
+    expect((await contextAdmissionSnapshot(conversationId)).context_limit_reached_at).toEqual(
+      marker,
+    );
+    expect(await candidateFootprint(rejected)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('rolls a context marker back at the failpoint and commits it before the stable retry error', async () => {
+    const conversationId = await createConversation();
+    await seedVisibleHistory(conversationId, 65_536);
+    const input = acceptInput(conversationId, { text: 'u' });
+    const before = await contextAdmissionSnapshot(conversationId);
+    const failing = new PostgresCloudJournal(journalPools, (step) => {
+      if (step === 'CONVERSATION_CONTEXT_LIMIT') throw new Error('FAILPOINT:CONTEXT_LIMIT');
+    });
+    await expect(failing.acceptInvocation(input)).rejects.toThrow('FAILPOINT:CONTEXT_LIMIT');
+    expect(await contextAdmissionSnapshot(conversationId)).toEqual(before);
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+
+    await expect(
+      new PostgresCloudJournal(journalPools).acceptInvocation(input),
+    ).rejects.toMatchObject({ code: 'CONVERSATION_CONTEXT_LIMIT' });
+    expectOnlyContextSuspension(before, await contextAdmissionSnapshot(conversationId));
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
+  it('replays the same context-limit candidate after its original deadline expires', async () => {
+    const conversationId = await createConversation();
+    await seedVisibleHistory(conversationId, 65_536);
+    const input = acceptInput(conversationId, { text: 'u' });
+    input.deadlineAt = new Date(Date.now() + 1_000);
+    const journal = new PostgresCloudJournal(journalPools);
+    await expect(journal.acceptInvocation(input)).rejects.toMatchObject({
+      code: 'CONVERSATION_CONTEXT_LIMIT',
+    });
+    const marker = (await contextAdmissionSnapshot(conversationId)).context_limit_reached_at;
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 1_100);
+    });
+    expect(input.deadlineAt.valueOf()).toBeLessThan(Date.now());
+    await expect(journal.acceptInvocation(input)).rejects.toMatchObject({
+      code: 'CONVERSATION_CONTEXT_LIMIT',
+    });
+    expect((await contextAdmissionSnapshot(conversationId)).context_limit_reached_at).toEqual(
+      marker,
+    );
+    expect(await candidateFootprint(input)).toEqual({
+      messages: '0',
+      invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+    });
+  });
+
   it('limits the real API role to a pure ACCEPTED request, prepare command, and API fact', async () => {
     const conversationId = await createConversation();
     const accepted = acceptInput(conversationId);
@@ -802,6 +1636,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         invocation_error_update: boolean;
         message_table_insert: boolean;
         message_role_insert: boolean;
+        conversation_state_update: boolean;
+        conversation_next_turn_update: boolean;
+        context_marker_update: boolean;
+        admission_execute: boolean;
       }>(
         `SELECT
            has_table_privilege(current_user, 'agent_invocations', 'INSERT')
@@ -851,7 +1689,22 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
            has_table_privilege(current_user, 'agent_messages', 'INSERT')
              AS message_table_insert,
            has_column_privilege(current_user, 'agent_messages', 'role', 'INSERT')
-             AS message_role_insert`,
+             AS message_role_insert,
+           has_column_privilege(current_user, 'agent_conversations', 'state', 'UPDATE')
+             AS conversation_state_update,
+           has_column_privilege(current_user, 'agent_conversations', 'next_turn_no', 'UPDATE')
+             AS conversation_next_turn_update,
+           has_column_privilege(
+             current_user,
+             'agent_conversations',
+             'context_limit_reached_at',
+             'UPDATE'
+           ) AS context_marker_update,
+           has_function_privilege(
+             current_user,
+             'creator_agent_admit_user_message_v1(uuid,uuid,uuid,uuid,uuid,text,uuid,integer,timestamptz,text,text,text,bytea,bytea,bytea,text,text,integer,uuid)',
+             'EXECUTE'
+           ) AS admission_execute`,
       ),
     ).resolves.toMatchObject({
       rows: [
@@ -871,9 +1724,46 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
           invocation_terminal_update: false,
           invocation_error_update: false,
           message_table_insert: false,
-          message_role_insert: true,
+          message_role_insert: false,
+          conversation_state_update: false,
+          conversation_next_turn_update: false,
+          context_marker_update: false,
+          admission_execute: true,
         },
       ],
+    });
+
+    const messageInsertColumns = [
+      'id',
+      'conversation_id',
+      'creator_id',
+      'consumer_subject_id',
+      'turn_no',
+      'role',
+      'client_message_id',
+      'content_algorithm',
+      'content_key_id',
+      'content_nonce',
+      'content_ciphertext',
+      'content_auth_tag',
+      'content_cipher_digest',
+      'content_digest',
+      'content_aad_version',
+      'invocation_id',
+    ];
+    await expect(
+      apiPool.query<{ column_name: string; allowed: boolean }>(
+        `SELECT column_name,
+                has_column_privilege(current_user, 'agent_messages', column_name, 'INSERT')
+                  AS allowed
+           FROM unnest($1::text[]) AS column_name
+          ORDER BY column_name`,
+        [messageInsertColumns],
+      ),
+    ).resolves.toMatchObject({
+      rows: [...messageInsertColumns]
+        .sort()
+        .map((column_name) => ({ column_name, allowed: false })),
     });
 
     async function expectApiWriteDenied(sql: string, parameters: readonly unknown[]) {
@@ -1010,6 +1900,191 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
   });
 
+  it('accepts only exact API and real API-member logins while denying direct DML and ambiguous roles', async () => {
+    const memberRole = `combo_context_api_${randomUUID().replaceAll('-', '')}`;
+    const dualRole = `combo_context_dual_${randomUUID().replaceAll('-', '')}`;
+    const memberPassword = `Api${randomUUID().replaceAll('-', '')}9x`;
+    const dualPassword = `Dual${randomUUID().replaceAll('-', '')}9x`;
+    const roleClient = (role: string, password: string) => {
+      const url = new URL(databaseUrl!);
+      url.username = role;
+      url.password = password;
+      return new Client({ connectionString: url.toString() });
+    };
+    await owner.query(
+      `CREATE ROLE "${memberRole}"
+         LOGIN PASSWORD '${memberPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE
+         NOINHERIT NOREPLICATION NOBYPASSRLS`,
+    );
+    await owner.query(`GRANT combo_agent_api TO "${memberRole}"`);
+    await owner.query(
+      `CREATE ROLE "${dualRole}"
+         LOGIN PASSWORD '${dualPassword}' NOSUPERUSER NOCREATEDB NOCREATEROLE
+         NOINHERIT NOREPLICATION NOBYPASSRLS`,
+    );
+    await owner.query(`GRANT combo_agent_api, combo_agent_broker TO "${dualRole}"`);
+
+    const member = roleClient(memberRole, memberPassword);
+    const dual = roleClient(dualRole, dualPassword);
+    try {
+      await member.connect();
+      await dual.connect();
+
+      const conversationId = await createConversation();
+      await seedVisibleHistory(conversationId, 65_536);
+      const input = acceptInput(conversationId, { text: 'u' });
+
+      await member.query('SET ROLE combo_agent_api');
+      await expect(
+        member.query<{
+          message_insert: boolean;
+          marker_update: boolean;
+          state_update: boolean;
+          admission_execute: boolean;
+        }>(
+          `SELECT
+             has_column_privilege(current_user, 'agent_messages', 'id', 'INSERT')
+               AS message_insert,
+             has_column_privilege(
+               current_user,
+               'agent_conversations',
+               'context_limit_reached_at',
+               'UPDATE'
+             ) AS marker_update,
+             has_column_privilege(current_user, 'agent_conversations', 'state', 'UPDATE')
+               AS state_update,
+             has_function_privilege(
+               current_user,
+               'creator_agent_admit_user_message_v1(uuid,uuid,uuid,uuid,uuid,text,uuid,integer,timestamptz,text,text,text,bytea,bytea,bytea,text,text,integer,uuid)',
+               'EXECUTE'
+             ) AS admission_execute`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            message_insert: false,
+            marker_update: false,
+            state_update: false,
+            admission_execute: true,
+          },
+        ],
+      });
+
+      await member.query('BEGIN');
+      await member.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await member.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(
+        member.query(
+          `UPDATE agent_conversations
+              SET state = 'SUSPENDED', context_limit_reached_at = clock_timestamp()
+            WHERE id = $1`,
+          [conversationId],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await member.query('ROLLBACK');
+
+      await member.query('BEGIN');
+      await member.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await member.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(
+        member.query(
+          `INSERT INTO agent_messages (
+             id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+             client_message_id, content_algorithm, content_key_id, content_nonce,
+             content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
+             content_aad_version, invocation_id
+           ) VALUES (
+             $1, $2, $3, $4, $5, 'USER', $6,
+             $7, $8, $9, $10, $11, $12, $13, $14, $15
+           )`,
+          [
+            input.userMessageId,
+            input.conversationId,
+            input.creatorId,
+            input.consumerId,
+            input.turnNo,
+            input.clientMessageId,
+            ...encryptedParametersForTest(input.encryptedUserMessage),
+            input.invocationId,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await member.query('ROLLBACK');
+
+      await member.query('BEGIN');
+      await member.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await member.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      input.deadlineAt = new Date(Date.now() + 1_000);
+      await expect(callUserAdmission(member, input)).resolves.toMatchObject({
+        rows: [{ admission_outcome: 'CONTEXT_LIMIT' }],
+      });
+      await member.query('COMMIT');
+      const committedMarker = (await contextAdmissionSnapshot(conversationId))
+        .context_limit_reached_at;
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 1_100);
+      });
+      await member.query('BEGIN');
+      await member.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await member.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(callUserAdmission(member, input)).resolves.toMatchObject({
+        rows: [{ admission_outcome: 'CONTEXT_LIMIT' }],
+      });
+      await member.query('COMMIT');
+      expect((await contextAdmissionSnapshot(conversationId)).context_limit_reached_at).toEqual(
+        committedMarker,
+      );
+      expect((await contextAdmissionSnapshot(conversationId)).conversation_state).toBe('SUSPENDED');
+      expect(await candidateFootprint(input)).toEqual({
+        messages: '0',
+        invocations: '0',
+        events: '0',
+        commands: '0',
+        consumer_events: '0',
+      });
+
+      const deniedConversation = await createConversation();
+      const denied = acceptInput(deniedConversation, { text: 'u' });
+      await dual.query('SET ROLE combo_agent_api');
+      await dual.query('BEGIN');
+      await dual.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await dual.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(callUserAdmission(dual, denied)).rejects.toMatchObject({
+        code: '42501',
+        message: 'USER Message admission authority is ambiguous',
+      });
+      await dual.query('ROLLBACK');
+
+      const broker = await brokerPool.connect();
+      try {
+        await broker.query('BEGIN');
+        await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+        await broker.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+        await expect(callUserAdmission(broker, denied)).rejects.toMatchObject({ code: '42501' });
+        await broker.query('ROLLBACK');
+      } finally {
+        await broker.query('ROLLBACK').catch(() => undefined);
+        broker.release();
+      }
+      await owner.query(`SELECT set_config('app.creator_id', $1, false)`, [ids.creatorId]);
+      await owner.query(`SELECT set_config('app.consumer_id', $1, false)`, [ids.consumerId]);
+      await expect(callUserAdmission(owner, denied)).rejects.toMatchObject({ code: '42501' });
+      expect(await contextAdmissionSnapshot(deniedConversation)).toMatchObject({
+        conversation_state: 'IDLE',
+        context_limit_reached_at: null,
+      });
+    } finally {
+      await member.end().catch(() => undefined);
+      await dual.end().catch(() => undefined);
+      await owner.query(`REVOKE combo_agent_api FROM "${memberRole}"`).catch(() => undefined);
+      await owner
+        .query(`REVOKE combo_agent_api, combo_agent_broker FROM "${dualRole}"`)
+        .catch(() => undefined);
+      await owner.query(`DROP ROLE IF EXISTS "${memberRole}"`).catch(() => undefined);
+      await owner.query(`DROP ROLE IF EXISTS "${dualRole}"`).catch(() => undefined);
+    }
+  });
+
   it('rejects API ASSISTANT and orphan USER Messages before commit with zero mutation', async () => {
     const conversationId = await createConversation();
     const orphan = acceptInput(conversationId);
@@ -1057,33 +2132,9 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       await orphanApi.query('BEGIN');
       await orphanApi.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
       await orphanApi.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
-      await orphanApi.query(
-        `INSERT INTO agent_messages (
-           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
-           client_message_id, content_algorithm, content_key_id, content_nonce,
-           content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
-           content_aad_version, invocation_id
-         ) VALUES (
-           $1, $2, $3, $4, 1, 'USER', $5,
-           $6, $7, $8, $9, $10, $11, $12, $13, $14
-         )`,
-        [
-          orphan.userMessageId,
-          conversationId,
-          ids.creatorId,
-          ids.consumerId,
-          orphan.clientMessageId,
-          orphanCipher.algorithm,
-          orphanCipher.keyId,
-          orphanCipher.nonce,
-          orphanCipher.ciphertext,
-          orphanCipher.authTag,
-          orphanCipher.cipherDigest,
-          orphanCipher.contentDigest,
-          orphanCipher.aadVersion,
-          orphan.invocationId,
-        ],
-      );
+      await expect(callUserAdmission(orphanApi, orphan)).resolves.toMatchObject({
+        rows: [{ admission_outcome: 'ADMITTED' }],
+      });
       await orphanApi.query(
         `INSERT INTO agent_invocations (
            id, conversation_id, creator_id, consumer_subject_id, agent_version_id,
@@ -1135,11 +2186,12 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
           'enforce_creator_agent_invocation_capability_authority()'::regprocedure,
           'creator_agent_security_revoke_deployment_capabilities(uuid,uuid)'::regprocedure,
           'creator_agent_cascade_invocation_capability_security_revocation()'::regprocedure,
-          'enforce_creator_agent_event_sequence()'::regprocedure
+          'enforce_creator_agent_event_sequence()'::regprocedure,
+          'creator_agent_admit_user_message_v1(uuid,uuid,uuid,uuid,uuid,text,uuid,integer,timestamptz,text,text,text,bytea,bytea,bytea,text,text,integer,uuid)'::regprocedure
         ])
         ORDER BY procedure.proname`,
     );
-    expect(authorities.rows).toHaveLength(4);
+    expect(authorities.rows).toHaveLength(5);
     expect(authorities.rows.every((row) => row.security_definer && row.trusted_owner)).toBe(true);
   });
 
@@ -3816,10 +4868,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
          behavior_contract, behavior_contract_digest, runtime_policy, runtime_policy_digest,
          io_contract, io_contract_digest, model_policy, model_policy_digest,
          codex_runtime_version, codex_runtime_artifact_digest, codex_protocol_schema_digest
-       ) VALUES (
+      ) VALUES (
          $1, $2, $3, 1, 1, $4, $5,
-         '{}'::jsonb, $6, '{}'::jsonb, $7, '{}'::jsonb, $8, '{}'::jsonb, $9,
-         '0.147.0-alpha.6.5', $10, $11
+         '{}'::jsonb, $6, $7::jsonb, $8, '{}'::jsonb, $9, '{}'::jsonb, $10,
+         '0.147.0-alpha.6.5', $11, $12
        )`,
       [
         raceVersionId,
@@ -3828,6 +4880,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         digest('7'),
         ids.snapshotId,
         digest('a'),
+        runtimePolicyJson(),
         digest('b'),
         digest('c'),
         digest('d'),
@@ -3999,10 +5052,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
          behavior_contract, behavior_contract_digest, runtime_policy, runtime_policy_digest,
          io_contract, io_contract_digest, model_policy, model_policy_digest,
          codex_runtime_version, codex_runtime_artifact_digest, codex_protocol_schema_digest
-       ) VALUES (
+      ) VALUES (
          $1, $2, $3, 1, 1, $4, $5,
-         '{}'::jsonb, $6, '{}'::jsonb, $7, '{}'::jsonb, $8, '{}'::jsonb, $9,
-         '0.147.0-alpha.6.5', $10, $11
+         '{}'::jsonb, $6, $7::jsonb, $8, '{}'::jsonb, $9, '{}'::jsonb, $10,
+         '0.147.0-alpha.6.5', $11, $12
        )`,
       [
         securityVersionId,
@@ -4011,6 +5064,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         digest('7'),
         ids.snapshotId,
         digest('a'),
+        runtimePolicyJson(),
         digest('b'),
         digest('c'),
         digest('d'),

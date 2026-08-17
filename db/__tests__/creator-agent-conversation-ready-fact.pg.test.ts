@@ -312,12 +312,13 @@ pgDescribe('0017 conversation.ready durable fact real PostgreSQL authority', () 
     const migrations = readdirSync(migrationsDirectory)
       .filter((filename) => /^\d{4}_.+\.sql$/u.test(filename))
       .sort();
-    expect(migrations.at(-1)).toBe('0020_creator_agent_confirmed_failure_fact.sql');
+    expect(migrations.at(-1)).toBe('0021_creator_agent_context_admission.sql');
     const pre0017 = migrations.filter((filename) => filename < '0017_');
     expect(pre0017.at(-1)).toBe('0016_creator_agent_invocation_lifecycle.sql');
     expect(pre0017).not.toContain('0018_creator_agent_broker_delivery_contract.sql');
     expect(pre0017).not.toContain('0019_creator_agent_broker_outbox_publisher.sql');
     expect(pre0017).not.toContain('0020_creator_agent_confirmed_failure_fact.sql');
+    expect(pre0017).not.toContain('0021_creator_agent_context_admission.sql');
     for (const filename of pre0017) {
       await applyMigration(target, filename);
     }

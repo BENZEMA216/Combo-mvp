@@ -57,6 +57,7 @@ export interface PostgresCloudJournalPools {
 }
 
 export type CloudJournalStep =
+  | 'CONVERSATION_CONTEXT_LIMIT'
   | 'USER_MESSAGE'
   | 'INVOCATION'
   | 'ACCEPTED_EVENT'
@@ -89,6 +90,7 @@ export class CloudJournalError extends Error {
   public constructor(
     public readonly code:
       | 'IDEMPOTENCY_CONFLICT'
+      | 'CONVERSATION_CONTEXT_LIMIT'
       | 'CONVERSATION_UNAVAILABLE'
       | 'EXECUTION_AUTHORITY_MISMATCH'
       | 'WORKER_FACT_CONFLICT'
@@ -134,7 +136,9 @@ const AcceptInvocationInputSchema = TenantIdentitySchema.extend({
   sourceEventId: UuidSchema,
   clientMessageId: UuidSchema,
   requestDigest: HmacSha256DigestSchema,
-  turnNo: z.number().int().min(1).max(20),
+  // Internal admission candidates can name the first rejected turn (21). Public Message and
+  // durable Message schemas remain capped at 20; the database function never inserts turn 21.
+  turnNo: z.number().int().min(1).max(21),
   deadlineAt: z.date(),
   encryptedUserMessage: EncryptedMessageSchema,
 }).strict();
@@ -305,6 +309,7 @@ interface ConversationRow {
   state: string;
   assigned_worker_id: string | null;
   next_turn_no: number;
+  context_limit_reached_at: Date | string | null;
   deadline_valid: boolean;
 }
 
@@ -784,151 +789,198 @@ export class PostgresCloudJournal {
 
   public async acceptInvocation(rawInput: AcceptInvocationInput): Promise<AcceptedInvocation> {
     const input = AcceptInvocationInputSchema.parse(rawInput);
-    return withTenantTransaction(this.pools.api, input, async (connection) => {
-      await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-        `${input.conversationId}:${input.clientMessageId}`,
-      ]);
-      const existing = await connection.query<ExistingInvocationRow>(
-        `SELECT id, user_message_id, request_digest, state
+    const outcome = await withTenantTransaction<AcceptedInvocation | null>(
+      this.pools.api,
+      input,
+      async (connection) => {
+        await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+          `${input.conversationId}:${input.clientMessageId}`,
+        ]);
+        const existing = await connection.query<ExistingInvocationRow>(
+          `SELECT id, user_message_id, request_digest, state
            FROM agent_invocations
           WHERE conversation_id = $1 AND client_message_id = $2`,
-        [input.conversationId, input.clientMessageId],
-      );
-      if (existing.rows[0]) {
-        if (existing.rows[0].request_digest !== input.requestDigest) {
-          throw new CloudJournalError(
-            'IDEMPOTENCY_CONFLICT',
-            '同一 clientMessageId 绑定了不同 requestDigest',
-          );
+          [input.conversationId, input.clientMessageId],
+        );
+        if (existing.rows[0]) {
+          if (existing.rows[0].request_digest !== input.requestDigest) {
+            throw new CloudJournalError(
+              'IDEMPOTENCY_CONFLICT',
+              '同一 clientMessageId 绑定了不同 requestDigest',
+            );
+          }
+          return {
+            invocationId: existing.rows[0].id,
+            userMessageId: existing.rows[0].user_message_id,
+            state: existing.rows[0].state,
+            replayed: true,
+          };
         }
-        return {
-          invocationId: existing.rows[0].id,
-          userMessageId: existing.rows[0].user_message_id,
-          state: existing.rows[0].state,
-          replayed: true,
-        };
-      }
 
-      const conversation = await connection.query<ConversationRow>(
-        `SELECT agent_version_id, version_digest, state, assigned_worker_id, next_turn_no,
+        const conversation = await connection.query<ConversationRow>(
+          `SELECT conversation.agent_version_id, conversation.version_digest,
+                conversation.state,
+                conversation.assigned_worker_id, conversation.next_turn_no,
+                conversation.context_limit_reached_at,
                 ($4::timestamptz > now()
                  AND $4::timestamptz <= now() + interval '120 seconds') AS deadline_valid
-           FROM agent_conversations
-          WHERE id = $1 AND creator_id = $2 AND consumer_subject_id = $3
-          FOR UPDATE`,
-        [input.conversationId, input.creatorId, input.consumerId, input.deadlineAt],
-      );
-      const current = conversation.rows[0];
-      if (
-        !current ||
-        current.state !== 'IDLE' ||
-        current.agent_version_id !== input.agentVersionId ||
-        current.version_digest !== input.agentVersionDigest ||
-        current.assigned_worker_id !== input.targetWorkerId ||
-        Number(current.next_turn_no) !== input.turnNo ||
-        current.deadline_valid !== true
-      ) {
-        throw new CloudJournalError(
-          'CONVERSATION_UNAVAILABLE',
-          'Conversation 不是可接收本轮的精确 Version/Worker/turn 状态',
+           FROM agent_conversations AS conversation
+          WHERE conversation.id = $1
+            AND conversation.creator_id = $2
+            AND conversation.consumer_subject_id = $3
+          FOR UPDATE OF conversation`,
+          [input.conversationId, input.creatorId, input.consumerId, input.deadlineAt],
         );
-      }
-      await connection.query(
-        `INSERT INTO agent_messages (
-           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
-           client_message_id, content_algorithm, content_key_id, content_nonce,
-           content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
-           content_aad_version, invocation_id
-         ) VALUES (
-           $1, $2, $3, $4, $5, 'USER', $6,
-           $7, $8, $9, $10, $11, $12, $13, $14, $15
-         )`,
-        [
-          input.userMessageId,
-          input.conversationId,
-          input.creatorId,
-          input.consumerId,
-          input.turnNo,
-          input.clientMessageId,
-          ...encryptedParameters(input.encryptedUserMessage),
-          input.invocationId,
-        ],
-      );
-      await inject(this.failureInjector, 'USER_MESSAGE');
+        const current = conversation.rows[0];
+        if (!current) {
+          throw new CloudJournalError(
+            'CONVERSATION_UNAVAILABLE',
+            'Conversation 不存在或租户/Version authority 不匹配',
+          );
+        }
+        if (
+          current.agent_version_id !== input.agentVersionId ||
+          current.version_digest !== input.agentVersionDigest ||
+          current.assigned_worker_id !== input.targetWorkerId ||
+          Number(current.next_turn_no) !== input.turnNo
+        ) {
+          throw new CloudJournalError(
+            'CONVERSATION_UNAVAILABLE',
+            'Conversation 不是可接收本轮的精确 Version/Worker/turn 状态',
+          );
+        }
+        if (current.context_limit_reached_at !== null) {
+          if (current.state === 'SUSPENDED') return null;
+          throw new CloudJournalError(
+            'CONVERSATION_UNAVAILABLE',
+            'Context-limit Conversation 已进入其他只读或终态',
+          );
+        }
+        if (current.state !== 'IDLE' || current.deadline_valid !== true) {
+          throw new CloudJournalError(
+            'CONVERSATION_UNAVAILABLE',
+            'Conversation 当前不可接收新轮次',
+          );
+        }
+        const admission = await connection.query<{ admission_outcome: string }>(
+          `SELECT admission_outcome
+           FROM creator_agent_admit_user_message_v1(
+             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+             $11, $12, $13, $14, $15, $16, $17, $18, $19
+           )`,
+          [
+            input.userMessageId,
+            input.conversationId,
+            input.creatorId,
+            input.consumerId,
+            input.agentVersionId,
+            input.agentVersionDigest,
+            input.targetWorkerId,
+            input.turnNo,
+            input.deadlineAt,
+            input.clientMessageId,
+            ...encryptedParameters(input.encryptedUserMessage),
+            input.invocationId,
+          ],
+        );
+        if (admission.rows[0]?.admission_outcome === 'CONTEXT_LIMIT') {
+          await inject(this.failureInjector, 'CONVERSATION_CONTEXT_LIMIT');
+          return null;
+        }
+        if (admission.rowCount !== 1 || admission.rows[0]?.admission_outcome !== 'ADMITTED') {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            'USER Message admission 未返回唯一稳定 outcome',
+          );
+        }
+        await inject(this.failureInjector, 'USER_MESSAGE');
 
-      await connection.query(
-        `INSERT INTO agent_invocations (
+        await connection.query(
+          `INSERT INTO agent_invocations (
            id, conversation_id, creator_id, consumer_subject_id, agent_version_id,
            user_message_id, client_message_id, request_digest, state, deadline_at
          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'ACCEPTED', $9)`,
-        [
-          input.invocationId,
-          input.conversationId,
-          input.creatorId,
-          input.consumerId,
-          input.agentVersionId,
-          input.userMessageId,
-          input.clientMessageId,
-          input.requestDigest,
-          input.deadlineAt,
-        ],
-      );
-      await inject(this.failureInjector, 'INVOCATION');
+          [
+            input.invocationId,
+            input.conversationId,
+            input.creatorId,
+            input.consumerId,
+            input.agentVersionId,
+            input.userMessageId,
+            input.clientMessageId,
+            input.requestDigest,
+            input.deadlineAt,
+          ],
+        );
+        await inject(this.failureInjector, 'INVOCATION');
 
-      await connection.query(
-        `INSERT INTO agent_invocation_events (
+        await connection.query(
+          `INSERT INTO agent_invocation_events (
            invocation_id, creator_id, consumer_subject_id, journal_seq, source,
            source_event_id, event_type, payload, occurred_at
          ) VALUES ($1, $2, $3, 1, 'API', $4, 'invocation.accepted', $5::jsonb, now())`,
-        [
-          input.invocationId,
-          input.creatorId,
-          input.consumerId,
-          input.sourceEventId,
-          JSON.stringify({ state: 'ACCEPTED' }),
-        ],
-      );
-      await inject(this.failureInjector, 'ACCEPTED_EVENT');
+          [
+            input.invocationId,
+            input.creatorId,
+            input.consumerId,
+            input.sourceEventId,
+            JSON.stringify({ state: 'ACCEPTED' }),
+          ],
+        );
+        await inject(this.failureInjector, 'ACCEPTED_EVENT');
 
-      await connection.query(
-        `INSERT INTO broker_outbox (
+        await connection.query(
+          `INSERT INTO broker_outbox (
            command_id, creator_id, target_worker_id, invocation_id, consumer_subject_id,
            command_type, dedupe_key, state, next_attempt_at, expires_at
          ) VALUES ($1, $2, $3, $4, $5, 'invocation.prepare', $6, 'PENDING', now(), $7)`,
-        [
-          input.outboxCommandId,
-          input.creatorId,
-          input.targetWorkerId,
-          input.invocationId,
-          input.consumerId,
-          `invocation:${input.invocationId}:prepare`,
-          input.deadlineAt,
-        ],
-      );
-      await inject(this.failureInjector, 'BROKER_OUTBOX');
-
-      const projection = await connection.query(
-        `UPDATE agent_conversations
-            SET state = 'BUSY', next_turn_no = next_turn_no + 1, last_activity_at = now()
-          WHERE id = $1 AND creator_id = $2 AND consumer_subject_id = $3
-            AND state = 'IDLE' AND next_turn_no = $4`,
-        [input.conversationId, input.creatorId, input.consumerId, input.turnNo],
-      );
-      if (projection.rowCount !== 1) {
-        throw new CloudJournalError(
-          'PERSISTENCE_INVARIANT_FAILED',
-          'Conversation projection 未原子进入 BUSY',
+          [
+            input.outboxCommandId,
+            input.creatorId,
+            input.targetWorkerId,
+            input.invocationId,
+            input.consumerId,
+            `invocation:${input.invocationId}:prepare`,
+            input.deadlineAt,
+          ],
         );
-      }
-      await inject(this.failureInjector, 'CONVERSATION_BUSY');
+        await inject(this.failureInjector, 'BROKER_OUTBOX');
 
-      return {
-        invocationId: input.invocationId,
-        userMessageId: input.userMessageId,
-        state: 'ACCEPTED',
-        replayed: false,
-      };
-    });
+        const projection = await connection.query<{ state: string; next_turn_no: number }>(
+          `SELECT state, next_turn_no
+           FROM agent_conversations
+          WHERE id = $1 AND creator_id = $2 AND consumer_subject_id = $3`,
+          [input.conversationId, input.creatorId, input.consumerId],
+        );
+        if (
+          projection.rowCount !== 1 ||
+          projection.rows[0]?.state !== 'BUSY' ||
+          Number(projection.rows[0].next_turn_no) !== input.turnNo + 1
+        ) {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            'Conversation admission function 未原子进入 BUSY',
+          );
+        }
+        await inject(this.failureInjector, 'CONVERSATION_BUSY');
+
+        return {
+          invocationId: input.invocationId,
+          userMessageId: input.userMessageId,
+          state: 'ACCEPTED',
+          replayed: false,
+        };
+      },
+    );
+    if (outcome === null) {
+      // The marker must commit before the stable public error escapes this method. Throwing from
+      // inside withTenantTransaction would roll the SUSPENDED authority back.
+      throw new CloudJournalError(
+        'CONVERSATION_CONTEXT_LIMIT',
+        'Conversation 已达到 pinned RuntimePolicy 上下文上限',
+      );
+    }
+    return outcome;
   }
 
   public async commitPrepared(

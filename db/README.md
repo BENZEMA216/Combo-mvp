@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0020`，已经执行的迁移保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费与 Creator-hosted Agent VNext 只通过后续迁移追加。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0021`，已经执行的迁移保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费与 Creator-hosted Agent VNext 只通过后续迁移追加。
 
 ## 迁移文件
 
@@ -25,6 +25,7 @@
 - `0018_creator_agent_broker_delivery_contract.sql` 在 zero-live cutover 后安装 Broker payload v1、visible-transcript KMS HMAC metadata、原始 assignment/current delivery 双 authority、跨 Session 稳定 business `messageId` 与 create-open-v2；历史 v0 business 不可 claim，`lease.revoke` 等 protocol control 继续以全局唯一 `messageId` 的 exact v0 frame 持久化。
 - `0019_creator_agent_broker_outbox_publisher.sql` 为默认关闭的 Test-only `conversation.open` publisher 固定不可变 wire 时间、严格 operation receipt、replacement pre-ACK identifier receipt 与 current Session/Lease claim 约束；PERSISTED 不 ACK Outbox，只有 ready projector 收敛终态。它不启动 Gateway，也不允许 Preview 或 Production delivery。
 - `0020_creator_agent_confirmed_failure_fact.sql` 只扩展 canonical Worker `invocation.failed` fact 的 durable digest/source binding，并把可公开的 confirmed failure code 收窄到固定 registry。它不启用 Invocation runtime；由于还没有受验证的 interrupt receipt authority，`invocation.cancelled` 继续 fail closed。
+- `0021_creator_agent_context_admission.sql` 以窄 SECURITY DEFINER 原子执行 USER Message admission、Conversation BUSY/next-turn projection或 context-limit suspension，并撤销 API 对这些写点的 direct column authority。它按 pinned RuntimePolicy、连续 USER 事实及 AES-GCM ciphertext octets执行 ADR-VNEXT-006 的下一条 USER admission；fresh ASSISTANT overflow策略与完整 ADR/SCH-004仍未完成。这是 Test-only quiescent exact-tuple cutover，不实现 HTTP send route。
 
 `users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。VNext 表把 Snapshot 密文对象索引、AgentVersion、邀请授权、在线 Deployment、短租约、Consumer 多轮消息和执行 Journal 分开；Conversation 在创建事务中固定 serving Version 与 Worker，`(consumer_subject_id, idempotency_key)` 防止重复创建。消息只保存 AEAD 密文与 HMAC 摘要，Event payload 明确拒绝 Prompt、答案、Token、路径和 Reasoning。成功终态同时写入独立 Consumer Event Outbox 与 stream cursor，Redis/SSE 只能在 PostgreSQL commit 后投影；七天回放保留期由 Reconciler 原子推进过期 cursor。
 
@@ -46,7 +47,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_creator_agent_gateway_authority.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0021_creator_agent_context_admission.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
