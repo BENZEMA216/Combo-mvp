@@ -4,8 +4,8 @@
 
 ## 目录职责
 
-- `src/` 定义共享协议（包括 Snapshot Manifest、archive/manifest 两类加密 Envelope、AgentVersion、Broker、Worker Conversation Ready/Invocation durable facts、Sandbox 与 HTTP）、RFC 8785 JSON 规范化、Invocation 状态机、稳定错误和重试策略、Evidence Bundle、不变量、测试注册表，以及 AgentVersion 与 Snapshot Manifest 的独立边界证据目录。
-- `fixtures/` 保存 Schema、WSS、状态机、canonical digest、AgentVersion 与 Snapshot Manifest 资源边界和 Evidence Bundle 的 golden vectors；`index.json` 绑定每个 fixture 的 SHA-256。
+- `src/` 定义共享协议（包括 Snapshot Manifest、archive/manifest 两类加密 Envelope、AgentVersion、Broker、Worker Conversation Ready/Invocation durable facts、Sandbox 与 HTTP）、RFC 8785 JSON 规范化、Invocation 状态机、稳定错误和重试策略、Evidence Bundle、不变量、测试注册表，以及 AgentVersion、Snapshot Manifest 总量和 Snapshot 单文件的独立边界证据目录。
+- `fixtures/` 保存 Schema、WSS、状态机、canonical digest、AgentVersion、Snapshot Manifest 总量与单文件资源边界和 Evidence Bundle 的 golden vectors；`index.json` 绑定每个 fixture 的 SHA-256。
 - `schemas/contract-schemas.v1.json` 是从运行时 Zod 真源生成的 JSON Schema bundle。
 - `schemas/broker-contract.v1.json` 独立冻结 Broker handshake、registration、wire Envelope、Conversation Open authority、逻辑命令摘要、JCS canonicalization、WSS connect path/frame 上限与完整 close code/reason map；注册与握手携带它的 RFC 8785 SHA-256，但该产物自身不写入 digest 值。
 - `openapi/creator-agent-v1.openapi.json` 是 Creator 与 Consumer HTTP API 的 OpenAPI 3.1 契约。
@@ -21,7 +21,7 @@ Worker registration capability 与 Broker handshake 复用同一份 strict schem
 
 Creator/Consumer OpenAPI 中 11 个由服务端分配 ID 的路径参数统一引用 `ServerId`，其运行时与公开 Schema 都只接受 36 字符小写 UUIDv7。9 个公开 `Idempotency-Key` header 保持既有 generic UUID 契约；运行时 alias 的 UUID 版本语义仍需独立 ADR，本次边界收口不宣称二者已对齐。Evidence reviewer signoff 和不变量注册表的 Gate 集合最多包含 9 个且不得重复；reviewer signoff 继续要求词法递增，不变量注册表继续保留仅唯一、不强制排序的既有语义。
 
-资源边界 corpus 只证明运行时 parser 与公开 contract/OpenAPI 在已声明数值上的一致性，不替代产品政策冻结。Snapshot Manifest 的文件总数 2,000 与展开后 200 MiB 直接引用技术方案 5.2 和测试方案 SNP-002/003/006/007；AgentVersion `developerInstructions=32` 仍需资源上限 ADR。`SCH-004` 在其余公开边界未全部收口前保持 `planned`。
+资源边界 corpus 只证明运行时 parser 与公开 contract/OpenAPI 在已声明数值上的一致性，不替代产品政策冻结。Snapshot Manifest 的文件总数 2,000 与展开后 200 MiB 直接引用技术方案 5.2 和测试方案 SNP-002/003/006/007；独立的单文件 corpus 引用同一技术方案、SNP-004/005 和既有 ADR-VNEXT-003，并由 Snapshot 包使用真实非稀疏 UTF-8 文件补充 build-to-verify 机制证据。AgentVersion `developerInstructions=32` 仍需资源上限 ADR。`SCH-004` 在其余公开边界未全部收口前保持 `planned`。
 
 Worker 的 `prepared/started/succeeded/failed/cancelled/uncertain` 事实使用 `combo.worker-invocation-fact/1`。事实 ID 不是调用方任选值：prepared 固定使用 `prepareCommandId`，started 固定使用 `startCommandId`，全部 terminal fact 固定使用 `invocationId`；它不能复用会随 connection 重封装的 WebSocket `messageId`。事实内的 Lease/Fence 表示最初执行权威，重连后可以由新的外层传输 Lease/Fence 承载同一事实，但事实本身和 `factDigest` 不得改变。started 必须保存可查询的 Host `runtimeThreadId/runtimeTurnId`，succeeded 必须重复这两个 handle 并绑定 `startedFactDigest`。`factDigest` 对 Version、Snapshot、Execution Capability、原执行 Lease/Fence 及事件专属非敏感字段做 canonical SHA-256。Worker SQLite 与 PostgreSQL 必须分别重算并保存同一 digest，同 ID 不同 digest 只能 security-block，不能猜测或覆盖。
 

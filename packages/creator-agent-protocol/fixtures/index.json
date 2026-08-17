@@ -151,6 +151,11 @@
       "path": "snapshot-resource-boundaries.v1.json",
       "bytes": 3685,
       "digest": "sha256:eeab4e490e20189d73e31887e490765dcc9c1c796d76eab41acd997fbc8b2960"
+    },
+    {
+      "path": "snapshot-single-file-boundaries.v1.json",
+      "bytes": 2592,
+      "digest": "sha256:66280cb036a03de5a761fd066b61ec250cdd5bf7857f7ca055e9952b3738c484"
     }
   ]
 }
