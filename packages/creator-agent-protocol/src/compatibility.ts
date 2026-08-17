@@ -1,16 +1,16 @@
 import { z } from 'zod';
 
-import { Sha256DigestSchema } from './primitives.js';
+import { RequiredUnicodeScalarNoControlStringSchema, Sha256DigestSchema } from './primitives.js';
 
 export const PROTOCOL_VERSION_CORPUS = 'combo.protocol-version-corpus/1' as const;
 
 const DeclaredProtocolVersionSchema = z
   .object({
-    wireProtocol: z.string().min(1),
+    wireProtocol: RequiredUnicodeScalarNoControlStringSchema,
     wireSchemaVersion: z.number().int().positive(),
     supportedProtocolVersions: z.array(z.number().int().positive()).min(1),
     brokerContractDigest: Sha256DigestSchema,
-    handshakeFixture: z.string().min(1),
+    handshakeFixture: RequiredUnicodeScalarNoControlStringSchema,
     handshakeFixtureDigest: Sha256DigestSchema,
   })
   .strict();
@@ -29,7 +29,7 @@ const RejectedRegistrationSchema = z
     id: RejectedRegistrationIdSchema,
     advertisementLocus: z.literal('creator-oauth-registration'),
     protocolVersions: z.array(z.number().int().positive()).min(1),
-    advertisedValue: z.string().nullable(),
+    advertisedValue: RequiredUnicodeScalarNoControlStringSchema.nullable(),
     expectedError: z.enum([
       'WORKER_REGISTRATION_INCOMPATIBLE',
       'BROKER_CONTRACT_INCOMPATIBLE',

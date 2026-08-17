@@ -124,7 +124,7 @@ class JsonDuplicateKeyScanner {
     while (true) {
       if (this.input[this.offset] !== '"') this.fail('object key 必须是字符串');
       const key = this.scanString();
-      if (keys.has(key)) this.fail(`重复 JSON key: ${key}`);
+      if (keys.has(key)) this.fail('重复 JSON key');
       keys.add(key);
       this.skipWhitespace();
       this.expect(':');

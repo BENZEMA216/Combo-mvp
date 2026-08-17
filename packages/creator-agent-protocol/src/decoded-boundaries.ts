@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { Sha256DigestSchema } from './primitives.js';
+import {
+  OptionalUnicodeScalarNoControlStringSchema,
+  RequiredUnicodeScalarNoControlStringSchema,
+  Sha256DigestSchema,
+} from './primitives.js';
 
 export const PROTOCOL_DECODED_BOUNDARY_CORPUS = 'combo.protocol-decoded-boundaries/1' as const;
 
@@ -9,9 +13,7 @@ const CheckedArtifactSchema = z.enum(['contract-schemas', 'broker-contract', 'op
 const ArtifactPointerSchema = z
   .object({
     artifact: CheckedArtifactSchema,
-    pointer: z
-      .string()
-      .min(1)
+    pointer: RequiredUnicodeScalarNoControlStringSchema.min(1)
       .max(2_048)
       .regex(/^\/(?:[^~]|~[01])*$/u),
   })
@@ -65,8 +67,8 @@ const OwnerCaseSchema = z
       'snapshot-envelope.v1.json',
       'snapshot-manifest-envelope.v1.json',
     ]),
-    ownerPointer: z.string().regex(/^(?:|\/(?:[^~]|~[01])*)$/u),
-    valuePointer: z.string().regex(/^\/(?:[^~]|~[01])*$/u),
+    ownerPointer: OptionalUnicodeScalarNoControlStringSchema.regex(/^(?:|\/(?:[^~]|~[01])*)$/u),
+    valuePointer: RequiredUnicodeScalarNoControlStringSchema.regex(/^\/(?:[^~]|~[01])*$/u),
     repair: z.enum(['none', 'broker-sensitive-cipher-digest']),
   })
   .strict();

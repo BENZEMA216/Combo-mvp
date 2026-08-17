@@ -39,6 +39,19 @@ describe('RFC 8785 canonical JSON 与敏感摘要', () => {
     expect(() => canonicalizeJson(Number.POSITIVE_INFINITY)).toThrow(/非有限/u);
   });
 
+  it('重复 JSON key 错误不回显原始 key 正文', () => {
+    const canary = 'DUPLICATE_JSON_KEY_CANARY_DO_NOT_ECHO';
+    let thrown: unknown;
+    try {
+      parseJsonNoDuplicateKeys(`{"${canary}":1,"${canary}":2}`);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(SyntaxError);
+    expect(String((thrown as Error).message)).toMatch(/重复 JSON key/u);
+    expect(String((thrown as Error).message)).not.toContain(canary);
+  });
+
   it('domain、tenant key 和 payload 共同隔离 HMAC digest', () => {
     const payload = { text: '低熵内容' };
     const tenantA = Buffer.alloc(32, 0x11);

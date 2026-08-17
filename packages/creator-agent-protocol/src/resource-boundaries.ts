@@ -1,13 +1,11 @@
 import { z } from 'zod';
 
-import { Sha256DigestSchema } from './primitives.js';
+import { RequiredUnicodeScalarNoControlStringSchema, Sha256DigestSchema } from './primitives.js';
 
 export const AGENT_VERSION_RESOURCE_BOUNDARY_CORPUS =
   'combo.agent-version-resource-boundaries/1' as const;
 
-const JsonPointerSchema = z
-  .string()
-  .min(1)
+const JsonPointerSchema = RequiredUnicodeScalarNoControlStringSchema.min(1)
   .max(2_048)
   .regex(/^\/(?:[^~]|~[01])*$/u);
 

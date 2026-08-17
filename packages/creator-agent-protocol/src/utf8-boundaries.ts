@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { Sha256DigestSchema } from './primitives.js';
+import { RequiredUnicodeScalarNoControlStringSchema, Sha256DigestSchema } from './primitives.js';
 
 export const PROTOCOL_UTF8_BOUNDARY_CORPUS = 'combo.protocol-utf8-boundaries/1' as const;
 
@@ -9,9 +9,7 @@ const CheckedArtifactSchema = z.enum(['contract-schemas', 'broker-contract', 'op
 const Utf8ArtifactPointerSchema = z
   .object({
     artifact: CheckedArtifactSchema,
-    pointer: z
-      .string()
-      .min(1)
+    pointer: RequiredUnicodeScalarNoControlStringSchema.min(1)
       .max(2_048)
       .regex(/^\/(?:[^~]|~[01])*$/u),
   })

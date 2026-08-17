@@ -145,6 +145,20 @@ export const UNICODE_SCALAR_NO_CONTROL_PATTERN = new RegExp(
   UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE,
   'u',
 );
+export const UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN_SOURCE =
+  '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$';
+export const UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN = new RegExp(
+  UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN_SOURCE,
+  'u',
+);
+
+/** Internal fixture/corpus metadata: Unicode scalar values with no C0/C1 controls. */
+export const RequiredUnicodeScalarNoControlStringSchema = z
+  .string()
+  .regex(UNICODE_SCALAR_NO_CONTROL_PATTERN);
+export const OptionalUnicodeScalarNoControlStringSchema = z
+  .string()
+  .regex(UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN);
 
 export const Uint63StringSchema = z
   .string()

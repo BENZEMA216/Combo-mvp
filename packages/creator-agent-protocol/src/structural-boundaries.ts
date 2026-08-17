@@ -1,6 +1,10 @@
 import { z } from 'zod';
 
-import { Sha256DigestSchema } from './primitives.js';
+import {
+  OptionalUnicodeScalarNoControlStringSchema,
+  RequiredUnicodeScalarNoControlStringSchema,
+  Sha256DigestSchema,
+} from './primitives.js';
 
 export const PROTOCOL_STRUCTURAL_BOUNDARY_CORPUS =
   'combo.protocol-structural-boundaries/1' as const;
@@ -10,9 +14,7 @@ const CheckedArtifactSchema = z.enum(['contractSchemas', 'brokerContract', 'open
 const ArtifactPointerSchema = z
   .object({
     artifact: CheckedArtifactSchema,
-    pointer: z
-      .string()
-      .min(1)
+    pointer: RequiredUnicodeScalarNoControlStringSchema.min(1)
       .max(2_048)
       .regex(/^\/(?:[^~]|~[01])*$/u),
   })
@@ -65,17 +67,13 @@ const UnicodeRuntimeOwnerIdSchema = z.enum([
 const UnicodeRuntimeOwnerSchema = z
   .object({
     id: UnicodeRuntimeOwnerIdSchema,
-    source: z.string().min(1).max(180),
-    runtimeParser: z.string().min(1).max(96),
-    fixtureSource: z.string().min(1).max(180),
+    source: RequiredUnicodeScalarNoControlStringSchema.max(180),
+    runtimeParser: RequiredUnicodeScalarNoControlStringSchema.max(96),
+    fixtureSource: RequiredUnicodeScalarNoControlStringSchema.max(180),
     fixtureFormat: z.enum(['json', 'yaml', 'inline']),
-    ownerPointer: z
-      .string()
-      .max(512)
-      .regex(/^(?:|\/(?:[^~]|~[01])*)$/u),
-    instancePointer: z
-      .string()
-      .min(1)
+    ownerPointer:
+      OptionalUnicodeScalarNoControlStringSchema.max(512).regex(/^(?:|\/(?:[^~]|~[01])*)$/u),
+    instancePointer: RequiredUnicodeScalarNoControlStringSchema.min(1)
       .max(512)
       .regex(/^\/(?:[^~]|~[01])*$/u),
     minimumCodePoints: z.number().int().nonnegative(),
@@ -185,11 +183,9 @@ const HttpBoundarySchema = z
 
 const OwnerFixtureSchema = z
   .object({
-    path: z.string().min(1).max(512),
+    path: RequiredUnicodeScalarNoControlStringSchema.max(512),
     format: z.enum(['json', 'yaml']),
-    valuePointer: z
-      .string()
-      .min(1)
+    valuePointer: RequiredUnicodeScalarNoControlStringSchema.min(1)
       .max(512)
       .regex(/^\/(?:[^~]|~[01])*$/u),
   })
@@ -214,9 +210,7 @@ const GateSetBoundarySchema = z
     runtimeParser: z.enum(['EvidenceReviewerSignoffSchema', 'InvariantRegistrySchema']),
     contractSchema: z.enum(['EvidenceReviewerSignoff', 'InvariantRegistry']),
     ownerFixture: OwnerFixtureSchema,
-    contractPointer: z
-      .string()
-      .min(1)
+    contractPointer: RequiredUnicodeScalarNoControlStringSchema.min(1)
       .max(2_048)
       .regex(/^\/(?:[^~]|~[01])*$/u),
     minimumItems: z.literal(1),
