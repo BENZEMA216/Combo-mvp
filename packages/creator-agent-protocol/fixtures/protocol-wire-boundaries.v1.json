@@ -2,6 +2,7 @@
   "protocol": "combo.protocol-wire-boundaries/1",
   "schemaVersion": 1,
   "scope": "broker-wire-and-parsed-evidence-json-bytes-only",
+  "evidenceClass": "runtime-to-advertised-alignment-only",
   "authorities": {
     "brokerFrameBytes": 65536,
     "structuredEvidenceJsonBytes": 1048576
@@ -45,6 +46,29 @@
     "protocol",
     "agent-gateway-loopback-websocket",
     "worker-broker-client-loopback-websocket"
+  ],
+  "advertisedBoundary": {
+    "artifact": "schemas/broker-contract.v1.json",
+    "digest": "sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f",
+    "pointer": "/maxFrameBytes",
+    "maximumBytes": 65536,
+    "authorityKind": "runtime-to-advertised-alignment-only"
+  },
+  "actualIngressPhases": [
+    "agent-gateway-handshake",
+    "agent-gateway-established-frame",
+    "worker-broker-client-first-lease",
+    "worker-broker-client-established-frame"
+  ],
+  "outcomeCounts": { "protocolParsers": 6, "actualIngress": 12, "total": 18 },
+  "actualIngressExclusions": [
+    "tls-and-public-wss",
+    "fragmentation-and-extension-negotiation",
+    "load-and-backpressure",
+    "e3-public-cloud-ingress",
+    "production",
+    "does-not-freeze-65536-as-product-policy",
+    "does-not-complete-sch-004"
   ],
   "remainingBoundaryClasses": [
     "other-structural-string-patterns",

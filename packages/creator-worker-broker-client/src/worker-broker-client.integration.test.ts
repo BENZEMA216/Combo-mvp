@@ -19,6 +19,7 @@ import {
   BrokerHandshakeUnsignedSchema,
   BrokerCloseCode,
   BrokerCloseReason,
+  ProtocolWireBoundaryCorpusSchema,
   brokerHandshakeSigningBytes,
   canonicalSha256,
   canonicalizeJson,
@@ -62,6 +63,10 @@ const SENT_AT = '2026-08-13T08:00:00.000Z';
 const FRAME_EXPIRES_AT = '2026-08-13T08:01:00.000Z';
 const brokerCapacityCorpusUrl = new URL(
   '../../creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json',
+  import.meta.url,
+);
+const wireBoundaryCorpusUrl = new URL(
+  '../../creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json',
   import.meta.url,
 );
 
@@ -130,6 +135,103 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(broker.connectionCount).toBe(1);
     expect(durable.committed).toHaveLength(1);
   });
+
+  it('binds all Worker first-lease and established-frame size offsets to the wire corpus', async () => {
+    const corpus = ProtocolWireBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(wireBoundaryCorpusUrl, 'utf8')),
+    );
+    expect(corpus.actualIngressPhases.slice(2)).toEqual([
+      'worker-broker-client-first-lease',
+      'worker-broker-client-established-frame',
+    ]);
+    expect(corpus.outcomeCounts.actualIngress).toBe(
+      corpus.actualIngressPhases.length * corpus.sizeOffsets.length,
+    );
+    let outcomes = 0;
+
+    for (const offset of corpus.sizeOffsets) {
+      const durable = new FakeDurablePort();
+      const broker = await startBroker({ initialGrantSizeOffset: offset });
+      const client = createClient(broker.url, durable, {
+        reconnectInitialMs: 100,
+        reconnectMaximumMs: 100,
+      });
+      const businessBefore = {
+        committed: durable.committed.length,
+        commitInboundCalls: durable.commitInboundCalls,
+        replayed: durable.replayed.length,
+        gaps: durable.gaps.length,
+      };
+      await client.start();
+      if (offset <= 0) {
+        await waitFor(() => client.status === 'READY');
+        expect(durable.committed, `first-lease:${offset}`).toHaveLength(1);
+      } else {
+        await waitFor(() => broker.connectionCount >= 2, 2_000);
+        expect(
+          {
+            committed: durable.committed.length,
+            commitInboundCalls: durable.commitInboundCalls,
+            replayed: durable.replayed.length,
+            gaps: durable.gaps.length,
+          },
+          `first-lease:${offset}`,
+        ).toEqual(businessBefore);
+      }
+      await client.stop();
+      activeClients.delete(client);
+      outcomes += 1;
+    }
+
+    for (const offset of corpus.sizeOffsets) {
+      const durable = new FakeDurablePort();
+      const broker = await startBroker();
+      const client = createClient(broker.url, durable, {
+        reconnectInitialMs: 100,
+        reconnectMaximumMs: 100,
+      });
+      await client.start();
+      await waitFor(() => client.status === 'READY');
+      const baseline = durable.committed.length;
+      const commitInboundBefore = durable.commitInboundCalls;
+      const replayedBefore = durable.replayed.length;
+      const gapsBefore = durable.gaps.length;
+      const releaseBefore = durable.releaseConnectionCalls;
+      const connection = broker.connections[0]!;
+      const messageId = uuid(920 + offset);
+      const command = pingCommand({
+        connectionId: connection.connectionId,
+        sequence: '1',
+        lease: leaseBinding(LEASE_A, '7'),
+        messageId,
+      });
+      const frame = padWireFrame(canonicalizeJson(command), offset);
+      expect(Buffer.byteLength(frame, 'utf8')).toBe(BROKER_MAX_FRAME_BYTES + offset);
+      connection.socket.send(frame);
+      if (offset <= 0) {
+        await waitFor(() => durable.committed.length === baseline + 1);
+        expect(
+          durable.committed.some((item) => item.messageId === messageId),
+          `established:${offset}`,
+        ).toBe(true);
+      } else {
+        await waitFor(() => broker.connectionCount >= 2, 2_000);
+        expect(
+          durable.committed.some((item) => item.messageId === messageId),
+          `established:${offset}`,
+        ).toBe(false);
+        expect(durable.commitInboundCalls, `established:${offset}`).toBe(commitInboundBefore);
+        expect(durable.replayed.length, `established:${offset}`).toBe(replayedBefore);
+        expect(durable.gaps.length, `established:${offset}`).toBe(gapsBefore);
+        await waitFor(() => durable.releaseConnectionCalls > releaseBefore);
+      }
+      await client.stop();
+      activeClients.delete(client);
+      outcomes += 1;
+    }
+
+    expect(outcomes).toBe(corpus.outcomeCounts.actualIngress / 2);
+  }, 20_000);
 
   it('never enters READY when the required conversation.ready replay reducer fails', async () => {
     const durable = new FakeDurablePort();
@@ -1014,6 +1116,7 @@ type FakeBrokerOptions = Readonly<{
   malformedFirstFrame?: boolean;
   invalidUtf8FirstFrame?: boolean;
   maximumSizeInitialGrant?: boolean;
+  initialGrantSizeOffset?: -1 | 0 | 1;
   rejectInstallationBeforeGrant?: boolean;
   initialGrantDelayMs?: number;
 }>;
@@ -1135,11 +1238,12 @@ class FakeBroker {
           sentAt: new Date(this.#baseNow + index * 1_000).toISOString(),
           leaseExpiresAt: this.leaseExpiresAt(index),
         });
-        if (this.#options.maximumSizeInitialGrant) {
+        const sizeOffset =
+          this.#options.initialGrantSizeOffset ??
+          (this.#options.maximumSizeInitialGrant === true ? 0 : undefined);
+        if (sizeOffset !== undefined) {
           const json = canonicalizeJson(grant);
-          const paddingBytes = BROKER_MAX_FRAME_BYTES - Buffer.byteLength(json, 'utf8');
-          if (paddingBytes < 0) throw new TypeError('INITIAL_GRANT_EXCEEDS_BROKER_MAX_FRAME_BYTES');
-          socket.send(`${json}${' '.repeat(paddingBytes)}`);
+          socket.send(padWireFrame(json, sizeOffset));
         } else if ((this.#options.initialGrantDelayMs ?? 0) > 0) {
           const timer = setTimeout(
             () => this.send(socket, grant),
@@ -1159,6 +1263,12 @@ class FakeBroker {
       }
     });
   }
+}
+
+function padWireFrame(json: string, offset: -1 | 0 | 1): string {
+  const paddingBytes = BROKER_MAX_FRAME_BYTES + offset - Buffer.byteLength(json, 'utf8');
+  if (paddingBytes < 0) throw new TypeError('WIRE_BOUNDARY_BASE_FRAME_TOO_LARGE');
+  return `${json}${' '.repeat(paddingBytes)}`;
 }
 
 class FakeDurablePort implements WorkerBrokerDurableTransportPort {

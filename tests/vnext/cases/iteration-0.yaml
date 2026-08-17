@@ -457,7 +457,7 @@ cases:
       - sha256:19223bcfda15eaa0d7fcf485ecd27ae176edd960a2a172074d38802e2f8a1f9c
       - sha256:47dcc8a01fac526e0a52b58989a0067123fe7f1289e338c0a24ace2098e2047b
       - sha256:3f59901e004372afafa698bb497edcb1deeefb01654a1eca543dc3b4cf925862
-      - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
+      - sha256:3982e6c2f365f83f5af8896147ad12ddd6d977fa33be2a052ee2d21fe3cd77ad
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
@@ -473,7 +473,7 @@ cases:
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
       - sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca
       - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
-      - sha256:650aa906b1c31ae224cb2d9e22dd3e5e15cacb3f2ce0c34307449ef1d3c4cb11
+      - sha256:3982e6c2f365f83f5af8896147ad12ddd6d977fa33be2a052ee2d21fe3cd77ad
   - <<: *sch
     id: SCH-006
     title: Runtime and generated schemas cannot drift

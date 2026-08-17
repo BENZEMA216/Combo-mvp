@@ -13,6 +13,7 @@ import { readFixture } from './fixture-helpers.js';
 
 const UTF8_SENTINEL = 'UTF8_SENTINEL';
 const corpusUrl = new URL('../../fixtures/protocol-wire-boundaries.v1.json', import.meta.url);
+const brokerContractUrl = new URL('../../schemas/broker-contract.v1.json', import.meta.url);
 
 async function readCorpus(): Promise<ProtocolWireBoundaryCorpus> {
   return ProtocolWireBoundaryCorpusSchema.parse(JSON.parse(await readFile(corpusUrl, 'utf8')));
@@ -105,6 +106,41 @@ describe('Broker wire byte boundaries', () => {
       'supportingArtifacts.environment.json',
       'supportingArtifacts.privacy-scan.json',
     ]);
+    expect(corpus.evidenceClass).toBe('runtime-to-advertised-alignment-only');
+    expect(corpus.actualIngressPhases).toEqual([
+      'agent-gateway-handshake',
+      'agent-gateway-established-frame',
+      'worker-broker-client-first-lease',
+      'worker-broker-client-established-frame',
+    ]);
+    expect(corpus.outcomeCounts).toEqual({
+      protocolParsers: 6,
+      actualIngress: 12,
+      total: 18,
+    });
+    expect(corpus.outcomeCounts.protocolParsers).toBe(2 * corpus.sizeOffsets.length);
+    expect(corpus.outcomeCounts.actualIngress).toBe(
+      corpus.actualIngressPhases.length * corpus.sizeOffsets.length,
+    );
+    expect(corpus.outcomeCounts.total).toBe(
+      corpus.outcomeCounts.protocolParsers + corpus.outcomeCounts.actualIngress,
+    );
+    expect(corpus.actualIngressExclusions).toEqual([
+      'tls-and-public-wss',
+      'fragmentation-and-extension-negotiation',
+      'load-and-backpressure',
+      'e3-public-cloud-ingress',
+      'production',
+      'does-not-freeze-65536-as-product-policy',
+      'does-not-complete-sch-004',
+    ]);
+    const brokerContractBytes = await readFile(brokerContractUrl);
+    expect(sha256(brokerContractBytes)).toBe(corpus.advertisedBoundary.digest);
+    const brokerContract = JSON.parse(brokerContractBytes.toString('utf8')) as {
+      maxFrameBytes?: number;
+    };
+    expect(corpus.advertisedBoundary.pointer).toBe('/maxFrameBytes');
+    expect(brokerContract.maxFrameBytes).toBe(corpus.advertisedBoundary.maximumBytes);
 
     for (const fixture of corpus.baseFixtures) {
       const bytes = await readFile(new URL(`../../fixtures/${fixture.path}`, import.meta.url));
@@ -118,6 +154,7 @@ describe('Broker wire byte boundaries', () => {
       ['broker-handshake.v1.json', parseBrokerHandshake],
       ['broker-invocation-prepare.v1.json', parseBrokerFrame],
     ] as const;
+    let outcomes = 0;
 
     for (const [fixturePath, parser] of parsers) {
       const input = JSON.parse(
@@ -128,10 +165,13 @@ describe('Broker wire byte boundaries', () => {
         const bytes = padJsonToBytes(json, corpus.authorities.brokerFrameBytes + offset);
         expect(bytes.byteLength).toBe(corpus.authorities.brokerFrameBytes + offset);
         expect(() => parser(bytes), `${fixturePath}:${offset}`).not.toThrow();
+        outcomes += 1;
       }
       const oversized = padJsonToBytes(json, corpus.authorities.brokerFrameBytes + 1);
       expect(() => parser(oversized), `${fixturePath}:+1`).toThrow();
+      outcomes += 1;
     }
+    expect(outcomes).toBe(corpus.outcomeCounts.protocolParsers);
   });
 
   it('SCH-005 rejects every representative malformed UTF-8 class in binary handshake and frame input', async () => {

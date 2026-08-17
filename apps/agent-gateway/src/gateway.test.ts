@@ -9,6 +9,7 @@ import {
   BrokerAckSchema,
   BrokerEnvelopeSchema,
   BrokerHandshakeSchema,
+  ProtocolWireBoundaryCorpusSchema,
   canonicalizeJson,
   currentBrokerContractDigest,
   type BrokerAck,
@@ -51,6 +52,10 @@ const PREVIOUS_BROKER_CONTRACT_DIGEST =
   'sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73';
 const brokerCapacityCorpusUrl = new URL(
   '../../../packages/creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json',
+  import.meta.url,
+);
+const wireBoundaryCorpusUrl = new URL(
+  '../../../packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json',
   import.meta.url,
 );
 
@@ -767,6 +772,100 @@ describe('AgentGateway real WebSocket transport', () => {
     expect(authority.gaps).toHaveLength(0);
   });
 
+  it('binds all Gateway handshake and established-frame size offsets to the wire corpus', async () => {
+    const corpus = ProtocolWireBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(wireBoundaryCorpusUrl, 'utf8')),
+    );
+    expect(corpus.actualIngressPhases.slice(0, 2)).toEqual([
+      'agent-gateway-handshake',
+      'agent-gateway-established-frame',
+    ]);
+    expect(corpus.outcomeCounts.actualIngress).toBe(
+      corpus.actualIngressPhases.length * corpus.sizeOffsets.length,
+    );
+    let outcomes = 0;
+
+    for (const offset of corpus.sizeOffsets) {
+      const authority = new FakeAuthority();
+      const started = await startGateway(authority);
+      const socket = await connect(started.url);
+      const frame = padWireFrame(canonicalizeJson(handshake(CHALLENGE_A)), offset);
+      const businessBefore = {
+        authenticateStarted: authority.authenticateStarted,
+        sessions: authority.sessions.length,
+        accepted: authority.accepted.length,
+        replayed: authority.replayed.length,
+        gaps: authority.gaps.length,
+      };
+      expect(Buffer.byteLength(frame, 'utf8')).toBe(BROKER_MAX_FRAME_BYTES + offset);
+      if (offset <= 0) {
+        socket.send(frame);
+        await waitFor(() => started.gateway.activeConnections === 1);
+        expect(authority.authenticateStarted, `handshake:${offset}`).toBe(1);
+        expect(authority.sessions, `handshake:${offset}`).toHaveLength(1);
+      } else {
+        const close = closeResult(socket);
+        socket.send(frame);
+        await within('OVERSIZED_HANDSHAKE_CLOSE_TIMEOUT', close);
+        expect(
+          {
+            authenticateStarted: authority.authenticateStarted,
+            sessions: authority.sessions.length,
+            accepted: authority.accepted.length,
+            replayed: authority.replayed.length,
+            gaps: authority.gaps.length,
+          },
+          `handshake:${offset}`,
+        ).toEqual(businessBefore);
+      }
+      await started.gateway.stop();
+      activeGateways.delete(started.gateway);
+      outcomes += 1;
+    }
+
+    for (const offset of corpus.sizeOffsets) {
+      const authority = new FakeAuthority();
+      const started = await startGateway(authority);
+      const socket = await connect(started.url);
+      socket.send(canonicalizeJson(handshake(CHALLENGE_A)));
+      await waitFor(() => started.gateway.activeConnections === 1);
+      const event = heartbeat(CONNECTION_A, SESSION_A, '0', HEARTBEAT_A);
+      const frame = padWireFrame(canonicalizeJson(event), offset);
+      const businessBefore = {
+        accepted: authority.accepted.length,
+        replayed: authority.replayed.length,
+        gaps: authority.gaps.length,
+      };
+      const closedBefore = authority.closed.length;
+      expect(Buffer.byteLength(frame, 'utf8')).toBe(BROKER_MAX_FRAME_BYTES + offset);
+      if (offset <= 0) {
+        socket.send(frame);
+        await waitFor(() => authority.accepted.length === 1);
+        expect(authority.accepted[0]?.envelope.messageId, `established:${offset}`).toBe(
+          HEARTBEAT_A,
+        );
+      } else {
+        const close = closeResult(socket);
+        socket.send(frame);
+        await within('OVERSIZED_ESTABLISHED_CLOSE_TIMEOUT', close);
+        expect(
+          {
+            accepted: authority.accepted.length,
+            replayed: authority.replayed.length,
+            gaps: authority.gaps.length,
+          },
+          `established:${offset}`,
+        ).toEqual(businessBefore);
+        await waitFor(() => authority.closed.length > closedBefore);
+      }
+      await started.gateway.stop();
+      activeGateways.delete(started.gateway);
+      outcomes += 1;
+    }
+
+    expect(outcomes).toBe(corpus.outcomeCounts.actualIngress / 2);
+  });
+
   it('bounds one outbound authority batch before parsing or writing its frames', async () => {
     const authority = new FakeAuthority();
     authority.oversizedAcceptResponse = true;
@@ -991,6 +1090,12 @@ function handshake(challengeId: string): BrokerHandshake {
     challengeId,
     challengeSignature: SIGNATURE,
   });
+}
+
+function padWireFrame(json: string, offset: -1 | 0 | 1): string {
+  const paddingBytes = BROKER_MAX_FRAME_BYTES + offset - Buffer.byteLength(json, 'utf8');
+  if (paddingBytes < 0) throw new TypeError('WIRE_BOUNDARY_BASE_FRAME_TOO_LARGE');
+  return `${json}${' '.repeat(paddingBytes)}`;
 }
 
 function heartbeat(

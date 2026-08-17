@@ -9,7 +9,7 @@
 - `src/sqlite-invocation-journal.ts` 在上述同一个 `journal-v1.sqlite`/WAL 中实现防御性 storage schema v4 的 Worker Invocation 与 `conversation.ready` authority：READY Conversation、immutable ready fact/logical outbox、PREPARED/STARTING/RUNNING/FINAL_READY/CLOUD_COMMITTED/UNCERTAIN、append-only facts/outbox、一次性 Host dispatch permit、Worker-Keychain Prompt/result AEAD、当前 Session 上行转封装和 self-contained exact Cloud ACK receipt。
 - `src/stored-broker-envelope.ts` 是只供 SQLite 历史读取的版本化 decoder：保留 c687 五字段 `conversation.open` 原始 canonical bytes/digest，不进入 WebSocket/live parser，也不改写旧 row。
 - `src/index.ts` 导出客户端、DeviceSigner、Challenge 与 durable transport 端口。
-- `src/worker-broker-client.integration.test.ts` 通过真实回环 WebSocket socket 和 Fake Broker 验证 `Real Worker transport ↔ Fake Broker` 契约。
+- `src/worker-broker-client.integration.test.ts` 通过真实回环 WebSocket socket 和 Fake Broker 验证 `Real Worker transport ↔ Fake Broker` 契约，并把 wire corpus 的 N-1/N/N+1 分别送入 first lease 与 established frame；N+1 target payload 不进入 activate/commitInbound/replay/gap，关闭后仍允许 `releaseConnection`、重连和新 Lease lifecycle。
 - `src/sqlite-durable-transport.test.ts` 使用真实 SQLite 文件、独立子进程和真实回环 `AgentGateway` 验证 WAL/FULL 回读、文件权限、owner CAS、事务/abort、SIGKILL 窗口、WAL 单独丢失、opaque command references、迁移重入、最大 backlog 重组、bounded retention、字节配额及 AEAD-only 落盘。
 - `src/sqlite-invocation-journal.test.ts` 验证 100 路 prepare 幂等、同一 command 跨 connection 重封装、prepare/start/final exact replay、Host 一次性 dispatch、STARTING crash→UNCERTAIN、Prompt/result AEAD、ACK 丢失、七天 retention、pinned-reader sensitive checkpoint 与 raw DB/WAL/SHM canary 清除。
 - `src/postgres-sqlite-vertical.pg.test.ts` 在显式测试开关下连接 disposable PostgreSQL，以真实 P-256 握手、真实 Gateway、真实 Worker 客户端和真实文件 SQLite 验证 Cloud-time Lease 续约、Gateway 重启重连、Fence 提升、Journal 重开、双向 message ID/digest 对账、WebSocket payload 原字节重复与 PostgreSQL COMMIT-response-loss 恢复。
@@ -64,7 +64,7 @@ CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST=1 \
 标准 `test` 入口会先按依赖顺序构建 Protocol、Broker Journal 与 Gateway，避免 fresh
 worktree 或刚集成提交时读取旧 `dist` 产生假绿/假红。
 
-`worker-broker-client.integration.test.ts` 属于 `E3 Contract/Fake System`：WebSocket 客户端与回环 socket 是真实实现，Broker、Challenge、DeviceSigner 和 durable port 是测试替身。
+`worker-broker-client.integration.test.ts` 属于 `E3 Contract/Fake System`：WebSocket 客户端与回环 socket 是真实实现，Broker、Challenge、DeviceSigner 和 durable port 是测试替身。whole-wire 结果只对齐当前 runtime 与 Broker contract，不覆盖 TLS/public WSS、fragmentation/extension negotiation、负载/backpressure、E3 公网云或 Production。
 
 `sqlite-durable-transport.test.ts` 与 `sqlite-invocation-journal.test.ts` 提供本机 `E2 SQLite` 证据，并覆盖真实 Worker client ↔ 真实回环 Gateway 的纵向切片；Challenge、DeviceSigner、Capability/Keychain/Host/Cloud ACK authority 和 Gateway authority 仍是测试端口。它们能证明真实文件上的 PRAGMA/事务/CAS、两进程竞争、1,050 次 clean reconnect、retained connection 总上限、512-row 最大 backlog、1,024+ 古老 durable replay、opaque command reference、owner/revoke isolation、v1→v2→v3→v4 前置完整性验证、READY backfill、内容型 watermark 与真实 SIGKILL、同 connection 丢失 response 后 exact replay、Invocation 本地状态机、WAL 单独移除、pinned-reader sensitive purge、row deletion/state/AEAD tamper fail-closed、bounded prune、DB/WAL admission 配额和 raw DB/WAL/SHM 敏感 canary 清除。`synchronous=FULL` 与 checkpoint 回读仍不等于真实断电/磁盘固件测试；同盘 watermark 也不等于 Cloud reconciliation 或异机备份恢复。这一切只算 SQLite tranche，不证明 Secure Enclave、真实 OAuth、真实 Cloud Execution Capability/KMS/Host、加密备份恢复、PostgreSQL/Redis/MinIO Cloud Journal、公网 TLS、NAT、真实 Linux/Mac VM、Test Cloud、24h soak 或 Gate 3/4。
 
