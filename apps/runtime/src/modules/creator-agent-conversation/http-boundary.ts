@@ -38,6 +38,14 @@ export function requireVnextMutationOrigin(): preHandlerHookHandler {
   };
 }
 
+export function requireVnextBodySchema(schema: {
+  safeParse(input: unknown): { success: true } | { success: false };
+}): preHandlerHookHandler {
+  return async (req, reply) => {
+    if (!schema.safeParse(req.body).success) return sendVnextError(req, reply, 'INVALID_INPUT');
+  };
+}
+
 function hasAlternateCredential(req: FastifyRequest): boolean {
   const query = req.query as { token?: unknown; access_token?: unknown } | undefined;
   return (

@@ -238,6 +238,7 @@ describe('VNext machine-readable contract registries', () => {
       'INV-002',
       'INV-024',
     ]);
+    expect(cases.find(({ id }) => id === 'SCH-005')?.invariants).toEqual(['INV-002', 'INV-019']);
     expect(cases.find(({ id }) => id === 'SCH-010')?.invariants).toEqual([
       'INV-001',
       'INV-002',

@@ -461,6 +461,7 @@ cases:
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
+    invariants: [INV-002, INV-019]
     fixture:
       - packages/creator-agent-protocol/fixtures/snapshot-manifest.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json

@@ -1,6 +1,6 @@
 # Creator-hosted Agent Conversation 模块（默认关闭）
 
-本目录是不可公开启用的 expand-only groundwork。`repo.ts` 使用 exact `combo_agent_consumer_api`，在单个 PostgreSQL transaction 中校验邀请授权、Deployment、serving AgentVersion、exact Worker Lease/Fence 和幂等请求，再调用窄 `creator_agent_create_opening_conversation_v2` definer 原子创建固定 Version/Worker 的 `OPENING` Conversation 与 payload-v1 `conversation.open` Outbox command。`handlers.ts` 只解析冻结 HTTP schema、调用仓储并返回稳定错误。`routes.ts` 定义 `/v1/public/agents/:slug/conversations`；只有 `CREATOR_AGENT_PUBLIC_ENABLED=true` 才注册。所有受支持部署都保持 false，false 时专用连接池不初始化且 readiness 不依赖它。
+本目录是不可公开启用的 expand-only groundwork。`repo.ts` 使用 exact `combo_agent_consumer_api`，在单个 PostgreSQL transaction 中校验邀请授权、Deployment、serving AgentVersion、exact Worker Lease/Fence 和幂等请求，再调用窄 `creator_agent_create_opening_conversation_v2` definer 原子创建固定 Version/Worker 的 `OPENING` Conversation 与 payload-v1 `conversation.open` Outbox command。`handlers.ts` 只解析冻结 HTTP schema、调用仓储并返回稳定错误。`routes.ts` 定义当前唯一 VNext ingress `/v1/public/agents/:slug/conversations`；只有 `CREATOR_AGENT_PUBLIC_ENABLED=true` 才注册。该 route child plugin 只接受 case-insensitive `application/json`，可带至多一个 `charset=utf-8`（允许 OWS 与 quoted `utf-8`），Content-Encoding 只允许缺失或 `identity`；它用 Buffer content parser 在任何 preHandler 前执行 fatal UTF-8 decode 与 duplicate-key scan，再按 Origin、body schema、Auth 的顺序进入业务边界。其他 media type/parameter/encoding，以及 malformed、duplicate、unknown 或超限 body，都返回不附带 parser input/issues/cause 的 `INVALID_INPUT`，且不会进入 auth/Creator PostgreSQL 或 Conversation/Outbox transaction。parser 继续复用 Runtime 既有 4 MiB body ceiling；这不是新冻结的 VNext body-size policy。所有受支持部署都保持 false，false 时专用连接池不初始化且 readiness 不依赖它。
 
 公开 slug 只用于定位 Agent。没有有效 `agent_access_grants` 行、Deployment 未真正 ONLINE、版本不可用或 Lease/Fence 不匹配时不会创建 Conversation。当前目录只实现默认关闭的 Conversation create groundwork；发送消息、读取 transcript、SSE、取消和重试由后续同一 VNext 模块补齐。
 
@@ -21,3 +21,5 @@ Runtime 目前只为 `COMBO_ENVIRONMENT=test` 接入 `test-k8s-secret-file`：�
 3. 公网 API/WSS、Cloud Journal、Worker sandbox open/ready 与 Consumer browser E2E。
 
 因此本目录的测试只证明默认关闭边界、HTTP wire 契约、visible-transcript HMAC primitive、create/open/ready 的 PostgreSQL authority、并发幂等和 fault rollback；不证明 production KMS adapter 或 Consumer Experience Gate。
+
+当前 raw-body 证据用真实 loopback HTTP 覆盖上述 media-type/encoding allowlist、五类 malformed UTF-8、BOM、root/nested duplicate、syntax、escaped surrogate/control、unknown key 与声明的 Content-Length 4 MiB + 1；helper 另以实际 N/N+1 bytes 锁定同一 ceiling。它没有新增压缩 Content-Encoding 接受语义，也不把 chunked/slowloris、Ingress proxy、public TLS 或负载测试冒充已完成 Gate。
