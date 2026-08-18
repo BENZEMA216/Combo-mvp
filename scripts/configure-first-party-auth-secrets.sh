@@ -79,7 +79,7 @@ patch_kubernetes_environment() {
     exit 1
   }
 
-  # Python generates a fresh, independent OTP secret and three URL-safe role
+  # Python generates a fresh, independent OTP secret and five URL-safe role
   # passwords for this environment. Generated values flow only into kubectl stdin.
   if ! printf '%s\0%s\0%s\0' "$resend_key" "$before_uid" "$before_rv" |
     python3 -c '
@@ -89,11 +89,11 @@ if len(parts) != 4 or parts[-1] != b"":
     raise SystemExit(2)
 resend, uid, rv = parts[:-1]
 generated = [secrets.token_urlsafe(48)] + [
-    secrets.token_urlsafe(36) for _ in range(3)
+    secrets.token_urlsafe(36) for _ in range(5)
 ]
-if len(set(generated)) != 4:
+if len(set(generated)) != 6:
     raise SystemExit(2)
-otp, api, worker, runtime = (value.encode("ascii") for value in generated)
+otp, api, worker, runtime, authz, billing = (value.encode("ascii") for value in generated)
 encode = lambda value: base64.b64encode(value).decode("ascii")
 patch = [
     {"op": "test", "path": "/metadata/uid", "value": uid.decode()},
@@ -104,6 +104,8 @@ patch = [
     {"op": "add", "path": "/data/POSTGRES_API_PASSWORD", "value": encode(api)},
     {"op": "add", "path": "/data/POSTGRES_WORKER_PASSWORD", "value": encode(worker)},
     {"op": "add", "path": "/data/POSTGRES_RUNTIME_PASSWORD", "value": encode(runtime)},
+    {"op": "add", "path": "/data/POSTGRES_AUTHZ_PASSWORD", "value": encode(authz)},
+    {"op": "add", "path": "/data/POSTGRES_BILLING_PASSWORD", "value": encode(billing)},
 ]
 sys.stdout.write(json.dumps(patch, separators=(",", ":")))
 ' |

@@ -42,6 +42,12 @@ spec:
             - name: POSTGRES_RUNTIME_PASSWORD
               valueFrom:
                 secretKeyRef: { name: combo-env, key: POSTGRES_RUNTIME_PASSWORD }
+            - name: POSTGRES_AUTHZ_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_AUTHZ_PASSWORD }
+            - name: POSTGRES_BILLING_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_BILLING_PASSWORD }
           resources:
             requests:
               memory: 128Mi

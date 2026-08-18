@@ -6,6 +6,8 @@ const PASSWORD_KEYS = {
   combo_api: 'POSTGRES_API_PASSWORD',
   combo_worker: 'POSTGRES_WORKER_PASSWORD',
   combo_runtime: 'POSTGRES_RUNTIME_PASSWORD',
+  combo_authz: 'POSTGRES_AUTHZ_PASSWORD',
+  combo_billing: 'POSTGRES_BILLING_PASSWORD',
 } as const;
 
 type ApplicationRole = keyof typeof PASSWORD_KEYS;
@@ -60,7 +62,7 @@ pgDescribe('application database roles on PostgreSQL', () => {
     await Promise.all([owner.end(), ...[...clients.values()].map((client) => client.end())]);
   });
 
-  it('allows all three constrained roles to log in under their exact identity', async () => {
+  it('allows all five constrained roles to log in under their exact identity', async () => {
     for (const [role, client] of clients) {
       const result = await client.query<{ current_user: string; can_login: boolean }>(
         `SELECT current_user, rolcanlogin AS can_login
@@ -88,6 +90,98 @@ pgDescribe('application database roles on PostgreSQL', () => {
     expect(await privilege(runtime, 'has_table_privilege', 'public.auth_sessions', 'INSERT')).toBe(
       false,
     );
+  });
+
+  it('gives authz least privileges on the v2 end-user tables and keeps creator roles out', async () => {
+    const api = clients.get('combo_api')!;
+    const worker = clients.get('combo_worker')!;
+    const runtime = clients.get('combo_runtime')!;
+    const authz = clients.get('combo_authz')!;
+
+    for (const action of ['SELECT', 'INSERT']) {
+      expect(await privilege(authz, 'has_table_privilege', 'public.v2_users', action)).toBe(true);
+      expect(await privilege(authz, 'has_table_privilege', 'public.v2_identities', action)).toBe(
+        true,
+      );
+    }
+    for (const table of ['v2_auth_challenges', 'v2_sessions']) {
+      for (const action of ['SELECT', 'INSERT', 'UPDATE']) {
+        expect(
+          await privilege(authz, 'has_table_privilege', `public.${table}`, action),
+          `${table} ${action}`,
+        ).toBe(true);
+      }
+    }
+    for (const table of ['v2_users', 'v2_identities', 'v2_auth_challenges', 'v2_sessions']) {
+      expect(await privilege(authz, 'has_table_privilege', `public.${table}`, 'DELETE')).toBe(
+        false,
+      );
+      for (const role of [api, worker, runtime]) {
+        expect(
+          await privilege(role, 'has_table_privilege', `public.${table}`, 'SELECT'),
+          `${table} creator-role SELECT`,
+        ).toBe(false);
+      }
+    }
+    // 用户与身份只许追加，不许改写既有行。
+    for (const table of ['v2_users', 'v2_identities']) {
+      expect(await privilege(authz, 'has_table_privilege', `public.${table}`, 'UPDATE')).toBe(
+        false,
+      );
+    }
+    // authz 对创作者域认证表零权限。
+    expect(await privilege(authz, 'has_table_privilege', 'public.auth_sessions', 'SELECT')).toBe(
+      false,
+    );
+  });
+
+  it('gives billing append-only ledger and metering access and keeps other roles out', async () => {
+    const api = clients.get('combo_api')!;
+    const worker = clients.get('combo_worker')!;
+    const runtime = clients.get('combo_runtime')!;
+    const authz = clients.get('combo_authz')!;
+    const billing = clients.get('combo_billing')!;
+
+    for (const action of ['SELECT', 'INSERT']) {
+      expect(await privilege(billing, 'has_table_privilege', 'public.v2_ledger', action)).toBe(
+        true,
+      );
+      expect(
+        await privilege(billing, 'has_table_privilege', 'public.v2_metering_events', action),
+      ).toBe(true);
+    }
+    for (const table of ['v2_wallets', 'v2_orders', 'v2_packages', 'v2_holds']) {
+      for (const action of ['SELECT', 'INSERT', 'UPDATE']) {
+        expect(
+          await privilege(billing, 'has_table_privilege', `public.${table}`, action),
+          `${table} ${action}`,
+        ).toBe(true);
+      }
+    }
+    const billingTables = [
+      'v2_wallets',
+      'v2_ledger',
+      'v2_orders',
+      'v2_packages',
+      'v2_holds',
+      'v2_metering_events',
+    ];
+    for (const table of billingTables) {
+      expect(await privilege(billing, 'has_table_privilege', `public.${table}`, 'DELETE')).toBe(
+        false,
+      );
+      for (const role of [api, worker, runtime, authz]) {
+        expect(
+          await privilege(role, 'has_table_privilege', `public.${table}`, 'SELECT'),
+          `${table} other-role SELECT`,
+        ).toBe(false);
+      }
+    }
+    for (const table of ['v2_ledger', 'v2_metering_events']) {
+      expect(await privilege(billing, 'has_table_privilege', `public.${table}`, 'UPDATE')).toBe(
+        false,
+      );
+    }
   });
 
   it('gives Runtime its Session model and only the current UI Capability update', async () => {

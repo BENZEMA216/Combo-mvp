@@ -6,6 +6,8 @@ const PASSWORD_KEYS = [
   'POSTGRES_API_PASSWORD',
   'POSTGRES_WORKER_PASSWORD',
   'POSTGRES_RUNTIME_PASSWORD',
+  'POSTGRES_AUTHZ_PASSWORD',
+  'POSTGRES_BILLING_PASSWORD',
 ] as const;
 
 afterEach(() => {
@@ -36,7 +38,7 @@ describe('application database role login provisioning', () => {
     const client = clientDouble();
 
     await expect(provisionApplicationRoleLogins(client)).rejects.toThrow(
-      /POSTGRES_WORKER_PASSWORD, POSTGRES_RUNTIME_PASSWORD/,
+      /POSTGRES_WORKER_PASSWORD, POSTGRES_RUNTIME_PASSWORD, POSTGRES_AUTHZ_PASSWORD, POSTGRES_BILLING_PASSWORD/,
     );
     expect(client.query).not.toHaveBeenCalled();
   });
@@ -45,6 +47,8 @@ describe('application database role login provisioning', () => {
     process.env.POSTGRES_API_PASSWORD = "api-'secret";
     process.env.POSTGRES_WORKER_PASSWORD = 'worker-secret';
     process.env.POSTGRES_RUNTIME_PASSWORD = 'runtime-secret';
+    process.env.POSTGRES_AUTHZ_PASSWORD = 'authz-secret';
+    process.env.POSTGRES_BILLING_PASSWORD = 'billing-secret';
     const client = clientDouble();
 
     await expect(provisionApplicationRoleLogins(client)).resolves.toBe(true);
@@ -52,11 +56,13 @@ describe('application database role login provisioning', () => {
     const formatCalls = client.query.mock.calls.filter(([sql]) =>
       String(sql).includes('SELECT format('),
     );
-    expect(formatCalls).toHaveLength(3);
+    expect(formatCalls).toHaveLength(5);
     expect(formatCalls.map(([, values]) => values)).toEqual([
       ["api-'secret"],
       ['worker-secret'],
       ['runtime-secret'],
+      ['authz-secret'],
+      ['billing-secret'],
     ]);
     const sqlText = client.query.mock.calls.map(([sql]) => String(sql)).join('\n');
     for (const key of PASSWORD_KEYS) expect(sqlText).not.toContain(process.env[key]);
@@ -68,6 +74,8 @@ describe('application database role login provisioning', () => {
     process.env.POSTGRES_API_PASSWORD = 'api-never-echo';
     process.env.POSTGRES_WORKER_PASSWORD = 'worker-never-echo';
     process.env.POSTGRES_RUNTIME_PASSWORD = 'runtime-never-echo';
+    process.env.POSTGRES_AUTHZ_PASSWORD = 'authz-never-echo';
+    process.env.POSTGRES_BILLING_PASSWORD = 'billing-never-echo';
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('SELECT format(')) {
         throw new Error(`database rejected ${process.env.POSTGRES_API_PASSWORD}`);

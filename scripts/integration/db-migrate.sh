@@ -17,6 +17,8 @@ fail() {
 : "${POSTGRES_API_PASSWORD:?需设置 POSTGRES_API_PASSWORD}"
 : "${POSTGRES_WORKER_PASSWORD:?需设置 POSTGRES_WORKER_PASSWORD}"
 : "${POSTGRES_RUNTIME_PASSWORD:?需设置 POSTGRES_RUNTIME_PASSWORD}"
+: "${POSTGRES_AUTHZ_PASSWORD:?需设置 POSTGRES_AUTHZ_PASSWORD}"
+: "${POSTGRES_BILLING_PASSWORD:?需设置 POSTGRES_BILLING_PASSWORD}"
 command -v pnpm >/dev/null 2>&1 || fail "需要 pnpm"
 command -v psql >/dev/null 2>&1 || fail "需要 psql（断言 schema 用）"
 
@@ -35,11 +37,13 @@ log "记账 ${applied}/${expected} ✓"
 for tbl in users tasks uploads capabilities sessions messages turns artifacts audit_llm_calls \
   auth_identities auth_otp_challenges auth_sessions auth_audit_events \
   billing_accounts billing_free_allowances usage_charges recharge_orders \
-  payment_attempts payment_callback_events wallet_ledger; do
+  payment_attempts payment_callback_events wallet_ledger \
+  v2_users v2_identities v2_auth_challenges v2_sessions \
+  v2_wallets v2_ledger v2_orders v2_packages v2_holds v2_metering_events; do
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,payment_attempts,payment_callback_events,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
+expected_tables='artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,payment_attempts,payment_callback_events,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,v2_auth_challenges,v2_holds,v2_identities,v2_ledger,v2_metering_events,v2_orders,v2_packages,v2_sessions,v2_users,v2_wallets,wallet_ledger'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables

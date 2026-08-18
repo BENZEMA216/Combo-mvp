@@ -99,6 +99,16 @@ describe('migrations', () => {
         'payment_attempts',
         'payment_callback_events',
         'wallet_ledger',
+        'v2_users',
+        'v2_identities',
+        'v2_auth_challenges',
+        'v2_sessions',
+        'v2_wallets',
+        'v2_ledger',
+        'v2_orders',
+        'v2_packages',
+        'v2_holds',
+        'v2_metering_events',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -186,12 +196,14 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-5)).toEqual([
+    expect(list.slice(-7)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
+      '0012_v2_end_user_identity.sql',
+      '0013_v2_billing.sql',
     ]);
   });
 
