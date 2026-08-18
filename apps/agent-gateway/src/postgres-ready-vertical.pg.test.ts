@@ -155,9 +155,12 @@ pgDescribe('Gateway -> Cloud conversation.ready reconnect vertical', () => {
     projectFailed: async () => {
       throw new Error('invocation projector must not run in ready vertical');
     },
+    projectCancelled: async () => {
+      throw new Error('invocation projector must not run in ready vertical');
+    },
   } satisfies Pick<
     PostgresCloudJournal,
-    'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed'
+    'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed' | 'projectCancelled'
   >;
   const unavailableSealer: AssistantMessageSealer = () => {
     throw new Error('terminal sealer must not run in ready vertical');

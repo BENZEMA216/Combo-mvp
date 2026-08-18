@@ -112,6 +112,7 @@ describe('migrations', () => {
         'agent_messages',
         'agent_invocations',
         'agent_invocation_events',
+        'creator_agent_cancelled_terminal_receipts',
         'creator_agent_failed_terminal_receipts',
         'creator_agent_journal_integrity_alerts',
         'creator_agent_success_seal_preflights',
@@ -216,7 +217,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-22)).toEqual([
+    expect(list.slice(-23)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -239,6 +240,7 @@ describe('migrations', () => {
       '0026_creator_agent_started_fact_admission.sql',
       '0027_creator_agent_failed_fact_admission.sql',
       '0028_creator_agent_success_fact_admission.sql',
+      '0029_creator_agent_cancelled_fact_admission.sql',
     ]);
   });
 

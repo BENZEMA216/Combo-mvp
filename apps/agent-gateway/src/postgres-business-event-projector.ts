@@ -7,6 +7,8 @@ import {
   UuidSchema,
   VnextErrorCodeSchema,
   WorkerConversationReadyFactSchema,
+  type WorkerInvocationCancelledFact,
+  WorkerInvocationCancelledFactSchema,
   type WorkerInvocationFailedFact,
   WorkerInvocationFailedFactSchema,
   type WorkerInvocationPreparedFact,
@@ -18,6 +20,7 @@ import {
 } from '@cb/creator-agent-protocol';
 import {
   type AssistantMessageSealer,
+  type CommittedCancelled,
   type CommittedFailed,
   type CommittedPrepared,
   type CommittedStarted,
@@ -35,7 +38,7 @@ import {
 
 type InvocationLifecycleProjector = Pick<
   PostgresCloudJournal,
-  'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed'
+  'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed' | 'projectCancelled'
 >;
 
 type ConversationReadyRow = Readonly<{
@@ -230,9 +233,40 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
       case 'version.ready':
       case 'version.rejected':
       case 'invocation.delta':
-      case 'invocation.cancelled':
       case 'invocation.uncertain':
         throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
+      case 'invocation.cancelled': {
+        const lifecycle = this.#requireInvocationLifecycle();
+        await clearConsumerContext(input.transaction, input.signal);
+        const body = input.event.body;
+        const fact = WorkerInvocationCancelledFactSchema.parse({
+          protocol: body.protocol,
+          schemaVersion: body.schemaVersion,
+          type: body.type,
+          sourceEventId: body.sourceEventId,
+          invocationId: body.invocationId,
+          agentVersionDigest: body.agentVersionDigest,
+          snapshotDigest: body.snapshotDigest,
+          executionCapabilityDigest: body.executionCapabilityDigest,
+          leaseId: body.leaseId,
+          fence: body.fence,
+          interruptReceiptDigest: body.interruptReceiptDigest,
+        });
+        const outcome = await lifecycle.projectCancelled(
+          input.transaction,
+          {
+            creatorId: input.transport.creatorId,
+            installationId: input.transport.installationId,
+            fact,
+            factDigest: body.factDigest,
+          },
+          input.signal,
+        );
+        if (outcome.kind === 'SECURITY_BLOCKED') return 'SECURITY_BLOCK';
+        const committed = outcome.committed;
+        assertCommittedCancelled(committed, fact);
+        return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
+      }
       default:
         throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
     }
@@ -467,6 +501,22 @@ function assertCommittedSuccess(
     committed.resultDigest !== fact.resultDigest ||
     !HmacSha256DigestSchema.safeParse(committed.resultDigest).success ||
     !UuidSchema.safeParse(committed.assistantMessageId).success ||
+    (committed.consumerEventCursor === null && committed.replayed !== true) ||
+    (committed.consumerEventCursor !== null &&
+      !Uint63StringSchema.safeParse(committed.consumerEventCursor).success) ||
+    typeof committed.replayed !== 'boolean'
+  ) {
+    throw persistenceFailure();
+  }
+}
+
+function assertCommittedCancelled(
+  committed: CommittedCancelled,
+  fact: WorkerInvocationCancelledFact,
+): void {
+  if (
+    committed.invocationId !== fact.invocationId ||
+    committed.state !== 'CANCELLED' ||
     (committed.consumerEventCursor === null && committed.replayed !== true) ||
     (committed.consumerEventCursor !== null &&
       !Uint63StringSchema.safeParse(committed.consumerEventCursor).success) ||

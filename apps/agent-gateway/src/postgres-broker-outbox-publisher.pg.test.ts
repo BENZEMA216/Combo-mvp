@@ -194,9 +194,12 @@ pgDescribe('Postgres Broker Outbox publisher', () => {
     projectFailed: async () => {
       throw new Error('invocation projector must not run in publisher phase A');
     },
+    projectCancelled: async () => {
+      throw new Error('invocation projector must not run in outbox publisher');
+    },
   } satisfies Pick<
     PostgresCloudJournal,
-    'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed'
+    'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed' | 'projectCancelled'
   >;
   const unavailableSealer: AssistantMessageSealer = () => {
     throw new Error('terminal sealer must not run in publisher phase A');

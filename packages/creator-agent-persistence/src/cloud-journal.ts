@@ -7,10 +7,12 @@ import {
   consumerEventDedupeKey,
   consumerEventPayloadDigest,
   HmacSha256DigestSchema,
+  Sha256DigestSchema,
   Sha256HexSchema,
   Uint63StringSchema,
   UuidSchema,
   VnextErrorCodeSchema,
+  WorkerInvocationCancelledFactSchema,
   WorkerInvocationFailedFactSchema,
   WorkerInvocationPreparedFactSchema,
   WorkerInvocationStartedFactSchema,
@@ -19,6 +21,7 @@ import {
   type ConsumerEventOutboxRecord,
   type BrokerSensitiveMessage,
   type VnextErrorCode,
+  type WorkerInvocationCancelledFact,
   type WorkerInvocationFailedFact,
   type WorkerInvocationPreparedFact,
   type WorkerInvocationStartedFact,
@@ -82,8 +85,11 @@ export type CloudJournalStep =
   | 'SUCCEEDED_EVENT'
   | 'SUCCESS_TERMINAL_RECEIPT'
   | 'SUCCESS_PREFLIGHT_CONSUMED'
+  | 'INVOCATION_CANCELLED'
   | 'INVOCATION_FAILED'
+  | 'CANCELLED_EVENT'
   | 'FAILED_EVENT'
+  | 'CANCELLED_TERMINAL_RECEIPT'
   | 'FAILED_TERMINAL_RECEIPT'
   | 'INVOCATION_RECONCILING'
   | 'RECONCILING_EVENT'
@@ -512,6 +518,98 @@ interface FailedAuthorityRow {
   terminal_at: Date | string | null;
 }
 
+interface CancelledAuthorityRow {
+  state: string;
+  consumer_subject_id: string;
+  result_message_id: string | null;
+  result_digest: string | null;
+  error_code: string | null;
+  agent_version_digest: string;
+  snapshot_digest: string;
+  assigned_worker_id: string | null;
+  assignment_lease_id: string | null;
+  assignment_fence: string | number | bigint | null;
+  execution_capability_id: string | null;
+  execution_capability_digest: string | null;
+  execution_capability_valid: boolean;
+  execution_capability_revoked_at: Date | string | null;
+  conversation_state: string;
+  lease_state: string;
+  lease_valid: boolean;
+  has_durable_started_evidence: boolean;
+  consumer_event_cursor: string | null;
+  consumer_event_source_event_id: string | null;
+  consumer_event_type: string | null;
+  consumer_event_payload: unknown;
+  consumer_event_payload_digest: string | null;
+  consumer_event_dedupe_key: string | null;
+  terminal_source_event_id: string | null;
+  terminal_source_fact_digest: string | null;
+  terminal_event_id: string | null;
+  terminal_event_payload: unknown;
+  terminal_event_occurred_at: Date | string | null;
+  terminal_at: Date | string | null;
+}
+
+const CancelledInvocationEventPayloadSchema = z
+  .object({
+    state: z.literal('CANCELLED'),
+  })
+  .strict();
+
+const CommitCancelledInputSchema = WorkerEventProjectorIdentitySchema.extend({
+  fact: WorkerInvocationCancelledFactSchema,
+  factDigest: Sha256HexSchema,
+}).strict();
+
+export interface CommitCancelledInput extends Omit<
+  z.input<typeof CommitCancelledInputSchema>,
+  'fact'
+> {
+  fact: WorkerInvocationCancelledFact;
+}
+
+export interface CommittedCancelled {
+  invocationId: string;
+  state: 'CANCELLED';
+  /** Null only when the exact terminal delivery record has passed durable retention. */
+  consumerEventCursor: string | null;
+  replayed: boolean;
+}
+
+export type ProjectCancelledOutcome =
+  | Readonly<{ kind: 'COMMITTED'; committed: CommittedCancelled }>
+  | Readonly<{ kind: 'SECURITY_BLOCKED' }>;
+
+const PROJECT_CANCELLED_SECURITY_BLOCKED = Object.freeze({
+  kind: 'SECURITY_BLOCKED' as const,
+});
+
+const CancelledFactAdmissionOutcomeSchema = z.enum([
+  'ADMITTED',
+  'EXACT',
+  'SECURITY_BLOCKED',
+  'TERMINAL',
+  'UNAVAILABLE',
+  'AUTHORITY_REJECTED',
+  'INVARIANT_FAILED',
+]);
+
+interface CancelledFactAdmissionRow {
+  outcome: string;
+  interrupt_receipt_digest: string | null;
+  terminal_at: Date | string | null;
+  consumer_event_cursor: string | number | bigint | null;
+  invocation_cancelled: boolean | null;
+  cancelled_event_appended: boolean | null;
+  consumer_event_appended: boolean | null;
+  consumer_stream_advanced: boolean | null;
+  terminal_receipt_appended: boolean | null;
+  conversation_idled: boolean | null;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
+}
+
 interface InvocationLifecycleAuthorityRow {
   state: string;
   request_digest: string;
@@ -903,7 +1001,8 @@ function assertCanonicalWorkerFact(
     | WorkerInvocationPreparedFact
     | WorkerInvocationStartedFact
     | WorkerInvocationSucceededFact
-    | WorkerInvocationFailedFact,
+    | WorkerInvocationFailedFact
+    | WorkerInvocationCancelledFact,
   expectedDigest: string,
 ): void {
   if (workerInvocationFactDigest(fact) !== expectedDigest) {
@@ -1009,6 +1108,10 @@ function isFailedSecurityBlocked(
   outcome: ProjectFailedOutcome,
 ): outcome is typeof PROJECT_FAILED_SECURITY_BLOCKED {
   return outcome.kind === 'SECURITY_BLOCKED';
+}
+
+function committedCancelledOutcome(committed: CommittedCancelled): ProjectCancelledOutcome {
+  return { kind: 'COMMITTED', committed };
 }
 
 function exactReconciliationEventMatches(input: {
@@ -3034,6 +3137,369 @@ export class PostgresCloudJournal {
     throw new CloudJournalError(
       'PERSISTENCE_INVARIANT_FAILED',
       'exact failed fact admission 未匹配 durable FAILED projection',
+    );
+  }
+
+  public async projectCancelled(
+    rawConnection: InvocationProjectorTransaction,
+    rawInput: CommitCancelledInput,
+    signal: AbortSignal,
+  ): Promise<ProjectCancelledOutcome> {
+    const input = CommitCancelledInputSchema.parse(rawInput);
+    return this.#projectConfirmedCancellation(rawConnection, input, signal);
+  }
+
+  async #projectConfirmedCancellation(
+    rawConnection: InvocationProjectorTransaction,
+    input: CommitCancelledInput,
+    signal: AbortSignal,
+  ): Promise<ProjectCancelledOutcome> {
+    const connection = bindInvocationProjectorSignal(rawConnection, signal);
+    assertCanonicalWorkerFact(input.fact, input.factDigest);
+    if (input.fact.sourceEventId !== input.fact.invocationId) {
+      throw new CloudJournalError(
+        'WORKER_FACT_CONFLICT',
+        'cancelled event 与 canonical Worker fact identity 不一致',
+      );
+    }
+    if (!Sha256DigestSchema.safeParse(input.fact.interruptReceiptDigest).success) {
+      throw new CloudJournalError(
+        'WORKER_FACT_CONFLICT',
+        'cancelled fact interruptReceiptDigest 非法',
+      );
+    }
+    const terminalState = 'CANCELLED' as const;
+    const eventType = 'invocation.cancelled' as const;
+    const terminalEventPayload = CancelledInvocationEventPayloadSchema.parse({
+      state: terminalState,
+    });
+    const admission = await connection.query<CancelledFactAdmissionRow>(
+      `SELECT outcome, interrupt_receipt_digest::text, terminal_at,
+              consumer_event_cursor::text,
+              invocation_cancelled, cancelled_event_appended, consumer_event_appended,
+              consumer_stream_advanced, terminal_receipt_appended, conversation_idled,
+              alert_id::text, alert_replayed
+         FROM creator_agent_project_cancelled_fact_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+         )`,
+      [
+        input.creatorId,
+        input.installationId,
+        input.fact.protocol,
+        input.fact.schemaVersion,
+        input.fact.type,
+        input.fact.sourceEventId,
+        input.fact.invocationId,
+        input.fact.agentVersionDigest,
+        input.fact.snapshotDigest,
+        input.fact.executionCapabilityDigest,
+        input.fact.leaseId,
+        input.fact.fence,
+        input.fact.interruptReceiptDigest,
+        input.factDigest,
+      ],
+    );
+    const admissionRow = admission.rows[0];
+    const admissionOutcome = CancelledFactAdmissionOutcomeSchema.safeParse(admissionRow?.outcome);
+    if (admission.rowCount !== 1 || !admissionRow || !admissionOutcome.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'cancelled fact admission 未返回唯一稳定 outcome',
+      );
+    }
+    if (admissionOutcome.data === 'SECURITY_BLOCKED') {
+      if (
+        admissionRow.interrupt_receipt_digest !== null ||
+        admissionRow.terminal_at !== null ||
+        admissionRow.consumer_event_cursor !== null ||
+        admissionRow.invocation_cancelled !== null ||
+        admissionRow.cancelled_event_appended !== null ||
+        admissionRow.consumer_event_appended !== null ||
+        admissionRow.consumer_stream_advanced !== null ||
+        admissionRow.terminal_receipt_appended !== null ||
+        admissionRow.conversation_idled !== null ||
+        !UuidSchema.safeParse(admissionRow.alert_id).success ||
+        typeof admissionRow.alert_replayed !== 'boolean'
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'cancelled fact security block 缺少 durable alert outcome',
+        );
+      }
+      await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+      return PROJECT_CANCELLED_SECURITY_BLOCKED;
+    }
+    if (admissionRow.alert_id !== null || admissionRow.alert_replayed !== null) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'cancelled fact non-security outcome 携带了 alert metadata',
+      );
+    }
+    switch (admissionOutcome.data) {
+      case 'TERMINAL':
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有其他终态');
+      case 'UNAVAILABLE':
+      case 'AUTHORITY_REJECTED':
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'cancelled fact 与 durable execution authority 不一致',
+        );
+      case 'INVARIANT_FAILED':
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'cancelled fact durable invariant 失败',
+        );
+      case 'ADMITTED':
+      case 'EXACT':
+        break;
+    }
+    if (
+      !Sha256DigestSchema.safeParse(admissionRow.interrupt_receipt_digest).success ||
+      admissionRow.interrupt_receipt_digest !== input.fact.interruptReceiptDigest ||
+      admissionRow.terminal_at === null
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'cancelled fact admission 缺少 exact digest/time outcome',
+      );
+    }
+    const parsedCursor =
+      admissionRow.consumer_event_cursor === null
+        ? null
+        : Uint63StringSchema.safeParse(String(admissionRow.consumer_event_cursor));
+    if (parsedCursor !== null && !parsedCursor.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'cancelled fact admission 返回非法 Consumer cursor',
+      );
+    }
+    const consumerEventCursor = parsedCursor === null ? null : parsedCursor.data;
+    if (admissionOutcome.data === 'ADMITTED') {
+      if (
+        consumerEventCursor === null ||
+        admissionRow.invocation_cancelled !== true ||
+        admissionRow.cancelled_event_appended !== true ||
+        admissionRow.consumer_event_appended !== true ||
+        admissionRow.consumer_stream_advanced !== true ||
+        admissionRow.terminal_receipt_appended !== true ||
+        admissionRow.conversation_idled !== true
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'admitted cancelled fact mutation flags 非 canonical',
+        );
+      }
+      await inject(this.failureInjector, 'INVOCATION_CANCELLED');
+      await inject(this.failureInjector, 'CANCELLED_EVENT');
+      await inject(this.failureInjector, 'CONSUMER_EVENT_OUTBOX');
+      await inject(this.failureInjector, 'CONSUMER_EVENT_STREAM');
+      await inject(this.failureInjector, 'CANCELLED_TERMINAL_RECEIPT');
+      await inject(this.failureInjector, 'CONVERSATION_IDLE');
+      return committedCancelledOutcome({
+        invocationId: input.fact.invocationId,
+        state: terminalState,
+        consumerEventCursor,
+        replayed: false,
+      });
+    }
+    if (
+      admissionRow.invocation_cancelled !== false ||
+      admissionRow.cancelled_event_appended !== false ||
+      admissionRow.consumer_event_appended !== false ||
+      admissionRow.consumer_stream_advanced !== false ||
+      admissionRow.terminal_receipt_appended !== false ||
+      admissionRow.conversation_idled !== false
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'exact cancelled fact outcome 声称发生 mutation',
+      );
+    }
+
+    const tenant = await connection.query<{
+      consumer_subject_id: string;
+      conversation_id: string;
+    }>(
+      `SELECT consumer_subject_id::text, conversation_id::text
+         FROM agent_invocations
+        WHERE id = $1 AND creator_id = $2 AND assigned_worker_id = $3`,
+      [input.fact.invocationId, input.creatorId, input.installationId],
+    );
+    const parsedConsumerId = UuidSchema.safeParse(tenant.rows[0]?.consumer_subject_id);
+    const parsedConversationId = UuidSchema.safeParse(tenant.rows[0]?.conversation_id);
+    if (tenant.rows.length !== 1 || !parsedConsumerId.success || !parsedConversationId.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'cancelled fact admission 未保留 exact tenant projection',
+      );
+    }
+    const consumerId = parsedConsumerId.data;
+    const conversationId = parsedConversationId.data;
+    const authority = await connection.query<CancelledAuthorityRow>(
+      `SELECT invocation.state, invocation.consumer_subject_id,
+              invocation.result_message_id, invocation.result_digest, invocation.error_code,
+              version.version_digest AS agent_version_digest, snapshot.snapshot_digest,
+              invocation.assigned_worker_id, invocation.assignment_lease_id,
+              invocation.assignment_fence, invocation.execution_capability_id,
+              invocation.execution_capability_digest,
+              (
+                invocation.execution_capability_expires_at > now()
+                AND invocation.execution_capability_revoked_at IS NULL
+              ) AS execution_capability_valid,
+              invocation.execution_capability_revoked_at,
+              conversation.state AS conversation_state,
+              lease.state AS lease_state, (lease.expires_at > now()) AS lease_valid,
+              EXISTS (
+                SELECT 1
+                  FROM agent_invocation_events AS started_event
+                  JOIN broker_outbox AS started_command
+                    ON started_command.command_id = started_event.broker_command_id
+                   AND started_command.creator_id = started_event.creator_id
+                   AND started_command.invocation_id = started_event.invocation_id
+                   AND started_command.consumer_subject_id = started_event.consumer_subject_id
+                 WHERE started_event.invocation_id = invocation.id
+                   AND started_event.source = 'WORKER'
+                   AND started_event.event_type = 'invocation.started'
+                   AND started_event.source_fact_digest IS NOT NULL
+                   AND started_command.command_type = 'invocation.start'
+                   AND started_command.state IN ('ACKED', 'EXPIRED')
+                   AND started_command.target_worker_id = invocation.assigned_worker_id
+                   AND started_command.assignment_lease_id = invocation.assignment_lease_id
+                   AND started_command.assignment_fence = invocation.assignment_fence
+                   AND started_command.execution_capability_id = invocation.execution_capability_id
+                   AND started_command.execution_capability_digest =
+                         invocation.execution_capability_digest
+              ) AS has_durable_started_evidence,
+              consumer_event.cursor::text AS consumer_event_cursor,
+              consumer_event.source_event_id AS consumer_event_source_event_id,
+              consumer_event.event_type AS consumer_event_type,
+              consumer_event.payload AS consumer_event_payload,
+              consumer_event.payload_digest AS consumer_event_payload_digest,
+              consumer_event.dedupe_key AS consumer_event_dedupe_key,
+              terminal_event.source_event_id AS terminal_source_event_id,
+              terminal_event.source_fact_digest AS terminal_source_fact_digest,
+              terminal_event.id::text AS terminal_event_id,
+              terminal_event.payload AS terminal_event_payload,
+              terminal_event.occurred_at AS terminal_event_occurred_at,
+              invocation.terminal_at
+         FROM agent_invocations AS invocation
+         JOIN agent_conversations AS conversation
+           ON conversation.id = invocation.conversation_id
+          AND conversation.creator_id = invocation.creator_id
+          AND conversation.consumer_subject_id = invocation.consumer_subject_id
+         JOIN worker_leases AS lease
+           ON lease.id = invocation.assignment_lease_id
+          AND lease.creator_id = invocation.creator_id
+          AND lease.worker_id = invocation.assigned_worker_id
+          AND lease.fence = invocation.assignment_fence
+         JOIN agent_versions AS version
+           ON version.id = invocation.agent_version_id
+          AND version.creator_id = invocation.creator_id
+         JOIN context_snapshots AS snapshot
+           ON snapshot.id = version.snapshot_id
+          AND snapshot.creator_id = version.creator_id
+         LEFT JOIN agent_invocation_events AS terminal_event
+           ON terminal_event.invocation_id = invocation.id
+          AND terminal_event.creator_id = invocation.creator_id
+          AND terminal_event.consumer_subject_id = invocation.consumer_subject_id
+          AND terminal_event.source = 'WORKER'
+          AND terminal_event.event_type = $5
+         LEFT JOIN consumer_event_outbox AS consumer_event
+           ON consumer_event.invocation_id = invocation.id
+          AND consumer_event.source_event_id = terminal_event.id
+          AND consumer_event.event_type = 'invocation.terminal'
+        WHERE invocation.id = $1
+          AND invocation.conversation_id = $2
+          AND invocation.creator_id = $3
+          AND invocation.consumer_subject_id = $4
+        FOR UPDATE OF invocation, conversation`,
+      [input.fact.invocationId, conversationId, input.creatorId, consumerId, eventType],
+    );
+    const current = authority.rows[0];
+    if (!current) {
+      throw new CloudJournalError('EXECUTION_AUTHORITY_MISMATCH', 'Invocation 不存在或租户不匹配');
+    }
+    if (
+      current.agent_version_digest !== input.fact.agentVersionDigest ||
+      current.snapshot_digest !== input.fact.snapshotDigest ||
+      current.consumer_subject_id !== consumerId ||
+      current.assigned_worker_id !== input.installationId ||
+      current.assignment_lease_id !== input.fact.leaseId ||
+      !bigintEquals(current.assignment_fence, input.fact.fence) ||
+      current.execution_capability_id === null ||
+      current.execution_capability_digest !== input.fact.executionCapabilityDigest
+    ) {
+      throw new CloudJournalError(
+        'EXECUTION_AUTHORITY_MISMATCH',
+        'cancelled terminal 与 durable Version/Worker/Lease/Fence/Capability 不一致',
+      );
+    }
+
+    if (current.state === terminalState) {
+      const durableTerminalEvent = CancelledInvocationEventPayloadSchema.safeParse(
+        current.terminal_event_payload,
+      );
+      if (
+        current.terminal_source_event_id !== input.fact.sourceEventId ||
+        current.terminal_source_fact_digest !== input.factDigest ||
+        !durableTerminalEvent.success ||
+        durableTerminalEvent.data.state !== terminalEventPayload.state ||
+        current.result_message_id !== null ||
+        current.result_digest !== null ||
+        current.error_code !== null ||
+        current.terminal_at === null ||
+        current.terminal_event_occurred_at === null ||
+        isoDate(current.terminal_event_occurred_at) !== isoDate(current.terminal_at) ||
+        isoDate(current.terminal_at) !== isoDate(admissionRow.terminal_at) ||
+        current.consumer_event_cursor !== consumerEventCursor ||
+        current.conversation_state !== 'IDLE'
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          '已提交 cancelled terminal 与 durable Event/projection 不一致',
+        );
+      }
+      if (current.consumer_event_cursor !== null) {
+        const durablePayload = ConsumerTerminalEventPayloadSchema.safeParse(
+          current.consumer_event_payload,
+        );
+        if (
+          current.consumer_event_source_event_id === null ||
+          current.consumer_event_type !== 'invocation.terminal' ||
+          current.consumer_event_source_event_id !== current.terminal_event_id ||
+          !durablePayload.success ||
+          durablePayload.data.conversationId !== conversationId ||
+          durablePayload.data.invocationId !== input.fact.invocationId ||
+          durablePayload.data.terminalState !== terminalState ||
+          durablePayload.data.assistantMessageId !== null ||
+          durablePayload.data.resultDigest !== null ||
+          durablePayload.data.errorCode !== null ||
+          current.consumer_event_payload_digest !==
+            consumerEventPayloadDigest(durablePayload.data) ||
+          current.consumer_event_dedupe_key !==
+            consumerEventDedupeKey({
+              ownerId: consumerId,
+              sourceEventId: current.consumer_event_source_event_id,
+              eventType: 'invocation.terminal',
+            })
+        ) {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            '已提交 cancelled terminal 的 retained Consumer Event 不一致',
+          );
+        }
+      }
+      return committedCancelledOutcome({
+        invocationId: input.fact.invocationId,
+        state: terminalState,
+        consumerEventCursor,
+        replayed: true,
+      });
+    }
+
+    throw new CloudJournalError(
+      'PERSISTENCE_INVARIANT_FAILED',
+      'exact cancelled fact admission 未匹配 durable CANCELLED projection',
     );
   }
 

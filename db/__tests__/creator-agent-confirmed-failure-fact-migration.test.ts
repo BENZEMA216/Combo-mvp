@@ -90,10 +90,21 @@ describe('0020 confirmed Worker failure fact contract', () => {
     }
   });
 
-  it('does not enable CANCELLED without a verified interrupt receipt authority', () => {
-    expect(migration).not.toContain("NEW.event_type = 'invocation.cancelled'");
-    expect(migration).toContain('CANCELLED remains unavailable');
-    expect(cloudJournal).not.toContain('projectCancelled(');
-    expect(cloudJournal).not.toContain('commitCancelled(');
+  it('enables CANCELLED only through the verified interrupt-receipt admission authority (0029)', () => {
+    // 0029 superseded the 0020-era guard: cancelled terminals are admitted only by the
+    // DB-owned definer that recomputes the canonical fact digest (which covers the interrupt
+    // receipt digest) and enforces exact Broker session authority + replay digest equality.
+    const cancelledMigration = readFileSync(
+      resolve(__dirname, '..', 'migrations', '0029_creator_agent_cancelled_fact_admission.sql'),
+      'utf8',
+    );
+    expect(cancelledMigration).toContain("NEW.event_type = 'invocation.cancelled'");
+    expect(cancelledMigration).toContain("jsonb_build_object('state', 'CANCELLED')");
+    expect(cancelledMigration).toMatch(/source_fact_digest IS DISTINCT FROM input_fact_digest/u);
+    expect(cancelledMigration).toContain(
+      'Cancelled fact admission requires exact Broker session authority',
+    );
+    expect(cloudJournal).toContain('projectCancelled(');
+    expect(cloudJournal).toContain('creator_agent_project_cancelled_fact_v1(');
   });
 });

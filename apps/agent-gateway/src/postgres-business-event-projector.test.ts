@@ -47,7 +47,7 @@ const FAILED_MESSAGE_ID = '0198f00d-4000-7000-8000-000000000042';
 
 type Lifecycle = Pick<
   PostgresCloudJournal,
-  'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed'
+  'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed' | 'projectCancelled'
 >;
 
 describe('PostgresGatewayBusinessEventProjector', () => {
@@ -599,7 +599,6 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     'version.ready',
     'version.rejected',
     'invocation.delta',
-    'invocation.cancelled',
     'invocation.uncertain',
   ] as const)('fails closed for unsupported %s events before calling Cloud', async (type) => {
     const lifecycle = lifecycleFixture();
@@ -616,6 +615,45 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     expect(lifecycle.projectSuccess).not.toHaveBeenCalled();
     expect(lifecycle.projectFailed).not.toHaveBeenCalled();
     expect(sealer).not.toHaveBeenCalled();
+  });
+
+  it('projects a canonical invocation.cancelled event through the lifecycle', async () => {
+    const lifecycle = lifecycleFixture();
+    lifecycle.projectCancelled = vi.fn(async () => ({
+      kind: 'COMMITTED',
+      committed: {
+        invocationId: '0198f00d-5000-7000-8000-000000000001',
+        state: 'CANCELLED',
+        consumerEventCursor: '42',
+        replayed: false,
+      },
+    }));
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle, unavailableSealer);
+    const event = {
+      ...conversationReady(),
+      type: 'invocation.cancelled',
+      body: {
+        protocol: 'combo.worker-invocation-fact/1',
+        schemaVersion: 1,
+        type: 'invocation.cancelled',
+        sourceEventId: '0198f00d-5000-7000-8000-000000000001',
+        invocationId: '0198f00d-5000-7000-8000-000000000001',
+        agentVersionDigest: 'a'.repeat(64),
+        snapshotDigest: 'b'.repeat(64),
+        executionCapabilityDigest: 'c'.repeat(64),
+        leaseId: '0198f00d-5000-7000-8000-000000000002',
+        fence: '1',
+        interruptReceiptDigest: `sha256:${'d'.repeat(64)}`,
+        factDigest: 'e'.repeat(64),
+      },
+    } as unknown as ProjectableWorkerEvent;
+    const decision = await projector.project(
+      projectorInput(emptyTransaction(), event, AbortSignal.timeout(5_000)),
+    );
+    expect(decision).toBe('APPLIED');
+    expect(lifecycle.projectCancelled).toHaveBeenCalledTimes(1);
+    expect(lifecycle.projectSuccess).not.toHaveBeenCalled();
+    expect(lifecycle.projectFailed).not.toHaveBeenCalled();
   });
 
   it('fails closed at runtime for an event type added ahead of this adapter', async () => {
@@ -811,6 +849,7 @@ function lifecycleFixture() {
     projectStarted: vi.fn<Lifecycle['projectStarted']>(),
     projectSuccess: vi.fn<Lifecycle['projectSuccess']>(),
     projectFailed: vi.fn<Lifecycle['projectFailed']>(),
+    projectCancelled: vi.fn<Lifecycle['projectCancelled']>(),
   };
 }
 
