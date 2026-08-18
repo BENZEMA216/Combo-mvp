@@ -1,0 +1,70 @@
+# 重启人生 Agent（收编验证）。镜像在 kol-agents/apps/restart-life 用自带 Dockerfile 构建。
+apiVersion: v1
+kind: Service
+metadata:
+  name: restart-life
+  labels:
+    app: restart-life
+spec:
+  selector:
+    app: restart-life
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restart-life
+  labels:
+    app: restart-life
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: restart-life
+  template:
+    metadata:
+      labels:
+        app: restart-life
+    spec:
+      containers:
+        - name: restart-life
+          image: combo-v2/restart-life@COMBO_V2_RESTART_LIFE_DIGEST
+          env:
+            - name: NODE_ENV
+              value: production
+            - name: HOSTNAME
+              value: 0.0.0.0
+            - name: PORT
+              value: '3000'
+            - name: RESTART_STATE_SECRET
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: RESTART_STATE_SECRET }
+            - name: COMBO_AGENT_ID
+              value: restart-life
+            - name: COMBO_PLATFORM_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: LLM_GATEWAY_INTERNAL_TOKEN }
+            - name: COMBO_LLM_GATEWAY_URL
+              value: http://llm-gateway
+            - name: COMBO_BILLING_URL
+              value: http://billing
+            - name: COMBO_JWKS_URL
+              value: http://authz/.well-known/jwks.json
+            - name: COMBO_LLM_MODEL
+              value: deepseek/deepseek-v4-flash
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /api/status, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/status, port: 3000 }
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }

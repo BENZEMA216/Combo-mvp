@@ -46,3 +46,4 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
 - `scripts/integration/`：CI 集成测试脚本。
+- `render-v2.mjs`：combo-v2 验证命名空间专用，把 `infra/k8s/v2/` 清单里的镜像 digest 占位符渲染成服务器构建出的实际摘要。只在服务器手工链路使用，不进三环境部署。

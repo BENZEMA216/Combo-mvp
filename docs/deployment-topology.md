@@ -83,3 +83,13 @@
 2. Test 有独立 foundation，数据常驻，不做销毁重建。
 3. 生产正式域名是 `buildwithcombo.com`，部署验证以此为准。
 4. 三环境应用部署互不阻塞；共享 foundation 的迁移串行。
+
+## 10. combo-v2：V2 架构验证命名空间
+
+`combo-v2` 是 V2 平台架构验证的独立命名空间，与三环境晋级链完全无关：
+
+- 手工部署：代码从本地 rsync 到主机构建，镜像经 `docker save` 加 `k3s ctr images import` 进集群，不经过 GitHub CI/CD，不产生 `combo-build-<SHA>` 构建清单；验证结束后整个命名空间拆除。
+- 纯增量：不得修改、重启或删除三环境与 `combo-foundation`、`kol-agents`、`observability` 的任何现有资源；系统 Nginx 与 systemd 只新增配置，不改既有文件。
+- 数据按「实例共享、逻辑隔离」：在 `combo-foundation` 的共享 PostgreSQL 实例上新建独立 database `combo_v2`（不动现有 `combo` 库），Redis 复用 `redis-hot` 并用 `authz:v2:` 等 v2 前缀隔离键。应用角色 `combo_authz` 与 `combo_billing` 是实例级角色，由 `combo_v2` 的迁移建立；迁移会按 0008 的既有逻辑短暂把 `combo_api` 等三角色收紧为 NOLOGIN 再以相同密码恢复 LOGIN，因此 combo-v2 的 `combo-env` 必须携带与现有环境一致的三份角色密码。
+- 入口：`https://v2-test.43-160-242-46.sslip.io`，系统 Nginx 反代到 systemd forwarder 维护的 loopback 端口（authz 18091、restart-life 18092）；billing 与 llm-gateway 只出 ClusterIP，不出集群。
+- 清单在 `infra/k8s/v2/`， Dockerfile 为 `infra/Dockerfile.v2`（单镜像按 PROCESS 分叉）与 restart-life 自带 Dockerfile；密钥只存在于 `combo-v2` 的 `combo-env` Secret，在主机上生成或从现有 `combo-env` 读取，不落本地盘、不进 Git。

@@ -16,7 +16,11 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 `api.yaml`、`worker.yaml`、`runtime.yaml`、`web.yaml` 是四业务面的基础清单，引用 `combo-env` Secret（凭证）与 `ghcr-pull`（镜像拉取）并带环境占位符。`release/base/apps/` 与 `release/base/migrate/` 提供发布专用补丁（`envFrom: combo-release` ConfigMap、迁移 PGHOST），`release/overlays/{test,preview,production}/` 按环境设置 namespace。发布渲染由 `scripts/render-env.mjs` 完成，把占位符替换为每环境实际主机名、公开入口与 Secret 名。
 
-所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建。
+所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、五个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建。
+
+## combo-v2 验证命名空间
+
+`v2/` 子目录是 V2 架构验证（authz / billing / llm-gateway / restart-life 四进程 + 迁移 Job）的手工部署清单，独立于三环境晋级链，不进 `render-env.mjs` 与 `deploy-env.sh`。镜像为 `combo-v2/platform` 与 `combo-v2/restart-life`，在主机上构建后经 `k3s ctr images import` 进集群，清单用 `repository@sha256` 摘要引用，摘要由 `scripts/render-v2.mjs` 在服务器上渲染进清单。命名空间、`combo-v2` 的 `combo-env` Secret（含 PostgreSQL 管理密码、五份应用角色密码——combo_api / combo_worker / combo_runtime 必须与现有环境一致，combo_authz / combo_billing 为新生成——以及 OTP、断言私钥、内部 token、provider key）都在主机上手工建立，密钥值不进入清单与 Git。数据落在共享 PostgreSQL 实例的独立 `combo_v2` 库。验证结束后整个命名空间连同新建配置一起拆除。
 
 ## 可选 Sandbox Tools
 

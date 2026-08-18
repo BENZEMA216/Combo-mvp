@@ -1,0 +1,90 @@
+# V2 用户体系（SSO + 断言签发）。镜像摘要在服务器构建后由 scripts/render-v2.mjs 渲染。
+apiVersion: v1
+kind: Service
+metadata:
+  name: authz
+  labels:
+    app: authz
+spec:
+  selector:
+    app: authz
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authz
+  labels:
+    app: authz
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authz
+  template:
+    metadata:
+      labels:
+        app: authz
+    spec:
+      containers:
+        - name: authz
+          image: combo-v2/platform@COMBO_V2_PLATFORM_DIGEST
+          env:
+            - name: PROCESS
+              value: authz
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: '3000'
+            - name: PGHOST
+              value: postgres.combo-foundation
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_authz
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_AUTHZ_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
+            - name: REDIS_URL
+              value: redis://redis-hot.combo-foundation:6379/0
+            - name: AUTHZ_HMAC_SECRET
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: AUTHZ_HMAC_SECRET }
+            - name: AUTHZ_DEV_OTP_CODE
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: AUTHZ_DEV_OTP_CODE }
+            - name: AUTHZ_ASSERTION_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: AUTHZ_ASSERTION_PRIVATE_KEY }
+            - name: AUTHZ_ASSERTION_KEY_ID
+              value: v2-test-1
+            - name: AUTHZ_ASSERTION_ISSUER
+              value: combo-authz
+            - name: AUTHZ_ASSERTION_TTL_SECONDS
+              value: '300'
+            # host-only Cookie（v2-test sslip 单域名验证站），Secure 由生产默认值承担。
+            - name: AUTHZ_SESSION_COOKIE_SECURE
+              value: 'true'
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /ready, port: 3000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }

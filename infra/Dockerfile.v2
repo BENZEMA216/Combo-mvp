@@ -1,0 +1,43 @@
+# V2 平台验证栈（combo-v2 namespace）：authz / billing / llm-gateway 共用同一镜像，
+# 按 PROCESS=authz|billing|llm-gateway 在 entrypoint 分叉；迁移容器覆盖 command 运行
+# db/scripts/migrate.ts。单镜像与 infra/Dockerfile.api 的「一镜像多入口」模式一致。
+FROM node:24-slim AS build
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
+# 先拷工作区清单 + 各 package.json，最大化 install 层缓存
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml* tsconfig.base.json tsconfig.json ./
+COPY packages ./packages
+COPY apps ./apps
+COPY db ./db
+RUN pnpm install --frozen-lockfile=false
+# shared 先 build（tsc 项目引用需要），再 build 三个 V2 服务
+RUN pnpm -F @cb/shared build \
+  && pnpm -F @cb/authz build \
+  && pnpm -F @cb/billing build \
+  && pnpm -F @cb/llm-gateway build
+
+FROM node:24-slim AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+# PROCESS 决定本容器跑哪个进程入口（authz 为默认）；migrate Job 用显式 command 覆盖。
+ENV PROCESS=authz
+RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
+COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
+COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=build /app/apps/authz/package.json ./apps/authz/package.json
+COPY --from=build /app/apps/billing/package.json ./apps/billing/package.json
+COPY --from=build /app/apps/llm-gateway/package.json ./apps/llm-gateway/package.json
+COPY --from=build /app/db/package.json ./db/package.json
+RUN pnpm install --prod --frozen-lockfile=false
+# 产物：三个服务 dist + 迁移运行时白名单（migrate 容器用 --experimental-strip-types 直跑 TS）。
+COPY --from=build /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build /app/apps/authz/dist ./apps/authz/dist
+COPY --from=build /app/apps/billing/dist ./apps/billing/dist
+COPY --from=build /app/apps/llm-gateway/dist ./apps/llm-gateway/dist
+COPY --from=build /app/db/migrations ./db/migrations
+COPY --from=build /app/db/scripts/migrate.ts ./db/scripts/migrate.ts
+COPY --from=build /app/db/scripts/provision-app-roles.ts ./db/scripts/provision-app-roles.ts
+COPY infra/entrypoint-v2.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+EXPOSE 3000
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

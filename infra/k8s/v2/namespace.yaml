@@ -1,0 +1,7 @@
+# combo-v2：V2 架构验证命名空间。手工部署，不进三环境晋级链；验证结束后整体拆除。
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: combo-v2
+  labels:
+    app.kubernetes.io/part-of: combo-v2-validation

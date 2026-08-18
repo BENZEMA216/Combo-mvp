@@ -1,0 +1,76 @@
+# V2 计费服务。只在集群内暴露（ClusterIP），不进公网。
+apiVersion: v1
+kind: Service
+metadata:
+  name: billing
+  labels:
+    app: billing
+spec:
+  selector:
+    app: billing
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: billing
+  labels:
+    app: billing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: billing
+  template:
+    metadata:
+      labels:
+        app: billing
+    spec:
+      containers:
+        - name: billing
+          image: combo-v2/platform@COMBO_V2_PLATFORM_DIGEST
+          env:
+            - name: PROCESS
+              value: billing
+            - name: NODE_ENV
+              value: production
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: '3000'
+            - name: PGHOST
+              value: postgres.combo-foundation
+            - name: PGPORT
+              value: '5432'
+            - name: PGDATABASE
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_DB }
+            - name: PGUSER
+              value: combo_billing
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: POSTGRES_BILLING_PASSWORD }
+            - name: DATABASE_URL
+              value: postgres://$(PGUSER):$(PGPASSWORD)@$(PGHOST):$(PGPORT)/$(PGDATABASE)
+            - name: BILLING_INTERNAL_TOKEN
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: BILLING_INTERNAL_TOKEN }
+            - name: BILLING_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: BILLING_ADMIN_TOKEN }
+          ports:
+            - containerPort: 3000
+          readinessProbe:
+            httpGet: { path: /ready, port: 3000 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 3000 }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 250m, memory: 256Mi }
+            limits: { cpu: 500m, memory: 512Mi }
