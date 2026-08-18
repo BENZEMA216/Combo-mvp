@@ -24,6 +24,7 @@ import {
   currentBrokerContractDigest,
   parseBrokerFrame,
   workerInvocationFactDigest,
+  workerInterruptReceiptDigest,
   type BrokerEnvelope,
   type BrokerHandshake,
   type BrokerSensitiveMessage,
@@ -31,6 +32,10 @@ import {
   type WorkerInvocationPreparedFact,
   type WorkerInvocationStartedFact,
   type WorkerInvocationSucceededFact,
+  WorkerInterruptReceiptSchema,
+  WORKER_INTERRUPT_RECEIPT_PROTOCOL,
+  type WorkerInvocationCancelledFact,
+  type WorkerInterruptReceipt,
 } from '@cb/creator-agent-protocol';
 import {
   PostgresCloudJournal,
@@ -441,6 +446,74 @@ function invocationSucceeded(
       resultCiphertext,
     },
   }) as Extract<BrokerEnvelope, { type: 'invocation.succeeded' }>;
+}
+
+function cancelledInterruptReceipt(input: {
+  session: AuthenticatedWorkerSession;
+  fact: Omit<WorkerInvocationCancelledFact, 'interruptReceiptDigest'>;
+  conversationId: string;
+  agentVersionId: string;
+  startCommandId: string;
+  runtimeThreadId: string;
+  runtimeTurnId: string;
+  dispatchReceiptDigest: string;
+  sandboxAttestationDigest: string;
+}): WorkerInterruptReceipt {
+  return WorkerInterruptReceiptSchema.parse({
+    protocol: WORKER_INTERRUPT_RECEIPT_PROTOCOL,
+    schemaVersion: 1,
+    outcome: 'INTERRUPTED',
+    evidenceAuthority: 'HOST',
+    installationId: input.session.installationId,
+    invocationId: input.fact.invocationId,
+    conversationId: input.conversationId,
+    agentVersionId: input.agentVersionId,
+    agentVersionDigest: input.fact.agentVersionDigest,
+    snapshotDigest: input.fact.snapshotDigest,
+    leaseId: input.fact.leaseId,
+    fence: input.fact.fence,
+    executionCapabilityDigest: input.fact.executionCapabilityDigest,
+    cancelCommandId: randomUuidV7(),
+    cancelReason: 'CONSUMER_REQUEST',
+    interruptNonce: randomUuidV7(),
+    dispatchAttemptCount: 1,
+    startCommandId: input.startCommandId,
+    dispatchNonce: randomUuidV7(),
+    runtimeThreadId: input.runtimeThreadId,
+    runtimeTurnId: input.runtimeTurnId,
+    dispatchReceiptDigest: input.dispatchReceiptDigest,
+    sandboxInstanceId: randomUuidV7(),
+    sandboxAttestationDigest: input.sandboxAttestationDigest,
+    hostTerminalDigest: 'sha256:' + randomBytes(32).toString('hex'),
+  });
+}
+
+function invocationCancelled(
+  session: AuthenticatedWorkerSession,
+  currentLease: Extract<BrokerEnvelope, { type: 'lease.grant' }>,
+  sequence: bigint,
+  fact: WorkerInvocationCancelledFact,
+  interruptReceipt: WorkerInterruptReceipt,
+): Extract<BrokerEnvelope, { type: 'invocation.cancelled' }> {
+  const sentAt = new Date().toISOString();
+  const receiptDigest = workerInterruptReceiptDigest(interruptReceipt);
+  if (receiptDigest !== fact.interruptReceiptDigest) {
+    throw new Error('CANCELLED_RECEIPT_DIGEST_UNBOUND');
+  }
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'event',
+    type: 'invocation.cancelled',
+    messageId: randomUuidV7(),
+    correlationId: fact.invocationId,
+    connectionId: session.connectionId,
+    sequence: sequence.toString(),
+    sentAt,
+    expiresAt: new Date(Date.parse(sentAt) + 30_000).toISOString(),
+    lease: currentLease.lease,
+    body: { ...fact, factDigest: workerInvocationFactDigest(fact), interruptReceipt },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.cancelled' }>;
 }
 
 function terminalSealer(
@@ -5099,6 +5172,264 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
     });
     expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
   }, 25_000);
+
+  it('atomically projects a canonical invocation.cancelled fact after durable started evidence and replays exactly', async () => {
+    const seeded = await seedInvocationProjectionFixture('cancelled-authority');
+    const { fixture, session, lease, projectingAuthority } = seeded;
+    const running = await advanceFixtureToRunning(seeded);
+    // The Cloud cancel authority (phase-B invocation.cancel command processing) durably
+    // transitions RUNNING -> CANCEL_REQUESTED with a timestamp before the Worker terminal
+    // fact may finalize CANCEL_REQUESTED -> CANCELLED (0012 transition trigger).
+    const tenantRow = await owner.query<{ creator_id: string }>(
+      'SELECT creator_id::text FROM agent_invocations WHERE id = $1',
+      [fixture.invocationId],
+    );
+    const creatorId = tenantRow.rows[0]?.creator_id;
+    if (creatorId === undefined) throw new Error('CANCELLED_CREATOR_MISSING');
+    const cancelRequest = await owner.query(
+      'UPDATE agent_invocations' +
+        " SET state = 'CANCEL_REQUESTED', cancel_requested_at = clock_timestamp()" +
+        " WHERE id = $1 AND creator_id = $2 AND state = 'RUNNING' RETURNING state",
+      [fixture.invocationId, creatorId],
+    );
+    if (cancelRequest.rows[0]?.state !== 'CANCEL_REQUESTED') {
+      throw new Error('CANCEL_REQUEST_TRANSITION_FAILED');
+    }
+    const cancelledFactFields = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.cancelled',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+    } as const;
+    const receiptInput = {
+      session,
+      fact: cancelledFactFields,
+      conversationId: fixture.conversationId,
+      agentVersionId: fixture.versionId,
+      startCommandId: running.startCommandId,
+      runtimeThreadId: running.startedFact.runtimeThreadId,
+      runtimeTurnId: running.startedFact.runtimeTurnId,
+      dispatchReceiptDigest: running.startedFact.dispatchReceiptDigest,
+      sandboxAttestationDigest: running.startedFact.sandboxAttestationDigest,
+    };
+    const admittedReceipt = cancelledInterruptReceipt(receiptInput);
+    const admittedReceiptDigest = workerInterruptReceiptDigest(admittedReceipt);
+    const admittedFact = {
+      ...cancelledFactFields,
+      interruptReceiptDigest: admittedReceiptDigest,
+    } as const satisfies WorkerInvocationCancelledFact;
+    const admittedEvent = invocationCancelled(session, lease, 2n, admittedFact, admittedReceipt);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(admittedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+
+    // The durable Worker fact digest is persisted on the cancelled event: recompute it in TS and
+    // compare with the SQL-persisted source_fact_digest across the real projector chain.
+    const persisted = await owner.query<{
+      source_fact_digest: string;
+      state: string;
+      conversation_state: string;
+      receipts: string;
+      cancelled_events: string;
+      consumer_events: string;
+      alerts: string;
+    }>(
+      'SELECT' +
+        ' (SELECT source_fact_digest FROM agent_invocation_events WHERE invocation_id = $1' +
+        "   AND event_type = 'invocation.cancelled') AS source_fact_digest," +
+        ' (SELECT state FROM agent_invocations WHERE id = $1) AS state,' +
+        ' (SELECT state FROM agent_conversations WHERE id = $2) AS conversation_state,' +
+        ' (SELECT count(*)::text FROM creator_agent_cancelled_terminal_receipts' +
+        '   WHERE invocation_id = $1) AS receipts,' +
+        ' (SELECT count(*)::text FROM agent_invocation_events' +
+        "   WHERE invocation_id = $1 AND event_type = 'invocation.cancelled') AS cancelled_events," +
+        ' (SELECT count(*)::text FROM consumer_event_outbox' +
+        "   WHERE invocation_id = $1 AND event_type = 'invocation.terminal') AS consumer_events," +
+        ' (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts' +
+        '   WHERE invocation_id = $1) AS alerts',
+      [fixture.invocationId, fixture.conversationId],
+    );
+    const footprint = persisted.rows[0];
+    if (footprint === undefined) throw new Error('CANCELLED_FOOTPRINT_MISSING');
+    expect(footprint).toMatchObject({
+      state: 'CANCELLED',
+      conversation_state: 'IDLE',
+      receipts: '1',
+      cancelled_events: '1',
+      consumer_events: '1',
+      alerts: '0',
+    });
+    expect(footprint.source_fact_digest).toBe(workerInvocationFactDigest(admittedFact));
+
+    // A new envelope for the exact same durable fact replays: one receipt, no second mutation.
+    const exactEvent = invocationCancelled(session, lease, 3n, admittedFact, admittedReceipt);
+    expect(exactEvent.messageId).not.toBe(admittedEvent.messageId);
+    await expect(
+      projectingAuthority.acceptEnvelope(session, delivery(exactEvent), AbortSignal.timeout(5_000)),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'IDEMPOTENT_REPLAY', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+
+    // Same terminal type but a different durable fact (new Host receipt) is a same-identity
+    // conflict: the Cloud authority rejects it and the first receipt stays immutable.
+    const conflictingReceipt = cancelledInterruptReceipt(receiptInput);
+    const conflictingFact = {
+      ...cancelledFactFields,
+      interruptReceiptDigest: workerInterruptReceiptDigest(conflictingReceipt),
+    } satisfies WorkerInvocationCancelledFact;
+    const conflictEvent = invocationCancelled(
+      session,
+      lease,
+      4n,
+      conflictingFact,
+      conflictingReceipt,
+    );
+    // The same-identity conflict (same source, different durable fact) is an invariant failure:
+    // the Cloud authority rejects the mutation and the first receipt stays immutable, with no
+    // integrity alert because no durable fact was admitted.
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(conflictEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      owner.query<{ receipts: string; alerts: string }>(
+        'SELECT' +
+          ' (SELECT count(*)::text FROM creator_agent_cancelled_terminal_receipts' +
+          '   WHERE invocation_id = $1) AS receipts,' +
+          ' (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts' +
+          '   WHERE invocation_id = $1) AS alerts',
+        [fixture.invocationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ receipts: '1', alerts: '0' }] });
+
+    // Terminal authority is exclusive in the other direction too: a cancelled fact for an
+    // invocation that already reached SUCCEEDED is rejected as a terminal conflict.
+    const successSeed = await seedInvocationProjectionFixture('cancelled-after-succeeded');
+    const {
+      fixture: successFixture,
+      session: successSession,
+      lease: successLease,
+      assistantMessageSealer: successSealer,
+      projectingAuthority: successAuthority,
+    } = successSeed;
+    const successRunning = await advanceFixtureToRunning(successSeed);
+    const successResultDigest = 'hmac-sha256:' + randomBytes(32).toString('hex');
+    const successFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.succeeded',
+      sourceEventId: successFixture.invocationId,
+      invocationId: successFixture.invocationId,
+      agentVersionDigest: successFixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: successFixture.capabilityDigest,
+      leaseId: successLease.lease.leaseId,
+      fence: successLease.lease.fence,
+      runtimeThreadId: successRunning.startedFact.runtimeThreadId,
+      runtimeTurnId: successRunning.startedFact.runtimeTurnId,
+      startedFactDigest: workerInvocationFactDigest(successRunning.startedFact),
+      resultDigest: successResultDigest,
+      localResultCipherDigest: randomBytes(32).toString('hex'),
+    } as const satisfies WorkerInvocationSucceededFact;
+    successSealer.mockImplementation(
+      terminalSealer(successResultDigest, successFact.localResultCipherDigest),
+    );
+    const successEvent = invocationSucceeded(
+      successSession,
+      successLease,
+      2n,
+      successFixture.conversationId,
+      successFact,
+    );
+    await expect(
+      successAuthority.acceptEnvelope(
+        successSession,
+        delivery(successEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    const lateCancelledFields = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.cancelled',
+      sourceEventId: successFixture.invocationId,
+      invocationId: successFixture.invocationId,
+      agentVersionDigest: successFixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: successFixture.capabilityDigest,
+      leaseId: successLease.lease.leaseId,
+      fence: successLease.lease.fence,
+    } as const;
+    const lateReceipt = cancelledInterruptReceipt({
+      session: successSession,
+      fact: lateCancelledFields,
+      conversationId: successFixture.conversationId,
+      agentVersionId: successFixture.versionId,
+      startCommandId: successRunning.startCommandId,
+      runtimeThreadId: successRunning.startedFact.runtimeThreadId,
+      runtimeTurnId: successRunning.startedFact.runtimeTurnId,
+      dispatchReceiptDigest: successRunning.startedFact.dispatchReceiptDigest,
+      sandboxAttestationDigest: successRunning.startedFact.sandboxAttestationDigest,
+    });
+    const lateCancelledFact = {
+      ...lateCancelledFields,
+      interruptReceiptDigest: workerInterruptReceiptDigest(lateReceipt),
+    } as const satisfies WorkerInvocationCancelledFact;
+    const lateCancelledEvent = invocationCancelled(
+      successSession,
+      successLease,
+      3n,
+      lateCancelledFact,
+      lateReceipt,
+    );
+    // A cancelled terminal for an already-SUCCEEDED invocation is security-isolated exactly
+    // like the failed/succeeded terminal-type conflicts: SECURITY_BLOCK ack plus Lease
+    // revocation, and the succeeded terminal stays immutable.
+    const lateBlocked = await successAuthority.acceptEnvelope(
+      successSession,
+      delivery(lateCancelledEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(lateBlocked).toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'SECURITY_BLOCK', level: 'CLOUD_COMMITTED' },
+      },
+      { type: 'lease.revoke', body: { reason: 'SECURITY' } },
+    ]);
+    await expect(
+      owner.query<{ state: string }>('SELECT state FROM agent_invocations WHERE id = $1', [
+        successFixture.invocationId,
+      ]),
+    ).resolves.toMatchObject({ rows: [{ state: 'SUCCEEDED' }] });
+    expect(successSealer).toHaveBeenCalledTimes(1);
+  }, 30_000);
 
   it('security-isolates a failed terminal-type conflict after a durable succeeded chain', async () => {
     const seeded = await seedInvocationProjectionFixture('succeeded-failed-conflict');

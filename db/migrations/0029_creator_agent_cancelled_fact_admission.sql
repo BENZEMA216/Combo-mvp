@@ -873,11 +873,38 @@ BEGIN
       END IF;
     END IF;
   ELSIF NEW.source = 'WORKER'
-        AND NEW.event_type IN ('invocation.succeeded', 'invocation.cancelled') THEN
+        AND NEW.event_type IN (
+          'invocation.succeeded', 'invocation.failed', 'invocation.cancelled'
+        ) THEN
     IF NEW.source_fact_digest IS NULL OR NEW.broker_command_id IS NOT NULL
        OR NEW.source_event_id <> NEW.invocation_id::text THEN
       RAISE EXCEPTION 'Worker Invocation terminal fact requires digest without a command'
         USING ERRCODE = '23514';
+    END IF;
+    IF NEW.event_type = 'invocation.failed' THEN
+      IF NEW.payload->>'state' IS DISTINCT FROM 'FAILED'
+         OR COALESCE(NEW.payload->>'errorCode', '') NOT IN (
+           'SNAPSHOT_DIGEST_MISMATCH', 'PROTOCOL_INCOMPATIBLE',
+           'SANDBOX_ATTESTATION_FAILED', 'RUNTIME_START_FAILED',
+           'MODEL_QUOTA_EXHAUSTED', 'TURN_TIMEOUT', 'TURN_FAILED'
+         ) THEN
+        RAISE EXCEPTION 'Worker Invocation failed fact requires a confirmed stable failure code'
+          USING ERRCODE = '23514';
+      END IF;
+      SELECT role.rolsuper OR role.rolbypassrls INTO privileged_session
+        FROM pg_catalog.pg_roles AS role WHERE role.rolname = session_user;
+      IF NOT COALESCE(privileged_session, false) THEN
+        SELECT role.rolname INTO phase_admission_owner
+          FROM pg_catalog.pg_proc AS procedure
+          JOIN pg_catalog.pg_roles AS role ON role.oid = procedure.proowner
+         WHERE procedure.oid =
+           'public.creator_agent_project_failed_fact_v1(uuid,uuid,text,integer,text,uuid,uuid,text,text,text,uuid,bigint,text,text)'::regprocedure;
+        IF session_user <> 'combo_agent_broker' OR current_user = session_user
+           OR current_user IS DISTINCT FROM phase_admission_owner THEN
+          RAISE EXCEPTION 'invocation.failed requires failed fact admission authority'
+            USING ERRCODE = '42501';
+        END IF;
+      END IF;
     END IF;
     IF NEW.event_type = 'invocation.cancelled' THEN
       IF NEW.payload->>'state' IS DISTINCT FROM 'CANCELLED' THEN
