@@ -1,0 +1,27 @@
+# Agent 与平台之间的契约文件。fork 本模板后保持本文件与代码一致；平台发布管线按它做准入检查。
+# 字段语义见平台技术方案第四节（构建套件 / agent.yaml）。
+name: nextjs-agent-template
+
+# 容器运行契约：监听端口与探针路径。
+port: 3000
+healthz: /api/healthz
+
+# 资源基线（单副本起步值，平台按信号扩容）。
+resources:
+  request: { cpu: 250m, memory: 256Mi }
+  limit: { cpu: 500m, memory: 512Mi }
+
+# 环境变量只声明名字，值存平台 k8s Secret，Git 不落值。
+# COMBO_PLATFORM_INTERNAL_TOKEN 由平台按 agent 签发，可单独吊销。
+env:
+  - COMBO_AGENT_ID
+  - COMBO_PLATFORM_INTERNAL_TOKEN
+  - COMBO_LLM_GATEWAY_URL
+  - COMBO_BILLING_URL
+  - COMBO_JWKS_URL
+
+# 声明用到的平台能力，是切面注入点。本模板用到 llm 与 entitlement；
+# storage 能力在 Agent 真正接入托管存储时再声明。
+capabilities:
+  - llm
+  - entitlement
