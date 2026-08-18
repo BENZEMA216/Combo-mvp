@@ -36,7 +36,12 @@ function integerString(minimum: number, maximum: number) {
     );
 }
 
-function jsonArray<T extends z.ZodTypeAny>(item: T, minimum: number, maximum: number) {
+function jsonArray<T extends z.ZodTypeAny>(
+  item: T,
+  minimum: number,
+  maximum: number,
+  unique = true,
+) {
   return z
     .string()
     .min(2)
@@ -54,7 +59,10 @@ function jsonArray<T extends z.ZodTypeAny>(item: T, minimum: number, maximum: nu
         .array(item)
         .min(minimum)
         .max(maximum)
-        .refine((values) => new Set(values).size === values.length, 'array values must be unique'),
+        .refine(
+          (values) => !unique || new Set(values).size === values.length,
+          'array values must be unique',
+        ),
     );
 }
 
@@ -74,9 +82,14 @@ const ProcessEnvironmentSchema = z
     AGENT_GATEWAY_PUBLISHER_POLL_INTERVAL_MS: integerString(10, 30_000).default('1000'),
     AGENT_GATEWAY_SHUTDOWN_TIMEOUT_MS: integerString(100, 30_000).default('5000'),
     AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS: jsonArray(WorkerVersionSchema, 1, 16),
-    AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS: jsonArray(Sha256DigestSchema, 1, 32),
-    AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS: jsonArray(Sha256DigestSchema, 1, 32),
-    AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES: jsonArray(IsolationModeSchema, 1, 2),
+    AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS: jsonArray(Sha256DigestSchema, 1, 16, false),
+    AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS: jsonArray(
+      Sha256DigestSchema,
+      1,
+      16,
+      false,
+    ),
+    AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES: jsonArray(IsolationModeSchema, 1, 16, false),
     AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST: jsonArray(UuidSchema, 0, 32).default('[]'),
     PGHOST: HostSchema,
     PGPORT: integerString(1, 65_535).default('5432'),
@@ -109,6 +122,29 @@ const ProcessEnvironmentSchema = z
         path: ['AGENT_GATEWAY_HEALTH_PORT'],
         message: 'health and transport ports must differ',
       });
+    }
+    const profileCount = environment.AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS.length;
+    for (const [field, values] of [
+      [
+        'AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS',
+        environment.AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS,
+      ],
+      [
+        'AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS',
+        environment.AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS,
+      ],
+      [
+        'AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES',
+        environment.AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES,
+      ],
+    ] as const) {
+      if (values.length !== profileCount) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: 'compatibility profile arrays must have equal length',
+        });
+      }
     }
   });
 

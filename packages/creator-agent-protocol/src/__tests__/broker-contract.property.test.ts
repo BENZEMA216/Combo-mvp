@@ -10,9 +10,12 @@ import {
   type BrokerConversationOpenCommand,
 } from '../broker.js';
 import { readFixture } from './fixture-helpers.js';
-
-const RUNS = Number.parseInt(process.env.VNEXT_PROPERTY_RUNS ?? '100000', 10);
-const SEED = Number.parseInt(process.env.VNEXT_PROPERTY_SEED ?? '12648430', 10) >>> 0;
+import {
+  PROPERTY_RUNS,
+  PROPERTY_SEED_BASE,
+  PROPERTY_SEED_COUNT,
+  propertySeedMatrix,
+} from './property-matrix.js';
 
 class XorShift32 {
   public constructor(private state: number) {
@@ -156,33 +159,37 @@ describe('Broker conversation.open contract property model', () => {
     }
   });
 
-  it(`固定 seed=${SEED} 运行 ${RUNS} 次 re-envelope/immutable/strict 边界`, async () => {
+  it(`${PROPERTY_SEED_COUNT} seeds from ${PROPERTY_SEED_BASE} run ${PROPERTY_RUNS} re-envelope/immutable/strict boundaries`, async () => {
     const baseline = BrokerConversationOpenCommandSchema.parse(
       await readFixture('broker-conversation-open.v1.json'),
     );
     const baselineDigest = brokerConversationOpenLogicalDigest(
       brokerConversationOpenLogicalCommand(baseline),
     );
-    const random = new XorShift32(SEED);
     let changed = 0;
     let rejected = 0;
 
-    for (let run = 0; run < RUNS; run += 1) {
-      const reEnveloped = mutateOuter(baseline, random);
-      expect(
-        brokerConversationOpenLogicalDigest(brokerConversationOpenLogicalCommand(reEnveloped)),
-      ).toBe(baselineDigest);
-
-      const candidate = BrokerConversationOpenCommandSchema.safeParse(
-        mutateImmutableOrInvalid(baseline, random),
-      );
-      if (candidate.success) {
+    for (const { seed, runs } of propertySeedMatrix()) {
+      const random = new XorShift32(seed);
+      for (let run = 0; run < runs; run += 1) {
+        const reEnveloped = mutateOuter(baseline, random);
         expect(
-          brokerConversationOpenLogicalDigest(brokerConversationOpenLogicalCommand(candidate.data)),
-        ).not.toBe(baselineDigest);
-        changed += 1;
-      } else {
-        rejected += 1;
+          brokerConversationOpenLogicalDigest(brokerConversationOpenLogicalCommand(reEnveloped)),
+        ).toBe(baselineDigest);
+
+        const candidate = BrokerConversationOpenCommandSchema.safeParse(
+          mutateImmutableOrInvalid(baseline, random),
+        );
+        if (candidate.success) {
+          expect(
+            brokerConversationOpenLogicalDigest(
+              brokerConversationOpenLogicalCommand(candidate.data),
+            ),
+          ).not.toBe(baselineDigest);
+          changed += 1;
+        } else {
+          rejected += 1;
+        }
       }
     }
 

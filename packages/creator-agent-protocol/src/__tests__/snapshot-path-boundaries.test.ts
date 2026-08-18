@@ -111,13 +111,33 @@ function expectOnlyPathByteIssue(
   expect(result.error.issues[0]).toEqual(expect.objectContaining({ code: 'custom', path }));
 }
 
+function hostilePathProbes(corpus: {
+  canaryPrefix: string;
+  forbiddenControlRanges: readonly { id: string; start: number; end: number }[];
+  loneSurrogates: readonly { id: string; codeUnit: number }[];
+}): Array<{ id: string; canary: string; path: string }> {
+  const controls = corpus.forbiddenControlRanges.flatMap((range) =>
+    Array.from({ length: range.end - range.start + 1 }, (_, offset) => {
+      const codeUnit = range.start + offset;
+      const id = `${range.id}-${codeUnit.toString(16).padStart(2, '0')}`;
+      const canary = `${corpus.canaryPrefix}${id.toUpperCase()}_`;
+      return { id, canary, path: `${canary}${String.fromCharCode(codeUnit)}.txt` };
+    }),
+  );
+  const surrogates = corpus.loneSurrogates.map(({ id, codeUnit }) => {
+    const canary = `${corpus.canaryPrefix}${id.toUpperCase()}_`;
+    return { id, canary, path: `${canary}${String.fromCharCode(codeUnit)}.txt` };
+  });
+  return [...controls, ...surrogates];
+}
+
 describe('digest-bound Snapshot path boundary', () => {
   it('pins the authority, dependencies, portable pattern and sole advertised owner', async () => {
     const corpusBytes = await readFile(corpusUrl);
     const corpus = SnapshotPathBoundaryCorpusSchema.parse(JSON.parse(corpusBytes.toString('utf8')));
     expect(corpus.authority).toEqual({
       technicalPlanSection: '技术方案 §5.2 Alpha 输入边界',
-      testPlanCases: ['SCH-004', 'SNP-009'],
+      testPlanCases: ['SCH-004', 'SCH-005', 'SNP-009', 'SNP-010'],
       pathPolicyDecisionId: 'ADR-VNEXT-004',
     });
     expect(corpus.remainingBoundaryClasses).toEqual([
@@ -153,6 +173,52 @@ describe('digest-bound Snapshot path boundary', () => {
     expect(node.maxLength).toBe(corpus.boundary.maximumUtf8Bytes);
     expect(node[corpus.boundary.jsonSchemaKeyword]).toBe(corpus.boundary.maximumUtf8Bytes);
     expect(node.pattern).toBe(portablePathPattern);
+  });
+
+  it('SCH-005 rejects all 65 C0/C1 code points and both lone surrogates in protocol path owners', async () => {
+    const corpus = SnapshotPathBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(corpusUrl, 'utf8')),
+    );
+    const baseManifest = SnapshotManifestSchema.parse(
+      JSON.parse(
+        await readFile(
+          new URL(corpus.checkedDependencies.baseManifest.path, fixtureDirectoryUrl),
+          'utf8',
+        ),
+      ),
+    );
+    const probes = hostilePathProbes(corpus.hostileUnicode);
+    expect(probes).toHaveLength(corpus.hostileUnicode.expectedCounts.probes);
+    expect(probes.filter(({ id }) => id.startsWith('c0-') || id.startsWith('c1-'))).toHaveLength(
+      corpus.hostileUnicode.expectedCounts.forbiddenControls,
+    );
+    let outcomes = 0;
+
+    for (const probe of probes) {
+      const pathResult = SnapshotPathSchema.safeParse(probe.path);
+      expect(pathResult.success, `path:${probe.id}`).toBe(false);
+      if (!pathResult.success) {
+        expect(JSON.stringify(pathResult.error.issues), `path-redaction:${probe.id}`).not.toContain(
+          probe.canary,
+        );
+      }
+      outcomes += 1;
+
+      const manifestResult = SnapshotManifestSchema.safeParse({
+        ...baseManifest,
+        files: [{ ...baseManifest.files[0]!, path: probe.path }, ...baseManifest.files.slice(1)],
+      });
+      expect(manifestResult.success, `manifest:${probe.id}`).toBe(false);
+      if (!manifestResult.success) {
+        expect(
+          JSON.stringify(manifestResult.error.issues),
+          `manifest-redaction:${probe.id}`,
+        ).not.toContain(probe.canary);
+      }
+      outcomes += 1;
+    }
+
+    expect(outcomes).toBe(corpus.hostileUnicode.expectedCounts.outcomes / 2);
   });
 
   it('keeps runtime and contract pair-aware for surrogates, astral text and controls', async () => {

@@ -6,9 +6,12 @@ import {
   type WorkerConversationReadyFact,
 } from '../conversation-ready-facts.js';
 import { readFixture } from './fixture-helpers.js';
-
-const RUNS = Number.parseInt(process.env.VNEXT_PROPERTY_RUNS ?? '100000', 10);
-const SEED = Number.parseInt(process.env.VNEXT_PROPERTY_SEED ?? '12648430', 10) >>> 0;
+import {
+  PROPERTY_RUNS,
+  PROPERTY_SEED_BASE,
+  PROPERTY_SEED_COUNT,
+  propertySeedMatrix,
+} from './property-matrix.js';
 
 class XorShift32 {
   public constructor(private state: number) {
@@ -26,14 +29,15 @@ class XorShift32 {
 }
 
 describe('Worker Conversation Ready fact property model', () => {
-  it(`固定 seed=${SEED} 随机篡改 ${RUNS} 次均改变 canonical factDigest`, async () => {
+  it(`${PROPERTY_SEED_COUNT} seeds from ${PROPERTY_SEED_BASE} mutate ${PROPERTY_RUNS} facts and always change the canonical factDigest`, async () => {
     const envelope = (await readFixture('broker-conversation-ready.v1.json')) as {
       body: WorkerConversationReadyFact & { factDigest: string };
     };
     const { factDigest: _factDigest, ...fact } = envelope.body;
     const baseline = workerConversationReadyFactDigest(fact);
-    const random = new XorShift32(SEED);
-    const mutations: ReadonlyArray<(value: WorkerConversationReadyFact) => unknown> = [
+    const mutations = (
+      random: XorShift32,
+    ): ReadonlyArray<(value: WorkerConversationReadyFact) => unknown> => [
       (value) => ({ ...value, conversationId: '0198f00d-5000-7000-8000-000000000011' }),
       (value) => ({
         ...value,
@@ -53,10 +57,14 @@ describe('Worker Conversation Ready fact property model', () => {
       (value) => ({ ...value, readyEvidenceDigest: `sha256:${'3'.repeat(64)}` }),
     ];
 
-    for (let run = 0; run < RUNS; run += 1) {
-      const mutate = mutations[random.next() % mutations.length]!;
-      const mutation = WorkerConversationReadyFactSchema.parse(mutate(fact));
-      expect(workerConversationReadyFactDigest(mutation)).not.toBe(baseline);
+    for (const { seed, runs } of propertySeedMatrix()) {
+      const random = new XorShift32(seed);
+      const seedMutations = mutations(random);
+      for (let run = 0; run < runs; run += 1) {
+        const mutate = seedMutations[random.next() % seedMutations.length]!;
+        const mutation = WorkerConversationReadyFactSchema.parse(mutate(fact));
+        expect(workerConversationReadyFactDigest(mutation)).not.toBe(baseline);
+      }
     }
   });
 });

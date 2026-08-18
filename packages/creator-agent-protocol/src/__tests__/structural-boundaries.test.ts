@@ -7,6 +7,8 @@ import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
 import type { ZodIssue } from 'zod';
 
+// VNext registry case: SCH-005 (all structural string owners fail closed without echo).
+
 import { ConsumerEventStreamSchema, decideConsumerEventReplay } from '../consumer-events.js';
 import { EvidenceReviewerSignoffSchema } from '../evidence.js';
 import {
@@ -20,6 +22,8 @@ import {
 import { VnextErrorResponseSchema, errorResponseFor } from '../invocation.js';
 import {
   ServerIdSchema,
+  UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN_SOURCE,
+  UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE,
   UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE,
   UTF8_TEXT_PORTABLE_PATTERN_SOURCE,
   UnicodeCodePointStringSchema,
@@ -373,6 +377,14 @@ describe('digest-bound public structural boundaries', () => {
     expect(probes.accepted).toHaveLength(parity.probeRecipe.expectedCounts.accepted);
     expect(probes.rejected).toHaveLength(parity.probeRecipe.expectedCounts.rejected);
     expect(probes.all).toHaveLength(parity.probeRecipe.expectedCounts.total);
+    expect(parity.strictPatternSource).toBe(UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE);
+    expect(parity.strictOptionalPatternSource).toBe(
+      UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN_SOURCE,
+    );
+    const strictRuntimeOwnerIds = new Set<string>(parity.strictRuntimeOwnerIds);
+    const strictArtifactPointers = new Set(
+      parity.strictArtifactPointers.map(({ artifact, pointer }) => `${artifact}:${pointer}`),
+    );
 
     let outcomes = 0;
     for (const owner of parity.runtimeOwners) {
@@ -396,23 +408,20 @@ describe('digest-bound public structural boundaries', () => {
         `runtime:${owner.id}:fixture`,
       ).toBe(true);
 
-      if (owner.kind === 'ordinary') {
-        for (const probe of probes.accepted) {
-          const result = parseUnicodeRuntimeOwner(
-            owner.runtimeParser,
-            replacePointer(parserInput, valuePointer, probe.value),
-          );
-          expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(true);
-          outcomes += 1;
-        }
-      }
-      for (const probe of probes.rejected) {
+      for (const probe of probes.all) {
+        const scalarForbidden = probes.rejected.some(({ id }) => id === probe.id);
+        const strictWhitespaceForbidden =
+          strictRuntimeOwnerIds.has(owner.id) &&
+          (probe.id === 'tab' || probe.id === 'lf' || probe.id === 'cr');
+        const expected =
+          owner.kind === 'ordinary' && !scalarForbidden && !strictWhitespaceForbidden;
         const result = parseUnicodeRuntimeOwner(
           owner.runtimeParser,
           replacePointer(parserInput, valuePointer, probe.value),
         );
-        expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(false);
-        if (!result.success) {
+        expect(result.success, `runtime:${owner.id}:${probe.id}`).toBe(expected);
+        if (!expected && !result.success) {
+          const shouldHaveRegexIssue = scalarForbidden || strictWhitespaceForbidden;
           expect(
             flattenZodIssues(result.error.issues).some(
               (issue) =>
@@ -421,7 +430,7 @@ describe('digest-bound public structural boundaries', () => {
                 issue.path.map(String).join('/') === pointerIssuePath(valuePointer),
             ),
             `runtime-regex:${owner.id}:${probe.id}`,
-          ).toBe(true);
+          ).toBe(shouldHaveRegexIssue);
           expect(JSON.stringify(result.error.issues)).not.toContain(parity.canaryPrefix);
         }
         outcomes += 1;
@@ -445,11 +454,21 @@ describe('digest-bound public structural boundaries', () => {
         })),
     );
     expect(publicPointers).toHaveLength(parity.expectedCounts.publicNodes);
+    expect(strictArtifactPointers.size).toBe(parity.expectedCounts.strictPublicNodes);
+    expect(
+      [...strictArtifactPointers].every((key) =>
+        publicPointers.some(({ artifact, pointer }) => `${artifact}:${pointer}` === key),
+      ),
+    ).toBe(true);
     const ajv = new Ajv({ allErrors: true, strict: false, validateFormats: false });
     for (const { artifact, pointer, minimumCodePoints } of publicPointers) {
       const publicNode = lookupPointer(documents[artifact], pointer);
-      const expectedPattern =
-        minimumCodePoints === 0
+      const strict = strictArtifactPointers.has(`${artifact}:${pointer}`);
+      const expectedPattern = strict
+        ? minimumCodePoints === 0
+          ? parity.strictOptionalPatternSource
+          : parity.strictPatternSource
+        : minimumCodePoints === 0
           ? UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE
           : UTF8_TEXT_PORTABLE_PATTERN_SOURCE;
       expect(
@@ -457,13 +476,15 @@ describe('digest-bound public structural boundaries', () => {
         `pattern:${artifact}:${pointer}`,
       ).toEqual([expectedPattern]);
       const validate = ajv.compile(publicNode as AnySchema);
-      for (const probe of probes.accepted) {
-        expect(validate(probe.value), `public:${artifact}:${pointer}:${probe.id}`).toBe(true);
-        outcomes += 1;
-      }
-      for (const probe of probes.rejected) {
-        expect(validate(probe.value), `public:${artifact}:${pointer}:${probe.id}`).toBe(false);
-        expect(JSON.stringify(validate.errors)).not.toContain(parity.canaryPrefix);
+      for (const probe of probes.all) {
+        const scalarForbidden = probes.rejected.some(({ id }) => id === probe.id);
+        const strictWhitespaceForbidden =
+          strict && (probe.id === 'tab' || probe.id === 'lf' || probe.id === 'cr');
+        const expected = !scalarForbidden && !strictWhitespaceForbidden;
+        expect(validate(probe.value), `public:${artifact}:${pointer}:${probe.id}`).toBe(expected);
+        if (!expected) {
+          expect(JSON.stringify(validate.errors)).not.toContain(parity.canaryPrefix);
+        }
         outcomes += 1;
       }
     }
@@ -493,7 +514,8 @@ describe('digest-bound public structural boundaries', () => {
         lookupPointer(documents[wrapper.artifact], wrapper.pointer) as AnySchema,
       );
       expect(validate(null), `nullable:${wrapper.id}:null`).toBe(true);
-      expect(validate(probes.accepted[0]!.value), `nullable:${wrapper.id}:scalar`).toBe(true);
+      expect(validate(probes.accepted[3]!.value), `nullable:${wrapper.id}:scalar`).toBe(true);
+      expect(validate(probes.accepted[0]!.value), `nullable:${wrapper.id}:tab`).toBe(false);
       expect(validate(probes.rejected.at(-1)!.value), `nullable:${wrapper.id}:surrogate`).toBe(
         false,
       );

@@ -30,15 +30,21 @@ import {
   type WorkerInvocationFact,
 } from './invocation-facts.js';
 import {
+  WorkerCancelReasonSchema,
+  WorkerInterruptReceiptSchema,
+  workerInterruptReceiptDigest,
+} from './interrupt-receipt.js';
+import {
   Base64UrlSchema,
   CanonicalBase64UrlBytesSchema,
+  ClientIdempotencyKeySchema,
   HmacSha256DigestSchema,
   IsoDateTimeSchema,
   P256P1363SignatureSchema,
   Sha256DigestSchema,
   Sha256HexSchema,
   Uint63StringSchema,
-  Utf8TextSchema,
+  StrictUtf8TextSchema,
   UuidSchema,
 } from './primitives.js';
 import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.js';
@@ -163,7 +169,7 @@ const BrokerHandshakeUnsignedShape = {
   protocol: z.literal(CREATOR_BROKER_PROTOCOL),
   schemaVersion: z.literal(1),
   installationId: UuidSchema,
-  workerVersion: Utf8TextSchema(128),
+  workerVersion: StrictUtf8TextSchema(128),
   supportedProtocolVersions: z.tuple([z.literal(1)]),
   ...BrokerRegistrationCapabilitiesShape,
   capacity: BrokerCapacitySchema,
@@ -210,7 +216,7 @@ const ExecutionCapabilityUnsignedShape = {
   fence: Uint63StringSchema,
   providerRequestId: UuidSchema,
   requestDigest: HmacSha256DigestSchema,
-  model: Utf8TextSchema(128),
+  model: StrictUtf8TextSchema(128),
   reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
   budget: z
     .object({
@@ -844,7 +850,7 @@ export const BrokerCommandSchema = z.discriminatedUnion('type', [
       .object({
         invocationId: UuidSchema,
         conversationId: UuidSchema,
-        clientMessageId: UuidSchema,
+        clientMessageId: ClientIdempotencyKeySchema,
         requestDigest: HmacSha256DigestSchema,
         userMessageCiphertext: BrokerSensitiveMessageSchema,
         agentVersionId: UuidSchema,
@@ -870,7 +876,7 @@ export const BrokerCommandSchema = z.discriminatedUnion('type', [
     z
       .object({
         invocationId: UuidSchema,
-        reason: z.enum(['CONSUMER_REQUEST', 'DRAIN_DEADLINE', 'SECURITY_REVOKE', 'DEADLINE']),
+        reason: WorkerCancelReasonSchema,
       })
       .strict(),
   ),
@@ -912,7 +918,7 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
   ),
   event(
     'version.rejected',
-    z.object({ generation: GenerationSchema, errorCode: Utf8TextSchema(128) }).strict(),
+    z.object({ generation: GenerationSchema, errorCode: StrictUtf8TextSchema(128) }).strict(),
   ),
   event('conversation.ready', WorkerConversationReadyFactBodySchema),
   event(
@@ -966,7 +972,7 @@ export const BrokerEventSchema = z.discriminatedUnion('type', [
     exactWorkerFactBody(
       WorkerInvocationCancelledFactObjectSchema,
       WorkerInvocationCancelledFactSchema,
-      {},
+      { interruptReceipt: WorkerInterruptReceiptSchema },
     ),
   ),
   event(
@@ -1123,6 +1129,32 @@ export const BrokerEnvelopeSchema = z
         path: ['correlationId'],
         message: 'Invocation response/event correlationId 必须绑定 invocationId',
       });
+    }
+    if (envelope.type === 'invocation.cancelled') {
+      const receipt = envelope.body.interruptReceipt;
+      if (workerInterruptReceiptDigest(receipt) !== envelope.body.interruptReceiptDigest) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['body', 'interruptReceiptDigest'],
+          message: 'interruptReceiptDigest 必须绑定 exact canonical Worker interrupt receipt',
+        });
+      }
+      for (const field of [
+        'invocationId',
+        'agentVersionDigest',
+        'snapshotDigest',
+        'executionCapabilityDigest',
+        'leaseId',
+        'fence',
+      ] as const) {
+        if (receipt[field] !== envelope.body[field]) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['body', 'interruptReceipt', field],
+            message: `interruptReceipt.${field} 必须绑定 exact cancelled fact`,
+          });
+        }
+      }
     }
   });
 export type BrokerEnvelope = z.infer<typeof BrokerEnvelopeSchema>;

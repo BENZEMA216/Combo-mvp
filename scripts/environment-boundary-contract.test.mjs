@@ -246,6 +246,26 @@ test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLi
       `${workflow} must pass the Consumer credential to migration and Conversation PG gates`,
     );
     assert.match(source, /CREATOR_AGENT_CONVERSATION_PG_TEST: '1'/);
+    assert.equal(
+      (source.match(/CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/g) ?? []).length,
+      1,
+      `${workflow} must enable the real 0022 Consumer accept suite exactly once`,
+    );
+    const consumerAcceptStep = capture(
+      source,
+      /\n {6}- name: Creator Agent Cloud Journal and Conversation PostgreSQL gates\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} Consumer accept PostgreSQL step`,
+    );
+    assert.match(consumerAcceptStep, /POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password/);
+    assert.match(
+      consumerAcceptStep,
+      /POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password/,
+    );
+    assert.match(consumerAcceptStep, /CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/);
+    assert.match(
+      consumerAcceptStep,
+      /pnpm --dir db exec vitest run \\\n+\s+__tests__\/creator-agent-consumer-message-accept\.pg\.test\.ts/,
+    );
     assert.match(source, /Creator Agent Gateway PostgreSQL authority gate/);
     assert.match(source, /CREATOR_AGENT_GATEWAY_PG_TEST: '1'/);
     assert.match(source, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
@@ -320,6 +340,11 @@ test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLi
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0015 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
     assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0013 upgrade gate/);
+    assert.ok(
+      source.indexOf('Creator Agent Cloud Journal and Conversation PostgreSQL gates') <
+        source.indexOf('Creator Agent Broker delivery contract PostgreSQL gate'),
+      `${workflow} must run the Consumer accept login gate before role-mutating child DB gates`,
+    );
     assert.ok(
       source.indexOf('Creator Agent Gateway PostgreSQL authority gate') <
         source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate'),

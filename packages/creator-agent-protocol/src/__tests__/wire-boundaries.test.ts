@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import { BROKER_MAX_FRAME_BYTES, parseBrokerFrame, parseBrokerHandshake } from '../broker.js';
 import { EVIDENCE_MAX_STRUCTURED_JSON_BYTES } from '../evidence.js';
+import { assertPublicManualCapOutcomeSubset } from '../public-manual-cap-outcomes.js';
 import {
   ProtocolWireBoundaryCorpusSchema,
   type ProtocolWireBoundaryCorpus,
@@ -14,6 +15,10 @@ import { readFixture } from './fixture-helpers.js';
 const UTF8_SENTINEL = 'UTF8_SENTINEL';
 const corpusUrl = new URL('../../fixtures/protocol-wire-boundaries.v1.json', import.meta.url);
 const brokerContractUrl = new URL('../../schemas/broker-contract.v1.json', import.meta.url);
+const manualOutcomeFixtureUrl = new URL(
+  '../../fixtures/public-manual-cap-outcomes.v1.json',
+  import.meta.url,
+);
 
 async function readCorpus(): Promise<ProtocolWireBoundaryCorpus> {
   return ProtocolWireBoundaryCorpusSchema.parse(JSON.parse(await readFile(corpusUrl, 'utf8')));
@@ -106,7 +111,7 @@ describe('Broker wire byte boundaries', () => {
       'supportingArtifacts.environment.json',
       'supportingArtifacts.privacy-scan.json',
     ]);
-    expect(corpus.evidenceClass).toBe('runtime-to-advertised-alignment-only');
+    expect(corpus.evidenceClass).toBe('adr-vnext-034-product-policy-and-runtime-alignment');
     expect(corpus.actualIngressPhases).toEqual([
       'agent-gateway-handshake',
       'agent-gateway-established-frame',
@@ -131,7 +136,7 @@ describe('Broker wire byte boundaries', () => {
       'load-and-backpressure',
       'e3-public-cloud-ingress',
       'production',
-      'does-not-freeze-65536-as-product-policy',
+      'product-policy-frozen-by-adr-vnext-034',
       'does-not-complete-sch-004',
     ]);
     const brokerContractBytes = await readFile(brokerContractUrl);
@@ -155,6 +160,11 @@ describe('Broker wire byte boundaries', () => {
       ['broker-invocation-prepare.v1.json', parseBrokerFrame],
     ] as const;
     let outcomes = 0;
+    const actualByOffset = new Map<-1 | 0 | 1, boolean>([
+      [-1, true],
+      [0, true],
+      [1, true],
+    ]);
 
     for (const [fixturePath, parser] of parsers) {
       const input = JSON.parse(
@@ -164,14 +174,37 @@ describe('Broker wire byte boundaries', () => {
       for (const offset of [-1, 0] as const) {
         const bytes = padJsonToBytes(json, corpus.authorities.brokerFrameBytes + offset);
         expect(bytes.byteLength).toBe(corpus.authorities.brokerFrameBytes + offset);
-        expect(() => parser(bytes), `${fixturePath}:${offset}`).not.toThrow();
+        let accepted = true;
+        try {
+          parser(bytes);
+        } catch {
+          accepted = false;
+        }
+        expect(accepted, `${fixturePath}:${offset}`).toBe(true);
+        actualByOffset.set(offset, actualByOffset.get(offset)! && accepted);
         outcomes += 1;
       }
       const oversized = padJsonToBytes(json, corpus.authorities.brokerFrameBytes + 1);
-      expect(() => parser(oversized), `${fixturePath}:+1`).toThrow();
+      let accepted = true;
+      try {
+        parser(oversized);
+      } catch {
+        accepted = false;
+      }
+      expect(accepted, `${fixturePath}:+1`).toBe(false);
+      actualByOffset.set(1, actualByOffset.get(1)! && accepted);
       outcomes += 1;
     }
     expect(outcomes).toBe(corpus.outcomeCounts.protocolParsers);
+    assertPublicManualCapOutcomeSubset(
+      JSON.parse(await readFile(manualOutcomeFixtureUrl, 'utf8')),
+      'packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts',
+      ([-1, 0, 1] as const).map((delta) => ({
+        probeId: 'manual-cap:broker-frame:n-minus-one-n-plus-one',
+        delta,
+        accepted: actualByOffset.get(delta)!,
+      })),
+    );
   });
 
   it('SCH-005 rejects every representative malformed UTF-8 class in binary handshake and frame input', async () => {

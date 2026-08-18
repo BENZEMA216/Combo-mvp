@@ -27,6 +27,7 @@ import {
   EvidencePrivacyScanSchema,
   EvidenceReleaseTupleSchema,
   EvidenceReviewerSignoffSchema,
+  MAX_PROPERTIES_SCHEMA_DESCRIPTION_PREFIX,
 } from './evidence.js';
 import {
   AgentVersionViewSchema,
@@ -43,6 +44,7 @@ import {
   DeploymentViewSchema,
   InvocationAcceptedResponseSchema,
   InvocationViewSchema,
+  IdempotencyKeySchema,
   LastEventIdSchema,
   PublicAgentSlugSchema,
   RetryInvocationRequestSchema,
@@ -56,6 +58,7 @@ import {
 } from './http.js';
 import { InvocationTransitionSchema, VnextErrorResponseSchema } from './invocation.js';
 import { WorkerInvocationFactSchema } from './invocation-facts.js';
+import { WorkerInterruptReceiptSchema } from './interrupt-receipt.js';
 import { WorkerConversationReadyFactSchema } from './conversation-ready-facts.js';
 import {
   ConsumerEventOutboxRecordSchema,
@@ -109,11 +112,13 @@ export const ContractSchemaDefinitions = {
   ExecutionCapabilityUseRecord: ExecutionCapabilityUseRecordSchema,
   InvocationTransition: InvocationTransitionSchema,
   WorkerInvocationFact: WorkerInvocationFactSchema,
+  WorkerInterruptReceipt: WorkerInterruptReceiptSchema,
   WorkerConversationReadyFact: WorkerConversationReadyFactSchema,
   VnextErrorResponse: VnextErrorResponseSchema,
   PublicAgentSlug: PublicAgentSlugSchema,
   DeploymentGenerationEtag: DeploymentGenerationEtagSchema,
   LastEventId: LastEventIdSchema,
+  IdempotencyKey: IdempotencyKeySchema,
   ServerId: ServerIdSchema,
   SandboxSpec: SandboxSpecSchema,
   SandboxAttestationUnsigned: SandboxAttestationUnsignedSchema,
@@ -242,6 +247,7 @@ const RuntimeSemanticConstraints: Partial<
     'Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))',
     'Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId',
     'Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping',
+    'invocation.cancelled interruptReceiptDigest == sha256(JCS(exact combo.worker-interrupt-receipt/1 fields)) and receipt invocation/version/snapshot/capability/lease/fence fields equal the cancelled fact',
     'prepared/started commandId == correlationId; delta and terminal correlationId == invocationId',
     'all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation',
   ],
@@ -264,8 +270,16 @@ const RuntimeSemanticConstraints: Partial<
     'sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for succeeded/failed/cancelled/uncertain',
     'leaseId/fence bind the original execution authority and remain immutable across Broker reconnection/re-enveloping',
     'started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest',
+    'cancelled binds the exact canonical WorkerInterruptReceipt digest; Broker additionally checks the shared authority fields',
     'fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807',
     'all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation',
+  ],
+  WorkerInterruptReceipt: [
+    'PROVED_NOT_EXECUTED requires evidenceAuthority LOCAL_DISPATCH_COUNTER and dispatchAttemptCount 0; PREPARED has null startCommandId/dispatchNonce while a durable STARTING intent has both UUIDs',
+    'PROVED_NOT_EXECUTED requires runtimeThreadId/runtimeTurnId/dispatchReceiptDigest/sandboxInstanceId/sandboxAttestationDigest/hostTerminalDigest all null',
+    'INTERRUPTED requires evidenceAuthority HOST, dispatchAttemptCount 1, and every Host field present',
+    'the receipt contains control identifiers and digests only; Prompt, answer, raw Host JSON, path, token, and credential fields are forbidden',
+    'all Worker interrupt receipts MUST pass the authoritative runtime WorkerInterruptReceiptSchema parser after structural JSON Schema validation',
   ],
   WorkerConversationReadyFact: [
     'sourceEventId == openCommandId and remains stable across Broker reconnection/re-enveloping',
@@ -303,6 +317,18 @@ function attachPublicBoundaryKeywords(value: unknown): unknown {
   if (description === UNIQUE_ARRAY_SCHEMA_DESCRIPTION) {
     delete output.description;
     output.uniqueItems = true;
+  } else if (
+    typeof description === 'string' &&
+    description.startsWith(MAX_PROPERTIES_SCHEMA_DESCRIPTION_PREFIX)
+  ) {
+    const maximumProperties = Number(
+      description.slice(MAX_PROPERTIES_SCHEMA_DESCRIPTION_PREFIX.length),
+    );
+    if (!Number.isSafeInteger(maximumProperties) || maximumProperties <= 0) {
+      throw new TypeError('maxProperties public boundary marker 无效');
+    }
+    output.maxProperties = maximumProperties;
+    output.description = `Object with at most ${maximumProperties} properties`;
   } else if (
     typeof description === 'string' &&
     description.startsWith(UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX)
@@ -473,7 +499,7 @@ const idempotencyHeader = {
   name: 'Idempotency-Key',
   in: 'header',
   required: true,
-  schema: { type: 'string', format: 'uuid' },
+  schema: { $ref: '#/components/schemas/IdempotencyKey' },
 };
 
 const serverIdPathParameter = (name: string) => ({
@@ -509,6 +535,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
     'PublicAgentSlug',
     'DeploymentGenerationEtag',
     'LastEventId',
+    'IdempotencyKey',
     'ServerId',
   ] as const;
 
@@ -619,6 +646,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
       '/v1/conversations/{conversationId}/messages': {
         post: {
           operationId: 'sendConversationMessage',
+          'x-combo-idempotency-body-field': 'clientMessageId',
           security: [{ consumerSession: [] }],
           parameters: [serverIdPathParameter('conversationId'), idempotencyHeader],
           requestBody: requestBody('SendConversationMessageRequest'),
@@ -673,6 +701,7 @@ export function createOpenApiDocument(): Record<string, unknown> {
       '/v1/invocations/{invocationId}:retry': {
         post: {
           operationId: 'retryInvocation',
+          'x-combo-idempotency-body-field': 'clientMessageId',
           security: [{ consumerSession: [] }],
           parameters: [serverIdPathParameter('invocationId'), idempotencyHeader],
           requestBody: requestBody('RetryInvocationRequest'),

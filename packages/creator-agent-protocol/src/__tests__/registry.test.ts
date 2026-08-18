@@ -89,7 +89,7 @@ describe('VNext machine-readable contract registries', () => {
     expect(contract.contractDigest).toBe(currentBrokerContractDigest());
     expect(contract.contractDigest).toBe(`sha256:${canonicalSha256(artifact)}`);
   });
-  it('parses exactly 25 invariants, 32 decisions, field-level data-flow locations and 66 cases', async () => {
+  it('parses exactly 25 invariants, 34 decisions, field-level data-flow locations and 66 cases', async () => {
     const invariants = InvariantRegistrySchema.parse(
       await readYaml(join(vnextDirectory, 'invariants.yaml')),
     );
@@ -102,7 +102,7 @@ describe('VNext machine-readable contract registries', () => {
     const cases = (await readCaseRegistries()).flatMap((registry) => registry.cases);
 
     expect(invariants.invariants).toHaveLength(25);
-    expect(decisions.decisions).toHaveLength(32);
+    expect(decisions.decisions).toHaveLength(34);
     expect(allowlist.fields.length).toBeGreaterThanOrEqual(18);
     expect(cases).toHaveLength(66);
     expect(new Set(cases.map((testCase) => testCase.id)).size).toBe(66);
@@ -117,7 +117,7 @@ describe('VNext machine-readable contract registries', () => {
       decisions: Array<Record<string, unknown>>;
     };
     const registry = DecisionRegistrySchema.parse(rawRegistry);
-    const mappedCatalog = registry.decisions.slice(20).map((decision, index) => {
+    const mappedCatalog = registry.decisions.slice(20, 32).map((decision, index) => {
       if (!('architectureDecisionId' in decision)) {
         throw new Error(`${decision.id} missing architecture decision mapping`);
       }
@@ -128,7 +128,7 @@ describe('VNext machine-readable contract registries', () => {
       };
     });
     expect(mappedCatalog).toEqual(frozenCatalog);
-    for (const decision of registry.decisions.slice(0, 20)) {
+    for (const decision of [...registry.decisions.slice(0, 20), ...registry.decisions.slice(32)]) {
       expect('architectureDecisionId' in decision, decision.id).toBe(false);
       expect('architectureDecisionSummary' in decision, decision.id).toBe(false);
     }
@@ -238,30 +238,110 @@ describe('VNext machine-readable contract registries', () => {
       'INV-002',
       'INV-024',
     ]);
+    expect(cases.find(({ id }) => id === 'SCH-004')?.implementation).toEqual({
+      status: 'implemented',
+      testFiles: [
+        'packages/creator-agent-protocol/src/__tests__/public-boundary-closure.test.ts',
+        'packages/creator-agent-protocol/src/__tests__/public-boundary-row-probes.test.ts',
+        'packages/creator-agent-protocol/src/__tests__/public-boundary-actual-roots.test.ts',
+        'packages/creator-agent-protocol/src/__tests__/public-string-pattern-census.test.ts',
+        'packages/creator-agent-protocol/src/__tests__/public-source-ast-census.test.ts',
+        'packages/creator-agent-protocol/src/__tests__/publication-marker-byte-boundaries.test.ts',
+        'packages/creator-agent-snapshot/src/__tests__/manifest-canonical-byte-maximum.test.ts',
+      ],
+    });
     expect(cases.find(({ id }) => id === 'SCH-005')?.invariants).toEqual(['INV-002', 'INV-019']);
     expect(cases.find(({ id }) => id === 'SCH-005')).toMatchObject({
-      implementation: { status: 'planned', testFiles: [] },
+      implementation: {
+        status: 'implemented',
+        testFiles: expect.arrayContaining([
+          'packages/creator-agent-protocol/src/__tests__/sch-005-closure.test.ts',
+          'apps/runtime/src/platform/http/vnext-json-body.test.ts',
+        ]),
+      },
       fixture: expect.arrayContaining([
         'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
+        'packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json',
       ]),
       fixtureDigests: expect.arrayContaining([
-        'sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca',
+        'sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab',
       ]),
     });
+    expect(cases.find(({ id }) => id === 'SCH-005')?.implementation.testFiles).toEqual([
+      'packages/creator-agent-protocol/src/__tests__/sch-005-closure.test.ts',
+      'packages/creator-agent-protocol/src/__tests__/utf8-boundaries.test.ts',
+      'packages/creator-agent-protocol/src/__tests__/structural-boundaries.test.ts',
+      'packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts',
+      'packages/creator-agent-protocol/src/__tests__/raw-ingress-hostile-boundaries.test.ts',
+      'packages/creator-agent-protocol/src/__tests__/snapshot-path-boundaries.test.ts',
+      'packages/creator-agent-snapshot/src/__tests__/path-boundaries.test.ts',
+      'apps/runtime/src/platform/http/vnext-json-body.test.ts',
+      'apps/runtime/src/modules/creator-agent-conversation/routes.integration.test.ts',
+    ]);
     expect(cases.find(({ id }) => id === 'SNP-010')).toMatchObject({
       implementation: { status: 'planned', testFiles: [] },
       fixture: expect.arrayContaining([
         'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
       ]),
       fixtureDigests: expect.arrayContaining([
-        'sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca',
+        'sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab',
       ]),
     });
+    expect(cases.find(({ id }) => id === 'SNP-008')).toEqual(
+      expect.objectContaining({
+        fixture: [
+          'packages/creator-agent-protocol/fixtures/snapshot-compressed-exact-boundary.v1.json',
+        ],
+        implementation: {
+          status: 'implemented',
+          testFiles: [
+            'packages/creator-agent-snapshot/src/__tests__/compressed-exact-boundary.test.ts',
+          ],
+        },
+        fixtureDigests: ['sha256:3a95d99be3cb60d68b80e2fd1b829baadfb71e2f064704cdf6d6362ce583794e'],
+      }),
+    );
     expect(cases.find(({ id }) => id === 'SCH-010')?.invariants).toEqual([
       'INV-001',
       'INV-002',
       'INV-021',
     ]);
+    expect(cases.find(({ id }) => id === 'SCH-009')?.implementation).toMatchObject({
+      status: 'implemented',
+      testFiles: ['apps/agent-gateway/src/compatibility.test.ts'],
+    });
+    expect(cases.find(({ id }) => id === 'SCH-010')?.implementation).toMatchObject({
+      status: 'implemented',
+      testFiles: expect.arrayContaining([
+        'apps/agent-gateway/src/compatibility.test.ts',
+        'packages/creator-worker-broker-client/src/postgres-sqlite-vertical.pg.test.ts',
+      ]),
+    });
+  });
+
+  it('binds only the implemented AgentVersion digest semantics to their exact corpus', async () => {
+    const cases = (await readCaseRegistries()).flatMap((registry) => registry.cases);
+    const fixture =
+      'packages/creator-agent-protocol/fixtures/agent-version-digest-semantics.v1.json';
+    const testFile =
+      'packages/creator-agent-snapshot/src/__tests__/agent-version-digest-semantics.test.ts';
+    const digest = 'sha256:b6ee748468b35c06bc2d319970bc781c73d1c9f3671fc0204be9977c8c62c6a9';
+    for (const id of ['AVR-001', 'AVR-003', 'AVR-004', 'AVR-006']) {
+      expect(
+        cases.find((testCase) => testCase.id === id),
+        id,
+      ).toMatchObject({
+        fixture: [fixture],
+        implementation: { status: 'implemented', testFiles: [testFile] },
+        fixtureDigests: [digest],
+      });
+    }
+    for (const id of ['AVR-002', 'AVR-005', 'AVR-007', 'AVR-008', 'AVR-009']) {
+      expect(cases.find((testCase) => testCase.id === id)?.implementation, id).toEqual({
+        status: 'planned',
+        testFiles: [],
+      });
+    }
   });
 
   it('requires implemented cases to name real tests containing the case ID and exact fixtures', async () => {
@@ -316,7 +396,7 @@ describe('VNext machine-readable contract registries', () => {
       (await readdir(join(repositoryRoot, 'docs', 'vnext', 'adr'))).filter((name) =>
         /^ADR-VNEXT-\d{3}\.md$/u.test(name),
       ),
-    ).toHaveLength(32);
+    ).toHaveLength(34);
 
     const databaseDecision = registry.decisions.find(
       (decision) => decision.id === 'ADR-VNEXT-018',

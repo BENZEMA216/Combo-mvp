@@ -59,6 +59,45 @@ describe('Agent Gateway executable configuration', () => {
     expect(config.policy.publisherDeploymentAllowlist).toBeUndefined();
   });
 
+  it('maps equal-length N-1/N arrays by index and rejects ambiguous profile keys', () => {
+    const environment = validEnvironment();
+    environment.AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS = JSON.stringify([
+      'combo-worker-test/0',
+      'combo-worker-test/1',
+    ]);
+    environment.AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS = JSON.stringify([
+      `sha256:${'e'.repeat(64)}`,
+      `sha256:${'c'.repeat(64)}`,
+    ]);
+    environment.AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS = JSON.stringify([
+      `sha256:${'f'.repeat(64)}`,
+      `sha256:${'d'.repeat(64)}`,
+    ]);
+    environment.AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES = JSON.stringify([
+      'lima-vz-v1',
+      'apple-container-v1',
+    ]);
+
+    const config = parseAgentGatewayProcessConfig(environment);
+    expect(config.policy).toMatchObject({
+      acceptedWorkerVersions: ['combo-worker-test/0', 'combo-worker-test/1'],
+      acceptedCodexRuntimeArtifacts: [`sha256:${'e'.repeat(64)}`, `sha256:${'c'.repeat(64)}`],
+      acceptedCodexProtocolSchemaDigests: [`sha256:${'f'.repeat(64)}`, `sha256:${'d'.repeat(64)}`],
+      acceptedIsolationModes: ['lima-vz-v1', 'apple-container-v1'],
+    });
+
+    const unequal = { ...environment };
+    unequal.AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES = '["apple-container-v1"]';
+    expect(() => parseAgentGatewayProcessConfig(unequal)).toThrow(/equal length/u);
+
+    const duplicateWorker = { ...environment };
+    duplicateWorker.AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS = JSON.stringify([
+      'combo-worker-test/1',
+      'combo-worker-test/1',
+    ]);
+    expect(() => parseAgentGatewayProcessConfig(duplicateWorker)).toThrow(/unique/u);
+  });
+
   it.each(['preview', 'production'])(
     'rejects the Test-only executable in %s before creating a database pool',
     (environmentName) => {

@@ -29,18 +29,24 @@ const RejectedProbeSchema = z
   .strict();
 
 /**
- * Additive SCH-004/SNP-009 evidence for the complete relative-path UTF-8
- * byte maximum. Filesystem component policy remains explicitly unfrozen.
+ * Additive SCH-004/SCH-005/SNP-009/SNP-010 evidence for the complete relative-path UTF-8
+ * byte maximum and the strict Unicode scalar/control policy. Filesystem component policy
+ * remains explicitly unfrozen.
  */
 export const SnapshotPathBoundaryCorpusSchema = z
   .object({
     protocol: z.literal(SNAPSHOT_PATH_BOUNDARY_CORPUS),
     schemaVersion: z.literal(1),
-    scope: z.literal('snapshot-relative-path-utf8-bytes-only'),
+    scope: z.literal('snapshot-relative-path-boundaries'),
     authority: z
       .object({
         technicalPlanSection: z.literal('技术方案 §5.2 Alpha 输入边界'),
-        testPlanCases: z.tuple([z.literal('SCH-004'), z.literal('SNP-009')]),
+        testPlanCases: z.tuple([
+          z.literal('SCH-004'),
+          z.literal('SCH-005'),
+          z.literal('SNP-009'),
+          z.literal('SNP-010'),
+        ]),
         pathPolicyDecisionId: z.literal('ADR-VNEXT-004'),
       })
       .strict(),
@@ -50,7 +56,7 @@ export const SnapshotPathBoundaryCorpusSchema = z
           .object({
             path: z.literal('protocol-utf8-boundaries.v1.json'),
             digest: z.literal(
-              'sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca',
+              'sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb',
             ),
           })
           .strict(),
@@ -63,7 +69,7 @@ export const SnapshotPathBoundaryCorpusSchema = z
           })
           .strict(),
         contractSchemas: z.literal(
-          'sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb',
+          'sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434',
         ),
       })
       .strict(),
@@ -144,6 +150,34 @@ export const SnapshotPathBoundaryCorpusSchema = z
             ),
           }),
         ]),
+      })
+      .strict(),
+    hostileUnicode: z
+      .object({
+        canaryPrefix: z.literal('SNAPSHOT_PATH_HOSTILE_CANARY_'),
+        forbiddenControlRanges: z.tuple([
+          z.object({ id: z.literal('c0'), start: z.literal(0x00), end: z.literal(0x1f) }).strict(),
+          z.object({ id: z.literal('c1'), start: z.literal(0x7f), end: z.literal(0x9f) }).strict(),
+        ]),
+        loneSurrogates: z.tuple([
+          z.object({ id: z.literal('high-surrogate'), codeUnit: z.literal(0xd800) }).strict(),
+          z.object({ id: z.literal('low-surrogate'), codeUnit: z.literal(0xdc00) }).strict(),
+        ]),
+        runtimeOwners: z.tuple([
+          z.literal('SnapshotPathSchema'),
+          z.literal('SnapshotManifestSchema'),
+          z.literal('canonicalizeSnapshotPath'),
+          z.literal('parseSnapshotManifest'),
+        ]),
+        expectedCounts: z
+          .object({
+            forbiddenControls: z.literal(65),
+            loneSurrogates: z.literal(2),
+            probes: z.literal(67),
+            runtimeOwners: z.literal(4),
+            outcomes: z.literal(268),
+          })
+          .strict(),
       })
       .strict(),
     remainingBoundaryClasses: z.tuple([

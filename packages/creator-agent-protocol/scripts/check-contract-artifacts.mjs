@@ -50,11 +50,53 @@ await checkRepository(
 );
 
 const fixtureDirectory = join(packageRoot, 'fixtures');
-const handshakeText = await readFile(join(fixtureDirectory, 'broker-handshake.v1.json'), 'utf8');
-const handshake = JSON.parse(handshakeText);
-if (handshake.brokerContractDigest !== currentBrokerContractDigest()) {
-  differences.push('fixtures/broker-handshake.v1.json#brokerContractDigest');
-}
+const handshakePath = join(fixtureDirectory, 'broker-handshake.v1.json');
+const handshake = JSON.parse(await readFile(handshakePath, 'utf8'));
+await check(
+  'fixtures/broker-handshake.v1.json',
+  await render({ ...handshake, brokerContractDigest: currentBrokerContractDigest() }),
+);
+const compatibilityPath = join(fixtureDirectory, 'protocol-compatibility.v1.json');
+const compatibility = JSON.parse(await readFile(compatibilityPath, 'utf8'));
+const renderedHandshake = await readFile(handshakePath);
+const previousProfile = compatibility.declaredPrevious[0];
+const previousHandshakePath = join(
+  fixtureDirectory,
+  previousProfile.handshakeFixture.split('/').at(-1),
+);
+const previousHandshake = JSON.parse(await readFile(previousHandshakePath, 'utf8'));
+await check(
+  `fixtures/${previousProfile.handshakeFixture.split('/').at(-1)}`,
+  await render({
+    ...previousHandshake,
+    brokerContractDigest: currentBrokerContractDigest(),
+  }),
+);
+const renderedPreviousHandshake = await readFile(previousHandshakePath);
+await check(
+  'fixtures/protocol-compatibility.v1.json',
+  await render({
+    ...compatibility,
+    current: {
+      ...compatibility.current,
+      brokerContractDigest: currentBrokerContractDigest(),
+      handshakeFixtureDigest: sha256(renderedHandshake),
+    },
+    declaredPrevious: compatibility.declaredPrevious.map((profile, index) =>
+      index === 0
+        ? {
+            ...profile,
+            brokerContractDigest: currentBrokerContractDigest(),
+            handshakeFixtureDigest: sha256(renderedPreviousHandshake),
+          }
+        : profile,
+    ),
+    gatewayReleases: compatibility.gatewayReleases.map((release) => ({
+      ...release,
+      brokerContractDigest: currentBrokerContractDigest(),
+    })),
+  }),
+);
 const fixtureFiles = (await readdir(fixtureDirectory))
   .filter((name) => name.endsWith('.json') && name !== 'index.json')
   .sort();

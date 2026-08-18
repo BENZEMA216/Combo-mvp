@@ -7,7 +7,8 @@ cases:
     level: E1
     environment: T0-LINUX-CI
     invariants: [INV-001]
-    fixture: [project-golden-v1]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/agent-version-digest-semantics.v1.json
     fault: []
     steps:
       [
@@ -20,36 +21,49 @@ cases:
     owner: Snapshot/Version
     reviewer: Protocol
     gate: G1
-    implementation: { status: planned, testFiles: [] }
+    implementation:
+      status: implemented
+      testFiles:
+        - packages/creator-agent-snapshot/src/__tests__/agent-version-digest-semantics.test.ts
     releaseTuple: [creator-agent-snapshot, creator-agent-protocol]
-    fixtureDigests: []
+    fixtureDigests: [sha256:b6ee748468b35c06bc2d319970bc781c73d1c9f3671fc0204be9977c8c62c6a9]
   - <<: *avr
     id: AVR-002
     title: Display metadata is outside execution identity
     fixture: [project-golden-v1]
     assertions: [Changing only display name or statistics leaves versionDigest unchanged]
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
   - <<: *avr
     id: AVR-003
     title: Snapshot digest participates in version identity
-    fixture: [project-golden-v1, project-golden-v2-one-byte]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/agent-version-digest-semantics.v1.json
     assertions: [Changing snapshotDigest changes versionDigest]
+    fixtureDigests: [sha256:b6ee748468b35c06bc2d319970bc781c73d1c9f3671fc0204be9977c8c62c6a9]
   - <<: *avr
     id: AVR-004
     title: Behavior canonical semantics participate in identity
-    fixture: [project-golden-v1, project-behavior-v2]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/agent-version-digest-semantics.v1.json
     assertions:
       [One semantic byte changes contract and version digests while whitespace and key order do not]
+    fixtureDigests: [sha256:b6ee748468b35c06bc2d319970bc781c73d1c9f3671fc0204be9977c8c62c6a9]
   - <<: *avr
     id: AVR-005
     title: Runtime and IO policies participate in identity
     fixture: [project-golden-v1]
     assertions: [Changing RuntimePolicy or IOContract changes versionDigest]
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
   - <<: *avr
     id: AVR-006
     title: Codex artifact schema model and effort participate in identity
-    fixture: [project-golden-v1]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/agent-version-digest-semantics.v1.json
     assertions:
       [Each Codex artifact schema model or reasoning effort mutation changes versionDigest]
+    fixtureDigests: [sha256:b6ee748468b35c06bc2d319970bc781c73d1c9f3671fc0204be9977c8c62c6a9]
   - <<: *avr
     id: AVR-007
     title: Maximum legal AgentVersion contract runs end to end
@@ -58,6 +72,8 @@ cases:
     fixture: [project-size-limits]
     assertions: [Maximum legal contract can be created read and selected for execution]
     frequency: merge-integration
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
   - <<: *avr
     id: AVR-008
     title: AgentVersion creation is idempotent for identical request
@@ -67,6 +83,8 @@ cases:
     fixture: [project-golden-v1]
     assertions: [Same Idempotency-Key and request returns the same Version row]
     frequency: merge-integration
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
   - <<: *avr
     id: AVR-009
     title: AgentVersion idempotency conflict creates no row
@@ -77,6 +95,8 @@ cases:
     assertions:
       [Same Idempotency-Key with different request returns 409 and creates zero new Version]
     frequency: merge-integration
+    implementation: { status: planned, testFiles: [] }
+    fixtureDigests: []
 
   - &brk
     id: BRK-001
@@ -117,7 +137,7 @@ cases:
     fault: [Advertise unsupported protocol Codex or isolation capability]
     assertions: [Deployment is BLOCKED with no downgrade and no Native runtime]
     implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:9bda0f40a9c055604e7d10cdbd27b0d35f9f309b429e3a33cc7bf6f62e4f5147]
+    fixtureDigests: [sha256:8a487268959e400a13fd28fa61372f05a7fb73f7ed2c6802ffa645426adef383]
   - <<: *brk
     id: BRK-006
     title: Only current connection epoch owns an installation
@@ -345,6 +365,9 @@ cases:
       - packages/creator-agent-protocol/fixtures/broker-invocation-prepared.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-started.v1.json
       - packages/creator-agent-protocol/fixtures/broker-invocation-succeeded.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-invocation-cancel.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-invocation-cancelled.v1.json
+      - packages/creator-agent-protocol/fixtures/worker-interrupt-receipt.v1.json
       - packages/creator-agent-protocol/fixtures/canonical-vectors.v1.json
       - packages/creator-agent-protocol/fixtures/consumer-terminal-event-outbox.v1.json
       - packages/creator-agent-protocol/fixtures/evidence-bundle-index.v1.json
@@ -377,17 +400,21 @@ cases:
         - packages/creator-agent-protocol/src/__tests__/canonical.test.ts
         - packages/creator-agent-protocol/src/__tests__/consumer-events.test.ts
         - packages/creator-agent-protocol/src/__tests__/invocation-facts.test.ts
+        - packages/creator-agent-protocol/src/__tests__/interrupt-receipt.test.ts
         - packages/creator-agent-protocol/src/__tests__/invocation.test.ts
     releaseTuple: [creator-agent-protocol@0.1.0]
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
-      - sha256:c87cec938a3be231a97feca8eec8e1595022f9880893022607c815607f5ab016
+      - sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f
       - sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4
       - sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889
-      - sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7
+      - sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de
       - sha256:fa98d56ca62e234788668df4cf53a384251ff3e2eca8c1140c18db6ed358dc81
       - sha256:da5d2ec27b581e76ac76a3936f497779b472f7ecea9d8a04e14c7c9f0d837c9f
       - sha256:9ba0722d26c12c76f5ccfbd2b546427bc896aaa4adb7067b8f05b7344f88e371
+      - sha256:3bbaeba00c44f4c429e8ec3f078f6ed7153b0c1960b11802fd8aa8220fef80a1
+      - sha256:c791cf93ff882c89408585a9b7ee529b0b52928ed095561ac7885b00ca390615
+      - sha256:b88fcb470e4c11fb3ccc95010db299646fdf577eef21ff4cce416b9785b3fa71
       - sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184
       - sha256:627ee0c59c91edfb067bdf534c4ef9e24d4d0279835cc934fd174b52c9702d4a
       - sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb
@@ -412,7 +439,7 @@ cases:
     implementation:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
-    fixtureDigests: [sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7]
+    fixtureDigests: [sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de]
   - <<: *sch
     id: SCH-003
     title: Unknown and duplicate JSON keys are rejected
@@ -422,7 +449,7 @@ cases:
     implementation:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/schemas.test.ts]
-    fixtureDigests: [sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7]
+    fixtureDigests: [sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de]
   - <<: *sch
     id: SCH-004
     title: Every protocol length boundary is exact
@@ -431,6 +458,7 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/http-idempotency-key-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/agent-version-resource-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/context-tools-closed-world-boundaries.v1.json
@@ -441,23 +469,38 @@ cases:
       - packages/creator-agent-protocol/fixtures/snapshot-compression-ratio-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/public-boundary-closure.v1.json
+      - packages/creator-agent-protocol/fixtures/public-manual-cap-outcomes.v1.json
     steps: [Generate max minus one max and max plus one for every public length]
     assertions: [Every advertised maximum matches runtime behavior]
-    implementation: { status: planned, testFiles: [] }
+    implementation:
+      status: implemented
+      testFiles:
+        - packages/creator-agent-protocol/src/__tests__/public-boundary-closure.test.ts
+        - packages/creator-agent-protocol/src/__tests__/public-boundary-row-probes.test.ts
+        - packages/creator-agent-protocol/src/__tests__/public-boundary-actual-roots.test.ts
+        - packages/creator-agent-protocol/src/__tests__/public-string-pattern-census.test.ts
+        - packages/creator-agent-protocol/src/__tests__/public-source-ast-census.test.ts
+        - packages/creator-agent-protocol/src/__tests__/publication-marker-byte-boundaries.test.ts
+        - packages/creator-agent-snapshot/src/__tests__/manifest-canonical-byte-maximum.test.ts
+    releaseTuple: [creator-agent-protocol@0.1.0, creator-agent-snapshot]
     fixtureDigests:
-      - sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca
-      - sha256:6387ea7f8c48c05978d6f22b4ddf6175bced448c4a403cba5e105fe5c2731350
-      - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
-      - sha256:d19a89c7abb5f16883ac55ad9709ce54e027fffa40fe7bc9bd603626c3840ca2
-      - sha256:53666da428d43bfecbb2156d72152730dc8a8112fd24541d42eb508290530a1c
-      - sha256:63e1ff4d5694d4247fe2eed312c56535831df6521342b7caa14bdc3a1c45ffd7
-      - sha256:356ff59d5f9223fc886f27b4e52a54c88c59820c43fdab6f3e83df26cb7a4b86
-      - sha256:dfe25e6e244468dec22366ea37bd68d34667a9452fffe1651ed0896858e5cac2
-      - sha256:36e05cdbaedb0eb0dc885c976be4f71a781530684da72b5b471a6dc97cea64bf
-      - sha256:19223bcfda15eaa0d7fcf485ecd27ae176edd960a2a172074d38802e2f8a1f9c
+      - sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb
+      - sha256:bc851f816f82d14e5de6d3973f4d8dffa3f6181751fd27d9c293bcebaea91e6d
+      - sha256:185e846169079fb6e2c993c6ad419142d07a8ebbd1b576478b5482f5cd1202c8
+      - sha256:b6cd84315dcae7f3ed7f0aef760dff04fad0f78f8ef759706e78d0457406825a
+      - sha256:58db022273834dacacf5338772fe5bd84cdbdb95caad235f7e2e80038d37b93e
+      - sha256:710bd029ca4e28d77877f191adf757671abee8faf67b9bc973415c08c7f1f862
+      - sha256:45535d70dfcccdd70fb0b9684ec7b1c97b97566a8acd5127361bf55e9076fbf2
+      - sha256:a7ee43f2ad816087aa7bb808996bb20316018eb8198ade451b0e62cd1107531f
+      - sha256:1f1864bbd18e701c14ae56e6ee7d2f81f6f4936beea004b3aaac0a0cd144c054
+      - sha256:43ab8263b158be1c72e64a7b2e70941a4a33c517b9a8642da365e9a218208a3c
+      - sha256:e4c68157be526bfbac42d8c351cc6a6664a15213fdbcb28feff82aed9bba28ae
       - sha256:47dcc8a01fac526e0a52b58989a0067123fe7f1289e338c0a24ace2098e2047b
-      - sha256:3f59901e004372afafa698bb497edcb1deeefb01654a1eca543dc3b4cf925862
-      - sha256:3982e6c2f365f83f5af8896147ad12ddd6d977fa33be2a052ee2d21fe3cd77ad
+      - sha256:c7a58a2d601c409c588bc24635daaff65a075cd96b034adf23e050978b9ef15f
+      - sha256:b6432fd6287028359d0bb3b5d3102e5fced130640ab0da1f3e7fad66fd04a041
+      - sha256:2b7fe5a869ece7610827dc6e277896801132b563b23bf73d76bd9d6149d04c13
+      - sha256:0867f2d3889c7b9baadc10d31c74033666b2329d6a8bdc3ed6957486a9449df2
   - <<: *sch
     id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
@@ -468,15 +511,29 @@ cases:
       - packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json
       - packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json
+      - packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json
     steps: [Inject lone surrogate NUL forbidden C0 and C1 into text and paths]
     assertions: [Invalid text is rejected and no error echoes source content]
-    implementation: { status: planned, testFiles: [] }
+    implementation:
+      status: implemented
+      testFiles:
+        - packages/creator-agent-protocol/src/__tests__/sch-005-closure.test.ts
+        - packages/creator-agent-protocol/src/__tests__/utf8-boundaries.test.ts
+        - packages/creator-agent-protocol/src/__tests__/structural-boundaries.test.ts
+        - packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts
+        - packages/creator-agent-protocol/src/__tests__/raw-ingress-hostile-boundaries.test.ts
+        - packages/creator-agent-protocol/src/__tests__/snapshot-path-boundaries.test.ts
+        - packages/creator-agent-snapshot/src/__tests__/path-boundaries.test.ts
+        - apps/runtime/src/platform/http/vnext-json-body.test.ts
+        - apps/runtime/src/modules/creator-agent-conversation/routes.integration.test.ts
+    releaseTuple: [creator-agent-protocol@0.1.0, creator-agent-snapshot, runtime]
     fixtureDigests:
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
-      - sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca
-      - sha256:ec28c2ad784a70ae8df7aca110cbcb39e5e9da5c05c7a5546b8bcb1a949d31d7
-      - sha256:3982e6c2f365f83f5af8896147ad12ddd6d977fa33be2a052ee2d21fe3cd77ad
-      - sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca
+      - sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb
+      - sha256:185e846169079fb6e2c993c6ad419142d07a8ebbd1b576478b5482f5cd1202c8
+      - sha256:b6432fd6287028359d0bb3b5d3102e5fced130640ab0da1f3e7fad66fd04a041
+      - sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab
+      - sha256:c7a58a2d601c409c588bc24635daaff65a075cd96b034adf23e050978b9ef15f
   - <<: *sch
     id: SCH-006
     title: Runtime and generated schemas cannot drift
@@ -495,9 +552,9 @@ cases:
       status: implemented
       testFiles: [packages/creator-agent-protocol/src/__tests__/artifacts.test.ts]
     fixtureDigests:
-      - sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb
-      - sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f
-      - sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce
+      - sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434
+      - sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253
+      - sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db
   - <<: *sch
     id: SCH-007
     title: Canonical JSON key reorder preserves digest
@@ -521,11 +578,20 @@ cases:
   - <<: *sch
     id: SCH-009
     title: Declared N minus one and N fixtures remain compatible
-    fixture: [protocol-version-corpus]
+    fixture:
+      - packages/creator-agent-protocol/fixtures/protocol-compatibility.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-handshake.n-minus-one.v1.json
+      - packages/creator-agent-protocol/fixtures/broker-handshake.v1.json
     steps: [Run every declared protocol pair against its exact golden fixtures]
     assertions: [Every advertised pair passes and no unadvertised pair is attempted]
-    implementation: { status: planned, testFiles: [] }
-    fixtureDigests: []
+    implementation:
+      status: implemented
+      testFiles: [apps/agent-gateway/src/compatibility.test.ts]
+    releaseTuple: [creator-agent-protocol@0.1.0, agent-gateway]
+    fixtureDigests:
+      - sha256:8a487268959e400a13fd28fa61372f05a7fb73f7ed2c6802ffa645426adef383
+      - sha256:a0c41f9a883e8d2d06cc615b1c4a2a387517cd2e2213f1e8c4e5a27bd9b5d9cc
+      - sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f
   - <<: *sch
     id: SCH-010
     title: N plus one or unknown capability blocks
@@ -533,8 +599,15 @@ cases:
     fixture: [packages/creator-agent-protocol/fixtures/protocol-compatibility.v1.json]
     steps: [Advertise an unknown future protocol or capability, Attempt readiness]
     assertions: [Deployment becomes BLOCKED without guessing or Native fallback]
-    implementation: { status: planned, testFiles: [] }
-    fixtureDigests: [sha256:9bda0f40a9c055604e7d10cdbd27b0d35f9f309b429e3a33cc7bf6f62e4f5147]
+    implementation:
+      status: implemented
+      testFiles:
+        - apps/agent-gateway/src/compatibility.test.ts
+        - apps/agent-gateway/src/postgres-authority.pg.test.ts
+        - packages/creator-worker-broker-client/src/postgres-sqlite-vertical.pg.test.ts
+    releaseTuple:
+      [creator-agent-protocol@0.1.0, agent-gateway, creator-worker-broker-client, postgresql-schema]
+    fixtureDigests: [sha256:8a487268959e400a13fd28fa61372f05a7fb73f7ed2c6802ffa645426adef383]
 
   - &snp
     id: SNP-001
@@ -581,7 +654,14 @@ cases:
   - <<: *snp
     id: SNP-008
     title: Fifty MiB compressed boundary is exact
+    fixture:
+      - packages/creator-agent-protocol/fixtures/snapshot-compressed-exact-boundary.v1.json
     assertions: [52428800 compressed bytes pass and plus one fails]
+    implementation:
+      status: implemented
+      testFiles:
+        - packages/creator-agent-snapshot/src/__tests__/compressed-exact-boundary.test.ts
+    fixtureDigests: [sha256:3a95d99be3cb60d68b80e2fd1b829baadfb71e2f064704cdf6d6362ce583794e]
   - <<: *snp
     id: SNP-009
     title: Five hundred twelve byte path boundary is exact
@@ -594,4 +674,4 @@ cases:
       - project-hostile-paths
       - packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json
     assertions: [Malformed UTF-8 NUL and every C0 C1 path fail before VERIFIED]
-    fixtureDigests: [sha256:a543336f0c2b3557786830dd6289e039afcd2888860ffa2259c45d46c41c19ca]
+    fixtureDigests: [sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab]

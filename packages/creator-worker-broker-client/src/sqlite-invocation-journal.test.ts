@@ -33,7 +33,10 @@ import {
   brokerSensitiveMessageCipherDigest,
   canonicalSha256,
   canonicalizeJson,
+  WorkerInterruptReceiptSchema,
+  workerInterruptReceiptDigest,
   executionCapabilitySigningBytes,
+  executionCapabilityDigest,
   workerConversationReadyFactDigest,
   validateExecutionCapabilityBinding,
   type BrokerEnvelope,
@@ -73,6 +76,7 @@ import {
   type BrokerResultReencryptAuthorityPort,
   type CloudInvocationAckAuthorityPort,
   type HostDispatchReceiptAuthorityPort,
+  type HostInterruptExpectedBinding,
   type LocalInvocationPromptAad,
   type LocalInvocationPromptCiphertext,
   type LocalPromptAeadAuthorityPort,
@@ -89,6 +93,7 @@ import {
 } from './sqlite-invocation-journal.js';
 import type { DurableBrokerConnection } from './worker-broker-client.js';
 import { downgradeToLegacyV3 } from '../test-support/sqlite-legacy-v3.js';
+import { downgradeToLegacyV4 } from '../test-support/sqlite-legacy-v4.js';
 
 const { DatabaseSync: SqliteDatabase } = createRequire(import.meta.url)('node:sqlite') as {
   readonly DatabaseSync: typeof DatabaseSync;
@@ -103,7 +108,7 @@ afterEach(() => {
   temporaryDirectories.clear();
 });
 
-describe('same-file SQLite Worker Invocation Journal v3', () => {
+describe('same-file SQLite Worker Invocation Journal v5', () => {
   it('shares the exact Broker ciphertext byte authority with local Prompt and Result storage', () => {
     const nonce = Buffer.alloc(12, 0x11).toString('base64url');
     const authTag = Buffer.alloc(16, 0x22).toString('base64url');
@@ -1599,7 +1604,7 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
     afterPrune.close();
   });
 
-  it('never reissues a STARTING permit after reopen and converts unknown dispatch to UNCERTAIN', async () => {
+  it('replays an unattempted STARTING permit after reopen and still dispatches only once', async () => {
     const fixture = await createInvocationFixture(200);
     const signal = new AbortController().signal;
     let journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
@@ -1621,24 +1626,25 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
 
     const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
     journal = reopened.createInvocationJournal(fixture.authorities.options);
-    expect(
-      await journal.recoverUnconfirmedStarts({
-        installationId: fixture.installationId,
-        ownerToken: OWNER,
-        signal,
-      }),
-    ).toBe(1);
-    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
+    const recoveredActions = await journal.recoverHostActions({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      signal,
+    });
+    expect(recoveredActions).toHaveLength(1);
+    expect(queryScalar(fixture.filename, 'state')).toBe('STARTING');
     expect(queryScalar(fixture.filename, 'host_dispatch_intent_count')).toBe(1);
+    const [replayed] = recoveredActions;
+    if (replayed?.action !== 'DISPATCH_ONCE') throw new Error('missing-recovered-dispatch-permit');
     await expect(
-      journal.start({
+      journal.dispatchOnce({
         installationId: fixture.installationId,
         ownerToken: OWNER,
-        command: fixture.startReference,
+        permit: replayed.permit,
         signal,
       }),
-    ).resolves.toMatchObject({ action: 'RETURN_IN_PROGRESS', state: 'UNCERTAIN' });
-    expect(fixture.authorities.hostReceiptCalls.count).toBe(0);
+    ).resolves.toMatchObject({ runtimeTurnId: 'turn-host-1' });
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(1);
     reopened.close();
   });
 
@@ -1703,6 +1709,746 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
     ).rejects.toMatchObject({ code: 'PROMPT_AEAD_INVALID' });
     expect(hostCalls).toBe(1);
     fixture.adapter.close();
+  });
+
+  it('cancels PREPARED from the durable zero-attempt counter without entering Host', async () => {
+    const fixture = await createInvocationFixture(251);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 251_900);
+    const decision = await journal.cancel({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    expect(decision).toMatchObject({ action: 'CANCELLED', replayed: false });
+    if (decision.action !== 'CANCELLED') throw new Error('missing-local-cancelled-fact');
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+    expect(fixture.authorities.hostInterruptCalls.count).toBe(0);
+    expect(queryScalar(fixture.filename, 'state')).toBe('CANCELLED');
+    expect(queryScalar(fixture.filename, 'host_dispatch_attempt_count')).toBe(0);
+    const pendingCommands = await fixture.adapter.readPendingCommands({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      connectionId: fixture.state.connectionId,
+      limit: 16,
+      signal,
+    });
+    expect(pendingCommands.some((candidate) => candidate.type === 'invocation.start')).toBe(false);
+    const receipt = WorkerInterruptReceiptSchema.parse(
+      queryJson(
+        fixture.filename,
+        'SELECT receipt_json AS value FROM local_invocation_interrupt_receipts',
+      ),
+    );
+    expect(receipt).toMatchObject({
+      outcome: 'PROVED_NOT_EXECUTED',
+      evidenceAuthority: 'LOCAL_DISPATCH_COUNTER',
+      dispatchAttemptCount: 0,
+      startCommandId: null,
+      dispatchNonce: null,
+    });
+    expect(workerInterruptReceiptDigest(receipt)).toBe(decision.interruptReceiptDigest);
+    const cancelled = (
+      await journal.readPendingFacts({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        limit: 10,
+        signal,
+      })
+    ).find((fact) => fact.eventType === 'invocation.cancelled');
+    if (cancelled === undefined) throw new Error('missing-cancelled-fact');
+    await journal.enqueuePendingFact({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      reference: cancelled,
+      connectionId: fixture.state.connectionId,
+      deliveryMessageId: uuid(251_901),
+      signal,
+    });
+    const wire = queryJson(
+      fixture.filename,
+      `SELECT envelope_json AS value FROM transport_outbox
+       WHERE envelope_type = 'invocation.cancelled'`,
+    ) as Extract<BrokerEnvelope, { type: 'invocation.cancelled' }>;
+    expect(wire.body.interruptReceipt).toEqual(receipt);
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(() => reopened.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+    reopened.close();
+  });
+
+  it('durably security-blocks a changed cancel identity before throwing and exact-replays it', async () => {
+    const fixture = await createInvocationFixture(258);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const acceptedCancel = await appendCancelCommand(fixture, 258_900);
+    await expect(
+      journal.cancel({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: acceptedCancel.reference,
+        signal,
+      }),
+    ).resolves.toMatchObject({ action: 'CANCELLED', replayed: false });
+    const businessBeforeConflict = {
+      state: queryScalar(fixture.filename, 'state'),
+      terminalFactDigest: queryScalar(fixture.filename, 'terminal_fact_digest'),
+      interruptReceiptDigest: queryScalar(fixture.filename, 'interrupt_receipt_digest'),
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      receipts: queryCount(fixture.filename, 'local_invocation_interrupt_receipts'),
+    };
+
+    const conflictingCancel = await appendCancelCommand(fixture, 258_910, 'SECURITY_REVOKE');
+    const consumedBeforeConflict = queryCount(fixture.filename, 'local_consumed_commands');
+    const rejectConflict = () =>
+      journal.cancel({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: conflictingCancel.reference,
+        signal,
+      });
+    await expect(rejectConflict()).rejects.toMatchObject({ code: 'CANCEL_COMMAND_CONFLICT' });
+    expect({
+      state: queryScalar(fixture.filename, 'state'),
+      terminalFactDigest: queryScalar(fixture.filename, 'terminal_fact_digest'),
+      interruptReceiptDigest: queryScalar(fixture.filename, 'interrupt_receipt_digest'),
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      receipts: queryCount(fixture.filename, 'local_invocation_interrupt_receipts'),
+    }).toEqual(businessBeforeConflict);
+    expect(queryCount(fixture.filename, 'local_consumed_commands')).toBe(
+      consumedBeforeConflict + 1,
+    );
+    const persisted = new SqliteDatabase(fixture.filename, { readOnly: true });
+    expect(
+      persisted
+        .prepare(`SELECT disposition FROM local_consumed_commands WHERE command_id = ?`)
+        .get(conflictingCancel.envelope.messageId),
+    ).toEqual({ disposition: 'SECURITY_BLOCK' });
+    expect(
+      persisted
+        .prepare(
+          `SELECT effect_state FROM transport_inbound_frames
+           WHERE connection_id = ? AND sequence = ?`,
+        )
+        .get(conflictingCancel.reference.connectionId, conflictingCancel.reference.sequence),
+    ).toEqual({ effect_state: 'APPLIED' });
+    persisted.close();
+
+    await expect(rejectConflict()).rejects.toMatchObject({ code: 'CANCEL_COMMAND_CONFLICT' });
+    expect(queryCount(fixture.filename, 'local_consumed_commands')).toBe(
+      consumedBeforeConflict + 1,
+    );
+    expect({
+      state: queryScalar(fixture.filename, 'state'),
+      terminalFactDigest: queryScalar(fixture.filename, 'terminal_fact_digest'),
+      interruptReceiptDigest: queryScalar(fixture.filename, 'interrupt_receipt_digest'),
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      receipts: queryCount(fixture.filename, 'local_invocation_interrupt_receipts'),
+    }).toEqual(businessBeforeConflict);
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+  });
+
+  it('cancels a STARTING intent before its Host attempt and binds the real start IDs', async () => {
+    const fixture = await createInvocationFixture(254);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-starting-permit');
+    const cancel = await appendCancelCommand(fixture, 254_900);
+    await expect(
+      journal.cancel({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: cancel.reference,
+        signal,
+      }),
+    ).resolves.toMatchObject({ action: 'CANCELLED', replayed: false });
+    const receipt = WorkerInterruptReceiptSchema.parse(
+      queryJson(
+        fixture.filename,
+        'SELECT receipt_json AS value FROM local_invocation_interrupt_receipts',
+      ),
+    );
+    expect(receipt).toMatchObject({
+      outcome: 'PROVED_NOT_EXECUTED',
+      dispatchAttemptCount: 0,
+      startCommandId: fixture.startReference.messageId,
+      dispatchNonce: start.permit.dispatchNonce,
+    });
+    await expect(
+      journal.dispatchOnce({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        permit: start.permit,
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'PROMPT_AEAD_INVALID' });
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+    const tampered = new SqliteDatabase(fixture.filename);
+    tampered.exec('DROP TRIGGER local_invocation_interrupt_receipts_no_update');
+    const receiptRow = tampered
+      .prepare('SELECT * FROM local_invocation_interrupt_receipts')
+      .get() as Record<string, unknown>;
+    const mismatched = WorkerInterruptReceiptSchema.parse({
+      ...receipt,
+      startCommandId: uuid(254_990),
+      dispatchNonce: uuid(254_991),
+    });
+    const receiptPayload: Record<string, unknown> = {
+      ...receiptRow,
+      receipt_json: canonicalizeJson(mismatched),
+    };
+    delete receiptPayload.row_digest;
+    tampered
+      .prepare(
+        `UPDATE local_invocation_interrupt_receipts
+         SET receipt_json = ?, row_digest = ? WHERE invocation_id = ?`,
+      )
+      .run(
+        receiptPayload.receipt_json as string,
+        sqliteInvocationRowDigest('local_invocation_interrupt_receipts', receiptPayload),
+        fixture.invocationId,
+      );
+    expect(() => assertWorkerInvocationIntegrity(tampered)).toThrow(
+      /invalid-local-interrupt-receipt/u,
+    );
+    tampered.close();
+  });
+
+  it('interrupts one exact RUNNING Host turn, persists its receipt, and exact-replays without a second call', async () => {
+    const fixture = await createInvocationFixture(252);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 252_900, 'SECURITY_REVOKE');
+    const requested = await journal.cancel({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    expect(requested.action).toBe('INTERRUPT_ONCE');
+    if (requested.action !== 'INTERRUPT_ONCE') throw new Error('missing-interrupt-permit');
+    const cancelled = await journal.interruptOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: requested.permit,
+      signal,
+    });
+    expect(cancelled).toMatchObject({ action: 'CANCELLED', replayed: false });
+    expect(fixture.authorities.hostInterruptCalls.count).toBe(1);
+    expect(fixture.authorities.hostInterruptReceiptCalls.count).toBe(1);
+    const replay = await journal.interruptOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: requested.permit,
+      signal,
+    });
+    expect(replay).toEqual({ ...cancelled, replayed: true });
+    expect(fixture.authorities.hostInterruptCalls.count).toBe(1);
+    expect(queryScalar(fixture.filename, 'interrupt_intent_count')).toBe(1);
+    expect(queryScalar(fixture.filename, 'interrupt_attempt_count')).toBe(1);
+    expect(queryScalar(fixture.filename, 'interrupt_confirmed_count')).toBe(1);
+    const receipt = WorkerInterruptReceiptSchema.parse(
+      queryJson(
+        fixture.filename,
+        'SELECT receipt_json AS value FROM local_invocation_interrupt_receipts',
+      ),
+    );
+    expect(receipt).toMatchObject({
+      outcome: 'INTERRUPTED',
+      evidenceAuthority: 'HOST',
+      runtimeTurnId: 'turn-host-1',
+      hostTerminalDigest: `sha256:${SHA('6')}`,
+    });
+    expect(rawJournalContainsAny(fixture.filename, ['HOST-RAW-INTERRUPT-CANARY'])).toBe(false);
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+    const missingCompanion = new SqliteDatabase(fixture.filename);
+    missingCompanion.exec('DELETE FROM local_invocation_interrupt_receipts');
+    expect(() => assertWorkerInvocationIntegrity(missingCompanion)).toThrow(
+      /invalid-local-invocation-state-binding/u,
+    );
+    missingCompanion.close();
+  });
+
+  it('reconstructs an unattempted interrupt permit from SQLite after process loss', async () => {
+    const fixture = await createInvocationFixture(259);
+    const signal = new AbortController().signal;
+    let journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 259_900);
+    await expect(
+      journal.cancel({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: cancel.reference,
+        signal,
+      }),
+    ).resolves.toMatchObject({ action: 'INTERRUPT_ONCE' });
+    fixture.adapter.close();
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    journal = reopened.createInvocationJournal(fixture.authorities.options);
+    const actions = await journal.recoverHostActions({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      signal,
+    });
+    expect(actions).toHaveLength(1);
+    const [action] = actions;
+    if (action?.action !== 'INTERRUPT_ONCE') throw new Error('missing-recovered-interrupt-permit');
+    await journal.interruptOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: action.permit,
+      signal,
+    });
+    expect(fixture.authorities.hostInterruptCalls.count).toBe(1);
+    expect(queryScalar(fixture.filename, 'state')).toBe('CANCELLED');
+    reopened.close();
+  });
+
+  it('returns stable WORKER_BUSY for prepare while one Invocation is CANCEL_REQUESTED', async () => {
+    const fixture = await createInvocationFixture(260);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 260_900);
+    await journal.cancel({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    expect(queryScalar(fixture.filename, 'state')).toBe('CANCEL_REQUESTED');
+
+    const second = pressurePrepareEnvelope(fixture, 260_910);
+    fixture.state = await commitCommand(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      second,
+    );
+    const secondReference = await commandReference(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      'invocation.prepare',
+    );
+    const before = {
+      invocations: queryCount(fixture.filename, 'local_invocations'),
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      consumed: queryCount(fixture.filename, 'local_consumed_commands'),
+    };
+    const permissive = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      capabilityAuthority: {
+        verify(input) {
+          const capability = ExecutionCapabilitySchema.parse(input);
+          return { capability, capabilityDigest: executionCapabilityDigest(capability) };
+        },
+        verifyPreviouslyCommitted:
+          fixture.authorities.options.capabilityAuthority.verifyPreviouslyCommitted.bind(
+            fixture.authorities.options.capabilityAuthority,
+          ),
+      },
+    });
+    await expect(
+      permissive.prepare({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: secondReference,
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'WORKER_BUSY' });
+    expect({
+      invocations: queryCount(fixture.filename, 'local_invocations'),
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      consumed: queryCount(fixture.filename, 'local_consumed_commands'),
+    }).toEqual(before);
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+  });
+
+  it('fails RUNNING cancel before mutation when the paired Host interrupt authority is absent', async () => {
+    const fixture = await createInvocationFixture(261);
+    const signal = new AbortController().signal;
+    expect(() =>
+      fixture.adapter.createInvocationJournal({
+        ...fixture.authorities.options,
+        hostInterruptReceiptAuthority: undefined,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'INTERRUPT_RECEIPT_INVALID' }));
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      hostInterruptPort: undefined,
+      hostInterruptReceiptAuthority: undefined,
+    });
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 261_900);
+    const before = {
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      consumed: queryCount(fixture.filename, 'local_consumed_commands'),
+    };
+    await expect(
+      journal.cancel({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: cancel.reference,
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'INTERRUPT_RECEIPT_INVALID' });
+    expect(queryScalar(fixture.filename, 'state')).toBe('RUNNING');
+    expect(queryNullable(fixture.filename, 'local_invocations', 'cancel_command_id')).toBeNull();
+    expect({
+      events: queryCount(fixture.filename, 'local_invocation_events'),
+      outbox: queryCount(fixture.filename, 'local_invocation_outbox'),
+      consumed: queryCount(fixture.filename, 'local_consumed_commands'),
+    }).toEqual(before);
+    fixture.adapter.close();
+  });
+
+  it('converts an invalid Host terminal receipt to UNCERTAIN without a second interrupt', async () => {
+    const fixture = await createInvocationFixture(255);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      hostInterruptReceiptAuthority: {
+        verify() {
+          throw new Error('INVALID_HOST_TERMINAL_BINDING');
+        },
+      },
+    });
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 255_900);
+    const requested = await journal.cancel({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    if (requested.action !== 'INTERRUPT_ONCE') throw new Error('missing-interrupt-permit');
+    await expect(
+      journal.interruptOnce({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        permit: requested.permit,
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'INTERRUPT_RECEIPT_INVALID' });
+    expect(fixture.authorities.hostInterruptCalls.count).toBe(1);
+    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
+    expect(queryScalar(fixture.filename, 'interrupt_attempt_count')).toBe(1);
+    expect(queryScalar(fixture.filename, 'interrupt_confirmed_count')).toBe(0);
+    expect(queryCount(fixture.filename, 'local_invocation_interrupt_receipts')).toBe(0);
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+  });
+
+  it('hard-aborts an uncooperative Host interrupt and durably converges to CANCEL_NOT_CONFIRMED', async () => {
+    const fixture = await createInvocationFixture(253);
+    const signal = new AbortController().signal;
+    let interruptCalls = 0;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      hostInterruptPort: {
+        interruptOnce() {
+          interruptCalls += 1;
+          return new Promise<never>(() => undefined);
+        },
+      },
+    });
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 253_900);
+    const requested = await journal.cancel({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    if (requested.action !== 'INTERRUPT_ONCE') throw new Error('missing-interrupt-permit');
+    await expect(
+      journal.interruptOnce({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        permit: requested.permit,
+        signal: AbortSignal.timeout(50),
+      }),
+    ).rejects.toBeDefined();
+    expect(interruptCalls).toBe(1);
+    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
+    expect(queryCount(fixture.filename, 'local_invocation_interrupt_receipts')).toBe(0);
+    expect(
+      await journal.recoverUnconfirmedInterrupts({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        signal,
+      }),
+    ).toBe(0);
+    expect(interruptCalls).toBe(1);
+    fixture.adapter.close();
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    const recoveredJournal = reopened.createInvocationJournal({
+      ...fixture.authorities.options,
+      hostInterruptPort: {
+        async interruptOnce() {
+          interruptCalls += 1;
+          throw new Error('SECOND_INTERRUPT_FORBIDDEN');
+        },
+      },
+    });
+    await expect(
+      recoveredJournal.cancel({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: cancel.reference,
+        signal,
+      }),
+    ).resolves.toMatchObject({ action: 'UNCERTAIN' });
+    expect(interruptCalls).toBe(1);
+    reopened.close();
+  });
+
+  it('serializes final-before-cancel and cancel-before-final without two terminal facts', async () => {
+    const signal = new AbortController().signal;
+    const finalFirst = await createCompletedFixture(256);
+    const finalJournal = finalFirst.adapter.createInvocationJournal(finalFirst.authorities.options);
+    const lateCancel = await appendCancelCommand(finalFirst, 256_900);
+    await expect(
+      finalJournal.cancel({
+        installationId: finalFirst.installationId,
+        ownerToken: OWNER,
+        command: lateCancel.reference,
+        signal,
+      }),
+    ).resolves.toMatchObject({ action: 'RETURN_TERMINAL', state: 'FINAL_READY' });
+    expect(finalFirst.authorities.hostInterruptCalls.count).toBe(0);
+    finalFirst.adapter.close();
+
+    const cancelFirst = await createInvocationFixture(257);
+    const cancelJournal = cancelFirst.adapter.createInvocationJournal(
+      cancelFirst.authorities.options,
+    );
+    await bindCloudCommittedReady(cancelJournal, cancelFirst, signal);
+    await cancelJournal.prepare({
+      installationId: cancelFirst.installationId,
+      ownerToken: OWNER,
+      command: cancelFirst.prepareReference,
+      signal,
+    });
+    const start = await cancelJournal.start({
+      installationId: cancelFirst.installationId,
+      ownerToken: OWNER,
+      command: cancelFirst.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+    await cancelJournal.dispatchOnce({
+      installationId: cancelFirst.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    const cancel = await appendCancelCommand(cancelFirst, 257_900);
+    const requested = await cancelJournal.cancel({
+      installationId: cancelFirst.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    if (requested.action !== 'INTERRUPT_ONCE') throw new Error('missing-interrupt-permit');
+    await expect(
+      cancelJournal.writeSucceeded({
+        installationId: cancelFirst.installationId,
+        ownerToken: OWNER,
+        invocationId: cancelFirst.invocationId,
+        dispatchNonce: start.permit.dispatchNonce,
+        sourceEventId: cancelFirst.invocationId,
+        resultCiphertext: encryptLocalResult(
+          'late success must lose',
+          cancelFirst.localResultKey,
+          cancelFirst.resultHmacKey,
+          cancelFirst.localResultKeyId,
+          {
+            schemaVersion: 1,
+            installationId: cancelFirst.installationId,
+            invocationId: cancelFirst.invocationId,
+            conversationId: cancelFirst.conversationId,
+            agentVersionDigest: SHA('a'),
+            role: 'ASSISTANT',
+          },
+        ),
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'ILLEGAL_LOCAL_TRANSITION' });
+    await cancelJournal.interruptOnce({
+      installationId: cancelFirst.installationId,
+      ownerToken: OWNER,
+      permit: requested.permit,
+      signal,
+    });
+    expect(queryScalar(cancelFirst.filename, 'state')).toBe('CANCELLED');
+    expect(
+      queryCountWhere(
+        cancelFirst.filename,
+        'local_invocation_events',
+        `event_type IN ('invocation.succeeded', 'invocation.cancelled')`,
+      ),
+    ).toBe(1);
+    cancelFirst.adapter.close();
   });
 
   it('never lets a D2 activation consume a pending D1 READY fact and later sends it on D1', async () => {
@@ -2038,7 +2784,7 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
     ackFixture.adapter.close();
   }, 30_000);
 
-  it('uses the same physical reserve to recover STARTING as UNCERTAIN and purge Prompt', async () => {
+  it('keeps an unattempted STARTING intent recoverable without consuming reserve or Prompt', async () => {
     let availableBytes = Number.MAX_SAFE_INTEGER;
     let pressureActive = false;
     let filename = '';
@@ -2084,18 +2830,20 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
         ownerToken: OWNER,
         signal,
       }),
-    ).resolves.toBe(1);
+    ).resolves.toBe(0);
     expect(existsSync(`${fixture.filename}.recovery-reserve`)).toBe(true);
     expect(queryPragmaNumber(fixture.filename, 'freelist_count')).toBeGreaterThanOrEqual(192);
-    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
-    expect(queryNullable(fixture.filename, 'local_invocations', 'prompt_ciphertext')).toBeNull();
+    expect(queryScalar(fixture.filename, 'state')).toBe('STARTING');
+    expect(
+      queryNullable(fixture.filename, 'local_invocations', 'prompt_ciphertext'),
+    ).not.toBeNull();
     expect(
       rawJournalContainsAny(fixture.filename, [
         retainedPrompt.nonce,
         retainedPrompt.ciphertext,
         retainedPrompt.authTag,
       ]),
-    ).toBe(false);
+    ).toBe(true);
     expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
     fixture.adapter.close();
   });
@@ -2497,6 +3245,153 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
     const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
     expect(() => reopened.createInvocationJournal(fixture.authorities.options)).not.toThrow();
     reopened.close();
+  });
+
+  it('migrates exact v4 dispatch counters to v5 and publishes the interrupt authority atomically', async () => {
+    const fixture = await createInvocationFixture(292);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.startReference,
+      signal,
+    });
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-v4-dispatch-intent');
+    fixture.adapter.close();
+    downgradeToLegacyV4(fixture.filename);
+    expect(queryPragmaNumber(fixture.filename, 'user_version')).toBe(4);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        `pragma_table_info('local_invocations')`,
+        `name = 'host_prompt_release_count'`,
+      ),
+    ).toBe(1);
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(reopened.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    expect(queryScalar(fixture.filename, 'host_dispatch_attempt_count')).toBe(0);
+    expect(queryCount(fixture.filename, 'local_invocation_interrupt_receipts')).toBe(0);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        `pragma_table_info('local_invocations')`,
+        `name = 'host_prompt_release_count'`,
+      ),
+    ).toBe(0);
+    expect(() => reopened.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+    const manifest = JSON.parse(readFileSync(`${fixture.filename}.migration-recovery`, 'utf8')) as {
+      payload: { legacySlot: { schemaVersion: number }; finalizedSlot: { schemaVersion: number } };
+    };
+    expect(manifest.payload.legacySlot.schemaVersion).toBe(4);
+    expect(manifest.payload.finalizedSlot.schemaVersion).toBe(5);
+    reopened.close();
+  });
+
+  it('classifies exact legacy v4 CANCELLED as reconciliation-required with zero byte mutation', async () => {
+    const fixture = await createInvocationFixture(298);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+    await journal.prepare({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.prepareReference,
+      signal,
+    });
+    const cancel = await appendCancelCommand(fixture, 298_900);
+    await journal.cancel({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: cancel.reference,
+      signal,
+    });
+    fixture.adapter.close();
+    downgradeToLegacyV4(fixture.filename, { allowCancelledForMigrationTest: true });
+    const databaseBefore = readFileSync(fixture.filename);
+    const watermarkBefore = readFileSync(`${fixture.filename}.watermark`);
+    expect(
+      () => new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_RECONCILIATION_REQUIRED' }));
+    expect(queryPragmaNumber(fixture.filename, 'user_version')).toBe(4);
+    expect(readFileSync(fixture.filename)).toEqual(databaseBefore);
+    expect(readFileSync(`${fixture.filename}.watermark`)).toEqual(watermarkBefore);
+  });
+
+  it.each([
+    'migration.v4_to_v5.after_local_projection',
+    'migration.v4_to_v5.after_watermark_fsync',
+  ] as const)('rolls back v4 after a late migration deadline at %s', async (faultPoint) => {
+    const seed =
+      299 +
+      [
+        'migration.v4_to_v5.after_local_projection',
+        'migration.v4_to_v5.after_watermark_fsync',
+      ].indexOf(faultPoint);
+    const fixture = await createInvocationFixture(seed);
+    fixture.adapter.close();
+    downgradeToLegacyV4(fixture.filename);
+    const databaseBefore = readFileSync(fixture.filename);
+    const watermarkBefore = readFileSync(`${fixture.filename}.watermark`);
+    const epochBefore = queryScalarFrom(fixture.filename, 'transport_meta', 'commit_epoch');
+
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: fixture.filename,
+          operationTimeoutMs: 50,
+          faultInjector(point) {
+            if (point === faultPoint) {
+              Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 80);
+            }
+          },
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_ABORTED' }));
+    expect(queryPragmaNumber(fixture.filename, 'user_version')).toBe(4);
+    expect(readFileSync(fixture.filename)).toEqual(databaseBefore);
+    expect(readFileSync(`${fixture.filename}.watermark`)).toEqual(watermarkBefore);
+    expect(queryScalarFrom(fixture.filename, 'transport_meta', 'commit_epoch')).toBe(epochBefore);
+
+    const recovered = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(recovered.inspectPragmas().userVersion).toBe(5);
+    recovered.close();
+  });
+
+  it.each([
+    'migration.v4_to_v5.before_watermark',
+    'migration.v4_to_v5.after_watermark_fsync',
+    'migration.v4_to_v5.after_commit',
+  ] as const)('recovers the exact v4 -> v5 watermark crash at %s', async (faultPoint) => {
+    const seed =
+      293 +
+      [
+        'migration.v4_to_v5.before_watermark',
+        'migration.v4_to_v5.after_watermark_fsync',
+        'migration.v4_to_v5.after_commit',
+      ].indexOf(faultPoint);
+    const fixture = await createInvocationFixture(seed);
+    fixture.adapter.close();
+    downgradeToLegacyV4(fixture.filename);
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: fixture.filename,
+          faultInjector(point) {
+            if (point === faultPoint) throw new Error(`SIMULATED:${faultPoint}`);
+          },
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_CORRUPT' }));
+    const recovered = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    expect(recovered.inspectPragmas().userVersion).toBe(5);
+    expect(() => recovered.createInvocationJournal(fixture.authorities.options)).not.toThrow();
+    recovered.close();
   });
 
   it('keeps retained local Prompt ciphertext out of the v3 migration recovery manifest', async () => {
@@ -3471,6 +4366,46 @@ describe('same-file SQLite Worker Invocation Journal v3', () => {
 
 type InvocationFixture = Awaited<ReturnType<typeof createInvocationFixture>>;
 
+async function appendCancelCommand(
+  fixture: InvocationFixture,
+  seed: number,
+  reason:
+    | 'CONSUMER_REQUEST'
+    | 'DRAIN_DEADLINE'
+    | 'SECURITY_REVOKE'
+    | 'DEADLINE' = 'CONSUMER_REQUEST',
+) {
+  const envelope = BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'command',
+    type: 'invocation.cancel',
+    messageId: uuid(seed),
+    correlationId: fixture.invocationId,
+    connectionId: fixture.state.connectionId,
+    sequence: nextSequence(fixture.state),
+    sentAt: fixture.startEnvelope.sentAt,
+    expiresAt: fixture.startEnvelope.expiresAt,
+    lease: fixture.startEnvelope.lease,
+    body: { invocationId: fixture.invocationId, reason },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.cancel' }>;
+  fixture.state = await commitCommand(
+    fixture.adapter,
+    fixture.installationId,
+    fixture.state,
+    envelope,
+  );
+  return {
+    envelope,
+    reference: await commandReference(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      'invocation.cancel',
+    ),
+  };
+}
+
 async function createInvocationFixture(
   seed: number,
   transportOptions: Omit<SqliteWorkerTransportOptions, 'filename' | 'newJournalAuthorization'> = {},
@@ -3617,7 +4552,7 @@ async function createInvocationFixture(
     body: {
       invocationId,
       conversationId,
-      clientMessageId: uuid(seed * 100 + 14),
+      clientMessageId: clientUuid(seed * 100 + 14),
       requestDigest,
       userMessageCiphertext: userCiphertext,
       agentVersionId,
@@ -3780,7 +4715,7 @@ function pressurePrepareEnvelope(fixture: InvocationFixture, seed: number): Brok
     body: {
       invocationId,
       conversationId: fixture.conversationId,
-      clientMessageId: uuid(seed + 4),
+      clientMessageId: clientUuid(seed + 4),
       requestDigest,
       userMessageCiphertext: encryptSensitive(
         plaintext.toString('utf8'),
@@ -3804,6 +4739,8 @@ function createAuthorities(
 ) {
   const hostDispatchCalls = { count: 0, prompts: [] as string[] };
   const hostReceiptCalls = { count: 0 };
+  const hostInterruptCalls = { count: 0 };
+  const hostInterruptReceiptCalls = { count: 0 };
   const cloudAckCalls = { count: 0 };
   const revokedCapabilityIds = new Set<string>();
   const cloudNow = { value: Date.now() };
@@ -3846,6 +4783,39 @@ function createAuthorities(
         dispatchReceiptDigest: `sha256:${SHA('8')}`,
         sandboxAttestationDigest: `sha256:${SHA('9')}`,
       };
+    },
+  };
+  const hostInterruptPort = {
+    async interruptOnce({ permit }: { permit: unknown }) {
+      hostInterruptCalls.count += 1;
+      return { token: 'host-interrupt-terminal', permit, raw: 'HOST-RAW-INTERRUPT-CANARY' };
+    },
+  };
+  const hostInterruptReceiptAuthority = {
+    verify(input: unknown, expected: HostInterruptExpectedBinding) {
+      const receipt = input as { token?: string; permit?: unknown };
+      if (
+        receipt.token !== 'host-interrupt-terminal' ||
+        canonicalizeJson(receipt.permit) !==
+          canonicalizeJson({
+            invocationId: expected.invocationId,
+            conversationId: expected.conversationId,
+            cancelCommandId: expected.cancelCommandId,
+            cancelReason: expected.cancelReason,
+            interruptNonce: expected.interruptNonce,
+            startCommandId: expected.startCommandId,
+            dispatchNonce: expected.dispatchNonce,
+            runtimeThreadId: expected.runtimeThreadId,
+            runtimeTurnId: expected.runtimeTurnId,
+            dispatchReceiptDigest: expected.dispatchReceiptDigest,
+            sandboxInstanceId: expected.sandboxInstanceId,
+            sandboxAttestationDigest: expected.sandboxAttestationDigest,
+          })
+      ) {
+        throw new Error('bad-interrupt-receipt');
+      }
+      hostInterruptReceiptCalls.count += 1;
+      return { hostTerminalDigest: `sha256:${SHA('6')}` };
     },
   };
   const localPromptAeadAuthority: LocalPromptAeadAuthorityPort = {
@@ -3939,6 +4909,8 @@ function createAuthorities(
     localResultKeys,
     hostDispatchCalls,
     hostReceiptCalls,
+    hostInterruptCalls,
+    hostInterruptReceiptCalls,
     cloudAckCalls,
     revokedCapabilityIds,
     cloudNow,
@@ -3947,6 +4919,8 @@ function createAuthorities(
       readyConversationAuthority,
       hostDispatchPort,
       hostDispatchReceiptAuthority,
+      hostInterruptPort,
+      hostInterruptReceiptAuthority,
       localPromptAeadAuthority,
       localResultAeadAuthority,
       brokerResultReencryptAuthority,
@@ -4781,4 +5755,8 @@ function assertLocalIntegrity(filename: string): void {
 
 function uuid(seed: number): string {
   return `00000000-0000-7000-8000-${String(seed).padStart(12, '0')}`;
+}
+
+function clientUuid(seed: number): string {
+  return `00000000-0000-4000-8000-${String(seed).padStart(12, '0')}`;
 }

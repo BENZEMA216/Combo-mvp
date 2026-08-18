@@ -7,9 +7,12 @@ import {
   type InvocationState,
   type InvocationTransitionEvidence,
 } from '../invocation.js';
-
-const RUNS = Number.parseInt(process.env.VNEXT_PROPERTY_RUNS ?? '100000', 10);
-const SEED = Number.parseInt(process.env.VNEXT_PROPERTY_SEED ?? '12648430', 10) >>> 0;
+import {
+  PROPERTY_RUNS,
+  PROPERTY_SEED_BASE,
+  PROPERTY_SEED_COUNT,
+  propertySeedMatrix,
+} from './property-matrix.js';
 
 class XorShift32 {
   public constructor(private state: number) {
@@ -41,32 +44,34 @@ const randomEvidence = (random: XorShift32): InvocationTransitionEvidence => ({
 });
 
 describe('Invocation state machine property model', () => {
-  it(`固定 seed=${SEED} 生成 ${RUNS} 次随机迁移并保持单调/证据不变量`, () => {
-    const random = new XorShift32(SEED);
-    let state: InvocationState = 'ACCEPTED';
+  it(`${PROPERTY_SEED_COUNT} seeds from ${PROPERTY_SEED_BASE} generate ${PROPERTY_RUNS} random transitions with monotonic evidence invariants`, () => {
     let accepted = 0;
     let rejected = 0;
 
-    for (let run = 0; run < RUNS; run += 1) {
-      if (isTerminalInvocationState(state)) state = 'ACCEPTED';
-      const next = random.pick(InvocationStateSchema.options);
-      const evidence = randomEvidence(random);
-      try {
-        const result = transitionInvocationState({ from: state, to: next, evidence });
-        expect(result).toBe(next);
-        if (result === 'SUCCEEDED') expect(evidence.durableFinal).toBe(true);
-        if (result === 'FAILED') expect(evidence.terminalFailureConfirmed).toBe(true);
-        if (result === 'CANCELLED') {
-          expect(Boolean(evidence.interruptConfirmed || evidence.provedNotExecuted)).toBe(true);
+    for (const { seed, runs } of propertySeedMatrix()) {
+      const random = new XorShift32(seed);
+      let state: InvocationState = 'ACCEPTED';
+      for (let run = 0; run < runs; run += 1) {
+        if (isTerminalInvocationState(state)) state = 'ACCEPTED';
+        const next = random.pick(InvocationStateSchema.options);
+        const evidence = randomEvidence(random);
+        try {
+          const result = transitionInvocationState({ from: state, to: next, evidence });
+          expect(result).toBe(next);
+          if (result === 'SUCCEEDED') expect(evidence.durableFinal).toBe(true);
+          if (result === 'FAILED') expect(evidence.terminalFailureConfirmed).toBe(true);
+          if (result === 'CANCELLED') {
+            expect(Boolean(evidence.interruptConfirmed || evidence.provedNotExecuted)).toBe(true);
+          }
+          if (result === 'RECONCILING') expect(evidence.executionEvidenceLost).toBe(true);
+          if (result === 'UNCERTAIN') expect(evidence.reconciliationExhausted).toBe(true);
+          if (result === 'EXPIRED') expect(evidence.queueTtlExpiredBeforeDispatch).toBe(true);
+          state = result;
+          accepted += 1;
+        } catch (error) {
+          expect(error).toBeInstanceOf(InvalidInvocationTransitionError);
+          rejected += 1;
         }
-        if (result === 'RECONCILING') expect(evidence.executionEvidenceLost).toBe(true);
-        if (result === 'UNCERTAIN') expect(evidence.reconciliationExhausted).toBe(true);
-        if (result === 'EXPIRED') expect(evidence.queueTtlExpiredBeforeDispatch).toBe(true);
-        state = result;
-        accepted += 1;
-      } catch (error) {
-        expect(error).toBeInstanceOf(InvalidInvocationTransitionError);
-        rejected += 1;
       }
     }
 
@@ -88,7 +93,7 @@ describe('Invocation state machine property model', () => {
           transitionInvocationState({
             from: terminal,
             to: next,
-            evidence: randomEvidence(new XorShift32(SEED)),
+            evidence: randomEvidence(new XorShift32(PROPERTY_SEED_BASE)),
           }),
         ).toThrow(InvalidInvocationTransitionError);
       }

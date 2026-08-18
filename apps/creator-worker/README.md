@@ -22,6 +22,8 @@ Worker 不启用 Codex 的全局 `--strict-config`：当前 Desktop 可能保留
 
 每个 app-server 进程使用一个新的私有 `HOME` 与 `CODEX_HOME`，只通过本地 symlink 桥接现有 `auth.json`，不加载创作者的 `config.toml`、MCP、Hook、Provider 或指令文件。绑定 Project 被显式标记为不受信任，Project 文档发现关闭；Project 文件只作为按需读取的上下文，不作为高优先级指令。
 
+`HostTurnHandle.interrupt()` 不会把 `turn/interrupt` 的空 RPC 响应冒充取消完成，并且每个 turn 最多只发送一次 interrupt。它只在同一 thread/turn 随后出现严格的 `turn/completed`、`status=interrupted`、`error=null` 和有效 `completedAt` 后，返回 `combo.codex-app-server-interrupt-terminal/1` 低敏证据；completed/failed/malformed terminal、等待 terminal 超时或 Host 进程丢失都会拒绝该证据。digest 只覆盖规范化 terminal observation，诊断事件不携带 threadId、turnId 或原始 Host payload。protocol 常量、strict evidence factory 及 observation/evidence 类型从包入口导出，供后续可信 Adapter 与 Journal verifier 共享。该接口仍只是 RC Host evidence API：尚未接入 VNext Worker 进程、SQLite Invocation Journal、云端 cancel authority 或跨进程 Host query/recover，不能据此宣称 durable CANCELLED 闭环。
+
 本 RC 的 experimental app-server 协议明确 pin 到 bundled Codex `0.147.0-alpha.6.5`；Desktop 升级后必须先重跑协议与真实多轮 gate，未审核版本会拒绝启动。
 
 运行方式：

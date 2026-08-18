@@ -65,7 +65,7 @@ function envelope(sequence: number, overrides: Partial<BrokerEnvelope> = {}): Br
     body: {
       invocationId: IDS.invocationA,
       conversationId: IDS.conversationA,
-      clientMessageId: '0198f00d-1000-7000-8000-000000000002',
+      clientMessageId: '550e8400-e29b-41d4-a716-446655440000',
       requestDigest: REQUEST_DIGEST,
       userMessageCiphertext: {
         algorithm: 'aes-256-gcm/v1',

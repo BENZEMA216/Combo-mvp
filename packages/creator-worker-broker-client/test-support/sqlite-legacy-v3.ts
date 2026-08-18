@@ -43,8 +43,19 @@ export function downgradeToLegacyV3(filename: string): void {
         'local_conversation_ready_outbox_receipts_v3',
       ),
     );
+    const legacyInvocationColumns = (
+      database.prepare(`PRAGMA table_info(local_invocations_v3)`).all() as Array<{ name: string }>
+    ).map(({ name }) => name);
+    const legacyProjection = legacyInvocationColumns
+      .map((name) =>
+        name === 'host_prompt_release_count'
+          ? 'host_dispatch_attempt_count AS host_prompt_release_count'
+          : name,
+      )
+      .join(', ');
     database.exec(`
-      INSERT INTO local_invocations_v3 SELECT * FROM local_invocations;
+      INSERT INTO local_invocations_v3(${legacyInvocationColumns.join(', ')})
+      SELECT ${legacyProjection} FROM local_invocations;
       INSERT INTO local_invocation_outbox_receipts_v3(
         receipt_id, source_event_id, fact_digest, delivery_message_id, ack_message_id,
         ack_connection_id, ack_sequence, ack_canonical_digest, cloud_evidence_digest,
@@ -64,6 +75,15 @@ export function downgradeToLegacyV3(filename: string): void {
              cloud_decided_at_ms, ''
       FROM local_conversation_ready_outbox_receipts;
     `);
+    for (const row of database.prepare(`SELECT * FROM local_invocations_v3`).all() as Array<
+      Record<string, unknown>
+    >) {
+      const payload = { ...row };
+      delete payload.row_digest;
+      database
+        .prepare(`UPDATE local_invocations_v3 SET row_digest = ? WHERE invocation_id = ?`)
+        .run(sqliteInvocationRowDigest('local_invocations', payload), String(row.invocation_id));
+    }
     for (const table of [
       'local_invocation_outbox_receipts_v3',
       'local_conversation_ready_outbox_receipts_v3',
@@ -86,6 +106,7 @@ export function downgradeToLegacyV3(filename: string): void {
     database.exec(`
       DROP TABLE local_conversation_ready_outbox_receipts;
       DROP TABLE local_invocation_outbox_receipts;
+      DROP TABLE local_invocation_interrupt_receipts;
       DROP TABLE local_invocations;
       ALTER TABLE local_invocations_v3 RENAME TO local_invocations;
       ALTER TABLE local_invocation_outbox_receipts_v3

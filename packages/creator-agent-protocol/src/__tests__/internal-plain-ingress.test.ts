@@ -65,9 +65,9 @@ async function loadOwners(): Promise<PlainIngressOwner[]> {
 
   return [
     {
-      id: 'compatibility.current.wireProtocol',
+      id: 'compatibility.declaredPrevious.handshakeFixture',
       fixture: compatibility,
-      path: ['current', 'wireProtocol'],
+      path: ['declaredPrevious', 0, 'handshakeFixture'],
       schema: ProtocolVersionCorpusSchema,
     },
     {

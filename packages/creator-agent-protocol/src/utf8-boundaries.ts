@@ -86,6 +86,23 @@ export const ProtocolUtf8BoundaryCorpusSchema = z
         portablePatternSource: z.literal(
           '^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$',
         ),
+        strictPatternSource: z.literal(
+          '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$',
+        ),
+        strictRuntimeOwnerIds: z.tuple([
+          z.literal('runtime-resolved-model'),
+          z.literal('model-policy-model'),
+          z.literal('codex-runtime-version'),
+          z.literal('sandbox-spec-adapter-version'),
+          z.literal('sandbox-attestation-adapter-version'),
+          z.literal('sandbox-attestation-codex-version'),
+          z.literal('create-agent-name'),
+          z.literal('agent-view-name'),
+          z.literal('broker-handshake-worker-version'),
+          z.literal('execution-capability-model'),
+          z.literal('version-rejected-error-code'),
+        ]),
+        strictArtifactPointers: z.array(Utf8ArtifactPointerSchema).length(26),
         runtimeOwners: z.tuple([
           ScalarControlRuntimeOwnerSchema.extend({
             id: z.literal('behavior-role'),
@@ -237,6 +254,17 @@ export const ProtocolUtf8BoundaryCorpusSchema = z
                   reason: z.literal('SnapshotPathSchema-has-independent-strict-pattern'),
                 })
                 .strict(),
+              z
+                .object({
+                  artifact: z.literal('contract-schemas'),
+                  pointer: z.literal(
+                    '/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/mediaType',
+                  ),
+                  reason: z.literal(
+                    'SnapshotFileSchema-mediaType-has-independent-ASCII-pattern-census',
+                  ),
+                })
+                .strict(),
             ]),
             expectedCounts: z
               .object({
@@ -301,7 +329,30 @@ export const ProtocolUtf8BoundaryCorpusSchema = z
           }),
         ]),
       })
-      .strict(),
+      .strict()
+      .superRefine((parity, context) => {
+        const runtimeIds = new Set(parity.runtimeOwners.map(({ id }) => id));
+        if (
+          new Set(parity.strictRuntimeOwnerIds).size !== parity.strictRuntimeOwnerIds.length ||
+          parity.strictRuntimeOwnerIds.some((id) => !runtimeIds.has(id))
+        ) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['strictRuntimeOwnerIds'],
+            message: 'strict UTF-8 runtime owners must be unique members of runtimeOwners',
+          });
+        }
+        const strictPointers = parity.strictArtifactPointers.map(
+          ({ artifact, pointer }) => `${artifact}:${pointer}`,
+        );
+        if (new Set(strictPointers).size !== strictPointers.length) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['strictArtifactPointers'],
+            message: 'strict UTF-8 artifact pointers must be unique',
+          });
+        }
+      }),
     strictStructuralParity: z
       .object({
         canaryPrefix: z.literal('SIGNED_PUT_URL_CANARY_'),

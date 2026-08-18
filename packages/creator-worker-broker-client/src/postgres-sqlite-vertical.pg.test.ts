@@ -62,9 +62,12 @@ const { DatabaseSync: SqliteDatabase } = createRequire(import.meta.url)('node:sq
   readonly DatabaseSync: typeof DatabaseSync;
 };
 const WORKER_VERSION = 'combo-worker-vertical/1';
+const PREVIOUS_WORKER_VERSION = 'combo-worker-vertical/0';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const PREVIOUS_RUNTIME_DIGEST = `sha256:${'e'.repeat(64)}`;
 const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const PREVIOUS_PROTOCOL_DIGEST = `sha256:${'d'.repeat(64)}`;
 const COMPATIBILITY_CORPUS = ProtocolVersionCorpusSchema.parse(
   JSON.parse(
     readFileSync(
@@ -779,10 +782,10 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
     }
   }, 40_000);
 
-  // Sub-evidence for planned VNext registry cases SCH-010 and BRK-005. The fixture
-  // seeds the trusted registration projection directly and the transport is loopback
-  // ws://; Creator registration, public WSS, and Native Host composition remain planned.
-  it('blocks incompatible registrations through real PG loopback WS Worker and file SQLite before Session or delivery', async () => {
+  // G0 SCH-010/BRK-005 exact-profile evidence. Registration is seeded directly and transport is
+  // loopback ws://; Creator registration, Runtime/Snapshot readiness, public WSS, and Native Host
+  // composition remain planned.
+  it('blocks N+1 unknown native and undeclared cross-profile registrations before Session or delivery', async () => {
     const owner = new Pool({ connectionString: databaseUrl, max: 4 });
     const apiPool = new Pool({
       connectionString: roleUrl('combo_agent_api', apiPassword ?? 'invalid'),
@@ -795,10 +798,10 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
     const authority = new PostgresAgentGatewayAuthority(
       { api: toGatewayPool(apiPool), broker: toGatewayPool(brokerPool) },
       {
-        acceptedWorkerVersions: [WORKER_VERSION],
-        acceptedCodexRuntimeArtifacts: [RUNTIME_DIGEST],
-        acceptedCodexProtocolSchemaDigests: [PROTOCOL_DIGEST],
-        acceptedIsolationModes: ['apple-container-v1'],
+        acceptedWorkerVersions: [PREVIOUS_WORKER_VERSION, WORKER_VERSION],
+        acceptedCodexRuntimeArtifacts: [PREVIOUS_RUNTIME_DIGEST, RUNTIME_DIGEST],
+        acceptedCodexProtocolSchemaDigests: [PREVIOUS_PROTOCOL_DIGEST, PROTOCOL_DIGEST],
+        acceptedIsolationModes: ['lima-vz-v1', 'apple-container-v1'],
         acceptedBrokerContractDigests: [BROKER_CONTRACT_DIGEST],
         sessionTtlMs: 60_000,
         leaseTtlMs: 10_000,
@@ -819,9 +822,9 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         wireProtocol: 'combo.creator-broker/1',
         wireSchemaVersion: 1,
         supportedProtocolVersions: [1],
-        brokerContractDigest: BROKER_CONTRACT_DIGEST,
       });
-      expect(COMPATIBILITY_CORPUS.declaredPrevious).toEqual([]);
+      expect(COMPATIBILITY_CORPUS.declaredPrevious).toHaveLength(1);
+      expect(COMPATIBILITY_CORPUS.declaredPairs).toHaveLength(4);
 
       for (const testCase of COMPATIBILITY_CORPUS.rejectedRegistrations) {
         const keyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
@@ -832,11 +835,18 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         );
         const capabilities = registration.rows[0]?.capabilities;
         if (capabilities === undefined) throw new Error('COMPATIBILITY_REGISTRATION_MISSING');
+        let registeredWorkerVersion = WORKER_VERSION;
         switch (testCase.id) {
           case 'future-protocol-v2':
             break;
+          case 'future-worker-version':
+            registeredWorkerVersion = testCase.advertisedValue!;
+            break;
           case 'unknown-capability-key':
             capabilities.futureCapability = testCase.advertisedValue;
+            break;
+          case 'native-macos':
+            capabilities.isolationModes = [testCase.advertisedValue];
             break;
           case 'stale-broker-contract':
             capabilities.brokerContractDigest = testCase.advertisedValue;
@@ -850,15 +860,20 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
           case 'unaccepted-isolation':
             capabilities.isolationModes = [testCase.advertisedValue];
             break;
+          case 'undeclared-cross-mix':
+            capabilities.codexRuntimeArtifacts = [PREVIOUS_RUNTIME_DIGEST];
+            break;
         }
         await owner.query(
           `UPDATE worker_installations
-              SET protocol_versions = $3::jsonb,
-                  capabilities = $4::jsonb
+              SET worker_version = $3,
+                  protocol_versions = $4::jsonb,
+                  capabilities = $5::jsonb
             WHERE id = $1 AND creator_id = $2`,
           [
             fixture.installationId,
             fixture.creatorId,
+            registeredWorkerVersion,
             JSON.stringify(testCase.protocolVersions),
             JSON.stringify(capabilities),
           ],
@@ -884,7 +899,28 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
             },
           },
         });
-        const client = createWorkerClient(url, fixture.installationId, adapter, ports, diagnostics);
+        const client = createWorkerClient(
+          url,
+          fixture.installationId,
+          adapter,
+          ports,
+          diagnostics,
+          testCase.id === 'future-worker-version'
+            ? { workerVersion: testCase.advertisedValue! }
+            : testCase.id === 'unaccepted-codex-runtime'
+              ? { codexRuntimeArtifacts: [testCase.advertisedValue!] }
+              : testCase.id === 'unaccepted-codex-protocol'
+                ? { codexProtocolSchemaDigests: [testCase.advertisedValue!] }
+                : testCase.id === 'unaccepted-isolation'
+                  ? {
+                      isolationModes: [
+                        testCase.advertisedValue! as 'apple-container-v1' | 'lima-vz-v1',
+                      ],
+                    }
+                  : testCase.id === 'undeclared-cross-mix'
+                    ? { codexRuntimeArtifacts: [PREVIOUS_RUNTIME_DIGEST] }
+                    : {},
+        );
 
         try {
           await client.start();
@@ -1155,14 +1191,20 @@ function createWorkerClient(
   durablePort: WorkerBrokerDurableTransportPort,
   ports: ReturnType<typeof workerPorts>,
   diagnostics: WorkerBrokerDiagnosticEvent[],
+  profile: Partial<{
+    workerVersion: string;
+    codexRuntimeArtifacts: readonly string[];
+    codexProtocolSchemaDigests: readonly string[];
+    isolationModes: readonly ('apple-container-v1' | 'lima-vz-v1')[];
+  }> = {},
 ): WorkerBrokerClient {
   return new WorkerBrokerClient({
     url,
     installationId,
-    workerVersion: WORKER_VERSION,
-    codexRuntimeArtifacts: [RUNTIME_DIGEST],
-    codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
-    isolationModes: ['apple-container-v1'],
+    workerVersion: profile.workerVersion ?? WORKER_VERSION,
+    codexRuntimeArtifacts: profile.codexRuntimeArtifacts ?? [RUNTIME_DIGEST],
+    codexProtocolSchemaDigests: profile.codexProtocolSchemaDigests ?? [PROTOCOL_DIGEST],
+    isolationModes: profile.isolationModes ?? ['apple-container-v1'],
     challengePort: ports.challengePort,
     deviceSigner: ports.deviceSigner,
     durablePort,

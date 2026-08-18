@@ -3,13 +3,13 @@
   "schemaVersion": 1,
   "scope": "decoded-and-canonical-base64url-owner-boundaries",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb",
-    "brokerContract": "sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f",
-    "openApi": "sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce"
+    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434",
+    "brokerContract": "sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253",
+    "openApi": "sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db"
   },
   "baseFixtureDigests": {
-    "brokerHandshake": "sha256:c87cec938a3be231a97feca8eec8e1595022f9880893022607c815607f5ab016",
-    "brokerInvocationPrepare": "sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7",
+    "brokerHandshake": "sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f",
+    "brokerInvocationPrepare": "sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de",
     "sandboxAttestation": "sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91",
     "evidenceReviewerSignoff": "sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b",
     "snapshotEnvelope": "sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9",

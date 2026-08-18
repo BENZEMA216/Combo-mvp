@@ -1,0 +1,169 @@
+{
+  "protocol": "combo.snapshot-compressed-exact-boundary/1",
+  "schemaVersion": 1,
+  "scope": "real-canonical-tar-zstd-50-mib-boundary",
+  "evidenceClass": "production-mechanism",
+  "authority": {
+    "technicalPlanSection": "技术方案 §5.2 Alpha 输入边界",
+    "testPlanCase": "SNP-008",
+    "decisionRegistryId": "ADR-VNEXT-003"
+  },
+  "generator": {
+    "algorithm": "shake256-low5-base32/1",
+    "seedPrefix": "combo:snp-008:shake256-base32:v1",
+    "seedSeparator": "single-nul-byte",
+    "fileIndexEncoding": "two-digit-decimal",
+    "shakeOutput": "one-shot-outputLength-equals-file-bytes",
+    "mapping": "alphabet[rawByte & 31]",
+    "alphabet": "abcdefghijklmnopqrstuvwxyz234567",
+    "pathTemplate": "snp008/base32-{index}.txt",
+    "mediaType": "text/plain; charset=utf-8",
+    "commonFiles": [
+      {
+        "index": "00",
+        "bytes": 10485760,
+        "sha256": "893d2ac9c09adbbc2e2d98e1c53b67462c1ba0d6bf61dd9b6642573b7e64cd7c"
+      },
+      {
+        "index": "01",
+        "bytes": 10485760,
+        "sha256": "2009a67bbadcbba6463e129954c8016a70a205d819a20bbd19672dda2791a110"
+      },
+      {
+        "index": "02",
+        "bytes": 10485760,
+        "sha256": "4d8e3b62ef96e73b23b0943e34530369de8077170eb71c5eb53b09440f64c8a6"
+      },
+      {
+        "index": "03",
+        "bytes": 10485760,
+        "sha256": "6017f0ef251a95fa1dbb72bd1ad843c842cfe83c548bdda640e377df97c03bd3"
+      },
+      {
+        "index": "04",
+        "bytes": 10485760,
+        "sha256": "638df7e44154f983e10e5caffb244c32e32cc10070b2a0e86f533d8088c01689"
+      },
+      {
+        "index": "05",
+        "bytes": 10485760,
+        "sha256": "524885e2125e66ac21c33949581e6f08f607bf1127c9a3d235680cf5c5e7ce5d"
+      },
+      {
+        "index": "06",
+        "bytes": 10485760,
+        "sha256": "ff6723ad2247b3f8e4e31368fbeb5c9bc0774445ab240c6f5a75a4bb9d58c20d"
+      }
+    ]
+  },
+  "canonicalArchivePolicy": {
+    "tarImplementation": "combo-ustar-pax/1",
+    "zstdImplementation": "node-zlib-zstd@1.5.7",
+    "zstdLevel": 9,
+    "zstdChecksum": true,
+    "zstdContentSize": true,
+    "zstdDictionaryId": false,
+    "zstdWorkers": 0,
+    "zstdFrameCount": 1,
+    "nodeSyncWrapper": {
+      "primaryOutputChunkBytes": 16384,
+      "aliasEmptyFrameHex": "28b52ffd240001000099e9d851",
+      "aliasRetryOutputChunkBytes": 65537,
+      "normalization": "retry-only-when-primary-output-ends-with-empty-frame-and-retry-equals-primary-prefix"
+    }
+  },
+  "calibrationProvenance": {
+    "mode": "offline-finite-search",
+    "runtime": "Darwin-arm64 Node-v25.6.1 zstd-1.5.7",
+    "ciSearchForbidden": true,
+    "largeObjectsCommitted": false,
+    "discovery": "The exact vector's primary frame is 52428800 bytes; Node's default sync output wrapper appended one 13-byte empty frame before conditional normalization."
+  },
+  "probes": [
+    {
+      "delta": -1,
+      "expected": "accepted",
+      "tailFile": {
+        "index": "07",
+        "bytes": 8971020,
+        "patches": [],
+        "sha256": "fad13451335d3623eb90a23cac428da66e11a28a5e365d4e30d109dc4466d04c"
+      },
+      "expandedBytes": 82371340,
+      "manifest": {
+        "bytes": 1871,
+        "sha256": "839deadae6f36323a3991fe6ca1d041de8aca4be384f9307db9e72ed434b6e2d"
+      },
+      "tar": {
+        "bytes": 82376704,
+        "sha256": "afdef2c20ca09dced1a8619b9be0def2034764702caeedd1fcf7147261566038"
+      },
+      "archive": {
+        "bytes": 52428799,
+        "sha256": "dcf5dd2a6a17d8939f54e9c101a2db87dc1197744d41ff7867d12d62568cbb4e",
+        "frames": 1
+      },
+      "builder": "accepted",
+      "verifier": "accepted"
+    },
+    {
+      "delta": 0,
+      "expected": "accepted",
+      "tailFile": {
+        "index": "07",
+        "bytes": 8971020,
+        "patches": [
+          {
+            "offset": 8934747,
+            "from": "c",
+            "to": "e"
+          }
+        ],
+        "sha256": "3085fb1c2cd11b77c81bfdf29ec50ea074bd92cc3d539ff023bf148b054400bb"
+      },
+      "expandedBytes": 82371340,
+      "manifest": {
+        "bytes": 1871,
+        "sha256": "5a6dfc3aaf719c3a7b080d9c87b7c7d8c1e23074961f6512d8d134338a1ba75e"
+      },
+      "tar": {
+        "bytes": 82376704,
+        "sha256": "866cc33aaa283d47ca340d380309b47b123494da0834c9f218f1a56fff826dee"
+      },
+      "archive": {
+        "bytes": 52428800,
+        "sha256": "42bca821bd2e1319b4e12edfe53dbd8b3c826f37843c1ca737bd7a8d80e4cef2",
+        "frames": 1
+      },
+      "builder": "accepted",
+      "verifier": "accepted"
+    },
+    {
+      "delta": 1,
+      "expected": "rejected",
+      "tailFile": {
+        "index": "07",
+        "bytes": 8971023,
+        "patches": [],
+        "sha256": "fe1193fd521635c1e02641e76a0dc7205f618c068ef629be213c86f7c54ebf2e"
+      },
+      "expandedBytes": 82371343,
+      "manifest": {
+        "bytes": 1871,
+        "sha256": "5ea3f0cfd9e809580f9ec94a95f82205ff3945a1d96d6496a4039787bf80b2ba"
+      },
+      "tar": {
+        "bytes": 82376704,
+        "sha256": "d16074426836a2a069f21165b743fa25cc1a572772152c13d37829d81c3ed583"
+      },
+      "archive": {
+        "bytes": 52428801,
+        "sha256": "005d328261351b70157cc31c206656e3be99e93176c008e522db176de05fdb07",
+        "frames": 1
+      },
+      "builder": "SNAPSHOT_COMPRESSED_TOO_LARGE",
+      "verifier": "SNAPSHOT_COMPRESSED_TOO_LARGE",
+      "preParserReject": true
+    }
+  ]
+}

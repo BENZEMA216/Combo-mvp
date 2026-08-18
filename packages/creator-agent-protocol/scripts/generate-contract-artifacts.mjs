@@ -60,6 +60,20 @@ await writeFile(
 const compatibilityPath = join(fixtureDirectory, 'protocol-compatibility.v1.json');
 const compatibility = JSON.parse(await readFile(compatibilityPath, 'utf8'));
 const renderedHandshake = await readFile(handshakePath);
+const previousProfile = compatibility.declaredPrevious[0];
+const previousHandshakePath = join(
+  fixtureDirectory,
+  previousProfile.handshakeFixture.split('/').at(-1),
+);
+const previousHandshake = JSON.parse(await readFile(previousHandshakePath, 'utf8'));
+await writeFile(
+  previousHandshakePath,
+  await render({
+    ...previousHandshake,
+    brokerContractDigest: currentBrokerContractDigest(),
+  }),
+);
+const renderedPreviousHandshake = await readFile(previousHandshakePath);
 await writeFile(
   compatibilityPath,
   await render({
@@ -69,6 +83,19 @@ await writeFile(
       brokerContractDigest: currentBrokerContractDigest(),
       handshakeFixtureDigest: sha256(renderedHandshake),
     },
+    declaredPrevious: compatibility.declaredPrevious.map((profile, index) =>
+      index === 0
+        ? {
+            ...profile,
+            brokerContractDigest: currentBrokerContractDigest(),
+            handshakeFixtureDigest: sha256(renderedPreviousHandshake),
+          }
+        : profile,
+    ),
+    gatewayReleases: compatibility.gatewayReleases.map((release) => ({
+      ...release,
+      brokerContractDigest: currentBrokerContractDigest(),
+    })),
   }),
 );
 const fixtureFiles = (await readdir(fixtureDirectory))

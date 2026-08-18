@@ -13,6 +13,7 @@ import {
   type SpawnAppServer,
 } from './app-server-client.js';
 import { CreatorWorker } from './creator-worker.js';
+import { createHostInterruptedTerminalEvidence } from './host-types.js';
 
 interface RequestMessage {
   id?: number | string;
@@ -173,6 +174,43 @@ async function createThread(
 }
 
 describe('CodexAppServerClient', () => {
+  it('freezes strict interrupted terminal evidence and its canonical digest', () => {
+    const evidence = createHostInterruptedTerminalEvidence({
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      status: 'interrupted',
+      error: null,
+      completedAt: 1,
+    });
+    expect(evidence).toEqual({
+      protocol: 'combo.codex-app-server-interrupt-terminal/1',
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+      outcome: 'INTERRUPTED',
+      hostTerminalDigest: 'sha256:d5fc77ba3a5b6c1085beaad3e32b332b4661370b3a48fc90cd6df64ab19ddbd1',
+    });
+    expect(Object.isFrozen(evidence)).toBe(true);
+    expect(() =>
+      createHostInterruptedTerminalEvidence({
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        status: 'interrupted',
+        error: null,
+        completedAt: Number.NaN,
+      }),
+    ).toThrow('Invalid interrupted Host terminal observation.');
+    expect(() =>
+      createHostInterruptedTerminalEvidence({
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        status: 'interrupted',
+        error: null,
+        completedAt: 1,
+        extra: 'forbidden',
+      } as never),
+    ).toThrow('Invalid interrupted Host terminal observation.');
+  });
+
   it('never gives the authentication bridge to an unreviewed real executable', () => {
     expect(
       () =>
@@ -832,6 +870,138 @@ describe('CodexAppServerClient', () => {
     }
   });
 
+  it('waits for the exact interrupted terminal after an empty interrupt ACK and sends once', async () => {
+    const diagnostics: HostDiagnosticEvent[] = [];
+    const { client, fake, projectPath } = await fixture(false, 20, 20, (event) =>
+      diagnostics.push(event),
+    );
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'manual-interrupt-evidence',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-interrupt-evidence' } } });
+    await handle.turnId;
+    const first = handle.interrupt();
+    const second = handle.interrupt();
+    expect(second).toBe(first);
+    const interrupt = await fake.nextRequest('turn/interrupt');
+    expect(fake.requests.filter((request) => request.method === 'turn/interrupt')).toHaveLength(1);
+    fake.send({ id: interrupt.id, result: {} });
+    let evidenceSettled = false;
+    void first.then(
+      () => {
+        evidenceSettled = true;
+      },
+      () => {
+        evidenceSettled = true;
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(evidenceSettled).toBe(false);
+
+    fake.send({
+      method: 'turn/completed',
+      params: {
+        threadId: thread.id,
+        turn: {
+          id: 'turn-interrupt-evidence',
+          status: 'interrupted',
+          error: null,
+          completedAt: 7,
+        },
+      },
+    });
+    await expect(first).resolves.toEqual(
+      createHostInterruptedTerminalEvidence({
+        threadId: thread.id,
+        turnId: 'turn-interrupt-evidence',
+        status: 'interrupted',
+        error: null,
+        completedAt: 7,
+      }),
+    );
+    await expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_INTERRUPTED' }),
+    );
+    expect(diagnostics).toContainEqual({ type: 'interrupt_terminal_verified' });
+    expect(JSON.stringify(diagnostics)).not.toContain(thread.id);
+    expect(JSON.stringify(diagnostics)).not.toContain('turn-interrupt-evidence');
+  });
+
+  it('rejects a terminal observed before the interrupt request is written', async () => {
+    const diagnostics: HostDiagnosticEvent[] = [];
+    const { client, fake, projectPath } = await fixture(false, 20, 20, (event) =>
+      diagnostics.push(event),
+    );
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'interrupt-causal-order',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-causal-order' } } });
+    await handle.turnId;
+    const resultAssertion = expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_TURN_FAILED' }),
+    );
+
+    fake.sendChunks(
+      `${JSON.stringify({ method: 'error', params: { threadId: thread.id, turnId: 'turn-causal-order', willRetry: false, error: { code: 'cancel' } } })}\n${JSON.stringify({ method: 'turn/completed', params: { threadId: thread.id, turn: { id: 'turn-causal-order', status: 'interrupted', error: null, completedAt: 7 } } })}\n`,
+    );
+    const interrupt = await fake.nextRequest('turn/interrupt');
+    fake.send({ id: interrupt.id, result: {} });
+
+    await expect(handle.interrupt()).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_TURN_FAILED' }),
+    );
+    await resultAssertion;
+    expect(diagnostics).not.toContainEqual({ type: 'interrupt_terminal_verified' });
+  });
+
+  it.each([
+    { label: 'completed', turn: { status: 'completed', error: null, completedAt: 1 } },
+    { label: 'failed', turn: { status: 'failed', error: null, completedAt: 1 } },
+    {
+      label: 'malformed',
+      turn: { status: 'interrupted', error: { code: 'unexpected' }, completedAt: 1 },
+    },
+  ])('rejects interrupt evidence for a $label terminal', async ({ turn }) => {
+    const { client, fake, projectPath } = await fixture(false, 20);
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'invalid-interrupt-terminal',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-invalid-interrupt' } } });
+    await handle.turnId;
+    const evidence = handle.interrupt();
+    const interrupt = await fake.nextRequest('turn/interrupt');
+    fake.send({ id: interrupt.id, result: {} });
+    fake.send({
+      method: 'turn/completed',
+      params: {
+        threadId: thread.id,
+        turn: { id: 'turn-invalid-interrupt', ...turn },
+      },
+    });
+    await expect(evidence).rejects.toEqual(expect.objectContaining({ code: 'HOST_INTERRUPTED' }));
+    await expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_INTERRUPTED' }),
+    );
+  });
+
   it('interrupts a timed-out turn exactly once and survives terminal-before-RPC-response ordering', async () => {
     const { client, fake, projectPath } = await fixture(false, 20);
     await initialize(client, fake);
@@ -840,6 +1010,7 @@ describe('CodexAppServerClient', () => {
     const start = await fake.nextRequest('turn/start');
     fake.send({ id: start.id, result: { turn: { id: 'turn-timeout' } } });
     const interrupt = await fake.nextRequest('turn/interrupt');
+    const interruptEvidence = handle.interrupt();
     const resultAssertion = expect(handle.result).rejects.toEqual(
       expect.objectContaining({ code: 'HOST_TIMEOUT' }),
     );
@@ -850,6 +1021,15 @@ describe('CodexAppServerClient', () => {
         turn: { id: 'turn-timeout', status: 'interrupted', error: null, completedAt: 1 },
       },
     });
+    await expect(interruptEvidence).resolves.toEqual(
+      createHostInterruptedTerminalEvidence({
+        threadId: thread.id,
+        turnId: 'turn-timeout',
+        status: 'interrupted',
+        error: null,
+        completedAt: 1,
+      }),
+    );
     fake.send({ id: interrupt.id, result: {} });
     await resultAssertion;
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -876,7 +1056,56 @@ describe('CodexAppServerClient', () => {
     await expect(handle.result).rejects.toEqual(
       expect.objectContaining({ code: 'HOST_INTERRUPTED', hostLost: true }),
     );
-    await interrupting;
+    await expect(interrupting).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_INTERRUPTED', hostLost: true }),
+    );
+    expect(fake.killed).toBe(true);
+  });
+
+  it('rejects interrupt evidence when the Host process is lost before a terminal observation', async () => {
+    const { client, fake, projectPath } = await fixture(false, 20);
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'interrupt-process-loss',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-process-loss' } } });
+    await handle.turnId;
+    const evidence = handle.interrupt();
+    await fake.nextRequest('turn/interrupt');
+    fake.emit('exit', 1, null);
+    await expect(evidence).rejects.toEqual(
+      expect.objectContaining({ code: expect.stringMatching(/^HOST_/u) }),
+    );
+    await expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: expect.stringMatching(/^HOST_/u) }),
+    );
+  });
+
+  it('rejects interrupt evidence when the Host never emits an interrupted terminal', async () => {
+    const { client, fake, projectPath } = await fixture(false, 20);
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'interrupt-terminal-timeout',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-terminal-timeout' } } });
+    await handle.turnId;
+    const evidence = handle.interrupt();
+    const interrupt = await fake.nextRequest('turn/interrupt');
+    fake.send({ id: interrupt.id, result: {} });
+    await expect(evidence).rejects.toEqual(expect.objectContaining({ code: 'HOST_INTERRUPTED' }));
+    await expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_INTERRUPTED' }),
+    );
     expect(fake.killed).toBe(true);
   });
 
@@ -893,6 +1122,9 @@ describe('CodexAppServerClient', () => {
     await fake.nextRequest('turn/start');
     await expect(handle.result).rejects.toEqual(expect.objectContaining({ code: 'HOST_TIMEOUT' }));
     await expect(handle.turnId).rejects.toEqual(expect.objectContaining({ code: 'HOST_TIMEOUT' }));
+    await expect(handle.interrupt()).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_TIMEOUT' }),
+    );
     expect(fake.requests.filter((request) => request.method === 'turn/interrupt')).toHaveLength(0);
     expect(fake.killed).toBe(true);
   });

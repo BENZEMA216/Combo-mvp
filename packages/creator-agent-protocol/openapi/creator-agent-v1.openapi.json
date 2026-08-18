@@ -16,7 +16,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -61,7 +61,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -100,7 +100,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -141,7 +141,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -219,7 +219,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           },
           {
             "name": "If-Match",
@@ -267,7 +267,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -331,6 +331,7 @@
     "/v1/conversations/{conversationId}/messages": {
       "post": {
         "operationId": "sendConversationMessage",
+        "x-combo-idempotency-body-field": "clientMessageId",
         "security": [{ "consumerSession": [] }],
         "parameters": [
           {
@@ -343,7 +344,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -455,7 +456,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -487,6 +488,7 @@
     "/v1/invocations/{invocationId}:retry": {
       "post": {
         "operationId": "retryInvocation",
+        "x-combo-idempotency-body-field": "clientMessageId",
         "security": [{ "consumerSession": [] }],
         "parameters": [
           {
@@ -499,7 +501,7 @@
             "name": "Idempotency-Key",
             "in": "header",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
           }
         ],
         "requestBody": {
@@ -578,7 +580,7 @@
                       "archiveDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                       "objectKey": {
                         "type": "string",
-                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                        "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 512 Unicode code points",
                         "minLength": 1,
                         "maxLength": 512,
@@ -683,7 +685,7 @@
                       "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                       "objectKey": {
                         "type": "string",
-                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                        "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 512 Unicode code points",
                         "minLength": 1,
                         "maxLength": 512,
@@ -950,7 +952,7 @@
           "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
           "errorCode": {
             "type": "string",
-            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
             "description": "String containing 0 to 128 Unicode code points",
             "nullable": true,
             "minLength": 0,
@@ -981,7 +983,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120,
-            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
             "description": "UTF-8 text with a maximum of 120 bytes",
             "x-combo-maxUtf8Bytes": 120
           },
@@ -1016,7 +1018,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 120,
-            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
             "description": "UTF-8 text with a maximum of 120 bytes",
             "x-combo-maxUtf8Bytes": 120
           },
@@ -1148,7 +1150,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 128,
-                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "UTF-8 text with a maximum of 128 bytes",
                     "x-combo-maxUtf8Bytes": 128
                   },
@@ -1218,7 +1220,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 128,
-                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "UTF-8 text with a maximum of 128 bytes",
                     "x-combo-maxUtf8Bytes": 128
                   },
@@ -1237,7 +1239,7 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 128,
-                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "UTF-8 text with a maximum of 128 bytes",
                     "x-combo-maxUtf8Bytes": 128
                   },
@@ -1371,7 +1373,7 @@
           },
           "lastErrorCode": {
             "type": "string",
-            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
             "description": "String containing 0 to 128 Unicode code points",
             "nullable": true,
             "minLength": 0,
@@ -1463,7 +1465,9 @@
         "properties": {
           "clientMessageId": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "format": "uuid"
           },
           "text": {
@@ -1589,7 +1593,7 @@
               },
               "requestId": {
                 "type": "string",
-                "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                 "description": "String containing 8 to 128 Unicode code points",
                 "minLength": 8,
                 "maxLength": 128,
@@ -1641,7 +1645,9 @@
         "properties": {
           "clientMessageId": {
             "type": "string",
-            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
             "format": "uuid"
           }
         },
@@ -2469,7 +2475,7 @@
           },
           "requestId": {
             "type": "string",
-            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
             "description": "String containing 8 to 128 Unicode code points",
             "minLength": 8,
             "maxLength": 128,
@@ -2496,6 +2502,13 @@
         "minLength": 1,
         "maxLength": 19,
         "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+      },
+      "IdempotencyKey": {
+        "type": "string",
+        "minLength": 36,
+        "maxLength": 36,
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "format": "uuid"
       },
       "ServerId": {
         "type": "string",

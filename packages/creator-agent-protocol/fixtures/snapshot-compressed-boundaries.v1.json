@@ -10,8 +10,8 @@
     "cipherOverheadDecisionId": "ADR-VNEXT-011"
   },
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb",
-    "openApi": "sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce"
+    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434",
+    "openApi": "sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db"
   },
   "baseFixtures": [
     {

@@ -11,6 +11,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  vnext-t0:
+    name: CI / VNext T0 G0
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vnext-t0.yml
+    with:
+      revision: ${{ github.sha }}
+      disposition: ADVISORY_ONLY
+      caller_workflow_path: .github/workflows/pr-ci.yml
+      caller_workflow_name: PR checks
+      event_name: pull_request
+      git_ref: ${{ github.ref }}
+      ref_protected: ${{ github.ref_protected }}
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      merge_sha: ${{ github.sha }}
+
   quality:
     name: CI / quality
     runs-on: ubuntu-latest
@@ -167,10 +184,14 @@ jobs:
           POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
           POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
           POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
           CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
           CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
+          CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'
         run: |
           set -euo pipefail
+          pnpm --dir db exec vitest run \
+            __tests__/creator-agent-consumer-message-accept.pg.test.ts
           pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
           pnpm --dir apps/runtime exec vitest run \
             src/modules/creator-agent-conversation/repo.pg.test.ts

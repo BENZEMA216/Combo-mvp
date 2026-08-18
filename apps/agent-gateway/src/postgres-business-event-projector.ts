@@ -59,9 +59,9 @@ const CONVERSATION_STATES = new Set([
  * PostgreSQL business projection adapter for the Agent Gateway.
  *
  * Every supported event is projected through the caller's existing Gateway transaction and
- * AbortSignal. Cloud projector failures are deliberately not translated into a positive decision:
- * the Gateway must roll the whole transaction back instead of committing a partial projection,
- * sequence receipt, or CLOUD_COMMITTED ACK.
+ * AbortSignal. Ordinary Cloud projector failures propagate so the whole transaction rolls back.
+ * A DB-owned durable SECURITY_BLOCKED outcome is different: it is returned as SECURITY_BLOCK so
+ * the same transaction can commit its alert, sequence receipt, and CLOUD_COMMITTED security ACK.
  */
 export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEventProjector {
   public constructor(
@@ -103,7 +103,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           requestDigest: body.requestDigest,
           prepareCommandId: body.prepareCommandId,
         });
-        const committed = await lifecycle.projectPrepared(
+        const outcome = await lifecycle.projectPrepared(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -113,6 +113,8 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           },
           input.signal,
         );
+        if (outcome.kind === 'SECURITY_BLOCKED') return 'SECURITY_BLOCK';
+        const committed = outcome.committed;
         assertCommittedPrepared(committed, fact, body.factDigest);
         if (committed.state === 'RECONCILING') return 'RECONCILE';
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
@@ -138,7 +140,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           dispatchReceiptDigest: body.dispatchReceiptDigest,
           sandboxAttestationDigest: body.sandboxAttestationDigest,
         });
-        const committed = await lifecycle.projectStarted(
+        const outcome = await lifecycle.projectStarted(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -148,13 +150,14 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           },
           input.signal,
         );
+        if (outcome.kind === 'SECURITY_BLOCKED') return 'SECURITY_BLOCK';
+        const committed = outcome.committed;
         assertCommittedStarted(committed, fact, body.factDigest);
         if (committed.state === 'RECONCILING') return 'RECONCILE';
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
       }
       case 'invocation.succeeded': {
         const lifecycle = this.#requireInvocationLifecycle();
-        const sealAssistantMessage = this.#requireAssistantMessageSealer();
         await clearConsumerContext(input.transaction, input.signal);
         const body = input.event.body;
         const fact = WorkerInvocationSucceededFactSchema.parse({
@@ -174,7 +177,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           resultDigest: body.resultDigest,
           localResultCipherDigest: body.localResultCipherDigest,
         });
-        const committed = await lifecycle.projectSuccess(
+        const outcome = await lifecycle.projectSuccess(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -183,9 +186,11 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
             factDigest: body.factDigest,
             resultCiphertext: body.resultCiphertext,
           },
-          sealAssistantMessage,
+          this.sealAssistantMessage,
           input.signal,
         );
+        if (outcome.kind === 'SECURITY_BLOCKED') return 'SECURITY_BLOCK';
+        const committed = outcome.committed;
         assertCommittedSuccess(committed, fact);
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
       }
@@ -207,7 +212,7 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           errorCode: body.errorCode,
         });
         VnextErrorCodeSchema.parse(fact.errorCode);
-        const committed = await lifecycle.projectFailed(
+        const outcome = await lifecycle.projectFailed(
           input.transaction,
           {
             creatorId: input.transport.creatorId,
@@ -217,6 +222,8 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
           },
           input.signal,
         );
+        if (outcome.kind === 'SECURITY_BLOCKED') return 'SECURITY_BLOCK';
+        const committed = outcome.committed;
         assertCommittedFailed(committed, fact);
         return committed.replayed ? 'IDEMPOTENT_REPLAY' : 'APPLIED';
       }
@@ -236,13 +243,6 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
       throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
     }
     return this.lifecycle;
-  }
-
-  #requireAssistantMessageSealer(): AssistantMessageSealer {
-    if (this.sealAssistantMessage === undefined) {
-      throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
-    }
-    return this.sealAssistantMessage;
   }
 
   async #projectConversationReady(input: {
@@ -467,7 +467,9 @@ function assertCommittedSuccess(
     committed.resultDigest !== fact.resultDigest ||
     !HmacSha256DigestSchema.safeParse(committed.resultDigest).success ||
     !UuidSchema.safeParse(committed.assistantMessageId).success ||
-    !Uint63StringSchema.safeParse(committed.consumerEventCursor).success ||
+    (committed.consumerEventCursor === null && committed.replayed !== true) ||
+    (committed.consumerEventCursor !== null &&
+      !Uint63StringSchema.safeParse(committed.consumerEventCursor).success) ||
     typeof committed.replayed !== 'boolean'
   ) {
     throw persistenceFailure();
@@ -480,6 +482,7 @@ function assertCommittedFailed(committed: CommittedFailed, fact: WorkerInvocatio
     committed.state !== 'FAILED' ||
     !VnextErrorCodeSchema.safeParse(committed.errorCode).success ||
     committed.errorCode !== fact.errorCode ||
+    (committed.consumerEventCursor === null && committed.replayed !== true) ||
     (committed.consumerEventCursor !== null &&
       !Uint63StringSchema.safeParse(committed.consumerEventCursor).success) ||
     typeof committed.replayed !== 'boolean'

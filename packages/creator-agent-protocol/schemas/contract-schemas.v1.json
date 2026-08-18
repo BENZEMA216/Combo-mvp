@@ -99,7 +99,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128,
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 128 bytes",
                   "x-combo-maxUtf8Bytes": 128
                 },
@@ -159,7 +159,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128,
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 128 bytes",
                   "x-combo-maxUtf8Bytes": 128
                 },
@@ -180,7 +180,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 128,
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "UTF-8 text with a maximum of 128 bytes",
                   "x-combo-maxUtf8Bytes": 128
                 },
@@ -279,7 +279,10 @@
                   "size": { "type": "integer", "minimum": 0, "maximum": 10485760 },
                   "mediaType": {
                     "type": "string",
-                    "pattern": "^(?:text\\/[a-z0-9.+-]+|application\\/(?:json|csv|javascript|xml|yaml|toml))(?:; charset=utf-8)?$"
+                    "maxLength": 128,
+                    "pattern": "^(?:text\\/[a-z0-9.+-]+|application\\/(?:json|csv|javascript|xml|yaml|toml))(?:; charset=utf-8)?$",
+                    "description": "UTF-8 text with a maximum of 128 bytes",
+                    "x-combo-maxUtf8Bytes": 128
                   },
                   "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
                 },
@@ -325,7 +328,7 @@
             },
             "objectKey": {
               "type": "string",
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -382,7 +385,7 @@
                 },
                 "objectKey": {
                   "type": "string",
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "String containing 1 to 512 Unicode code points",
                   "minLength": 1,
                   "maxLength": 512,
@@ -482,7 +485,7 @@
             "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "objectKey": {
               "type": "string",
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -538,7 +541,7 @@
                 "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
                 "objectKey": {
                   "type": "string",
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                   "description": "String containing 1 to 512 Unicode code points",
                   "minLength": 1,
                   "maxLength": 512,
@@ -675,7 +678,7 @@
                             },
                             "objectKey": {
                               "type": "string",
-                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "String containing 1 to 512 Unicode code points",
                               "minLength": 1,
                               "maxLength": 512,
@@ -794,7 +797,7 @@
                             },
                             "objectKey": {
                               "type": "string",
-                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "String containing 1 to 512 Unicode code points",
                               "minLength": 1,
                               "maxLength": 512,
@@ -919,7 +922,7 @@
             "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
             "preparationKey": {
               "type": "string",
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 1 to 512 Unicode code points",
               "minLength": 1,
               "maxLength": 512,
@@ -1010,7 +1013,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -1592,7 +1595,11 @@
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
                         },
                         "clientMessageId": {
-                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                          "type": "string",
+                          "minLength": 36,
+                          "maxLength": 36,
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "format": "uuid"
                         },
                         "requestDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
@@ -1753,7 +1760,7 @@
                               "type": "string",
                               "minLength": 1,
                               "maxLength": 128,
-                              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                               "description": "UTF-8 text with a maximum of 128 bytes",
                               "x-combo-maxUtf8Bytes": 128
                             },
@@ -2364,7 +2371,7 @@
                           "type": "string",
                           "minLength": 1,
                           "maxLength": 128,
-                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "UTF-8 text with a maximum of 128 bytes",
                           "x-combo-maxUtf8Bytes": 128
                         }
@@ -3107,6 +3114,308 @@
                         "interruptReceiptDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
                         },
+                        "interruptReceipt": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "protocol": {
+                                  "type": "string",
+                                  "const": "combo.worker-interrupt-receipt/1"
+                                },
+                                "schemaVersion": { "type": "number", "const": 1 },
+                                "installationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "snapshotDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "leaseId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "fence": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                                },
+                                "executionCapabilityDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "cancelCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "cancelReason": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/8/properties/body/properties/reason"
+                                },
+                                "interruptNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "outcome": { "type": "string", "const": "PROVED_NOT_EXECUTED" },
+                                "evidenceAuthority": {
+                                  "type": "string",
+                                  "const": "LOCAL_DISPATCH_COUNTER"
+                                },
+                                "dispatchAttemptCount": { "type": "number", "const": 0 },
+                                "runtimeThreadId": { "type": "null" },
+                                "runtimeTurnId": { "type": "null" },
+                                "dispatchReceiptDigest": { "type": "null" },
+                                "sandboxInstanceId": { "type": "null" },
+                                "sandboxAttestationDigest": { "type": "null" },
+                                "hostTerminalDigest": { "type": "null" },
+                                "startCommandId": { "type": "null" },
+                                "dispatchNonce": { "type": "null" }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "installationId",
+                                "invocationId",
+                                "conversationId",
+                                "agentVersionId",
+                                "agentVersionDigest",
+                                "snapshotDigest",
+                                "leaseId",
+                                "fence",
+                                "executionCapabilityDigest",
+                                "cancelCommandId",
+                                "cancelReason",
+                                "interruptNonce",
+                                "outcome",
+                                "evidenceAuthority",
+                                "dispatchAttemptCount",
+                                "runtimeThreadId",
+                                "runtimeTurnId",
+                                "dispatchReceiptDigest",
+                                "sandboxInstanceId",
+                                "sandboxAttestationDigest",
+                                "hostTerminalDigest",
+                                "startCommandId",
+                                "dispatchNonce"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "protocol": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/protocol"
+                                },
+                                "schemaVersion": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/schemaVersion"
+                                },
+                                "installationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "snapshotDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "leaseId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "fence": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                                },
+                                "executionCapabilityDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "cancelCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "cancelReason": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/8/properties/body/properties/reason"
+                                },
+                                "interruptNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "outcome": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/outcome"
+                                },
+                                "evidenceAuthority": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/evidenceAuthority"
+                                },
+                                "dispatchAttemptCount": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/dispatchAttemptCount"
+                                },
+                                "runtimeThreadId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/runtimeThreadId"
+                                },
+                                "runtimeTurnId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/runtimeTurnId"
+                                },
+                                "dispatchReceiptDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/dispatchReceiptDigest"
+                                },
+                                "sandboxInstanceId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/sandboxInstanceId"
+                                },
+                                "sandboxAttestationDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/sandboxAttestationDigest"
+                                },
+                                "hostTerminalDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/hostTerminalDigest"
+                                },
+                                "startCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "dispatchNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "installationId",
+                                "invocationId",
+                                "conversationId",
+                                "agentVersionId",
+                                "agentVersionDigest",
+                                "snapshotDigest",
+                                "leaseId",
+                                "fence",
+                                "executionCapabilityDigest",
+                                "cancelCommandId",
+                                "cancelReason",
+                                "interruptNonce",
+                                "outcome",
+                                "evidenceAuthority",
+                                "dispatchAttemptCount",
+                                "runtimeThreadId",
+                                "runtimeTurnId",
+                                "dispatchReceiptDigest",
+                                "sandboxInstanceId",
+                                "sandboxAttestationDigest",
+                                "hostTerminalDigest",
+                                "startCommandId",
+                                "dispatchNonce"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "protocol": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/protocol"
+                                },
+                                "schemaVersion": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/schemaVersion"
+                                },
+                                "installationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "snapshotDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "leaseId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "fence": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                                },
+                                "executionCapabilityDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "cancelCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "cancelReason": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/8/properties/body/properties/reason"
+                                },
+                                "interruptNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "outcome": { "type": "string", "const": "INTERRUPTED" },
+                                "evidenceAuthority": { "type": "string", "const": "HOST" },
+                                "dispatchAttemptCount": { "type": "number", "const": 1 },
+                                "startCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "dispatchNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "runtimeThreadId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                                },
+                                "runtimeTurnId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                                },
+                                "dispatchReceiptDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                                },
+                                "sandboxInstanceId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "sandboxAttestationDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                                },
+                                "hostTerminalDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                                }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "installationId",
+                                "invocationId",
+                                "conversationId",
+                                "agentVersionId",
+                                "agentVersionDigest",
+                                "snapshotDigest",
+                                "leaseId",
+                                "fence",
+                                "executionCapabilityDigest",
+                                "cancelCommandId",
+                                "cancelReason",
+                                "interruptNonce",
+                                "outcome",
+                                "evidenceAuthority",
+                                "dispatchAttemptCount",
+                                "startCommandId",
+                                "dispatchNonce",
+                                "runtimeThreadId",
+                                "runtimeTurnId",
+                                "dispatchReceiptDigest",
+                                "sandboxInstanceId",
+                                "sandboxAttestationDigest",
+                                "hostTerminalDigest"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
                         "factDigest": {
                           "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
                         }
@@ -3123,6 +3432,7 @@
                         "fence",
                         "type",
                         "interruptReceiptDigest",
+                        "interruptReceipt",
                         "factDigest"
                       ],
                       "additionalProperties": false
@@ -3490,6 +3800,7 @@
         "Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))",
         "Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId",
         "Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping",
+        "invocation.cancelled interruptReceiptDigest == sha256(JCS(exact combo.worker-interrupt-receipt/1 fields)) and receipt invocation/version/snapshot/capability/lease/fence fields equal the cancelled fact",
         "prepared/started commandId == correlationId; delta and terminal correlationId == invocationId",
         "all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation"
       ]
@@ -3806,7 +4117,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -3906,7 +4217,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4402,8 +4713,323 @@
         "sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for succeeded/failed/cancelled/uncertain",
         "leaseId/fence bind the original execution authority and remain immutable across Broker reconnection/re-enveloping",
         "started stores exact runtimeThreadId/runtimeTurnId query handles; succeeded repeats both handles and binds startedFactDigest",
+        "cancelled binds the exact canonical WorkerInterruptReceipt digest; Broker additionally checks the shared authority fields",
         "fence MUST be a canonical decimal string in the exact uint63 range 0..9223372036854775807",
         "all Worker Invocation facts MUST pass the authoritative runtime WorkerInvocationFactSchema parser after structural JSON Schema validation"
+      ]
+    },
+    "WorkerInterruptReceipt": {
+      "$ref": "#/definitions/WorkerInterruptReceipt",
+      "definitions": {
+        "WorkerInterruptReceipt": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "protocol": { "type": "string", "const": "combo.worker-interrupt-receipt/1" },
+                "schemaVersion": { "type": "number", "const": 1 },
+                "installationId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "leaseId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "fence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 19,
+                  "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+                },
+                "executionCapabilityDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "cancelCommandId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "cancelReason": {
+                  "type": "string",
+                  "enum": ["CONSUMER_REQUEST", "DRAIN_DEADLINE", "SECURITY_REVOKE", "DEADLINE"]
+                },
+                "interruptNonce": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "outcome": { "type": "string", "const": "PROVED_NOT_EXECUTED" },
+                "evidenceAuthority": { "type": "string", "const": "LOCAL_DISPATCH_COUNTER" },
+                "dispatchAttemptCount": { "type": "number", "const": 0 },
+                "runtimeThreadId": { "type": "null" },
+                "runtimeTurnId": { "type": "null" },
+                "dispatchReceiptDigest": { "type": "null" },
+                "sandboxInstanceId": { "type": "null" },
+                "sandboxAttestationDigest": { "type": "null" },
+                "hostTerminalDigest": { "type": "null" },
+                "startCommandId": { "type": "null" },
+                "dispatchNonce": { "type": "null" }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "installationId",
+                "invocationId",
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "leaseId",
+                "fence",
+                "executionCapabilityDigest",
+                "cancelCommandId",
+                "cancelReason",
+                "interruptNonce",
+                "outcome",
+                "evidenceAuthority",
+                "dispatchAttemptCount",
+                "runtimeThreadId",
+                "runtimeTurnId",
+                "dispatchReceiptDigest",
+                "sandboxInstanceId",
+                "sandboxAttestationDigest",
+                "hostTerminalDigest",
+                "startCommandId",
+                "dispatchNonce"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/schemaVersion"
+                },
+                "installationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "agentVersionDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "leaseId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "fence": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/fence"
+                },
+                "executionCapabilityDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "cancelCommandId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "cancelReason": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/cancelReason"
+                },
+                "interruptNonce": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "outcome": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/outcome"
+                },
+                "evidenceAuthority": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/evidenceAuthority"
+                },
+                "dispatchAttemptCount": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/dispatchAttemptCount"
+                },
+                "runtimeThreadId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/runtimeThreadId"
+                },
+                "runtimeTurnId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/runtimeTurnId"
+                },
+                "dispatchReceiptDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/dispatchReceiptDigest"
+                },
+                "sandboxInstanceId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/sandboxInstanceId"
+                },
+                "sandboxAttestationDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/sandboxAttestationDigest"
+                },
+                "hostTerminalDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/hostTerminalDigest"
+                },
+                "startCommandId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "dispatchNonce": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "installationId",
+                "invocationId",
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "leaseId",
+                "fence",
+                "executionCapabilityDigest",
+                "cancelCommandId",
+                "cancelReason",
+                "interruptNonce",
+                "outcome",
+                "evidenceAuthority",
+                "dispatchAttemptCount",
+                "runtimeThreadId",
+                "runtimeTurnId",
+                "dispatchReceiptDigest",
+                "sandboxInstanceId",
+                "sandboxAttestationDigest",
+                "hostTerminalDigest",
+                "startCommandId",
+                "dispatchNonce"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/schemaVersion"
+                },
+                "installationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "invocationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "conversationId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "agentVersionDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "leaseId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "fence": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/fence"
+                },
+                "executionCapabilityDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/agentVersionDigest"
+                },
+                "cancelCommandId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "cancelReason": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/cancelReason"
+                },
+                "interruptNonce": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "outcome": { "type": "string", "const": "INTERRUPTED" },
+                "evidenceAuthority": { "type": "string", "const": "HOST" },
+                "dispatchAttemptCount": { "type": "number", "const": 1 },
+                "startCommandId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "dispatchNonce": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "runtimeThreadId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9._:-]+$"
+                },
+                "runtimeTurnId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/2/properties/runtimeThreadId"
+                },
+                "dispatchReceiptDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                "sandboxInstanceId": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/0/properties/installationId"
+                },
+                "sandboxAttestationDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/2/properties/dispatchReceiptDigest"
+                },
+                "hostTerminalDigest": {
+                  "$ref": "#/definitions/WorkerInterruptReceipt/anyOf/2/properties/dispatchReceiptDigest"
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "installationId",
+                "invocationId",
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "leaseId",
+                "fence",
+                "executionCapabilityDigest",
+                "cancelCommandId",
+                "cancelReason",
+                "interruptNonce",
+                "outcome",
+                "evidenceAuthority",
+                "dispatchAttemptCount",
+                "startCommandId",
+                "dispatchNonce",
+                "runtimeThreadId",
+                "runtimeTurnId",
+                "dispatchReceiptDigest",
+                "sandboxInstanceId",
+                "sandboxAttestationDigest",
+                "hostTerminalDigest"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "x-combo-runtime-constraints": [
+        "PROVED_NOT_EXECUTED requires evidenceAuthority LOCAL_DISPATCH_COUNTER and dispatchAttemptCount 0; PREPARED has null startCommandId/dispatchNonce while a durable STARTING intent has both UUIDs",
+        "PROVED_NOT_EXECUTED requires runtimeThreadId/runtimeTurnId/dispatchReceiptDigest/sandboxInstanceId/sandboxAttestationDigest/hostTerminalDigest all null",
+        "INTERRUPTED requires evidenceAuthority HOST, dispatchAttemptCount 1, and every Host field present",
+        "the receipt contains control identifiers and digests only; Prompt, answer, raw Host JSON, path, token, and credential fields are forbidden",
+        "all Worker interrupt receipts MUST pass the authoritative runtime WorkerInterruptReceiptSchema parser after structural JSON Schema validation"
       ]
     },
     "WorkerConversationReadyFact": {
@@ -4555,7 +5181,7 @@
             },
             "requestId": {
               "type": "string",
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "String containing 8 to 128 Unicode code points",
               "minLength": 8,
               "maxLength": 128,
@@ -4604,6 +5230,19 @@
       },
       "$schema": "http://json-schema.org/draft-07/schema#"
     },
+    "IdempotencyKey": {
+      "$ref": "#/definitions/IdempotencyKey",
+      "definitions": {
+        "IdempotencyKey": {
+          "type": "string",
+          "minLength": 36,
+          "maxLength": 36,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+          "format": "uuid"
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
     "ServerId": {
       "$ref": "#/definitions/ServerId",
       "definitions": {
@@ -4630,7 +5269,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4761,7 +5400,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4802,7 +5441,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4898,7 +5537,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -4937,7 +5576,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 128,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 128 bytes",
               "x-combo-maxUtf8Bytes": 128
             },
@@ -5064,7 +5703,7 @@
                         },
                         "objectKey": {
                           "type": "string",
-                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -5173,7 +5812,7 @@
                         },
                         "objectKey": {
                           "type": "string",
-                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -5485,7 +6124,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
                   "description": "String containing 0 to 128 Unicode code points",
                   "minLength": 0,
                   "maxLength": 128,
@@ -5528,7 +6167,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 120,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 120 bytes",
               "x-combo-maxUtf8Bytes": 120
             },
@@ -5569,7 +6208,7 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 120,
-              "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
               "description": "UTF-8 text with a maximum of 120 bytes",
               "x-combo-maxUtf8Bytes": 120
             },
@@ -5710,7 +6349,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 128,
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 128 bytes",
                       "x-combo-maxUtf8Bytes": 128
                     },
@@ -5780,7 +6419,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 128,
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 128 bytes",
                       "x-combo-maxUtf8Bytes": 128
                     },
@@ -5801,7 +6440,7 @@
                       "type": "string",
                       "minLength": 1,
                       "maxLength": 128,
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "UTF-8 text with a maximum of 128 bytes",
                       "x-combo-maxUtf8Bytes": 128
                     },
@@ -5951,7 +6590,7 @@
               "anyOf": [
                 {
                   "type": "string",
-                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+                  "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
                   "description": "String containing 0 to 128 Unicode code points",
                   "minLength": 0,
                   "maxLength": 128,
@@ -6057,7 +6696,9 @@
           "properties": {
             "clientMessageId": {
               "type": "string",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "minLength": 36,
+              "maxLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "format": "uuid"
             },
             "text": {
@@ -6194,7 +6835,7 @@
                     },
                     "requestId": {
                       "type": "string",
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 8 to 128 Unicode code points",
                       "minLength": 8,
                       "maxLength": 128,
@@ -6260,7 +6901,9 @@
           "properties": {
             "clientMessageId": {
               "type": "string",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "minLength": 36,
+              "maxLength": 36,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
               "format": "uuid"
             }
           },
@@ -7447,7 +8090,9 @@
             "cloudImageDigests": {
               "type": "object",
               "additionalProperties": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-              "propertyNames": { "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+              "propertyNames": { "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+              "description": "Object with at most 64 properties",
+              "maxProperties": 64
             },
             "workerArtifactDigest": {
               "$ref": "#/definitions/EvidenceBundleManifest/properties/cloudImageDigests/additionalProperties"
@@ -7636,7 +8281,9 @@
                 "type": "string",
                 "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,255}$"
               },
-              "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$" }
+              "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$" },
+              "description": "Object with at most 64 properties",
+              "maxProperties": 64
             },
             "realComponents": {
               "type": "array",
@@ -7706,7 +8353,9 @@
                       "type": "string",
                       "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,255}$"
                     },
-                    "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$" }
+                    "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._+()-]{0,63}$" },
+                    "description": "Object with at most 64 properties",
+                    "maxProperties": 64
                   },
                   "realComponents": {
                     "type": "array",
@@ -7858,7 +8507,9 @@
             "cloudImageDigests": {
               "type": "object",
               "additionalProperties": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-              "propertyNames": { "pattern": "^[a-z][a-z0-9-]{1,63}$" }
+              "propertyNames": { "pattern": "^[a-z][a-z0-9-]{1,63}$" },
+              "description": "Object with at most 64 properties",
+              "maxProperties": 64
             },
             "workerArtifactDigest": {
               "$ref": "#/definitions/EvidenceReleaseTuple/properties/cloudImageDigests/additionalProperties"
@@ -8236,7 +8887,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 64 Unicode code points",
                       "minLength": 1,
                       "maxLength": 64,
@@ -8309,7 +8960,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 256 Unicode code points",
                       "minLength": 1,
                       "maxLength": 256,
@@ -8376,7 +9027,7 @@
                   },
                   "owner": {
                     "type": "string",
-                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 64 Unicode code points",
                     "minLength": 1,
                     "maxLength": 64,
@@ -8384,7 +9035,7 @@
                   },
                   "reviewer": {
                     "type": "string",
-                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                     "description": "String containing 1 to 64 Unicode code points",
                     "minLength": 1,
                     "maxLength": 64,
@@ -8402,7 +9053,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
-                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 512 Unicode code points",
                           "minLength": 1,
                           "maxLength": 512,
@@ -8417,7 +9068,7 @@
                     "type": "array",
                     "items": {
                       "type": "string",
-                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                       "description": "String containing 1 to 128 Unicode code points",
                       "minLength": 1,
                       "maxLength": 128,
@@ -8487,7 +9138,7 @@
                       "status": { "type": "string", "const": "accepted" },
                       "owner": {
                         "type": "string",
-                        "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                        "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                         "description": "String containing 1 to 64 Unicode code points",
                         "minLength": 1,
                         "maxLength": 64,
@@ -8550,7 +9201,7 @@
                         "type": "array",
                         "items": {
                           "type": "string",
-                          "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
                           "description": "String containing 1 to 128 Unicode code points",
                           "minLength": 1,
                           "maxLength": 128,
@@ -8646,11 +9297,65 @@
                       "document"
                     ],
                     "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "id": { "type": "string", "enum": ["ADR-VNEXT-033", "ADR-VNEXT-034"] },
+                      "title": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/title"
+                      },
+                      "status": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/status"
+                      },
+                      "owner": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/owner"
+                      },
+                      "decidedAt": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/decidedAt"
+                      },
+                      "decision": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/decision"
+                      },
+                      "alternatives": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/alternatives"
+                      },
+                      "evidence": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/evidence"
+                      },
+                      "securityImpact": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/securityImpact"
+                      },
+                      "reversalTriggers": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/reversalTriggers"
+                      },
+                      "protocolVersions": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/protocolVersions"
+                      },
+                      "document": {
+                        "$ref": "#/definitions/DecisionRegistry/properties/decisions/items/anyOf/0/properties/document"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "title",
+                      "status",
+                      "owner",
+                      "decidedAt",
+                      "decision",
+                      "alternatives",
+                      "evidence",
+                      "securityImpact",
+                      "reversalTriggers",
+                      "protocolVersions",
+                      "document"
+                    ],
+                    "additionalProperties": false
                   }
                 ]
               },
-              "minItems": 32,
-              "maxItems": 32
+              "minItems": 34,
+              "maxItems": 34
             }
           },
           "required": ["protocol", "schemaVersion", "decisions"],

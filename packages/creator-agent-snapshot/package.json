@@ -20,6 +20,8 @@
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "test": "pnpm build && vitest run --exclude 'src/**/*.integration.test.ts'",
+    "test:avr-digests": "pnpm build && vitest run src/__tests__/agent-version-digest-semantics.test.ts src/__tests__/agent-version.test.ts",
+    "test:snp008": "pnpm build && vitest run src/__tests__/compressed-exact-boundary.test.ts",
     "test:object-storage": "pnpm build && vitest run src/__tests__/object-storage.test.ts",
     "test:minio:e2": "pnpm build && node scripts/run-minio-e2.mjs",
     "test:watch": "vitest",

@@ -81,7 +81,7 @@ describe('migrations', () => {
   });
 
   it('the full chain creates only the current data model', () => {
-    const created = [...allSql().matchAll(/CREATE TABLE\s+([a-z][a-z0-9_]*)\s*\(/gi)]
+    const created = [...allSql().matchAll(/CREATE TABLE\s+(?:public\.)?([a-z][a-z0-9_]*)\s*\(/gi)]
       .map((match) => match[1]!.toLowerCase())
       .sort();
     expect(created).toEqual(
@@ -112,6 +112,10 @@ describe('migrations', () => {
         'agent_messages',
         'agent_invocations',
         'agent_invocation_events',
+        'creator_agent_failed_terminal_receipts',
+        'creator_agent_journal_integrity_alerts',
+        'creator_agent_success_seal_preflights',
+        'creator_agent_succeeded_terminal_receipts',
         'broker_outbox',
         'consumer_event_streams',
         'consumer_event_outbox',
@@ -212,7 +216,7 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-15)).toEqual([
+    expect(list.slice(-22)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -228,6 +232,13 @@ describe('migrations', () => {
       '0019_creator_agent_broker_outbox_publisher.sql',
       '0020_creator_agent_confirmed_failure_fact.sql',
       '0021_creator_agent_context_admission.sql',
+      '0022_creator_agent_consumer_message_accept.sql',
+      '0023_creator_agent_event_integrity.sql',
+      '0024_creator_agent_reconciliation_source_admission.sql',
+      '0025_creator_agent_prepared_fact_admission.sql',
+      '0026_creator_agent_started_fact_admission.sql',
+      '0027_creator_agent_failed_fact_admission.sql',
+      '0028_creator_agent_success_fact_admission.sql',
     ]);
   });
 

@@ -156,7 +156,7 @@ export class CreatorWorker {
     this.closed = true;
     this.online = false;
     this.stopping = (async () => {
-      const interrupts: Promise<void>[] = [];
+      const interrupts: Promise<unknown>[] = [];
       for (const conversation of this.conversations.values()) {
         const active = conversation.activeMessageId
           ? conversation.messages.get(conversation.activeMessageId)

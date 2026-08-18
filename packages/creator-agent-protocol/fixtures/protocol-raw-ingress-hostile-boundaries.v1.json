@@ -12,11 +12,11 @@
   "baseFixtures": [
     {
       "path": "broker-handshake.v1.json",
-      "digest": "sha256:c87cec938a3be231a97feca8eec8e1595022f9880893022607c815607f5ab016"
+      "digest": "sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f"
     },
     {
       "path": "broker-invocation-prepare.v1.json",
-      "digest": "sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7"
+      "digest": "sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de"
     },
     {
       "path": "snapshot-envelope.v1.json",
@@ -195,12 +195,11 @@
   "exclusions": [
     "real-gateway-worker-socket-full-matrix",
     "object-storage-business-side-effects",
-    "all-http-request-roots",
-    "generic-json-parser-public-errors",
+    "http-request-roots-covered-by-sch-005-closure",
+    "runtime-json-bytes-covered-by-vnext-json-body-test",
     "registry-yaml-public-errors",
     "content-encoding-and-chunked-ingress",
     "t0-linux-ci-evidence",
-    "does-not-complete-sch-005",
     "does-not-complete-snp-010"
   ]
 }

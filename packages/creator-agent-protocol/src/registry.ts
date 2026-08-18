@@ -3,6 +3,7 @@ import { parse } from 'yaml';
 import {
   IsoDateTimeSchema,
   Sha256DigestSchema,
+  StrictUnicodeCodePointStringSchema,
   UNIQUE_ARRAY_SCHEMA_DESCRIPTION,
   UnicodeCodePointStringSchema,
 } from './primitives.js';
@@ -55,7 +56,7 @@ export const InvariantRegistrySchema = z
               .min(1)
               .max(9)
               .describe(UNIQUE_ARRAY_SCHEMA_DESCRIPTION),
-            owners: z.array(UnicodeCodePointStringSchema(1, 64)).min(1),
+            owners: z.array(StrictUnicodeCodePointStringSchema(1, 64)).min(1),
           })
           .strict()
           .superRefine((invariant, context) => {
@@ -91,7 +92,7 @@ export const TestCaseSchema = z
       'T7-DR',
     ]),
     invariants: z.array(InvariantIdSchema).min(1),
-    fixture: z.array(UnicodeCodePointStringSchema(1, 256)).min(1),
+    fixture: z.array(StrictUnicodeCodePointStringSchema(1, 256)).min(1),
     fault: z.array(UnicodeCodePointStringSchema(1, 256)),
     steps: z.array(UnicodeCodePointStringSchema(1, 512)),
     assertions: z.array(UnicodeCodePointStringSchema(1, 512)).min(1),
@@ -104,16 +105,16 @@ export const TestCaseSchema = z
       'cloud-rc',
       'alpha-release',
     ]),
-    owner: UnicodeCodePointStringSchema(1, 64),
-    reviewer: UnicodeCodePointStringSchema(1, 64),
+    owner: StrictUnicodeCodePointStringSchema(1, 64),
+    reviewer: StrictUnicodeCodePointStringSchema(1, 64),
     gate: z.enum(['G0', 'G1', 'G2', 'G3', 'G4', 'G5', 'G6', 'G7', 'G8']),
     implementation: z
       .object({
         status: z.enum(['implemented', 'planned']),
-        testFiles: z.array(UnicodeCodePointStringSchema(1, 512)),
+        testFiles: z.array(StrictUnicodeCodePointStringSchema(1, 512)),
       })
       .strict(),
-    releaseTuple: z.array(UnicodeCodePointStringSchema(1, 128)).min(1),
+    releaseTuple: z.array(StrictUnicodeCodePointStringSchema(1, 128)).min(1),
     fixtureDigests: z.array(Sha256DigestSchema),
   })
   .strict()
@@ -176,14 +177,14 @@ export type TestCaseRegistry = z.infer<typeof TestCaseRegistrySchema>;
 const DecisionRegistryCommonShape = {
   title: UnicodeCodePointStringSchema(1, 256),
   status: z.literal('accepted'),
-  owner: UnicodeCodePointStringSchema(1, 64),
+  owner: StrictUnicodeCodePointStringSchema(1, 64),
   decidedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/u),
   decision: UnicodeCodePointStringSchema(1, 2_048),
   alternatives: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
   evidence: z.array(UnicodeCodePointStringSchema(1, 512)).min(1),
   securityImpact: UnicodeCodePointStringSchema(1, 2_048),
   reversalTriggers: z.array(UnicodeCodePointStringSchema(1, 1_024)).min(1),
-  protocolVersions: z.array(UnicodeCodePointStringSchema(1, 128)).min(1),
+  protocolVersions: z.array(StrictUnicodeCodePointStringSchema(1, 128)).min(1),
   document: z.string().regex(/^docs\/vnext\/adr\/ADR-VNEXT-\d{3}\.md$/u),
 } as const;
 
@@ -220,11 +221,23 @@ export const ArchitectureDecisionSchema = z
   .strict()
   .superRefine(refineDecisionLists);
 
+const SupplementalDecisionSchema = z
+  .object({
+    id: z.enum(['ADR-VNEXT-033', 'ADR-VNEXT-034']),
+    ...DecisionRegistryCommonShape,
+  })
+  .strict()
+  .superRefine(refineDecisionLists);
+
 export const DecisionRegistrySchema = z
   .object({
     protocol: z.literal(DECISION_REGISTRY_PROTOCOL),
     schemaVersion: z.literal(1),
-    decisions: z.array(z.union([LegacyDecisionSchema, ArchitectureDecisionSchema])).length(32),
+    decisions: z
+      .array(
+        z.union([LegacyDecisionSchema, ArchitectureDecisionSchema, SupplementalDecisionSchema]),
+      )
+      .length(34),
   })
   .strict()
   .superRefine((registry, context) => {
@@ -234,14 +247,14 @@ export const DecisionRegistrySchema = z
       ['decisions'],
     );
     const expectedDecisionIds = Array.from(
-      { length: 32 },
+      { length: 34 },
       (_, index) => `ADR-VNEXT-${String(index + 1).padStart(3, '0')}`,
     );
     if (registry.decisions.some((decision, index) => decision.id !== expectedDecisionIds[index])) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['decisions'],
-        message: 'ADR catalog 必须逐项覆盖 ADR-VNEXT-001..032',
+        message: 'ADR catalog 必须逐项覆盖 ADR-VNEXT-001..034',
       });
     }
     const architectureDecisions = registry.decisions.filter(
@@ -444,8 +457,17 @@ export function decideDataFlowObservation(
 }
 
 /** Normative YAML loader：支持本仓库 anchors/merge，并对 alias expansion 设硬上限。 */
+export const VNEXT_REGISTRY_YAML_MAX_ALIAS_EXPANSIONS = 1_000;
+/** yaml uses a strict threshold, so the implementation option is the public inclusive cap plus one. */
+export const VNEXT_REGISTRY_YAML_LIBRARY_MAX_ALIAS_COUNT =
+  VNEXT_REGISTRY_YAML_MAX_ALIAS_EXPANSIONS + 1;
+
 export function parseVnextRegistryYaml(text: string): unknown {
-  return parse(text, { merge: true, maxAliasCount: 1_000, uniqueKeys: true }) as unknown;
+  return parse(text, {
+    merge: true,
+    maxAliasCount: VNEXT_REGISTRY_YAML_LIBRARY_MAX_ALIAS_COUNT,
+    uniqueKeys: true,
+  }) as unknown;
 }
 
 function assertUniqueValues(

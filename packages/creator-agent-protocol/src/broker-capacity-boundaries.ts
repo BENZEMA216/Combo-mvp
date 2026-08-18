@@ -61,13 +61,13 @@ export const BrokerCapacityBoundaryCorpusSchema = z
     checkedArtifactDigests: z
       .object({
         contractSchemas: z.literal(
-          'sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb',
+          'sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434',
         ),
         brokerContract: z.literal(
-          'sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f',
+          'sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253',
         ),
         advertisedBrokerContract: z.literal(
-          'sha256:347769d71019a3707611d8a9be365b735e2aefcb35f53c55be53787ae98c131f',
+          'sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8',
         ),
       })
       .strict(),
@@ -75,7 +75,7 @@ export const BrokerCapacityBoundaryCorpusSchema = z
       .object({
         path: z.literal('broker-handshake.v1.json'),
         digest: z.literal(
-          'sha256:c87cec938a3be231a97feca8eec8e1595022f9880893022607c815607f5ab016',
+          'sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f',
         ),
       })
       .strict(),

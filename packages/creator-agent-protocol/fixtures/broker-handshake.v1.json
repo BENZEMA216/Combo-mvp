@@ -14,5 +14,5 @@
   "capacity": { "maxActiveConversations": 1, "maxActiveTurns": 1 },
   "challengeId": "0198f00d-2222-7222-8222-222222222222",
   "challengeSignature": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg",
-  "brokerContractDigest": "sha256:347769d71019a3707611d8a9be365b735e2aefcb35f53c55be53787ae98c131f"
+  "brokerContractDigest": "sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8"
 }

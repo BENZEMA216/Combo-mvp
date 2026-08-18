@@ -15,8 +15,40 @@ import { verifyP256P1363Signature, type P256PublicKeyInput } from './signatures.
 export const EVIDENCE_BUNDLE_PROTOCOL = 'combo.vnext-evidence-bundle/1' as const;
 export const EVIDENCE_RELEASE_TUPLE_PROTOCOL = 'combo.vnext-release-tuple/1' as const;
 export const EVIDENCE_MAX_STRUCTURED_JSON_BYTES = 1_048_576;
+export const EVIDENCE_MAX_CLOUD_IMAGE_DIGEST_PROPERTIES = 64;
+export const EVIDENCE_MAX_RUNTIME_VERSION_PROPERTIES = 64;
+export const MAX_PROPERTIES_SCHEMA_DESCRIPTION_PREFIX = 'combo:max-properties:' as const;
+
+function boundedRecordSchema<KeySchema extends z.ZodString, ValueSchema extends z.ZodTypeAny>(
+  keySchema: KeySchema,
+  valueSchema: ValueSchema,
+  maximumProperties: number,
+) {
+  return z
+    .record(keySchema, valueSchema)
+    .superRefine((record, context) => {
+      if (Object.keys(record).length > maximumProperties) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `RECORD_PROPERTY_COUNT_EXCEEDS_${maximumProperties}`,
+        });
+      }
+    })
+    .describe(`${MAX_PROPERTIES_SCHEMA_DESCRIPTION_PREFIX}${maximumProperties}`);
+}
+
 const EvidenceTokenSchema = (maximum: number) =>
   z.string().regex(new RegExp(`^[A-Za-z0-9][A-Za-z0-9._+()-]{0,${maximum - 1}}$`, 'u'));
+const EvidenceCloudImageDigestsSchema = boundedRecordSchema(
+  z.string().regex(/^[a-z][a-z0-9-]{1,63}$/u),
+  Sha256DigestSchema,
+  EVIDENCE_MAX_CLOUD_IMAGE_DIGEST_PROPERTIES,
+);
+const EvidenceRuntimeVersionsSchema = boundedRecordSchema(
+  EvidenceTokenSchema(64),
+  EvidenceTokenSchema(256),
+  EVIDENCE_MAX_RUNTIME_VERSION_PROPERTIES,
+);
 export const EvidenceEnvironmentIdSchema = z.enum([
   'T0-LINUX-CI',
   'T1-SERVICE-CI',
@@ -43,7 +75,7 @@ export const EvidenceBundleManifestSchema = z
     schemaVersion: z.literal(1),
     rcId: z.string().regex(/^[a-z0-9][a-z0-9._-]{2,127}$/u),
     sourceSha: z.string().regex(/^[a-f0-9]{40}$/u),
-    cloudImageDigests: z.record(z.string().regex(/^[a-z][a-z0-9-]{1,63}$/u), Sha256DigestSchema),
+    cloudImageDigests: EvidenceCloudImageDigestsSchema,
     workerArtifactDigest: Sha256DigestSchema,
     codexArtifactDigest: Sha256DigestSchema,
     sandboxImageDigest: Sha256DigestSchema,
@@ -101,7 +133,7 @@ export const EvidenceReleaseTupleSchema = z
     protocol: z.literal(EVIDENCE_RELEASE_TUPLE_PROTOCOL),
     schemaVersion: z.literal(1),
     sourceSha: z.string().regex(/^[a-f0-9]{40}$/u),
-    cloudImageDigests: z.record(z.string().regex(/^[a-z][a-z0-9-]{1,63}$/u), Sha256DigestSchema),
+    cloudImageDigests: EvidenceCloudImageDigestsSchema,
     workerArtifactDigest: Sha256DigestSchema,
     codexArtifactDigest: Sha256DigestSchema,
     sandboxImageDigest: Sha256DigestSchema,
@@ -239,7 +271,7 @@ export const EvidenceEnvironmentSchema = z
     environmentId: EvidenceEnvironmentIdSchema,
     os: EvidenceTokenSchema(256),
     architecture: z.enum(['arm64', 'x64']),
-    runtimeVersions: z.record(EvidenceTokenSchema(64), EvidenceTokenSchema(256)),
+    runtimeVersions: EvidenceRuntimeVersionsSchema,
     realComponents: z.array(EvidenceTokenSchema(128)).max(64),
     substitutedComponents: z.array(EvidenceTokenSchema(128)).max(64),
     capturedAt: IsoDateTimeSchema,

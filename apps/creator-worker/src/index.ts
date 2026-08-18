@@ -19,8 +19,12 @@ export {
 } from './creator-worker.js';
 export {
   CodexHostError,
+  HOST_INTERRUPT_TERMINAL_PROTOCOL,
+  createHostInterruptedTerminalEvidence,
   type CodexHost,
   type CodexHostErrorCode,
+  type HostInterruptedTerminalEvidence,
+  type HostInterruptedTerminalObservation,
   type HostThread,
   type HostTurnHandle,
   type HostTurnResult,

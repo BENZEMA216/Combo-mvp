@@ -3,13 +3,23 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { SnapshotPathBoundaryCorpusSchema } from '@cb/creator-agent-protocol';
+import { SnapshotPathBoundaryCorpusSchema, canonicalizeJson } from '@cb/creator-agent-protocol';
 import { describe, expect, it } from 'vitest';
 
-import { buildSnapshotFromProject, isSnapshotError, verifySnapshotArchive } from '../index.js';
+import {
+  buildSnapshotFromProject,
+  canonicalizeSnapshotPath,
+  isSnapshotError,
+  parseSnapshotManifest,
+  verifySnapshotArchive,
+} from '../index.js';
 
 const corpusUrl = new URL(
   '../../../creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json',
+  import.meta.url,
+);
+const manifestUrl = new URL(
+  '../../../creator-agent-protocol/fixtures/snapshot-manifest.v1.json',
   import.meta.url,
 );
 
@@ -38,7 +48,95 @@ function derivePath(
   ].join(recipe.separator);
 }
 
+function hostilePathProbes(corpus: {
+  canaryPrefix: string;
+  forbiddenControlRanges: readonly { id: string; start: number; end: number }[];
+  loneSurrogates: readonly { id: string; codeUnit: number }[];
+}): Array<{ id: string; canary: string; path: string; surrogateEscape?: string }> {
+  const controls = corpus.forbiddenControlRanges.flatMap((range) =>
+    Array.from({ length: range.end - range.start + 1 }, (_, offset) => {
+      const codeUnit = range.start + offset;
+      const id = `${range.id}-${codeUnit.toString(16).padStart(2, '0')}`;
+      const canary = `${corpus.canaryPrefix}${id.toUpperCase()}_`;
+      return { id, canary, path: `${canary}${String.fromCharCode(codeUnit)}.txt` };
+    }),
+  );
+  const surrogates = corpus.loneSurrogates.map(({ id, codeUnit }) => {
+    const canary = `${corpus.canaryPrefix}${id.toUpperCase()}_`;
+    return {
+      id,
+      canary,
+      path: `${canary}${String.fromCharCode(codeUnit)}.txt`,
+      surrogateEscape: `\\u${codeUnit.toString(16).padStart(4, '0')}`,
+    };
+  });
+  return [...controls, ...surrogates];
+}
+
+function caught(action: () => unknown): unknown {
+  try {
+    action();
+  } catch (error) {
+    return error;
+  }
+  return undefined;
+}
+
 describe('real Snapshot path boundary', () => {
+  it('SCH-005 rejects the complete strict path control/surrogate matrix without echo', async () => {
+    const corpus = SnapshotPathBoundaryCorpusSchema.parse(
+      JSON.parse(await readFile(corpusUrl, 'utf8')),
+    );
+    const baseManifest = JSON.parse(await readFile(manifestUrl, 'utf8')) as {
+      files: Array<Record<string, unknown>>;
+      [key: string]: unknown;
+    };
+    const safePath = String(baseManifest.files[0]!.path);
+    const safeCanonical = canonicalizeJson(baseManifest);
+    const probes = hostilePathProbes(corpus.hostileUnicode);
+    expect(probes).toHaveLength(corpus.hostileUnicode.expectedCounts.probes);
+    let outcomes = 0;
+
+    for (const probe of probes) {
+      const directError = caught(() => canonicalizeSnapshotPath(probe.path));
+      expect(isSnapshotError(directError, 'SNAPSHOT_INVALID_PATH'), `direct:${probe.id}`).toBe(
+        true,
+      );
+      expect(
+        `${String(directError)} ${JSON.stringify(directError)}`,
+        `direct:${probe.id}`,
+      ).not.toContain(probe.canary);
+      outcomes += 1;
+
+      let hostileBytes: Buffer;
+      if (probe.surrogateEscape === undefined) {
+        const manifest = structuredClone(baseManifest);
+        manifest.files[0] = { ...manifest.files[0]!, path: probe.path };
+        hostileBytes = Buffer.from(canonicalizeJson(manifest), 'utf8');
+      } else {
+        const encodedPath = `${probe.canary}${probe.surrogateEscape}.txt`;
+        hostileBytes = Buffer.from(
+          safeCanonical.replace(JSON.stringify(safePath), `"${encodedPath}"`),
+          'utf8',
+        );
+      }
+      expect(hostileBytes.includes(Buffer.from(probe.canary, 'utf8')), `raw:${probe.id}`).toBe(
+        true,
+      );
+      const rawError = caught(() => parseSnapshotManifest(hostileBytes));
+      expect(isSnapshotError(rawError, 'SNAPSHOT_ARCHIVE_INVALID'), `raw:${probe.id}`).toBe(true);
+      expect(rawError, `raw:${probe.id}`).not.toHaveProperty('cause');
+      expect(rawError, `raw:${probe.id}`).not.toHaveProperty('issues');
+      expect(rawError, `raw:${probe.id}`).not.toHaveProperty('input');
+      expect(`${String(rawError)} ${JSON.stringify(rawError)}`, `raw:${probe.id}`).not.toContain(
+        probe.canary,
+      );
+      outcomes += 1;
+    }
+
+    expect(outcomes).toBe(corpus.hostileUnicode.expectedCounts.outcomes / 2);
+  });
+
   it('runs SNP-009 through real mixed UTF-8 paths and build-to-verify', async () => {
     const corpus = SnapshotPathBoundaryCorpusSchema.parse(
       JSON.parse(await readFile(corpusUrl, 'utf8')),

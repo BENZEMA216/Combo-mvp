@@ -3,6 +3,7 @@ import {
   CONSUMER_EVENT_OUTBOX_PROTOCOL,
   ConsumerEventOutboxRecordSchema,
   ConsumerTerminalEventPayloadSchema,
+  ClientIdempotencyKeySchema,
   consumerEventDedupeKey,
   consumerEventPayloadDigest,
   HmacSha256DigestSchema,
@@ -24,7 +25,11 @@ import {
   type WorkerInvocationSucceededFact,
 } from '@cb/creator-agent-protocol';
 import { z } from 'zod';
-import type { EncryptedMessage, MessageAad } from './message-crypto.js';
+import {
+  EncryptedMessageSchema,
+  type EncryptedMessage,
+  type MessageAad,
+} from './message-crypto.js';
 
 export interface QueryResult<R = Record<string, unknown>> {
   rows: R[];
@@ -72,12 +77,18 @@ export type CloudJournalStep =
   | 'STARTED_EVENT'
   | 'START_COMMAND_ACK'
   | 'ASSISTANT_MESSAGE'
+  | 'SUCCESS_SEAL_PREFLIGHT'
   | 'INVOCATION_SUCCEEDED'
   | 'SUCCEEDED_EVENT'
+  | 'SUCCESS_TERMINAL_RECEIPT'
+  | 'SUCCESS_PREFLIGHT_CONSUMED'
   | 'INVOCATION_FAILED'
   | 'FAILED_EVENT'
+  | 'FAILED_TERMINAL_RECEIPT'
   | 'INVOCATION_RECONCILING'
   | 'RECONCILING_EVENT'
+  | 'RECONCILING_RESUMED_EVENT'
+  | 'JOURNAL_INTEGRITY_ALERT'
   | 'INVOCATION_UNCERTAIN'
   | 'UNCERTAIN_EVENT'
   | 'CONSUMER_EVENT_OUTBOX'
@@ -95,6 +106,7 @@ export class CloudJournalError extends Error {
       | 'EXECUTION_AUTHORITY_MISMATCH'
       | 'WORKER_FACT_CONFLICT'
       | 'TERMINAL_CONFLICT'
+      | 'JOURNAL_SECURITY_BLOCKED'
       | 'PERSISTENCE_INVARIANT_FAILED'
       | 'SSE_CURSOR_EXPIRED',
     message: string,
@@ -110,21 +122,6 @@ const WorkerEventProjectorIdentitySchema = CreatorIdentitySchema.extend({
   installationId: UuidSchema,
 }).strict();
 
-const EncryptedMessageSchema = z
-  .object({
-    algorithm: z.literal('aes-256-gcm/v1'),
-    keyId: z.string().regex(/^[-A-Za-z0-9_.:/]{1,256}$/u),
-    nonce: z.instanceof(Buffer).refine((value) => value.byteLength === 12),
-    ciphertext: z
-      .instanceof(Buffer)
-      .refine((value) => value.byteLength >= 1 && value.byteLength <= 65_536),
-    authTag: z.instanceof(Buffer).refine((value) => value.byteLength === 16),
-    cipherDigest: Sha256HexSchema,
-    contentDigest: HmacSha256DigestSchema,
-    aadVersion: z.literal(1),
-  })
-  .strict();
-
 const AcceptInvocationInputSchema = TenantIdentitySchema.extend({
   conversationId: UuidSchema,
   agentVersionId: UuidSchema,
@@ -134,7 +131,7 @@ const AcceptInvocationInputSchema = TenantIdentitySchema.extend({
   invocationId: UuidSchema,
   outboxCommandId: UuidSchema,
   sourceEventId: UuidSchema,
-  clientMessageId: UuidSchema,
+  clientMessageId: ClientIdempotencyKeySchema,
   requestDigest: HmacSha256DigestSchema,
   // Internal admission candidates can name the first rejected turn (21). Public Message and
   // durable Message schemas remain capped at 20; the database function never inserts turn 21.
@@ -198,6 +195,75 @@ export interface CommittedSuccess {
   replayed: boolean;
 }
 
+export type ProjectSuccessOutcome =
+  | Readonly<{ kind: 'COMMITTED'; committed: CommittedSuccess }>
+  | Readonly<{ kind: 'SECURITY_BLOCKED' }>;
+
+const PROJECT_SUCCESS_SECURITY_BLOCKED = Object.freeze({
+  kind: 'SECURITY_BLOCKED' as const,
+});
+
+const SuccessFactPreflightOutcomeSchema = z.enum([
+  'SEAL_REQUIRED',
+  'EXACT',
+  'SECURITY_BLOCKED',
+  'TERMINAL',
+  'UNAVAILABLE',
+  'AUTHORITY_REJECTED',
+  'INVARIANT_FAILED',
+]);
+
+interface SuccessFactPreflightRow {
+  outcome: string;
+  seal_token: string | null;
+  assistant_message_id: string | null;
+  aad_schema_version: string | number | null;
+  aad_owner_id: string | null;
+  aad_conversation_id: string | null;
+  aad_role: string | null;
+  result_digest: string | null;
+  consumer_event_cursor: string | number | bigint | null;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
+}
+
+const SuccessFactFinalizeOutcomeSchema = z.enum([
+  'ADMITTED',
+  'SECURITY_BLOCKED',
+  'AUTHORITY_REJECTED',
+  'INVARIANT_FAILED',
+]);
+
+interface SuccessFactFinalizeRow {
+  outcome: string;
+  assistant_message_id: string | null;
+  result_digest: string | null;
+  terminal_at: Date | string | null;
+  consumer_event_cursor: string | number | bigint | null;
+  assistant_message_appended: boolean | null;
+  invocation_succeeded: boolean | null;
+  succeeded_event_appended: boolean | null;
+  consumer_event_appended: boolean | null;
+  consumer_stream_advanced: boolean | null;
+  terminal_receipt_appended: boolean | null;
+  conversation_idled: boolean | null;
+  preflight_consumed: boolean | null;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
+}
+
+interface SuccessExactProjectionRow {
+  state: string;
+  conversation_id: string;
+  result_message_id: string | null;
+  result_digest: string | null;
+  conversation_state: string;
+  message_role: string | null;
+  message_aad_version: number | null;
+  terminal_source_event_id: string | null;
+  terminal_fact_digest: string | null;
+}
+
 const CommitFailedInputSchema = WorkerEventProjectorIdentitySchema.extend({
   fact: WorkerInvocationFailedFactSchema,
   factDigest: Sha256HexSchema,
@@ -211,8 +277,42 @@ export interface CommittedFailed {
   invocationId: string;
   state: 'FAILED';
   errorCode: VnextErrorCode;
+  /** Null only when the exact terminal delivery record has passed durable retention. */
   consumerEventCursor: string | null;
   replayed: boolean;
+}
+
+export type ProjectFailedOutcome =
+  | Readonly<{ kind: 'COMMITTED'; committed: CommittedFailed }>
+  | Readonly<{ kind: 'SECURITY_BLOCKED' }>;
+
+const PROJECT_FAILED_SECURITY_BLOCKED = Object.freeze({
+  kind: 'SECURITY_BLOCKED' as const,
+});
+
+const FailedFactAdmissionOutcomeSchema = z.enum([
+  'ADMITTED',
+  'EXACT',
+  'SECURITY_BLOCKED',
+  'TERMINAL',
+  'UNAVAILABLE',
+  'AUTHORITY_REJECTED',
+  'INVARIANT_FAILED',
+]);
+
+interface FailedFactAdmissionRow {
+  outcome: string;
+  error_code: string | null;
+  terminal_at: Date | string | null;
+  consumer_event_cursor: string | number | bigint | null;
+  invocation_failed: boolean | null;
+  failed_event_appended: boolean | null;
+  consumer_event_appended: boolean | null;
+  consumer_stream_advanced: boolean | null;
+  terminal_receipt_appended: boolean | null;
+  conversation_idled: boolean | null;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
 }
 
 const CommitPreparedInputSchema = WorkerEventProjectorIdentitySchema.extend({
@@ -236,6 +336,30 @@ export interface CommittedPrepared {
   replayed: boolean;
 }
 
+export type ProjectPreparedOutcome =
+  | Readonly<{ kind: 'COMMITTED'; committed: CommittedPrepared }>
+  | Readonly<{ kind: 'SECURITY_BLOCKED' }>;
+
+const PROJECT_PREPARED_SECURITY_BLOCKED = Object.freeze({
+  kind: 'SECURITY_BLOCKED' as const,
+});
+
+const PreparedFactAdmissionOutcomeSchema = z.enum([
+  'ADMITTED',
+  'EXACT',
+  'SECURITY_BLOCKED',
+  'TERMINAL',
+  'UNAVAILABLE',
+  'AUTHORITY_REJECTED',
+  'INVARIANT_FAILED',
+]);
+
+interface PreparedFactAdmissionRow {
+  outcome: string;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
+}
+
 const CommitStartedInputSchema = WorkerEventProjectorIdentitySchema.extend({
   fact: WorkerInvocationStartedFactSchema,
   factDigest: Sha256HexSchema,
@@ -252,6 +376,35 @@ export interface CommittedStarted {
   factDigest: string;
   startedAt: string;
   replayed: boolean;
+}
+
+export type ProjectStartedOutcome =
+  | Readonly<{ kind: 'COMMITTED'; committed: CommittedStarted }>
+  | Readonly<{ kind: 'SECURITY_BLOCKED' }>;
+
+const PROJECT_STARTED_SECURITY_BLOCKED = Object.freeze({
+  kind: 'SECURITY_BLOCKED' as const,
+});
+
+const StartedFactAdmissionOutcomeSchema = z.enum([
+  'ADMITTED',
+  'EXACT',
+  'SECURITY_BLOCKED',
+  'TERMINAL',
+  'UNAVAILABLE',
+  'AUTHORITY_REJECTED',
+  'INVARIANT_FAILED',
+]);
+
+interface StartedFactAdmissionRow {
+  outcome: string;
+  projected_state: string | null;
+  started_at: Date | string | null;
+  entered_starting: boolean | null;
+  reconciliation_root_appended: boolean | null;
+  start_command_acked: boolean | null;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
 }
 
 export const InvocationUncertaintyReasonSchema = z.enum([
@@ -283,6 +436,19 @@ export interface BeginReconciliationResult {
   replayed: boolean;
 }
 
+const JOURNAL_SECURITY_BLOCKED_COMMIT_OUTCOME = Object.freeze({
+  kind: 'SECURITY_BLOCKED' as const,
+});
+type BeginReconciliationCommitOutcome =
+  | BeginReconciliationResult
+  | typeof JOURNAL_SECURITY_BLOCKED_COMMIT_OUTCOME;
+
+function isJournalSecurityBlockedOutcome(
+  outcome: BeginReconciliationCommitOutcome,
+): outcome is typeof JOURNAL_SECURITY_BLOCKED_COMMIT_OUTCOME {
+  return 'kind' in outcome && outcome.kind === 'SECURITY_BLOCKED';
+}
+
 export type MarkUncertainInput = z.input<typeof MarkUncertainInputSchema>;
 
 export interface MarkUncertainResult {
@@ -311,43 +477,6 @@ interface ConversationRow {
   next_turn_no: number;
   context_limit_reached_at: Date | string | null;
   deadline_valid: boolean;
-}
-
-interface SuccessAuthorityRow {
-  state: string;
-  consumer_subject_id: string;
-  user_turn_no: number;
-  result_message_id: string | null;
-  result_digest: string | null;
-  agent_version_id: string;
-  agent_version_digest: string;
-  snapshot_digest: string;
-  assigned_worker_id: string | null;
-  assignment_lease_id: string | null;
-  assignment_fence: string | number | bigint | null;
-  execution_capability_id: string | null;
-  execution_capability_digest: string | null;
-  execution_capability_valid: boolean;
-  execution_capability_revoked_at: Date | string | null;
-  runtime_thread_id: string | null;
-  runtime_turn_id: string | null;
-  started_fact_digest: string | null;
-  conversation_state: string;
-  lease_state: string;
-  lease_valid: boolean;
-  has_durable_started_evidence: boolean;
-  consumer_event_cursor: string | null;
-  consumer_event_source_event_id: string | null;
-  consumer_event_type: string | null;
-  consumer_event_payload: unknown;
-  consumer_event_payload_digest: string | null;
-  consumer_event_dedupe_key: string | null;
-  terminal_source_event_id: string | null;
-  terminal_source_fact_digest: string | null;
-  terminal_event_id: string | null;
-  terminal_event_payload: unknown;
-  terminal_event_occurred_at: Date | string | null;
-  terminal_at: Date | string | null;
 }
 
 interface FailedAuthorityRow {
@@ -469,11 +598,38 @@ interface ReconciliationAuthorityRow {
   reconciliation_source_event_id: string | null;
 }
 
-const SucceededInvocationEventPayloadSchema = z
+interface BeginReconciliationAuthorityRow extends ReconciliationAuthorityRow {
+  reconciliation_event_payload: unknown;
+  reconciliation_event_occurred_at: Date | string | null;
+  reconciliation_journal_seq: string | number | bigint | null;
+  latest_started_source_event_id: string | null;
+  latest_started_journal_seq: string | number | bigint | null;
+  reconciliation_resumed_source_event_id: string | null;
+  reconciliation_resumed_event_payload: unknown;
+  reconciliation_resumed_journal_seq: string | number | bigint | null;
+}
+
+const BeginReconciliationAdmissionOutcomeSchema = z.enum([
+  'ADMITTED',
+  'EXACT',
+  'SOURCE_DIFFERENT',
+  'TERMINAL',
+  'UNAVAILABLE',
+  'INVARIANT_FAILED',
+  'SECURITY_BLOCKED',
+]);
+
+interface BeginReconciliationAdmissionRow {
+  outcome: string;
+  reconciliation_started_at: Date | string | null;
+  alert_id: string | null;
+  alert_replayed: boolean | null;
+}
+
+const ReconciliationInvocationEventPayloadSchema = z
   .object({
-    state: z.literal('SUCCEEDED'),
-    messageId: UuidSchema,
-    resultDigest: HmacSha256DigestSchema,
+    state: z.literal('RECONCILING'),
+    reason: InvocationUncertaintyReasonSchema,
   })
   .strict();
 
@@ -640,9 +796,9 @@ async function withCreatorTransaction<T>(
       await connection.query(`SELECT set_config('app.creator_id', $1, true)`, [
         parsedIdentity.creatorId,
       ]);
-      // A pooled connection must not retain an earlier Consumer identity. The
-      // terminal projector derives it from the Creator-visible Invocation and
-      // installs it before taking any row lock or performing a mutation.
+      // A pooled connection must not retain an earlier Consumer identity. Each
+      // narrow database authority locks and derives the Creator-visible Invocation,
+      // then installs the exact Consumer context before any tenant mutation.
       await connection.query(`SELECT set_config('app.consumer_id', '', true)`);
       const result = await operation(connection);
       await connection.query('COMMIT');
@@ -654,36 +810,6 @@ async function withCreatorTransaction<T>(
   } finally {
     connection.release();
   }
-}
-
-async function deriveInvocationProjectorTenant(
-  connection: InvocationProjectorTransaction,
-  input: { creatorId: string; installationId: string; invocationId: string },
-): Promise<{ consumerId: string; conversationId: string }> {
-  const tenant = await connection.query<{
-    consumer_subject_id: string;
-    conversation_id: string;
-    assigned_worker_id: string | null;
-  }>(
-    `SELECT consumer_subject_id, conversation_id, assigned_worker_id
-       FROM agent_invocations
-      WHERE id = $1 AND creator_id = $2`,
-    [input.invocationId, input.creatorId],
-  );
-  const current = tenant.rows[0];
-  if (!current || current.assigned_worker_id !== input.installationId) {
-    throw new CloudJournalError(
-      'EXECUTION_AUTHORITY_MISMATCH',
-      'Worker event 不属于 authenticated Creator/Installation 的 durable Invocation',
-    );
-  }
-  await connection.query(`SELECT set_config('app.consumer_id', $1, true)`, [
-    current.consumer_subject_id,
-  ]);
-  return {
-    consumerId: current.consumer_subject_id,
-    conversationId: current.conversation_id,
-  };
 }
 
 function bindInvocationProjectorSignal(
@@ -738,6 +864,40 @@ async function inject(
   await injector?.(step);
 }
 
+const SUCCESS_SEAL_HARD_TIMEOUT_MS = 10_000;
+
+async function settleAssistantMessageSealer(
+  sealer: AssistantMessageSealer,
+  input: Omit<SealAssistantMessageInput, 'signal'>,
+  callerSignal: AbortSignal,
+): Promise<SealedAssistantMessage> {
+  const hardDeadline = AbortSignal.timeout(SUCCESS_SEAL_HARD_TIMEOUT_MS);
+  const signal = AbortSignal.any([callerSignal, hardDeadline]);
+  signal.throwIfAborted();
+  let rejectOnAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = reject;
+  });
+  const onAbort = (): void => {
+    rejectOnAbort(signal.reason ?? new DOMException('Operation aborted', 'AbortError'));
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  const pending = Promise.resolve().then(() =>
+    sealer({
+      ...input,
+      signal,
+    }),
+  );
+  try {
+    const settled = await Promise.race([pending, aborted]);
+    signal.throwIfAborted();
+    return settled;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
+
 function assertCanonicalWorkerFact(
   fact:
     | WorkerInvocationPreparedFact
@@ -756,6 +916,36 @@ function assertCanonicalWorkerFact(
 
 function bigintEquals(value: string | number | bigint | null, expected: string): boolean {
   return value !== null && BigInt(value) === BigInt(expected);
+}
+
+function successPreflightBusinessFieldsAreNull(row: SuccessFactPreflightRow): boolean {
+  return (
+    row.seal_token === null &&
+    row.assistant_message_id === null &&
+    row.aad_schema_version === null &&
+    row.aad_owner_id === null &&
+    row.aad_conversation_id === null &&
+    row.aad_role === null &&
+    row.result_digest === null &&
+    row.consumer_event_cursor === null
+  );
+}
+
+function successFinalizeBusinessFieldsAreNull(row: SuccessFactFinalizeRow): boolean {
+  return (
+    row.assistant_message_id === null &&
+    row.result_digest === null &&
+    row.terminal_at === null &&
+    row.consumer_event_cursor === null &&
+    row.assistant_message_appended === null &&
+    row.invocation_succeeded === null &&
+    row.succeeded_event_appended === null &&
+    row.consumer_event_appended === null &&
+    row.consumer_stream_advanced === null &&
+    row.terminal_receipt_appended === null &&
+    row.conversation_idled === null &&
+    row.preflight_consumed === null
+  );
 }
 
 function exactLifecycleEventMatches(input: {
@@ -779,6 +969,102 @@ function exactLifecycleEventMatches(input: {
     input.event.broker_command_id === input.commandId &&
     payload.success
   );
+}
+
+function committedPreparedOutcome(committed: CommittedPrepared): ProjectPreparedOutcome {
+  return { kind: 'COMMITTED', committed };
+}
+
+function committedSuccessOutcome(committed: CommittedSuccess): ProjectSuccessOutcome {
+  return { kind: 'COMMITTED', committed };
+}
+
+function isSuccessSecurityBlocked(
+  outcome: ProjectSuccessOutcome,
+): outcome is typeof PROJECT_SUCCESS_SECURITY_BLOCKED {
+  return outcome.kind === 'SECURITY_BLOCKED';
+}
+
+function isPreparedSecurityBlocked(
+  outcome: ProjectPreparedOutcome,
+): outcome is typeof PROJECT_PREPARED_SECURITY_BLOCKED {
+  return outcome.kind === 'SECURITY_BLOCKED';
+}
+
+function committedStartedOutcome(committed: CommittedStarted): ProjectStartedOutcome {
+  return { kind: 'COMMITTED', committed };
+}
+
+function isStartedSecurityBlocked(
+  outcome: ProjectStartedOutcome,
+): outcome is typeof PROJECT_STARTED_SECURITY_BLOCKED {
+  return outcome.kind === 'SECURITY_BLOCKED';
+}
+
+function committedFailedOutcome(committed: CommittedFailed): ProjectFailedOutcome {
+  return { kind: 'COMMITTED', committed };
+}
+
+function isFailedSecurityBlocked(
+  outcome: ProjectFailedOutcome,
+): outcome is typeof PROJECT_FAILED_SECURITY_BLOCKED {
+  return outcome.kind === 'SECURITY_BLOCKED';
+}
+
+function exactReconciliationEventMatches(input: {
+  event: InvocationLifecycleEventRow;
+  invocationId: string;
+  sourceEventId?: string;
+  eventType: 'invocation.reconciling' | 'invocation.reconciling_resumed';
+  reason: InvocationUncertaintyReason;
+  occurredAt?: Date | string;
+}): boolean {
+  const payload = ReconciliationInvocationEventPayloadSchema.safeParse(input.event.payload);
+  return (
+    input.event.invocation_id === input.invocationId &&
+    (input.sourceEventId === undefined || input.event.source_event_id === input.sourceEventId) &&
+    input.event.event_type === input.eventType &&
+    input.event.source_fact_digest === null &&
+    input.event.broker_command_id === null &&
+    payload.success &&
+    payload.data.reason === input.reason &&
+    (input.occurredAt === undefined ||
+      isoDate(input.event.occurred_at) === isoDate(input.occurredAt))
+  );
+}
+
+function reconciliationResumedSourceEventId(
+  rootSourceEventId: string,
+  latestStartedSourceEventId: string,
+): string {
+  const sourceEventId = `resume-reconciliation:${rootSourceEventId}:${latestStartedSourceEventId}`;
+  if (sourceEventId.length > 256) {
+    throw new CloudJournalError(
+      'PERSISTENCE_INVARIANT_FAILED',
+      'reconciliation resumed durable source identity 超出数据库上限',
+    );
+  }
+  return sourceEventId;
+}
+
+function reconciliationRootAcceptsInput(
+  rootSourceEventId: string | null,
+  inputSourceEventId: string,
+): boolean {
+  return (
+    rootSourceEventId === inputSourceEventId ||
+    rootSourceEventId === `late-prepared:${inputSourceEventId}` ||
+    rootSourceEventId === `late-started:${inputSourceEventId}`
+  );
+}
+
+function positiveJournalSeq(value: string | number | bigint | null): bigint | null {
+  try {
+    const parsed = value === null ? 0n : BigInt(value);
+    return parsed > 0n ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 export class PostgresCloudJournal {
@@ -988,9 +1274,13 @@ export class PostgresCloudJournal {
     signal: AbortSignal = AbortSignal.timeout(10_000),
   ): Promise<CommittedPrepared> {
     const input = CommitPreparedInputSchema.parse(rawInput);
-    return withCreatorTransaction(this.pools.broker, input, (connection) =>
+    const outcome = await withCreatorTransaction(this.pools.broker, input, (connection) =>
       this.projectPrepared(adaptStandaloneJournalTransaction(connection), input, signal),
     );
+    if (isPreparedSecurityBlocked(outcome)) {
+      throw new CloudJournalError('JOURNAL_SECURITY_BLOCKED', 'JOURNAL_SECURITY_BLOCKED');
+    }
+    return outcome.committed;
   }
 
   /** Project a strict Gateway invocation.prepared event inside the caller's transaction. */
@@ -998,19 +1288,103 @@ export class PostgresCloudJournal {
     rawConnection: InvocationProjectorTransaction,
     rawInput: CommitPreparedInput,
     signal: AbortSignal,
-  ): Promise<CommittedPrepared> {
+  ): Promise<ProjectPreparedOutcome> {
     const connection = bindInvocationProjectorSignal(rawConnection, signal);
     const input = CommitPreparedInputSchema.parse(rawInput);
     assertCanonicalWorkerFact(input.fact, input.factDigest);
-    await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-      input.fact.invocationId,
-    ]);
-    const derived = await deriveInvocationProjectorTenant(connection, {
-      creatorId: input.creatorId,
-      installationId: input.installationId,
-      invocationId: input.fact.invocationId,
-    });
-    const { consumerId, conversationId } = derived;
+    const admission = await connection.query<PreparedFactAdmissionRow>(
+      `SELECT outcome, alert_id::text, alert_replayed
+         FROM creator_agent_project_prepared_fact_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+         )`,
+      [
+        input.creatorId,
+        input.installationId,
+        input.fact.protocol,
+        input.fact.schemaVersion,
+        input.fact.type,
+        input.fact.sourceEventId,
+        input.fact.invocationId,
+        input.fact.agentVersionDigest,
+        input.fact.snapshotDigest,
+        input.fact.executionCapabilityDigest,
+        input.fact.leaseId,
+        input.fact.fence,
+        input.fact.requestDigest,
+        input.fact.prepareCommandId,
+        input.factDigest,
+      ],
+    );
+    const admissionRow = admission.rows[0];
+    const admissionOutcome = PreparedFactAdmissionOutcomeSchema.safeParse(admissionRow?.outcome);
+    if (admission.rowCount !== 1 || !admissionRow || !admissionOutcome.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'prepared fact admission 未返回唯一稳定 outcome',
+      );
+    }
+    if (admissionOutcome.data === 'SECURITY_BLOCKED') {
+      if (
+        !UuidSchema.safeParse(admissionRow.alert_id).success ||
+        typeof admissionRow.alert_replayed !== 'boolean'
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'prepared fact security block 缺少 durable alert outcome',
+        );
+      }
+      await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+      return PROJECT_PREPARED_SECURITY_BLOCKED;
+    }
+    if (admissionRow.alert_id !== null || admissionRow.alert_replayed !== null) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'prepared fact non-security outcome 携带了 alert metadata',
+      );
+    }
+    switch (admissionOutcome.data) {
+      case 'TERMINAL':
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有终态');
+      case 'UNAVAILABLE':
+      case 'AUTHORITY_REJECTED':
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'prepared fact 与 durable execution authority 不一致',
+        );
+      case 'INVARIANT_FAILED':
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'prepared fact durable invariant 失败',
+        );
+      case 'ADMITTED':
+      case 'EXACT':
+        break;
+    }
+    const admitted = admissionOutcome.data === 'ADMITTED';
+    if (admitted) {
+      await inject(this.failureInjector, 'INVOCATION_PERSISTED');
+      await inject(this.failureInjector, 'PREPARED_EVENT');
+    }
+
+    const tenant = await connection.query<{
+      consumer_subject_id: string;
+      conversation_id: string;
+    }>(
+      `SELECT consumer_subject_id::text, conversation_id::text
+         FROM agent_invocations
+        WHERE id = $1 AND creator_id = $2 AND assigned_worker_id = $3`,
+      [input.fact.invocationId, input.creatorId, input.installationId],
+    );
+    const parsedConsumerId = UuidSchema.safeParse(tenant.rows[0]?.consumer_subject_id);
+    const parsedConversationId = UuidSchema.safeParse(tenant.rows[0]?.conversation_id);
+    if (tenant.rows.length !== 1 || !parsedConsumerId.success || !parsedConversationId.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'prepared fact admission 未保留 exact tenant projection',
+      );
+    }
+    const consumerId = parsedConsumerId.data;
+    const conversationId = parsedConversationId.data;
 
     const authority = await connection.query<InvocationLifecycleAuthorityRow>(
       `SELECT invocation.state, invocation.request_digest, invocation.deadline_at,
@@ -1082,6 +1456,12 @@ export class PostgresCloudJournal {
       throw new CloudJournalError(
         'WORKER_FACT_CONFLICT',
         'prepared sourceEventId 或 Invocation lifecycle fact 与 durable digest 冲突',
+      );
+    }
+    if (exactEvents.length !== 1) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'prepared fact admission 未留下唯一 exact durable Event',
       );
     }
 
@@ -1156,6 +1536,9 @@ export class PostgresCloudJournal {
         'prepared fact 没有绑定 exact invocation.prepare Outbox command',
       );
     }
+    if (admitted && command.state === 'ACKED') {
+      await inject(this.failureInjector, 'PREPARE_COMMAND_ACK');
+    }
 
     const startCommands = await connection.query<InvocationCommandAuthorityRow>(
       `SELECT command_id, creator_id, target_worker_id, invocation_id,
@@ -1197,7 +1580,7 @@ export class PostgresCloudJournal {
       );
     });
 
-    if (exactEvents.length === 1) {
+    if (!admitted) {
       const start = startCommands.rows[0];
       if (startCommands.rows.length === 1 && start) {
         if (
@@ -1229,14 +1612,14 @@ export class PostgresCloudJournal {
             '已提交 prepared fact 缺少 exact durable start command',
           );
         }
-        return {
+        return committedPreparedOutcome({
           invocationId: input.fact.invocationId,
           state: 'PERSISTED',
           prepareCommandId: input.fact.prepareCommandId,
           startCommandId: start.command_id,
           factDigest: input.factDigest,
           replayed: true,
-        };
+        });
       }
       if (
         startCommands.rows.length !== 0 ||
@@ -1252,14 +1635,14 @@ export class PostgresCloudJournal {
           '已提交 late prepared fact 缺少 exact durable reconciliation binding',
         );
       }
-      return {
+      return committedPreparedOutcome({
         invocationId: input.fact.invocationId,
         state: 'RECONCILING',
         prepareCommandId: input.fact.prepareCommandId,
         startCommandId: null,
         factDigest: input.factDigest,
         replayed: true,
-      };
+      });
     }
 
     if (startCommands.rows.length > 0) {
@@ -1269,90 +1652,15 @@ export class PostgresCloudJournal {
       );
     }
     if (
-      current.state !== 'DISPATCH_PENDING' ||
+      current.state !== 'PERSISTED' ||
       current.conversation_state !== 'BUSY' ||
-      !(command.state === 'SENT' || (command.state === 'EXPIRED' && command.attempt_count > 0))
+      !['ACKED', 'EXPIRED'].includes(command.state) ||
+      command.attempt_count < 1
     ) {
       throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'fresh prepared fact 需要 exact durable assignment 与已发送 prepare command',
+        'PERSISTENCE_INVARIANT_FAILED',
+        'admitted prepared fact 未留下 exact PERSISTED/Event/prepare ACK projection',
       );
-    }
-
-    const persisted = await connection.query(
-      `UPDATE agent_invocations
-            SET state = 'PERSISTED'
-          WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-            AND consumer_subject_id = $4 AND state = 'DISPATCH_PENDING'
-            AND assigned_worker_id = $5 AND assignment_lease_id = $6
-            AND assignment_fence = $7 AND execution_capability_id = $8
-            AND execution_capability_digest = $9`,
-      [
-        input.fact.invocationId,
-        conversationId,
-        input.creatorId,
-        consumerId,
-        input.installationId,
-        input.fact.leaseId,
-        input.fact.fence,
-        current.execution_capability_id,
-        input.fact.executionCapabilityDigest,
-      ],
-    );
-    if (persisted.rowCount !== 1) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'PERSISTED compare-and-set 未匹配 exact authority',
-      );
-    }
-    await inject(this.failureInjector, 'INVOCATION_PERSISTED');
-
-    try {
-      await connection.query(
-        `INSERT INTO agent_invocation_events (
-             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
-             source_event_id, event_type, payload, occurred_at,
-             source_fact_digest, broker_command_id
-           )
-           SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
-                  'WORKER', $4, 'invocation.persisted', $5::jsonb, now(), $6, $7
-             FROM agent_invocation_events
-            WHERE invocation_id = $1`,
-        [
-          input.fact.invocationId,
-          input.creatorId,
-          consumerId,
-          input.fact.sourceEventId,
-          JSON.stringify({ state: 'PERSISTED' }),
-          input.factDigest,
-          input.fact.prepareCommandId,
-        ],
-      );
-    } catch (error) {
-      if ((error as { code?: unknown }).code === '23505') {
-        throw new CloudJournalError(
-          'WORKER_FACT_CONFLICT',
-          'prepared sourceEventId 或 Invocation lifecycle fact 已绑定其他 digest',
-        );
-      }
-      throw error;
-    }
-    await inject(this.failureInjector, 'PREPARED_EVENT');
-
-    if (command.state === 'SENT') {
-      const acknowledged = await connection.query(
-        `UPDATE broker_outbox
-              SET state = 'ACKED', acked_at = now()
-            WHERE command_id = $1 AND creator_id = $2 AND state = 'SENT'`,
-        [input.fact.prepareCommandId, input.creatorId],
-      );
-      if (acknowledged.rowCount !== 1) {
-        throw new CloudJournalError(
-          'PERSISTENCE_INVARIANT_FAILED',
-          'prepare command 未原子收敛为 ACKED',
-        );
-      }
-      await inject(this.failureInjector, 'PREPARE_COMMAND_ACK');
     }
 
     // The prepared fact is durable even if authority expires while this
@@ -1437,20 +1745,20 @@ export class PostgresCloudJournal {
     if (startCommandId) {
       await inject(this.failureInjector, 'START_COMMAND');
 
-      return {
+      return committedPreparedOutcome({
         invocationId: input.fact.invocationId,
         state: 'PERSISTED',
         prepareCommandId: input.fact.prepareCommandId,
         startCommandId,
         factDigest: input.factDigest,
         replayed: false,
-      };
+      });
     }
 
     const reconciliation = await connection.query<{ reconciliation_started_at: Date | string }>(
       `UPDATE agent_invocations
             SET state = 'RECONCILING', reconciliation_reason = 'START_DISPATCH_UNKNOWN',
-                reconciliation_started_at = clock_timestamp()
+                reconciliation_started_at = date_trunc('milliseconds', clock_timestamp())
           WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
             AND consumer_subject_id = $4 AND state = 'PERSISTED'
             AND reconciliation_reason IS NULL AND reconciliation_started_at IS NULL
@@ -1486,14 +1794,14 @@ export class PostgresCloudJournal {
     );
     await inject(this.failureInjector, 'RECONCILING_EVENT');
 
-    return {
+    return committedPreparedOutcome({
       invocationId: input.fact.invocationId,
       state: 'RECONCILING',
       prepareCommandId: input.fact.prepareCommandId,
       startCommandId: null,
       factDigest: input.factDigest,
       replayed: false,
-    };
+    });
   }
 
   public async commitStarted(
@@ -1501,9 +1809,13 @@ export class PostgresCloudJournal {
     signal: AbortSignal = AbortSignal.timeout(10_000),
   ): Promise<CommittedStarted> {
     const input = CommitStartedInputSchema.parse(rawInput);
-    return withCreatorTransaction(this.pools.broker, input, (connection) =>
+    const outcome = await withCreatorTransaction(this.pools.broker, input, (connection) =>
       this.projectStarted(adaptStandaloneJournalTransaction(connection), input, signal),
     );
+    if (isStartedSecurityBlocked(outcome)) {
+      throw new CloudJournalError('JOURNAL_SECURITY_BLOCKED', 'JOURNAL_SECURITY_BLOCKED');
+    }
+    return outcome.committed;
   }
 
   /** Project a strict Gateway invocation.started event inside the caller's transaction. */
@@ -1511,19 +1823,165 @@ export class PostgresCloudJournal {
     rawConnection: InvocationProjectorTransaction,
     rawInput: CommitStartedInput,
     signal: AbortSignal,
-  ): Promise<CommittedStarted> {
+  ): Promise<ProjectStartedOutcome> {
     const connection = bindInvocationProjectorSignal(rawConnection, signal);
     const input = CommitStartedInputSchema.parse(rawInput);
     assertCanonicalWorkerFact(input.fact, input.factDigest);
-    await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-      input.fact.invocationId,
-    ]);
-    const derived = await deriveInvocationProjectorTenant(connection, {
-      creatorId: input.creatorId,
-      installationId: input.installationId,
-      invocationId: input.fact.invocationId,
-    });
-    const { consumerId, conversationId } = derived;
+    const admission = await connection.query<StartedFactAdmissionRow>(
+      `SELECT outcome, projected_state, started_at, entered_starting,
+              reconciliation_root_appended, start_command_acked,
+              alert_id::text, alert_replayed
+         FROM creator_agent_project_started_fact_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9,
+           $10, $11, $12, $13, $14, $15, $16, $17, $18
+         )`,
+      [
+        input.creatorId,
+        input.installationId,
+        input.fact.protocol,
+        input.fact.schemaVersion,
+        input.fact.type,
+        input.fact.sourceEventId,
+        input.fact.invocationId,
+        input.fact.agentVersionDigest,
+        input.fact.snapshotDigest,
+        input.fact.executionCapabilityDigest,
+        input.fact.leaseId,
+        input.fact.fence,
+        input.fact.startCommandId,
+        input.fact.runtimeThreadId,
+        input.fact.runtimeTurnId,
+        input.fact.dispatchReceiptDigest,
+        input.fact.sandboxAttestationDigest,
+        input.factDigest,
+      ],
+    );
+    const admissionRow = admission.rows[0];
+    const admissionOutcome = StartedFactAdmissionOutcomeSchema.safeParse(admissionRow?.outcome);
+    if (admission.rowCount !== 1 || !admissionRow || !admissionOutcome.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'started fact admission 未返回唯一稳定 outcome',
+      );
+    }
+    if (admissionOutcome.data === 'SECURITY_BLOCKED') {
+      if (
+        admissionRow.projected_state !== null ||
+        admissionRow.started_at !== null ||
+        admissionRow.entered_starting !== null ||
+        admissionRow.reconciliation_root_appended !== null ||
+        admissionRow.start_command_acked !== null ||
+        !UuidSchema.safeParse(admissionRow.alert_id).success ||
+        typeof admissionRow.alert_replayed !== 'boolean'
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'started fact security block 缺少 durable alert outcome',
+        );
+      }
+      await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+      return PROJECT_STARTED_SECURITY_BLOCKED;
+    }
+    if (admissionRow.alert_id !== null || admissionRow.alert_replayed !== null) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'started fact non-security outcome 携带了 alert metadata',
+      );
+    }
+    switch (admissionOutcome.data) {
+      case 'TERMINAL':
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有终态');
+      case 'UNAVAILABLE':
+      case 'AUTHORITY_REJECTED':
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'started fact 与 durable execution authority 不一致',
+        );
+      case 'INVARIANT_FAILED':
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'started fact durable invariant 失败',
+        );
+      case 'ADMITTED':
+      case 'EXACT':
+        break;
+    }
+    const projectedState = z
+      .enum(['RUNNING', 'RECONCILING'])
+      .safeParse(admissionRow.projected_state);
+    if (!projectedState.success || admissionRow.started_at === null) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'started fact admission 缺少 exact state/time outcome',
+      );
+    }
+    if (admissionOutcome.data === 'ADMITTED') {
+      if (
+        typeof admissionRow.entered_starting !== 'boolean' ||
+        typeof admissionRow.reconciliation_root_appended !== 'boolean' ||
+        typeof admissionRow.start_command_acked !== 'boolean' ||
+        (projectedState.data === 'RUNNING' && admissionRow.reconciliation_root_appended)
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'admitted started fact mutation flags 非 canonical',
+        );
+      }
+      if (admissionRow.entered_starting) {
+        await inject(this.failureInjector, 'INVOCATION_STARTING');
+      }
+      await inject(
+        this.failureInjector,
+        projectedState.data === 'RUNNING' ? 'INVOCATION_RUNNING' : 'INVOCATION_RECONCILING',
+      );
+      await inject(this.failureInjector, 'STARTED_EVENT');
+      if (admissionRow.reconciliation_root_appended) {
+        await inject(this.failureInjector, 'RECONCILING_EVENT');
+      }
+      if (admissionRow.start_command_acked) {
+        await inject(this.failureInjector, 'START_COMMAND_ACK');
+      }
+      return committedStartedOutcome({
+        invocationId: input.fact.invocationId,
+        state: projectedState.data,
+        startCommandId: input.fact.startCommandId,
+        factDigest: input.factDigest,
+        startedAt: isoDate(admissionRow.started_at),
+        replayed: false,
+      });
+    }
+    if (
+      admissionRow.entered_starting !== false ||
+      admissionRow.reconciliation_root_appended !== false ||
+      admissionRow.start_command_acked !== false
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'exact started fact outcome 声称发生 mutation',
+      );
+    }
+    const exactProjectedState = projectedState.data;
+    const exactStartedAt = admissionRow.started_at;
+
+    const tenant = await connection.query<{
+      consumer_subject_id: string;
+      conversation_id: string;
+    }>(
+      `SELECT consumer_subject_id::text, conversation_id::text
+         FROM agent_invocations
+        WHERE id = $1 AND creator_id = $2 AND assigned_worker_id = $3`,
+      [input.fact.invocationId, input.creatorId, input.installationId],
+    );
+    const parsedConsumerId = UuidSchema.safeParse(tenant.rows[0]?.consumer_subject_id);
+    const parsedConversationId = UuidSchema.safeParse(tenant.rows[0]?.conversation_id);
+    if (tenant.rows.length !== 1 || !parsedConsumerId.success || !parsedConversationId.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'started fact admission 未保留 exact tenant projection',
+      );
+    }
+    const consumerId = parsedConsumerId.data;
+    const conversationId = parsedConversationId.data;
 
     const authority = await connection.query<InvocationLifecycleAuthorityRow>(
       `SELECT invocation.state, invocation.request_digest, invocation.deadline_at,
@@ -1607,6 +2065,37 @@ export class PostgresCloudJournal {
       throw new CloudJournalError(
         'WORKER_FACT_CONFLICT',
         'started sourceEventId 或 Invocation lifecycle fact 与 durable digest 冲突',
+      );
+    }
+
+    const reconciliationRoots = await connection.query<InvocationLifecycleEventRow>(
+      `SELECT invocation_id, source_event_id, event_type, source_fact_digest,
+              broker_command_id, payload, occurred_at
+         FROM agent_invocation_events
+        WHERE invocation_id = $1 AND source = 'RECONCILER'
+          AND event_type = 'invocation.reconciling'`,
+      [input.fact.invocationId],
+    );
+    const currentReconciliationReason = InvocationUncertaintyReasonSchema.safeParse(
+      current.reconciliation_reason,
+    );
+    const hasCurrentReconciliationBinding = current.reconciliation_started_at !== null;
+    if (
+      hasCurrentReconciliationBinding
+        ? !currentReconciliationReason.success ||
+          reconciliationRoots.rows.length !== 1 ||
+          !exactReconciliationEventMatches({
+            event: reconciliationRoots.rows[0]!,
+            invocationId: input.fact.invocationId,
+            eventType: 'invocation.reconciling',
+            reason: currentReconciliationReason.data,
+            occurredAt: current.reconciliation_started_at!,
+          })
+        : current.reconciliation_reason !== null || reconciliationRoots.rows.length !== 0
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'started projection 的 reconciliation binding 与 durable root Event 不一致',
       );
     }
 
@@ -1705,8 +2194,26 @@ export class PostgresCloudJournal {
       );
     }
 
-    if (exactEvents.length === 1) {
+    if (exactEvents.length !== 1) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'exact started fact admission 未留下唯一 durable Event',
+      );
+    }
+    {
       const replayedState = exactReconcilingEvents.length === 1 ? 'RECONCILING' : 'RUNNING';
+      const hasExactReconciliationRoot =
+        replayedState !== 'RECONCILING' ||
+        (currentReconciliationReason.success &&
+          current.reconciliation_started_at !== null &&
+          reconciliationRoots.rows.length === 1 &&
+          exactReconciliationEventMatches({
+            event: reconciliationRoots.rows[0]!,
+            invocationId: input.fact.invocationId,
+            eventType: 'invocation.reconciling',
+            reason: currentReconciliationReason.data,
+            occurredAt: current.reconciliation_started_at,
+          }));
       if (
         (replayedState === 'RUNNING'
           ? ![
@@ -1719,231 +2226,27 @@ export class PostgresCloudJournal {
               'UNCERTAIN',
             ].includes(current.state)
           : !['RECONCILING', 'FAILED', 'CANCELLED', 'UNCERTAIN'].includes(current.state)) ||
+        replayedState !== exactProjectedState ||
+        isoDate(exactEvents[0]!.occurred_at) !== isoDate(exactStartedAt) ||
         !['ACKED', 'EXPIRED'].includes(command.state) ||
         current.runtime_thread_id !== input.fact.runtimeThreadId ||
         current.runtime_turn_id !== input.fact.runtimeTurnId ||
-        (replayedState === 'RECONCILING' &&
-          (current.reconciliation_reason === null || current.reconciliation_started_at === null))
+        !hasExactReconciliationRoot
       ) {
         throw new CloudJournalError(
           'PERSISTENCE_INVARIANT_FAILED',
           '已提交 started fact 与 durable projection/command 不一致',
         );
       }
-      return {
+      return committedStartedOutcome({
         invocationId: input.fact.invocationId,
         state: replayedState,
         startCommandId: input.fact.startCommandId,
         factDigest: input.factDigest,
         startedAt: isoDate(exactEvents[0]!.occurred_at),
         replayed: true,
-      };
+      });
     }
-
-    if (
-      !['PERSISTED', 'RECONCILING'].includes(current.state) ||
-      current.conversation_state !== 'BUSY' ||
-      !(command.state === 'SENT' || (command.state === 'EXPIRED' && command.attempt_count > 0))
-    ) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'fresh started fact 需要 exact durable prepared predecessor 与已发送 start command',
-      );
-    }
-
-    const projectionAuthorityParameters = [
-      input.fact.invocationId,
-      conversationId,
-      input.creatorId,
-      consumerId,
-      input.installationId,
-      input.fact.leaseId,
-      input.fact.fence,
-      current.execution_capability_id,
-      input.fact.executionCapabilityDigest,
-      input.fact.runtimeThreadId,
-      input.fact.runtimeTurnId,
-    ] as const;
-    let startedAt: string | undefined;
-    let projectedState: 'RUNNING' | 'RECONCILING' | undefined;
-
-    if (
-      current.state === 'PERSISTED' &&
-      current.deadline_valid === true &&
-      current.execution_capability_valid === true
-    ) {
-      const starting = await connection.query<{ started_at: Date | string }>(
-        `UPDATE agent_invocations
-              SET state = 'STARTING', started_at = clock_timestamp(),
-                  runtime_thread_id = $10, runtime_turn_id = $11
-            WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-              AND consumer_subject_id = $4 AND state = 'PERSISTED'
-              AND assigned_worker_id = $5 AND assignment_lease_id = $6
-              AND assignment_fence = $7 AND execution_capability_id = $8
-              AND execution_capability_digest = $9
-              AND deadline_at > clock_timestamp()
-              AND execution_capability_expires_at > clock_timestamp()
-              AND execution_capability_revoked_at IS NULL
-            RETURNING started_at`,
-        projectionAuthorityParameters,
-      );
-      if (starting.rowCount === 1 && starting.rows[0]?.started_at) {
-        startedAt = isoDate(starting.rows[0].started_at);
-        await inject(this.failureInjector, 'INVOCATION_STARTING');
-
-        const running = await connection.query(
-          `UPDATE agent_invocations
-                SET state = 'RUNNING'
-              WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-                AND consumer_subject_id = $4 AND state = 'STARTING'
-                AND assigned_worker_id = $5 AND assignment_lease_id = $6
-                AND assignment_fence = $7 AND execution_capability_id = $8
-                AND execution_capability_digest = $9
-                AND runtime_thread_id = $10 AND runtime_turn_id = $11
-                AND started_at IS NOT NULL
-                AND deadline_at > clock_timestamp()
-                AND execution_capability_expires_at > clock_timestamp()
-                AND execution_capability_revoked_at IS NULL`,
-          projectionAuthorityParameters,
-        );
-        if (running.rowCount === 1) {
-          projectedState = 'RUNNING';
-        }
-      }
-    } else if (
-      current.state === 'RECONCILING' &&
-      current.deadline_valid === true &&
-      current.execution_capability_valid === true
-    ) {
-      const reconciledRunning = await connection.query<{ started_at: Date | string }>(
-        `UPDATE agent_invocations
-              SET state = 'RUNNING', started_at = COALESCE(started_at, clock_timestamp()),
-                  runtime_thread_id = COALESCE(runtime_thread_id, $10),
-                  runtime_turn_id = COALESCE(runtime_turn_id, $11)
-            WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-              AND consumer_subject_id = $4 AND state = 'RECONCILING'
-              AND reconciliation_reason IS NOT NULL
-              AND reconciliation_started_at IS NOT NULL
-              AND assigned_worker_id = $5 AND assignment_lease_id = $6
-              AND assignment_fence = $7 AND execution_capability_id = $8
-              AND execution_capability_digest = $9
-              AND (runtime_thread_id IS NULL OR runtime_thread_id = $10)
-              AND (runtime_turn_id IS NULL OR runtime_turn_id = $11)
-              AND deadline_at > clock_timestamp()
-              AND execution_capability_expires_at > clock_timestamp()
-              AND execution_capability_revoked_at IS NULL
-            RETURNING started_at`,
-        projectionAuthorityParameters,
-      );
-      if (reconciledRunning.rowCount === 1 && reconciledRunning.rows[0]?.started_at) {
-        startedAt = isoDate(reconciledRunning.rows[0].started_at);
-        projectedState = 'RUNNING';
-      }
-    }
-
-    if (projectedState !== 'RUNNING') {
-      const reconciling = await connection.query<{ started_at: Date | string }>(
-        `UPDATE agent_invocations
-              SET state = 'RECONCILING',
-                  started_at = COALESCE(started_at, clock_timestamp()),
-                  runtime_thread_id = COALESCE(runtime_thread_id, $10),
-                  runtime_turn_id = COALESCE(runtime_turn_id, $11),
-                  reconciliation_reason = COALESCE(
-                    reconciliation_reason,
-                    'CANCEL_NOT_CONFIRMED'
-                  ),
-                  reconciliation_started_at = COALESCE(
-                    reconciliation_started_at,
-                    clock_timestamp()
-                  )
-            WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-              AND consumer_subject_id = $4
-              AND state IN ('PERSISTED', 'STARTING', 'RECONCILING')
-              AND assigned_worker_id = $5 AND assignment_lease_id = $6
-              AND assignment_fence = $7 AND execution_capability_id = $8
-              AND execution_capability_digest = $9
-              AND (runtime_thread_id IS NULL OR runtime_thread_id = $10)
-              AND (runtime_turn_id IS NULL OR runtime_turn_id = $11)
-            RETURNING started_at`,
-        projectionAuthorityParameters,
-      );
-      if (reconciling.rowCount !== 1 || !reconciling.rows[0]?.started_at) {
-        throw new CloudJournalError(
-          'EXECUTION_AUTHORITY_MISMATCH',
-          'deadline/revoked/expired capability 的 started fact 未原子进入 RECONCILING',
-        );
-      }
-      startedAt = isoDate(reconciling.rows[0].started_at);
-      projectedState = 'RECONCILING';
-      await inject(this.failureInjector, 'INVOCATION_RECONCILING');
-    } else {
-      await inject(this.failureInjector, 'INVOCATION_RUNNING');
-    }
-
-    if (!startedAt) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'started projection 缺少 Cloud started_at',
-      );
-    }
-
-    try {
-      await connection.query(
-        `INSERT INTO agent_invocation_events (
-             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
-             source_event_id, event_type, payload, occurred_at,
-             source_fact_digest, broker_command_id
-           )
-           SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
-                  'WORKER', $4, 'invocation.started', $5::jsonb, $6, $7, $8
-             FROM agent_invocation_events
-            WHERE invocation_id = $1`,
-        [
-          input.fact.invocationId,
-          input.creatorId,
-          consumerId,
-          input.fact.sourceEventId,
-          JSON.stringify({ state: projectedState }),
-          startedAt,
-          input.factDigest,
-          input.fact.startCommandId,
-        ],
-      );
-    } catch (error) {
-      if ((error as { code?: unknown }).code === '23505') {
-        throw new CloudJournalError(
-          'WORKER_FACT_CONFLICT',
-          'started sourceEventId 或 Invocation lifecycle fact 已绑定其他 digest',
-        );
-      }
-      throw error;
-    }
-    await inject(this.failureInjector, 'STARTED_EVENT');
-
-    if (command.state === 'SENT') {
-      const acknowledged = await connection.query(
-        `UPDATE broker_outbox
-              SET state = 'ACKED', acked_at = now()
-            WHERE command_id = $1 AND creator_id = $2 AND state = 'SENT'`,
-        [input.fact.startCommandId, input.creatorId],
-      );
-      if (acknowledged.rowCount !== 1) {
-        throw new CloudJournalError(
-          'PERSISTENCE_INVARIANT_FAILED',
-          'start command 未原子收敛为 ACKED',
-        );
-      }
-      await inject(this.failureInjector, 'START_COMMAND_ACK');
-    }
-
-    return {
-      invocationId: input.fact.invocationId,
-      state: projectedState,
-      startCommandId: input.fact.startCommandId,
-      factDigest: input.factDigest,
-      startedAt,
-      replayed: false,
-    };
   }
 
   public async commitSuccess(
@@ -1952,7 +2255,7 @@ export class PostgresCloudJournal {
     signal: AbortSignal = AbortSignal.timeout(10_000),
   ): Promise<CommittedSuccess> {
     const input = CommitSuccessInputSchema.parse(rawInput);
-    return withCreatorTransaction(this.pools.broker, input, (connection) =>
+    const outcome = await withCreatorTransaction(this.pools.broker, input, (connection) =>
       this.projectSuccess(
         adaptStandaloneJournalTransaction(connection),
         input,
@@ -1960,6 +2263,10 @@ export class PostgresCloudJournal {
         signal,
       ),
     );
+    if (isSuccessSecurityBlocked(outcome)) {
+      throw new CloudJournalError('JOURNAL_SECURITY_BLOCKED', 'JOURNAL_SECURITY_BLOCKED');
+    }
+    return outcome.committed;
   }
 
   /** Project a strict Gateway invocation.succeeded event inside the caller's transaction. */
@@ -1968,7 +2275,7 @@ export class PostgresCloudJournal {
     rawInput: CommitSuccessInput,
     sealAssistantMessage: AssistantMessageSealer | undefined,
     signal: AbortSignal,
-  ): Promise<CommittedSuccess> {
+  ): Promise<ProjectSuccessOutcome> {
     const connection = bindInvocationProjectorSignal(rawConnection, signal);
     const input = CommitSuccessInputSchema.parse(rawInput);
     assertCanonicalWorkerFact(input.fact, input.factDigest);
@@ -1983,272 +2290,233 @@ export class PostgresCloudJournal {
         'success event 与 canonical Worker terminal fact/transport AAD 不一致',
       );
     }
-    await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-      input.fact.invocationId,
-    ]);
-    const derived = await deriveInvocationProjectorTenant(connection, {
-      creatorId: input.creatorId,
-      installationId: input.installationId,
-      invocationId: input.fact.invocationId,
-    });
-    const { consumerId, conversationId } = derived;
-    if (input.resultCiphertext.aad.conversationId !== conversationId) {
+    const preflight = await connection.query<SuccessFactPreflightRow>(
+      `SELECT outcome, seal_token::text, assistant_message_id::text,
+              aad_schema_version, aad_owner_id::text, aad_conversation_id::text,
+              aad_role, result_digest, consumer_event_cursor::text,
+              alert_id::text, alert_replayed
+         FROM creator_agent_preflight_success_fact_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9,
+           $10, $11, $12, $13, $14, $15, $16, $17, $18
+         )`,
+      [
+        input.creatorId,
+        input.installationId,
+        input.fact.protocol,
+        input.fact.schemaVersion,
+        input.fact.type,
+        input.fact.sourceEventId,
+        input.fact.invocationId,
+        input.fact.agentVersionDigest,
+        input.fact.snapshotDigest,
+        input.fact.executionCapabilityDigest,
+        input.fact.leaseId,
+        input.fact.fence,
+        input.fact.runtimeThreadId,
+        input.fact.runtimeTurnId,
+        input.fact.startedFactDigest,
+        input.fact.resultDigest,
+        input.fact.localResultCipherDigest,
+        input.factDigest,
+      ],
+    );
+    const preflightRow = preflight.rows[0];
+    const preflightOutcome = SuccessFactPreflightOutcomeSchema.safeParse(preflightRow?.outcome);
+    if (preflight.rowCount !== 1 || !preflightRow || !preflightOutcome.success) {
       throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'Invocation 与 Worker terminal transport AAD conversationId 不一致',
+        'PERSISTENCE_INVARIANT_FAILED',
+        'success fact preflight 未返回唯一稳定 outcome',
       );
     }
+    if (preflightOutcome.data === 'SECURITY_BLOCKED') {
+      if (
+        preflightRow.seal_token !== null ||
+        preflightRow.assistant_message_id !== null ||
+        preflightRow.aad_schema_version !== null ||
+        preflightRow.aad_owner_id !== null ||
+        preflightRow.aad_conversation_id !== null ||
+        preflightRow.aad_role !== null ||
+        preflightRow.result_digest !== null ||
+        preflightRow.consumer_event_cursor !== null ||
+        !UuidSchema.safeParse(preflightRow.alert_id).success ||
+        typeof preflightRow.alert_replayed !== 'boolean'
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'success fact security block 缺少 durable alert outcome',
+        );
+      }
+      await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+      return PROJECT_SUCCESS_SECURITY_BLOCKED;
+    }
+    if (preflightRow.alert_id !== null || preflightRow.alert_replayed !== null) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'success fact non-security preflight 携带了 alert metadata',
+      );
+    }
+    if (
+      ['TERMINAL', 'UNAVAILABLE', 'AUTHORITY_REJECTED', 'INVARIANT_FAILED'].includes(
+        preflightOutcome.data,
+      ) &&
+      !successPreflightBusinessFieldsAreNull(preflightRow)
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'success fact rejection preflight 携带了 business metadata',
+      );
+    }
+    switch (preflightOutcome.data) {
+      case 'TERMINAL':
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有其他终态');
+      case 'UNAVAILABLE':
+      case 'AUTHORITY_REJECTED':
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'success fact 与 durable execution authority 不一致',
+        );
+      case 'INVARIANT_FAILED':
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'success fact durable invariant 失败',
+        );
+      case 'EXACT':
+      case 'SEAL_REQUIRED':
+        break;
+    }
 
-    const authority = await connection.query<SuccessAuthorityRow>(
-      `SELECT invocation.state, invocation.consumer_subject_id,
-                user_message.turn_no AS user_turn_no,
-                invocation.result_message_id, invocation.result_digest,
-                invocation.agent_version_id, version.version_digest AS agent_version_digest,
-                snapshot.snapshot_digest, invocation.assigned_worker_id,
-                invocation.assignment_lease_id, invocation.assignment_fence,
-                invocation.execution_capability_id, invocation.execution_capability_digest,
-                (
-                  invocation.execution_capability_expires_at > now()
-                  AND invocation.execution_capability_revoked_at IS NULL
-                ) AS execution_capability_valid,
-                invocation.execution_capability_revoked_at,
-                invocation.runtime_thread_id, invocation.runtime_turn_id,
-                conversation.state AS conversation_state,
-                invocation.terminal_at,
-                lease.state AS lease_state, (lease.expires_at > now()) AS lease_valid,
-                EXISTS (
-                  SELECT 1
-                    FROM agent_invocation_events AS started_event
-                    JOIN broker_outbox AS started_command
-                      ON started_command.command_id = started_event.broker_command_id
-                     AND started_command.creator_id = started_event.creator_id
-                     AND started_command.invocation_id = started_event.invocation_id
-                     AND started_command.consumer_subject_id = started_event.consumer_subject_id
-                   WHERE started_event.invocation_id = invocation.id
-                     AND started_event.source = 'WORKER'
-                     AND started_event.event_type = 'invocation.started'
-                     AND started_event.source_fact_digest IS NOT NULL
-                     AND started_command.command_type = 'invocation.start'
-                     AND started_command.state IN ('ACKED', 'EXPIRED')
-                     AND started_command.target_worker_id = invocation.assigned_worker_id
-                     AND started_command.assignment_lease_id = invocation.assignment_lease_id
-                     AND started_command.assignment_fence = invocation.assignment_fence
-                     AND started_command.execution_capability_id = invocation.execution_capability_id
-                     AND started_command.execution_capability_digest =
-                           invocation.execution_capability_digest
-                ) AS has_durable_started_evidence,
-                (
-                  SELECT started_event.source_fact_digest
-                    FROM agent_invocation_events AS started_event
-                   WHERE started_event.invocation_id = invocation.id
-                     AND started_event.source = 'WORKER'
-                     AND started_event.event_type = 'invocation.started'
-                ) AS started_fact_digest,
-                consumer_event.cursor::text AS consumer_event_cursor,
-                consumer_event.source_event_id AS consumer_event_source_event_id,
-                consumer_event.event_type AS consumer_event_type,
-                consumer_event.payload AS consumer_event_payload,
-                consumer_event.payload_digest AS consumer_event_payload_digest,
-                consumer_event.dedupe_key AS consumer_event_dedupe_key,
-                terminal_event.source_event_id AS terminal_source_event_id,
-                terminal_event.source_fact_digest AS terminal_source_fact_digest,
-                terminal_event.id::text AS terminal_event_id,
-                terminal_event.payload AS terminal_event_payload,
-                terminal_event.occurred_at AS terminal_event_occurred_at
+    const parsedAssistantMessageId = UuidSchema.safeParse(preflightRow.assistant_message_id);
+    const parsedResultDigest = HmacSha256DigestSchema.safeParse(preflightRow.result_digest);
+    const parsedCursor =
+      preflightRow.consumer_event_cursor === null
+        ? null
+        : Uint63StringSchema.safeParse(String(preflightRow.consumer_event_cursor));
+    if (
+      !parsedAssistantMessageId.success ||
+      !parsedResultDigest.success ||
+      parsedResultDigest.data !== input.fact.resultDigest ||
+      (parsedCursor !== null && !parsedCursor.success)
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'success fact preflight 缺少 exact message/result outcome',
+      );
+    }
+    const assistantMessageId = parsedAssistantMessageId.data;
+    const consumerEventCursor = parsedCursor === null ? null : parsedCursor.data;
+
+    if (preflightOutcome.data === 'EXACT') {
+      if (
+        preflightRow.seal_token !== null ||
+        preflightRow.aad_schema_version !== null ||
+        preflightRow.aad_owner_id !== null ||
+        preflightRow.aad_conversation_id !== null ||
+        preflightRow.aad_role !== null
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'exact success fact 不得携带 seal intent/AAD',
+        );
+      }
+      const reverse = await connection.query<SuccessExactProjectionRow>(
+        `SELECT invocation.state, invocation.conversation_id::text,
+                invocation.result_message_id::text,
+                invocation.result_digest, conversation.state AS conversation_state,
+                message.role AS message_role,
+                message.content_aad_version AS message_aad_version,
+                terminal.source_event_id AS terminal_source_event_id,
+                terminal.source_fact_digest AS terminal_fact_digest
            FROM agent_invocations AS invocation
            JOIN agent_conversations AS conversation
              ON conversation.id = invocation.conversation_id
             AND conversation.creator_id = invocation.creator_id
             AND conversation.consumer_subject_id = invocation.consumer_subject_id
-           JOIN worker_leases AS lease
-             ON lease.id = invocation.assignment_lease_id
-            AND lease.creator_id = invocation.creator_id
-            AND lease.worker_id = invocation.assigned_worker_id
-            AND lease.fence = invocation.assignment_fence
-           JOIN agent_versions AS version
-             ON version.id = invocation.agent_version_id
-            AND version.creator_id = invocation.creator_id
-           JOIN context_snapshots AS snapshot
-             ON snapshot.id = version.snapshot_id
-            AND snapshot.creator_id = version.creator_id
-           JOIN agent_messages AS user_message
-             ON user_message.id = invocation.user_message_id
-            AND user_message.conversation_id = invocation.conversation_id
-            AND user_message.creator_id = invocation.creator_id
-            AND user_message.consumer_subject_id = invocation.consumer_subject_id
-            AND user_message.invocation_id = invocation.id
-            AND user_message.role = 'USER'
-           LEFT JOIN agent_invocation_events AS terminal_event
-             ON terminal_event.invocation_id = invocation.id
-            AND terminal_event.creator_id = invocation.creator_id
-            AND terminal_event.consumer_subject_id = invocation.consumer_subject_id
-            AND terminal_event.source = 'WORKER'
-            AND terminal_event.event_type = 'invocation.succeeded'
-           LEFT JOIN consumer_event_outbox AS consumer_event
-             ON consumer_event.invocation_id = invocation.id
-            AND consumer_event.source_event_id = terminal_event.id
-            AND consumer_event.event_type = 'invocation.terminal'
-          WHERE invocation.id = $1
-            AND invocation.conversation_id = $2
-            AND invocation.creator_id = $3
-            AND invocation.consumer_subject_id = $4
-          FOR UPDATE OF invocation, conversation`,
-      [input.fact.invocationId, conversationId, input.creatorId, consumerId],
-    );
-    const current = authority.rows[0];
-    if (!current) {
-      throw new CloudJournalError('EXECUTION_AUTHORITY_MISMATCH', 'Invocation 不存在或租户不匹配');
-    }
-    if (
-      current.agent_version_digest !== input.fact.agentVersionDigest ||
-      current.snapshot_digest !== input.fact.snapshotDigest ||
-      current.consumer_subject_id !== consumerId ||
-      current.assigned_worker_id !== input.installationId ||
-      current.assignment_lease_id !== input.fact.leaseId ||
-      !bigintEquals(current.assignment_fence, input.fact.fence) ||
-      current.execution_capability_id === null ||
-      current.execution_capability_digest !== input.fact.executionCapabilityDigest ||
-      !Number.isInteger(Number(current.user_turn_no)) ||
-      Number(current.user_turn_no) < 1 ||
-      Number(current.user_turn_no) > 20 ||
-      current.runtime_thread_id !== input.fact.runtimeThreadId ||
-      current.runtime_turn_id !== input.fact.runtimeTurnId ||
-      current.started_fact_digest !== input.fact.startedFactDigest
-    ) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'final 与 durable Version/Worker/Lease/Fence/Capability 不一致',
+           JOIN agent_messages AS message
+             ON message.id = invocation.result_message_id
+            AND message.invocation_id = invocation.id
+            AND message.conversation_id = invocation.conversation_id
+            AND message.creator_id = invocation.creator_id
+            AND message.consumer_subject_id = invocation.consumer_subject_id
+           JOIN agent_invocation_events AS terminal
+             ON terminal.invocation_id = invocation.id
+            AND terminal.creator_id = invocation.creator_id
+            AND terminal.consumer_subject_id = invocation.consumer_subject_id
+            AND terminal.source = 'WORKER'
+            AND terminal.event_type = 'invocation.succeeded'
+          WHERE invocation.id = $1 AND invocation.creator_id = $2`,
+        [input.fact.invocationId, input.creatorId],
       );
-    }
-    if (current.state === 'SUCCEEDED') {
+      const durable = reverse.rows[0];
       if (
-        current.terminal_source_event_id !== input.fact.sourceEventId ||
-        current.terminal_source_fact_digest !== input.factDigest
-      ) {
-        throw new CloudJournalError(
-          'WORKER_FACT_CONFLICT',
-          '终态重放与 durable Worker fact identity 不一致',
-        );
-      }
-      if (current.result_digest !== input.fact.resultDigest || current.result_message_id === null) {
-        throw new CloudJournalError('TERMINAL_CONFLICT', '终态重放与 durable result 不一致');
-      }
-      const durableTerminalEvent = SucceededInvocationEventPayloadSchema.safeParse(
-        current.terminal_event_payload,
-      );
-      if (
-        !durableTerminalEvent.success ||
-        durableTerminalEvent.data.messageId !== current.result_message_id ||
-        durableTerminalEvent.data.resultDigest !== current.result_digest ||
-        current.terminal_at === null ||
-        current.terminal_event_occurred_at === null ||
-        isoDate(current.terminal_event_occurred_at) !== isoDate(current.terminal_at)
+        reverse.rowCount !== 1 ||
+        !durable ||
+        durable.state !== 'SUCCEEDED' ||
+        durable.conversation_id !== input.resultCiphertext.aad.conversationId ||
+        durable.result_message_id !== assistantMessageId ||
+        durable.result_digest !== input.fact.resultDigest ||
+        durable.conversation_state !== 'IDLE' ||
+        durable.message_role !== 'ASSISTANT' ||
+        durable.message_aad_version !== 1 ||
+        durable.terminal_source_event_id !== input.fact.sourceEventId ||
+        durable.terminal_fact_digest !== input.factDigest
       ) {
         throw new CloudJournalError(
           'PERSISTENCE_INVARIANT_FAILED',
-          '已成功 Invocation 的 durable terminal Event 不一致',
+          'exact success fact 未保留 durable terminal projection',
         );
       }
-      if (current.consumer_event_cursor !== null) {
-        const durablePayload = ConsumerTerminalEventPayloadSchema.safeParse(
-          current.consumer_event_payload,
-        );
-        if (
-          current.consumer_event_source_event_id === null ||
-          current.consumer_event_type !== 'invocation.terminal' ||
-          current.consumer_event_source_event_id !== current.terminal_event_id ||
-          !durablePayload.success ||
-          durablePayload.data.conversationId !== conversationId ||
-          durablePayload.data.invocationId !== input.fact.invocationId ||
-          durablePayload.data.terminalState !== 'SUCCEEDED' ||
-          durablePayload.data.assistantMessageId !== current.result_message_id ||
-          durablePayload.data.resultDigest !== input.fact.resultDigest ||
-          durablePayload.data.errorCode !== null ||
-          current.consumer_event_payload_digest !==
-            consumerEventPayloadDigest(durablePayload.data) ||
-          current.consumer_event_dedupe_key !==
-            consumerEventDedupeKey({
-              ownerId: consumerId,
-              sourceEventId: current.consumer_event_source_event_id,
-              eventType: 'invocation.terminal',
-            })
-        ) {
-          throw new CloudJournalError(
-            'PERSISTENCE_INVARIANT_FAILED',
-            '已成功 Invocation 的 retained Consumer Event 不一致',
-          );
-        }
-      }
-      return {
+      return committedSuccessOutcome({
         invocationId: input.fact.invocationId,
-        assistantMessageId: current.result_message_id,
+        assistantMessageId,
         resultDigest: input.fact.resultDigest,
-        consumerEventCursor: current.consumer_event_cursor,
+        consumerEventCursor,
         replayed: true,
-      };
-    }
-    const terminalStates = new Set(['FAILED', 'CANCELLED', 'UNCERTAIN', 'EXPIRED']);
-    if (terminalStates.has(current.state)) {
-      throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有其他终态');
-    }
-    if (current.execution_capability_revoked_at !== null) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        '新的 final 被原 Execution Capability security revoke 拒绝',
-      );
-    }
-    if (current.execution_capability_valid !== true) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        '新的 final 已越过原 Execution Capability Cloud deadline',
-      );
-    }
-    const originalLeaseCurrentlyLive =
-      current.lease_state === 'ACTIVE' && current.lease_valid === true;
-    if (!originalLeaseCurrentlyLive && !current.has_durable_started_evidence) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'late final 缺少 exact durable started fact',
-      );
-    }
-    if (
-      !['RUNNING', 'CANCEL_REQUESTED', 'RECONCILING'].includes(current.state) ||
-      current.conversation_state !== 'BUSY'
-    ) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'final 与 durable Version/Worker/Lease/Fence/Capability 不一致',
-      );
+      });
     }
 
+    const parsedAadOwnerId = UuidSchema.safeParse(preflightRow.aad_owner_id);
+    const parsedAadConversationId = UuidSchema.safeParse(preflightRow.aad_conversation_id);
+    const parsedSealToken = UuidSchema.safeParse(preflightRow.seal_token);
+    if (
+      !parsedSealToken.success ||
+      parsedSealToken.data === assistantMessageId ||
+      consumerEventCursor !== null ||
+      Number(preflightRow.aad_schema_version) !== 1 ||
+      !parsedAadOwnerId.success ||
+      parsedAadOwnerId.data !== input.creatorId ||
+      !parsedAadConversationId.success ||
+      preflightRow.aad_role !== 'ASSISTANT'
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'fresh success fact preflight 缺少 exact seal intent/AAD',
+      );
+    }
+    if (input.resultCiphertext.aad.conversationId !== parsedAadConversationId.data) {
+      throw new CloudJournalError(
+        'EXECUTION_AUTHORITY_MISMATCH',
+        'Invocation 与 Worker terminal transport AAD conversationId 不一致',
+      );
+    }
+    await inject(this.failureInjector, 'SUCCESS_SEAL_PREFLIGHT');
     if (!sealAssistantMessage) {
       throw new CloudJournalError(
         'PERSISTENCE_INVARIANT_FAILED',
         'fresh terminal commit 缺少 transport decrypt/KMS durable message sealer',
       );
     }
-    const generatedMessage = await connection.query<{ id: string }>(
-      `SELECT gen_uuid_v7()::text AS id`,
-    );
-    const assistantMessageId = generatedMessage.rows[0]?.id;
-    if (!assistantMessageId) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'Cloud 未生成 durable Assistant Message identity',
-      );
-    }
-    signal.throwIfAborted();
-    const sealedAssistantMessage = await sealAssistantMessage({
-      resultCiphertext: input.resultCiphertext,
-      aad: {
-        schemaVersion: 1,
-        ownerId: input.creatorId,
-        conversationId,
-        messageId: assistantMessageId,
-        role: 'ASSISTANT',
-      },
+    const aad = {
+      schemaVersion: 1 as const,
+      ownerId: parsedAadOwnerId.data,
+      conversationId: parsedAadConversationId.data,
+      messageId: assistantMessageId,
+      role: 'ASSISTANT' as const,
+    };
+    const sealedAssistantMessage = await settleAssistantMessageSealer(
+      sealAssistantMessage,
+      { resultCiphertext: input.resultCiphertext, aad },
       signal,
-    });
+    );
     signal.throwIfAborted();
     const encryptedAssistantMessage = EncryptedMessageSchema.parse(
       sealedAssistantMessage.encryptedMessage,
@@ -2256,204 +2524,133 @@ export class PostgresCloudJournal {
     const verifiedResultDigest = HmacSha256DigestSchema.parse(
       sealedAssistantMessage.verifiedResultDigest,
     );
-    if (verifiedResultDigest !== input.fact.resultDigest) {
-      throw new CloudJournalError(
-        'WORKER_FACT_CONFLICT',
-        'Worker terminal resultDigest 与 transport 解密明文的 tenant digest 不一致',
-      );
-    }
 
-    await connection.query(
-      `INSERT INTO agent_messages (
-           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
-           client_message_id, content_algorithm, content_key_id, content_nonce,
-           content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
-           content_aad_version, invocation_id
-         ) VALUES (
-           $1, $2, $3, $4, $5, 'ASSISTANT', NULL,
-           $6, $7, $8, $9, $10, $11, $12, $13, $14
+    const finalized = await connection.query<SuccessFactFinalizeRow>(
+      `SELECT outcome, assistant_message_id::text, result_digest, terminal_at,
+              consumer_event_cursor::text, assistant_message_appended,
+              invocation_succeeded, succeeded_event_appended, consumer_event_appended,
+              consumer_stream_advanced, terminal_receipt_appended, conversation_idled,
+              preflight_consumed, alert_id::text, alert_replayed
+         FROM creator_agent_finalize_success_fact_v1(
+           $1, $2, $3, $4, $5, $6, $7,
+           $8, $9, $10, $11, $12, $13, $14
          )`,
       [
-        assistantMessageId,
-        conversationId,
+        parsedSealToken.data,
         input.creatorId,
-        consumerId,
-        Number(current.user_turn_no),
+        input.fact.invocationId,
+        input.factDigest,
+        assistantMessageId,
+        verifiedResultDigest,
         ...encryptedParameters(encryptedAssistantMessage),
-        input.fact.invocationId,
       ],
     );
-    await inject(this.failureInjector, 'ASSISTANT_MESSAGE');
-
-    const terminal = await connection.query<{ terminal_at: Date | string }>(
-      `UPDATE agent_invocations
-            SET state = 'SUCCEEDED', result_message_id = $5, result_digest = $6,
-                error_code = NULL, uncertainty_reason = NULL,
-                terminal_at = clock_timestamp()
-          WHERE id = $1 AND conversation_id = $2 AND creator_id = $3 AND consumer_subject_id = $4
-            AND state IN ('RUNNING', 'CANCEL_REQUESTED', 'RECONCILING')
-            AND agent_version_id = $7 AND assigned_worker_id = $8
-            AND assignment_lease_id = $9 AND assignment_fence = $10
-            AND execution_capability_id = $11
-            AND execution_capability_digest = $12
-            AND execution_capability_expires_at > clock_timestamp()
-            AND execution_capability_revoked_at IS NULL
-          RETURNING terminal_at`,
-      [
-        input.fact.invocationId,
-        conversationId,
-        input.creatorId,
-        consumerId,
-        assistantMessageId,
-        input.fact.resultDigest,
-        current.agent_version_id,
-        current.assigned_worker_id,
-        input.fact.leaseId,
-        input.fact.fence,
-        current.execution_capability_id,
-        input.fact.executionCapabilityDigest,
-      ],
-    );
-    if (terminal.rowCount !== 1) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        '终态 compare-and-set 未匹配 exact authority',
-      );
-    }
-    const terminalAt = terminal.rows[0]?.terminal_at;
-    if (!terminalAt) {
+    const finalizedRow = finalized.rows[0];
+    const finalizedOutcome = SuccessFactFinalizeOutcomeSchema.safeParse(finalizedRow?.outcome);
+    if (finalized.rowCount !== 1 || !finalizedRow || !finalizedOutcome.success) {
       throw new CloudJournalError(
         'PERSISTENCE_INVARIANT_FAILED',
-        'Invocation terminal 缺少 Cloud 时间',
+        'success fact finalize 未返回唯一稳定 outcome',
       );
     }
-    const terminalOccurredAt = isoDate(terminalAt);
-    await inject(this.failureInjector, 'INVOCATION_SUCCEEDED');
-
-    let terminalEvent: QueryResult<{ id: string }>;
-    try {
-      terminalEvent = await connection.query<{ id: string }>(
-        `INSERT INTO agent_invocation_events (
-             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
-             source_event_id, event_type, payload, occurred_at,
-             source_fact_digest, broker_command_id
-           )
-           SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
-                  'WORKER', $4, 'invocation.succeeded', $5::jsonb, $6, $7, NULL
-             FROM agent_invocation_events
-            WHERE invocation_id = $1
-           RETURNING id::text AS id`,
-        [
-          input.fact.invocationId,
-          input.creatorId,
-          consumerId,
-          input.fact.sourceEventId,
-          JSON.stringify({
-            state: 'SUCCEEDED',
-            messageId: assistantMessageId,
-            resultDigest: input.fact.resultDigest,
-          }),
-          terminalOccurredAt,
-          input.factDigest,
-        ],
-      );
-    } catch (error) {
-      if ((error as { code?: unknown }).code === '23505') {
+    if (finalizedOutcome.data === 'SECURITY_BLOCKED') {
+      if (
+        finalizedRow.assistant_message_id !== null ||
+        finalizedRow.result_digest !== null ||
+        finalizedRow.terminal_at !== null ||
+        finalizedRow.consumer_event_cursor !== null ||
+        finalizedRow.assistant_message_appended !== null ||
+        finalizedRow.invocation_succeeded !== null ||
+        finalizedRow.succeeded_event_appended !== null ||
+        finalizedRow.consumer_event_appended !== null ||
+        finalizedRow.consumer_stream_advanced !== null ||
+        finalizedRow.terminal_receipt_appended !== null ||
+        finalizedRow.conversation_idled !== null ||
+        finalizedRow.preflight_consumed !== null ||
+        !UuidSchema.safeParse(finalizedRow.alert_id).success ||
+        typeof finalizedRow.alert_replayed !== 'boolean'
+      ) {
         throw new CloudJournalError(
-          'WORKER_FACT_CONFLICT',
-          'success sourceEventId 已绑定其他 terminal fact',
+          'PERSISTENCE_INVARIANT_FAILED',
+          'success finalize security block 缺少 durable alert outcome',
         );
       }
-      throw error;
+      await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+      return PROJECT_SUCCESS_SECURITY_BLOCKED;
     }
-    const terminalEventId = terminalEvent.rows[0]?.id;
-    if (!terminalEventId) {
+    if (finalizedRow.alert_id !== null || finalizedRow.alert_replayed !== null) {
       throw new CloudJournalError(
         'PERSISTENCE_INVARIANT_FAILED',
-        'Invocation terminal Event 未返回 durable identity',
+        'success finalize non-security outcome 携带了 alert metadata',
       );
     }
+    if (
+      finalizedOutcome.data !== 'ADMITTED' &&
+      !successFinalizeBusinessFieldsAreNull(finalizedRow)
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'success finalize rejection 携带了 business metadata',
+      );
+    }
+    switch (finalizedOutcome.data) {
+      case 'AUTHORITY_REJECTED':
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'success finalize 越过 durable execution authority',
+        );
+      case 'INVARIANT_FAILED':
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'success finalize durable invariant 失败',
+        );
+      case 'ADMITTED':
+        break;
+    }
+    const finalizedMessageId = UuidSchema.safeParse(finalizedRow.assistant_message_id);
+    const finalizedResultDigest = HmacSha256DigestSchema.safeParse(finalizedRow.result_digest);
+    const finalizedCursor =
+      finalizedRow.consumer_event_cursor === null
+        ? null
+        : Uint63StringSchema.safeParse(String(finalizedRow.consumer_event_cursor));
+    if (
+      !finalizedMessageId.success ||
+      finalizedMessageId.data !== assistantMessageId ||
+      !finalizedResultDigest.success ||
+      finalizedResultDigest.data !== input.fact.resultDigest ||
+      finalizedRow.terminal_at === null ||
+      finalizedCursor === null ||
+      !finalizedCursor.success ||
+      finalizedRow.assistant_message_appended !== true ||
+      finalizedRow.invocation_succeeded !== true ||
+      finalizedRow.succeeded_event_appended !== true ||
+      finalizedRow.consumer_event_appended !== true ||
+      finalizedRow.consumer_stream_advanced !== true ||
+      finalizedRow.terminal_receipt_appended !== true ||
+      finalizedRow.conversation_idled !== true ||
+      finalizedRow.preflight_consumed !== true
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'admitted success finalize mutation flags 非 canonical',
+      );
+    }
+    isoDate(finalizedRow.terminal_at);
+    await inject(this.failureInjector, 'ASSISTANT_MESSAGE');
+    await inject(this.failureInjector, 'INVOCATION_SUCCEEDED');
     await inject(this.failureInjector, 'SUCCEEDED_EVENT');
-
-    const terminalPayload = ConsumerTerminalEventPayloadSchema.parse({
-      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
-      schemaVersion: 1,
-      type: 'invocation.terminal',
-      conversationId,
-      invocationId: input.fact.invocationId,
-      terminalState: 'SUCCEEDED',
-      assistantMessageId,
-      resultDigest: input.fact.resultDigest,
-      errorCode: null,
-      occurredAt: terminalOccurredAt,
-    });
-    const terminalPayloadDigest = consumerEventPayloadDigest(terminalPayload);
-    const terminalDedupeKey = consumerEventDedupeKey({
-      ownerId: consumerId,
-      sourceEventId: terminalEventId,
-      eventType: 'invocation.terminal',
-    });
-
-    const consumerEvent = await connection.query<{ cursor: string }>(
-      `INSERT INTO consumer_event_outbox (
-           owner_id, conversation_id, invocation_id, source_event_id,
-           event_type, payload, payload_digest, dedupe_key
-         ) VALUES ($1, $2, $3, $4, 'invocation.terminal', $5::jsonb, $6, $7)
-         RETURNING cursor::text AS cursor`,
-      [
-        consumerId,
-        conversationId,
-        input.fact.invocationId,
-        terminalEventId,
-        JSON.stringify(terminalPayload),
-        terminalPayloadDigest,
-        terminalDedupeKey,
-      ],
-    );
-    const consumerEventCursor = consumerEvent.rows[0]?.cursor;
-    if (consumerEventCursor === undefined) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'Consumer Event Outbox 未返回 cursor',
-      );
-    }
     await inject(this.failureInjector, 'CONSUMER_EVENT_OUTBOX');
-
-    await connection.query(
-      `INSERT INTO consumer_event_streams (
-           owner_id, conversation_id, latest_cursor, expired_through_cursor, updated_at
-         ) VALUES ($1, $2, $3, 0, now())
-         ON CONFLICT (owner_id, conversation_id) DO UPDATE
-           SET latest_cursor = GREATEST(
-                 consumer_event_streams.latest_cursor,
-                 EXCLUDED.latest_cursor
-               ),
-               updated_at = now()`,
-      [consumerId, conversationId, consumerEventCursor],
-    );
     await inject(this.failureInjector, 'CONSUMER_EVENT_STREAM');
-
-    const conversation = await connection.query(
-      `UPDATE agent_conversations
-            SET state = 'IDLE', last_activity_at = now()
-          WHERE id = $1 AND creator_id = $2 AND consumer_subject_id = $3 AND state = 'BUSY'`,
-      [conversationId, input.creatorId, consumerId],
-    );
-    if (conversation.rowCount !== 1) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'Conversation projection 未原子回到 IDLE',
-      );
-    }
+    await inject(this.failureInjector, 'SUCCESS_TERMINAL_RECEIPT');
     await inject(this.failureInjector, 'CONVERSATION_IDLE');
-
-    return {
+    await inject(this.failureInjector, 'SUCCESS_PREFLIGHT_CONSUMED');
+    return committedSuccessOutcome({
       invocationId: input.fact.invocationId,
       assistantMessageId,
       resultDigest: input.fact.resultDigest,
-      consumerEventCursor,
+      consumerEventCursor: finalizedCursor.data,
       replayed: false,
-    };
+    });
   }
 
   public async commitFailed(
@@ -2461,9 +2658,13 @@ export class PostgresCloudJournal {
     signal: AbortSignal = AbortSignal.timeout(10_000),
   ): Promise<CommittedFailed> {
     const input = CommitFailedInputSchema.parse(rawInput);
-    return withCreatorTransaction(this.pools.broker, input, (connection) =>
+    const outcome = await withCreatorTransaction(this.pools.broker, input, (connection) =>
       this.projectFailed(adaptStandaloneJournalTransaction(connection), input, signal),
     );
+    if (isFailedSecurityBlocked(outcome)) {
+      throw new CloudJournalError('JOURNAL_SECURITY_BLOCKED', 'JOURNAL_SECURITY_BLOCKED');
+    }
+    return outcome.committed;
   }
 
   /** Project a confirmed Worker failure without creating an Assistant Message. */
@@ -2471,7 +2672,7 @@ export class PostgresCloudJournal {
     rawConnection: InvocationProjectorTransaction,
     rawInput: CommitFailedInput,
     signal: AbortSignal,
-  ): Promise<CommittedFailed> {
+  ): Promise<ProjectFailedOutcome> {
     const input = CommitFailedInputSchema.parse(rawInput);
     return this.#projectConfirmedFailure(rawConnection, input, signal);
   }
@@ -2480,7 +2681,7 @@ export class PostgresCloudJournal {
     rawConnection: InvocationProjectorTransaction,
     input: CommitFailedInput,
     signal: AbortSignal,
-  ): Promise<CommittedFailed> {
+  ): Promise<ProjectFailedOutcome> {
     const connection = bindInvocationProjectorSignal(rawConnection, signal);
     assertCanonicalWorkerFact(input.fact, input.factDigest);
     if (input.fact.sourceEventId !== input.fact.invocationId) {
@@ -2503,15 +2704,169 @@ export class PostgresCloudJournal {
       state: terminalState,
       errorCode,
     });
+    const admission = await connection.query<FailedFactAdmissionRow>(
+      `SELECT outcome, error_code, terminal_at, consumer_event_cursor::text,
+              invocation_failed, failed_event_appended, consumer_event_appended,
+              consumer_stream_advanced, terminal_receipt_appended, conversation_idled,
+              alert_id::text, alert_replayed
+         FROM creator_agent_project_failed_fact_v2(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14
+         )`,
+      [
+        input.creatorId,
+        input.installationId,
+        input.fact.protocol,
+        input.fact.schemaVersion,
+        input.fact.type,
+        input.fact.sourceEventId,
+        input.fact.invocationId,
+        input.fact.agentVersionDigest,
+        input.fact.snapshotDigest,
+        input.fact.executionCapabilityDigest,
+        input.fact.leaseId,
+        input.fact.fence,
+        input.fact.errorCode,
+        input.factDigest,
+      ],
+    );
+    const admissionRow = admission.rows[0];
+    const admissionOutcome = FailedFactAdmissionOutcomeSchema.safeParse(admissionRow?.outcome);
+    if (admission.rowCount !== 1 || !admissionRow || !admissionOutcome.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'failed fact admission 未返回唯一稳定 outcome',
+      );
+    }
+    if (admissionOutcome.data === 'SECURITY_BLOCKED') {
+      if (
+        admissionRow.error_code !== null ||
+        admissionRow.terminal_at !== null ||
+        admissionRow.consumer_event_cursor !== null ||
+        admissionRow.invocation_failed !== null ||
+        admissionRow.failed_event_appended !== null ||
+        admissionRow.consumer_event_appended !== null ||
+        admissionRow.consumer_stream_advanced !== null ||
+        admissionRow.terminal_receipt_appended !== null ||
+        admissionRow.conversation_idled !== null ||
+        !UuidSchema.safeParse(admissionRow.alert_id).success ||
+        typeof admissionRow.alert_replayed !== 'boolean'
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'failed fact security block 缺少 durable alert outcome',
+        );
+      }
+      await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+      return PROJECT_FAILED_SECURITY_BLOCKED;
+    }
+    if (admissionRow.alert_id !== null || admissionRow.alert_replayed !== null) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'failed fact non-security outcome 携带了 alert metadata',
+      );
+    }
+    switch (admissionOutcome.data) {
+      case 'TERMINAL':
+        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有其他终态');
+      case 'UNAVAILABLE':
+      case 'AUTHORITY_REJECTED':
+        throw new CloudJournalError(
+          'EXECUTION_AUTHORITY_MISMATCH',
+          'failed fact 与 durable execution authority 不一致',
+        );
+      case 'INVARIANT_FAILED':
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'failed fact durable invariant 失败',
+        );
+      case 'ADMITTED':
+      case 'EXACT':
+        break;
+    }
+    const admittedErrorCode = ConfirmedWorkerFailureCodeSchema.safeParse(admissionRow.error_code);
+    if (
+      !admittedErrorCode.success ||
+      admittedErrorCode.data !== errorCode ||
+      admissionRow.terminal_at === null
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'failed fact admission 缺少 exact error/time outcome',
+      );
+    }
+    const parsedCursor =
+      admissionRow.consumer_event_cursor === null
+        ? null
+        : Uint63StringSchema.safeParse(String(admissionRow.consumer_event_cursor));
+    if (parsedCursor !== null && !parsedCursor.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'failed fact admission 返回非法 Consumer cursor',
+      );
+    }
+    const consumerEventCursor = parsedCursor === null ? null : parsedCursor.data;
+    if (admissionOutcome.data === 'ADMITTED') {
+      if (
+        consumerEventCursor === null ||
+        admissionRow.invocation_failed !== true ||
+        admissionRow.failed_event_appended !== true ||
+        admissionRow.consumer_event_appended !== true ||
+        admissionRow.consumer_stream_advanced !== true ||
+        admissionRow.terminal_receipt_appended !== true ||
+        admissionRow.conversation_idled !== true
+      ) {
+        throw new CloudJournalError(
+          'PERSISTENCE_INVARIANT_FAILED',
+          'admitted failed fact mutation flags 非 canonical',
+        );
+      }
+      await inject(this.failureInjector, 'INVOCATION_FAILED');
+      await inject(this.failureInjector, 'FAILED_EVENT');
+      await inject(this.failureInjector, 'CONSUMER_EVENT_OUTBOX');
+      await inject(this.failureInjector, 'CONSUMER_EVENT_STREAM');
+      await inject(this.failureInjector, 'FAILED_TERMINAL_RECEIPT');
+      await inject(this.failureInjector, 'CONVERSATION_IDLE');
+      return committedFailedOutcome({
+        invocationId: input.fact.invocationId,
+        state: terminalState,
+        errorCode,
+        consumerEventCursor,
+        replayed: false,
+      });
+    }
+    if (
+      admissionRow.invocation_failed !== false ||
+      admissionRow.failed_event_appended !== false ||
+      admissionRow.consumer_event_appended !== false ||
+      admissionRow.consumer_stream_advanced !== false ||
+      admissionRow.terminal_receipt_appended !== false ||
+      admissionRow.conversation_idled !== false
+    ) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'exact failed fact outcome 声称发生 mutation',
+      );
+    }
 
-    await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-      input.fact.invocationId,
-    ]);
-    const { consumerId, conversationId } = await deriveInvocationProjectorTenant(connection, {
-      creatorId: input.creatorId,
-      installationId: input.installationId,
-      invocationId: input.fact.invocationId,
-    });
+    const tenant = await connection.query<{
+      consumer_subject_id: string;
+      conversation_id: string;
+    }>(
+      `SELECT consumer_subject_id::text, conversation_id::text
+         FROM agent_invocations
+        WHERE id = $1 AND creator_id = $2 AND assigned_worker_id = $3`,
+      [input.fact.invocationId, input.creatorId, input.installationId],
+    );
+    const parsedConsumerId = UuidSchema.safeParse(tenant.rows[0]?.consumer_subject_id);
+    const parsedConversationId = UuidSchema.safeParse(tenant.rows[0]?.conversation_id);
+    if (tenant.rows.length !== 1 || !parsedConsumerId.success || !parsedConversationId.success) {
+      throw new CloudJournalError(
+        'PERSISTENCE_INVARIANT_FAILED',
+        'failed fact admission 未保留 exact tenant projection',
+      );
+    }
+    const consumerId = parsedConsumerId.data;
+    const conversationId = parsedConversationId.data;
     const authority = await connection.query<FailedAuthorityRow>(
       `SELECT invocation.state, invocation.consumer_subject_id,
               invocation.result_message_id, invocation.result_digest, invocation.error_code,
@@ -2628,6 +2983,8 @@ export class PostgresCloudJournal {
         current.terminal_at === null ||
         current.terminal_event_occurred_at === null ||
         isoDate(current.terminal_event_occurred_at) !== isoDate(current.terminal_at) ||
+        isoDate(current.terminal_at) !== isoDate(admissionRow.terminal_at) ||
+        current.consumer_event_cursor !== consumerEventCursor ||
         current.conversation_state !== 'IDLE'
       ) {
         throw new CloudJournalError(
@@ -2665,198 +3022,19 @@ export class PostgresCloudJournal {
           );
         }
       }
-      return {
+      return committedFailedOutcome({
         invocationId: input.fact.invocationId,
         state: terminalState,
         errorCode,
-        consumerEventCursor: current.consumer_event_cursor,
+        consumerEventCursor,
         replayed: true,
-      };
+      });
     }
 
-    if (['SUCCEEDED', 'FAILED', 'CANCELLED', 'UNCERTAIN', 'EXPIRED'].includes(current.state)) {
-      throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有其他终态');
-    }
-    if (
-      current.execution_capability_revoked_at !== null ||
-      current.execution_capability_valid !== true
-    ) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        '新的 failed terminal 已越过或被撤销的 Execution Capability',
-      );
-    }
-    const originalLeaseCurrentlyLive =
-      current.lease_state === 'ACTIVE' && current.lease_valid === true;
-    if (
-      !['RUNNING', 'CANCEL_REQUESTED', 'RECONCILING'].includes(current.state) ||
-      current.conversation_state !== 'BUSY' ||
-      (!originalLeaseCurrentlyLive && current.has_durable_started_evidence !== true) ||
-      current.result_message_id !== null ||
-      current.result_digest !== null ||
-      current.error_code !== null
-    ) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'failed terminal 缺少 confirmed running authority',
-      );
-    }
-
-    const terminal = await connection.query<{ terminal_at: Date | string }>(
-      `UPDATE agent_invocations
-          SET state = $5, result_message_id = NULL, result_digest = NULL,
-              error_code = $6, uncertainty_reason = NULL,
-              terminal_at = date_trunc('milliseconds', clock_timestamp())
-        WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-          AND consumer_subject_id = $4
-          AND state IN ('RUNNING', 'CANCEL_REQUESTED', 'RECONCILING')
-          AND assigned_worker_id = $7 AND assignment_lease_id = $8
-          AND assignment_fence = $9 AND execution_capability_id = $10
-          AND execution_capability_digest = $11
-          AND execution_capability_expires_at > clock_timestamp()
-          AND execution_capability_revoked_at IS NULL
-        RETURNING terminal_at::text AS terminal_at`,
-      [
-        input.fact.invocationId,
-        conversationId,
-        input.creatorId,
-        consumerId,
-        terminalState,
-        errorCode,
-        input.installationId,
-        input.fact.leaseId,
-        input.fact.fence,
-        current.execution_capability_id,
-        input.fact.executionCapabilityDigest,
-      ],
+    throw new CloudJournalError(
+      'PERSISTENCE_INVARIANT_FAILED',
+      'exact failed fact admission 未匹配 durable FAILED projection',
     );
-    const terminalAt = terminal.rows[0]?.terminal_at;
-    if (terminal.rowCount !== 1 || !terminalAt) {
-      throw new CloudJournalError(
-        'EXECUTION_AUTHORITY_MISMATCH',
-        'failed terminal compare-and-set 未匹配 exact authority',
-      );
-    }
-    const terminalOccurredAt = isoDate(terminalAt);
-    await inject(this.failureInjector, 'INVOCATION_FAILED');
-
-    let terminalEvent: QueryResult<{ id: string }>;
-    try {
-      terminalEvent = await connection.query<{ id: string }>(
-        `INSERT INTO agent_invocation_events (
-           invocation_id, creator_id, consumer_subject_id, journal_seq, source,
-           source_event_id, event_type, payload, occurred_at,
-           source_fact_digest, broker_command_id
-         )
-         SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
-                'WORKER', $4, $5, $6::jsonb, $7, $8, NULL
-           FROM agent_invocation_events
-          WHERE invocation_id = $1
-         RETURNING id::text AS id`,
-        [
-          input.fact.invocationId,
-          input.creatorId,
-          consumerId,
-          input.fact.sourceEventId,
-          eventType,
-          JSON.stringify(terminalEventPayload),
-          terminalAt,
-          input.factDigest,
-        ],
-      );
-    } catch (error) {
-      if ((error as { code?: unknown }).code === '23505') {
-        throw new CloudJournalError(
-          'WORKER_FACT_CONFLICT',
-          'failed terminal sourceEventId 已绑定其他 Worker fact',
-        );
-      }
-      throw error;
-    }
-    const terminalEventId = terminalEvent.rows[0]?.id;
-    if (!terminalEventId) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'failed terminal Event 未返回 durable identity',
-      );
-    }
-    await inject(this.failureInjector, 'FAILED_EVENT');
-
-    const terminalPayload = ConsumerTerminalEventPayloadSchema.parse({
-      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
-      schemaVersion: 1,
-      type: 'invocation.terminal',
-      conversationId,
-      invocationId: input.fact.invocationId,
-      terminalState,
-      assistantMessageId: null,
-      resultDigest: null,
-      errorCode,
-      occurredAt: terminalOccurredAt,
-    });
-    const terminalPayloadDigest = consumerEventPayloadDigest(terminalPayload);
-    const terminalDedupeKey = consumerEventDedupeKey({
-      ownerId: consumerId,
-      sourceEventId: terminalEventId,
-      eventType: 'invocation.terminal',
-    });
-    const consumerEvent = await connection.query<{ cursor: string }>(
-      `INSERT INTO consumer_event_outbox (
-         owner_id, conversation_id, invocation_id, source_event_id,
-         event_type, payload, payload_digest, dedupe_key
-       ) VALUES ($1, $2, $3, $4, 'invocation.terminal', $5::jsonb, $6, $7)
-       RETURNING cursor::text AS cursor`,
-      [
-        consumerId,
-        conversationId,
-        input.fact.invocationId,
-        terminalEventId,
-        JSON.stringify(terminalPayload),
-        terminalPayloadDigest,
-        terminalDedupeKey,
-      ],
-    );
-    const consumerEventCursor = consumerEvent.rows[0]?.cursor;
-    if (!consumerEventCursor) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'failed terminal Consumer Event Outbox 未返回 cursor',
-      );
-    }
-    await inject(this.failureInjector, 'CONSUMER_EVENT_OUTBOX');
-    await connection.query(
-      `INSERT INTO consumer_event_streams (
-         owner_id, conversation_id, latest_cursor, expired_through_cursor, updated_at
-       ) VALUES ($1, $2, $3, 0, now())
-       ON CONFLICT (owner_id, conversation_id) DO UPDATE
-         SET latest_cursor = GREATEST(
-               consumer_event_streams.latest_cursor,
-               EXCLUDED.latest_cursor
-             ),
-             updated_at = now()`,
-      [consumerId, conversationId, consumerEventCursor],
-    );
-    await inject(this.failureInjector, 'CONSUMER_EVENT_STREAM');
-    const conversation = await connection.query(
-      `UPDATE agent_conversations
-          SET state = 'IDLE', last_activity_at = now()
-        WHERE id = $1 AND creator_id = $2 AND consumer_subject_id = $3 AND state = 'BUSY'`,
-      [conversationId, input.creatorId, consumerId],
-    );
-    if (conversation.rowCount !== 1) {
-      throw new CloudJournalError(
-        'PERSISTENCE_INVARIANT_FAILED',
-        'failed terminal Conversation projection 未原子回到 IDLE',
-      );
-    }
-    await inject(this.failureInjector, 'CONVERSATION_IDLE');
-    return {
-      invocationId: input.fact.invocationId,
-      state: terminalState,
-      errorCode,
-      consumerEventCursor,
-      replayed: false,
-    };
   }
 
   public async beginReconciliation(
@@ -2870,12 +3048,118 @@ export class PostgresCloudJournal {
         'Invocation reconciliation 需要独立 Reconciler pool',
       );
     }
-    return withTenantTransaction(pool, input, async (connection) => {
-      await connection.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
-        input.invocationId,
-      ]);
-      const authority = await connection.query<ReconciliationAuthorityRow>(
-        `SELECT invocation.state, conversation.state AS conversation_state,
+    const outcome = await withTenantTransaction<BeginReconciliationCommitOutcome>(
+      pool,
+      input,
+      async (connection) => {
+        const admission = await connection.query<BeginReconciliationAdmissionRow>(
+          `SELECT outcome, reconciliation_started_at, alert_id::text, alert_replayed
+             FROM creator_agent_begin_reconciliation_v2($1, $2, $3, $4, $5, $6)`,
+          [
+            input.creatorId,
+            input.consumerId,
+            input.conversationId,
+            input.invocationId,
+            input.sourceEventId,
+            input.reason,
+          ],
+        );
+        const admissionRow = admission.rows[0];
+        const admissionOutcome = BeginReconciliationAdmissionOutcomeSchema.safeParse(
+          admissionRow?.outcome,
+        );
+        if (admission.rowCount !== 1 || !admissionRow || !admissionOutcome.success) {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            'reconciliation admission 未返回唯一稳定 outcome',
+          );
+        }
+        switch (admissionOutcome.data) {
+          case 'SECURITY_BLOCKED':
+            if (
+              admissionRow.reconciliation_started_at !== null ||
+              !UuidSchema.safeParse(admissionRow.alert_id).success ||
+              typeof admissionRow.alert_replayed !== 'boolean'
+            ) {
+              throw new CloudJournalError(
+                'PERSISTENCE_INVARIANT_FAILED',
+                'reconciliation security block 缺少 durable alert outcome',
+              );
+            }
+            await inject(this.failureInjector, 'JOURNAL_INTEGRITY_ALERT');
+            return JOURNAL_SECURITY_BLOCKED_COMMIT_OUTCOME;
+          case 'ADMITTED':
+            if (
+              admissionRow.reconciliation_started_at === null ||
+              admissionRow.alert_id !== null ||
+              admissionRow.alert_replayed !== null
+            ) {
+              throw new CloudJournalError(
+                'PERSISTENCE_INVARIANT_FAILED',
+                'fresh reconciliation admission 缺少 Cloud-time outcome',
+              );
+            }
+            await inject(this.failureInjector, 'INVOCATION_RECONCILING');
+            await inject(this.failureInjector, 'RECONCILING_EVENT');
+            return {
+              invocationId: input.invocationId,
+              state: 'RECONCILING',
+              reason: input.reason,
+              reconciliationStartedAt: isoDate(admissionRow.reconciliation_started_at),
+              reconciliationDeadlineAt: reconciliationDeadline(
+                admissionRow.reconciliation_started_at,
+              ),
+              replayed: false,
+            };
+          case 'SOURCE_DIFFERENT':
+            if (
+              admissionRow.reconciliation_started_at !== null ||
+              admissionRow.alert_id !== null ||
+              admissionRow.alert_replayed !== null
+            ) {
+              throw new CloudJournalError(
+                'PERSISTENCE_INVARIANT_FAILED',
+                'reconciliation source conflict outcome 非 canonical',
+              );
+            }
+            throw new CloudJournalError(
+              'TERMINAL_CONFLICT',
+              'Reconciliation 重放与 durable source binding 不一致',
+            );
+          case 'TERMINAL':
+            throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有终态');
+          case 'UNAVAILABLE':
+            throw new CloudJournalError(
+              'EXECUTION_AUTHORITY_MISMATCH',
+              'Invocation 不存在或 reconciliation authority 不可用',
+            );
+          case 'INVARIANT_FAILED':
+            throw new CloudJournalError(
+              'PERSISTENCE_INVARIANT_FAILED',
+              'reconciliation admission durable invariant 失败',
+            );
+          case 'EXACT':
+            if (
+              admissionRow.reconciliation_started_at === null ||
+              admissionRow.alert_id !== null ||
+              admissionRow.alert_replayed !== null
+            ) {
+              throw new CloudJournalError(
+                'PERSISTENCE_INVARIANT_FAILED',
+                'exact reconciliation admission outcome 非 canonical',
+              );
+            }
+            break;
+        }
+        if (admissionOutcome.data !== 'EXACT' || admissionRow.reconciliation_started_at === null) {
+          throw new CloudJournalError(
+            'PERSISTENCE_INVARIANT_FAILED',
+            'reconciliation admission outcome 未终止或进入 exact path',
+          );
+        }
+        const exactAdmissionStartedAt = admissionRow.reconciliation_started_at;
+        const authority = await connection.query<BeginReconciliationAuthorityRow>(
+          `SELECT invocation.state, conversation.state AS conversation_state,
                 invocation.reconciliation_reason, invocation.reconciliation_started_at,
                 invocation.uncertainty_reason, invocation.error_code, invocation.terminal_at,
                 false AS reconciliation_exhausted,
@@ -2886,7 +3170,15 @@ export class PostgresCloudJournal {
                 NULL::text AS consumer_event_payload_digest,
                 NULL::text AS consumer_event_dedupe_key,
                 NULL::text AS terminal_source_event_id,
-                reconciling_event.source_event_id AS reconciliation_source_event_id
+                reconciling_event.source_event_id AS reconciliation_source_event_id,
+                reconciling_event.payload AS reconciliation_event_payload,
+                reconciling_event.occurred_at AS reconciliation_event_occurred_at,
+                reconciling_event.journal_seq AS reconciliation_journal_seq,
+                latest_started_event.source_event_id AS latest_started_source_event_id,
+                latest_started_event.journal_seq AS latest_started_journal_seq,
+                resumed_event.source_event_id AS reconciliation_resumed_source_event_id,
+                resumed_event.payload AS reconciliation_resumed_event_payload,
+                resumed_event.journal_seq AS reconciliation_resumed_journal_seq
            FROM agent_invocations AS invocation
            JOIN agent_conversations AS conversation
              ON conversation.id = invocation.conversation_id
@@ -2894,152 +3186,216 @@ export class PostgresCloudJournal {
             AND conversation.consumer_subject_id = invocation.consumer_subject_id
            LEFT JOIN agent_invocation_events AS reconciling_event
              ON reconciling_event.invocation_id = invocation.id
+            AND reconciling_event.source = 'RECONCILER'
             AND reconciling_event.event_type = 'invocation.reconciling'
+           LEFT JOIN LATERAL (
+             SELECT started_event.source_event_id, started_event.journal_seq
+               FROM agent_invocation_events AS started_event
+              WHERE started_event.invocation_id = invocation.id
+                AND started_event.source = 'WORKER'
+                AND started_event.event_type = 'invocation.started'
+                AND started_event.payload = '{"state":"RUNNING"}'::jsonb
+              ORDER BY started_event.journal_seq DESC
+              LIMIT 1
+           ) AS latest_started_event ON true
+           LEFT JOIN LATERAL (
+             SELECT candidate.source_event_id, candidate.payload, candidate.journal_seq
+               FROM agent_invocation_events AS candidate
+              WHERE candidate.invocation_id = invocation.id
+                AND candidate.source = 'RECONCILER'
+                AND candidate.event_type = 'invocation.reconciling_resumed'
+                AND candidate.source_event_id =
+                      'resume-reconciliation:' || reconciling_event.source_event_id || ':' ||
+                      latest_started_event.source_event_id
+              ORDER BY candidate.journal_seq DESC
+              LIMIT 1
+           ) AS resumed_event ON true
           WHERE invocation.id = $1
             AND invocation.conversation_id = $2
             AND invocation.creator_id = $3
             AND invocation.consumer_subject_id = $4
           FOR UPDATE OF invocation, conversation`,
-        [input.invocationId, input.conversationId, input.creatorId, input.consumerId],
-      );
-      const current = authority.rows[0];
-      if (!current) {
-        throw new CloudJournalError(
-          'EXECUTION_AUTHORITY_MISMATCH',
-          'Invocation 不存在或 reconciliation 租户不匹配',
+          [input.invocationId, input.conversationId, input.creatorId, input.consumerId],
         );
-      }
-      if (current.state === 'RECONCILING') {
-        if (
-          current.reconciliation_reason !== input.reason ||
-          current.reconciliation_started_at === null ||
-          current.reconciliation_source_event_id !== input.sourceEventId
-        ) {
+        const current = authority.rows[0];
+        if (!current) {
           throw new CloudJournalError(
-            'TERMINAL_CONFLICT',
-            'Reconciliation 重放与 durable lost-evidence binding 不一致',
+            'EXECUTION_AUTHORITY_MISMATCH',
+            'Invocation 不存在或 reconciliation 租户不匹配',
           );
         }
-        return {
-          invocationId: input.invocationId,
-          state: 'RECONCILING',
-          reason: input.reason,
-          reconciliationStartedAt: isoDate(current.reconciliation_started_at),
-          reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
-          replayed: true,
-        };
-      }
-      if (
-        current.state === 'RUNNING' &&
-        current.conversation_state === 'BUSY' &&
-        current.reconciliation_started_at !== null &&
-        current.reconciliation_reason !== null
-      ) {
-        if (
-          current.reconciliation_reason !== input.reason ||
-          current.reconciliation_source_event_id !== input.sourceEventId
-        ) {
-          throw new CloudJournalError(
-            'TERMINAL_CONFLICT',
-            '再次 reconciliation 与首个 durable lost-evidence binding 不一致',
+        const durableReconciliationReason = InvocationUncertaintyReasonSchema.safeParse(
+          current.reconciliation_reason,
+        );
+        const durableReconciliationPayload = ReconciliationInvocationEventPayloadSchema.safeParse(
+          current.reconciliation_event_payload,
+        );
+        const durableReconciliationResumedPayload =
+          ReconciliationInvocationEventPayloadSchema.safeParse(
+            current.reconciliation_resumed_event_payload,
           );
+        const reconciliationJournalSeq = positiveJournalSeq(current.reconciliation_journal_seq);
+        const latestStartedJournalSeq = positiveJournalSeq(current.latest_started_journal_seq);
+        const resumedJournalSeq = positiveJournalSeq(current.reconciliation_resumed_journal_seq);
+        const hasExactStoredReconciliationRoot =
+          durableReconciliationReason.success &&
+          current.reconciliation_source_event_id !== null &&
+          current.reconciliation_started_at !== null &&
+          current.reconciliation_event_occurred_at !== null &&
+          reconciliationJournalSeq !== null &&
+          durableReconciliationPayload.success &&
+          durableReconciliationPayload.data.reason === durableReconciliationReason.data &&
+          isoDate(current.reconciliation_event_occurred_at) ===
+            isoDate(current.reconciliation_started_at) &&
+          isoDate(current.reconciliation_started_at) === isoDate(exactAdmissionStartedAt);
+        const hasExactReconciliationRoot =
+          hasExactStoredReconciliationRoot &&
+          reconciliationRootAcceptsInput(
+            current.reconciliation_source_event_id,
+            input.sourceEventId,
+          );
+        const latestStartedIsAfterRoot =
+          reconciliationJournalSeq !== null &&
+          latestStartedJournalSeq !== null &&
+          latestStartedJournalSeq > reconciliationJournalSeq;
+        const hasExactCurrentResumedEvent =
+          current.reconciliation_source_event_id !== null &&
+          current.latest_started_source_event_id !== null &&
+          current.reconciliation_resumed_source_event_id ===
+            reconciliationResumedSourceEventId(
+              current.reconciliation_source_event_id,
+              current.latest_started_source_event_id,
+            ) &&
+          durableReconciliationResumedPayload.success &&
+          durableReconciliationResumedPayload.data.reason === input.reason &&
+          resumedJournalSeq !== null &&
+          latestStartedJournalSeq !== null &&
+          resumedJournalSeq > latestStartedJournalSeq;
+        if (current.state === 'RECONCILING') {
+          if (
+            !hasExactReconciliationRoot ||
+            current.reconciliation_started_at === null ||
+            !durableReconciliationReason.success ||
+            durableReconciliationReason.data !== input.reason
+          ) {
+            throw new CloudJournalError(
+              'TERMINAL_CONFLICT',
+              'Reconciliation 重放与 durable lost-evidence binding 不一致',
+            );
+          }
+          if (
+            latestStartedIsAfterRoot
+              ? !hasExactCurrentResumedEvent
+              : current.reconciliation_resumed_source_event_id !== null
+          ) {
+            throw new CloudJournalError(
+              'PERSISTENCE_INVARIANT_FAILED',
+              'reconciliation projection 与当前 durable resume episode 不一致',
+            );
+          }
+          return {
+            invocationId: input.invocationId,
+            state: 'RECONCILING',
+            reason: input.reason,
+            reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+            reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+            replayed: true,
+          };
         }
-        const resumed = await connection.query(
-          `UPDATE agent_invocations
+        if (
+          current.state === 'RUNNING' &&
+          current.conversation_state === 'BUSY' &&
+          current.reconciliation_started_at !== null &&
+          current.reconciliation_reason !== null
+        ) {
+          if (
+            !hasExactReconciliationRoot ||
+            !durableReconciliationReason.success ||
+            durableReconciliationReason.data !== input.reason
+          ) {
+            throw new CloudJournalError(
+              'TERMINAL_CONFLICT',
+              '再次 reconciliation 与首个 durable lost-evidence binding 不一致',
+            );
+          }
+          if (
+            !latestStartedIsAfterRoot ||
+            current.reconciliation_source_event_id === null ||
+            current.latest_started_source_event_id === null ||
+            current.reconciliation_resumed_source_event_id !== null
+          ) {
+            throw new CloudJournalError(
+              'PERSISTENCE_INVARIANT_FAILED',
+              'RUNNING reconciliation re-entry 缺少唯一 root→started episode',
+            );
+          }
+          const resumedSourceEventId = reconciliationResumedSourceEventId(
+            current.reconciliation_source_event_id,
+            current.latest_started_source_event_id,
+          );
+          const resumed = await connection.query(
+            `UPDATE agent_invocations
               SET state = 'RECONCILING'
             WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
               AND consumer_subject_id = $4 AND state = 'RUNNING'
               AND reconciliation_reason = $5
               AND reconciliation_started_at IS NOT NULL`,
-          [
-            input.invocationId,
-            input.conversationId,
-            input.creatorId,
-            input.consumerId,
-            input.reason,
-          ],
-        );
-        if (resumed.rowCount !== 1) {
-          throw new CloudJournalError(
-            'PERSISTENCE_INVARIANT_FAILED',
-            'Invocation 未按首个 durable binding 重新进入 RECONCILING',
+            [
+              input.invocationId,
+              input.conversationId,
+              input.creatorId,
+              input.consumerId,
+              input.reason,
+            ],
           );
+          if (resumed.rowCount !== 1) {
+            throw new CloudJournalError(
+              'PERSISTENCE_INVARIANT_FAILED',
+              'Invocation 未按首个 durable binding 重新进入 RECONCILING',
+            );
+          }
+          await inject(this.failureInjector, 'INVOCATION_RECONCILING');
+          await connection.query(
+            `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at
+           )
+           SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                  'RECONCILER', $4, 'invocation.reconciling_resumed', $5::jsonb,
+                  clock_timestamp()
+             FROM agent_invocation_events
+            WHERE invocation_id = $1`,
+            [
+              input.invocationId,
+              input.creatorId,
+              input.consumerId,
+              resumedSourceEventId,
+              JSON.stringify({ state: 'RECONCILING', reason: input.reason }),
+            ],
+          );
+          await inject(this.failureInjector, 'RECONCILING_RESUMED_EVENT');
+          return {
+            invocationId: input.invocationId,
+            state: 'RECONCILING',
+            reason: input.reason,
+            reconciliationStartedAt: isoDate(current.reconciliation_started_at),
+            reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
+            replayed: false,
+          };
         }
-        return {
-          invocationId: input.invocationId,
-          state: 'RECONCILING',
-          reason: input.reason,
-          reconciliationStartedAt: isoDate(current.reconciliation_started_at),
-          reconciliationDeadlineAt: reconciliationDeadline(current.reconciliation_started_at),
-          replayed: true,
-        };
-      }
-      if (['SUCCEEDED', 'FAILED', 'CANCELLED', 'UNCERTAIN', 'EXPIRED'].includes(current.state)) {
-        throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有终态');
-      }
-      if (
-        !['PERSISTED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED'].includes(current.state) ||
-        current.conversation_state !== 'BUSY' ||
-        current.reconciliation_started_at !== null ||
-        current.reconciliation_reason !== null
-      ) {
+        if (['SUCCEEDED', 'FAILED', 'CANCELLED', 'UNCERTAIN', 'EXPIRED'].includes(current.state)) {
+          throw new CloudJournalError('TERMINAL_CONFLICT', 'Invocation 已有终态');
+        }
         throw new CloudJournalError(
           'EXECUTION_AUTHORITY_MISMATCH',
-          'Invocation 不在可进入 reconciliation 的 durable 状态',
+          'Invocation 不在 exact reconciliation replay/re-entry 状态',
         );
-      }
-
-      const projection = await connection.query<{
-        reconciliation_started_at: Date | string;
-      }>(
-        `UPDATE agent_invocations
-            SET state = 'RECONCILING', reconciliation_reason = $5,
-                reconciliation_started_at = now()
-          WHERE id = $1 AND conversation_id = $2 AND creator_id = $3
-            AND consumer_subject_id = $4
-            AND state IN ('PERSISTED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED')
-            AND reconciliation_reason IS NULL AND reconciliation_started_at IS NULL
-          RETURNING reconciliation_started_at`,
-        [input.invocationId, input.conversationId, input.creatorId, input.consumerId, input.reason],
-      );
-      const startedAt = projection.rows[0]?.reconciliation_started_at;
-      if (!startedAt) {
-        throw new CloudJournalError(
-          'PERSISTENCE_INVARIANT_FAILED',
-          'Invocation projection 未原子进入 RECONCILING',
-        );
-      }
-      await inject(this.failureInjector, 'INVOCATION_RECONCILING');
-
-      await connection.query(
-        `INSERT INTO agent_invocation_events (
-           invocation_id, creator_id, consumer_subject_id, journal_seq, source,
-           source_event_id, event_type, payload, occurred_at
-         )
-         SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
-                'RECONCILER', $4, 'invocation.reconciling', $5::jsonb, $6
-           FROM agent_invocation_events
-          WHERE invocation_id = $1`,
-        [
-          input.invocationId,
-          input.creatorId,
-          input.consumerId,
-          input.sourceEventId,
-          JSON.stringify({ state: 'RECONCILING', reason: input.reason }),
-          isoDate(startedAt),
-        ],
-      );
-      await inject(this.failureInjector, 'RECONCILING_EVENT');
-
-      return {
-        invocationId: input.invocationId,
-        state: 'RECONCILING',
-        reason: input.reason,
-        reconciliationStartedAt: isoDate(startedAt),
-        reconciliationDeadlineAt: reconciliationDeadline(startedAt),
-        replayed: false,
-      };
-    });
+      },
+    );
+    if (isJournalSecurityBlockedOutcome(outcome)) {
+      throw new CloudJournalError('JOURNAL_SECURITY_BLOCKED', 'JOURNAL_SECURITY_BLOCKED');
+    }
+    return outcome;
   }
 
   public async markUncertain(rawInput: MarkUncertainInput): Promise<MarkUncertainResult> {

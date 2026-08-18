@@ -199,7 +199,7 @@ describe('生成的 JSON Schema 与 OpenAPI', () => {
     );
     expect(idempotencyParameters).toHaveLength(9);
     expect(idempotencyParameters.map(({ schema }) => schema)).toEqual(
-      Array.from({ length: 9 }, () => ({ type: 'string', format: 'uuid' })),
+      Array.from({ length: 9 }, () => ({ $ref: '#/components/schemas/IdempotencyKey' })),
     );
   });
 

@@ -25,10 +25,25 @@ env:
   SOURCE_SHA: ${{ inputs.revision || github.sha }}
 
 jobs:
+  vnext-t0:
+    name: CI / VNext T0 G0
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vnext-t0.yml
+    with:
+      revision: ${{ inputs.revision || github.sha }}
+      disposition: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && 'FORMAL' || 'ADVISORY_ONLY' }}
+      caller_workflow_path: .github/workflows/ci.yml
+      caller_workflow_name: Release build
+      event_name: ${{ github.event_name }}
+      git_ref: ${{ github.ref }}
+      ref_protected: ${{ github.ref_protected }}
+
   gate:
     name: lint / typecheck / build / test
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: vnext-t0
     steps:
       - name: Check out the exact source
         uses: actions/checkout@v4
@@ -237,10 +252,14 @@ jobs:
           POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
           POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
           POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
           CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
           CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
+          CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'
         run: |
           set -euo pipefail
+          pnpm --dir db exec vitest run \
+            __tests__/creator-agent-consumer-message-accept.pg.test.ts
           pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
           pnpm --dir apps/runtime exec vitest run \
             src/modules/creator-agent-conversation/repo.pg.test.ts

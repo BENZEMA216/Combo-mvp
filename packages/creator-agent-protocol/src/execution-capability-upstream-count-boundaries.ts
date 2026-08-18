@@ -45,7 +45,7 @@ export const ExecutionCapabilityUpstreamCountBoundaryCorpusSchema = z
     checkedArtifactDigests: z
       .object({
         contractSchemas: z.literal(
-          'sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb',
+          'sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434',
         ),
       })
       .strict(),
@@ -53,7 +53,7 @@ export const ExecutionCapabilityUpstreamCountBoundaryCorpusSchema = z
       .object({
         path: z.literal('broker-invocation-prepare.v1.json'),
         digest: z.literal(
-          'sha256:a770c1abe81d66160adc817b3dc7d0cdbb17973c11e6739c88887537f8eed3d7',
+          'sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de',
         ),
       })
       .strict(),

@@ -12,7 +12,7 @@ const VERSION = '01900000-0000-7000-8000-000000000004';
 const DEPLOYMENT = '01900000-0000-7000-8000-000000000005';
 const WORKER = '01900000-0000-7000-8000-000000000006';
 const CONVERSATION = '01900000-0000-7000-8000-000000000007';
-const IDEMPOTENCY = '01900000-0000-7000-8000-000000000008';
+const IDEMPOTENCY = '550e8400-e29b-41d4-a716-446655440000';
 const VERSION_DIGEST = 'a'.repeat(64);
 const visibleTranscriptDigester: VisibleTranscriptDigester = async () => ({
   digest: `hmac-sha256:${'b'.repeat(64)}`,
@@ -190,6 +190,12 @@ describe('POST /v1/public/agents/:slug/conversations handler', () => {
   it.each([
     ['missing idempotency key', { idempotencyKey: undefined }],
     ['malformed idempotency key', { idempotencyKey: 'not-a-uuid' }],
+    ['server UUIDv7 idempotency key', { idempotencyKey: '01900000-0000-7000-8000-000000000008' }],
+    ['uppercase UUIDv4 idempotency key', { idempotencyKey: IDEMPOTENCY.toUpperCase() }],
+    [
+      'wrong UUID variant idempotency key',
+      { idempotencyKey: '550e8400-e29b-41d4-4716-446655440000' },
+    ],
     ['duplicate idempotency key', { idempotencyKey: [IDEMPOTENCY, IDEMPOTENCY] }],
     ['invalid slug', { idempotencyKey: IDEMPOTENCY, slug: '../private' }],
     ['unknown body field', { idempotencyKey: IDEMPOTENCY, body: { model: 'unsafe' } }],

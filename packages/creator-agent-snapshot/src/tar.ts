@@ -8,10 +8,12 @@ import {
   DETERMINISTIC_ZSTD_LEVEL,
   MAX_DECOMPRESSED_TAR_BYTES,
   REQUIRED_ZSTD_VERSION,
+  ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES,
 } from './policy.js';
 
 const TAR_BLOCK_BYTES = 512;
 const TAR_END_BYTES = TAR_BLOCK_BYTES * 2;
+const ZSTD_SYNC_EMPTY_FRAME = Buffer.from('28b52ffd240001000099e9d851', 'hex');
 
 function assertPinnedZstdRuntime(): void {
   const zstdVersion = (process.versions as Record<string, string | undefined>).zstd;
@@ -168,27 +170,50 @@ export function createDeterministicTar(inputFiles: readonly ArchiveFile[]): Buff
 
 export function compressDeterministicTar(tarBytes: Uint8Array): Buffer {
   assertPinnedZstdRuntime();
-  return zstdCompressSync(tarBytes, {
-    params: {
-      [zlibConstants.ZSTD_c_compressionLevel]: DETERMINISTIC_ZSTD_LEVEL,
-      [zlibConstants.ZSTD_c_checksumFlag]: 1,
-      [zlibConstants.ZSTD_c_contentSizeFlag]: 1,
-      [zlibConstants.ZSTD_c_dictIDFlag]: 0,
-      [zlibConstants.ZSTD_c_nbWorkers]: 0,
-    },
-  });
+  if (tarBytes.byteLength > MAX_DECOMPRESSED_TAR_BYTES) fail('SNAPSHOT_ARCHIVE_INVALID');
+  const params = {
+    [zlibConstants.ZSTD_c_compressionLevel]: DETERMINISTIC_ZSTD_LEVEL,
+    [zlibConstants.ZSTD_c_checksumFlag]: 1,
+    [zlibConstants.ZSTD_c_contentSizeFlag]: 1,
+    [zlibConstants.ZSTD_c_dictIDFlag]: 0,
+    [zlibConstants.ZSTD_c_nbWorkers]: 0,
+  };
+  const initial = zstdCompressSync(tarBytes, { params });
+  if (!initial.subarray(-ZSTD_SYNC_EMPTY_FRAME.byteLength).equals(ZSTD_SYNC_EMPTY_FRAME)) {
+    return initial;
+  }
+
+  // Node's 16 KiB default and the 65,537-byte retry chunk are coprime. Their
+  // 1,073,758,208-byte LCM is far above the bounded tar/output size, so the retry cannot
+  // reproduce the same chunk-alignment alias inside the Snapshot policy envelope.
+  let retry: Buffer;
+  try {
+    retry = zstdCompressSync(tarBytes, {
+      chunkSize: ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES,
+      params,
+    });
+  } catch (error) {
+    fail('SNAPSHOT_ARCHIVE_INVALID', error);
+  }
+  if (retry.equals(initial.subarray(0, -ZSTD_SYNC_EMPTY_FRAME.byteLength))) return retry;
+  if (retry.equals(initial)) return initial;
+  fail('SNAPSHOT_ARCHIVE_INVALID');
 }
 
-export function assertCompressedArchiveLimits(
-  compressedBytes: number,
-  expandedFileBytes: number,
-): void {
+export function assertCompressedArchiveByteLength(compressedBytes: number): void {
   if (!Number.isSafeInteger(compressedBytes) || compressedBytes <= 0) {
     fail('SNAPSHOT_ARCHIVE_INVALID');
   }
   if (compressedBytes > ALPHA_SNAPSHOT_POLICY.maxCompressedBytes) {
     fail('SNAPSHOT_COMPRESSED_TOO_LARGE');
   }
+}
+
+export function assertCompressedArchiveLimits(
+  compressedBytes: number,
+  expandedFileBytes: number,
+): void {
+  assertCompressedArchiveByteLength(compressedBytes);
   if (!Number.isSafeInteger(expandedFileBytes) || expandedFileBytes < 0) {
     fail('SNAPSHOT_ARCHIVE_INVALID');
   }
@@ -201,15 +226,11 @@ export function assertCompressedArchiveLimits(
 }
 
 export function decompressZstdWithLimit(archiveBytes: Uint8Array, maxOutputLength: number): Buffer {
-  assertPinnedZstdRuntime();
-  if (
-    archiveBytes.byteLength <= 0 ||
-    archiveBytes.byteLength > ALPHA_SNAPSHOT_POLICY.maxCompressedBytes ||
-    !Number.isSafeInteger(maxOutputLength) ||
-    maxOutputLength <= 0
-  ) {
+  assertCompressedArchiveByteLength(archiveBytes.byteLength);
+  if (!Number.isSafeInteger(maxOutputLength) || maxOutputLength <= 0) {
     fail('SNAPSHOT_ARCHIVE_INVALID');
   }
+  assertPinnedZstdRuntime();
   try {
     return zstdDecompressSync(archiveBytes, { maxOutputLength });
   } catch (error) {

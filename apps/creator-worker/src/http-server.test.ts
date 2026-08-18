@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { CreatorWorker } from './creator-worker.js';
 import { CreatorWorkerHttpServer, type CreatorWorkerServerAddress } from './http-server.js';
-import type { CodexHost, HostThread, HostTurnHandle } from './host-types.js';
+import {
+  createHostInterruptedTerminalEvidence,
+  type CodexHost,
+  type HostThread,
+  type HostTurnHandle,
+} from './host-types.js';
 
 class ImmediateHost implements CodexHost {
   createThreadCount = 0;
@@ -30,10 +35,18 @@ class ImmediateHost implements CodexHost {
 
   startTurn(input: { thread: HostThread; messageId: string; text: string }): HostTurnHandle {
     this.turnCount += 1;
+    const turnId = `turn-${this.turnCount}`;
     return {
-      turnId: Promise.resolve(`turn-${this.turnCount}`),
+      turnId: Promise.resolve(turnId),
       result: Promise.resolve({ text: `<script>${input.text}</script>` }),
-      interrupt: async () => undefined,
+      interrupt: async () =>
+        createHostInterruptedTerminalEvidence({
+          threadId: input.thread.id,
+          turnId,
+          status: 'interrupted',
+          error: null,
+          completedAt: 0,
+        }),
     };
   }
 }

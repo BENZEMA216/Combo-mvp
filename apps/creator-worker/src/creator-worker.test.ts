@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { CreatorWorker, CreatorWorkerError } from './creator-worker.js';
 import {
   CodexHostError,
+  createHostInterruptedTerminalEvidence,
   type CodexHost,
   type HostThread,
   type HostTurnHandle,
@@ -75,13 +76,21 @@ class FakeHost implements CodexHost {
       interruptCount: 0,
     };
     this.turns.push(turn);
+    const turnId = `turn-${this.turns.length}`;
     if (this.autoReply) deferred.resolve({ text: this.autoReply(input.text) });
     return {
-      turnId: Promise.resolve(`turn-${this.turns.length}`),
+      turnId: Promise.resolve(turnId),
       result: deferred.promise,
       interrupt: async () => {
         turn.interruptCount += 1;
         deferred.reject(new CodexHostError('HOST_INTERRUPTED', 'interrupted', true));
+        return createHostInterruptedTerminalEvidence({
+          threadId: input.thread.id,
+          turnId,
+          status: 'interrupted',
+          error: null,
+          completedAt: 0,
+        });
       },
     };
   }

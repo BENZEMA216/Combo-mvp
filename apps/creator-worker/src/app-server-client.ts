@@ -15,7 +15,9 @@ import type { Readable, Writable } from 'node:stream';
 
 import {
   CodexHostError,
+  createHostInterruptedTerminalEvidence,
   type CodexHost,
+  type HostInterruptedTerminalEvidence,
   type HostThread,
   type HostTurnHandle,
   type HostTurnResult,
@@ -122,6 +124,9 @@ interface ActiveInvocation {
   readonly rejectResult: (error: Error) => void;
   readonly turnIdPromise: Promise<string>;
   readonly resultPromise: Promise<HostTurnResult>;
+  readonly interruptEvidencePromise: Promise<HostInterruptedTerminalEvidence>;
+  readonly resolveInterruptEvidence: (evidence: HostInterruptedTerminalEvidence) => void;
+  readonly rejectInterruptEvidence: (error: Error) => void;
   readonly completedAgentMessages: Array<{
     phase: 'commentary' | 'final_answer' | null;
     text: string;
@@ -132,7 +137,10 @@ interface ActiveInvocation {
   interruptGrace?: NodeJS.Timeout;
   settled: boolean;
   cancelled: boolean;
+  interruptRequested: boolean;
   interruptSent: boolean;
+  interruptEvidenceSettled: boolean;
+  interruptEvidenceVerified: boolean;
   dispatchConfirmed: boolean;
   terminalTurn?: JsonObject;
   fatalError?: CodexHostError;
@@ -166,6 +174,7 @@ export type HostDiagnosticEvent =
       phase?: 'commentary' | 'final_answer' | null;
     }
   | { type: 'turn_completed'; status: 'completed' | 'other' }
+  | { type: 'interrupt_terminal_verified' }
   | { type: 'server_request' }
   | { type: 'host_error'; willRetry: boolean }
   | { type: 'process_failed'; code: string };
@@ -590,7 +599,16 @@ export class CodexAppServerClient implements CodexHost {
       resolveResult = resolve;
       rejectResult = reject;
     });
+    let resolveInterruptEvidence!: (evidence: HostInterruptedTerminalEvidence) => void;
+    let rejectInterruptEvidence!: (error: Error) => void;
+    const interruptEvidencePromise = new Promise<HostInterruptedTerminalEvidence>(
+      (resolve, reject) => {
+        resolveInterruptEvidence = resolve;
+        rejectInterruptEvidence = reject;
+      },
+    );
     void turnIdPromise.catch(() => undefined);
+    void interruptEvidencePromise.catch(() => undefined);
 
     const invocation: ActiveInvocation = {
       child,
@@ -602,11 +620,17 @@ export class CodexAppServerClient implements CodexHost {
       rejectResult,
       turnIdPromise,
       resultPromise,
+      interruptEvidencePromise,
+      resolveInterruptEvidence,
+      rejectInterruptEvidence,
       completedAgentMessages: [],
       completedAgentMessageBytes: 0,
       settled: false,
       cancelled: false,
+      interruptRequested: false,
       interruptSent: false,
+      interruptEvidenceSettled: false,
+      interruptEvidenceVerified: false,
       dispatchConfirmed: false,
     };
     this.activeByThread.set(input.thread.id, invocation);
@@ -621,9 +645,16 @@ export class CodexAppServerClient implements CodexHost {
     return {
       turnId: turnIdPromise,
       result: resultPromise,
-      interrupt: async () => {
-        await this.cancelInvocation(invocation, publicHostError('HOST_INTERRUPTED', true));
-        await resultPromise.catch(() => undefined);
+      interrupt: () => {
+        void this.cancelInvocation(invocation, publicHostError('HOST_INTERRUPTED', true)).catch(
+          (error: unknown) => {
+            this.rejectInterruptEvidence(
+              invocation,
+              error instanceof Error ? error : publicHostError('HOST_INTERRUPTED', true),
+            );
+          },
+        );
+        return interruptEvidencePromise;
       },
     };
   }
@@ -694,14 +725,14 @@ export class CodexAppServerClient implements CodexHost {
 
   private async sendInterrupt(invocation: ActiveInvocation): Promise<void> {
     if (
-      invocation.interruptSent ||
+      invocation.interruptRequested ||
       invocation.settled ||
       !invocation.turnId ||
       this.child !== invocation.child
     ) {
       return;
     }
-    invocation.interruptSent = true;
+    invocation.interruptRequested = true;
     try {
       const result = await this.request(
         'turn/interrupt',
@@ -710,8 +741,16 @@ export class CodexAppServerClient implements CodexHost {
           turnId: invocation.turnId,
         },
         invocation.fatalError,
+        () => {
+          invocation.interruptSent = true;
+        },
       );
       if (!isObject(result) || Object.keys(result).length !== 0) {
+        if (invocation.interruptEvidenceVerified) return;
+        this.rejectInterruptEvidence(
+          invocation,
+          invocation.fatalError ?? publicHostError('HOST_PROTOCOL_ERROR', true),
+        );
         if (this.child === invocation.child) {
           this.failProcess(invocation.fatalError ?? publicHostError('HOST_PROTOCOL_ERROR', true));
         }
@@ -719,11 +758,20 @@ export class CodexAppServerClient implements CodexHost {
       }
       if (invocation.settled) return;
       invocation.interruptGrace = setTimeout(() => {
+        this.rejectInterruptEvidence(
+          invocation,
+          invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true),
+        );
         if (this.child === invocation.child) {
           this.failProcess(invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true));
         }
       }, this.interruptGraceMs);
     } catch {
+      if (invocation.interruptEvidenceVerified) return;
+      this.rejectInterruptEvidence(
+        invocation,
+        invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true),
+      );
       if (this.child === invocation.child) {
         this.failProcess(invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true));
       }
@@ -972,12 +1020,53 @@ export class CodexAppServerClient implements CodexHost {
     this.bindTurnId(invocation, params.turn.id);
     if (invocation.turnId !== params.turn.id) return;
 
+    if (invocation.interruptRequested) {
+      if (invocation.interruptSent) {
+        this.settleInterruptTerminalEvidence(invocation, params.threadId, params.turn);
+      } else {
+        this.rejectInterruptEvidence(
+          invocation,
+          invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true),
+        );
+      }
+    }
+
     invocation.terminalTurn = params.turn;
     this.emitDiagnostic({
       type: 'turn_completed',
       status: params.turn.status === 'completed' ? 'completed' : 'other',
     });
     this.finishTerminalTurn(invocation);
+  }
+
+  private settleInterruptTerminalEvidence(
+    invocation: ActiveInvocation,
+    threadId: string,
+    turn: JsonObject,
+  ): void {
+    try {
+      const evidence = createHostInterruptedTerminalEvidence({
+        threadId,
+        turnId: String(turn.id),
+        status: turn.status as 'interrupted',
+        error: turn.error as null,
+        completedAt: turn.completedAt as number,
+      });
+      if (
+        threadId !== invocation.thread.id ||
+        evidence.turnId !== invocation.turnId ||
+        !invocation.cancelled
+      ) {
+        throw new Error('interrupt-terminal-binding');
+      }
+      this.resolveInterruptEvidence(invocation, evidence);
+      this.emitDiagnostic({ type: 'interrupt_terminal_verified' });
+    } catch {
+      this.rejectInterruptEvidence(
+        invocation,
+        invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true),
+      );
+    }
   }
 
   private finishTerminalTurn(invocation: ActiveInvocation): void {
@@ -1082,6 +1171,9 @@ export class CodexAppServerClient implements CodexHost {
     if (this.activeByThread.get(invocation.thread.id) === invocation) {
       this.activeByThread.delete(invocation.thread.id);
     }
+    if (!invocation.interruptEvidenceSettled) {
+      this.rejectInterruptEvidence(invocation, error ?? publicHostError('HOST_TURN_FAILED', true));
+    }
     if (!invocation.turnId)
       invocation.rejectTurnId(error ?? publicHostError('HOST_PROTOCOL_ERROR'));
     if (error) invocation.rejectResult(error);
@@ -1089,7 +1181,28 @@ export class CodexAppServerClient implements CodexHost {
     else invocation.rejectResult(publicHostError('HOST_PROTOCOL_ERROR'));
   }
 
-  private request(method: string, params: unknown, fatalCause?: CodexHostError): Promise<unknown> {
+  private resolveInterruptEvidence(
+    invocation: ActiveInvocation,
+    evidence: HostInterruptedTerminalEvidence,
+  ): void {
+    if (invocation.interruptEvidenceSettled) return;
+    invocation.interruptEvidenceSettled = true;
+    invocation.interruptEvidenceVerified = true;
+    invocation.resolveInterruptEvidence(evidence);
+  }
+
+  private rejectInterruptEvidence(invocation: ActiveInvocation, error: Error): void {
+    if (invocation.interruptEvidenceSettled) return;
+    invocation.interruptEvidenceSettled = true;
+    invocation.rejectInterruptEvidence(error);
+  }
+
+  private request(
+    method: string,
+    params: unknown,
+    fatalCause?: CodexHostError,
+    onWritten?: () => void,
+  ): Promise<unknown> {
     if (!this.child) {
       return Promise.reject(this.processFailure ?? publicHostError('HOST_NOT_READY'));
     }
@@ -1101,7 +1214,7 @@ export class CodexAppServerClient implements CodexHost {
         reject(this.failProcess(error));
       }, this.rpcTimeoutMs);
       this.pending.set(id, { method, fatalCause, resolve, reject, timer });
-      void this.writeMessage({ id, method, params }).catch(() => {
+      void this.writeMessage({ id, method, params }, onWritten).catch(() => {
         const pending = this.pending.get(id);
         if (!pending) return;
         this.pending.delete(id);
@@ -1116,7 +1229,7 @@ export class CodexAppServerClient implements CodexHost {
     return this.writeMessage(params === undefined ? { method } : { method, params });
   }
 
-  private writeMessage(message: JsonObject): Promise<void> {
+  private writeMessage(message: JsonObject, onWritten?: () => void): Promise<void> {
     const target = this.child;
     if (!target) {
       return Promise.reject(this.processFailure ?? publicHostError('HOST_SESSION_LOST'));
@@ -1126,7 +1239,9 @@ export class CodexAppServerClient implements CodexHost {
       if (this.child !== target || target.stdin.destroyed) {
         throw this.processFailure ?? publicHostError('HOST_SESSION_LOST');
       }
-      if (!target.stdin.write(serialized)) {
+      const accepted = target.stdin.write(serialized);
+      onWritten?.();
+      if (!accepted) {
         await waitForDrain(target.stdin, this.rpcTimeoutMs);
       }
       if (this.child !== target) {
@@ -1245,9 +1360,11 @@ export class CodexAppServerClient implements CodexHost {
 function rejectedTurnHandle(error: CodexHostError): HostTurnHandle {
   const turnId = Promise.reject<string>(error);
   const result = Promise.reject<HostTurnResult>(error);
+  const interruptEvidence = Promise.reject<HostInterruptedTerminalEvidence>(error);
   void turnId.catch(() => undefined);
   void result.catch(() => undefined);
-  return { turnId, result, interrupt: async () => undefined };
+  void interruptEvidence.catch(() => undefined);
+  return { turnId, result, interrupt: () => interruptEvidence };
 }
 
 function delay(milliseconds: number): Promise<void> {

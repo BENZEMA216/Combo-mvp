@@ -1,0 +1,329 @@
+name: VNext T0 Linux CI
+
+on:
+  workflow_call:
+    outputs:
+      tested_sha:
+        description: Exact tested source SHA.
+        value: ${{ jobs.g0.outputs.tested_sha }}
+      disposition:
+        description: FORMAL or ADVISORY_ONLY evidence disposition.
+        value: ${{ jobs.g0.outputs.disposition }}
+      conclusion:
+        description: PASS, FAIL, or BLOCKED gate conclusion without rewriting command outcome.
+        value: ${{ jobs.g0.outputs.conclusion }}
+      evidence_digest:
+        description: Canonical evidence JSON SHA-256.
+        value: ${{ jobs.g0.outputs.evidence_digest }}
+      artifact_digest:
+        description: Immutable GitHub artifact SHA-256.
+        value: ${{ jobs.g0.outputs.artifact_digest }}
+      artifact_name:
+        description: Immutable GitHub artifact name.
+        value: ${{ jobs.g0.outputs.artifact_name }}
+    inputs:
+      revision:
+        description: Exact commit SHA whose clean tree is tested.
+        required: true
+        type: string
+      disposition:
+        description: FORMAL only for a trusted main push; every other caller is ADVISORY_ONLY.
+        required: true
+        type: string
+      caller_workflow_path:
+        description: Repository-relative caller workflow path.
+        required: true
+        type: string
+      caller_workflow_name:
+        description: Stable caller workflow display name.
+        required: true
+        type: string
+      event_name:
+        description: Original caller event.
+        required: true
+        type: string
+      git_ref:
+        description: Original caller Git ref.
+        required: true
+        type: string
+      ref_protected:
+        description: GitHub protected-ref context from the top-level caller.
+        required: true
+        type: boolean
+      base_sha:
+        description: Pull request base SHA, empty outside pull_request.
+        required: false
+        type: string
+        default: ''
+      head_sha:
+        description: Pull request head SHA, empty outside pull_request.
+        required: false
+        type: string
+        default: ''
+      merge_sha:
+        description: Pull request merge SHA, empty outside pull_request.
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  g0:
+    name: T0 / G0 Contract Freeze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      tested_sha: ${{ inputs.revision }}
+      disposition: ${{ inputs.disposition }}
+      conclusion: ${{ steps.validated-evidence.outputs.conclusion }}
+      evidence_digest: ${{ steps.validated-evidence.outputs.evidence_digest }}
+      artifact_digest: ${{ steps.published-evidence.outputs.artifact_digest }}
+      artifact_name: ${{ steps.published-evidence.outputs.artifact_name }}
+    env:
+      EXPECTED_SHA: ${{ inputs.revision }}
+      EXPECTED_DISPOSITION: ${{ inputs.disposition }}
+      EXPECTED_CALLER_WORKFLOW_NAME: ${{ inputs.caller_workflow_name }}
+      EXPECTED_CALLER_WORKFLOW_PATH: ${{ inputs.caller_workflow_path }}
+      EXPECTED_EVENT_NAME: ${{ inputs.event_name }}
+      EXPECTED_GIT_REF: ${{ inputs.git_ref }}
+      EXPECTED_REF_PROTECTED: ${{ inputs.ref_protected }}
+      EXPECTED_BASE_SHA: ${{ inputs.base_sha }}
+      EXPECTED_HEAD_SHA: ${{ inputs.head_sha }}
+      EXPECTED_MERGE_SHA: ${{ inputs.merge_sha }}
+      CI: 'true'
+      COMBO_RUN_CONTAINER_CONTRACTS: '0'
+    steps:
+      - name: Check out the exact T0 source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.revision }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the clean tested identity
+        id: identity
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_OS" == Linux ]]
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+
+          case "$EXPECTED_EVENT_NAME:$EXPECTED_DISPOSITION" in
+            pull_request:ADVISORY_ONLY)
+              [[ "$EXPECTED_MERGE_SHA" == "$EXPECTED_SHA" ]]
+              [[ "$EXPECTED_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+              [[ "$(git rev-parse HEAD^1)" == "$EXPECTED_BASE_SHA" ]]
+              [[ "$(git rev-parse HEAD^2)" == "$EXPECTED_HEAD_SHA" ]]
+              [[ "$EXPECTED_GIT_REF" =~ ^refs/pull/[1-9][0-9]*/merge$ ]]
+              ;;
+            push:FORMAL)
+              [[ "$EXPECTED_GIT_REF" == refs/heads/main ]]
+              [[ "$EXPECTED_REF_PROTECTED" == true ]]
+              [[ -z "$EXPECTED_BASE_SHA$EXPECTED_HEAD_SHA$EXPECTED_MERGE_SHA" ]]
+              ;;
+            workflow_call:ADVISORY_ONLY|workflow_dispatch:ADVISORY_ONLY)
+              [[ -z "$EXPECTED_BASE_SHA$EXPECTED_HEAD_SHA$EXPECTED_MERGE_SHA" ]]
+              ;;
+            *)
+              echo 'Invalid T0 caller/disposition identity.' >&2
+              exit 1
+              ;;
+          esac
+
+          printf 'tree-sha=%s\n' "$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 11.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install the frozen dependency graph
+        run: pnpm install --frozen-lockfile
+
+      - name: Build shared contract dependencies
+        run: |
+          set -euo pipefail
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
+
+      - name: T0 format check
+        run: pnpm format:check
+
+      - name: T0 lint
+        run: pnpm lint
+
+      - name: T0 source typecheck
+        run: pnpm typecheck
+
+      - name: T0 test typecheck
+        run: pnpm typecheck:test
+
+      - name: VNext G0 Linux gate
+        id: vnext-g0
+        env:
+          VNEXT_T0_EVIDENCE_DIRECTORY: ${{ runner.temp }}/vnext-t0-g0-${{ inputs.revision }}-${{ github.run_attempt }}
+          VNEXT_T0_JOB_CONTEXT_JSON: ${{ toJSON(job) }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$VNEXT_T0_EVIDENCE_DIRECTORY/junit"
+          printf 'directory=%s\n' "$VNEXT_T0_EVIDENCE_DIRECTORY" >> "$GITHUB_OUTPUT"
+          started_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+
+          source_clean=true
+          command_executed=false
+          command_exit=''
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo 'T0 source became dirty before the G0 command.' >&2
+            source_clean=false
+          else
+            command_executed=true
+            set +e
+            GITHUB_OUTPUT=/dev/null \
+            GITHUB_ENV=/dev/null \
+            GITHUB_PATH=/dev/null \
+            GITHUB_STEP_SUMMARY=/dev/null \
+              pnpm vnext:test:g0
+            command_exit=$?
+            set -e
+          fi
+
+          if [[ "$(git rev-parse HEAD)" != "$EXPECTED_SHA" ]] ||
+             [[ "$(git rev-parse 'HEAD^{tree}')" != "${{ steps.identity.outputs.tree-sha }}" ]] ||
+             ! git diff --quiet ||
+             ! git diff --cached --quiet ||
+             [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
+            echo 'T0 source identity changed while the gate was running.' >&2
+            source_clean=false
+          fi
+
+          gate_exit=1
+          if [[ "$source_clean" == true && "$command_executed" == true ]]; then
+            gate_exit="$command_exit"
+          fi
+
+          finished_at=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
+          export VNEXT_T0_SOURCE_SHA="$EXPECTED_SHA"
+          export VNEXT_T0_TREE_SHA="${{ steps.identity.outputs.tree-sha }}"
+          export VNEXT_T0_CLEAN="$source_clean"
+          export VNEXT_T0_DISPOSITION="$EXPECTED_DISPOSITION"
+          export VNEXT_T0_REPOSITORY="$GITHUB_REPOSITORY"
+          export VNEXT_T0_CALLER_WORKFLOW_NAME="$EXPECTED_CALLER_WORKFLOW_NAME"
+          export VNEXT_T0_CALLER_WORKFLOW_PATH="$EXPECTED_CALLER_WORKFLOW_PATH"
+          export VNEXT_T0_TOP_LEVEL_WORKFLOW_NAME="$GITHUB_WORKFLOW"
+          export VNEXT_T0_TOP_LEVEL_WORKFLOW_REF="$GITHUB_WORKFLOW_REF"
+          export VNEXT_T0_TOP_LEVEL_WORKFLOW_SHA="$GITHUB_WORKFLOW_SHA"
+          export VNEXT_T0_EVENT_NAME="$EXPECTED_EVENT_NAME"
+          export VNEXT_T0_GIT_REF="$EXPECTED_GIT_REF"
+          export VNEXT_T0_REF_PROTECTED="$EXPECTED_REF_PROTECTED"
+          export VNEXT_T0_RUN_ID="$GITHUB_RUN_ID"
+          export VNEXT_T0_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"
+          export VNEXT_T0_JOB="$GITHUB_JOB"
+          export VNEXT_T0_BASE_SHA="$EXPECTED_BASE_SHA"
+          export VNEXT_T0_HEAD_SHA="$EXPECTED_HEAD_SHA"
+          export VNEXT_T0_MERGE_SHA="$EXPECTED_MERGE_SHA"
+          export VNEXT_T0_RUNNER_OS="$RUNNER_OS"
+          export VNEXT_T0_RUNNER_ARCH="$RUNNER_ARCH"
+          export VNEXT_T0_RUNNER_IMAGE_OS="${ImageOS:?GitHub runner ImageOS is required}"
+          export VNEXT_T0_RUNNER_IMAGE_VERSION="${ImageVersion:?GitHub runner ImageVersion is required}"
+          node_version=$(node --version)
+          pnpm_version=$(pnpm --version)
+          export VNEXT_T0_NODE_VERSION="$node_version"
+          export VNEXT_T0_PNPM_VERSION="$pnpm_version"
+          export VNEXT_T0_STARTED_AT="$started_at"
+          export VNEXT_T0_FINISHED_AT="$finished_at"
+          export VNEXT_T0_COMMAND_EXECUTED="$command_executed"
+          export VNEXT_T0_COMMAND_EXIT_CODE="$command_exit"
+
+          node scripts/vnext-t0-evidence.mjs create \
+            --directory "$VNEXT_T0_EVIDENCE_DIRECTORY" >/dev/null
+          node scripts/vnext-t0-evidence.mjs verify \
+            --directory "$VNEXT_T0_EVIDENCE_DIRECTORY" \
+            --source-sha "$EXPECTED_SHA" >/dev/null
+          exit "$gate_exit"
+
+      - name: Validate the canonical T0 evidence bundle
+        id: validated-evidence
+        if: ${{ always() && steps.vnext-g0.outcome != 'skipped' }}
+        env:
+          VNEXT_T0_EVIDENCE_DIRECTORY: ${{ runner.temp }}/vnext-t0-g0-${{ inputs.revision }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ "$(git rev-parse 'HEAD^{tree}')" == "${{ steps.identity.outputs.tree-sha }}" ]]
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+          evidence_digest=$(node scripts/vnext-t0-evidence.mjs verify \
+            --directory "$VNEXT_T0_EVIDENCE_DIRECTORY" \
+            --source-sha "$EXPECTED_SHA")
+          conclusion=$(node - "$VNEXT_T0_EVIDENCE_DIRECTORY/t0-evidence.json" <<'NODE'
+          const { readFileSync } = require('node:fs');
+          const evidence = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          if (!['PASS', 'FAIL', 'BLOCKED'].includes(evidence.conclusion)) process.exit(1);
+          process.stdout.write(evidence.conclusion);
+          NODE
+          )
+          printf 'evidence_digest=%s\n' "$evidence_digest" >> "$GITHUB_OUTPUT"
+          printf 'conclusion=%s\n' "$conclusion" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the SHA-bound T0 evidence
+        id: evidence-artifact
+        if: ${{ always() && steps.validated-evidence.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: combo-vnext-t0-g0-${{ inputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vnext-t0-g0-${{ inputs.revision }}-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+          include-hidden-files: false
+
+      - name: Download the immutable uploaded T0 evidence
+        id: downloaded-evidence
+        if: ${{ always() && steps.validated-evidence.outcome == 'success' }}
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: combo-vnext-t0-g0-${{ inputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/vnext-t0-uploaded-${{ inputs.revision }}-${{ github.run_attempt }}
+
+      - name: Publish the redacted T0 evidence identity
+        id: published-evidence
+        if: >-
+          ${{ always() &&
+              steps.validated-evidence.outcome == 'success' &&
+              steps.evidence-artifact.outcome == 'success' &&
+              steps.downloaded-evidence.outcome == 'success' }}
+        env:
+          ARTIFACT_DIGEST: ${{ steps.evidence-artifact.outputs.artifact-digest }}
+          ARTIFACT_NAME: combo-vnext-t0-g0-${{ inputs.revision }}-${{ github.run_id }}-${{ github.run_attempt }}
+          EVIDENCE_DIGEST: ${{ steps.validated-evidence.outputs.evidence_digest }}
+          UPLOADED_EVIDENCE_DIRECTORY: ${{ runner.temp }}/vnext-t0-uploaded-${{ inputs.revision }}-${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          [[ "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EVIDENCE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$EXPECTED_SHA" ]]
+          [[ "$(git rev-parse 'HEAD^{tree}')" == "${{ steps.identity.outputs.tree-sha }}" ]]
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]]
+          uploaded_digest=$(node scripts/vnext-t0-evidence.mjs verify \
+            --directory "$UPLOADED_EVIDENCE_DIRECTORY" \
+            --source-sha "$EXPECTED_SHA")
+          [[ "$uploaded_digest" == "$EVIDENCE_DIGEST" ]]
+          node scripts/vnext-t0-evidence.mjs summary \
+            --directory "$UPLOADED_EVIDENCE_DIRECTORY" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf -- '- evidence artifact: %s\n' "$ARTIFACT_NAME"
+            printf -- '- evidence JSON digest: %s\n' "$EVIDENCE_DIGEST"
+            printf -- '- GitHub artifact digest: sha256:%s\n' "$ARTIFACT_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'artifact_name=%s\n' "$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          printf 'artifact_digest=sha256:%s\n' "$ARTIFACT_DIGEST" >> "$GITHUB_OUTPUT"

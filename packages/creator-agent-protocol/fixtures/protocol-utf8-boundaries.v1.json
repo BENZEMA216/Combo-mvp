@@ -3,13 +3,133 @@
   "schemaVersion": 1,
   "scope": "utf8-byte-limits-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb",
-    "brokerContract": "sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f",
-    "openApi": "sha256:4b7b30dd948c96a3d37e32670eec16970faca5154a4ff0a130b3d01b265d0fce"
+    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434",
+    "brokerContract": "sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253",
+    "openApi": "sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db"
   },
   "scalarControlParity": {
     "canaryPrefix": "UTF8_SCALAR_CONTROL_CANARY_",
     "portablePatternSource": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+    "strictPatternSource": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+    "strictRuntimeOwnerIds": [
+      "runtime-resolved-model",
+      "model-policy-model",
+      "codex-runtime-version",
+      "sandbox-spec-adapter-version",
+      "sandbox-attestation-adapter-version",
+      "sandbox-attestation-codex-version",
+      "create-agent-name",
+      "agent-view-name",
+      "broker-handshake-worker-version",
+      "execution-capability-model",
+      "version-rejected-error-code"
+    ],
+    "strictArtifactPointers": [
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentRequest/definitions/CreateAgentRequest/properties/name"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentView/definitions/AgentView/properties/name"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentRequest/properties/name"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/AgentView/properties/name"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/resolvedModel"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/codexRuntime/properties/version"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/modelPolicy/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/workerVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/1/anyOf/3/properties/body/properties/errorCode"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/ExecutionCapabilityUnsigned/definitions/ExecutionCapabilityUnsigned/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxSpec/definitions/SandboxSpec/properties/adapterVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestationUnsigned/definitions/SandboxAttestationUnsigned/properties/adapterVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestationUnsigned/definitions/SandboxAttestationUnsigned/properties/codexVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/adapterVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/codexVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/version"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model"
+      },
+      {
+        "artifact": "broker-contract",
+        "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/workerVersion"
+      },
+      {
+        "artifact": "broker-contract",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model"
+      },
+      {
+        "artifact": "broker-contract",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/1/anyOf/3/properties/body/properties/errorCode"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/version"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model"
+      }
+    ],
     "runtimeOwners": [
       {
         "id": "behavior-role",
@@ -151,6 +271,11 @@
           "artifact": "contract-schemas",
           "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path",
           "reason": "SnapshotPathSchema-has-independent-strict-pattern"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/mediaType",
+          "reason": "SnapshotFileSchema-mediaType-has-independent-ASCII-pattern-census"
         }
       ],
       "expectedCounts": {
@@ -393,6 +518,10 @@
         {
           "artifact": "contract-schemas",
           "pointer": "/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/model"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/mediaType"
         },
         {
           "artifact": "contract-schemas",

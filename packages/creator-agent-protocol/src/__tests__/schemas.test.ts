@@ -74,6 +74,7 @@ import {
   snapshotPublicationPreparationMarkerBytes,
 } from '../http.js';
 import { VnextErrorResponseSchema, errorResponseFor } from '../invocation.js';
+import { assertPublicManualCapOutcomeSubset } from '../public-manual-cap-outcomes.js';
 import {
   IsoDateTimeSchema,
   UnicodeCodePointStringSchema,
@@ -641,6 +642,8 @@ describe('六类共享协议运行时 schema', () => {
       'broker-invocation-prepared.v1.json',
       'broker-invocation-started.v1.json',
       'broker-invocation-succeeded.v1.json',
+      'broker-invocation-cancel.v1.json',
+      'broker-invocation-cancelled.v1.json',
     ]) {
       const text = await readFixtureText(fixture);
       expect(BrokerEnvelopeSchema.safeParse(JSON.parse(text)).success, fixture).toBe(true);
@@ -668,72 +671,67 @@ describe('六类共享协议运行时 schema', () => {
     }
   });
 
-  it('binds the compatibility corpus to the current signed fixture and trusted registration rejects', async () => {
+  it('binds the compatibility corpus to exact N-1 and N handshake goldens', async () => {
     const corpus = ProtocolVersionCorpusSchema.parse(
       await readFixture('protocol-compatibility.v1.json'),
     );
-    const handshakeText = await readFixtureText('broker-handshake.v1.json');
-    const handshake = BrokerHandshakeSchema.parse(JSON.parse(handshakeText));
-    expect(corpus.current).toMatchObject({
-      wireProtocol: handshake.protocol,
-      wireSchemaVersion: handshake.schemaVersion,
-      supportedProtocolVersions: handshake.supportedProtocolVersions,
-      brokerContractDigest: currentBrokerContractDigest(),
-    });
-    expect(corpus.current.handshakeFixtureDigest).toBe(
-      `sha256:${createHash('sha256').update(handshakeText).digest('hex')}`,
-    );
-    expect(corpus.declaredPrevious).toEqual([]);
+    expect(corpus.current.profileId).toBe('worker-n');
+    expect(corpus.declaredPrevious[0].profileId).toBe('worker-n-minus-one');
+    expect(corpus.gatewayReleases).toHaveLength(2);
+    expect(corpus.declaredPairs).toHaveLength(4);
 
+    for (const profile of [corpus.declaredPrevious[0], corpus.current]) {
+      const fixtureName = profile.handshakeFixture.split('/').at(-1)!;
+      const handshakeText = await readFixtureText(fixtureName);
+      const handshake = BrokerHandshakeSchema.parse(JSON.parse(handshakeText));
+      expect(profile).toMatchObject({
+        wireProtocol: handshake.protocol,
+        wireSchemaVersion: handshake.schemaVersion,
+        workerVersion: handshake.workerVersion,
+        supportedProtocolVersions: handshake.supportedProtocolVersions,
+        codexRuntimeArtifacts: handshake.codexRuntimeArtifacts,
+        codexProtocolSchemaDigests: handshake.codexProtocolSchemaDigests,
+        isolationModes: handshake.isolationModes,
+        brokerContractDigest: currentBrokerContractDigest(),
+      });
+      expect(profile.handshakeFixtureDigest).toBe(
+        `sha256:${createHash('sha256').update(handshakeText).digest('hex')}`,
+      );
+    }
+
+    const currentHandshake = BrokerHandshakeSchema.parse(
+      await readFixture('broker-handshake.v1.json'),
+    );
     const currentRegistration = {
-      codexRuntimeArtifacts: handshake.codexRuntimeArtifacts,
-      codexProtocolSchemaDigests: handshake.codexProtocolSchemaDigests,
-      isolationModes: handshake.isolationModes,
-      brokerContractDigest: handshake.brokerContractDigest,
+      codexRuntimeArtifacts: currentHandshake.codexRuntimeArtifacts,
+      codexProtocolSchemaDigests: currentHandshake.codexProtocolSchemaDigests,
+      isolationModes: currentHandshake.isolationModes,
+      brokerContractDigest: currentHandshake.brokerContractDigest,
     };
     expect(BrokerRegistrationCapabilitiesSchema.safeParse(currentRegistration).success).toBe(true);
-    for (const rejected of corpus.rejectedRegistrations) {
-      expect(rejected.advertisementLocus).toBe('creator-oauth-registration');
-      if (rejected.id === 'future-protocol-v2') {
-        expect(
-          BrokerHandshakeUnsignedSchema.safeParse({
-            ...handshake,
-            supportedProtocolVersions: rejected.protocolVersions,
-          }).success,
-        ).toBe(false);
-      } else if (rejected.id === 'unknown-capability-key') {
-        expect(
-          BrokerRegistrationCapabilitiesSchema.safeParse({
-            ...currentRegistration,
-            futureCapability: rejected.advertisedValue,
-          }).success,
-        ).toBe(false);
-      } else if (rejected.id === 'stale-broker-contract') {
-        expect(rejected.advertisedValue).toBe(
-          'sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73',
-        );
-        expect(rejected.advertisedValue).not.toBe(currentBrokerContractDigest());
-        expect(
-          BrokerRegistrationCapabilitiesSchema.safeParse({
-            ...currentRegistration,
-            brokerContractDigest: rejected.advertisedValue,
-          }).success,
-        ).toBe(true);
-      } else {
-        const mutation =
-          rejected.id === 'unaccepted-codex-runtime'
-            ? { codexRuntimeArtifacts: [rejected.advertisedValue] }
-            : rejected.id === 'unaccepted-codex-protocol'
-              ? { codexProtocolSchemaDigests: [rejected.advertisedValue] }
-              : { isolationModes: [rejected.advertisedValue] };
-        expect(
-          BrokerRegistrationCapabilitiesSchema.safeParse({
-            ...currentRegistration,
-            ...mutation,
-          }).success,
-        ).toBe(true);
-      }
-    }
+    const futureProtocol = corpus.rejectedRegistrations.find(
+      ({ id }) => id === 'future-protocol-v2',
+    )!;
+    expect(
+      BrokerHandshakeUnsignedSchema.safeParse({
+        ...currentHandshake,
+        supportedProtocolVersions: futureProtocol.protocolVersions,
+      }).success,
+    ).toBe(false);
+    const unknown = corpus.rejectedRegistrations.find(({ id }) => id === 'unknown-capability-key')!;
+    expect(
+      BrokerRegistrationCapabilitiesSchema.safeParse({
+        ...currentRegistration,
+        futureCapability: unknown.advertisedValue,
+      }).success,
+    ).toBe(false);
+    const native = corpus.rejectedRegistrations.find(({ id }) => id === 'native-macos')!;
+    expect(
+      BrokerRegistrationCapabilitiesSchema.safeParse({
+        ...currentRegistration,
+        isolationModes: [native.advertisedValue],
+      }).success,
+    ).toBe(false);
   });
 
   it('Broker DeviceSigner receives canonical unsigned handshake bytes only', async () => {
@@ -1701,6 +1699,26 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       });
       expect(oversized).toEqual(oversizedBefore);
     }
+    const indexRawBytes = liveRawChainInput.index;
+    const evidenceOutcomeRows = ([-1, 0, 1] as const).map((delta) => {
+      const boundaryBytes = Buffer.concat([
+        Buffer.from(indexRawBytes),
+        Buffer.alloc(EVIDENCE_MAX_STRUCTURED_JSON_BYTES + delta - indexRawBytes.byteLength, 0x20),
+      ]);
+      return {
+        probeId: 'manual-cap:evidence-json:n-minus-one-n-plus-one',
+        delta,
+        accepted: validateEvidenceBundleChain({
+          ...liveRawChainInput,
+          index: boundaryBytes,
+        }).ok,
+      };
+    });
+    assertPublicManualCapOutcomeSubset(
+      await readFixture('public-manual-cap-outcomes.v1.json'),
+      'packages/creator-agent-protocol/src/__tests__/schemas.test.ts',
+      evidenceOutcomeRows,
+    );
 
     const invalidUtf8 = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xc3, 0x28, 0x7d]);
     const duplicateManifestKeys = Buffer.from(
@@ -1996,5 +2014,5 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       ok: false,
       reasons: expect.arrayContaining(['manifestDigest', 'resultCounts', 'verdict']),
     });
-  });
+  }, 15_000);
 });

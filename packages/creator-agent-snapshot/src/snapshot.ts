@@ -18,6 +18,7 @@ import {
 } from './manifest.js';
 import { readStagedProject, stageProject } from './staging.js';
 import {
+  assertCompressedArchiveByteLength,
   assertCompressedArchiveLimits,
   compressDeterministicTar,
   createDeterministicTar,
@@ -80,6 +81,7 @@ export type VerifiedSnapshotArchive = Readonly<{
 }>;
 
 export function verifySnapshotArchive(input: VerifySnapshotArchiveInput): VerifiedSnapshotArchive {
+  assertCompressedArchiveByteLength(input.archiveBytes.byteLength);
   const manifest = parseSnapshotManifest(input.manifestBytes);
   const actualSnapshotDigest = sha256Hex(input.manifestBytes);
   const actualArchiveDigest = sha256Hex(input.archiveBytes);

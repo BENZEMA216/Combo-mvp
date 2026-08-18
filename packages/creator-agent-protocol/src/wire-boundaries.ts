@@ -29,7 +29,7 @@ export const ProtocolWireBoundaryCorpusSchema = z
     protocol: z.literal(PROTOCOL_WIRE_BOUNDARY_CORPUS),
     schemaVersion: z.literal(1),
     scope: z.literal('broker-wire-and-parsed-evidence-json-bytes-only'),
-    evidenceClass: z.literal('runtime-to-advertised-alignment-only'),
+    evidenceClass: z.literal('adr-vnext-034-product-policy-and-runtime-alignment'),
     authorities: z
       .object({
         brokerFrameBytes: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
@@ -70,11 +70,11 @@ export const ProtocolWireBoundaryCorpusSchema = z
       .object({
         artifact: z.literal('schemas/broker-contract.v1.json'),
         digest: z.literal(
-          'sha256:3e8a6a4f907f3b656ee2cfdac8b4b17f49d42f596c0ffcfa1884d843c343795f',
+          'sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253',
         ),
         pointer: z.literal('/maxFrameBytes'),
         maximumBytes: z.literal(65_536),
-        authorityKind: z.literal('runtime-to-advertised-alignment-only'),
+        authorityKind: z.literal('adr-vnext-034-product-policy'),
       })
       .strict(),
     actualIngressPhases: z.tuple([
@@ -96,7 +96,7 @@ export const ProtocolWireBoundaryCorpusSchema = z
       z.literal('load-and-backpressure'),
       z.literal('e3-public-cloud-ingress'),
       z.literal('production'),
-      z.literal('does-not-freeze-65536-as-product-policy'),
+      z.literal('product-policy-frozen-by-adr-vnext-034'),
       z.literal('does-not-complete-sch-004'),
     ]),
     remainingBoundaryClasses: z.tuple([

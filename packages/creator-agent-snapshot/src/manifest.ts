@@ -87,7 +87,7 @@ export function validateSnapshotManifestFiles(files: readonly SnapshotManifestFi
     if (
       typeof file.mediaType !== 'string' ||
       file.mediaType.length === 0 ||
-      Buffer.byteLength(file.mediaType, 'utf8') > 128
+      Buffer.byteLength(file.mediaType, 'utf8') > ALPHA_SNAPSHOT_POLICY.maxMediaTypeBytes
     ) {
       fail('SNAPSHOT_ARCHIVE_INVALID');
     }

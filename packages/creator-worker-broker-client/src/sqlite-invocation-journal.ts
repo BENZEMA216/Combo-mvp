@@ -8,6 +8,9 @@ import {
   BrokerSensitiveMessageSchema,
   ExecutionCapabilitySchema,
   UuidSchema,
+  WORKER_INTERRUPT_RECEIPT_PROTOCOL,
+  WorkerInterruptReceiptSchema,
+  WorkerInvocationCancelledFactSchema,
   WorkerInvocationFactSchema,
   WorkerInvocationPreparedFactSchema,
   WorkerInvocationStartedFactSchema,
@@ -17,6 +20,7 @@ import {
   canonicalizeJson,
   executionCapabilityBindingFrom,
   executionCapabilityDigest,
+  workerInterruptReceiptDigest,
   workerInvocationFactDigest,
   workerConversationReadyFactDigest,
   type BrokerCommand,
@@ -26,6 +30,8 @@ import {
   type ExecutionCapability,
   type ExpectedExecutionCapabilityBinding,
   type WorkerInvocationFact,
+  type WorkerInterruptReceipt,
+  type WorkerCancelReason,
 } from '@cb/creator-agent-protocol';
 
 import {
@@ -39,6 +45,7 @@ import {
 export const WORKER_INVOCATION_SCHEMA_VERSION = 2;
 export const WORKER_CONVERSATION_READY_SCHEMA_VERSION = 3;
 export const WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION = 4;
+export const WORKER_HOST_CONTROL_SCHEMA_VERSION = 5;
 export const WORKER_INVOCATION_TERMINAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const LOCAL_INVOCATION_PROMPT_PROTOCOL = 'combo.local-invocation-prompt/1' as const;
 export const LOCAL_INVOCATION_RESULT_PROTOCOL = 'combo.local-invocation-result/1' as const;
@@ -294,7 +301,7 @@ export const LocalInvocationResultCiphertextSchema = Object.freeze({
  * Invocation facts live in the Broker transport database. Keeping these tables in the same
  * physical WAL is what makes command consumption and the corresponding local fact one commit.
  */
-function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
+function workerInvocationSchemaSql(defensiveIntegrityV4: boolean, hostControlV5 = false): string {
   return `
   -- This table is intentionally empty at every logical boundary. The transport temporarily fills
   -- and deletes it to leave real freelist pages that only terminal/reconciliation transactions
@@ -341,8 +348,8 @@ function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
     local_prompt_cipher_digest TEXT NOT NULL,
     prompt_released_at_ms INTEGER,
     prompt_purged_at_ms INTEGER,
-    host_prompt_release_count INTEGER NOT NULL DEFAULT 0
-      CHECK (host_prompt_release_count IN (0, 1)),
+    ${hostControlV5 ? 'host_dispatch_attempt_count' : 'host_prompt_release_count'} INTEGER NOT NULL DEFAULT 0
+      CHECK (${hostControlV5 ? 'host_dispatch_attempt_count' : 'host_prompt_release_count'} IN (0, 1)),
     agent_version_id TEXT NOT NULL,
     agent_version_digest TEXT NOT NULL,
     snapshot_digest TEXT NOT NULL,
@@ -383,13 +390,34 @@ function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
     terminal_source_event_id TEXT UNIQUE,
     terminal_fact_digest TEXT,
     state TEXT NOT NULL CHECK (
-      state IN ('PREPARED', 'STARTING', 'RUNNING', 'FINAL_READY', 'CLOUD_COMMITTED',
+      state IN ('PREPARED', 'STARTING', 'RUNNING', ${hostControlV5 ? "'CANCEL_REQUESTED', " : ''}'FINAL_READY', 'CLOUD_COMMITTED',
                 'FAILED', 'CANCELLED', 'UNCERTAIN')
     ),
     host_dispatch_intent_count INTEGER NOT NULL DEFAULT 0
       CHECK (host_dispatch_intent_count IN (0, 1)),
     host_dispatch_confirmed_count INTEGER NOT NULL DEFAULT 0
       CHECK (host_dispatch_confirmed_count IN (0, 1)),
+    ${
+      hostControlV5
+        ? `cancel_command_id TEXT UNIQUE,
+    cancel_reason TEXT CHECK (
+      cancel_reason IS NULL OR cancel_reason IN (
+        'CONSUMER_REQUEST', 'DRAIN_DEADLINE', 'SECURITY_REVOKE', 'DEADLINE'
+      )
+    ),
+    interrupt_nonce TEXT UNIQUE,
+    interrupt_intent_at_ms INTEGER,
+    interrupt_attempted_at_ms INTEGER,
+    interrupt_confirmed_at_ms INTEGER,
+    interrupt_receipt_digest TEXT,
+    interrupt_intent_count INTEGER NOT NULL DEFAULT 0
+      CHECK (interrupt_intent_count IN (0, 1)),
+    interrupt_attempt_count INTEGER NOT NULL DEFAULT 0
+      CHECK (interrupt_attempt_count IN (0, 1)),
+    interrupt_confirmed_count INTEGER NOT NULL DEFAULT 0
+      CHECK (interrupt_confirmed_count IN (0, 1)),`
+        : ''
+    }
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
     row_digest TEXT NOT NULL,
@@ -432,14 +460,43 @@ function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
       OR (prompt_ciphertext IS NULL AND prompt_purged_at_ms IS NOT NULL)
     ),
     CHECK (
-      (prompt_released_at_ms IS NULL AND host_prompt_release_count = 0)
-      OR (prompt_released_at_ms IS NOT NULL AND host_prompt_release_count = 1)
+      (prompt_released_at_ms IS NULL AND ${hostControlV5 ? 'host_dispatch_attempt_count' : 'host_prompt_release_count'} = 0)
+      OR (prompt_released_at_ms IS NOT NULL AND ${hostControlV5 ? 'host_dispatch_attempt_count' : 'host_prompt_release_count'} = 1)
     )
+    ${
+      hostControlV5
+        ? `,
+    CHECK (host_dispatch_confirmed_count <= host_dispatch_attempt_count
+      AND host_dispatch_attempt_count <= host_dispatch_intent_count),
+    CHECK (
+      (cancel_command_id IS NULL AND cancel_reason IS NULL AND interrupt_nonce IS NULL
+        AND interrupt_intent_at_ms IS NULL AND interrupt_attempted_at_ms IS NULL
+        AND interrupt_confirmed_at_ms IS NULL AND interrupt_receipt_digest IS NULL
+        AND interrupt_intent_count = 0 AND interrupt_attempt_count = 0
+        AND interrupt_confirmed_count = 0)
+      OR
+      (cancel_command_id IS NOT NULL AND cancel_reason IS NOT NULL AND interrupt_nonce IS NOT NULL
+        AND interrupt_intent_at_ms IS NOT NULL AND interrupt_intent_count = 1
+        AND interrupt_attempt_count <= interrupt_intent_count
+        AND interrupt_confirmed_count <= 1)
+    ),
+    CHECK (
+      (interrupt_attempt_count = 0 AND interrupt_attempted_at_ms IS NULL)
+      OR (interrupt_attempt_count = 1 AND interrupt_attempted_at_ms IS NOT NULL)
+    ),
+    CHECK (
+      (interrupt_confirmed_count = 0 AND interrupt_confirmed_at_ms IS NULL
+        AND interrupt_receipt_digest IS NULL)
+      OR (interrupt_confirmed_count = 1 AND interrupt_confirmed_at_ms IS NOT NULL
+        AND interrupt_receipt_digest IS NOT NULL)
+    )`
+        : ''
+    }
   ) STRICT;
 
   CREATE UNIQUE INDEX local_one_active_invocation
     ON local_invocations(installation_id)
-    WHERE state IN ('PREPARED', 'STARTING', 'RUNNING', 'FINAL_READY');
+    WHERE state IN ('PREPARED', 'STARTING', 'RUNNING', ${hostControlV5 ? "'CANCEL_REQUESTED', " : ''}'FINAL_READY');
 
   CREATE INDEX local_invocation_conversation_state
     ON local_invocations(conversation_id, state, created_at_ms);
@@ -471,15 +528,16 @@ function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
     source_event_id TEXT UNIQUE,
     event_type TEXT NOT NULL CHECK (
       event_type IN ('invocation.prepared', 'local.invocation.starting',
+                     ${hostControlV5 ? "'local.invocation.cancel_requested', " : ''}
                      'invocation.started', 'invocation.succeeded', 'invocation.failed',
                      'invocation.cancelled', 'invocation.uncertain')
     ),
     from_state TEXT CHECK (
-      from_state IS NULL OR from_state IN ('PREPARED', 'STARTING', 'RUNNING', 'FINAL_READY',
+      from_state IS NULL OR from_state IN ('PREPARED', 'STARTING', 'RUNNING', ${hostControlV5 ? "'CANCEL_REQUESTED', " : ''}'FINAL_READY',
                                            'CLOUD_COMMITTED', 'FAILED', 'CANCELLED', 'UNCERTAIN')
     ),
     to_state TEXT NOT NULL CHECK (
-      to_state IN ('PREPARED', 'STARTING', 'RUNNING', 'FINAL_READY', 'CLOUD_COMMITTED',
+      to_state IN ('PREPARED', 'STARTING', 'RUNNING', ${hostControlV5 ? "'CANCEL_REQUESTED', " : ''}'FINAL_READY', 'CLOUD_COMMITTED',
                    'FAILED', 'CANCELLED', 'UNCERTAIN')
     ),
     fact_json TEXT,
@@ -530,6 +588,29 @@ function workerInvocationSchemaSql(defensiveIntegrityV4: boolean): string {
 
   CREATE INDEX local_invocation_delivery_source
     ON local_invocation_deliveries(source_event_id, created_at_ms);
+
+  ${
+    hostControlV5
+      ? `CREATE TABLE local_invocation_interrupt_receipts (
+    invocation_id TEXT PRIMARY KEY REFERENCES local_invocations(invocation_id),
+    cancel_command_id TEXT NOT NULL UNIQUE REFERENCES local_consumed_commands(command_id),
+    interrupt_nonce TEXT NOT NULL UNIQUE,
+    outcome TEXT NOT NULL CHECK (outcome IN ('PROVED_NOT_EXECUTED', 'INTERRUPTED')),
+    evidence_authority TEXT NOT NULL CHECK (
+      evidence_authority IN ('LOCAL_DISPATCH_COUNTER', 'HOST')
+    ),
+    receipt_json TEXT NOT NULL CHECK (length(receipt_json) BETWEEN 2 AND 8192),
+    receipt_digest TEXT NOT NULL UNIQUE,
+    verified_at_ms INTEGER NOT NULL,
+    row_digest TEXT NOT NULL
+  ) STRICT;
+
+  CREATE TRIGGER local_invocation_interrupt_receipts_no_update
+    BEFORE UPDATE ON local_invocation_interrupt_receipts BEGIN
+      SELECT RAISE(ABORT, 'local_invocation_interrupt_receipts is append-only');
+    END;`
+      : ''
+  }
 
   CREATE TABLE local_invocation_outbox_receipts (
     receipt_id INTEGER PRIMARY KEY,
@@ -587,6 +668,9 @@ export const WORKER_INVOCATION_SCHEMA_SQL = workerInvocationSchemaSql(false);
 
 /** Fresh v4 local authority schema with self-contained ACK evidence. */
 export const WORKER_INVOCATION_SCHEMA_V4_SQL = workerInvocationSchemaSql(true);
+
+/** Fresh v5 local authority with durable dispatch attempts and interrupt receipts. */
+export const WORKER_INVOCATION_SCHEMA_V5_SQL = workerInvocationSchemaSql(true, true);
 
 /** Additive v2 -> v3 authority for one durable conversation.ready business fact. */
 function workerConversationReadySchemaSql(defensiveIntegrityV4: boolean): string {
@@ -738,6 +822,10 @@ const LOCAL_AUTHORITY_TABLES = [
   ['local_invocation_outbox_receipts', 'receipt_id'],
 ] as const;
 
+const LOCAL_HOST_CONTROL_AUTHORITY_TABLES = [
+  ['local_invocation_interrupt_receipts', 'invocation_id'],
+] as const;
+
 const LOCAL_READY_AUTHORITY_TABLES = [
   ['local_conversation_ready_facts', 'source_event_id'],
   ['local_conversation_ready_outbox', 'source_event_id'],
@@ -778,7 +866,20 @@ export function workerInvocationTablesExist(database: DatabaseSync): boolean {
        WHERE type = 'table' AND name = 'local_recovery_reserve_pages'`,
     )
     .get() as { count: number };
-  return row.count === LOCAL_AUTHORITY_TABLES.length && reserve.count === 1;
+  const base = row.count === LOCAL_AUTHORITY_TABLES.length && reserve.count === 1;
+  if (!base) return false;
+  if (workerSchemaVersion(database) < WORKER_HOST_CONTROL_SCHEMA_VERSION) return true;
+  return workerHostControlTablesExist(database);
+}
+
+export function workerHostControlTablesExist(database: DatabaseSync): boolean {
+  const row = database
+    .prepare(
+      `SELECT count(*) AS count FROM sqlite_master
+       WHERE type = 'table' AND name = 'local_invocation_interrupt_receipts'`,
+    )
+    .get() as { count: number };
+  return row.count === LOCAL_HOST_CONTROL_AUTHORITY_TABLES.length;
 }
 
 /** Rows folded into transport_meta.authority_digest and therefore the external watermark. */
@@ -790,9 +891,18 @@ export function workerInvocationAuthorityRows(database: DatabaseSync): unknown {
       database.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all(),
     ]),
   );
-  if (!workerConversationReadyTablesExist(database)) return invocation;
+  const hostControl = workerHostControlTablesExist(database)
+    ? Object.fromEntries(
+        LOCAL_HOST_CONTROL_AUTHORITY_TABLES.map(([table, orderBy]) => [
+          table,
+          database.prepare(`SELECT * FROM ${table} ORDER BY ${orderBy}`).all(),
+        ]),
+      )
+    : {};
+  if (!workerConversationReadyTablesExist(database)) return { ...invocation, ...hostControl };
   return {
     ...invocation,
+    ...hostControl,
     ...Object.fromEntries(
       LOCAL_READY_AUTHORITY_TABLES.map(([table, orderBy]) => [
         table,
@@ -1259,7 +1369,13 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
       database.prepare('SELECT * FROM local_conversations').all() as Array<Record<string, unknown>>
     ).map((row) => [String(row.conversation_id), row]),
   );
-  for (const [table] of LOCAL_AUTHORITY_TABLES) {
+  const authorityTables = [
+    ...LOCAL_AUTHORITY_TABLES,
+    ...(defensiveIntegrityV4 && workerHostControlTablesExist(database)
+      ? LOCAL_HOST_CONTROL_AUTHORITY_TABLES
+      : []),
+  ] as const;
+  for (const [table] of authorityTables) {
     const rows = database.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
     for (const row of rows) {
       const digestColumn = table === 'local_invocation_events' ? 'event_digest' : 'row_digest';
@@ -1292,6 +1408,60 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
           !eventFactMatchesInvocation(row, fact, invocation, conversations)
         ) {
           throw new Error('invalid-local-invocation-event-fact');
+        }
+      }
+      if (table === 'local_invocation_interrupt_receipts') {
+        const invocation = invocations.get(String(row.invocation_id));
+        let receipt: WorkerInterruptReceipt;
+        try {
+          receipt = WorkerInterruptReceiptSchema.parse(JSON.parse(String(row.receipt_json)));
+        } catch {
+          throw new Error('invalid-local-interrupt-receipt-json');
+        }
+        const conversation = invocation && conversations.get(invocation.conversation_id);
+        if (
+          invocation === undefined ||
+          canonicalizeJson(receipt) !== row.receipt_json ||
+          workerInterruptReceiptDigest(receipt) !== row.receipt_digest ||
+          invocation.cancel_command_id !== row.cancel_command_id ||
+          invocation.interrupt_nonce !== row.interrupt_nonce ||
+          invocation.interrupt_receipt_digest !== row.receipt_digest ||
+          invocation.interrupt_confirmed_count !== 1 ||
+          invocation.interrupt_confirmed_at_ms !== row.verified_at_ms ||
+          receipt.outcome !== row.outcome ||
+          receipt.evidenceAuthority !== row.evidence_authority ||
+          receipt.installationId !== invocation.installation_id ||
+          receipt.invocationId !== invocation.invocation_id ||
+          receipt.conversationId !== invocation.conversation_id ||
+          receipt.agentVersionId !== invocation.agent_version_id ||
+          receipt.agentVersionDigest !== invocation.agent_version_digest ||
+          receipt.snapshotDigest !== invocation.snapshot_digest ||
+          receipt.leaseId !== invocation.lease_id ||
+          receipt.fence !== invocation.fence ||
+          receipt.executionCapabilityDigest !== invocation.execution_capability_digest ||
+          receipt.cancelCommandId !== invocation.cancel_command_id ||
+          receipt.cancelReason !== invocation.cancel_reason ||
+          receipt.interruptNonce !== invocation.interrupt_nonce ||
+          receipt.dispatchAttemptCount !== dispatchAttemptCount(invocation) ||
+          (receipt.outcome === 'PROVED_NOT_EXECUTED' &&
+            ((invocation.interrupt_attempt_count ?? 0) !== 0 ||
+              invocation.interrupt_attempted_at_ms != null ||
+              (receipt.startCommandId === null
+                ? invocation.start_command_id !== null || invocation.dispatch_nonce !== null
+                : receipt.startCommandId !== invocation.start_command_id ||
+                  receipt.dispatchNonce !== invocation.dispatch_nonce))) ||
+          (receipt.outcome === 'INTERRUPTED' &&
+            ((invocation.interrupt_attempt_count ?? 0) !== 1 ||
+              invocation.interrupt_attempted_at_ms == null ||
+              receipt.startCommandId !== invocation.start_command_id ||
+              receipt.dispatchNonce !== invocation.dispatch_nonce ||
+              receipt.runtimeThreadId !== conversation?.runtime_thread_id ||
+              receipt.runtimeTurnId !== invocation.runtime_turn_id ||
+              receipt.dispatchReceiptDigest !== invocation.dispatch_receipt_digest ||
+              receipt.sandboxInstanceId !== conversation?.sandbox_instance_id ||
+              receipt.sandboxAttestationDigest !== invocation.sandbox_attestation_digest))
+        ) {
+          throw new Error('invalid-local-interrupt-receipt-binding');
         }
       }
       if (table === 'local_invocation_outbox') {
@@ -1604,9 +1774,30 @@ export function assertWorkerInvocationIntegrity(database: DatabaseSync): void {
          WHERE invocation_id = ? AND event_type = 'invocation.prepared'`,
       )
       .get(invocation.invocation_id) as { fact_digest: string } | undefined;
+    const terminal =
+      invocation.terminal_source_event_id === null
+        ? undefined
+        : (database
+            .prepare(
+              `SELECT event_type FROM local_invocation_events
+               WHERE invocation_id = ? AND source_event_id = ?`,
+            )
+            .get(invocation.invocation_id, invocation.terminal_source_event_id) as
+            | { event_type: string }
+            | undefined);
+    const interruptReceipt = workerHostControlTablesExist(database)
+      ? database
+          .prepare(
+            `SELECT receipt_digest FROM local_invocation_interrupt_receipts
+             WHERE invocation_id = ?`,
+          )
+          .get(invocation.invocation_id)
+      : undefined;
     if (
       prepared?.fact_digest !== invocation.prepared_fact_digest ||
-      !invocationStateColumnsAreValid(invocation)
+      (invocation.terminal_source_event_id !== null && terminal === undefined) ||
+      ((invocation.interrupt_confirmed_count ?? 0) === 1) !== (interruptReceipt !== undefined) ||
+      !invocationStateColumnsAreValid(invocation, terminal?.event_type)
     ) {
       throw new Error('invalid-local-invocation-state-binding');
     }
@@ -1657,10 +1848,35 @@ function eventFactMatchesInvocation(
     );
   }
   if (fact.type === 'invocation.uncertain') {
+    const expectedFrom =
+      fact.reason === 'CANCEL_NOT_CONFIRMED'
+        ? event.from_state === 'STARTING' || event.from_state === 'CANCEL_REQUESTED'
+        : event.from_state === 'STARTING';
     return (
       fact.sourceEventId === invocation.invocation_id &&
-      event.from_state === 'STARTING' &&
+      expectedFrom &&
       event.to_state === 'UNCERTAIN' &&
+      (fact.reason !== 'CANCEL_NOT_CONFIRMED' ||
+        (event.command_id === invocation.cancel_command_id &&
+          invocation.interrupt_intent_count === 1 &&
+          (event.from_state === 'CANCEL_REQUESTED'
+            ? invocation.interrupt_attempt_count === 1
+            : invocation.interrupt_attempt_count === 0) &&
+          invocation.interrupt_confirmed_count === 0)) &&
+      invocation.terminal_source_event_id === fact.sourceEventId &&
+      invocation.terminal_fact_digest === workerInvocationFactDigest(fact)
+    );
+  }
+  if (fact.type === 'invocation.cancelled') {
+    return (
+      fact.sourceEventId === invocation.invocation_id &&
+      event.command_id === invocation.cancel_command_id &&
+      (event.from_state === 'PREPARED' ||
+        event.from_state === 'STARTING' ||
+        event.from_state === 'CANCEL_REQUESTED') &&
+      event.to_state === 'CANCELLED' &&
+      fact.interruptReceiptDigest === invocation.interrupt_receipt_digest &&
+      invocation.interrupt_confirmed_count === 1 &&
       invocation.terminal_source_event_id === fact.sourceEventId &&
       invocation.terminal_fact_digest === workerInvocationFactDigest(fact)
     );
@@ -1725,6 +1941,9 @@ function factFromBrokerEvent(envelope: BrokerEnvelope): WorkerInvocationFact {
   if (envelope.type === 'invocation.succeeded') {
     delete body.conversationId;
     delete body.resultCiphertext;
+  }
+  if (envelope.type === 'invocation.cancelled') {
+    delete body.interruptReceipt;
   }
   return WorkerInvocationFactSchema.parse(body);
 }
@@ -2024,12 +2243,12 @@ function loadExactCloudAck(
   });
 }
 
-function invocationStateColumnsAreValid(row: InvocationRow): boolean {
+function invocationStateColumnsAreValid(row: InvocationRow, terminalEventType?: string): boolean {
   const promptRetained = row.prompt_ciphertext !== null && row.prompt_purged_at_ms === null;
   const promptPurged = row.prompt_ciphertext === null && row.prompt_purged_at_ms !== null;
-  const promptUnreleased =
-    row.prompt_released_at_ms === null && row.host_prompt_release_count === 0;
-  const promptReleased = row.prompt_released_at_ms !== null && row.host_prompt_release_count === 1;
+  const attemptCount = dispatchAttemptCount(row);
+  const promptUnreleased = row.prompt_released_at_ms === null && attemptCount === 0;
+  const promptReleased = row.prompt_released_at_ms !== null && attemptCount === 1;
   if (!SHA256_HEX.test(row.local_prompt_cipher_digest)) return false;
   const hasStart =
     row.start_command_id !== null &&
@@ -2046,8 +2265,38 @@ function invocationStateColumnsAreValid(row: InvocationRow): boolean {
     row.local_result_cipher_digest !== null &&
     row.result_source_event_id === row.invocation_id &&
     row.result_fact_digest !== null;
+  const interruptIntentCount = row.interrupt_intent_count ?? 0;
+  const interruptAttemptCount = row.interrupt_attempt_count ?? 0;
+  const interruptConfirmedCount = row.interrupt_confirmed_count ?? 0;
+  const hasInterruptIntent =
+    row.cancel_command_id != null &&
+    row.cancel_reason != null &&
+    row.interrupt_nonce != null &&
+    row.interrupt_intent_at_ms != null &&
+    interruptIntentCount === 1;
+  const hasInterruptAttempt =
+    hasInterruptIntent && row.interrupt_attempted_at_ms != null && interruptAttemptCount === 1;
+  const hasInterruptReceipt =
+    hasInterruptIntent &&
+    row.interrupt_confirmed_at_ms != null &&
+    row.interrupt_receipt_digest != null &&
+    interruptConfirmedCount === 1;
+  const hasNoInterrupt =
+    !hasInterruptIntent &&
+    !hasInterruptAttempt &&
+    !hasInterruptReceipt &&
+    interruptIntentCount === 0 &&
+    interruptAttemptCount === 0 &&
+    interruptConfirmedCount === 0;
   if (row.state === 'PREPARED') {
-    return promptRetained && promptUnreleased && !hasStart && !hasHostReceipt && !hasResult;
+    return (
+      promptRetained &&
+      promptUnreleased &&
+      !hasStart &&
+      !hasHostReceipt &&
+      !hasResult &&
+      hasNoInterrupt
+    );
   }
   if (row.state === 'STARTING') {
     return (
@@ -2055,36 +2304,113 @@ function invocationStateColumnsAreValid(row: InvocationRow): boolean {
       (promptUnreleased || promptReleased) &&
       hasStart &&
       !hasHostReceipt &&
-      !hasResult
+      !hasResult &&
+      hasNoInterrupt
     );
   }
   if (row.state === 'RUNNING') {
-    return promptPurged && promptReleased && hasStart && hasHostReceipt && !hasResult;
+    return (
+      promptPurged && promptReleased && hasStart && hasHostReceipt && !hasResult && hasNoInterrupt
+    );
   }
-  if (row.state === 'FINAL_READY' || row.state === 'CLOUD_COMMITTED') {
+  if (row.state === 'CANCEL_REQUESTED') {
+    return (
+      promptPurged &&
+      promptReleased &&
+      hasStart &&
+      hasHostReceipt &&
+      !hasResult &&
+      hasInterruptIntent &&
+      !hasInterruptReceipt
+    );
+  }
+  if (row.state === 'FINAL_READY') {
     return (
       promptPurged &&
       promptReleased &&
       hasStart &&
       hasHostReceipt &&
       hasResult &&
+      hasNoInterrupt &&
+      terminalEventType === 'invocation.succeeded' &&
       row.terminal_source_event_id === row.invocation_id &&
       row.terminal_fact_digest === row.result_fact_digest
     );
   }
-  if (row.state === 'UNCERTAIN') {
+  if (row.state === 'CLOUD_COMMITTED') {
+    const hasTerminal =
+      row.terminal_source_event_id === row.invocation_id && row.terminal_fact_digest !== null;
+    const succeeded =
+      hasResult &&
+      hasNoInterrupt &&
+      terminalEventType === 'invocation.succeeded' &&
+      row.terminal_fact_digest === row.result_fact_digest;
+    const cancelled =
+      !hasResult &&
+      hasInterruptIntent &&
+      hasInterruptReceipt &&
+      terminalEventType === 'invocation.cancelled';
+    const otherTerminal =
+      !hasResult &&
+      hasNoInterrupt &&
+      (terminalEventType === 'invocation.failed' || terminalEventType === 'invocation.uncertain');
+    const cancelUncertain =
+      !hasResult &&
+      hasInterruptIntent &&
+      !hasInterruptReceipt &&
+      terminalEventType === 'invocation.uncertain';
     return (
+      promptPurged && hasTerminal && (succeeded || cancelled || otherTerminal || cancelUncertain)
+    );
+  }
+  if (row.state === 'UNCERTAIN') {
+    const startUnknown =
       promptPurged &&
       (promptUnreleased || promptReleased) &&
       hasStart &&
       !hasHostReceipt &&
       !hasResult &&
+      hasNoInterrupt;
+    const interruptUnknown =
+      promptPurged &&
+      promptReleased &&
+      hasStart &&
+      hasHostReceipt &&
+      !hasResult &&
+      hasInterruptIntent &&
+      hasInterruptAttempt &&
+      !hasInterruptReceipt;
+    const cancelDuringAmbiguousStart =
+      promptPurged &&
+      promptReleased &&
+      hasStart &&
+      !hasHostReceipt &&
+      !hasResult &&
+      hasInterruptIntent &&
+      !hasInterruptAttempt &&
+      !hasInterruptReceipt;
+    return (
+      (startUnknown || interruptUnknown || cancelDuringAmbiguousStart) &&
+      terminalEventType === 'invocation.uncertain' &&
+      row.terminal_source_event_id === row.invocation_id &&
+      row.terminal_fact_digest !== null
+    );
+  }
+  if (row.state === 'CANCELLED') {
+    return (
+      promptPurged &&
+      !hasResult &&
+      hasInterruptIntent &&
+      hasInterruptReceipt &&
+      terminalEventType === 'invocation.cancelled' &&
       row.terminal_source_event_id === row.invocation_id &&
       row.terminal_fact_digest !== null
     );
   }
   return (
     promptPurged &&
+    hasNoInterrupt &&
+    terminalEventType === 'invocation.failed' &&
     row.terminal_source_event_id === row.invocation_id &&
     row.terminal_fact_digest !== null
   );
@@ -2117,6 +2443,9 @@ export type WorkerInvocationJournalErrorCode =
   | 'ILLEGAL_LOCAL_TRANSITION'
   | 'PROMPT_AEAD_INVALID'
   | 'HOST_RECEIPT_INVALID'
+  | 'CANCEL_COMMAND_CONFLICT'
+  | 'INTERRUPT_RECEIPT_INVALID'
+  | 'INTERRUPT_IN_PROGRESS'
   | 'FINAL_AEAD_INVALID'
   | 'FINAL_CONFLICT'
   | 'OUTBOX_CONFLICT'
@@ -2189,6 +2518,7 @@ export type HostDispatchExpectedBinding = Readonly<{
   agentVersionDigest: string;
   snapshotDigest: string;
   sandboxInstanceId: string;
+  runtimeThreadId: string;
 }>;
 
 export type VerifiedHostDispatchReceipt = Readonly<{
@@ -2212,6 +2542,49 @@ export interface TrustedHostDispatchPort {
       permit: OpaqueHostDispatchPermit;
       userMessage: Uint8Array;
     }>,
+    signal: AbortSignal,
+  ): Promise<unknown>;
+}
+
+export type HostInterruptExpectedBinding = Readonly<{
+  installationId: string;
+  invocationId: string;
+  conversationId: string;
+  agentVersionId: string;
+  agentVersionDigest: string;
+  snapshotDigest: string;
+  leaseId: string;
+  fence: string;
+  executionCapabilityDigest: string;
+  startCommandId: string;
+  cancelCommandId: string;
+  cancelReason: WorkerCancelReason;
+  interruptNonce: string;
+  dispatchNonce: string;
+  runtimeThreadId: string;
+  runtimeTurnId: string;
+  dispatchReceiptDigest: string;
+  sandboxInstanceId: string;
+  sandboxAttestationDigest: string;
+}>;
+
+export type VerifiedHostInterruptReceipt = Readonly<{
+  hostTerminalDigest: string;
+}>;
+
+export interface HostInterruptReceiptAuthorityPort {
+  /** Only a terminal Host observation for the exact accepted turn may return successfully. */
+  verify(
+    input: unknown,
+    expected: HostInterruptExpectedBinding,
+    cloudNow: Date,
+  ): VerifiedHostInterruptReceipt;
+}
+
+export interface TrustedHostInterruptPort {
+  /** Sends one interrupt to an already accepted Host turn; it must never dispatch a new turn. */
+  interruptOnce(
+    input: Readonly<{ permit: OpaqueHostInterruptPermit }>,
     signal: AbortSignal,
   ): Promise<unknown>;
 }
@@ -2289,12 +2662,15 @@ export type SqliteWorkerInvocationJournalOptions = Readonly<{
   readyConversationAuthority: ReadyConversationAuthorityPort;
   hostDispatchPort: TrustedHostDispatchPort;
   hostDispatchReceiptAuthority: HostDispatchReceiptAuthorityPort;
+  hostInterruptPort?: TrustedHostInterruptPort;
+  hostInterruptReceiptAuthority?: HostInterruptReceiptAuthorityPort;
   localPromptAeadAuthority: LocalPromptAeadAuthorityPort;
   localResultAeadAuthority: LocalResultAeadAuthorityPort;
   brokerResultReencryptAuthority: BrokerResultReencryptAuthorityPort;
   cloudAckAuthority: CloudInvocationAckAuthorityPort;
   cloudClock: TrustedCloudClockPort;
   dispatchNonceFactory?: () => string;
+  interruptNonceFactory?: () => string;
   maxInvocations?: number;
   maxPendingFacts?: number;
 }>;
@@ -2362,6 +2738,26 @@ export type OpaqueHostDispatchPermit = Readonly<{
   deadlineAt: string;
 }>;
 
+export type OpaqueHostInterruptPermit = Readonly<{
+  invocationId: string;
+  conversationId: string;
+  cancelCommandId: string;
+  cancelReason: WorkerCancelReason;
+  interruptNonce: string;
+  startCommandId: string;
+  dispatchNonce: string;
+  runtimeThreadId: string;
+  runtimeTurnId: string;
+  dispatchReceiptDigest: string;
+  sandboxInstanceId: string;
+  sandboxAttestationDigest: string;
+}>;
+
+type CancelCommandIdentity = Readonly<{
+  messageId: string;
+  body: Readonly<{ reason: WorkerCancelReason }>;
+}>;
+
 type OneUseHostInvocationInput = Readonly<{
   invocationId: string;
   conversationId: string;
@@ -2396,6 +2792,36 @@ export type StartInvocationDecision =
   | Readonly<{ action: 'DISPATCH_ONCE'; permit: OpaqueHostDispatchPermit }>
   | Readonly<{ action: 'RETURN_IN_PROGRESS'; state: string }>
   | Readonly<{ action: 'UNCERTAIN'; sourceEventId: string; factDigest: string }>;
+
+export type CancelInvocationDecision =
+  | Readonly<{
+      action: 'CANCELLED';
+      sourceEventId: string;
+      factDigest: string;
+      interruptReceiptDigest: string;
+      replayed: boolean;
+    }>
+  | Readonly<{ action: 'INTERRUPT_ONCE'; permit: OpaqueHostInterruptPermit }>
+  | Readonly<{ action: 'RETURN_TERMINAL'; state: string }>
+  | Readonly<{ action: 'UNCERTAIN'; sourceEventId: string; factDigest: string }>;
+
+export type RecoverableHostAction =
+  | Readonly<{
+      action: 'DISPATCH_ONCE';
+      invocationId: string;
+      permit: OpaqueHostDispatchPermit;
+    }>
+  | Readonly<{
+      action: 'INTERRUPT_ONCE';
+      invocationId: string;
+      permit: OpaqueHostInterruptPermit;
+    }>
+  | Readonly<{
+      action: 'UNCERTAIN';
+      invocationId: string;
+      sourceEventId: string;
+      factDigest: string;
+    }>;
 
 export type PendingInvocationFactReference = Readonly<{
   sourceEventId: string;
@@ -2518,7 +2944,8 @@ type InvocationRow = Record<string, unknown> & {
   local_prompt_cipher_digest: string;
   prompt_released_at_ms: number | null;
   prompt_purged_at_ms: number | null;
-  host_prompt_release_count: number;
+  host_prompt_release_count?: number;
+  host_dispatch_attempt_count?: number;
   agent_version_id: string;
   agent_version_digest: string;
   snapshot_digest: string;
@@ -2551,15 +2978,31 @@ type InvocationRow = Record<string, unknown> & {
   result_fact_digest: string | null;
   terminal_source_event_id: string | null;
   terminal_fact_digest: string | null;
+  cancel_command_id?: string | null;
+  cancel_reason?: string | null;
+  interrupt_nonce?: string | null;
+  interrupt_intent_at_ms?: number | null;
+  interrupt_attempted_at_ms?: number | null;
+  interrupt_confirmed_at_ms?: number | null;
+  interrupt_receipt_digest?: string | null;
+  interrupt_intent_count?: number;
+  interrupt_attempt_count?: number;
+  interrupt_confirmed_count?: number;
   state: string;
   created_at_ms: number;
   updated_at_ms: number;
 };
 
+function dispatchAttemptCount(row: InvocationRow): number {
+  const value = row.host_dispatch_attempt_count ?? row.host_prompt_release_count;
+  return value === 0 || value === 1 ? value : -1;
+}
+
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const DEFAULT_MAX_INVOCATIONS = 10_000;
 const DEFAULT_MAX_PENDING_FACTS = 2_000;
+const HOST_INTERRUPT_HARD_TIMEOUT_MS = 10_000;
 const MAX_RETAINED_CONSUMED_COMMANDS = 100_000;
 const MAX_RETAINED_INVOCATION_DELIVERIES = 100_000;
 
@@ -2572,12 +3015,15 @@ export class SqliteWorkerInvocationJournal {
   readonly #readyConversationAuthority: ReadyConversationAuthorityPort;
   readonly #hostDispatchPort: TrustedHostDispatchPort;
   readonly #hostDispatchReceiptAuthority: HostDispatchReceiptAuthorityPort;
+  readonly #hostInterruptPort: TrustedHostInterruptPort | undefined;
+  readonly #hostInterruptReceiptAuthority: HostInterruptReceiptAuthorityPort | undefined;
   readonly #localPromptAeadAuthority: LocalPromptAeadAuthorityPort;
   readonly #localResultAeadAuthority: LocalResultAeadAuthorityPort;
   readonly #brokerResultReencryptAuthority: BrokerResultReencryptAuthorityPort;
   readonly #cloudAckAuthority: CloudInvocationAckAuthorityPort;
   readonly #cloudClock: TrustedCloudClockPort;
   readonly #dispatchNonceFactory: () => string;
+  readonly #interruptNonceFactory: () => string;
   readonly #maxInvocations: number;
   readonly #maxPendingFacts: number;
 
@@ -2589,12 +3035,21 @@ export class SqliteWorkerInvocationJournal {
     this.#readyConversationAuthority = options.readyConversationAuthority;
     this.#hostDispatchPort = options.hostDispatchPort;
     this.#hostDispatchReceiptAuthority = options.hostDispatchReceiptAuthority;
+    this.#hostInterruptPort = options.hostInterruptPort;
+    this.#hostInterruptReceiptAuthority = options.hostInterruptReceiptAuthority;
+    if (
+      (this.#hostInterruptPort === undefined) !==
+      (this.#hostInterruptReceiptAuthority === undefined)
+    ) {
+      throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+    }
     this.#localPromptAeadAuthority = options.localPromptAeadAuthority;
     this.#localResultAeadAuthority = options.localResultAeadAuthority;
     this.#brokerResultReencryptAuthority = options.brokerResultReencryptAuthority;
     this.#cloudAckAuthority = options.cloudAckAuthority;
     this.#cloudClock = options.cloudClock;
     this.#dispatchNonceFactory = options.dispatchNonceFactory ?? uuidV7;
+    this.#interruptNonceFactory = options.interruptNonceFactory ?? uuidV7;
     this.#maxInvocations = boundedCapacity(
       options.maxInvocations ?? DEFAULT_MAX_INVOCATIONS,
       1,
@@ -2608,6 +3063,20 @@ export class SqliteWorkerInvocationJournal {
     this.host.inspect((database) => this.#verifyPersistedCapabilities(database));
     this.host.inspect((database) => this.#verifyPersistedPromptAead(database));
     this.host.inspect((database) => this.#verifyPersistedResultAead(database));
+    if (
+      this.#hostInterruptPort === undefined &&
+      this.host.inspect(
+        (database) =>
+          database
+            .prepare(
+              `SELECT 1 FROM local_invocations
+               WHERE state = 'CANCEL_REQUESTED' LIMIT 1`,
+            )
+            .get() !== undefined,
+      )
+    ) {
+      throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+    }
   }
 
   async bindReadyConversation(input: {
@@ -3129,7 +3598,9 @@ export class SqliteWorkerInvocationJournal {
         const active = context.database
           .prepare(
             `SELECT invocation_id FROM local_invocations WHERE installation_id = ?
-             AND state IN ('PREPARED', 'STARTING', 'RUNNING', 'FINAL_READY') LIMIT 1`,
+             AND state IN (
+               'PREPARED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED', 'FINAL_READY'
+             ) LIMIT 1`,
           )
           .get(input.installationId);
         if (active !== undefined) return 'WORKER_BUSY';
@@ -3257,6 +3728,12 @@ export class SqliteWorkerInvocationJournal {
           this.#verifyPersistedCapability(invocation, new Date(invocation.created_at_ms));
           context.markTransportCommandApplied(input.command);
           if (invocation.state === 'STARTING') {
+            if (dispatchAttemptCount(invocation) === 0) {
+              return Object.freeze({
+                action: 'DISPATCH_ONCE',
+                permit: hostDispatchPermitFromInvocation(invocation),
+              });
+            }
             return this.#markStartUnknown(context.database, invocation, now);
           }
           return Object.freeze({ action: 'RETURN_IN_PROGRESS', state: invocation.state });
@@ -3282,7 +3759,7 @@ export class SqliteWorkerInvocationJournal {
           invocation.prompt_ciphertext === null ||
           invocation.prompt_purged_at_ms !== null ||
           invocation.prompt_released_at_ms !== null ||
-          invocation.host_prompt_release_count !== 0
+          dispatchAttemptCount(invocation) !== 0
         ) {
           return 'PROMPT_AEAD_INVALID';
         }
@@ -3428,6 +3905,584 @@ export class SqliteWorkerInvocationJournal {
     if (result !== undefined) throw new WorkerInvocationJournalError(result);
   }
 
+  async cancel(input: {
+    installationId: string;
+    ownerToken: string;
+    command: OpaqueInvocationCommandReference;
+    signal: AbortSignal;
+  }): Promise<CancelInvocationDecision> {
+    const result = this.host.transact(
+      { ...input, name: 'invocation_cancel' },
+      (context): CancelInvocationDecision | WorkerInvocationJournalErrorCode => {
+        const now = this.#cloudNow();
+        const stored = loadStoredCommand(context, input.installationId, input.command);
+        if (stored.envelope.type !== 'invocation.cancel') {
+          throw new WorkerInvocationJournalError('COMMAND_TYPE_INVALID');
+        }
+        assertCurrentCancellationBinding(stored);
+        const command = stored.envelope;
+        const invocation = loadInvocation(context.database, command.body.invocationId);
+        if (invocation === undefined || invocation.installation_id !== input.installationId) {
+          throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+        }
+        if (invocation.cancel_command_id != null) {
+          if (
+            invocation.cancel_command_id !== command.messageId ||
+            invocation.cancel_reason !== command.body.reason
+          ) {
+            consumeSecurityBlocked(context, input.command, command, now.getTime());
+            return 'CANCEL_COMMAND_CONFLICT';
+          }
+          assertExactConsumedCommand(context.database, input.command, command);
+          context.markTransportCommandApplied(input.command);
+          if (invocation.state === 'CANCELLED') {
+            return cancelledDecision(context.database, invocation, true);
+          }
+          if (invocation.state === 'CANCEL_REQUESTED') {
+            if ((invocation.interrupt_attempt_count ?? 0) === 0) {
+              return Object.freeze({
+                action: 'INTERRUPT_ONCE',
+                permit: interruptPermitFromInvocation(
+                  invocation,
+                  requireConversation(context.database, invocation.conversation_id),
+                ),
+              });
+            }
+            throw new WorkerInvocationJournalError('INTERRUPT_IN_PROGRESS');
+          }
+          if (invocation.state === 'UNCERTAIN') {
+            return uncertainDecision(context.database, invocation);
+          }
+          return Object.freeze({ action: 'RETURN_TERMINAL', state: invocation.state });
+        }
+        if (
+          ['FINAL_READY', 'CLOUD_COMMITTED', 'FAILED', 'CANCELLED', 'UNCERTAIN'].includes(
+            invocation.state,
+          )
+        ) {
+          consumeTerminalCommand(context, input.command, command, now.getTime(), 'EXPIRED');
+          return Object.freeze({ action: 'RETURN_TERMINAL', state: invocation.state });
+        }
+        if (
+          invocation.state === 'RUNNING' &&
+          (this.#hostInterruptPort === undefined ||
+            this.#hostInterruptReceiptAuthority === undefined)
+        ) {
+          throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+        }
+        assertCommandPersisted(stored);
+        const interruptNonce = this.#interruptNonce();
+        insertConsumedCommand(context.database, input.command, command, {
+          invocationId: invocation.invocation_id,
+          conversationId: invocation.conversation_id,
+          disposition: 'APPLIED',
+          consumedAtMs: now.getTime(),
+        });
+        context.markTransportCommandApplied(input.command);
+        const conversation = requireConversation(context.database, invocation.conversation_id);
+        if (
+          invocation.state === 'PREPARED' ||
+          (invocation.state === 'STARTING' && dispatchAttemptCount(invocation) === 0)
+        ) {
+          if (invocation.state === 'PREPARED') {
+            expirePendingStartCommands(context, input.installationId, invocation, now.getTime());
+          }
+          const receipt = WorkerInterruptReceiptSchema.parse({
+            ...interruptReceiptCommon(invocation, command, interruptNonce),
+            outcome: 'PROVED_NOT_EXECUTED',
+            evidenceAuthority: 'LOCAL_DISPATCH_COUNTER',
+            dispatchAttemptCount: 0,
+            startCommandId: invocation.start_command_id,
+            dispatchNonce: invocation.dispatch_nonce,
+            runtimeThreadId: null,
+            runtimeTurnId: null,
+            dispatchReceiptDigest: null,
+            sandboxInstanceId: null,
+            sandboxAttestationDigest: null,
+            hostTerminalDigest: null,
+          });
+          return this.#commitCancelled(
+            context.database,
+            invocation,
+            command,
+            interruptNonce,
+            receipt,
+            invocation.state,
+            now,
+          );
+        }
+        if (invocation.state === 'STARTING') {
+          this.#persistInterruptIntent(
+            context.database,
+            invocation,
+            command,
+            interruptNonce,
+            now,
+            false,
+          );
+          return this.#markCancelUnknown(
+            context.database,
+            loadInvocation(context.database, invocation.invocation_id)!,
+            now,
+            'STARTING',
+          );
+        }
+        if (invocation.state !== 'RUNNING') {
+          throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+        }
+        this.#persistInterruptIntent(
+          context.database,
+          invocation,
+          command,
+          interruptNonce,
+          now,
+          true,
+        );
+        appendLocalEvent(context.database, {
+          invocationId: invocation.invocation_id,
+          commandId: command.messageId,
+          eventType: 'local.invocation.cancel_requested',
+          fromState: 'RUNNING',
+          toState: 'CANCEL_REQUESTED',
+          occurredAtMs: now.getTime(),
+        });
+        const persisted = loadInvocation(context.database, invocation.invocation_id);
+        if (persisted === undefined) throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+        return Object.freeze({
+          action: 'INTERRUPT_ONCE',
+          permit: interruptPermitFromInvocation(persisted, conversation),
+        });
+      },
+    );
+    if (typeof result === 'string') throw new WorkerInvocationJournalError(result);
+    return result;
+  }
+
+  async interruptOnce(input: {
+    installationId: string;
+    ownerToken: string;
+    permit: OpaqueHostInterruptPermit;
+    signal: AbortSignal;
+  }): Promise<Extract<CancelInvocationDecision, { action: 'CANCELLED' }>> {
+    const interruptPort = this.#hostInterruptPort;
+    const receiptAuthority = this.#hostInterruptReceiptAuthority;
+    if (interruptPort === undefined || receiptAuthority === undefined) {
+      throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+    }
+    let attempted = false;
+    try {
+      const expected = this.host.transact(
+        { ...input, name: 'invocation_take_host_interrupt' },
+        (context): HostInterruptExpectedBinding | CancelInvocationDecision => {
+          const invocation = loadInvocation(context.database, input.permit.invocationId);
+          if (invocation === undefined || invocation.installation_id !== input.installationId) {
+            throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+          }
+          if (invocation.state === 'CANCELLED') {
+            return cancelledDecision(context.database, invocation, true);
+          }
+          const conversation = requireConversation(context.database, invocation.conversation_id);
+          if (
+            invocation.state !== 'CANCEL_REQUESTED' ||
+            !interruptPermitMatches(input.permit, invocation, conversation)
+          ) {
+            throw new WorkerInvocationJournalError('CANCEL_COMMAND_CONFLICT');
+          }
+          if ((invocation.interrupt_attempt_count ?? 0) !== 0) {
+            throw new WorkerInvocationJournalError('INTERRUPT_IN_PROGRESS');
+          }
+          const now = this.#cloudNow();
+          const updated = context.database
+            .prepare(
+              `UPDATE local_invocations SET interrupt_attempt_count = 1,
+                 interrupt_attempted_at_ms = ?, updated_at_ms = ?
+               WHERE invocation_id = ? AND state = 'CANCEL_REQUESTED'
+                 AND interrupt_attempt_count = 0 AND interrupt_confirmed_count = 0`,
+            )
+            .run(now.getTime(), now.getTime(), invocation.invocation_id);
+          if (Number(updated.changes) !== 1) {
+            throw new WorkerInvocationJournalError('INTERRUPT_IN_PROGRESS');
+          }
+          refreshMutableRowDigest(
+            context.database,
+            'local_invocations',
+            'invocation_id',
+            invocation.invocation_id,
+          );
+          attempted = true;
+          return interruptExpectedBinding(invocation, conversation);
+        },
+      );
+      if ('action' in expected) {
+        if (expected.action !== 'CANCELLED') {
+          throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+        }
+        return expected;
+      }
+      const rawReceipt = await settleHostInterrupt(interruptPort, input.permit, input.signal);
+      return this.host.transact(
+        { ...input, name: 'invocation_confirm_host_interrupt' },
+        (context) => {
+          const now = this.#cloudNow();
+          const invocation = loadInvocation(context.database, input.permit.invocationId);
+          if (invocation === undefined)
+            throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+          const conversation = requireConversation(context.database, invocation.conversation_id);
+          if (
+            invocation.installation_id !== input.installationId ||
+            invocation.state !== 'CANCEL_REQUESTED' ||
+            !interruptPermitMatches(input.permit, invocation, conversation) ||
+            (invocation.interrupt_attempt_count ?? 0) !== 1 ||
+            (invocation.interrupt_confirmed_count ?? 0) !== 0
+          ) {
+            throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+          }
+          let verified: VerifiedHostInterruptReceipt;
+          try {
+            verified = receiptAuthority.verify(rawReceipt, expected, now);
+            assertSha256Digest(verified.hostTerminalDigest);
+          } catch {
+            throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+          }
+          const receipt = WorkerInterruptReceiptSchema.parse({
+            ...interruptReceiptCommonFromExpected(expected),
+            outcome: 'INTERRUPTED',
+            evidenceAuthority: 'HOST',
+            dispatchAttemptCount: 1,
+            startCommandId: expected.startCommandId,
+            dispatchNonce: expected.dispatchNonce,
+            runtimeThreadId: expected.runtimeThreadId,
+            runtimeTurnId: expected.runtimeTurnId,
+            dispatchReceiptDigest: expected.dispatchReceiptDigest,
+            sandboxInstanceId: expected.sandboxInstanceId,
+            sandboxAttestationDigest: expected.sandboxAttestationDigest,
+            hostTerminalDigest: verified.hostTerminalDigest,
+          });
+          const command = loadConsumedCancelCommand(context.database, invocation);
+          return this.#commitCancelled(
+            context.database,
+            invocation,
+            command,
+            String(invocation.interrupt_nonce),
+            receipt,
+            'CANCEL_REQUESTED',
+            now,
+          );
+        },
+      );
+    } catch (error) {
+      if (attempted) {
+        this.#recordInterruptUnknown({ ...input, signal: new AbortController().signal });
+      }
+      throw error;
+    }
+  }
+
+  async recoverUnconfirmedInterrupts(input: {
+    installationId: string;
+    ownerToken: string;
+    signal: AbortSignal;
+  }): Promise<number> {
+    return this.host.transact(
+      { ...input, name: 'invocation_recover_unconfirmed_interrupt' },
+      (context) => {
+        const rows = context.database
+          .prepare(
+            `SELECT * FROM local_invocations WHERE installation_id = ?
+             AND state = 'CANCEL_REQUESTED' AND interrupt_attempt_count = 1
+             AND interrupt_confirmed_count = 0`,
+          )
+          .all(input.installationId) as InvocationRow[];
+        for (const row of rows) {
+          this.#markCancelUnknown(context.database, row, this.#cloudNow(), 'CANCEL_REQUESTED');
+        }
+        return rows.length;
+      },
+    );
+  }
+
+  /**
+   * Startup authority reconstructed only from committed SQLite rows. No caller-supplied command
+   * reference or pre-crash permit participates. Attempt=0 remains eligible for its first Host
+   * call; attempt=1 without a verified receipt is terminally UNCERTAIN and is never retried.
+   */
+  async recoverHostActions(input: {
+    installationId: string;
+    ownerToken: string;
+    signal: AbortSignal;
+  }): Promise<readonly RecoverableHostAction[]> {
+    return this.host.transact(
+      { ...input, name: 'invocation_recover_host_actions' },
+      (context): readonly RecoverableHostAction[] => {
+        const rows = context.database
+          .prepare(
+            `SELECT * FROM local_invocations WHERE installation_id = ?
+             AND state IN ('STARTING', 'CANCEL_REQUESTED')
+             ORDER BY created_at_ms, invocation_id`,
+          )
+          .all(input.installationId) as InvocationRow[];
+        const actions: RecoverableHostAction[] = [];
+        for (const row of rows) {
+          const now = this.#cloudNow();
+          if (row.state === 'STARTING') {
+            if (dispatchAttemptCount(row) === 0) {
+              actions.push(
+                Object.freeze({
+                  action: 'DISPATCH_ONCE',
+                  invocationId: row.invocation_id,
+                  permit: hostDispatchPermitFromInvocation(row),
+                }),
+              );
+            } else {
+              const uncertain = this.#markStartUnknown(context.database, row, now);
+              actions.push(
+                Object.freeze({
+                  action: 'UNCERTAIN',
+                  invocationId: row.invocation_id,
+                  sourceEventId: uncertain.sourceEventId,
+                  factDigest: uncertain.factDigest,
+                }),
+              );
+            }
+            continue;
+          }
+          if ((row.interrupt_attempt_count ?? 0) === 0) {
+            actions.push(
+              Object.freeze({
+                action: 'INTERRUPT_ONCE',
+                invocationId: row.invocation_id,
+                permit: interruptPermitFromInvocation(
+                  row,
+                  requireConversation(context.database, row.conversation_id),
+                ),
+              }),
+            );
+          } else {
+            const uncertain = this.#markCancelUnknown(
+              context.database,
+              row,
+              now,
+              'CANCEL_REQUESTED',
+            );
+            actions.push(
+              Object.freeze({
+                action: 'UNCERTAIN',
+                invocationId: row.invocation_id,
+                sourceEventId: uncertain.sourceEventId,
+                factDigest: uncertain.factDigest,
+              }),
+            );
+          }
+        }
+        return Object.freeze(actions);
+      },
+    );
+  }
+
+  #persistInterruptIntent(
+    database: DatabaseSync,
+    invocation: InvocationRow,
+    command: CancelCommandIdentity,
+    interruptNonce: string,
+    now: Date,
+    enterCancelRequested: boolean,
+  ): void {
+    const nextState = enterCancelRequested ? 'CANCEL_REQUESTED' : invocation.state;
+    const updated = database
+      .prepare(
+        `UPDATE local_invocations SET cancel_command_id = ?, cancel_reason = ?,
+           interrupt_nonce = ?, interrupt_intent_at_ms = ?, interrupt_intent_count = 1,
+           state = ?, updated_at_ms = ?
+         WHERE invocation_id = ? AND state = ? AND cancel_command_id IS NULL
+           AND interrupt_intent_count = 0`,
+      )
+      .run(
+        command.messageId,
+        command.body.reason,
+        interruptNonce,
+        now.getTime(),
+        nextState,
+        now.getTime(),
+        invocation.invocation_id,
+        invocation.state,
+      );
+    if (Number(updated.changes) !== 1) {
+      throw new WorkerInvocationJournalError('CANCEL_COMMAND_CONFLICT');
+    }
+    refreshMutableRowDigest(
+      database,
+      'local_invocations',
+      'invocation_id',
+      invocation.invocation_id,
+    );
+  }
+
+  #commitCancelled(
+    database: DatabaseSync,
+    invocation: InvocationRow,
+    command: CancelCommandIdentity,
+    interruptNonce: string,
+    receipt: WorkerInterruptReceipt,
+    fromState: string,
+    now: Date,
+  ): Extract<CancelInvocationDecision, { action: 'CANCELLED' }> {
+    const parsedReceipt = WorkerInterruptReceiptSchema.parse(receipt);
+    const receiptDigest = workerInterruptReceiptDigest(parsedReceipt);
+    const fact = WorkerInvocationCancelledFactSchema.parse({
+      ...factBase(invocation, invocation.invocation_id),
+      type: 'invocation.cancelled',
+      interruptReceiptDigest: receiptDigest,
+    });
+    const factDigest = workerInvocationFactDigest(fact);
+    const attemptCount = parsedReceipt.outcome === 'INTERRUPTED' ? 1 : 0;
+    const nowMs = now.getTime();
+    const updated = database
+      .prepare(
+        `UPDATE local_invocations SET cancel_command_id = ?, cancel_reason = ?,
+           interrupt_nonce = ?, interrupt_intent_at_ms = COALESCE(interrupt_intent_at_ms, ?),
+           interrupt_attempt_count = ?,
+           interrupt_attempted_at_ms = CASE WHEN ? = 1
+             THEN COALESCE(interrupt_attempted_at_ms, ?) ELSE NULL END,
+           interrupt_confirmed_count = 1, interrupt_confirmed_at_ms = ?,
+           interrupt_receipt_digest = ?, terminal_source_event_id = ?,
+           terminal_fact_digest = ?, prompt_ciphertext = NULL,
+           prompt_purged_at_ms = COALESCE(prompt_purged_at_ms, ?), state = 'CANCELLED',
+           updated_at_ms = ?, interrupt_intent_count = 1
+         WHERE invocation_id = ? AND state = ? AND terminal_source_event_id IS NULL`,
+      )
+      .run(
+        command.messageId,
+        command.body.reason,
+        interruptNonce,
+        nowMs,
+        attemptCount,
+        attemptCount,
+        nowMs,
+        nowMs,
+        receiptDigest,
+        invocation.invocation_id,
+        factDigest,
+        nowMs,
+        nowMs,
+        invocation.invocation_id,
+        fromState,
+      );
+    if (Number(updated.changes) !== 1) {
+      throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+    }
+    const receiptJson = canonicalizeJson(parsedReceipt);
+    const receiptRow = {
+      invocation_id: invocation.invocation_id,
+      cancel_command_id: command.messageId,
+      interrupt_nonce: interruptNonce,
+      outcome: parsedReceipt.outcome,
+      evidence_authority: parsedReceipt.evidenceAuthority,
+      receipt_json: receiptJson,
+      receipt_digest: receiptDigest,
+      verified_at_ms: nowMs,
+    };
+    database
+      .prepare(
+        `INSERT INTO local_invocation_interrupt_receipts(
+           invocation_id, cancel_command_id, interrupt_nonce, outcome, evidence_authority,
+           receipt_json, receipt_digest, verified_at_ms, row_digest
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        ...Object.values(receiptRow),
+        sqliteInvocationRowDigest('local_invocation_interrupt_receipts', receiptRow),
+      );
+    refreshMutableRowDigest(
+      database,
+      'local_invocations',
+      'invocation_id',
+      invocation.invocation_id,
+    );
+    appendFact(
+      database,
+      invocation.invocation_id,
+      command.messageId,
+      fromState,
+      'CANCELLED',
+      fact,
+      { correlationId: invocation.invocation_id, occurredAtMs: nowMs },
+    );
+    return Object.freeze({
+      action: 'CANCELLED',
+      sourceEventId: invocation.invocation_id,
+      factDigest,
+      interruptReceiptDigest: receiptDigest,
+      replayed: false,
+    });
+  }
+
+  #markCancelUnknown(
+    database: DatabaseSync,
+    invocation: InvocationRow,
+    now: Date,
+    fromState: 'STARTING' | 'CANCEL_REQUESTED',
+  ): Extract<CancelInvocationDecision, { action: 'UNCERTAIN' }> {
+    const fact = WorkerInvocationFactSchema.parse({
+      ...factBase(invocation, invocation.invocation_id),
+      type: 'invocation.uncertain',
+      reason: 'CANCEL_NOT_CONFIRMED',
+    });
+    const factDigest = workerInvocationFactDigest(fact);
+    const nowMs = now.getTime();
+    const updated = database
+      .prepare(
+        `UPDATE local_invocations SET terminal_source_event_id = ?, terminal_fact_digest = ?,
+           prompt_ciphertext = NULL, prompt_purged_at_ms = COALESCE(prompt_purged_at_ms, ?),
+           state = 'UNCERTAIN', updated_at_ms = ?
+         WHERE invocation_id = ? AND state = ? AND interrupt_confirmed_count = 0`,
+      )
+      .run(invocation.invocation_id, factDigest, nowMs, nowMs, invocation.invocation_id, fromState);
+    if (Number(updated.changes) !== 1) {
+      throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+    }
+    refreshMutableRowDigest(
+      database,
+      'local_invocations',
+      'invocation_id',
+      invocation.invocation_id,
+    );
+    appendFact(
+      database,
+      invocation.invocation_id,
+      String(invocation.cancel_command_id),
+      fromState,
+      'UNCERTAIN',
+      fact,
+      { correlationId: invocation.invocation_id, occurredAtMs: nowMs },
+    );
+    return Object.freeze({
+      action: 'UNCERTAIN',
+      sourceEventId: invocation.invocation_id,
+      factDigest,
+    });
+  }
+
+  #recordInterruptUnknown(input: {
+    installationId: string;
+    ownerToken: string;
+    permit: OpaqueHostInterruptPermit;
+    signal: AbortSignal;
+  }): void {
+    this.host.transact(
+      { ...input, name: 'invocation_record_interrupt_unknown' },
+      (context): void => {
+        const invocation = loadInvocation(context.database, input.permit.invocationId);
+        if (invocation === undefined)
+          throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+        if (invocation.state === 'CANCELLED' || invocation.state === 'UNCERTAIN') return;
+        if (invocation.state !== 'CANCEL_REQUESTED') {
+          throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+        }
+        this.#markCancelUnknown(context.database, invocation, this.#cloudNow(), 'CANCEL_REQUESTED');
+      },
+    );
+  }
+
   /**
    * The only public Host boundary. Plaintext is passed directly to the injected trusted Host port,
    * never returned to callers; a failed/ambiguous Host call is terminally UNCERTAIN and not retried.
@@ -3504,7 +4559,7 @@ export class SqliteWorkerInvocationJournal {
             invocation.prompt_ciphertext === null ||
             invocation.prompt_purged_at_ms !== null ||
             invocation.prompt_released_at_ms !== null ||
-            invocation.host_prompt_release_count !== 0 ||
+            dispatchAttemptCount(invocation) !== 0 ||
             !hostDispatchPermitMatches(input.permit, invocation)
           ) {
             throw new WorkerInvocationJournalError('PROMPT_AEAD_INVALID');
@@ -3531,10 +4586,10 @@ export class SqliteWorkerInvocationJournal {
           const updated = context.database
             .prepare(
               `UPDATE local_invocations SET prompt_released_at_ms = ?,
-               host_prompt_release_count = 1, updated_at_ms = ?
+               host_dispatch_attempt_count = 1, updated_at_ms = ?
              WHERE invocation_id = ? AND state = 'STARTING'
                AND prompt_ciphertext IS NOT NULL AND prompt_released_at_ms IS NULL
-               AND host_prompt_release_count = 0`,
+               AND host_dispatch_attempt_count = 0`,
             )
             .run(now.getTime(), now.getTime(), invocation.invocation_id);
           if (Number(updated.changes) !== 1) {
@@ -3643,7 +4698,7 @@ export class SqliteWorkerInvocationJournal {
           invocation.start_command_id !== hostInput.startCommandId ||
           invocation.state !== 'STARTING' ||
           invocation.runtime_turn_id !== null ||
-          invocation.host_prompt_release_count !== 1 ||
+          dispatchAttemptCount(invocation) !== 1 ||
           invocation.prompt_released_at_ms === null
         ) {
           throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
@@ -3729,7 +4784,8 @@ export class SqliteWorkerInvocationJournal {
         const rows = context.database
           .prepare(
             `SELECT * FROM local_invocations
-             WHERE installation_id = ? AND state = 'STARTING' AND runtime_turn_id IS NULL`,
+             WHERE installation_id = ? AND state = 'STARTING' AND runtime_turn_id IS NULL
+               AND host_dispatch_attempt_count = 1`,
           )
           .all(input.installationId) as InvocationRow[];
         for (const row of rows) this.#markStartUnknown(context.database, row, this.#cloudNow());
@@ -3759,7 +4815,7 @@ export class SqliteWorkerInvocationJournal {
         invocation.dispatch_nonce !== input.dispatchNonce ||
         invocation.start_command_id === null ||
         input.sourceEventId !== invocation.start_command_id ||
-        invocation.host_prompt_release_count !== 1 ||
+        dispatchAttemptCount(invocation) !== 1 ||
         invocation.prompt_released_at_ms === null
       ) {
         throw new WorkerInvocationJournalError('HOST_RECEIPT_INVALID');
@@ -3779,6 +4835,7 @@ export class SqliteWorkerInvocationJournal {
               agentVersionDigest: invocation.agent_version_digest,
               snapshotDigest: invocation.snapshot_digest,
               sandboxInstanceId: String(conversation.sandbox_instance_id),
+              runtimeThreadId: String(conversation.runtime_thread_id),
             },
             at,
           );
@@ -4055,6 +5112,25 @@ export class SqliteWorkerInvocationJournal {
           conversationId: invocation.conversation_id,
           resultCiphertext: brokerCiphertext,
         };
+      } else if (fact.type === 'invocation.cancelled') {
+        const receiptRow = context.database
+          .prepare(
+            `SELECT receipt_json, receipt_digest FROM local_invocation_interrupt_receipts
+             WHERE invocation_id = ?`,
+          )
+          .get(invocation.invocation_id) as
+          | { receipt_json: string; receipt_digest: string }
+          | undefined;
+        if (receiptRow === undefined || receiptRow.receipt_digest !== fact.interruptReceiptDigest) {
+          throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
+        }
+        const interruptReceipt = WorkerInterruptReceiptSchema.parse(
+          JSON.parse(receiptRow.receipt_json),
+        );
+        if (workerInterruptReceiptDigest(interruptReceipt) !== receiptRow.receipt_digest) {
+          throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
+        }
+        body = { ...body, interruptReceipt };
       } else if (input.brokerKeyId !== undefined) {
         throw new WorkerInvocationJournalError('OUTBOX_CONFLICT');
       }
@@ -4357,6 +5433,9 @@ export class SqliteWorkerInvocationJournal {
             .run(row.invocation_id);
           context.database
             .prepare('DELETE FROM local_invocation_events WHERE invocation_id = ?')
+            .run(row.invocation_id);
+          context.database
+            .prepare('DELETE FROM local_invocation_interrupt_receipts WHERE invocation_id = ?')
             .run(row.invocation_id);
           context.database
             .prepare('DELETE FROM local_invocations WHERE invocation_id = ?')
@@ -4665,6 +5744,39 @@ export class SqliteWorkerInvocationJournal {
   #dispatchNonce(): string {
     return assertUuid(this.#dispatchNonceFactory());
   }
+
+  #interruptNonce(): string {
+    return assertUuid(this.#interruptNonceFactory());
+  }
+}
+
+async function settleHostInterrupt(
+  port: TrustedHostInterruptPort,
+  permit: OpaqueHostInterruptPermit,
+  callerSignal: AbortSignal,
+): Promise<unknown> {
+  const signal = AbortSignal.any([
+    callerSignal,
+    AbortSignal.timeout(HOST_INTERRUPT_HARD_TIMEOUT_MS),
+  ]);
+  signal.throwIfAborted();
+  let rejectOnAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectOnAbort = reject;
+  });
+  const onAbort = (): void => {
+    rejectOnAbort(signal.reason ?? new DOMException('Host interrupt aborted', 'AbortError'));
+  };
+  signal.addEventListener('abort', onAbort, { once: true });
+  if (signal.aborted) onAbort();
+  const pending = Promise.resolve().then(() => port.interruptOnce({ permit }, signal));
+  try {
+    const receipt = await Promise.race([pending, aborted]);
+    signal.throwIfAborted();
+    return receipt;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 function loadStoredCommand(
@@ -4880,6 +5992,23 @@ function assertCurrentTransportBinding(stored: StoredCommand): void {
   }
 }
 
+function assertCurrentCancellationBinding(stored: StoredCommand): void {
+  const { envelope, connection } = stored;
+  if (
+    envelope.type !== 'invocation.cancel' ||
+    connection.status !== 'ACTIVE' ||
+    (connection.lease_state !== 'ACTIVE' && connection.lease_state !== 'REVOKED') ||
+    envelope.lease.deploymentId !== connection.deployment_id ||
+    envelope.lease.leaseId !== connection.lease_id ||
+    envelope.lease.workerSessionId !== connection.worker_session_id
+  ) {
+    throw new WorkerInvocationJournalError('STALE_LEASE');
+  }
+  if (envelope.lease.fence !== connection.fence) {
+    throw new WorkerInvocationJournalError('STALE_FENCE');
+  }
+}
+
 function assertCommandPersisted(stored: StoredCommand): void {
   if (stored.effectState !== 'PERSISTED') {
     throw new WorkerInvocationJournalError('COMMAND_ALREADY_CONSUMED');
@@ -4950,6 +6079,51 @@ function assertExactConsumedCommand(
   }
 }
 
+function expirePendingStartCommands(
+  context: WorkerInvocationJournalTransactionContext,
+  installationId: string,
+  invocation: InvocationRow,
+  nowMs: number,
+): void {
+  const rows = context.database
+    .prepare(
+      `SELECT frame.connection_id, frame.sequence, frame.message_id,
+              frame.canonical_digest, frame.envelope_json
+       FROM transport_inbound_frames AS frame
+       JOIN transport_connections AS connection
+         ON connection.connection_id = frame.connection_id
+       WHERE connection.installation_id = ? AND frame.envelope_kind = 'command'
+         AND frame.envelope_type = 'invocation.start' AND frame.effect_state = 'PERSISTED'
+       ORDER BY frame.recorded_at_ms, frame.connection_id, frame.sequence`,
+    )
+    .all(installationId) as Array<{
+    connection_id: string;
+    sequence: string;
+    message_id: string;
+    canonical_digest: string;
+    envelope_json: string;
+  }>;
+  for (const row of rows) {
+    const envelope = BrokerEnvelopeSchema.parse(JSON.parse(row.envelope_json));
+    if (
+      envelope.kind !== 'command' ||
+      envelope.type !== 'invocation.start' ||
+      envelope.body.invocationId !== invocation.invocation_id
+    ) {
+      continue;
+    }
+    const reference: OpaqueInvocationCommandReference = Object.freeze({
+      connectionId: row.connection_id,
+      sequence: row.sequence,
+      messageId: row.message_id,
+      type: 'invocation.start',
+      canonicalDigest: row.canonical_digest,
+      effectState: 'PERSISTED',
+    });
+    consumeTerminalCommand(context, reference, envelope, nowMs, 'EXPIRED');
+  }
+}
+
 function consumeSecurityBlocked(
   context: WorkerInvocationJournalTransactionContext,
   reference: OpaqueInvocationCommandReference,
@@ -5014,7 +6188,7 @@ function initialInvocationRow(input: {
     local_prompt_cipher_digest: input.promptCiphertext.cipherDigest,
     prompt_released_at_ms: null,
     prompt_purged_at_ms: null,
-    host_prompt_release_count: 0,
+    host_dispatch_attempt_count: 0,
     agent_version_id: input.command.body.agentVersionId,
     agent_version_digest: input.command.body.agentVersionDigest,
     snapshot_digest: input.command.body.snapshotDigest,
@@ -5057,6 +6231,16 @@ function initialInvocationRow(input: {
     state: 'PREPARED',
     host_dispatch_intent_count: 0,
     host_dispatch_confirmed_count: 0,
+    cancel_command_id: null,
+    cancel_reason: null,
+    interrupt_nonce: null,
+    interrupt_intent_at_ms: null,
+    interrupt_attempted_at_ms: null,
+    interrupt_confirmed_at_ms: null,
+    interrupt_receipt_digest: null,
+    interrupt_intent_count: 0,
+    interrupt_attempt_count: 0,
+    interrupt_confirmed_count: 0,
     created_at_ms: input.nowMs,
     updated_at_ms: input.nowMs,
     row_digest: '',
@@ -5071,7 +6255,7 @@ function insertInvocation(database: DatabaseSync, input: InvocationRow): void {
       `INSERT INTO local_invocations(
          invocation_id, conversation_id, installation_id, client_message_id, request_digest,
          prompt_ciphertext, local_prompt_cipher_digest, prompt_released_at_ms,
-         prompt_purged_at_ms, host_prompt_release_count,
+         prompt_purged_at_ms, host_dispatch_attempt_count,
          agent_version_id, agent_version_digest, snapshot_digest, deployment_id, lease_id,
          worker_session_id, fence, execution_capability_id, execution_capability_digest,
          execution_capability_json, execution_capability_binding_json, capability_not_before_ms,
@@ -5084,9 +6268,13 @@ function insertInvocation(database: DatabaseSync, input: InvocationRow): void {
          sandbox_attestation_digest, started_source_event_id, started_fact_digest, result_digest,
          result_ciphertext, local_result_cipher_digest, result_source_event_id,
          result_fact_digest, terminal_source_event_id, terminal_fact_digest, state,
-         host_dispatch_intent_count, host_dispatch_confirmed_count, created_at_ms, updated_at_ms,
+         host_dispatch_intent_count, host_dispatch_confirmed_count,
+         cancel_command_id, cancel_reason, interrupt_nonce, interrupt_intent_at_ms,
+         interrupt_attempted_at_ms, interrupt_confirmed_at_ms, interrupt_receipt_digest,
+         interrupt_intent_count, interrupt_attempt_count, interrupt_confirmed_count,
+         created_at_ms, updated_at_ms,
          row_digest
-       ) VALUES (${Array.from({ length: 55 }, () => '?').join(', ')})`,
+       ) VALUES (${Array.from({ length: 65 }, () => '?').join(', ')})`,
     )
     .run(...values, sqliteInvocationRowDigest('local_invocations', row));
 }
@@ -5175,6 +6363,212 @@ function hostDispatchPermitMatches(
   }
 }
 
+function hostDispatchPermitFromInvocation(invocation: InvocationRow): OpaqueHostDispatchPermit {
+  if (invocation.start_command_id == null || invocation.dispatch_nonce == null) {
+    throw new WorkerInvocationJournalError('START_COMMAND_CONFLICT');
+  }
+  return Object.freeze({
+    invocationId: invocation.invocation_id,
+    conversationId: invocation.conversation_id,
+    startCommandId: invocation.start_command_id,
+    dispatchNonce: invocation.dispatch_nonce,
+    agentVersionId: invocation.agent_version_id,
+    agentVersionDigest: invocation.agent_version_digest,
+    snapshotDigest: invocation.snapshot_digest,
+    requestDigest: invocation.request_digest,
+    executionCapabilityDigest: invocation.execution_capability_digest,
+    deadlineAt: new Date(invocation.command_deadline_at_ms).toISOString(),
+  });
+}
+
+function interruptReceiptCommon(
+  invocation: InvocationRow,
+  command: CancelCommandIdentity,
+  interruptNonce: string,
+) {
+  return {
+    protocol: WORKER_INTERRUPT_RECEIPT_PROTOCOL,
+    schemaVersion: 1 as const,
+    installationId: invocation.installation_id,
+    invocationId: invocation.invocation_id,
+    conversationId: invocation.conversation_id,
+    agentVersionId: invocation.agent_version_id,
+    agentVersionDigest: invocation.agent_version_digest,
+    snapshotDigest: invocation.snapshot_digest,
+    leaseId: invocation.lease_id,
+    fence: invocation.fence,
+    executionCapabilityDigest: invocation.execution_capability_digest,
+    cancelCommandId: command.messageId,
+    cancelReason: command.body.reason,
+    interruptNonce,
+  };
+}
+
+function interruptReceiptCommonFromExpected(expected: HostInterruptExpectedBinding) {
+  return {
+    protocol: WORKER_INTERRUPT_RECEIPT_PROTOCOL,
+    schemaVersion: 1 as const,
+    installationId: expected.installationId,
+    invocationId: expected.invocationId,
+    conversationId: expected.conversationId,
+    agentVersionId: expected.agentVersionId,
+    agentVersionDigest: expected.agentVersionDigest,
+    snapshotDigest: expected.snapshotDigest,
+    leaseId: expected.leaseId,
+    fence: expected.fence,
+    executionCapabilityDigest: expected.executionCapabilityDigest,
+    cancelCommandId: expected.cancelCommandId,
+    cancelReason: expected.cancelReason,
+    interruptNonce: expected.interruptNonce,
+  };
+}
+
+function interruptPermitFromInvocation(
+  invocation: InvocationRow,
+  conversation: Record<string, unknown>,
+): OpaqueHostInterruptPermit {
+  if (
+    invocation.cancel_command_id == null ||
+    invocation.cancel_reason == null ||
+    invocation.interrupt_nonce == null ||
+    invocation.dispatch_nonce == null ||
+    invocation.start_command_id == null ||
+    invocation.runtime_turn_id == null ||
+    invocation.dispatch_receipt_digest == null ||
+    invocation.sandbox_attestation_digest == null ||
+    conversation.runtime_thread_id == null ||
+    conversation.sandbox_instance_id == null
+  ) {
+    throw new WorkerInvocationJournalError('CANCEL_COMMAND_CONFLICT');
+  }
+  return Object.freeze({
+    invocationId: invocation.invocation_id,
+    conversationId: invocation.conversation_id,
+    cancelCommandId: invocation.cancel_command_id,
+    cancelReason: invocation.cancel_reason as WorkerCancelReason,
+    interruptNonce: invocation.interrupt_nonce,
+    startCommandId: invocation.start_command_id,
+    dispatchNonce: invocation.dispatch_nonce,
+    runtimeThreadId: String(conversation.runtime_thread_id),
+    runtimeTurnId: invocation.runtime_turn_id,
+    dispatchReceiptDigest: invocation.dispatch_receipt_digest,
+    sandboxInstanceId: String(conversation.sandbox_instance_id),
+    sandboxAttestationDigest: invocation.sandbox_attestation_digest,
+  });
+}
+
+function interruptPermitMatches(
+  permit: OpaqueHostInterruptPermit,
+  invocation: InvocationRow,
+  conversation: Record<string, unknown>,
+): boolean {
+  try {
+    return (
+      canonicalizeJson(permit) ===
+      canonicalizeJson(interruptPermitFromInvocation(invocation, conversation))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function interruptExpectedBinding(
+  invocation: InvocationRow,
+  conversation: Record<string, unknown>,
+): HostInterruptExpectedBinding {
+  const permit = interruptPermitFromInvocation(invocation, conversation);
+  return Object.freeze({
+    installationId: invocation.installation_id,
+    agentVersionId: invocation.agent_version_id,
+    agentVersionDigest: invocation.agent_version_digest,
+    snapshotDigest: invocation.snapshot_digest,
+    leaseId: invocation.lease_id,
+    fence: invocation.fence,
+    executionCapabilityDigest: invocation.execution_capability_digest,
+    ...permit,
+  });
+}
+
+function loadConsumedCancelCommand(
+  database: DatabaseSync,
+  invocation: InvocationRow,
+): CancelCommandIdentity {
+  if (invocation.cancel_command_id == null || invocation.cancel_reason == null) {
+    throw new WorkerInvocationJournalError('CANCEL_COMMAND_CONFLICT');
+  }
+  const row = database
+    .prepare(
+      `SELECT command_id, command_type FROM local_consumed_commands
+       WHERE command_id = ? AND invocation_id = ?`,
+    )
+    .get(invocation.cancel_command_id, invocation.invocation_id) as
+    | { command_id: string; command_type: string }
+    | undefined;
+  if (row === undefined || row.command_type !== 'invocation.cancel') {
+    throw new WorkerInvocationJournalError('CANCEL_COMMAND_CONFLICT');
+  }
+  return Object.freeze({
+    messageId: row.command_id,
+    body: Object.freeze({ reason: invocation.cancel_reason as WorkerCancelReason }),
+  });
+}
+
+function cancelledDecision(
+  database: DatabaseSync,
+  invocation: InvocationRow,
+  replayed: boolean,
+): Extract<CancelInvocationDecision, { action: 'CANCELLED' }> {
+  const event = database
+    .prepare(
+      `SELECT fact_digest, fact_json FROM local_invocation_events
+       WHERE invocation_id = ? AND event_type = 'invocation.cancelled'`,
+    )
+    .get(invocation.invocation_id) as { fact_digest: string; fact_json: string } | undefined;
+  const receipt = database
+    .prepare(
+      `SELECT receipt_digest, receipt_json FROM local_invocation_interrupt_receipts
+       WHERE invocation_id = ?`,
+    )
+    .get(invocation.invocation_id) as { receipt_digest: string; receipt_json: string } | undefined;
+  if (event === undefined || receipt === undefined) {
+    throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+  }
+  const parsedFact = WorkerInvocationCancelledFactSchema.parse(JSON.parse(event.fact_json));
+  const parsedReceipt = WorkerInterruptReceiptSchema.parse(JSON.parse(receipt.receipt_json));
+  if (
+    workerInvocationFactDigest(parsedFact) !== event.fact_digest ||
+    workerInterruptReceiptDigest(parsedReceipt) !== receipt.receipt_digest ||
+    parsedFact.interruptReceiptDigest !== receipt.receipt_digest
+  ) {
+    throw new WorkerInvocationJournalError('INTERRUPT_RECEIPT_INVALID');
+  }
+  return Object.freeze({
+    action: 'CANCELLED',
+    sourceEventId: parsedFact.sourceEventId,
+    factDigest: event.fact_digest,
+    interruptReceiptDigest: receipt.receipt_digest,
+    replayed,
+  });
+}
+
+function uncertainDecision(
+  database: DatabaseSync,
+  invocation: InvocationRow,
+): Extract<CancelInvocationDecision, { action: 'UNCERTAIN' }> {
+  const event = database
+    .prepare(
+      `SELECT source_event_id, fact_digest FROM local_invocation_events
+       WHERE invocation_id = ? AND event_type = 'invocation.uncertain'`,
+    )
+    .get(invocation.invocation_id) as { source_event_id: string; fact_digest: string } | undefined;
+  if (event === undefined) throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+  return Object.freeze({
+    action: 'UNCERTAIN',
+    sourceEventId: event.source_event_id,
+    factDigest: event.fact_digest,
+  });
+}
+
 function factBase(row: InvocationRow, sourceEventId: string) {
   return {
     protocol: 'combo.worker-invocation-fact/1' as const,
@@ -5249,14 +6643,24 @@ function appendFact(
 
 function appendLocalEvent(
   database: DatabaseSync,
-  input: Readonly<{
-    invocationId: string;
-    commandId: string;
-    eventType: 'local.invocation.starting';
-    fromState: 'PREPARED';
-    toState: 'STARTING';
-    occurredAtMs: number;
-  }>,
+  input: Readonly<
+    {
+      invocationId: string;
+      commandId: string;
+      occurredAtMs: number;
+    } & (
+      | {
+          eventType: 'local.invocation.starting';
+          fromState: 'PREPARED';
+          toState: 'STARTING';
+        }
+      | {
+          eventType: 'local.invocation.cancel_requested';
+          fromState: 'RUNNING';
+          toState: 'CANCEL_REQUESTED';
+        }
+    )
+  >,
 ): void {
   const row = {
     invocation_id: input.invocationId,

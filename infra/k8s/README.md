@@ -22,7 +22,7 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 schema v2 Test 清单要求 `POSTGRES_AGENT_API_PASSWORD`、`POSTGRES_AGENT_BROKER_PASSWORD`、`POSTGRES_AGENT_RECONCILER_PASSWORD` 成组存在。Test migration 的三个引用均为 optional，以便旧 Test Secret 在三键全缺时继续迁移并保留 NOLOGIN；部分键存在会由角色 provision 脚本拒绝，三键齐全才原子 provision。Gateway Pod 只读取 `POSTGRES_AGENT_BROKER_PASSWORD`，不读取 API/Reconciler 密码或管理员 `PGPASSWORD`。
 
-四个 compatibility policy 键 `AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS`、`AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS`、`AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS`、`AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES` 必须是应用契约接受的非空 JSON 数组；缺键会让 Pod fail closed。publisher 显式为 false，publisher Deployment allowlist 可缺；未来打开 publisher 时必须同时提供非空的 `AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST`。Service 仅暴露集群内 3300 WebSocket，3301 只供 Pod `/health` 与 `/ready` 探针，Preview/Production 不创建 Gateway Service 或 Deployment。
+四个 compatibility policy 键 `AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS`、`AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS`、`AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS`、`AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES` 必须是应用契约接受的非空等长 JSON 数组，并按索引组成 exact profile；Worker version 是不可重复的 profile key，各数组不是独立 allowlist。缺键、长度不等或重复 Worker version 都会让 Pod fail closed。publisher 显式为 false，publisher Deployment allowlist 可缺；未来打开 publisher 时必须同时提供非空的 `AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST`。Service 仅暴露集群内 3300 WebSocket，3301 只供 Pod `/health` 与 `/ready` 探针，Preview/Production 不创建 Gateway Service 或 Deployment。
 
 ### Test-only visible transcript keyring
 

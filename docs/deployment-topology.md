@@ -29,15 +29,18 @@
 
 ## 3. workflow 清单
 
-| workflow                       | 显示名        | 触发                                  | 作用                                                                                                                                                                      |
-| ------------------------------ | ------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/pr-ci.yml`  | PR checks     | pull_request                          | 合并前质量门禁：依赖安装、shared 构建、format、lint、typecheck、无容器快速测试、ShellCheck；不构建或发布镜像                                                              |
-| `.github/workflows/ci.yml`     | Release build | main push、workflow_call              | 全量构建：集成测试、容器契约、四个镜像（api/agent-gateway/runtime/web），并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>-<attempt>` 构建清单；也是分支构建的可复用入口 |
-| `.github/workflows/deploy.yml` | Deploy        | Release build 完成、workflow_dispatch | 统一部署三环境，执行晋级链                                                                                                                                                |
+| workflow                         | 显示名            | 触发                                  | 作用                                                                                                                                                                      |
+| -------------------------------- | ----------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.github/workflows/pr-ci.yml`    | PR checks         | pull_request                          | 合并前质量门禁：依赖安装、shared 构建、format、lint、typecheck、无容器快速测试、ShellCheck；不构建或发布镜像                                                              |
+| `.github/workflows/ci.yml`       | Release build     | main push、workflow_call              | 全量构建：集成测试、容器契约、四个镜像（api/agent-gateway/runtime/web），并发布绑定精确提交 SHA 的不可变 `combo-build-<SHA>-<attempt>` 构建清单；也是分支构建的可复用入口 |
+| `.github/workflows/vnext-t0.yml` | VNext T0 Linux CI | workflow_call                         | PR checks 与 Release build 共用的只读 Linux Gate：执行 format/lint/source+test typecheck、精确 `pnpm vnext:test:g0`，并生成 SHA-bound JUnit/evidence artifact             |
+| `.github/workflows/deploy.yml`   | Deploy            | Release build 完成、workflow_dispatch | 统一部署三环境，执行晋级链                                                                                                                                                |
 
 `deploy.yml` 的 `workflow_run` 触发器必须引用 `Release build` 显示名；重命名 ci.yml 时需要同步。
 
 `ci.yml` 的并发组名是 `main-cd-*`（main push 时 `main-cd-main`，分支构建时 `main-cd-<revision>`），与 `combo-deploy-<env>` 部署锁互不相交。自动部署只作用于 Preview（main 的 `Release build` 成功后触发）；Test 没有自动触发路径，只接受手工 `workflow_dispatch`。
+
+`vnext-t0.yml` 只接受同仓库 reusable workflow caller，不读取 Secret，不授予 package、OIDC 或其他写权限，并固定使用 `ubuntu-24.04`、Node 24 实际 patch 和 pnpm 11.0.9；checkout、pnpm setup、Node setup及artifact upload/download action均绑定审计时的完整commit SHA。PR merge SHA 的结果始终标记为 `ADVISORY_ONLY`；只有 `Release build` 在 GitHub标记为protected的 `main` push上测试同一SHA时才能生成 `FORMAL` disposition。分支 Test build 即使由 main 上的 Deploy 控制器调用，也继续标记 `ADVISORY_ONLY`。artifact 记录 tested/tree、top-level caller与实际reusable job workflow身份、runner/toolchain、100-seed property policy、SCH-001..010、source tuple、五份非空且零skip的JUnit digest与计数，且不包含 raw log、Prompt、答案或凭据。上传只接受已验证bundle，上传后会重新下载并复验，避免verify/upload间漂移。仓库中的 workflow/schema 只证明机制已实现；只有 GitHub job 对同一 clean SHA 成功、artifact 上传成功且 artifact digest 可核对后，才构成正式 T0 PASS。
 
 ## 4. 域名
 
@@ -71,7 +74,7 @@
 - 凭证只在受信任运维边界原位轮换，不删除重建；现有 `scripts/configure-first-party-auth-secrets.sh` 负责 legacy 键，VNext Test Gateway 键需另行以不回显方式预置到 `combo-test/combo-env`。
 - 部署脚本不得输出、落盘、复制或提交任何 Secret 值。
 - Test 可额外预置 `combo-visible-transcript-test-keyring`，只供 Runtime 的 `test-k8s-secret-file` adapter 以 `0400` 只读 volume 使用。清单不创建或填充该 Secret；Preview 与 Production 禁止渲染此 provider、path 或 volume。它不是 production KMS，不能作为腾讯云真实 provider 验证。
-- Test schema v2 还要求 `combo-env` 成组预置三个 VNext 角色密码和四个 Gateway compatibility JSON allowlist。migration 对角色键 optional 是旧环境 expand compatibility，不代表 Gateway 可无凭据运行；Pod 只持 broker 密码且默认关闭 publisher。Preview/Production 不接受这些 Gateway 资源，当前 helper 也不会生成这些值。
+- Test schema v2 还要求 `combo-env` 成组预置三个 VNext 角色密码和四个 Gateway compatibility JSON profile 数组。四个数组必须等长并按索引组成 Worker/Codex artifact/Codex schema/isolation exact profile，不能按独立 allowlist 做 Cartesian 组合；Worker version 不得重复。migration 对角色键 optional 是旧环境 expand compatibility，不代表 Gateway 可无凭据运行；Pod 只持 broker 密码且默认关闭 publisher。Preview/Production 不接受这些 Gateway 资源，当前 helper 也不会生成这些值。
 
 ## 8. 更新流程
 

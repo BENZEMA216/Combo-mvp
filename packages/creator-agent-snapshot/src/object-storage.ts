@@ -10,9 +10,10 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import {
   CREATOR_AGENT_HTTP_PROTOCOL,
+  SNAPSHOT_EXACT_PUBLICATION_COMMIT_MARKER_BYTES,
   SNAPSHOT_MAX_COMPRESSED_BYTES,
   SNAPSHOT_MAX_MANIFEST_BYTES,
-  SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES,
+  SNAPSHOT_MAX_PUBLICATION_PREPARATION_MARKER_BYTES,
   SNAPSHOT_OBJECT_STORAGE_PROTOCOL,
   SNAPSHOT_PUBLICATION_COMMIT_PROTOCOL,
   SNAPSHOT_PUBLICATION_PREPARATION_PROTOCOL,
@@ -1037,11 +1038,16 @@ export class S3ImmutableSnapshotObjectStore {
       if (isMissingObject(error)) return undefined;
       fail('SNAPSHOT_STORAGE_UNAVAILABLE', error);
     }
+    const markerLengthIsValid =
+      input.kind === 'preparation'
+        ? output.ContentLength !== undefined &&
+          output.ContentLength >= 1 &&
+          output.ContentLength <= SNAPSHOT_MAX_PUBLICATION_PREPARATION_MARKER_BYTES
+        : output.ContentLength === SNAPSHOT_EXACT_PUBLICATION_COMMIT_MARKER_BYTES;
     if (
       output.ContentLength === undefined ||
       !Number.isSafeInteger(output.ContentLength) ||
-      output.ContentLength < 1 ||
-      output.ContentLength > SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES ||
+      !markerLengthIsValid ||
       output.ContentType !== MARKER_CONTENT_TYPE ||
       output.CacheControl !== CACHE_CONTROL
     ) {

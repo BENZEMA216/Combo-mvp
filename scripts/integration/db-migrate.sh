@@ -40,6 +40,8 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   snapshot_uploads context_snapshots agents agent_access_grants agent_versions \
   agent_version_controls deployments worker_installations worker_leases \
   agent_conversations agent_messages agent_invocations agent_invocation_events \
+  creator_agent_failed_terminal_receipts creator_agent_journal_integrity_alerts \
+  creator_agent_success_seal_preflights creator_agent_succeeded_terminal_receipts \
   broker_outbox conversation_ready_fact_receipts conversation_ready_receipts \
   consumer_event_streams consumer_event_outbox \
   worker_auth_challenges worker_gateway_sessions worker_auth_security_events \
@@ -49,7 +51,7 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='agent_access_grants,agent_conversations,agent_invocation_events,agent_invocations,agent_messages,agent_version_controls,agent_versions,agents,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,broker_outbox,capabilities,consumer_event_outbox,consumer_event_streams,context_snapshots,conversation_ready_fact_receipts,conversation_ready_receipts,deployments,messages,payment_attempts,payment_callback_events,recharge_orders,sessions,snapshot_uploads,tasks,turns,uploads,usage_charges,users,wallet_ledger,worker_auth_challenges,worker_auth_security_events,worker_gateway_frame_receipts,worker_gateway_operation_receipts,worker_gateway_outbound_frames,worker_gateway_security_events,worker_gateway_sequence_gaps,worker_gateway_sessions,worker_installations,worker_leases'
+expected_tables='agent_access_grants,agent_conversations,agent_invocation_events,agent_invocations,agent_messages,agent_version_controls,agent_versions,agents,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,broker_outbox,capabilities,consumer_event_outbox,consumer_event_streams,context_snapshots,conversation_ready_fact_receipts,conversation_ready_receipts,creator_agent_failed_terminal_receipts,creator_agent_journal_integrity_alerts,creator_agent_succeeded_terminal_receipts,creator_agent_success_seal_preflights,deployments,messages,payment_attempts,payment_callback_events,recharge_orders,sessions,snapshot_uploads,tasks,turns,uploads,usage_charges,users,wallet_ledger,worker_auth_challenges,worker_auth_security_events,worker_gateway_frame_receipts,worker_gateway_operation_receipts,worker_gateway_outbound_frames,worker_gateway_security_events,worker_gateway_sequence_gaps,worker_gateway_sessions,worker_installations,worker_leases'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables

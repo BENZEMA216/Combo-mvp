@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0021`，已经执行的迁移保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费与 Creator-hosted Agent VNext 只通过后续迁移追加。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0028`，已经执行的迁移保持原样；第一方邮箱认证、应用数据库角色、共享 Agent 计费与 Creator-hosted Agent VNext 只通过后续迁移追加。
 
 ## 迁移文件
 
@@ -26,6 +26,13 @@
 - `0019_creator_agent_broker_outbox_publisher.sql` 为默认关闭的 Test-only `conversation.open` publisher 固定不可变 wire 时间、严格 operation receipt、replacement pre-ACK identifier receipt 与 current Session/Lease claim 约束；PERSISTED 不 ACK Outbox，只有 ready projector 收敛终态。它不启动 Gateway，也不允许 Preview 或 Production delivery。
 - `0020_creator_agent_confirmed_failure_fact.sql` 只扩展 canonical Worker `invocation.failed` fact 的 durable digest/source binding，并把可公开的 confirmed failure code 收窄到固定 registry。它不启用 Invocation runtime；由于还没有受验证的 interrupt receipt authority，`invocation.cancelled` 继续 fail closed。
 - `0021_creator_agent_context_admission.sql` 以窄 SECURITY DEFINER 原子执行 USER Message admission、Conversation BUSY/next-turn projection或 context-limit suspension，并撤销 API 对这些写点的 direct column authority。它按 pinned RuntimePolicy、连续 USER 事实及 AES-GCM ciphertext octets执行 ADR-VNEXT-006 的下一条 USER admission；fresh ASSISTANT overflow策略与完整 ADR/SCH-004仍未完成。这是 Test-only quiescent exact-tuple cutover，不实现 HTTP send route。
+- `0022_creator_agent_consumer_message_accept.sql` 为 direct-login `combo_agent_consumer_api` 增加唯一的 Consumer message full-accept definer。Runtime 先分配 USER Message UUIDv7 并完成未来 KMS sealing；数据库在同一事务内生成 Invocation、accepted Event、prepare Outbox 的 UUIDv7 和 Cloud deadline，复用 0021 admission core，并以 replay、conflict、context-limit 和 unavailable 稳定结果收敛。ADR-VNEXT-033 要求 HTTP fresh Consumer key 为 canonical lowercase UUIDv4；Message text authority同时检查canonical形式与版本，Conversation的PostgreSQL uuid trigger只能在类型规范化后检查版本位。已有bounded legacy key只在durable row命中后replay/conflict。Fresh accept还要求Version未发生安全撤销、Deployment/Worker observed online且当前Lease/Gateway留有安全窗口。Consumer仍没有业务表直接写权，也不能执行private core或API wrapper；该迁移不实现KMS、HTTP route或Broker dispatch。
+- `0023_creator_agent_event_integrity.sql` 为 reconciliation Event 链增加显式 `invocation.reconciling_resumed` 事件，并新增低敏、append-only、FORCE-RLS 的 Journal integrity alert authority。Root/resumed trigger把Broker/Reconciler session、既有Worker fact、reason、journal sequence和deterministic source identity精确绑定；deferred companion constraint也会在提交前拒绝旧binary产生的无root/无resume投影。该cutover要求quiescent upgrade，zero-legacy门还拒绝可确定的活动及UNCERTAIN历史缺口；无法无歧义识别的旧terminal history仍不回填。完整 Event fold、projection digest parity、冲突后 durable alert 接线与恢复审计仍未实现，不能据此关闭测试方案 10.6。
+- `0024_creator_agent_reconciliation_source_admission.sql` 把explicit Reconciler root的fresh admission、exact replay与global logical source冲突收进一个最窄`SECURITY DEFINER`。函数在读取全局source前验证exact session/tenant，按logical UUIDv7取得全局advisory lock，再锁incoming Invocation/Conversation；同source不同canonical body只向incoming tenant写一条低敏deduplicated alert并返回`SECURITY_BLOCKED`，不改变业务projection。归一化唯一索引同时覆盖direct、`late-prepared:`与`late-started:`别名；旧Reconciler binary的direct explicit INSERT由root trigger拒绝。该迁移只接线begin-reconciliation source conflict，不实现其他Event类型、完整reducer/parity或alert审计生命周期。
+- `0025_creator_agent_prepared_fact_admission.sql` 将`invocation.prepared` Worker fact的global source锁、单Invocation phase锁、跨RLS full-field compare、fresh persisted Event与prepare ACK、exact replay和conflict alert统一进Broker-only definer。数据库按冻结JCS字段独立重算fact digest；旧Broker direct persisted Event writer由trigger拒绝。`SECURITY_BLOCKED`由Gateway外层继续提交frame/operation receipt与Cloud ACK；start command和late reconciliation仍在同一外层事务的Cloud projector后半段完成。
+- `0026_creator_agent_started_fact_admission.sql` 将`invocation.started` Worker fact的JCS digest、global source/started phase classifier、RUNNING或RECONCILING projection、started Event、双attestation component、可选late-started root及start ACK全部收进Broker-only definer。旧started历史因缺dispatch/sandbox component无法安全回填，迁移在锁内zero-legacy fail closed；旧Broker direct started writer由trigger拒绝。
+- `0027_creator_agent_failed_fact_admission.sql` 将confirmed `invocation.failed` fact、FAILED projection、Worker Event、Consumer terminal payload/digest/dedupe/cursor、stream、永久低敏receipt与Conversation IDLE收进Broker-only definer。Receipt在Outbox retention删除后继续证明原cursor；迁移zero-legacy拒绝旧confirmed failed终态，旧Broker direct failed Event与failed Consumer Outbox写入均fail closed。
+- `0028_creator_agent_success_fact_admission.sql` 以同一外层事务中的preflight/seal/finalize两阶段协议接管`invocation.succeeded`：数据库先锁定全局source与Invocation并分配Assistant Message ID/AAD，外部authority完成sealing后，finalize重验Cloud时钟与事实绑定，再原子写入Message、SUCCEEDED projection/Event、Consumer Outbox/stream、永久receipt与Conversation IDLE。Transient preflight必须同事务消费；旧Broker direct Assistant/Success Event/Outbox写入fail closed。迁移同时把failed-after-succeeded冲突从generic binding升级为完整success chain验证，但不实现KMS本身。
 
 `users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。VNext 表把 Snapshot 密文对象索引、AgentVersion、邀请授权、在线 Deployment、短租约、Consumer 多轮消息和执行 Journal 分开；Conversation 在创建事务中固定 serving Version 与 Worker，`(consumer_subject_id, idempotency_key)` 防止重复创建。消息只保存 AEAD 密文与 HMAC 摘要，Event payload 明确拒绝 Prompt、答案、Token、路径和 Reasoning。成功终态同时写入独立 Consumer Event Outbox 与 stream cursor，Redis/SSE 只能在 PostgreSQL commit 后投影；七天回放保留期由 Reconciler 原子推进过期 cursor。
 
@@ -47,7 +54,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0021_creator_agent_context_admission.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0028_creator_agent_success_fact_admission.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test

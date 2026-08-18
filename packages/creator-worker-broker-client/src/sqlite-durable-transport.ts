@@ -17,7 +17,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import type { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync, SQLInputValue } from 'node:sqlite';
 
 import {
   BrokerEnvelopeSchema,
@@ -50,11 +50,13 @@ import {
 import {
   WORKER_INVOCATION_SCHEMA_SQL,
   WORKER_INVOCATION_SCHEMA_V4_SQL,
+  WORKER_INVOCATION_SCHEMA_V5_SQL,
   WORKER_INVOCATION_SCHEMA_VERSION,
   WORKER_CONVERSATION_READY_SCHEMA_SQL,
   WORKER_CONVERSATION_READY_SCHEMA_V4_SQL,
   WORKER_CONVERSATION_READY_SCHEMA_VERSION,
   WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION,
+  WORKER_HOST_CONTROL_SCHEMA_VERSION,
   SqliteWorkerInvocationJournal,
   assertWorkerConversationReadyIntegrity,
   assertWorkerInvocationIntegrity,
@@ -81,7 +83,7 @@ const loadNodeSqlite = (): NodeSqliteModule =>
   createRequire(import.meta.url)('node:sqlite') as NodeSqliteModule;
 
 export const WORKER_TRANSPORT_APPLICATION_ID = 0x43425754;
-export const WORKER_TRANSPORT_SCHEMA_VERSION = WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION;
+export const WORKER_TRANSPORT_SCHEMA_VERSION = WORKER_HOST_CONTROL_SCHEMA_VERSION;
 export const WORKER_TRANSPORT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const WORKER_TRANSPORT_SEQUENCE_RETENTION = 1_024;
 export const WORKER_TRANSPORT_DEFAULT_MAX_INBOUND_ROWS = 512;
@@ -149,6 +151,11 @@ export type SqliteWorkerTransportFaultPoint =
   | 'migration.v3_to_v4.after_commit'
   | 'migration.v3_to_v4.after_local_projection'
   | 'migration.v3_to_v4.before_authority_digest'
+  | 'migration.v4_to_v5.before_watermark'
+  | 'migration.v4_to_v5.after_watermark_fsync'
+  | 'migration.v4_to_v5.after_commit'
+  | 'migration.v4_to_v5.after_local_projection'
+  | 'migration.v4_to_v5.before_authority_digest'
   | `${string}.before_commit`
   | `${string}.after_watermark_fsync`
   | `${string}.after_commit`;
@@ -261,7 +268,7 @@ type JournalCommitWatermark = JournalCommitWatermarkBase &
   Readonly<{
     formatVersion: 2;
     evidenceVersion: 2;
-    schemaVersion: 4;
+    schemaVersion: 4 | 5;
     currentConnectionAuthority: CurrentConnectionAuthority | null;
   }>;
 
@@ -271,17 +278,17 @@ type MigrationRecoveryManifest = Readonly<{
   formatVersion: 1;
   nonce: string;
   legacySlot: Readonly<{
-    schemaVersion: 3;
+    schemaVersion: 3 | 4;
     commitEpoch: number;
-    watermark: LegacyJournalCommitWatermark;
+    watermark: AnyJournalCommitWatermark;
   }>;
   candidateSlot: Readonly<{
-    schemaVersion: 4;
+    schemaVersion: 4 | 5;
     commitEpoch: number;
     watermark: JournalCommitWatermark;
   }> | null;
   finalizedSlot: Readonly<{
-    schemaVersion: 4;
+    schemaVersion: 4 | 5;
     commitEpoch: number;
     candidateDigest: string;
   }> | null;
@@ -1367,7 +1374,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
              AND c.owner_epoch = ? AND f.connection_id = ? AND f.effect_state = 'PERSISTED'
              AND (
                lc.command_id IS NULL OR
-               f.envelope_type IN ('conversation.open', 'invocation.prepare', 'invocation.start')
+               f.envelope_type IN (
+                 'conversation.open', 'invocation.prepare', 'invocation.start', 'invocation.cancel'
+               )
              )
            ORDER BY f.recorded_at_ms, length(f.sequence), f.sequence LIMIT ?`,
         )
@@ -1775,6 +1784,11 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       // transaction. Keep this branch explicit so the legacy format-1 watermark is always
       // validated before any v4 bytes are published.
       this.#migrateLegacyV3ToV4();
+      migratedVersion = WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION;
+    }
+    if (migratedVersion === WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION) {
+      this.#validateLegacyV4Snapshot();
+      this.#migrateLegacyV4ToV5();
       return;
     }
 
@@ -1801,7 +1815,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
       }
       this.#database.exec(SCHEMA_SQL);
-      this.#database.exec(WORKER_INVOCATION_SCHEMA_V4_SQL);
+      this.#database.exec(WORKER_INVOCATION_SCHEMA_V5_SQL);
       this.#rebuildLegacyConversationsWithoutTransportForeignKey(
         performance.now() + this.#operationTimeoutMs,
       );
@@ -1994,12 +2008,15 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec('PRAGMA foreign_keys = OFF;');
       const remaining = Math.max(1, Math.floor(migrationDeadline - performance.now()));
-      this.#database.exec(`PRAGMA busy_timeout = ${Math.min(previousBusyTimeout, remaining)};`);
+      const migrationBusyTimeout = Math.min(previousBusyTimeout, remaining);
+      this.#database.exec(`PRAGMA busy_timeout = ${migrationBusyTimeout};`);
       try {
         this.#database.exec('BEGIN EXCLUSIVE');
         began = true;
       } catch {
-        this.#assertMigrationDeadline(migrationDeadline);
+        if (migrationBusyTimeout >= remaining) {
+          throw new SqliteWorkerTransportError('JOURNAL_ABORTED');
+        }
         throw new SqliteWorkerTransportError('JOURNAL_BUSY');
       }
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
@@ -2145,7 +2162,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
       this.#assertMigrationDeadline(migrationDeadline);
       const lockedVersion = pragmaNumber(this.#database, 'user_version');
-      if (lockedVersion === WORKER_TRANSPORT_SCHEMA_VERSION) {
+      if (lockedVersion === WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION) {
         this.#database.exec('COMMIT');
         committed = true;
         this.#database.exec('PRAGMA foreign_keys = ON;');
@@ -2258,7 +2275,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       for (const sql of transientSchema.indexes) this.#database.exec(sql);
       this.#assertMigrationDeadline(migrationDeadline);
 
-      this.#database.exec(`PRAGMA user_version = ${WORKER_TRANSPORT_SCHEMA_VERSION};`);
+      this.#database.exec(`PRAGMA user_version = ${WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION};`);
       this.#assertMigrationDeadline(migrationDeadline);
       const schemaDigest = this.#actualSchemaDigest();
       this.#assertMigrationDeadline(migrationDeadline);
@@ -2287,7 +2304,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#assertStoredEnvelopeIntegrity();
       this.#assertMigrationDeadline(migrationDeadline);
 
-      candidateWatermark = this.#readDatabaseWatermark();
+      candidateWatermark = this.#readDatabaseWatermark(WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION);
       recoveryManifest = this.#recordMigrationRecoveryCandidate(
         recoveryManifest,
         candidateWatermark,
@@ -2329,6 +2346,253 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
       if (isSqliteCapacity(error)) throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
       throw error;
+    }
+  }
+
+  #validateLegacyV4Snapshot(): void {
+    this.#database.exec('BEGIN');
+    let completed = false;
+    try {
+      const pragmas = this.inspectPragmas();
+      if (
+        pragmas.applicationId !== WORKER_TRANSPORT_APPLICATION_ID ||
+        pragmas.userVersion !== WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION ||
+        pragmas.journalMode.toLowerCase() !== 'wal' ||
+        pragmas.synchronous !== 2 ||
+        pragmas.foreignKeys !== 1 ||
+        pragmas.secureDelete !== 1 ||
+        pragmas.quickCheck.toLowerCase() !== 'ok'
+      ) {
+        throw new SqliteWorkerTransportError('JOURNAL_PRAGMA_MISMATCH');
+      }
+      this.#assertDatabaseIntegrity();
+      this.#assertSchemaDigest();
+      this.#assertStoredEnvelopeIntegrity();
+      assertWorkerConversationReadyIntegrity(this.#database);
+      const legacyCancelled = this.#legacyV4HasCancelledAuthority();
+      if (!legacyCancelled) assertWorkerInvocationIntegrity(this.#database);
+      const watermark = this.#readDatabaseWatermark(WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION);
+      this.#database.exec('COMMIT');
+      completed = true;
+      this.#recoverMigrationWatermarkIfNeeded(watermark);
+      this.#assertExternalWatermark(watermark);
+      if (legacyCancelled) {
+        throw new SqliteWorkerTransportError('JOURNAL_RECONCILIATION_REQUIRED');
+      }
+    } finally {
+      if (!completed) safeRollback(this.#database);
+    }
+  }
+
+  #migrateLegacyV4ToV5(): void {
+    const migrationDeadline = performance.now() + this.#operationTimeoutMs;
+    const previousBusyTimeout = pragmaNumber(this.#database, 'busy_timeout', 'timeout');
+    let began = false;
+    let committed = false;
+    let legacyWatermark: JournalCommitWatermark | undefined;
+    let recoveryManifest: MigrationRecoveryManifest | undefined;
+    let candidateWatermark: JournalCommitWatermark | undefined;
+    try {
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec('PRAGMA foreign_keys = OFF;');
+      const remaining = Math.max(1, Math.floor(migrationDeadline - performance.now()));
+      this.#database.exec(`PRAGMA busy_timeout = ${Math.min(previousBusyTimeout, remaining)};`);
+      this.#database.exec('BEGIN EXCLUSIVE');
+      began = true;
+      this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
+      this.#assertMigrationDeadline(migrationDeadline);
+      const lockedVersion = pragmaNumber(this.#database, 'user_version');
+      if (lockedVersion === WORKER_HOST_CONTROL_SCHEMA_VERSION) {
+        this.#database.exec('COMMIT');
+        committed = true;
+        this.#database.exec('PRAGMA foreign_keys = ON;');
+        return;
+      }
+      if (lockedVersion !== WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION) {
+        throw new SqliteWorkerTransportError('JOURNAL_SCHEMA_UNSUPPORTED');
+      }
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertDatabaseIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertSchemaDigest();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertStoredEnvelopeIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerInvocationIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerConversationReadyIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      legacyWatermark = this.#readDatabaseWatermark(WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION);
+      this.#assertExternalWatermark(legacyWatermark);
+      this.#assertMigrationDeadline(migrationDeadline);
+      recoveryManifest = this.#prepareMigrationRecoveryManifest(legacyWatermark);
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec(
+        migrationCreateTableSql(
+          WORKER_INVOCATION_SCHEMA_V5_SQL,
+          'local_invocations',
+          'local_invocations_v5',
+        ),
+      );
+      this.#database.exec(
+        migrationCreateTableSql(
+          WORKER_INVOCATION_SCHEMA_V5_SQL,
+          'local_invocation_events',
+          'local_invocation_events_v5',
+        ),
+      );
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#copyLegacyV4Invocations(migrationDeadline);
+      this.#database.exec(
+        `INSERT INTO local_invocation_events_v5 SELECT * FROM local_invocation_events`,
+      );
+      this.#faultInjector?.('migration.v4_to_v5.after_local_projection');
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec(`
+        DROP TABLE local_invocation_events;
+        DROP TABLE local_invocations;
+        ALTER TABLE local_invocations_v5 RENAME TO local_invocations;
+        ALTER TABLE local_invocation_events_v5 RENAME TO local_invocation_events;
+        CREATE UNIQUE INDEX local_one_active_invocation
+          ON local_invocations(installation_id)
+          WHERE state IN ('PREPARED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED', 'FINAL_READY');
+        CREATE INDEX local_invocation_conversation_state
+          ON local_invocations(conversation_id, state, created_at_ms);
+        CREATE INDEX local_invocation_event_order
+          ON local_invocation_events(invocation_id, event_id);
+        CREATE TRIGGER local_invocation_events_no_update
+          BEFORE UPDATE ON local_invocation_events BEGIN
+            SELECT RAISE(ABORT, 'local_invocation_events is append-only');
+          END;
+      `);
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec(
+        migrationCreateTableSql(
+          WORKER_INVOCATION_SCHEMA_V5_SQL,
+          'local_invocation_interrupt_receipts',
+          'local_invocation_interrupt_receipts',
+        ),
+      );
+      this.#database.exec(`
+        CREATE TRIGGER local_invocation_interrupt_receipts_no_update
+          BEFORE UPDATE ON local_invocation_interrupt_receipts BEGIN
+            SELECT RAISE(ABORT, 'local_invocation_interrupt_receipts is append-only');
+          END;
+        PRAGMA user_version = ${WORKER_HOST_CONTROL_SCHEMA_VERSION};
+      `);
+      this.#assertMigrationDeadline(migrationDeadline);
+      const schemaDigest = this.#actualSchemaDigest();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#faultInjector?.('migration.v4_to_v5.before_authority_digest');
+      this.#assertMigrationDeadline(migrationDeadline);
+      const authorityDigest = this.#actualAuthorityDigest();
+      this.#assertMigrationDeadline(migrationDeadline);
+      const updated = this.#database
+        .prepare(
+          `UPDATE transport_meta SET schema_digest = ?, authority_digest = ?,
+             commit_epoch = commit_epoch + 1 WHERE singleton = 1`,
+        )
+        .run(schemaDigest, authorityDigest);
+      if (Number(updated.changes) !== 1) throw permanentPortFailure();
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertDatabaseIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerInvocationIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      assertWorkerConversationReadyIntegrity(this.#database);
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#assertStoredEnvelopeIntegrity();
+      this.#assertMigrationDeadline(migrationDeadline);
+      candidateWatermark = this.#readDatabaseWatermark();
+      recoveryManifest = this.#recordMigrationRecoveryCandidate(
+        recoveryManifest,
+        candidateWatermark,
+      );
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#faultInjector?.('migration.v4_to_v5.before_watermark');
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#writeExternalWatermark(candidateWatermark);
+      this.#faultInjector?.('migration.v4_to_v5.after_watermark_fsync');
+      this.#assertMigrationDeadline(migrationDeadline);
+      this.#database.exec('COMMIT');
+      committed = true;
+      this.#database.exec('PRAGMA foreign_keys = ON;');
+      this.#faultInjector?.('migration.v4_to_v5.after_commit');
+      this.#finalizeMigrationRecoveryManifest(recoveryManifest, candidateWatermark);
+      this.#secureJournalFiles();
+    } catch (error) {
+      if (!committed) {
+        if (began) safeRollback(this.#database);
+        if (recoveryManifest !== undefined && legacyWatermark !== undefined) {
+          try {
+            this.#writeExternalWatermark(legacyWatermark);
+            this.#assertExternalWatermark(legacyWatermark);
+            this.#writeMigrationRecoveryManifest({
+              ...recoveryManifest,
+              candidateSlot: null,
+              finalizedSlot: null,
+            });
+          } catch {
+            this.#database.exec('PRAGMA foreign_keys = ON;');
+            throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
+          }
+        }
+      }
+      this.#database.exec('PRAGMA foreign_keys = ON;');
+      this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
+      if (isSqliteCapacity(error)) throw new WorkerBrokerClientError('CAPACITY_EXCEEDED');
+      throw error;
+    }
+  }
+
+  #legacyV4HasCancelledAuthority(): boolean {
+    return (
+      this.#database
+        .prepare(
+          `SELECT 1 AS present FROM local_invocations WHERE state = 'CANCELLED'
+           UNION ALL
+           SELECT 1 FROM local_invocation_events WHERE event_type = 'invocation.cancelled'
+           UNION ALL
+           SELECT 1 FROM local_invocation_outbox WHERE event_type = 'invocation.cancelled'
+           LIMIT 1`,
+        )
+        .get() !== undefined
+    );
+  }
+
+  #copyLegacyV4Invocations(deadline: number): void {
+    const rows = this.#database
+      .prepare('SELECT * FROM local_invocations ORDER BY invocation_id')
+      .iterate() as Iterable<Record<string, unknown>>;
+    for (const row of rows) {
+      this.#assertMigrationDeadline(deadline);
+      const candidate = { ...row };
+      const attemptCount = Number(candidate.host_prompt_release_count);
+      delete candidate.host_prompt_release_count;
+      delete candidate.row_digest;
+      Object.assign(candidate, {
+        host_dispatch_attempt_count: attemptCount,
+        cancel_command_id: null,
+        cancel_reason: null,
+        interrupt_nonce: null,
+        interrupt_intent_at_ms: null,
+        interrupt_attempted_at_ms: null,
+        interrupt_confirmed_at_ms: null,
+        interrupt_receipt_digest: null,
+        interrupt_intent_count: 0,
+        interrupt_attempt_count: 0,
+        interrupt_confirmed_count: 0,
+      });
+      const columns = Object.keys(candidate);
+      this.#database
+        .prepare(
+          `INSERT INTO local_invocations_v5(${columns.join(', ')}, row_digest)
+           VALUES (${columns.map(() => '?').join(', ')}, ?)`,
+        )
+        .run(
+          ...(Object.values(candidate) as SQLInputValue[]),
+          sqliteInvocationRowDigest('local_invocations', candidate),
+        );
     }
   }
 
@@ -2983,7 +3247,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
 
   #readDatabaseWatermark(): JournalCommitWatermark;
   #readDatabaseWatermark(schemaVersion: 1 | 2 | 3): LegacyJournalCommitWatermark;
-  #readDatabaseWatermark(schemaVersion?: 1 | 2 | 3): AnyJournalCommitWatermark {
+  #readDatabaseWatermark(schemaVersion: 4): JournalCommitWatermark;
+  #readDatabaseWatermark(schemaVersion?: 1 | 2 | 3 | 4): AnyJournalCommitWatermark {
     const row = this.#database
       .prepare(
         `SELECT schema_digest, authority_digest, installation_id, journal_generation,
@@ -3042,7 +3307,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       maxWalBytes: row.max_wal_bytes,
       minFreeBytes: row.min_free_bytes,
     };
-    if (schemaVersion !== undefined) {
+    if (schemaVersion !== undefined && schemaVersion <= 3) {
       return Object.freeze({
         ...common,
         formatVersion: LEGACY_WATERMARK_FORMAT_VERSION,
@@ -3053,7 +3318,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       ...common,
       formatVersion: WATERMARK_FORMAT_VERSION,
       evidenceVersion: WATERMARK_EVIDENCE_VERSION,
-      schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+      schemaVersion: (schemaVersion ?? WORKER_TRANSPORT_SCHEMA_VERSION) as 4 | 5,
       currentConnectionAuthority: this.#currentConnectionAuthority(row.installation_id),
     });
   }
@@ -3096,11 +3361,14 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
   }
 
   #prepareMigrationRecoveryManifest(
-    legacyWatermark: LegacyJournalCommitWatermark,
+    legacyWatermark: AnyJournalCommitWatermark,
   ): MigrationRecoveryManifest {
     if (
-      legacyWatermark.schemaVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION ||
-      legacyWatermark.formatVersion !== LEGACY_WATERMARK_FORMAT_VERSION
+      (legacyWatermark.schemaVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION &&
+        legacyWatermark.schemaVersion !== WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION) ||
+      (legacyWatermark.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+        ? legacyWatermark.formatVersion !== LEGACY_WATERMARK_FORMAT_VERSION
+        : legacyWatermark.formatVersion !== WATERMARK_FORMAT_VERSION)
     ) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
@@ -3108,7 +3376,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       formatVersion: MIGRATION_RECOVERY_FORMAT_VERSION,
       nonce: uuidV7(),
       legacySlot: Object.freeze({
-        schemaVersion: WORKER_CONVERSATION_READY_SCHEMA_VERSION,
+        schemaVersion: legacyWatermark.schemaVersion,
         commitEpoch: legacyWatermark.commitEpoch,
         watermark: legacyWatermark,
       }),
@@ -3123,10 +3391,10 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     manifest: MigrationRecoveryManifest,
     candidateWatermark: JournalCommitWatermark,
   ): MigrationRecoveryManifest {
+    const candidateSchemaVersion = manifest.legacySlot.schemaVersion + 1;
     if (
       candidateWatermark.commitEpoch !== manifest.legacySlot.commitEpoch + 1 ||
-      candidateWatermark.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION ||
-      candidateWatermark.currentConnectionAuthority !== null ||
+      candidateWatermark.schemaVersion !== candidateSchemaVersion ||
       candidateWatermark.applicationId !== manifest.legacySlot.watermark.applicationId ||
       candidateWatermark.installationId !== manifest.legacySlot.watermark.installationId ||
       candidateWatermark.journalGeneration !== manifest.legacySlot.watermark.journalGeneration ||
@@ -3135,17 +3403,33 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       candidateWatermark.maxDatabaseBytes !== manifest.legacySlot.watermark.maxDatabaseBytes ||
       candidateWatermark.maxWalBytes !== manifest.legacySlot.watermark.maxWalBytes ||
       candidateWatermark.minFreeBytes !== manifest.legacySlot.watermark.minFreeBytes ||
-      candidateWatermark.inboundEvidenceCount !== 0 ||
-      candidateWatermark.inboundEvidenceXor !== ZERO_DIGEST ||
-      candidateWatermark.outboxEvidenceCount !== 0 ||
-      candidateWatermark.outboxEvidenceXor !== ZERO_DIGEST
+      candidateWatermark.inboundEvidenceCount !==
+        (manifest.legacySlot.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+          ? 0
+          : manifest.legacySlot.watermark.inboundEvidenceCount) ||
+      candidateWatermark.inboundEvidenceXor !==
+        (manifest.legacySlot.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+          ? ZERO_DIGEST
+          : manifest.legacySlot.watermark.inboundEvidenceXor) ||
+      candidateWatermark.outboxEvidenceCount !==
+        (manifest.legacySlot.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+          ? 0
+          : manifest.legacySlot.watermark.outboxEvidenceCount) ||
+      candidateWatermark.outboxEvidenceXor !==
+        (manifest.legacySlot.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+          ? ZERO_DIGEST
+          : manifest.legacySlot.watermark.outboxEvidenceXor) ||
+      (manifest.legacySlot.watermark.formatVersion === WATERMARK_FORMAT_VERSION
+        ? canonicalizeJson(candidateWatermark.currentConnectionAuthority) !==
+          canonicalizeJson(manifest.legacySlot.watermark.currentConnectionAuthority)
+        : candidateWatermark.currentConnectionAuthority !== null)
     ) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
     const candidate = Object.freeze({
       ...manifest,
       candidateSlot: Object.freeze({
-        schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        schemaVersion: candidateSchemaVersion as 4 | 5,
         commitEpoch: candidateWatermark.commitEpoch,
         watermark: candidateWatermark,
       }),
@@ -3159,6 +3443,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     manifest: MigrationRecoveryManifest,
     candidateWatermark: JournalCommitWatermark,
   ): void {
+    const candidateSchemaVersion = manifest.legacySlot.schemaVersion + 1;
     if (
       manifest.candidateSlot === null ||
       canonicalizeJson(manifest.candidateSlot.watermark) !== canonicalizeJson(candidateWatermark)
@@ -3170,7 +3455,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         ...manifest,
         candidateSlot: null,
         finalizedSlot: Object.freeze({
-          schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+          schemaVersion: candidateSchemaVersion as 4 | 5,
           commitEpoch: candidateWatermark.commitEpoch,
           candidateDigest: migrationRecoveryCandidateDigest(candidateWatermark),
         }),
@@ -3192,9 +3477,9 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     ) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
-    if (expected.schemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION) {
+    if (expected.schemaVersion === legacy.schemaVersion) {
       if (
-        expected.formatVersion !== LEGACY_WATERMARK_FORMAT_VERSION ||
+        expected.formatVersion !== legacy.watermark.formatVersion ||
         legacy.commitEpoch !== expected.commitEpoch ||
         canonicalizeJson(legacy.watermark) !== canonicalizeJson(expected) ||
         manifest.finalizedSlot !== null
@@ -3215,7 +3500,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
     if (
       expected.formatVersion !== WATERMARK_FORMAT_VERSION ||
-      expected.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION
+      expected.schemaVersion !== legacy.schemaVersion + 1
     ) {
       throw new SqliteWorkerTransportError('JOURNAL_CORRUPT');
     }
@@ -3344,7 +3629,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
   #assertStoredEnvelopeIntegrity(): void {
     try {
       const defensiveIntegrityV4 =
-        pragmaNumber(this.#database, 'user_version') >= WORKER_TRANSPORT_SCHEMA_VERSION;
+        pragmaNumber(this.#database, 'user_version') >= WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION;
       const provisioned = this.#database
         .prepare(
           `SELECT installation_id, inbound_evidence_count, inbound_evidence_xor,
@@ -3604,7 +3889,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
           (!locallyConsumedCommands.has(row.message_id) ||
             row.envelope_type === 'conversation.open' ||
             row.envelope_type === 'invocation.prepare' ||
-            row.envelope_type === 'invocation.start')
+            row.envelope_type === 'invocation.start' ||
+            row.envelope_type === 'invocation.cancel')
         ) {
           pendingInboundCount += 1;
         }
@@ -3886,6 +4172,12 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
         name === 'invocation_record_dispatch_unknown' ||
         name === 'invocation_reject_host_dispatch' ||
         name === 'invocation_confirm_host_dispatch' ||
+        name === 'invocation_cancel' ||
+        name === 'invocation_take_host_interrupt' ||
+        name === 'invocation_confirm_host_interrupt' ||
+        name === 'invocation_record_interrupt_unknown' ||
+        name === 'invocation_recover_unconfirmed_interrupt' ||
+        name === 'invocation_recover_host_actions' ||
         name === 'invocation_mark_cloud_committed' ||
         name === 'invocation_prune_committed_retention'
       ) {
@@ -4358,7 +4650,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     }
     const duplicateEffect = prior !== undefined || permanentIdentities.length > 0;
     // An explicit cross-connection retry transfers a not-yet-consumed command to the current
-    // connection. Ready-open/prepare/start re-envelopes remain PERSISTED until the business journal
+    // connection. Ready-open/prepare/start/cancel re-envelopes remain PERSISTED until the journal
     // revalidates current transport authority and exact logical replay; other already-applied
     // commands do not need a second business effect.
     const invocationReplayNeedsBusinessValidation =
@@ -4366,7 +4658,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       envelope.kind === 'command' &&
       (envelope.type === 'conversation.open' ||
         envelope.type === 'invocation.prepare' ||
-        envelope.type === 'invocation.start');
+        envelope.type === 'invocation.start' ||
+        envelope.type === 'invocation.cancel');
     const storedEffectState = invocationReplayNeedsBusinessValidation
       ? effectState
       : prior === undefined
@@ -5711,7 +6004,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
       table === 'transport_inbound_frames'
         ? `SELECT count(*) AS count FROM transport_inbound_frames
            WHERE effect_state = 'PERSISTED'
-             ${workerInvocationTablesExist(this.#database) ? `AND (message_id NOT IN (SELECT command_id FROM local_consumed_commands) OR envelope_type IN ('conversation.open', 'invocation.prepare', 'invocation.start'))` : ''}`
+             ${workerInvocationTablesExist(this.#database) ? `AND (message_id NOT IN (SELECT command_id FROM local_consumed_commands) OR envelope_type IN ('conversation.open', 'invocation.prepare', 'invocation.start', 'invocation.cancel'))` : ''}`
         : table === 'transport_outbox'
           ? `SELECT count(*) AS count FROM transport_outbox
              WHERE state IN ('UNBOUND', 'PENDING', 'WRITTEN')`
@@ -6422,11 +6715,15 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
       'schemaVersion',
       'watermark',
     ]);
-    const legacyWatermark = parseRecoveryWatermark(legacySlot.watermark, 3);
     if (
-      legacySlot.schemaVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION ||
-      legacySlot.commitEpoch !== legacyWatermark.commitEpoch
+      legacySlot.schemaVersion !== WORKER_CONVERSATION_READY_SCHEMA_VERSION &&
+      legacySlot.schemaVersion !== WORKER_DEFENSIVE_INTEGRITY_SCHEMA_VERSION
     ) {
+      throw new Error('migration-recovery-legacy-version');
+    }
+    const legacySchemaVersion = legacySlot.schemaVersion as 3 | 4;
+    const legacyWatermark = parseRecoveryWatermark(legacySlot.watermark, legacySchemaVersion);
+    if (legacySlot.commitEpoch !== legacyWatermark.commitEpoch) {
       throw new Error('migration-recovery-legacy');
     }
     let candidateSlot: MigrationRecoveryManifest['candidateSlot'] = null;
@@ -6436,9 +6733,10 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
         'schemaVersion',
         'watermark',
       ]);
-      const watermark = parseRecoveryWatermark(candidate.watermark, 4);
+      const candidateSchemaVersion = (legacySchemaVersion + 1) as 4 | 5;
+      const watermark = parseRecoveryWatermark(candidate.watermark, candidateSchemaVersion);
       if (
-        candidate.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION ||
+        candidate.schemaVersion !== candidateSchemaVersion ||
         candidate.commitEpoch !== watermark.commitEpoch ||
         candidate.commitEpoch !== legacyWatermark.commitEpoch + 1 ||
         watermark.applicationId !== legacyWatermark.applicationId ||
@@ -6448,15 +6746,31 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
         watermark.maxDatabaseBytes !== legacyWatermark.maxDatabaseBytes ||
         watermark.maxWalBytes !== legacyWatermark.maxWalBytes ||
         watermark.minFreeBytes !== legacyWatermark.minFreeBytes ||
-        watermark.inboundEvidenceCount !== 0 ||
-        watermark.inboundEvidenceXor !== ZERO_DIGEST ||
-        watermark.outboxEvidenceCount !== 0 ||
-        watermark.outboxEvidenceXor !== ZERO_DIGEST
+        watermark.inboundEvidenceCount !==
+          (legacySchemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+            ? 0
+            : legacyWatermark.inboundEvidenceCount) ||
+        watermark.inboundEvidenceXor !==
+          (legacySchemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+            ? ZERO_DIGEST
+            : legacyWatermark.inboundEvidenceXor) ||
+        watermark.outboxEvidenceCount !==
+          (legacySchemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+            ? 0
+            : legacyWatermark.outboxEvidenceCount) ||
+        watermark.outboxEvidenceXor !==
+          (legacySchemaVersion === WORKER_CONVERSATION_READY_SCHEMA_VERSION
+            ? ZERO_DIGEST
+            : legacyWatermark.outboxEvidenceXor) ||
+        (legacyWatermark.formatVersion === WATERMARK_FORMAT_VERSION
+          ? canonicalizeJson(watermark.currentConnectionAuthority) !==
+            canonicalizeJson(legacyWatermark.currentConnectionAuthority)
+          : watermark.currentConnectionAuthority !== null)
       ) {
         throw new Error('migration-recovery-candidate');
       }
       candidateSlot = Object.freeze({
-        schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        schemaVersion: candidateSchemaVersion,
         commitEpoch: watermark.commitEpoch,
         watermark,
       });
@@ -6469,7 +6783,7 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
         'schemaVersion',
       ]);
       if (
-        finalized.schemaVersion !== WORKER_TRANSPORT_SCHEMA_VERSION ||
+        finalized.schemaVersion !== legacySchemaVersion + 1 ||
         !Number.isSafeInteger(finalized.commitEpoch) ||
         Number(finalized.commitEpoch) !== legacyWatermark.commitEpoch + 1 ||
         typeof finalized.candidateDigest !== 'string' ||
@@ -6478,7 +6792,7 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
         throw new Error('migration-recovery-finalized');
       }
       finalizedSlot = Object.freeze({
-        schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
+        schemaVersion: (legacySchemaVersion + 1) as 4 | 5,
         commitEpoch: Number(finalized.commitEpoch),
         candidateDigest: finalized.candidateDigest,
       });
@@ -6490,7 +6804,7 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
       formatVersion: MIGRATION_RECOVERY_FORMAT_VERSION,
       nonce: nonce.data,
       legacySlot: Object.freeze({
-        schemaVersion: WORKER_CONVERSATION_READY_SCHEMA_VERSION,
+        schemaVersion: legacySchemaVersion,
         commitEpoch: legacyWatermark.commitEpoch,
         watermark: legacyWatermark,
       }),
@@ -6504,8 +6818,15 @@ function readMigrationRecoveryManifest(filename: string): MigrationRecoveryManif
 }
 
 function parseRecoveryWatermark(input: unknown, schemaVersion: 3): LegacyJournalCommitWatermark;
-function parseRecoveryWatermark(input: unknown, schemaVersion: 4): JournalCommitWatermark;
-function parseRecoveryWatermark(input: unknown, schemaVersion: 3 | 4): AnyJournalCommitWatermark {
+function parseRecoveryWatermark(input: unknown, schemaVersion: 4 | 5): JournalCommitWatermark;
+function parseRecoveryWatermark(
+  input: unknown,
+  schemaVersion: 3 | 4 | 5,
+): AnyJournalCommitWatermark;
+function parseRecoveryWatermark(
+  input: unknown,
+  schemaVersion: 3 | 4 | 5,
+): AnyJournalCommitWatermark {
   const baseKeys = [
     'applicationId',
     'authorityDigest',
@@ -6585,17 +6906,40 @@ function parseRecoveryWatermark(input: unknown, schemaVersion: 3 | 4): AnyJourna
   }
   if (
     row.formatVersion !== WATERMARK_FORMAT_VERSION ||
-    row.evidenceVersion !== WATERMARK_EVIDENCE_VERSION ||
-    row.currentConnectionAuthority !== null
+    row.evidenceVersion !== WATERMARK_EVIDENCE_VERSION
   ) {
     throw new Error('migration-recovery-current-format');
+  }
+  let currentConnectionAuthority: CurrentConnectionAuthority | null = null;
+  if (row.currentConnectionAuthority !== null) {
+    const authority = exactRecord(row.currentConnectionAuthority, [
+      'connectionDigest',
+      'connectionId',
+      'installationId',
+    ]);
+    const authorityInstallation = UuidSchema.safeParse(authority.installationId);
+    const authorityConnection = UuidSchema.safeParse(authority.connectionId);
+    if (
+      !authorityInstallation.success ||
+      !authorityConnection.success ||
+      authorityInstallation.data !== installation.data ||
+      typeof authority.connectionDigest !== 'string' ||
+      !SHA256_HEX.test(authority.connectionDigest)
+    ) {
+      throw new Error('migration-recovery-current-authority');
+    }
+    currentConnectionAuthority = Object.freeze({
+      installationId: authorityInstallation.data,
+      connectionId: authorityConnection.data,
+      connectionDigest: authority.connectionDigest,
+    });
   }
   return Object.freeze({
     ...common,
     formatVersion: WATERMARK_FORMAT_VERSION,
     evidenceVersion: WATERMARK_EVIDENCE_VERSION,
-    schemaVersion: WORKER_TRANSPORT_SCHEMA_VERSION,
-    currentConnectionAuthority: null,
+    schemaVersion,
+    currentConnectionAuthority,
   });
 }
 
@@ -6933,6 +7277,12 @@ function isRecoveryTransaction(operation: string): boolean {
     operation === 'invocation_record_dispatch_unknown' ||
     operation === 'invocation_recover_unconfirmed_start' ||
     operation === 'invocation_confirm_host_dispatch' ||
+    operation === 'invocation_cancel' ||
+    operation === 'invocation_take_host_interrupt' ||
+    operation === 'invocation_confirm_host_interrupt' ||
+    operation === 'invocation_record_interrupt_unknown' ||
+    operation === 'invocation_recover_unconfirmed_interrupt' ||
+    operation === 'invocation_recover_host_actions' ||
     operation === 'invocation_write_succeeded' ||
     operation === 'invocation_mark_cloud_committed' ||
     operation === 'invocation_prune_committed_retention'

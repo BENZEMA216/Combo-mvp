@@ -10,12 +10,14 @@ import { ConsumerTerminalEventPayloadSchema } from './consumer-events.js';
 import { InvocationStateSchema, VnextErrorResponseSchema } from './invocation.js';
 import {
   CanonicalSha256Base64Schema,
+  ClientIdempotencyKeySchema,
   HmacSha256DigestSchema,
   IsoDateTimeSchema,
   Sha256HexSchema,
+  StrictUnicodeCodePointStringSchema,
+  StrictUtf8TextSchema,
   UINT63_DECIMAL_PATTERN_SOURCE,
   UNICODE_SCALAR_NO_CONTROL_PATTERN,
-  UnicodeCodePointStringSchema,
   Uint63StringSchema,
   Utf8TextSchema,
   UuidSchema,
@@ -26,7 +28,8 @@ import {
   SNAPSHOT_MAX_EXPANDED_BYTES,
   SNAPSHOT_MAX_FILES,
   SNAPSHOT_MAX_MANIFEST_BYTES,
-  SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES,
+  SNAPSHOT_EXACT_PUBLICATION_COMMIT_MARKER_BYTES,
+  SNAPSHOT_MAX_PUBLICATION_PREPARATION_MARKER_BYTES,
   SNAPSHOT_PUBLICATION_COMMIT_PROTOCOL,
   SNAPSHOT_PUBLICATION_PREPARATION_PROTOCOL,
   SnapshotArchiveEnvelopeSchema,
@@ -35,7 +38,17 @@ import {
 } from './snapshot.js';
 
 export const CREATOR_AGENT_HTTP_PROTOCOL = 'combo.creator-agent-http/1' as const;
-export const IdempotencyKeySchema = UuidSchema;
+export const IdempotencyKeySchema = ClientIdempotencyKeySchema;
+
+/** Send/retry HTTP handlers must bind the header and body alias byte-for-byte. */
+export function hasExactClientIdempotencyBinding(
+  headerValue: unknown,
+  bodyClientMessageId: unknown,
+): boolean {
+  const header = IdempotencyKeySchema.safeParse(headerValue);
+  const body = ClientIdempotencyKeySchema.safeParse(bodyClientMessageId);
+  return header.success && body.success && header.data === body.data;
+}
 export const PublicAgentSlugSchema = z
   .string()
   .min(1)
@@ -267,7 +280,7 @@ export const SnapshotPublicationCommitMarkerSchema = z
     schemaVersion: z.literal(1),
     creatorId: UuidSchema,
     snapshotDigest: Sha256HexSchema,
-    preparationKey: UnicodeCodePointStringSchema(1, 512),
+    preparationKey: StrictUnicodeCodePointStringSchema(1, 512),
     preparationDigest: Sha256HexSchema,
   })
   .strict()
@@ -285,26 +298,40 @@ export const SnapshotPublicationCommitMarkerSchema = z
   });
 export type SnapshotPublicationCommitMarker = z.infer<typeof SnapshotPublicationCommitMarkerSchema>;
 
-function canonicalPublicationMarkerBytes(value: unknown): Buffer {
+function canonicalPreparationMarkerBytes(value: unknown): Buffer {
   const bytes = Buffer.from(canonicalizeJson(value), 'utf8');
-  if (bytes.byteLength > SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES) {
-    throw new TypeError('Snapshot publication marker 超过冻结上限');
+  if (bytes.byteLength > SNAPSHOT_MAX_PUBLICATION_PREPARATION_MARKER_BYTES) {
+    throw new TypeError('Snapshot publication preparation marker 超过冻结上限');
   }
   return bytes;
 }
 
-function parseCanonicalPublicationMarkerJson(bytesInput: Uint8Array): unknown {
-  if (
-    !(bytesInput instanceof Uint8Array) ||
-    bytesInput.byteLength === 0 ||
-    bytesInput.byteLength > SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES
-  ) {
+function canonicalCommitMarkerBytes(value: unknown): Buffer {
+  const bytes = Buffer.from(canonicalizeJson(value), 'utf8');
+  if (bytes.byteLength !== SNAPSHOT_EXACT_PUBLICATION_COMMIT_MARKER_BYTES) {
+    throw new TypeError('Snapshot publication commit marker 长度不符合冻结值');
+  }
+  return bytes;
+}
+
+function parseCanonicalPublicationMarkerJson(
+  bytesInput: Uint8Array,
+  kind: 'preparation' | 'commit',
+): unknown {
+  const hasValidLength =
+    bytesInput instanceof Uint8Array &&
+    bytesInput.byteLength > 0 &&
+    (kind === 'preparation'
+      ? bytesInput.byteLength <= SNAPSHOT_MAX_PUBLICATION_PREPARATION_MARKER_BYTES
+      : bytesInput.byteLength === SNAPSHOT_EXACT_PUBLICATION_COMMIT_MARKER_BYTES);
+  if (!hasValidLength) {
     throw new TypeError('Snapshot publication marker bytes 无效');
   }
   const bytes = Buffer.from(bytesInput);
   const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
   const parsed = parseJsonNoDuplicateKeys(text);
-  if (!canonicalPublicationMarkerBytes(parsed).equals(bytes)) {
+  const canonical = Buffer.from(canonicalizeJson(parsed), 'utf8');
+  if (!canonical.equals(bytes)) {
     throw new TypeError('Snapshot publication marker 必须是 exact canonical JCS bytes');
   }
   return parsed;
@@ -313,7 +340,7 @@ function parseCanonicalPublicationMarkerJson(bytesInput: Uint8Array): unknown {
 export function snapshotPublicationPreparationMarkerBytes(
   input: SnapshotPublicationPreparationMarker,
 ): Buffer {
-  return canonicalPublicationMarkerBytes(SnapshotPublicationPreparationMarkerSchema.parse(input));
+  return canonicalPreparationMarkerBytes(SnapshotPublicationPreparationMarkerSchema.parse(input));
 }
 
 export function snapshotPublicationPreparationDigest(
@@ -327,7 +354,7 @@ export function parseSnapshotPublicationPreparationMarker(
 ): SnapshotPublicationPreparationMarker {
   try {
     return SnapshotPublicationPreparationMarkerSchema.parse(
-      parseCanonicalPublicationMarkerJson(bytes),
+      parseCanonicalPublicationMarkerJson(bytes, 'preparation'),
     );
   } catch {
     throw new ProtocolRawInputError('SNAPSHOT_PREPARATION_MARKER_INVALID');
@@ -337,14 +364,16 @@ export function parseSnapshotPublicationPreparationMarker(
 export function snapshotPublicationCommitMarkerBytes(
   input: SnapshotPublicationCommitMarker,
 ): Buffer {
-  return canonicalPublicationMarkerBytes(SnapshotPublicationCommitMarkerSchema.parse(input));
+  return canonicalCommitMarkerBytes(SnapshotPublicationCommitMarkerSchema.parse(input));
 }
 
 export function parseSnapshotPublicationCommitMarker(
   bytes: Uint8Array,
 ): SnapshotPublicationCommitMarker {
   try {
-    return SnapshotPublicationCommitMarkerSchema.parse(parseCanonicalPublicationMarkerJson(bytes));
+    return SnapshotPublicationCommitMarkerSchema.parse(
+      parseCanonicalPublicationMarkerJson(bytes, 'commit'),
+    );
   } catch {
     throw new ProtocolRawInputError('SNAPSHOT_COMMIT_MARKER_INVALID');
   }
@@ -407,13 +436,13 @@ export const SnapshotUploadViewSchema = z
     state: SnapshotUploadStateSchema,
     snapshotId: UuidSchema.nullable(),
     snapshotDigest: Sha256HexSchema,
-    errorCode: UnicodeCodePointStringSchema(0, 128).nullable(),
+    errorCode: StrictUnicodeCodePointStringSchema(0, 128).nullable(),
     updatedAt: IsoDateTimeSchema,
   })
   .strict();
 
 export const CreateAgentRequestSchema = z
-  .object({ name: Utf8TextSchema(120), description: Utf8TextSchema(1_024) })
+  .object({ name: StrictUtf8TextSchema(120), description: Utf8TextSchema(1_024) })
   .strict();
 
 export const AgentViewSchema = z
@@ -421,7 +450,7 @@ export const AgentViewSchema = z
     protocol: z.literal(CREATOR_AGENT_HTTP_PROTOCOL),
     agentId: UuidSchema,
     publicSlug: PublicAgentSlugSchema,
-    name: Utf8TextSchema(120),
+    name: StrictUtf8TextSchema(120),
     description: Utf8TextSchema(1_024),
     lifecycle: z.enum(['ACTIVE', 'ARCHIVED']),
     createdAt: IsoDateTimeSchema,
@@ -480,7 +509,7 @@ export const DeploymentViewSchema = z
       'BLOCKED',
     ]),
     generation: Uint63StringSchema,
-    lastErrorCode: UnicodeCodePointStringSchema(0, 128).nullable(),
+    lastErrorCode: StrictUnicodeCodePointStringSchema(0, 128).nullable(),
     updatedAt: IsoDateTimeSchema,
   })
   .strict();
@@ -513,7 +542,7 @@ export const ConversationViewSchema = z
 
 export const SendConversationMessageRequestSchema = z
   .object({
-    clientMessageId: UuidSchema,
+    clientMessageId: ClientIdempotencyKeySchema,
     text: Utf8TextSchema(16_384),
   })
   .strict();
@@ -541,7 +570,57 @@ export const InvocationViewSchema = z
   .strict();
 
 export const CancelInvocationRequestSchema = z.object({}).strict();
-export const RetryInvocationRequestSchema = z.object({ clientMessageId: UuidSchema }).strict();
+export const RetryInvocationRequestSchema = z
+  .object({ clientMessageId: ClientIdempotencyKeySchema })
+  .strict();
+
+export const PublicHttpRequestRootNameSchema = z.enum([
+  'SnapshotUploadCreateRequest',
+  'SnapshotUploadCompleteRequest',
+  'CreateAgentRequest',
+  'CreateAgentVersionRequest',
+  'DeploymentMutation',
+  'CreateConversationRequest',
+  'SendConversationMessageRequest',
+  'CancelInvocationRequest',
+  'RetryInvocationRequest',
+]);
+export type PublicHttpRequestRootName = z.infer<typeof PublicHttpRequestRootNameSchema>;
+
+const PublicHttpRequestRootSchemas = {
+  SnapshotUploadCreateRequest: SnapshotUploadCreateRequestSchema,
+  SnapshotUploadCompleteRequest: SnapshotUploadCompleteRequestSchema,
+  CreateAgentRequest: CreateAgentRequestSchema,
+  CreateAgentVersionRequest: CreateAgentVersionRequestSchema,
+  DeploymentMutation: DeploymentMutationSchema,
+  CreateConversationRequest: CreateConversationRequestSchema,
+  SendConversationMessageRequest: SendConversationMessageRequestSchema,
+  CancelInvocationRequest: CancelInvocationRequestSchema,
+  RetryInvocationRequest: RetryInvocationRequestSchema,
+} as const satisfies Record<PublicHttpRequestRootName, z.ZodTypeAny>;
+
+/** Stable post-JSON public boundary: never exposes Zod issues, input, or a nested cause. */
+export class PublicHttpRequestValidationError extends Error {
+  override readonly name = 'PublicHttpRequestValidationError';
+  readonly code = 'PUBLIC_HTTP_REQUEST_INVALID' as const;
+
+  constructor() {
+    super('PUBLIC_HTTP_REQUEST_INVALID');
+  }
+}
+
+export function parsePublicHttpRequestRoot(
+  root: PublicHttpRequestRootName,
+  input: unknown,
+): unknown {
+  try {
+    const parsed = PublicHttpRequestRootSchemas[root].safeParse(input);
+    if (!parsed.success) throw new PublicHttpRequestValidationError();
+    return parsed.data;
+  } catch {
+    throw new PublicHttpRequestValidationError();
+  }
+}
 
 export const ConsumerMessageSchema = z
   .object({

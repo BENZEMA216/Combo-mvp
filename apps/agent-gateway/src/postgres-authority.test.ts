@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   PostgresAgentGatewayAuthority,
+  gatewayBusinessSecurityIsolation,
   type GatewayCompatibilityPolicy,
   type GatewayConnection,
   type GatewayPool,
@@ -149,6 +150,22 @@ function result<Row>(rows: Row[], rowCount = rows.length): GatewayQueryResult<Ro
 }
 
 describe('PostgresAgentGatewayAuthority compatibility policy', () => {
+  it('maps only a committed business SECURITY_BLOCK to one fail-closed isolation disposition', () => {
+    expect(gatewayBusinessSecurityIsolation('SECURITY_BLOCK')).toEqual({
+      revokeReason: 'SECURITY',
+      observedState: 'BLOCKED',
+      errorCode: 'WORKER_FACT_CONFLICT',
+    });
+    for (const decision of [
+      'APPLIED',
+      'IDEMPOTENT_REPLAY',
+      'NOOP_TERMINAL',
+      'RECONCILE',
+    ] as const) {
+      expect(gatewayBusinessSecurityIsolation(decision), decision).toBeUndefined();
+    }
+  });
+
   it('requires at least one accepted Broker contract digest', () => {
     const pool = new CommitOutcomePool('UNKNOWN');
     expect(
@@ -158,6 +175,36 @@ describe('PostgresAgentGatewayAuthority compatibility policy', () => {
           { ...POLICY, acceptedBrokerContractDigests: [] },
         ),
     ).toThrow();
+  });
+
+  it('rejects unequal profile arrays and duplicate Worker profile keys', () => {
+    const pool = new CommitOutcomePool('UNKNOWN');
+    expect(
+      () =>
+        new PostgresAgentGatewayAuthority(
+          { api: pool, broker: pool },
+          {
+            ...POLICY,
+            acceptedWorkerVersions: ['combo-worker-test/0', 'combo-worker-test/1'],
+          },
+        ),
+    ).toThrow(/equal length/u);
+    expect(
+      () =>
+        new PostgresAgentGatewayAuthority(
+          { api: pool, broker: pool },
+          {
+            ...POLICY,
+            acceptedWorkerVersions: ['combo-worker-test/1', 'combo-worker-test/1'],
+            acceptedCodexRuntimeArtifacts: [`sha256:${'a'.repeat(64)}`, `sha256:${'a'.repeat(64)}`],
+            acceptedCodexProtocolSchemaDigests: [
+              `sha256:${'b'.repeat(64)}`,
+              `sha256:${'b'.repeat(64)}`,
+            ],
+            acceptedIsolationModes: ['apple-container-v1', 'apple-container-v1'],
+          },
+        ),
+    ).toThrow(/unique profile keys/u);
   });
 
   it('does not mutate an otherwise eligible Test command outside the Deployment rollout fence', async () => {

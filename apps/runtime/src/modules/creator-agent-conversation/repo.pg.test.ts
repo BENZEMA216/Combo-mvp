@@ -504,7 +504,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     ).resolves.toMatchObject({ rows: [{ count: '0' }] });
   });
 
-  it('fails readiness closed for v0, missing v2, or any extra SECURITY DEFINER', async () => {
+  it('fails readiness closed for v0, either missing approved definer, or any extra definer', async () => {
     const env = {
       CREATOR_AGENT_PUBLIC_ENABLED: true,
       CREATOR_AGENT_DATABASE_URL: apiDatabaseUrl(),
@@ -514,6 +514,9 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     )`;
     const v2Signature = `public.creator_agent_create_opening_conversation_v2(
       uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text
+    )`;
+    const acceptSignature = `public.creator_agent_accept_consumer_message_v1(
+      uuid,uuid,uuid,uuid,text,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer
     )`;
 
     await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
@@ -549,6 +552,16 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
       await expect(pingCreatorAgentDb(env)).resolves.toBe(false);
     } finally {
       await owner.query(`GRANT EXECUTE ON FUNCTION ${v2Signature} TO combo_agent_consumer_api`);
+    }
+    await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
+
+    await owner.query(
+      `REVOKE EXECUTE ON FUNCTION ${acceptSignature} FROM combo_agent_consumer_api`,
+    );
+    try {
+      await expect(pingCreatorAgentDb(env)).resolves.toBe(false);
+    } finally {
+      await owner.query(`GRANT EXECUTE ON FUNCTION ${acceptSignature} TO combo_agent_consumer_api`);
     }
     await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
   });
@@ -724,7 +737,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
   });
 
   it('serializes 20 identical requests into one version-pinned row', async () => {
-    const idempotencyKey = randomUuidV7();
+    const idempotencyKey = randomUUID();
     const input = {
       consumerId: ids.consumerId,
       publicSlug,
@@ -808,7 +821,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
   });
 
   it('rejects the same key with a different canonical request without a second row', async () => {
-    const idempotencyKey = randomUuidV7();
+    const idempotencyKey = randomUUID();
     const base = {
       consumerId: ids.consumerId,
       publicSlug,
@@ -840,7 +853,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     const created = await createConsumerConversation(runtimeDb, {
       consumerId: ids.consumerId,
       publicSlug,
-      idempotencyKey: randomUuidV7(),
+      idempotencyKey: randomUUID(),
       environment: 'TEST',
     });
     expect(created.conversation.state).toBe('OPENING');
@@ -956,7 +969,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     const created = await createConsumerConversation(runtimeDb, {
       consumerId: ids.consumerId,
       publicSlug,
-      idempotencyKey: randomUuidV7(),
+      idempotencyKey: randomUUID(),
       environment: 'TEST',
     });
     const command = await markOpenCommandSent(created.conversation.conversationId);
@@ -1008,7 +1021,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
   });
 
   it('rolls back the Conversation when durable conversation.open append fails', async () => {
-    const idempotencyKey = randomUuidV7();
+    const idempotencyKey = randomUUID();
     await owner.query(`
       CREATE OR REPLACE FUNCTION reject_test_conversation_open()
       RETURNS trigger AS $test$
@@ -1054,7 +1067,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
   });
 
   it('applies grant revocation to new requests while preserving exact replay of an existing row', async () => {
-    const idempotencyKey = randomUuidV7();
+    const idempotencyKey = randomUUID();
     const input = {
       consumerId: ids.consumerId,
       publicSlug,
@@ -1074,7 +1087,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     await expect(
       createConsumerConversation(runtimeDb, {
         ...input,
-        idempotencyKey: randomUuidV7(),
+        idempotencyKey: randomUUID(),
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' } satisfies Partial<ConsumerConversationError>);
   });
@@ -1084,7 +1097,7 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
       createConsumerConversation(runtimeDb, {
         consumerId: ids.intruderId,
         publicSlug,
-        idempotencyKey: randomUuidV7(),
+        idempotencyKey: randomUUID(),
         environment: 'TEST',
       }),
     ).rejects.toMatchObject({ code: 'FORBIDDEN' } satisfies Partial<ConsumerConversationError>);

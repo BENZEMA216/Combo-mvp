@@ -18,7 +18,7 @@
   "body": {
     "invocationId": "0198f00d-3000-7000-8000-000000000002",
     "conversationId": "0198f00d-3000-7000-8000-000000000006",
-    "clientMessageId": "0198f00d-3000-7000-8000-000000000007",
+    "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
     "requestDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     "userMessageCiphertext": {
       "algorithm": "aes-256-gcm/v1",

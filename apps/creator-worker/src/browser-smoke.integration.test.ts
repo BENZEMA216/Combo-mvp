@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { CreatorWorker } from './creator-worker.js';
 import {
   CodexHostError,
+  createHostInterruptedTerminalEvidence,
   type CodexHost,
   type HostThread,
   type HostTurnHandle,
@@ -30,8 +31,10 @@ class BrowserSmokeHost implements CodexHost {
     };
   }
 
-  startTurn(input: { text: string }): HostTurnHandle {
+  startTurn(input: { thread: HostThread; text: string }): HostTurnHandle {
     this.turnCount += 1;
+    const threadId = input.thread.id;
+    const turnId = `browser-turn-${this.turnCount}`;
     let rejectResult: (error: Error) => void = () => undefined;
     const result =
       input.text === 'hold'
@@ -40,10 +43,17 @@ class BrowserSmokeHost implements CodexHost {
           })
         : Promise.resolve({ text: `reply:${input.text}` });
     return {
-      turnId: Promise.resolve(`browser-turn-${this.turnCount}`),
+      turnId: Promise.resolve(turnId),
       result,
       interrupt: async () => {
         rejectResult(new CodexHostError('HOST_INTERRUPTED', 'interrupted', true));
+        return createHostInterruptedTerminalEvidence({
+          threadId,
+          turnId,
+          status: 'interrupted',
+          error: null,
+          completedAt: 0,
+        });
       },
     };
   }

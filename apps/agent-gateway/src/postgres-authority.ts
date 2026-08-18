@@ -116,7 +116,7 @@ const CompatibilityPolicySchema = z
     acceptedIsolationModes: z
       .array(z.enum(['apple-container-v1', 'lima-vz-v1']))
       .min(1)
-      .max(2),
+      .max(16),
     acceptedBrokerContractDigests: z.array(Sha256DigestSchema).min(1).max(32),
     /**
      * Optional rollout fence for the Test-only publisher. A deployment uniquely binds its
@@ -135,7 +135,40 @@ const CompatibilityPolicySchema = z
     responseTtlMs: z.number().int().min(5_000).max(60_000).default(30_000),
     transactionTimeoutMs: z.number().int().min(100).max(10_000).default(2_000),
   })
-  .strict();
+  .strict()
+  .superRefine((policy, context) => {
+    const profileCount = policy.acceptedWorkerVersions.length;
+    for (const [field, values] of [
+      ['acceptedCodexRuntimeArtifacts', policy.acceptedCodexRuntimeArtifacts],
+      ['acceptedCodexProtocolSchemaDigests', policy.acceptedCodexProtocolSchemaDigests],
+      ['acceptedIsolationModes', policy.acceptedIsolationModes],
+    ] as const) {
+      if (values.length !== profileCount) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [field],
+          message: 'compatibility profile arrays must have equal length',
+        });
+      }
+    }
+    if (new Set(policy.acceptedWorkerVersions).size !== profileCount) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['acceptedWorkerVersions'],
+        message: 'compatibility worker versions must be unique profile keys',
+      });
+    }
+    if (
+      policy.acceptedBrokerContractDigests.length !== 1 &&
+      policy.acceptedBrokerContractDigests.length !== profileCount
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['acceptedBrokerContractDigests'],
+        message: 'Broker contract digests must be shared singleton or profile-indexed',
+      });
+    }
+  });
 
 export type GatewayCompatibilityPolicy = z.input<typeof CompatibilityPolicySchema>;
 
@@ -424,7 +457,7 @@ type AuthenticateOutcome =
       code: typeof BrokerAuthenticationFailureCode.WORKER_INCOMPATIBLE;
     }>;
 
-type WorkerCompatibilityErrorCode =
+export type WorkerCompatibilityErrorCode =
   | 'WORKER_REGISTRATION_INCOMPATIBLE'
   | 'WORKER_VERSION_INCOMPATIBLE'
   | 'PROTOCOL_INCOMPATIBLE'
@@ -432,6 +465,50 @@ type WorkerCompatibilityErrorCode =
   | 'CODEX_PROTOCOL_INCOMPATIBLE'
   | 'ISOLATION_INCOMPATIBLE'
   | 'BROKER_CONTRACT_INCOMPATIBLE';
+
+export type GatewayWorkerCompatibilityRegistration = {
+  workerVersion: string;
+  protocolVersions: unknown;
+  capabilities: unknown;
+  codexRuntimeArtifactDigest: string;
+  codexProtocolSchemaDigest: string;
+  runtimePolicy: unknown;
+};
+
+type ParsedGatewayCompatibilityPolicy = z.output<typeof CompatibilityPolicySchema>;
+
+type ExactGatewayWorkerProfile = Readonly<{
+  workerVersion: string;
+  protocolVersion: 1;
+  codexRuntimeArtifact: string;
+  codexProtocolSchemaDigest: string;
+  isolationMode: 'apple-container-v1' | 'lima-vz-v1';
+  brokerContractDigest: string;
+}>;
+
+export type GatewayWorkerCompatibilityAdmission<T> =
+  | Readonly<{ kind: 'ADMITTED'; value: T }>
+  | Readonly<{ kind: 'BLOCKED'; reason: WorkerCompatibilityErrorCode }>;
+
+/**
+ * G0 exact-profile admission. The only callback is the compatible branch; there is deliberately
+ * no Native/fallback callback. This does not assert Runtime, Snapshot, Host, or Deployment ready.
+ */
+export function admitGatewayWorkerCompatibility<T>(
+  policy: GatewayCompatibilityPolicy,
+  handshake: BrokerHandshake,
+  registration: GatewayWorkerCompatibilityRegistration,
+  onAdmitted: () => T,
+): GatewayWorkerCompatibilityAdmission<T> {
+  const reason = matchGatewayWorkerCompatibility(
+    CompatibilityPolicySchema.parse(policy),
+    handshake,
+    registration,
+  );
+  return reason === undefined
+    ? { kind: 'ADMITTED', value: onAdmitted() }
+    : { kind: 'BLOCKED', reason };
+}
 
 export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort {
   readonly #policy: z.output<typeof CompatibilityPolicySchema>;
@@ -1523,23 +1600,30 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     if (this.projector === undefined) {
       throw new PostgresGatewayAuthorityError('BUSINESS_PROJECTOR_UNAVAILABLE');
     }
-    return {
-      decision: await this.projector.project({
-        transaction,
-        session,
-        transport: Object.freeze({
-          creatorId: session.ownerId,
-          installationId: session.installationId,
-          workerSessionId: session.workerSessionId,
-          connectionId: session.connectionId,
-          deploymentId: lease.deployment_id,
-          leaseId: lease.lease_id,
-          fence: parseUint63(lease.lease_fence),
-        }),
-        event: envelope as ProjectableWorkerEvent,
-        signal,
+    const decision = await this.projector.project({
+      transaction,
+      session,
+      transport: Object.freeze({
+        creatorId: session.ownerId,
+        installationId: session.installationId,
+        workerSessionId: session.workerSessionId,
+        connectionId: session.connectionId,
+        deploymentId: lease.deployment_id,
+        leaseId: lease.lease_id,
+        fence: parseUint63(lease.lease_fence),
       }),
-    };
+      event: envelope as ProjectableWorkerEvent,
+      signal,
+    });
+    const securityIsolation = gatewayBusinessSecurityIsolation(decision);
+    if (securityIsolation !== undefined) {
+      await revokeLeaseAuthority(transaction, session, lease, securityIsolation, signal);
+      return {
+        decision,
+        revokeReason: securityIsolation.revokeReason,
+      };
+    }
+    return { decision };
   }
 
   async #acceptOutboundAck(
@@ -1629,73 +1713,20 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     handshake: BrokerHandshake,
     installation: ChallengeInstallationRow,
   ): WorkerCompatibilityErrorCode | undefined {
-    const registeredProtocols = RegisteredProtocolVersionsSchema.safeParse(
-      installation.protocol_versions,
+    const admission = admitGatewayWorkerCompatibility(
+      this.#policy,
+      handshake,
+      {
+        workerVersion: installation.worker_version,
+        protocolVersions: installation.protocol_versions,
+        capabilities: installation.capabilities,
+        codexRuntimeArtifactDigest: installation.codex_runtime_artifact_digest,
+        codexProtocolSchemaDigest: installation.codex_protocol_schema_digest,
+        runtimePolicy: installation.runtime_policy,
+      },
+      () => undefined,
     );
-    const registeredCapabilities = BrokerRegistrationCapabilitiesSchema.safeParse(
-      installation.capabilities,
-    );
-    const runtimePolicy = RuntimePolicySchema.safeParse(installation.runtime_policy);
-    if (!registeredProtocols.success) {
-      return 'WORKER_REGISTRATION_INCOMPATIBLE';
-    }
-    if (!registeredCapabilities.success) {
-      return hasInvalidOrMissingBrokerContractDigest(installation.capabilities)
-        ? 'BROKER_CONTRACT_INCOMPATIBLE'
-        : 'WORKER_REGISTRATION_INCOMPATIBLE';
-    }
-    if (
-      handshake.brokerContractDigest !== registeredCapabilities.data.brokerContractDigest ||
-      !this.#policy.acceptedBrokerContractDigests.includes(handshake.brokerContractDigest)
-    ) {
-      return 'BROKER_CONTRACT_INCOMPATIBLE';
-    }
-    if (
-      handshake.workerVersion !== installation.worker_version ||
-      !this.#policy.acceptedWorkerVersions.includes(handshake.workerVersion)
-    ) {
-      return 'WORKER_VERSION_INCOMPATIBLE';
-    }
-    if (
-      canonicalSha256(handshake.supportedProtocolVersions) !==
-      canonicalSha256(registeredProtocols.data)
-    ) {
-      return 'PROTOCOL_INCOMPATIBLE';
-    }
-    if (
-      !exactStringSet(
-        handshake.codexRuntimeArtifacts,
-        registeredCapabilities.data.codexRuntimeArtifacts,
-      ) ||
-      !handshake.codexRuntimeArtifacts.every((value) =>
-        this.#policy.acceptedCodexRuntimeArtifacts.includes(value),
-      ) ||
-      !handshake.codexRuntimeArtifacts.includes(installation.codex_runtime_artifact_digest)
-    ) {
-      return 'CODEX_RUNTIME_INCOMPATIBLE';
-    }
-    if (
-      !exactStringSet(
-        handshake.codexProtocolSchemaDigests,
-        registeredCapabilities.data.codexProtocolSchemaDigests,
-      ) ||
-      !handshake.codexProtocolSchemaDigests.every((value) =>
-        this.#policy.acceptedCodexProtocolSchemaDigests.includes(value),
-      ) ||
-      !handshake.codexProtocolSchemaDigests.includes(installation.codex_protocol_schema_digest)
-    ) {
-      return 'CODEX_PROTOCOL_INCOMPATIBLE';
-    }
-    if (
-      !runtimePolicy.success ||
-      !exactStringSet(handshake.isolationModes, registeredCapabilities.data.isolationModes) ||
-      !handshake.isolationModes.every((value) =>
-        this.#policy.acceptedIsolationModes.includes(value),
-      )
-    ) {
-      return 'ISOLATION_INCOMPATIBLE';
-    }
-    return undefined;
+    return admission.kind === 'BLOCKED' ? admission.reason : undefined;
   }
 
   async #blockIncompatibleDeployment(
@@ -2843,8 +2874,32 @@ function envelopeInvocationRoute(envelope: BrokerEnvelope): EnvelopeInvocationRo
 type LeaseBlockDisposition = Readonly<{
   revokeReason: LeaseRevokeReason;
   observedState: 'OFFLINE' | 'BLOCKED';
-  errorCode: 'DEPLOYMENT_OFFLINE' | 'INSTALLATION_REVOKED' | 'VERSION_SECURITY_REVOKED';
+  errorCode:
+    | 'DEPLOYMENT_OFFLINE'
+    | 'INSTALLATION_REVOKED'
+    | 'VERSION_SECURITY_REVOKED'
+    | 'WORKER_FACT_CONFLICT';
 }>;
+
+const WORKER_FACT_CONFLICT_SECURITY_DISPOSITION = Object.freeze({
+  revokeReason: 'SECURITY',
+  observedState: 'BLOCKED',
+  errorCode: 'WORKER_FACT_CONFLICT',
+} as const satisfies LeaseBlockDisposition);
+
+/**
+ * A committed business security decision has one fail-closed Gateway disposition. Transport
+ * sequence conflicts never enter this mapper and retain their distinct receipt/audit outcome.
+ */
+export function gatewayBusinessSecurityIsolation(decision: GatewayProjectionDecision):
+  | Readonly<{
+      revokeReason: 'SECURITY';
+      observedState: 'BLOCKED';
+      errorCode: 'WORKER_FACT_CONFLICT';
+    }>
+  | undefined {
+  return decision === 'SECURITY_BLOCK' ? WORKER_FACT_CONFLICT_SECURITY_DISPOSITION : undefined;
+}
 
 function leaseBlockDisposition(lease: SessionLeaseRow): LeaseBlockDisposition | undefined {
   if (lease.revoked_at !== null) {
@@ -3133,6 +3188,104 @@ function parseSession(session: AuthenticatedWorkerSession): AuthenticatedWorkerS
     connectionId: UuidSchema.parse(session.connectionId),
     workerSessionId: UuidSchema.parse(session.workerSessionId),
   });
+}
+
+function matchGatewayWorkerCompatibility(
+  policy: ParsedGatewayCompatibilityPolicy,
+  handshake: BrokerHandshake,
+  registration: GatewayWorkerCompatibilityRegistration,
+): WorkerCompatibilityErrorCode | undefined {
+  const registeredProtocols = RegisteredProtocolVersionsSchema.safeParse(
+    registration.protocolVersions,
+  );
+  const registeredCapabilities = BrokerRegistrationCapabilitiesSchema.safeParse(
+    registration.capabilities,
+  );
+  const runtimePolicy = RuntimePolicySchema.safeParse(registration.runtimePolicy);
+  if (!registeredProtocols.success) return 'WORKER_REGISTRATION_INCOMPATIBLE';
+  if (!registeredCapabilities.success) {
+    return hasInvalidOrMissingBrokerContractDigest(registration.capabilities)
+      ? 'BROKER_CONTRACT_INCOMPATIBLE'
+      : 'WORKER_REGISTRATION_INCOMPATIBLE';
+  }
+  if (handshake.brokerContractDigest !== registeredCapabilities.data.brokerContractDigest) {
+    return 'BROKER_CONTRACT_INCOMPATIBLE';
+  }
+  if (handshake.workerVersion !== registration.workerVersion) {
+    return 'WORKER_VERSION_INCOMPATIBLE';
+  }
+  if (
+    canonicalSha256(handshake.supportedProtocolVersions) !==
+    canonicalSha256(registeredProtocols.data)
+  ) {
+    return 'PROTOCOL_INCOMPATIBLE';
+  }
+  if (
+    !exactStringSet(
+      handshake.codexRuntimeArtifacts,
+      registeredCapabilities.data.codexRuntimeArtifacts,
+    )
+  ) {
+    return 'CODEX_RUNTIME_INCOMPATIBLE';
+  }
+  if (
+    !exactStringSet(
+      handshake.codexProtocolSchemaDigests,
+      registeredCapabilities.data.codexProtocolSchemaDigests,
+    )
+  ) {
+    return 'CODEX_PROTOCOL_INCOMPATIBLE';
+  }
+  if (!exactStringSet(handshake.isolationModes, registeredCapabilities.data.isolationModes)) {
+    return 'ISOLATION_INCOMPATIBLE';
+  }
+
+  const profile = exactGatewayWorkerProfiles(policy).find(
+    ({ workerVersion }) => workerVersion === handshake.workerVersion,
+  );
+  if (profile === undefined) return 'WORKER_VERSION_INCOMPATIBLE';
+  if (handshake.brokerContractDigest !== profile.brokerContractDigest) {
+    return 'BROKER_CONTRACT_INCOMPATIBLE';
+  }
+  if (
+    handshake.supportedProtocolVersions.length !== 1 ||
+    handshake.supportedProtocolVersions[0] !== profile.protocolVersion
+  ) {
+    return 'PROTOCOL_INCOMPATIBLE';
+  }
+  if (
+    !exactStringSet(handshake.codexRuntimeArtifacts, [profile.codexRuntimeArtifact]) ||
+    registration.codexRuntimeArtifactDigest !== profile.codexRuntimeArtifact
+  ) {
+    return 'CODEX_RUNTIME_INCOMPATIBLE';
+  }
+  if (
+    !exactStringSet(handshake.codexProtocolSchemaDigests, [profile.codexProtocolSchemaDigest]) ||
+    registration.codexProtocolSchemaDigest !== profile.codexProtocolSchemaDigest
+  ) {
+    return 'CODEX_PROTOCOL_INCOMPATIBLE';
+  }
+  if (
+    !runtimePolicy.success ||
+    !exactStringSet(handshake.isolationModes, [profile.isolationMode])
+  ) {
+    return 'ISOLATION_INCOMPATIBLE';
+  }
+  return undefined;
+}
+
+function exactGatewayWorkerProfiles(
+  policy: ParsedGatewayCompatibilityPolicy,
+): readonly ExactGatewayWorkerProfile[] {
+  const sharedBrokerContract = policy.acceptedBrokerContractDigests.length === 1;
+  return policy.acceptedWorkerVersions.map((workerVersion, index) => ({
+    workerVersion,
+    protocolVersion: 1,
+    codexRuntimeArtifact: policy.acceptedCodexRuntimeArtifacts[index]!,
+    codexProtocolSchemaDigest: policy.acceptedCodexProtocolSchemaDigests[index]!,
+    isolationMode: policy.acceptedIsolationModes[index]!,
+    brokerContractDigest: policy.acceptedBrokerContractDigests[sharedBrokerContract ? 0 : index]!,
+  }));
 }
 
 function rowVersionIsReady(row: SessionLeaseRow): boolean {

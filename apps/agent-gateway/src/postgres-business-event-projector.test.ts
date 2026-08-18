@@ -14,6 +14,10 @@ import {
   type CommittedStarted,
   type CommittedSuccess,
   type PostgresCloudJournal,
+  type ProjectFailedOutcome,
+  type ProjectPreparedOutcome,
+  type ProjectStartedOutcome,
+  type ProjectSuccessOutcome,
 } from '@cb/creator-agent-persistence';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -74,10 +78,10 @@ describe('PostgresGatewayBusinessEventProjector', () => {
 
     const prepared = fixture('broker-invocation-prepared.v1.json');
     lifecycle.projectPrepared
-      .mockResolvedValueOnce(preparedResult(prepared, 'PERSISTED', false))
-      .mockResolvedValueOnce(preparedResult(prepared, 'PERSISTED', true))
-      .mockResolvedValueOnce(preparedResult(prepared, 'RECONCILING', false))
-      .mockResolvedValueOnce(preparedResult(prepared, 'RECONCILING', true));
+      .mockResolvedValueOnce(preparedOutcome(prepared, 'PERSISTED', false))
+      .mockResolvedValueOnce(preparedOutcome(prepared, 'PERSISTED', true))
+      .mockResolvedValueOnce(preparedOutcome(prepared, 'RECONCILING', false))
+      .mockResolvedValueOnce(preparedOutcome(prepared, 'RECONCILING', true));
     await expect(projector.project(projectorInput(transaction, prepared, signal))).resolves.toBe(
       'APPLIED',
     );
@@ -102,10 +106,10 @@ describe('PostgresGatewayBusinessEventProjector', () => {
 
     const started = fixture('broker-invocation-started.v1.json');
     lifecycle.projectStarted
-      .mockResolvedValueOnce(startedResult(started, 'RUNNING', false))
-      .mockResolvedValueOnce(startedResult(started, 'RUNNING', true))
-      .mockResolvedValueOnce(startedResult(started, 'RECONCILING', false))
-      .mockResolvedValueOnce(startedResult(started, 'RECONCILING', true));
+      .mockResolvedValueOnce(startedOutcome(started, 'RUNNING', false))
+      .mockResolvedValueOnce(startedOutcome(started, 'RUNNING', true))
+      .mockResolvedValueOnce(startedOutcome(started, 'RECONCILING', false))
+      .mockResolvedValueOnce(startedOutcome(started, 'RECONCILING', true));
     await expect(projector.project(projectorInput(transaction, started, signal))).resolves.toBe(
       'APPLIED',
     );
@@ -136,8 +140,8 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const projector = new PostgresGatewayBusinessEventProjector(lifecycle, sealer);
     const succeeded = fixture('broker-invocation-succeeded.v1.json');
     lifecycle.projectSuccess
-      .mockResolvedValueOnce(successResult(succeeded, false))
-      .mockResolvedValueOnce(successResult(succeeded, true));
+      .mockResolvedValueOnce(successOutcome(succeeded, false))
+      .mockResolvedValueOnce(successOutcome(succeeded, true));
 
     await expect(projector.project(projectorInput(transaction, succeeded, signal))).resolves.toBe(
       'APPLIED',
@@ -166,8 +170,8 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const projector = new PostgresGatewayBusinessEventProjector(lifecycle, sealer);
     const failed = failedEvent();
     lifecycle.projectFailed
-      .mockResolvedValueOnce(failedResult(failed, false))
-      .mockResolvedValueOnce(failedResult(failed, true));
+      .mockResolvedValueOnce(failedOutcome(failed, false))
+      .mockResolvedValueOnce(failedOutcome(failed, true));
 
     await expect(projector.project(projectorInput(transaction, failed, signal))).resolves.toBe(
       'APPLIED',
@@ -336,6 +340,136 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     ).rejects.toBe(failure);
   });
 
+  it('maps a durable prepared SECURITY_BLOCKED outcome without throwing the caller transaction', async () => {
+    const transaction = emptyTransaction();
+    const signal = AbortSignal.timeout(5_000);
+    const lifecycle = lifecycleFixture();
+    lifecycle.projectPrepared.mockResolvedValue({ kind: 'SECURITY_BLOCKED' });
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle, unavailableSealer);
+    await expect(
+      projector.project(
+        projectorInput(transaction, fixture('broker-invocation-prepared.v1.json'), signal),
+      ),
+    ).resolves.toBe('SECURITY_BLOCK');
+    expect(lifecycle.projectPrepared).toHaveBeenCalledTimes(1);
+    expect(transaction.calls).toContainEqual([
+      `SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`,
+      [],
+      signal,
+    ]);
+  });
+
+  it('maps a durable started SECURITY_BLOCKED outcome without throwing the caller transaction', async () => {
+    const transaction = emptyTransaction();
+    const signal = AbortSignal.timeout(5_000);
+    const lifecycle = lifecycleFixture();
+    lifecycle.projectStarted.mockResolvedValue({ kind: 'SECURITY_BLOCKED' });
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle, unavailableSealer);
+    await expect(
+      projector.project(
+        projectorInput(transaction, fixture('broker-invocation-started.v1.json'), signal),
+      ),
+    ).resolves.toBe('SECURITY_BLOCK');
+    expect(lifecycle.projectStarted).toHaveBeenCalledTimes(1);
+    expect(transaction.calls).toContainEqual([
+      `SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`,
+      [],
+      signal,
+    ]);
+  });
+
+  it('maps a durable failed SECURITY_BLOCKED outcome without sealing or throwing the caller transaction', async () => {
+    const transaction = emptyTransaction();
+    const signal = AbortSignal.timeout(5_000);
+    const lifecycle = lifecycleFixture();
+    const sealer = vi.fn<AssistantMessageSealer>();
+    lifecycle.projectFailed.mockResolvedValue({ kind: 'SECURITY_BLOCKED' });
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle, sealer);
+    await expect(
+      projector.project(projectorInput(transaction, failedEvent(), signal)),
+    ).resolves.toBe('SECURITY_BLOCK');
+    expect(lifecycle.projectFailed).toHaveBeenCalledTimes(1);
+    expect(transaction.calls).toContainEqual([
+      `SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`,
+      [],
+      signal,
+    ]);
+    expect(sealer).not.toHaveBeenCalled();
+  });
+
+  it('maps a durable succeeded SECURITY_BLOCKED outcome without invoking its terminal sealer', async () => {
+    const transaction = emptyTransaction();
+    const signal = AbortSignal.timeout(5_000);
+    const lifecycle = lifecycleFixture();
+    lifecycle.projectSuccess.mockResolvedValue({ kind: 'SECURITY_BLOCKED' });
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle);
+    await expect(
+      projector.project(
+        projectorInput(transaction, fixture('broker-invocation-succeeded.v1.json'), signal),
+      ),
+    ).resolves.toBe('SECURITY_BLOCK');
+    expect(lifecycle.projectSuccess).toHaveBeenCalledTimes(1);
+    expect(transaction.calls).toContainEqual([
+      `SELECT pg_catalog.set_config('app.consumer_id', ''::text, true)`,
+      [],
+      signal,
+    ]);
+    expect(lifecycle.projectSuccess.mock.calls[0]?.[2]).toBeUndefined();
+  });
+
+  it('allows an exact succeeded replay to terminate before a missing fresh-only sealer', async () => {
+    const transaction = emptyTransaction();
+    const signal = AbortSignal.timeout(5_000);
+    const lifecycle = lifecycleFixture();
+    const succeeded = fixture('broker-invocation-succeeded.v1.json');
+    lifecycle.projectSuccess.mockResolvedValue({
+      kind: 'COMMITTED',
+      committed: {
+        ...successResult(succeeded, true),
+        consumerEventCursor: null,
+      },
+    });
+    const projector = new PostgresGatewayBusinessEventProjector(lifecycle);
+    await expect(projector.project(projectorInput(transaction, succeeded, signal))).resolves.toBe(
+      'IDEMPOTENT_REPLAY',
+    );
+    expect(lifecycle.projectSuccess.mock.calls[0]?.[2]).toBeUndefined();
+  });
+
+  it('rejects a non-null succeeded replay cursor outside the uint63 contract', async () => {
+    const lifecycle = lifecycleFixture();
+    const succeeded = fixture('broker-invocation-succeeded.v1.json');
+    lifecycle.projectSuccess.mockResolvedValue({
+      kind: 'COMMITTED',
+      committed: {
+        ...successResult(succeeded, true),
+        consumerEventCursor: 'not-a-cursor',
+      },
+    });
+    await expect(
+      new PostgresGatewayBusinessEventProjector(lifecycle).project(
+        projectorInput(emptyTransaction(), succeeded, AbortSignal.timeout(5_000)),
+      ),
+    ).rejects.toMatchObject({ code: 'PERSISTENCE_INVARIANT_FAILED' });
+  });
+
+  it('rejects a fresh succeeded outcome without its durable Consumer cursor', async () => {
+    const lifecycle = lifecycleFixture();
+    const succeeded = fixture('broker-invocation-succeeded.v1.json');
+    lifecycle.projectSuccess.mockResolvedValue({
+      kind: 'COMMITTED',
+      committed: {
+        ...successResult(succeeded, false),
+        consumerEventCursor: null,
+      },
+    });
+    await expect(
+      new PostgresGatewayBusinessEventProjector(lifecycle).project(
+        projectorInput(emptyTransaction(), succeeded, AbortSignal.timeout(5_000)),
+      ),
+    ).rejects.toMatchObject({ code: 'PERSISTENCE_INVARIANT_FAILED' });
+  });
+
   it('rejects a ready event whose wire correlation diverges from its Conversation', async () => {
     const transaction = emptyTransaction();
     const projector = new PostgresGatewayBusinessEventProjector(
@@ -381,8 +515,11 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const prepared = fixture('broker-invocation-prepared.v1.json');
     const preparedLifecycle = lifecycleFixture();
     preparedLifecycle.projectPrepared.mockResolvedValue({
-      ...preparedResult(prepared, 'PERSISTED', false),
-      invocationId: CONVERSATION_ID,
+      kind: 'COMMITTED',
+      committed: {
+        ...preparedResult(prepared, 'PERSISTED', false),
+        invocationId: CONVERSATION_ID,
+      },
     });
     await expect(
       new PostgresGatewayBusinessEventProjector(preparedLifecycle, unavailableSealer).project(
@@ -393,8 +530,11 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const started = fixture('broker-invocation-started.v1.json');
     const startedLifecycle = lifecycleFixture();
     startedLifecycle.projectStarted.mockResolvedValue({
-      ...startedResult(started, 'RUNNING', false),
-      factDigest: 'f'.repeat(64),
+      kind: 'COMMITTED',
+      committed: {
+        ...startedResult(started, 'RUNNING', false),
+        factDigest: 'f'.repeat(64),
+      },
     });
     await expect(
       new PostgresGatewayBusinessEventProjector(startedLifecycle, unavailableSealer).project(
@@ -405,8 +545,11 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const succeeded = fixture('broker-invocation-succeeded.v1.json');
     const successLifecycle = lifecycleFixture();
     successLifecycle.projectSuccess.mockResolvedValue({
-      ...successResult(succeeded, false),
-      resultDigest: 'hmac-sha256:' + 'e'.repeat(64),
+      kind: 'COMMITTED',
+      committed: {
+        ...successResult(succeeded, false),
+        resultDigest: 'hmac-sha256:' + 'e'.repeat(64),
+      },
     });
     await expect(
       new PostgresGatewayBusinessEventProjector(successLifecycle, unavailableSealer).project(
@@ -417,8 +560,11 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     const failed = failedEvent();
     const failedLifecycle = lifecycleFixture();
     failedLifecycle.projectFailed.mockResolvedValue({
-      ...failedResult(failed, false),
-      errorCode: 'TURN_TIMEOUT',
+      kind: 'COMMITTED',
+      committed: {
+        ...failedResult(failed, false),
+        errorCode: 'TURN_TIMEOUT',
+      },
     });
     await expect(
       new PostgresGatewayBusinessEventProjector(failedLifecycle, unavailableSealer).project(
@@ -683,6 +829,14 @@ function preparedResult(
   };
 }
 
+function preparedOutcome(
+  event: Extract<BrokerEnvelope, { type: 'invocation.prepared' }>,
+  state: CommittedPrepared['state'],
+  replayed: boolean,
+): ProjectPreparedOutcome {
+  return { kind: 'COMMITTED', committed: preparedResult(event, state, replayed) };
+}
+
 function startedResult(
   event: Extract<BrokerEnvelope, { type: 'invocation.started' }>,
   state: CommittedStarted['state'],
@@ -698,6 +852,14 @@ function startedResult(
   };
 }
 
+function startedOutcome(
+  event: Extract<BrokerEnvelope, { type: 'invocation.started' }>,
+  state: CommittedStarted['state'],
+  replayed: boolean,
+): ProjectStartedOutcome {
+  return { kind: 'COMMITTED', committed: startedResult(event, state, replayed) };
+}
+
 function successResult(
   event: Extract<BrokerEnvelope, { type: 'invocation.succeeded' }>,
   replayed: boolean,
@@ -711,6 +873,13 @@ function successResult(
   };
 }
 
+function successOutcome(
+  event: Extract<BrokerEnvelope, { type: 'invocation.succeeded' }>,
+  replayed: boolean,
+): ProjectSuccessOutcome {
+  return { kind: 'COMMITTED', committed: successResult(event, replayed) };
+}
+
 function failedResult(
   event: Extract<BrokerEnvelope, { type: 'invocation.failed' }>,
   replayed: boolean,
@@ -722,6 +891,13 @@ function failedResult(
     consumerEventCursor: '2',
     replayed,
   };
+}
+
+function failedOutcome(
+  event: Extract<BrokerEnvelope, { type: 'invocation.failed' }>,
+  replayed: boolean,
+): ProjectFailedOutcome {
+  return { kind: 'COMMITTED', committed: failedResult(event, replayed) };
 }
 
 const unavailableSealer: AssistantMessageSealer = () => {

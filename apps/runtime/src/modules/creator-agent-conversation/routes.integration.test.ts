@@ -6,6 +6,8 @@ import cookie from '@fastify/cookie';
 import { VnextErrorResponseSchema, type VnextErrorResponse } from '@cb/creator-agent-protocol';
 import { authSessionCookieName } from '@cb/shared';
 import { describe, expect, it } from 'vitest';
+
+// VNext registry case: SCH-005 (actual route response/log/authority remains canary-free).
 import { ALWAYS_ENABLED_ENDPOINTS, registerBusinessRoutes } from '../../bootstrap/routes.js';
 import { loadEnv, type Env } from '../../platform/config/env.js';
 import { RUNTIME_HTTP_BODY_LIMIT_BYTES } from '../../platform/http/vnext-json-body.js';
@@ -176,7 +178,7 @@ function validHeaders(overrides: Record<string, string> = {}): Record<string, st
     origin: 'http://combo.test',
     'sec-fetch-site': 'same-origin',
     'content-type': 'application/json',
-    'idempotency-key': '01900000-0000-7000-8000-000000000008',
+    'idempotency-key': '550e8400-e29b-41d4-a716-446655440000',
     cookie: `${authSessionCookieName(false)}=${SESSION_TOKEN}`,
     ...overrides,
   };
@@ -229,6 +231,16 @@ describe('VNext Consumer route registration and wire errors', () => {
       'UNAUTHORIZED',
     ],
     ['missing Idempotency-Key', validHeaders({ 'idempotency-key': '' }), 'INVALID_INPUT'],
+    [
+      'server UUIDv7 Idempotency-Key',
+      validHeaders({ 'idempotency-key': '01900000-0000-7000-8000-000000000008' }),
+      'INVALID_INPUT',
+    ],
+    [
+      'uppercase UUIDv4 Idempotency-Key',
+      validHeaders({ 'idempotency-key': '550E8400-E29B-41D4-A716-446655440000' }),
+      'INVALID_INPUT',
+    ],
   ] as const)('returns a strict VNext error for %s', async (_name, headers, expectedCode) => {
     const app = await appFor({ enabled: true, auth: 'valid' });
     try {

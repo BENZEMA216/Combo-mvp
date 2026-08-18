@@ -7,6 +7,7 @@ import {
   brokerSensitiveMessageAadDigest,
   brokerSensitiveMessageCipherDigest,
   canonicalSha256,
+  consumerEventDedupeKey,
   consumerEventPayloadDigest,
   domainSeparatedHmacSha256,
   workerInvocationFactDigest,
@@ -32,7 +33,11 @@ import {
   type JournalPool,
   type QueryResult,
 } from './cloud-journal.js';
-import { encryptMessage, type MessageRole } from './message-crypto.js';
+import {
+  encryptMessageWithRawKeyForTest as encryptMessage,
+  type EncryptedMessage,
+  type MessageRole,
+} from './message-crypto.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 const apiPassword = process.env.POSTGRES_AGENT_API_PASSWORD;
@@ -134,7 +139,6 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
   const encryptionKey = Buffer.alloc(32, 0x31);
   const digestKey = Buffer.alloc(32, 0x32);
   const transportKey = Buffer.alloc(32, 0x33);
-  let nonceCounter = 1;
   let transportNonceCounter = 1;
 
   interface TestExecutionAssignment {
@@ -242,9 +246,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     messageId: string,
     role: MessageRole,
     text: string,
-    options: { keyId?: string; nonce?: Buffer } = {},
+    options: { keyId?: string } = {},
   ) {
-    const nonce = options.nonce ?? Buffer.alloc(12, nonceCounter++);
     return encryptMessage({
       plaintext: text,
       encryptionKey,
@@ -257,7 +260,6 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         messageId,
         role,
       },
-      nonce,
     });
   }
 
@@ -331,7 +333,6 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       digestKey,
       keyId: `pg-test:${aad.messageId}`,
       aad,
-      nonce: Buffer.alloc(12, nonceCounter++),
     });
     return {
       encryptedMessage,
@@ -347,7 +348,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       clientMessageId?: string;
       requestDigest?: `hmac-sha256:${string}`;
       keyId?: string;
-      nonce?: Buffer;
+      encryptedUserMessage?: EncryptedMessage;
       turnNo?: number;
       consumerId?: string;
       targetWorkerId?: string;
@@ -369,17 +370,19 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       invocationId: randomUuidV7(),
       outboxCommandId: randomUuidV7(),
       sourceEventId: randomUuidV7(),
-      clientMessageId: options.clientMessageId ?? randomUuidV7(),
+      clientMessageId: options.clientMessageId ?? randomUUID(),
       requestDigest: options.requestDigest ?? hmac('8'),
       turnNo,
       deadlineAt: new Date(Date.now() + 120_000),
-      encryptedUserMessage: encrypted(
-        conversationId,
-        userMessageId,
-        'USER',
-        options.text ?? 'consumer secret',
-        options,
-      ),
+      encryptedUserMessage:
+        options.encryptedUserMessage ??
+        encrypted(
+          conversationId,
+          userMessageId,
+          'USER',
+          options.text ?? 'consumer secret',
+          options,
+        ),
     };
   }
 
@@ -585,6 +588,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
   function gatewayProjectorTransaction(
     client: PoolClient,
     observedSignals: AbortSignal[] = [],
+    observedSql: string[] = [],
   ): InvocationProjectorTransaction {
     return {
       async query<R = Record<string, unknown>>(
@@ -593,6 +597,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         signal?: AbortSignal,
       ): Promise<QueryResult<R>> {
         if (signal) observedSignals.push(signal);
+        observedSql.push(sql);
         signal?.throwIfAborted();
         const result = await client.query(sql, parameters as unknown[] | undefined);
         signal?.throwIfAborted();
@@ -607,29 +612,38 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     sourceEventId: string,
   ): Promise<void> {
     await assignPersisted(input);
-    const transition = await owner.query<{ reconciliation_started_at: Date }>(
-      `UPDATE agent_invocations
-          SET state = 'RECONCILING', reconciliation_reason = $2,
-              reconciliation_started_at = now() - interval '301 seconds'
-        WHERE id = $1
-        RETURNING reconciliation_started_at`,
-      [input.invocationId, reason],
-    );
-    await owner.query(
-      `INSERT INTO agent_invocation_events (
-         invocation_id, creator_id, consumer_subject_id, journal_seq, source,
-         source_event_id, event_type, payload, occurred_at
-       ) VALUES ($1, $2, $3, 2, 'RECONCILER', $4,
-                 'invocation.reconciling', $5::jsonb, $6)`,
-      [
-        input.invocationId,
-        ids.creatorId,
-        ids.consumerId,
-        sourceEventId,
-        JSON.stringify({ state: 'RECONCILING', reason }),
-        transition.rows[0]!.reconciliation_started_at,
-      ],
-    );
+    await owner.query('BEGIN');
+    try {
+      const transition = await owner.query<{ reconciliation_started_at: Date }>(
+        `UPDATE agent_invocations
+            SET state = 'RECONCILING', reconciliation_reason = $2,
+                reconciliation_started_at = date_trunc(
+                  'milliseconds', clock_timestamp() - interval '301 seconds'
+                )
+          WHERE id = $1
+          RETURNING reconciliation_started_at`,
+        [input.invocationId, reason],
+      );
+      await owner.query(
+        `INSERT INTO agent_invocation_events (
+           invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+           source_event_id, event_type, payload, occurred_at
+         ) VALUES ($1, $2, $3, 2, 'RECONCILER', $4,
+                   'invocation.reconciling', $5::jsonb, $6)`,
+        [
+          input.invocationId,
+          ids.creatorId,
+          ids.consumerId,
+          sourceEventId,
+          JSON.stringify({ state: 'RECONCILING', reason }),
+          transition.rows[0]!.reconciliation_started_at,
+        ],
+      );
+      await owner.query('COMMIT');
+    } catch (error) {
+      await owner.query('ROLLBACK');
+      throw error;
+    }
   }
 
   function successInput(
@@ -669,6 +683,29 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       factDigest: workerInvocationFactDigest(fact),
       resultCiphertext,
     };
+  }
+
+  function successPreflightParameters(input: CommitSuccessInput): readonly unknown[] {
+    return [
+      input.creatorId,
+      input.installationId,
+      input.fact.protocol,
+      input.fact.schemaVersion,
+      input.fact.type,
+      input.fact.sourceEventId,
+      input.fact.invocationId,
+      input.fact.agentVersionDigest,
+      input.fact.snapshotDigest,
+      input.fact.executionCapabilityDigest,
+      input.fact.leaseId,
+      input.fact.fence,
+      input.fact.runtimeThreadId,
+      input.fact.runtimeTurnId,
+      input.fact.startedFactDigest,
+      input.fact.resultDigest,
+      input.fact.localResultCipherDigest,
+      input.factDigest,
+    ];
   }
 
   function failedInput(
@@ -725,6 +762,165 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
        FROM agent_conversations WHERE id = $1`,
       [conversationId],
     );
+    return result.rows[0]!;
+  }
+
+  async function reconciliationBusinessFootprint(
+    invocationId: string,
+    conversationId: string,
+  ): Promise<unknown> {
+    const result = await owner.query<{ footprint: unknown }>(
+      `SELECT pg_catalog.jsonb_build_object(
+         'invocation', pg_catalog.to_jsonb(invocation),
+         'conversation', pg_catalog.to_jsonb(conversation),
+         'messages', COALESCE((
+           SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(message) ORDER BY message.id)
+             FROM agent_messages AS message
+            WHERE message.conversation_id = conversation.id
+         ), '[]'::jsonb),
+         'events', COALESCE((
+           SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(event) ORDER BY event.journal_seq)
+             FROM agent_invocation_events AS event
+            WHERE event.invocation_id = invocation.id
+         ), '[]'::jsonb),
+         'brokerOutbox', COALESCE((
+           SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(command) ORDER BY command.command_id)
+             FROM broker_outbox AS command
+            WHERE command.invocation_id = invocation.id
+         ), '[]'::jsonb),
+         'consumerOutbox', COALESCE((
+           SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(event) ORDER BY event.cursor)
+             FROM consumer_event_outbox AS event
+            WHERE event.invocation_id = invocation.id
+         ), '[]'::jsonb)
+       ) AS footprint
+         FROM agent_invocations AS invocation
+         JOIN agent_conversations AS conversation
+           ON conversation.id = invocation.conversation_id
+        WHERE invocation.id = $1 AND conversation.id = $2`,
+      [invocationId, conversationId],
+    );
+    if (result.rows.length !== 1) throw new Error('missing reconciliation footprint');
+    return result.rows[0]!.footprint;
+  }
+
+  async function reconciliationIntegrityAlerts(invocationId: string) {
+    const result = await owner.query<{
+      id: string;
+      invocation_id: string;
+      creator_id: string;
+      consumer_subject_id: string;
+      reason: string;
+      source: string;
+      source_event_id_digest: string;
+      existing_canonical_digest: string;
+      received_canonical_digest: string;
+      expected_journal_seq: string | null;
+      received_journal_seq: string | null;
+      recorded_at: Date;
+    }>(
+      `SELECT id::text, invocation_id::text, creator_id::text, consumer_subject_id::text,
+              reason, source, source_event_id_digest, existing_canonical_digest,
+              received_canonical_digest, expected_journal_seq::text,
+              received_journal_seq::text, recorded_at
+         FROM creator_agent_journal_integrity_alerts
+        WHERE invocation_id = $1
+        ORDER BY recorded_at, id`,
+      [invocationId],
+    );
+    return result.rows;
+  }
+
+  async function successControlFootprint(invocationId: string) {
+    const result = await owner.query<{ preflights: string; receipts: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM creator_agent_success_seal_preflights
+           WHERE invocation_id = $1) AS preflights,
+         (SELECT count(*)::text FROM creator_agent_succeeded_terminal_receipts
+           WHERE invocation_id = $1) AS receipts`,
+      [invocationId],
+    );
+    return result.rows[0]!;
+  }
+
+  async function reconciliationCanonicalDigests(input: {
+    creatorId: string;
+    consumerId: string;
+    conversationId: string;
+    invocationId: string;
+    sourceEventId: string;
+    existingReason: string;
+    receivedReason: string;
+  }) {
+    const result = await owner.query<{
+      source_identity_digest: string;
+      existing_identity_digest: string;
+      received_identity_digest: string;
+    }>(
+      `WITH identities AS (
+         SELECT pg_catalog.jsonb_build_object(
+                  'domain', 'combo:vnext:journal-source-identity:v1',
+                  'protocol', 'combo.creator-agent-reconciliation-source-admission',
+                  'version', 2,
+                  'creatorId', $1::uuid::text,
+                  'consumerId', $2::uuid::text,
+                  'conversationId', $3::uuid::text,
+                  'invocationId', $4::uuid::text,
+                  'source', 'RECONCILER',
+                  'logicalSourceEventId', $5::uuid::text
+                ) AS source_identity,
+                pg_catalog.jsonb_build_object(
+                  'domain', 'combo:vnext:journal-event-body:v1',
+                  'protocol', 'combo.creator-agent-reconciliation-event',
+                  'version', 1,
+                  'creatorId', $1::uuid::text,
+                  'consumerId', $2::uuid::text,
+                  'conversationId', $3::uuid::text,
+                  'invocationId', $4::uuid::text,
+                  'source', 'RECONCILER',
+                  'logicalSourceEventId', $5::uuid::text,
+                  'eventType', 'invocation.reconciling',
+                  'payload', pg_catalog.jsonb_build_object(
+                    'state', 'RECONCILING', 'reason', $6::text
+                  )
+                ) AS existing_identity,
+                pg_catalog.jsonb_build_object(
+                  'domain', 'combo:vnext:journal-event-body:v1',
+                  'protocol', 'combo.creator-agent-reconciliation-event',
+                  'version', 1,
+                  'creatorId', $1::uuid::text,
+                  'consumerId', $2::uuid::text,
+                  'conversationId', $3::uuid::text,
+                  'invocationId', $4::uuid::text,
+                  'source', 'RECONCILER',
+                  'logicalSourceEventId', $5::uuid::text,
+                  'eventType', 'invocation.reconciling',
+                  'payload', pg_catalog.jsonb_build_object(
+                    'state', 'RECONCILING', 'reason', $7::text
+                  )
+                ) AS received_identity
+       )
+       SELECT pg_catalog.encode(public.digest(
+                pg_catalog.convert_to(source_identity::text, 'UTF8'), 'sha256'
+              ), 'hex') AS source_identity_digest,
+              pg_catalog.encode(public.digest(
+                pg_catalog.convert_to(existing_identity::text, 'UTF8'), 'sha256'
+              ), 'hex') AS existing_identity_digest,
+              pg_catalog.encode(public.digest(
+                pg_catalog.convert_to(received_identity::text, 'UTF8'), 'sha256'
+              ), 'hex') AS received_identity_digest
+         FROM identities`,
+      [
+        input.creatorId,
+        input.consumerId,
+        input.conversationId,
+        input.invocationId,
+        input.sourceEventId,
+        input.existingReason,
+        input.receivedReason,
+      ],
+    );
+    if (result.rows.length !== 1) throw new Error('missing reconciliation canonical digests');
     return result.rows[0]!;
   }
 
@@ -2540,7 +2736,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
   }, 10_000);
 
-  it('rechecks started authority after STARTING and preserves the fact as CANCEL_NOT_CONFIRMED', async () => {
+  it('atomically decides started authority before post-admission failpoints run', async () => {
     const conversationId = await createConversation();
     const accepted = acceptInput(conversationId);
     const admission = new PostgresCloudJournal(journalPools);
@@ -2562,7 +2758,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
     await expect(journal.commitStarted(started)).resolves.toMatchObject({
       invocationId: accepted.invocationId,
-      state: 'RECONCILING',
+      state: 'RUNNING',
       startCommandId: committedPrepared.startCommandId,
       factDigest: started.factDigest,
       replayed: false,
@@ -2580,7 +2776,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         `SELECT invocation.state, invocation.reconciliation_reason,
                   invocation.runtime_thread_id, invocation.runtime_turn_id,
                   command.state AS start_state,
-                  event.payload, event.source_fact_digest
+                  event.payload, event.source_fact_digest,
+                  (SELECT count(*) FROM agent_invocation_events AS root
+                    WHERE root.invocation_id = invocation.id
+                      AND root.event_type = 'invocation.reconciling')::text AS root_events
              FROM agent_invocations AS invocation
              JOIN broker_outbox AS command
                ON command.invocation_id = invocation.id
@@ -2594,13 +2793,14 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     ).resolves.toMatchObject({
       rows: [
         {
-          state: 'RECONCILING',
-          reconciliation_reason: 'CANCEL_NOT_CONFIRMED',
+          state: 'RUNNING',
+          reconciliation_reason: null,
           runtime_thread_id: started.fact.runtimeThreadId,
           runtime_turn_id: started.fact.runtimeTurnId,
           start_state: 'ACKED',
-          payload: { state: 'RECONCILING' },
+          payload: { state: 'RUNNING' },
           source_fact_digest: started.factDigest,
+          root_events: '0',
         },
       ],
     });
@@ -2646,6 +2846,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
 
     const committedPrepared = await journal.commitPrepared(prepared);
+    const preparedBeforeConflict = await reconciliationBusinessFootprint(
+      accepted.invocationId,
+      conversationId,
+    );
     const conflictingSourceFact: WorkerInvocationPreparedFact = {
       ...prepared.fact,
       requestDigest: hmac('7'),
@@ -2656,7 +2860,16 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         fact: conflictingSourceFact,
         factDigest: workerInvocationFactDigest(conflictingSourceFact),
       }),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      preparedBeforeConflict,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toMatchObject([
+      { reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' },
+    ]);
 
     if (!committedPrepared.startCommandId) throw new Error('expected start command');
     await markStartSent(committedPrepared.startCommandId);
@@ -2681,16 +2894,751 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     ).toMatchObject({ rows: [{ state: 'PERSISTED' }] });
   });
 
-  it('lets the real Broker role fill exact legacy prepare authority and denies RLS/stale mutation', async () => {
+  it('matches the PostgreSQL prepared-fact JCS helper to workerInvocationFactDigest', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    await new PostgresCloudJournal(journalPools).acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const databaseDigest = await owner.query<{ fact_digest: string }>(
+      `SELECT creator_agent_worker_prepared_fact_digest_v1(
+         $1, $2, $3, $4, $5, $6, $7, $8, $9
+       ) AS fact_digest`,
+      [
+        prepared.fact.sourceEventId,
+        prepared.fact.invocationId,
+        prepared.fact.agentVersionDigest,
+        prepared.fact.snapshotDigest,
+        prepared.fact.executionCapabilityDigest,
+        prepared.fact.leaseId,
+        prepared.fact.fence,
+        prepared.fact.requestDigest,
+        prepared.fact.prepareCommandId,
+      ],
+    );
+    expect(databaseDigest.rows).toEqual([{ fact_digest: prepared.factDigest }]);
+
+    const goldenFact: WorkerInvocationPreparedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.prepared',
+      sourceEventId: '0198f00d-5000-7000-8000-000000000014',
+      invocationId: '0198f00d-5000-7000-8000-000000000013',
+      agentVersionDigest: digest('a'),
+      snapshotDigest: digest('b'),
+      executionCapabilityDigest: digest('c'),
+      leaseId: '0198f00d-5000-7000-8000-000000000015',
+      fence: '7',
+      requestDigest: hmac('d'),
+      prepareCommandId: '0198f00d-5000-7000-8000-000000000014',
+    };
+    const golden = '4bfcb4a52338b8b786ff28a488bc6dd45f408092533f5d08b9f17e50da31405c';
+    expect(workerInvocationFactDigest(goldenFact)).toBe(golden);
+    await expect(
+      owner.query<{ fact_digest: string }>(
+        `SELECT creator_agent_worker_prepared_fact_digest_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9
+         ) AS fact_digest`,
+        [
+          goldenFact.sourceEventId,
+          goldenFact.invocationId,
+          goldenFact.agentVersionDigest,
+          goldenFact.snapshotDigest,
+          goldenFact.executionCapabilityDigest,
+          goldenFact.leaseId,
+          goldenFact.fence,
+          goldenFact.requestDigest,
+          goldenFact.prepareCommandId,
+        ],
+      ),
+    ).resolves.toMatchObject({ rows: [{ fact_digest: golden }] });
+  });
+
+  it('matches the PostgreSQL started-fact JCS helper to workerInvocationFactDigest', async () => {
     const conversationId = await createConversation();
     const accepted = acceptInput(conversationId);
     const journal = new PostgresCloudJournal(journalPools);
     await journal.acceptInvocation(accepted);
     const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    const databaseDigest = await owner.query<{ fact_digest: string }>(
+      `SELECT creator_agent_worker_started_fact_digest_v1(
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+       ) AS fact_digest`,
+      [
+        started.fact.sourceEventId,
+        started.fact.invocationId,
+        started.fact.agentVersionDigest,
+        started.fact.snapshotDigest,
+        started.fact.executionCapabilityDigest,
+        started.fact.leaseId,
+        started.fact.fence,
+        started.fact.startCommandId,
+        started.fact.runtimeThreadId,
+        started.fact.runtimeTurnId,
+        started.fact.dispatchReceiptDigest,
+        started.fact.sandboxAttestationDigest,
+      ],
+    );
+    expect(databaseDigest.rows).toEqual([{ fact_digest: started.factDigest }]);
+
+    const goldenFact: WorkerInvocationStartedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.started',
+      sourceEventId: '0198f00d-5000-7000-8000-000000000016',
+      invocationId: '0198f00d-5000-7000-8000-000000000013',
+      agentVersionDigest: digest('a'),
+      snapshotDigest: digest('b'),
+      executionCapabilityDigest: digest('c'),
+      leaseId: '0198f00d-5000-7000-8000-000000000015',
+      fence: '7',
+      startCommandId: '0198f00d-5000-7000-8000-000000000016',
+      runtimeThreadId: 'thread-golden',
+      runtimeTurnId: 'turn-golden',
+      dispatchReceiptDigest: `sha256:${digest('d')}`,
+      sandboxAttestationDigest: `sha256:${digest('e')}`,
+    };
+    const golden = '55355cc2101293379d320db25c1e02961778c7b1341ccfb21a1176c475931836';
+    expect(workerInvocationFactDigest(goldenFact)).toBe(golden);
+    await expect(
+      owner.query<{ fact_digest: string }>(
+        `SELECT creator_agent_worker_started_fact_digest_v1(
+           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+         ) AS fact_digest`,
+        [
+          goldenFact.sourceEventId,
+          goldenFact.invocationId,
+          goldenFact.agentVersionDigest,
+          goldenFact.snapshotDigest,
+          goldenFact.executionCapabilityDigest,
+          goldenFact.leaseId,
+          goldenFact.fence,
+          goldenFact.startCommandId,
+          goldenFact.runtimeThreadId,
+          goldenFact.runtimeTurnId,
+          goldenFact.dispatchReceiptDigest,
+          goldenFact.sandboxAttestationDigest,
+        ],
+      ),
+    ).resolves.toMatchObject({ rows: [{ fact_digest: golden }] });
+  });
+
+  it('security-blocks every mutable prepared body field and dedupes concurrent repeats', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    await journal.commitPrepared(prepared);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const mutatedFacts: WorkerInvocationPreparedFact[] = [
+      { ...prepared.fact, agentVersionDigest: digest('2') },
+      { ...prepared.fact, snapshotDigest: digest('3') },
+      { ...prepared.fact, executionCapabilityDigest: digest('6') },
+      { ...prepared.fact, leaseId: randomUuidV7() },
+      { ...prepared.fact, fence: '2' },
+      { ...prepared.fact, requestDigest: hmac('5') },
+    ];
+    for (const fact of mutatedFacts) {
+      await expect(
+        journal.commitPrepared({
+          ...prepared,
+          fact,
+          factDigest: workerInvocationFactDigest(fact),
+        }),
+      ).rejects.toMatchObject({
+        code: 'JOURNAL_SECURITY_BLOCKED',
+        message: 'JOURNAL_SECURITY_BLOCKED',
+      });
+    }
+    const repeated = await Promise.allSettled(
+      Array.from({ length: 8 }, () => {
+        const fact = mutatedFacts[0]!;
+        return journal.commitPrepared({
+          ...prepared,
+          fact,
+          factDigest: workerInvocationFactDigest(fact),
+        });
+      }),
+    );
+    expect(repeated.every((result) => result.status === 'rejected')).toBe(true);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    const alerts = await reconciliationIntegrityAlerts(accepted.invocationId);
+    expect(alerts).toHaveLength(mutatedFacts.length);
+    expect(alerts.every((alert) => alert.source === 'WORKER')).toBe(true);
+  });
+
+  it('security-blocks every mutable started body field and dedupes concurrent repeats', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    await journal.commitStarted(started);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const mutatedFacts: WorkerInvocationStartedFact[] = [
+      { ...started.fact, agentVersionDigest: digest('2') },
+      { ...started.fact, snapshotDigest: digest('3') },
+      { ...started.fact, executionCapabilityDigest: digest('7') },
+      { ...started.fact, leaseId: randomUuidV7() },
+      { ...started.fact, fence: '2' },
+      { ...started.fact, runtimeThreadId: 'thread-mutated' },
+      { ...started.fact, runtimeTurnId: 'turn-mutated' },
+      { ...started.fact, dispatchReceiptDigest: `sha256:${digest('8')}` },
+      { ...started.fact, sandboxAttestationDigest: `sha256:${digest('9')}` },
+    ];
+    for (const fact of mutatedFacts) {
+      await expect(
+        journal.commitStarted({
+          ...started,
+          fact,
+          factDigest: workerInvocationFactDigest(fact),
+        }),
+      ).rejects.toMatchObject({
+        code: 'JOURNAL_SECURITY_BLOCKED',
+        message: 'JOURNAL_SECURITY_BLOCKED',
+      });
+    }
+    const repeated = await Promise.allSettled(
+      Array.from({ length: 8 }, () => {
+        const fact = mutatedFacts[0]!;
+        return journal.commitStarted({
+          ...started,
+          fact,
+          factDigest: workerInvocationFactDigest(fact),
+        });
+      }),
+    );
+    expect(repeated.every((result) => result.status === 'rejected')).toBe(true);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    const alerts = await reconciliationIntegrityAlerts(accepted.invocationId);
+    expect(alerts).toHaveLength(mutatedFacts.length);
+    expect(alerts.every((alert) => alert.source === 'WORKER')).toBe(true);
+  });
+
+  it('preserves exact started replay after terminal and security-blocks a terminal-phase mutation', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    const committedStarted = await journal.commitStarted(started);
+    await journal.commitFailed(failedInput(accepted, authority));
+    await expect(journal.commitStarted(started)).resolves.toEqual({
+      ...committedStarted,
+      replayed: true,
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const conflictFact: WorkerInvocationStartedFact = {
+      ...started.fact,
+      runtimeTurnId: 'turn-terminal-conflict',
+    };
+    await expect(
+      journal.commitStarted({
+        ...started,
+        fact: conflictFact,
+        factDigest: workerInvocationFactDigest(conflictFact),
+      }),
+    ).rejects.toMatchObject({ code: 'JOURNAL_SECURITY_BLOCKED' });
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toMatchObject([
+      { reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' },
+    ]);
+  });
+
+  it('security-blocks global cross-Consumer source reuse and a conflicting same-phase source', async () => {
+    const secondConsumer = await owner.query<{ id: string }>(
+      `INSERT INTO users (account) VALUES ($1) RETURNING id`,
+      [account()],
+    );
+    const secondConsumerId = secondConsumer.rows[0]!.id;
+    const firstConversationId = await createConversation();
+    const secondConversationId = await createConversation({ consumerId: secondConsumerId });
+    const first = acceptInput(firstConversationId);
+    const second = acceptInput(secondConversationId, { consumerId: secondConsumerId });
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(first);
+    await journal.acceptInvocation(second);
+    const firstAuthority = await assignDispatchPending(first);
+    const secondAuthority = await assignDispatchPending(second);
+    const firstPrepared = preparedInput(first, firstAuthority);
+    const secondPrepared = preparedInput(second, secondAuthority);
+    await journal.commitPrepared(firstPrepared);
+    const loserBefore = await reconciliationBusinessFootprint(
+      second.invocationId,
+      secondConversationId,
+    );
+
+    const globalConflictFact: WorkerInvocationPreparedFact = {
+      ...secondPrepared.fact,
+      sourceEventId: firstPrepared.fact.sourceEventId,
+      prepareCommandId: firstPrepared.fact.prepareCommandId,
+    };
+    const globalConflict = {
+      ...secondPrepared,
+      fact: globalConflictFact,
+      factDigest: workerInvocationFactDigest(globalConflictFact),
+    };
+    const globalAttempts = await Promise.allSettled(
+      Array.from({ length: 8 }, () => journal.commitPrepared(globalConflict)),
+    );
+    expect(globalAttempts.every((result) => result.status === 'rejected')).toBe(true);
+    for (const result of globalAttempts) {
+      if (result.status === 'rejected') {
+        expect(result.reason).toMatchObject({ code: 'JOURNAL_SECURITY_BLOCKED' });
+      }
+    }
+    expect(
+      await reconciliationBusinessFootprint(second.invocationId, secondConversationId),
+    ).toEqual(loserBefore);
+    expect(await reconciliationIntegrityAlerts(first.invocationId)).toEqual([]);
+    expect(await reconciliationIntegrityAlerts(second.invocationId)).toMatchObject([
+      {
+        creator_id: ids.creatorId,
+        consumer_subject_id: secondConsumerId,
+        reason: 'SOURCE_EVENT_CONFLICT',
+        source: 'WORKER',
+      },
+    ]);
+
+    await journal.commitPrepared(secondPrepared);
+    const committedBefore = await reconciliationBusinessFootprint(
+      second.invocationId,
+      secondConversationId,
+    );
+    const competingPhaseId = randomUuidV7();
+    const phaseConflictFact: WorkerInvocationPreparedFact = {
+      ...secondPrepared.fact,
+      sourceEventId: competingPhaseId,
+      prepareCommandId: competingPhaseId,
+    };
+    await expect(
+      journal.commitPrepared({
+        ...secondPrepared,
+        fact: phaseConflictFact,
+        factDigest: workerInvocationFactDigest(phaseConflictFact),
+      }),
+    ).rejects.toMatchObject({ code: 'JOURNAL_SECURITY_BLOCKED' });
+    expect(
+      await reconciliationBusinessFootprint(second.invocationId, secondConversationId),
+    ).toEqual(committedBefore);
+    expect(await reconciliationIntegrityAlerts(second.invocationId)).toHaveLength(2);
+  });
+
+  it('security-blocks global cross-Consumer started source reuse and a conflicting same-phase source', async () => {
+    const secondConsumer = await owner.query<{ id: string }>(
+      `INSERT INTO users (account) VALUES ($1) RETURNING id`,
+      [account()],
+    );
+    const secondConsumerId = secondConsumer.rows[0]!.id;
+    const firstConversationId = await createConversation();
+    const secondConversationId = await createConversation({ consumerId: secondConsumerId });
+    const first = acceptInput(firstConversationId);
+    const second = acceptInput(secondConversationId, { consumerId: secondConsumerId });
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(first);
+    await journal.acceptInvocation(second);
+    const firstAuthority = await assignDispatchPending(first);
+    const secondAuthority = await assignDispatchPending(second);
+    const firstPrepared = preparedInput(first, firstAuthority);
+    const secondPrepared = preparedInput(second, secondAuthority);
+    const firstCommittedPrepared = await journal.commitPrepared(firstPrepared);
+    const secondCommittedPrepared = await journal.commitPrepared(secondPrepared);
+    if (!firstCommittedPrepared.startCommandId || !secondCommittedPrepared.startCommandId) {
+      throw new Error('expected start commands');
+    }
+    await markStartSent(firstCommittedPrepared.startCommandId);
+    await markStartSent(secondCommittedPrepared.startCommandId);
+    const firstStarted = startedInput(firstPrepared, firstCommittedPrepared.startCommandId);
+    const secondStarted = startedInput(secondPrepared, secondCommittedPrepared.startCommandId);
+    await journal.commitStarted(firstStarted);
+    const loserBefore = await reconciliationBusinessFootprint(
+      second.invocationId,
+      secondConversationId,
+    );
+
+    const globalConflictFact: WorkerInvocationStartedFact = {
+      ...secondStarted.fact,
+      sourceEventId: firstStarted.fact.sourceEventId,
+      startCommandId: firstStarted.fact.startCommandId,
+    };
+    const globalConflict = {
+      ...secondStarted,
+      fact: globalConflictFact,
+      factDigest: workerInvocationFactDigest(globalConflictFact),
+    };
+    const globalAttempts = await Promise.allSettled(
+      Array.from({ length: 8 }, () => journal.commitStarted(globalConflict)),
+    );
+    expect(globalAttempts.every((result) => result.status === 'rejected')).toBe(true);
+    for (const result of globalAttempts) {
+      if (result.status === 'rejected') {
+        expect(result.reason).toMatchObject({ code: 'JOURNAL_SECURITY_BLOCKED' });
+      }
+    }
+    expect(
+      await reconciliationBusinessFootprint(second.invocationId, secondConversationId),
+    ).toEqual(loserBefore);
+    expect(await reconciliationIntegrityAlerts(first.invocationId)).toEqual([]);
+    expect(await reconciliationIntegrityAlerts(second.invocationId)).toMatchObject([
+      {
+        creator_id: ids.creatorId,
+        consumer_subject_id: secondConsumerId,
+        reason: 'SOURCE_EVENT_CONFLICT',
+        source: 'WORKER',
+      },
+    ]);
+
+    await journal.commitStarted(secondStarted);
+    const committedBefore = await reconciliationBusinessFootprint(
+      second.invocationId,
+      secondConversationId,
+    );
+    const competingPhaseId = randomUuidV7();
+    const phaseConflictFact: WorkerInvocationStartedFact = {
+      ...secondStarted.fact,
+      sourceEventId: competingPhaseId,
+      startCommandId: competingPhaseId,
+    };
+    await expect(
+      journal.commitStarted({
+        ...secondStarted,
+        fact: phaseConflictFact,
+        factDigest: workerInvocationFactDigest(phaseConflictFact),
+      }),
+    ).rejects.toMatchObject({ code: 'JOURNAL_SECURITY_BLOCKED' });
+    expect(
+      await reconciliationBusinessFootprint(second.invocationId, secondConversationId),
+    ).toEqual(committedBefore);
+    expect(await reconciliationIntegrityAlerts(second.invocationId)).toHaveLength(2);
+  });
+
+  it('returns a prepared SECURITY_BLOCKED marker inside a caller transaction and standalone throws post-commit', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    await journal.commitPrepared(prepared);
+    const conflictFact: WorkerInvocationPreparedFact = {
+      ...prepared.fact,
+      requestDigest: hmac('6'),
+    };
+    const conflict = {
+      ...prepared,
+      fact: conflictFact,
+      factDigest: workerInvocationFactDigest(conflictFact),
+    };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const broker = await brokerPool.connect();
+    try {
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
+      const outcome = await journal.projectPrepared(
+        gatewayProjectorTransaction(broker),
+        conflict,
+        AbortSignal.timeout(5_000),
+      );
+      expect(outcome).toEqual({ kind: 'SECURITY_BLOCKED' });
+      await broker.query('COMMIT');
+    } finally {
+      await broker.query('ROLLBACK').catch(() => undefined);
+      broker.release();
+    }
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(journal.commitPrepared(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+  });
+
+  it('rolls back a prepared alert failpoint and dedupes after standalone COMMIT ACK loss', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const baseJournal = new PostgresCloudJournal(journalPools);
+    await baseJournal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    await baseJournal.commitPrepared(prepared);
+    const conflictFact: WorkerInvocationPreparedFact = {
+      ...prepared.fact,
+      requestDigest: hmac('9'),
+    };
+    const conflict = {
+      ...prepared,
+      fact: conflictFact,
+      factDigest: workerInvocationFactDigest(conflictFact),
+    };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+
+    const failing = new PostgresCloudJournal(journalPools, (step) => {
+      if (step === 'JOURNAL_INTEGRITY_ALERT') {
+        throw new Error('FAILPOINT:PREPARED_JOURNAL_INTEGRITY_ALERT');
+      }
+    });
+    await expect(failing.commitPrepared(conflict)).rejects.toThrow(
+      'FAILPOINT:PREPARED_JOURNAL_INTEGRITY_ALERT',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    let loseCommitAcknowledgement = true;
+    const ambiguousBrokerPool: JournalPool = {
+      async connect() {
+        const client = await brokerPool.connect();
+        return {
+          async query<R = Record<string, unknown>>(
+            sql: string,
+            parameters?: readonly unknown[],
+          ): Promise<QueryResult<R>> {
+            const result = await client.query(sql, parameters as unknown[] | undefined);
+            if (sql === 'COMMIT' && loseCommitAcknowledgement) {
+              loseCommitAcknowledgement = false;
+              throw new Error('SIMULATED_PREPARED_COMMIT_ACK_LOSS');
+            }
+            return result as unknown as QueryResult<R>;
+          },
+          release() {
+            client.release();
+          },
+        };
+      },
+    };
+    const ambiguousJournal = new PostgresCloudJournal({
+      ...journalPools,
+      broker: ambiguousBrokerPool,
+    });
+    await expect(ambiguousJournal.commitPrepared(conflict)).rejects.toThrow(
+      'SIMULATED_PREPARED_COMMIT_ACK_LOSS',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(baseJournal.commitPrepared(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+  });
+
+  it('returns a started SECURITY_BLOCKED marker inside a caller transaction and standalone throws post-commit', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    await journal.commitStarted(started);
+    const conflictFact: WorkerInvocationStartedFact = {
+      ...started.fact,
+      runtimeThreadId: 'thread-security-conflict',
+    };
+    const conflict = {
+      ...started,
+      fact: conflictFact,
+      factDigest: workerInvocationFactDigest(conflictFact),
+    };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const broker = await brokerPool.connect();
+    try {
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
+      const outcome = await journal.projectStarted(
+        gatewayProjectorTransaction(broker),
+        conflict,
+        AbortSignal.timeout(5_000),
+      );
+      expect(outcome).toEqual({ kind: 'SECURITY_BLOCKED' });
+      await broker.query('COMMIT');
+    } finally {
+      await broker.query('ROLLBACK').catch(() => undefined);
+      broker.release();
+    }
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(journal.commitStarted(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+  });
+
+  it('rolls back a started alert failpoint and dedupes after standalone COMMIT ACK loss', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const baseJournal = new PostgresCloudJournal(journalPools);
+    await baseJournal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await baseJournal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    await baseJournal.commitStarted(started);
+    const conflictFact: WorkerInvocationStartedFact = {
+      ...started.fact,
+      runtimeTurnId: 'turn-security-conflict',
+    };
+    const conflict = {
+      ...started,
+      fact: conflictFact,
+      factDigest: workerInvocationFactDigest(conflictFact),
+    };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const failing = new PostgresCloudJournal(journalPools, (step) => {
+      if (step === 'JOURNAL_INTEGRITY_ALERT') {
+        throw new Error('FAILPOINT:STARTED_JOURNAL_INTEGRITY_ALERT');
+      }
+    });
+    await expect(failing.commitStarted(conflict)).rejects.toThrow(
+      'FAILPOINT:STARTED_JOURNAL_INTEGRITY_ALERT',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    let loseCommitAcknowledgement = true;
+    const ambiguousBrokerPool: JournalPool = {
+      async connect() {
+        const client = await brokerPool.connect();
+        return {
+          async query<R = Record<string, unknown>>(
+            sql: string,
+            parameters?: readonly unknown[],
+          ): Promise<QueryResult<R>> {
+            const result = await client.query(sql, parameters as unknown[] | undefined);
+            if (sql === 'COMMIT' && loseCommitAcknowledgement) {
+              loseCommitAcknowledgement = false;
+              throw new Error('SIMULATED_STARTED_COMMIT_ACK_LOSS');
+            }
+            return result as unknown as QueryResult<R>;
+          },
+          release() {
+            client.release();
+          },
+        };
+      },
+    };
+    const ambiguousJournal = new PostgresCloudJournal({
+      ...journalPools,
+      broker: ambiguousBrokerPool,
+    });
+    await expect(ambiguousJournal.commitStarted(conflict)).rejects.toThrow(
+      'SIMULATED_STARTED_COMMIT_ACK_LOSS',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(baseJournal.commitStarted(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+  });
+
+  it('blocks the legacy direct prepared writer and still denies RLS/stale mutation', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
 
     await expect(
       brokerPool.query<{ current_user: string }>(`SELECT current_user`),
     ).resolves.toMatchObject({ rows: [{ current_user: 'combo_agent_broker' }] });
+
+    const legacyWriter = await brokerPool.connect();
+    try {
+      await legacyWriter.query('BEGIN');
+      await legacyWriter.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacyWriter.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await legacyWriter.query(`UPDATE agent_invocations SET state = 'PERSISTED' WHERE id = $1`, [
+        accepted.invocationId,
+      ]);
+      await expect(
+        legacyWriter.query(
+          `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at,
+             source_fact_digest, broker_command_id
+           ) VALUES (
+             $1, $2, $3, 2, 'WORKER', $4, 'invocation.persisted',
+             '{"state":"PERSISTED"}'::jsonb, clock_timestamp(), $5, $6
+           )`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            prepared.fact.sourceEventId,
+            prepared.factDigest,
+            prepared.fact.prepareCommandId,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await legacyWriter.query('ROLLBACK').catch(() => undefined);
+      legacyWriter.release();
+    }
+    await expect(
+      owner.query<{
+        state: string;
+        persisted_events: string;
+        prepare_state: string;
+      }>(
+        `SELECT invocation.state,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.persisted')::text AS persisted_events,
+                (SELECT state FROM broker_outbox
+                  WHERE invocation_id = invocation.id
+                    AND command_type = 'invocation.prepare') AS prepare_state
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ state: 'DISPATCH_PENDING', persisted_events: '0', prepare_state: 'SENT' }],
+    });
 
     const rls = await brokerPool.connect();
     try {
@@ -2752,6 +3700,80 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
           execution_capability_digest: authority.executionCapabilityDigest,
         },
       ],
+    });
+  });
+
+  it('blocks the legacy direct started writer without rolling forward its projection', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    const legacyWriter = await brokerPool.connect();
+    try {
+      await legacyWriter.query('BEGIN');
+      await legacyWriter.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacyWriter.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await legacyWriter.query(
+        `UPDATE agent_invocations
+            SET state = 'STARTING', started_at = clock_timestamp(),
+                runtime_thread_id = $2, runtime_turn_id = $3
+          WHERE id = $1`,
+        [accepted.invocationId, started.fact.runtimeThreadId, started.fact.runtimeTurnId],
+      );
+      await legacyWriter.query(`UPDATE agent_invocations SET state = 'RUNNING' WHERE id = $1`, [
+        accepted.invocationId,
+      ]);
+      await expect(
+        legacyWriter.query(
+          `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at,
+             source_fact_digest, broker_command_id,
+             source_dispatch_receipt_digest, source_sandbox_attestation_digest
+           ) VALUES (
+             $1, $2, $3, 3, 'WORKER', $4, 'invocation.started',
+             '{"state":"RUNNING"}'::jsonb, clock_timestamp(), $5, $6, $7, $8
+           )`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            started.fact.sourceEventId,
+            started.factDigest,
+            started.fact.startCommandId,
+            started.fact.dispatchReceiptDigest,
+            started.fact.sandboxAttestationDigest,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await legacyWriter.query('ROLLBACK').catch(() => undefined);
+      legacyWriter.release();
+    }
+    await expect(
+      owner.query<{
+        state: string;
+        started_events: string;
+        start_state: string;
+      }>(
+        `SELECT invocation.state,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.started')::text AS started_events,
+                (SELECT state FROM broker_outbox
+                  WHERE invocation_id = invocation.id
+                    AND command_type = 'invocation.start') AS start_state
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ state: 'PERSISTED', started_events: '0', start_state: 'SENT' }],
     });
   });
 
@@ -2896,6 +3918,69 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         start_commands: '0',
       });
     }
+
+    for (const target of [
+      'INVOCATION_RECONCILING',
+      'STARTED_EVENT',
+      'RECONCILING_EVENT',
+      'START_COMMAND_ACK',
+    ] satisfies CloudJournalStep[]) {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const setupJournal = new PostgresCloudJournal(journalPools);
+      await setupJournal.acceptInvocation(accepted);
+      const authority = await assignDispatchPending(accepted);
+      const prepared = preparedInput(accepted, authority);
+      const committedPrepared = await setupJournal.commitPrepared(prepared);
+      if (!committedPrepared.startCommandId) throw new Error('expected start command');
+      await markStartSent(committedPrepared.startCommandId);
+      await owner.query(
+        `UPDATE agent_invocations
+            SET execution_capability_revoked_at = clock_timestamp()
+          WHERE id = $1`,
+        [accepted.invocationId],
+      );
+      const started = startedInput(prepared, committedPrepared.startCommandId);
+      const journal = new PostgresCloudJournal(journalPools, (step) => {
+        if (step === target) throw new Error(`FAILPOINT:${target}`);
+      });
+      await expect(journal.commitStarted(started)).rejects.toThrow(`FAILPOINT:${target}`);
+      const state = await owner.query<{
+        state: string;
+        reconciliation_reason: string | null;
+        reconciliation_started_at: Date | null;
+        runtime_thread_id: string | null;
+        runtime_turn_id: string | null;
+        started_events: string;
+        reconciliation_events: string;
+        start_state: string;
+      }>(
+        `SELECT invocation.state, invocation.reconciliation_reason,
+                invocation.reconciliation_started_at,
+                invocation.runtime_thread_id, invocation.runtime_turn_id,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.started')::text AS started_events,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling')::text AS reconciliation_events,
+                (SELECT state FROM broker_outbox
+                  WHERE invocation_id = invocation.id AND command_type = 'invocation.start')
+                  AS start_state
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      );
+      expect(state.rows[0], `fresh-started-root:${target}`).toEqual({
+        state: 'PERSISTED',
+        reconciliation_reason: null,
+        reconciliation_started_at: null,
+        runtime_thread_id: null,
+        runtime_turn_id: null,
+        started_events: '0',
+        reconciliation_events: '0',
+        start_state: 'SENT',
+      });
+    }
   });
 
   it('projects prepared, started, and success inside one caller transaction', async () => {
@@ -2907,13 +3992,17 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     const prepared = preparedInput(accepted, authority);
     const signal = new AbortController().signal;
     const observedSignals: AbortSignal[] = [];
+    const observedSql: string[] = [];
     const broker = await brokerPool.connect();
     try {
       await broker.query('BEGIN');
       await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
-      const transaction = gatewayProjectorTransaction(broker, observedSignals);
-      const committedPrepared = await journal.projectPrepared(transaction, prepared, signal);
+      const transaction = gatewayProjectorTransaction(broker, observedSignals, observedSql);
+      const preparedOutcome = await journal.projectPrepared(transaction, prepared, signal);
+      if (preparedOutcome.kind !== 'COMMITTED') throw new Error('expected committed prepared');
+      const committedPrepared = preparedOutcome.committed;
       if (!committedPrepared.startCommandId) throw new Error('expected start command');
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
       await broker.query(
         `UPDATE broker_outbox
             SET state = 'SENT', attempt_count = 1, next_attempt_at = now()
@@ -2922,8 +4011,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       );
       const started = startedInput(prepared, committedPrepared.startCommandId);
       await expect(journal.projectStarted(transaction, started, signal)).resolves.toMatchObject({
-        state: 'RUNNING',
-        replayed: false,
+        kind: 'COMMITTED',
+        committed: { state: 'RUNNING', replayed: false },
       });
       const success = successInput(accepted, {
         ...authority,
@@ -2931,11 +4020,26 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         runtimeTurnId: started.fact.runtimeTurnId,
         startedFactDigest: started.factDigest,
       });
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
+      const successSqlStart = observedSql.length;
+      const successSignalStart = observedSignals.length;
       await expect(
         journal.projectSuccess(transaction, success, sealAssistantMessage, signal),
-      ).resolves.toMatchObject({ replayed: false });
-      expect(observedSignals.length).toBeGreaterThan(20);
-      expect(observedSignals.every((observed) => observed === signal)).toBe(true);
+      ).resolves.toMatchObject({ kind: 'COMMITTED', committed: { replayed: false } });
+      const successSql = observedSql.slice(successSqlStart);
+      const successSignals = observedSignals.slice(successSignalStart);
+      const preflightIndex = successSql.findIndex((sql) =>
+        sql.includes('creator_agent_preflight_success_fact_v1'),
+      );
+      const finalizeIndex = successSql.findIndex((sql) =>
+        sql.includes('creator_agent_finalize_success_fact_v1'),
+      );
+      expect(preflightIndex).toBe(0);
+      expect(finalizeIndex).toBeGreaterThan(preflightIndex);
+      expect(successSignals.length).toBeGreaterThanOrEqual(2);
+      expect(successSignals[preflightIndex]).toBe(signal);
+      expect(successSignals[finalizeIndex]).toBe(signal);
+      expect(successSignals.every((observed) => observed === signal)).toBe(true);
     } finally {
       await broker.query('ROLLBACK').catch(() => undefined);
       broker.release();
@@ -3053,7 +4157,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
     const controller = new AbortController();
     const blockedSealer: AssistantMessageSealer = async (input) => {
-      expect(input.signal).toBe(controller.signal);
+      expect(input.signal).not.toBe(controller.signal);
+      expect(input.signal.aborted).toBe(false);
       enterSealer();
       await released;
       return sealAssistantMessage(input);
@@ -3090,6 +4195,365 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         accepted.invocationId,
       ]),
     ).resolves.toMatchObject({ rows: [{ state: 'RUNNING', result_message_id: null }] });
+    expect(await successControlFootprint(accepted.invocationId)).toEqual({
+      preflights: '0',
+      receipts: '0',
+    });
+  });
+
+  it('settles a terminal sealer that ignores caller abort and releases its database locks', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    const hungSealer: AssistantMessageSealer = () => new Promise<never>(() => undefined);
+
+    await expect(
+      journal.commitSuccess(success, hungSealer, AbortSignal.timeout(100)),
+    ).rejects.toMatchObject({ name: 'TimeoutError' });
+    expect(await counts(conversationId)).toMatchObject({
+      messages: '1',
+      events: '3',
+      consumer_events: '0',
+      consumer_streams: '0',
+      conversation_state: 'BUSY',
+    });
+    expect(await successControlFootprint(accepted.invocationId)).toEqual({
+      preflights: '0',
+      receipts: '0',
+    });
+    await expect(journal.commitSuccess(success, sealAssistantMessage)).resolves.toMatchObject({
+      replayed: false,
+    });
+  });
+
+  it('refuses to commit an unconsumed success seal preflight', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const broker = await brokerPool.connect();
+    try {
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
+      await expect(
+        broker.query<{ outcome: string; seal_token: string; assistant_message_id: string }>(
+          `SELECT outcome, seal_token::text, assistant_message_id::text
+             FROM creator_agent_preflight_success_fact_v1(
+               $1, $2, $3, $4, $5, $6, $7, $8, $9,
+               $10, $11, $12, $13, $14, $15, $16, $17, $18
+             )`,
+          successPreflightParameters(success) as unknown[],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            outcome: 'SEAL_REQUIRED',
+            seal_token: expect.any(String),
+            assistant_message_id: expect.any(String),
+          },
+        ],
+      });
+      await expect(broker.query('COMMIT')).rejects.toMatchObject({ code: '23514' });
+    } finally {
+      await broker.query('ROLLBACK').catch(() => undefined);
+      broker.release();
+    }
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(
+      owner.query<{ pending: string }>(
+        `SELECT count(*)::text AS pending FROM creator_agent_success_seal_preflights
+          WHERE invocation_id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ pending: '0' }] });
+  });
+
+  it('rejects cross-transaction and direct success finalize without a matching seal intent', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    const preflightOwner = await brokerPool.connect();
+    const outsider = await brokerPool.connect();
+    try {
+      await preflightOwner.query('BEGIN');
+      await preflightOwner.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await preflightOwner.query(`SELECT set_config('app.consumer_id', '', true)`);
+      const pending = await preflightOwner.query<{
+        seal_token: string;
+        assistant_message_id: string;
+        aad_owner_id: string;
+        aad_conversation_id: string;
+      }>(
+        `SELECT seal_token::text, assistant_message_id::text,
+                aad_owner_id::text, aad_conversation_id::text
+           FROM creator_agent_preflight_success_fact_v1(
+             $1, $2, $3, $4, $5, $6, $7, $8, $9,
+             $10, $11, $12, $13, $14, $15, $16, $17, $18
+           )`,
+        successPreflightParameters(success) as unknown[],
+      );
+      const intent = pending.rows[0]!;
+      const sealed = await sealAssistantMessage({
+        resultCiphertext: success.resultCiphertext,
+        aad: {
+          schemaVersion: 1,
+          ownerId: intent.aad_owner_id,
+          conversationId: intent.aad_conversation_id,
+          messageId: intent.assistant_message_id,
+          role: 'ASSISTANT',
+        },
+        signal: AbortSignal.timeout(5_000),
+      });
+      const encrypted = sealed.encryptedMessage;
+      const finalize = async (sealToken: string) =>
+        outsider.query<{ outcome: string }>(
+          `SELECT outcome FROM creator_agent_finalize_success_fact_v1(
+             $1, $2, $3, $4, $5, $6, $7,
+             $8, $9, $10, $11, $12, $13, $14
+           )`,
+          [
+            sealToken,
+            ids.creatorId,
+            success.fact.invocationId,
+            success.factDigest,
+            intent.assistant_message_id,
+            sealed.verifiedResultDigest,
+            encrypted.algorithm,
+            encrypted.keyId,
+            encrypted.nonce,
+            encrypted.ciphertext,
+            encrypted.authTag,
+            encrypted.cipherDigest,
+            encrypted.contentDigest,
+            encrypted.aadVersion,
+          ],
+        );
+
+      await outsider.query('BEGIN');
+      await outsider.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await outsider.query(`SELECT set_config('app.consumer_id', '', true)`);
+      await expect(finalize(intent.seal_token)).resolves.toMatchObject({
+        rows: [{ outcome: 'AUTHORITY_REJECTED' }],
+      });
+      await expect(finalize(randomUuidV7())).resolves.toMatchObject({
+        rows: [{ outcome: 'AUTHORITY_REJECTED' }],
+      });
+      await outsider.query('ROLLBACK');
+    } finally {
+      await preflightOwner.query('ROLLBACK').catch(() => undefined);
+      await outsider.query('ROLLBACK').catch(() => undefined);
+      preflightOwner.release();
+      outsider.release();
+    }
+    await expect(journal.commitSuccess(success, sealAssistantMessage)).resolves.toMatchObject({
+      replayed: false,
+    });
+  });
+
+  it('returns a success SECURITY_BLOCKED marker after finalize commits a digest alert', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const mismatchedSealer: AssistantMessageSealer = async (input) => ({
+      ...(await sealAssistantMessage(input)),
+      verifiedResultDigest: hmac('5'),
+    });
+    const failing = new PostgresCloudJournal(journalPools, (step) => {
+      if (step === 'JOURNAL_INTEGRITY_ALERT') {
+        throw new Error('FAILPOINT:SUCCESS_JOURNAL_INTEGRITY_ALERT');
+      }
+    });
+    await expect(failing.commitSuccess(success, mismatchedSealer)).rejects.toThrow(
+      'FAILPOINT:SUCCESS_JOURNAL_INTEGRITY_ALERT',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    expect(await successControlFootprint(accepted.invocationId)).toEqual({
+      preflights: '0',
+      receipts: '0',
+    });
+    const broker = await brokerPool.connect();
+    try {
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
+      await expect(
+        journal.projectSuccess(
+          gatewayProjectorTransaction(broker),
+          success,
+          mismatchedSealer,
+          AbortSignal.timeout(5_000),
+        ),
+      ).resolves.toEqual({ kind: 'SECURITY_BLOCKED' });
+      await broker.query('COMMIT');
+    } finally {
+      await broker.query('ROLLBACK').catch(() => undefined);
+      broker.release();
+    }
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await successControlFootprint(accepted.invocationId)).toEqual({
+      preflights: '0',
+      receipts: '0',
+    });
+    await expect(journal.commitSuccess(success, mismatchedSealer)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    await expect(journal.commitSuccess(success, sealAssistantMessage)).resolves.toMatchObject({
+      replayed: false,
+    });
+  });
+
+  it('serializes concurrent exact success facts and invokes the terminal sealer once', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    const sealer = vi.fn(sealAssistantMessage);
+
+    const committed = await Promise.all(
+      Array.from({ length: 8 }, () => journal.commitSuccess(success, sealer)),
+    );
+    expect(sealer).toHaveBeenCalledTimes(1);
+    expect(committed.filter((result) => !result.replayed)).toHaveLength(1);
+    expect(committed.filter((result) => result.replayed)).toHaveLength(7);
+    expect(new Set(committed.map((result) => result.assistantMessageId)).size).toBe(1);
+    expect(new Set(committed.map((result) => result.consumerEventCursor)).size).toBe(1);
+  });
+
+  it('serializes concurrent different success bodies to one admitted fact and one security block', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const first = successInput(accepted, authority);
+    const secondFact: WorkerInvocationSucceededFact = {
+      ...first.fact,
+      resultDigest: domainSeparatedHmacSha256('combo:vnext:result:v1', digestKey, {
+        text: 'alternate assistant secret',
+      }),
+      localResultCipherDigest: digest('b'),
+    };
+    const second: CommitSuccessInput = {
+      ...first,
+      fact: secondFact,
+      factDigest: workerInvocationFactDigest(secondFact),
+      resultCiphertext: transportEncryptedAssistant(
+        conversationId,
+        accepted.invocationId,
+        'alternate assistant secret',
+      ),
+    };
+    const sealer = vi.fn(sealAssistantMessage);
+
+    const attempts = await Promise.allSettled([
+      journal.commitSuccess(first, sealer),
+      journal.commitSuccess(second, sealer),
+    ]);
+    expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+    expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
+    const rejected = attempts.find((attempt) => attempt.status === 'rejected');
+    expect(rejected).toMatchObject({
+      status: 'rejected',
+      reason: { code: 'JOURNAL_SECURITY_BLOCKED', message: 'JOURNAL_SECURITY_BLOCKED' },
+    });
+    expect(sealer).toHaveBeenCalledTimes(1);
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    await expect(
+      owner.query<{ state: string; result_digest: string; messages: string; events: string }>(
+        `SELECT state, result_digest,
+                (SELECT count(*)::text FROM agent_messages
+                  WHERE invocation_id = agent_invocations.id AND role = 'ASSISTANT') AS messages,
+                (SELECT count(*)::text FROM agent_invocation_events
+                  WHERE invocation_id = agent_invocations.id
+                    AND event_type = 'invocation.succeeded') AS events
+           FROM agent_invocations WHERE id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: 'SUCCEEDED',
+          result_digest: expect.stringMatching(/^hmac-sha256:[a-f0-9]{64}$/u),
+          messages: '1',
+          events: '1',
+        },
+      ],
+    });
+  });
+
+  it('recovers a success COMMIT acknowledgement loss through exact replay without resealing', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const baseJournal = new PostgresCloudJournal(journalPools);
+    await baseJournal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    let loseCommitAcknowledgement = true;
+    const ambiguousBrokerPool: JournalPool = {
+      async connect() {
+        const client = await brokerPool.connect();
+        return {
+          async query<R = Record<string, unknown>>(
+            sql: string,
+            parameters?: readonly unknown[],
+          ): Promise<QueryResult<R>> {
+            const result = await client.query(sql, parameters as unknown[] | undefined);
+            if (sql === 'COMMIT' && loseCommitAcknowledgement) {
+              loseCommitAcknowledgement = false;
+              throw new Error('SIMULATED_SUCCESS_COMMIT_ACK_LOSS');
+            }
+            return result as unknown as QueryResult<R>;
+          },
+          release() {
+            client.release();
+          },
+        };
+      },
+    };
+    const ambiguousJournal = new PostgresCloudJournal({
+      ...journalPools,
+      broker: ambiguousBrokerPool,
+    });
+    const sealer = vi.fn(sealAssistantMessage);
+    await expect(ambiguousJournal.commitSuccess(success, sealer)).rejects.toThrow(
+      'SIMULATED_SUCCESS_COMMIT_ACK_LOSS',
+    );
+    expect(sealer).toHaveBeenCalledTimes(1);
+    const forbiddenReplaySealer = vi.fn<AssistantMessageSealer>(() => {
+      throw new Error('EXACT_REPLAY_MUST_NOT_SEAL');
+    });
+    await expect(baseJournal.commitSuccess(success, forbiddenReplaySealer)).resolves.toMatchObject({
+      replayed: true,
+      assistantMessageId: expect.any(String),
+      consumerEventCursor: expect.any(String),
+    });
+    expect(forbiddenReplaySealer).not.toHaveBeenCalled();
   });
 
   it('durably records a late prepared fact and reconciles without creating start authority', async () => {
@@ -3117,6 +4581,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       ...committed,
       replayed: true,
     });
+    const beforeConflict = await reconciliationBusinessFootprint(
+      accepted.invocationId,
+      conversationId,
+    );
 
     const conflictingFact: WorkerInvocationPreparedFact = {
       ...prepared.fact,
@@ -3128,7 +4596,16 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         fact: conflictingFact,
         factDigest: workerInvocationFactDigest(conflictingFact),
       }),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      beforeConflict,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toMatchObject([
+      { reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' },
+    ]);
 
     const state = await owner.query<{
       state: string;
@@ -3221,6 +4698,1045 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
   });
 
+  it.each([
+    {
+      label: 'explicit UUID',
+      reason: 'JOURNAL_LOST' as const,
+      internalLatePrepared: false,
+    },
+    {
+      label: 'internal late-prepared UUID suffix',
+      reason: 'START_DISPATCH_UNKNOWN' as const,
+      internalLatePrepared: true,
+    },
+  ])(
+    'keeps one $label reconciliation root and appends one deterministic resumed event',
+    async ({ reason, internalLatePrepared }) => {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const journal = new PostgresCloudJournal(journalPools);
+      await journal.acceptInvocation(accepted);
+      const authority = await assignDispatchPending(accepted);
+      const prepared = preparedInput(accepted, authority);
+      const committedPrepared = await journal.commitPrepared(prepared);
+      if (!committedPrepared.startCommandId) throw new Error('expected start command');
+      await markStartSent(committedPrepared.startCommandId);
+
+      const rootInputSourceEventId = internalLatePrepared
+        ? prepared.fact.sourceEventId
+        : randomUuidV7();
+      const rootSourceEventId = internalLatePrepared
+        ? `late-prepared:${rootInputSourceEventId}`
+        : rootInputSourceEventId;
+      if (internalLatePrepared) {
+        await owner.query('BEGIN');
+        try {
+          const transition = await owner.query<{ reconciliation_started_at: Date }>(
+            `UPDATE agent_invocations
+                SET state = 'RECONCILING', reconciliation_reason = $2,
+                    reconciliation_started_at = date_trunc('milliseconds', clock_timestamp())
+              WHERE id = $1 AND state = 'PERSISTED'
+              RETURNING reconciliation_started_at`,
+            [accepted.invocationId, reason],
+          );
+          await owner.query(
+            `INSERT INTO agent_invocation_events (
+               invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+               source_event_id, event_type, payload, occurred_at
+             )
+             SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                    'RECONCILER', $4, 'invocation.reconciling', $5::jsonb, $6
+               FROM agent_invocation_events
+              WHERE invocation_id = $1`,
+            [
+              accepted.invocationId,
+              ids.creatorId,
+              ids.consumerId,
+              rootSourceEventId,
+              JSON.stringify({ state: 'RECONCILING', reason }),
+              transition.rows[0]!.reconciliation_started_at,
+            ],
+          );
+          await owner.query('COMMIT');
+        } catch (error) {
+          await owner.query('ROLLBACK');
+          throw error;
+        }
+      } else {
+        await journal.beginReconciliation({
+          creatorId: ids.creatorId,
+          consumerId: ids.consumerId,
+          conversationId,
+          invocationId: accepted.invocationId,
+          sourceEventId: rootInputSourceEventId,
+          reason,
+        });
+      }
+
+      const started = startedInput(prepared, committedPrepared.startCommandId);
+      await expect(journal.commitStarted(started)).resolves.toMatchObject({
+        state: 'RUNNING',
+        replayed: false,
+      });
+      const reentered = await journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: rootInputSourceEventId,
+        reason,
+      });
+      expect(reentered).toMatchObject({ state: 'RECONCILING', reason, replayed: false });
+
+      const durable = await owner.query<{
+        state: string;
+        reconciliation_reason: string;
+        reconciliation_started_at: Date;
+        root_events: string;
+        root_source_event_id: string;
+        root_payload: unknown;
+        root_occurred_at: Date;
+        root_journal_seq: string;
+        started_source_event_id: string;
+        started_journal_seq: string;
+        resumed_events: string;
+        resumed_source_event_id: string;
+        resumed_payload: unknown;
+        resumed_journal_seq: string;
+      }>(
+        `SELECT invocation.state, invocation.reconciliation_reason,
+                invocation.reconciliation_started_at,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling')::text AS root_events,
+                root.source_event_id AS root_source_event_id,
+                root.payload AS root_payload,
+                root.occurred_at AS root_occurred_at,
+                root.journal_seq::text AS root_journal_seq,
+                started.source_event_id AS started_source_event_id,
+                started.journal_seq::text AS started_journal_seq,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling_resumed')::text AS resumed_events,
+                resumed.source_event_id AS resumed_source_event_id,
+                resumed.payload AS resumed_payload,
+                resumed.journal_seq::text AS resumed_journal_seq
+           FROM agent_invocations AS invocation
+           JOIN agent_invocation_events AS root
+             ON root.invocation_id = invocation.id
+            AND root.event_type = 'invocation.reconciling'
+           JOIN agent_invocation_events AS started
+             ON started.invocation_id = invocation.id
+            AND started.source = 'WORKER'
+            AND started.event_type = 'invocation.started'
+           JOIN agent_invocation_events AS resumed
+             ON resumed.invocation_id = invocation.id
+            AND resumed.source = 'RECONCILER'
+            AND resumed.event_type = 'invocation.reconciling_resumed'
+          WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      );
+      expect(durable.rows[0]).toMatchObject({
+        state: 'RECONCILING',
+        reconciliation_reason: reason,
+        root_events: '1',
+        root_source_event_id: rootSourceEventId,
+        root_payload: { state: 'RECONCILING', reason },
+        root_journal_seq: '3',
+        started_source_event_id: started.fact.sourceEventId,
+        started_journal_seq: '4',
+        resumed_events: '1',
+        resumed_source_event_id: `resume-reconciliation:${rootSourceEventId}:${started.fact.sourceEventId}`,
+        resumed_payload: { state: 'RECONCILING', reason },
+        resumed_journal_seq: '5',
+      });
+      expect(durable.rows[0]!.root_occurred_at.toISOString()).toBe(
+        durable.rows[0]!.reconciliation_started_at.toISOString(),
+      );
+      const afterReentry = await counts(conversationId);
+      expect(afterReentry.events).toBe('5');
+      await expect(
+        journal.beginReconciliation({
+          creatorId: ids.creatorId,
+          consumerId: ids.consumerId,
+          conversationId,
+          invocationId: accepted.invocationId,
+          sourceEventId: rootInputSourceEventId,
+          reason,
+        }),
+      ).resolves.toEqual({ ...reentered, replayed: true });
+      expect(await counts(conversationId)).toEqual(afterReentry);
+    },
+  );
+
+  it('rejects direct Broker or old Reconciler attempts to spoof reconciliation Events', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const rootSourceEventId = randomUuidV7();
+    const broker = await brokerPool.connect();
+    try {
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      const transition = await broker.query<{ reconciliation_started_at: Date }>(
+        `UPDATE agent_invocations
+            SET state = 'RECONCILING', reconciliation_reason = 'JOURNAL_LOST',
+                reconciliation_started_at = date_trunc('milliseconds', clock_timestamp())
+          WHERE id = $1 AND state = 'PERSISTED'
+          RETURNING reconciliation_started_at`,
+        [accepted.invocationId],
+      );
+      await expect(
+        broker.query(
+          `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at
+           )
+           SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                  'RECONCILER', $4, 'invocation.reconciling', $5::jsonb, $6
+             FROM agent_invocation_events WHERE invocation_id = $1`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            rootSourceEventId,
+            JSON.stringify({ state: 'RECONCILING', reason: 'JOURNAL_LOST' }),
+            transition.rows[0]!.reconciliation_started_at,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await broker.query('ROLLBACK');
+
+      const oldReconciler = await reconcilerPool.connect();
+      try {
+        await oldReconciler.query('BEGIN');
+        await oldReconciler.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+        await oldReconciler.query(`SELECT set_config('app.consumer_id', $1, true)`, [
+          ids.consumerId,
+        ]);
+        const oldTransition = await oldReconciler.query<{ reconciliation_started_at: Date }>(
+          `UPDATE agent_invocations
+              SET state = 'RECONCILING', reconciliation_reason = 'JOURNAL_LOST',
+                  reconciliation_started_at = date_trunc('milliseconds', clock_timestamp())
+            WHERE id = $1 AND state = 'PERSISTED'
+            RETURNING reconciliation_started_at`,
+          [accepted.invocationId],
+        );
+        await expect(
+          oldReconciler.query(
+            `INSERT INTO agent_invocation_events (
+               invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+               source_event_id, event_type, payload, occurred_at
+             )
+             SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                    'RECONCILER', $4, 'invocation.reconciling', $5::jsonb, $6
+               FROM agent_invocation_events WHERE invocation_id = $1`,
+            [
+              accepted.invocationId,
+              ids.creatorId,
+              ids.consumerId,
+              rootSourceEventId,
+              JSON.stringify({ state: 'RECONCILING', reason: 'JOURNAL_LOST' }),
+              oldTransition.rows[0]!.reconciliation_started_at,
+            ],
+          ),
+        ).rejects.toMatchObject({ code: '42501' });
+        await oldReconciler.query('ROLLBACK');
+      } finally {
+        await oldReconciler.query('ROLLBACK').catch(() => undefined);
+        oldReconciler.release();
+      }
+
+      await journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: rootSourceEventId,
+        reason: 'JOURNAL_LOST',
+      });
+      const started = startedInput(prepared, committedPrepared.startCommandId);
+      await journal.commitStarted(started);
+
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await broker.query(`UPDATE agent_invocations SET state = 'RECONCILING' WHERE id = $1`, [
+        accepted.invocationId,
+      ]);
+      await expect(
+        broker.query(
+          `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at
+           )
+           SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                  'RECONCILER', $4, 'invocation.reconciling_resumed', $5::jsonb,
+                  clock_timestamp()
+             FROM agent_invocation_events WHERE invocation_id = $1`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            `resume-reconciliation:${rootSourceEventId}:${started.fact.sourceEventId}`,
+            JSON.stringify({ state: 'RECONCILING', reason: 'JOURNAL_LOST' }),
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await broker.query('ROLLBACK');
+    } finally {
+      await broker.query('ROLLBACK').catch(() => undefined);
+      broker.release();
+    }
+    await expect(
+      owner.query<{ state: string; roots: string; resumed: string }>(
+        `SELECT invocation.state,
+                count(event.id) FILTER (
+                  WHERE event.event_type = 'invocation.reconciling'
+                )::text AS roots,
+                count(event.id) FILTER (
+                  WHERE event.event_type = 'invocation.reconciling_resumed'
+                )::text AS resumed
+           FROM agent_invocations AS invocation
+           JOIN agent_invocation_events AS event ON event.invocation_id = invocation.id
+          WHERE invocation.id = $1
+          GROUP BY invocation.state`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ state: 'RUNNING', roots: '1', resumed: '0' }] });
+  });
+
+  it('rejects same-transaction re-entry to terminal without a resumed Event', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const rootSourceEventId = randomUuidV7();
+    const reconciliationInput = {
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId: rootSourceEventId,
+      reason: 'JOURNAL_LOST' as const,
+    };
+    await journal.beginReconciliation(reconciliationInput);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    await journal.commitStarted(started);
+
+    const reconciler = await reconcilerPool.connect();
+    const bindContext = async (): Promise<void> => {
+      await reconciler.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await reconciler.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+    };
+    try {
+      await reconciler.query('BEGIN');
+      await bindContext();
+      await reconciler.query(`UPDATE agent_invocations SET state = 'RECONCILING' WHERE id = $1`, [
+        accepted.invocationId,
+      ]);
+      await reconciler.query(
+        `UPDATE agent_invocations
+            SET state = 'FAILED', error_code = 'SNAPSHOT_MISMATCH',
+                terminal_at = clock_timestamp()
+          WHERE id = $1`,
+        [accepted.invocationId],
+      );
+      await expect(reconciler.query('COMMIT')).rejects.toMatchObject({
+        code: '23514',
+        message: expect.stringContaining('requires exact durable resumed Event'),
+      });
+      await reconciler.query('ROLLBACK');
+
+      await reconciler.query('BEGIN');
+      await bindContext();
+      await reconciler.query(`UPDATE agent_invocations SET state = 'RECONCILING' WHERE id = $1`, [
+        accepted.invocationId,
+      ]);
+      await reconciler.query(
+        `INSERT INTO agent_invocation_events (
+           invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+           source_event_id, event_type, payload, occurred_at
+         )
+         SELECT $1, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                'RECONCILER', $4, 'invocation.reconciling_resumed', $5::jsonb,
+                clock_timestamp()
+           FROM agent_invocation_events WHERE invocation_id = $1`,
+        [
+          accepted.invocationId,
+          ids.creatorId,
+          ids.consumerId,
+          `resume-reconciliation:${rootSourceEventId}:${started.fact.sourceEventId}`,
+          JSON.stringify({ state: 'RECONCILING', reason: 'JOURNAL_LOST' }),
+        ],
+      );
+      await reconciler.query(
+        `UPDATE agent_invocations
+            SET state = 'FAILED', error_code = 'SNAPSHOT_MISMATCH',
+                terminal_at = clock_timestamp()
+          WHERE id = $1`,
+        [accepted.invocationId],
+      );
+      await reconciler.query('COMMIT');
+    } finally {
+      await reconciler.query('ROLLBACK').catch(() => undefined);
+      reconciler.release();
+    }
+    await expect(
+      owner.query<{ state: string; resumed: string }>(
+        `SELECT invocation.state,
+                count(event.id) FILTER (
+                  WHERE event.event_type = 'invocation.reconciling_resumed'
+                )::text AS resumed
+           FROM agent_invocations AS invocation
+           JOIN agent_invocation_events AS event ON event.invocation_id = invocation.id
+          WHERE invocation.id = $1
+          GROUP BY invocation.state`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ state: 'FAILED', resumed: '1' }] });
+  });
+
+  it('rolls back every reconciliation re-entry crash window and retries exactly once', async () => {
+    for (const target of [
+      'INVOCATION_RECONCILING',
+      'RECONCILING_RESUMED_EVENT',
+    ] satisfies CloudJournalStep[]) {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const baseJournal = new PostgresCloudJournal(journalPools);
+      await baseJournal.acceptInvocation(accepted);
+      const authority = await assignDispatchPending(accepted);
+      const prepared = preparedInput(accepted, authority);
+      const committedPrepared = await baseJournal.commitPrepared(prepared);
+      if (!committedPrepared.startCommandId) throw new Error('expected start command');
+      await markStartSent(committedPrepared.startCommandId);
+      const rootSourceEventId = randomUuidV7();
+      const input = {
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: rootSourceEventId,
+        reason: 'JOURNAL_LOST' as const,
+      };
+      await baseJournal.beginReconciliation(input);
+      const started = startedInput(prepared, committedPrepared.startCommandId);
+      await expect(baseJournal.commitStarted(started)).resolves.toMatchObject({
+        state: 'RUNNING',
+        replayed: false,
+      });
+
+      const failing = new PostgresCloudJournal(journalPools, (step) => {
+        if (step === target) throw new Error(`FAILPOINT:${target}`);
+      });
+      await expect(failing.beginReconciliation(input)).rejects.toThrow(`FAILPOINT:${target}`);
+      const rolledBack = await owner.query<{
+        state: string;
+        root_events: string;
+        resumed_events: string;
+        events: string;
+      }>(
+        `SELECT invocation.state,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling')::text AS root_events,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling_resumed')::text AS resumed_events,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id)::text AS events
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      );
+      expect(rolledBack.rows[0], target).toEqual({
+        state: 'RUNNING',
+        root_events: '1',
+        resumed_events: '0',
+        events: '4',
+      });
+
+      const retried = await baseJournal.beginReconciliation(input);
+      expect(retried).toMatchObject({ state: 'RECONCILING', replayed: false });
+      const afterRetry = await counts(conversationId);
+      expect(afterRetry.events).toBe('5');
+      await expect(baseJournal.beginReconciliation(input)).resolves.toEqual({
+        ...retried,
+        replayed: true,
+      });
+      expect(await counts(conversationId)).toEqual(afterRetry);
+    }
+  });
+
+  it('rejects a RECONCILING projection without its current resumed Event', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignDispatchPending(accepted);
+    const prepared = preparedInput(accepted, authority);
+    const committedPrepared = await journal.commitPrepared(prepared);
+    if (!committedPrepared.startCommandId) throw new Error('expected start command');
+    await markStartSent(committedPrepared.startCommandId);
+    const input = {
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId: randomUuidV7(),
+      reason: 'JOURNAL_LOST' as const,
+    };
+    await journal.beginReconciliation(input);
+    const started = startedInput(prepared, committedPrepared.startCommandId);
+    await journal.commitStarted(started);
+
+    await expect(
+      owner.query(`UPDATE agent_invocations SET state = 'RECONCILING' WHERE id = $1`, [
+        accepted.invocationId,
+      ]),
+    ).rejects.toMatchObject({ code: '23514' });
+    const before = await counts(conversationId);
+    expect(before.events).toBe('4');
+    await expect(journal.beginReconciliation(input)).resolves.toMatchObject({
+      state: 'RECONCILING',
+      replayed: false,
+    });
+    const after = await counts(conversationId);
+    expect(after.events).toBe('5');
+    await expect(
+      owner.query<{
+        state: string;
+        resumed_events: string;
+      }>(
+        `SELECT invocation.state,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling_resumed')::text AS resumed_events
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ state: 'RECONCILING', resumed_events: '1' }],
+    });
+  });
+
+  it('records only deduplicated low-sensitivity integrity alerts through exact Reconciler authority', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    await new PostgresCloudJournal(journalPools).acceptInvocation(accepted);
+    const sourceEventIdDigest = digest('8');
+    const existingCanonicalDigest = digest('9');
+    const receivedCanonicalDigest = digest('a');
+    const connection = await reconcilerPool.connect();
+    let alertId = '';
+    try {
+      await connection.query('BEGIN');
+      await connection.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await connection.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      const first = await connection.query<{ alert_id: string; replayed: boolean }>(
+        `SELECT * FROM creator_agent_record_journal_integrity_alert_v1(
+           $1, $2, $3, 'SOURCE_EVENT_CONFLICT', 'WORKER', $4, $5, $6
+         )`,
+        [
+          ids.creatorId,
+          ids.consumerId,
+          accepted.invocationId,
+          sourceEventIdDigest,
+          existingCanonicalDigest,
+          receivedCanonicalDigest,
+        ],
+      );
+      alertId = first.rows[0]?.alert_id ?? '';
+      expect(alertId).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(first.rows[0]?.replayed).toBe(false);
+      const replay = await connection.query<{ alert_id: string; replayed: boolean }>(
+        `SELECT * FROM creator_agent_record_journal_integrity_alert_v1(
+           $1, $2, $3, 'SOURCE_EVENT_CONFLICT', 'WORKER', $4, $5, $6
+         )`,
+        [
+          ids.creatorId,
+          ids.consumerId,
+          accepted.invocationId,
+          sourceEventIdDigest,
+          existingCanonicalDigest,
+          receivedCanonicalDigest,
+        ],
+      );
+      expect(replay.rows).toEqual([{ alert_id: alertId, replayed: true }]);
+      const order = await connection.query<{ alert_id: string; replayed: boolean }>(
+        `SELECT * FROM creator_agent_record_journal_integrity_alert_v1(
+           $1, $2, $3, 'JOURNAL_ORDER_CONFLICT', 'RECONCILER', $4, $5, $5, 4, 6
+         )`,
+        [ids.creatorId, ids.consumerId, accepted.invocationId, digest('c'), digest('d')],
+      );
+      expect(order.rows[0]?.alert_id).toMatch(/^[0-9a-f-]{36}$/u);
+      expect(order.rows[0]?.replayed).toBe(false);
+      await connection.query('COMMIT');
+
+      await expect(
+        connection.query(`SELECT id FROM creator_agent_journal_integrity_alerts`),
+      ).rejects.toMatchObject({ code: '42501' });
+      await expect(
+        connection.query(
+          `INSERT INTO creator_agent_journal_integrity_alerts (
+             invocation_id, creator_id, consumer_subject_id, reason, source,
+             source_event_id_digest, existing_canonical_digest, received_canonical_digest
+           ) VALUES ($1, $2, $3, 'SOURCE_EVENT_CONFLICT', 'WORKER', $4, $5, $6)`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            digest('b'),
+            existingCanonicalDigest,
+            receivedCanonicalDigest,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await connection.query('ROLLBACK').catch(() => undefined);
+      connection.release();
+    }
+
+    await expect(
+      owner.query(
+        `SELECT * FROM creator_agent_record_journal_integrity_alert_v1(
+           $1, $2, $3, 'SOURCE_EVENT_CONFLICT', 'WORKER', $4, $5, $6
+         )`,
+        [
+          ids.creatorId,
+          ids.consumerId,
+          accepted.invocationId,
+          sourceEventIdDigest,
+          existingCanonicalDigest,
+          receivedCanonicalDigest,
+        ],
+      ),
+    ).rejects.toMatchObject({ code: '42501' });
+    const durable = await owner.query<{
+      alerts: string;
+      reason: string;
+      source: string;
+      source_event_id_digest: string;
+      existing_canonical_digest: string;
+      received_canonical_digest: string;
+    }>(
+      `SELECT count(*)::text AS alerts, min(reason) AS reason, min(source) AS source,
+              min(source_event_id_digest) AS source_event_id_digest,
+              min(existing_canonical_digest) AS existing_canonical_digest,
+              min(received_canonical_digest) AS received_canonical_digest
+         FROM creator_agent_journal_integrity_alerts
+        WHERE invocation_id = $1 AND reason = 'SOURCE_EVENT_CONFLICT'`,
+      [accepted.invocationId],
+    );
+    expect(durable.rows[0]).toEqual({
+      alerts: '1',
+      reason: 'SOURCE_EVENT_CONFLICT',
+      source: 'WORKER',
+      source_event_id_digest: sourceEventIdDigest,
+      existing_canonical_digest: existingCanonicalDigest,
+      received_canonical_digest: receivedCanonicalDigest,
+    });
+    await expect(
+      owner.query<{ alerts: string }>(
+        `SELECT count(*)::text AS alerts
+           FROM creator_agent_journal_integrity_alerts
+          WHERE invocation_id = $1 AND reason = 'JOURNAL_ORDER_CONFLICT'
+            AND existing_canonical_digest = received_canonical_digest
+            AND expected_journal_seq = 4 AND received_journal_seq = 6`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ alerts: '1' }] });
+    await expect(
+      owner.query(
+        `UPDATE creator_agent_journal_integrity_alerts SET recorded_at = now() WHERE id = $1`,
+        [alertId],
+      ),
+    ).rejects.toMatchObject({ code: '55000' });
+    await expect(
+      owner.query(`DELETE FROM creator_agent_journal_integrity_alerts WHERE id = $1`, [alertId]),
+    ).rejects.toMatchObject({ code: '55000' });
+  });
+
+  it('commits one sanitized reconciliation source conflict alert and dedupes repeated concurrency', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    await assignPersisted(accepted);
+    const sourceEventId = randomUuidV7();
+    const exactInput = {
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId,
+      reason: 'JOURNAL_LOST' as const,
+    };
+    const admitted = await journal.beginReconciliation(exactInput);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    await expect(journal.beginReconciliation(exactInput)).resolves.toEqual({
+      ...admitted,
+      replayed: true,
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+
+    await expect(
+      journal.beginReconciliation({
+        ...exactInput,
+        sourceEventId: randomUuidV7(),
+        reason: 'HOST_EVIDENCE_LOST',
+      }),
+    ).rejects.toMatchObject({ code: 'TERMINAL_CONFLICT' });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    const conflictInput = { ...exactInput, reason: 'HOST_EVIDENCE_LOST' as const };
+    const firstConflict = await journal.beginReconciliation(conflictInput).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(firstConflict).toBeInstanceOf(Error);
+    expect(firstConflict).toMatchObject({
+      name: 'CloudJournalError',
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    const repeated = await Promise.allSettled(
+      Array.from({ length: 8 }, () => journal.beginReconciliation(conflictInput)),
+    );
+    expect(repeated).toHaveLength(8);
+    for (const outcome of repeated) {
+      expect(outcome.status).toBe('rejected');
+      if (outcome.status === 'rejected') {
+        expect(outcome.reason).toMatchObject({
+          code: 'JOURNAL_SECURITY_BLOCKED',
+          message: 'JOURNAL_SECURITY_BLOCKED',
+        });
+      }
+    }
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    const alerts = await reconciliationIntegrityAlerts(accepted.invocationId);
+    expect(alerts).toHaveLength(1);
+    const expectedDigests = await reconciliationCanonicalDigests({
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId,
+      existingReason: exactInput.reason,
+      receivedReason: conflictInput.reason,
+    });
+    expect(alerts[0]).toMatchObject({
+      invocation_id: accepted.invocationId,
+      creator_id: ids.creatorId,
+      consumer_subject_id: ids.consumerId,
+      reason: 'SOURCE_EVENT_CONFLICT',
+      source: 'RECONCILER',
+      source_event_id_digest: expectedDigests.source_identity_digest,
+      existing_canonical_digest: expectedDigests.existing_identity_digest,
+      received_canonical_digest: expectedDigests.received_identity_digest,
+      expected_journal_seq: null,
+      received_journal_seq: null,
+    });
+    const serializedAlert = JSON.stringify(alerts[0]);
+    expect(serializedAlert).not.toContain(sourceEventId);
+    expect(serializedAlert).not.toContain(exactInput.reason);
+    expect(serializedAlert).not.toContain(conflictInput.reason);
+
+    const golden = await reconciliationCanonicalDigests({
+      creatorId: '0198f00d-5000-7000-8000-000000000010',
+      consumerId: '0198f00d-5000-7000-8000-000000000011',
+      conversationId: '0198f00d-5000-7000-8000-000000000012',
+      invocationId: '0198f00d-5000-7000-8000-000000000013',
+      sourceEventId: '0198f00d-5000-7000-8000-000000000014',
+      existingReason: 'JOURNAL_LOST',
+      receivedReason: 'HOST_EVIDENCE_LOST',
+    });
+    expect(golden).toEqual({
+      source_identity_digest: 'df412e52aa83fab44e23ae91e99ef9a3df8b67976aba6210830e7a21fa153a1e',
+      existing_identity_digest: 'e804548e36120c0758c7176b655804253f0e53ee7168aec927612843bd391bf3',
+      received_identity_digest: '71e67afd7cb67431d4cfa686d589a05f72123070b9947fe695e7aa26ad36ace5',
+    });
+  });
+
+  it.each(['RUNNING', 'FAILED', 'LATE_PREPARED', 'LATE_STARTED'] as const)(
+    'security-blocks the same logical reconciliation source with a different reason in %s',
+    async (fixtureState) => {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const journal = new PostgresCloudJournal(journalPools);
+      await journal.acceptInvocation(accepted);
+      const authority = await assignDispatchPending(accepted);
+      const prepared = preparedInput(accepted, authority);
+      let sourceEventId: string;
+      let existingReason: 'JOURNAL_LOST' | 'START_DISPATCH_UNKNOWN' | 'CANCEL_NOT_CONFIRMED';
+
+      if (fixtureState === 'LATE_PREPARED') {
+        await owner.query(
+          `UPDATE agent_invocations
+              SET execution_capability_revoked_at = clock_timestamp()
+            WHERE id = $1`,
+          [accepted.invocationId],
+        );
+        await journal.commitPrepared(prepared);
+        sourceEventId = prepared.fact.sourceEventId;
+        existingReason = 'START_DISPATCH_UNKNOWN';
+      } else {
+        const committedPrepared = await journal.commitPrepared(prepared);
+        if (!committedPrepared.startCommandId) throw new Error('expected start command');
+        await markStartSent(committedPrepared.startCommandId);
+        const started = startedInput(prepared, committedPrepared.startCommandId);
+        if (fixtureState === 'LATE_STARTED') {
+          await owner.query(
+            `UPDATE agent_invocations
+                SET execution_capability_revoked_at = clock_timestamp()
+              WHERE id = $1`,
+            [accepted.invocationId],
+          );
+          await journal.commitStarted(started);
+          sourceEventId = started.fact.sourceEventId;
+          existingReason = 'CANCEL_NOT_CONFIRMED';
+        } else {
+          sourceEventId = randomUuidV7();
+          existingReason = 'JOURNAL_LOST';
+          await journal.beginReconciliation({
+            creatorId: ids.creatorId,
+            consumerId: ids.consumerId,
+            conversationId,
+            invocationId: accepted.invocationId,
+            sourceEventId,
+            reason: existingReason,
+          });
+          await journal.commitStarted(started);
+          if (fixtureState === 'FAILED') {
+            await journal.commitFailed(failedInput(accepted, authority));
+          }
+        }
+      }
+
+      const exactInput = {
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId,
+        reason: existingReason,
+      };
+      if (fixtureState === 'LATE_PREPARED' || fixtureState === 'LATE_STARTED') {
+        await expect(journal.beginReconciliation(exactInput)).resolves.toMatchObject({
+          state: 'RECONCILING',
+          replayed: true,
+        });
+        expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+      }
+      const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+      const receivedReason =
+        existingReason === 'JOURNAL_LOST' ? 'HOST_EVIDENCE_LOST' : 'JOURNAL_LOST';
+      await expect(
+        journal.beginReconciliation({ ...exactInput, reason: receivedReason }),
+      ).rejects.toMatchObject({
+        code: 'JOURNAL_SECURITY_BLOCKED',
+        message: 'JOURNAL_SECURITY_BLOCKED',
+      });
+      expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+        before,
+      );
+      expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    },
+  );
+
+  it('rolls back an alert failpoint and dedupes after a committed alert ACK is lost', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const baseJournal = new PostgresCloudJournal(journalPools);
+    await baseJournal.acceptInvocation(accepted);
+    await assignPersisted(accepted);
+    const input = {
+      creatorId: ids.creatorId,
+      consumerId: ids.consumerId,
+      conversationId,
+      invocationId: accepted.invocationId,
+      sourceEventId: randomUuidV7(),
+      reason: 'JOURNAL_LOST' as const,
+    };
+    await baseJournal.beginReconciliation(input);
+    const conflict = { ...input, reason: 'MODEL_ATTEMPT_UNKNOWN' as const };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+
+    const failing = new PostgresCloudJournal(journalPools, (step) => {
+      if (step === 'JOURNAL_INTEGRITY_ALERT') {
+        throw new Error('FAILPOINT:JOURNAL_INTEGRITY_ALERT');
+      }
+    });
+    await expect(failing.beginReconciliation(conflict)).rejects.toThrow(
+      'FAILPOINT:JOURNAL_INTEGRITY_ALERT',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    let loseCommitAcknowledgement = true;
+    const ambiguousReconcilerPool: JournalPool = {
+      async connect() {
+        const client = await reconcilerPool.connect();
+        return {
+          async query<R = Record<string, unknown>>(
+            sql: string,
+            parameters?: readonly unknown[],
+          ): Promise<QueryResult<R>> {
+            const result = await client.query(sql, parameters as unknown[] | undefined);
+            if (sql === 'COMMIT' && loseCommitAcknowledgement) {
+              loseCommitAcknowledgement = false;
+              throw new Error('SIMULATED_COMMIT_ACK_LOSS');
+            }
+            return result as unknown as QueryResult<R>;
+          },
+          release() {
+            client.release();
+          },
+        };
+      },
+    };
+    const ambiguousJournal = new PostgresCloudJournal({
+      ...journalPools,
+      reconciler: ambiguousReconcilerPool,
+    });
+    await expect(ambiguousJournal.beginReconciliation(conflict)).rejects.toThrow(
+      'SIMULATED_COMMIT_ACK_LOSS',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    await expect(baseJournal.beginReconciliation(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+  });
+
+  it.each([
+    { label: 'same Consumer tenant', crossConsumer: false },
+    { label: 'different Consumer tenants', crossConsumer: true },
+  ])(
+    'serializes one global reconciliation source winner across $label',
+    async ({ crossConsumer }) => {
+      const secondConsumerId = crossConsumer
+        ? (
+            await owner.query<{ id: string }>(
+              `INSERT INTO users (account) VALUES ($1) RETURNING id`,
+              [account()],
+            )
+          ).rows[0]!.id
+        : ids.consumerId;
+      const firstConversationId = await createConversation();
+      const secondConversationId = await createConversation({ consumerId: secondConsumerId });
+      const first = acceptInput(firstConversationId);
+      const second = acceptInput(secondConversationId, { consumerId: secondConsumerId });
+      const journal = new PostgresCloudJournal(journalPools);
+      await journal.acceptInvocation(first);
+      await journal.acceptInvocation(second);
+      await assignPersisted(first);
+      await assignPersisted(second);
+      const firstBefore = await reconciliationBusinessFootprint(
+        first.invocationId,
+        firstConversationId,
+      );
+      const secondBefore = await reconciliationBusinessFootprint(
+        second.invocationId,
+        secondConversationId,
+      );
+      const sourceEventId = randomUuidV7();
+      const attempts = await Promise.allSettled([
+        journal.beginReconciliation({
+          creatorId: ids.creatorId,
+          consumerId: ids.consumerId,
+          conversationId: firstConversationId,
+          invocationId: first.invocationId,
+          sourceEventId,
+          reason: 'JOURNAL_LOST',
+        }),
+        journal.beginReconciliation({
+          creatorId: ids.creatorId,
+          consumerId: secondConsumerId,
+          conversationId: secondConversationId,
+          invocationId: second.invocationId,
+          sourceEventId,
+          reason: 'HOST_EVIDENCE_LOST',
+        }),
+      ]);
+      expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
+      expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
+      const loserIndex = attempts.findIndex((attempt) => attempt.status === 'rejected');
+      const winnerIndex = loserIndex === 0 ? 1 : 0;
+      const loser = loserIndex === 0 ? first : second;
+      const winner = winnerIndex === 0 ? first : second;
+      const loserConversationId = loserIndex === 0 ? firstConversationId : secondConversationId;
+      const loserBefore = loserIndex === 0 ? firstBefore : secondBefore;
+      const loserConsumerId = loserIndex === 0 ? ids.consumerId : secondConsumerId;
+      const winnerConversationId = winnerIndex === 0 ? firstConversationId : secondConversationId;
+      const rejected = attempts[loserIndex];
+      if (rejected?.status !== 'rejected') throw new Error('expected one security-blocked loser');
+      expect(rejected.reason).toMatchObject({
+        code: 'JOURNAL_SECURITY_BLOCKED',
+        message: 'JOURNAL_SECURITY_BLOCKED',
+      });
+
+      expect(
+        await reconciliationBusinessFootprint(loser.invocationId, loserConversationId),
+      ).toEqual(loserBefore);
+      await expect(
+        owner.query<{ state: string; roots: string }>(
+          `SELECT invocation.state,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.reconciling')::text AS roots
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+          [winner.invocationId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ state: 'RECONCILING', roots: '1' }] });
+      expect(winnerConversationId).not.toBe(loserConversationId);
+      const loserAlerts = await reconciliationIntegrityAlerts(loser.invocationId);
+      expect(loserAlerts).toHaveLength(1);
+      expect(loserAlerts[0]).toMatchObject({
+        creator_id: ids.creatorId,
+        consumer_subject_id: loserConsumerId,
+        reason: 'SOURCE_EVENT_CONFLICT',
+        source: 'RECONCILER',
+      });
+      const serializedAlert = JSON.stringify(loserAlerts[0]);
+      expect(serializedAlert).not.toContain(sourceEventId);
+      expect(serializedAlert).not.toContain(winner.invocationId);
+      expect(await reconciliationIntegrityAlerts(winner.invocationId)).toEqual([]);
+    },
+  );
+
   it('records a security-revoked started fact but keeps the Invocation in reconciliation', async () => {
     const conversationId = await createConversation();
     const accepted = acceptInput(conversationId);
@@ -3254,6 +5770,25 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       ...committed,
       replayed: true,
     });
+    await expect(
+      journal.beginReconciliation({
+        creatorId: ids.creatorId,
+        consumerId: ids.consumerId,
+        conversationId,
+        invocationId: accepted.invocationId,
+        sourceEventId: started.fact.sourceEventId,
+        reason: 'CANCEL_NOT_CONFIRMED',
+      }),
+    ).resolves.toMatchObject({ state: 'RECONCILING', replayed: true });
+    await expect(
+      owner.query<{ roots: string; resumed: string }>(
+        `SELECT
+           count(*) FILTER (WHERE event_type = 'invocation.reconciling')::text AS roots,
+           count(*) FILTER (WHERE event_type = 'invocation.reconciling_resumed')::text AS resumed
+         FROM agent_invocation_events WHERE invocation_id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ roots: '1', resumed: '0' }] });
 
     const success = successInput(accepted, {
       ...authority,
@@ -3270,6 +5805,9 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       reconciliation_reason: string;
       started_events: string;
       started_payload_state: string;
+      reconciliation_events: string;
+      reconciliation_source_event_id: string;
+      reconciliation_payload: unknown;
       succeeded_events: string;
       messages: string;
       start_state: string;
@@ -3283,6 +5821,18 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
                 WHERE invocation_id = invocation.id
                   AND source = 'WORKER'
                   AND event_type = 'invocation.started') AS started_payload_state,
+              (SELECT count(*) FROM agent_invocation_events
+                WHERE invocation_id = invocation.id
+                  AND source = 'RECONCILER'
+                  AND event_type = 'invocation.reconciling')::text AS reconciliation_events,
+              (SELECT source_event_id FROM agent_invocation_events
+                WHERE invocation_id = invocation.id
+                  AND source = 'RECONCILER'
+                  AND event_type = 'invocation.reconciling') AS reconciliation_source_event_id,
+              (SELECT payload FROM agent_invocation_events
+                WHERE invocation_id = invocation.id
+                  AND source = 'RECONCILER'
+                  AND event_type = 'invocation.reconciling') AS reconciliation_payload,
               (SELECT count(*) FROM agent_invocation_events
                 WHERE invocation_id = invocation.id
                   AND event_type = 'invocation.succeeded')::text AS succeeded_events,
@@ -3299,6 +5849,9 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       reconciliation_reason: 'CANCEL_NOT_CONFIRMED',
       started_events: '1',
       started_payload_state: 'RECONCILING',
+      reconciliation_events: '1',
+      reconciliation_source_event_id: `late-started:${started.fact.sourceEventId}`,
+      reconciliation_payload: { state: 'RECONCILING', reason: 'CANCEL_NOT_CONFIRMED' },
       succeeded_events: '0',
       messages: '1',
       start_state: 'EXPIRED',
@@ -3338,12 +5891,17 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumer_events: string;
       latest_cursor: string;
       payload_digest: string;
+      dedupe_key: string;
       payload: unknown;
       terminal_payload: unknown;
+      terminal_event_id: string;
       terminal_source: string;
       terminal_source_event_id: string;
       terminal_fact_digest: string;
       terminal_occurred_at: Date;
+      receipt_cursor: string;
+      receipt_payload_digest: string;
+      receipt_dedupe_key: string;
     }>(
       `SELECT
          (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
@@ -3356,12 +5914,16 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
            WHERE invocation_id = $1)::text AS consumer_events,
          (SELECT latest_cursor::text FROM consumer_event_streams
            WHERE conversation_id = invocation.conversation_id) AS latest_cursor,
-         terminal_outbox.payload_digest, terminal_outbox.payload,
+         terminal_outbox.payload_digest, terminal_outbox.dedupe_key, terminal_outbox.payload,
          terminal_event.payload AS terminal_payload,
+         terminal_event.id::text AS terminal_event_id,
          terminal_event.source AS terminal_source,
          terminal_event.source_event_id AS terminal_source_event_id,
          terminal_event.source_fact_digest AS terminal_fact_digest,
-         terminal_event.occurred_at AS terminal_occurred_at
+         terminal_event.occurred_at AS terminal_occurred_at,
+         terminal_receipt.consumer_event_cursor::text AS receipt_cursor,
+         terminal_receipt.payload_digest AS receipt_payload_digest,
+         terminal_receipt.dedupe_key AS receipt_dedupe_key
        FROM agent_invocations AS invocation
        JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
        JOIN agent_invocation_events AS terminal_event
@@ -3371,6 +5933,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
          ON terminal_outbox.invocation_id = invocation.id
         AND terminal_outbox.source_event_id = terminal_event.id
         AND terminal_outbox.event_type = 'invocation.terminal'
+       JOIN creator_agent_failed_terminal_receipts AS terminal_receipt
+         ON terminal_receipt.invocation_id = invocation.id
+        AND terminal_receipt.terminal_event_id = terminal_event.id
+        AND terminal_receipt.consumer_event_cursor = terminal_outbox.cursor
        WHERE invocation.id = $1`,
       [accepted.invocationId],
     );
@@ -3398,17 +5964,137 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumer_events: '1',
       latest_cursor: committed.consumerEventCursor,
       payload_digest: consumerEventPayloadDigest(terminalPayload),
+      dedupe_key: consumerEventDedupeKey({
+        ownerId: ids.consumerId,
+        sourceEventId: state.rows[0]!.terminal_event_id,
+        eventType: 'invocation.terminal',
+      }),
       payload: terminalPayload,
       terminal_payload: { state: 'FAILED', errorCode: 'TURN_FAILED' },
+      terminal_event_id: expect.any(String),
       terminal_source: 'WORKER',
       terminal_source_event_id: accepted.invocationId,
       terminal_fact_digest: failed.factDigest,
       terminal_occurred_at: expect.any(Date),
+      receipt_cursor: committed.consumerEventCursor,
+      receipt_payload_digest: consumerEventPayloadDigest(terminalPayload),
+      receipt_dedupe_key: consumerEventDedupeKey({
+        ownerId: ids.consumerId,
+        sourceEventId: state.rows[0]!.terminal_event_id,
+        eventType: 'invocation.terminal',
+      }),
     });
     expect(state.rows[0]!.terminal_occurred_at.toISOString()).toBe(
       state.rows[0]!.terminal_at.toISOString(),
     );
     expect(terminalPayload.occurredAt).toBe(state.rows[0]!.terminal_at.toISOString());
+    const databaseDigests = await owner.query<{
+      fact_digest: string;
+      payload_digest: string;
+      dedupe_key: string;
+    }>(
+      `SELECT creator_agent_worker_failed_fact_digest_v1(
+                $1, $2, $3, $4, $5, $6, $7, $8
+              ) AS fact_digest,
+              creator_agent_failed_consumer_payload_digest_v1(
+                $9, $2, $8, $10
+              ) AS payload_digest,
+              creator_agent_failed_consumer_dedupe_key_v1($11, $12) AS dedupe_key`,
+      [
+        failed.fact.sourceEventId,
+        failed.fact.invocationId,
+        failed.fact.agentVersionDigest,
+        failed.fact.snapshotDigest,
+        failed.fact.executionCapabilityDigest,
+        failed.fact.leaseId,
+        failed.fact.fence,
+        failed.fact.errorCode,
+        conversationId,
+        terminalPayload.occurredAt,
+        ids.consumerId,
+        state.rows[0]!.terminal_event_id,
+      ],
+    );
+    expect(databaseDigests.rows).toEqual([
+      {
+        fact_digest: failed.factDigest,
+        payload_digest: consumerEventPayloadDigest(terminalPayload),
+        dedupe_key: consumerEventDedupeKey({
+          ownerId: ids.consumerId,
+          sourceEventId: state.rows[0]!.terminal_event_id,
+          eventType: 'invocation.terminal',
+        }),
+      },
+    ]);
+    const goldenFact: WorkerInvocationFailedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.failed',
+      sourceEventId: '0198f00d-5000-7000-8000-000000000013',
+      invocationId: '0198f00d-5000-7000-8000-000000000013',
+      agentVersionDigest: digest('a'),
+      snapshotDigest: digest('b'),
+      executionCapabilityDigest: digest('c'),
+      leaseId: '0198f00d-5000-7000-8000-000000000015',
+      fence: '7',
+      errorCode: 'TURN_FAILED',
+    };
+    const goldenPayload = ConsumerTerminalEventPayloadSchema.parse({
+      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.terminal',
+      conversationId: '0198f00d-5000-7000-8000-000000000012',
+      invocationId: goldenFact.invocationId,
+      terminalState: 'FAILED',
+      assistantMessageId: null,
+      resultDigest: null,
+      errorCode: goldenFact.errorCode,
+      occurredAt: '2026-08-20T08:00:10.123Z',
+    });
+    const factGolden = '869a68366e876060ce899ebda7da9ac86656230267e95578bb799856e2180173';
+    const payloadGolden = '07ef5b866ba609d187a5dc036121c5c816fd927a8ce5e63d0ec0e41402b8fe04';
+    const dedupeGolden = 'f80d5d425897b0e6a8668e1faaa20ec3c9bfa4ed253d8e6e1f4dc8d7452e0d9d';
+    expect(workerInvocationFactDigest(goldenFact)).toBe(factGolden);
+    expect(consumerEventPayloadDigest(goldenPayload)).toBe(payloadGolden);
+    expect(
+      consumerEventDedupeKey({
+        ownerId: '0198f00d-5000-7000-8000-000000000011',
+        sourceEventId: '42',
+        eventType: 'invocation.terminal',
+      }),
+    ).toBe(dedupeGolden);
+    await expect(
+      owner.query<{ fact_digest: string; payload_digest: string; dedupe_key: string }>(
+        `SELECT creator_agent_worker_failed_fact_digest_v1(
+                  $1, $2, $3, $4, $5, $6, $7, $8
+                ) AS fact_digest,
+                creator_agent_failed_consumer_payload_digest_v1(
+                  $9, $2, $8, $10
+                ) AS payload_digest,
+                creator_agent_failed_consumer_dedupe_key_v1($11, 42) AS dedupe_key`,
+        [
+          goldenFact.sourceEventId,
+          goldenFact.invocationId,
+          goldenFact.agentVersionDigest,
+          goldenFact.snapshotDigest,
+          goldenFact.executionCapabilityDigest,
+          goldenFact.leaseId,
+          goldenFact.fence,
+          goldenFact.errorCode,
+          goldenPayload.conversationId,
+          goldenPayload.occurredAt,
+          '0198f00d-5000-7000-8000-000000000011',
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          fact_digest: factGolden,
+          payload_digest: payloadGolden,
+          dedupe_key: dedupeGolden,
+        },
+      ],
+    });
 
     if (committed.consumerEventCursor === null) {
       throw new Error('expected retained failed Consumer event');
@@ -3416,6 +6102,26 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     await publishAndPruneTerminalEvent(journal, {
       conversationId,
       cursor: committed.consumerEventCursor,
+    });
+    await expect(
+      owner.query<{ receipt_cursor: string; payload_digest: string; dedupe_key: string }>(
+        `SELECT consumer_event_cursor::text AS receipt_cursor, payload_digest, dedupe_key
+           FROM creator_agent_failed_terminal_receipts
+          WHERE invocation_id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          receipt_cursor: committed.consumerEventCursor,
+          payload_digest: consumerEventPayloadDigest(terminalPayload),
+          dedupe_key: consumerEventDedupeKey({
+            ownerId: ids.consumerId,
+            sourceEventId: state.rows[0]!.terminal_event_id,
+            eventType: 'invocation.terminal',
+          }),
+        },
+      ],
     });
     await expect(journal.commitFailed(failed)).resolves.toEqual({
       ...committed,
@@ -3432,9 +6138,26 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         reason: 'JOURNAL_LOST',
       }),
     ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'TERMINAL_CONFLICT' });
+    const beforeSuccessConflict = await reconciliationBusinessFootprint(
+      accepted.invocationId,
+      conversationId,
+    );
+    const alertsBeforeSuccessConflict = (await reconciliationIntegrityAlerts(accepted.invocationId))
+      .length;
+    const forbiddenSuccessSealer = vi.fn(sealAssistantMessage);
     await expect(
-      journal.commitSuccess(successInput(accepted, authority), sealAssistantMessage),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'TERMINAL_CONFLICT' });
+      journal.commitSuccess(successInput(accepted, authority), forbiddenSuccessSealer),
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(forbiddenSuccessSealer).not.toHaveBeenCalled();
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      beforeSuccessConflict,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(
+      alertsBeforeSuccessConflict + 1,
+    );
     await expect(
       owner.query(
         `SELECT
@@ -3452,6 +6175,244 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     ).resolves.toMatchObject({
       rows: [{ failed_events: '1', succeeded_events: '0', retained_consumer_events: '0' }],
     });
+  });
+
+  it.each([
+    'SNAPSHOT_DIGEST_MISMATCH',
+    'PROTOCOL_INCOMPATIBLE',
+    'SANDBOX_ATTESTATION_FAILED',
+    'RUNTIME_START_FAILED',
+    'MODEL_QUOTA_EXHAUSTED',
+    'TURN_TIMEOUT',
+    'TURN_FAILED',
+  ] as const)(
+    'admits confirmed failure code %s through one DB terminal authority',
+    async (errorCode) => {
+      const conversationId = await createConversation();
+      const accepted = acceptInput(conversationId);
+      const journal = new PostgresCloudJournal(journalPools);
+      await journal.acceptInvocation(accepted);
+      const authority = await assignRunning(accepted);
+      await expect(
+        journal.commitFailed(failedInput(accepted, authority, errorCode)),
+      ).resolves.toMatchObject({
+        invocationId: accepted.invocationId,
+        state: 'FAILED',
+        errorCode,
+        consumerEventCursor: expect.any(String),
+        replayed: false,
+      });
+    },
+  );
+
+  it('security-blocks every mutable failed body field and dedupes concurrent repeats', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const failed = failedInput(accepted, authority, 'TURN_FAILED');
+    await journal.commitFailed(failed);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const mutatedFacts: WorkerInvocationFailedFact[] = [
+      { ...failed.fact, agentVersionDigest: digest('2') },
+      { ...failed.fact, snapshotDigest: digest('3') },
+      { ...failed.fact, executionCapabilityDigest: digest('7') },
+      { ...failed.fact, leaseId: randomUuidV7() },
+      { ...failed.fact, fence: '2' },
+      { ...failed.fact, errorCode: 'TURN_TIMEOUT' },
+    ];
+    for (const fact of mutatedFacts) {
+      await expect(
+        journal.commitFailed({
+          ...failed,
+          fact,
+          factDigest: workerInvocationFactDigest(fact),
+        }),
+      ).rejects.toMatchObject({
+        code: 'JOURNAL_SECURITY_BLOCKED',
+        message: 'JOURNAL_SECURITY_BLOCKED',
+      });
+    }
+    const repeated = await Promise.allSettled(
+      Array.from({ length: 8 }, () => {
+        const fact = mutatedFacts[0]!;
+        return journal.commitFailed({
+          ...failed,
+          fact,
+          factDigest: workerInvocationFactDigest(fact),
+        });
+      }),
+    );
+    expect(repeated.every((result) => result.status === 'rejected')).toBe(true);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    const alerts = await reconciliationIntegrityAlerts(accepted.invocationId);
+    expect(alerts).toHaveLength(mutatedFacts.length);
+    expect(alerts.every((alert) => alert.source === 'WORKER')).toBe(true);
+  });
+
+  it('returns a failed SECURITY_BLOCKED marker inside a caller transaction and standalone throws post-commit', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const failed = failedInput(accepted, authority, 'TURN_FAILED');
+    await journal.commitFailed(failed);
+    const conflictFact: WorkerInvocationFailedFact = {
+      ...failed.fact,
+      errorCode: 'TURN_TIMEOUT',
+    };
+    const conflict = {
+      ...failed,
+      fact: conflictFact,
+      factDigest: workerInvocationFactDigest(conflictFact),
+    };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const broker = await brokerPool.connect();
+    try {
+      await broker.query('BEGIN');
+      await broker.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await broker.query(`SELECT set_config('app.consumer_id', '', true)`);
+      const outcome = await journal.projectFailed(
+        gatewayProjectorTransaction(broker),
+        conflict,
+        AbortSignal.timeout(5_000),
+      );
+      expect(outcome).toEqual({ kind: 'SECURITY_BLOCKED' });
+      await broker.query('COMMIT');
+    } finally {
+      await broker.query('ROLLBACK').catch(() => undefined);
+      broker.release();
+    }
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(journal.commitFailed(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+  });
+
+  it('security-blocks a confirmed failed fact after the same terminal source already succeeded', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    await journal.commitSuccess(successInput(accepted, authority), sealAssistantMessage);
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    await expect(journal.commitFailed(failedInput(accepted, authority))).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toMatchObject([
+      { reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' },
+    ]);
+  });
+
+  it('security-blocks a succeeded fact after the same terminal source already failed', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    await journal.commitFailed(failedInput(accepted, authority));
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const forbiddenSealer = vi.fn<AssistantMessageSealer>(() => {
+      throw new Error('TERMINAL_CONFLICT_MUST_NOT_SEAL');
+    });
+    await expect(
+      journal.commitSuccess(successInput(accepted, authority), forbiddenSealer),
+    ).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(forbiddenSealer).not.toHaveBeenCalled();
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toMatchObject([
+      { reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' },
+    ]);
+  });
+
+  it('rolls back a failed alert failpoint and dedupes after standalone COMMIT ACK loss', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const baseJournal = new PostgresCloudJournal(journalPools);
+    await baseJournal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const failed = failedInput(accepted, authority, 'TURN_FAILED');
+    await baseJournal.commitFailed(failed);
+    const conflictFact: WorkerInvocationFailedFact = {
+      ...failed.fact,
+      errorCode: 'TURN_TIMEOUT',
+    };
+    const conflict = {
+      ...failed,
+      fact: conflictFact,
+      factDigest: workerInvocationFactDigest(conflictFact),
+    };
+    const before = await reconciliationBusinessFootprint(accepted.invocationId, conversationId);
+    const failing = new PostgresCloudJournal(journalPools, (step) => {
+      if (step === 'JOURNAL_INTEGRITY_ALERT') {
+        throw new Error('FAILPOINT:FAILED_JOURNAL_INTEGRITY_ALERT');
+      }
+    });
+    await expect(failing.commitFailed(conflict)).rejects.toThrow(
+      'FAILPOINT:FAILED_JOURNAL_INTEGRITY_ALERT',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toEqual([]);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+
+    let loseCommitAcknowledgement = true;
+    const ambiguousBrokerPool: JournalPool = {
+      async connect() {
+        const client = await brokerPool.connect();
+        return {
+          async query<R = Record<string, unknown>>(
+            sql: string,
+            parameters?: readonly unknown[],
+          ): Promise<QueryResult<R>> {
+            const result = await client.query(sql, parameters as unknown[] | undefined);
+            if (sql === 'COMMIT' && loseCommitAcknowledgement) {
+              loseCommitAcknowledgement = false;
+              throw new Error('SIMULATED_FAILED_COMMIT_ACK_LOSS');
+            }
+            return result as unknown as QueryResult<R>;
+          },
+          release() {
+            client.release();
+          },
+        };
+      },
+    };
+    const ambiguousJournal = new PostgresCloudJournal({
+      ...journalPools,
+      broker: ambiguousBrokerPool,
+    });
+    await expect(ambiguousJournal.commitFailed(conflict)).rejects.toThrow(
+      'SIMULATED_FAILED_COMMIT_ACK_LOSS',
+    );
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
+    expect(await reconciliationBusinessFootprint(accepted.invocationId, conversationId)).toEqual(
+      before,
+    );
+    await expect(baseJournal.commitFailed(conflict)).rejects.toMatchObject({
+      code: 'JOURNAL_SECURITY_BLOCKED',
+      message: 'JOURNAL_SECURITY_BLOCKED',
+    });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
   });
 
   it.each(['CANCEL_REQUESTED', 'RECONCILING'] as const)(
@@ -3657,12 +6618,77 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
   });
 
+  it('blocks the legacy direct failed writer without rolling forward its terminal projection', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const failed = failedInput(accepted, authority);
+    const legacyWriter = await brokerPool.connect();
+    try {
+      await legacyWriter.query('BEGIN');
+      await legacyWriter.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacyWriter.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      const terminal = await legacyWriter.query<{ terminal_at: Date }>(
+        `UPDATE agent_invocations
+            SET state = 'FAILED', error_code = $2,
+                terminal_at = date_trunc('milliseconds', clock_timestamp())
+          WHERE id = $1
+          RETURNING terminal_at`,
+        [accepted.invocationId, failed.fact.errorCode],
+      );
+      await expect(
+        legacyWriter.query(
+          `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at,
+             source_fact_digest, broker_command_id
+           ) VALUES (
+             $1, $2, $3, 4, 'WORKER', $4, 'invocation.failed', $5::jsonb, $6, $7, NULL
+           )`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            failed.fact.sourceEventId,
+            JSON.stringify({ state: 'FAILED', errorCode: failed.fact.errorCode }),
+            terminal.rows[0]!.terminal_at,
+            failed.factDigest,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+    } finally {
+      await legacyWriter.query('ROLLBACK').catch(() => undefined);
+      legacyWriter.release();
+    }
+    await expect(
+      owner.query<{
+        state: string;
+        failed_events: string;
+        consumer_events: string;
+      }>(
+        `SELECT invocation.state,
+                (SELECT count(*) FROM agent_invocation_events
+                  WHERE invocation_id = invocation.id
+                    AND event_type = 'invocation.failed')::text AS failed_events,
+                (SELECT count(*) FROM consumer_event_outbox
+                  WHERE invocation_id = invocation.id)::text AS consumer_events
+           FROM agent_invocations AS invocation WHERE invocation.id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ state: 'RUNNING', failed_events: '0', consumer_events: '0' }],
+    });
+  });
+
   it('rolls back every confirmed failure crash window to the original RUNNING projection', async () => {
     for (const target of [
       'INVOCATION_FAILED',
       'FAILED_EVENT',
       'CONSUMER_EVENT_OUTBOX',
       'CONSUMER_EVENT_STREAM',
+      'FAILED_TERMINAL_RECEIPT',
       'CONVERSATION_IDLE',
     ] satisfies CloudJournalStep[]) {
       const conversationId = await createConversation();
@@ -3688,6 +6714,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         conversation_state: string;
         consumer_events: string;
         consumer_streams: string;
+        terminal_receipts: string;
       }>(
         `SELECT
            (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
@@ -3702,7 +6729,9 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
            (SELECT count(*) FROM consumer_event_outbox
              WHERE invocation_id = $1)::text AS consumer_events,
            (SELECT count(*) FROM consumer_event_streams
-             WHERE conversation_id = invocation.conversation_id)::text AS consumer_streams
+             WHERE conversation_id = invocation.conversation_id)::text AS consumer_streams,
+           (SELECT count(*) FROM creator_agent_failed_terminal_receipts
+             WHERE invocation_id = invocation.id)::text AS terminal_receipts
          FROM agent_invocations AS invocation
          JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
          WHERE invocation.id = $1`,
@@ -3720,6 +6749,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         conversation_state: 'BUSY',
         consumer_events: '0',
         consumer_streams: '0',
+        terminal_receipts: '0',
       });
       await expect(baseJournal.commitFailed(failed)).resolves.toMatchObject({
         state: 'FAILED',
@@ -3807,6 +6837,34 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       ),
     ).rejects.toThrow();
 
+    const invalidDurableCipherSealer: AssistantMessageSealer = async (input) => {
+      const sealed = await sealAssistantMessage(input);
+      return {
+        ...sealed,
+        encryptedMessage: {
+          ...sealed.encryptedMessage,
+          cipherDigest: digest('9'),
+        },
+      };
+    };
+    await expect(journal.commitSuccess(success, invalidDurableCipherSealer)).rejects.toMatchObject<
+      Partial<CloudJournalError>
+    >({ code: 'EXECUTION_AUTHORITY_MISMATCH' });
+
+    const swappedContentDomainSealer: AssistantMessageSealer = async (input) => {
+      const sealed = await sealAssistantMessage(input);
+      return {
+        ...sealed,
+        encryptedMessage: {
+          ...sealed.encryptedMessage,
+          contentDigest: success.fact.resultDigest,
+        },
+      };
+    };
+    await expect(journal.commitSuccess(success, swappedContentDomainSealer)).rejects.toMatchObject<
+      Partial<CloudJournalError>
+    >({ code: 'EXECUTION_AUTHORITY_MISMATCH' });
+
     const swappedDigestDomainSealer: AssistantMessageSealer = ({ aad }) => {
       const encryptedMessage = encryptMessage({
         plaintext: 'different assistant secret',
@@ -3814,7 +6872,6 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         digestKey,
         keyId: `pg-test:${aad.messageId}`,
         aad,
-        nonce: Buffer.alloc(12, nonceCounter++),
       });
       return {
         encryptedMessage,
@@ -3823,7 +6880,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     };
     await expect(journal.commitSuccess(success, swappedDigestDomainSealer)).rejects.toMatchObject<
       Partial<CloudJournalError>
-    >({ code: 'WORKER_FACT_CONFLICT' });
+    >({ code: 'JOURNAL_SECURITY_BLOCKED', message: 'JOURNAL_SECURITY_BLOCKED' });
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(1);
     await expect(
       owner.query(
         `SELECT state,
@@ -3850,6 +6908,19 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       consumerEventCursor: committed.consumerEventCursor,
     });
     expect(unavailableOnReplay).not.toHaveBeenCalled();
+    const reencryptedReplay = {
+      ...success,
+      resultCiphertext: transportEncryptedAssistant(
+        conversationId,
+        accepted.invocationId,
+        'different replay transport bytes',
+      ),
+    };
+    await expect(journal.commitSuccess(reencryptedReplay, unavailableOnReplay)).resolves.toEqual({
+      ...committed,
+      replayed: true,
+    });
+    expect(unavailableOnReplay).not.toHaveBeenCalled();
     const wrongResultFact: WorkerInvocationSucceededFact = {
       ...success.fact,
       resultDigest: hmac('5'),
@@ -3860,16 +6931,14 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         fact: wrongResultFact,
         factDigest: workerInvocationFactDigest(wrongResultFact),
       }),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'JOURNAL_SECURITY_BLOCKED' });
     await expect(
       journal.commitSuccess({
         ...success,
         fact: wrongFenceFact,
         factDigest: workerInvocationFactDigest(wrongFenceFact),
       }),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({
-      code: 'EXECUTION_AUTHORITY_MISMATCH',
-    });
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'JOURNAL_SECURITY_BLOCKED' });
     const differentLocalCipherFact: WorkerInvocationSucceededFact = {
       ...success.fact,
       localResultCipherDigest: digest('b'),
@@ -3880,7 +6949,29 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         fact: differentLocalCipherFact,
         factDigest: workerInvocationFactDigest(differentLocalCipherFact),
       }),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'JOURNAL_SECURITY_BLOCKED' });
+    for (const factPatch of [
+      { agentVersionDigest: digest('2') },
+      { snapshotDigest: digest('3') },
+      { executionCapabilityDigest: digest('8') },
+      { leaseId: randomUuidV7() },
+      { runtimeThreadId: 'thread-security-conflict' },
+      { runtimeTurnId: 'turn-security-conflict' },
+      { startedFactDigest: digest('6') },
+    ] satisfies readonly Partial<WorkerInvocationSucceededFact>[]) {
+      const conflictingFact: WorkerInvocationSucceededFact = { ...success.fact, ...factPatch };
+      await expect(
+        journal.commitSuccess({
+          ...success,
+          fact: conflictingFact,
+          factDigest: workerInvocationFactDigest(conflictingFact),
+        }),
+      ).rejects.toMatchObject<Partial<CloudJournalError>>({
+        code: 'JOURNAL_SECURITY_BLOCKED',
+        message: 'JOURNAL_SECURITY_BLOCKED',
+      });
+    }
+    expect(await reconciliationIntegrityAlerts(accepted.invocationId)).toHaveLength(11);
 
     const state = await owner.query<{
       messages: string;
@@ -3895,11 +6986,18 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       terminal_source: string;
       terminal_source_event_id: string;
       terminal_fact_digest: string;
+      terminal_local_cipher_digest: string;
       started_fact_digest: string;
       runtime_thread_id: string;
       runtime_turn_id: string;
       durable_cipher_digest: string;
       durable_content_digest: string;
+      receipt_event_id: string;
+      receipt_message_id: string;
+      receipt_cursor: string;
+      receipt_payload_digest: string;
+      receipt_dedupe_key: string;
+      pending_preflights: string;
     }>(
       `SELECT
          (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
@@ -3929,11 +7027,23 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
          (SELECT source_fact_digest FROM agent_invocation_events
             WHERE invocation_id = $1 AND event_type = 'invocation.succeeded')
             AS terminal_fact_digest,
+         (SELECT source_local_result_cipher_digest FROM agent_invocation_events
+            WHERE invocation_id = $1 AND event_type = 'invocation.succeeded')
+            AS terminal_local_cipher_digest,
          (SELECT source_fact_digest FROM agent_invocation_events
             WHERE invocation_id = $1 AND event_type = 'invocation.started')
-            AS started_fact_digest
+            AS started_fact_digest,
+         receipt.terminal_event_id::text AS receipt_event_id,
+         receipt.assistant_message_id::text AS receipt_message_id,
+         receipt.consumer_event_cursor::text AS receipt_cursor,
+         receipt.payload_digest AS receipt_payload_digest,
+         receipt.dedupe_key AS receipt_dedupe_key,
+         (SELECT count(*)::text FROM creator_agent_success_seal_preflights
+           WHERE invocation_id = invocation.id) AS pending_preflights
        FROM agent_invocations AS invocation
        JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
+       JOIN creator_agent_succeeded_terminal_receipts AS receipt
+         ON receipt.invocation_id = invocation.id
        WHERE invocation.id = $1`,
       [accepted.invocationId],
     );
@@ -3962,6 +7072,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       terminal_source: 'WORKER',
       terminal_source_event_id: accepted.invocationId,
       terminal_fact_digest: success.factDigest,
+      terminal_local_cipher_digest: success.fact.localResultCipherDigest,
       started_fact_digest: success.fact.startedFactDigest,
       runtime_thread_id: success.fact.runtimeThreadId,
       runtime_turn_id: success.fact.runtimeTurnId,
@@ -3969,11 +7080,259 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       durable_content_digest: domainSeparatedHmacSha256('combo:vnext:message:v1', digestKey, {
         text: 'assistant secret',
       }),
+      receipt_event_id: expect.any(String),
+      receipt_message_id: committed.assistantMessageId,
+      receipt_cursor: committed.consumerEventCursor,
+      receipt_payload_digest: consumerEventPayloadDigest(terminalPayload),
+      receipt_dedupe_key: consumerEventDedupeKey({
+        ownerId: ids.consumerId,
+        sourceEventId: state.rows[0]!.receipt_event_id,
+        eventType: 'invocation.terminal',
+      }),
+      pending_preflights: '0',
     });
     expect(state.rows[0]!.durable_cipher_digest).not.toBe(success.fact.localResultCipherDigest);
     expect(state.rows[0]!.durable_cipher_digest).not.toBe(success.resultCiphertext.cipherDigest);
     expect(success.resultCiphertext.cipherDigest).not.toBe(success.fact.localResultCipherDigest);
     expect(state.rows[0]!.durable_content_digest).not.toBe(success.fact.resultDigest);
+
+    await expect(
+      owner.query<{ fact_digest: string; payload_digest: string; dedupe_key: string }>(
+        `SELECT creator_agent_worker_success_fact_digest_v1(
+                  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                ) AS fact_digest,
+                creator_agent_success_consumer_payload_digest_v1(
+                  $13, $14, $2, $9, $15
+                ) AS payload_digest,
+                creator_agent_success_consumer_dedupe_key_v1($16, $17) AS dedupe_key`,
+        [
+          success.fact.sourceEventId,
+          success.fact.invocationId,
+          success.fact.agentVersionDigest,
+          success.fact.snapshotDigest,
+          success.fact.executionCapabilityDigest,
+          success.fact.leaseId,
+          success.fact.fence,
+          success.fact.localResultCipherDigest,
+          success.fact.resultDigest,
+          success.fact.runtimeThreadId,
+          success.fact.runtimeTurnId,
+          success.fact.startedFactDigest,
+          committed.assistantMessageId,
+          conversationId,
+          terminalPayload.occurredAt,
+          ids.consumerId,
+          state.rows[0]!.receipt_event_id,
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          fact_digest: success.factDigest,
+          payload_digest: consumerEventPayloadDigest(terminalPayload),
+          dedupe_key: consumerEventDedupeKey({
+            ownerId: ids.consumerId,
+            sourceEventId: state.rows[0]!.receipt_event_id,
+            eventType: 'invocation.terminal',
+          }),
+        },
+      ],
+    });
+
+    const goldenFact: WorkerInvocationSucceededFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.succeeded',
+      sourceEventId: '0198f00d-5000-7000-8000-000000000013',
+      invocationId: '0198f00d-5000-7000-8000-000000000013',
+      agentVersionDigest: digest('a'),
+      snapshotDigest: digest('b'),
+      executionCapabilityDigest: digest('c'),
+      leaseId: '0198f00d-5000-7000-8000-000000000015',
+      fence: '7',
+      localResultCipherDigest: digest('d'),
+      resultDigest: hmac('e'),
+      runtimeThreadId: 'thread-golden',
+      runtimeTurnId: 'turn-golden',
+      startedFactDigest: digest('f'),
+    };
+    const goldenPayload = ConsumerTerminalEventPayloadSchema.parse({
+      protocol: CONSUMER_EVENT_OUTBOX_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.terminal',
+      conversationId: '0198f00d-5000-7000-8000-000000000012',
+      invocationId: goldenFact.invocationId,
+      terminalState: 'SUCCEEDED',
+      assistantMessageId: '0198f00d-5000-7000-8000-000000000016',
+      resultDigest: goldenFact.resultDigest,
+      errorCode: null,
+      occurredAt: '2026-08-20T08:00:10.123Z',
+    });
+    const factGolden = '18e36805cffcec4d475163ac96bfd465fce6ede158b1af1e7e12378ed8ddece9';
+    const payloadGolden = 'b80f18d6fa8afacd61f1dda54b374d363c231fba012aede12664b8911d47c632';
+    const dedupeGolden = 'f80d5d425897b0e6a8668e1faaa20ec3c9bfa4ed253d8e6e1f4dc8d7452e0d9d';
+    expect(workerInvocationFactDigest(goldenFact)).toBe(factGolden);
+    expect(consumerEventPayloadDigest(goldenPayload)).toBe(payloadGolden);
+    expect(
+      consumerEventDedupeKey({
+        ownerId: '0198f00d-5000-7000-8000-000000000011',
+        sourceEventId: '42',
+        eventType: 'invocation.terminal',
+      }),
+    ).toBe(dedupeGolden);
+    await expect(
+      owner.query<{ fact_digest: string; payload_digest: string; dedupe_key: string }>(
+        `SELECT creator_agent_worker_success_fact_digest_v1(
+                  $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+                ) AS fact_digest,
+                creator_agent_success_consumer_payload_digest_v1(
+                  $13, $14, $2, $9, $15
+                ) AS payload_digest,
+                creator_agent_success_consumer_dedupe_key_v1($16, 42) AS dedupe_key`,
+        [
+          goldenFact.sourceEventId,
+          goldenFact.invocationId,
+          goldenFact.agentVersionDigest,
+          goldenFact.snapshotDigest,
+          goldenFact.executionCapabilityDigest,
+          goldenFact.leaseId,
+          goldenFact.fence,
+          goldenFact.localResultCipherDigest,
+          goldenFact.resultDigest,
+          goldenFact.runtimeThreadId,
+          goldenFact.runtimeTurnId,
+          goldenFact.startedFactDigest,
+          goldenPayload.assistantMessageId,
+          goldenPayload.conversationId,
+          goldenPayload.occurredAt,
+          '0198f00d-5000-7000-8000-000000000011',
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          fact_digest: factGolden,
+          payload_digest: payloadGolden,
+          dedupe_key: dedupeGolden,
+        },
+      ],
+    });
+  });
+
+  it('blocks legacy direct Assistant Message, succeeded Event, and succeeded Consumer Outbox writes', async () => {
+    const conversationId = await createConversation();
+    const accepted = acceptInput(conversationId);
+    const journal = new PostgresCloudJournal(journalPools);
+    await journal.acceptInvocation(accepted);
+    const authority = await assignRunning(accepted);
+    const success = successInput(accepted, authority);
+    const legacy = await brokerPool.connect();
+    try {
+      const directMessageId = randomUuidV7();
+      const sealed = await sealAssistantMessage({
+        resultCiphertext: success.resultCiphertext,
+        aad: {
+          schemaVersion: 1,
+          ownerId: ids.creatorId,
+          conversationId,
+          messageId: directMessageId,
+          role: 'ASSISTANT',
+        },
+        signal: AbortSignal.timeout(5_000),
+      });
+      const encrypted = sealed.encryptedMessage;
+      await legacy.query('BEGIN');
+      await legacy.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacy.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(
+        legacy.query(
+          `INSERT INTO agent_messages (
+             id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+             client_message_id, content_algorithm, content_key_id, content_nonce,
+             content_ciphertext, content_auth_tag, content_cipher_digest, content_digest,
+             content_aad_version, invocation_id
+           ) VALUES (
+             $1, $2, $3, $4, 1, 'ASSISTANT', NULL,
+             $5, $6, $7, $8, $9, $10, $11, $12, $13
+           )`,
+          [
+            directMessageId,
+            conversationId,
+            ids.creatorId,
+            ids.consumerId,
+            encrypted.algorithm,
+            encrypted.keyId,
+            encrypted.nonce,
+            encrypted.ciphertext,
+            encrypted.authTag,
+            encrypted.cipherDigest,
+            encrypted.contentDigest,
+            encrypted.aadVersion,
+            accepted.invocationId,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await legacy.query('ROLLBACK');
+
+      await legacy.query('BEGIN');
+      await legacy.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacy.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(
+        legacy.query(
+          `INSERT INTO agent_invocation_events (
+             invocation_id, creator_id, consumer_subject_id, journal_seq, source,
+             source_event_id, event_type, payload, occurred_at,
+             source_fact_digest, broker_command_id, source_local_result_cipher_digest
+           )
+           SELECT $1::uuid, $2, $3, COALESCE(max(journal_seq), 0) + 1,
+                  'WORKER', $1::uuid::text, 'invocation.succeeded', $4::jsonb,
+                  date_trunc('milliseconds', clock_timestamp()), $5, NULL, $6
+             FROM agent_invocation_events WHERE invocation_id = $1::uuid`,
+          [
+            accepted.invocationId,
+            ids.creatorId,
+            ids.consumerId,
+            JSON.stringify({
+              state: 'SUCCEEDED',
+              messageId: directMessageId,
+              resultDigest: success.fact.resultDigest,
+            }),
+            success.factDigest,
+            success.fact.localResultCipherDigest,
+          ],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await legacy.query('ROLLBACK');
+
+      await journal.commitSuccess(success, sealAssistantMessage);
+      await legacy.query('BEGIN');
+      await legacy.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacy.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(
+        legacy.query(`SELECT invocation_id FROM creator_agent_succeeded_terminal_receipts`),
+      ).rejects.toMatchObject({ code: '42501' });
+      await legacy.query('ROLLBACK');
+
+      await legacy.query('BEGIN');
+      await legacy.query(`SELECT set_config('app.creator_id', $1, true)`, [ids.creatorId]);
+      await legacy.query(`SELECT set_config('app.consumer_id', $1, true)`, [ids.consumerId]);
+      await expect(
+        legacy.query(
+          `INSERT INTO consumer_event_outbox (
+             owner_id, conversation_id, invocation_id, source_event_id,
+             event_type, payload, payload_digest, dedupe_key
+           )
+           SELECT owner_id, conversation_id, invocation_id, source_event_id,
+                  event_type, payload, payload_digest, dedupe_key
+             FROM consumer_event_outbox WHERE invocation_id = $1`,
+          [accepted.invocationId],
+        ),
+      ).rejects.toMatchObject({ code: '42501' });
+      await legacy.query('ROLLBACK');
+    } finally {
+      await legacy.query('ROLLBACK').catch(() => undefined);
+      legacy.release();
+    }
   });
 
   it('replays SUCCEEDED from the durable Invocation journal after Consumer retention pruning', async () => {
@@ -3992,6 +7351,25 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
 
     const afterPrune = await counts(conversationId);
     expect(afterPrune.consumer_events).toBe('0');
+    await expect(
+      owner.query<{ receipt_cursor: string; assistant_message_id: string; pending: string }>(
+        `SELECT receipt.consumer_event_cursor::text AS receipt_cursor,
+                receipt.assistant_message_id::text,
+                (SELECT count(*)::text FROM creator_agent_success_seal_preflights
+                  WHERE invocation_id = receipt.invocation_id) AS pending
+           FROM creator_agent_succeeded_terminal_receipts AS receipt
+          WHERE receipt.invocation_id = $1`,
+        [accepted.invocationId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          receipt_cursor: committed.consumerEventCursor,
+          assistant_message_id: committed.assistantMessageId,
+          pending: '0',
+        },
+      ],
+    });
     await expect(journal.commitSuccess(success)).resolves.toEqual({
       invocationId: accepted.invocationId,
       assistantMessageId: committed.assistantMessageId,
@@ -4011,7 +7389,7 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         fact: conflictingFact,
         factDigest: workerInvocationFactDigest(conflictingFact),
       }),
-    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'WORKER_FACT_CONFLICT' });
+    ).rejects.toMatchObject<Partial<CloudJournalError>>({ code: 'JOURNAL_SECURITY_BLOCKED' });
     expect(await counts(conversationId)).toEqual(afterPrune);
   });
 
@@ -4279,20 +7657,6 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       ),
     ).rejects.toMatchObject({ code: '23514' });
 
-    await owner.query(`UPDATE agent_invocations SET state = 'RUNNING' WHERE id = $1`, [
-      accepted.invocationId,
-    ]);
-    await expect(
-      journal.beginReconciliation({
-        creatorId: ids.creatorId,
-        consumerId: ids.consumerId,
-        conversationId,
-        invocationId: accepted.invocationId,
-        sourceEventId,
-        reason: 'JOURNAL_LOST',
-      }),
-    ).resolves.toMatchObject({ state: 'RECONCILING', replayed: true });
-
     await expect(
       journal.markUncertain({
         creatorId: ids.creatorId,
@@ -4523,12 +7887,15 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
 
   it('rolls back every final crash window to the original RUNNING projection', async () => {
     const steps: CloudJournalStep[] = [
+      'SUCCESS_SEAL_PREFLIGHT',
       'ASSISTANT_MESSAGE',
       'INVOCATION_SUCCEEDED',
       'SUCCEEDED_EVENT',
       'CONSUMER_EVENT_OUTBOX',
       'CONSUMER_EVENT_STREAM',
+      'SUCCESS_TERMINAL_RECEIPT',
       'CONVERSATION_IDLE',
+      'SUCCESS_PREFLIGHT_CONSUMED',
     ];
     for (const target of steps) {
       const conversationId = await createConversation();
@@ -4552,6 +7919,8 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         conversation_state: string;
         consumer_events: string;
         consumer_streams: string;
+        success_preflights: string;
+        success_receipts: string;
       }>(
         `SELECT
            (SELECT count(*) FROM agent_messages WHERE invocation_id = $1)::text AS messages,
@@ -4561,7 +7930,11 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
            (SELECT count(*) FROM consumer_event_outbox
              WHERE invocation_id = $1)::text AS consumer_events,
            (SELECT count(*) FROM consumer_event_streams
-             WHERE conversation_id = invocation.conversation_id)::text AS consumer_streams
+             WHERE conversation_id = invocation.conversation_id)::text AS consumer_streams,
+           (SELECT count(*) FROM creator_agent_success_seal_preflights
+             WHERE invocation_id = invocation.id)::text AS success_preflights,
+           (SELECT count(*) FROM creator_agent_succeeded_terminal_receipts
+             WHERE invocation_id = invocation.id)::text AS success_receipts
          FROM agent_invocations AS invocation
          JOIN agent_conversations AS conversation ON conversation.id = invocation.conversation_id
          WHERE invocation.id = $1`,
@@ -4575,28 +7948,41 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         conversation_state: 'BUSY',
         consumer_events: '0',
         consumer_streams: '0',
+        success_preflights: '0',
+        success_receipts: '0',
       });
+      await expect(baseJournal.commitSuccess(success, sealAssistantMessage)).resolves.toMatchObject(
+        {
+          replayed: false,
+        },
+      );
     }
   });
 
   it('rejects an AES-GCM key/nonce reuse at the durable database boundary', async () => {
-    const sharedNonce = randomBytes(12);
     const sharedKeyId = `pg-test:shared-${randomUUID()}`;
     const firstConversation = await createConversation();
     const secondConversation = await createConversation();
     const journal = new PostgresCloudJournal(journalPools);
-    await journal.acceptInvocation(
-      acceptInput(firstConversation, { keyId: sharedKeyId, nonce: sharedNonce }),
-    );
+    const first = acceptInput(firstConversation, { keyId: sharedKeyId });
+    await journal.acceptInvocation(first);
     await expect(
       journal.acceptInvocation(
-        acceptInput(secondConversation, { keyId: sharedKeyId, nonce: sharedNonce }),
+        acceptInput(secondConversation, {
+          keyId: sharedKeyId,
+          encryptedUserMessage: first.encryptedUserMessage,
+        }),
       ),
     ).rejects.toMatchObject({ code: '23505' });
-    expect(await counts(secondConversation)).toMatchObject({
+    expect(await counts(secondConversation)).toEqual({
       messages: '0',
       invocations: '0',
+      events: '0',
+      commands: '0',
+      consumer_events: '0',
+      consumer_streams: '0',
       conversation_state: 'IDLE',
+      next_turn_no: 1,
     });
   });
 
@@ -4719,6 +8105,10 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
       code: 'EXECUTION_AUTHORITY_MISMATCH',
     });
     expect(sealerCalls).toBe(1);
+    expect(await successControlFootprint(accepted.invocationId)).toEqual({
+      preflights: '0',
+      receipts: '0',
+    });
     await expect(
       owner.query(
         `SELECT invocation.state, invocation.result_message_id, invocation.result_digest,

@@ -504,7 +504,8 @@ describe('digest-bound raw ingress hostile boundaries', () => {
       rejected: 900,
       total: 912,
     });
-    expect(corpus.exclusions).toContain('does-not-complete-sch-005');
+    expect(corpus.exclusions).toContain('http-request-roots-covered-by-sch-005-closure');
+    expect(corpus.exclusions).toContain('runtime-json-bytes-covered-by-vnext-json-body-test');
     expect(corpus.exclusions).toContain('does-not-complete-snp-010');
     const fixtureIndex = JSON.parse(await readFile(fixtureIndexUrl, 'utf8')) as {
       fixtures: Array<{ path: string; bytes: number; digest: string }>;

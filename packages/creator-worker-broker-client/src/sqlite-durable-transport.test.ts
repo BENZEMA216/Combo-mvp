@@ -792,7 +792,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
         `SELECT count(*) AS value FROM sqlite_master
          WHERE type = 'table' AND name LIKE 'local_%'`,
       ),
-    ).toBe(13);
+    ).toBe(14);
 
     const mismatched = temporaryJournal();
     createJournal(mismatched.filename, MIGRATION_INSTALLATION_ID).close();
@@ -1222,7 +1222,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     ).toThrow();
     expect(
       queryScalar(committed.filename, 'SELECT user_version AS value FROM pragma_user_version'),
-    ).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+    ).toBe(4);
     const committedReopen = new SqliteWorkerBrokerDurableTransport({
       filename: committed.filename,
     });
@@ -1244,7 +1244,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       const committedBoundary = faultPoint === 'migration.v3_to_v4.after_commit';
       expect(
         queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
-      ).toBe(committedBoundary ? WORKER_TRANSPORT_SCHEMA_VERSION : 3);
+      ).toBe(committedBoundary ? 4 : 3);
       const watermark = JSON.parse(readFileSync(`${target.filename}.watermark`, 'utf8')) as {
         payload: { formatVersion: number; schemaVersion: number };
       };
@@ -4692,7 +4692,7 @@ function encryptedInvocationPrepare(
       ...body,
       invocationId,
       conversationId,
-      clientMessageId: uuid(seed + 3),
+      clientMessageId: clientUuid(seed + 3),
       userMessageCiphertext: {
         algorithm: 'aes-256-gcm/v1',
         keyScope: 'worker-session',
@@ -4864,6 +4864,7 @@ function downgradeToLegacyV1(filename: string): void {
     DROP TABLE local_conversation_ready_facts;
     DROP TABLE local_recovery_reserve_pages;
     DROP TABLE local_invocation_outbox_receipts;
+    DROP TABLE local_invocation_interrupt_receipts;
     DROP TABLE local_invocation_deliveries;
     DROP TABLE local_invocation_outbox;
     DROP TABLE local_invocation_events;
@@ -6426,6 +6427,11 @@ class LoopbackAuthority implements AgentGatewayAuthorityPort {
 function uuid(index: number): string {
   const suffix = Math.abs(index).toString(16).padStart(12, '0').slice(-12);
   return `0198f00d-0000-7000-8000-${suffix}`;
+}
+
+function clientUuid(index: number): string {
+  const suffix = Math.abs(index).toString(16).padStart(12, '0').slice(-12);
+  return `0198f00d-0000-4000-8000-${suffix}`;
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 10_000): Promise<void> {

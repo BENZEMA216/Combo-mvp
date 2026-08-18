@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, chmod, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,12 +15,14 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   ALPHA_SNAPSHOT_POLICY,
+  ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES,
   assertCompressedArchiveLimits,
   buildSnapshotFromProject,
   canonicalizeJson,
   compressDeterministicTar,
   createDeterministicTar,
   createSnapshotManifest,
+  decompressZstdWithLimit,
   decryptAndVerifySnapshot,
   encryptSnapshotArchive,
   isSnapshotError,
@@ -124,6 +127,37 @@ describe('deterministic Snapshot', () => {
     expect(sha256Hex(tar)).toBe('44198b3a6cefe1e5105cec65e8930e52b525ff7e142a4afbab75cb3c9222f7d9');
     expect(sha256Hex(archive)).toBe(
       '308a88492d7dc342c973a84f508c154b95ab542ae8ae3844ef180e8cef823abb',
+    );
+    expect(ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES).toBe(65_537);
+    expect(
+      ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES & (ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES - 1),
+    ).not.toBe(0);
+    expect(
+      ALPHA_SNAPSHOT_POLICY.maxCompressedBytes % ZSTD_SYNC_ALIAS_RETRY_OUTPUT_CHUNK_BYTES,
+    ).not.toBe(0);
+  });
+
+  it('avoids the Node sync wrapper empty-frame alias without changing the main frame', () => {
+    const input = createHash('shake256', { outputLength: 65_522 })
+      .update('combo-zstd-sync-alias-regression/v1')
+      .digest();
+    const params = {
+      [zlibConstants.ZSTD_c_compressionLevel]: 9,
+      [zlibConstants.ZSTD_c_checksumFlag]: 1,
+      [zlibConstants.ZSTD_c_contentSizeFlag]: 1,
+      [zlibConstants.ZSTD_c_dictIDFlag]: 0,
+      [zlibConstants.ZSTD_c_nbWorkers]: 0,
+    };
+    const defaultWrapped = zstdCompressSync(input, { params });
+    const production = compressDeterministicTar(input);
+    const emptyFrame = Buffer.from('28b52ffd240001000099e9d851', 'hex');
+
+    expect(defaultWrapped.byteLength).toBe(65_536 + emptyFrame.byteLength);
+    expect(defaultWrapped.subarray(65_536).equals(emptyFrame)).toBe(true);
+    expect(production.byteLength).toBe(65_536);
+    expect(production.equals(defaultWrapped.subarray(0, production.byteLength))).toBe(true);
+    expect(sha256Hex(production)).toBe(
+      '90f55edf47f2d658fc6182c580efb6b5594d0b380db85d211bb8b4b091562257',
     );
   });
 
@@ -391,6 +425,39 @@ describe('Snapshot policy boundaries', () => {
       () => createSnapshotManifest([manifestFile(`${path512}d`)]),
       'SNAPSHOT_PATH_TOO_LONG',
     );
+  });
+
+  it('rejects compressed overflow before verifier input work or zstd runtime access', () => {
+    const archiveBytes = Buffer.alloc(ALPHA_SNAPSHOT_POLICY.maxCompressedBytes + 1);
+    const impossibleDigest = '0'.repeat(64);
+    expectSnapshotCode(
+      () =>
+        verifySnapshotArchive({
+          manifestBytes: Buffer.from('{"malformed":', 'utf8'),
+          archiveBytes,
+          expectedSnapshotDigest: impossibleDigest,
+          expectedArchiveDigest: impossibleDigest,
+        }),
+      'SNAPSHOT_COMPRESSED_TOO_LARGE',
+    );
+
+    const zstdDescriptor = Object.getOwnPropertyDescriptor(process.versions, 'zstd');
+    if (zstdDescriptor === undefined) throw new Error('ZSTD_RUNTIME_DESCRIPTOR_MISSING');
+    Object.defineProperty(process.versions, 'zstd', {
+      configurable: true,
+      enumerable: zstdDescriptor.enumerable,
+      get(): never {
+        throw new Error('ZSTD_RUNTIME_QUERIED_BEFORE_COMPRESSED_SIZE_GUARD');
+      },
+    });
+    try {
+      expectSnapshotCode(
+        () => decompressZstdWithLimit(archiveBytes, 0),
+        'SNAPSHOT_COMPRESSED_TOO_LARGE',
+      );
+    } finally {
+      Object.defineProperty(process.versions, 'zstd', zstdDescriptor);
+    }
   });
 
   it('rejects empty snapshots and abnormal compression ratios above 100:1', () => {

@@ -1,4 +1,11 @@
-import { generateKeyPairSync, randomBytes, randomUUID, sign, type KeyObject } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  randomBytes,
+  randomUUID,
+  sign,
+  type KeyObject,
+} from 'node:crypto';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
 
@@ -8,6 +15,9 @@ import {
   BrokerHandshakeSchema,
   BrokerHandshakeUnsignedSchema,
   ProtocolVersionCorpusSchema,
+  WORKER_INVOCATION_FACT_PROTOCOL,
+  brokerSensitiveMessageAadDigest,
+  brokerSensitiveMessageCipherDigest,
   brokerHandshakeSigningBytes,
   canonicalSha256,
   canonicalizeJson,
@@ -16,10 +26,19 @@ import {
   workerInvocationFactDigest,
   type BrokerEnvelope,
   type BrokerHandshake,
+  type BrokerSensitiveMessage,
   type WorkerInvocationFailedFact,
+  type WorkerInvocationPreparedFact,
+  type WorkerInvocationStartedFact,
+  type WorkerInvocationSucceededFact,
 } from '@cb/creator-agent-protocol';
+import {
+  PostgresCloudJournal,
+  type AssistantMessageSealer,
+  type JournalPool,
+} from '@cb/creator-agent-persistence';
 import { Client, Pool } from 'pg';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import {
@@ -30,6 +49,7 @@ import {
   type GatewayPool,
   type PostgresGatewayAuthorityError,
 } from './postgres-authority.js';
+import { PostgresGatewayBusinessEventProjector } from './postgres-business-event-projector.js';
 import { AgentGateway, type AuthenticatedWorkerSession, type GatewayDelivery } from './gateway.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -41,8 +61,11 @@ const enabled =
 const pgDescribe = enabled ? describe.sequential : describe.skip;
 
 const WORKER_VERSION = 'combo-worker-gateway-pg/1';
+const PREVIOUS_WORKER_VERSION = 'combo-worker-gateway-pg/0';
 const RUNTIME_DIGEST = `sha256:${'a'.repeat(64)}`;
+const PREVIOUS_RUNTIME_DIGEST = `sha256:${'e'.repeat(64)}`;
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
+const PREVIOUS_PROTOCOL_DIGEST = `sha256:${'d'.repeat(64)}`;
 const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const compatibilityCorpus = readFile(
   new URL(
@@ -143,6 +166,9 @@ function signedHandshake(
   challengeId: string,
   overrides: Partial<{
     workerVersion: string;
+    codexRuntimeArtifacts: readonly string[];
+    codexProtocolSchemaDigests: readonly string[];
+    isolationModes: readonly ('apple-container-v1' | 'lima-vz-v1')[];
     brokerContractDigest: string;
     challengeSignature: string;
   }> = {},
@@ -153,9 +179,9 @@ function signedHandshake(
     installationId,
     workerVersion: overrides.workerVersion ?? WORKER_VERSION,
     supportedProtocolVersions: [1],
-    codexRuntimeArtifacts: [RUNTIME_DIGEST],
-    codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
-    isolationModes: ['apple-container-v1'],
+    codexRuntimeArtifacts: overrides.codexRuntimeArtifacts ?? [RUNTIME_DIGEST],
+    codexProtocolSchemaDigests: overrides.codexProtocolSchemaDigests ?? [PROTOCOL_DIGEST],
+    isolationModes: overrides.isolationModes ?? ['apple-container-v1'],
     brokerContractDigest: overrides.brokerContractDigest ?? BROKER_CONTRACT_DIGEST,
     capacity: { maxActiveConversations: 1, maxActiveTurns: 1 },
     challengeId,
@@ -291,6 +317,172 @@ function invocationFailed(
   }) as Extract<BrokerEnvelope, { type: 'invocation.failed' }>;
 }
 
+function invocationPrepared(
+  session: AuthenticatedWorkerSession,
+  currentLease: Extract<BrokerEnvelope, { type: 'lease.grant' }>,
+  sequence: bigint,
+  fact: WorkerInvocationPreparedFact,
+): Extract<BrokerEnvelope, { type: 'invocation.prepared' }> {
+  const sentAt = new Date().toISOString();
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'event',
+    type: 'invocation.prepared',
+    messageId: randomUuidV7(),
+    correlationId: fact.prepareCommandId,
+    connectionId: session.connectionId,
+    sequence: sequence.toString(),
+    sentAt,
+    expiresAt: new Date(Date.parse(sentAt) + 30_000).toISOString(),
+    lease: currentLease.lease,
+    body: { ...fact, factDigest: workerInvocationFactDigest(fact) },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.prepared' }>;
+}
+
+function invocationStarted(
+  session: AuthenticatedWorkerSession,
+  currentLease: Extract<BrokerEnvelope, { type: 'lease.grant' }>,
+  sequence: bigint,
+  fact: WorkerInvocationStartedFact,
+): Extract<BrokerEnvelope, { type: 'invocation.started' }> {
+  const sentAt = new Date().toISOString();
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'event',
+    type: 'invocation.started',
+    messageId: randomUuidV7(),
+    correlationId: fact.startCommandId,
+    connectionId: session.connectionId,
+    sequence: sequence.toString(),
+    sentAt,
+    expiresAt: new Date(Date.parse(sentAt) + 30_000).toISOString(),
+    lease: currentLease.lease,
+    body: { ...fact, factDigest: workerInvocationFactDigest(fact) },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.started' }>;
+}
+
+function invocationFailedFact(
+  session: AuthenticatedWorkerSession,
+  currentLease: Extract<BrokerEnvelope, { type: 'lease.grant' }>,
+  sequence: bigint,
+  fact: WorkerInvocationFailedFact,
+): Extract<BrokerEnvelope, { type: 'invocation.failed' }> {
+  const sentAt = new Date().toISOString();
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'event',
+    type: 'invocation.failed',
+    messageId: randomUuidV7(),
+    correlationId: fact.invocationId,
+    connectionId: session.connectionId,
+    sequence: sequence.toString(),
+    sentAt,
+    expiresAt: new Date(Date.parse(sentAt) + 30_000).toISOString(),
+    lease: currentLease.lease,
+    body: { ...fact, factDigest: workerInvocationFactDigest(fact) },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.failed' }>;
+}
+
+function invocationSucceeded(
+  session: AuthenticatedWorkerSession,
+  currentLease: Extract<BrokerEnvelope, { type: 'lease.grant' }>,
+  sequence: bigint,
+  conversationId: string,
+  fact: WorkerInvocationSucceededFact,
+): Extract<BrokerEnvelope, { type: 'invocation.succeeded' }> {
+  const sentAt = new Date().toISOString();
+  const messageId = randomUuidV7();
+  const keyId = `gateway-terminal-${messageId}`;
+  const aad: BrokerSensitiveMessage['aad'] = {
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    envelopeType: 'invocation.succeeded',
+    messageId,
+    conversationId,
+    invocationId: fact.invocationId,
+    workerSessionId: session.workerSessionId,
+    role: 'ASSISTANT',
+    keyId,
+  };
+  const nonce = randomBytes(12).toString('base64url');
+  const ciphertext = randomBytes(24).toString('base64url');
+  const authTag = randomBytes(16).toString('base64url');
+  const resultCiphertext: BrokerSensitiveMessage = {
+    algorithm: 'aes-256-gcm/v1',
+    keyScope: 'worker-session',
+    keyId,
+    nonce,
+    ciphertext,
+    authTag,
+    cipherDigest: brokerSensitiveMessageCipherDigest(nonce, ciphertext, authTag),
+    aad,
+    aadDigest: brokerSensitiveMessageAadDigest(aad),
+    aadVersion: 1,
+  };
+  return BrokerEnvelopeSchema.parse({
+    protocol: 'combo.creator-broker/1',
+    schemaVersion: 1,
+    kind: 'event',
+    type: 'invocation.succeeded',
+    messageId,
+    correlationId: fact.invocationId,
+    connectionId: session.connectionId,
+    sequence: sequence.toString(),
+    sentAt,
+    expiresAt: new Date(Date.parse(sentAt) + 30_000).toISOString(),
+    lease: currentLease.lease,
+    body: {
+      ...fact,
+      factDigest: workerInvocationFactDigest(fact),
+      conversationId,
+      resultCiphertext,
+    },
+  }) as Extract<BrokerEnvelope, { type: 'invocation.succeeded' }>;
+}
+
+function terminalSealer(
+  resultDigest: string,
+  forbiddenCipherDigest?: string,
+): AssistantMessageSealer {
+  return ({ aad }) => {
+    let nonce: Buffer;
+    let ciphertext: Buffer;
+    let authTag: Buffer;
+    let cipherDigest: string;
+    do {
+      nonce = randomBytes(12);
+      ciphertext = randomBytes(24);
+      authTag = randomBytes(16);
+      cipherDigest = createHash('sha256')
+        .update(nonce)
+        .update(ciphertext)
+        .update(authTag)
+        .digest('hex');
+    } while (cipherDigest === forbiddenCipherDigest);
+    let contentDigest = `hmac-sha256:${randomBytes(32).toString('hex')}`;
+    if (contentDigest === resultDigest) {
+      const fallback = `hmac-sha256:${'f'.repeat(64)}`;
+      contentDigest = resultDigest === fallback ? `hmac-sha256:${'e'.repeat(64)}` : fallback;
+    }
+    return {
+      encryptedMessage: {
+        algorithm: 'aes-256-gcm/v1',
+        keyId: `gateway-terminal-key-${aad.messageId}`,
+        nonce,
+        ciphertext,
+        authTag,
+        cipherDigest,
+        contentDigest,
+        aadVersion: 1,
+      },
+      verifiedResultDigest: resultDigest,
+    };
+  };
+}
+
 function delivery(envelope: BrokerEnvelope): GatewayDelivery {
   return Object.freeze({ envelope, canonicalDigest: canonicalSha256(envelope) });
 }
@@ -344,6 +536,326 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
   let firstLease: Extract<BrokerEnvelope, { type: 'lease.grant' }>;
   let firstRenewal: Extract<BrokerEnvelope, { type: 'lease.grant' }>;
   let latestSession: AuthenticatedWorkerSession | undefined;
+
+  async function seedInvocationProjectionFixture(label: string) {
+    const fixture = {
+      agentId: randomUuidV7(),
+      versionId: randomUuidV7(),
+      versionDigest: randomBytes(32).toString('hex'),
+      deploymentId: randomUuidV7(),
+      installationId: randomUuidV7(),
+      conversationId: randomUuidV7(),
+      userMessageId: randomUuidV7(),
+      invocationId: randomUuidV7(),
+      prepareCommandId: randomUuidV7(),
+      capabilityId: randomUuidV7(),
+      capabilityDigest: randomBytes(32).toString('hex'),
+      requestDigest: `hmac-sha256:${randomBytes(32).toString('hex')}`,
+    } as const;
+    const fixtureKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const matchingCapabilities = JSON.stringify({
+      codexRuntimeArtifacts: [RUNTIME_DIGEST],
+      codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
+      isolationModes: ['apple-container-v1'],
+      brokerContractDigest: BROKER_CONTRACT_DIGEST,
+    });
+    await owner.query(
+      `INSERT INTO agents (id, creator_id, public_slug, name)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        fixture.agentId,
+        ids.creatorId,
+        `gateway-${canonicalSha256(label).slice(0, 8)}-${fixture.agentId.slice(0, 8)}`,
+        `Gateway ${label}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO agent_versions (
+         id, agent_id, creator_id, ordinal, schema_version, version_digest, snapshot_id,
+         behavior_contract, behavior_contract_digest, runtime_policy, runtime_policy_digest,
+         io_contract, io_contract_digest, model_policy, model_policy_digest,
+         codex_runtime_version, codex_runtime_artifact_digest, codex_protocol_schema_digest
+       ) VALUES (
+         $1, $2, $3, 1, 1, $4, $5,
+         '{}'::jsonb, $6, $7::jsonb, $8, '{}'::jsonb, $9, '{}'::jsonb, $10,
+         '0.147.0-alpha.6.5', $11, $12
+       )`,
+      [
+        fixture.versionId,
+        fixture.agentId,
+        ids.creatorId,
+        fixture.versionDigest,
+        ids.snapshotId,
+        randomBytes(32).toString('hex'),
+        JSON.stringify(TEST_RUNTIME_POLICY),
+        randomBytes(32).toString('hex'),
+        randomBytes(32).toString('hex'),
+        randomBytes(32).toString('hex'),
+        RUNTIME_DIGEST,
+        PROTOCOL_DIGEST,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO agent_version_controls (version_id, creator_id) VALUES ($1, $2)`,
+      [fixture.versionId, ids.creatorId],
+    );
+    await owner.query(
+      `INSERT INTO deployments (
+         id, agent_id, creator_id, environment, desired_state,
+         desired_version_id, generation
+       ) VALUES ($1, $2, $3, 'TEST', 'ONLINE', $4, 1)`,
+      [fixture.deploymentId, fixture.agentId, ids.creatorId, fixture.versionId],
+    );
+    await owner.query(
+      `INSERT INTO worker_installations (
+         id, creator_id, installation_key_id, device_public_key,
+         worker_version, protocol_versions, capabilities
+       ) VALUES ($1, $2, $3, $4, $5, '[1]'::jsonb, $6::jsonb)`,
+      [
+        fixture.installationId,
+        ids.creatorId,
+        `gateway-key-${fixture.installationId}`,
+        publicPoint(fixtureKeyPair.publicKey),
+        WORKER_VERSION,
+        matchingCapabilities,
+      ],
+    );
+
+    const securityPolicy = {
+      ...policy,
+      leaseTtlMs: 60_000,
+      transactionTimeoutMs: 5_000,
+    } satisfies GatewayCompatibilityPolicy;
+    const bootstrapAuthority = new PostgresAgentGatewayAuthority(pools, securityPolicy);
+    const challenge = await bootstrapAuthority.issueChallenge({
+      creatorId: ids.creatorId,
+      installationId: fixture.installationId,
+      deploymentId: fixture.deploymentId,
+      deploymentGeneration: '1',
+      operationId: randomUuidV7(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const session = await bootstrapAuthority.authenticate({
+      handshake: signedHandshake(
+        fixtureKeyPair.privateKey,
+        fixture.installationId,
+        challenge.challengeId,
+      ),
+      connectedAt: new Date().toISOString(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const opened = await bootstrapAuthority.openSession(session, AbortSignal.timeout(5_000));
+    const lease = opened[0];
+    if (lease?.type !== 'lease.grant') throw new Error(`expected ${label} lease.grant`);
+
+    const clientMessageId = randomUUID();
+    await owner.query(
+      `INSERT INTO agent_conversations (
+         id, agent_id, deployment_id, agent_version_id, creator_id,
+         consumer_subject_id, version_digest, state, assigned_worker_id,
+         next_turn_no, expires_at, idempotency_key, request_digest
+       ) VALUES (
+         $1, $2, $3, $4, $5, $5, $6, 'BUSY', $7, 2,
+         statement_timestamp() + interval '1 hour', $8, $9
+       )`,
+      [
+        fixture.conversationId,
+        fixture.agentId,
+        fixture.deploymentId,
+        fixture.versionId,
+        ids.creatorId,
+        fixture.versionDigest,
+        fixture.installationId,
+        randomUuidV7(),
+        randomBytes(32).toString('hex'),
+      ],
+    );
+    await owner.query('BEGIN');
+    try {
+      await owner.query(
+        `INSERT INTO agent_messages (
+           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+           client_message_id, content_algorithm, content_key_id, content_nonce,
+           content_ciphertext, content_auth_tag, content_cipher_digest,
+           content_digest, content_aad_version, invocation_id
+         ) VALUES (
+           $1, $2, $3, $3, 1, 'USER', $4, 'aes-256-gcm/v1', $5, $6, $7, $8,
+           $9, $10, 1, $11
+         )`,
+        [
+          fixture.userMessageId,
+          fixture.conversationId,
+          ids.creatorId,
+          clientMessageId,
+          `gateway-key-${fixture.userMessageId}`,
+          randomBytes(12),
+          randomBytes(32),
+          randomBytes(16),
+          randomBytes(32).toString('hex'),
+          `hmac-sha256:${randomBytes(32).toString('hex')}`,
+          fixture.invocationId,
+        ],
+      );
+      await owner.query(
+        `INSERT INTO agent_invocations (
+           id, conversation_id, creator_id, consumer_subject_id, agent_version_id,
+           user_message_id, client_message_id, request_digest, state,
+           assigned_worker_id, assignment_lease_id, assignment_fence,
+           execution_capability_id, execution_capability_digest,
+           execution_capability_expires_at, deadline_at
+         ) VALUES (
+           $1, $2, $3, $3, $4, $5, $6, $7, 'DISPATCH_PENDING',
+           $8, $9, $10, $11, $12,
+           statement_timestamp() + interval '2 minutes 15 seconds',
+           statement_timestamp() + interval '2 minutes'
+         )`,
+        [
+          fixture.invocationId,
+          fixture.conversationId,
+          ids.creatorId,
+          fixture.versionId,
+          fixture.userMessageId,
+          clientMessageId,
+          fixture.requestDigest,
+          fixture.installationId,
+          lease.lease.leaseId,
+          lease.lease.fence,
+          fixture.capabilityId,
+          fixture.capabilityDigest,
+        ],
+      );
+      await owner.query('COMMIT');
+    } catch (error) {
+      await owner.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    }
+    await owner.query(
+      `INSERT INTO broker_outbox (
+         command_id, creator_id, target_worker_id, invocation_id, consumer_subject_id,
+         command_type, dedupe_key, state, attempt_count, next_attempt_at, expires_at,
+         conversation_id, deployment_id, assignment_lease_id, assignment_fence,
+         execution_capability_id, execution_capability_digest
+       ) VALUES (
+         $1, $2, $3, $4, $2, 'invocation.prepare', $5, 'SENT', 1,
+         statement_timestamp(), statement_timestamp() + interval '2 minutes',
+         $6, $7, $8, $9, $10, $11
+       )`,
+      [
+        fixture.prepareCommandId,
+        ids.creatorId,
+        fixture.installationId,
+        fixture.invocationId,
+        `gateway-${label}:${fixture.invocationId}`,
+        fixture.conversationId,
+        fixture.deploymentId,
+        lease.lease.leaseId,
+        lease.lease.fence,
+        fixture.capabilityId,
+        fixture.capabilityDigest,
+      ],
+    );
+
+    const journal = new PostgresCloudJournal({
+      api: apiPool as unknown as JournalPool,
+      broker: brokerPool as unknown as JournalPool,
+    });
+    const assistantMessageSealer = vi.fn<AssistantMessageSealer>();
+    const businessProjector = new PostgresGatewayBusinessEventProjector(
+      journal,
+      assistantMessageSealer,
+    );
+    const projectingAuthority = new PostgresAgentGatewayAuthority(
+      pools,
+      securityPolicy,
+      businessProjector,
+    );
+    const preparedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.prepared',
+      sourceEventId: fixture.prepareCommandId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      requestDigest: fixture.requestDigest,
+      prepareCommandId: fixture.prepareCommandId,
+    } as const satisfies WorkerInvocationPreparedFact;
+
+    return {
+      fixture,
+      session,
+      lease,
+      securityPolicy,
+      journal,
+      assistantMessageSealer,
+      businessProjector,
+      projectingAuthority,
+      preparedFact,
+    };
+  }
+
+  async function advanceFixtureToRunning(
+    seeded: Awaited<ReturnType<typeof seedInvocationProjectionFixture>>,
+  ) {
+    const { fixture, session, lease, projectingAuthority, preparedFact } = seeded;
+    const preparedEvent = invocationPrepared(session, lease, 0n, preparedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(preparedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    const startCommand = await owner.query<{ command_id: string }>(
+      `UPDATE broker_outbox
+          SET state = 'SENT', attempt_count = 1, next_attempt_at = statement_timestamp()
+        WHERE invocation_id = $1 AND command_type = 'invocation.start'
+          AND state = 'PENDING'
+      RETURNING command_id::text`,
+      [fixture.invocationId],
+    );
+    const startCommandId = startCommand.rows[0]?.command_id;
+    if (!startCommandId) throw new Error('expected one Invocation start command');
+    const startedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.started',
+      sourceEventId: startCommandId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      startCommandId,
+      runtimeThreadId: `thread-${fixture.invocationId}`,
+      runtimeTurnId: `turn-${fixture.invocationId}`,
+      dispatchReceiptDigest: `sha256:${randomBytes(32).toString('hex')}`,
+      sandboxAttestationDigest: `sha256:${randomBytes(32).toString('hex')}`,
+    } as const satisfies WorkerInvocationStartedFact;
+    const startedEvent = invocationStarted(session, lease, 1n, startedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(startedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    return { preparedEvent, startCommandId, startedFact, startedEvent };
+  }
 
   beforeAll(async () => {
     await owner.connect();
@@ -1950,22 +2462,29 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
     );
   });
 
-  // Sub-evidence for planned VNext registry cases SCH-010 and BRK-005. The fixture
-  // seeds the trusted registration projection directly; a Creator OAuth registration
-  // entrypoint is not implemented here and remains part of the planned vertical gate.
-  it('durably blocks signed future protocol Codex isolation and unknown-capability registrations', async () => {
+  // G0 SCH-010/BRK-005 exact-profile evidence. Registration is seeded directly; Creator OAuth,
+  // Runtime/Snapshot readiness, public WSS, and Native Host composition remain planned.
+  it('durably blocks signed N+1 unknown native and undeclared cross-profile registrations', async () => {
     const corpus = await compatibilityCorpus;
+    const exactProfileAuthority = new PostgresAgentGatewayAuthority(pools, {
+      ...policy,
+      acceptedWorkerVersions: [PREVIOUS_WORKER_VERSION, WORKER_VERSION],
+      acceptedCodexRuntimeArtifacts: [PREVIOUS_RUNTIME_DIGEST, RUNTIME_DIGEST],
+      acceptedCodexProtocolSchemaDigests: [PREVIOUS_PROTOCOL_DIGEST, PROTOCOL_DIGEST],
+      acceptedIsolationModes: ['lima-vz-v1', 'apple-container-v1'],
+    });
     expect(corpus.current).toMatchObject({
       wireProtocol: 'combo.creator-broker/1',
       wireSchemaVersion: 1,
       supportedProtocolVersions: [1],
-      brokerContractDigest: BROKER_CONTRACT_DIGEST,
     });
-    expect(corpus.declaredPrevious).toEqual([]);
+    expect(corpus.declaredPrevious).toHaveLength(1);
+    expect(corpus.declaredPairs).toHaveLength(4);
 
     for (const testCase of corpus.rejectedRegistrations) {
       const testKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
       const installationId = randomUuidV7();
+      let registeredWorkerVersion = WORKER_VERSION;
       const capabilities: Record<string, unknown> = {
         codexRuntimeArtifacts: [RUNTIME_DIGEST],
         codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
@@ -1975,8 +2494,14 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
       switch (testCase.id) {
         case 'future-protocol-v2':
           break;
+        case 'future-worker-version':
+          registeredWorkerVersion = testCase.advertisedValue!;
+          break;
         case 'unknown-capability-key':
           capabilities.futureCapability = testCase.advertisedValue;
+          break;
+        case 'native-macos':
+          capabilities.isolationModes = [testCase.advertisedValue];
           break;
         case 'stale-broker-contract':
           capabilities.brokerContractDigest = testCase.advertisedValue;
@@ -1990,6 +2515,9 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
         case 'unaccepted-isolation':
           capabilities.isolationModes = [testCase.advertisedValue];
           break;
+        case 'undeclared-cross-mix':
+          capabilities.codexRuntimeArtifacts = [PREVIOUS_RUNTIME_DIGEST];
+          break;
       }
       await owner.query(
         `INSERT INTO worker_installations (
@@ -2001,12 +2529,12 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
           ids.creatorId,
           `gateway-compatibility-key-${installationId}`,
           publicPoint(testKeyPair.publicKey),
-          WORKER_VERSION,
+          registeredWorkerVersion,
           JSON.stringify(testCase.protocolVersions),
           JSON.stringify(capabilities),
         ],
       );
-      const challenge = await authority.issueChallenge({
+      const challenge = await exactProfileAuthority.issueChallenge({
         creatorId: ids.creatorId,
         installationId,
         ...challengeTarget,
@@ -2017,10 +2545,32 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
         testKeyPair.privateKey,
         installationId,
         challenge.challengeId,
+        {
+          ...(testCase.id === 'future-worker-version'
+            ? { workerVersion: testCase.advertisedValue! }
+            : {}),
+          ...(testCase.id === 'stale-broker-contract'
+            ? { brokerContractDigest: testCase.advertisedValue! }
+            : {}),
+          ...(testCase.id === 'unaccepted-codex-runtime'
+            ? { codexRuntimeArtifacts: [testCase.advertisedValue!] }
+            : {}),
+          ...(testCase.id === 'unaccepted-codex-protocol'
+            ? { codexProtocolSchemaDigests: [testCase.advertisedValue!] }
+            : {}),
+          ...(testCase.id === 'unaccepted-isolation'
+            ? {
+                isolationModes: [testCase.advertisedValue! as 'apple-container-v1' | 'lima-vz-v1'],
+              }
+            : {}),
+          ...(testCase.id === 'undeclared-cross-mix'
+            ? { codexRuntimeArtifacts: [PREVIOUS_RUNTIME_DIGEST] }
+            : {}),
+        },
       );
 
       await expect(
-        authority.authenticate({
+        exactProfileAuthority.authenticate({
           handshake,
           connectedAt: new Date().toISOString(),
           signal: AbortSignal.timeout(5_000),
@@ -2772,6 +3322,2179 @@ pgDescribe('PostgresAgentGatewayAuthority real transactions', () => {
       ]);
     }
   });
+
+  it('atomically isolates a durable prepared-fact conflict and replays its receipt after revocation', async () => {
+    const fixture = {
+      agentId: randomUuidV7(),
+      versionId: randomUuidV7(),
+      versionDigest: randomBytes(32).toString('hex'),
+      deploymentId: randomUuidV7(),
+      installationId: randomUuidV7(),
+      conversationId: randomUuidV7(),
+      userMessageId: randomUuidV7(),
+      invocationId: randomUuidV7(),
+      prepareCommandId: randomUuidV7(),
+      capabilityId: randomUuidV7(),
+      capabilityDigest: randomBytes(32).toString('hex'),
+      requestDigest: `hmac-sha256:${randomBytes(32).toString('hex')}`,
+    } as const;
+    const fixtureKeyPair = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const matchingCapabilities = JSON.stringify({
+      codexRuntimeArtifacts: [RUNTIME_DIGEST],
+      codexProtocolSchemaDigests: [PROTOCOL_DIGEST],
+      isolationModes: ['apple-container-v1'],
+      brokerContractDigest: BROKER_CONTRACT_DIGEST,
+    });
+    await owner.query(
+      `INSERT INTO agents (id, creator_id, public_slug, name)
+         VALUES ($1, $2, $3, 'Gateway prepared conflict')`,
+      [fixture.agentId, ids.creatorId, `gateway-prepared-${fixture.agentId.slice(0, 8)}`],
+    );
+    await owner.query(
+      `INSERT INTO agent_versions (
+           id, agent_id, creator_id, ordinal, schema_version, version_digest, snapshot_id,
+           behavior_contract, behavior_contract_digest, runtime_policy, runtime_policy_digest,
+           io_contract, io_contract_digest, model_policy, model_policy_digest,
+           codex_runtime_version, codex_runtime_artifact_digest, codex_protocol_schema_digest
+         ) VALUES (
+           $1, $2, $3, 1, 1, $4, $5,
+           '{}'::jsonb, $6, $7::jsonb, $8, '{}'::jsonb, $9, '{}'::jsonb, $10,
+           '0.147.0-alpha.6.5', $11, $12
+         )`,
+      [
+        fixture.versionId,
+        fixture.agentId,
+        ids.creatorId,
+        fixture.versionDigest,
+        ids.snapshotId,
+        randomBytes(32).toString('hex'),
+        JSON.stringify(TEST_RUNTIME_POLICY),
+        randomBytes(32).toString('hex'),
+        randomBytes(32).toString('hex'),
+        randomBytes(32).toString('hex'),
+        RUNTIME_DIGEST,
+        PROTOCOL_DIGEST,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO agent_version_controls (version_id, creator_id) VALUES ($1, $2)`,
+      [fixture.versionId, ids.creatorId],
+    );
+    await owner.query(
+      `INSERT INTO deployments (
+           id, agent_id, creator_id, environment, desired_state,
+           desired_version_id, generation
+         ) VALUES ($1, $2, $3, 'TEST', 'ONLINE', $4, 1)`,
+      [fixture.deploymentId, fixture.agentId, ids.creatorId, fixture.versionId],
+    );
+    await owner.query(
+      `INSERT INTO worker_installations (
+           id, creator_id, installation_key_id, device_public_key,
+           worker_version, protocol_versions, capabilities
+         ) VALUES ($1, $2, $3, $4, $5, '[1]'::jsonb, $6::jsonb)`,
+      [
+        fixture.installationId,
+        ids.creatorId,
+        `gateway-key-${fixture.installationId}`,
+        publicPoint(fixtureKeyPair.publicKey),
+        WORKER_VERSION,
+        matchingCapabilities,
+      ],
+    );
+
+    const securityPolicy = {
+      ...policy,
+      leaseTtlMs: 60_000,
+      transactionTimeoutMs: 5_000,
+    } satisfies GatewayCompatibilityPolicy;
+    const bootstrapAuthority = new PostgresAgentGatewayAuthority(pools, securityPolicy);
+    const challenge = await bootstrapAuthority.issueChallenge({
+      creatorId: ids.creatorId,
+      installationId: fixture.installationId,
+      deploymentId: fixture.deploymentId,
+      deploymentGeneration: '1',
+      operationId: randomUuidV7(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const session = await bootstrapAuthority.authenticate({
+      handshake: signedHandshake(
+        fixtureKeyPair.privateKey,
+        fixture.installationId,
+        challenge.challengeId,
+      ),
+      connectedAt: new Date().toISOString(),
+      signal: AbortSignal.timeout(5_000),
+    });
+    const opened = await bootstrapAuthority.openSession(session, AbortSignal.timeout(5_000));
+    const lease = opened[0];
+    if (lease?.type !== 'lease.grant') throw new Error('expected prepared-conflict lease.grant');
+
+    const clientMessageId = randomUUID();
+    await owner.query(
+      `INSERT INTO agent_conversations (
+           id, agent_id, deployment_id, agent_version_id, creator_id,
+           consumer_subject_id, version_digest, state, assigned_worker_id,
+           next_turn_no, expires_at, idempotency_key, request_digest
+         ) VALUES (
+           $1, $2, $3, $4, $5, $5, $6, 'BUSY', $7, 2,
+           statement_timestamp() + interval '1 hour', $8, $9
+         )`,
+      [
+        fixture.conversationId,
+        fixture.agentId,
+        fixture.deploymentId,
+        fixture.versionId,
+        ids.creatorId,
+        fixture.versionDigest,
+        fixture.installationId,
+        randomUuidV7(),
+        randomBytes(32).toString('hex'),
+      ],
+    );
+    await owner.query(
+      `INSERT INTO agent_messages (
+           id, conversation_id, creator_id, consumer_subject_id, turn_no, role,
+           client_message_id, content_algorithm, content_key_id, content_nonce,
+           content_ciphertext, content_auth_tag, content_cipher_digest,
+           content_digest, content_aad_version
+         ) VALUES (
+           $1, $2, $3, $3, 1, 'USER', $4, 'aes-256-gcm/v1', $5, $6, $7, $8,
+           $9, $10, 1
+         )`,
+      [
+        fixture.userMessageId,
+        fixture.conversationId,
+        ids.creatorId,
+        clientMessageId,
+        `gateway-key-${fixture.userMessageId}`,
+        randomBytes(12),
+        randomBytes(32),
+        randomBytes(16),
+        randomBytes(32).toString('hex'),
+        `hmac-sha256:${randomBytes(32).toString('hex')}`,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO agent_invocations (
+           id, conversation_id, creator_id, consumer_subject_id, agent_version_id,
+           user_message_id, client_message_id, request_digest, state,
+           assigned_worker_id, assignment_lease_id, assignment_fence,
+           execution_capability_id, execution_capability_digest,
+           execution_capability_expires_at, deadline_at
+         ) VALUES (
+           $1, $2, $3, $3, $4, $5, $6, $7, 'DISPATCH_PENDING',
+           $8, $9, $10, $11, $12,
+           statement_timestamp() + interval '2 minutes 15 seconds',
+           statement_timestamp() + interval '2 minutes'
+         )`,
+      [
+        fixture.invocationId,
+        fixture.conversationId,
+        ids.creatorId,
+        fixture.versionId,
+        fixture.userMessageId,
+        clientMessageId,
+        fixture.requestDigest,
+        fixture.installationId,
+        lease.lease.leaseId,
+        lease.lease.fence,
+        fixture.capabilityId,
+        fixture.capabilityDigest,
+      ],
+    );
+    await owner.query(
+      `INSERT INTO broker_outbox (
+           command_id, creator_id, target_worker_id, invocation_id, consumer_subject_id,
+           command_type, dedupe_key, state, attempt_count, next_attempt_at, expires_at,
+           conversation_id, deployment_id, assignment_lease_id, assignment_fence,
+           execution_capability_id, execution_capability_digest
+         ) VALUES (
+           $1, $2, $3, $4, $2, 'invocation.prepare', $5, 'SENT', 1,
+           statement_timestamp(), statement_timestamp() + interval '2 minutes',
+           $6, $7, $8, $9, $10, $11
+         )`,
+      [
+        fixture.prepareCommandId,
+        ids.creatorId,
+        fixture.installationId,
+        fixture.invocationId,
+        `gateway-prepared:${fixture.invocationId}`,
+        fixture.conversationId,
+        fixture.deploymentId,
+        lease.lease.leaseId,
+        lease.lease.fence,
+        fixture.capabilityId,
+        fixture.capabilityDigest,
+      ],
+    );
+
+    const journal = new PostgresCloudJournal({
+      api: apiPool as unknown as JournalPool,
+      broker: brokerPool as unknown as JournalPool,
+    });
+    const assistantMessageSealer = vi.fn<AssistantMessageSealer>();
+    const businessProjector = new PostgresGatewayBusinessEventProjector(
+      journal,
+      assistantMessageSealer,
+    );
+    const projectingAuthority = new PostgresAgentGatewayAuthority(
+      pools,
+      securityPolicy,
+      businessProjector,
+    );
+    const admittedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.prepared',
+      sourceEventId: fixture.prepareCommandId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      requestDigest: fixture.requestDigest,
+      prepareCommandId: fixture.prepareCommandId,
+    } as const satisfies WorkerInvocationPreparedFact;
+    const admittedEvent = invocationPrepared(session, lease, 0n, admittedFact);
+    const admitted = await projectingAuthority.acceptEnvelope(
+      session,
+      delivery(admittedEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(admitted).toHaveLength(1);
+    expect(admitted[0]).toMatchObject({
+      type: 'message.ack',
+      body: {
+        acknowledgedMessageId: admittedEvent.messageId,
+        level: 'CLOUD_COMMITTED',
+        decision: 'APPLIED',
+      },
+    });
+
+    const conflictingFact = {
+      ...admittedFact,
+      requestDigest: `hmac-sha256:${randomBytes(32).toString('hex')}`,
+    } satisfies WorkerInvocationPreparedFact;
+    const conflictEvent = invocationPrepared(session, lease, 1n, conflictingFact);
+    const admittedOperationKey = `${admittedEvent.messageId}:${canonicalSha256(admittedEvent)}`;
+    const conflictOperationKey = `${conflictEvent.messageId}:${canonicalSha256(conflictEvent)}`;
+    const footprint = async () => {
+      const observed = await owner.query<{
+        invocation_state: string;
+        capability_revoked: boolean;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string | null;
+        alerts: string;
+        worker_events: string;
+        start_commands: string;
+        receipts: string;
+        outbound_frames: string;
+        operations: string;
+        inbound_next_seq: string;
+        outbound_next_seq: string;
+      }>(
+        `SELECT invocation.state AS invocation_state,
+                  invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                  lease.state AS lease_state, gateway.state AS session_state,
+                  deployment.observed_state AS deployment_state,
+                  deployment.last_error_code,
+                  (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                    WHERE alert.invocation_id = invocation.id) AS alerts,
+                  (SELECT count(*)::text FROM agent_invocation_events AS event
+                    WHERE event.invocation_id = invocation.id AND event.source = 'WORKER')
+                    AS worker_events,
+                  (SELECT count(*)::text FROM broker_outbox AS command
+                    WHERE command.invocation_id = invocation.id
+                      AND command.command_type = 'invocation.start') AS start_commands,
+                  (SELECT count(*)::text FROM worker_gateway_frame_receipts AS receipt
+                    WHERE receipt.session_id = gateway.id) AS receipts,
+                  (SELECT count(*)::text FROM worker_gateway_outbound_frames AS frame
+                    WHERE frame.session_id = gateway.id) AS outbound_frames,
+                  (SELECT count(*)::text FROM worker_gateway_operation_receipts AS operation
+                    WHERE operation.creator_id = invocation.creator_id
+                      AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+                      AND operation.operation_key = ANY($4::text[])) AS operations,
+                  gateway.inbound_next_seq::text, gateway.outbound_next_seq::text
+             FROM agent_invocations AS invocation
+             JOIN worker_leases AS lease ON lease.id = $2
+             JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+             JOIN deployments AS deployment ON deployment.id = $1
+            WHERE invocation.id = $5`,
+        [
+          fixture.deploymentId,
+          lease.lease.leaseId,
+          session.workerSessionId,
+          [admittedOperationKey, conflictOperationKey],
+          fixture.invocationId,
+        ],
+      );
+      const row = observed.rows[0];
+      if (!row) throw new Error('prepared conflict footprint missing');
+      return row;
+    };
+    const beforeConflict = await footprint();
+    expect(beforeConflict).toMatchObject({
+      invocation_state: 'PERSISTED',
+      capability_revoked: false,
+      lease_state: 'ACTIVE',
+      session_state: 'ACTIVE',
+      alerts: '0',
+      worker_events: '1',
+      start_commands: '1',
+      receipts: '1',
+      outbound_frames: '2',
+      operations: '1',
+      inbound_next_seq: '1',
+      outbound_next_seq: '2',
+    });
+
+    for (const target of ['EVENT_PROJECTED', 'RECEIPT_INSERTED'] as const) {
+      const failingAuthority = new PostgresAgentGatewayAuthority(
+        pools,
+        securityPolicy,
+        businessProjector,
+        (step) => {
+          if (step === target) throw new Error(`FAILPOINT:${target}`);
+        },
+      );
+      await expect(
+        failingAuthority.acceptEnvelope(
+          session,
+          delivery(conflictEvent),
+          AbortSignal.timeout(5_000),
+        ),
+      ).rejects.toThrow(`FAILPOINT:${target}`);
+      expect(await footprint(), target).toEqual(beforeConflict);
+    }
+
+    const lossySecurityAuthority = new PostgresAgentGatewayAuthority(
+      { api: apiGatewayPool, broker: lossyBrokerPool },
+      securityPolicy,
+      businessProjector,
+    );
+    lossyBrokerPool.arm();
+    const blocked = await lossySecurityAuthority.acceptEnvelope(
+      session,
+      delivery(conflictEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked.map((frame) => frame.type)).toEqual(['message.ack', 'lease.revoke']);
+    expect(blocked[0]).toMatchObject({
+      type: 'message.ack',
+      body: {
+        acknowledgedMessageId: conflictEvent.messageId,
+        level: 'CLOUD_COMMITTED',
+        decision: 'SECURITY_BLOCK',
+      },
+    });
+    expect(blocked[1]).toMatchObject({
+      type: 'lease.revoke',
+      body: { reason: 'SECURITY' },
+    });
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    expect(await footprint()).toMatchObject({
+      invocation_state: 'PERSISTED',
+      capability_revoked: true,
+      lease_state: 'REVOKED',
+      session_state: 'REVOKED',
+      deployment_state: 'BLOCKED',
+      last_error_code: 'WORKER_FACT_CONFLICT',
+      alerts: '1',
+      worker_events: '1',
+      start_commands: '1',
+      receipts: '2',
+      outbound_frames: '4',
+      operations: '2',
+      inbound_next_seq: '2',
+      outbound_next_seq: '4',
+    });
+    const durableFact = await owner.query<{
+      state: string;
+      source_event_id: string;
+      source_fact_digest: string;
+      request_digest: string;
+      prepare_state: string;
+      start_commands: string;
+    }>(
+      `SELECT invocation.state, event.source_event_id, event.source_fact_digest,
+                invocation.request_digest,
+                prepare.state AS prepare_state,
+                (SELECT count(*)::text FROM broker_outbox AS start_command
+                  WHERE start_command.invocation_id = invocation.id
+                    AND start_command.command_type = 'invocation.start') AS start_commands
+           FROM agent_invocations AS invocation
+           JOIN agent_invocation_events AS event
+             ON event.invocation_id = invocation.id
+            AND event.source = 'WORKER'
+            AND event.event_type = 'invocation.persisted'
+           JOIN broker_outbox AS prepare ON prepare.command_id = $2
+          WHERE invocation.id = $1`,
+      [fixture.invocationId, fixture.prepareCommandId],
+    );
+    expect(durableFact.rows).toEqual([
+      {
+        state: 'PERSISTED',
+        source_event_id: fixture.prepareCommandId,
+        source_fact_digest: workerInvocationFactDigest(admittedFact),
+        request_digest: fixture.requestDigest,
+        prepare_state: 'ACKED',
+        start_commands: '1',
+      },
+    ]);
+    const alerts = await owner.query<{
+      reason: string;
+      source: string;
+      source_event_id_digest: string;
+      existing_canonical_digest: string;
+      received_canonical_digest: string;
+    }>(
+      `SELECT reason, source, source_event_id_digest,
+                existing_canonical_digest, received_canonical_digest
+           FROM creator_agent_journal_integrity_alerts
+          WHERE invocation_id = $1`,
+      [fixture.invocationId],
+    );
+    expect(alerts.rows).toHaveLength(1);
+    expect(alerts.rows[0]).toMatchObject({
+      reason: 'SOURCE_EVENT_CONFLICT',
+      source: 'WORKER',
+    });
+    for (const value of [
+      alerts.rows[0]?.source_event_id_digest,
+      alerts.rows[0]?.existing_canonical_digest,
+      alerts.rows[0]?.received_canonical_digest,
+    ]) {
+      expect(value).toMatch(/^[a-f0-9]{64}$/u);
+    }
+    expect(alerts.rows[0]?.existing_canonical_digest).not.toBe(
+      alerts.rows[0]?.received_canonical_digest,
+    );
+    const serializedAlert = JSON.stringify(alerts.rows[0]);
+    expect(serializedAlert).not.toContain(fixture.prepareCommandId);
+    expect(serializedAlert).not.toContain(fixture.requestDigest);
+    expect(serializedAlert).not.toContain(conflictingFact.requestDigest);
+
+    const conflictReceipt = await owner.query<{
+      response_frames: unknown;
+      result_value: unknown;
+    }>(
+      `SELECT receipt.response_frames, operation.result_value
+           FROM worker_gateway_frame_receipts AS receipt
+           JOIN worker_gateway_operation_receipts AS operation
+             ON operation.creator_id = receipt.creator_id
+            AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+            AND operation.operation_key = $4
+          WHERE receipt.session_id = $1 AND receipt.sequence = 1
+            AND receipt.message_id = $2 AND receipt.canonical_digest = $3`,
+      [
+        session.workerSessionId,
+        conflictEvent.messageId,
+        canonicalSha256(conflictEvent),
+        conflictOperationKey,
+      ],
+    );
+    expect(conflictReceipt.rows).toEqual([
+      {
+        response_frames: blocked,
+        result_value: { kind: 'RESPONSES', responses: blocked },
+      },
+    ]);
+
+    const afterCommit = await footprint();
+    await expect(
+      projectingAuthority.replayEnvelope(
+        session,
+        delivery(conflictEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toEqual(blocked);
+    expect(await footprint()).toEqual(afterCommit);
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    const transportConflict = BrokerEnvelopeSchema.parse({
+      ...conflictEvent,
+      messageId: randomUuidV7(),
+    });
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(transportConflict),
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+    await expect(
+      owner.query<{ alerts: string; transport_conflicts: string }>(
+        `SELECT
+             (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts
+               WHERE invocation_id = $1) AS alerts,
+             (SELECT count(*)::text FROM worker_gateway_security_events
+               WHERE session_id = $2 AND event_type = 'SEQUENCE_CONFLICT')
+               AS transport_conflicts`,
+        [fixture.invocationId, session.workerSessionId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ alerts: '1', transport_conflicts: '1' }],
+    });
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it('atomically isolates a durable started-fact conflict and preserves the original Host evidence', async () => {
+    const seeded = await seedInvocationProjectionFixture('started-conflict');
+    const {
+      fixture,
+      session,
+      lease,
+      securityPolicy,
+      assistantMessageSealer,
+      businessProjector,
+      projectingAuthority,
+      preparedFact,
+    } = seeded;
+    const preparedEvent = invocationPrepared(session, lease, 0n, preparedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(preparedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: {
+          acknowledgedMessageId: preparedEvent.messageId,
+          level: 'CLOUD_COMMITTED',
+          decision: 'APPLIED',
+        },
+      },
+    ]);
+    const startCommand = await owner.query<{ command_id: string }>(
+      `UPDATE broker_outbox
+          SET state = 'SENT', attempt_count = 1, next_attempt_at = statement_timestamp()
+        WHERE invocation_id = $1 AND command_type = 'invocation.start'
+          AND state = 'PENDING'
+      RETURNING command_id::text`,
+      [fixture.invocationId],
+    );
+    const startCommandId = startCommand.rows[0]?.command_id;
+    if (!startCommandId) throw new Error('expected one started-conflict start command');
+
+    const admittedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.started',
+      sourceEventId: startCommandId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      startCommandId,
+      runtimeThreadId: `thread-${fixture.invocationId}`,
+      runtimeTurnId: `turn-${fixture.invocationId}`,
+      dispatchReceiptDigest: `sha256:${randomBytes(32).toString('hex')}`,
+      sandboxAttestationDigest: `sha256:${randomBytes(32).toString('hex')}`,
+    } as const satisfies WorkerInvocationStartedFact;
+    const admittedEvent = invocationStarted(session, lease, 1n, admittedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(admittedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: {
+          acknowledgedMessageId: admittedEvent.messageId,
+          level: 'CLOUD_COMMITTED',
+          decision: 'APPLIED',
+        },
+      },
+    ]);
+
+    const conflictingFact = {
+      ...admittedFact,
+      runtimeThreadId: `thread-conflict-${fixture.invocationId}`,
+      runtimeTurnId: `turn-conflict-${fixture.invocationId}`,
+      dispatchReceiptDigest: `sha256:${randomBytes(32).toString('hex')}`,
+      sandboxAttestationDigest: `sha256:${randomBytes(32).toString('hex')}`,
+    } satisfies WorkerInvocationStartedFact;
+    const conflictEvent = invocationStarted(session, lease, 2n, conflictingFact);
+    const operationKeys = [preparedEvent, admittedEvent, conflictEvent].map(
+      (event) => `${event.messageId}:${canonicalSha256(event)}`,
+    );
+    const footprint = async () => {
+      const observed = await owner.query<{
+        invocation_state: string;
+        capability_revoked: boolean;
+        runtime_thread_id: string | null;
+        runtime_turn_id: string | null;
+        dispatch_receipt_digest: string | null;
+        sandbox_attestation_digest: string | null;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string | null;
+        alerts: string;
+        started_events: string;
+        started_source_event_id: string | null;
+        started_fact_digest: string | null;
+        started_payload: unknown;
+        reconciliation_roots: string;
+        start_commands: string;
+        start_state: string | null;
+        receipts: string;
+        outbound_frames: string;
+        operations: string;
+        inbound_next_seq: string;
+        outbound_next_seq: string;
+      }>(
+        `SELECT invocation.state AS invocation_state,
+                invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                invocation.runtime_thread_id, invocation.runtime_turn_id,
+                started.source_dispatch_receipt_digest AS dispatch_receipt_digest,
+                started.source_sandbox_attestation_digest AS sandbox_attestation_digest,
+                lease.state AS lease_state, gateway.state AS session_state,
+                deployment.observed_state AS deployment_state,
+                deployment.last_error_code,
+                (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                  WHERE alert.invocation_id = invocation.id) AS alerts,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id AND event.source = 'WORKER'
+                    AND event.event_type = 'invocation.started') AS started_events,
+                started.source_event_id AS started_source_event_id,
+                started.source_fact_digest AS started_fact_digest,
+                started.payload AS started_payload,
+                (SELECT count(*)::text FROM agent_invocation_events AS root
+                  WHERE root.invocation_id = invocation.id AND root.source = 'RECONCILER'
+                    AND root.event_type = 'invocation.reconciling') AS reconciliation_roots,
+                (SELECT count(*)::text FROM broker_outbox AS command
+                  WHERE command.invocation_id = invocation.id
+                    AND command.command_type = 'invocation.start') AS start_commands,
+                start_command.state AS start_state,
+                (SELECT count(*)::text FROM worker_gateway_frame_receipts AS receipt
+                  WHERE receipt.session_id = gateway.id) AS receipts,
+                (SELECT count(*)::text FROM worker_gateway_outbound_frames AS frame
+                  WHERE frame.session_id = gateway.id) AS outbound_frames,
+                (SELECT count(*)::text FROM worker_gateway_operation_receipts AS operation
+                  WHERE operation.creator_id = invocation.creator_id
+                    AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+                    AND operation.operation_key = ANY($4::text[])) AS operations,
+                gateway.inbound_next_seq::text, gateway.outbound_next_seq::text
+           FROM agent_invocations AS invocation
+           JOIN worker_leases AS lease ON lease.id = $2
+           JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+           JOIN deployments AS deployment ON deployment.id = $1
+           LEFT JOIN agent_invocation_events AS started
+             ON started.invocation_id = invocation.id AND started.source = 'WORKER'
+            AND started.event_type = 'invocation.started'
+           LEFT JOIN broker_outbox AS start_command
+             ON start_command.invocation_id = invocation.id
+            AND start_command.command_type = 'invocation.start'
+          WHERE invocation.id = $5`,
+        [
+          fixture.deploymentId,
+          lease.lease.leaseId,
+          session.workerSessionId,
+          operationKeys,
+          fixture.invocationId,
+        ],
+      );
+      const row = observed.rows[0];
+      if (!row) throw new Error('started conflict footprint missing');
+      return row;
+    };
+    const beforeConflict = await footprint();
+    expect(beforeConflict).toMatchObject({
+      invocation_state: 'RUNNING',
+      capability_revoked: false,
+      runtime_thread_id: admittedFact.runtimeThreadId,
+      runtime_turn_id: admittedFact.runtimeTurnId,
+      dispatch_receipt_digest: admittedFact.dispatchReceiptDigest,
+      sandbox_attestation_digest: admittedFact.sandboxAttestationDigest,
+      lease_state: 'ACTIVE',
+      session_state: 'ACTIVE',
+      alerts: '0',
+      started_events: '1',
+      started_source_event_id: startCommandId,
+      started_fact_digest: workerInvocationFactDigest(admittedFact),
+      started_payload: { state: 'RUNNING' },
+      reconciliation_roots: '0',
+      start_commands: '1',
+      start_state: 'ACKED',
+      receipts: '2',
+      outbound_frames: '3',
+      operations: '2',
+      inbound_next_seq: '2',
+      outbound_next_seq: '3',
+    });
+
+    for (const target of ['EVENT_PROJECTED', 'RECEIPT_INSERTED'] as const) {
+      const failingAuthority = new PostgresAgentGatewayAuthority(
+        pools,
+        securityPolicy,
+        businessProjector,
+        (step) => {
+          if (step === target) throw new Error(`FAILPOINT:STARTED:${target}`);
+        },
+      );
+      await expect(
+        failingAuthority.acceptEnvelope(
+          session,
+          delivery(conflictEvent),
+          AbortSignal.timeout(5_000),
+        ),
+      ).rejects.toThrow(`FAILPOINT:STARTED:${target}`);
+      expect(await footprint(), target).toEqual(beforeConflict);
+    }
+
+    const lossySecurityAuthority = new PostgresAgentGatewayAuthority(
+      { api: apiGatewayPool, broker: lossyBrokerPool },
+      securityPolicy,
+      businessProjector,
+    );
+    lossyBrokerPool.arm();
+    const blocked = await lossySecurityAuthority.acceptEnvelope(
+      session,
+      delivery(conflictEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked.map((frame) => frame.type)).toEqual(['message.ack', 'lease.revoke']);
+    expect(blocked[0]).toMatchObject({
+      type: 'message.ack',
+      body: {
+        acknowledgedMessageId: conflictEvent.messageId,
+        level: 'CLOUD_COMMITTED',
+        decision: 'SECURITY_BLOCK',
+      },
+    });
+    expect(blocked[1]).toMatchObject({ type: 'lease.revoke', body: { reason: 'SECURITY' } });
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    expect(await footprint()).toMatchObject({
+      ...beforeConflict,
+      // RUNNING remains live until the shared Deployment revoker stamps its capability.
+      capability_revoked: true,
+      lease_state: 'REVOKED',
+      session_state: 'REVOKED',
+      deployment_state: 'BLOCKED',
+      last_error_code: 'WORKER_FACT_CONFLICT',
+      alerts: '1',
+      receipts: '3',
+      outbound_frames: '5',
+      operations: '3',
+      inbound_next_seq: '3',
+      outbound_next_seq: '5',
+    });
+    const alerts = await owner.query<{
+      reason: string;
+      source: string;
+      source_event_id_digest: string;
+      existing_canonical_digest: string;
+      received_canonical_digest: string;
+    }>(
+      `SELECT reason, source, source_event_id_digest,
+              existing_canonical_digest, received_canonical_digest
+         FROM creator_agent_journal_integrity_alerts
+        WHERE invocation_id = $1`,
+      [fixture.invocationId],
+    );
+    expect(alerts.rows).toHaveLength(1);
+    expect(alerts.rows[0]).toMatchObject({ reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' });
+    expect(alerts.rows[0]?.existing_canonical_digest).not.toBe(
+      alerts.rows[0]?.received_canonical_digest,
+    );
+    const serializedAlert = JSON.stringify(alerts.rows[0]);
+    for (const forbidden of [
+      startCommandId,
+      admittedFact.runtimeThreadId,
+      admittedFact.runtimeTurnId,
+      admittedFact.dispatchReceiptDigest,
+      admittedFact.sandboxAttestationDigest,
+      conflictingFact.runtimeThreadId,
+      conflictingFact.runtimeTurnId,
+      conflictingFact.dispatchReceiptDigest,
+      conflictingFact.sandboxAttestationDigest,
+    ]) {
+      expect(serializedAlert).not.toContain(forbidden);
+    }
+
+    const conflictOperationKey = operationKeys[2]!;
+    await expect(
+      owner.query<{ response_frames: unknown; result_value: unknown }>(
+        `SELECT receipt.response_frames, operation.result_value
+           FROM worker_gateway_frame_receipts AS receipt
+           JOIN worker_gateway_operation_receipts AS operation
+             ON operation.creator_id = receipt.creator_id
+            AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+            AND operation.operation_key = $4
+          WHERE receipt.session_id = $1 AND receipt.sequence = 2
+            AND receipt.message_id = $2 AND receipt.canonical_digest = $3`,
+        [
+          session.workerSessionId,
+          conflictEvent.messageId,
+          canonicalSha256(conflictEvent),
+          conflictOperationKey,
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          response_frames: blocked,
+          result_value: { kind: 'RESPONSES', responses: blocked },
+        },
+      ],
+    });
+
+    const afterCommit = await footprint();
+    await expect(
+      projectingAuthority.replayEnvelope(
+        session,
+        delivery(conflictEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toEqual(blocked);
+    expect(await footprint()).toEqual(afterCommit);
+
+    const transportConflict = BrokerEnvelopeSchema.parse({
+      ...conflictEvent,
+      messageId: randomUuidV7(),
+    });
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(transportConflict),
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+    await expect(
+      owner.query<{ alerts: string; transport_conflicts: string; start_commands: string }>(
+        `SELECT
+           (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts
+             WHERE invocation_id = $1) AS alerts,
+           (SELECT count(*)::text FROM worker_gateway_security_events
+             WHERE session_id = $2 AND event_type = 'SEQUENCE_CONFLICT')
+             AS transport_conflicts,
+           (SELECT count(*)::text FROM broker_outbox
+             WHERE invocation_id = $1 AND command_type = 'invocation.start')
+             AS start_commands`,
+        [fixture.invocationId, session.workerSessionId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ alerts: '1', transport_conflicts: '1', start_commands: '1' }],
+    });
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it('keeps one late-started reconciliation root when a replayed source changes its evidence', async () => {
+    const seeded = await seedInvocationProjectionFixture('late-started-conflict');
+    const { fixture, session, lease, assistantMessageSealer, projectingAuthority, preparedFact } =
+      seeded;
+    const preparedEvent = invocationPrepared(session, lease, 0n, preparedFact);
+    await projectingAuthority.acceptEnvelope(
+      session,
+      delivery(preparedEvent),
+      AbortSignal.timeout(5_000),
+    );
+    const startCommand = await owner.query<{ command_id: string }>(
+      `UPDATE broker_outbox
+          SET state = 'SENT', attempt_count = 1, next_attempt_at = statement_timestamp()
+        WHERE invocation_id = $1 AND command_type = 'invocation.start'
+          AND state = 'PENDING'
+      RETURNING command_id::text`,
+      [fixture.invocationId],
+    );
+    const startCommandId = startCommand.rows[0]?.command_id;
+    if (!startCommandId) throw new Error('expected one late-started start command');
+    await owner.query(
+      `UPDATE agent_invocations
+          SET execution_capability_revoked_at = clock_timestamp()
+        WHERE id = $1`,
+      [fixture.invocationId],
+    );
+    const admittedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.started',
+      sourceEventId: startCommandId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      startCommandId,
+      runtimeThreadId: `late-thread-${fixture.invocationId}`,
+      runtimeTurnId: `late-turn-${fixture.invocationId}`,
+      dispatchReceiptDigest: `sha256:${randomBytes(32).toString('hex')}`,
+      sandboxAttestationDigest: `sha256:${randomBytes(32).toString('hex')}`,
+    } as const satisfies WorkerInvocationStartedFact;
+    const admittedEvent = invocationStarted(session, lease, 1n, admittedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(admittedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: {
+          acknowledgedMessageId: admittedEvent.messageId,
+          decision: 'RECONCILE',
+          level: 'CLOUD_COMMITTED',
+        },
+      },
+    ]);
+    const beforeConflict = await owner.query<{
+      state: string;
+      runtime_thread_id: string;
+      runtime_turn_id: string;
+      source_fact_digest: string;
+      source_dispatch_receipt_digest: string;
+      source_sandbox_attestation_digest: string;
+      payload: unknown;
+      root_source_event_id: string;
+      root_payload: unknown;
+      root_events: string;
+      start_state: string;
+      alerts: string;
+    }>(
+      `SELECT invocation.state, invocation.runtime_thread_id, invocation.runtime_turn_id,
+              started.source_fact_digest, started.source_dispatch_receipt_digest,
+              started.source_sandbox_attestation_digest, started.payload,
+              root.source_event_id AS root_source_event_id, root.payload AS root_payload,
+              (SELECT count(*)::text FROM agent_invocation_events AS candidate
+                WHERE candidate.invocation_id = invocation.id
+                  AND candidate.source = 'RECONCILER'
+                  AND candidate.event_type = 'invocation.reconciling') AS root_events,
+              start_command.state AS start_state,
+              (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                WHERE alert.invocation_id = invocation.id) AS alerts
+         FROM agent_invocations AS invocation
+         JOIN agent_invocation_events AS started
+           ON started.invocation_id = invocation.id AND started.source = 'WORKER'
+          AND started.event_type = 'invocation.started'
+         JOIN agent_invocation_events AS root
+           ON root.invocation_id = invocation.id AND root.source = 'RECONCILER'
+          AND root.event_type = 'invocation.reconciling'
+         JOIN broker_outbox AS start_command
+           ON start_command.command_id = $2
+        WHERE invocation.id = $1`,
+      [fixture.invocationId, startCommandId],
+    );
+    expect(beforeConflict.rows).toEqual([
+      {
+        state: 'RECONCILING',
+        runtime_thread_id: admittedFact.runtimeThreadId,
+        runtime_turn_id: admittedFact.runtimeTurnId,
+        source_fact_digest: workerInvocationFactDigest(admittedFact),
+        source_dispatch_receipt_digest: admittedFact.dispatchReceiptDigest,
+        source_sandbox_attestation_digest: admittedFact.sandboxAttestationDigest,
+        payload: { state: 'RECONCILING' },
+        root_source_event_id: `late-started:${startCommandId}`,
+        root_payload: { state: 'RECONCILING', reason: 'CANCEL_NOT_CONFIRMED' },
+        root_events: '1',
+        start_state: 'ACKED',
+        alerts: '0',
+      },
+    ]);
+
+    const conflictingFact = {
+      ...admittedFact,
+      dispatchReceiptDigest: `sha256:${randomBytes(32).toString('hex')}`,
+    } satisfies WorkerInvocationStartedFact;
+    const conflictEvent = invocationStarted(session, lease, 2n, conflictingFact);
+    const blocked = await projectingAuthority.acceptEnvelope(
+      session,
+      delivery(conflictEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked).toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'SECURITY_BLOCK', level: 'CLOUD_COMMITTED' },
+      },
+      { type: 'lease.revoke', body: { reason: 'SECURITY' } },
+    ]);
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    await expect(
+      owner.query<{
+        state: string;
+        source_fact_digest: string;
+        source_dispatch_receipt_digest: string;
+        source_sandbox_attestation_digest: string;
+        root_events: string;
+        alerts: string;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string;
+      }>(
+        `SELECT invocation.state, started.source_fact_digest,
+                started.source_dispatch_receipt_digest,
+                started.source_sandbox_attestation_digest,
+                (SELECT count(*)::text FROM agent_invocation_events AS root
+                  WHERE root.invocation_id = invocation.id AND root.source = 'RECONCILER'
+                    AND root.event_type = 'invocation.reconciling') AS root_events,
+                (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                  WHERE alert.invocation_id = invocation.id) AS alerts,
+                lease.state AS lease_state, gateway.state AS session_state,
+                deployment.observed_state AS deployment_state, deployment.last_error_code
+           FROM agent_invocations AS invocation
+           JOIN agent_invocation_events AS started
+             ON started.invocation_id = invocation.id AND started.source = 'WORKER'
+            AND started.event_type = 'invocation.started'
+           JOIN worker_leases AS lease ON lease.id = $2
+           JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+           JOIN deployments AS deployment ON deployment.id = $4
+          WHERE invocation.id = $1`,
+        [fixture.invocationId, lease.lease.leaseId, session.workerSessionId, fixture.deploymentId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: 'RECONCILING',
+          source_fact_digest: workerInvocationFactDigest(admittedFact),
+          source_dispatch_receipt_digest: admittedFact.dispatchReceiptDigest,
+          source_sandbox_attestation_digest: admittedFact.sandboxAttestationDigest,
+          root_events: '1',
+          alerts: '1',
+          lease_state: 'REVOKED',
+          session_state: 'REVOKED',
+          deployment_state: 'BLOCKED',
+          last_error_code: 'WORKER_FACT_CONFLICT',
+        },
+      ],
+    });
+  }, 20_000);
+
+  it('atomically isolates a confirmed failed-fact mutation after an exact re-envelope', async () => {
+    const seeded = await seedInvocationProjectionFixture('failed-conflict');
+    const {
+      fixture,
+      session,
+      lease,
+      securityPolicy,
+      assistantMessageSealer,
+      businessProjector,
+      projectingAuthority,
+    } = seeded;
+    const running = await advanceFixtureToRunning(seeded);
+    const admittedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.failed',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      errorCode: 'TURN_FAILED',
+    } as const satisfies WorkerInvocationFailedFact;
+    const admittedEvent = invocationFailedFact(session, lease, 2n, admittedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(admittedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    const exactEvent = invocationFailedFact(session, lease, 3n, admittedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(session, delivery(exactEvent), AbortSignal.timeout(5_000)),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'IDEMPOTENT_REPLAY', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+
+    const conflictingFact = {
+      ...admittedFact,
+      errorCode: 'TURN_TIMEOUT',
+    } satisfies WorkerInvocationFailedFact;
+    const conflictEvent = invocationFailedFact(session, lease, 4n, conflictingFact);
+    const operationKeys = [
+      running.preparedEvent,
+      running.startedEvent,
+      admittedEvent,
+      exactEvent,
+      conflictEvent,
+    ].map((event) => `${event.messageId}:${canonicalSha256(event)}`);
+    const footprint = async () => {
+      const observed = await owner.query<{
+        invocation_state: string;
+        error_code: string | null;
+        result_message_id: string | null;
+        result_digest: string | null;
+        capability_revoked: boolean;
+        conversation_state: string;
+        failed_events: string;
+        succeeded_events: string;
+        terminal_source_event_id: string | null;
+        terminal_fact_digest: string | null;
+        terminal_payload: unknown;
+        consumer_events: string;
+        assistant_messages: string;
+        start_commands: string;
+        start_state: string | null;
+        alerts: string;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string | null;
+        receipts: string;
+        outbound_frames: string;
+        operations: string;
+        inbound_next_seq: string;
+        outbound_next_seq: string;
+      }>(
+        `SELECT invocation.state AS invocation_state, invocation.error_code,
+                invocation.result_message_id::text, invocation.result_digest,
+                invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                conversation.state AS conversation_state,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.failed') AS failed_events,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.succeeded') AS succeeded_events,
+                terminal.source_event_id AS terminal_source_event_id,
+                terminal.source_fact_digest AS terminal_fact_digest,
+                terminal.payload AS terminal_payload,
+                (SELECT count(*)::text FROM consumer_event_outbox AS consumer_event
+                  WHERE consumer_event.invocation_id = invocation.id
+                    AND consumer_event.event_type = 'invocation.terminal') AS consumer_events,
+                (SELECT count(*)::text FROM agent_messages AS message
+                  WHERE message.invocation_id = invocation.id
+                    AND message.role = 'ASSISTANT') AS assistant_messages,
+                (SELECT count(*)::text FROM broker_outbox AS command
+                  WHERE command.invocation_id = invocation.id
+                    AND command.command_type = 'invocation.start') AS start_commands,
+                start_command.state AS start_state,
+                (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                  WHERE alert.invocation_id = invocation.id) AS alerts,
+                lease.state AS lease_state, gateway.state AS session_state,
+                deployment.observed_state AS deployment_state, deployment.last_error_code,
+                (SELECT count(*)::text FROM worker_gateway_frame_receipts AS receipt
+                  WHERE receipt.session_id = gateway.id) AS receipts,
+                (SELECT count(*)::text FROM worker_gateway_outbound_frames AS frame
+                  WHERE frame.session_id = gateway.id) AS outbound_frames,
+                (SELECT count(*)::text FROM worker_gateway_operation_receipts AS operation
+                  WHERE operation.creator_id = invocation.creator_id
+                    AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+                    AND operation.operation_key = ANY($4::text[])) AS operations,
+                gateway.inbound_next_seq::text, gateway.outbound_next_seq::text
+           FROM agent_invocations AS invocation
+           JOIN agent_conversations AS conversation
+             ON conversation.id = invocation.conversation_id
+           JOIN worker_leases AS lease ON lease.id = $2
+           JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+           JOIN deployments AS deployment ON deployment.id = $1
+           LEFT JOIN agent_invocation_events AS terminal
+             ON terminal.invocation_id = invocation.id AND terminal.source = 'WORKER'
+            AND terminal.event_type = 'invocation.failed'
+           LEFT JOIN broker_outbox AS start_command
+             ON start_command.invocation_id = invocation.id
+            AND start_command.command_type = 'invocation.start'
+          WHERE invocation.id = $5`,
+        [
+          fixture.deploymentId,
+          lease.lease.leaseId,
+          session.workerSessionId,
+          operationKeys,
+          fixture.invocationId,
+        ],
+      );
+      const row = observed.rows[0];
+      if (!row) throw new Error('failed conflict footprint missing');
+      return row;
+    };
+    const beforeConflict = await footprint();
+    expect(beforeConflict).toMatchObject({
+      invocation_state: 'FAILED',
+      error_code: admittedFact.errorCode,
+      result_message_id: null,
+      result_digest: null,
+      capability_revoked: false,
+      conversation_state: 'IDLE',
+      failed_events: '1',
+      succeeded_events: '0',
+      terminal_source_event_id: fixture.invocationId,
+      terminal_fact_digest: workerInvocationFactDigest(admittedFact),
+      terminal_payload: { state: 'FAILED', errorCode: admittedFact.errorCode },
+      consumer_events: '1',
+      assistant_messages: '0',
+      start_commands: '1',
+      start_state: 'ACKED',
+      alerts: '0',
+      lease_state: 'ACTIVE',
+      session_state: 'ACTIVE',
+      receipts: '4',
+      outbound_frames: '5',
+      operations: '4',
+      inbound_next_seq: '4',
+      outbound_next_seq: '5',
+    });
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    for (const target of ['EVENT_PROJECTED', 'RECEIPT_INSERTED'] as const) {
+      const failingAuthority = new PostgresAgentGatewayAuthority(
+        pools,
+        securityPolicy,
+        businessProjector,
+        (step) => {
+          if (step === target) throw new Error(`FAILPOINT:FAILED:${target}`);
+        },
+      );
+      await expect(
+        failingAuthority.acceptEnvelope(
+          session,
+          delivery(conflictEvent),
+          AbortSignal.timeout(5_000),
+        ),
+      ).rejects.toThrow(`FAILPOINT:FAILED:${target}`);
+      expect(await footprint(), target).toEqual(beforeConflict);
+    }
+
+    const lossySecurityAuthority = new PostgresAgentGatewayAuthority(
+      { api: apiGatewayPool, broker: lossyBrokerPool },
+      securityPolicy,
+      businessProjector,
+    );
+    lossyBrokerPool.arm();
+    const blocked = await lossySecurityAuthority.acceptEnvelope(
+      session,
+      delivery(conflictEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked).toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'SECURITY_BLOCK', level: 'CLOUD_COMMITTED' },
+      },
+      { type: 'lease.revoke', body: { reason: 'SECURITY' } },
+    ]);
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+    expect(await footprint()).toMatchObject({
+      ...beforeConflict,
+      // FAILED is already terminal; its historical capability remains unstamped but inert.
+      capability_revoked: false,
+      alerts: '1',
+      lease_state: 'REVOKED',
+      session_state: 'REVOKED',
+      deployment_state: 'BLOCKED',
+      last_error_code: 'WORKER_FACT_CONFLICT',
+      receipts: '5',
+      outbound_frames: '7',
+      operations: '5',
+      inbound_next_seq: '5',
+      outbound_next_seq: '7',
+    });
+    const alerts = await owner.query<{
+      reason: string;
+      source: string;
+      source_event_id_digest: string;
+      existing_canonical_digest: string;
+      received_canonical_digest: string;
+    }>(
+      `SELECT reason, source, source_event_id_digest,
+              existing_canonical_digest, received_canonical_digest
+         FROM creator_agent_journal_integrity_alerts
+        WHERE invocation_id = $1`,
+      [fixture.invocationId],
+    );
+    expect(alerts.rows).toHaveLength(1);
+    expect(alerts.rows[0]).toMatchObject({ reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' });
+    expect(alerts.rows[0]?.existing_canonical_digest).not.toBe(
+      alerts.rows[0]?.received_canonical_digest,
+    );
+    const serializedAlert = JSON.stringify(alerts.rows[0]);
+    expect(serializedAlert).not.toContain(fixture.invocationId);
+    expect(serializedAlert).not.toContain(admittedFact.errorCode);
+    expect(serializedAlert).not.toContain(conflictingFact.errorCode);
+
+    const conflictOperationKey = operationKeys[4]!;
+    await expect(
+      owner.query<{ response_frames: unknown; result_value: unknown }>(
+        `SELECT receipt.response_frames, operation.result_value
+           FROM worker_gateway_frame_receipts AS receipt
+           JOIN worker_gateway_operation_receipts AS operation
+             ON operation.creator_id = receipt.creator_id
+            AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+            AND operation.operation_key = $4
+          WHERE receipt.session_id = $1 AND receipt.sequence = 4
+            AND receipt.message_id = $2 AND receipt.canonical_digest = $3`,
+        [
+          session.workerSessionId,
+          conflictEvent.messageId,
+          canonicalSha256(conflictEvent),
+          conflictOperationKey,
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          response_frames: blocked,
+          result_value: { kind: 'RESPONSES', responses: blocked },
+        },
+      ],
+    });
+    const afterCommit = await footprint();
+    await expect(
+      projectingAuthority.replayEnvelope(
+        session,
+        delivery(conflictEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toEqual(blocked);
+    expect(await footprint()).toEqual(afterCommit);
+
+    const transportConflict = BrokerEnvelopeSchema.parse({
+      ...conflictEvent,
+      messageId: randomUuidV7(),
+    });
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(transportConflict),
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+    await expect(
+      owner.query<{ alerts: string; transport_conflicts: string }>(
+        `SELECT
+           (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts
+             WHERE invocation_id = $1) AS alerts,
+           (SELECT count(*)::text FROM worker_gateway_security_events
+             WHERE session_id = $2 AND event_type = 'SEQUENCE_CONFLICT')
+             AS transport_conflicts`,
+        [fixture.invocationId, session.workerSessionId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ alerts: '1', transport_conflicts: '1' }] });
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+  }, 25_000);
+
+  it('atomically isolates a full succeeded-fact mutation after an exact transport re-envelope', async () => {
+    const seeded = await seedInvocationProjectionFixture('succeeded-conflict');
+    const {
+      fixture,
+      session,
+      lease,
+      securityPolicy,
+      assistantMessageSealer,
+      businessProjector,
+      projectingAuthority,
+    } = seeded;
+    const running = await advanceFixtureToRunning(seeded);
+    const resultDigest = `hmac-sha256:${randomBytes(32).toString('hex')}`;
+    const admittedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.succeeded',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      runtimeThreadId: running.startedFact.runtimeThreadId,
+      runtimeTurnId: running.startedFact.runtimeTurnId,
+      startedFactDigest: workerInvocationFactDigest(running.startedFact),
+      resultDigest,
+      localResultCipherDigest: randomBytes(32).toString('hex'),
+    } as const satisfies WorkerInvocationSucceededFact;
+    assistantMessageSealer.mockImplementation(
+      terminalSealer(resultDigest, admittedFact.localResultCipherDigest),
+    );
+    const admittedEvent = invocationSucceeded(
+      session,
+      lease,
+      2n,
+      fixture.conversationId,
+      admittedFact,
+    );
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(admittedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+
+    // A new envelope necessarily has a new messageId/AAD and transport ciphertext. Durable source
+    // identity is the exact Worker fact, so this must replay without a second KMS/sealer call.
+    const exactEvent = invocationSucceeded(
+      session,
+      lease,
+      3n,
+      fixture.conversationId,
+      admittedFact,
+    );
+    expect(exactEvent.body.resultCiphertext).not.toEqual(admittedEvent.body.resultCiphertext);
+    await expect(
+      projectingAuthority.acceptEnvelope(session, delivery(exactEvent), AbortSignal.timeout(5_000)),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'IDEMPOTENT_REPLAY', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+
+    const conflictingFact = {
+      ...admittedFact,
+      agentVersionDigest: randomBytes(32).toString('hex'),
+      snapshotDigest: randomBytes(32).toString('hex'),
+      executionCapabilityDigest: randomBytes(32).toString('hex'),
+      leaseId: randomUuidV7(),
+      fence: (BigInt(admittedFact.fence) + 1n).toString(),
+      runtimeThreadId: `success-conflict-thread-${fixture.invocationId}`,
+      runtimeTurnId: `success-conflict-turn-${fixture.invocationId}`,
+      startedFactDigest: randomBytes(32).toString('hex'),
+      resultDigest: `hmac-sha256:${randomBytes(32).toString('hex')}`,
+      localResultCipherDigest: randomBytes(32).toString('hex'),
+    } satisfies WorkerInvocationSucceededFact;
+    const conflictEvent = invocationSucceeded(
+      session,
+      lease,
+      4n,
+      fixture.conversationId,
+      conflictingFact,
+    );
+    const operationKeys = [
+      running.preparedEvent,
+      running.startedEvent,
+      admittedEvent,
+      exactEvent,
+      conflictEvent,
+    ].map((event) => `${event.messageId}:${canonicalSha256(event)}`);
+    const footprint = async () => {
+      const observed = await owner.query<{
+        invocation_state: string;
+        result_message_id: string | null;
+        result_digest: string | null;
+        error_code: string | null;
+        capability_revoked: boolean;
+        conversation_state: string;
+        succeeded_events: string;
+        failed_events: string;
+        terminal_source_event_id: string | null;
+        terminal_fact_digest: string | null;
+        terminal_local_cipher_digest: string | null;
+        terminal_payload: unknown;
+        assistant_messages: string;
+        message_key_id: string | null;
+        message_nonce: string | null;
+        message_ciphertext: string | null;
+        message_auth_tag: string | null;
+        message_cipher_digest: string | null;
+        message_content_digest: string | null;
+        consumer_events: string;
+        consumer_payload: unknown;
+        consumer_payload_digest: string | null;
+        consumer_dedupe_key: string | null;
+        terminal_receipts: string;
+        start_commands: string;
+        start_state: string | null;
+        alerts: string;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string | null;
+        receipts: string;
+        outbound_frames: string;
+        operations: string;
+        inbound_next_seq: string;
+        outbound_next_seq: string;
+      }>(
+        `SELECT invocation.state AS invocation_state,
+                invocation.result_message_id::text, invocation.result_digest,
+                invocation.error_code,
+                invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                conversation.state AS conversation_state,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.succeeded') AS succeeded_events,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.failed') AS failed_events,
+                terminal.source_event_id AS terminal_source_event_id,
+                terminal.source_fact_digest AS terminal_fact_digest,
+                terminal.source_local_result_cipher_digest AS terminal_local_cipher_digest,
+                terminal.payload AS terminal_payload,
+                (SELECT count(*)::text FROM agent_messages AS candidate
+                  WHERE candidate.invocation_id = invocation.id
+                    AND candidate.role = 'ASSISTANT') AS assistant_messages,
+                message.content_key_id AS message_key_id,
+                encode(message.content_nonce, 'hex') AS message_nonce,
+                encode(message.content_ciphertext, 'hex') AS message_ciphertext,
+                encode(message.content_auth_tag, 'hex') AS message_auth_tag,
+                message.content_cipher_digest AS message_cipher_digest,
+                message.content_digest AS message_content_digest,
+                (SELECT count(*)::text FROM consumer_event_outbox AS candidate
+                  WHERE candidate.invocation_id = invocation.id
+                    AND candidate.event_type = 'invocation.terminal') AS consumer_events,
+                consumer.payload AS consumer_payload,
+                consumer.payload_digest AS consumer_payload_digest,
+                consumer.dedupe_key AS consumer_dedupe_key,
+                (SELECT count(*)::text FROM creator_agent_succeeded_terminal_receipts AS receipt
+                  WHERE receipt.invocation_id = invocation.id) AS terminal_receipts,
+                (SELECT count(*)::text FROM broker_outbox AS command
+                  WHERE command.invocation_id = invocation.id
+                    AND command.command_type = 'invocation.start') AS start_commands,
+                start_command.state AS start_state,
+                (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                  WHERE alert.invocation_id = invocation.id) AS alerts,
+                lease.state AS lease_state, gateway.state AS session_state,
+                deployment.observed_state AS deployment_state, deployment.last_error_code,
+                (SELECT count(*)::text FROM worker_gateway_frame_receipts AS receipt
+                  WHERE receipt.session_id = gateway.id) AS receipts,
+                (SELECT count(*)::text FROM worker_gateway_outbound_frames AS frame
+                  WHERE frame.session_id = gateway.id) AS outbound_frames,
+                (SELECT count(*)::text FROM worker_gateway_operation_receipts AS operation
+                  WHERE operation.creator_id = invocation.creator_id
+                    AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+                    AND operation.operation_key = ANY($4::text[])) AS operations,
+                gateway.inbound_next_seq::text, gateway.outbound_next_seq::text
+           FROM agent_invocations AS invocation
+           JOIN agent_conversations AS conversation
+             ON conversation.id = invocation.conversation_id
+           JOIN worker_leases AS lease ON lease.id = $2
+           JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+           JOIN deployments AS deployment ON deployment.id = $1
+           LEFT JOIN agent_invocation_events AS terminal
+             ON terminal.invocation_id = invocation.id AND terminal.source = 'WORKER'
+            AND terminal.event_type = 'invocation.succeeded'
+           LEFT JOIN agent_messages AS message
+             ON message.id = invocation.result_message_id AND message.role = 'ASSISTANT'
+           LEFT JOIN consumer_event_outbox AS consumer
+             ON consumer.invocation_id = invocation.id
+            AND consumer.source_event_id = terminal.id
+            AND consumer.event_type = 'invocation.terminal'
+           LEFT JOIN broker_outbox AS start_command
+             ON start_command.invocation_id = invocation.id
+            AND start_command.command_type = 'invocation.start'
+          WHERE invocation.id = $5`,
+        [
+          fixture.deploymentId,
+          lease.lease.leaseId,
+          session.workerSessionId,
+          operationKeys,
+          fixture.invocationId,
+        ],
+      );
+      const row = observed.rows[0];
+      if (!row) throw new Error('succeeded conflict footprint missing');
+      return row;
+    };
+    const beforeConflict = await footprint();
+    expect(beforeConflict).toMatchObject({
+      invocation_state: 'SUCCEEDED',
+      result_message_id: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+      result_digest: admittedFact.resultDigest,
+      error_code: null,
+      capability_revoked: false,
+      conversation_state: 'IDLE',
+      succeeded_events: '1',
+      failed_events: '0',
+      terminal_source_event_id: fixture.invocationId,
+      terminal_fact_digest: workerInvocationFactDigest(admittedFact),
+      terminal_local_cipher_digest: admittedFact.localResultCipherDigest,
+      terminal_payload: {
+        state: 'SUCCEEDED',
+        messageId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+        resultDigest: admittedFact.resultDigest,
+      },
+      assistant_messages: '1',
+      consumer_events: '1',
+      consumer_payload: {
+        terminalState: 'SUCCEEDED',
+        resultDigest: admittedFact.resultDigest,
+      },
+      terminal_receipts: '1',
+      start_commands: '1',
+      start_state: 'ACKED',
+      alerts: '0',
+      lease_state: 'ACTIVE',
+      session_state: 'ACTIVE',
+      receipts: '4',
+      outbound_frames: '5',
+      operations: '4',
+      inbound_next_seq: '4',
+      outbound_next_seq: '5',
+    });
+
+    for (const target of ['EVENT_PROJECTED', 'RECEIPT_INSERTED'] as const) {
+      const failingAuthority = new PostgresAgentGatewayAuthority(
+        pools,
+        securityPolicy,
+        businessProjector,
+        (step) => {
+          if (step === target) throw new Error(`FAILPOINT:SUCCEEDED:${target}`);
+        },
+      );
+      await expect(
+        failingAuthority.acceptEnvelope(
+          session,
+          delivery(conflictEvent),
+          AbortSignal.timeout(5_000),
+        ),
+      ).rejects.toThrow(`FAILPOINT:SUCCEEDED:${target}`);
+      expect(await footprint(), target).toEqual(beforeConflict);
+      expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+    }
+
+    const lossySecurityAuthority = new PostgresAgentGatewayAuthority(
+      { api: apiGatewayPool, broker: lossyBrokerPool },
+      securityPolicy,
+      businessProjector,
+    );
+    lossyBrokerPool.arm();
+    const blocked = await lossySecurityAuthority.acceptEnvelope(
+      session,
+      delivery(conflictEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked).toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'SECURITY_BLOCK', level: 'CLOUD_COMMITTED' },
+      },
+      { type: 'lease.revoke', body: { reason: 'SECURITY' } },
+    ]);
+    expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+    expect(await footprint()).toMatchObject({
+      ...beforeConflict,
+      capability_revoked: false,
+      alerts: '1',
+      lease_state: 'REVOKED',
+      session_state: 'REVOKED',
+      deployment_state: 'BLOCKED',
+      last_error_code: 'WORKER_FACT_CONFLICT',
+      receipts: '5',
+      outbound_frames: '7',
+      operations: '5',
+      inbound_next_seq: '5',
+      outbound_next_seq: '7',
+    });
+    const alerts = await owner.query<{
+      reason: string;
+      source: string;
+      source_event_id_digest: string;
+      existing_canonical_digest: string;
+      received_canonical_digest: string;
+    }>(
+      `SELECT reason, source, source_event_id_digest,
+              existing_canonical_digest, received_canonical_digest
+         FROM creator_agent_journal_integrity_alerts
+        WHERE invocation_id = $1`,
+      [fixture.invocationId],
+    );
+    expect(alerts.rows).toHaveLength(1);
+    expect(alerts.rows[0]).toMatchObject({ reason: 'SOURCE_EVENT_CONFLICT', source: 'WORKER' });
+    const serializedAlert = JSON.stringify(alerts.rows[0]);
+    for (const forbidden of [
+      fixture.invocationId,
+      admittedFact.resultDigest,
+      admittedFact.localResultCipherDigest,
+      conflictingFact.resultDigest,
+      conflictingFact.localResultCipherDigest,
+      beforeConflict.message_key_id,
+      beforeConflict.message_nonce,
+      beforeConflict.message_ciphertext,
+      beforeConflict.message_auth_tag,
+      beforeConflict.message_cipher_digest,
+      beforeConflict.message_content_digest,
+    ]) {
+      if (forbidden !== null) expect(serializedAlert).not.toContain(forbidden);
+    }
+
+    const conflictOperationKey = operationKeys[4]!;
+    await expect(
+      owner.query<{ response_frames: unknown; result_value: unknown }>(
+        `SELECT receipt.response_frames, operation.result_value
+           FROM worker_gateway_frame_receipts AS receipt
+           JOIN worker_gateway_operation_receipts AS operation
+             ON operation.creator_id = receipt.creator_id
+            AND operation.operation_kind = 'ACCEPT_ENVELOPE'
+            AND operation.operation_key = $4
+          WHERE receipt.session_id = $1 AND receipt.sequence = 4
+            AND receipt.message_id = $2 AND receipt.canonical_digest = $3`,
+        [
+          session.workerSessionId,
+          conflictEvent.messageId,
+          canonicalSha256(conflictEvent),
+          conflictOperationKey,
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          response_frames: blocked,
+          result_value: { kind: 'RESPONSES', responses: blocked },
+        },
+      ],
+    });
+    const afterCommit = await footprint();
+    await expect(
+      projectingAuthority.replayEnvelope(
+        session,
+        delivery(conflictEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toEqual(blocked);
+    expect(await footprint()).toEqual(afterCommit);
+
+    const transportConflict = invocationSucceeded(
+      session,
+      lease,
+      4n,
+      fixture.conversationId,
+      conflictingFact,
+    );
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(transportConflict),
+        AbortSignal.timeout(5_000),
+      ),
+    ).rejects.toMatchObject({ code: 'SEQUENCE_CONFLICT' });
+    await expect(
+      owner.query<{ alerts: string; transport_conflicts: string; start_commands: string }>(
+        `SELECT
+           (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts
+             WHERE invocation_id = $1) AS alerts,
+           (SELECT count(*)::text FROM worker_gateway_security_events
+             WHERE session_id = $2 AND event_type = 'SEQUENCE_CONFLICT')
+             AS transport_conflicts,
+           (SELECT count(*)::text FROM broker_outbox
+             WHERE invocation_id = $1 AND command_type = 'invocation.start')
+             AS start_commands`,
+        [fixture.invocationId, session.workerSessionId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ alerts: '1', transport_conflicts: '1', start_commands: '1' }],
+    });
+    expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+  }, 25_000);
+
+  it('security-isolates a failed terminal-type conflict after a durable succeeded chain', async () => {
+    const seeded = await seedInvocationProjectionFixture('succeeded-failed-conflict');
+    const { fixture, session, lease, assistantMessageSealer, projectingAuthority } = seeded;
+    const running = await advanceFixtureToRunning(seeded);
+    const resultDigest = `hmac-sha256:${randomBytes(32).toString('hex')}`;
+    const succeededFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.succeeded',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      runtimeThreadId: running.startedFact.runtimeThreadId,
+      runtimeTurnId: running.startedFact.runtimeTurnId,
+      startedFactDigest: workerInvocationFactDigest(running.startedFact),
+      resultDigest,
+      localResultCipherDigest: randomBytes(32).toString('hex'),
+    } as const satisfies WorkerInvocationSucceededFact;
+    assistantMessageSealer.mockImplementation(
+      terminalSealer(resultDigest, succeededFact.localResultCipherDigest),
+    );
+    const succeededEvent = invocationSucceeded(
+      session,
+      lease,
+      2n,
+      fixture.conversationId,
+      succeededFact,
+    );
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(succeededEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+
+    const failedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.failed',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      errorCode: 'TURN_FAILED',
+    } as const satisfies WorkerInvocationFailedFact;
+    const failedEvent = invocationFailedFact(session, lease, 3n, failedFact);
+    const blocked = await projectingAuthority.acceptEnvelope(
+      session,
+      delivery(failedEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked).toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'SECURITY_BLOCK', level: 'CLOUD_COMMITTED' },
+      },
+      { type: 'lease.revoke', body: { reason: 'SECURITY' } },
+    ]);
+    expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+
+    await expect(
+      owner.query<{
+        state: string;
+        result_message_id: string;
+        result_digest: string;
+        error_code: string | null;
+        succeeded_events: string;
+        failed_events: string;
+        assistant_messages: string;
+        consumer_events: string;
+        start_commands: string;
+        alerts: string;
+        capability_revoked: boolean;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string;
+      }>(
+        `SELECT invocation.state, invocation.result_message_id::text,
+                invocation.result_digest, invocation.error_code,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.succeeded') AS succeeded_events,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.failed') AS failed_events,
+                (SELECT count(*)::text FROM agent_messages AS message
+                  WHERE message.invocation_id = invocation.id
+                    AND message.role = 'ASSISTANT') AS assistant_messages,
+                (SELECT count(*)::text FROM consumer_event_outbox AS consumer_event
+                  WHERE consumer_event.invocation_id = invocation.id
+                    AND consumer_event.event_type = 'invocation.terminal') AS consumer_events,
+                (SELECT count(*)::text FROM broker_outbox AS command
+                  WHERE command.invocation_id = invocation.id
+                    AND command.command_type = 'invocation.start') AS start_commands,
+                (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                  WHERE alert.invocation_id = invocation.id) AS alerts,
+                invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                lease.state AS lease_state, gateway.state AS session_state,
+                deployment.observed_state AS deployment_state, deployment.last_error_code
+           FROM agent_invocations AS invocation
+           JOIN worker_leases AS lease ON lease.id = $2
+           JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+           JOIN deployments AS deployment ON deployment.id = $4
+          WHERE invocation.id = $1`,
+        [fixture.invocationId, lease.lease.leaseId, session.workerSessionId, fixture.deploymentId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: 'SUCCEEDED',
+          result_message_id: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+          result_digest: resultDigest,
+          error_code: null,
+          succeeded_events: '1',
+          failed_events: '0',
+          assistant_messages: '1',
+          consumer_events: '1',
+          start_commands: '1',
+          alerts: '1',
+          // SUCCEEDED is already terminal; its historical capability remains unstamped but inert.
+          capability_revoked: false,
+          lease_state: 'REVOKED',
+          session_state: 'REVOKED',
+          deployment_state: 'BLOCKED',
+          last_error_code: 'WORKER_FACT_CONFLICT',
+        },
+      ],
+    });
+  }, 20_000);
+
+  it('security-isolates a succeeded terminal-type conflict after a durable failed chain', async () => {
+    const seeded = await seedInvocationProjectionFixture('failed-succeeded-conflict');
+    const { fixture, session, lease, assistantMessageSealer, projectingAuthority } = seeded;
+    const running = await advanceFixtureToRunning(seeded);
+    const failedFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.failed',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      errorCode: 'TURN_FAILED',
+    } as const satisfies WorkerInvocationFailedFact;
+    const failedEvent = invocationFailedFact(session, lease, 2n, failedFact);
+    await expect(
+      projectingAuthority.acceptEnvelope(
+        session,
+        delivery(failedEvent),
+        AbortSignal.timeout(5_000),
+      ),
+    ).resolves.toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'APPLIED', level: 'CLOUD_COMMITTED' },
+      },
+    ]);
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    const succeededFact = {
+      protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+      schemaVersion: 1,
+      type: 'invocation.succeeded',
+      sourceEventId: fixture.invocationId,
+      invocationId: fixture.invocationId,
+      agentVersionDigest: fixture.versionDigest,
+      snapshotDigest: digest('1'),
+      executionCapabilityDigest: fixture.capabilityDigest,
+      leaseId: lease.lease.leaseId,
+      fence: lease.lease.fence,
+      runtimeThreadId: running.startedFact.runtimeThreadId,
+      runtimeTurnId: running.startedFact.runtimeTurnId,
+      startedFactDigest: workerInvocationFactDigest(running.startedFact),
+      resultDigest: `hmac-sha256:${randomBytes(32).toString('hex')}`,
+      localResultCipherDigest: randomBytes(32).toString('hex'),
+    } as const satisfies WorkerInvocationSucceededFact;
+    const succeededEvent = invocationSucceeded(
+      session,
+      lease,
+      3n,
+      fixture.conversationId,
+      succeededFact,
+    );
+    const blocked = await projectingAuthority.acceptEnvelope(
+      session,
+      delivery(succeededEvent),
+      AbortSignal.timeout(5_000),
+    );
+    expect(blocked).toMatchObject([
+      {
+        type: 'message.ack',
+        body: { decision: 'SECURITY_BLOCK', level: 'CLOUD_COMMITTED' },
+      },
+      { type: 'lease.revoke', body: { reason: 'SECURITY' } },
+    ]);
+    expect(assistantMessageSealer).not.toHaveBeenCalled();
+
+    await expect(
+      owner.query<{
+        state: string;
+        error_code: string;
+        result_message_id: string | null;
+        result_digest: string | null;
+        failed_events: string;
+        succeeded_events: string;
+        assistant_messages: string;
+        consumer_events: string;
+        failed_receipts: string;
+        succeeded_receipts: string;
+        start_commands: string;
+        alerts: string;
+        capability_revoked: boolean;
+        lease_state: string;
+        session_state: string;
+        deployment_state: string;
+        last_error_code: string;
+      }>(
+        `SELECT invocation.state, invocation.error_code,
+                invocation.result_message_id::text, invocation.result_digest,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.failed') AS failed_events,
+                (SELECT count(*)::text FROM agent_invocation_events AS event
+                  WHERE event.invocation_id = invocation.id
+                    AND event.event_type = 'invocation.succeeded') AS succeeded_events,
+                (SELECT count(*)::text FROM agent_messages AS message
+                  WHERE message.invocation_id = invocation.id
+                    AND message.role = 'ASSISTANT') AS assistant_messages,
+                (SELECT count(*)::text FROM consumer_event_outbox AS consumer_event
+                  WHERE consumer_event.invocation_id = invocation.id
+                    AND consumer_event.event_type = 'invocation.terminal') AS consumer_events,
+                (SELECT count(*)::text FROM creator_agent_failed_terminal_receipts AS receipt
+                  WHERE receipt.invocation_id = invocation.id) AS failed_receipts,
+                (SELECT count(*)::text FROM creator_agent_succeeded_terminal_receipts AS receipt
+                  WHERE receipt.invocation_id = invocation.id) AS succeeded_receipts,
+                (SELECT count(*)::text FROM broker_outbox AS command
+                  WHERE command.invocation_id = invocation.id
+                    AND command.command_type = 'invocation.start') AS start_commands,
+                (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                  WHERE alert.invocation_id = invocation.id) AS alerts,
+                invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                lease.state AS lease_state, gateway.state AS session_state,
+                deployment.observed_state AS deployment_state, deployment.last_error_code
+           FROM agent_invocations AS invocation
+           JOIN worker_leases AS lease ON lease.id = $2
+           JOIN worker_gateway_sessions AS gateway ON gateway.id = $3
+           JOIN deployments AS deployment ON deployment.id = $4
+          WHERE invocation.id = $1`,
+        [fixture.invocationId, lease.lease.leaseId, session.workerSessionId, fixture.deploymentId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: 'FAILED',
+          error_code: failedFact.errorCode,
+          result_message_id: null,
+          result_digest: null,
+          failed_events: '1',
+          succeeded_events: '0',
+          assistant_messages: '0',
+          consumer_events: '1',
+          failed_receipts: '1',
+          succeeded_receipts: '0',
+          start_commands: '1',
+          alerts: '1',
+          capability_revoked: false,
+          lease_state: 'REVOKED',
+          session_state: 'REVOKED',
+          deployment_state: 'BLOCKED',
+          last_error_code: 'WORKER_FACT_CONFLICT',
+        },
+      ],
+    });
+  }, 20_000);
+
+  it.each(['THROW', 'IGNORE_ABORT'] as const)(
+    'rolls back Gateway frame and sequence state when the fresh success sealer is %s',
+    async (mode) => {
+      const seeded = await seedInvocationProjectionFixture(`success-sealer-${mode.toLowerCase()}`);
+      const { fixture, session, lease, assistantMessageSealer, projectingAuthority } = seeded;
+      const running = await advanceFixtureToRunning(seeded);
+      const resultDigest = `hmac-sha256:${randomBytes(32).toString('hex')}`;
+      if (mode === 'THROW') {
+        assistantMessageSealer.mockImplementation(() => {
+          throw new Error('SIMULATED_SUCCESS_SEALER_FAILURE');
+        });
+      } else {
+        assistantMessageSealer.mockImplementation(() => new Promise<never>(() => undefined));
+      }
+      const fact = {
+        protocol: WORKER_INVOCATION_FACT_PROTOCOL,
+        schemaVersion: 1,
+        type: 'invocation.succeeded',
+        sourceEventId: fixture.invocationId,
+        invocationId: fixture.invocationId,
+        agentVersionDigest: fixture.versionDigest,
+        snapshotDigest: digest('1'),
+        executionCapabilityDigest: fixture.capabilityDigest,
+        leaseId: lease.lease.leaseId,
+        fence: lease.lease.fence,
+        runtimeThreadId: running.startedFact.runtimeThreadId,
+        runtimeTurnId: running.startedFact.runtimeTurnId,
+        startedFactDigest: workerInvocationFactDigest(running.startedFact),
+        resultDigest,
+        localResultCipherDigest: randomBytes(32).toString('hex'),
+      } as const satisfies WorkerInvocationSucceededFact;
+      const event = invocationSucceeded(session, lease, 2n, fixture.conversationId, fact);
+      const footprint = () =>
+        owner.query<{
+          invocation_state: string;
+          assistant_messages: string;
+          succeeded_events: string;
+          consumer_events: string;
+          terminal_receipts: string;
+          alerts: string;
+          start_commands: string;
+          receipts: string;
+          outbound_frames: string;
+          inbound_next_seq: string;
+          outbound_next_seq: string;
+        }>(
+          `SELECT invocation.state AS invocation_state,
+                  (SELECT count(*)::text FROM agent_messages AS message
+                    WHERE message.invocation_id = invocation.id
+                      AND message.role = 'ASSISTANT') AS assistant_messages,
+                  (SELECT count(*)::text FROM agent_invocation_events AS terminal
+                    WHERE terminal.invocation_id = invocation.id
+                      AND terminal.event_type = 'invocation.succeeded') AS succeeded_events,
+                  (SELECT count(*)::text FROM consumer_event_outbox AS consumer_event
+                    WHERE consumer_event.invocation_id = invocation.id
+                      AND consumer_event.event_type = 'invocation.terminal') AS consumer_events,
+                  (SELECT count(*)::text FROM creator_agent_succeeded_terminal_receipts AS receipt
+                    WHERE receipt.invocation_id = invocation.id) AS terminal_receipts,
+                  (SELECT count(*)::text FROM creator_agent_journal_integrity_alerts AS alert
+                    WHERE alert.invocation_id = invocation.id) AS alerts,
+                  (SELECT count(*)::text FROM broker_outbox AS command
+                    WHERE command.invocation_id = invocation.id
+                      AND command.command_type = 'invocation.start') AS start_commands,
+                  (SELECT count(*)::text FROM worker_gateway_frame_receipts AS receipt
+                    WHERE receipt.session_id = gateway.id) AS receipts,
+                  (SELECT count(*)::text FROM worker_gateway_outbound_frames AS frame
+                    WHERE frame.session_id = gateway.id) AS outbound_frames,
+                  gateway.inbound_next_seq::text, gateway.outbound_next_seq::text
+             FROM agent_invocations AS invocation
+             JOIN worker_gateway_sessions AS gateway ON gateway.id = $2
+            WHERE invocation.id = $1`,
+          [fixture.invocationId, session.workerSessionId],
+        );
+      const before = await footprint();
+      expect(before.rows).toEqual([
+        {
+          invocation_state: 'RUNNING',
+          assistant_messages: '0',
+          succeeded_events: '0',
+          consumer_events: '0',
+          terminal_receipts: '0',
+          alerts: '0',
+          start_commands: '1',
+          receipts: '2',
+          outbound_frames: '3',
+          inbound_next_seq: '2',
+          outbound_next_seq: '3',
+        },
+      ]);
+
+      await expect(
+        projectingAuthority.acceptEnvelope(
+          session,
+          delivery(event),
+          mode === 'THROW' ? AbortSignal.timeout(5_000) : AbortSignal.timeout(100),
+        ),
+      ).rejects.toBeDefined();
+      expect(assistantMessageSealer).toHaveBeenCalledTimes(1);
+      expect((await footprint()).rows).toEqual(before.rows);
+    },
+    10_000,
+  );
 
   it('serializes a first Lease grant with concurrent SECURITY revocation', async () => {
     const raceAgentId = randomUuidV7();

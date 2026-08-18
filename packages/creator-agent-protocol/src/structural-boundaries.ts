@@ -85,6 +85,14 @@ const UnicodeRuntimeOwnerSchema = z
 const UnicodeScalarParitySchema = z
   .object({
     canaryPrefix: z.literal('UNICODE_SCALAR_CANARY_'),
+    strictPatternSource: z.literal(
+      '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$',
+    ),
+    strictOptionalPatternSource: z.literal(
+      '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$',
+    ),
+    strictRuntimeOwnerIds: z.array(UnicodeRuntimeOwnerIdSchema).length(14),
+    strictArtifactPointers: z.array(ArtifactPointerSchema).length(29),
     runtimeOwners: z.array(UnicodeRuntimeOwnerSchema).length(29),
     probeRecipe: z
       .object({
@@ -143,9 +151,11 @@ const UnicodeScalarParitySchema = z
         runtimeOwners: z.literal(29),
         ordinaryOwners: z.literal(26),
         exactDerivedOwners: z.literal(3),
+        strictRuntimeOwners: z.literal(14),
         publicNodes: z.literal(47),
+        strictPublicNodes: z.literal(29),
         helperBoundaries: z.literal(8),
-        outcomes: z.literal(5_700),
+        outcomes: z.literal(5_712),
       })
       .strict(),
   })
@@ -154,10 +164,17 @@ const UnicodeScalarParitySchema = z
     const ids = parity.runtimeOwners.map(({ id }) => id);
     const ordinary = parity.runtimeOwners.filter(({ kind }) => kind === 'ordinary').length;
     const derived = parity.runtimeOwners.filter(({ kind }) => kind === 'exact-derived').length;
+    const strictIds = new Set(parity.strictRuntimeOwnerIds);
+    const strictPointers = parity.strictArtifactPointers.map(
+      ({ artifact, pointer }) => `${artifact}:${pointer}`,
+    );
     if (
       new Set(ids).size !== parity.expectedCounts.runtimeOwners ||
       ordinary !== parity.expectedCounts.ordinaryOwners ||
-      derived !== parity.expectedCounts.exactDerivedOwners
+      derived !== parity.expectedCounts.exactDerivedOwners ||
+      strictIds.size !== parity.expectedCounts.strictRuntimeOwners ||
+      parity.strictRuntimeOwnerIds.some((id) => !ids.includes(id)) ||
+      new Set(strictPointers).size !== parity.expectedCounts.strictPublicNodes
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,

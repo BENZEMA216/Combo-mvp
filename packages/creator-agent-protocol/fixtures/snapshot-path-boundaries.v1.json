@@ -1,22 +1,22 @@
 {
   "protocol": "combo.snapshot-path-boundaries/1",
   "schemaVersion": 1,
-  "scope": "snapshot-relative-path-utf8-bytes-only",
+  "scope": "snapshot-relative-path-boundaries",
   "authority": {
     "technicalPlanSection": "技术方案 §5.2 Alpha 输入边界",
-    "testPlanCases": ["SCH-004", "SNP-009"],
+    "testPlanCases": ["SCH-004", "SCH-005", "SNP-009", "SNP-010"],
     "pathPolicyDecisionId": "ADR-VNEXT-004"
   },
   "checkedDependencies": {
     "utf8BoundaryCorpus": {
       "path": "protocol-utf8-boundaries.v1.json",
-      "digest": "sha256:e1486075186f68b367e2c640658c0cad2811c0a52cbefb087fce38595e1a7dca"
+      "digest": "sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb"
     },
     "baseManifest": {
       "path": "snapshot-manifest.v1.json",
       "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
     },
-    "contractSchemas": "sha256:ebbd5e475380de98a17e29f4ae2c0d6af3ad6ceaabc7e02bbc335eddc4ed24eb"
+    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434"
   },
   "pathRecipe": {
     "algorithm": "segmented-ascii-cjk-astral/1",
@@ -72,6 +72,30 @@
         "candidateManifestDigest": "sha256:27c39ef1d3fdca7e1407a4b6442a1e670e7c938414f8ade97db4674392496abb"
       }
     ]
+  },
+  "hostileUnicode": {
+    "canaryPrefix": "SNAPSHOT_PATH_HOSTILE_CANARY_",
+    "forbiddenControlRanges": [
+      { "id": "c0", "start": 0, "end": 31 },
+      { "id": "c1", "start": 127, "end": 159 }
+    ],
+    "loneSurrogates": [
+      { "id": "high-surrogate", "codeUnit": 55296 },
+      { "id": "low-surrogate", "codeUnit": 56320 }
+    ],
+    "runtimeOwners": [
+      "SnapshotPathSchema",
+      "SnapshotManifestSchema",
+      "canonicalizeSnapshotPath",
+      "parseSnapshotManifest"
+    ],
+    "expectedCounts": {
+      "forbiddenControls": 65,
+      "loneSurrogates": 2,
+      "probes": 67,
+      "runtimeOwners": 4,
+      "outcomes": 268
+    }
   },
   "remainingBoundaryClasses": ["filesystem-component-255-byte-policy-not-frozen"]
 }

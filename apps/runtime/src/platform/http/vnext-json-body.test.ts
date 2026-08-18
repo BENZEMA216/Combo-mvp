@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+// VNext registry case: SCH-005 (raw UTF-8/duplicate/syntax errors are sanitized).
+
 import {
   RUNTIME_HTTP_BODY_LIMIT_BYTES,
   VnextJsonBodyError,

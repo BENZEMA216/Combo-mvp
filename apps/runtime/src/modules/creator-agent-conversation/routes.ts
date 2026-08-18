@@ -1,5 +1,4 @@
 import type { FastifyInstance } from 'fastify';
-import { CreateConversationRequestSchema } from '@cb/creator-agent-protocol';
 import { registerEndpoints, type EndpointDecl } from '../../platform/http/_helpers.js';
 import { registerVnextJsonBodyParser } from '../../platform/http/vnext-json-body.js';
 import { createConsumerConversationHandler } from './handlers.js';
@@ -16,7 +15,7 @@ export const CREATOR_AGENT_CONVERSATION_ENDPOINTS: EndpointDecl[] = [
     url: '/v1/public/agents/:slug/conversations',
     preHandlers: [
       requireVnextMutationOrigin(),
-      requireVnextBodySchema(CreateConversationRequestSchema),
+      requireVnextBodySchema('CreateConversationRequest'),
       requireVnextAuth(),
     ],
     handler: createConsumerConversationHandler(),

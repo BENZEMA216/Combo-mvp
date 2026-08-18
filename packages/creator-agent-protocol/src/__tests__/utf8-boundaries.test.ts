@@ -4,6 +4,8 @@ import { readFile } from 'node:fs/promises';
 import { Ajv, type AnySchema } from 'ajv';
 import { describe, expect, it } from 'vitest';
 
+// VNext registry case: SCH-005 (multiline vs strict Unicode owner matrix).
+
 import {
   AgentVersionManifestSchema,
   BehaviorContractSchema,
@@ -236,6 +238,7 @@ async function runtimeOwnerCases(): Promise<Record<string, RuntimeOwnerCase>> {
   const unsignedCapability = { ...prepareEnvelope.body.executionCapability };
   delete unsignedCapability.signature;
   const uuid = '0198f00d-6000-7000-8000-000000000001';
+  const clientUuid = '550e8400-e29b-41d4-a716-446655440000';
   const timestamp = '2026-08-13T08:00:00.000Z';
 
   return {
@@ -323,7 +326,7 @@ async function runtimeOwnerCases(): Promise<Record<string, RuntimeOwnerCase>> {
     'send-conversation-message-text': {
       runtimeParser: 'SendConversationMessageRequestSchema',
       schema: SendConversationMessageRequestSchema,
-      base: { clientMessageId: uuid, text: 'Safe message' },
+      base: { clientMessageId: clientUuid, text: 'Safe message' },
     },
     'consumer-message-text': {
       runtimeParser: 'ConsumerMessageSchema',
@@ -456,7 +459,11 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
     expect(fixture.scalarControlParity.portablePatternSource).toBe(
       UTF8_TEXT_PORTABLE_PATTERN_SOURCE,
     );
+    expect(fixture.scalarControlParity.strictPatternSource).toBe(
+      UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE,
+    );
     expect(UTF8_TEXT_PORTABLE_PATTERN.source).toBe(UTF8_TEXT_PORTABLE_PATTERN_SOURCE);
+    expect(UNICODE_SCALAR_NO_CONTROL_PATTERN.source).toBe(UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE);
     const excludedPointers = new Set(
       fixture.scalarControlParity.artifactCoverage.excludedPointers.map(
         ({ artifact, pointer }) => `${artifact}:${pointer}`,
@@ -465,6 +472,21 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
     const publicOwners = fixture.boundaries
       .flatMap(({ artifactPointers }) => artifactPointers)
       .filter(({ artifact, pointer }) => !excludedPointers.has(`${artifact}:${pointer}`));
+    const strictRuntimeOwnerIds = new Set<string>(
+      fixture.scalarControlParity.strictRuntimeOwnerIds,
+    );
+    const strictArtifactPointers = new Set(
+      fixture.scalarControlParity.strictArtifactPointers.map(
+        ({ artifact, pointer }) => `${artifact}:${pointer}`,
+      ),
+    );
+    expect(
+      [...strictArtifactPointers].every((pointer) =>
+        publicOwners.some(
+          ({ artifact, pointer: candidate }) => `${artifact}:${candidate}` === pointer,
+        ),
+      ),
+    ).toBe(true);
     const coverage = publicOwners.reduce(
       (counts, { artifact }) => {
         if (artifact === 'contract-schemas') counts.contractSchemas += 1;
@@ -491,7 +513,12 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
       for (const probe of fixture.scalarControlParity.probes) {
         const value =
           fixture.scalarControlParity.canaryPrefix + String.fromCharCode(...probe.codeUnits);
-        const expected = probe.expected === 'accepted';
+        const expected =
+          probe.expected === 'accepted' &&
+          !(
+            strictRuntimeOwnerIds.has(owner.id) &&
+            (probe.id === 'tab' || probe.id === 'lf' || probe.id === 'cr')
+          );
         const result = runtime.schema.safeParse(
           replacePointer(runtime.base, owner.instancePointer, value),
         );
@@ -507,16 +534,21 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
 
     const advertisedValidators = publicOwners.map(({ artifact, pointer }) => {
       const node = lookupPointer(documents[artifact], pointer);
+      const strict = strictArtifactPointers.has(`${artifact}:${pointer}`);
       expect(node.pattern, `${artifact}:${pointer}`).toBe(
-        fixture.scalarControlParity.portablePatternSource,
+        strict
+          ? fixture.scalarControlParity.strictPatternSource
+          : fixture.scalarControlParity.portablePatternSource,
       );
-      return { artifact, pointer, validate: ajv.compile(node as AnySchema) };
+      return { artifact, pointer, strict, validate: ajv.compile(node as AnySchema) };
     });
-    for (const { artifact, pointer, validate } of advertisedValidators) {
+    for (const { artifact, pointer, strict, validate } of advertisedValidators) {
       for (const probe of fixture.scalarControlParity.probes) {
         const value =
           fixture.scalarControlParity.canaryPrefix + String.fromCharCode(...probe.codeUnits);
-        const expected = probe.expected === 'accepted';
+        const expected =
+          probe.expected === 'accepted' &&
+          !(strict && (probe.id === 'tab' || probe.id === 'lf' || probe.id === 'cr'));
         expect(validate(value), `${artifact}:${pointer}:${probe.id}`).toBe(expected);
         if (!expected) {
           expect(JSON.stringify(validate.errors)).not.toContain(

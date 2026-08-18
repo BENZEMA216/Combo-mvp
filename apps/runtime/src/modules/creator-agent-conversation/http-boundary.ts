@@ -2,6 +2,8 @@ import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastif
 import {
   VNEXT_ERROR_CLASSIFICATION,
   errorResponseFor,
+  parsePublicHttpRequestRoot,
+  type PublicHttpRequestRootName,
   type VnextErrorCode,
 } from '@cb/creator-agent-protocol';
 import { authSessionCookieName } from '@cb/shared';
@@ -38,11 +40,13 @@ export function requireVnextMutationOrigin(): preHandlerHookHandler {
   };
 }
 
-export function requireVnextBodySchema(schema: {
-  safeParse(input: unknown): { success: true } | { success: false };
-}): preHandlerHookHandler {
+export function requireVnextBodySchema(root: PublicHttpRequestRootName): preHandlerHookHandler {
   return async (req, reply) => {
-    if (!schema.safeParse(req.body).success) return sendVnextError(req, reply, 'INVALID_INPUT');
+    try {
+      parsePublicHttpRequestRoot(root, req.body);
+    } catch {
+      return sendVnextError(req, reply, 'INVALID_INPUT');
+    }
   };
 }
 

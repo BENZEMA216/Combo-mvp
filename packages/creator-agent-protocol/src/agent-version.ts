@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { canonicalSha256 } from './canonical.js';
-import { Sha256DigestSchema, Sha256HexSchema, Utf8TextSchema } from './primitives.js';
+import {
+  Sha256DigestSchema,
+  Sha256HexSchema,
+  StrictUtf8TextSchema,
+  Utf8TextSchema,
+} from './primitives.js';
 
 export const AGENT_VERSION_PROTOCOL = 'combo.agent-version-manifest/1' as const;
 
@@ -41,7 +46,7 @@ export const RuntimePolicySchema = z
     maxConversationTurns: z.number().int().min(1).max(20),
     maxVisibleHistoryBytes: z.number().int().min(1).max(65_536),
     maxActiveTurns: z.literal(1),
-    resolvedModel: Utf8TextSchema(128),
+    resolvedModel: StrictUtf8TextSchema(128),
     reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
   })
   .strict();
@@ -62,7 +67,7 @@ export type IOContract = z.infer<typeof IOContractSchema>;
 export const ModelPolicySchema = z
   .object({
     schemaVersion: z.literal(1),
-    model: Utf8TextSchema(128),
+    model: StrictUtf8TextSchema(128),
     reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
     creatorFunded: z.literal(true),
   })
@@ -79,7 +84,7 @@ export const AgentVersionManifestSchema = z
     ioContract: IOContractSchema,
     codexRuntime: z
       .object({
-        version: Utf8TextSchema(128),
+        version: StrictUtf8TextSchema(128),
         artifactDigest: Sha256DigestSchema,
         protocolSchemaDigest: Sha256DigestSchema,
         platform: z.literal('linux-arm64'),

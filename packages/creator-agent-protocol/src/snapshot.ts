@@ -4,8 +4,8 @@ import {
   CanonicalBase64UrlBytesSchema,
   containsForbiddenControl,
   Sha256HexSchema,
+  StrictUnicodeCodePointStringSchema,
   UNICODE_SCALAR_NO_CONTROL_PATTERN,
-  UnicodeCodePointStringSchema,
   UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX,
   UuidSchema,
 } from './primitives.js';
@@ -21,13 +21,27 @@ export const SNAPSHOT_OBJECT_STORAGE_PROTOCOL = 'combo.snapshot-object-storage/1
 export const SNAPSHOT_PUBLICATION_PREPARATION_PROTOCOL =
   'combo.snapshot-publication-preparation/1' as const;
 export const SNAPSHOT_PUBLICATION_COMMIT_PROTOCOL = 'combo.snapshot-publication-commit/1' as const;
-export const SNAPSHOT_MAX_PUBLICATION_MARKER_BYTES = 16 * 1024;
-export const SNAPSHOT_MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
+/**
+ * Exact reachable canonical byte boundaries frozen by ADR-VNEXT-034.
+ *
+ * The preparation maximum is derived from one valid marker with every bounded string and numeric
+ * resource owner at its public maximum. The commit marker contains only fixed-width or exactly
+ * derived fields, so every valid canonical commit marker has one exact byte length.
+ */
+export const SNAPSHOT_MAX_PUBLICATION_PREPARATION_MARKER_BYTES = 2_992;
+export const SNAPSHOT_EXACT_PUBLICATION_COMMIT_MARKER_BYTES = 456;
+/** Encrypted-object/read-all defense ceiling; valid canonical manifests have a lower exact max. */
+export const SNAPSHOT_MANIFEST_RAW_DEFENSE_MAX_BYTES = 4 * 1024 * 1024;
+/** Compatibility alias for existing envelope/storage callers. Do not use as a semantic maximum. */
+export const SNAPSHOT_MAX_MANIFEST_BYTES = SNAPSHOT_MANIFEST_RAW_DEFENSE_MAX_BYTES;
+/** Reachable global maximum for one canonical SnapshotManifestSchema value. */
+export const SNAPSHOT_MAX_CANONICAL_MANIFEST_BYTES = 2_536_575;
 export const SNAPSHOT_MAX_FILES = 2_000;
 export const SNAPSHOT_MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const SNAPSHOT_MAX_EXPANDED_BYTES = 200 * 1024 * 1024;
 export const SNAPSHOT_MAX_COMPRESSED_BYTES = 50 * 1024 * 1024;
 export const SNAPSHOT_MAX_PATH_BYTES = 512;
+export const SNAPSHOT_MAX_MEDIA_TYPE_BYTES = 128;
 export const SNAPSHOT_MAX_COMPRESSION_RATIO = 100;
 
 const FORBIDDEN_SEGMENTS = new Set([
@@ -80,7 +94,7 @@ export const SnapshotArchiveEnvelopeAadSchema = z
     creatorId: UuidSchema,
     snapshotDigest: Sha256HexSchema,
     archiveDigest: Sha256HexSchema,
-    objectKey: UnicodeCodePointStringSchema(1, 512),
+    objectKey: StrictUnicodeCodePointStringSchema(1, 512),
     plaintextBytes: z.number().int().min(1).max(SNAPSHOT_MAX_COMPRESSED_BYTES),
     keyId: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{0,255}$/u),
   })
@@ -182,8 +196,8 @@ export const SnapshotManifestEnvelopeAadSchema = z
     cipherObjectFormat: z.literal(SNAPSHOT_MANIFEST_OBJECT_FORMAT),
     creatorId: UuidSchema,
     snapshotDigest: Sha256HexSchema,
-    objectKey: UnicodeCodePointStringSchema(1, 512),
-    plaintextBytes: z.number().int().min(1).max(SNAPSHOT_MAX_MANIFEST_BYTES),
+    objectKey: StrictUnicodeCodePointStringSchema(1, 512),
+    plaintextBytes: z.number().int().min(1).max(SNAPSHOT_MANIFEST_RAW_DEFENSE_MAX_BYTES),
     keyId: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{0,255}$/u),
   })
   .strict()
@@ -223,7 +237,7 @@ export const SnapshotManifestEnvelopeSchema = z
       .number()
       .int()
       .min(37)
-      .max(SNAPSHOT_MAX_MANIFEST_BYTES + 36),
+      .max(SNAPSHOT_MANIFEST_RAW_DEFENSE_MAX_BYTES + 36),
   })
   .strict()
   .superRefine((envelope, context) => {
@@ -311,9 +325,11 @@ export const SnapshotFileSchema = z
     size: z.number().int().min(0).max(SNAPSHOT_MAX_FILE_BYTES),
     mediaType: z
       .string()
+      .max(SNAPSHOT_MAX_MEDIA_TYPE_BYTES)
       .regex(
         /^(?:text\/[a-z0-9.+-]+|application\/(?:json|csv|javascript|xml|yaml|toml))(?:; charset=utf-8)?$/u,
-      ),
+      )
+      .describe(`${UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX}${SNAPSHOT_MAX_MEDIA_TYPE_BYTES}`),
     sha256: Sha256HexSchema,
   })
   .strict();

@@ -39,6 +39,14 @@ export type Uuid = z.infer<typeof UuidSchema>;
 /** Public HTTP server IDs reuse UUIDv7 semantics and advertise the implied exact length. */
 export const ServerIdSchema = UuidSchema.length(36);
 
+/** Client-generated idempotency identity: canonical lowercase RFC 9562 UUIDv4. */
+export const ClientIdempotencyKeySchema = z
+  .string()
+  .length(36)
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u)
+  .uuid();
+export type ClientIdempotencyKey = z.infer<typeof ClientIdempotencyKeySchema>;
+
 export const IsoDateTimeSchema = z
   .string()
   .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u)
@@ -71,11 +79,12 @@ export const UNIQUE_ARRAY_SCHEMA_DESCRIPTION = 'combo:unique-items' as const;
  * min/max count UTF-16 code units. Public schemas use this helper so runtime and advertised
  * validators accept the same supplementary-plane characters at every structural boundary.
  */
-export const UnicodeCodePointStringSchema = (
+function unicodeCodePointStringSchema(
   minimumCodePoints: number,
   maximumCodePoints: number,
-  baseSchema: z.ZodString = z.string(),
-) => {
+  baseSchema: z.ZodString,
+  controlPolicy: 'multiline-text' | 'strict-no-control',
+) {
   if (
     !Number.isSafeInteger(minimumCodePoints) ||
     !Number.isSafeInteger(maximumCodePoints) ||
@@ -84,8 +93,16 @@ export const UnicodeCodePointStringSchema = (
   ) {
     throw new TypeError('Unicode code-point boundary 无效');
   }
+  const pattern =
+    controlPolicy === 'multiline-text'
+      ? minimumCodePoints > 0
+        ? UTF8_TEXT_PORTABLE_PATTERN
+        : UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN
+      : minimumCodePoints > 0
+        ? UNICODE_SCALAR_NO_CONTROL_PATTERN
+        : UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN;
   return baseSchema
-    .regex(minimumCodePoints > 0 ? UTF8_TEXT_PORTABLE_PATTERN : UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN)
+    .regex(pattern)
     .superRefine((value, context) => {
       let codePoints = 0;
       for (const _character of value) {
@@ -102,7 +119,27 @@ export const UnicodeCodePointStringSchema = (
     .describe(
       `${UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX}${minimumCodePoints}:${maximumCodePoints}`,
     );
-};
+}
+
+export const UnicodeCodePointStringSchema = (
+  minimumCodePoints: number,
+  maximumCodePoints: number,
+  baseSchema: z.ZodString = z.string(),
+) =>
+  unicodeCodePointStringSchema(minimumCodePoints, maximumCodePoints, baseSchema, 'multiline-text');
+
+/** Structural Unicode scalar text: bounded in code points and forbidden from all C0/C1. */
+export const StrictUnicodeCodePointStringSchema = (
+  minimumCodePoints: number,
+  maximumCodePoints: number,
+  baseSchema: z.ZodString = z.string(),
+) =>
+  unicodeCodePointStringSchema(
+    minimumCodePoints,
+    maximumCodePoints,
+    baseSchema,
+    'strict-no-control',
+  );
 
 export const CanonicalBase64UrlBytesSchema = (minimumBytes: number, maximumBytes: number) => {
   if (
@@ -171,24 +208,40 @@ export const Uint63StringSchema = z
   );
 export type Uint63String = z.infer<typeof Uint63StringSchema>;
 
-export const Utf8TextSchema = (maxBytes: number) =>
-  z
-    .string()
-    .min(1)
-    // Every Unicode scalar requires at least one UTF-8 byte, so this is a safe structural
-    // upper bound for standard JSON Schema validators. The exact byte authority remains
-    // the refine below and is published as x-combo-maxUtf8Bytes in checked artifacts.
-    .max(maxBytes)
-    .regex(UTF8_TEXT_PORTABLE_PATTERN)
-    .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes, {
-      message: `UTF-8 内容不得超过 ${maxBytes} bytes`,
-    })
-    .refine((value) => !containsLoneSurrogate(value), '不接受未配对的 Unicode surrogate')
-    .refine(
-      (value) => !containsForbiddenControl(value, true),
-      '除 TAB、LF、CR 外不接受 C0/C1 控制字符',
-    )
-    .describe(`${UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX}${maxBytes}`);
+function utf8TextSchema(maxBytes: number, controlPolicy: 'multiline-text' | 'strict-no-control') {
+  const pattern =
+    controlPolicy === 'multiline-text'
+      ? UTF8_TEXT_PORTABLE_PATTERN
+      : UNICODE_SCALAR_NO_CONTROL_PATTERN;
+  return (
+    z
+      .string()
+      .min(1)
+      // Every Unicode scalar requires at least one UTF-8 byte, so this is a safe structural
+      // upper bound for standard JSON Schema validators. The exact byte authority remains
+      // the refine below and is published as x-combo-maxUtf8Bytes in checked artifacts.
+      .max(maxBytes)
+      .regex(pattern)
+      .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes, {
+        message: `UTF-8 内容不得超过 ${maxBytes} bytes`,
+      })
+      .refine((value) => !containsLoneSurrogate(value), '不接受未配对的 Unicode surrogate')
+      .refine(
+        (value) => !containsForbiddenControl(value, controlPolicy === 'multiline-text'),
+        controlPolicy === 'multiline-text'
+          ? '除 TAB、LF、CR 外不接受 C0/C1 控制字符'
+          : '不接受 C0/C1 控制字符',
+      )
+      .describe(`${UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX}${maxBytes}`)
+  );
+}
+
+/** Human-authored multiline prose. TAB/LF/CR are the only admitted C0 controls. */
+export const Utf8TextSchema = (maxBytes: number) => utf8TextSchema(maxBytes, 'multiline-text');
+
+/** Single-line or structural Unicode text. Every C0/C1 code point is rejected. */
+export const StrictUtf8TextSchema = (maxBytes: number) =>
+  utf8TextSchema(maxBytes, 'strict-no-control');
 
 /**
  * C0/C1 都是协议文字里的非法控制字符；普通多行文字仅允许 TAB/LF/CR，

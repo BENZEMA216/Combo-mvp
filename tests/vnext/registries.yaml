@@ -3,4 +3,4 @@ schemaVersion: 1
 contracts:
   - wireProtocol: combo.creator-broker/1
     artifactPath: packages/creator-agent-protocol/schemas/broker-contract.v1.json
-    contractDigest: sha256:347769d71019a3707611d8a9be365b735e2aefcb35f53c55be53787ae98c131f
+    contractDigest: sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8
