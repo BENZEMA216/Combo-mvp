@@ -1,0 +1,33 @@
+{
+  "name": "@cb/authz",
+  "version": "0.0.0",
+  "private": true,
+  "description": "V2 用户体系：登录（验证期为开发态 OTP）、session 管理、JWT(EdDSA) 断言签发与 JWKS 公钥端点。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "dev": "node --experimental-strip-types --watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@cb/shared": "workspace:*",
+    "@fastify/cookie": "^11.0.2",
+    "fastify": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "jose": "^5.10.0",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
