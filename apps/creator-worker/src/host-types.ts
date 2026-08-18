@@ -1,4 +1,21 @@
-import { createHash } from 'node:crypto';
+import {
+  HOST_INTERRUPT_TERMINAL_PROTOCOL,
+  createHostInterruptedTerminalEvidence,
+} from '@cb/creator-agent-protocol';
+import type {
+  HostInterruptedTerminalEvidence,
+  HostInterruptedTerminalObservation,
+} from '@cb/creator-agent-protocol';
+
+// The Host interrupted-terminal contract is frozen in the shared protocol package so that
+// the VNext SQLite Journal composition can verify cancellation evidence without depending
+// on this app. These re-exports keep the local API surface unchanged.
+export {
+  HOST_INTERRUPT_TERMINAL_PROTOCOL,
+  createHostInterruptedTerminalEvidence,
+  type HostInterruptedTerminalEvidence,
+  type HostInterruptedTerminalObservation,
+};
 
 export interface HostThread {
   id: string;
@@ -14,69 +31,6 @@ export interface HostTurnHandle {
   readonly turnId: Promise<string>;
   readonly result: Promise<HostTurnResult>;
   interrupt(): Promise<HostInterruptedTerminalEvidence>;
-}
-
-export const HOST_INTERRUPT_TERMINAL_PROTOCOL =
-  'combo.codex-app-server-interrupt-terminal/1' as const;
-
-export interface HostInterruptedTerminalObservation {
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly status: 'interrupted';
-  readonly error: null;
-  readonly completedAt: number;
-}
-
-export interface HostInterruptedTerminalEvidence {
-  readonly protocol: typeof HOST_INTERRUPT_TERMINAL_PROTOCOL;
-  readonly threadId: string;
-  readonly turnId: string;
-  readonly outcome: 'INTERRUPTED';
-  readonly hostTerminalDigest: `sha256:${string}`;
-}
-
-const HOST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
-const INTERRUPTED_TERMINAL_KEYS = ['completedAt', 'error', 'status', 'threadId', 'turnId'] as const;
-
-/**
- * Normalizes one exact app-server terminal observation into low-sensitivity evidence.
- * The digest covers RFC-8785-compatible canonical bytes; fixed ASCII keys are emitted in
- * lexicographic order and JSON number serialization follows the required ECMAScript form.
- */
-export function createHostInterruptedTerminalEvidence(
-  input: HostInterruptedTerminalObservation,
-): HostInterruptedTerminalEvidence {
-  if (
-    typeof input !== 'object' ||
-    input === null ||
-    Array.isArray(input) ||
-    Object.keys(input).sort().join('\u0000') !== INTERRUPTED_TERMINAL_KEYS.join('\u0000') ||
-    !HOST_ID_PATTERN.test(input.threadId) ||
-    !HOST_ID_PATTERN.test(input.turnId) ||
-    input.status !== 'interrupted' ||
-    input.error !== null ||
-    !Number.isFinite(input.completedAt) ||
-    input.completedAt < 0
-  ) {
-    throw new TypeError('Invalid interrupted Host terminal observation.');
-  }
-  const canonicalBytes = Buffer.from(
-    JSON.stringify({
-      completedAt: input.completedAt,
-      error: null,
-      status: 'interrupted',
-      threadId: input.threadId,
-      turnId: input.turnId,
-    }),
-    'utf8',
-  );
-  return Object.freeze({
-    protocol: HOST_INTERRUPT_TERMINAL_PROTOCOL,
-    threadId: input.threadId,
-    turnId: input.turnId,
-    outcome: 'INTERRUPTED',
-    hostTerminalDigest: `sha256:${createHash('sha256').update(canonicalBytes).digest('hex')}`,
-  });
 }
 
 export interface CodexHost {

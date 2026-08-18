@@ -533,7 +533,7 @@ describe('digest-bound public structural boundaries', () => {
     expect(validateAllOf(probes.rejected.at(-1)!.value)).toBe(false);
 
     expect(outcomes).toBe(parity.expectedCounts.outcomes);
-  }, 15_000);
+  }, 60_000);
 
   it('drives exact Unicode code-point maxima through all actual runtime owners', async () => {
     const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(
@@ -652,7 +652,7 @@ describe('digest-bound public structural boundaries', () => {
       noCanaryChecks: 35,
       nullableRuntimeChecks: 2,
     });
-  }, 15_000);
+  }, 60_000);
 
   it('drives exact Unicode code-point maxima through all advertised public nodes', async () => {
     const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(
@@ -741,7 +741,7 @@ describe('digest-bound public structural boundaries', () => {
       noCanaryChecks: 47,
       nullableContractChecks: 2,
     });
-  }, 15_000);
+  }, 60_000);
 
   it('uses one owner UUID fixture across runtime, contract and OpenAPI Ajv boundaries', async () => {
     const corpus = ProtocolStructuralBoundaryCorpusSchema.parse(

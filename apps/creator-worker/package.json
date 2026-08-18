@@ -17,6 +17,9 @@
     "test": "vitest run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
+  "dependencies": {
+    "@cb/creator-agent-protocol": "workspace:*"
+  },
   "devDependencies": {
     "@playwright/test": "1.62.0",
     "@types/node": "^22.10.5",

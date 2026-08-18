@@ -10,6 +10,7 @@ export * from './conversation-ready-facts.js';
 export * from './decoded-boundaries.js';
 export * from './evidence.js';
 export * from './execution-capability-upstream-count-boundaries.js';
+export * from './host-interrupt-terminal.js';
 export * from './http.js';
 export * from './interrupt-receipt.js';
 export * from './invocation.js';
