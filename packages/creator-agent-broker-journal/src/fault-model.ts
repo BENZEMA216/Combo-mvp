@@ -112,17 +112,17 @@ export const FAULT_COVERAGE: readonly FaultCoverageEntry[] = [
   entry(
     'FLT-014_CANCEL_BEFORE_INTERRUPT_ACK',
     'MODEL_ONLY_E1',
-    'interrupt receipt is not implemented',
+    'E1 model has no Host interrupt path; receipt machinery implemented and E3-covered (host-interrupt-terminal, journal interruptOnce, 0029 admission)',
   ),
   entry(
     'FLT-015_CANCEL_FINAL_RACE',
     'MODEL_ONLY_E1',
-    'state reducer only; no real concurrent runtime',
+    'E1 state reducer only; SQLite journal cancel/final race tests cover E3',
   ),
   entry(
     'FLT-016_LEASE_EXPIRY_OLD_WORKER_FINAL',
     'MODEL_ONLY_E1',
-    'signed binding model only; no WSS failover',
+    'E1 signed binding model; WSS reconnect/fence covered at E3 vertical',
   ),
   entry('FLT-017_REDIS_LOSS', 'BLOCKED_E2_E6', 'Redis topology is not implemented'),
   entry(
