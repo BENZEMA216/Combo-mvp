@@ -312,7 +312,7 @@ pgDescribe('0017 conversation.ready durable fact real PostgreSQL authority', () 
     const migrations = readdirSync(migrationsDirectory)
       .filter((filename) => /^\d{4}_.+\.sql$/u.test(filename))
       .sort();
-    expect(migrations.at(-1)).toBe('0028_creator_agent_success_fact_admission.sql');
+    expect(migrations.at(-1)).toBe('0029_creator_agent_cancelled_fact_admission.sql');
     const pre0017 = migrations.filter((filename) => filename < '0017_');
     expect(pre0017.at(-1)).toBe('0016_creator_agent_invocation_lifecycle.sql');
     expect(pre0017).not.toContain('0018_creator_agent_broker_delivery_contract.sql');
@@ -506,6 +506,24 @@ pgDescribe('0017 conversation.ready durable fact real PostgreSQL authority', () 
   }, 60_000);
 
   afterAll(async () => {
+    if (admin !== undefined) {
+      // Migrations 0008/0012/0014 close application-role logins cluster-wide (ALTER ROLE
+      // NOLOGIN). This upgrade suite applies those historical migrations against a scratch
+      // database; restore login capability so sibling suites can connect under their
+      // provisioned identities.
+      await admin
+        .query(
+          `ALTER ROLE combo_api LOGIN;
+           ALTER ROLE combo_worker LOGIN;
+           ALTER ROLE combo_runtime LOGIN;
+           ALTER ROLE combo_agent_api LOGIN;
+           ALTER ROLE combo_agent_broker LOGIN;
+           ALTER ROLE combo_agent_reconciler LOGIN;
+           ALTER ROLE combo_agent_maintenance LOGIN;
+           ALTER ROLE combo_agent_consumer_api LOGIN;`,
+        )
+        .catch(() => undefined);
+    }
     if (target !== undefined) await target.end().catch(() => undefined);
     if (admin !== undefined) {
       await admin

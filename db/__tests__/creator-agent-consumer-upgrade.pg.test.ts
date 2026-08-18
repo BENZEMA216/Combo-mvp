@@ -656,6 +656,21 @@ pgDescribe('0012 -> 0013 -> 0014 -> 0015 -> 0016 -> 0017 Creator Agent persisten
       ).resolves.toMatchObject({ rows: [{ applied: '2' }] });
     } finally {
       await target?.end().catch(() => undefined);
+      // Migrations 0008/0012 close application-role logins cluster-wide (ALTER ROLE NOLOGIN).
+      // This upgrade suite applies them against a scratch database; restore login capability
+      // so sibling suites can connect under their provisioned identities.
+      await admin
+        .query(
+          `ALTER ROLE combo_api LOGIN;
+           ALTER ROLE combo_worker LOGIN;
+           ALTER ROLE combo_runtime LOGIN;
+           ALTER ROLE combo_agent_api LOGIN;
+           ALTER ROLE combo_agent_broker LOGIN;
+           ALTER ROLE combo_agent_reconciler LOGIN;
+           ALTER ROLE combo_agent_maintenance LOGIN;
+           ALTER ROLE combo_agent_consumer_api LOGIN;`,
+        )
+        .catch(() => undefined);
       await admin.query(`DROP DATABASE IF EXISTS "${databaseName}" WITH (FORCE)`);
       await admin.end();
     }

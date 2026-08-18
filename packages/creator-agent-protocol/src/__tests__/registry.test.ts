@@ -336,7 +336,19 @@ describe('VNext machine-readable contract registries', () => {
         fixtureDigests: [digest],
       });
     }
-    for (const id of ['AVR-002', 'AVR-005', 'AVR-007', 'AVR-008', 'AVR-009']) {
+    const displayPolicyTestFile =
+      'packages/creator-agent-snapshot/src/__tests__/agent-version-display-and-policy.test.ts';
+    for (const id of ['AVR-002', 'AVR-005']) {
+      expect(
+        cases.find((testCase) => testCase.id === id),
+        id,
+      ).toMatchObject({
+        fixture: [fixture],
+        implementation: { status: 'implemented', testFiles: [displayPolicyTestFile] },
+        fixtureDigests: [digest],
+      });
+    }
+    for (const id of ['AVR-007', 'AVR-008', 'AVR-009']) {
       expect(cases.find((testCase) => testCase.id === id)?.implementation, id).toEqual({
         status: 'planned',
         testFiles: [],

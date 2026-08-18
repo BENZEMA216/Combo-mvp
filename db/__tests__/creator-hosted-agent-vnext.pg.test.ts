@@ -595,8 +595,15 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
        )`,
       [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
     );
+    // 0029 makes CANCELLED database-owned: the confirmed-companion requires the exact Worker
+    // terminal chain (receipt + consumer outbox + stream), so this journal-immutability scenario
+    // uses EXPIRED (Cloud deadline authority) as its manual terminal instead.
     await owner.query(
-      `UPDATE agent_invocations SET state = 'CANCELLED', terminal_at = now() WHERE id = $1`,
+      `UPDATE agent_invocations SET deadline_at = now() - interval '1 minute' WHERE id = $1`,
+      [firstInvocation],
+    );
+    await owner.query(
+      `UPDATE agent_invocations SET state = 'EXPIRED', terminal_at = now() WHERE id = $1`,
       [firstInvocation],
     );
     const terminalSourceEventId = randomUuidV7();
@@ -605,8 +612,8 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
          invocation_id, creator_id, consumer_subject_id, journal_seq,
          source, source_event_id, event_type, payload, occurred_at
        ) VALUES (
-         $1, $2, $3, 3, 'BROKER', $4, 'invocation.cancelled',
-         '{"state":"CANCELLED"}'::jsonb, now()
+         $1, $2, $3, 3, 'BROKER', $4, 'invocation.expired',
+         '{"state":"EXPIRED","errorCode":"INVOCATION_EXPIRED"}'::jsonb, now()
        ) RETURNING id::text AS id, occurred_at`,
       [firstInvocation, ids.creatorA, ids.consumerB, terminalSourceEventId],
     );
@@ -616,8 +623,8 @@ pgDescribe('Creator-hosted Agent VNext PostgreSQL authority', () => {
            invocation_id, creator_id, consumer_subject_id, journal_seq,
            source, source_event_id, event_type, payload, occurred_at
          ) VALUES (
-           $1, $2, $3, 4, 'BROKER', $4, 'invocation.cancelled',
-           '{"state":"CANCELLED"}'::jsonb, now()
+           $1, $2, $3, 4, 'BROKER', $4, 'invocation.expired',
+           '{"state":"EXPIRED","errorCode":"INVOCATION_EXPIRED"}'::jsonb, now()
          )`,
         [firstInvocation, ids.creatorA, ids.consumerB, randomUuidV7()],
       ),
