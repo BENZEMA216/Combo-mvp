@@ -1,0 +1,30 @@
+{
+  "name": "@cb/billing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "V2 计费服务：钱包（本金/赠送分桶）、append-only 流水、hold/settle 预授权结算、计量事件事实源。核心逻辑移植自 runtime/authoring 既有 billing 模块并泛化到 agent 维度。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "dev": "node --experimental-strip-types --watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@cb/shared": "workspace:*",
+    "fastify": "^5.2.1",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
