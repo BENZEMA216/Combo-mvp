@@ -573,6 +573,9 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         projectFailed: async () => {
           throw new Error('publisher vertical must not project invocation.failed');
         },
+        projectCancelled: async () => {
+          throw new Error('publisher vertical must not project invocation.cancelled');
+        },
       },
       () => {
         throw new Error('publisher vertical must not seal an assistant message');
