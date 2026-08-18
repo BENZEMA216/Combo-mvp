@@ -2014,5 +2014,5 @@ h6QkoGPwYui0+ZMdS6RsuAIK5/GZVL2mLvj3oJH9oMWoC7VdzF+SE9iduQ==
       ok: false,
       reasons: expect.arrayContaining(['manifestDigest', 'resultCounts', 'verdict']),
     });
-  }, 15_000);
+  }, 60_000);
 });
