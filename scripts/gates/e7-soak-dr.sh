@@ -3,7 +3,6 @@
 # 用法: scripts/gates/e7-soak-dr.sh [soak|dr|uat]
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NOT_RUN=0
 
 log() { printf '[E7] %s\n' "$*"; }
