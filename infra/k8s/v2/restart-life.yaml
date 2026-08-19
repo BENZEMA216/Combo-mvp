@@ -55,6 +55,9 @@ spec:
               value: http://authz/.well-known/jwks.json
             - name: COMBO_LLM_MODEL
               value: deepseek/deepseek-v4-flash
+            # 浏览器 Origin 与反代后内部地址 scheme 不一致，显式放行验证站域名（非密钥）。
+            - name: RESTART_LIFE_ALLOWED_ORIGINS
+              value: https://v2-test.43-160-242-46.sslip.io
           ports:
             - containerPort: 3000
           readinessProbe:
