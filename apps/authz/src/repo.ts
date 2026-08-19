@@ -1,7 +1,7 @@
 // PostgreSQL 事实源实现：SQL 与 db/migrations/0012_v2_end_user_identity.sql 一一对应。
 // 表与字段名改动必须先改迁移再改这里。
 import { type Pool, type PoolClient } from 'pg';
-import { OTP_MAX_ATTEMPTS, codeDigestMatches } from './crypto.js';
+import { codeDigestMatches } from './crypto.js';
 import type { AuthzStore, ResolvedSession } from './service.js';
 
 export interface QueryResultLike<R = Record<string, unknown>> {
@@ -90,13 +90,17 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
           return true;
         }
 
-        const attempts = challenge.attempt_count + 1;
+        // 在库内原子累加并按 max_attempts 落定作废，避免把次数作为参数重复使用
+        // （PG 对同一参数的多上下文类型推断会直接报错）。
         await tx.query(
           `UPDATE v2_auth_challenges
-              SET attempt_count = $2,
-                  invalidated_at = CASE WHEN $2 >= ${OTP_MAX_ATTEMPTS} THEN now() ELSE NULL END
+              SET attempt_count = attempt_count + 1,
+                  invalidated_at = CASE
+                    WHEN attempt_count + 1 >= max_attempts THEN now()
+                    ELSE NULL
+                  END
             WHERE id = $1`,
-          [challenge.id, attempts],
+          [challenge.id],
         );
         return false;
       });
