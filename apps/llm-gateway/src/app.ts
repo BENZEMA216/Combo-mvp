@@ -13,7 +13,7 @@ import {
   type GatewayLogger,
   type HoldOutcome,
 } from './service.js';
-import { createUsageExtractor } from './usage.js';
+import { createUsageExtractor, normalizeUsage } from './usage.js';
 
 export interface GatewayAppDependencies {
   billing: BillingClient;
@@ -165,7 +165,7 @@ async function handleJson(
     return reply.code(upstream.status).send(upstream.json);
   }
 
-  const usage = normalizeJsonUsage(upstream.json);
+  const usage = normalizeUsage((upstream.json as { usage?: unknown } | null)?.usage);
   await finalizeTurn(
     deps.billing,
     { hold, platform: parsed.platform, model: parsed.model, price, usage },
@@ -206,22 +206,4 @@ async function handleStream(
     log,
   );
   return reply;
-}
-
-function normalizeJsonUsage(json: unknown): TokenUsage | null {
-  if (typeof json !== 'object' || json === null) return null;
-  const usage = (json as Record<string, unknown>).usage;
-  if (typeof usage !== 'object' || usage === null) return null;
-  const candidate = usage as Record<string, unknown>;
-  const prompt = candidate.prompt_tokens;
-  const completion = candidate.completion_tokens;
-  if (
-    !Number.isSafeInteger(prompt) ||
-    (prompt as number) < 0 ||
-    !Number.isSafeInteger(completion) ||
-    (completion as number) < 0
-  ) {
-    return null;
-  }
-  return { promptTokens: prompt as number, completionTokens: completion as number };
 }

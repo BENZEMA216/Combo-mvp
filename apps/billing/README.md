@@ -16,7 +16,7 @@
 
 ## 接口
 
-除健康探针外都要 Bearer token 鉴权：前四条用平台内部 token（`BILLING_INTERNAL_TOKEN`，模型网关与 Agent SDK 持有），管理充值用管理 token（`BILLING_ADMIN_TOKEN`）。
+除健康探针外都要 Bearer token 鉴权：前四条用平台内部 token（`BILLING_INTERNAL_TOKEN`，模型网关与 Agent SDK 持有；验证期与 `LLM_GATEWAY_INTERNAL_TOKEN` 同值，即单 token 策略），管理充值用管理 token（`BILLING_ADMIN_TOKEN`）。
 
 - `GET /billing/wallets/{user_id}` 返回余额与冻结读模型（含推导出的可用余额）；无钱包行的用户返回全零视图。
 - `POST /billing/holds` 按 `{user_id, agent_id, turn_id, estimated_amount}` 创建预授权（201）。同一 turn 重复调用返回原 hold（200，replayed）。可用余额不足或触发负余额硬停返回 402 与当前钱包，reason 字段区分 `insufficient` 与 `overdraft_blocked`。

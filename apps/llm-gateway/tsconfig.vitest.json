@@ -6,7 +6,6 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "references": [{ "path": "../../packages/shared" }],
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

@@ -6,7 +6,7 @@
 
 - `src/config.ts` 从环境变量解析 SDK 配置（agent_id、内部 token、网关 / 计费 / JWKS 地址），缺失项一次性报错。
 - `src/assertion.ts` 是断言验签：JWKS 公钥带缓存与 kid 轮换感知（未知 kid 强制刷新一次），强制 audience 等于本 Agent 的 agent_id，验签失败抛带结构化 code 的 AssertionVerificationError；`extractAssertion` 与 `verifyRequest` 负责从 Next.js Request 或普通 header 记录提取 `x-combo-assertion`。
-- `src/llm.ts` 是模型网关客户端：自动注入 `x_combo` 平台扩展（user_id / agent_id / turn_id，turn_id 可传可自动生成），非流式返回 JSON，流式返回原始字节流供路由处理器直接透传，`parseChatStream` 提供逐帧 JSON 的异步迭代形态。
+- `src/llm.ts` 是模型网关客户端：自动注入 `x_combo` 平台扩展（user_id / agent_id / turn_id，turn_id 可传可自动生成），非流式返回 JSON，流式返回原始字节流供路由处理器直接透传。
 - `src/entitlement.ts` 读计费服务的钱包读模型（余额与冻结），是权益判定下沉 Agent 的落点；SDK 不缓存读模型。
 - `src/index.ts` 汇总导出。
 - `src/__tests__/` 是不依赖真实服务的 vitest 测试，JWKS 与 HTTP 调用全部用内存桩。

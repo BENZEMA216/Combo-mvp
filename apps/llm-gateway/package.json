@@ -15,10 +15,7 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@cb/shared": "workspace:*",
     "fastify": "^5.2.1",
-    "jose": "^5.10.0",
-    "pino": "^9.6.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {

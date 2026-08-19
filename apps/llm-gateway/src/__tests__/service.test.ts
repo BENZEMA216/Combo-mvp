@@ -250,7 +250,6 @@ describe('usage extractor', () => {
     extractor.push('data: [DONE]\n\n');
 
     expect(extractor.result()).toEqual({ promptTokens: 11, completionTokens: 7 });
-    expect(extractor.sawDone()).toBe(true);
   });
 
   it('ignores comments, heartbeats, and malformed usage', () => {
@@ -259,6 +258,5 @@ describe('usage extractor', () => {
       ': comment\n\nevent: ping\ndata: {}\n\ndata: {"usage":{"prompt_tokens":"x"}}\n\n',
     );
     expect(extractor.result()).toBeNull();
-    expect(extractor.sawDone()).toBe(false);
   });
 });

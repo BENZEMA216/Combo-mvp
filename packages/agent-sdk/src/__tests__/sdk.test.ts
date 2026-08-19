@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AgentSdkConfigError, loadAgentSdkConfig } from '../config.js';
 import { EntitlementError, createEntitlementClient } from '../entitlement.js';
-import { LlmGatewayError, createLlmClient, parseChatStream } from '../llm.js';
+import { LlmGatewayError, createLlmClient } from '../llm.js';
 
 const ENV = {
   COMBO_AGENT_ID: 'agent-a',
@@ -127,29 +127,6 @@ describe('llm client', () => {
     expect((failure as LlmGatewayError).body).toMatchObject({
       error: { code: 'payment_required' },
     });
-  });
-
-  it('streams raw bytes and parses chunks through parseChatStream', async () => {
-    const sse =
-      'data: {"id":"c1","choices":[{"delta":{"content":"你"}}]}\n\n' +
-      'data: {"id":"c1","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":5}}\n\n' +
-      'data: [DONE]\n\n';
-    const { fetchImpl, calls } = captureFetch(
-      () => new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }),
-    );
-    const client = createLlmClient({ ...options, fetchImpl });
-
-    const stream = await client.chatCompletionStream({
-      userId: 'user-1',
-      messages: [{ role: 'user', content: 'hi' }],
-    });
-    expect(calls[0]!.body).toMatchObject({ stream: true });
-
-    const chunks = [];
-    for await (const chunk of parseChatStream(stream)) chunks.push(chunk);
-    expect(chunks).toHaveLength(2);
-    expect(chunks[0]).toMatchObject({ id: 'c1' });
-    expect(chunks[1]).toMatchObject({ usage: { prompt_tokens: 3, completion_tokens: 5 } });
   });
 
   it('throws LlmGatewayError when the stream request fails', async () => {

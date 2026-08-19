@@ -11,7 +11,6 @@ export const V2_SESSION_TOKEN_BYTES = 32;
 export const V2_SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 export const V2_SESSION_COOKIE_VALUE_PATTERN = /^v2s1\.[A-Za-z0-9_-]{43}$/;
 
-export const OTP_CODE_LENGTH = 6;
 export const OTP_CODE_PATTERN = /^[0-9]{6}$/;
 export const OTP_CHALLENGE_TTL_SECONDS = 5 * 60;
 export const OTP_MAX_ATTEMPTS = 5;

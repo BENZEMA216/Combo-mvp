@@ -6,7 +6,6 @@
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "types": ["node"]
   },
-  "references": [{ "path": "../../packages/shared" }],
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/__tests__/**"]
 }

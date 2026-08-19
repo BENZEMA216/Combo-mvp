@@ -6,10 +6,9 @@ export interface UsageExtractor {
   push(text: string): void;
   /** 流结束后的最终 usage；provider 未给（未请求 include_usage 或中途断流）时为 null。 */
   result(): TokenUsage | null;
-  sawDone(): boolean;
 }
 
-function normalizeUsage(value: unknown): TokenUsage | null {
+export function normalizeUsage(value: unknown): TokenUsage | null {
   if (typeof value !== 'object' || value === null) return null;
   const candidate = value as Record<string, unknown>;
   const prompt = candidate.prompt_tokens;
@@ -28,7 +27,6 @@ function normalizeUsage(value: unknown): TokenUsage | null {
 export function createUsageExtractor(): UsageExtractor {
   let buffer = '';
   let usage: TokenUsage | null = null;
-  let done = false;
 
   return {
     push(text) {
@@ -42,10 +40,7 @@ export function createUsageExtractor(): UsageExtractor {
         const trimmed = line.trim();
         if (!trimmed.startsWith('data:')) continue;
         const payload = trimmed.slice('data:'.length).trim();
-        if (payload === '[DONE]') {
-          done = true;
-          continue;
-        }
+        if (payload === '[DONE]') continue;
         try {
           const parsed = JSON.parse(payload) as { usage?: unknown };
           const normalized = normalizeUsage(parsed.usage);
@@ -57,9 +52,6 @@ export function createUsageExtractor(): UsageExtractor {
     },
     result() {
       return usage;
-    },
-    sawDone() {
-      return done;
     },
   };
 }

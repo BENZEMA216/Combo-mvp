@@ -1,6 +1,6 @@
 // llm client：指向平台模型网关的 OpenAI 兼容子集封装。自动注入 x_combo 平台扩展
 // （user_id / agent_id / turn_id），turn_id 可传可自动生成；流式返回原始字节流，
-// 可直接交给 Next.js 路由处理器透传，也可用 parseChatStream 逐 chunk 消费。
+// 可直接交给 Next.js 路由处理器透传。
 
 export class LlmGatewayError extends Error {
   constructor(
@@ -110,48 +110,4 @@ export function createLlmClient(options: LlmClientOptions): LlmClient {
       return response.body;
     },
   };
-}
-
-export interface ChatStreamChunk {
-  id?: string;
-  choices?: unknown[];
-  usage?: { prompt_tokens?: number; completion_tokens?: number };
-  [extra: string]: unknown;
-}
-
-/**
- * 把 chatCompletionStream 的字节流解析成逐帧 JSON chunk 的异步迭代器；
- * [DONE] 帧结束迭代。需要原样转发 SSE 的 Agent 不要用这个助手，直接透传字节流。
- */
-export async function* parseChatStream(
-  stream: ReadableStream<Uint8Array>,
-): AsyncGenerator<ChatStreamChunk> {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let newline = buffer.indexOf('\n');
-      while (newline >= 0) {
-        const line = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        newline = buffer.indexOf('\n');
-
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const payload = trimmed.slice('data:'.length).trim();
-        if (payload === '[DONE]') return;
-        try {
-          yield JSON.parse(payload) as ChatStreamChunk;
-        } catch {
-          // 非 JSON 的 data 行忽略。
-        }
-      }
-    }
-  } finally {
-    reader.releaseLock();
-  }
 }

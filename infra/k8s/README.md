@@ -20,7 +20,7 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## combo-v2 验证命名空间
 
-`v2/` 子目录是 V2 架构验证（authz / billing / llm-gateway / restart-life 四进程 + 迁移 Job）的手工部署清单，独立于三环境晋级链，不进 `render-env.mjs` 与 `deploy-env.sh`。镜像为 `combo-v2/platform` 与 `combo-v2/restart-life`，在主机上构建后经 `k3s ctr images import` 进集群，清单用 `repository@sha256` 摘要引用，摘要由 `scripts/render-v2.mjs` 在服务器上渲染进清单。命名空间、`combo-v2` 的 `combo-env` Secret（含 PostgreSQL 管理密码、五份应用角色密码——combo_api / combo_worker / combo_runtime 必须与现有环境一致，combo_authz / combo_billing 为新生成——以及 OTP、断言私钥、内部 token、provider key）都在主机上手工建立，密钥值不进入清单与 Git。数据落在共享 PostgreSQL 实例的独立 `combo_v2` 库。验证结束后整个命名空间连同新建配置一起拆除。
+`v2/` 子目录是 V2 架构验证（authz / billing / llm-gateway / restart-life 四进程 + 迁移 Job）的手工部署清单，独立于三环境晋级链，不进 `render-env.mjs` 与 `deploy-env.sh`。镜像为 `combo-v2/platform` 与 `combo-v2/restart-life`，在主机上构建后经 `k3s ctr images import` 进集群，清单用 `repository@sha256` 摘要引用，摘要由 `scripts/render-v2.mjs` 在服务器上渲染进清单。命名空间、`combo-v2` 的 `combo-env` Secret（含 PostgreSQL 管理密码、五份应用角色密码——combo_api / combo_worker / combo_runtime 必须与现有环境一致，combo_authz / combo_billing 为新生成——以及 OTP、断言私钥、内部 token、provider key）都在主机上手工建立，密钥值不进入清单与 Git。验证期采用单内部 token 策略：`LLM_GATEWAY_INTERNAL_TOKEN` 与 `BILLING_INTERNAL_TOKEN` 在 Secret 里同值，Agent 注入的 `COMBO_PLATFORM_INTERNAL_TOKEN` 引用同一凭据，一个 token 同时打通网关入口与计费接口。数据落在共享 PostgreSQL 实例的独立 `combo_v2` 库。验证结束后整个命名空间连同新建配置一起拆除。
 
 ## 可选 Sandbox Tools
 

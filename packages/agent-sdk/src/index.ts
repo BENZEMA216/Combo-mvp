@@ -13,10 +13,8 @@ export {
 export {
   LlmGatewayError,
   createLlmClient,
-  parseChatStream,
   type ChatCompletionInput,
   type ChatMessage,
-  type ChatStreamChunk,
   type LlmClient,
 } from './llm.js';
 export {

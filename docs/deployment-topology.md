@@ -92,4 +92,4 @@
 - 纯增量：不得修改、重启或删除三环境与 `combo-foundation`、`kol-agents`、`observability` 的任何现有资源；系统 Nginx 与 systemd 只新增配置，不改既有文件。
 - 数据按「实例共享、逻辑隔离」：在 `combo-foundation` 的共享 PostgreSQL 实例上新建独立 database `combo_v2`（不动现有 `combo` 库），Redis 复用 `redis-hot` 并用 `authz:v2:` 等 v2 前缀隔离键。应用角色 `combo_authz` 与 `combo_billing` 是实例级角色，由 `combo_v2` 的迁移建立；迁移会按 0008 的既有逻辑短暂把 `combo_api` 等三角色收紧为 NOLOGIN 再以相同密码恢复 LOGIN，因此 combo-v2 的 `combo-env` 必须携带与现有环境一致的三份角色密码。
 - 入口：`https://v2-test.43-160-242-46.sslip.io`，系统 Nginx 反代到 systemd forwarder 维护的 loopback 端口（authz 18091、restart-life 18092）；billing 与 llm-gateway 只出 ClusterIP，不出集群。
-- 清单在 `infra/k8s/v2/`， Dockerfile 为 `infra/Dockerfile.v2`（单镜像按 PROCESS 分叉）与 restart-life 自带 Dockerfile；密钥只存在于 `combo-v2` 的 `combo-env` Secret，在主机上生成或从现有 `combo-env` 读取，不落本地盘、不进 Git。
+- 清单在 `infra/k8s/v2/`， Dockerfile 为 `infra/Dockerfile.v2`（单镜像按 PROCESS 分叉）与 restart-life 自带 Dockerfile；密钥只存在于 `combo-v2` 的 `combo-env` Secret，在主机上生成或从现有 `combo-env` 读取，不落本地盘、不进 Git。验证期采用单内部 token 策略：`LLM_GATEWAY_INTERNAL_TOKEN` 与 `BILLING_INTERNAL_TOKEN` 同值，Agent 侧的 `COMBO_PLATFORM_INTERNAL_TOKEN` 引用同一凭据。

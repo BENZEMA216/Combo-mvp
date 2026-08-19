@@ -10,9 +10,8 @@ COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
 RUN pnpm install --frozen-lockfile=false
-# shared 先 build（tsc 项目引用需要），再 build 三个 V2 服务
-RUN pnpm -F @cb/shared build \
-  && pnpm -F @cb/authz build \
+# 依次 build 三个 V2 服务（tsc -b 项目内编译）
+RUN pnpm -F @cb/authz build \
   && pnpm -F @cb/billing build \
   && pnpm -F @cb/llm-gateway build
 
@@ -23,14 +22,12 @@ ENV NODE_ENV=production
 ENV PROCESS=authz
 RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
-COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
 COPY --from=build /app/apps/authz/package.json ./apps/authz/package.json
 COPY --from=build /app/apps/billing/package.json ./apps/billing/package.json
 COPY --from=build /app/apps/llm-gateway/package.json ./apps/llm-gateway/package.json
 COPY --from=build /app/db/package.json ./db/package.json
 RUN pnpm install --prod --frozen-lockfile=false
 # 产物：三个服务 dist + 迁移运行时白名单（migrate 容器用 --experimental-strip-types 直跑 TS）。
-COPY --from=build /app/packages/shared/dist ./packages/shared/dist
 COPY --from=build /app/apps/authz/dist ./apps/authz/dist
 COPY --from=build /app/apps/billing/dist ./apps/billing/dist
 COPY --from=build /app/apps/llm-gateway/dist ./apps/llm-gateway/dist

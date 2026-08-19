@@ -126,9 +126,6 @@ importers:
 
   apps/authz:
     dependencies:
-      '@cb/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       '@fastify/cookie':
         specifier: ^11.0.2
         version: 11.0.2
@@ -144,9 +141,6 @@ importers:
       pg:
         specifier: ^8.13.1
         version: 8.21.0
-      pino:
-        specifier: ^9.6.0
-        version: 9.14.0
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -166,18 +160,12 @@ importers:
 
   apps/billing:
     dependencies:
-      '@cb/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       fastify:
         specifier: ^5.2.1
         version: 5.8.5
       pg:
         specifier: ^8.13.1
         version: 8.21.0
-      pino:
-        specifier: ^9.6.0
-        version: 9.14.0
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -231,18 +219,9 @@ importers:
 
   apps/llm-gateway:
     dependencies:
-      '@cb/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
       fastify:
         specifier: ^5.2.1
         version: 5.8.5
-      jose:
-        specifier: ^5.10.0
-        version: 5.10.0
-      pino:
-        specifier: ^9.6.0
-        version: 9.14.0
       zod:
         specifier: ^3.24.1
         version: 3.25.76
