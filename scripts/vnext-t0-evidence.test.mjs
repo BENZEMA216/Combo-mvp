@@ -118,7 +118,10 @@ test('creates and verifies canonical FORMAL PASS evidence with five digest-bound
     Array.from({ length: 10 }, (_, index) => `SCH-${String(index + 1).padStart(3, '0')}`),
   );
   assert.equal(evidence.results.junit.length, VNEXT_G0_SUITE.groups.length);
-  assert.equal(evidence.results.totals.tests, 47);
+  assert.equal(
+    evidence.results.totals.tests,
+    VNEXT_G0_SUITE.groups.reduce((total, group) => total + group.expectedJUnitFiles.length, 0),
+  );
   assert.equal(evidence.results.totals.failures, 0);
   assert.equal(evidence.rawLogsIncluded, false);
   assert.equal(raw.endsWith('\n'), false);
