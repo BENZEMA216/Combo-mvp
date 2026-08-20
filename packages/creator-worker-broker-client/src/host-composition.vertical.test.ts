@@ -25,6 +25,7 @@ import {
   canonicalSha256,
   canonicalizeJson,
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
   executionCapabilitySigningBytes,
   validateExecutionCapabilityBinding,
   workerInterruptReceiptDigest,
@@ -56,7 +57,10 @@ import {
   type LocalInvocationPromptAad,
   type LocalInvocationPromptCiphertext,
   type LocalPromptAeadAuthorityPort,
+  type LocalResultAeadSealerPort,
   type LocalResultAeadAuthorityPort,
+  type LocalInvocationResultCiphertext,
+  type OpaqueHostDispatchPermit,
   type ReadyConversationAuthorityPort,
   type TrustedHostDispatchPort,
   localInvocationPromptAadBytes,
@@ -68,11 +72,14 @@ import {
 } from './sqlite-invocation-journal.js';
 import type { DurableBrokerConnection } from './worker-broker-client.js';
 import {
+  HOST_DISPATCH_RECEIPT_PROTOCOL,
   HostTurnRegistry,
   createHostDispatchPort,
   createHostDispatchReceiptAuthority,
   createHostInterruptPort,
   createHostInterruptReceiptAuthority,
+  observeHostTerminal,
+  sealHostTerminalResult,
   type HostTurnHandleLike,
 } from './host-composition.js';
 
@@ -102,6 +109,32 @@ function uuid(seed: number): string {
 
 function clientUuid(seed: number): string {
   return `00000000-0000-4000-8000-${String(seed).padStart(12, '0')}`;
+}
+
+function hostPermit(
+  seed: number,
+  conversationId: string,
+  runtimeThreadId: string,
+): OpaqueHostDispatchPermit {
+  return Object.freeze({
+    installationId: uuid(seed),
+    deploymentId: uuid(seed + 1),
+    leaseId: uuid(seed + 2),
+    workerSessionId: uuid(seed + 3),
+    fence: String(seed),
+    invocationId: uuid(seed + 4),
+    conversationId,
+    startCommandId: uuid(seed + 5),
+    dispatchNonce: uuid(seed + 6),
+    agentVersionId: uuid(seed + 7),
+    agentVersionDigest: SHA('a'),
+    snapshotDigest: SHA('b'),
+    requestDigest: HMAC('c'),
+    executionCapabilityDigest: SHA('d'),
+    deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    sandboxInstanceId: uuid(seed + 8),
+    runtimeThreadId,
+  });
 }
 
 function authorization(installationId: string): NewWorkerJournalAuthorization {
@@ -230,6 +263,7 @@ class FakeCodexHost {
   readonly registry = new HostTurnRegistry();
   readonly producers = new Map<string, () => unknown>();
   readonly dispatchedTexts: string[] = [];
+  abortAfterStart?: AbortController;
   dispatchCount = 0;
 
   private key(threadId: string, turnId: string): string {
@@ -237,13 +271,17 @@ class FakeCodexHost {
   }
 
   /** CodexHostLike.createThread: the fake has one fixed ready thread. */
-  async createThread(): Promise<{ id: string }> {
-    return { id: 'thread-ready-001' };
+  async createThread(): Promise<{
+    id: string;
+    generation: number;
+    workspaceRootsAcknowledged: boolean;
+  }> {
+    return { id: 'thread-ready-001', generation: 1, workspaceRootsAcknowledged: true };
   }
 
   /** CodexHostLike.startTurn: resolves the turn id on dispatch and wires the programmable interrupt producer. */
   startTurn(input: {
-    thread: { id: string };
+    thread: { id: string; generation: number; workspaceRootsAcknowledged: boolean };
     messageId: string;
     text: string;
     timeoutMs: number;
@@ -255,8 +293,11 @@ class FakeCodexHost {
     if (!this.producers.has(this.key(threadId, turnId))) {
       this.producers.set(this.key(threadId, turnId), defaultEvidenceProducer(threadId, turnId));
     }
+    this.abortAfterStart?.abort();
     return {
       turnId: Promise.resolve(turnId),
+      result: new Promise(() => undefined),
+      terminal: new Promise(() => undefined),
       interrupt: async (): Promise<HostInterruptedTerminalEvidence> => {
         const produced = this.producers.get(this.key(threadId, turnId));
         if (produced === undefined) throw new Error('host-turn-not-alive');
@@ -334,7 +375,8 @@ function createAuthorities(args: {
   });
   const hostDispatchReceiptAuthority: HostDispatchReceiptAuthorityPort =
     createHostDispatchReceiptAuthority({
-      sandboxAttestationDigest: (_threadId, _turnId) => `sha256:${SHA('9')}`,
+      registry: args.host.registry,
+      sandboxAttestationDigest: (_binding) => `sha256:${SHA('9')}`,
     });
   const localPromptAeadAuthority: LocalPromptAeadAuthorityPort = {
     rewrap({ brokerCiphertext, brokerAad, localAad, expectedRequestDigest }) {
@@ -665,7 +707,11 @@ async function createVerticalFixture(seed: number): Promise<VerticalFixture> {
   }) as Extract<BrokerEnvelope, { type: 'invocation.start' }>;
   state = await commitCommand(adapter, installationId, state, startEnvelope);
   const host = new FakeCodexHost();
-  host.registry.bindThread(conversationId, 'thread-ready-001');
+  host.registry.bindThread(conversationId, {
+    id: 'thread-ready-001',
+    generation: 1,
+    workspaceRootsAcknowledged: true,
+  });
   const authorities = createAuthorities({
     publicKey: keyPair.publicKey,
     brokerContentKey: contentKey,
@@ -741,35 +787,7 @@ async function driveToCancelRequested(fixture: VerticalFixture): Promise<{
   >['permit'];
 }> {
   const signal = new AbortController().signal;
-  await fixture.journal.prepare({
-    installationId: fixture.installationId,
-    ownerToken: OWNER,
-    command: await commandReference(
-      fixture.adapter,
-      fixture.installationId,
-      fixture.state,
-      'invocation.prepare',
-    ),
-    signal,
-  });
-  const start = await fixture.journal.start({
-    installationId: fixture.installationId,
-    ownerToken: OWNER,
-    command: await commandReference(
-      fixture.adapter,
-      fixture.installationId,
-      fixture.state,
-      'invocation.start',
-    ),
-    signal,
-  });
-  if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
-  await fixture.journal.dispatchOnce({
-    installationId: fixture.installationId,
-    ownerToken: OWNER,
-    permit: start.permit,
-    signal,
-  });
+  await driveToRunning(fixture, signal);
   const cancelEnvelope = BrokerEnvelopeSchema.parse({
     protocol: 'combo.creator-broker/1',
     schemaVersion: 1,
@@ -803,6 +821,41 @@ async function driveToCancelRequested(fixture: VerticalFixture): Promise<{
   });
   if (cancel.action !== 'INTERRUPT_ONCE') throw new Error('missing-interrupt-permit');
   return { cancelPermit: cancel.permit };
+}
+
+async function driveToRunning(
+  fixture: VerticalFixture,
+  signal: AbortSignal = new AbortController().signal,
+): Promise<Readonly<{ sourceEventId: string; factDigest: string; runtimeTurnId: string }>> {
+  await fixture.journal.prepare({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    command: await commandReference(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      'invocation.prepare',
+    ),
+    signal,
+  });
+  const start = await fixture.journal.start({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    command: await commandReference(
+      fixture.adapter,
+      fixture.installationId,
+      fixture.state,
+      'invocation.start',
+    ),
+    signal,
+  });
+  if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-dispatch-permit');
+  return fixture.journal.dispatchOnce({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    permit: start.permit,
+    signal,
+  });
 }
 
 function queryScalar(fixture: VerticalFixture, column: string): string | number | null {
@@ -1014,13 +1067,69 @@ describe('Host composition vertical: real SQLite journal + composition ports + f
     fixture.adapter.close();
   });
 
-  it('dispatch receipt authority rejects malformed or misbound receipts and produces canonical digests', async () => {
-    const authority = createHostDispatchReceiptAuthority({
-      sandboxAttestationDigest: (threadId, turnId) =>
-        `sha256:${createHash('sha256').update(`${threadId}/${turnId}`).digest('hex')}`,
+  it('durably confirms a Host dispatch when caller abort races after the Host accepted the turn', async () => {
+    const fixture = await createVerticalFixture(407);
+    const controller = new AbortController();
+    fixture.host.abortAfterStart = controller;
+
+    await expect(driveToRunning(fixture, controller.signal)).resolves.toMatchObject({
+      runtimeTurnId: 'turn-host-1',
     });
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(fixture.host.dispatchCount).toBe(1);
+    expect(queryScalar(fixture, 'state')).toBe('RUNNING');
+    expect(fixture.registry.bindingForInvocation(fixture.invocationId)).toMatchObject({
+      invocationId: fixture.invocationId,
+      turnId: 'turn-host-1',
+    });
+  });
+
+  it('rejects malformed UTF-8 before starting a Host turn', async () => {
+    const permit: OpaqueHostDispatchPermit = {
+      installationId: uuid(405_001),
+      deploymentId: uuid(405_002),
+      leaseId: uuid(405_003),
+      workerSessionId: uuid(405_004),
+      fence: '405',
+      invocationId: uuid(405_005),
+      conversationId: uuid(405_006),
+      startCommandId: uuid(405_007),
+      dispatchNonce: uuid(405_008),
+      agentVersionId: uuid(405_009),
+      agentVersionDigest: SHA('a'),
+      snapshotDigest: SHA('b'),
+      requestDigest: HMAC('c'),
+      executionCapabilityDigest: SHA('d'),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      sandboxInstanceId: uuid(405_010),
+      runtimeThreadId: 'thread-ready-001',
+    };
+    const registry = new HostTurnRegistry();
+    registry.bindThread(permit.conversationId, {
+      id: permit.runtimeThreadId,
+      generation: 1,
+      workspaceRootsAcknowledged: true,
+    });
+    const host = new FakeCodexHost();
+    const dispatch = createHostDispatchPort({ registry, host });
+
+    await expect(
+      dispatch.dispatchOnce(
+        { permit, userMessage: Uint8Array.from([0xc3, 0x28]) },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'HOST_PROMPT_INVALID' });
+    expect(host.dispatchCount).toBe(0);
+  });
+
+  it('dispatch receipt authority rejects malformed or misbound receipts and produces canonical digests', async () => {
     const expected: HostDispatchExpectedBinding = {
       installationId: uuid(406_001),
+      deploymentId: uuid(406_008),
+      leaseId: uuid(406_009),
+      workerSessionId: uuid(406_010),
+      fence: '406',
       invocationId: uuid(406_002),
       conversationId: uuid(406_003),
       startCommandId: uuid(406_004),
@@ -1028,22 +1137,72 @@ describe('Host composition vertical: real SQLite journal + composition ports + f
       agentVersionId: uuid(406_006),
       agentVersionDigest: SHA('a'),
       snapshotDigest: SHA('b'),
+      requestDigest: HMAC('c'),
+      executionCapabilityDigest: SHA('d'),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
       sandboxInstanceId: uuid(406_007),
       runtimeThreadId: 'thread-ready-001',
     };
-    const verified = authority.verify(
-      { token: 'host-receipt', runtimeThreadId: 'thread-ready-001', runtimeTurnId: 'turn-host-1' },
-      expected,
-      new Date(),
-    );
+    const registry = new HostTurnRegistry();
+    const thread = {
+      id: expected.runtimeThreadId,
+      generation: 1,
+      workspaceRootsAcknowledged: true,
+    } as const;
+    const handle: HostTurnHandleLike = {
+      turnId: Promise.resolve('turn-host-1'),
+      result: Promise.resolve({ text: 'done' }),
+      terminal: Promise.resolve(
+        createHostTurnTerminalEvidence({
+          threadId: thread.id,
+          turnId: 'turn-host-1',
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: Date.now(),
+        }),
+      ),
+      interrupt: async () => {
+        throw new Error('never-called');
+      },
+    };
+    registry.bindThread(expected.conversationId, thread);
+    registry.register({
+      permit: expected,
+      thread,
+      turnId: 'turn-host-1',
+      handle,
+    });
+    const authority = createHostDispatchReceiptAuthority({
+      registry,
+      sandboxAttestationDigest: (binding) =>
+        `sha256:${createHash('sha256')
+          .update(
+            `${binding.sandboxInstanceId}/${binding.runtimeThreadId}/${binding.runtimeTurnId}/${binding.hostGeneration}`,
+          )
+          .digest('hex')}`,
+    });
+    const receipt = {
+      protocol: HOST_DISPATCH_RECEIPT_PROTOCOL,
+      schemaVersion: 1,
+      ...expected,
+      runtimeTurnId: 'turn-host-1',
+      hostGeneration: 1,
+      workspaceRootsAcknowledged: true,
+    } as const;
+    const verified = authority.verify(receipt, expected, new Date());
     expect(verified.runtimeTurnId).toBe('turn-host-1');
     expect(verified.sandboxAttestationDigest).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(verified.dispatchReceiptDigest).toBe(
       `sha256:${createHash('sha256')
         .update(
           canonicalizeJson({
-            runtimeThreadId: 'thread-ready-001',
-            runtimeTurnId: 'turn-host-1',
+            receipt,
+            sandboxAttestationDigest: `sha256:${createHash('sha256')
+              .update(`${expected.sandboxInstanceId}/thread-ready-001/turn-host-1/1`)
+              .digest('hex')}`,
           }),
           'utf8',
         )
@@ -1052,8 +1211,8 @@ describe('Host composition vertical: real SQLite journal + composition ports + f
     for (const candidate of [
       null,
       { token: 'ack-only' },
-      { token: 'host-receipt', runtimeThreadId: 42, runtimeTurnId: 'turn-host-1' },
-      { token: 'host-receipt', runtimeThreadId: 'thread-ready-001' },
+      { ...receipt, runtimeThreadId: 42 },
+      { ...receipt, runtimeTurnId: undefined },
     ]) {
       let thrown: unknown;
       try {
@@ -1069,15 +1228,7 @@ describe('Host composition vertical: real SQLite journal + composition ports + f
     // A receipt for a different ready thread is a binding mismatch and must be rejected.
     let mismatched: unknown;
     try {
-      authority.verify(
-        {
-          token: 'host-receipt',
-          runtimeThreadId: 'thread-ready-002',
-          runtimeTurnId: 'turn-host-1',
-        },
-        expected,
-        new Date(),
-      );
+      authority.verify({ ...receipt, runtimeThreadId: 'thread-ready-002' }, expected, new Date());
     } catch (error) {
       mismatched = error;
     }
@@ -1085,6 +1236,38 @@ describe('Host composition vertical: real SQLite journal + composition ports + f
       name: 'HostCompositionError',
       code: 'HOST_DISPATCH_BINDING_MISMATCH',
     });
+    for (const key of [
+      'installationId',
+      'deploymentId',
+      'leaseId',
+      'workerSessionId',
+      'fence',
+      'invocationId',
+      'conversationId',
+      'startCommandId',
+      'dispatchNonce',
+      'agentVersionId',
+      'agentVersionDigest',
+      'snapshotDigest',
+      'requestDigest',
+      'executionCapabilityDigest',
+      'deadlineAt',
+      'sandboxInstanceId',
+    ] as const) {
+      expect(() =>
+        authority.verify({ ...receipt, [key]: `changed-${key}` }, expected, new Date()),
+      ).toThrowError(expect.objectContaining({ code: 'HOST_DISPATCH_BINDING_MISMATCH' }));
+    }
+    expect(() =>
+      authority.verify({ ...receipt, hostGeneration: 2 }, expected, new Date()),
+    ).toThrowError(expect.objectContaining({ code: 'HOST_DISPATCH_BINDING_MISMATCH' }));
+    expect(() =>
+      authority.verify({ ...receipt, workspaceRootsAcknowledged: false }, expected, new Date()),
+    ).toThrowError(expect.objectContaining({ code: 'HOST_DISPATCH_RECEIPT_INVALID' }));
+    registry.clear();
+    expect(() => authority.verify(receipt, expected, new Date())).toThrowError(
+      expect.objectContaining({ code: 'HOST_DISPATCH_BINDING_MISMATCH' }),
+    );
   });
 
   it('emits a canonical invocation.cancelled fact bound to the durable interrupt receipt', async () => {
@@ -1149,32 +1332,251 @@ describe('Host composition vertical: real SQLite journal + composition ports + f
     fixture.adapter.close();
   });
 
+  it('classifies Host terminal results conservatively and keeps the binding until durable commit', async () => {
+    const registry = new HostTurnRegistry();
+    const thread = {
+      id: 'thread-terminal',
+      generation: 1,
+      workspaceRootsAcknowledged: true,
+    } as const;
+    const conversationId = uuid(409_001);
+    const permit = hostPermit(409_010, conversationId, thread.id);
+    registry.bindThread(conversationId, thread);
+    const successHandle: HostTurnHandleLike = {
+      turnId: Promise.resolve('turn-success'),
+      result: Promise.resolve({ text: 'sealed answer' }),
+      terminal: Promise.resolve(
+        createHostTurnTerminalEvidence({
+          threadId: thread.id,
+          turnId: 'turn-success',
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: Date.now(),
+        }),
+      ),
+      interrupt: async () => {
+        throw new Error('never-called');
+      },
+    };
+    const successBinding = registry.register({
+      permit,
+      thread,
+      turnId: 'turn-success',
+      handle: successHandle,
+    });
+    const success = await observeHostTerminal(registry, permit.invocationId);
+    expect(success).toMatchObject({ outcome: 'SUCCEEDED', result: { text: 'sealed answer' } });
+    expect(registry.bindingForInvocation(permit.invocationId)).toBe(successBinding);
+    if (success.outcome !== 'SUCCEEDED') throw new Error('missing-success');
+    let sealedPlaintext = '';
+    let sealedAad: unknown;
+    const sealedCiphertext = {
+      token: 'sealed-result',
+    } as unknown as LocalInvocationResultCiphertext;
+    const sealer: LocalResultAeadSealerPort = {
+      seal(plaintext, expectedAad) {
+        sealedPlaintext = Buffer.from(plaintext).toString('utf8');
+        sealedAad = expectedAad;
+        return sealedCiphertext;
+      },
+    };
+    expect(sealHostTerminalResult(success, sealer)).toBe(sealedCiphertext);
+    expect(sealedPlaintext).toBe('sealed answer');
+    expect(sealedAad).toEqual({
+      schemaVersion: 1,
+      installationId: permit.installationId,
+      invocationId: permit.invocationId,
+      conversationId: permit.conversationId,
+      agentVersionDigest: permit.agentVersionDigest,
+      role: 'ASSISTANT',
+    });
+
+    const failedPermit = hostPermit(409_100, uuid(409_101), 'thread-terminal-failed');
+    const failedThread = { ...thread, id: failedPermit.runtimeThreadId };
+    registry.bindThread(failedPermit.conversationId, failedThread);
+    registry.register({
+      permit: failedPermit,
+      thread: failedThread,
+      turnId: 'turn-failed',
+      handle: {
+        turnId: Promise.resolve('turn-failed'),
+        result: new Promise(() => undefined),
+        terminal: Promise.resolve(
+          createHostTurnTerminalEvidence({
+            threadId: failedThread.id,
+            turnId: 'turn-failed',
+            outcome: 'FAILED',
+            errorCode: 'TURN_FAILED',
+            terminalStatus: 'failed',
+            terminalError: 'PRESENT',
+            outputState: 'NOT_APPLICABLE',
+            completedAt: Date.now(),
+          }),
+        ),
+        interrupt: async () =>
+          createHostInterruptedTerminalEvidence({
+            threadId: failedThread.id,
+            turnId: 'turn-failed',
+            status: 'interrupted',
+            error: null,
+            completedAt: Date.now(),
+          }),
+      },
+    });
+    await expect(observeHostTerminal(registry, failedPermit.invocationId)).resolves.toMatchObject({
+      outcome: 'FAILED',
+      errorCode: 'TURN_FAILED',
+    });
+
+    const lostPermit = hostPermit(409_200, uuid(409_201), 'thread-terminal-lost');
+    const lostThread = { ...thread, id: lostPermit.runtimeThreadId };
+    registry.bindThread(lostPermit.conversationId, lostThread);
+    registry.register({
+      permit: lostPermit,
+      thread: lostThread,
+      turnId: 'turn-lost',
+      handle: {
+        turnId: Promise.resolve('turn-lost'),
+        result: new Promise(() => undefined),
+        terminal: Promise.reject(new Error('host terminal evidence lost')),
+        interrupt: async () => {
+          throw new Error('never-called');
+        },
+      },
+    });
+    await expect(observeHostTerminal(registry, lostPermit.invocationId)).resolves.toMatchObject({
+      outcome: 'UNCERTAIN',
+      reason: 'HOST_EVIDENCE_LOST',
+    });
+  });
+
   it('the registry is process-generation bound: entries die with clear() and IDs can be reused only in a new generation', () => {
     const registry = new HostTurnRegistry();
+    const thread = {
+      id: 'thread-a',
+      generation: 1,
+      workspaceRootsAcknowledged: true,
+    } as const;
+    const permit = {
+      installationId: uuid(410_010),
+      deploymentId: uuid(410_011),
+      leaseId: uuid(410_012),
+      workerSessionId: uuid(410_013),
+      fence: '410',
+      invocationId: uuid(410_002),
+      conversationId: uuid(410_001),
+      startCommandId: uuid(410_014),
+      dispatchNonce: uuid(410_015),
+      agentVersionId: uuid(410_016),
+      agentVersionDigest: SHA('a'),
+      snapshotDigest: SHA('b'),
+      requestDigest: HMAC('c'),
+      executionCapabilityDigest: SHA('d'),
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+      sandboxInstanceId: uuid(410_017),
+      runtimeThreadId: thread.id,
+    } as const;
+    registry.bindThread(uuid(410_001), thread);
     const first: HostTurnHandleLike = {
       turnId: Promise.resolve('turn-1'),
+      result: Promise.resolve({ text: 'done' }),
+      terminal: Promise.resolve(
+        createHostTurnTerminalEvidence({
+          threadId: thread.id,
+          turnId: 'turn-1',
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: Date.now(),
+        }),
+      ),
       interrupt: async () => {
         throw new Error('never-called');
       },
     };
     expect(registry.generation).toBe(0);
-    registry.register('thread-a', 'turn-1', first);
+    const firstBinding = registry.register({
+      permit,
+      thread,
+      turnId: 'turn-1',
+      handle: first,
+    });
     expect(registry.lookup('thread-a', 'turn-1')).toBe(first);
     expect(registry.lookup('thread-a', 'turn-2')).toBeUndefined();
-    registry.unregister('thread-a', 'turn-1');
+    expect(registry.unregister({ ...firstBinding })).toBe(false);
+    expect(registry.lookup('thread-a', 'turn-1')).toBe(first);
+    expect(registry.unregister(firstBinding)).toBe(true);
     expect(registry.lookup('thread-a', 'turn-1')).toBeUndefined();
-    registry.register('thread-a', 'turn-1', first);
+    registry.register({
+      permit,
+      thread,
+      turnId: 'turn-1',
+      handle: first,
+    });
     registry.clear();
     expect(registry.generation).toBe(1);
     expect(registry.lookup('thread-a', 'turn-1')).toBeUndefined();
     // Same IDs in a new generation are distinct entries.
     const second: HostTurnHandleLike = {
       turnId: Promise.resolve('turn-1'),
+      result: Promise.resolve({ text: 'done again' }),
+      terminal: Promise.resolve(
+        createHostTurnTerminalEvidence({
+          threadId: thread.id,
+          turnId: 'turn-1',
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: Date.now(),
+        }),
+      ),
       interrupt: async () => {
         throw new Error('never-called');
       },
     };
-    registry.register('thread-a', 'turn-1', second);
+    registry.bindThread(uuid(410_001), thread);
+    registry.register({
+      permit,
+      thread,
+      turnId: 'turn-1',
+      handle: second,
+    });
     expect(registry.lookup('thread-a', 'turn-1')).toBe(second);
+    expect(() =>
+      registry.bindThread(uuid(410_003), {
+        id: 'thread-b',
+        generation: 2,
+        workspaceRootsAcknowledged: true,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'HOST_CONVERSATION_BINDING_CONFLICT' }));
+    expect(() =>
+      registry.bindThread(uuid(410_004), {
+        id: 'thread-c',
+        generation: 1,
+        workspaceRootsAcknowledged: false,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'HOST_THREAD_INVALID' }));
+    expect(() =>
+      registry.bindThread(uuid(410_005), {
+        id: 'thread\u0000collision',
+        generation: 1,
+        workspaceRootsAcknowledged: true,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'HOST_THREAD_INVALID' }));
+    expect(() =>
+      registry.register({
+        permit: { ...permit, invocationId: uuid(410_006) },
+        thread,
+        turnId: 'turn\u0000collision',
+        handle: second,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'HOST_TURN_INVALID' }));
   });
 });

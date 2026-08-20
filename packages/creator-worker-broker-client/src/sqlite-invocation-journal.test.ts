@@ -1604,7 +1604,7 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     afterPrune.close();
   });
 
-  it('replays an unattempted STARTING permit after reopen and still dispatches only once', async () => {
+  it('never dispatches an unattempted STARTING permit after process reopen', async () => {
     const fixture = await createInvocationFixture(200);
     const signal = new AbortController().signal;
     let journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
@@ -1626,25 +1626,118 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
 
     const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
     journal = reopened.createInvocationJournal(fixture.authorities.options);
-    const recoveredActions = await journal.recoverHostActions({
+    const recoveredActions = await journal.recoverHostActionsAfterProcessStart({
       installationId: fixture.installationId,
       ownerToken: OWNER,
       signal,
     });
     expect(recoveredActions).toHaveLength(1);
-    expect(queryScalar(fixture.filename, 'state')).toBe('STARTING');
+    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
     expect(queryScalar(fixture.filename, 'host_dispatch_intent_count')).toBe(1);
     const [replayed] = recoveredActions;
-    if (replayed?.action !== 'DISPATCH_ONCE') throw new Error('missing-recovered-dispatch-permit');
+    expect(replayed).toMatchObject({ action: 'UNCERTAIN', invocationId: fixture.invocationId });
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+    assertLocalIntegrity(fixture.filename);
+    reopened.close();
+  });
+
+  it('writes only a confirmed Host terminal failure from RUNNING and exact-replays it', async () => {
+    const fixture = await createInvocationFixture(201);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const running = await driveInvocationToRunning(journal, fixture, signal);
+    const failed = await journal.writeFailed({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      invocationId: fixture.invocationId,
+      dispatchNonce: running.dispatchNonce,
+      sourceEventId: fixture.invocationId,
+      errorCode: 'TURN_FAILED',
+      signal,
+    });
+    expect(queryScalar(fixture.filename, 'state')).toBe('FAILED');
     await expect(
-      journal.dispatchOnce({
+      journal.writeFailed({
         installationId: fixture.installationId,
         ownerToken: OWNER,
-        permit: replayed.permit,
+        invocationId: fixture.invocationId,
+        dispatchNonce: running.dispatchNonce,
+        sourceEventId: fixture.invocationId,
+        errorCode: 'TURN_FAILED',
         signal,
       }),
-    ).resolves.toMatchObject({ runtimeTurnId: 'turn-host-1' });
+    ).resolves.toEqual(failed);
+    await expect(
+      journal.writeFailed({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        invocationId: fixture.invocationId,
+        dispatchNonce: running.dispatchNonce,
+        sourceEventId: fixture.invocationId,
+        errorCode: 'TURN_TIMEOUT',
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'FINAL_CONFLICT' });
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+  });
+
+  it('marks a live RUNNING invocation uncertain when its Host evidence is lost', async () => {
+    const fixture = await createInvocationFixture(202);
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const running = await driveInvocationToRunning(journal, fixture, signal);
+    const uncertain = await journal.markHostEvidenceLost({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      invocationId: fixture.invocationId,
+      dispatchNonce: running.dispatchNonce,
+      sourceEventId: fixture.invocationId,
+      signal,
+    });
+    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
+    await expect(
+      journal.markHostEvidenceLost({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        invocationId: fixture.invocationId,
+        dispatchNonce: running.dispatchNonce,
+        sourceEventId: fixture.invocationId,
+        signal,
+      }),
+    ).resolves.toEqual(uncertain);
+    const terminal = queryJson(
+      fixture.filename,
+      `SELECT fact_json AS value FROM local_invocation_events
+       WHERE event_type = 'invocation.uncertain'`,
+    ) as { reason: string };
+    expect(terminal.reason).toBe('HOST_EVIDENCE_LOST');
+    assertLocalIntegrity(fixture.filename);
+    fixture.adapter.close();
+  });
+
+  it('converges a reopened RUNNING invocation without a second Host call', async () => {
+    const fixture = await createInvocationFixture(203);
+    const signal = new AbortController().signal;
+    let journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await driveInvocationToRunning(journal, fixture, signal);
     expect(fixture.authorities.hostDispatchCalls.count).toBe(1);
+    fixture.adapter.close();
+
+    const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+    journal = reopened.createInvocationJournal(fixture.authorities.options);
+    await expect(
+      journal.recoverHostActionsAfterProcessStart({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        signal,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ action: 'UNCERTAIN', invocationId: fixture.invocationId }),
+    ]);
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(1);
+    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
+    assertLocalIntegrity(fixture.filename);
     reopened.close();
   });
 
@@ -2026,7 +2119,7 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     missingCompanion.close();
   });
 
-  it('reconstructs an unattempted interrupt permit from SQLite after process loss', async () => {
+  it('never reconstructs an interrupt after process loss without a live Host generation', async () => {
     const fixture = await createInvocationFixture(259);
     const signal = new AbortController().signal;
     let journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
@@ -2063,22 +2156,17 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
 
     const reopened = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
     journal = reopened.createInvocationJournal(fixture.authorities.options);
-    const actions = await journal.recoverHostActions({
+    const actions = await journal.recoverHostActionsAfterProcessStart({
       installationId: fixture.installationId,
       ownerToken: OWNER,
       signal,
     });
     expect(actions).toHaveLength(1);
     const [action] = actions;
-    if (action?.action !== 'INTERRUPT_ONCE') throw new Error('missing-recovered-interrupt-permit');
-    await journal.interruptOnce({
-      installationId: fixture.installationId,
-      ownerToken: OWNER,
-      permit: action.permit,
-      signal,
-    });
-    expect(fixture.authorities.hostInterruptCalls.count).toBe(1);
-    expect(queryScalar(fixture.filename, 'state')).toBe('CANCELLED');
+    expect(action).toMatchObject({ action: 'UNCERTAIN', invocationId: fixture.invocationId });
+    expect(fixture.authorities.hostInterruptCalls.count).toBe(0);
+    expect(queryScalar(fixture.filename, 'state')).toBe('UNCERTAIN');
+    assertLocalIntegrity(fixture.filename);
     reopened.close();
   });
 
@@ -2847,6 +2935,58 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
     fixture.adapter.close();
   });
+
+  it.each([['FAILED', 276_100] as const, ['UNCERTAIN', 276_200] as const])(
+    'preserves terminal reserve for a RUNNING to %s Host settlement',
+    async (terminal, seed) => {
+      let availableBytes = Number.MAX_SAFE_INTEGER;
+      let pressureActive = false;
+      let filename = '';
+      const fixture = await createInvocationFixture(seed, {
+        minFreeBytes: 1,
+        availableFilesystemBytesForTests: () => availableBytes,
+        faultInjector(point) {
+          if (
+            pressureActive &&
+            point.endsWith('.before_commit') &&
+            existsSync(`${filename}.recovery-reserve`)
+          ) {
+            throw Object.assign(new Error('SIMULATED_TERMINAL_ENOSPC'), { code: 'ENOSPC' });
+          }
+        },
+      });
+      filename = fixture.filename;
+      const signal = new AbortController().signal;
+      const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+      const running = await driveInvocationToRunning(journal, fixture, signal);
+      availableBytes = 0;
+      pressureActive = true;
+      if (terminal === 'FAILED') {
+        await journal.writeFailed({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          invocationId: fixture.invocationId,
+          dispatchNonce: running.dispatchNonce,
+          sourceEventId: fixture.invocationId,
+          errorCode: 'TURN_FAILED',
+          signal,
+        });
+      } else {
+        await journal.markHostEvidenceLost({
+          installationId: fixture.installationId,
+          ownerToken: OWNER,
+          invocationId: fixture.invocationId,
+          dispatchNonce: running.dispatchNonce,
+          sourceEventId: fixture.invocationId,
+          signal,
+        });
+      }
+      expect(queryScalar(fixture.filename, 'state')).toBe(terminal);
+      expect(existsSync(`${fixture.filename}.recovery-reserve`)).toBe(true);
+      assertLocalIntegrity(fixture.filename);
+      fixture.adapter.close();
+    },
+  );
 
   it('protects reserve across 1000 exact Cloud ACK replays and fails pinned polling before reserve', async () => {
     const fixture = await createCompletedFixture(277, {
@@ -4670,6 +4810,34 @@ async function createCompletedFixture(
     signal,
   });
   return fixture;
+}
+
+async function driveInvocationToRunning(
+  journal: SqliteWorkerInvocationJournal,
+  fixture: InvocationFixture,
+  signal: AbortSignal,
+): Promise<Readonly<{ dispatchNonce: string }>> {
+  await bindCloudCommittedReady(journal, fixture, signal);
+  await journal.prepare({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    command: fixture.prepareReference,
+    signal,
+  });
+  const start = await journal.start({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    command: fixture.startReference,
+    signal,
+  });
+  if (start.action !== 'DISPATCH_ONCE') throw new Error('missing-permit');
+  await journal.dispatchOnce({
+    installationId: fixture.installationId,
+    ownerToken: OWNER,
+    permit: start.permit,
+    signal,
+  });
+  return Object.freeze({ dispatchNonce: start.permit.dispatchNonce });
 }
 
 function pressurePrepareEnvelope(fixture: InvocationFixture, seed: number): BrokerEnvelope {

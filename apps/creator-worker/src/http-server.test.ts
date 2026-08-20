@@ -6,6 +6,7 @@ import { CreatorWorker } from './creator-worker.js';
 import { CreatorWorkerHttpServer, type CreatorWorkerServerAddress } from './http-server.js';
 import {
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
   type CodexHost,
   type HostThread,
   type HostTurnHandle,
@@ -39,6 +40,18 @@ class ImmediateHost implements CodexHost {
     return {
       turnId: Promise.resolve(turnId),
       result: Promise.resolve({ text: `<script>${input.text}</script>` }),
+      terminal: Promise.resolve(
+        createHostTurnTerminalEvidence({
+          threadId: input.thread.id,
+          turnId,
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: 0,
+        }),
+      ),
       interrupt: async () =>
         createHostInterruptedTerminalEvidence({
           threadId: input.thread.id,

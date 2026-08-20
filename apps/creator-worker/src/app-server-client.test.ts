@@ -13,7 +13,10 @@ import {
   type SpawnAppServer,
 } from './app-server-client.js';
 import { CreatorWorker } from './creator-worker.js';
-import { createHostInterruptedTerminalEvidence } from './host-types.js';
+import {
+  createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
+} from './host-types.js';
 
 interface RequestMessage {
   id?: number | string;
@@ -489,6 +492,18 @@ describe('CodexAppServerClient', () => {
 
     await expect(handle.turnId).resolves.toBe('turn-1');
     await expect(handle.result).resolves.toEqual({ text: 'public answer' });
+    await expect(handle.terminal).resolves.toEqual(
+      createHostTurnTerminalEvidence({
+        threadId: thread.id,
+        turnId: 'turn-1',
+        outcome: 'SUCCEEDED',
+        errorCode: null,
+        terminalStatus: 'completed',
+        terminalError: 'NONE',
+        outputState: 'USABLE',
+        completedAt: 1,
+      }),
+    );
     expect(request.params).toEqual({
       threadId: thread.id,
       clientUserMessageId: 'message-1',
@@ -534,6 +549,77 @@ describe('CodexAppServerClient', () => {
       },
     });
     await expect(handle.result).resolves.toEqual({ text: 'new' });
+  });
+
+  it.each([
+    { label: 'missing status', turn: { error: null, completedAt: 1 } },
+    { label: 'missing error', turn: { status: 'failed', completedAt: 1 } },
+    { label: 'unknown status', turn: { status: 'other', error: null, completedAt: 1 } },
+    { label: 'string error', turn: { status: 'failed', error: 'private detail', completedAt: 1 } },
+    { label: 'invalid completedAt', turn: { status: 'failed', error: null, completedAt: null } },
+  ])('rejects a terminal with $label instead of confirming Host failure', async ({ turn }) => {
+    const { client, fake, projectPath } = await fixture();
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'malformed-terminal',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-malformed-terminal' } } });
+    await handle.turnId;
+
+    fake.send({
+      method: 'turn/completed',
+      params: { threadId: thread.id, turn: { id: 'turn-malformed-terminal', ...turn } },
+    });
+
+    await expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_PROTOCOL_ERROR', hostLost: true }),
+    );
+    await expect(handle.terminal).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_PROTOCOL_ERROR', hostLost: true }),
+    );
+  });
+
+  it('emits TURN_FAILED evidence only for an explicit well-formed failed terminal', async () => {
+    const { client, fake, projectPath } = await fixture();
+    await initialize(client, fake);
+    const thread = await createThread(client, fake, projectPath);
+    const handle = client.startTurn({
+      thread,
+      messageId: 'failed-terminal',
+      text: 'hello',
+      timeoutMs: 5_000,
+    });
+    const start = await fake.nextRequest('turn/start');
+    fake.send({ id: start.id, result: { turn: { id: 'turn-failed' } } });
+    await handle.turnId;
+    fake.send({
+      method: 'turn/completed',
+      params: {
+        threadId: thread.id,
+        turn: { id: 'turn-failed', status: 'failed', error: { code: 'redacted' }, completedAt: 2 },
+      },
+    });
+
+    await expect(handle.result).rejects.toEqual(
+      expect.objectContaining({ code: 'HOST_TURN_FAILED', hostLost: false }),
+    );
+    await expect(handle.terminal).resolves.toEqual(
+      createHostTurnTerminalEvidence({
+        threadId: thread.id,
+        turnId: 'turn-failed',
+        outcome: 'FAILED',
+        errorCode: 'TURN_FAILED',
+        terminalStatus: 'failed',
+        terminalError: 'PRESENT',
+        outputState: 'NOT_APPLICABLE',
+        completedAt: 2,
+      }),
+    );
   });
 
   it('rejects a second active turn on the same Host thread without dispatching it', async () => {
@@ -655,6 +741,18 @@ describe('CodexAppServerClient', () => {
 
     await expect(handle.result).rejects.toEqual(
       expect.objectContaining({ code: 'HOST_TURN_FAILED' }),
+    );
+    await expect(handle.terminal).resolves.toEqual(
+      createHostTurnTerminalEvidence({
+        threadId: thread.id,
+        turnId: 'turn-unsafe',
+        outcome: 'FAILED',
+        errorCode: 'TURN_FAILED',
+        terminalStatus: 'interrupted',
+        terminalError: 'NONE',
+        outputState: 'NOT_APPLICABLE',
+        completedAt: 1,
+      }),
     );
     expect(fake.requests).toContainEqual({
       id: 'server-1',
@@ -1032,6 +1130,18 @@ describe('CodexAppServerClient', () => {
     );
     fake.send({ id: interrupt.id, result: {} });
     await resultAssertion;
+    await expect(handle.terminal).resolves.toEqual(
+      createHostTurnTerminalEvidence({
+        threadId: thread.id,
+        turnId: 'turn-timeout',
+        outcome: 'FAILED',
+        errorCode: 'TURN_TIMEOUT',
+        terminalStatus: 'interrupted',
+        terminalError: 'NONE',
+        outputState: 'NOT_APPLICABLE',
+        completedAt: 1,
+      }),
+    );
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(fake.requests.filter((request) => request.method === 'turn/interrupt')).toHaveLength(1);
     expect(fake.killed).toBe(false);
@@ -1083,6 +1193,9 @@ describe('CodexAppServerClient', () => {
     );
     await expect(handle.result).rejects.toEqual(
       expect.objectContaining({ code: expect.stringMatching(/^HOST_/u) }),
+    );
+    await expect(handle.terminal).rejects.toEqual(
+      expect.objectContaining({ code: expect.stringMatching(/^HOST_/u), hostLost: true }),
     );
   });
 

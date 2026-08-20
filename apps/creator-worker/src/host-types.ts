@@ -1,10 +1,13 @@
 import {
   HOST_INTERRUPT_TERMINAL_PROTOCOL,
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
 } from '@cb/creator-agent-protocol';
 import type {
   HostInterruptedTerminalEvidence,
   HostInterruptedTerminalObservation,
+  HostTurnTerminalEvidence,
+  HostTurnTerminalObservation,
 } from '@cb/creator-agent-protocol';
 
 // The Host interrupted-terminal contract is frozen in the shared protocol package so that
@@ -13,8 +16,11 @@ import type {
 export {
   HOST_INTERRUPT_TERMINAL_PROTOCOL,
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
   type HostInterruptedTerminalEvidence,
   type HostInterruptedTerminalObservation,
+  type HostTurnTerminalEvidence,
+  type HostTurnTerminalObservation,
 };
 
 export interface HostThread {
@@ -30,6 +36,7 @@ export interface HostTurnResult {
 export interface HostTurnHandle {
   readonly turnId: Promise<string>;
   readonly result: Promise<HostTurnResult>;
+  readonly terminal: Promise<HostTurnTerminalEvidence>;
   interrupt(): Promise<HostInterruptedTerminalEvidence>;
 }
 

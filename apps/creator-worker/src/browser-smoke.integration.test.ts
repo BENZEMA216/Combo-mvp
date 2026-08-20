@@ -5,6 +5,7 @@ import { CreatorWorker } from './creator-worker.js';
 import {
   CodexHostError,
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
   type CodexHost,
   type HostThread,
   type HostTurnHandle,
@@ -36,17 +37,48 @@ class BrowserSmokeHost implements CodexHost {
     const threadId = input.thread.id;
     const turnId = `browser-turn-${this.turnCount}`;
     let rejectResult: (error: Error) => void = () => undefined;
+    let resolveTerminal!: (evidence: ReturnType<typeof createHostTurnTerminalEvidence>) => void;
+    const terminal = new Promise<ReturnType<typeof createHostTurnTerminalEvidence>>((resolve) => {
+      resolveTerminal = resolve;
+    });
     const result =
       input.text === 'hold'
         ? new Promise<HostTurnResult>((_resolve, reject) => {
             rejectResult = reject;
           })
         : Promise.resolve({ text: `reply:${input.text}` });
+    if (input.text !== 'hold') {
+      resolveTerminal(
+        createHostTurnTerminalEvidence({
+          threadId,
+          turnId,
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: 0,
+        }),
+      );
+    }
     return {
       turnId: Promise.resolve(turnId),
       result,
+      terminal,
       interrupt: async () => {
         rejectResult(new CodexHostError('HOST_INTERRUPTED', 'interrupted', true));
+        resolveTerminal(
+          createHostTurnTerminalEvidence({
+            threadId,
+            turnId,
+            outcome: 'CANCELLED',
+            errorCode: null,
+            terminalStatus: 'interrupted',
+            terminalError: 'NONE',
+            outputState: 'NOT_APPLICABLE',
+            completedAt: 0,
+          }),
+        );
         return createHostInterruptedTerminalEvidence({
           threadId,
           turnId,

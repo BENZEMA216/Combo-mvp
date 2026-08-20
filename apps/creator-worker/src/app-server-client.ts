@@ -16,11 +16,13 @@ import type { Readable, Writable } from 'node:stream';
 import {
   CodexHostError,
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
   type CodexHost,
   type HostInterruptedTerminalEvidence,
   type HostThread,
   type HostTurnHandle,
   type HostTurnResult,
+  type HostTurnTerminalEvidence,
 } from './host-types.js';
 
 const MAX_PROTOCOL_LINE_BYTES = 1_048_576;
@@ -84,6 +86,13 @@ const TRUSTED_SHELL = '/bin/zsh';
 
 type JsonObject = Record<string, unknown>;
 
+interface HostTerminalTurn extends JsonObject {
+  readonly id: string;
+  readonly status: 'completed' | 'interrupted' | 'failed';
+  readonly error: JsonObject | null;
+  readonly completedAt: number;
+}
+
 interface AppServerProcess {
   readonly stdin: Writable;
   readonly stdout: Readable;
@@ -124,6 +133,9 @@ interface ActiveInvocation {
   readonly rejectResult: (error: Error) => void;
   readonly turnIdPromise: Promise<string>;
   readonly resultPromise: Promise<HostTurnResult>;
+  readonly terminalPromise: Promise<HostTurnTerminalEvidence>;
+  readonly resolveTerminal: (evidence: HostTurnTerminalEvidence) => void;
+  readonly rejectTerminal: (error: Error) => void;
   readonly interruptEvidencePromise: Promise<HostInterruptedTerminalEvidence>;
   readonly resolveInterruptEvidence: (evidence: HostInterruptedTerminalEvidence) => void;
   readonly rejectInterruptEvidence: (error: Error) => void;
@@ -142,7 +154,7 @@ interface ActiveInvocation {
   interruptEvidenceSettled: boolean;
   interruptEvidenceVerified: boolean;
   dispatchConfirmed: boolean;
-  terminalTurn?: JsonObject;
+  terminalTurn?: HostTerminalTurn;
   fatalError?: CodexHostError;
 }
 
@@ -300,6 +312,31 @@ function defaultSpawnAppServer(
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function parseHostTerminalTurn(value: unknown): HostTerminalTurn | undefined {
+  if (
+    !isObject(value) ||
+    !isSafeHostId(value.id) ||
+    !(
+      value.status === 'completed' ||
+      value.status === 'interrupted' ||
+      value.status === 'failed'
+    ) ||
+    !(value.error === null || isObject(value.error)) ||
+    typeof value.completedAt !== 'number' ||
+    !Number.isFinite(value.completedAt) ||
+    value.completedAt < 0
+  ) {
+    return undefined;
+  }
+  return Object.freeze({
+    id: value.id,
+    status: value.status,
+    // The error payload may contain provider details. Only its presence participates in evidence.
+    error: value.error === null ? null : Object.freeze({}),
+    completedAt: value.completedAt,
+  });
 }
 
 function isRequestId(value: unknown): value is string | number {
@@ -599,6 +636,12 @@ export class CodexAppServerClient implements CodexHost {
       resolveResult = resolve;
       rejectResult = reject;
     });
+    let resolveTerminal!: (evidence: HostTurnTerminalEvidence) => void;
+    let rejectTerminal!: (error: Error) => void;
+    const terminalPromise = new Promise<HostTurnTerminalEvidence>((resolve, reject) => {
+      resolveTerminal = resolve;
+      rejectTerminal = reject;
+    });
     let resolveInterruptEvidence!: (evidence: HostInterruptedTerminalEvidence) => void;
     let rejectInterruptEvidence!: (error: Error) => void;
     const interruptEvidencePromise = new Promise<HostInterruptedTerminalEvidence>(
@@ -608,6 +651,7 @@ export class CodexAppServerClient implements CodexHost {
       },
     );
     void turnIdPromise.catch(() => undefined);
+    void terminalPromise.catch(() => undefined);
     void interruptEvidencePromise.catch(() => undefined);
 
     const invocation: ActiveInvocation = {
@@ -620,6 +664,9 @@ export class CodexAppServerClient implements CodexHost {
       rejectResult,
       turnIdPromise,
       resultPromise,
+      terminalPromise,
+      resolveTerminal,
+      rejectTerminal,
       interruptEvidencePromise,
       resolveInterruptEvidence,
       rejectInterruptEvidence,
@@ -645,6 +692,7 @@ export class CodexAppServerClient implements CodexHost {
     return {
       turnId: turnIdPromise,
       result: resultPromise,
+      terminal: terminalPromise,
       interrupt: () => {
         void this.cancelInvocation(invocation, publicHostError('HOST_INTERRUPTED', true)).catch(
           (error: unknown) => {
@@ -1011,18 +1059,19 @@ export class CodexAppServerClient implements CodexHost {
   }
 
   private handleCompletedTurn(params: JsonObject): void {
-    if (!isSafeHostId(params.threadId) || !isObject(params.turn) || !isSafeHostId(params.turn.id)) {
+    const terminalTurn = parseHostTerminalTurn(params.turn);
+    if (!isSafeHostId(params.threadId) || terminalTurn === undefined) {
       this.failProcess(publicHostError('HOST_PROTOCOL_ERROR', true));
       return;
     }
     const invocation = this.activeByThread.get(params.threadId);
     if (!invocation) return;
-    this.bindTurnId(invocation, params.turn.id);
-    if (invocation.turnId !== params.turn.id) return;
+    this.bindTurnId(invocation, terminalTurn.id);
+    if (invocation.turnId !== terminalTurn.id) return;
 
     if (invocation.interruptRequested) {
       if (invocation.interruptSent) {
-        this.settleInterruptTerminalEvidence(invocation, params.threadId, params.turn);
+        this.settleInterruptTerminalEvidence(invocation, params.threadId, terminalTurn);
       } else {
         this.rejectInterruptEvidence(
           invocation,
@@ -1031,10 +1080,10 @@ export class CodexAppServerClient implements CodexHost {
       }
     }
 
-    invocation.terminalTurn = params.turn;
+    invocation.terminalTurn = terminalTurn;
     this.emitDiagnostic({
       type: 'turn_completed',
-      status: params.turn.status === 'completed' ? 'completed' : 'other',
+      status: terminalTurn.status === 'completed' ? 'completed' : 'other',
     });
     this.finishTerminalTurn(invocation);
   }
@@ -1042,7 +1091,7 @@ export class CodexAppServerClient implements CodexHost {
   private settleInterruptTerminalEvidence(
     invocation: ActiveInvocation,
     threadId: string,
-    turn: JsonObject,
+    turn: HostTerminalTurn,
   ): void {
     try {
       const evidence = createHostInterruptedTerminalEvidence({
@@ -1073,9 +1122,15 @@ export class CodexAppServerClient implements CodexHost {
     const turn = invocation.terminalTurn;
     if (!turn || !invocation.dispatchConfirmed || invocation.settled) return;
     if (invocation.cancelled || invocation.fatalError) {
+      const terminalEvidence = this.createTerminalEvidenceForError(
+        invocation,
+        invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true),
+      );
       this.settleInvocation(
         invocation,
         invocation.fatalError ?? publicHostError('HOST_INTERRUPTED', true),
+        undefined,
+        terminalEvidence,
       );
       return;
     }
@@ -1084,7 +1139,12 @@ export class CodexAppServerClient implements CodexHost {
       turn.error !== null ||
       typeof turn.completedAt !== 'number'
     ) {
-      this.settleInvocation(invocation, publicHostError('HOST_TURN_FAILED', true));
+      this.settleInvocation(
+        invocation,
+        publicHostError('HOST_TURN_FAILED', true),
+        undefined,
+        this.createTerminalEvidence(invocation, 'FAILED', 'TURN_FAILED', 'NOT_APPLICABLE'),
+      );
       return;
     }
 
@@ -1096,10 +1156,68 @@ export class CodexAppServerClient implements CodexHost {
       .find((item) => item.phase === null);
     const text = (finalMessage ?? fallback)?.text.trim();
     if (!text || text.length > MAX_FINAL_TEXT_CHARS) {
-      this.settleInvocation(invocation, publicHostError('HOST_OUTPUT_INVALID'));
+      this.settleInvocation(
+        invocation,
+        publicHostError('HOST_OUTPUT_INVALID'),
+        undefined,
+        this.createTerminalEvidence(invocation, 'FAILED', 'TURN_FAILED', 'UNUSABLE'),
+      );
       return;
     }
-    this.settleInvocation(invocation, undefined, { text });
+    this.settleInvocation(
+      invocation,
+      undefined,
+      { text },
+      this.createTerminalEvidence(invocation, 'SUCCEEDED', null, 'USABLE'),
+    );
+  }
+
+  private createTerminalEvidenceForError(
+    invocation: ActiveInvocation,
+    error: CodexHostError,
+  ): HostTurnTerminalEvidence | undefined {
+    if (error.hostLost) return undefined;
+    if (error.code === 'HOST_TIMEOUT') {
+      return this.createTerminalEvidence(invocation, 'FAILED', 'TURN_TIMEOUT', 'NOT_APPLICABLE');
+    }
+    if (error.code === 'HOST_TURN_FAILED') {
+      return this.createTerminalEvidence(invocation, 'FAILED', 'TURN_FAILED', 'NOT_APPLICABLE');
+    }
+    if (error.code === 'HOST_INTERRUPTED') {
+      return this.createTerminalEvidence(invocation, 'CANCELLED', null, 'NOT_APPLICABLE');
+    }
+    return undefined;
+  }
+
+  private createTerminalEvidence(
+    invocation: ActiveInvocation,
+    outcome: 'SUCCEEDED' | 'FAILED' | 'CANCELLED',
+    errorCode: 'TURN_TIMEOUT' | 'TURN_FAILED' | null,
+    outputState: 'USABLE' | 'UNUSABLE' | 'NOT_APPLICABLE',
+  ): HostTurnTerminalEvidence | undefined {
+    const turn = invocation.terminalTurn;
+    if (
+      turn === undefined ||
+      invocation.turnId === undefined ||
+      turn.id !== invocation.turnId ||
+      typeof turn.completedAt !== 'number'
+    ) {
+      return undefined;
+    }
+    try {
+      return createHostTurnTerminalEvidence({
+        threadId: invocation.thread.id,
+        turnId: invocation.turnId,
+        outcome,
+        errorCode,
+        terminalStatus: turn.status,
+        terminalError: turn.error === null ? 'NONE' : 'PRESENT',
+        outputState,
+        completedAt: turn.completedAt,
+      });
+    } catch {
+      return undefined;
+    }
   }
 
   private poisonServerRequest(params: unknown): {
@@ -1163,6 +1281,7 @@ export class CodexAppServerClient implements CodexHost {
     invocation: ActiveInvocation,
     error?: CodexHostError,
     result?: HostTurnResult,
+    terminalEvidence?: HostTurnTerminalEvidence,
   ): void {
     if (invocation.settled) return;
     invocation.settled = true;
@@ -1173,6 +1292,11 @@ export class CodexAppServerClient implements CodexHost {
     }
     if (!invocation.interruptEvidenceSettled) {
       this.rejectInterruptEvidence(invocation, error ?? publicHostError('HOST_TURN_FAILED', true));
+    }
+    if (terminalEvidence === undefined) {
+      invocation.rejectTerminal(error ?? publicHostError('HOST_PROTOCOL_ERROR', true));
+    } else {
+      invocation.resolveTerminal(terminalEvidence);
     }
     if (!invocation.turnId)
       invocation.rejectTurnId(error ?? publicHostError('HOST_PROTOCOL_ERROR'));
@@ -1360,11 +1484,13 @@ export class CodexAppServerClient implements CodexHost {
 function rejectedTurnHandle(error: CodexHostError): HostTurnHandle {
   const turnId = Promise.reject<string>(error);
   const result = Promise.reject<HostTurnResult>(error);
+  const terminal = Promise.reject<HostTurnTerminalEvidence>(error);
   const interruptEvidence = Promise.reject<HostInterruptedTerminalEvidence>(error);
   void turnId.catch(() => undefined);
   void result.catch(() => undefined);
+  void terminal.catch(() => undefined);
   void interruptEvidence.catch(() => undefined);
-  return { turnId, result, interrupt: () => interruptEvidence };
+  return { turnId, result, terminal, interrupt: () => interruptEvidence };
 }
 
 function delay(milliseconds: number): Promise<void> {

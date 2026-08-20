@@ -4,10 +4,12 @@ import { CreatorWorker, CreatorWorkerError } from './creator-worker.js';
 import {
   CodexHostError,
   createHostInterruptedTerminalEvidence,
+  createHostTurnTerminalEvidence,
   type CodexHost,
   type HostThread,
   type HostTurnHandle,
   type HostTurnResult,
+  type HostTurnTerminalEvidence,
 } from './host-types.js';
 
 class Deferred<T> {
@@ -28,6 +30,7 @@ interface FakeTurn {
   messageId: string;
   text: string;
   deferred: Deferred<HostTurnResult>;
+  terminal: Deferred<HostTurnTerminalEvidence>;
   interruptCount: number;
 }
 
@@ -68,22 +71,51 @@ class FakeHost implements CodexHost {
     timeoutMs: number;
   }): HostTurnHandle {
     const deferred = new Deferred<HostTurnResult>();
+    const terminal = new Deferred<HostTurnTerminalEvidence>();
+    const turnId = `turn-${this.turns.length + 1}`;
     const turn: FakeTurn = {
       thread: input.thread,
       messageId: input.messageId,
       text: input.text,
       deferred,
+      terminal,
       interruptCount: 0,
     };
     this.turns.push(turn);
-    const turnId = `turn-${this.turns.length}`;
-    if (this.autoReply) deferred.resolve({ text: this.autoReply(input.text) });
+    if (this.autoReply) {
+      deferred.resolve({ text: this.autoReply(input.text) });
+      terminal.resolve(
+        createHostTurnTerminalEvidence({
+          threadId: input.thread.id,
+          turnId,
+          outcome: 'SUCCEEDED',
+          errorCode: null,
+          terminalStatus: 'completed',
+          terminalError: 'NONE',
+          outputState: 'USABLE',
+          completedAt: 0,
+        }),
+      );
+    }
     return {
       turnId: Promise.resolve(turnId),
       result: deferred.promise,
+      terminal: terminal.promise,
       interrupt: async () => {
         turn.interruptCount += 1;
         deferred.reject(new CodexHostError('HOST_INTERRUPTED', 'interrupted', true));
+        terminal.resolve(
+          createHostTurnTerminalEvidence({
+            threadId: input.thread.id,
+            turnId,
+            outcome: 'CANCELLED',
+            errorCode: null,
+            terminalStatus: 'interrupted',
+            terminalError: 'NONE',
+            outputState: 'NOT_APPLICABLE',
+            completedAt: 0,
+          }),
+        );
         return createHostInterruptedTerminalEvidence({
           threadId: input.thread.id,
           turnId,

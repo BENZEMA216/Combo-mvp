@@ -7284,6 +7284,8 @@ function isRecoveryTransaction(operation: string): boolean {
     operation === 'invocation_recover_unconfirmed_interrupt' ||
     operation === 'invocation_recover_host_actions' ||
     operation === 'invocation_write_succeeded' ||
+    operation === 'invocation_write_failed' ||
+    operation === 'invocation_mark_host_evidence_lost' ||
     operation === 'invocation_mark_cloud_committed' ||
     operation === 'invocation_prune_committed_retention'
   );

@@ -12,6 +12,7 @@ import {
   WorkerInterruptReceiptSchema,
   WorkerInvocationCancelledFactSchema,
   WorkerInvocationFactSchema,
+  WorkerInvocationFailedFactSchema,
   WorkerInvocationPreparedFactSchema,
   WorkerInvocationStartedFactSchema,
   WorkerInvocationSucceededFactSchema,
@@ -32,6 +33,7 @@ import {
   type WorkerInvocationFact,
   type WorkerInterruptReceipt,
   type WorkerCancelReason,
+  type VnextErrorCode,
 } from '@cb/creator-agent-protocol';
 
 import {
@@ -1847,11 +1849,23 @@ function eventFactMatchesInvocation(
       fact.localResultCipherDigest === invocation.local_result_cipher_digest
     );
   }
+  if (fact.type === 'invocation.failed') {
+    const validFromState = failureCodeAllowedFromState(fact.errorCode, event.from_state);
+    return (
+      validFromState &&
+      event.to_state === 'FAILED' &&
+      fact.sourceEventId === invocation.invocation_id &&
+      invocation.terminal_source_event_id === fact.sourceEventId &&
+      invocation.terminal_fact_digest === workerInvocationFactDigest(fact)
+    );
+  }
   if (fact.type === 'invocation.uncertain') {
     const expectedFrom =
       fact.reason === 'CANCEL_NOT_CONFIRMED'
         ? event.from_state === 'STARTING' || event.from_state === 'CANCEL_REQUESTED'
-        : event.from_state === 'STARTING';
+        : fact.reason === 'HOST_EVIDENCE_LOST'
+          ? event.from_state === 'RUNNING'
+          : event.from_state === 'STARTING';
     return (
       fact.sourceEventId === invocation.invocation_id &&
       expectedFrom &&
@@ -1860,7 +1874,7 @@ function eventFactMatchesInvocation(
         (event.command_id === invocation.cancel_command_id &&
           invocation.interrupt_intent_count === 1 &&
           (event.from_state === 'CANCEL_REQUESTED'
-            ? invocation.interrupt_attempt_count === 1
+            ? invocation.interrupt_attempt_count === 0 || invocation.interrupt_attempt_count === 1
             : invocation.interrupt_attempt_count === 0) &&
           invocation.interrupt_confirmed_count === 0)) &&
       invocation.terminal_source_event_id === fact.sourceEventId &&
@@ -1881,7 +1895,7 @@ function eventFactMatchesInvocation(
       invocation.terminal_fact_digest === workerInvocationFactDigest(fact)
     );
   }
-  return fact.sourceEventId === invocation.invocation_id;
+  return false;
 }
 
 function outboxCorrelationMatchesFact(correlationId: string, fact: WorkerInvocationFact): boolean {
@@ -2389,8 +2403,23 @@ function invocationStateColumnsAreValid(row: InvocationRow, terminalEventType?: 
       hasInterruptIntent &&
       !hasInterruptAttempt &&
       !hasInterruptReceipt;
+    const cancelEvidenceLost =
+      promptPurged &&
+      promptReleased &&
+      hasStart &&
+      hasHostReceipt &&
+      !hasResult &&
+      hasInterruptIntent &&
+      !hasInterruptAttempt &&
+      !hasInterruptReceipt;
+    const runningEvidenceLost =
+      promptPurged && promptReleased && hasStart && hasHostReceipt && !hasResult && hasNoInterrupt;
     return (
-      (startUnknown || interruptUnknown || cancelDuringAmbiguousStart) &&
+      (startUnknown ||
+        interruptUnknown ||
+        cancelDuringAmbiguousStart ||
+        cancelEvidenceLost ||
+        runningEvidenceLost) &&
       terminalEventType === 'invocation.uncertain' &&
       row.terminal_source_event_id === row.invocation_id &&
       row.terminal_fact_digest !== null
@@ -2409,6 +2438,7 @@ function invocationStateColumnsAreValid(row: InvocationRow, terminalEventType?: 
   }
   return (
     promptPurged &&
+    !hasResult &&
     hasNoInterrupt &&
     terminalEventType === 'invocation.failed' &&
     row.terminal_source_event_id === row.invocation_id &&
@@ -2510,6 +2540,10 @@ export interface ReadyConversationAuthorityPort {
 
 export type HostDispatchExpectedBinding = Readonly<{
   installationId: string;
+  deploymentId: string;
+  leaseId: string;
+  workerSessionId: string;
+  fence: string;
   invocationId: string;
   conversationId: string;
   startCommandId: string;
@@ -2517,6 +2551,9 @@ export type HostDispatchExpectedBinding = Readonly<{
   agentVersionId: string;
   agentVersionDigest: string;
   snapshotDigest: string;
+  requestDigest: string;
+  executionCapabilityDigest: string;
+  deadlineAt: string;
   sandboxInstanceId: string;
   runtimeThreadId: string;
 }>;
@@ -2624,6 +2661,14 @@ export interface LocalResultAeadAuthorityPort {
   ): Readonly<{ resultDigest: string }>;
 }
 
+export interface LocalResultAeadSealerPort {
+  /** Encrypts Host output under the durable Worker-Keychain key with exact result-domain AAD. */
+  seal(
+    plaintext: Uint8Array,
+    expectedAad: LocalInvocationResultAad,
+  ): LocalInvocationResultCiphertext;
+}
+
 export interface BrokerResultReencryptAuthorityPort {
   /** Re-encrypts authenticated local plaintext under the current request-lifetime session key. */
   reencrypt(
@@ -2726,6 +2771,11 @@ export type DurablePreparedInvocation = Readonly<{
 }>;
 
 export type OpaqueHostDispatchPermit = Readonly<{
+  installationId: string;
+  deploymentId: string;
+  leaseId: string;
+  workerSessionId: string;
+  fence: string;
   invocationId: string;
   conversationId: string;
   startCommandId: string;
@@ -2736,7 +2786,39 @@ export type OpaqueHostDispatchPermit = Readonly<{
   requestDigest: string;
   executionCapabilityDigest: string;
   deadlineAt: string;
+  sandboxInstanceId: string;
+  runtimeThreadId: string;
 }>;
+
+export const HOST_TERMINAL_FAILURE_CODES = [
+  'TURN_TIMEOUT',
+  'TURN_FAILED',
+] as const satisfies readonly VnextErrorCode[];
+
+export type HostTerminalFailureCode = (typeof HOST_TERMINAL_FAILURE_CODES)[number];
+
+const HOST_TERMINAL_FAILURE_CODE_SET = new Set<string>(HOST_TERMINAL_FAILURE_CODES);
+
+function isHostTerminalFailureCode(value: string): value is HostTerminalFailureCode {
+  return HOST_TERMINAL_FAILURE_CODE_SET.has(value);
+}
+
+function failureCodeAllowedFromState(errorCode: string, fromState: unknown): boolean {
+  if (fromState === 'RUNNING') return isHostTerminalFailureCode(errorCode);
+  if (fromState === 'STARTING') {
+    return (
+      errorCode === 'INVOCATION_DEADLINE_EXPIRED' || errorCode === 'EXECUTION_CAPABILITY_INVALID'
+    );
+  }
+  if (fromState === 'PREPARED') {
+    return (
+      errorCode === 'INVOCATION_DEADLINE_EXPIRED' ||
+      errorCode === 'EXECUTION_CAPABILITY_INVALID' ||
+      errorCode === 'START_COMMAND_CONFLICT'
+    );
+  }
+  return false;
+}
 
 export type OpaqueHostInterruptPermit = Readonly<{
   invocationId: string;
@@ -2805,23 +2887,12 @@ export type CancelInvocationDecision =
   | Readonly<{ action: 'RETURN_TERMINAL'; state: string }>
   | Readonly<{ action: 'UNCERTAIN'; sourceEventId: string; factDigest: string }>;
 
-export type RecoverableHostAction =
-  | Readonly<{
-      action: 'DISPATCH_ONCE';
-      invocationId: string;
-      permit: OpaqueHostDispatchPermit;
-    }>
-  | Readonly<{
-      action: 'INTERRUPT_ONCE';
-      invocationId: string;
-      permit: OpaqueHostInterruptPermit;
-    }>
-  | Readonly<{
-      action: 'UNCERTAIN';
-      invocationId: string;
-      sourceEventId: string;
-      factDigest: string;
-    }>;
+export type RecoverableHostAction = Readonly<{
+  action: 'UNCERTAIN';
+  invocationId: string;
+  sourceEventId: string;
+  factDigest: string;
+}>;
 
 export type PendingInvocationFactReference = Readonly<{
   sourceEventId: string;
@@ -3731,7 +3802,10 @@ export class SqliteWorkerInvocationJournal {
             if (dispatchAttemptCount(invocation) === 0) {
               return Object.freeze({
                 action: 'DISPATCH_ONCE',
-                permit: hostDispatchPermitFromInvocation(invocation),
+                permit: hostDispatchPermitFromInvocation(
+                  invocation,
+                  requireConversation(context.database, invocation.conversation_id),
+                ),
               });
             }
             return this.#markStartUnknown(context.database, invocation, now);
@@ -3807,6 +3881,11 @@ export class SqliteWorkerInvocationJournal {
         return Object.freeze({
           action: 'DISPATCH_ONCE',
           permit: Object.freeze({
+            installationId: invocation.installation_id,
+            deploymentId: invocation.deployment_id,
+            leaseId: invocation.lease_id,
+            workerSessionId: invocation.worker_session_id,
+            fence: invocation.fence,
             invocationId: invocation.invocation_id,
             conversationId: invocation.conversation_id,
             startCommandId: command.messageId,
@@ -3817,6 +3896,12 @@ export class SqliteWorkerInvocationJournal {
             requestDigest: invocation.request_digest,
             executionCapabilityDigest: invocation.execution_capability_digest,
             deadlineAt: new Date(invocation.command_deadline_at_ms).toISOString(),
+            sandboxInstanceId: String(
+              requireConversation(context.database, invocation.conversation_id).sandbox_instance_id,
+            ),
+            runtimeThreadId: String(
+              requireConversation(context.database, invocation.conversation_id).runtime_thread_id,
+            ),
           }),
         });
       },
@@ -4202,11 +4287,11 @@ export class SqliteWorkerInvocationJournal {
   }
 
   /**
-   * Startup authority reconstructed only from committed SQLite rows. No caller-supplied command
-   * reference or pre-crash permit participates. Attempt=0 remains eligible for its first Host
-   * call; attempt=1 without a verified receipt is terminally UNCERTAIN and is never retried.
+   * Process-start recovery is conservative because the SQLite commit cannot prove whether the
+   * previous process crossed the Host boundary. It therefore never emits a new Host call:
+   * STARTING, RUNNING and CANCEL_REQUESTED all converge to a durable UNCERTAIN fact.
    */
-  async recoverHostActions(input: {
+  async recoverHostActionsAfterProcessStart(input: {
     installationId: string;
     ownerToken: string;
     signal: AbortSignal;
@@ -4217,7 +4302,7 @@ export class SqliteWorkerInvocationJournal {
         const rows = context.database
           .prepare(
             `SELECT * FROM local_invocations WHERE installation_id = ?
-             AND state IN ('STARTING', 'CANCEL_REQUESTED')
+             AND state IN ('STARTING', 'RUNNING', 'CANCEL_REQUESTED')
              ORDER BY created_at_ms, invocation_id`,
           )
           .all(input.installationId) as InvocationRow[];
@@ -4225,45 +4310,7 @@ export class SqliteWorkerInvocationJournal {
         for (const row of rows) {
           const now = this.#cloudNow();
           if (row.state === 'STARTING') {
-            if (dispatchAttemptCount(row) === 0) {
-              actions.push(
-                Object.freeze({
-                  action: 'DISPATCH_ONCE',
-                  invocationId: row.invocation_id,
-                  permit: hostDispatchPermitFromInvocation(row),
-                }),
-              );
-            } else {
-              const uncertain = this.#markStartUnknown(context.database, row, now);
-              actions.push(
-                Object.freeze({
-                  action: 'UNCERTAIN',
-                  invocationId: row.invocation_id,
-                  sourceEventId: uncertain.sourceEventId,
-                  factDigest: uncertain.factDigest,
-                }),
-              );
-            }
-            continue;
-          }
-          if ((row.interrupt_attempt_count ?? 0) === 0) {
-            actions.push(
-              Object.freeze({
-                action: 'INTERRUPT_ONCE',
-                invocationId: row.invocation_id,
-                permit: interruptPermitFromInvocation(
-                  row,
-                  requireConversation(context.database, row.conversation_id),
-                ),
-              }),
-            );
-          } else {
-            const uncertain = this.#markCancelUnknown(
-              context.database,
-              row,
-              now,
-              'CANCEL_REQUESTED',
-            );
+            const uncertain = this.#markStartUnknown(context.database, row, now);
             actions.push(
               Object.freeze({
                 action: 'UNCERTAIN',
@@ -4272,7 +4319,29 @@ export class SqliteWorkerInvocationJournal {
                 factDigest: uncertain.factDigest,
               }),
             );
+            continue;
           }
+          if (row.state === 'RUNNING') {
+            const uncertain = this.#markHostEvidenceLost(context.database, row, now);
+            actions.push(
+              Object.freeze({
+                action: 'UNCERTAIN',
+                invocationId: row.invocation_id,
+                sourceEventId: uncertain.sourceEventId,
+                factDigest: uncertain.factDigest,
+              }),
+            );
+            continue;
+          }
+          const uncertain = this.#markCancelUnknown(context.database, row, now, 'CANCEL_REQUESTED');
+          actions.push(
+            Object.freeze({
+              action: 'UNCERTAIN',
+              invocationId: row.invocation_id,
+              sourceEventId: uncertain.sourceEventId,
+              factDigest: uncertain.factDigest,
+            }),
+          );
         }
         return Object.freeze(actions);
       },
@@ -4523,7 +4592,9 @@ export class SqliteWorkerInvocationJournal {
         dispatchNonce: hostInput.dispatchNonce,
         sourceEventId: hostInput.startCommandId,
         receipt,
-        signal: input.signal,
+        // Once the trusted Host returned a receipt, committing that evidence is safety cleanup;
+        // a caller abort must not turn a known dispatch into an artificial unknown outcome.
+        signal: new AbortController().signal,
       });
     } catch (error) {
       await this.#recordDispatchUnknown(
@@ -4560,7 +4631,11 @@ export class SqliteWorkerInvocationJournal {
             invocation.prompt_purged_at_ms !== null ||
             invocation.prompt_released_at_ms !== null ||
             dispatchAttemptCount(invocation) !== 0 ||
-            !hostDispatchPermitMatches(input.permit, invocation)
+            !hostDispatchPermitMatches(
+              input.permit,
+              invocation,
+              requireConversation(context.database, invocation.conversation_id),
+            )
           ) {
             throw new WorkerInvocationJournalError('PROMPT_AEAD_INVALID');
           }
@@ -4827,6 +4902,10 @@ export class SqliteWorkerInvocationJournal {
             input.receipt,
             {
               installationId: input.installationId,
+              deploymentId: invocation.deployment_id,
+              leaseId: invocation.lease_id,
+              workerSessionId: invocation.worker_session_id,
+              fence: invocation.fence,
               invocationId: invocation.invocation_id,
               conversationId: invocation.conversation_id,
               startCommandId: String(invocation.start_command_id),
@@ -4834,6 +4913,9 @@ export class SqliteWorkerInvocationJournal {
               agentVersionId: invocation.agent_version_id,
               agentVersionDigest: invocation.agent_version_digest,
               snapshotDigest: invocation.snapshot_digest,
+              requestDigest: invocation.request_digest,
+              executionCapabilityDigest: invocation.execution_capability_digest,
+              deadlineAt: new Date(invocation.command_deadline_at_ms).toISOString(),
               sandboxInstanceId: String(conversation.sandbox_instance_id),
               runtimeThreadId: String(conversation.runtime_thread_id),
             },
@@ -5016,6 +5098,135 @@ export class SqliteWorkerInvocationJournal {
       );
       return Object.freeze({ sourceEventId: input.sourceEventId, factDigest });
     });
+  }
+
+  async writeFailed(input: {
+    installationId: string;
+    ownerToken: string;
+    invocationId: string;
+    dispatchNonce: string;
+    sourceEventId: string;
+    errorCode: HostTerminalFailureCode;
+    signal: AbortSignal;
+  }): Promise<Readonly<{ sourceEventId: string; factDigest: string }>> {
+    return this.host.transact({ ...input, name: 'invocation_write_failed' }, (context) => {
+      const now = this.#cloudNow();
+      assertUuid(input.invocationId);
+      assertUuid(input.dispatchNonce);
+      assertUuid(input.sourceEventId);
+      if (!isHostTerminalFailureCode(input.errorCode)) {
+        throw new WorkerInvocationJournalError('FINAL_CONFLICT');
+      }
+      const invocation = loadInvocation(context.database, input.invocationId);
+      if (invocation === undefined) throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+      if (
+        invocation.installation_id !== input.installationId ||
+        invocation.dispatch_nonce !== input.dispatchNonce ||
+        input.sourceEventId !== invocation.invocation_id
+      ) {
+        throw new WorkerInvocationJournalError('FINAL_CONFLICT');
+      }
+      if (invocation.terminal_source_event_id !== null) {
+        const event = context.database
+          .prepare(
+            `SELECT fact_json, fact_digest FROM local_invocation_events
+             WHERE invocation_id = ? AND source_event_id = ?`,
+          )
+          .get(invocation.invocation_id, input.sourceEventId) as
+          | { fact_json: string; fact_digest: string }
+          | undefined;
+        try {
+          const fact = WorkerInvocationFailedFactSchema.parse(JSON.parse(event?.fact_json ?? ''));
+          if (
+            event === undefined ||
+            fact.errorCode !== input.errorCode ||
+            event.fact_digest !== workerInvocationFactDigest(fact) ||
+            invocation.terminal_fact_digest !== event.fact_digest
+          ) {
+            throw new Error('failed-replay-conflict');
+          }
+          this.#verifyPersistedCapability(invocation, new Date(invocation.created_at_ms));
+          return Object.freeze({
+            sourceEventId: input.sourceEventId,
+            factDigest: event.fact_digest,
+          });
+        } catch {
+          throw new WorkerInvocationJournalError('FINAL_CONFLICT');
+        }
+      }
+      this.#verifyCurrentPersistedCapability(invocation, now);
+      if (invocation.state !== 'RUNNING') {
+        throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+      }
+      const fact = WorkerInvocationFailedFactSchema.parse({
+        ...factBase(invocation, input.sourceEventId),
+        type: 'invocation.failed',
+        errorCode: input.errorCode,
+      });
+      const factDigest = workerInvocationFactDigest(fact);
+      const updated = context.database
+        .prepare(
+          `UPDATE local_invocations SET terminal_source_event_id = ?, terminal_fact_digest = ?,
+             state = 'FAILED', updated_at_ms = ?
+           WHERE invocation_id = ? AND state = 'RUNNING' AND terminal_source_event_id IS NULL`,
+        )
+        .run(input.sourceEventId, factDigest, now.getTime(), invocation.invocation_id);
+      if (Number(updated.changes) !== 1) {
+        throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+      }
+      refreshMutableRowDigest(
+        context.database,
+        'local_invocations',
+        'invocation_id',
+        invocation.invocation_id,
+      );
+      appendFact(
+        context.database,
+        invocation.invocation_id,
+        invocation.start_command_id,
+        'RUNNING',
+        'FAILED',
+        fact,
+        { correlationId: invocation.invocation_id, occurredAtMs: now.getTime() },
+      );
+      return Object.freeze({ sourceEventId: input.sourceEventId, factDigest });
+    });
+  }
+
+  async markHostEvidenceLost(input: {
+    installationId: string;
+    ownerToken: string;
+    invocationId: string;
+    dispatchNonce: string;
+    sourceEventId: string;
+    signal: AbortSignal;
+  }): Promise<Readonly<{ sourceEventId: string; factDigest: string }>> {
+    return this.host.transact(
+      { ...input, name: 'invocation_mark_host_evidence_lost' },
+      (context) => {
+        assertUuid(input.invocationId);
+        assertUuid(input.dispatchNonce);
+        assertUuid(input.sourceEventId);
+        const invocation = loadInvocation(context.database, input.invocationId);
+        if (invocation === undefined) {
+          throw new WorkerInvocationJournalError('INVOCATION_NOT_FOUND');
+        }
+        if (
+          invocation.installation_id !== input.installationId ||
+          invocation.dispatch_nonce !== input.dispatchNonce ||
+          input.sourceEventId !== invocation.invocation_id
+        ) {
+          throw new WorkerInvocationJournalError('FINAL_CONFLICT');
+        }
+        if (invocation.state === 'UNCERTAIN') {
+          return uncertainTerminalDecision(context.database, invocation, 'HOST_EVIDENCE_LOST');
+        }
+        if (invocation.state !== 'RUNNING') {
+          throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+        }
+        return this.#markHostEvidenceLost(context.database, invocation, this.#cloudNow());
+      },
+    );
   }
 
   /**
@@ -5529,6 +5740,46 @@ export class SqliteWorkerInvocationJournal {
       { correlationId: invocation.invocation_id, occurredAtMs: now.getTime() },
     );
     return Object.freeze({ action: 'UNCERTAIN', sourceEventId, factDigest });
+  }
+
+  #markHostEvidenceLost(
+    database: DatabaseSync,
+    invocation: InvocationRow,
+    now: Date,
+  ): Readonly<{ sourceEventId: string; factDigest: string }> {
+    const sourceEventId = invocation.invocation_id;
+    const fact = WorkerInvocationFactSchema.parse({
+      ...factBase(invocation, sourceEventId),
+      type: 'invocation.uncertain',
+      reason: 'HOST_EVIDENCE_LOST',
+    });
+    const factDigest = workerInvocationFactDigest(fact);
+    const updated = database
+      .prepare(
+        `UPDATE local_invocations SET terminal_source_event_id = ?, terminal_fact_digest = ?,
+           state = 'UNCERTAIN', updated_at_ms = ?
+         WHERE invocation_id = ? AND state = 'RUNNING' AND terminal_source_event_id IS NULL`,
+      )
+      .run(sourceEventId, factDigest, now.getTime(), invocation.invocation_id);
+    if (Number(updated.changes) !== 1) {
+      throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
+    }
+    refreshMutableRowDigest(
+      database,
+      'local_invocations',
+      'invocation_id',
+      invocation.invocation_id,
+    );
+    appendFact(
+      database,
+      invocation.invocation_id,
+      invocation.start_command_id,
+      'RUNNING',
+      'UNCERTAIN',
+      fact,
+      { correlationId: invocation.invocation_id, occurredAtMs: now.getTime() },
+    );
+    return Object.freeze({ sourceEventId, factDigest });
   }
 
   #rewrapPromptCiphertext(
@@ -6332,9 +6583,15 @@ function localPromptAadFromInvocation(invocation: InvocationRow): LocalInvocatio
 function hostDispatchPermitMatches(
   permit: OpaqueHostDispatchPermit,
   invocation: InvocationRow,
+  conversation: Record<string, unknown>,
 ): boolean {
   try {
     const row = strictObject(permit, [
+      'installationId',
+      'deploymentId',
+      'leaseId',
+      'workerSessionId',
+      'fence',
       'invocationId',
       'conversationId',
       'startCommandId',
@@ -6345,8 +6602,15 @@ function hostDispatchPermitMatches(
       'requestDigest',
       'executionCapabilityDigest',
       'deadlineAt',
+      'sandboxInstanceId',
+      'runtimeThreadId',
     ]);
     return (
+      row.installationId === invocation.installation_id &&
+      row.deploymentId === invocation.deployment_id &&
+      row.leaseId === invocation.lease_id &&
+      row.workerSessionId === invocation.worker_session_id &&
+      row.fence === invocation.fence &&
       row.invocationId === invocation.invocation_id &&
       row.conversationId === invocation.conversation_id &&
       row.startCommandId === invocation.start_command_id &&
@@ -6356,18 +6620,28 @@ function hostDispatchPermitMatches(
       row.snapshotDigest === invocation.snapshot_digest &&
       row.requestDigest === invocation.request_digest &&
       row.executionCapabilityDigest === invocation.execution_capability_digest &&
-      row.deadlineAt === new Date(invocation.command_deadline_at_ms).toISOString()
+      row.deadlineAt === new Date(invocation.command_deadline_at_ms).toISOString() &&
+      row.sandboxInstanceId === conversation.sandbox_instance_id &&
+      row.runtimeThreadId === conversation.runtime_thread_id
     );
   } catch {
     return false;
   }
 }
 
-function hostDispatchPermitFromInvocation(invocation: InvocationRow): OpaqueHostDispatchPermit {
+function hostDispatchPermitFromInvocation(
+  invocation: InvocationRow,
+  conversation: Record<string, unknown>,
+): OpaqueHostDispatchPermit {
   if (invocation.start_command_id == null || invocation.dispatch_nonce == null) {
     throw new WorkerInvocationJournalError('START_COMMAND_CONFLICT');
   }
   return Object.freeze({
+    installationId: invocation.installation_id,
+    deploymentId: invocation.deployment_id,
+    leaseId: invocation.lease_id,
+    workerSessionId: invocation.worker_session_id,
+    fence: invocation.fence,
     invocationId: invocation.invocation_id,
     conversationId: invocation.conversation_id,
     startCommandId: invocation.start_command_id,
@@ -6378,6 +6652,8 @@ function hostDispatchPermitFromInvocation(invocation: InvocationRow): OpaqueHost
     requestDigest: invocation.request_digest,
     executionCapabilityDigest: invocation.execution_capability_digest,
     deadlineAt: new Date(invocation.command_deadline_at_ms).toISOString(),
+    sandboxInstanceId: String(conversation.sandbox_instance_id),
+    runtimeThreadId: String(conversation.runtime_thread_id),
   });
 }
 
@@ -6567,6 +6843,40 @@ function uncertainDecision(
     sourceEventId: event.source_event_id,
     factDigest: event.fact_digest,
   });
+}
+
+function uncertainTerminalDecision(
+  database: DatabaseSync,
+  invocation: InvocationRow,
+  expectedReason: Extract<WorkerInvocationFact, { type: 'invocation.uncertain' }>['reason'],
+): Readonly<{ sourceEventId: string; factDigest: string }> {
+  const event = database
+    .prepare(
+      `SELECT source_event_id, fact_json, fact_digest FROM local_invocation_events
+       WHERE invocation_id = ? AND event_type = 'invocation.uncertain'`,
+    )
+    .get(invocation.invocation_id) as
+    | { source_event_id: string; fact_json: string; fact_digest: string }
+    | undefined;
+  try {
+    const fact = WorkerInvocationFactSchema.parse(JSON.parse(event?.fact_json ?? ''));
+    if (
+      event === undefined ||
+      fact.type !== 'invocation.uncertain' ||
+      fact.reason !== expectedReason ||
+      fact.sourceEventId !== invocation.invocation_id ||
+      event.fact_digest !== workerInvocationFactDigest(fact) ||
+      invocation.terminal_fact_digest !== event.fact_digest
+    ) {
+      throw new Error('uncertain-replay-conflict');
+    }
+    return Object.freeze({
+      sourceEventId: event.source_event_id,
+      factDigest: event.fact_digest,
+    });
+  } catch {
+    throw new WorkerInvocationJournalError('FINAL_CONFLICT');
+  }
 }
 
 function factBase(row: InvocationRow, sourceEventId: string) {
