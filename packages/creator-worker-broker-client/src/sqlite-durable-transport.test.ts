@@ -2033,6 +2033,43 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     }
   }, 10_000);
 
+  it('keeps v3 unchanged when the SQLite busy budget expires before the operation deadline', () => {
+    const target = temporaryJournal();
+    createJournal(target.filename, MIGRATION_INSTALLATION_ID).close();
+    downgradeToLegacyV3(target.filename);
+    const databaseBefore = readFileSync(target.filename);
+    const watermarkBefore = readFileSync(`${target.filename}.watermark`);
+    const epochBefore = queryScalar(
+      target.filename,
+      'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+    );
+    const blocker = new SqliteDatabase(target.filename);
+    blocker.exec('BEGIN IMMEDIATE');
+    expect(
+      () =>
+        new SqliteWorkerBrokerDurableTransport({
+          filename: target.filename,
+          busyTimeoutMs: 25,
+          operationTimeoutMs: 1_000,
+        }),
+    ).toThrowError(expect.objectContaining({ code: 'JOURNAL_BUSY' }));
+    expect(
+      queryScalar(target.filename, 'SELECT user_version AS value FROM pragma_user_version'),
+    ).toBe(3);
+    expect(readFileSync(target.filename)).toEqual(databaseBefore);
+    expect(readFileSync(`${target.filename}.watermark`)).toEqual(watermarkBefore);
+    expect(
+      queryScalar(
+        target.filename,
+        'SELECT commit_epoch AS value FROM transport_meta WHERE singleton = 1',
+      ),
+    ).toBe(epochBefore);
+    blocker.exec('ROLLBACK');
+    blocker.close();
+    const recovered = new SqliteWorkerBrokerDurableTransport({ filename: target.filename });
+    recovered.close();
+  });
+
   it('keeps v3 and its old watermark under no-page, lock, and late-fsync migration failure', async () => {
     const signal = new AbortController().signal;
     const capacity = temporaryJournal();

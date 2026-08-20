@@ -2031,18 +2031,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     try {
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec('PRAGMA foreign_keys = OFF;');
-      const remaining = Math.max(1, Math.floor(migrationDeadline - performance.now()));
-      const migrationBusyTimeout = Math.min(previousBusyTimeout, remaining);
-      this.#database.exec(`PRAGMA busy_timeout = ${migrationBusyTimeout};`);
-      try {
-        this.#database.exec('BEGIN EXCLUSIVE');
-        began = true;
-      } catch {
-        if (migrationBusyTimeout >= remaining) {
-          throw new SqliteWorkerTransportError('JOURNAL_ABORTED');
-        }
-        throw new SqliteWorkerTransportError('JOURNAL_BUSY');
-      }
+      this.#beginExclusiveMigration(migrationDeadline, previousBusyTimeout);
+      began = true;
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
       this.#assertMigrationDeadline(migrationDeadline);
       if (pragmaNumber(this.#database, 'user_version') !== WORKER_INVOCATION_SCHEMA_VERSION) {
@@ -2174,15 +2164,8 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     try {
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec('PRAGMA foreign_keys = OFF;');
-      const remaining = Math.max(1, Math.floor(migrationDeadline - performance.now()));
-      this.#database.exec(`PRAGMA busy_timeout = ${Math.min(previousBusyTimeout, remaining)};`);
-      try {
-        this.#database.exec('BEGIN EXCLUSIVE');
-        began = true;
-      } catch {
-        this.#assertMigrationDeadline(migrationDeadline);
-        throw new SqliteWorkerTransportError('JOURNAL_BUSY');
-      }
+      this.#beginExclusiveMigration(migrationDeadline, previousBusyTimeout);
+      began = true;
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
       this.#assertMigrationDeadline(migrationDeadline);
       const lockedVersion = pragmaNumber(this.#database, 'user_version');
@@ -2419,9 +2402,7 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     try {
       this.#assertMigrationDeadline(migrationDeadline);
       this.#database.exec('PRAGMA foreign_keys = OFF;');
-      const remaining = Math.max(1, Math.floor(migrationDeadline - performance.now()));
-      this.#database.exec(`PRAGMA busy_timeout = ${Math.min(previousBusyTimeout, remaining)};`);
-      this.#database.exec('BEGIN EXCLUSIVE');
+      this.#beginExclusiveMigration(migrationDeadline, previousBusyTimeout);
       began = true;
       this.#database.exec(`PRAGMA busy_timeout = ${previousBusyTimeout};`);
       this.#assertMigrationDeadline(migrationDeadline);
@@ -2967,6 +2948,22 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
 
   #assertMigrationDeadline(deadline: number): void {
     if (performance.now() >= deadline) throw new SqliteWorkerTransportError('JOURNAL_ABORTED');
+  }
+
+  #beginExclusiveMigration(deadline: number, maximumBusyTimeoutMs: number): void {
+    this.#assertMigrationDeadline(deadline);
+    const remaining = Math.max(1, Math.floor(deadline - performance.now()));
+    const lockBudget = Math.min(maximumBusyTimeoutMs, remaining);
+    this.#database.exec(`PRAGMA busy_timeout = ${lockBudget};`);
+    try {
+      this.#database.exec('BEGIN EXCLUSIVE');
+    } catch (error) {
+      if (!isSqliteBusy(error)) throw error;
+      if (lockBudget >= remaining || performance.now() >= deadline) {
+        throw new SqliteWorkerTransportError('JOURNAL_ABORTED');
+      }
+      throw new SqliteWorkerTransportError('JOURNAL_BUSY');
+    }
   }
 
   #rebuildLegacyConversationsWithoutTransportForeignKey(deadline: number): void {

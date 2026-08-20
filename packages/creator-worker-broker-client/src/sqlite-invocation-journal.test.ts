@@ -3598,6 +3598,41 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     reopened.close();
   });
 
+  it('classifies v4 migration locks by the budget that expires first without mutating authority', async () => {
+    for (const scenario of [
+      { seed: 291_100, busyTimeoutMs: 1_000, operationTimeoutMs: 50, code: 'JOURNAL_ABORTED' },
+      { seed: 291_200, busyTimeoutMs: 25, operationTimeoutMs: 1_000, code: 'JOURNAL_BUSY' },
+    ] as const) {
+      const fixture = await createInvocationFixture(scenario.seed);
+      fixture.adapter.close();
+      downgradeToLegacyV4(fixture.filename);
+      const databaseBefore = readFileSync(fixture.filename);
+      const watermarkBefore = readFileSync(`${fixture.filename}.watermark`);
+      const epochBefore = queryScalarFrom(fixture.filename, 'transport_meta', 'commit_epoch');
+      const blocker = new SqliteDatabase(fixture.filename);
+      blocker.exec('BEGIN IMMEDIATE');
+
+      expect(
+        () =>
+          new SqliteWorkerBrokerDurableTransport({
+            filename: fixture.filename,
+            busyTimeoutMs: scenario.busyTimeoutMs,
+            operationTimeoutMs: scenario.operationTimeoutMs,
+          }),
+      ).toThrowError(expect.objectContaining({ code: scenario.code }));
+      expect(queryPragmaNumber(fixture.filename, 'user_version')).toBe(4);
+      expect(readFileSync(fixture.filename)).toEqual(databaseBefore);
+      expect(readFileSync(`${fixture.filename}.watermark`)).toEqual(watermarkBefore);
+      expect(queryScalarFrom(fixture.filename, 'transport_meta', 'commit_epoch')).toBe(epochBefore);
+
+      blocker.exec('ROLLBACK');
+      blocker.close();
+      const recovered = new SqliteWorkerBrokerDurableTransport({ filename: fixture.filename });
+      expect(recovered.inspectPragmas().userVersion).toBe(WORKER_TRANSPORT_SCHEMA_VERSION);
+      recovered.close();
+    }
+  }, 10_000);
+
   it('migrates exact v4 dispatch counters to v5 and publishes the interrupt authority atomically', async () => {
     const fixture = await createInvocationFixture(292);
     const signal = new AbortController().signal;
