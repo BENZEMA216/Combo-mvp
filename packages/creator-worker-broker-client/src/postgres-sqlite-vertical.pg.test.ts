@@ -68,6 +68,8 @@ const PREVIOUS_RUNTIME_DIGEST = `sha256:${'e'.repeat(64)}`;
 const BROKER_CONTRACT_DIGEST = currentBrokerContractDigest();
 const PROTOCOL_DIGEST = `sha256:${'b'.repeat(64)}`;
 const PREVIOUS_PROTOCOL_DIGEST = `sha256:${'d'.repeat(64)}`;
+const WORKER_OWNER_A = 'postgres-worker-owner-a-0123456789';
+const WORKER_OWNER_B = 'postgres-worker-owner-b-0123456789';
 const COMPATIBILITY_CORPUS = ProtocolVersionCorpusSchema.parse(
   JSON.parse(
     readFileSync(
@@ -277,6 +279,7 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       firstClient = createWorkerClient(
         url,
         fixture.installationId,
+        WORKER_OWNER_A,
         firstAdapter,
         ports,
         diagnostics,
@@ -483,6 +486,7 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       secondClient = createWorkerClient(
         url,
         fixture.installationId,
+        WORKER_OWNER_B,
         secondAdapter,
         ports,
         diagnostics,
@@ -591,7 +595,6 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
     const directory = realpathSync(mkdtempSync(join(tmpdir(), 'combo-publisher-vertical-')));
     const filename = join(directory, 'journal.sqlite');
     const diagnostics: WorkerBrokerDiagnosticEvent[] = [];
-    const observedOwnerToken: { value?: string } = {};
     let gateway: AgentGateway | undefined;
     let client: WorkerBrokerClient | undefined;
     let adapter: SqliteWorkerBrokerDurableTransport | undefined;
@@ -614,7 +617,8 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       client = createWorkerClient(
         url,
         fixture.installationId,
-        observeOwnerToken(adapter, observedOwnerToken),
+        WORKER_OWNER_A,
+        adapter,
         ports,
         diagnostics,
       );
@@ -719,11 +723,9 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         brokerConversationOpenLogicalDigest(brokerConversationOpenLogicalCommand(firstEnvelope)),
       );
 
-      const ownerToken = observedOwnerToken.value;
-      if (ownerToken === undefined) throw new Error('PUBLISHER_WORKER_OWNER_TOKEN_MISSING');
       const pending = await adapter.readPendingCommands({
         installationId: fixture.installationId,
-        ownerToken,
+        ownerToken: WORKER_OWNER_A,
         connectionId: replacementDelivery.connection_id,
         limit: 8,
         signal: AbortSignal.timeout(2_000),
@@ -755,7 +757,7 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
       const journal = adapter.createInvocationJournal(publisherReadyJournalOptions(readyAt));
       await journal.bindReadyConversation({
         installationId: fixture.installationId,
-        ownerToken,
+        ownerToken: WORKER_OWNER_A,
         command: openReference,
         evidence: { token: 'publisher-sandbox-ready' },
         signal: AbortSignal.timeout(2_000),
@@ -905,6 +907,7 @@ pgDescribe('PostgreSQL Gateway to Worker SQLite vertical control chain', () => {
         const client = createWorkerClient(
           url,
           fixture.installationId,
+          WORKER_OWNER_A,
           adapter,
           ports,
           diagnostics,
@@ -1191,6 +1194,7 @@ function workerPorts(
 function createWorkerClient(
   url: string,
   installationId: string,
+  ownerToken: string,
   durablePort: WorkerBrokerDurableTransportPort,
   ports: ReturnType<typeof workerPorts>,
   diagnostics: WorkerBrokerDiagnosticEvent[],
@@ -1204,6 +1208,7 @@ function createWorkerClient(
   return new WorkerBrokerClient({
     url,
     installationId,
+    ownerToken,
     workerVersion: profile.workerVersion ?? WORKER_VERSION,
     codexRuntimeArtifacts: profile.codexRuntimeArtifacts ?? [RUNTIME_DIGEST],
     codexProtocolSchemaDigests: profile.codexProtocolSchemaDigests ?? [PROTOCOL_DIGEST],
@@ -1230,32 +1235,6 @@ function newJournalAuthorization(installationId: string): NewWorkerJournalAuthor
     authorizationDigest: createHash('sha256')
       .update(`vertical-new-worker-journal:${installationId}`, 'utf8')
       .digest('hex'),
-  });
-}
-
-function observeOwnerToken(
-  port: WorkerBrokerDurableTransportPort,
-  observed: { value?: string },
-): WorkerBrokerDurableTransportPort {
-  return new Proxy(port, {
-    get(target, property) {
-      const value = Reflect.get(target, property, target) as unknown;
-      if (typeof value !== 'function') return value;
-      return (input: unknown) => {
-        if (
-          typeof input === 'object' &&
-          input !== null &&
-          'ownerToken' in input &&
-          typeof input.ownerToken === 'string'
-        ) {
-          if (observed.value !== undefined && observed.value !== input.ownerToken) {
-            throw new Error('PUBLISHER_WORKER_OWNER_TOKEN_CHANGED');
-          }
-          observed.value = input.ownerToken;
-        }
-        return Reflect.apply(value, target, [input]);
-      };
-    },
   });
 }
 

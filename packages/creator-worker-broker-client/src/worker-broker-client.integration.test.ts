@@ -61,6 +61,7 @@ const CORRELATION = uuid(6);
 const SIGNATURE = Buffer.alloc(64, 9).toString('base64url');
 const SENT_AT = '2026-08-13T08:00:00.000Z';
 const FRAME_EXPIRES_AT = '2026-08-13T08:01:00.000Z';
+let clientOwnerSequence = 0;
 const brokerCapacityCorpusUrl = new URL(
   '../../creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json',
   import.meta.url,
@@ -97,6 +98,20 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     expect(boundedBackoff(0, 10, 80)).toBe(10);
     expect(boundedBackoff(1, 10, 80)).toBe(10);
     expect(boundedBackoff(99, 10, 80)).toBe(80);
+  });
+
+  it('requires an explicitly injected owner capability bounded by UTF-8 bytes', () => {
+    const url = 'wss://broker.example/v1/worker/connect';
+    expect(() =>
+      createClient(url, new FakeDurablePort(), { ownerToken: 'a'.repeat(15) }),
+    ).toThrow('INVALID_OPTIONS');
+    expect(() =>
+      createClient(url, new FakeDurablePort(), { ownerToken: '界'.repeat(342) }),
+    ).toThrow('INVALID_OPTIONS');
+    const minimum = createClient(url, new FakeDurablePort(), { ownerToken: 'a'.repeat(16) });
+    const maximum = createClient(url, new FakeDurablePort(), { ownerToken: 'a'.repeat(1_024) });
+    expect(minimum.status).toBe('IDLE');
+    expect(maximum.status).toBe('IDLE');
   });
 
   it('permanently blocks a malformed first Broker frame without durable activation', async () => {
@@ -264,8 +279,11 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     const durable = new FakeDurablePort();
     const broker = await startBroker();
     const signed: Buffer[] = [];
-    const first = createClient(broker.url, durable, { signed });
-    const second = createClient(broker.url, durable);
+    const firstOwnerToken = 'worker-client-owner-first-0123456789';
+    const first = createClient(broker.url, durable, { signed, ownerToken: firstOwnerToken });
+    const second = createClient(broker.url, durable, {
+      ownerToken: 'worker-client-owner-second-0123456789',
+    });
 
     await Promise.all([first.start(), first.start(), first.start()]);
     await waitFor(() => first.status === 'READY');
@@ -293,6 +311,7 @@ describe('Real Worker transport ↔ Fake Broker', () => {
     }
     expect(capacityOutcomes).toBe(capacityCorpus.outcomeCounts.workerTransport);
     expect(durable.acquireCalls).toBe(3);
+    expect(durable.owner).toBe(firstOwnerToken);
     expect(broker.connectionCount).toBe(1);
     await waitFor(() => broker.received.length >= 1);
     const accepted = broker.received.find((item) => item.envelope.type === 'lease.accepted');
@@ -1451,6 +1470,13 @@ class FakeDurablePort implements WorkerBrokerDurableTransportPort {
     return this.current?.connectionId === input.connectionId ? cloneConnection(this.current) : null;
   }
 
+  async loadOwnedActiveConnection(input: {
+    ownerToken: string;
+  }): Promise<DurableBrokerConnection | null> {
+    this.assertOwner(input.ownerToken);
+    return this.current === undefined ? null : cloneConnection(this.current);
+  }
+
   async commitInbound(input: {
     ownerToken: string;
     connectionId: string;
@@ -1905,6 +1931,7 @@ function createClient(
     portTimeoutMs?: number;
     diagnosticSink?: (event: WorkerBrokerDiagnosticEvent) => void;
     challengeCloudTime?: string;
+    ownerToken?: string;
   } = {},
 ): WorkerBrokerClient {
   let challenge = 700;
@@ -1928,6 +1955,8 @@ function createClient(
   const client = new WorkerBrokerClient({
     url,
     installationId: INSTALLATION,
+    ownerToken:
+      options.ownerToken ?? `worker-client-owner-${++clientOwnerSequence}-0123456789`,
     workerVersion: '0.1.0',
     codexRuntimeArtifacts: [`sha256:${'1'.repeat(64)}`],
     codexProtocolSchemaDigests: [`sha256:${'2'.repeat(64)}`],

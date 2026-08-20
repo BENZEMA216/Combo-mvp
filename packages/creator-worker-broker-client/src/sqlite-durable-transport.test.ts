@@ -337,6 +337,68 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
     reopened.close();
   });
 
+  it('loads only the active connection owned by the exact process capability', async () => {
+    const fixture = createFixture(10_100);
+    const { filename } = temporaryJournal();
+    const adapter = createJournal(filename, fixture.installationId);
+    const signal = new AbortController().signal;
+    await adapter.acquireInstallation(ownerInput(fixture.installationId, OWNER_A, signal));
+
+    await expect(
+      adapter.loadOwnedActiveConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        signal,
+      }),
+    ).resolves.toBeNull();
+
+    const first = await activate(adapter, fixture, OWNER_A, signal);
+    await expect(
+      adapter.loadOwnedActiveConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        signal,
+      }),
+    ).resolves.toEqual(first);
+    await expect(
+      adapter.loadOwnedActiveConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_B,
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'PORT_FAILED', permanent: true });
+
+    const replacement = createFixture(
+      10_101,
+      fixture.installationId,
+      fixture.deploymentId,
+    );
+    const second = await activate(adapter, replacement, OWNER_A, signal);
+    expect(second.connectionId).not.toBe(first.connectionId);
+    await expect(
+      adapter.loadOwnedActiveConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        signal,
+      }),
+    ).resolves.toEqual(second);
+
+    await adapter.releaseConnection({
+      installationId: fixture.installationId,
+      ownerToken: OWNER_A,
+      connectionId: second.connectionId,
+      signal,
+    });
+    await expect(
+      adapter.loadOwnedActiveConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        signal,
+      }),
+    ).resolves.toBeNull();
+    adapter.close();
+  });
+
   it('enforces durable DB/WAL page budgets and a filesystem free-space reserve', async () => {
     const fixture = createFixture(11);
     const boundedJournal = temporaryJournal();
@@ -4370,17 +4432,24 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       () => authority.accepted.filter((item) => item.messageId === firstAck.messageId).length >= 2,
     );
     const secondSession = authority.sessions.at(-1)!;
+    await expect(
+      secondAdapter.loadOwnedActiveConnection({
+        installationId: fixture.installationId,
+        ownerToken: OWNER_A,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ connectionId: secondSession.connectionId });
     const pending = await secondAdapter
       .readPendingCommands({
         installationId: fixture.installationId,
-        ownerToken: authority.clientOwnerTokenNotExposed,
+        ownerToken: OWNER_A,
         connectionId: secondSession.connectionId,
         limit: 10,
         signal: new AbortController().signal,
       })
       .catch(() => []);
-    // WorkerBrokerClient intentionally keeps its random owner capability private. Durable restart
-    // is therefore proved by the replayed exact ACK on the new connection, not test backdoor access.
+    // The root-injected capability can inspect only its current connection. The prior command
+    // remains historical while the exact ACK is reframed onto the replacement session.
     expect(pending).toEqual([]);
     const replays = authority.accepted.filter((item) => item.messageId === firstAck.messageId);
     expect(replays).toHaveLength(2);
@@ -6216,11 +6285,13 @@ function createClient(
     heartbeatIntervalMs?: number;
     requestChallenge?: () => Promise<{ challengeId: string }>;
     diagnosticSink?: (event: WorkerBrokerDiagnosticEvent) => void;
+    ownerToken?: string;
   } = {},
 ): WorkerBrokerClient {
   return new WorkerBrokerClient({
     url,
     installationId,
+    ownerToken: options.ownerToken ?? OWNER_A,
     workerVersion: '0.0.0-test',
     codexRuntimeArtifacts: [`sha256:${SHA('a')}`],
     codexProtocolSchemaDigests: [`sha256:${SHA('b')}`],
@@ -6250,7 +6321,6 @@ function createClient(
 class LoopbackAuthority implements AgentGatewayAuthorityPort {
   readonly sessions: AuthenticatedWorkerSession[] = [];
   readonly accepted: BrokerEnvelope[] = [];
-  readonly clientOwnerTokenNotExposed = 'not-the-private-client-owner-token';
   readonly #leases = new Map<string, DurableBrokerConnection['lease']>();
   readonly #expiry = new Map<string, string>();
   readonly #nextOutbound = new Map<string, bigint>();

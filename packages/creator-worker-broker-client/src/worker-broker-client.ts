@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import type { ClientRequest, IncomingMessage } from 'node:http';
 import { performance } from 'node:perf_hooks';
 
@@ -178,6 +177,12 @@ export interface WorkerBrokerDurableTransportPort {
     connectionId: string;
     signal: AbortSignal;
   }): Promise<DurableBrokerConnection | null>;
+  /** Returns the single active transport connection owned by this exact process capability. */
+  loadOwnedActiveConnection(input: {
+    installationId: string;
+    ownerToken: string;
+    signal: AbortSignal;
+  }): Promise<DurableBrokerConnection | null>;
   commitInbound(input: {
     installationId: string;
     ownerToken: string;
@@ -238,6 +243,7 @@ export interface WorkerBrokerDurableTransportPort {
 export type WorkerBrokerClientOptions = Readonly<{
   url: string;
   installationId: string;
+  ownerToken: string;
   workerVersion: string;
   codexRuntimeArtifacts: readonly string[];
   codexProtocolSchemaDigests: readonly string[];
@@ -315,7 +321,7 @@ export class WorkerBrokerClient {
   readonly #monotonicNow: () => number;
   readonly #diagnosticSink?: (event: WorkerBrokerDiagnosticEvent) => void;
   readonly #allowUnanchoredCloudTimeForTests: boolean;
-  readonly #ownerToken = randomBytes(24).toString('base64url');
+  readonly #ownerToken: string;
   readonly #lifecycle = new AbortController();
 
   #status: WorkerBrokerClientStatus = 'IDLE';
@@ -329,6 +335,7 @@ export class WorkerBrokerClient {
 
   constructor(options: WorkerBrokerClientOptions) {
     this.#url = validateBrokerUrl(options.url, options.allowInsecureLoopbackForTests === true);
+    this.#ownerToken = validateOwnerToken(options.ownerToken);
     this.#allowUnanchoredCloudTimeForTests = options.allowInsecureLoopbackForTests === true;
     const unsigned = BrokerHandshakeUnsignedSchema.parse({
       protocol: 'combo.creator-broker/1',
@@ -1388,6 +1395,17 @@ function validateBrokerUrl(input: string, allowInsecureLoopback: boolean): strin
     throw new WorkerBrokerClientError('INVALID_BROKER_URL', true);
   }
   return url.toString();
+}
+
+function validateOwnerToken(input: unknown): string {
+  if (typeof input !== 'string') {
+    throw new WorkerBrokerClientError('INVALID_OPTIONS', true);
+  }
+  const byteLength = Buffer.byteLength(input, 'utf8');
+  if (byteLength < 16 || byteLength > 1_024) {
+    throw new WorkerBrokerClientError('INVALID_OPTIONS', true);
+  }
+  return input;
 }
 
 function bounded(value: number, minimum: number, maximum: number): number {

@@ -1010,6 +1010,30 @@ export class SqliteWorkerBrokerDurableTransport implements WorkerBrokerDurableTr
     });
   }
 
+  async loadOwnedActiveConnection(input: {
+    installationId: string;
+    ownerToken: string;
+    signal: AbortSignal;
+  }): Promise<DurableBrokerConnection | null> {
+    const installationId = parseUuid(input.installationId);
+    return this.#transaction('load_owned_active_connection', input.signal, () => {
+      const { ownerEpoch } = this.#assertAndRefreshOwner(installationId, input.ownerToken);
+      const rows = this.#database
+        .prepare(
+          `SELECT connection_id FROM transport_connections
+           WHERE installation_id = ? AND owner_epoch = ? AND status = 'ACTIVE'
+           ORDER BY connection_id LIMIT 2`,
+        )
+        .all(installationId, ownerEpoch) as Array<{ connection_id: string }>;
+      if (rows.length > 1) throw permanentPortFailure();
+      const connectionId = rows[0]?.connection_id;
+      if (connectionId === undefined) return null;
+      return durableConnection(
+        this.#requireActiveConnection(installationId, connectionId, ownerEpoch),
+      );
+    });
+  }
+
   async commitInbound(input: {
     installationId: string;
     ownerToken: string;
