@@ -211,6 +211,9 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     expect(first).toMatchObject({
       sourceEventId: fixture.openReference.messageId,
       openCommandId: fixture.openReference.messageId,
+      sandboxInstanceId: uuid(900_001),
+      runtimeThreadId: 'thread-ready-001',
+      readyEvidenceDigest: `sha256:${SHA('7')}`,
       cloudState: 'PENDING',
     });
     expect(queryCount(fixture.filename, 'local_conversations')).toBe(1);
@@ -221,6 +224,182 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
         fixture.filename,
         'local_conversation_ready_facts',
         `source_event_id = open_command_id AND source_event_id = '${fixture.openReference.messageId}'`,
+      ),
+    ).toBe(1);
+  });
+
+  it('authorizes a new conversation.open for provisioning without mutating durable state', async () => {
+    const fixture = await createInvocationFixture(10_101, {}, { readyOnly: true });
+    let readyEvidenceVerifications = 0;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      readyConversationAuthority: {
+        verify(input, expected, now) {
+          readyEvidenceVerifications += 1;
+          return fixture.authorities.options.readyConversationAuthority.verify(
+            input,
+            expected,
+            now,
+          );
+        },
+      },
+    });
+    const signal = new AbortController().signal;
+    const before = queryReadyBusinessStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.authorizeConversationOpen({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        signal,
+      }),
+    ).resolves.toEqual({
+      action: 'PROVISION',
+      expected: {
+        ...fixture.openEnvelope.body.openAuthority,
+        conversationId: fixture.openEnvelope.body.conversationId,
+        agentVersionId: fixture.openEnvelope.body.agentVersionId,
+        agentVersionDigest: fixture.openEnvelope.body.agentVersionDigest,
+        snapshotDigest: fixture.openEnvelope.body.snapshotDigest,
+        openCommandId: fixture.openEnvelope.messageId,
+      },
+    });
+    expect(queryReadyBusinessStateSnapshot(fixture.filename)).toEqual(before);
+    expect(queryCount(fixture.filename, 'local_conversations')).toBe(0);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'transport_inbound_frames',
+        `connection_id = '${fixture.state.connectionId}' AND sequence = '${fixture.openEnvelope.sequence}' AND effect_state = 'PERSISTED'`,
+      ),
+    ).toBe(1);
+    expect(readyEvidenceVerifications).toBe(0);
+  });
+
+  it('rejects a non-conversation.open authorization without durable mutation', async () => {
+    const fixture = await createInvocationFixture(10_102);
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const before = queryReadyBusinessStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.authorizeConversationOpen({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.prepareReference,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: 'COMMAND_TYPE_INVALID' });
+    expect(queryReadyBusinessStateSnapshot(fixture.filename)).toEqual(before);
+  });
+
+  it('fails closed when conversation.open is bound to a stale transport session', async () => {
+    const fixture = await createInvocationFixture(10_103, {}, { readyOnly: true });
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await activateReplacementLease(fixture, 103_900);
+    const before = queryReadyBusinessStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.authorizeConversationOpen({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_LEASE' });
+    expect(queryReadyBusinessStateSnapshot(fixture.filename)).toEqual(before);
+  });
+
+  it('returns an exact durable READY replay without provisioning or evidence verification', async () => {
+    const fixture = await createInvocationFixture(10_104, {}, { readyOnly: true });
+    let readyEvidenceVerifications = 0;
+    const journal = fixture.adapter.createInvocationJournal({
+      ...fixture.authorities.options,
+      readyConversationAuthority: {
+        verify(input, expected, now) {
+          readyEvidenceVerifications += 1;
+          return fixture.authorities.options.readyConversationAuthority.verify(
+            input,
+            expected,
+            now,
+          );
+        },
+      },
+    });
+    const signal = new AbortController().signal;
+    const ready = await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    const beforeBusinessState = queryReadyBusinessStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.authorizeConversationOpen({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.openReference,
+        signal,
+      }),
+    ).resolves.toEqual({ action: 'RETURN_READY', conversation: ready });
+    expect(queryReadyBusinessStateSnapshot(fixture.filename)).toEqual(beforeBusinessState);
+    expect(readyEvidenceVerifications).toBe(1);
+  });
+
+  it('returns an exact READY semantic replay on a same-Deployment replacement session', async () => {
+    const fixture = await createInvocationFixture(10_105, {}, { readyOnly: true });
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const signal = new AbortController().signal;
+    const ready = await journal.bindReadyConversation({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+      signal,
+    });
+    const replacement = await activateReplacementLease(
+      fixture,
+      105_900,
+      fixture.openEnvelope.lease.deploymentId,
+    );
+    const replayedOpen = BrokerEnvelopeSchema.parse({
+      ...fixture.openEnvelope,
+      connectionId: replacement.connectionId,
+      sequence: nextSequence(replacement),
+      sentAt: replacement.leaseGrantedAt,
+      expiresAt: replacement.leaseExpiresAt,
+      lease: replacement.lease,
+    }) as Extract<BrokerEnvelope, { type: 'conversation.open' }>;
+    const current = await commitCommand(
+      fixture.adapter,
+      fixture.installationId,
+      replacement,
+      replayedOpen,
+    );
+    const replayReference = await commandReference(
+      fixture.adapter,
+      fixture.installationId,
+      current,
+      'conversation.open',
+    );
+    const beforeBusinessState = queryReadyBusinessStateSnapshot(fixture.filename);
+
+    await expect(
+      journal.authorizeConversationOpen({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: replayReference,
+        signal,
+      }),
+    ).resolves.toEqual({ action: 'RETURN_READY', conversation: ready });
+    expect(queryReadyBusinessStateSnapshot(fixture.filename)).toEqual(beforeBusinessState);
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'transport_inbound_frames',
+        `connection_id = '${current.connectionId}' AND sequence = '${replayedOpen.sequence}' AND effect_state = 'APPLIED'`,
       ),
     ).toBe(1);
   });

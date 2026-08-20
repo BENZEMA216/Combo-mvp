@@ -2517,10 +2517,23 @@ export type ReadyConversationExpectedBinding = Readonly<{
 
 export type DurableReadyConversation = ReadyConversationExpectedBinding &
   Readonly<{
+    sandboxInstanceId: string;
+    runtimeThreadId: string;
+    readyEvidenceDigest: string;
     sourceEventId: string;
     factDigest: string;
     cloudState: 'PENDING' | 'CLOUD_COMMITTED' | 'CLOUD_REJECTED';
   }>;
+
+export type ConversationOpenAuthorization =
+  | Readonly<{
+      action: 'PROVISION';
+      expected: ReadyConversationExpectedBinding;
+    }>
+  | Readonly<{
+      action: 'RETURN_READY';
+      conversation: DurableReadyConversation;
+    }>;
 
 export type VerifiedReadyConversationEvidence = Readonly<{
   sandboxInstanceId: string;
@@ -3150,6 +3163,86 @@ export class SqliteWorkerInvocationJournal {
     }
   }
 
+  async authorizeConversationOpen(input: {
+    installationId: string;
+    ownerToken: string;
+    command: OpaqueInvocationCommandReference;
+    signal: AbortSignal;
+  }): Promise<ConversationOpenAuthorization> {
+    return this.host.transact(
+      { ...input, name: 'invocation_authorize_conversation_open' },
+      (context) => {
+        const now = this.#cloudNow();
+        const stored = loadStoredCommand(context, input.installationId, input.command);
+        if (stored.envelope.type !== 'conversation.open') {
+          throw new WorkerInvocationJournalError('COMMAND_TYPE_INVALID');
+        }
+        assertCurrentTransportEnvelope(stored, now);
+        const currentExpected = readyExpectedFromStoredOpen(stored.envelope);
+        if (currentExpected.installationId !== input.installationId) {
+          throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+        }
+
+        const terminal = context.database
+          .prepare(
+            `SELECT t.*, c.installation_id, c.deployment_id, c.lease_id,
+                    c.worker_session_id, c.fence, c.agent_version_id,
+                    c.agent_version_digest, c.snapshot_digest,
+                    c.sandbox_instance_id, c.runtime_thread_id, c.ready_evidence_digest,
+                    c.state AS conversation_state,
+                    c.ready_cloud_state AS conversation_cloud_state,
+                    consumed.semantic_digest AS consumed_semantic_digest,
+                    consumed.command_type AS consumed_command_type
+             FROM local_conversation_ready_terminal_tombstones AS t
+             JOIN local_conversations AS c ON c.conversation_id = t.conversation_id
+             JOIN local_consumed_commands AS consumed ON consumed.command_id = t.open_command_id
+             WHERE t.open_command_id = ?`,
+          )
+          .get(currentExpected.openCommandId) as Record<string, unknown> | undefined;
+        if (terminal !== undefined) {
+          if (
+            terminal.consumed_command_type !== 'conversation.open' ||
+            terminal.open_semantic_digest !== terminal.consumed_semantic_digest ||
+            terminal.open_semantic_digest !== stored.semanticDigest ||
+            terminal.source_event_id !== currentExpected.openCommandId ||
+            !sameReadyExpectedBinding(currentExpected, readyExpectedFromConversation(terminal))
+          ) {
+            throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+          }
+          const conversation = loadCompactedReadyConversation(terminal);
+          context.markTransportCommandApplied(input.command);
+          return Object.freeze({ action: 'RETURN_READY', conversation });
+        }
+
+        const existingRows = context.database
+          .prepare(
+            `SELECT * FROM local_conversations
+             WHERE conversation_id = ? OR open_command_id = ?
+             ORDER BY conversation_id`,
+          )
+          .all(currentExpected.conversationId, currentExpected.openCommandId) as Array<
+          Record<string, unknown>
+        >;
+        if (existingRows.length !== 0) {
+          if (existingRows.length !== 1) {
+            throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+          }
+          const existing = existingRows[0]!;
+          assertCurrentReadyReplay(context.database, stored, existing, input.installationId, now);
+          const conversation = loadDurableReadyConversation(
+            context.database,
+            readyExpectedFromConversation(existing),
+          );
+          context.markTransportCommandApplied(input.command);
+          return Object.freeze({ action: 'RETURN_READY', conversation });
+        }
+
+        assertCommandPersisted(stored);
+        return Object.freeze({ action: 'PROVISION', expected: currentExpected });
+      },
+    );
+  }
+
   async bindReadyConversation(input: {
     installationId: string;
     ownerToken: string;
@@ -3227,18 +3320,7 @@ export class SqliteWorkerInvocationJournal {
         if (openAuthority.installationId !== input.installationId) {
           throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
         }
-        const currentExpected = Object.freeze({
-          installationId: openAuthority.installationId,
-          deploymentId: openAuthority.deploymentId,
-          leaseId: openAuthority.leaseId,
-          workerSessionId: openAuthority.workerSessionId,
-          fence: openAuthority.fence,
-          conversationId: stored.envelope.body.conversationId,
-          agentVersionId: stored.envelope.body.agentVersionId,
-          agentVersionDigest: stored.envelope.body.agentVersionDigest,
-          snapshotDigest: stored.envelope.body.snapshotDigest,
-          openCommandId: stored.envelope.messageId,
-        });
+        const currentExpected = readyExpectedFromStoredOpen(stored.envelope);
         const existingRows = context.database
           .prepare(
             `SELECT * FROM local_conversations
@@ -3428,6 +3510,9 @@ export class SqliteWorkerInvocationJournal {
         context.markTransportCommandApplied(input.command);
         return Object.freeze({
           ...currentExpected,
+          sandboxInstanceId: evidence.sandboxInstanceId,
+          runtimeThreadId: evidence.runtimeThreadId,
+          readyEvidenceDigest: evidence.evidenceDigest,
           sourceEventId: fact.sourceEventId,
           factDigest,
           cloudState: 'PENDING' as const,
@@ -7076,6 +7161,42 @@ function legacyConversationOpenSemanticDigest(
   });
 }
 
+function readyExpectedFromStoredOpen(
+  command: Extract<BrokerCommand, { type: 'conversation.open' }>,
+): ReadyConversationExpectedBinding {
+  const openAuthority = command.body.openAuthority;
+  return Object.freeze({
+    installationId: openAuthority.installationId,
+    deploymentId: openAuthority.deploymentId,
+    leaseId: openAuthority.leaseId,
+    workerSessionId: openAuthority.workerSessionId,
+    fence: openAuthority.fence,
+    conversationId: command.body.conversationId,
+    agentVersionId: command.body.agentVersionId,
+    agentVersionDigest: command.body.agentVersionDigest,
+    snapshotDigest: command.body.snapshotDigest,
+    openCommandId: command.messageId,
+  });
+}
+
+function sameReadyExpectedBinding(
+  left: ReadyConversationExpectedBinding,
+  right: ReadyConversationExpectedBinding,
+): boolean {
+  return (
+    left.installationId === right.installationId &&
+    left.deploymentId === right.deploymentId &&
+    left.leaseId === right.leaseId &&
+    left.workerSessionId === right.workerSessionId &&
+    left.fence === right.fence &&
+    left.conversationId === right.conversationId &&
+    left.agentVersionId === right.agentVersionId &&
+    left.agentVersionDigest === right.agentVersionDigest &&
+    left.snapshotDigest === right.snapshotDigest &&
+    left.openCommandId === right.openCommandId
+  );
+}
+
 function readyExpectedFromConversation(
   conversation: Record<string, unknown>,
 ): ReadyConversationExpectedBinding {
@@ -7131,6 +7252,9 @@ function loadCompactedReadyConversation(
   }
   return Object.freeze({
     ...expected,
+    sandboxInstanceId: fact.sandboxInstanceId,
+    runtimeThreadId: fact.runtimeThreadId,
+    readyEvidenceDigest: fact.readyEvidenceDigest,
     sourceEventId: fact.sourceEventId,
     factDigest: String(terminal.fact_digest),
     cloudState,
@@ -7211,6 +7335,9 @@ function loadDurableReadyConversation(
   }
   return Object.freeze({
     ...expected,
+    sandboxInstanceId: fact.sandboxInstanceId,
+    runtimeThreadId: fact.runtimeThreadId,
+    readyEvidenceDigest: fact.readyEvidenceDigest,
     sourceEventId: fact.sourceEventId,
     factDigest: row.fact_digest,
     cloudState: row.ready_cloud_state,
