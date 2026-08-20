@@ -7,24 +7,163 @@ owner: Protocol（独立于 production reducer 维护；禁止从 production red
 note: 每行引用唯一 golden row；T1 真机执行 20 个 failpoint 时逐项引用本表。
 
 rows:
-  - { id: FLT-001, kill: API transaction 前, expected: 客户端同 key 可重放, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-002, kill: transaction commit 后、HTTP 202 前, expected: 重放返回同一 Invocation, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-003, kill: Outbox commit 后、Broker send 前, expected: 重投同 command, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-004, kill: Worker receive 后、SQLite commit 前, expected: Cloud 重投, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-005, kill: PREPARED commit 后、ack 前, expected: 重发 prepared，零 Codex dispatch, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-006, kill: Cloud PERSISTED 后、start send 前, expected: 重发同 start command, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-007, kill: Worker STARTING commit 后、Host call 前, expected: Host/dispatch receipt 独立对账；无法证明未 dispatch 则 UNCERTAIN，禁止二次 start, inv: INV-009/INV-010, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-008, kill: Host 已收 turn/start、response 前, expected: UNCERTAIN，禁止自动二次 start, inv: INV-009/INV-010, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-009, kill: 保存 turnId 后、started event 前, expected: 查询/恢复；无证据则 reconcile, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-010, kill: RUNNING 中 Worker crash, expected: Host/VM capability 可查则恢复，否则 UNCERTAIN, inv: INV-009/INV-010, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-011, kill: final 生成后、SQLite commit 前, expected: 同 Host turn 已完成的 exact final 才补写；否则唯一结果 UNCERTAIN，禁止假称成功或自动重跑, inv: INV-009/INV-010, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-012, kill: final SQLite commit 后、Cloud submit 前, expected: 重发 exact final, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-013, kill: Cloud terminal commit 后、ACK 前, expected: 重放得到 CLOUD_COMMITTED，零第二条 answer, inv: INV-009/INV-010, e1: SIMULATED_RECOVERY_E1, t1: planned }
-  - { id: FLT-014, kill: cancel send 后、interrupt ACK 前, expected: CANCEL_REQUESTED/RECONCILING，不是假 CANCELLED（0029 需 receipt 证据）, inv: INV-009/INV-010/INV-016, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-015, kill: final 与 cancel 同时, expected: durable final 可赢；confirmed interrupted 才 CANCELLED, inv: INV-009/INV-010/INV-016, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-016, kill: Lease expiry + old Worker final, expected: 按 Execution Capability/Fence 对账，不能改新 Deployment, inv: INV-013/INV-015, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-017, kill: Redis 丢失, expected: 从 PG 恢复，不改变执行事实, inv: INV-023, e1: BLOCKED_E2_E6, t1: planned }
-  - { id: FLT-018, kill: Gateway rolling restart, expected: cursor/outbox 重放，不重复执行, inv: INV-010/INV-023, e1: BLOCKED_E2_E6, t1: planned }
-  - { id: FLT-019, kill: Model Proxy response 后连接断, expected: Worker 无法证明时 UNCERTAIN，不重新调用模型, inv: INV-007/INV-010/INV-015, e1: MODEL_ONLY_E1, t1: planned }
-  - { id: FLT-020, kill: VM cleanup 失败, expected: Deployment degraded/blocked；禁止复用污染 Sandbox, inv: INV-004/INV-006, e1: BLOCKED_E2_E6, t1: planned }
-
+  - {
+      id: FLT-001,
+      kill: API transaction 前,
+      expected: 客户端同 key 可重放,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-002,
+      kill: transaction commit 后、HTTP 202 前,
+      expected: 重放返回同一 Invocation,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-003,
+      kill: Outbox commit 后、Broker send 前,
+      expected: 重投同 command,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-004,
+      kill: Worker receive 后、SQLite commit 前,
+      expected: Cloud 重投,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-005,
+      kill: PREPARED commit 后、ack 前,
+      expected: 重发 prepared，零 Codex dispatch,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-006,
+      kill: Cloud PERSISTED 后、start send 前,
+      expected: 重发同 start command,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-007,
+      kill: Worker STARTING commit 后、Host call 前,
+      expected: '生产恢复不能借助测试 failpoint 推断“尚未 call”；必须通过 Host/dispatch receipt 独立对账，无法证明未 dispatch 就进入 `UNCERTAIN`，禁止自动继续或二次 start',
+      inv: INV-009/INV-010,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-008,
+      kill: Host 已收 turn/start、response 前,
+      expected: '`UNCERTAIN`，禁止自动二次 start',
+      inv: INV-009/INV-010,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-009,
+      kill: 保存 turnId 后、started event 前,
+      expected: 查询/恢复；无证据则 reconcile,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-010,
+      kill: RUNNING 中 Worker crash,
+      expected: Host/VM capability 可查则恢复，否则 UNCERTAIN,
+      inv: INV-009/INV-010,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-011,
+      kill: final 生成后、SQLite commit 前,
+      expected: '同一 Host turn 可查询且返回已完成、绑定一致的 exact final 时才允许补写；Host 不可查/证据不完整则唯一结果 `UNCERTAIN`，禁止假称成功或自动重跑',
+      inv: INV-009/INV-010,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-012,
+      kill: final SQLite commit 后、Cloud submit 前,
+      expected: 重发 exact final,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-013,
+      kill: Cloud terminal commit 后、ACK 前,
+      expected: 重放得到 CLOUD_COMMITTED，零第二条 answer,
+      inv: INV-009/INV-010,
+      e1: SIMULATED_RECOVERY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-014,
+      kill: cancel send 后、interrupt ACK 前,
+      expected: CANCEL_REQUESTED/RECONCILING，不是假 CANCELLED,
+      inv: INV-009/INV-010/INV-016,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-015,
+      kill: final 与 cancel 同时,
+      expected: durable final 可赢；confirmed interrupted 才 CANCELLED,
+      inv: INV-009/INV-010/INV-016,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-016,
+      kill: Lease expiry + old Worker final,
+      expected: 按 Execution Capability/Fence 对账，不能改新 Deployment,
+      inv: INV-013/INV-015,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-017,
+      kill: Redis 丢失,
+      expected: 从 PG恢复，不改变执行事实,
+      inv: INV-023,
+      e1: BLOCKED_E2_E6,
+      t1: planned,
+    }
+  - {
+      id: FLT-018,
+      kill: Gateway rolling restart,
+      expected: cursor/outbox 重放，不重复执行,
+      inv: INV-010/INV-023,
+      e1: BLOCKED_E2_E6,
+      t1: planned,
+    }
+  - {
+      id: FLT-019,
+      kill: Model Proxy response 后连接断,
+      expected: Worker无法证明时 UNCERTAIN，不重新调用模型,
+      inv: INV-007/INV-010/INV-015,
+      e1: MODEL_ONLY_E1,
+      t1: planned,
+    }
+  - {
+      id: FLT-020,
+      kill: VM cleanup 失败,
+      expected: Deployment degraded/blocked；禁止复用污染 Sandbox,
+      inv: INV-004/INV-006,
+      e1: BLOCKED_E2_E6,
+      t1: planned,
+    }

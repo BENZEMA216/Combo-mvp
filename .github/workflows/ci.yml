@@ -141,6 +141,7 @@ jobs:
           sudo apt-get install -y shellcheck
           shellcheck \
             scripts/*.sh \
+            scripts/gates/*.sh \
             scripts/integration/*.sh \
             infra/entrypoint.sh \
             infra/minio/init-buckets.sh \

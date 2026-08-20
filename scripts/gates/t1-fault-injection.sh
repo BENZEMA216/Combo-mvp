@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # VNext INV-010/016 T1-SERVICE-CI fault-injection preflight（fail-closed）。
 # 环境缺失时非零退出并打印阻塞原因；E1 矩阵一致性检查真实运行。
+# 当前没有远端 20 场景 runner/Evidence Bundle，因此永不返回 T1 Gate PASS。
 # 用法: scripts/gates/t1-fault-injection.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+FAILPOINT_CONTROLLER="${VNX_T1_FAILPOINT_CONTROLLER:-$ROOT_DIR/scripts/fault/failpoint-controller}"
 NOT_RUN=0
 
 log() { printf '[T1] %s\n' "$*"; }
@@ -20,8 +22,10 @@ log '== INV-010/016 T1 fault-injection preflight =='
 [ "${VNX_T1_DEPLOY_AUTHORIZED:-}" = 'true' ] || fail 'VNX_T1_DEPLOY_AUTHORIZED != true（部署/执行未获用户显式授权）'
 
 # 2) failpoint controller（§12.2：arm/submit/restart/replay + golden decision table）
-if [ ! -x "$ROOT_DIR/scripts/fault/failpoint-controller" ]; then
+if [ ! -x "$FAILPOINT_CONTROLLER" ]; then
   fail 'failpoint controller 未交付（scripts/fault/failpoint-controller；arm → submit → restart → replay）'
+else
+  log "failpoint controller present: $FAILPOINT_CONTROLLER"
 fi
 if [ ! -f "$ROOT_DIR/tests/vnext/golden-decision-table.yaml" ]; then
   fail 'golden decision table 未交付（tests/vnext/golden-decision-table.yaml；每个 failpoint 引用唯一 golden row）'
@@ -36,7 +40,7 @@ fi
 # 3) E1 矩阵一致性（本地真实运行：20 failpoint 分类 + 9 个重建序列，无重复副作用）
 if [ -d "$ROOT_DIR/packages/creator-agent-broker-journal" ]; then
   log 'running E1 fault-model matrix locally (real)...'
-  if ! (cd "$ROOT_DIR/packages/creator-agent-broker-journal" && npx vitest run src/fault-model.test.ts >/dev/null 2>&1); then
+  if ! (cd "$ROOT_DIR/packages/creator-agent-broker-journal" && pnpm exec vitest run src/fault-model.test.ts >/dev/null 2>&1); then
     fail 'E1 fault-model matrix 检查未通过（先修复本地矩阵再进 T1）'
   else
     log 'E1 fault-model matrix OK (13/13)'
@@ -49,4 +53,7 @@ if [ "$NOT_RUN" -eq 1 ]; then
   log '== T1 preflight: NOT_RUN（见上方阻塞项）=='
   exit 2
 fi
-log '== T1 preflight: READY（Job 步骤见 docs/测试/vnext-inv010-016-t1-prep-20260818.md §4）=='
+log 'PRECHECK_READY: local matrix and prerequisites satisfied'
+log 'NOT_RUN: 20 个远端 failpoint 场景与逐项 Evidence Bundle 生成/验证尚未实现'
+log '== T1 Gate: NOT_RUN =='
+exit 2

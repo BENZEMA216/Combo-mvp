@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# VNext E5 Real Isolation — preflight（机制骨架，fail-closed）。
-# 环境缺失时非零退出并打印阻塞原因；绝不伪造通过。
+# VNext E5 Real Isolation — prerequisite preflight（机制骨架，fail-closed）。
+# 本脚本不启动隔离 VM，也不执行 canary，因此永不返回 Gate PASS。
 # 用法: scripts/gates/e5-isolation-canary.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CANARY_DIR="${VNX_E5_CANARY_DIR:-$ROOT_DIR/scripts/integration/isolation-canary}"
 NOT_RUN=0
 
 log() { printf '[E5] %s\n' "$*"; }
@@ -14,9 +15,13 @@ log '== E5 Real Isolation preflight =='
 
 # 1) 隔离运行时：Apple container 或 Lima（本机检查）
 ISOLATION_RUNTIME=''
-if command -v lima >/dev/null 2>&1; then ISOLATION_RUNTIME='lima'; fi
+if command -v container >/dev/null 2>&1; then
+  ISOLATION_RUNTIME='container'
+elif command -v limactl >/dev/null 2>&1; then
+  ISOLATION_RUNTIME='limactl'
+fi
 if [ -z "$ISOLATION_RUNTIME" ]; then
-  fail 'Apple container / lima 均不可用（真实隔离运行时缺失）'
+  fail 'Apple container / limactl 均不可用（真实隔离运行时缺失）'
 else
   log "isolation runtime: $ISOLATION_RUNTIME"
 fi
@@ -29,9 +34,8 @@ else
 fi
 
 # 3) canary 清单（syscall/network canary 二进制随镜像交付）
-if [ ! -f "$ROOT_DIR/scripts/integration/isolation-canary/syscall-canary" ] \
-    && [ ! -f "$ROOT_DIR/scripts/integration/isolation-canary/network-canary" ]; then
-  fail '隔离 canary 二进制缺失（scripts/integration/isolation-canary/ 需随镜像构建交付）'
+if [ ! -x "$CANARY_DIR/syscall-canary" ] || [ ! -x "$CANARY_DIR/network-canary" ]; then
+  fail "两个隔离 canary 都必须存在且可执行: $CANARY_DIR"
 fi
 
 # 4) 网络策略断言材料（model-proxy-only；hostMounts forbidden）
@@ -43,4 +47,6 @@ if [ "$NOT_RUN" -eq 1 ]; then
   log '== E5 preflight: NOT_RUN（见上方阻塞项）=='
   exit 2
 fi
-log '== E5 preflight: READY（真机执行步骤见 runbook §3：syscall/network/cross-conversation canary）=='
+log 'PRECHECK_READY: prerequisites satisfied; isolation VM and canaries were not executed'
+log '== E5 Gate: NOT_RUN =='
+exit 2

@@ -11,14 +11,22 @@ const YAML = protocolRequire('yaml');
 const rootUrl = new URL('../', import.meta.url);
 
 test('the golden decision table freezes all 20 formal failpoints with unique golden rows', async () => {
-  const source = await readFile(new URL('tests/vnext/golden-decision-table.yaml', rootUrl), 'utf8');
+  const [source, testPlanSource] = await Promise.all([
+    readFile(new URL('tests/vnext/golden-decision-table.yaml', rootUrl), 'utf8'),
+    readFile(new URL('docs/vnext/creator-hosted-agent-vnext-test-plan.md', rootUrl), 'utf8'),
+  ]);
   const table = YAML.parse(source);
   assert.equal(table.protocol, 'combo.vnext-golden-decision-table/1');
   assert.equal(table.schemaVersion, 1);
   const rows = table.rows;
   assert.equal(rows.length, 20);
   const ids = rows.map((row) => row.id);
-  assert.deepEqual(new Set(ids).size, 20);
+  const expectedIds = Array.from(
+    { length: 20 },
+    (_, index) => 'FLT-' + String(index + 1).padStart(3, '0'),
+  );
+  assert.deepEqual(ids, expectedIds);
+  assert.equal(new Set(ids).size, 20);
   for (const row of rows) {
     assert.match(row.id, /^FLT-\d{3}$/u, `bad id ${row.id}`);
     assert.ok(row.kill && row.expected && row.inv, `row ${row.id} incomplete`);
@@ -33,4 +41,18 @@ test('the golden decision table freezes all 20 formal failpoints with unique gol
   for (const row of rows) {
     assert.match(row.inv, /^INV-\d{3}(\/INV-\d{3})*$/u, `row ${row.id} bad invariant list`);
   }
+
+  const formalSection = testPlanSource.match(
+    /### 12\.2 正式 Failpoint\n\n([\s\S]*?)\n### 12\.3 Fault Harness/u,
+  );
+  assert.ok(formalSection, 'frozen test plan must contain the formal failpoint table');
+  const planRows = Array.from(
+    formalSection[1].matchAll(/^\| `(FLT-\d{3})` \| ([^|]+) \| ([^|]+) \|$/gmu),
+    (match) => ({ id: match[1], kill: match[2].trim(), expected: match[3].trim() }),
+  );
+  assert.deepEqual(
+    rows.map(({ id, kill, expected }) => ({ id, kill, expected })),
+    planRows,
+    'golden rows must match frozen test plan section 12.2 exactly',
+  );
 });

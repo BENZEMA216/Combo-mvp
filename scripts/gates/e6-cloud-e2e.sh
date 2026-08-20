@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # VNext E6 Real Cloud E2E — Golden Path 编排骨架（fail-closed）。
 # 仅在环境齐备且获得部署授权后执行；任何前置缺失即 NOT_RUN 退出。
+# 当前没有真实 runner 或 Evidence Bundle 生成器，因此即使前置齐备也必须 NOT_RUN。
 # 用法: scripts/gates/e6-cloud-e2e.sh [golden-path|two-creator|version-update|remote-fault|gateway-rollout|nat-sleep-wake]
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-EVIDENCE_DIR="${VNX_E6_EVIDENCE_DIR:-$ROOT_DIR/evidence/e6}"
 NOT_RUN=0
 
 log() { printf '[E6] %s\n' "$*"; }
@@ -13,6 +12,14 @@ fail() { log "NOT_RUN: $*"; NOT_RUN=1; }
 
 SCENARIO="${1:-golden-path}"
 log "== E6 Real Cloud E2E ($SCENARIO) =="
+
+case "$SCENARIO" in
+  golden-path|two-creator|version-update|remote-fault|gateway-rollout|nat-sleep-wake) ;;
+  *)
+    log "未知场景: $SCENARIO" >&2
+    exit 1
+    ;;
+esac
 
 # 环境与授权门（全部强制）
 [ -n "${VNX_E6_API_BASE_URL:-}" ] || fail 'VNX_E6_API_BASE_URL 未设置（Test 云 API 端点）'
@@ -26,9 +33,6 @@ if [ "$NOT_RUN" -eq 1 ]; then
   exit 2
 fi
 
-mkdir -p "$EVIDENCE_DIR/junit" "$EVIDENCE_DIR/digests"
-log "evidence dir: $EVIDENCE_DIR"
-
 # Golden Path 断言钩子（环境就绪后按 runbook §4 逐项实现）：
 # - Mac 无公网 listener（lsof -iTCP -sTCP:LISTEN 白名单比对）
 # - WSS outbound 会话建立（heartbeat/lease 链）
@@ -39,14 +43,7 @@ log "evidence dir: $EVIDENCE_DIR"
 # Remote Fault 场景：20 个 failpoint 逐项真机执行（FLT-001..020，§12.2 golden decision table），
 # 每次记录 Cloud PG / Worker SQLite / Host counter / Consumer final count / 恢复时间。
 
-case "$SCENARIO" in
-  golden-path|two-creator|version-update|remote-fault|gateway-rollout|nat-sleep-wake)
-    log "scenario $SCENARIO 已选择；环境就绪后在此实现断言钩子（当前为机制骨架，未执行真机步骤）"
-    ;;
-  *)
-    log "未知场景: $SCENARIO" >&2
-    exit 1
-    ;;
-esac
-
-log '== E6 skeleton ready（真机步骤未执行；NOT_RUN 状态不变）=='
+log "scenario $SCENARIO prerequisites ready"
+log 'NOT_RUN: cloud runner 与完整 Evidence Bundle 生成/验证尚未实现；未执行任何真机步骤'
+log '== E6 Gate: NOT_RUN =='
+exit 2

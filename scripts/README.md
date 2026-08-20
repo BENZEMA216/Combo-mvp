@@ -50,5 +50,8 @@ Agent Gateway 目前是严格 Test-only：`combo-env` 必须预置三个 VNext �
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
 - `run-vnext-g0.mjs`：唯一的 VNext G0 命令编排器。它以固定 base seed、100 个唯一 seed 和每个 property model 合计 100,000 runs 执行 Protocol，并补齐 Snapshot、Gateway 与 Runtime 的全部 T0 SCH-001..010 登记文件；两个真实 PostgreSQL 文件明确留给 T1。
+- `source-integrity.test.mjs`：扫描 Git tracked 的源码与配置文件，禁止真实 NUL 字节把文本源码降级为 binary diff。
+- `vnext-gate-honesty.test.mjs`：进程级验证 E4-E7/T1 骨架 fail-closed、空 evidence 不落盘，并锁定 CI 的 Gate ShellCheck 覆盖。
+- `vnext-golden-decision-table.test.mjs`：把 FLT-001..020 的 kill/expected 文本逐行绑定到冻结测试方案 §12.2，禁止仅靠“20 行存在”冒充语义一致。
 - `vnext-t0-evidence.mjs`：为 reusable `vnext-t0.yml` 创建、严格验证和输出脱敏摘要。canonical evidence 绑定测试前后clean的tested/tree SHA、top-level caller与实际reusable job workflow身份、runner/toolchain、source tuple和五份exact file-set、非空零skip JUnit；PR与分支build只能是 `ADVISORY_ONLY`，仅GitHub标记为protected的main push可以是 `FORMAL`。command是否执行与真实exit code独立保存，source-integrity失败或未执行记`BLOCKED`，不会伪造成命令`FAIL`。只有独立validation step确认的静态目录会上传，随后下载同一immutable artifact再复验；命令失败时删除可能含诊断正文的JUnit并只记录`NOT_PRODUCED`，artifact 中不保存raw log、Prompt、答案或凭据。
 - `scripts/integration/`：CI 集成测试脚本。
