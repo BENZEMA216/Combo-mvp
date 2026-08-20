@@ -155,7 +155,10 @@ test('PR and Release callers share the exact reusable T0 workflow with honest di
 });
 
 test('PR checks run the isolated R3 PostgreSQL vertical against the exact merge source', async () => {
-  const source = await text('.github/workflows/pr-ci.yml');
+  const [source, r3GateSource] = await Promise.all([
+    text('.github/workflows/pr-ci.yml'),
+    text('scripts/integration/vnext-r3-ephemeral-pg.mjs'),
+  ]);
   const workflow = YAML.parse(source);
   const job = workflow.jobs['vnext-r3-pg'];
 
@@ -193,6 +196,10 @@ test('PR checks run the isolated R3 PostgreSQL vertical against the exact merge 
 
   const gate = job.steps.find(({ name }) => name === 'R3 isolated PostgreSQL product vertical');
   assert.equal(gate.run, 'pnpm vnext:test:r3:pg');
+  assert.match(r3GateSource, /run\('bash', \['scripts\/integration\/db-migrate\.sh'\]/u);
+  assert.match(r3GateSource, /MIGRATION_RUNS: '2'/u);
+  assert.match(r3GateSource, /run\('pnpm', \['-F', '@cb\/shared', 'build'\]/u);
+  assert.match(r3GateSource, /run\('pnpm', \['-F', '@cb\/creator-agent-protocol', 'build'\]/u);
 });
 
 test('the workflow contract entrypoint includes T0 suite and evidence tests', async () => {

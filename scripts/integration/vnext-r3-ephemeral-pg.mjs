@@ -258,13 +258,23 @@ try {
     CREATOR_AGENT_R3_PG_CLUSTER_NAME: CLUSTER_NAME,
     CREATOR_AGENT_R3_PG_ISOLATED: '1',
     EXPECTED_MIGRATION_HEAD: MIGRATION_HEAD,
+    POSTGRES_API_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
+    POSTGRES_WORKER_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
+    POSTGRES_RUNTIME_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
     POSTGRES_AGENT_API_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
     POSTGRES_AGENT_BROKER_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
+    POSTGRES_AGENT_CONSUMER_API_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
     POSTGRES_AGENT_RECONCILER_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
   };
 
-  await run('pnpm', ['-F', '@cb/db', 'migrate'], {
+  await run('bash', ['scripts/integration/db-migrate.sh'], {
     env: { ...isolatedEnvironment, MIGRATION_RUNS: '2' },
+  });
+  await run('pnpm', ['-F', '@cb/shared', 'build'], {
+    env: isolatedEnvironment,
+  });
+  await run('pnpm', ['-F', '@cb/creator-agent-protocol', 'build'], {
+    env: isolatedEnvironment,
   });
   await run(
     'pnpm',
