@@ -50,6 +50,7 @@ Agent Gateway 目前是严格 Test-only：`combo-env` 必须预置三个 VNext �
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
 - `run-vnext-g0.mjs`：唯一的 VNext G0 命令编排器。它以固定 base seed、100 个唯一 seed 和每个 property model 合计 100,000 runs 执行 Protocol，并补齐 Snapshot、Gateway 与 Runtime 的全部 T0 SCH-001..010 登记文件；两个真实 PostgreSQL 文件明确留给 T1。
+- `integration/vnext-r3-ephemeral-pg.mjs`：R3 本地 PostgreSQL 验收器。它创建只监听临时 Unix socket 的一次性 PostgreSQL 集群，在隔离集群内应用完整迁移，验证 0030 权限/validator、Session replacement 后 immutable execution authority、Runtime↔Gateway 两个真实 mounted-keyring adapter 的 USER/ASSISTANT 双向 roundtrip，以及 Gateway prepare/start lifecycle 实库链；最后执行 `integration/vnext-r3-worker-host.pg.test.ts`，把真实 Runtime send/repo、Gateway lifecycle authority/projector、Worker Broker/SQLite command pump 和 deterministic Host 组合为 send、prepare、start、Host success、Cloud SUCCEEDED、Runtime ASSISTANT transcript 的单次纵向链，并验证 exact replay 不会第二次 dispatch Host。验收器在执行测试前通过 `@cb/scripts typecheck:test` 使用 `tsconfig.integration.json` 对两份跨包 TypeScript Gate 做严格语义检查；最后停止进程并删除临时数据，固定应用角色的迁移不会触碰共享开发数据库。跨 adapter 测试只存在于 `integration/vnext-r3-crypto-boundary.test.ts` 与该 Worker/Host 纵向测试，不会在产品包之间引入运行时依赖。
 - `source-integrity.test.mjs`：扫描 Git tracked 的源码与配置文件，禁止真实 NUL 字节把文本源码降级为 binary diff。
 - `vnext-gate-honesty.test.mjs`：进程级验证 E4-E7/T1 骨架 fail-closed、空 evidence 不落盘，并锁定 CI 的 Gate ShellCheck 覆盖。
 - `vnext-golden-decision-table.test.mjs`：把 FLT-001..020 的 kill/expected 文本逐行绑定到冻结测试方案 §12.2，禁止仅靠“20 行存在”冒充语义一致。

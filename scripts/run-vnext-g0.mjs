@@ -58,6 +58,7 @@ export const VNEXT_G0_SUITE = Object.freeze({
         'src/__tests__/broker-contract.property.test.ts',
         'src/__tests__/capability.property.test.ts',
         'src/__tests__/host-interrupt-terminal.test.ts',
+        'src/__tests__/host-turn-terminal.test.ts',
       ]),
       registeredTestFiles: Object.freeze([
         'packages/creator-agent-protocol/src/__tests__/artifacts.test.ts',

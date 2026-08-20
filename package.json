@@ -22,6 +22,7 @@
     "vnext:test:g0": "node scripts/run-vnext-g0.mjs",
     "vnext:test:fast": "pnpm vnext:test:g0",
     "vnext:test:property": "pnpm -F @cb/creator-agent-protocol test:property",
+    "vnext:test:r3:pg": "node scripts/integration/vnext-r3-ephemeral-pg.mjs",
     "test:fast": "pnpm -r --workspace-concurrency=1 --filter '!@cb/scripts' run test && pnpm test:workflow-contracts",
     "test:local": "pnpm -r --workspace-concurrency=1 --filter '!@cb/scripts' run test && pnpm test:workflow-contracts",
     "test": "pnpm -r --workspace-concurrency=1 run test && node --test scripts/verify-preview-release.test.mjs scripts/environment-boundary-contract.test.mjs && python3 .agents/skills/github-collaboration/scripts/test_worktree_guard.py",
