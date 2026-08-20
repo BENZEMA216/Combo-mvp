@@ -256,11 +256,11 @@ jobs:
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
           CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
           CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
-          CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'
+          CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'
         run: |
           set -euo pipefail
           pnpm --dir db exec vitest run \
-            __tests__/creator-agent-consumer-message-accept.pg.test.ts
+            __tests__/creator-agent-consumer-message-v1-decommission.pg.test.ts
           pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
           pnpm --dir apps/runtime exec vitest run \
             src/modules/creator-agent-conversation/repo.pg.test.ts

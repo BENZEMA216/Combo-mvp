@@ -166,9 +166,13 @@ jobs:
           [[ -x "$pg_bindir/initdb" ]]
           [[ -x "$pg_bindir/postgres" ]]
           [[ -x "$pg_bindir/pg_isready" ]]
+          [[ -x "$pg_bindir/createdb" ]]
+          [[ -x "$pg_bindir/dropdb" ]]
           printf 'INITDB_BIN=%s/initdb\n' "$pg_bindir" >> "$GITHUB_ENV"
           printf 'POSTGRES_BIN=%s/postgres\n' "$pg_bindir" >> "$GITHUB_ENV"
           printf 'PG_ISREADY_BIN=%s/pg_isready\n' "$pg_bindir" >> "$GITHUB_ENV"
+          printf 'CREATEDB_BIN=%s/createdb\n' "$pg_bindir" >> "$GITHUB_ENV"
+          printf 'DROPDB_BIN=%s/dropdb\n' "$pg_bindir" >> "$GITHUB_ENV"
 
       - name: R3 isolated PostgreSQL product vertical
         run: pnpm vnext:test:r3:pg
@@ -251,11 +255,11 @@ jobs:
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
           CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
           CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
-          CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'
+          CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'
         run: |
           set -euo pipefail
           pnpm --dir db exec vitest run \
-            __tests__/creator-agent-consumer-message-accept.pg.test.ts
+            __tests__/creator-agent-consumer-message-v1-decommission.pg.test.ts
           pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
           pnpm --dir apps/runtime exec vitest run \
             src/modules/creator-agent-conversation/repo.pg.test.ts

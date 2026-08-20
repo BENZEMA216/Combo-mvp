@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   listMigrations,
+  migrationFilesForRun,
   migrationHead,
   parseMigrationRuns,
   planMigrations,
@@ -32,6 +33,28 @@ describe('migration runner contract', () => {
     for (const invalid of ['', '0', '02', '3', 'true']) {
       expect(() => parseMigrationRuns(invalid)).toThrow(/must be exactly 1 or 2/);
     }
+  });
+
+  it('allows an exact historical prefix only behind the disposable-test double gate', () => {
+    const target = '0022_creator_agent_consumer_message_accept.sql';
+    const prefix = migrationFilesForRun(migrations, '1', '1');
+    expect(migrationHead(prefix)).toBe(target);
+    expect(prefix).toEqual(migrations.slice(0, migrations.indexOf(target) + 1));
+    expect(migrationFilesForRun(migrations, undefined, undefined)).toEqual(migrations);
+    expect(migrationFilesForRun(migrations, undefined, '1')).toEqual(migrations);
+    expect(planMigrations(migrations, prefix, migrationHead(migrations)).pending[0]).toBe(
+      '0023_creator_agent_event_integrity.sql',
+    );
+
+    expect(() => migrationFilesForRun(migrations, '1', undefined)).toThrow(
+      /requires CREATOR_AGENT_R3_PG_ISOLATED=1/,
+    );
+    expect(() => migrationFilesForRun(migrations, 'true', '1')).toThrow(
+      /must be exactly 1 when set/,
+    );
+    expect(() => migrationFilesForRun(migrations.slice(0, 22), '1', '1')).toThrow(
+      /missing fixed historical migration/,
+    );
   });
 
   it('rejects an unknown applied migration from the legacy chain', () => {

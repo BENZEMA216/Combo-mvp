@@ -147,6 +147,16 @@ pgDescribe('0022 Consumer message full-accept real PostgreSQL authority', () => 
 
   beforeAll(async () => {
     await owner.connect();
+    const migrationHead = await owner.query<{ filename: string }>(
+      `SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1`,
+    );
+    if (migrationHead.rows[0]?.filename !== '0022_creator_agent_consumer_message_accept.sql') {
+      throw new Error(
+        'CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST requires exact migration head ' +
+          '0022_creator_agent_consumer_message_accept.sql; final releases must run the ' +
+          '0030 legacy-v1 decommission gate instead',
+      );
+    }
     const users = await owner.query<{ id: string; account: string }>(
       `INSERT INTO users (account)
        VALUES ($1), ($2), ($3)

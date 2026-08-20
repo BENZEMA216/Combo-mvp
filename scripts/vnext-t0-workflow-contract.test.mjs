@@ -192,6 +192,8 @@ test('PR checks run the isolated R3 PostgreSQL vertical against the exact merge 
   assert.match(postgres.run, /INITDB_BIN=%s\/initdb/u);
   assert.match(postgres.run, /POSTGRES_BIN=%s\/postgres/u);
   assert.match(postgres.run, /PG_ISREADY_BIN=%s\/pg_isready/u);
+  assert.match(postgres.run, /CREATEDB_BIN=%s\/createdb/u);
+  assert.match(postgres.run, /DROPDB_BIN=%s\/dropdb/u);
   assert.match(postgres.run, /GITHUB_ENV/u);
 
   const gate = job.steps.find(({ name }) => name === 'R3 isolated PostgreSQL product vertical');
@@ -200,6 +202,29 @@ test('PR checks run the isolated R3 PostgreSQL vertical against the exact merge 
   assert.match(r3GateSource, /MIGRATION_RUNS: '2'/u);
   assert.match(r3GateSource, /run\('pnpm', \['-F', '@cb\/shared', 'build'\]/u);
   assert.match(r3GateSource, /run\('pnpm', \['-F', '@cb\/creator-agent-protocol', 'build'\]/u);
+  assert.match(r3GateSource, /CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST: '1'/u);
+  assert.match(r3GateSource, /MIGRATION_RUNS: '2'/u);
+  assert.match(r3GateSource, /EXPECTED_MIGRATION_HEAD: MIGRATION_HEAD/u);
+  assert.match(r3GateSource, /const legacyEnvironment = \{\s+\.\.\.isolatedEnvironment,/u);
+  assert.match(r3GateSource, /__tests__\/creator-agent-consumer-message-accept\.pg\.test\.ts/u);
+  assert.match(
+    r3GateSource,
+    /__tests__\/creator-agent-consumer-message-v1-decommission\.pg\.test\.ts/u,
+  );
+  const historicalOrder = [
+    r3GateSource.indexOf("postgresSiblingExecutable('CREATEDB_BIN', 'createdb')"),
+    r3GateSource.indexOf("await run('pnpm', ['-F', '@cb/db', 'migrate']"),
+    r3GateSource.indexOf('__tests__/creator-agent-consumer-message-accept.pg.test.ts'),
+    r3GateSource.indexOf("postgresSiblingExecutable('DROPDB_BIN', 'dropdb')"),
+    r3GateSource.indexOf("await run('bash', ['scripts/integration/db-migrate.sh']"),
+    r3GateSource.indexOf('__tests__/creator-agent-consumer-message-v1-decommission.pg.test.ts'),
+  ];
+  assert.ok(historicalOrder.every((index) => index >= 0));
+  assert.deepEqual(
+    [...historicalOrder].sort((left, right) => left - right),
+    historicalOrder,
+  );
+  assert.match(r3GateSource, /'--force',[\s\S]+LEGACY_DATABASE_NAME/u);
 });
 
 test('the workflow contract entrypoint includes T0 suite and evidence tests', async () => {

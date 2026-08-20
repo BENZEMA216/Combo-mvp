@@ -247,9 +247,14 @@ test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLi
     );
     assert.match(source, /CREATOR_AGENT_CONVERSATION_PG_TEST: '1'/);
     assert.equal(
-      (source.match(/CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/g) ?? []).length,
+      (source.match(/CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'/g) ?? []).length,
       1,
-      `${workflow} must enable the real 0022 Consumer accept suite exactly once`,
+      `${workflow} must enable the final 0030 Consumer v1 decommission suite exactly once`,
+    );
+    assert.doesNotMatch(
+      source,
+      /CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/,
+      `${workflow} must not run the historical 0022 accept authority on the final schema`,
     );
     const consumerAcceptStep = capture(
       source,
@@ -261,10 +266,10 @@ test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLi
       consumerAcceptStep,
       /POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password/,
     );
-    assert.match(consumerAcceptStep, /CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/);
+    assert.match(consumerAcceptStep, /CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'/);
     assert.match(
       consumerAcceptStep,
-      /pnpm --dir db exec vitest run \\\n+\s+__tests__\/creator-agent-consumer-message-accept\.pg\.test\.ts/,
+      /pnpm --dir db exec vitest run \\\n+\s+__tests__\/creator-agent-consumer-message-v1-decommission\.pg\.test\.ts/,
     );
     assert.match(source, /Creator Agent Gateway PostgreSQL authority gate/);
     assert.match(source, /CREATOR_AGENT_GATEWAY_PG_TEST: '1'/);
@@ -366,6 +371,15 @@ test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLi
       `${workflow} must run the vertical gate before the role-mutating upgrade gate`,
     );
   }
+
+  const r3Gate = text('scripts/integration/vnext-r3-ephemeral-pg.mjs');
+  assert.equal(
+    (r3Gate.match(/CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/g) ?? []).length,
+    1,
+    'the isolated PR R3 gate must run the historical 0022 PostgreSQL suite exactly once',
+  );
+  assert.match(r3Gate, /CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST: '1'/);
+  assert.match(r3Gate, /__tests__\/creator-agent-consumer-message-accept\.pg\.test\.ts/);
 });
 
 test('release CI builds and binds an independent fourth Agent Gateway image', () => {

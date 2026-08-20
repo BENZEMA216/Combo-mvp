@@ -9,6 +9,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 const CLUSTER_NAME = 'combo-vnext-r3-ephemeral';
 const MIGRATION_HEAD = '0030_creator_agent_runtime_product_wiring.sql';
+const LEGACY_DATABASE_NAME = 'combo_vnext_legacy_0022';
 const ADMIN_ROLE = 'combo_r3_test_admin';
 const EPHEMERAL_ROLE_PASSWORD = 'combo-r3-ephemeral-role-password';
 const POSTGRES_PORT = '5432';
@@ -33,6 +34,13 @@ let activeCommandProcess;
 function executable(envName, fallback) {
   const configured = process.env[envName]?.trim();
   return configured && configured.length > 0 ? configured : fallback;
+}
+
+function postgresSiblingExecutable(envName, filename) {
+  const configured = process.env[envName]?.trim();
+  if (configured && configured.length > 0) return configured;
+  const postgres = process.env.POSTGRES_BIN?.trim();
+  return postgres && postgres.length > 0 ? join(dirname(postgres), filename) : filename;
 }
 
 function appendPostgresLog(chunk) {
@@ -267,6 +275,61 @@ try {
     POSTGRES_AGENT_RECONCILER_PASSWORD: EPHEMERAL_ROLE_PASSWORD,
   };
 
+  await run(
+    postgresSiblingExecutable('CREATEDB_BIN', 'createdb'),
+    [
+      '--host',
+      socketDirectory,
+      '--port',
+      POSTGRES_PORT,
+      '--username',
+      ADMIN_ROLE,
+      LEGACY_DATABASE_NAME,
+    ],
+    { env: isolatedEnvironment },
+  );
+  const legacyDatabaseUrl =
+    `postgresql://${ADMIN_ROLE}@localhost:${POSTGRES_PORT}/${LEGACY_DATABASE_NAME}` +
+    `?host=${encodedSocket}&application_name=combo_vnext_legacy_0022_gate`;
+  const legacyEnvironment = {
+    ...isolatedEnvironment,
+    DATABASE_URL: legacyDatabaseUrl,
+    CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST: '1',
+    MIGRATION_RUNS: '2',
+  };
+  await run('pnpm', ['-F', '@cb/db', 'migrate'], { env: legacyEnvironment });
+  await run(
+    'pnpm',
+    [
+      '-F',
+      '@cb/db',
+      'exec',
+      'vitest',
+      'run',
+      '__tests__/creator-agent-consumer-message-accept.pg.test.ts',
+    ],
+    {
+      env: {
+        ...legacyEnvironment,
+        CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1',
+      },
+    },
+  );
+  await run(
+    postgresSiblingExecutable('DROPDB_BIN', 'dropdb'),
+    [
+      '--host',
+      socketDirectory,
+      '--port',
+      POSTGRES_PORT,
+      '--username',
+      ADMIN_ROLE,
+      '--force',
+      LEGACY_DATABASE_NAME,
+    ],
+    { env: isolatedEnvironment },
+  );
+
   await run('bash', ['scripts/integration/db-migrate.sh'], {
     env: { ...isolatedEnvironment, MIGRATION_RUNS: '2' },
   });
@@ -291,6 +354,23 @@ try {
       env: {
         ...isolatedEnvironment,
         CREATOR_AGENT_RUNTIME_PRODUCT_PG_TEST: '1',
+      },
+    },
+  );
+  await run(
+    'pnpm',
+    [
+      '-F',
+      '@cb/db',
+      'exec',
+      'vitest',
+      'run',
+      '__tests__/creator-agent-consumer-message-v1-decommission.pg.test.ts',
+    ],
+    {
+      env: {
+        ...isolatedEnvironment,
+        CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1',
       },
     },
   );
