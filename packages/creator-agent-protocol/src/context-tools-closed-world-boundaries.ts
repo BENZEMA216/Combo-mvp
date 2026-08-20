@@ -88,12 +88,8 @@ export const ContextToolsClosedWorldBoundaryCorpusSchema = z
       .strict(),
     checkedArtifactDigests: z
       .object({
-        contractSchemas: z.literal(
-          'sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434',
-        ),
-        openApi: z.literal(
-          'sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db',
-        ),
+        contractSchemas: Sha256DigestSchema,
+        openApi: Sha256DigestSchema,
       })
       .strict(),
     baseFixtures: z.tuple([
@@ -101,18 +97,14 @@ export const ContextToolsClosedWorldBoundaryCorpusSchema = z
         .object({
           owner: z.literal('AgentVersionManifestSchema'),
           path: z.literal('agent-version-manifest.v1.json'),
-          digest: z.literal(
-            'sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4',
-          ),
+          digest: Sha256DigestSchema,
         })
         .strict(),
       z
         .object({
           owner: z.literal('SandboxSpecSchema'),
           path: z.literal('sandbox-spec.v1.json'),
-          digest: z.literal(
-            'sha256:e4b9749843a479a2669950a6c33cd9be4f90ddea8dd00c2436bf7dbdc6fb9a0a',
-          ),
+          digest: Sha256DigestSchema,
         })
         .strict(),
     ]),

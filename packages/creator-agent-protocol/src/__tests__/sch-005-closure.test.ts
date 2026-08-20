@@ -16,6 +16,7 @@ import {
   type PublicHttpRequestRootName,
 } from '../http.js';
 import {
+  MODEL_ID_PATTERN_SOURCE,
   UNICODE_SCALAR_NO_CONTROL_OPTIONAL_PATTERN_SOURCE,
   UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE,
   UTF8_TEXT_OPTIONAL_PORTABLE_PATTERN_SOURCE,
@@ -99,6 +100,7 @@ function markerPointers(
 }
 
 function lookupPointer(document: unknown, pointer: string): Record<string, unknown> {
+  const root = document;
   let current = document;
   for (const encoded of pointer.slice(1).split('/')) {
     const segment = encoded.replaceAll('~1', '/').replaceAll('~0', '~');
@@ -110,7 +112,21 @@ function lookupPointer(document: unknown, pointer: string): Record<string, unkno
   if (current === null || typeof current !== 'object') {
     throw new Error(`SCH005_POINTER_NOT_OBJECT:${pointer}`);
   }
-  return current as Record<string, unknown>;
+  const record = current as Record<string, unknown>;
+  const reference = record.$ref;
+  if (typeof reference !== 'string' || !reference.startsWith('#/')) return record;
+  const referencedPointer = reference.startsWith('#/components/')
+    ? `/${reference.slice(2)}`
+    : `/${[
+        ...pointer
+          .slice(1)
+          .split('/')
+          .slice(0, pointer.startsWith('/components/schemas/') ? 3 : 2),
+        ...reference.slice(2).split('/'),
+      ].join('/')}`;
+  const referenced = lookupPointer(root, referencedPointer);
+  const { $ref: _reference, ...siblings } = record;
+  return { ...referenced, ...siblings };
 }
 
 function patternSources(value: unknown, output: string[] = []): string[] {
@@ -284,27 +300,27 @@ describe('SCH-005 public Unicode and sanitized request closure', () => {
     const allStringNodes = Object.entries(documents).flatMap(([artifact, document]) =>
       collectStringNodes(artifact as ArtifactName, document),
     );
-    const nodesByPointer = new Map(
-      allStringNodes.map(({ artifact, pointer, node }) => [`${artifact}:${pointer}`, node]),
-    );
     const strictUtf8Pointers = new Set(
       utf8.scalarControlParity.strictArtifactPointers.map(
         ({ artifact, pointer }) => `${artifact}:${pointer}`,
       ),
     );
     for (const pointer of actualUtf8Pointers) {
-      const node = nodesByPointer.get(pointer);
-      expect(node, pointer).toBeDefined();
+      const separator = pointer.indexOf(':');
+      const artifact = pointer.slice(0, separator) as ArtifactName;
+      const node = lookupPointer(documents[artifact], pointer.slice(separator + 1));
       const snapshotPath = pointer.endsWith(
         '/SnapshotManifest/properties/files/items/properties/path',
       );
       const snapshotMediaType = pointer.endsWith(
         '/SnapshotManifest/properties/files/items/properties/mediaType',
       );
-      if (snapshotMediaType) {
-        expect(tokenPatternIsClosed(String(node!.pattern)), pointer).toBe(true);
+      const modelId = node.pattern === MODEL_ID_PATTERN_SOURCE;
+      if (snapshotMediaType || modelId) {
+        expect(tokenPatternIsClosed(String(node.pattern)), pointer).toBe(true);
+        if (modelId) expect(node.pattern, pointer).toBe(MODEL_ID_PATTERN_SOURCE);
       } else {
-        expect(node!.pattern, pointer).toBe(
+        expect(node.pattern, pointer).toBe(
           strictUtf8Pointers.has(pointer) || snapshotPath
             ? UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE
             : UTF8_TEXT_PORTABLE_PATTERN_SOURCE,

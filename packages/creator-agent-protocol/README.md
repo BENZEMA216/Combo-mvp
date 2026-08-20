@@ -9,7 +9,7 @@
 - `schemas/contract-schemas.v1.json` 是从运行时 Zod 真源生成的 JSON Schema bundle。
 - `schemas/broker-contract.v1.json` 独立冻结 Broker handshake、registration、wire Envelope、Conversation Open authority、逻辑命令摘要、JCS canonicalization、WSS connect path/frame 上限与完整 close code/reason map；注册与握手携带它的 RFC 8785 SHA-256，但该产物自身不写入 digest 值。
 - `openapi/creator-agent-v1.openapi.json` 是 Creator 与 Consumer HTTP API 的 OpenAPI 3.1 契约。
-- `scripts/` 负责生成、校验契约产物，以及用固定 base seed和100个唯一派生 seed运行 Invocation、Conversation Ready、Conversation Open 与 Execution Capability 属性测试；每个 model 的总运行数保持100,000。
+- `scripts/` 负责生成、校验契约产物，级联刷新依赖生成产物的 corpus、fixture index 与测试注册表 digest，以及用固定 base seed和100个唯一派生 seed运行 Invocation、Conversation Ready、Conversation Open 与 Execution Capability 属性测试；每个 model 的总运行数保持100,000。
 
 ## 协议边界
 
@@ -22,6 +22,8 @@ Worker registration capability 与 Broker handshake 复用同一份 strict schem
 `protocol-compatibility.v1.json` 以两个 exact Worker profile、Gateway N-1/N 和四个显式 pair 冻结 G0 兼容矩阵。每个 Worker profile 绑定独立 handshake golden、Worker version、Codex artifact/schema 与 isolation mode；各维值即使分别被接受，只要索引 profile 未声明也必须阻断。该 corpus 和 matcher 只证明注册/握手兼容决策，不证明 Runtime、Snapshot、Host、公开 WSS 或 Deployment readiness。
 
 `requestDigest`、`contentDigest` 和 `resultDigest` 使用按租户或版本密钥计算的 domain-separated HMAC-SHA-256；Snapshot 与公开构建产物继续使用普通 SHA-256 内容寻址。这些 digest 不代替 AEAD、签名、Lease 或 Execution Capability。
+
+Model ID 由共享 `ModelIdSchema` 统一限制为 1 至 128 字符的 ASCII 路由标识，首字符只能是字母或数字，后续只允许字母、数字、点、下划线、冒号、斜杠和连字符。`RuntimePolicy.resolvedModel`、`ModelPolicy.model`、Execution Capability、Runtime durable preflight 与 0030 PostgreSQL validator 使用同一正则语义；Unicode、反斜杠、引号、前导连字符和 129 字符输入统一失败关闭。
 
 Creator/Consumer OpenAPI 中 11 个由服务端分配 ID 的路径参数统一引用 `ServerId`，其运行时与公开 Schema 都只接受 36 字符小写 UUIDv7。ADR-VNEXT-033 将 9 个公开 `Idempotency-Key` header 与 send/retry `clientMessageId` 冻结为同一 36 字符 canonical lowercase UUIDv4 约束；header 统一引用 `IdempotencyKey` component，body alias 发布等价 inline schema 与 binding extension，send/retry 还必须逐字绑定两者。Client key 不用于排序、授权或模型输入，fresh admission 不接受 legacy key，已有 bounded legacy 行只允许在 durable replay 命中后回读。Evidence reviewer signoff 和不变量注册表的 Gate 集合最多包含 9 个且不得重复；reviewer signoff 继续要求词法递增，不变量注册表继续保留仅唯一、不强制排序的既有语义。
 

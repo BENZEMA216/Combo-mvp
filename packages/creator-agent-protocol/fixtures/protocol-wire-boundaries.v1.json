@@ -3,15 +3,12 @@
   "schemaVersion": 1,
   "scope": "broker-wire-and-parsed-evidence-json-bytes-only",
   "evidenceClass": "adr-vnext-034-product-policy-and-runtime-alignment",
-  "authorities": {
-    "brokerFrameBytes": 65536,
-    "structuredEvidenceJsonBytes": 1048576
-  },
+  "authorities": { "brokerFrameBytes": 65536, "structuredEvidenceJsonBytes": 1048576 },
   "baseFixtures": [
     {
       "parser": "parseBrokerHandshake",
       "path": "broker-handshake.v1.json",
-      "digest": "sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f"
+      "digest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
     },
     {
       "parser": "parseBrokerFrame",
@@ -49,7 +46,7 @@
   ],
   "advertisedBoundary": {
     "artifact": "schemas/broker-contract.v1.json",
-    "digest": "sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253",
+    "digest": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
     "pointer": "/maxFrameBytes",
     "maximumBytes": 65536,
     "authorityKind": "adr-vnext-034-product-policy"

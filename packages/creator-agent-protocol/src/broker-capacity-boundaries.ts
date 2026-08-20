@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { RequiredUnicodeScalarNoControlStringSchema } from './primitives.js';
+import { RequiredUnicodeScalarNoControlStringSchema, Sha256DigestSchema } from './primitives.js';
 
 export const BROKER_CAPACITY_BOUNDARY_CORPUS = 'combo.broker-capacity-boundaries/1' as const;
 
@@ -60,23 +60,15 @@ export const BrokerCapacityBoundaryCorpusSchema = z
     ]),
     checkedArtifactDigests: z
       .object({
-        contractSchemas: z.literal(
-          'sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434',
-        ),
-        brokerContract: z.literal(
-          'sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253',
-        ),
-        advertisedBrokerContract: z.literal(
-          'sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8',
-        ),
+        contractSchemas: Sha256DigestSchema,
+        brokerContract: Sha256DigestSchema,
+        advertisedBrokerContract: Sha256DigestSchema,
       })
       .strict(),
     baseFixture: z
       .object({
         path: z.literal('broker-handshake.v1.json'),
-        digest: z.literal(
-          'sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f',
-        ),
+        digest: Sha256DigestSchema,
       })
       .strict(),
     runtimeOwners: z.tuple([

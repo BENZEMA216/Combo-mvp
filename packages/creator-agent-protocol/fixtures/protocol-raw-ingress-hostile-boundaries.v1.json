@@ -12,7 +12,7 @@
   "baseFixtures": [
     {
       "path": "broker-handshake.v1.json",
-      "digest": "sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f"
+      "digest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
     },
     {
       "path": "broker-invocation-prepare.v1.json",

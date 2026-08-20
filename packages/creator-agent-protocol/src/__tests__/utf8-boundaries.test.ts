@@ -28,6 +28,7 @@ import {
   SnapshotUploadCreateResponseSchema,
 } from '../http.js';
 import {
+  MODEL_ID_PATTERN_SOURCE,
   UNICODE_SCALAR_NO_CONTROL_PATTERN,
   UNICODE_SCALAR_NO_CONTROL_PATTERN_SOURCE,
   UTF8_TEXT_PORTABLE_PATTERN,
@@ -48,6 +49,11 @@ const artifactUrls = {
   openapi: new URL('../../openapi/creator-agent-v1.openapi.json', import.meta.url),
 } as const satisfies Record<CheckedArtifactName, URL>;
 const UTF8_BYTE_BOUNDARY_CANARY = 'UTF8_BYTE_BOUNDARY_CANARY_';
+const MODEL_ID_RUNTIME_OWNERS = new Set([
+  'runtime-resolved-model',
+  'model-policy-model',
+  'execution-capability-model',
+]);
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
@@ -162,6 +168,7 @@ function collectUtf8Pointers(
 }
 
 function lookupPointer(document: unknown, pointer: string): Record<string, unknown> {
+  const root = document;
   let current = document;
   for (const encoded of pointer.slice(1).split('/')) {
     const segment = encoded.replaceAll('~1', '/').replaceAll('~0', '~');
@@ -173,7 +180,20 @@ function lookupPointer(document: unknown, pointer: string): Record<string, unkno
   if (current === null || typeof current !== 'object') {
     throw new Error(`UTF8_BOUNDARY_POINTER_NOT_OBJECT:${pointer}`);
   }
-  return current as Record<string, unknown>;
+  const record = current as Record<string, unknown>;
+  const reference = record.$ref;
+  if (typeof reference !== 'string' || !reference.startsWith('#/')) return record;
+  const pointerSegments = pointer.slice(1).split('/');
+  const schemaRootSegments =
+    pointerSegments[0] === 'components' && pointerSegments[1] === 'schemas'
+      ? pointerSegments.slice(0, 3)
+      : pointerSegments.slice(0, 2);
+  const referenced = lookupPointer(
+    root,
+    `/${[...schemaRootSegments, ...reference.slice(2).split('/')].join('/')}`,
+  );
+  const { $ref: _reference, ...siblings } = record;
+  return { ...referenced, ...siblings };
 }
 
 function replacePointer(document: unknown, pointer: string, value: string): unknown {
@@ -514,6 +534,7 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
         const value =
           fixture.scalarControlParity.canaryPrefix + String.fromCharCode(...probe.codeUnits);
         const expected =
+          !MODEL_ID_RUNTIME_OWNERS.has(owner.id) &&
           probe.expected === 'accepted' &&
           !(
             strictRuntimeOwnerIds.has(owner.id) &&
@@ -535,18 +556,22 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
     const advertisedValidators = publicOwners.map(({ artifact, pointer }) => {
       const node = lookupPointer(documents[artifact], pointer);
       const strict = strictArtifactPointers.has(`${artifact}:${pointer}`);
+      const modelId = node.pattern === MODEL_ID_PATTERN_SOURCE;
       expect(node.pattern, `${artifact}:${pointer}`).toBe(
-        strict
-          ? fixture.scalarControlParity.strictPatternSource
-          : fixture.scalarControlParity.portablePatternSource,
+        modelId
+          ? MODEL_ID_PATTERN_SOURCE
+          : strict
+            ? fixture.scalarControlParity.strictPatternSource
+            : fixture.scalarControlParity.portablePatternSource,
       );
-      return { artifact, pointer, strict, validate: ajv.compile(node as AnySchema) };
+      return { artifact, pointer, strict, modelId, validate: ajv.compile(node as AnySchema) };
     });
-    for (const { artifact, pointer, strict, validate } of advertisedValidators) {
+    for (const { artifact, pointer, strict, modelId, validate } of advertisedValidators) {
       for (const probe of fixture.scalarControlParity.probes) {
         const value =
           fixture.scalarControlParity.canaryPrefix + String.fromCharCode(...probe.codeUnits);
         const expected =
+          !modelId &&
           probe.expected === 'accepted' &&
           !(strict && (probe.id === 'tab' || probe.id === 'lf' || probe.id === 'cr'));
         expect(validate(value), `${artifact}:${pointer}:${probe.id}`).toBe(expected);
@@ -595,7 +620,8 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
           const result = runtime.schema.safeParse(
             replacePointer(runtime.base, owner.instancePointer, value),
           );
-          const expected = delta <= 0;
+          const expected =
+            delta <= 0 && (!MODEL_ID_RUNTIME_OWNERS.has(owner.id) || generator === 'ascii');
           expect(result.success, `${owner.id}:${generator}:${delta}`).toBe(expected);
           if (result.success) accepted += 1;
           else rejected += 1;
@@ -604,13 +630,15 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
             if (result.success) {
               throw new Error(`UTF8_RUNTIME_OWNER_N_PLUS_ONE_ACCEPTED:${owner.id}:${generator}`);
             }
-            const targetIssue = hasRuntimeByteBoundaryIssue(
-              result.error.issues,
-              owner.instancePointer,
-              owner.maxBytes,
-            );
-            expect(targetIssue, `${owner.id}:${generator}:target-issue`).toBe(true);
-            if (targetIssue) targetIssues += 1;
+            if (delta > 0) {
+              const targetIssue = hasRuntimeByteBoundaryIssue(
+                result.error.issues,
+                owner.instancePointer,
+                owner.maxBytes,
+              );
+              expect(targetIssue, `${owner.id}:${generator}:target-issue`).toBe(true);
+              if (targetIssue) targetIssues += 1;
+            }
             const noCanary = !JSON.stringify(result.error.issues).includes(
               UTF8_BYTE_BOUNDARY_CANARY,
             );
@@ -624,10 +652,10 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
 
     expect({ outcomes, accepted, rejected, targetIssues, noCanaryChecks }).toEqual({
       outcomes: 171,
-      accepted: 114,
-      rejected: 57,
+      accepted: 102,
+      rejected: 69,
       targetIssues: 57,
-      noCanaryChecks: 57,
+      noCanaryChecks: 69,
     });
   });
 
@@ -694,9 +722,9 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
     let targetIssues = 0;
     let noCanaryChecks = 0;
     for (const owner of publicOwners) {
-      const validate = ajv.compile(
-        lookupPointer(documents[owner.artifact], owner.pointer) as AnySchema,
-      );
+      const schema = lookupPointer(documents[owner.artifact], owner.pointer);
+      const modelId = schema.pattern === MODEL_ID_PATTERN_SOURCE;
+      const validate = ajv.compile(schema as AnySchema);
       for (const generator of owner.generators) {
         for (const delta of [-1, 0, 1] as const) {
           const targetBytes = owner.maxBytes + delta;
@@ -705,7 +733,7 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
             Buffer.byteLength(value, 'utf8'),
             `${owner.artifact}:${owner.pointer}:${generator}:${delta}:bytes`,
           ).toBe(targetBytes);
-          const expected = delta <= 0;
+          const expected = delta <= 0 && (!modelId || generator === 'ascii');
           const result = validate(value);
           expect(
             result,
@@ -714,7 +742,7 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
           if (result) accepted += 1;
           else rejected += 1;
 
-          if (!expected) {
+          if (!expected && delta > 0) {
             const targetIssue =
               validate.errors?.some(
                 ({ keyword, instancePath }) =>
@@ -725,6 +753,8 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
               `${owner.artifact}:${owner.pointer}:${generator}:target-issue`,
             ).toBe(true);
             if (targetIssue) targetIssues += 1;
+          }
+          if (!expected) {
             const noCanary = !JSON.stringify(validate.errors).includes(UTF8_BYTE_BOUNDARY_CANARY);
             expect(noCanary, `${owner.artifact}:${owner.pointer}:${generator}:no-canary`).toBe(
               true,
@@ -738,10 +768,10 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
 
     expect({ outcomes, accepted, rejected, targetIssues, noCanaryChecks }).toEqual({
       outcomes: 423,
-      accepted: 282,
-      rejected: 141,
+      accepted: 242,
+      rejected: 181,
       targetIssues: 141,
-      noCanaryChecks: 141,
+      noCanaryChecks: 181,
     });
   });
 
@@ -874,7 +904,9 @@ describe('digest-bound public UTF-8 byte boundaries', () => {
     });
     for (const boundary of fixture.boundaries) {
       const pointer = boundary.artifactPointers.find(
-        ({ artifact }) => artifact === 'contract-schemas',
+        ({ artifact, pointer: candidate }) =>
+          artifact === 'contract-schemas' &&
+          lookupPointer(contractSchemas, candidate).pattern !== MODEL_ID_PATTERN_SOURCE,
       );
       if (pointer === undefined) throw new Error('UTF8_CONTRACT_SCHEMA_POINTER_MISSING');
       const node = lookupPointer(contractSchemas, pointer.pointer);

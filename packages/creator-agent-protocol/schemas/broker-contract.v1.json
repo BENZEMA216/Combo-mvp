@@ -836,7 +836,7 @@
                               "type": "string",
                               "minLength": 1,
                               "maxLength": 128,
-                              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
                               "description": "UTF-8 text with a maximum of 128 bytes",
                               "x-combo-maxUtf8Bytes": 128
                             },

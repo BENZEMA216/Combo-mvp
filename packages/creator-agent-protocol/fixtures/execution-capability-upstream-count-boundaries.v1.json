@@ -17,7 +17,7 @@
     "additiveRegistryCaseId": "SCH-004"
   },
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434"
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b"
   },
   "baseFixture": {
     "path": "broker-invocation-prepare.v1.json",
@@ -63,10 +63,7 @@
       "canonicalRecordDigest": "sha256:74a7048591d62084255a0afdcfb9de5a6b65f3524a5acd4358a299b5b52339c0",
       "schemaExpected": "accepted",
       "sqliteExpected": "accepted",
-      "decisionExpected": {
-        "action": "DISPATCH_ONCE",
-        "nextProviderUpstreamRequestCount": 1
-      }
+      "decisionExpected": { "action": "DISPATCH_ONCE", "nextProviderUpstreamRequestCount": 1 }
     },
     {
       "id": "dispatched-one",
@@ -87,10 +84,7 @@
       "canonicalRecordDigest": "sha256:a6b8008128533f55a4c729e8481073736fca0fa44d6bc12d2e855f48a03e73ab",
       "schemaExpected": "rejected",
       "sqliteExpected": "rejected",
-      "decisionExpected": {
-        "action": "SECURITY_BLOCK",
-        "code": "CAPABILITY_LEDGER_INVALID"
-      }
+      "decisionExpected": { "action": "SECURITY_BLOCK", "code": "CAPABILITY_LEDGER_INVALID" }
     }
   ]
 }

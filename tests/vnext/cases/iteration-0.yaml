@@ -312,7 +312,7 @@ cases:
       testFiles: []
     releaseTuple: *id013
     fixtureDigests:
-      - sha256:8a487268959e400a13fd28fa61372f05a7fb73f7ed2c6802ffa645426adef383
+      - sha256:440dc50139245c740b6b93da8e688a063205ad262bc0b7de4fa01173e994d660
   - id: BRK-006
     title: Only current connection epoch owns an installation
     level: E3
@@ -1038,7 +1038,7 @@ cases:
       - creator-agent-protocol@0.1.0
     fixtureDigests:
       - sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4
-      - sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f
+      - sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4
       - sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4
       - sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889
       - sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de
@@ -1163,21 +1163,21 @@ cases:
       - creator-agent-protocol@0.1.0
       - creator-agent-snapshot
     fixtureDigests:
-      - sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb
-      - sha256:bc851f816f82d14e5de6d3973f4d8dffa3f6181751fd27d9c293bcebaea91e6d
-      - sha256:185e846169079fb6e2c993c6ad419142d07a8ebbd1b576478b5482f5cd1202c8
+      - sha256:420e3afd8b8307fa56fad257987012f3fec33071104dad9667bdced84385ee40
+      - sha256:7f3d291d5c96d8484f7535d36f652f07adcae84175d8802da18b76f56d97742e
+      - sha256:3ca02f495a45c2d8a7bbeebb452466ca9fa3763699146c67725fa8802a628810
       - sha256:b6cd84315dcae7f3ed7f0aef760dff04fad0f78f8ef759706e78d0457406825a
-      - sha256:58db022273834dacacf5338772fe5bd84cdbdb95caad235f7e2e80038d37b93e
-      - sha256:710bd029ca4e28d77877f191adf757671abee8faf67b9bc973415c08c7f1f862
-      - sha256:45535d70dfcccdd70fb0b9684ec7b1c97b97566a8acd5127361bf55e9076fbf2
-      - sha256:a7ee43f2ad816087aa7bb808996bb20316018eb8198ade451b0e62cd1107531f
-      - sha256:1f1864bbd18e701c14ae56e6ee7d2f81f6f4936beea004b3aaac0a0cd144c054
-      - sha256:43ab8263b158be1c72e64a7b2e70941a4a33c517b9a8642da365e9a218208a3c
-      - sha256:e4c68157be526bfbac42d8c351cc6a6664a15213fdbcb28feff82aed9bba28ae
+      - sha256:9842b670a1ce1e30cd7d0e87f11f7233aff04066c5c4f3594e6e7608145b9246
+      - sha256:ec268c7a097d3bfefe3973326b51100259949ec12ecc2eea4a62d46c30c35aa6
+      - sha256:2a146dbe04c93b307fc21a064a61f829f60eca5c2772bc3c87d795a15649c598
+      - sha256:f8a98f60e7dc1226e145d1c6ac04f956364f241453d3435fb0cd836aee0f714c
+      - sha256:3cfb6800ec2af0e5166b91aa262f2a97ae1abdbd34acf8679284ba59ee9d2320
+      - sha256:513560d9e423287279b3a813c84a7c244272a0c06af05c6d3fbf9520af12a198
+      - sha256:c3ee4bf1915b12d6142b92970dcb6502f31c22b960ce0499584e9bb5594f919a
       - sha256:47dcc8a01fac526e0a52b58989a0067123fe7f1289e338c0a24ace2098e2047b
-      - sha256:c7a58a2d601c409c588bc24635daaff65a075cd96b034adf23e050978b9ef15f
-      - sha256:b6432fd6287028359d0bb3b5d3102e5fced130640ab0da1f3e7fad66fd04a041
-      - sha256:2b7fe5a869ece7610827dc6e277896801132b563b23bf73d76bd9d6149d04c13
+      - sha256:1ee646b62893f7eade68a7937890f0bd77eeb15f4c1a0ce74b1af90c83bf4a92
+      - sha256:836b6fa7b081e89bac1eaa0a7ca8dbc335ffc1720852b54f3ab2fdeaae5311e7
+      - sha256:ca24f1bc2348a3acd0a4ace84f768abdf4678a398dceac47ce778e4640b4de54
       - sha256:0867f2d3889c7b9baadc10d31c74033666b2329d6a8bdc3ed6957486a9449df2
   - id: SCH-005
     title: Malformed Unicode NUL and controls fail closed
@@ -1221,11 +1221,11 @@ cases:
       - runtime
     fixtureDigests:
       - sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088
-      - sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb
-      - sha256:185e846169079fb6e2c993c6ad419142d07a8ebbd1b576478b5482f5cd1202c8
-      - sha256:b6432fd6287028359d0bb3b5d3102e5fced130640ab0da1f3e7fad66fd04a041
-      - sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab
-      - sha256:c7a58a2d601c409c588bc24635daaff65a075cd96b034adf23e050978b9ef15f
+      - sha256:420e3afd8b8307fa56fad257987012f3fec33071104dad9667bdced84385ee40
+      - sha256:3ca02f495a45c2d8a7bbeebb452466ca9fa3763699146c67725fa8802a628810
+      - sha256:836b6fa7b081e89bac1eaa0a7ca8dbc335ffc1720852b54f3ab2fdeaae5311e7
+      - sha256:1e9a73c8b8e1b93085dbea8183bdeadd940a6ebb74068fbbe0caeed458bf86b3
+      - sha256:1ee646b62893f7eade68a7937890f0bd77eeb15f4c1a0ce74b1af90c83bf4a92
   - id: SCH-006
     title: Runtime and generated schemas cannot drift
     level: E0
@@ -1252,9 +1252,9 @@ cases:
         - packages/creator-agent-protocol/src/__tests__/artifacts.test.ts
     releaseTuple: *id031
     fixtureDigests:
-      - sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434
-      - sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253
-      - sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db
+      - sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b
+      - sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d
+      - sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350
   - id: SCH-007
     title: Canonical JSON key reorder preserves digest
     level: E1
@@ -1332,9 +1332,9 @@ cases:
       - creator-agent-protocol@0.1.0
       - agent-gateway
     fixtureDigests:
-      - sha256:8a487268959e400a13fd28fa61372f05a7fb73f7ed2c6802ffa645426adef383
-      - sha256:a0c41f9a883e8d2d06cc615b1c4a2a387517cd2e2213f1e8c4e5a27bd9b5d9cc
-      - sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f
+      - sha256:440dc50139245c740b6b93da8e688a063205ad262bc0b7de4fa01173e994d660
+      - sha256:85a1feb185556f98cd44cad92693e6e6ace152424be1fae2993662d2fb910bcc
+      - sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4
   - id: SCH-010
     title: N plus one or unknown capability blocks
     level: E1
@@ -1368,7 +1368,7 @@ cases:
       - creator-worker-broker-client
       - postgresql-schema
     fixtureDigests:
-      - sha256:8a487268959e400a13fd28fa61372f05a7fb73f7ed2c6802ffa645426adef383
+      - sha256:440dc50139245c740b6b93da8e688a063205ad262bc0b7de4fa01173e994d660
   - id: SNP-001
     title: Empty Snapshot is rejected
     level: E1
@@ -1568,4 +1568,4 @@ cases:
     implementation: *id037
     releaseTuple: *id038
     fixtureDigests:
-      - sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab
+      - sha256:1e9a73c8b8e1b93085dbea8183bdeadd940a6ebb74068fbbe0caeed458bf86b3

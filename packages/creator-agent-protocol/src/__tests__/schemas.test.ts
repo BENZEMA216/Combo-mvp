@@ -1,7 +1,12 @@
 import { createHash, generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
 // VNext registry cases: SCH-001 SCH-002 SCH-003 SCH-005 SCH-008
 import { describe, expect, it } from 'vitest';
-import { AgentVersionManifestSchema, computeAgentVersionDigests } from '../agent-version.js';
+import {
+  AgentVersionManifestSchema,
+  ModelPolicySchema,
+  RuntimePolicySchema,
+  computeAgentVersionDigests,
+} from '../agent-version.js';
 import { currentBrokerContractDigest } from '../artifacts.js';
 import { canonicalSha256, canonicalizeJson } from '../canonical.js';
 import { ProtocolVersionCorpusSchema } from '../compatibility.js';
@@ -77,6 +82,8 @@ import { VnextErrorResponseSchema, errorResponseFor } from '../invocation.js';
 import { assertPublicManualCapOutcomeSubset } from '../public-manual-cap-outcomes.js';
 import {
   IsoDateTimeSchema,
+  MODEL_ID_PATTERN_SOURCE,
+  ModelIdSchema,
   UnicodeCodePointStringSchema,
   Uint63StringSchema,
   Utf8TextSchema,
@@ -198,6 +205,61 @@ function validateEvidenceBundleChainObjects(input: EvidenceBundleChainObjectInpu
 }
 
 describe('六类共享协议运行时 schema', () => {
+  it('keeps one exact ASCII Model ID contract across policies and Execution Capability', async () => {
+    expect(MODEL_ID_PATTERN_SOURCE).toBe('^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$');
+    const version = AgentVersionManifestSchema.parse(
+      await readFixture('agent-version-manifest.v1.json'),
+    );
+    const prepare = BrokerEnvelopeSchema.parse(
+      await readFixture('broker-invocation-prepare.v1.json'),
+    );
+    if (prepare.type !== 'invocation.prepare') throw new Error('prepare fixture type drifted');
+
+    for (const model of ['a', `a${'b'.repeat(127)}`]) {
+      expect(model.length).toBeLessThanOrEqual(128);
+      expect(ModelIdSchema.safeParse(model).success, model).toBe(true);
+      expect(
+        RuntimePolicySchema.safeParse({ ...version.runtimePolicy, resolvedModel: model }).success,
+        model,
+      ).toBe(true);
+      expect(ModelPolicySchema.safeParse({ ...version.modelPolicy, model }).success, model).toBe(
+        true,
+      );
+      expect(
+        ExecutionCapabilitySchema.safeParse({
+          ...prepare.body.executionCapability,
+          model,
+        }).success,
+        model,
+      ).toBe(true);
+    }
+
+    for (const model of [
+      '',
+      '-leading',
+      '模型/test',
+      'bad"model',
+      'bad\\model',
+      `a${'b'.repeat(128)}`,
+    ]) {
+      expect(ModelIdSchema.safeParse(model).success, model).toBe(false);
+      expect(
+        RuntimePolicySchema.safeParse({ ...version.runtimePolicy, resolvedModel: model }).success,
+        model,
+      ).toBe(false);
+      expect(ModelPolicySchema.safeParse({ ...version.modelPolicy, model }).success, model).toBe(
+        false,
+      );
+      expect(
+        ExecutionCapabilitySchema.safeParse({
+          ...prepare.body.executionCapability,
+          model,
+        }).success,
+        model,
+      ).toBe(false);
+    }
+  });
+
   it('解析 Snapshot 和 AgentVersion golden fixtures，并产生稳定 digest', async () => {
     const snapshot = SnapshotManifestSchema.parse(await readFixture('snapshot-manifest.v1.json'));
     const version = AgentVersionManifestSchema.parse(
@@ -1076,7 +1138,7 @@ describe('六类共享协议运行时 schema', () => {
     sensitive.aadDigest = brokerSensitiveMessageAadDigest(sensitive.aad);
     const capability = atCiphertextMaximum.body.executionCapability;
     capability.fence = maximumUint63;
-    capability.model = '\\'.repeat(128);
+    capability.model = 'z'.repeat(128);
     capability.reasoningEffort = 'medium';
     capability.budget = {
       maxInputTokens: 200_000,

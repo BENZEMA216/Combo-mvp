@@ -8,7 +8,7 @@
     "decisionRegistryId": "ADR-VNEXT-003"
   },
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434"
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b"
   },
   "baseFixture": {
     "path": "snapshot-manifest.v1.json",

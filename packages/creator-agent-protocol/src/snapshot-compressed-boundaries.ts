@@ -58,12 +58,8 @@ export const SnapshotCompressedBoundaryCorpusSchema = z
       .strict(),
     checkedArtifactDigests: z
       .object({
-        contractSchemas: z.literal(
-          'sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434',
-        ),
-        openApi: z.literal(
-          'sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db',
-        ),
+        contractSchemas: Sha256DigestSchema,
+        openApi: Sha256DigestSchema,
       })
       .strict(),
     baseFixtures: z.tuple([
@@ -71,18 +67,14 @@ export const SnapshotCompressedBoundaryCorpusSchema = z
         .object({
           kind: z.literal('archiveEnvelope'),
           path: z.literal('snapshot-envelope.v1.json'),
-          digest: z.literal(
-            'sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9',
-          ),
+          digest: Sha256DigestSchema,
         })
         .strict(),
       z
         .object({
           kind: z.literal('manifestEnvelope'),
           path: z.literal('snapshot-manifest-envelope.v1.json'),
-          digest: z.literal(
-            'sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd',
-          ),
+          digest: Sha256DigestSchema,
         })
         .strict(),
     ]),

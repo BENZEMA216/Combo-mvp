@@ -14,9 +14,9 @@
       "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     ],
     "isolationModes": ["apple-container-v1"],
-    "brokerContractDigest": "sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8",
+    "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
     "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.v1.json",
-    "handshakeFixtureDigest": "sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f"
+    "handshakeFixtureDigest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
   },
   "declaredPrevious": [
     {
@@ -32,9 +32,9 @@
         "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
       ],
       "isolationModes": ["lima-vz-v1"],
-      "brokerContractDigest": "sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8",
+      "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
       "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.n-minus-one.v1.json",
-      "handshakeFixtureDigest": "sha256:a0c41f9a883e8d2d06cc615b1c4a2a387517cd2e2213f1e8c4e5a27bd9b5d9cc"
+      "handshakeFixtureDigest": "sha256:85a1feb185556f98cd44cad92693e6e6ace152424be1fae2993662d2fb910bcc"
     }
   ],
   "gatewayReleases": [
@@ -42,7 +42,7 @@
       "releaseId": "gateway-n-minus-one",
       "wireProtocol": "combo.creator-broker/1",
       "wireSchemaVersion": 1,
-      "brokerContractDigest": "sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8",
+      "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
       "matcher": "combo.exact-worker-profile-matcher/1",
       "acceptedWorkerProfileIds": ["worker-n-minus-one", "worker-n"]
     },
@@ -50,7 +50,7 @@
       "releaseId": "gateway-n",
       "wireProtocol": "combo.creator-broker/1",
       "wireSchemaVersion": 1,
-      "brokerContractDigest": "sha256:0bd829b949a5d724ec5ca43c2a0ee7d14cf2d890b50fc30825767a1fb21890f8",
+      "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
       "matcher": "combo.exact-worker-profile-matcher/1",
       "acceptedWorkerProfileIds": ["worker-n-minus-one", "worker-n"]
     }

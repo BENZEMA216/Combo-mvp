@@ -3,9 +3,9 @@
   "schemaVersion": 1,
   "scope": "utf8-byte-limits-only",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434",
-    "brokerContract": "sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253",
-    "openApi": "sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db"
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "brokerContract": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
+    "openApi": "sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350"
   },
   "scalarControlParity": {
     "canaryPrefix": "UTF8_SCALAR_CONTROL_CANARY_",
@@ -37,10 +37,7 @@
         "artifact": "openapi",
         "pointer": "/components/schemas/CreateAgentRequest/properties/name"
       },
-      {
-        "artifact": "openapi",
-        "pointer": "/components/schemas/AgentView/properties/name"
-      },
+      { "artifact": "openapi", "pointer": "/components/schemas/AgentView/properties/name" },
       {
         "artifact": "contract-schemas",
         "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/resolvedModel"
@@ -278,64 +275,19 @@
           "reason": "SnapshotFileSchema-mediaType-has-independent-ASCII-pattern-census"
         }
       ],
-      "expectedCounts": {
-        "contractSchemas": 30,
-        "brokerContract": 3,
-        "openApi": 14,
-        "total": 47
-      }
+      "expectedCounts": { "contractSchemas": 30, "brokerContract": 3, "openApi": 14, "total": 47 }
     },
     "probes": [
-      {
-        "id": "tab",
-        "codeUnits": [9],
-        "expected": "accepted"
-      },
-      {
-        "id": "lf",
-        "codeUnits": [10],
-        "expected": "accepted"
-      },
-      {
-        "id": "cr",
-        "codeUnits": [13],
-        "expected": "accepted"
-      },
-      {
-        "id": "astral",
-        "codeUnits": [55357, 56832],
-        "expected": "accepted"
-      },
-      {
-        "id": "high-surrogate",
-        "codeUnits": [55296],
-        "expected": "rejected"
-      },
-      {
-        "id": "low-surrogate",
-        "codeUnits": [56320],
-        "expected": "rejected"
-      },
-      {
-        "id": "nul",
-        "codeUnits": [0],
-        "expected": "rejected"
-      },
-      {
-        "id": "other-c0",
-        "codeUnits": [31],
-        "expected": "rejected"
-      },
-      {
-        "id": "del",
-        "codeUnits": [127],
-        "expected": "rejected"
-      },
-      {
-        "id": "c1",
-        "codeUnits": [159],
-        "expected": "rejected"
-      }
+      { "id": "tab", "codeUnits": [9], "expected": "accepted" },
+      { "id": "lf", "codeUnits": [10], "expected": "accepted" },
+      { "id": "cr", "codeUnits": [13], "expected": "accepted" },
+      { "id": "astral", "codeUnits": [55357, 56832], "expected": "accepted" },
+      { "id": "high-surrogate", "codeUnits": [55296], "expected": "rejected" },
+      { "id": "low-surrogate", "codeUnits": [56320], "expected": "rejected" },
+      { "id": "nul", "codeUnits": [0], "expected": "rejected" },
+      { "id": "other-c0", "codeUnits": [31], "expected": "rejected" },
+      { "id": "del", "codeUnits": [127], "expected": "rejected" },
+      { "id": "c1", "codeUnits": [159], "expected": "rejected" }
     ]
   },
   "strictStructuralParity": {
@@ -398,66 +350,18 @@
       }
     ],
     "probes": [
-      {
-        "id": "ascii",
-        "codeUnits": [65],
-        "expected": "accepted"
-      },
-      {
-        "id": "cjk",
-        "codeUnits": [30028],
-        "expected": "accepted"
-      },
-      {
-        "id": "astral",
-        "codeUnits": [55357, 56832],
-        "expected": "accepted"
-      },
-      {
-        "id": "high-surrogate",
-        "codeUnits": [55296],
-        "expected": "rejected"
-      },
-      {
-        "id": "low-surrogate",
-        "codeUnits": [56320],
-        "expected": "rejected"
-      },
-      {
-        "id": "nul",
-        "codeUnits": [0],
-        "expected": "rejected"
-      },
-      {
-        "id": "tab",
-        "codeUnits": [9],
-        "expected": "rejected"
-      },
-      {
-        "id": "lf",
-        "codeUnits": [10],
-        "expected": "rejected"
-      },
-      {
-        "id": "cr",
-        "codeUnits": [13],
-        "expected": "rejected"
-      },
-      {
-        "id": "other-c0",
-        "codeUnits": [31],
-        "expected": "rejected"
-      },
-      {
-        "id": "del",
-        "codeUnits": [127],
-        "expected": "rejected"
-      },
-      {
-        "id": "c1",
-        "codeUnits": [159],
-        "expected": "rejected"
-      }
+      { "id": "ascii", "codeUnits": [65], "expected": "accepted" },
+      { "id": "cjk", "codeUnits": [30028], "expected": "accepted" },
+      { "id": "astral", "codeUnits": [55357, 56832], "expected": "accepted" },
+      { "id": "high-surrogate", "codeUnits": [55296], "expected": "rejected" },
+      { "id": "low-surrogate", "codeUnits": [56320], "expected": "rejected" },
+      { "id": "nul", "codeUnits": [0], "expected": "rejected" },
+      { "id": "tab", "codeUnits": [9], "expected": "rejected" },
+      { "id": "lf", "codeUnits": [10], "expected": "rejected" },
+      { "id": "cr", "codeUnits": [13], "expected": "rejected" },
+      { "id": "other-c0", "codeUnits": [31], "expected": "rejected" },
+      { "id": "del", "codeUnits": [127], "expected": "rejected" },
+      { "id": "c1", "codeUnits": [159], "expected": "rejected" }
     ]
   },
   "boundaries": [
@@ -477,10 +381,7 @@
           "artifact": "openapi",
           "pointer": "/components/schemas/CreateAgentRequest/properties/name"
         },
-        {
-          "artifact": "openapi",
-          "pointer": "/components/schemas/AgentView/properties/name"
-        }
+        { "artifact": "openapi", "pointer": "/components/schemas/AgentView/properties/name" }
       ]
     },
     {
@@ -619,10 +520,7 @@
           "artifact": "openapi",
           "pointer": "/components/schemas/CreateAgentRequest/properties/description"
         },
-        {
-          "artifact": "openapi",
-          "pointer": "/components/schemas/AgentView/properties/description"
-        }
+        { "artifact": "openapi", "pointer": "/components/schemas/AgentView/properties/description" }
       ]
     },
     {

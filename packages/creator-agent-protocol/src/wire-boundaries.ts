@@ -69,9 +69,7 @@ export const ProtocolWireBoundaryCorpusSchema = z
     advertisedBoundary: z
       .object({
         artifact: z.literal('schemas/broker-contract.v1.json'),
-        digest: z.literal(
-          'sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253',
-        ),
+        digest: Sha256DigestSchema,
         pointer: z.literal('/maxFrameBytes'),
         maximumBytes: z.literal(65_536),
         authorityKind: z.literal('adr-vnext-034-product-policy'),

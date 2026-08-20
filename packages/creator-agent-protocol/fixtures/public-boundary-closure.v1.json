@@ -4,9 +4,9 @@
   "authority": "ADR-VNEXT-034",
   "status": "implemented",
   "checkedArtifactDigests": {
-    "contractSchemas": "sha256:e1e6d2c02ffb275844c994afe25977f8f6282077e1e95a76707e2e6865f8b434",
-    "brokerContract": "sha256:ec373c7b2b9f21b89a91fbdb5bc932b58face9066dc9a907b15463768c66e253",
-    "openApi": "sha256:17a72c3be236567cffdfbd68195c5db0e038e1fe8413d8b2ebdf44cf3b1188db"
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "brokerContract": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
+    "openApi": "sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350"
   },
   "sourceRows": [
     {
@@ -161,7 +161,7 @@
     },
     {
       "id": "source:AgentVersionManifest:/modelPolicy/model:string-regex-2",
-      "fingerprint": "sha256:53beeae67d0e905cdee98faae2ee5561320751cc0b012d8d0eb9bcca0a9e0c52",
+      "fingerprint": "sha256:3938aaf8e1a632ce137d0d5605c00e0703fa917efed2116191c8eccb50902090",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:AgentVersionManifest:/modelPolicy/model:string-regex-2",
@@ -231,7 +231,7 @@
     },
     {
       "id": "source:AgentVersionManifest:/runtimePolicy/resolvedModel:string-regex-2",
-      "fingerprint": "sha256:c107018dca8dfcf16f466f4f59c3e3efee831f33ed9b08e6c4be224b39b325d6",
+      "fingerprint": "sha256:515cb549914de049ed79ae708f316abda35d264d214f365cb14912eb487f01d1",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:AgentVersionManifest:/runtimePolicy/resolvedModel:string-regex-2",
@@ -3231,7 +3231,7 @@
     },
     {
       "id": "source:BrokerEnvelope:/anyOf/0/anyOf/6/body/executionCapability/model:string-regex-2",
-      "fingerprint": "sha256:f6edaa85911872624fb70165982dfd5bca361c710ee856afe9dd0c3f8999c340",
+      "fingerprint": "sha256:4a2f057ef55ac98524f8aba6998300e778f19612d7955530530105f474a89e29",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:BrokerEnvelope:/anyOf/0/anyOf/6/body/executionCapability/model:string-regex-2",
@@ -12941,7 +12941,7 @@
     },
     {
       "id": "source:CreateAgentVersionRequest:/manifest/modelPolicy/model:string-regex-2",
-      "fingerprint": "sha256:09a180fa6b00953f9dee0d5ec0e0f0da2205a42e2d7450314c33e76135db3087",
+      "fingerprint": "sha256:9faad7eb168fd632028a1259e5f0c5ddb2008921233df670c9bebe6a22d989cc",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:CreateAgentVersionRequest:/manifest/modelPolicy/model:string-regex-2",
@@ -13011,7 +13011,7 @@
     },
     {
       "id": "source:CreateAgentVersionRequest:/manifest/runtimePolicy/resolvedModel:string-regex-2",
-      "fingerprint": "sha256:5750ef2d4d2ae2d78a7033bcc16a2a51e8f38a848b58521f69c25c6e3dc22774",
+      "fingerprint": "sha256:4d37cebc68e53317f632321f3414d34bb9624249e7ad4e27a6b60feddf55c498",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:CreateAgentVersionRequest:/manifest/runtimePolicy/resolvedModel:string-regex-2",
@@ -14981,7 +14981,7 @@
     },
     {
       "id": "source:ExecutionCapability:/model:string-regex-2",
-      "fingerprint": "sha256:24b9c94c9e8838f05c9427088db654a97383e83a15a65549ba2033f52c6bab02",
+      "fingerprint": "sha256:f3940134f6d637e7def73af8c0eefa14a9dd9c7da706cd4d469f4327d893cb32",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:ExecutionCapability:/model:string-regex-2",
@@ -15311,7 +15311,7 @@
     },
     {
       "id": "source:ExecutionCapabilityUnsigned:/model:string-regex-2",
-      "fingerprint": "sha256:6fbdb71c30c50eb1c9975bc069b253cb7df18c747306241c9659d3e871e68d46",
+      "fingerprint": "sha256:18b503a06ce44ac88328304c3053d2f76eca9dea751a9745838825f069cab8c5",
       "evidence": {
         "status": "covered",
         "probeId": "public-string-pattern:source:ExecutionCapabilityUnsigned:/model:string-regex-2",
@@ -20523,7 +20523,7 @@
     },
     {
       "id": "artifact:brokerContract:/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model",
-      "fingerprint": "sha256:498001608003e5a13d1ba864646ebedddc803ad6e17e85a8d9c9af4d56a588b6",
+      "fingerprint": "sha256:284c79e4ab242f8ef80b9d07109d84bbfaacffd8568adbd0f82c7ef53d5df0e3",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:brokerContract:/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model",
@@ -20933,7 +20933,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/modelPolicy/properties/model",
-      "fingerprint": "sha256:2e956f361baf4dcf457a8c5021e85b0ec6b41a5d46c5430fc4df86ea56b61180",
+      "fingerprint": "sha256:fe741a58a5bdb2de5bf28de2d467172967ed083433a1a719144232031ea12f7e",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/modelPolicy/properties/model",
@@ -20993,7 +20993,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/resolvedModel",
-      "fingerprint": "sha256:e9c01e80e12a7be0061eccb7add2b289330cfe9790cb15d8b52db1fa5e12e14b",
+      "fingerprint": "sha256:68bf5413d0b17df71e598ccf0047d7de11be20aa554e1024bc3986376104cb43",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/resolvedModel",
@@ -21333,7 +21333,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model",
-      "fingerprint": "sha256:02a5864579aaf90820e34bcb022b00cce37139805de4a3efafab200b02266fae",
+      "fingerprint": "sha256:159afa27fbcf1ea62ab6fde0c8c0e9947ae6964e2dd2b06ba48af17ee073408a",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model",
@@ -22053,7 +22053,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model",
-      "fingerprint": "sha256:009d86ffa565e2d8b24d5bfff7fec7e1c21c3789d58638c11193fdb8fb071cff",
+      "fingerprint": "sha256:06ed3322d6617b00821297494cc7db807b37eaca910efc63d11009ec34a8cb2f",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model",
@@ -22113,7 +22113,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel",
-      "fingerprint": "sha256:9caa183bc0dd5aa6787f6bee0115e99e456df3a331c1a4fc68b73b45e380cb6d",
+      "fingerprint": "sha256:059b5de70f5d385792e7b2e9a99013ee65be6711124db0573320fd136299ab66",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel",
@@ -23473,7 +23473,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/model",
-      "fingerprint": "sha256:cb9914483bb751b67aeb2baa5698289d277784ab244544cfdf7b9f90180fe6e0",
+      "fingerprint": "sha256:a27025f79f8ca65c0692e0c84bc971c029a990c0ccf1755fb29870e9e3578f99",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/model",
@@ -23593,7 +23593,7 @@
     },
     {
       "id": "artifact:contractSchemas:/schemas/ExecutionCapabilityUnsigned/definitions/ExecutionCapabilityUnsigned/properties/model",
-      "fingerprint": "sha256:e50100683954f3d6b42afdf6a653f9274f2c55d76df78a78f113c734760da5c6",
+      "fingerprint": "sha256:9bc97528ec67defb6db3233ff252cac7ce77ef73540fb0768b148778371036ef",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:contractSchemas:/schemas/ExecutionCapabilityUnsigned/definitions/ExecutionCapabilityUnsigned/properties/model",
@@ -26813,7 +26813,7 @@
     },
     {
       "id": "artifact:openApi:/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model",
-      "fingerprint": "sha256:cfe01ad7038dc275dcc33c51122fb97c758dba5ffb7ab968a9f56f07e5ac0579",
+      "fingerprint": "sha256:6b2d8f571694aa2324025ffbf9679c13bda5d9619f22dd4d6dbf314caccb388a",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:openApi:/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model",
@@ -26863,7 +26863,7 @@
     },
     {
       "id": "artifact:openApi:/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel",
-      "fingerprint": "sha256:3dd81ab2937068a079a0f1134902ca85e7ab7d1a5ef53979d7469d54d0e69d12",
+      "fingerprint": "sha256:3207187892bf7f7aab6464096e0fa280880bcb832deb12b21688379dcae6b4ea",
       "evidence": {
         "status": "covered",
         "probeId": "artifact-fragment:artifact:openApi:/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel",
@@ -27969,17 +27969,17 @@
   "delegatedFixtures": [
     {
       "path": "packages/creator-agent-protocol/fixtures/protocol-utf8-boundaries.v1.json",
-      "digest": "sha256:7785d570eec5849d02754295ffa0eaebdf02eeeba24e49053610787d1104abdb",
+      "digest": "sha256:420e3afd8b8307fa56fad257987012f3fec33071104dad9667bdced84385ee40",
       "testFiles": ["packages/creator-agent-protocol/src/__tests__/utf8-boundaries.test.ts"]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/protocol-decoded-boundaries.v1.json",
-      "digest": "sha256:bc851f816f82d14e5de6d3973f4d8dffa3f6181751fd27d9c293bcebaea91e6d",
+      "digest": "sha256:7f3d291d5c96d8484f7535d36f652f07adcae84175d8802da18b76f56d97742e",
       "testFiles": ["packages/creator-agent-protocol/src/__tests__/decoded-boundaries.test.ts"]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/protocol-structural-boundaries.v1.json",
-      "digest": "sha256:185e846169079fb6e2c993c6ad419142d07a8ebbd1b576478b5482f5cd1202c8",
+      "digest": "sha256:3ca02f495a45c2d8a7bbeebb452466ca9fa3763699146c67725fa8802a628810",
       "testFiles": ["packages/creator-agent-protocol/src/__tests__/structural-boundaries.test.ts"]
     },
     {
@@ -27991,47 +27991,47 @@
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/agent-version-resource-boundaries.v1.json",
-      "digest": "sha256:58db022273834dacacf5338772fe5bd84cdbdb95caad235f7e2e80038d37b93e",
+      "digest": "sha256:9842b670a1ce1e30cd7d0e87f11f7233aff04066c5c4f3594e6e7608145b9246",
       "testFiles": ["packages/creator-agent-protocol/src/__tests__/resource-boundaries.test.ts"]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/broker-capacity-boundaries.v1.json",
-      "digest": "sha256:710bd029ca4e28d77877f191adf757671abee8faf67b9bc973415c08c7f1f862",
+      "digest": "sha256:ec268c7a097d3bfefe3973326b51100259949ec12ecc2eea4a62d46c30c35aa6",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/broker-capacity-boundaries.test.ts"
       ]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/context-tools-closed-world-boundaries.v1.json",
-      "digest": "sha256:45535d70dfcccdd70fb0b9684ec7b1c97b97566a8acd5127361bf55e9076fbf2",
+      "digest": "sha256:2a146dbe04c93b307fc21a064a61f829f60eca5c2772bc3c87d795a15649c598",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/context-tools-closed-world-boundaries.test.ts"
       ]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/execution-capability-upstream-count-boundaries.v1.json",
-      "digest": "sha256:a7ee43f2ad816087aa7bb808996bb20316018eb8198ade451b0e62cd1107531f",
+      "digest": "sha256:f8a98f60e7dc1226e145d1c6ac04f956364f241453d3435fb0cd836aee0f714c",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/execution-capability-upstream-count-boundaries.test.ts"
       ]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/snapshot-resource-boundaries.v1.json",
-      "digest": "sha256:1f1864bbd18e701c14ae56e6ee7d2f81f6f4936beea004b3aaac0a0cd144c054",
+      "digest": "sha256:3cfb6800ec2af0e5166b91aa262f2a97ae1abdbd34acf8679284ba59ee9d2320",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/snapshot-resource-boundaries.test.ts"
       ]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/snapshot-single-file-boundaries.v1.json",
-      "digest": "sha256:43ab8263b158be1c72e64a7b2e70941a4a33c517b9a8642da365e9a218208a3c",
+      "digest": "sha256:513560d9e423287279b3a813c84a7c244272a0c06af05c6d3fbf9520af12a198",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/snapshot-single-file-boundaries.test.ts"
       ]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/snapshot-compressed-boundaries.v1.json",
-      "digest": "sha256:e4c68157be526bfbac42d8c351cc6a6664a15213fdbcb28feff82aed9bba28ae",
+      "digest": "sha256:c3ee4bf1915b12d6142b92970dcb6502f31c22b960ce0499584e9bb5594f919a",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/snapshot-compressed-boundaries.test.ts"
       ]
@@ -28045,33 +28045,33 @@
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json",
-      "digest": "sha256:c7a58a2d601c409c588bc24635daaff65a075cd96b034adf23e050978b9ef15f",
+      "digest": "sha256:1ee646b62893f7eade68a7937890f0bd77eeb15f4c1a0ce74b1af90c83bf4a92",
       "testFiles": [
         "packages/creator-agent-protocol/src/__tests__/snapshot-path-boundaries.test.ts"
       ]
     },
     {
       "path": "packages/creator-agent-protocol/fixtures/protocol-wire-boundaries.v1.json",
-      "digest": "sha256:b6432fd6287028359d0bb3b5d3102e5fced130640ab0da1f3e7fad66fd04a041",
+      "digest": "sha256:836b6fa7b081e89bac1eaa0a7ca8dbc335ffc1720852b54f3ab2fdeaae5311e7",
       "testFiles": ["packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts"]
     }
   ],
   "sourceAstCensus": {
     "protocol": "combo.public-source-ast-census/1",
-    "digest": "sha256:6ad9ca23d833857a3560fb4759e2d9328cf5d8eb407602ec304705264781c89e",
+    "digest": "sha256:bf548bf61d2d5af094acfe447683abe27fd9601aa5a77c0e32437bd7accbc2a7",
     "rowCount": 233,
     "familyCounts": {
-      "boundary-helper-call": 80,
+      "boundary-helper-call": 77,
       "derived-byte-invariant": 9,
-      "dynamic-byte-bound": 9,
+      "dynamic-byte-bound": 10,
       "manual-byte-cap": 10,
       "resource-literal": 12,
       "runtime-byte-cap-exclusion": 1,
       "yaml-alias-cap": 1,
       "zod-format-call": 4,
       "zod-length-call": 6,
-      "zod-max-call": 49,
-      "zod-regex-call": 46,
+      "zod-max-call": 50,
+      "zod-regex-call": 47,
       "zod-tuple-call": 6
     },
     "testFile": "packages/creator-agent-protocol/src/__tests__/public-source-ast-census.test.ts",

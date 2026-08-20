@@ -393,6 +393,7 @@ function ownersForRegex(
       .map(({ id }) => id);
   }
   const namedPatterns: Record<string, (keyValue: string) => boolean> = {
+    MODEL_ID_PATTERN: (keyValue) => keyValue === '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/u',
     UNICODE_SCALAR_NO_CONTROL_PATTERN: (keyValue) =>
       keyValue ===
       '^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$/u',

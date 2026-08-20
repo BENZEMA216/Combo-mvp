@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { canonicalSha256 } from './canonical.js';
 import {
+  MODEL_ID_SCHEMA_DESCRIPTION,
+  ModelIdSchema,
   Sha256DigestSchema,
   Sha256HexSchema,
   StrictUtf8TextSchema,
@@ -46,7 +48,7 @@ export const RuntimePolicySchema = z
     maxConversationTurns: z.number().int().min(1).max(20),
     maxVisibleHistoryBytes: z.number().int().min(1).max(65_536),
     maxActiveTurns: z.literal(1),
-    resolvedModel: StrictUtf8TextSchema(128),
+    resolvedModel: ModelIdSchema.describe(MODEL_ID_SCHEMA_DESCRIPTION),
     reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
   })
   .strict();
@@ -67,7 +69,7 @@ export type IOContract = z.infer<typeof IOContractSchema>;
 export const ModelPolicySchema = z
   .object({
     schemaVersion: z.literal(1),
-    model: StrictUtf8TextSchema(128),
+    model: ModelIdSchema.describe(MODEL_ID_SCHEMA_DESCRIPTION),
     reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
     creatorFunded: z.literal(true),
   })

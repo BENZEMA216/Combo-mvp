@@ -40,6 +40,8 @@ import {
   ClientIdempotencyKeySchema,
   HmacSha256DigestSchema,
   IsoDateTimeSchema,
+  MODEL_ID_SCHEMA_DESCRIPTION,
+  ModelIdSchema,
   P256P1363SignatureSchema,
   Sha256DigestSchema,
   Sha256HexSchema,
@@ -216,7 +218,7 @@ const ExecutionCapabilityUnsignedShape = {
   fence: Uint63StringSchema,
   providerRequestId: UuidSchema,
   requestDigest: HmacSha256DigestSchema,
-  model: StrictUtf8TextSchema(128),
+  model: ModelIdSchema.describe(MODEL_ID_SCHEMA_DESCRIPTION),
   reasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
   budget: z
     .object({

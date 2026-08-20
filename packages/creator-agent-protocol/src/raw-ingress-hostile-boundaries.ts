@@ -103,69 +103,47 @@ export const ProtocolRawIngressHostileBoundaryCorpusSchema = z
     baseFixtures: z.tuple([
       BaseFixtureSchema.extend({
         path: z.literal('broker-handshake.v1.json'),
-        digest: z.literal(
-          'sha256:b6ed51697a3af8b31a3e2c17693b35791359b744d94107e3d942582ff102c11f',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('broker-invocation-prepare.v1.json'),
-        digest: z.literal(
-          'sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('snapshot-envelope.v1.json'),
-        digest: z.literal(
-          'sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('snapshot-manifest-envelope.v1.json'),
-        digest: z.literal(
-          'sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('evidence-bundle-index.v1.json'),
-        digest: z.literal(
-          'sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('evidence-bundle-manifest.v1.json'),
-        digest: z.literal(
-          'sha256:99bb2e91df30706472c02acbcf7d23a5dcc772f16fd28754266f584d8f5a0f4a',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('evidence-case-result.v1.json'),
-        digest: z.literal(
-          'sha256:a4fb707bd3b5e82a0125ee8b3cf0dd3a7e24f31f5a554c2d4cf1289212c1fd4f',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('evidence-environment.v1.json'),
-        digest: z.literal(
-          'sha256:5f6d858f2269537861bdd4dad925033e3851a541633037e48da2c50c61a8e3f8',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('evidence-privacy-scan.v1.json'),
-        digest: z.literal(
-          'sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('evidence-reviewer-signoff.v1.json'),
-        digest: z.literal(
-          'sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
       BaseFixtureSchema.extend({
         path: z.literal('snapshot-manifest.v1.json'),
-        digest: z.literal(
-          'sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088',
-        ),
+        digest: Sha256DigestSchema,
       }).strict(),
     ]),
     owners: z.tuple([

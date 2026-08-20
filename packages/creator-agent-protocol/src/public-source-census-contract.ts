@@ -166,22 +166,22 @@ export const PUBLIC_SOURCE_MANUAL_BINDINGS: readonly PublicSourceManualBinding[]
 ]);
 
 export const PUBLIC_SOURCE_AST_CENSUS_DIGEST =
-  'sha256:6ad9ca23d833857a3560fb4759e2d9328cf5d8eb407602ec304705264781c89e' as const;
+  'sha256:bf548bf61d2d5af094acfe447683abe27fd9601aa5a77c0e32437bd7accbc2a7' as const;
 
 export const PUBLIC_SOURCE_AST_CENSUS_ROW_COUNT = 233 as const;
 
 export const PUBLIC_SOURCE_AST_CENSUS_FAMILY_COUNTS = Object.freeze({
-  'boundary-helper-call': 80,
+  'boundary-helper-call': 77,
   'derived-byte-invariant': 9,
-  'dynamic-byte-bound': 9,
+  'dynamic-byte-bound': 10,
   'manual-byte-cap': 10,
   'resource-literal': 12,
   'runtime-byte-cap-exclusion': 1,
   'yaml-alias-cap': 1,
   'zod-format-call': 4,
   'zod-length-call': 6,
-  'zod-max-call': 49,
-  'zod-regex-call': 46,
+  'zod-max-call': 50,
+  'zod-regex-call': 47,
   'zod-tuple-call': 6,
 } as const satisfies Record<PublicSourceAstFamily, number>);
 

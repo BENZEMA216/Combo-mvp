@@ -221,6 +221,14 @@ describe('VNext machine-readable contract registries', () => {
   });
 
   it('binds Gate 0 resource and no-native-fallback traceability explicitly', async () => {
+    const rawIngressFixtureDigest = sha256Digest(
+      await readFile(
+        join(
+          repositoryRoot,
+          'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
+        ),
+      ),
+    );
     const invariantRegistry = InvariantRegistrySchema.parse(
       await readYaml(join(vnextDirectory, 'invariants.yaml')),
     );
@@ -263,9 +271,7 @@ describe('VNext machine-readable contract registries', () => {
         'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
         'packages/creator-agent-protocol/fixtures/snapshot-path-boundaries.v1.json',
       ]),
-      fixtureDigests: expect.arrayContaining([
-        'sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab',
-      ]),
+      fixtureDigests: expect.arrayContaining([rawIngressFixtureDigest]),
     });
     expect(cases.find(({ id }) => id === 'SCH-005')?.implementation.testFiles).toEqual([
       'packages/creator-agent-protocol/src/__tests__/sch-005-closure.test.ts',
@@ -283,9 +289,7 @@ describe('VNext machine-readable contract registries', () => {
       fixture: expect.arrayContaining([
         'packages/creator-agent-protocol/fixtures/protocol-raw-ingress-hostile-boundaries.v1.json',
       ]),
-      fixtureDigests: expect.arrayContaining([
-        'sha256:dbd9c91121898efe37d36cf6f1bdf06cdc1a47d2209058695d86d2d25b022bab',
-      ]),
+      fixtureDigests: expect.arrayContaining([rawIngressFixtureDigest]),
     });
     expect(cases.find(({ id }) => id === 'SNP-008')).toEqual(
       expect.objectContaining({

@@ -75,6 +75,25 @@ export const UNICODE_CODE_POINT_STRING_SCHEMA_DESCRIPTION_PREFIX =
 export const UNIQUE_ARRAY_SCHEMA_DESCRIPTION = 'combo:unique-items' as const;
 
 /**
+ * Provider/model routing identifier shared by AgentVersion, Runtime and Execution Capability.
+ * Keep this source byte-for-byte aligned with the PostgreSQL 0030 validator.
+ */
+export const MODEL_ID_PATTERN_SOURCE = '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$' as const;
+export const MODEL_ID_PATTERN = new RegExp(MODEL_ID_PATTERN_SOURCE, 'u');
+export const MODEL_ID_SCHEMA_DESCRIPTION = `${UTF8_TEXT_SCHEMA_DESCRIPTION_PREFIX}128` as const;
+const maxBytesForModelId = 128;
+export const ModelIdSchema = z
+  .string()
+  .min(1)
+  .max(maxBytesForModelId)
+  .regex(MODEL_ID_PATTERN)
+  .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytesForModelId, {
+    message: `UTF-8 内容不得超过 ${maxBytesForModelId} bytes`,
+  })
+  .describe(MODEL_ID_SCHEMA_DESCRIPTION);
+export type ModelId = z.infer<typeof ModelIdSchema>;
+
+/**
  * JSON Schema minLength/maxLength count Unicode code points, while Zod's native string
  * min/max count UTF-16 code units. Public schemas use this helper so runtime and advertised
  * validators accept the same supplementary-plane characters at every structural boundary.
