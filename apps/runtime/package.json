@@ -19,6 +19,7 @@
     "@ag-ui/core": "0.0.57",
     "@ag-ui/encoder": "0.0.57",
     "@aws-sdk/client-s3": "^3.726.1",
+    "@cb/creator-agent-persistence": "workspace:*",
     "@cb/creator-agent-protocol": "workspace:*",
     "@cb/shared": "workspace:*",
     "@earendil-works/pi-agent-core": "^0.80.2",

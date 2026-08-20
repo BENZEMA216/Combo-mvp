@@ -1,7 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { registerEndpoints, type EndpointDecl } from '../../platform/http/_helpers.js';
 import { registerVnextJsonBodyParser } from '../../platform/http/vnext-json-body.js';
-import { createConsumerConversationHandler } from './handlers.js';
+import {
+  createConsumerConversationHandler,
+  getConsumerConversationTranscriptHandler,
+  getConsumerEventsHandler,
+  getConsumerInvocationHandler,
+  sendConsumerMessageHandler,
+} from './handlers.js';
 import {
   requireVnextAuth,
   requireVnextBodySchema,
@@ -19,6 +25,34 @@ export const CREATOR_AGENT_CONVERSATION_ENDPOINTS: EndpointDecl[] = [
       requireVnextAuth(),
     ],
     handler: createConsumerConversationHandler(),
+  },
+  {
+    method: 'POST',
+    url: '/v1/conversations/:conversationId/messages',
+    preHandlers: [
+      requireVnextMutationOrigin(),
+      requireVnextBodySchema('SendConversationMessageRequest'),
+      requireVnextAuth(),
+    ],
+    handler: sendConsumerMessageHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/v1/conversations/:conversationId',
+    preHandlers: [requireVnextAuth()],
+    handler: getConsumerConversationTranscriptHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/v1/invocations/:invocationId',
+    preHandlers: [requireVnextAuth()],
+    handler: getConsumerInvocationHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/v1/conversations/:conversationId/events',
+    preHandlers: [requireVnextAuth()],
+    handler: getConsumerEventsHandler(),
   },
 ];
 

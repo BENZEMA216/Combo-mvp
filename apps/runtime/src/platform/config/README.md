@@ -4,9 +4,9 @@
 
 浏览器认证只读取 PostgreSQL 中的共享不透明会话，不配置远端身份提供商、JWT 用户验签、开发登录或会话签名密钥。发布身份来自 `COMBO_ENVIRONMENT`、`COMBO_SOURCE_SHA`、`COMBO_RELEASE_ID`、`COMBO_BUILT_AT`、`COMBO_RELEASE_MANIFEST_DIGEST` 和 `COMBO_WEB_ASSET_MANIFEST`。
 
-Creator Agent visible transcript 只配置 provider 名、非敏感 namespace、允许的 keyRef prefix、最低 key version policy 与 keyring 文件路径。唯一已实现的 provider 是 `test-k8s-secret-file`，并且 `COMBO_ENVIRONMENT` 必须精确为 `test`；Preview、Production 或未知环境会在 env 校验时失败关闭。公开 flag 开启时 provider、专用数据库 URL 和全部 policy 必须同时存在；即使在非 production 的 Node 模式下也不允许解析失败后回落为 feature-off 默认值。
+Creator Agent visible transcript 只配置 provider 名、非敏感 namespace、允许的 keyRef prefix、最低 key version policy 与 keyring 文件路径。USER/ASSISTANT durable Message authority另使用 `CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER` + mounted keyring，Execution Capability signer/budget authority使用独立 `CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER` + mounted private-key file。三类 authority 唯一已实现的 provider 都是 `test-k8s-secret-file`，且 `COMBO_ENVIRONMENT` 必须精确为 `test`；Execution signer私钥不进入共享 Message/Gateway keyring。Preview、Production 或未知环境会在 env 校验时失败关闭。公开 flag 开启时 providers、专用数据库 URL 和全部 policy/file paths 必须同时存在；即使在非 production 的 Node 模式下也不允许解析失败后回落为 feature-off 默认值。
 
-`test-k8s-secret-file` 只读取 Test Kubernetes Secret volume 中的严格 keyring，文件路径本身不是凭据。Runtime 环境变量不接受 raw HMAC key、base64 key、secret fallback 或本地默认 key。公开 flag 为 false 时 bootstrap 不构造 provider、readiness 不探测它，也不读取 keyring。
+`test-k8s-secret-file` 只读取 Test Kubernetes Secret volume 中的严格 0600 regular file，拒绝 symlink、wrong owner、duplicate JSON key、非 fatal UTF-8、未知字段和不合法 key/curve/budget。Runtime 环境变量不接受 raw HMAC/encryption/signing key、base64 key、secret fallback 或本地默认 key。公开 flag 为 false 时 bootstrap 不构造 provider、readiness 不探测它，也不读取 keyring。
 
 `SESSION_COOKIE_SECURE` 独立于 `NODE_ENV`。Test、Preview 与 Production 发布身份都必须选择 Secure Cookie 和 HTTPS origin；非 production 的本地开发仍可显式选择非 Secure Cookie 和 HTTP origin。Runtime 与 authoring 对这两个配置使用相同语义。
 

@@ -555,13 +555,13 @@ pgDescribe('Creator-hosted Consumer Conversation real PostgreSQL transaction', (
     }
     await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
 
-    await owner.query(
-      `REVOKE EXECUTE ON FUNCTION ${acceptSignature} FROM combo_agent_consumer_api`,
-    );
+    await owner.query(`GRANT EXECUTE ON FUNCTION ${acceptSignature} TO combo_agent_consumer_api`);
     try {
       await expect(pingCreatorAgentDb(env)).resolves.toBe(false);
     } finally {
-      await owner.query(`GRANT EXECUTE ON FUNCTION ${acceptSignature} TO combo_agent_consumer_api`);
+      await owner.query(
+        `REVOKE EXECUTE ON FUNCTION ${acceptSignature} FROM combo_agent_consumer_api`,
+      );
     }
     await expect(pingCreatorAgentDb(env)).resolves.toBe(true);
   });

@@ -8,6 +8,7 @@ import { createRedisSessionEventLog } from './redis-event-log.js';
 import type { SessionEventLog } from '../../modules/agent/event-log.js';
 import { createDisabledSandboxBackend, type SandboxBackend } from './sandbox-backend.js';
 import type { VisibleTranscriptKmsBinding } from './visible-transcript-test-kms.js';
+import type { ConsumerRuntimeProductAuthorities } from '../../modules/creator-agent-conversation/runtime-product-repo.js';
 
 interface InfraLogger {
   info(fields: Record<string, unknown>, message: string): void;
@@ -26,6 +27,8 @@ export interface InfraContext {
   sandbox: SandboxBackend;
   /** Test-only visible-transcript key binding; absent while the public feature remains disabled. */
   visibleTranscriptKms: VisibleTranscriptKmsBinding | null;
+  /** Test-only message/signer product authorities; absent while the public feature is disabled. */
+  creatorAgentRuntimeProduct: ConsumerRuntimeProductAuthorities | null;
 }
 
 /** Feature-off avoids even loading the Test adapter module or reading its mounted keyring. */
@@ -54,6 +57,36 @@ export async function createVisibleTranscriptKmsForEnv(
   );
 }
 
+/** Feature-off avoids loading either mounted Test authority module or reading its files. */
+export async function createCreatorAgentRuntimeProductForEnv(
+  env: Env,
+  idDb: RuntimeDb,
+): Promise<ConsumerRuntimeProductAuthorities | null> {
+  if (!env.CREATOR_AGENT_PUBLIC_ENABLED) return null;
+  if (
+    env.COMBO_ENVIRONMENT !== 'test' ||
+    env.CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER !== 'test-k8s-secret-file' ||
+    !env.CREATOR_AGENT_MESSAGE_KEYRING_FILE ||
+    env.CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER !== 'test-k8s-secret-file' ||
+    !env.CREATOR_AGENT_EXECUTION_AUTHORITY_FILE
+  ) {
+    throw new Error('[infra] Creator Agent Runtime Test authorities are invalid');
+  }
+  const [{ loadTestConsumerMessageAuthority }, invocationModule, repositoryModule] =
+    await Promise.all([
+      import('../../modules/creator-agent-conversation/consumer-message-authority.js'),
+      import('../../modules/creator-agent-conversation/invocation-prepare-authority.js'),
+      import('../../modules/creator-agent-conversation/runtime-product-repo.js'),
+    ]);
+  return Object.freeze({
+    message: loadTestConsumerMessageAuthority(env.CREATOR_AGENT_MESSAGE_KEYRING_FILE),
+    invocationPrepare: invocationModule.loadTestInvocationPrepareAuthority(
+      env.CREATOR_AGENT_EXECUTION_AUTHORITY_FILE,
+    ),
+    serverIds: repositoryModule.createPostgresServerIdAuthority(idDb),
+  });
+}
+
 /** 组装基础设施上下文。沙箱关闭时连 Kubernetes 客户端模块都不加载。 */
 export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraContext> {
   const db = toRuntimeDb(getPool(env));
@@ -66,6 +99,10 @@ export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraCont
       })
     : createDisabledSandboxBackend();
   const visibleTranscriptKms = await createVisibleTranscriptKmsForEnv(env);
+  const creatorAgentRuntimeProduct =
+    creatorAgentDb === null
+      ? null
+      : await createCreatorAgentRuntimeProductForEnv(env, creatorAgentDb);
   return {
     env,
     db,
@@ -75,6 +112,7 @@ export async function buildInfra(env: Env, log?: InfraLogger): Promise<InfraCont
     eventLog: createRedisSessionEventLog(env),
     sandbox,
     visibleTranscriptKms,
+    creatorAgentRuntimeProduct,
   };
 }
 

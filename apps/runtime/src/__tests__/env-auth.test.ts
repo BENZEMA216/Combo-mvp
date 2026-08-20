@@ -10,6 +10,10 @@ const MANAGED_KEYS = [
   'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX',
   'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION',
   'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE',
+  'CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER',
+  'CREATOR_AGENT_MESSAGE_KEYRING_FILE',
+  'CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER',
+  'CREATOR_AGENT_EXECUTION_AUTHORITY_FILE',
   'REDIS_URL',
   'S3_ENDPOINT',
   'S3_ACCESS_KEY',
@@ -173,6 +177,12 @@ describe('runtime authentication configuration', () => {
     process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER = 'test-k8s-secret-file';
     process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE =
       '/var/run/secrets/combo/visible-transcript/keyring.json';
+    process.env.CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER = 'test-k8s-secret-file';
+    process.env.CREATOR_AGENT_MESSAGE_KEYRING_FILE =
+      '/var/run/secrets/combo/agent-gateway/keyring.json';
+    process.env.CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER = 'test-k8s-secret-file';
+    process.env.CREATOR_AGENT_EXECUTION_AUTHORITY_FILE =
+      '/var/run/secrets/combo/runtime/execution-authority.json';
     process.env.COMBO_ENVIRONMENT = 'test';
     vi.resetModules();
     loaded = await import('../platform/config/env.js');
@@ -185,6 +195,11 @@ describe('runtime authentication configuration', () => {
       CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER: 'test-k8s-secret-file',
       CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE:
         '/var/run/secrets/combo/visible-transcript/keyring.json',
+      CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER: 'test-k8s-secret-file',
+      CREATOR_AGENT_MESSAGE_KEYRING_FILE: '/var/run/secrets/combo/agent-gateway/keyring.json',
+      CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER: 'test-k8s-secret-file',
+      CREATOR_AGENT_EXECUTION_AUTHORITY_FILE:
+        '/var/run/secrets/combo/runtime/execution-authority.json',
     });
     expect(
       Object.keys(env).some((key) =>

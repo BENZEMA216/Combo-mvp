@@ -72,17 +72,19 @@ async function createDirectArtifactTool(input: {
 }
 
 describe('route registry self-check', () => {
-  it('declares 11 always-on endpoints plus one separately gated VNext endpoint', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(12);
+  it('declares 11 always-on endpoints plus five separately gated VNext endpoints', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(16);
     expect(ALWAYS_ENABLED_ENDPOINTS).toHaveLength(11);
-    expect(ALL_ENDPOINTS).toEqual(
+    expect(ALL_ENDPOINTS.map(({ method, url }) => `${String(method)} ${url}`)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          method: 'POST',
-          url: '/v1/public/agents/:slug/conversations',
-        }),
+        'POST /v1/public/agents/:slug/conversations',
+        'POST /v1/conversations/:conversationId/messages',
+        'GET /v1/conversations/:conversationId',
+        'GET /v1/conversations/:conversationId/events',
+        'GET /v1/invocations/:invocationId',
       ]),
     );
+    expect(ALL_ENDPOINTS.some(({ url }) => /cancel|retry/u.test(url))).toBe(false);
   });
 
   it('no duplicate (method,url) pairs', () => {

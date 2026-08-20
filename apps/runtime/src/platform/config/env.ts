@@ -90,6 +90,36 @@ const EnvSchema = z
         })
         .optional(),
     ),
+    // Durable USER/ASSISTANT message keys share the Gateway Test mount protocol. The execution
+    // signer is intentionally a separate Runtime-only mount and is never accepted as env text.
+    CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER: z
+      .enum(['disabled', 'test-k8s-secret-file'])
+      .default('disabled'),
+    CREATOR_AGENT_MESSAGE_KEYRING_FILE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .min(2)
+        .max(1_024)
+        .refine((value) => value.startsWith('/') && !containsControlCharacter(value), {
+          message: 'the Test message keyring file must be an absolute safe path',
+        })
+        .optional(),
+    ),
+    CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER: z
+      .enum(['disabled', 'test-k8s-secret-file'])
+      .default('disabled'),
+    CREATOR_AGENT_EXECUTION_AUTHORITY_FILE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .min(2)
+        .max(1_024)
+        .refine((value) => value.startsWith('/') && !containsControlCharacter(value), {
+          message: 'the Test execution authority file must be an absolute safe path',
+        })
+        .optional(),
+    ),
     REDIS_URL: z.string().trim().min(1).default('redis://localhost:6379'),
 
     // ObjectStore（MinIO/S3）：按 capabilities.storage_key 读能力定义 + 读写产物内容。
@@ -214,6 +244,42 @@ const EnvSchema = z
         path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX'],
         message: 'a KMS keyRef prefix is required when the VNext public API is enabled',
       });
+    }
+    for (const [providerKey, provider, fileKey, file] of [
+      [
+        'CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER',
+        env.CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER,
+        'CREATOR_AGENT_MESSAGE_KEYRING_FILE',
+        env.CREATOR_AGENT_MESSAGE_KEYRING_FILE,
+      ],
+      [
+        'CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER',
+        env.CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER,
+        'CREATOR_AGENT_EXECUTION_AUTHORITY_FILE',
+        env.CREATOR_AGENT_EXECUTION_AUTHORITY_FILE,
+      ],
+    ] as const) {
+      if (provider === 'test-k8s-secret-file' && env.COMBO_ENVIRONMENT !== 'test') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [providerKey],
+          message: 'the mounted Test authority is restricted to the Test environment',
+        });
+      }
+      if (provider === 'test-k8s-secret-file' && !file) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [fileKey],
+          message: 'the mounted Test authority requires a read-only file',
+        });
+      }
+      if (env.CREATOR_AGENT_PUBLIC_ENABLED && provider === 'disabled') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [providerKey],
+          message: 'the VNext public API requires an explicit mounted authority',
+        });
+      }
     }
     if (!env.SANDBOX_TOOLS_ENABLED) return;
     if (!env.SANDBOX_IMAGE) {

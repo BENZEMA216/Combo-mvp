@@ -285,6 +285,32 @@ export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
              ('agent_conversations', 'request_digest'),
              ('agent_conversations', 'state'),
              ('agent_conversations', 'version_digest'),
+             ('agent_invocations', 'consumer_subject_id'),
+             ('agent_invocations', 'conversation_id'),
+             ('agent_invocations', 'created_at'),
+             ('agent_invocations', 'creator_id'),
+             ('agent_invocations', 'error_code'),
+             ('agent_invocations', 'id'),
+             ('agent_invocations', 'result_digest'),
+             ('agent_invocations', 'retry_of_invocation_id'),
+             ('agent_invocations', 'state'),
+             ('agent_invocations', 'terminal_at'),
+             ('agent_messages', 'content_aad_version'),
+             ('agent_messages', 'content_algorithm'),
+             ('agent_messages', 'content_auth_tag'),
+             ('agent_messages', 'content_cipher_digest'),
+             ('agent_messages', 'content_ciphertext'),
+             ('agent_messages', 'content_digest'),
+             ('agent_messages', 'content_key_id'),
+             ('agent_messages', 'content_nonce'),
+             ('agent_messages', 'consumer_subject_id'),
+             ('agent_messages', 'conversation_id'),
+             ('agent_messages', 'created_at'),
+             ('agent_messages', 'creator_id'),
+             ('agent_messages', 'id'),
+             ('agent_messages', 'invocation_id'),
+             ('agent_messages', 'role'),
+             ('agent_messages', 'turn_no'),
              ('agent_version_controls', 'availability'),
              ('agent_version_controls', 'creator_id'),
              ('agent_version_controls', 'version_id'),
@@ -306,7 +332,19 @@ export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
              ('deployments', 'observed_generation'),
              ('deployments', 'observed_state'),
              ('deployments', 'observed_worker_id'),
-             ('deployments', 'serving_version_id')
+             ('deployments', 'serving_version_id'),
+             ('consumer_event_outbox', 'conversation_id'),
+             ('consumer_event_outbox', 'cursor'),
+             ('consumer_event_outbox', 'event_type'),
+             ('consumer_event_outbox', 'invocation_id'),
+             ('consumer_event_outbox', 'owner_id'),
+             ('consumer_event_outbox', 'payload'),
+             ('consumer_event_outbox', 'retained_until'),
+             ('consumer_event_streams', 'conversation_id'),
+             ('consumer_event_streams', 'expired_through_cursor'),
+             ('consumer_event_streams', 'latest_cursor'),
+             ('consumer_event_streams', 'owner_id'),
+             ('consumer_event_streams', 'updated_at')
          ), actual_select AS (
            SELECT relation.relname::text AS table_name,
                   attribute.attname::text AS column_name
@@ -443,7 +481,17 @@ export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
                   )
                   AND has_function_privilege(
                     current_user,
-                    'creator_agent_accept_consumer_message_v1(uuid,uuid,uuid,uuid,text,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer)',
+                    'creator_agent_issue_runtime_product_ids_v2(integer)',
+                    'EXECUTE'
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_preflight_consumer_message_v2(uuid,uuid,text,text)',
+                    'EXECUTE'
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_finalize_consumer_message_v2(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer,jsonb,text)',
                     'EXECUTE'
                   )
                   AND NOT has_function_privilege(
@@ -460,7 +508,9 @@ export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
                        AND has_function_privilege(current_user, procedure.oid, 'EXECUTE')
                        AND procedure.oid NOT IN (
                          'public.creator_agent_create_opening_conversation_v2(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text)'::regprocedure,
-                         'public.creator_agent_accept_consumer_message_v1(uuid,uuid,uuid,uuid,text,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer)'::regprocedure
+                         'public.creator_agent_issue_runtime_product_ids_v2(integer)'::regprocedure,
+                         'public.creator_agent_preflight_consumer_message_v2(uuid,uuid,text,text)'::regprocedure,
+                         'public.creator_agent_finalize_consumer_message_v2(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer,jsonb,text)'::regprocedure
                        )
                   )
                 ) AS exact_capabilities

@@ -3,7 +3,12 @@ import type { AddressInfo } from 'node:net';
 
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
-import { VnextErrorResponseSchema, type VnextErrorResponse } from '@cb/creator-agent-protocol';
+import {
+  ExecutionCapabilitySchema,
+  VnextErrorResponseSchema,
+  executionCapabilityDigest,
+  type VnextErrorResponse,
+} from '@cb/creator-agent-protocol';
 import { authSessionCookieName } from '@cb/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -12,9 +17,28 @@ import { ALWAYS_ENABLED_ENDPOINTS, registerBusinessRoutes } from '../../bootstra
 import { loadEnv, type Env } from '../../platform/config/env.js';
 import { RUNTIME_HTTP_BODY_LIMIT_BYTES } from '../../platform/http/vnext-json-body.js';
 import type { QueryResultLike, RuntimeDb, TxConn } from '../../platform/infra/db.js';
+import type { ConsumerMessageAuthority } from './consumer-message-authority.js';
+import { formatConsumerEventSse } from './consumer-events.js';
+import type { InvocationPrepareAuthority } from './invocation-prepare-authority.js';
+import type { ConsumerRuntimeProductAuthorities } from './runtime-product-repo.js';
 
 const SESSION_TOKEN = `s1.${'A'.repeat(43)}`;
 const CONSUMER = '01900000-0000-7000-8000-000000000001';
+const CREATOR = '01900000-0000-7000-8000-000000000010';
+const CONVERSATION = '01900000-0000-7000-8000-000000000011';
+const AGENT = '01900000-0000-7000-8000-000000000012';
+const AGENT_VERSION = '01900000-0000-7000-8000-000000000013';
+const DEPLOYMENT = '01900000-0000-7000-8000-000000000014';
+const INSTALLATION = '01900000-0000-7000-8000-000000000015';
+const LEASE = '01900000-0000-7000-8000-000000000016';
+const INVOCATION = '01900000-0000-7000-8000-000000000017';
+const USER_MESSAGE = '01900000-0000-7000-8000-000000000018';
+const ASSISTANT_MESSAGE = '01900000-0000-7000-8000-000000000019';
+const CLIENT_MESSAGE = '550e8400-e29b-41d4-a716-446655440000';
+const HMAC = `hmac-sha256:${'a'.repeat(64)}`;
+const SHA = 'b'.repeat(64);
+const CREATED_AT = '2026-08-20T00:00:00.000Z';
+const TERMINAL_AT = '2026-08-20T00:00:05.000Z';
 const BASE_ENV = loadEnv();
 
 function env(enabled: boolean): Env {
@@ -97,6 +121,8 @@ async function appFor(input: {
   enabled: boolean;
   auth?: 'valid' | 'invalid' | 'error';
   repositoryError?: Error;
+  creatorAgentDb?: RuntimeDb;
+  runtimeProductAuthorities?: ConsumerRuntimeProductAuthorities | null;
   capturedParsedBodies?: unknown[];
   dbCounters?: DbCounters;
   logLines?: string[];
@@ -122,7 +148,8 @@ async function appFor(input: {
   app.decorate('infra', {
     env: env(input.enabled),
     db: runtimeDb,
-    creatorAgentDb: input.enabled ? runtimeDb : null,
+    creatorAgentDb: input.enabled ? (input.creatorAgentDb ?? runtimeDb) : null,
+    creatorAgentRuntimeProduct: input.enabled ? (input.runtimeProductAuthorities ?? null) : null,
   } as never);
   if (input.legacyParserProbe) {
     app.post('/legacy-parser-probe', async (request) => request.body);
@@ -184,32 +211,161 @@ function validHeaders(overrides: Record<string, string> = {}): Record<string, st
   };
 }
 
+type SqlResponder = (
+  sql: string,
+  parameters: unknown[] | undefined,
+) => Promise<readonly unknown[]> | readonly unknown[];
+
+function creatorProductDb(responder: SqlResponder) {
+  const queries: Array<{ sql: string; parameters: unknown[] | undefined }> = [];
+  let releases = 0;
+  const query = async <R>(sql: string, parameters?: unknown[]): Promise<QueryResultLike<R>> => {
+    queries.push({ sql, parameters });
+    const rows = await responder(sql, parameters);
+    return { rows: [...rows] as R[], rowCount: rows.length };
+  };
+  const runtimeDb: RuntimeDb = {
+    query,
+    async connect(): Promise<TxConn> {
+      return {
+        query,
+        release: () => {
+          releases += 1;
+        },
+      };
+    },
+  };
+  return { runtimeDb, queries, releases: () => releases };
+}
+
+function encryptedMessage() {
+  return {
+    algorithm: 'aes-256-gcm/v1' as const,
+    keyId: 'owner-key-v1',
+    nonce: Buffer.alloc(12, 1),
+    ciphertext: Buffer.from('sealed-user-message'),
+    authTag: Buffer.alloc(16, 2),
+    cipherDigest: 'c'.repeat(64),
+    contentDigest: HMAC,
+    aadVersion: 1 as const,
+  };
+}
+
+const SERVER_IDS = Object.freeze([
+  USER_MESSAGE,
+  INVOCATION,
+  '01900000-0000-7000-8000-000000000020',
+  '01900000-0000-7000-8000-000000000021',
+  '01900000-0000-7000-8000-000000000022',
+  '01900000-0000-7000-8000-000000000023',
+  '01900000-0000-7000-8000-000000000024',
+  '01900000-0000-7000-8000-000000000025',
+]);
+
+function productAuthorities(options: { openedText?: string } = {}) {
+  const calls = { bind: 0, seal: 0, prepare: 0, issue: 0, open: 0 };
+  const message: ConsumerMessageAuthority = {
+    async bindUserMessage() {
+      calls.bind += 1;
+      return {
+        requestDigest: HMAC,
+        async seal() {
+          calls.seal += 1;
+          return encryptedMessage();
+        },
+      };
+    },
+    async openMessage() {
+      calls.open += 1;
+      return options.openedText ?? 'opened visible message';
+    },
+  };
+  const invocationPrepare: InvocationPrepareAuthority = {
+    async prepare(input) {
+      calls.prepare += 1;
+      const { installationId, signal: _signal, ...wireInput } = input;
+      const capability = ExecutionCapabilitySchema.parse({
+        protocol: 'combo.execution-capability/1',
+        schemaVersion: 1,
+        ...wireInput,
+        workerInstallationId: installationId,
+        budget: { maxInputTokens: 1_024, maxOutputTokens: 512, maxCostMicros: 10_000 },
+        nonce: Buffer.alloc(32, 4).toString('base64url'),
+        signatureAlgorithm: 'ES256',
+        signatureEncoding: 'ieee-p1363',
+        signature: Buffer.alloc(64, 5).toString('base64url'),
+      });
+      return { capability, capabilityDigest: executionCapabilityDigest(capability) };
+    },
+  };
+  const authorities: ConsumerRuntimeProductAuthorities = Object.freeze({
+    message,
+    invocationPrepare,
+    serverIds: {
+      async issue(count: number) {
+        calls.issue += 1;
+        return SERVER_IDS.slice(0, count);
+      },
+    },
+  });
+  return { authorities, calls };
+}
+
+function readyPreflight() {
+  return {
+    outcome: 'READY',
+    existing_invocation_id: null,
+    existing_state: null,
+    creator_id: CREATOR,
+    deployment_id: DEPLOYMENT,
+    agent_version_id: AGENT_VERSION,
+    agent_version_digest: SHA,
+    snapshot_digest: 'd'.repeat(64),
+    installation_id: INSTALLATION,
+    lease_id: LEASE,
+    fence: '7',
+    capability_not_before: '2026-08-20T00:00:00.000Z',
+    deadline_at: '2026-08-20T00:00:30.000Z',
+    capability_expires_at: '2026-08-20T00:01:00.000Z',
+    resolved_model: 'openai/gpt-5',
+    reasoning_effort: 'medium',
+  };
+}
+
+const NEW_PRODUCT_ROUTES = [
+  { method: 'POST' as const, url: '/v1/public/agents/:slug/conversations' },
+  { method: 'POST' as const, url: '/v1/conversations/:conversationId/messages' },
+  { method: 'GET' as const, url: '/v1/conversations/:conversationId' },
+  { method: 'GET' as const, url: '/v1/invocations/:invocationId' },
+  { method: 'GET' as const, url: '/v1/conversations/:conversationId/events' },
+];
+
 describe('VNext Consumer route registration and wire errors', () => {
-  it('keeps the public route absent when the feature flag is false', async () => {
+  it('keeps all five Creator Agent product routes absent when the feature flag is false', async () => {
     const app = await appFor({ enabled: false });
     try {
-      expect(app.hasRoute({ method: 'POST', url: '/v1/public/agents/:slug/conversations' })).toBe(
-        false,
-      );
+      for (const route of NEW_PRODUCT_ROUTES) expect(app.hasRoute(route)).toBe(false);
       expect(ALWAYS_ENABLED_ENDPOINTS).toHaveLength(11);
-      const response = await app.inject({
-        method: 'POST',
-        url: '/v1/public/agents/research-agent/conversations',
-        headers: validHeaders(),
-        payload: {},
-      });
-      expect(response.statusCode).toBe(404);
+      const requests = [
+        ['POST', '/v1/public/agents/research-agent/conversations', {}],
+        ['POST', `/v1/conversations/${CONVERSATION}/messages`, {}],
+        ['GET', `/v1/conversations/${CONVERSATION}`, undefined],
+        ['GET', `/v1/invocations/${INVOCATION}`, undefined],
+        ['GET', `/v1/conversations/${CONVERSATION}/events`, undefined],
+      ] as const;
+      for (const [method, url, payload] of requests) {
+        const response = await app.inject({ method, url, headers: validHeaders(), payload });
+        expect(response.statusCode, `${method} ${url}`).toBe(404);
+      }
     } finally {
       await app.close();
     }
   });
 
-  it('registers the route only when enabled and rejects a missing origin in VNext shape', async () => {
+  it('registers all five routes only when enabled and rejects a missing origin in VNext shape', async () => {
     const app = await appFor({ enabled: true });
     try {
-      expect(app.hasRoute({ method: 'POST', url: '/v1/public/agents/:slug/conversations' })).toBe(
-        true,
-      );
+      for (const route of NEW_PRODUCT_ROUTES) expect(app.hasRoute(route)).toBe(true);
       const response = await app.inject({
         method: 'POST',
         url: '/v1/public/agents/research-agent/conversations',
@@ -548,6 +704,353 @@ describe('VNext Consumer route registration and wire errors', () => {
       expect(error.code).toBe('AGENT_OFFLINE');
       expect(JSON.parse(response.body)).not.toHaveProperty('error');
       expect(response.body).not.toContain('secret database');
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe('registered Creator Agent Runtime product routes', () => {
+  it('requires the session Cookie on every message/read/invocation/events route', async () => {
+    const product = creatorProductDb(() => []);
+    const { authorities } = productAuthorities();
+    const app = await appFor({
+      enabled: true,
+      creatorAgentDb: product.runtimeDb,
+      runtimeProductAuthorities: authorities,
+    });
+    const requests = [
+      {
+        method: 'POST' as const,
+        url: `/v1/conversations/${CONVERSATION}/messages`,
+        payload: { clientMessageId: CLIENT_MESSAGE, text: 'hello' },
+      },
+      { method: 'GET' as const, url: `/v1/conversations/${CONVERSATION}` },
+      { method: 'GET' as const, url: `/v1/invocations/${INVOCATION}` },
+      { method: 'GET' as const, url: `/v1/conversations/${CONVERSATION}/events` },
+    ];
+    try {
+      for (const request of requests) {
+        const response = await app.inject({
+          ...request,
+          headers: validHeaders({ cookie: '' }),
+        });
+        expect(response.statusCode, `${request.method} ${request.url}`).toBe(401);
+        expect(parseVnextError(response.body).code).toBe('UNAUTHORIZED');
+      }
+      expect(product.queries).toEqual([]);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('enforces message Origin, exact body, and body-bound Idempotency-Key before product IO', async () => {
+    const product = creatorProductDb(() => []);
+    const { authorities, calls } = productAuthorities();
+    const app = await appFor({
+      enabled: true,
+      auth: 'valid',
+      creatorAgentDb: product.runtimeDb,
+      runtimeProductAuthorities: authorities,
+    });
+    try {
+      const missingOrigin = await app.inject({
+        method: 'POST',
+        url: `/v1/conversations/${CONVERSATION}/messages`,
+        headers: validHeaders({ origin: '' }),
+        payload: { clientMessageId: CLIENT_MESSAGE, text: 'hello' },
+      });
+      expect(missingOrigin.statusCode).toBe(403);
+      expect(parseVnextError(missingOrigin.body).code).toBe('FORBIDDEN');
+
+      const unknownBody = await app.inject({
+        method: 'POST',
+        url: `/v1/conversations/${CONVERSATION}/messages`,
+        headers: validHeaders(),
+        payload: { clientMessageId: CLIENT_MESSAGE, text: 'hello', unknown: true },
+      });
+      expect(unknownBody.statusCode).toBe(400);
+      expect(parseVnextError(unknownBody.body).code).toBe('INVALID_INPUT');
+
+      const mismatchedKey = await app.inject({
+        method: 'POST',
+        url: `/v1/conversations/${CONVERSATION}/messages`,
+        headers: validHeaders({
+          'idempotency-key': '6ba7b810-9dad-41d1-80b4-00c04fd430c8',
+        }),
+        payload: { clientMessageId: CLIENT_MESSAGE, text: 'hello' },
+      });
+      expect(mismatchedKey.statusCode).toBe(400);
+      expect(parseVnextError(mismatchedKey.body).code).toBe('INVALID_INPUT');
+      expect(product.queries).toEqual([]);
+      expect(calls).toEqual({ bind: 0, seal: 0, prepare: 0, issue: 0, open: 0 });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('returns 202 only after the injected DB and message/signing/ID authorities finalize admission', async () => {
+    const product = creatorProductDb((sql, parameters) => {
+      if (sql.includes('SELECT creator_id') && sql.includes('FROM agent_conversations')) {
+        return [{ creator_id: CREATOR }];
+      }
+      if (sql.includes('creator_agent_preflight_consumer_message_v2')) {
+        return [readyPreflight()];
+      }
+      if (sql.includes('creator_agent_finalize_consumer_message_v2')) {
+        return [
+          {
+            finalize_outcome: 'ADMITTED',
+            invocation_id: parameters?.[3],
+            invocation_state: 'DISPATCH_PENDING',
+          },
+        ];
+      }
+      return [];
+    });
+    const { authorities, calls } = productAuthorities();
+    const app = await appFor({
+      enabled: true,
+      auth: 'valid',
+      creatorAgentDb: product.runtimeDb,
+      runtimeProductAuthorities: authorities,
+    });
+    try {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/v1/conversations/${CONVERSATION}/messages`,
+        headers: validHeaders(),
+        payload: { clientMessageId: CLIENT_MESSAGE, text: 'run the mounted product path' },
+      });
+      expect(response.statusCode).toBe(202);
+      expect(response.json()).toEqual({
+        protocol: 'combo.creator-agent-http/1',
+        invocationId: INVOCATION,
+        state: 'QUEUED',
+      });
+      expect(calls).toEqual({ bind: 1, seal: 1, prepare: 1, issue: 1, open: 0 });
+      expect(
+        product.queries.find(({ sql }) =>
+          sql.includes('creator_agent_finalize_consumer_message_v2'),
+        )?.parameters,
+      ).toHaveLength(20);
+      expect(product.queries.map(({ sql }) => sql)).toContain('COMMIT');
+      expect(product.releases()).toBe(3);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('serves transcript and invocation views through their read-only transaction wiring', async () => {
+    const product = creatorProductDb((sql) => {
+      if (sql.includes('SELECT id, agent_id') && sql.includes('FROM agent_conversations')) {
+        return [
+          {
+            id: CONVERSATION,
+            agent_id: AGENT,
+            agent_version_id: AGENT_VERSION,
+            creator_id: CREATOR,
+            version_digest: SHA,
+            state: 'IDLE',
+            created_at: CREATED_AT,
+            expires_at: '2026-08-21T00:00:00.000Z',
+          },
+        ];
+      }
+      if (sql.includes('FROM agent_messages')) {
+        return [
+          {
+            id: USER_MESSAGE,
+            invocation_id: INVOCATION,
+            turn_no: 1,
+            role: 'USER',
+            content_algorithm: 'aes-256-gcm/v1',
+            content_key_id: 'owner-key-v1',
+            content_nonce: Buffer.alloc(12, 1),
+            content_ciphertext: Buffer.from('sealed-user-message'),
+            content_auth_tag: Buffer.alloc(16, 2),
+            content_cipher_digest: 'c'.repeat(64),
+            content_digest: HMAC,
+            content_aad_version: 1,
+            created_at: CREATED_AT,
+          },
+        ];
+      }
+      if (sql.includes('FROM consumer_event_streams')) return [{ latest_cursor: '9' }];
+      if (sql.includes('SELECT creator_id, conversation_id')) {
+        return [{ creator_id: CREATOR, conversation_id: CONVERSATION }];
+      }
+      if (sql.includes('SELECT id, conversation_id') && sql.includes('FROM agent_invocations')) {
+        return [
+          {
+            id: INVOCATION,
+            conversation_id: CONVERSATION,
+            creator_id: CREATOR,
+            state: 'SUCCEEDED',
+            result_digest: HMAC,
+            error_code: null,
+            retry_of_invocation_id: null,
+            created_at: CREATED_AT,
+            terminal_at: TERMINAL_AT,
+          },
+        ];
+      }
+      return [];
+    });
+    const { authorities, calls } = productAuthorities({ openedText: 'visible user message' });
+    const app = await appFor({
+      enabled: true,
+      auth: 'valid',
+      creatorAgentDb: product.runtimeDb,
+      runtimeProductAuthorities: authorities,
+    });
+    try {
+      const transcript = await app.inject({
+        method: 'GET',
+        url: `/v1/conversations/${CONVERSATION}`,
+        headers: validHeaders(),
+      });
+      expect(transcript.statusCode).toBe(200);
+      expect(transcript.json()).toMatchObject({
+        protocol: 'combo.creator-agent-http/1',
+        conversation: { conversationId: CONVERSATION, state: 'IDLE' },
+        messages: [
+          {
+            messageId: USER_MESSAGE,
+            invocationId: INVOCATION,
+            role: 'USER',
+            text: 'visible user message',
+          },
+        ],
+        latestEventId: '9',
+      });
+
+      const invocation = await app.inject({
+        method: 'GET',
+        url: `/v1/invocations/${INVOCATION}`,
+        headers: validHeaders(),
+      });
+      expect(invocation.statusCode).toBe(200);
+      expect(invocation.json()).toEqual({
+        protocol: 'combo.creator-agent-http/1',
+        invocationId: INVOCATION,
+        conversationId: CONVERSATION,
+        state: 'SUCCEEDED',
+        resultDigest: HMAC,
+        error: null,
+        retryOfInvocationId: null,
+        createdAt: CREATED_AT,
+        terminalAt: TERMINAL_AT,
+      });
+      expect(calls.open).toBe(1);
+      expect(product.releases()).toBe(2);
+      expect(product.queries.filter(({ sql }) => sql.includes('READ ONLY'))).toHaveLength(2);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('maps absent Consumer ownership to the frozen error on every registered product repository', async () => {
+    const product = creatorProductDb(() => []);
+    const { authorities } = productAuthorities();
+    const app = await appFor({
+      enabled: true,
+      auth: 'valid',
+      creatorAgentDb: product.runtimeDb,
+      runtimeProductAuthorities: authorities,
+    });
+    const requests = [
+      {
+        method: 'POST' as const,
+        url: `/v1/conversations/${CONVERSATION}/messages`,
+        payload: { clientMessageId: CLIENT_MESSAGE, text: 'not mine' },
+      },
+      { method: 'GET' as const, url: `/v1/conversations/${CONVERSATION}` },
+      { method: 'GET' as const, url: `/v1/invocations/${INVOCATION}` },
+      { method: 'GET' as const, url: `/v1/conversations/${CONVERSATION}/events` },
+    ];
+    try {
+      for (const request of requests) {
+        const response = await app.inject({ ...request, headers: validHeaders() });
+        expect(response.statusCode, `${request.method} ${request.url}`).toBe(403);
+        expect(parseVnextError(response.body).code).toBe('FORBIDDEN');
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it('replays a terminal SSE frame strictly after Last-Event-ID through the registered route', async () => {
+    const terminalEvent = {
+      id: '9',
+      type: 'invocation.terminal' as const,
+      payload: {
+        protocol: 'combo.consumer-event-outbox/1' as const,
+        schemaVersion: 1 as const,
+        type: 'invocation.terminal' as const,
+        conversationId: CONVERSATION,
+        invocationId: INVOCATION,
+        occurredAt: TERMINAL_AT,
+        terminalState: 'SUCCEEDED' as const,
+        assistantMessageId: ASSISTANT_MESSAGE,
+        resultDigest: HMAC,
+        errorCode: null,
+      },
+    };
+    const product = creatorProductDb((sql) => {
+      if (sql.includes('FROM agent_conversations')) {
+        return [{ creator_id: CREATOR, created_at: CREATED_AT }];
+      }
+      if (sql.includes('FROM consumer_event_streams')) {
+        return [
+          {
+            owner_id: CONSUMER,
+            conversation_id: CONVERSATION,
+            latest_cursor: '9',
+            expired_through_cursor: '0',
+            updated_at: TERMINAL_AT,
+          },
+        ];
+      }
+      if (sql.includes('FROM consumer_event_outbox')) {
+        return [
+          {
+            cursor: '9',
+            owner_id: CONSUMER,
+            conversation_id: CONVERSATION,
+            invocation_id: INVOCATION,
+            event_type: 'invocation.terminal',
+            payload: terminalEvent.payload,
+          },
+        ];
+      }
+      return [];
+    });
+    const app = await appFor({ enabled: true, auth: 'valid', creatorAgentDb: product.runtimeDb });
+    try {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/v1/conversations/${CONVERSATION}/events`,
+        headers: validHeaders({ 'last-event-id': '7' }),
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers).toMatchObject({
+        'cache-control': 'no-store',
+        'x-accel-buffering': 'no',
+        'content-type': 'text/event-stream; charset=utf-8',
+      });
+      expect(response.body).toBe(formatConsumerEventSse(terminalEvent));
+      expect(
+        product.queries.find(({ sql }) => sql.includes('FROM consumer_event_outbox'))?.parameters,
+      ).toEqual([CONSUMER, CONVERSATION, '7', 51]);
+
+      const malformedCursor = await app.inject({
+        method: 'GET',
+        url: `/v1/conversations/${CONVERSATION}/events`,
+        headers: validHeaders({ 'last-event-id': '9223372036854775808' }),
+      });
+      expect(malformedCursor.statusCode).toBe(400);
+      expect(parseVnextError(malformedCursor.body).code).toBe('INVALID_INPUT');
     } finally {
       await app.close();
     }
