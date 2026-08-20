@@ -2,6 +2,8 @@
 
 本目录冻结 Creator-hosted Agent VNext 的技术方案和测试方案，供实现、代码审查和验收共同引用。
 
+接管期间的来源边界、已证明/未证明状态、阻断项与恢复 tranche 记录在 `recovery-ledger-2026-08-20.md`。该账本是工程取证记录，不替代下列权威文档、机器 registry 或正式 Evidence Bundle。
+
 ## 权威文档
 
 - `creator-hosted-agent-vnext-architecture.md`
