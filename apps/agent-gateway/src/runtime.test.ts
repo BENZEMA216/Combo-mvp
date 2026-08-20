@@ -8,6 +8,7 @@ import {
   type AgentGatewayRuntimeDependencies,
   type RuntimeGateway,
 } from './runtime.js';
+import { createPostgresAgentGatewayRuntime } from './runtime.js';
 
 const SOURCE_SHA = 'a'.repeat(40);
 
@@ -76,6 +77,13 @@ function dependencies(options: { databaseReady?: boolean } = {}) {
 }
 
 describe('Agent Gateway executable lifecycle', () => {
+  it('fails before opening PostgreSQL when an enabled publisher lacks both crypto ports', () => {
+    const enabled = { ...config(), publisherEnabled: true };
+    expect(() => createPostgresAgentGatewayRuntime(enabled)).toThrow(
+      'AGENT_GATEWAY_LIFECYCLE_CRYPTO_REQUIRED',
+    );
+  });
+
   it('consumes idle Pool errors without exposing the driver cause or trusting the sink', () => {
     const listeners: Array<(error: Error) => void> = [];
     const pool = {
@@ -114,6 +122,80 @@ describe('Agent Gateway executable lifecycle', () => {
     await vi.waitFor(() => expect(release).toHaveBeenCalledWith(true));
   });
 
+  it('requires the exact Broker role plus ledger-free lifecycle-v2 schema and function probes', async () => {
+    const release = vi.fn();
+    const query = vi.fn(async (sql: string, parameters?: readonly unknown[]) => {
+      expect(sql).toContain('creator_agent_gateway_lifecycle_v2_ready()');
+      expect(sql).toContain('creator_agent_lock_gateway_lifecycle_command_v2');
+      expect(sql).toContain('creator_agent_gateway_operation_result_is_safe');
+      expect(sql).toContain('role.rolcanlogin');
+      expect(sql).toContain('NOT role.rolinherit');
+      expect(sql).toContain('NOT role.rolcreaterole');
+      expect(sql).toContain('NOT role.rolcreatedb');
+      expect(sql).toContain('NOT role.rolreplication');
+      expect(sql).toContain('pg_catalog.pg_auth_members');
+      expect(sql).toContain("'canonicalDigest', repeat('0', 64)");
+      expect(parameters).toEqual(
+        expect.arrayContaining([
+          'broker_outbox',
+          'execution_capability_wire',
+          'cancel_reason',
+          'worker_gateway_outbound_frames',
+          'wire_envelope',
+          'wire_canonical_text',
+        ]),
+      );
+      return {
+        rowCount: 1,
+        rows: [{ role_name: 'combo_agent_broker', least_privilege: true, schema_ready: true }],
+      };
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release })),
+    } as unknown as Parameters<typeof checkBrokerDatabaseReady>[0];
+
+    await expect(
+      checkBrokerDatabaseReady(pool, AbortSignal.timeout(2_000)),
+    ).resolves.toBeUndefined();
+    expect(release).toHaveBeenCalledWith(false);
+  });
+
+  it('fails readiness when PostgreSQL reports any lifecycle contract component missing', async () => {
+    const release = vi.fn();
+    const pool = {
+      connect: vi.fn(async () => ({
+        query: vi.fn(async () => ({
+          rowCount: 1,
+          rows: [{ role_name: 'combo_agent_broker', least_privilege: true, schema_ready: false }],
+        })),
+        release,
+      })),
+    } as unknown as Parameters<typeof checkBrokerDatabaseReady>[0];
+
+    await expect(checkBrokerDatabaseReady(pool, AbortSignal.timeout(2_000))).rejects.toThrow(
+      'AGENT_GATEWAY_DATABASE_NOT_READY',
+    );
+    expect(release).toHaveBeenCalledWith(false);
+  });
+
+  it('fails readiness when the connected Broker role has privileged attributes or membership', async () => {
+    const release = vi.fn();
+    const pool = {
+      connect: vi.fn(async () => ({
+        query: vi.fn(async () => ({
+          rowCount: 1,
+          rows: [{ role_name: 'combo_agent_broker', least_privilege: false, schema_ready: true }],
+        })),
+        release,
+      })),
+    } as unknown as Parameters<typeof checkBrokerDatabaseReady>[0];
+
+    await expect(checkBrokerDatabaseReady(pool, AbortSignal.timeout(2_000))).rejects.toThrow(
+      'AGENT_GATEWAY_DATABASE_NOT_READY',
+    );
+    expect(release).toHaveBeenCalledWith(false);
+  });
+
   it('serves release-bound liveness and dynamic database readiness', async () => {
     const fixture = dependencies();
     const runtime = new AgentGatewayRuntime(config(), fixture.value);
@@ -129,7 +211,7 @@ describe('Agent Gateway executable lifecycle', () => {
       environment: 'test',
       sourceSha: SOURCE_SHA,
       releaseId: `release-${SOURCE_SHA}`,
-      capability: 'conversation.open-ready/test-v1',
+      capability: 'broker-lifecycle-ready/test-v2',
     });
 
     const ready = await fetch(`${origin}/ready`);

@@ -3,13 +3,20 @@ import { pathToFileURL } from 'node:url';
 
 import { parseAgentGatewayProcessConfig } from '../config.js';
 import { createPostgresAgentGatewayRuntime } from '../runtime.js';
+import { loadGatewayTestKeyring } from '../test-keyring.js';
 
 export async function runAgentGatewayProcess(
   environment: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
   const config = parseAgentGatewayProcessConfig(environment);
+  const keyring =
+    config.testKeyringPath === undefined
+      ? undefined
+      : loadGatewayTestKeyring(config.testKeyringPath);
   const runtime = createPostgresAgentGatewayRuntime(config, {
     diagnosticSink: (event) => writeEvent({ event }),
+    sealAssistantMessage: keyring?.sealAssistantMessage,
+    sealUserMessage: keyring?.sealUserMessage,
   });
   try {
     const address = await runtime.start();

@@ -4,6 +4,7 @@ import {
   currentBrokerContractDigest,
 } from '@cb/creator-agent-protocol';
 import { z } from 'zod';
+import { isAbsolute } from 'node:path';
 
 import type { GatewayCompatibilityPolicy } from './postgres-authority.js';
 
@@ -24,6 +25,12 @@ const PasswordSchema = z
   .refine((value) => !containsControlCharacter(value), 'database password contains control bytes');
 const WorkerVersionSchema = z.string().min(1).max(128);
 const IsolationModeSchema = z.enum(['apple-container-v1', 'lima-vz-v1']);
+const MountedKeyringPathSchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .refine((value) => isAbsolute(value), 'keyring path must be absolute')
+  .refine((value) => !containsControlCharacter(value), 'keyring path contains control bytes');
 
 function integerString(minimum: number, maximum: number) {
   return z
@@ -91,6 +98,7 @@ const ProcessEnvironmentSchema = z
     ),
     AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES: jsonArray(IsolationModeSchema, 1, 16, false),
     AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST: jsonArray(UuidSchema, 0, 32).default('[]'),
+    AGENT_GATEWAY_TEST_KEYRING_PATH: MountedKeyringPathSchema.optional(),
     PGHOST: HostSchema,
     PGPORT: integerString(1, 65_535).default('5432'),
     PGDATABASE: DatabaseNameSchema,
@@ -114,6 +122,16 @@ const ProcessEnvironmentSchema = z
         code: z.ZodIssueCode.custom,
         path: ['AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST'],
         message: 'publisher requires a non-empty exact Deployment allowlist',
+      });
+    }
+    if (
+      environment.AGENT_GATEWAY_PUBLISHER_ENABLED === 'true' &&
+      environment.AGENT_GATEWAY_TEST_KEYRING_PATH === undefined
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['AGENT_GATEWAY_TEST_KEYRING_PATH'],
+        message: 'publisher requires a mounted Test keyring path',
       });
     }
     if (environment.AGENT_GATEWAY_PORT === environment.AGENT_GATEWAY_HEALTH_PORT) {
@@ -160,6 +178,7 @@ export type AgentGatewayProcessConfig = Readonly<{
   maxConnections: number;
   publisherEnabled: boolean;
   publisherPollIntervalMs: number;
+  testKeyringPath?: string;
   shutdownTimeoutMs: number;
   database: Readonly<{
     host: string;
@@ -187,6 +206,9 @@ export function parseAgentGatewayProcessConfig(
     maxConnections: environment.AGENT_GATEWAY_MAX_CONNECTIONS,
     publisherEnabled: environment.AGENT_GATEWAY_PUBLISHER_ENABLED === 'true',
     publisherPollIntervalMs: environment.AGENT_GATEWAY_PUBLISHER_POLL_INTERVAL_MS,
+    ...(environment.AGENT_GATEWAY_TEST_KEYRING_PATH === undefined
+      ? {}
+      : { testKeyringPath: environment.AGENT_GATEWAY_TEST_KEYRING_PATH }),
     shutdownTimeoutMs: environment.AGENT_GATEWAY_SHUTDOWN_TIMEOUT_MS,
     database: Object.freeze({
       host: environment.PGHOST,

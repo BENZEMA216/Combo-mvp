@@ -1,6 +1,7 @@
 import { createServer, type Server as HttpServer, type ServerResponse } from 'node:http';
 
 import { currentBrokerContractDigest } from '@cb/creator-agent-protocol';
+import { PostgresCloudJournal } from '@cb/creator-agent-persistence';
 import { Pool, type PoolClient } from 'pg';
 
 import type { AgentGatewayProcessConfig } from './config.js';
@@ -10,11 +11,20 @@ import {
   toGatewayPool,
   type GatewayPool,
 } from './postgres-authority.js';
-import { PostgresGatewayBusinessEventProjector } from './postgres-business-event-projector.js';
+import {
+  PostgresGatewayBusinessEventProjector,
+  type GatewayAssistantMessageSealer,
+} from './postgres-business-event-projector.js';
+import type { GatewayUserMessageSealer } from './lifecycle-outbound.js';
 
 const READY_SCHEMA_COLUMNS = Object.freeze([
+  ['broker_outbox', 'execution_capability_wire'],
+  ['broker_outbox', 'cancel_reason'],
+  ['worker_gateway_outbound_frames', 'delivery_contract_version'],
   ['worker_gateway_outbound_frames', 'wire_sent_at'],
   ['worker_gateway_outbound_frames', 'wire_expires_at'],
+  ['worker_gateway_outbound_frames', 'wire_envelope'],
+  ['worker_gateway_outbound_frames', 'wire_canonical_text'],
   ['worker_gateway_frame_receipts', 'broker_acknowledged_message_id'],
   ['worker_gateway_frame_receipts', 'broker_ack_level'],
   ['worker_gateway_frame_receipts', 'broker_ack_decision'],
@@ -175,15 +185,25 @@ export class AgentGatewayRuntime {
       releaseId: this.#config.releaseId,
       releaseManifestDigest: this.#config.releaseManifestDigest,
       brokerContractDigest: currentBrokerContractDigest(),
-      capability: 'conversation.open-ready/test-v1',
+      capability: 'broker-lifecycle-ready/test-v2',
     } as const;
   }
 }
 
 export function createPostgresAgentGatewayRuntime(
   config: AgentGatewayProcessConfig,
-  options: Pick<AgentGatewayOptions, 'diagnosticSink'> = {},
+  options: Pick<AgentGatewayOptions, 'diagnosticSink'> &
+    Readonly<{
+      sealAssistantMessage?: GatewayAssistantMessageSealer;
+      sealUserMessage?: GatewayUserMessageSealer;
+    }> = {},
 ): AgentGatewayRuntime {
+  if (
+    config.publisherEnabled &&
+    (options.sealAssistantMessage === undefined || options.sealUserMessage === undefined)
+  ) {
+    throw new Error('AGENT_GATEWAY_LIFECYCLE_CRYPTO_REQUIRED');
+  }
   const pool = new Pool({
     host: config.database.host,
     port: config.database.port,
@@ -198,12 +218,16 @@ export function createPostgresAgentGatewayRuntime(
   });
   attachBrokerPoolErrorBoundary(pool, options.diagnosticSink);
   const broker = toGatewayPool(pool);
+  const lifecycle = new PostgresCloudJournal({ api: unavailableApiPool(), broker });
   const authority = new PostgresAgentGatewayAuthority(
     { api: unavailableApiPool(), broker },
     config.policy,
-    // This bootstrap intentionally supports only conversation.open/ready. Invocation events fail
-    // closed until a real session-key/KMS terminal sealer and complete lifecycle projector exist.
-    new PostgresGatewayBusinessEventProjector(),
+    // Prepared, started, failed, and cancelled events always use the real Cloud Journal. A fresh
+    // succeeded event still fails closed unless the executable root receives an authenticated
+    // Worker-session-to-owner-message sealer; exact/security replays remain DB-owned.
+    new PostgresGatewayBusinessEventProjector(lifecycle, options.sealAssistantMessage),
+    undefined,
+    options.sealUserMessage,
   );
   const gateway = new AgentGateway({
     authority,
@@ -266,7 +290,19 @@ export async function checkBrokerDatabaseReady(pool: Pool, signal: AbortSignal):
       }>(
         `SELECT current_user AS role_name,
                 COALESCE((
-                  SELECT NOT role.rolsuper AND NOT role.rolbypassrls
+                  SELECT role.rolcanlogin
+                         AND NOT role.rolsuper
+                         AND NOT role.rolinherit
+                         AND NOT role.rolcreaterole
+                         AND NOT role.rolcreatedb
+                         AND NOT role.rolreplication
+                         AND NOT role.rolbypassrls
+                         AND NOT EXISTS (
+                           SELECT 1
+                             FROM pg_catalog.pg_auth_members AS membership
+                            WHERE membership.member = role.oid
+                               OR membership.roleid = role.oid
+                         )
                     FROM pg_catalog.pg_roles AS role
                    WHERE role.rolname = current_user
                 ), false) AS least_privilege,
@@ -274,6 +310,22 @@ export async function checkBrokerDatabaseReady(pool: Pool, signal: AbortSignal):
                 AND to_regclass('public.worker_gateway_outbound_frames') IS NOT NULL
                 AND to_regclass('public.worker_gateway_frame_receipts') IS NOT NULL
                 AND to_regclass('public.worker_gateway_operation_receipts') IS NOT NULL
+                AND COALESCE(public.creator_agent_gateway_lifecycle_v2_ready(), false)
+                AND to_regprocedure(
+                  'public.creator_agent_lock_gateway_lifecycle_command_v2(uuid,uuid,uuid,uuid,uuid,uuid,uuid,bigint)'
+                ) IS NOT NULL
+                AND COALESCE(
+                  public.creator_agent_gateway_operation_result_is_safe(
+                    'CLAIM_BROKER_COMMAND',
+                    pg_catalog.jsonb_build_object(
+                      'sessionId', '00000000-0000-7000-8000-000000000001',
+                      'commandId', '00000000-0000-7000-8000-000000000002',
+                      'sequence', '0',
+                      'canonicalDigest', repeat('0', 64)
+                    )
+                  ),
+                  false
+                )
                 AND NOT EXISTS (
                   SELECT 1
                     FROM (VALUES

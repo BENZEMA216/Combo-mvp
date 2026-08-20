@@ -151,7 +151,7 @@ describe('PostgresGatewayBusinessEventProjector', () => {
     );
     const call = lifecycle.projectSuccess.mock.calls[0]!;
     expect(call[0]).toBe(transaction);
-    expect(call[2]).toBe(sealer);
+    expect(call[2]).toBeTypeOf('function');
     expect(call[3]).toBe(signal);
     expect(call[1]).toMatchObject({
       creatorId: CREATOR_ID,
@@ -159,6 +159,23 @@ describe('PostgresGatewayBusinessEventProjector', () => {
       fact: { type: 'invocation.succeeded' },
       factDigest: succeeded.body.factDigest,
       resultCiphertext: succeeded.body.resultCiphertext,
+    });
+    const sealerInput = {
+      resultCiphertext: succeeded.body.resultCiphertext,
+      aad: {
+        schemaVersion: 1 as const,
+        ownerId: CREATOR_ID,
+        conversationId: CONVERSATION_ID,
+        messageId: READY_MESSAGE_ID,
+        role: 'ASSISTANT' as const,
+      },
+      signal,
+    };
+    await call[2]?.(sealerInput);
+    expect(sealer).toHaveBeenCalledWith({
+      ...sealerInput,
+      installationId: INSTALLATION_ID,
+      workerSessionId: CURRENT_SESSION_ID,
     });
   });
 

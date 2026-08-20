@@ -135,7 +135,14 @@ class PublisherCandidatePool implements GatewayPool {
         this.queries.push(sql.trim().replace(/\s+/gu, ' '));
         if (sql.includes('SELECT command.command_id::text, command.deployment_id::text')) {
           return Promise.resolve(
-            result([{ command_id: this.commandId, deployment_id: this.deploymentId }] as Row[]),
+            result([
+              {
+                command_id: this.commandId,
+                deployment_id: this.deploymentId,
+                command_type: 'conversation.open',
+                payload_contract_version: 1,
+              },
+            ] as Row[]),
           );
         }
         return Promise.resolve(result([]));

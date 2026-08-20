@@ -11,7 +11,7 @@ const enabled =
 const pgDescribe = enabled ? describe.sequential : describe.skip;
 
 pgDescribe('Agent Gateway executable real PostgreSQL readiness', () => {
-  it('starts only with the exact broker role and 0019 schema, then drains cleanly', async () => {
+  it('starts only with the exact broker role and 0030 lifecycle schema, then drains cleanly', async () => {
     const url = new URL(databaseUrl ?? 'postgresql://invalid@127.0.0.1:1/invalid');
     const sourceSha = 'a'.repeat(40);
     const config: AgentGatewayProcessConfig = {
@@ -52,7 +52,7 @@ pgDescribe('Agent Gateway executable real PostgreSQL readiness', () => {
       status: 'ok',
       service: 'agent-gateway',
       sourceSha,
-      capability: 'conversation.open-ready/test-v1',
+      capability: 'broker-lifecycle-ready/test-v2',
     });
     expect(address.transport.path).toBe('/v1/worker/connect');
 

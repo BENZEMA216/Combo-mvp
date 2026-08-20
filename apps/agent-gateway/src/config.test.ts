@@ -19,6 +19,7 @@ function validEnvironment(): Record<string, string> {
     AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS: `["sha256:${'d'.repeat(64)}"]`,
     AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES: '["apple-container-v1"]',
     AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST: `["${DEPLOYMENT_ID}"]`,
+    AGENT_GATEWAY_TEST_KEYRING_PATH: '/run/secrets/combo-agent-gateway-test-keyring.json',
     PGHOST: 'postgres.combo-test.svc.cluster.local',
     PGDATABASE: 'combo',
     PGUSER: 'combo_agent_broker',
@@ -113,6 +114,16 @@ describe('Agent Gateway executable configuration', () => {
     expect(() => parseAgentGatewayProcessConfig(environment)).toThrow(
       /non-empty exact Deployment allowlist/u,
     );
+  });
+
+  it('rejects an enabled lifecycle publisher without an absolute mounted Test keyring', () => {
+    const missing = validEnvironment();
+    delete missing.AGENT_GATEWAY_TEST_KEYRING_PATH;
+    expect(() => parseAgentGatewayProcessConfig(missing)).toThrow(/mounted Test keyring/u);
+
+    const relative = validEnvironment();
+    relative.AGENT_GATEWAY_TEST_KEYRING_PATH = 'secrets/keyring.json';
+    expect(() => parseAgentGatewayProcessConfig(relative)).toThrow(/absolute/u);
   });
 
   it('rejects a release tuple mismatch, elevated role, duplicates, and control bytes', () => {

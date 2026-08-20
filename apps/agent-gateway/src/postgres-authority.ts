@@ -11,14 +11,19 @@ import {
   IsoDateTimeSchema,
   RuntimePolicySchema,
   Sha256DigestSchema,
+  Sha256HexSchema,
+  Uint63StringSchema,
   UuidSchema,
   brokerHandshakeSigningBytes,
   canonicalSha256,
+  canonicalizeJson,
+  parseBrokerFrame,
   verifyP256P1363Signature,
   type BrokerEnvelope,
   type BrokerEvent,
   type BrokerHandshake,
 } from '@cb/creator-agent-protocol';
+import { EncryptedMessageSchema, MessageAadSchema } from '@cb/creator-agent-persistence';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 
@@ -28,6 +33,13 @@ import type {
   GatewayDelivery,
   GatewayDisconnectReason,
 } from './gateway.js';
+import {
+  BrokerLifecycleCommandSourceV2Schema,
+  materializeBrokerLifecycleCommandV2,
+  type BrokerLifecycleCommand,
+  type BrokerLifecycleCommandSourceV2,
+  type GatewayUserMessageSealer,
+} from './lifecycle-outbound.js';
 
 const MAX_UINT63 = 9_223_372_036_854_775_807n;
 const P256_UNCOMPRESSED_SPKI_PREFIX = Buffer.from(
@@ -101,6 +113,22 @@ const AcceptOutcomeSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('RESPONSES'), responses: AcceptResponseBatchSchema }).strict(),
   z.object({ kind: z.literal('SEQUENCE_CONFLICT') }).strict(),
 ]);
+const BrokerLifecycleCommandTypeSchema = z.enum(['invocation.prepare', 'invocation.start']);
+type BrokerLifecycleCommandType = z.infer<typeof BrokerLifecycleCommandTypeSchema>;
+const BrokerBusinessCommandTypeSchema = z.enum([
+  'conversation.open',
+  ...BrokerLifecycleCommandTypeSchema.options,
+]);
+type BrokerBusinessCommandType = z.infer<typeof BrokerBusinessCommandTypeSchema>;
+const LifecycleClaimRefSchema = z
+  .object({
+    sessionId: UuidSchema,
+    commandId: UuidSchema,
+    sequence: Uint63StringSchema,
+    canonicalDigest: Sha256HexSchema,
+  })
+  .strict();
+type LifecycleClaimRef = z.infer<typeof LifecycleClaimRefSchema>;
 
 const CompatibilityPolicySchema = z
   .object({
@@ -271,6 +299,7 @@ export class PostgresGatewayAuthorityError extends Error {
       | 'DIRECTION_INVALID'
       | 'MESSAGE_EXPIRED'
       | 'BUSINESS_PROJECTOR_UNAVAILABLE'
+      | 'LIFECYCLE_CRYPTO_UNAVAILABLE'
       | 'OPERATION_CONFLICT'
       | 'COMMIT_NOT_APPLIED'
       | 'COMMIT_OUTCOME_UNKNOWN'
@@ -354,6 +383,8 @@ interface OperationReceiptRow {
 interface BrokerCommandCandidateRow {
   command_id: string;
   deployment_id: string;
+  command_type: BrokerBusinessCommandType;
+  payload_contract_version: 1 | 2;
 }
 
 interface BrokerPublisherCurrentAuthorityRow extends InstallationRegistrationRow {
@@ -390,6 +421,44 @@ interface ExistingBrokerDeliveryRow {
 
 interface BrokerPersistedAckReceiptRow {
   committed_at: Date | string;
+}
+
+interface BrokerLifecycleCommandRow {
+  command_type: string;
+  command_id: string;
+  invocation_id: string;
+  creator_id: string;
+  conversation_id: string;
+  client_message_id: string;
+  request_digest: string;
+  deployment_id: string;
+  installation_id: string;
+  assignment_lease_id: string;
+  assignment_fence: string | number | bigint;
+  agent_version_id: string;
+  agent_version_digest: string;
+  snapshot_digest: string;
+  deadline_at: Date | string;
+  execution_capability_wire: unknown;
+  execution_capability_id: string;
+  execution_capability_digest: string;
+  predecessor_command_id: string | null;
+  cancel_reason: string | null;
+  message_id: string | null;
+  content_algorithm: string | null;
+  content_key_id: string | null;
+  content_nonce: Buffer | null;
+  content_ciphertext: Buffer | null;
+  content_auth_tag: Buffer | null;
+  content_cipher_digest: string | null;
+  content_digest: string | null;
+  content_aad_version: string | number | null;
+  wire_sent_at: Date | string;
+  wire_expires_at: Date | string;
+}
+
+interface ExistingLifecycleDeliveryRow extends ExistingBrokerDeliveryRow {
+  wire_canonical_text: string | null;
 }
 
 type GatewayOperationKind = z.infer<typeof GatewayOperationKindSchema>;
@@ -518,6 +587,7 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     policy: GatewayCompatibilityPolicy,
     readonly projector?: GatewayBusinessEventProjector,
     readonly failureInjector?: GatewayAuthorityFailureInjector,
+    readonly sealUserMessage?: GatewayUserMessageSealer,
   ) {
     this.#policy = CompatibilityPolicySchema.parse(policy);
   }
@@ -1005,6 +1075,20 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     ) {
       return undefined;
     }
+    if (candidate.payload_contract_version === 2) {
+      if (!BrokerLifecycleCommandTypeSchema.safeParse(candidate.command_type).success) {
+        throw persistenceFailure();
+      }
+      return this.#claimLifecycleCommand(
+        parsedSession,
+        candidate as BrokerCommandCandidateRow & {
+          command_type: BrokerLifecycleCommandType;
+          payload_contract_version: 2;
+        },
+        signal,
+      );
+    }
+    if (candidate.command_type !== 'conversation.open') throw persistenceFailure();
 
     const operation = gatewayOperation<BrokerEnvelope>(
       'CLAIM_BROKER_COMMAND',
@@ -1140,6 +1224,216 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
       if (error instanceof NoBrokerCommandAvailable) return undefined;
       throw error;
     }
+  }
+
+  async #claimLifecycleCommand(
+    session: AuthenticatedWorkerSession,
+    candidate: BrokerCommandCandidateRow & {
+      command_type: BrokerLifecycleCommandType;
+      payload_contract_version: 2;
+    },
+    signal: AbortSignal,
+  ): Promise<BrokerLifecycleCommand | undefined> {
+    const operation = gatewayOperation<LifecycleClaimRef>(
+      'CLAIM_BROKER_COMMAND',
+      { session, candidate },
+      LifecycleClaimRefSchema,
+      `${session.workerSessionId}:${candidate.command_id}:${randomUUID()}`,
+    );
+    try {
+      const reference = await withGatewayTransaction(
+        this.pools.broker,
+        {
+          creatorId: session.ownerId,
+          signal,
+          timeoutMs: this.#policy.transactionTimeoutMs,
+          operation,
+          beforeCommit: () => this.#inject('BEFORE_COMMIT'),
+        },
+        async (transaction) => {
+          await transaction.query(
+            `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1::text, 0))`,
+            [`combo.gateway.accept/v1:${session.workerSessionId}`],
+            signal,
+          );
+          await transaction.query(
+            `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1::text, 0))`,
+            [`combo.gateway.publisher-wip/v1:${session.ownerId}`],
+            signal,
+          );
+          await transaction.query(
+            `SELECT pg_advisory_xact_lock(pg_catalog.hashtextextended($1::text, 0))`,
+            [`combo.gateway.deployment/v1:${session.ownerId}:${candidate.deployment_id}`],
+            signal,
+          );
+          const current = await lockPublisherCurrentAuthority(
+            transaction,
+            session,
+            candidate.deployment_id,
+            signal,
+          );
+          const command = await lockLifecycleCommand(
+            transaction,
+            session,
+            candidate,
+            current,
+            signal,
+          );
+          const existing = await lockExistingLifecycleDelivery(
+            transaction,
+            session,
+            command.command_id,
+            signal,
+          );
+          if (
+            existing?.durable_ack_level === 'PERSISTED' ||
+            existing?.durable_ack_level === 'CLOUD_COMMITTED'
+          ) {
+            throw new NoBrokerCommandAvailable();
+          }
+          if (existing?.wire_retryable === false) throw new NoBrokerCommandAvailable();
+          const persistedAck =
+            existing === undefined
+              ? await findCurrentBrokerPersistedAckReceipt(
+                  transaction,
+                  session,
+                  command.command_id,
+                  signal,
+                )
+              : undefined;
+
+          let envelope: BrokerLifecycleCommand;
+          let canonicalDigest: string;
+          const sequence =
+            existing === undefined
+              ? parseUint63(current.outbound_next_seq)
+              : parseUint63(existing.sequence);
+          if (existing !== undefined) {
+            envelope = parseExactLifecycleWire({
+              canonicalText: existing.wire_canonical_text,
+              canonicalDigest: existing.canonical_digest,
+              session,
+              current,
+              deploymentId: candidate.deployment_id,
+              commandId: command.command_id,
+              commandType: candidate.command_type,
+              sequence,
+            });
+            canonicalDigest = existing.canonical_digest;
+          } else {
+            const source = lifecycleCommandSource(command, candidate.command_type);
+            const userMessageCiphertext =
+              candidate.command_type === 'invocation.prepare'
+                ? await this.#sealLifecycleUserMessage(command, session.workerSessionId, signal)
+                : undefined;
+            envelope = materializeBrokerLifecycleCommandV2(
+              source,
+              {
+                connectionId: session.connectionId,
+                sequence,
+                sentAt: isoDate(command.wire_sent_at),
+                expiresAt: isoDate(command.wire_expires_at),
+                lease: {
+                  deploymentId: candidate.deployment_id,
+                  leaseId: current.lease_id,
+                  workerSessionId: session.workerSessionId,
+                  fence: parseUint63(current.lease_fence),
+                },
+              },
+              userMessageCiphertext,
+            );
+            canonicalDigest = canonicalSha256(envelope);
+            await persistBrokerLifecycleCommand(
+              transaction,
+              session,
+              current,
+              command,
+              envelope,
+              canonicalDigest,
+              persistedAck,
+              signal,
+            );
+            await advanceOutbound(transaction, session, current.outbound_next_seq, signal);
+          }
+
+          const attempted = await transaction.query(
+            `UPDATE broker_outbox
+                SET state = 'SENT', attempt_count = attempt_count + 1,
+                    next_attempt_at = LEAST(
+                      expires_at,
+                      transaction_timestamp() + interval '1 second'
+                    )
+              WHERE command_id = $1 AND creator_id = $2
+                AND payload_contract_version = 2
+                AND command_type = $3
+                AND state IN ('PENDING', 'SENT')
+                AND attempt_count < 100
+                AND next_attempt_at <= transaction_timestamp()
+                AND expires_at > clock_timestamp()`,
+            [command.command_id, session.ownerId, candidate.command_type],
+            signal,
+          );
+          if (attempted.rowCount !== 1) throw new NoBrokerCommandAvailable();
+          await this.#inject('BROKER_COMMAND_CLAIMED');
+          return LifecycleClaimRefSchema.parse({
+            sessionId: session.workerSessionId,
+            commandId: command.command_id,
+            sequence,
+            canonicalDigest,
+          });
+        },
+      );
+      return await loadExactLifecycleFrame(
+        this.pools.broker,
+        session,
+        candidate.command_type,
+        reference,
+        signal,
+      );
+    } catch (error) {
+      if (error instanceof NoBrokerCommandAvailable) return undefined;
+      throw error;
+    }
+  }
+
+  async #sealLifecycleUserMessage(
+    command: BrokerLifecycleCommandRow,
+    workerSessionId: string,
+    signal: AbortSignal,
+  ) {
+    if (this.sealUserMessage === undefined) {
+      throw new PostgresGatewayAuthorityError('LIFECYCLE_CRYPTO_UNAVAILABLE');
+    }
+    const durableMessage = EncryptedMessageSchema.parse({
+      algorithm: command.content_algorithm,
+      keyId: command.content_key_id,
+      nonce: command.content_nonce,
+      ciphertext: command.content_ciphertext,
+      authTag: command.content_auth_tag,
+      cipherDigest: command.content_cipher_digest,
+      contentDigest: command.content_digest,
+      aadVersion: Number(command.content_aad_version),
+    });
+    const durableAad = MessageAadSchema.parse({
+      schemaVersion: 1,
+      ownerId: command.creator_id,
+      conversationId: command.conversation_id,
+      messageId: command.message_id,
+      role: 'USER',
+    });
+    return await this.sealUserMessage({
+      creatorId: command.creator_id,
+      installationId: command.installation_id,
+      durableMessage,
+      durableAad,
+      command: {
+        messageId: command.command_id,
+        conversationId: command.conversation_id,
+        invocationId: command.invocation_id,
+        workerSessionId,
+      },
+      signal,
+    });
   }
 
   async acceptEnvelope(
@@ -1647,7 +1941,7 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
     const current = found.rows[0];
     if (current === undefined) {
       // SQLite reframes a durable ACK before it asks Cloud to replay the business command on a
-      // replacement transport. Accept only an exact prior PERSISTED/APPLIED v1 command binding as
+      // replacement transport. Accept only an exact prior PERSISTED/APPLIED typed command binding as
       // a no-op. The current Session still has no delivery, so the publisher must re-envelope the
       // command; critically, this path never ACKs broker_outbox.
       if (envelope.body.level !== 'PERSISTED' || envelope.body.decision !== 'APPLIED') {
@@ -1660,8 +1954,24 @@ export class PostgresAgentGatewayAuthority implements AgentGatewayAuthorityPort 
              ON command.command_id = delivery.broker_command_id
             AND command.creator_id = delivery.creator_id
           WHERE delivery.message_id = $1 AND delivery.creator_id = $2
-            AND delivery.delivery_contract_version = 1
-            AND delivery.envelope_type = 'conversation.open'
+            AND (
+              (
+                delivery.delivery_contract_version = 1
+                AND delivery.envelope_type = 'conversation.open'
+                AND command.payload_contract_version = 1
+              )
+              OR
+              (
+                delivery.delivery_contract_version = 2
+                AND delivery.envelope_type IN (
+                  'invocation.prepare', 'invocation.start'
+                )
+                AND command.payload_contract_version = 2
+                AND delivery.wire_envelope IS NOT NULL
+                AND delivery.wire_canonical_text IS NOT NULL
+              )
+            )
+            AND command.command_type = delivery.envelope_type
             AND delivery.durable_ack_level IN ('PERSISTED', 'CLOUD_COMMITTED')
             AND delivery.ack_decision = 'APPLIED'
             AND command.command_id = $1
@@ -2248,7 +2558,8 @@ async function findNextBrokerCommandCandidate(
     // This is deliberately a non-authoritative pre-read. The exact candidate is rechecked only
     // after the per-Deployment advisory and current Session/Lease locks in the claim transaction.
     const result = await connection.query<BrokerCommandCandidateRow>(
-      `SELECT command.command_id::text, command.deployment_id::text
+      `SELECT command.command_id::text, command.deployment_id::text,
+              command.command_type, command.payload_contract_version
          FROM worker_gateway_sessions AS gateway
          JOIN worker_auth_challenges AS challenge
            ON challenge.id = gateway.challenge_id
@@ -2279,8 +2590,19 @@ async function findNextBrokerCommandCandidate(
           AND deployment.lease_fence = lease.fence
           AND lease.state = 'ACTIVE'
           AND lease.expires_at > clock_timestamp() + interval '3 seconds'
-          AND command.payload_contract_version = 1
-          AND command.command_type = 'conversation.open'
+          AND (
+            (
+              command.payload_contract_version = 1
+              AND command.command_type = 'conversation.open'
+            )
+            OR
+            (
+              command.payload_contract_version = 2
+              AND command.command_type IN (
+                'invocation.prepare', 'invocation.start'
+              )
+            )
+          )
           AND command.state IN ('PENDING', 'SENT')
           AND command.attempt_count < 100
           AND command.next_attempt_at <= transaction_timestamp()
@@ -2288,17 +2610,23 @@ async function findNextBrokerCommandCandidate(
           AND NOT EXISTS (
             SELECT 1
               FROM broker_outbox AS competing_command
-              JOIN agent_conversations AS competing_conversation
-                ON competing_conversation.id = competing_command.conversation_id
-               AND competing_conversation.creator_id = competing_command.creator_id
-               AND competing_conversation.consumer_subject_id = competing_command.consumer_subject_id
              WHERE competing_command.creator_id = command.creator_id
                AND competing_command.command_id <> command.command_id
-               AND competing_command.payload_contract_version = 1
-               AND competing_command.command_type = 'conversation.open'
+               AND (
+                 (
+                   competing_command.payload_contract_version = 1
+                   AND competing_command.command_type = 'conversation.open'
+                 )
+                 OR
+                 (
+                   competing_command.payload_contract_version = 2
+                   AND competing_command.command_type IN (
+                     'invocation.prepare', 'invocation.start'
+                   )
+                 )
+               )
                AND competing_command.state IN ('PENDING', 'SENT')
                AND competing_command.expires_at > clock_timestamp()
-               AND competing_conversation.state = 'OPENING'
                AND (
                  competing_command.state = 'SENT'
                  OR EXISTS (
@@ -2306,7 +2634,8 @@ async function findNextBrokerCommandCandidate(
                      FROM worker_gateway_outbound_frames AS competing_delivery
                     WHERE competing_delivery.creator_id = competing_command.creator_id
                       AND competing_delivery.broker_command_id = competing_command.command_id
-                      AND competing_delivery.delivery_contract_version = 1
+                      AND competing_delivery.delivery_contract_version =
+                          competing_command.payload_contract_version
                       AND competing_delivery.durable_ack_level IS DISTINCT FROM 'CLOUD_COMMITTED'
                  )
                  OR (
@@ -2323,7 +2652,7 @@ async function findNextBrokerCommandCandidate(
              WHERE delivery.session_id = gateway.id
                AND delivery.creator_id = gateway.creator_id
                AND delivery.broker_command_id = command.command_id
-               AND delivery.delivery_contract_version = 1
+               AND delivery.delivery_contract_version = command.payload_contract_version
                AND delivery.durable_ack_level IN ('PERSISTED', 'CLOUD_COMMITTED')
           )
         ORDER BY command.next_attempt_at, command.command_id
@@ -2338,6 +2667,10 @@ async function findNextBrokerCommandCandidate(
     return {
       command_id: UuidSchema.parse(row.command_id),
       deployment_id: UuidSchema.parse(row.deployment_id),
+      command_type: BrokerBusinessCommandTypeSchema.parse(row.command_type),
+      payload_contract_version: z
+        .union([z.literal(1), z.literal(2)])
+        .parse(Number(row.payload_contract_version)),
     };
   } catch (error) {
     destroy = true;
@@ -2480,17 +2813,32 @@ async function lockConversationOpenCommand(
         AND NOT EXISTS (
           SELECT 1
             FROM broker_outbox AS competing_command
-            JOIN agent_conversations AS competing_conversation
-              ON competing_conversation.id = competing_command.conversation_id
-             AND competing_conversation.creator_id = competing_command.creator_id
-             AND competing_conversation.consumer_subject_id = competing_command.consumer_subject_id
            WHERE competing_command.creator_id = command.creator_id
              AND competing_command.command_id <> command.command_id
-             AND competing_command.payload_contract_version = 1
-             AND competing_command.command_type = 'conversation.open'
+             AND (
+               (
+                 competing_command.payload_contract_version = 1
+                 AND competing_command.command_type = 'conversation.open'
+                 AND EXISTS (
+                   SELECT 1
+                     FROM agent_conversations AS competing_conversation
+                    WHERE competing_conversation.id = competing_command.conversation_id
+                      AND competing_conversation.creator_id = competing_command.creator_id
+                      AND competing_conversation.consumer_subject_id =
+                            competing_command.consumer_subject_id
+                      AND competing_conversation.state = 'OPENING'
+                 )
+               )
+               OR
+               (
+                 competing_command.payload_contract_version = 2
+                 AND competing_command.command_type IN (
+                   'invocation.prepare', 'invocation.start'
+                 )
+               )
+             )
              AND competing_command.state IN ('PENDING', 'SENT')
              AND competing_command.expires_at > clock_timestamp()
-             AND competing_conversation.state = 'OPENING'
              AND (
                competing_command.state = 'SENT'
                OR EXISTS (
@@ -2498,7 +2846,8 @@ async function lockConversationOpenCommand(
                    FROM worker_gateway_outbound_frames AS competing_delivery
                   WHERE competing_delivery.creator_id = competing_command.creator_id
                     AND competing_delivery.broker_command_id = competing_command.command_id
-                    AND competing_delivery.delivery_contract_version = 1
+                    AND competing_delivery.delivery_contract_version =
+                          competing_command.payload_contract_version
                     AND competing_delivery.durable_ack_level IS DISTINCT FROM 'CLOUD_COMMITTED'
                )
                OR (
@@ -2523,6 +2872,302 @@ async function lockConversationOpenCommand(
   const row = found.rows[0];
   if (row === undefined) throw new NoBrokerCommandAvailable();
   return row;
+}
+
+async function lockLifecycleCommand(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  candidate: BrokerCommandCandidateRow & {
+    command_type: BrokerLifecycleCommandType;
+    payload_contract_version: 2;
+  },
+  current: BrokerPublisherCurrentAuthorityRow,
+  signal: AbortSignal,
+): Promise<BrokerLifecycleCommandRow> {
+  const found = await transaction.query<BrokerLifecycleCommandRow>(
+    `SELECT *
+       FROM public.creator_agent_lock_gateway_lifecycle_command_v2(
+         $1::uuid, $2::uuid, $3::uuid, $4::uuid,
+         $5::uuid, $6::uuid, $7::uuid, $8::bigint
+       )`,
+    [
+      candidate.command_id,
+      session.ownerId,
+      session.installationId,
+      candidate.deployment_id,
+      session.workerSessionId,
+      session.connectionId,
+      current.lease_id,
+      parseUint63(current.lease_fence),
+    ],
+    signal,
+  );
+  if (found.rowCount !== 1 || found.rows.length !== 1) throw new NoBrokerCommandAvailable();
+  const row = found.rows[0]!;
+  if (
+    UuidSchema.safeParse(row.command_id).success === false ||
+    row.command_id !== candidate.command_id ||
+    BrokerLifecycleCommandTypeSchema.safeParse(row.command_type).success === false ||
+    row.command_type !== candidate.command_type ||
+    row.creator_id !== session.ownerId ||
+    row.installation_id !== session.installationId ||
+    row.deployment_id !== candidate.deployment_id ||
+    UuidSchema.safeParse(row.assignment_lease_id).success === false
+  ) {
+    throw persistenceFailure();
+  }
+  parseUint63(row.assignment_fence);
+  return row;
+}
+
+function lifecycleCommandSource(
+  command: BrokerLifecycleCommandRow,
+  commandType: BrokerLifecycleCommandType,
+): BrokerLifecycleCommandSourceV2 {
+  const common = {
+    payloadContractVersion: 2 as const,
+    commandId: command.command_id,
+    invocationId: command.invocation_id,
+    executionAuthority: {
+      deploymentId: command.deployment_id,
+      installationId: command.installation_id,
+      leaseId: command.assignment_lease_id,
+      fence: parseUint63(command.assignment_fence),
+    },
+  };
+  if (commandType === 'invocation.prepare') {
+    if (command.predecessor_command_id !== null || command.cancel_reason !== null) {
+      throw persistenceFailure();
+    }
+    return BrokerLifecycleCommandSourceV2Schema.parse({
+      ...common,
+      type: commandType,
+      conversationId: command.conversation_id,
+      clientMessageId: command.client_message_id,
+      requestDigest: command.request_digest,
+      agentVersionId: command.agent_version_id,
+      agentVersionDigest: command.agent_version_digest,
+      snapshotDigest: command.snapshot_digest,
+      deadlineAt: isoDate(command.deadline_at),
+      executionCapability: command.execution_capability_wire,
+      executionCapabilityDigest: command.execution_capability_digest,
+    });
+  }
+  if (command.predecessor_command_id === null || command.cancel_reason !== null) {
+    throw persistenceFailure();
+  }
+  return BrokerLifecycleCommandSourceV2Schema.parse({
+    ...common,
+    type: commandType,
+    conversationId: command.conversation_id,
+    requestDigest: command.request_digest,
+    agentVersionId: command.agent_version_id,
+    agentVersionDigest: command.agent_version_digest,
+    prepareCommandId: command.predecessor_command_id,
+    executionCapabilityId: command.execution_capability_id,
+    executionCapability: command.execution_capability_wire,
+    executionCapabilityDigest: command.execution_capability_digest,
+  });
+}
+
+async function lockExistingLifecycleDelivery(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  commandId: string,
+  signal: AbortSignal,
+): Promise<ExistingLifecycleDeliveryRow | undefined> {
+  const found = await transaction.query<ExistingLifecycleDeliveryRow>(
+    `SELECT sequence, canonical_digest, durable_ack_level, wire_sent_at, wire_expires_at,
+            wire_canonical_text,
+            wire_expires_at > clock_timestamp() + interval '1 second' AS wire_retryable
+       FROM worker_gateway_outbound_frames
+      WHERE session_id = $1 AND creator_id = $2 AND broker_command_id = $3
+        AND delivery_contract_version = 2
+      FOR UPDATE`,
+    [session.workerSessionId, session.ownerId, commandId],
+    signal,
+  );
+  if (found.rows.length > 1) throw persistenceFailure();
+  return found.rows[0];
+}
+
+function parseExactLifecycleWire(input: {
+  canonicalText: string | null;
+  canonicalDigest: string;
+  session: AuthenticatedWorkerSession;
+  current: BrokerPublisherCurrentAuthorityRow;
+  deploymentId: string;
+  commandId: string;
+  commandType: BrokerLifecycleCommandType;
+  sequence: string;
+}): BrokerLifecycleCommand {
+  if (typeof input.canonicalText !== 'string' || input.canonicalText.length === 0) {
+    throw persistenceFailure();
+  }
+  const parsed = parseBrokerFrame(Buffer.from(input.canonicalText, 'utf8'));
+  if (
+    canonicalizeJson(parsed) !== input.canonicalText ||
+    canonicalSha256(parsed) !== input.canonicalDigest ||
+    parsed.kind !== 'command' ||
+    parsed.type !== input.commandType ||
+    parsed.messageId !== input.commandId ||
+    parsed.correlationId !==
+      (parsed.type === 'invocation.prepare' || parsed.type === 'invocation.start'
+        ? parsed.body.invocationId
+        : '') ||
+    parsed.connectionId !== input.session.connectionId ||
+    parsed.sequence !== input.sequence ||
+    parsed.lease.deploymentId !== input.deploymentId ||
+    parsed.lease.leaseId !== input.current.lease_id ||
+    parsed.lease.workerSessionId !== input.session.workerSessionId ||
+    parsed.lease.fence !== parseUint63(input.current.lease_fence)
+  ) {
+    throw persistenceFailure();
+  }
+  return parsed as BrokerLifecycleCommand;
+}
+
+async function persistBrokerLifecycleCommand(
+  transaction: GatewayTransaction,
+  session: AuthenticatedWorkerSession,
+  current: BrokerPublisherCurrentAuthorityRow,
+  command: BrokerLifecycleCommandRow,
+  envelope: BrokerLifecycleCommand,
+  canonicalDigest: string,
+  persistedAck: BrokerPersistedAckReceiptRow | undefined,
+  signal: AbortSignal,
+): Promise<void> {
+  const canonicalText = canonicalizeJson(envelope);
+  if (
+    canonicalizeJson(JSON.parse(canonicalText) as unknown) !== canonicalText ||
+    canonicalSha256(envelope) !== canonicalDigest
+  ) {
+    throw persistenceFailure();
+  }
+  const inserted = await transaction.query(
+    `INSERT INTO worker_gateway_outbound_frames (
+       session_id, creator_id, sequence, message_id, canonical_digest, envelope_type,
+       delivery_contract_version, broker_command_id, broker_target_worker_id,
+       broker_deployment_id, claim_session_id, claim_connection_id,
+       current_delivery_lease_id, current_delivery_fence, wire_sent_at, wire_expires_at,
+       wire_envelope, wire_canonical_text, durable_ack_level, ack_decision, acked_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6,
+       2, $4, $7, $8, $1, $9,
+       $10, $11, $12::timestamptz, $13::timestamptz,
+       $14::jsonb, $15, $16, $17, $18::timestamptz
+     )`,
+    [
+      session.workerSessionId,
+      session.ownerId,
+      parseUint63(envelope.sequence),
+      command.command_id,
+      canonicalDigest,
+      envelope.type,
+      session.installationId,
+      envelope.lease.deploymentId,
+      session.connectionId,
+      current.lease_id,
+      parseUint63(current.lease_fence),
+      envelope.sentAt,
+      envelope.expiresAt,
+      canonicalText,
+      canonicalText,
+      persistedAck === undefined ? null : 'PERSISTED',
+      persistedAck === undefined ? null : 'APPLIED',
+      persistedAck === undefined ? null : isoDate(persistedAck.committed_at),
+    ],
+    signal,
+  );
+  if (inserted.rowCount !== 1) throw persistenceFailure();
+}
+
+async function loadExactLifecycleFrame(
+  pool: GatewayPool,
+  session: AuthenticatedWorkerSession,
+  commandType: BrokerLifecycleCommandType,
+  rawReference: LifecycleClaimRef,
+  signal: AbortSignal,
+): Promise<BrokerLifecycleCommand> {
+  const reference = LifecycleClaimRefSchema.parse(rawReference);
+  const connection = await connectWithSignal(pool, signal);
+  let transactionOpen = false;
+  let destroy = false;
+  try {
+    await connection.query('BEGIN READ ONLY', undefined, signal);
+    transactionOpen = true;
+    await connection.query(
+      `SELECT set_config('app.creator_id', $1, true)`,
+      [session.ownerId],
+      signal,
+    );
+    const found = await connection.query<{
+      wire_canonical_text: string | null;
+      wire_envelope: unknown;
+      broker_deployment_id: string;
+      current_delivery_lease_id: string;
+      current_delivery_fence: string | number | bigint;
+      wire_sent_at: Date | string;
+      wire_expires_at: Date | string;
+    }>(
+      `SELECT wire_canonical_text, wire_envelope, broker_deployment_id::text,
+              current_delivery_lease_id::text, current_delivery_fence,
+              wire_sent_at, wire_expires_at
+         FROM worker_gateway_outbound_frames
+        WHERE session_id = $1 AND creator_id = $2
+          AND broker_command_id = $3 AND message_id = $3
+          AND sequence = $4::bigint AND canonical_digest = $5
+          AND delivery_contract_version = 2 AND envelope_type = $6
+          AND claim_session_id = $1 AND claim_connection_id = $7`,
+      [
+        reference.sessionId,
+        session.ownerId,
+        reference.commandId,
+        reference.sequence,
+        reference.canonicalDigest,
+        commandType,
+        session.connectionId,
+      ],
+      signal,
+    );
+    if (found.rowCount !== 1 || found.rows.length !== 1) throw persistenceFailure();
+    const row = found.rows[0]!;
+    const canonicalText = row.wire_canonical_text;
+    if (typeof canonicalText !== 'string' || canonicalText.length === 0) {
+      throw persistenceFailure();
+    }
+    const parsed = parseBrokerFrame(Buffer.from(canonicalText, 'utf8'));
+    if (
+      canonicalizeJson(parsed) !== canonicalText ||
+      canonicalizeJson(row.wire_envelope) !== canonicalText ||
+      canonicalSha256(parsed) !== reference.canonicalDigest ||
+      parsed.kind !== 'command' ||
+      parsed.type !== commandType ||
+      parsed.messageId !== reference.commandId ||
+      parsed.sequence !== reference.sequence ||
+      parsed.connectionId !== session.connectionId ||
+      parsed.lease.workerSessionId !== session.workerSessionId ||
+      parsed.lease.deploymentId !== UuidSchema.parse(row.broker_deployment_id) ||
+      parsed.lease.leaseId !== UuidSchema.parse(row.current_delivery_lease_id) ||
+      parsed.lease.fence !== parseUint63(row.current_delivery_fence) ||
+      parsed.sentAt !== isoDate(row.wire_sent_at) ||
+      parsed.expiresAt !== isoDate(row.wire_expires_at)
+    ) {
+      throw persistenceFailure();
+    }
+    await connection.query('COMMIT', undefined, signal);
+    transactionOpen = false;
+    return parsed as BrokerLifecycleCommand;
+  } catch (error) {
+    if (transactionOpen) {
+      await connection.query('ROLLBACK', undefined, AbortSignal.timeout(2_000)).catch(() => {
+        destroy = true;
+      });
+    }
+    throw error;
+  } finally {
+    connection.release(destroy || signal.aborted);
+  }
 }
 
 async function lockExistingBrokerDelivery(

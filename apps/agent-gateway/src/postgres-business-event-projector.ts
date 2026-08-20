@@ -41,6 +41,11 @@ type InvocationLifecycleProjector = Pick<
   'projectPrepared' | 'projectStarted' | 'projectSuccess' | 'projectFailed' | 'projectCancelled'
 >;
 
+export type GatewayAssistantMessageSealer = (
+  input: Parameters<AssistantMessageSealer>[0] &
+    Readonly<{ installationId: string; workerSessionId: string }>,
+) => ReturnType<AssistantMessageSealer>;
+
 type ConversationReadyRow = Readonly<{
   outcome: string;
   conversation_state: string | null;
@@ -69,7 +74,7 @@ const CONVERSATION_STATES = new Set([
 export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEventProjector {
   public constructor(
     private readonly lifecycle?: InvocationLifecycleProjector,
-    private readonly sealAssistantMessage?: AssistantMessageSealer,
+    private readonly sealAssistantMessage?: GatewayAssistantMessageSealer,
   ) {}
 
   public async project(input: {
@@ -189,7 +194,14 @@ export class PostgresGatewayBusinessEventProjector implements GatewayBusinessEve
             factDigest: body.factDigest,
             resultCiphertext: body.resultCiphertext,
           },
-          this.sealAssistantMessage,
+          this.sealAssistantMessage === undefined
+            ? undefined
+            : (sealerInput) =>
+                this.sealAssistantMessage!({
+                  ...sealerInput,
+                  installationId: input.transport.installationId,
+                  workerSessionId: input.transport.workerSessionId,
+                }),
           input.signal,
         );
         if (outcome.kind === 'SECURITY_BLOCKED') return 'SECURITY_BLOCK';
