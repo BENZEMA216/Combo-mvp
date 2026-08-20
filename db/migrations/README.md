@@ -2,6 +2,8 @@
 
 本目录按文件名字典序保存 PostgreSQL 迁移。已应用的迁移不可修改，新增结构必须通过新的迁移文件演进。
 
+`0030_creator_agent_runtime_product_wiring.sql` 接通默认关闭的 Test-only Runtime send/read 与 payload-v2 `invocation.prepare/start` transport。Consumer fresh send以短 preflight、事务外AEAD/P-256 authority、短finalize组成；finalize在统一Deployment advisory/Version NOWAIT锁序下原子提交USER/Invocation/Event/prepare Outbox，并由DB固定schema canonical helper重算完整Execution Capability digest。Runtime model、AgentVersion policy 与 Capability 共用同一 ASCII Model ID 语义；0030 撤销 Consumer 对旧 v1 accept wrapper 的执行权，只保留 create 与 v2 preflight/finalize 的 exact readiness。Gateway lifecycle delivery按current Session/Lease唯一，保存immutable canonical wire text + JSON projection + SHA-256；same-session replay复用exact bytes，replacement Session才新seal。Broker只通过ledger-free readiness与窄lock definer读取，claim receipt不含ciphertext。迁移只铺 nullable cancel字段但拒绝v2 cancel producer/claim；public cancel/retry仍fail closed，须由后续完整admission/projector/ACK迁移实现。
+
 `0028_creator_agent_success_fact_admission.sql` 将`invocation.succeeded`切换到同一外层事务的DB preflight与finalize：preflight锁定canonical Worker fact并分配KMS AAD所需Assistant Message ID，finalize重验verified result、durable AEAD digest和Cloud deadline后一次提交Message/SUCCEEDED Event/Consumer chain/永久receipt/IDLE。Deferred constraints拒绝未消费seal intent或残缺terminal chain；failed v2在委托0027前对既有succeeded source做完整重构，旧success writers与Broker直调failed v1均被撤权。
 
 `0027_creator_agent_failed_fact_admission.sql` 将confirmed `invocation.failed`的global source/terminal phase分类、DB JCS fact与Consumer payload/dedupe、FAILED/Event/Outbox/stream/receipt/Conversation原子链统一到Broker-only definer。永久append-only receipt支持Outbox retention后的exact replay；结构合法但不同的succeeded source只以generic stored-terminal binding参与security alert，不冒充完整succeeded fact重构。
