@@ -154,6 +154,47 @@ test('PR and Release callers share the exact reusable T0 workflow with honest di
   assert.doesNotMatch(`${prSource}\n${releaseSource}`, /pull_request_target/u);
 });
 
+test('PR checks run the isolated R3 PostgreSQL vertical against the exact merge source', async () => {
+  const source = await text('.github/workflows/pr-ci.yml');
+  const workflow = YAML.parse(source);
+  const job = workflow.jobs['vnext-r3-pg'];
+
+  assert.equal(job.name, 'CI / VNext R3 PostgreSQL vertical');
+  assert.equal(job['runs-on'], 'ubuntu-24.04');
+  assert.equal(job['timeout-minutes'], 30);
+  assert.deepEqual(job.permissions, { contents: 'read' });
+  assert.equal(job.services, undefined);
+  assert.equal(job.env.MERGE_SHA, '${{ github.sha }}');
+  assert.equal(job.env.BASE_SHA, '${{ github.event.pull_request.base.sha }}');
+  assert.equal(job.env.HEAD_SHA, '${{ github.event.pull_request.head.sha }}');
+  assert.doesNotMatch(source, /pull_request_target/u);
+  assert.doesNotMatch(source, /continue-on-error/u);
+
+  const checkout = job.steps.find(
+    ({ name }) => name === 'Check out the exact pull request merge source for R3',
+  );
+  assert.equal(checkout.uses, 'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd');
+  assert.equal(checkout.with.ref, '${{ github.sha }}');
+  assert.equal(checkout.with['fetch-depth'], 0);
+  assert.equal(checkout.with['persist-credentials'], false);
+
+  const identity = job.steps.find(({ name }) => name === 'Verify the R3 merge identity');
+  assert.match(identity.run, /git rev-parse HEAD\^1/u);
+  assert.match(identity.run, /git rev-parse HEAD\^2/u);
+  assert.match(identity.run, /git diff --cached --quiet/u);
+
+  const postgres = job.steps.find(({ name }) => name === 'Install the isolated PostgreSQL runtime');
+  assert.match(postgres.run, /apt-get install -y[\s\S]*postgresql[\s\S]*postgresql-client/u);
+  assert.match(postgres.run, /pg_config --bindir/u);
+  assert.match(postgres.run, /INITDB_BIN=%s\/initdb/u);
+  assert.match(postgres.run, /POSTGRES_BIN=%s\/postgres/u);
+  assert.match(postgres.run, /PG_ISREADY_BIN=%s\/pg_isready/u);
+  assert.match(postgres.run, /GITHUB_ENV/u);
+
+  const gate = job.steps.find(({ name }) => name === 'R3 isolated PostgreSQL product vertical');
+  assert.equal(gate.run, 'pnpm vnext:test:r3:pg');
+});
+
 test('the workflow contract entrypoint includes T0 suite and evidence tests', async () => {
   const rootPackage = JSON.parse(await text('package.json'));
   const command = rootPackage.scripts['test:workflow-contracts'];
