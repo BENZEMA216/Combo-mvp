@@ -8147,18 +8147,26 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
     });
   }, 12_000);
 
-  it('commits an old exact final after replacement revokes its Lease while Capability remains live', async () => {
+  it('continues prepared and terminal facts after replacement revokes the old transport Lease', async () => {
     const conversationId = await createConversation();
     const staleConversationId = await createConversation();
+    const replacementPreparedConversationId = await createConversation();
     const journal = new PostgresCloudJournal(journalPools);
     const accepted = acceptInput(conversationId);
     const staleAccepted = acceptInput(staleConversationId);
+    const replacementPreparedAccepted = acceptInput(replacementPreparedConversationId);
     await journal.acceptInvocation(accepted);
     await journal.acceptInvocation(staleAccepted);
+    await journal.acceptInvocation(replacementPreparedAccepted);
     const authority = await assignDispatchPending(accepted);
     const staleAuthority = await assignDispatchPending(staleAccepted);
+    const replacementPreparedAuthority = await assignDispatchPending(replacementPreparedAccepted);
     const prepared = preparedInput(accepted, authority);
     const stalePrepared = preparedInput(staleAccepted, staleAuthority);
+    const replacementPrepared = preparedInput(
+      replacementPreparedAccepted,
+      replacementPreparedAuthority,
+    );
     const committedPrepared = await journal.commitPrepared(prepared);
     const committedStalePrepared = await journal.commitPrepared(stalePrepared);
     if (!committedPrepared.startCommandId || !committedStalePrepared.startCommandId) {
@@ -8194,6 +8202,18 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
        ) VALUES ($1, $2, $3, $4, $5, 2, now() + interval '10 minutes')`,
       [currentTransportLeaseId, ids.deploymentId, ids.creatorId, ids.workerId, randomUuidV7()],
     );
+    const replacementPreparedCommitted = await journal.commitPrepared(replacementPrepared);
+    expect(replacementPreparedCommitted).toMatchObject({
+      invocationId: replacementPreparedAccepted.invocationId,
+      state: 'PERSISTED',
+      prepareCommandId: replacementPreparedAccepted.outboxCommandId,
+      startCommandId: expect.any(String),
+      replayed: false,
+    });
+    await expect(journal.commitPrepared(replacementPrepared)).resolves.toEqual({
+      ...replacementPreparedCommitted,
+      replayed: true,
+    });
     const currentAuthorityBefore = await owner.query(
       `SELECT lease.state AS lease_state, lease.fence, lease.worker_id,
               deployment.serving_version_id, deployment.observed_state,
@@ -8233,12 +8253,65 @@ pgDescribe('PostgresCloudJournal real transactions', () => {
         [staleAccepted.invocationId],
       ),
     ).resolves.toMatchObject({ rows: [{ state: 'SUCCEEDED', succeeded_events: '1' }] });
+    await expect(
+      owner.query(
+        `SELECT invocation.state,
+                invocation.assignment_lease_id::text,
+                invocation.assignment_fence::text,
+                invocation.execution_capability_revoked_at IS NOT NULL AS capability_revoked,
+                assignment_lease.state AS assignment_lease_state,
+                replacement_lease.state AS replacement_lease_state,
+                start_command.assignment_lease_id::text AS start_assignment_lease_id,
+                start_command.assignment_fence::text AS start_assignment_fence,
+                start_command.execution_capability_id::text AS start_capability_id,
+                start_command.execution_capability_digest AS start_capability_digest,
+                (SELECT count(*) FROM broker_outbox
+                  WHERE invocation_id = invocation.id
+                    AND command_type = 'invocation.start')::text AS start_commands
+           FROM agent_invocations AS invocation
+           JOIN worker_leases AS assignment_lease
+             ON assignment_lease.id = invocation.assignment_lease_id
+           JOIN worker_leases AS replacement_lease
+             ON replacement_lease.id = $3
+           JOIN broker_outbox AS start_command
+             ON start_command.command_id = $2
+          WHERE invocation.id = $1`,
+        [
+          replacementPreparedAccepted.invocationId,
+          replacementPreparedCommitted.startCommandId,
+          currentTransportLeaseId,
+        ],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          state: 'PERSISTED',
+          assignment_lease_id: ids.leaseId,
+          assignment_fence: '1',
+          capability_revoked: false,
+          assignment_lease_state: 'REVOKED',
+          replacement_lease_state: 'ACTIVE',
+          start_assignment_lease_id: ids.leaseId,
+          start_assignment_fence: '1',
+          start_capability_id: replacementPreparedAuthority.executionCapabilityId,
+          start_capability_digest: replacementPreparedAuthority.executionCapabilityDigest,
+          start_commands: '1',
+        },
+      ],
+    });
     expect(await counts(conversationId)).toMatchObject({
       messages: '2',
       events: '4',
       commands: '2',
       consumer_events: '1',
       conversation_state: 'IDLE',
+    });
+    expect(await counts(replacementPreparedConversationId)).toMatchObject({
+      messages: '1',
+      events: '2',
+      commands: '2',
+      consumer_events: '0',
+      conversation_state: 'BUSY',
     });
   });
 

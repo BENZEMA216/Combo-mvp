@@ -62,6 +62,8 @@ Journal 还保留真正的 terminal/reconciliation storage reserve，而不是�
 
 Heartbeat 只在 Cloud `lease.grant` 的剩余有效期内运行。客户端从 Challenge 的可信 Cloud time 和本机 monotonic timer 估算接收时刻；网络延迟不会把 `(leaseExpiresAt - sentAt)` 的完整时长重新授予本机，已过期的初始 grant 不会进入 READY。发送 Heartbeat、收到普通 ACK 或本机 wall clock 变化都不能延长权限，只有新的合法 `lease.grant` 可以续期。stale connection、stale fence、revoke 和 sequence conflict 会 fail closed。生产配置的 Heartbeat 周期下限为 10 秒；更短周期只允许显式不安全回环测试。
 
+Journal 接收 `invocation.prepare` 与 `invocation.start` 时要求命令的 outer Session、Lease、Fence 和 envelope 当前有效。Invocation deadline 可以晚于当前 transport Lease 到期时间，但不能晚于 Execution Capability 到期时间；自然 transport 到期只保留 PREPARED 并等待同一 Deployment 的合法 replacement，不能把它终态化为 Invocation deadline expired。replacement 上的 start 仍使用当前 transport authority，持久化事实继续绑定原始 Execution Capability 的 Lease 与 Fence。
+
 断线后，客户端在每次网络尝试前续取 installation ownership，并在 Challenge/签名完成后、创建 Broker socket 前再次 CAS；长时间 Challenge 后若另一进程已接管，loser 会在接触 Broker 之前 BLOCKED。随后才建立新连接；未 ACK frame 是否重投、使用哪个 connection sequence、command 是否已经持久化，都只由 durable port 回答。网络写成功只记 `written`，不冒充 `PERSISTED` 或 `CLOUD_COMMITTED`。
 
 生产 SQLite owner lease 最短 60 秒，而生产 reconnect backoff、heartbeat 和单次 socket handshake 上限均不超过 30 秒；短 owner lease 与更快 reconnect 只允许显式测试开关。断网期间每次重试仍会续租，所以默认 60 秒离线不会让健康的唯一 Worker 因 backoff 自行失权；若 competitor 已在到期窗口完成 CAS，旧 Worker 的下一次 pre-network CAS 会失败。

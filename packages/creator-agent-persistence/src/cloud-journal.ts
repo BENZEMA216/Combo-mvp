@@ -1768,8 +1768,16 @@ export class PostgresCloudJournal {
 
     // The prepared fact is durable even if authority expires while this
     // transaction is projecting it. Only the final start-command INSERT may
-    // consume live authority, and every deadline is re-read from PostgreSQL
-    // with clock_timestamp() in that same statement.
+    // consume the immutable execution Capability, and every deadline is
+    // re-read from PostgreSQL with clock_timestamp() in that same statement.
+    //
+    // A natural Session replacement revokes the old transport Lease without
+    // revoking an already-issued execution Capability. The Invocation and
+    // start command must therefore retain the old assignment Lease/Fence,
+    // while a later Gateway claim wraps that immutable command in the current
+    // active transport Lease. Treating the assignment Lease as the current
+    // transport here would strand every replacement-session prepare in
+    // RECONCILING even though its Capability is still live.
     const generatedStartCommand = await connection.query<{ command_id: string }>(
       `INSERT INTO broker_outbox (
          command_id, creator_id, target_worker_id, invocation_id, consumer_subject_id,
@@ -1789,12 +1797,6 @@ export class PostgresCloudJournal {
            ON conversation.id = invocation.conversation_id
           AND conversation.creator_id = invocation.creator_id
           AND conversation.consumer_subject_id = invocation.consumer_subject_id
-         JOIN worker_leases AS lease
-           ON lease.id = invocation.assignment_lease_id
-          AND lease.deployment_id = conversation.deployment_id
-          AND lease.creator_id = invocation.creator_id
-          AND lease.worker_id = invocation.assigned_worker_id
-          AND lease.fence = invocation.assignment_fence
          JOIN broker_outbox AS prepare_command
            ON prepare_command.command_id = $11
           AND prepare_command.creator_id = invocation.creator_id
@@ -1823,8 +1825,6 @@ export class PostgresCloudJournal {
           AND invocation.deadline_at > clock_timestamp()
           AND invocation.execution_capability_expires_at > clock_timestamp()
           AND invocation.execution_capability_revoked_at IS NULL
-          AND lease.state = 'ACTIVE'
-          AND lease.expires_at > clock_timestamp()
           AND prepare_command.command_type = 'invocation.prepare'
           AND prepare_command.state = 'ACKED'
           AND prepare_command.attempt_count > 0

@@ -4579,6 +4579,135 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     fixture.adapter.close();
   });
 
+  it('keeps a longer Invocation retryable across natural transport expiry and starts on a current replacement', async () => {
+    const fixture = await createInvocationFixture(
+      426,
+      {},
+      {
+        transportLeaseMs: 30_000,
+        invocationDeadlineMs: 120_000,
+        capabilityExpiryMs: 125_000,
+      },
+    );
+    const signal = new AbortController().signal;
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    await bindCloudCommittedReady(journal, fixture, signal);
+
+    expect(Date.parse(fixture.prepareEnvelope.body.deadlineAt)).toBeGreaterThan(
+      Date.parse(fixture.prepareEnvelope.expiresAt),
+    );
+    expect(Date.parse(fixture.prepareEnvelope.body.executionCapability.expiresAt)).toBeGreaterThan(
+      Date.parse(fixture.prepareEnvelope.body.deadlineAt),
+    );
+    await expect(
+      journal.prepare({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.prepareReference,
+        signal,
+      }),
+    ).resolves.toMatchObject({
+      invocationId: fixture.invocationId,
+      state: 'PREPARED',
+    });
+    expect(queryScalar(fixture.filename, 'state')).toBe('PREPARED');
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+    const preparedFact = queryJson(
+      fixture.filename,
+      `SELECT fact_json AS value FROM local_invocation_events
+       WHERE event_type = 'invocation.prepared'`,
+    ) as { leaseId: string; fence: string; prepareCommandId: string };
+    expect(preparedFact).toMatchObject({
+      leaseId: fixture.prepareEnvelope.lease.leaseId,
+      fence: fixture.prepareEnvelope.lease.fence,
+      prepareCommandId: fixture.prepareEnvelope.messageId,
+    });
+
+    const originalTransportExpiry = Date.parse(fixture.startEnvelope.expiresAt);
+    fixture.authorities.cloudNow.value = originalTransportExpiry;
+    await expect(
+      journal.start({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: fixture.startReference,
+        signal,
+      }),
+    ).rejects.toMatchObject({ code: 'STALE_LEASE' });
+    expect(queryScalar(fixture.filename, 'state')).toBe('PREPARED');
+    expect(queryNullable(fixture.filename, 'local_invocations', 'start_command_id')).toBeNull();
+    expect(
+      queryCountWhere(
+        fixture.filename,
+        'local_invocation_events',
+        "event_type = 'invocation.failed'",
+      ),
+    ).toBe(0);
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(0);
+
+    const replacement = await activateReplacementLease(
+      fixture,
+      426_900,
+      fixture.startEnvelope.lease.deploymentId,
+      originalTransportExpiry,
+    );
+    const replacementStart = BrokerEnvelopeSchema.parse({
+      ...fixture.startEnvelope,
+      connectionId: replacement.connectionId,
+      sequence: nextSequence(replacement),
+      sentAt: replacement.leaseGrantedAt,
+      expiresAt: replacement.leaseExpiresAt,
+      lease: replacement.lease,
+    }) as Extract<BrokerEnvelope, { type: 'invocation.start' }>;
+    const current = await commitCommand(
+      fixture.adapter,
+      fixture.installationId,
+      replacement,
+      replacementStart,
+    );
+    const replacementStartReference = await commandReference(
+      fixture.adapter,
+      fixture.installationId,
+      current,
+      'invocation.start',
+    );
+    const start = await journal.start({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      command: replacementStartReference,
+      signal,
+    });
+    expect(start.action).toBe('DISPATCH_ONCE');
+    if (start.action !== 'DISPATCH_ONCE') throw new Error('replacement-permit');
+    await journal.dispatchOnce({
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      permit: start.permit,
+      signal,
+    });
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(1);
+    await expect(
+      journal.start({
+        installationId: fixture.installationId,
+        ownerToken: OWNER,
+        command: replacementStartReference,
+        signal,
+      }),
+    ).resolves.toEqual({ action: 'RETURN_IN_PROGRESS', state: 'RUNNING' });
+    expect(fixture.authorities.hostDispatchCalls.count).toBe(1);
+    const startedFact = queryJson(
+      fixture.filename,
+      `SELECT fact_json AS value FROM local_invocation_events
+       WHERE event_type = 'invocation.started'`,
+    ) as { leaseId: string; fence: string; startCommandId: string };
+    expect(startedFact).toMatchObject({
+      leaseId: fixture.startEnvelope.lease.leaseId,
+      fence: fixture.startEnvelope.lease.fence,
+      startCommandId: fixture.startEnvelope.messageId,
+    });
+    expect(startedFact.leaseId).not.toBe(replacement.lease.leaseId);
+    fixture.adapter.close();
+  });
+
   it('blocks same-installation cross-Deployment start before Host and terminally releases admission', async () => {
     const fixture = await createInvocationFixture(425);
     const signal = new AbortController().signal;
@@ -4760,7 +4889,12 @@ async function appendCancelCommand(
 async function createInvocationFixture(
   seed: number,
   transportOptions: Omit<SqliteWorkerTransportOptions, 'filename' | 'newJournalAuthorization'> = {},
-  fixtureOptions: Readonly<{ readyOnly?: boolean }> = {},
+  fixtureOptions: Readonly<{
+    readyOnly?: boolean;
+    transportLeaseMs?: number;
+    invocationDeadlineMs?: number;
+    capabilityExpiryMs?: number;
+  }> = {},
 ) {
   const directory = realpathSync(mkdtempSync(join(tmpdir(), 'combo-invocation-sqlite-')));
   temporaryDirectories.add(directory);
@@ -4782,7 +4916,7 @@ async function createInvocationFixture(
   const localResultKeyId = `worker-keychain-v1-${seed}`;
   const lease = { deploymentId, leaseId, workerSessionId, fence: String(seed + 1) };
   const sentAt = new Date(nowMs - 1_000).toISOString();
-  const expiresAt = new Date(nowMs + 60_000).toISOString();
+  const expiresAt = new Date(nowMs + (fixtureOptions.transportLeaseMs ?? 60_000)).toISOString();
   const adapter = new SqliteWorkerBrokerDurableTransport({
     filename,
     newJournalAuthorization: authorization(installationId),
@@ -4868,7 +5002,7 @@ async function createInvocationFixture(
       reasoningEffort: 'high',
       budget: { maxInputTokens: 4096, maxOutputTokens: 1024, maxCostMicros: 1_000_000 },
       notBefore: new Date(nowMs - 2_000).toISOString(),
-      expiresAt: new Date(nowMs + 55_000).toISOString(),
+      expiresAt: new Date(nowMs + (fixtureOptions.capabilityExpiryMs ?? 55_000)).toISOString(),
       nonce: Buffer.from(`capability-nonce-${seed}`, 'utf8').toString('base64url'),
       signatureAlgorithm: 'ES256',
       signatureEncoding: 'ieee-p1363',
@@ -4909,7 +5043,7 @@ async function createInvocationFixture(
       agentVersionId,
       agentVersionDigest: SHA('a'),
       snapshotDigest: SHA('b'),
-      deadlineAt: new Date(nowMs + 50_000).toISOString(),
+      deadlineAt: new Date(nowMs + (fixtureOptions.invocationDeadlineMs ?? 50_000)).toISOString(),
       executionCapability: capability,
     },
   }) as Extract<BrokerEnvelope, { type: 'invocation.prepare' }>;

@@ -3733,8 +3733,7 @@ export class SqliteWorkerInvocationJournal {
           capability.leaseId !== conversation.lease_id ||
           capability.fence !== conversation.fence ||
           capability.requestDigest !== command.body.requestDigest ||
-          Date.parse(command.body.deadlineAt) > Date.parse(capability.expiresAt) ||
-          Date.parse(command.body.deadlineAt) > Date.parse(stored.connection.lease_expires_at)
+          Date.parse(command.body.deadlineAt) > Date.parse(capability.expiresAt)
         ) {
           consumeSecurityBlocked(context, input.command, command, now.getTime());
           return 'EXECUTION_CAPABILITY_INVALID';
@@ -6374,7 +6373,7 @@ function assertCurrentTransportEnvelope(stored: StoredCommand, cloudNow: Date): 
   const { envelope, connection } = stored;
   const nowMs = cloudNow.getTime();
   if (Date.parse(connection.lease_expires_at) <= nowMs || Date.parse(envelope.expiresAt) <= nowMs) {
-    throw new WorkerInvocationJournalError('INVOCATION_DEADLINE_EXPIRED');
+    throw new WorkerInvocationJournalError('STALE_LEASE');
   }
 }
 
