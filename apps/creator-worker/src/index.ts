@@ -34,3 +34,16 @@ export {
   type CreatorWorkerHttpServerOptions,
   type CreatorWorkerServerAddress,
 } from './http-server.js';
+export {
+  VnextCreatorWorkerRuntime,
+  VnextCreatorWorkerRuntimeError,
+  createVnextCreatorWorkerRuntime,
+  type CreateVnextCreatorWorkerRuntimeOptions,
+  type VnextCreatorWorkerRuntimeDiagnostic,
+  type VnextCreatorWorkerRuntimeErrorCode,
+  type VnextCreatorWorkerRuntimeOptions,
+  type VnextCreatorWorkerRuntimeStatus,
+  type VnextRuntimeBrokerPort,
+  type VnextRuntimePumpPort,
+  type VnextRuntimeTransportPort,
+} from './vnext-runtime.js';

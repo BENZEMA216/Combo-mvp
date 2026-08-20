@@ -102,9 +102,9 @@ describe('Real Worker transport ↔ Fake Broker', () => {
 
   it('requires an explicitly injected owner capability bounded by UTF-8 bytes', () => {
     const url = 'wss://broker.example/v1/worker/connect';
-    expect(() =>
-      createClient(url, new FakeDurablePort(), { ownerToken: 'a'.repeat(15) }),
-    ).toThrow('INVALID_OPTIONS');
+    expect(() => createClient(url, new FakeDurablePort(), { ownerToken: 'a'.repeat(15) })).toThrow(
+      'INVALID_OPTIONS',
+    );
     expect(() =>
       createClient(url, new FakeDurablePort(), { ownerToken: '界'.repeat(342) }),
     ).toThrow('INVALID_OPTIONS');
@@ -1955,8 +1955,7 @@ function createClient(
   const client = new WorkerBrokerClient({
     url,
     installationId: INSTALLATION,
-    ownerToken:
-      options.ownerToken ?? `worker-client-owner-${++clientOwnerSequence}-0123456789`,
+    ownerToken: options.ownerToken ?? `worker-client-owner-${++clientOwnerSequence}-0123456789`,
     workerVersion: '0.1.0',
     codexRuntimeArtifacts: [`sha256:${'1'.repeat(64)}`],
     codexProtocolSchemaDigests: [`sha256:${'2'.repeat(64)}`],

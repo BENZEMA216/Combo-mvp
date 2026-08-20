@@ -165,6 +165,14 @@ export class HostTurnRegistry {
     return this.#invocations.get(invocationId);
   }
 
+  /** Resolves a replayed durable start command only inside the current Host generation. */
+  bindingForStartCommand(startCommandId: string): HostTurnBinding | undefined {
+    for (const binding of this.#invocations.values()) {
+      if (binding.permit.startCommandId === startCommandId) return binding;
+    }
+    return undefined;
+  }
+
   /** Binds one ready conversation to its Host thread for this process generation. */
   bindThread(conversationId: string, input: HostThreadLike): HostThreadLike {
     const thread = freezeHostThread(input);
@@ -210,6 +218,21 @@ export class HostTurnRegistry {
 
   threadFor(conversationId: string): HostThreadLike | undefined {
     return this.#threads.get(conversationId);
+  }
+
+  /**
+   * Rolls back a provisioned thread only while no turn has crossed the Host boundary. Identity
+   * matching prevents a failed open attempt from deleting a newer binding.
+   */
+  unbindThread(conversationId: string, expectedThread: HostThreadLike): boolean {
+    const current = this.#threads.get(conversationId);
+    if (current === undefined || !sameHostThread(current, expectedThread)) return false;
+    for (const binding of this.#invocations.values()) {
+      if (binding.conversationId === conversationId) return false;
+    }
+    this.#threads.delete(conversationId);
+    if (this.#threads.size === 0) this.#activeHostGeneration = undefined;
+    return true;
   }
 
   threadIdFor(conversationId: string): string | undefined {

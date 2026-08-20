@@ -368,11 +368,7 @@ describe('SqliteWorkerBrokerDurableTransport', () => {
       }),
     ).rejects.toMatchObject({ code: 'PORT_FAILED', permanent: true });
 
-    const replacement = createFixture(
-      10_101,
-      fixture.installationId,
-      fixture.deploymentId,
-    );
+    const replacement = createFixture(10_101, fixture.installationId, fixture.deploymentId);
     const second = await activate(adapter, replacement, OWNER_A, signal);
     expect(second.connectionId).not.toBe(first.connectionId);
     await expect(

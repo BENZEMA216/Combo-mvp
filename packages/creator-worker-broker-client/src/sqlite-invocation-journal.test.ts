@@ -277,6 +277,23 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
     expect(readyEvidenceVerifications).toBe(0);
   });
 
+  it('surfaces durable READY rows as explicit process-start reattach blockers', async () => {
+    const fixture = await createInvocationFixture(10_100, {}, { readyOnly: true });
+    const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
+    const common = {
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      signal: new AbortController().signal,
+    };
+    await expect(journal.countReadyConversationsAfterProcessStart(common)).resolves.toBe(0);
+    await journal.bindReadyConversation({
+      ...common,
+      command: fixture.openReference,
+      evidence: { token: 'sandbox-ready' },
+    });
+    await expect(journal.countReadyConversationsAfterProcessStart(common)).resolves.toBe(1);
+  });
+
   it('rejects a non-conversation.open authorization without durable mutation', async () => {
     const fixture = await createInvocationFixture(10_102);
     const journal = fixture.adapter.createInvocationJournal(fixture.authorities.options);
@@ -1600,6 +1617,17 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
       prompts: ['secret prompt'],
     });
     expect(fixture.authorities.hostReceiptCalls.count).toBe(1);
+    const dispositionInput = {
+      installationId: fixture.installationId,
+      ownerToken: OWNER,
+      invocationId: fixture.invocationId,
+      dispatchNonce: start.permit.dispatchNonce,
+      signal,
+    };
+    await expect(journal.readTerminalDisposition(dispositionInput)).resolves.toEqual({
+      state: 'RUNNING',
+      terminal: false,
+    });
     expect(queryNullable(fixture.filename, 'local_invocations', 'prompt_ciphertext')).toBeNull();
     expect(
       rawJournalContainsAny(fixture.filename, [
@@ -1632,6 +1660,10 @@ describe('same-file SQLite Worker Invocation Journal v5', () => {
       sourceEventId: resultSourceEventId,
       resultCiphertext,
       signal,
+    });
+    await expect(journal.readTerminalDisposition(dispositionInput)).resolves.toEqual({
+      state: 'FINAL_READY',
+      terminal: true,
     });
     expect(rawJournalContainsAny(fixture.filename, ['durable assistant result'])).toBe(false);
     expect(queryScalar(fixture.filename, 'state')).toBe('FINAL_READY');

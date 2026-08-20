@@ -18,7 +18,8 @@
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "@cb/creator-agent-protocol": "workspace:*"
+    "@cb/creator-agent-protocol": "workspace:*",
+    "@cb/creator-worker-broker-client": "workspace:*"
   },
   "devDependencies": {
     "@playwright/test": "1.62.0",

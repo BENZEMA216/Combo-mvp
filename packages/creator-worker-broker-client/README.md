@@ -8,13 +8,27 @@
 - `src/sqlite-durable-transport.ts` 实现真实文件型 SQLite durable transport。每个 DB 只绑定一个 installation；它校验 `0700` 全路径父目录和 `0600` DB/WAL/SHM/commit-watermark（拒绝 symlink/hardlink），并持久化 installation owner/epoch、连接、Lease/Fence、双向 cursor、inbound command、ACK effect、sequence gap 和 outbound outbox。
 - `src/sqlite-invocation-journal.ts` 在上述同一个 `journal-v1.sqlite`/WAL 中实现防御性 storage schema v5 的 Worker Invocation 与 `conversation.ready` authority：READY Conversation、immutable ready fact/logical outbox、PREPARED/STARTING/RUNNING/CANCEL_REQUESTED/FINAL_READY/CLOUD_COMMITTED/UNCERTAIN、append-only facts/outbox、一次性 Host dispatch/interrupt permit、确认 Host terminal failure、Host evidence loss、Worker-Keychain Prompt/result AEAD、当前 Session 上行转封装和 self-contained exact Cloud ACK receipt。
 - `src/host-composition.ts` 把完整 Host thread generation、live turn handle、严格 dispatch/interrupt receipt、terminal evidence observer 与 result sealer 组合成 Journal 的可信 Host 边界；registry 只对当前 OS 进程和单一 Host generation 有效，terminal durable commit 之前不会自动移除 binding。
+- `src/worker-command-pump.ts` 是唯一的 owner-scoped Worker reducer：从当前 owned `ACTIVE` connection 读取 opaque command reference，在同一串行 mutation queue 中推进 command、Host terminal、durable fact 和 Cloud ACK，并把 reconnect 与 process-start recovery 明确分开。
 - `src/stored-broker-envelope.ts` 是只供 SQLite 历史读取的版本化 decoder：保留 c687 五字段 `conversation.open` 原始 canonical bytes/digest，不进入 WebSocket/live parser，也不改写旧 row。
 - `src/index.ts` 导出客户端、DeviceSigner、Challenge 与 durable transport 端口。
 - `src/worker-broker-client.integration.test.ts` 通过真实回环 WebSocket socket 和 Fake Broker 验证 `Real Worker transport ↔ Fake Broker` 契约，并把 wire corpus 的 N-1/N/N+1 分别送入 first lease 与 established frame；N+1 target payload 不进入 activate/commitInbound/replay/gap，关闭后仍允许 `releaseConnection`、重连和新 Lease lifecycle。
 - `src/sqlite-durable-transport.test.ts` 使用真实 SQLite 文件、独立子进程和真实回环 `AgentGateway` 验证 WAL/FULL 回读、文件权限、owner CAS、事务/abort、SIGKILL 窗口、WAL 单独丢失、opaque command references、迁移重入、最大 backlog 重组、bounded retention、字节配额及 AEAD-only 落盘。
 - `src/sqlite-invocation-journal.test.ts` 验证 100 路 prepare 幂等、同一 command 跨 connection 重封装、prepare/start/final exact replay、Host 一次性 dispatch、STARTING/RUNNING/CANCEL_REQUESTED process-loss→UNCERTAIN、确认失败、Host evidence loss、Prompt/result AEAD、ACK 丢失、七天 retention、terminal reserve、pinned-reader sensitive checkpoint 与 raw DB/WAL/SHM canary 清除。
 - `src/host-composition.vertical.test.ts` 用真实文件 SQLite 和结构上等同 Creator Worker 的 fake app-server 验证 full-thread dispatch、逐字段 receipt binding、caller-abort 孤儿窗口、terminal result/failure/loss、identity-safe registry 与 interrupt evidence；它仍不是 bundled Codex 或真实 Isolation Gate。
+- `src/worker-command-pump.test.ts` 验证单 owner command/fact/ACK loop、两阶段 open、ambiguous bind response loss、terminal watcher、cancel/final 串行化、进程启动 recovery、READY reattach fail-closed 和 evidence-only drain。
 - `src/postgres-sqlite-vertical.pg.test.ts` 在显式测试开关下连接 disposable PostgreSQL，以真实 P-256 握手、真实 Gateway、真实 Worker 客户端和真实文件 SQLite 验证 Cloud-time Lease 续约、Gateway 重启重连、Fence 提升、Journal 重开、双向 message ID/digest 对账、WebSocket payload 原字节重复与 PostgreSQL COMMIT-response-loss 恢复；兼容性子用例还证明 N+1、未知字段、Native 声明和各维合法但未声明的 cross-profile 组合会在 Session/Lease/本地 transport mutation 前持久化阻断。
+
+## R2 单一 Worker loop
+
+上层 `apps/creator-worker/src/vnext-runtime.ts` 是这组端口的唯一 R2 composition root。它生成一个进程级 owner capability，并把同一个显式 `ownerToken` 交给 installation ownership、`WorkerBrokerClient`、`WorkerCommandPump` 和所有 Journal mutation。`WorkerBrokerClientOptions.ownerToken` 没有隐式随机 fallback 或公开 getter；有效范围是 16..1024 UTF-8 bytes。pump 通过 `loadOwnedActiveConnection({ installationId, ownerToken, signal })` 获取当前 connection snapshot，随后才用相同 owner 和该 `connectionId` 读取命令；command 自带的历史 connection 不能被当成当前 fact/ACK delivery authority。
+
+`conversation.open` 使用 authorize/provision/bind 两阶段协议：Journal 先从 exact opaque reference 决定 `RETURN_READY` 或给出预期 binding；Isolation/Host 端口再 `provision`，或在 bind 响应丢失后只 `resumeProvision` 同一个资源；最后 `bindReadyConversation` 才持久化 READY authority 与 fact。确定的 Journal pre-COMMIT 错误会 `releaseProvision` 并 identity-safe unbind，未知的 COMMIT 响应则保留 exact provision；重放不得静默新建第二个 Host thread。
+
+`recoverAfterProcessStart()` 必须在 command tick 之前且每个 OS 进程只调用一次。它不依赖崩溃前的 command reference、permit 或 live handle；遗留 `STARTING`/`RUNNING`/`CANCEL_REQUESTED` 在缺少跨进程 Host evidence 时保守进入 `UNCERTAIN`。same-process reconnect 继续使用现有 `HostTurnRegistry` 与 terminal watcher，不能再次调用 process-start recovery。若 restart 扫描发现 durable READY conversation 需要 reattach，而当前没有可信 Host binding，pump 返回 `READY_HOST_BINDING_MISSING`，上层 runtime 保持 `BLOCKED`，不能报告 READY。
+
+terminal watcher 只观察当前 process generation 的 exact Host handle，并在 durable terminal commit 成功后才移除 registry binding。`drainEvidence()` 不消费 business command，只提交可信 Cloud ACK evidence、把 pending Journal facts按当前 ACTIVE connection 重封装并触发 Broker flush；上层停止顺序必须先等待 watcher，再做至多 `finalDrainRounds` 轮 drain，观察到非 `PROGRESSED` 的静止轮次后才关闭 Broker、Host 与 SQLite。任何 terminal commit、Cloud ACK authority、fact projection、drain 调用、timeout，或轮数耗尽仍未证明静止，都会保持 `BLOCKED`/fail closed。
+
+这仍是 R2 本地组合切片，不是生产产品链路。legacy `apps/creator-worker/src/cli.ts` 尚未调用这条 composition root；生产 Secure Enclave DeviceSigner、Broker Session/Worker-Keychain/KMS crypto、Isolation Supervisor 与跨进程 reattach、真实 Cloud ACK evidence/reconciliation 和环境配置仍未完成。本包的 fake/loopback/SQLite 证据不能替代这些 R3 Cloud/Runtime 接线。
 
 ## 必需端口
 

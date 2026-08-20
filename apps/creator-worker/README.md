@@ -10,7 +10,20 @@
 - `src/http-server.ts` 提供 loopback HTTP API、用户安全错误信封和最小聊天页面。
 - `src/chat-page.ts` 生成不暴露本地路径或 Host 技术细节的消费者聊天页面。
 - `src/cli.ts` 校验启动参数、解析真实 Project 路径并管理进程生命周期。
+- `src/vnext-runtime.ts` 是新的 R2 Worker 可执行组合根：把真实 SQLite transport/Invocation Journal、Broker client、单一 command pump、进程内 Host registry 和 Codex Host 组合成一条生命周期，并把生产 authority 保持为显式注入端口。
 - `src/index.ts` 导出可测试的公共类型和构造器。
+
+## VNext R2 组合边界
+
+`createVnextCreatorWorkerRuntime()` 为一条 Worker process lifecycle 创建一个 owner capability，并把同一个显式 `ownerToken` 注入 installation acquisition、Broker client、command pump 和 Journal 调用。command pump 只读取该 owner 当前 `ACTIVE` connection 上的 opaque command reference，按单一串行 mutation queue 处理 `conversation.open`、`invocation.prepare`、`invocation.start`、`invocation.cancel`、Host terminal、durable fact 和 Cloud ACK，不能用旧 connection 或旧 owner 作为当前执行 authority。
+
+`conversation.open` 是两阶段 open：Journal 先授权 exact durable command，Isolation/Host runtime 再 provision 或恢复同一个未提交资源，最后才把 thread、sandbox evidence 与 READY fact 原子绑定进 Journal。明确的 Journal pre-COMMIT 失败会精确释放该 provision；COMMIT 响应是否丢失不明确时保留同一资源供重放，不能另建 thread 猜测成功。
+
+启动顺序是 `acquire owner → recoverAfterProcessStart → Host start → Broker start → pump`。进程启动 recovery 只执行一次；同一进程的 reconnect 继续使用当前 registry 和 terminal watcher，不能冒充 process restart。当前 Host 没有跨进程 query/reattach authority，因此重启发现遗留 Host action 会保守收敛为 `UNCERTAIN`；发现 durable READY conversation 但本进程没有对应 Host binding 时，runtime 必须保持 `BLOCKED`，绝不报告 `READY`。
+
+正常停止会先等待所有 terminal watcher 把证据持久化，再通过 `drainEvidence()` 做至多 `finalDrainRounds` 轮 evidence-only drain，只有观察到非 `PROGRESSED` 的静止轮次后才停止 Broker/Host、清空 registry 并关闭 SQLite。terminal commit、drain 调用、drain timeout 或轮数耗尽但仍持续前进时，停止流程 fail closed 为 `BLOCKED`，不会把未落 durable evidence 的 Host 结果伪装成已完成，也不会在尚未证明静止时关闭 Host/Broker。
+
+这条 R2 根目前是导出的程序化 API 和本地测试切片；`src/cli.ts`/`combo-creator-worker` 仍启动下面的 legacy loopback 体验链，尚未接入 `createVnextCreatorWorkerRuntime()`。生产用 Secure Enclave/Keychain/KMS crypto、真实 Isolation Supervisor/资源 reattach、Cloud ACK evidence/reconciliation 及相应配置也仍未实现，所以不能把 R2 本地组合证据称为真实产品链路或生产部署。
 
 ## 体验边界
 
@@ -24,7 +37,7 @@ Worker 不启用 Codex 的全局 `--strict-config`：当前 Desktop 可能保留
 
 `HostTurnHandle.terminal` 只在同一 thread/turn 出现可验证的 `turn/completed` 后解析为 `SUCCEEDED`、`FAILED(TURN_FAILED|TURN_TIMEOUT)` 或 `CANCELLED` 低敏证据；Host 进程丢失、协议丢失或无法绑定的 terminal 会拒绝，而不是把 Promise rejection 猜成稳定业务终态。`HostTurnHandle.interrupt()` 也不会把 `turn/interrupt` 的空 RPC 响应冒充取消完成，并且每个 turn 最多只发送一次 interrupt；只有严格的 interrupted terminal 才返回 `combo.codex-app-server-interrupt-terminal/1`。两类 digest 都只覆盖规范化 observation，不包含回答、Prompt、路径或原始 Host payload。
 
-共享 Protocol 与 Broker Client 已有 R1 structural contract 和真实 SQLite 纵向测试，但本应用当前可执行入口仍是旧的 loopback 体验组合根，尚未启动 Broker client、SQLite command pump、Isolation Supervisor 或 Cloud reconciliation。所以下面的真实 bundled Codex gate 只证明 Host Adapter 与旧体验链，不等于 VNext Worker 端到端 Gate，也不能据此宣称 durable Cloud terminal 闭环。
+共享 Protocol、Broker Client、Invocation Journal、command pump 与 `vnext-runtime` 已有本地 structural/SQLite 测试，但当前 CLI 可执行入口仍是旧的 loopback 体验组合根，尚未启动这条 R2 graph、Isolation Supervisor 或 Cloud reconciliation。所以下面的真实 bundled Codex gate 只证明 Host Adapter 与旧体验链，不等于 VNext Worker 端到端 Gate，也不能据此宣称 durable Cloud terminal 闭环。
 
 本 RC 的 experimental app-server 协议明确 pin 到 bundled Codex `0.147.0-alpha.6.5`；Desktop 升级后必须先重跑协议与真实多轮 gate，未审核版本会拒绝启动。
 
@@ -41,7 +54,7 @@ pnpm --dir apps/creator-worker dev --project /absolute/path/to/safe-project --al
 ## 明确非目标
 
 - 公网消费者、TLS、多租户鉴权、DDoS 与计费。
-- Combo 云消息 Broker、lease、heartbeat、durable journal 与跨重启恢复。
+- legacy loopback CLI 中的 Combo 云 Broker、lease、heartbeat、durable journal 与跨重启恢复接线。
 - 容器或 VM 级文件、CPU、内存和网络隔离。
 - Project 上传、凭据迁移、外部 Action 或自动写入。
 

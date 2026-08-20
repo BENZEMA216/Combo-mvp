@@ -2907,6 +2907,11 @@ export type RecoverableHostAction = Readonly<{
   factDigest: string;
 }>;
 
+export type DurableInvocationTerminalDisposition = Readonly<{
+  state: string;
+  terminal: boolean;
+}>;
+
 export type PendingInvocationFactReference = Readonly<{
   sourceEventId: string;
   invocationId: string;
@@ -4433,6 +4438,33 @@ export class SqliteWorkerInvocationJournal {
     );
   }
 
+  /**
+   * READY binds an exact Host thread and sandbox from the process that produced its evidence.
+   * Until conversation reconciliation is implemented, a new process must surface these rows as
+   * an explicit reattach blocker instead of silently claiming product readiness.
+   */
+  async countReadyConversationsAfterProcessStart(input: {
+    installationId: string;
+    ownerToken: string;
+    signal: AbortSignal;
+  }): Promise<number> {
+    return this.host.transact(
+      { ...input, name: 'conversation_count_ready_after_process_start' },
+      (context) => {
+        const row = context.database
+          .prepare(
+            `SELECT count(*) AS count FROM local_conversations
+             WHERE installation_id = ? AND state = 'READY'`,
+          )
+          .get(input.installationId) as { count: number };
+        if (!Number.isSafeInteger(row.count) || row.count < 0) {
+          throw new WorkerInvocationJournalError('CONVERSATION_CONFLICT');
+        }
+        return row.count;
+      },
+    );
+  }
+
   #persistInterruptIntent(
     database: DatabaseSync,
     invocation: InvocationRow,
@@ -5310,6 +5342,40 @@ export class SqliteWorkerInvocationJournal {
           throw new WorkerInvocationJournalError('ILLEGAL_LOCAL_TRANSITION');
         }
         return this.#markHostEvidenceLost(context.database, invocation, this.#cloudNow());
+      },
+    );
+  }
+
+  /**
+   * Exact owner-scoped arbitration read used only after a terminal mutation response is lost or a
+   * cancel wins the serialized race. It never changes state or exposes Prompt/result data.
+   */
+  async readTerminalDisposition(input: {
+    installationId: string;
+    ownerToken: string;
+    invocationId: string;
+    dispatchNonce: string;
+    signal: AbortSignal;
+  }): Promise<DurableInvocationTerminalDisposition> {
+    return this.host.transact(
+      { ...input, name: 'invocation_read_terminal_disposition' },
+      (context) => {
+        assertUuid(input.invocationId);
+        assertUuid(input.dispatchNonce);
+        const invocation = loadInvocation(context.database, input.invocationId);
+        if (
+          invocation === undefined ||
+          invocation.installation_id !== input.installationId ||
+          invocation.dispatch_nonce !== input.dispatchNonce
+        ) {
+          throw new WorkerInvocationJournalError('FINAL_CONFLICT');
+        }
+        return Object.freeze({
+          state: invocation.state,
+          terminal: ['FINAL_READY', 'FAILED', 'CANCELLED', 'UNCERTAIN', 'CLOUD_COMMITTED'].includes(
+            invocation.state,
+          ),
+        });
       },
     );
   }
