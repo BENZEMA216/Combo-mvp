@@ -1,0 +1,2522 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Combo Creator-hosted Agent VNext API",
+    "version": "1.0.0-alpha.1",
+    "description": "Creator/Consumer HTTP contract. All IDs are control-plane data and never model input."
+  },
+  "servers": [{ "url": "https://test.example.invalid" }],
+  "security": [{ "creatorOAuth": [] }],
+  "paths": {
+    "/v1/creator/snapshot-uploads": {
+      "post": {
+        "operationId": "createSnapshotUpload",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SnapshotUploadCreateRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已创建绑定对象和校验和的上传会话",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SnapshotUploadCreateResponse" }
+              }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/creator/snapshot-uploads/{uploadId}:complete": {
+      "post": {
+        "operationId": "completeSnapshotUpload",
+        "parameters": [
+          {
+            "name": "uploadId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SnapshotUploadCompleteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "上传进入 VERIFYING",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SnapshotUploadView" }
+              }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/creator/agents": {
+      "post": {
+        "operationId": "createAgent",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/CreateAgentRequest" } }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已创建 Agent",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AgentView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/creator/agents/{agentId}/versions": {
+      "post": {
+        "operationId": "createAgentVersion",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateAgentVersionRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "已创建或复用不可变 AgentVersion",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AgentVersionView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/creator/agents/{agentId}/versions/{versionId}": {
+      "get": {
+        "operationId": "getAgentVersion",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "versionId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "不可变 AgentVersion 视图",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/AgentVersionView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/creator/agents/{agentId}/deployment": {
+      "put": {
+        "operationId": "updateAgentDeployment",
+        "parameters": [
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          },
+          {
+            "name": "If-Match",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/DeploymentGenerationEtag" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/DeploymentMutation" } }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已接受 desired state；observed state 由 Worker 事实更新",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/DeploymentView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/public/agents/{slug}/conversations": {
+      "post": {
+        "operationId": "createConversation",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/PublicAgentSlug" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CreateConversationRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Conversation 已原子固定 serving AgentVersion",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ConversationView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversationId}": {
+      "get": {
+        "operationId": "getConversationTranscript",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "权威 transcript 与最新 durable cursor",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ConversationTranscript" }
+              }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversationId}/messages": {
+      "post": {
+        "operationId": "sendConversationMessage",
+        "x-combo-idempotency-body-field": "clientMessageId",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SendConversationMessageRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "请求与 Outbox 已在 PostgreSQL 原子提交",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InvocationAcceptedResponse" }
+              }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversations/{conversationId}/events": {
+      "get": {
+        "operationId": "streamConversationEvents",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "conversationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": { "$ref": "#/components/schemas/LastEventId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE；delta 可丢，terminal/final 可从 PostgreSQL 恢复",
+            "content": {
+              "text/event-stream": { "schema": { "$ref": "#/components/schemas/ConsumerEvent" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invocations/{invocationId}": {
+      "get": {
+        "operationId": "getInvocation",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "invocationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Invocation 当前权威状态",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/InvocationView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invocations/{invocationId}:cancel": {
+      "post": {
+        "operationId": "cancelInvocation",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "invocationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CancelInvocationRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已记录取消请求；不等同于已取消",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/InvocationView" } }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/invocations/{invocationId}:retry": {
+      "post": {
+        "operationId": "retryInvocation",
+        "x-combo-idempotency-body-field": "clientMessageId",
+        "security": [{ "consumerSession": [] }],
+        "parameters": [
+          {
+            "name": "invocationId",
+            "in": "path",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/ServerId" }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": true,
+            "schema": { "$ref": "#/components/schemas/IdempotencyKey" }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RetryInvocationRequest" }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "已创建关联的新 Invocation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/InvocationAcceptedResponse" }
+              }
+            }
+          },
+          "default": {
+            "description": "稳定错误信封",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VnextErrorResponse" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "creatorOAuth": {
+        "type": "oauth2",
+        "flows": {
+          "authorizationCode": {
+            "authorizationUrl": "/oauth/authorize",
+            "tokenUrl": "/oauth/token",
+            "scopes": {}
+          }
+        }
+      },
+      "consumerSession": { "type": "apiKey", "in": "cookie", "name": "__Host-cb_session" }
+    },
+    "schemas": {
+      "SnapshotUploadCreateRequest": {
+        "type": "object",
+        "properties": {
+          "archive": {
+            "type": "object",
+            "properties": {
+              "envelope": {
+                "type": "object",
+                "properties": {
+                  "protocol": { "type": "string", "enum": ["combo.snapshot-envelope/1"] },
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "cipherObjectFormat": { "type": "string", "enum": ["combo.snapshot-binary/1"] },
+                  "algorithm": { "type": "string", "enum": ["aes-256-gcm/v1"] },
+                  "keyWrapAlgorithm": { "type": "string", "enum": ["rfc3394-aes-256-kw/v1"] },
+                  "aad": {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.snapshot-envelope/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "cipherObjectFormat": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-binary/1"]
+                      },
+                      "creatorId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "archiveDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "objectKey": {
+                        "type": "string",
+                        "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                        "description": "String containing 1 to 512 Unicode code points",
+                        "minLength": 1,
+                        "maxLength": 512,
+                        "x-combo-unicodeCodePoints": { "minimum": 1, "maximum": 512 }
+                      },
+                      "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 52428800 },
+                      "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$" }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "cipherObjectFormat",
+                      "creatorId",
+                      "snapshotDigest",
+                      "archiveDigest",
+                      "objectKey",
+                      "plaintextBytes",
+                      "keyId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "aadDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "nonce": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 16,
+                    "maxLength": 16,
+                    "description": "Canonical base64url encoding of exactly 12 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 12, "maximum": 12 }
+                  },
+                  "authTag": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 22,
+                    "maxLength": 22,
+                    "description": "Canonical base64url encoding of exactly 16 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 16, "maximum": 16 }
+                  },
+                  "wrappedDek": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 54,
+                    "maxLength": 54,
+                    "description": "Canonical base64url encoding of exactly 40 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 40, "maximum": 40 }
+                  },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 }
+                },
+                "required": [
+                  "protocol",
+                  "schemaVersion",
+                  "cipherObjectFormat",
+                  "algorithm",
+                  "keyWrapAlgorithm",
+                  "aad",
+                  "aadDigest",
+                  "nonce",
+                  "authTag",
+                  "wrappedDek",
+                  "cipherDigest",
+                  "cipherBytes"
+                ],
+                "additionalProperties": false
+              },
+              "checksumSha256": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" }
+            },
+            "required": ["envelope", "checksumSha256"],
+            "additionalProperties": false
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "envelope": {
+                "type": "object",
+                "properties": {
+                  "protocol": { "type": "string", "enum": ["combo.snapshot-manifest-envelope/1"] },
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "cipherObjectFormat": {
+                    "type": "string",
+                    "enum": ["combo.snapshot-manifest-binary/1"]
+                  },
+                  "algorithm": { "type": "string", "enum": ["aes-256-gcm/v1"] },
+                  "keyWrapAlgorithm": { "type": "string", "enum": ["rfc3394-aes-256-kw/v1"] },
+                  "aad": {
+                    "type": "object",
+                    "properties": {
+                      "protocol": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-manifest-envelope/1"]
+                      },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "cipherObjectFormat": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-manifest-binary/1"]
+                      },
+                      "creatorId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "objectKey": {
+                        "type": "string",
+                        "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                        "description": "String containing 1 to 512 Unicode code points",
+                        "minLength": 1,
+                        "maxLength": 512,
+                        "x-combo-unicodeCodePoints": { "minimum": 1, "maximum": 512 }
+                      },
+                      "plaintextBytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+                      "keyId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._:/-]{0,255}$" }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "cipherObjectFormat",
+                      "creatorId",
+                      "snapshotDigest",
+                      "objectKey",
+                      "plaintextBytes",
+                      "keyId"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "aadDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "nonce": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 16,
+                    "maxLength": 16,
+                    "description": "Canonical base64url encoding of exactly 12 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 12, "maximum": 12 }
+                  },
+                  "authTag": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 22,
+                    "maxLength": 22,
+                    "description": "Canonical base64url encoding of exactly 16 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 16, "maximum": 16 }
+                  },
+                  "wrappedDek": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]+$",
+                    "minLength": 54,
+                    "maxLength": 54,
+                    "description": "Canonical base64url encoding of exactly 40 bytes",
+                    "x-combo-canonicalBase64UrlBytes": { "minimum": 40, "maximum": 40 }
+                  },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 4194340 }
+                },
+                "required": [
+                  "protocol",
+                  "schemaVersion",
+                  "cipherObjectFormat",
+                  "algorithm",
+                  "keyWrapAlgorithm",
+                  "aad",
+                  "aadDigest",
+                  "nonce",
+                  "authTag",
+                  "wrappedDek",
+                  "cipherDigest",
+                  "cipherBytes"
+                ],
+                "additionalProperties": false
+              },
+              "checksumSha256": { "type": "string", "pattern": "^[A-Za-z0-9+/]{43}=$" }
+            },
+            "required": ["envelope", "checksumSha256"],
+            "additionalProperties": false
+          },
+          "expandedBytes": { "type": "integer", "minimum": 1, "maximum": 209715200 },
+          "fileCount": { "type": "integer", "minimum": 1, "maximum": 2000 }
+        },
+        "required": ["archive", "manifest", "expandedBytes", "fileCount"],
+        "additionalProperties": false,
+        "x-combo-runtime-constraints": [
+          "archive.checksumSha256 == canonicalBase64(hexToBytes(archive.envelope.cipherDigest))",
+          "manifest.checksumSha256 == canonicalBase64(hexToBytes(manifest.envelope.cipherDigest))",
+          "archive and manifest envelopes MUST bind the same creatorId/snapshotDigest/keyId/wrappedDek and distinct nonces",
+          "the Worker MUST finish both cipher objects before constructing this request",
+          "all consumers MUST pass the authoritative runtime SnapshotUploadCreateRequestSchema parser after structural JSON Schema validation"
+        ]
+      },
+      "SnapshotUploadCreateResponse": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "uploadId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "state": { "type": "string", "enum": ["CREATED"] },
+          "uploads": {
+            "type": "object",
+            "properties": {
+              "archive": {
+                "type": "object",
+                "properties": {
+                  "method": { "type": "string", "enum": ["PUT"] },
+                  "putUrl": {
+                    "type": "string",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "format": "uri"
+                  },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 52428836 },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "requiredHeaders": {
+                    "type": "object",
+                    "properties": {
+                      "cache-control": { "type": "string", "enum": ["no-store"] },
+                      "content-length": { "type": "string", "pattern": "^[1-9][0-9]{0,7}$" },
+                      "content-type": { "type": "string", "enum": ["application/octet-stream"] },
+                      "if-none-match": { "type": "string", "enum": ["*"] },
+                      "x-amz-checksum-sha256": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9+/]{43}=$"
+                      },
+                      "x-amz-meta-archive-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "x-amz-meta-cipher-bytes": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,7}$"
+                      },
+                      "x-amz-meta-cipher-digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "x-amz-meta-object-kind": { "type": "string", "enum": ["archive"] },
+                      "x-amz-meta-object-state": { "type": "string", "enum": ["upload"] },
+                      "x-amz-meta-protocol": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-object-storage/1"]
+                      },
+                      "x-amz-meta-snapshot-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "cache-control",
+                      "content-length",
+                      "content-type",
+                      "if-none-match",
+                      "x-amz-checksum-sha256",
+                      "x-amz-meta-archive-digest",
+                      "x-amz-meta-cipher-bytes",
+                      "x-amz-meta-cipher-digest",
+                      "x-amz-meta-object-kind",
+                      "x-amz-meta-object-state",
+                      "x-amz-meta-protocol",
+                      "x-amz-meta-snapshot-digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["method", "putUrl", "cipherBytes", "cipherDigest", "requiredHeaders"],
+                "additionalProperties": false
+              },
+              "manifest": {
+                "type": "object",
+                "properties": {
+                  "method": { "type": "string", "enum": ["PUT"] },
+                  "putUrl": {
+                    "type": "string",
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "format": "uri"
+                  },
+                  "cipherBytes": { "type": "integer", "minimum": 37, "maximum": 4194340 },
+                  "cipherDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                  "requiredHeaders": {
+                    "type": "object",
+                    "properties": {
+                      "cache-control": { "type": "string", "enum": ["no-store"] },
+                      "content-length": { "type": "string", "pattern": "^[1-9][0-9]{0,7}$" },
+                      "content-type": { "type": "string", "enum": ["application/octet-stream"] },
+                      "if-none-match": { "type": "string", "enum": ["*"] },
+                      "x-amz-checksum-sha256": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9+/]{43}=$"
+                      },
+                      "x-amz-meta-archive-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "x-amz-meta-cipher-bytes": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,7}$"
+                      },
+                      "x-amz-meta-cipher-digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                      "x-amz-meta-object-kind": { "type": "string", "enum": ["manifest"] },
+                      "x-amz-meta-object-state": { "type": "string", "enum": ["upload"] },
+                      "x-amz-meta-protocol": {
+                        "type": "string",
+                        "enum": ["combo.snapshot-object-storage/1"]
+                      },
+                      "x-amz-meta-snapshot-digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "cache-control",
+                      "content-length",
+                      "content-type",
+                      "if-none-match",
+                      "x-amz-checksum-sha256",
+                      "x-amz-meta-archive-digest",
+                      "x-amz-meta-cipher-bytes",
+                      "x-amz-meta-cipher-digest",
+                      "x-amz-meta-object-kind",
+                      "x-amz-meta-object-state",
+                      "x-amz-meta-protocol",
+                      "x-amz-meta-snapshot-digest"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["method", "putUrl", "cipherBytes", "cipherDigest", "requiredHeaders"],
+                "additionalProperties": false
+              }
+            },
+            "required": ["archive", "manifest"],
+            "additionalProperties": false
+          },
+          "expiresAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
+        },
+        "required": ["protocol", "uploadId", "state", "uploads", "expiresAt"],
+        "additionalProperties": false,
+        "x-combo-runtime-constraints": [
+          "each target requiredHeaders MUST bind exact cipherBytes/cipherDigest/checksum/object-kind and include no unknown header",
+          "archive and manifest targets MUST bind the same snapshotDigest/archiveDigest and distinct temp object locators",
+          "archive cipherBytes <= SNAPSHOT_MAX_COMPRESSED_BYTES + 36 and manifest cipherBytes <= SNAPSHOT_MAX_MANIFEST_BYTES + 36",
+          "public Authoring responses MUST use HTTPS; insecure loopback is only an explicit disposable component-test authority",
+          "all consumers MUST pass the authoritative runtime SnapshotUploadCreateResponseSchema parser after structural JSON Schema validation"
+        ]
+      },
+      "SnapshotUploadCompleteRequest": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "SnapshotUploadView": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "uploadId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["CREATED", "UPLOADED", "VERIFYING", "VERIFIED", "REJECTED", "EXPIRED"]
+          },
+          "snapshotId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
+          "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "errorCode": {
+            "type": "string",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+            "description": "String containing 0 to 128 Unicode code points",
+            "nullable": true,
+            "minLength": 0,
+            "maxLength": 128,
+            "x-combo-unicodeCodePoints": { "minimum": 0, "maximum": 128 }
+          },
+          "updatedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "protocol",
+          "uploadId",
+          "state",
+          "snapshotId",
+          "snapshotDigest",
+          "errorCode",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "CreateAgentRequest": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "UTF-8 text with a maximum of 120 bytes",
+            "x-combo-maxUtf8Bytes": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "UTF-8 text with a maximum of 1024 bytes",
+            "x-combo-maxUtf8Bytes": 1024
+          }
+        },
+        "required": ["name", "description"],
+        "additionalProperties": false
+      },
+      "AgentView": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "publicSlug": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "UTF-8 text with a maximum of 120 bytes",
+            "x-combo-maxUtf8Bytes": 120
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024,
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "UTF-8 text with a maximum of 1024 bytes",
+            "x-combo-maxUtf8Bytes": 1024
+          },
+          "lifecycle": { "type": "string", "enum": ["ACTIVE", "ARCHIVED"] },
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "protocol",
+          "agentId",
+          "publicSlug",
+          "name",
+          "description",
+          "lifecycle",
+          "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "CreateAgentVersionRequest": {
+        "type": "object",
+        "properties": {
+          "verifiedSnapshotId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "manifest": {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.agent-version-manifest/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "behaviorContract": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "role": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512,
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "description": "UTF-8 text with a maximum of 512 bytes",
+                    "x-combo-maxUtf8Bytes": 512
+                  },
+                  "objective": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048,
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "description": "UTF-8 text with a maximum of 2048 bytes",
+                    "x-combo-maxUtf8Bytes": 2048
+                  },
+                  "developerInstructions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 2048,
+                      "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                      "description": "UTF-8 text with a maximum of 2048 bytes",
+                      "x-combo-maxUtf8Bytes": 2048
+                    },
+                    "minItems": 1,
+                    "maxItems": 32
+                  },
+                  "language": { "type": "string", "pattern": "^[a-z]{2,3}(?:-[A-Z]{2})?$" },
+                  "evidencePolicy": {
+                    "type": "string",
+                    "enum": ["none", "cite-relative-path-when-used"]
+                  },
+                  "answerStyle": { "type": "string", "enum": ["plain", "conclusion-evidence-risk"] }
+                },
+                "required": [
+                  "schemaVersion",
+                  "role",
+                  "objective",
+                  "developerInstructions",
+                  "language",
+                  "evidencePolicy",
+                  "answerStyle"
+                ],
+                "additionalProperties": false
+              },
+              "runtimePolicy": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "isolation": { "type": "string", "enum": ["conversation-vm-required"] },
+                  "filesystem": {
+                    "type": "object",
+                    "properties": {
+                      "context": { "type": "string", "enum": ["read-only-noexec"] },
+                      "scratch": { "type": "string", "enum": ["conversation-only"] },
+                      "hostMounts": { "type": "string", "enum": ["forbidden"] }
+                    },
+                    "required": ["context", "scratch", "hostMounts"],
+                    "additionalProperties": false
+                  },
+                  "contextTools": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": [
+                      { "type": "string", "enum": ["read_context"] },
+                      { "type": "string", "enum": ["list_context"] },
+                      { "type": "string", "enum": ["search_context"] }
+                    ]
+                  },
+                  "projectExecution": { "type": "string", "enum": ["forbidden"] },
+                  "network": { "type": "string", "enum": ["model-proxy-only"] },
+                  "externalTools": { "type": "string", "enum": ["disabled"] },
+                  "hostCredentials": { "type": "string", "enum": ["forbidden"] },
+                  "maxTurnSeconds": { "type": "integer", "minimum": 1, "maximum": 120 },
+                  "maxConversationTurns": { "type": "integer", "minimum": 1, "maximum": 20 },
+                  "maxVisibleHistoryBytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+                  "maxActiveTurns": { "type": "number", "enum": [1] },
+                  "resolvedModel": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                    "description": "UTF-8 text with a maximum of 128 bytes",
+                    "x-combo-maxUtf8Bytes": 128
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "xhigh"]
+                  }
+                },
+                "required": [
+                  "schemaVersion",
+                  "isolation",
+                  "filesystem",
+                  "contextTools",
+                  "projectExecution",
+                  "network",
+                  "externalTools",
+                  "hostCredentials",
+                  "maxTurnSeconds",
+                  "maxConversationTurns",
+                  "maxVisibleHistoryBytes",
+                  "maxActiveTurns",
+                  "resolvedModel",
+                  "reasoningEffort"
+                ],
+                "additionalProperties": false
+              },
+              "ioContract": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "input": {
+                    "type": "object",
+                    "properties": {
+                      "type": { "type": "string", "enum": ["text"] },
+                      "maxUtf8Bytes": { "type": "number", "enum": [16384] }
+                    },
+                    "required": ["type", "maxUtf8Bytes"],
+                    "additionalProperties": false
+                  },
+                  "output": {
+                    "type": "object",
+                    "properties": {
+                      "type": { "type": "string", "enum": ["text"] },
+                      "maxUtf8Bytes": { "type": "number", "enum": [32768] }
+                    },
+                    "required": ["type", "maxUtf8Bytes"],
+                    "additionalProperties": false
+                  },
+                  "files": { "type": "boolean", "enum": [false] },
+                  "actions": { "type": "boolean", "enum": [false] },
+                  "rawReasoning": { "type": "boolean", "enum": [false] }
+                },
+                "required": [
+                  "schemaVersion",
+                  "input",
+                  "output",
+                  "files",
+                  "actions",
+                  "rawReasoning"
+                ],
+                "additionalProperties": false
+              },
+              "codexRuntime": {
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "description": "UTF-8 text with a maximum of 128 bytes",
+                    "x-combo-maxUtf8Bytes": 128
+                  },
+                  "artifactDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                  "protocolSchemaDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                  "platform": { "type": "string", "enum": ["linux-arm64"] }
+                },
+                "required": ["version", "artifactDigest", "protocolSchemaDigest", "platform"],
+                "additionalProperties": false
+              },
+              "modelPolicy": {
+                "type": "object",
+                "properties": {
+                  "schemaVersion": { "type": "number", "enum": [1] },
+                  "model": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                    "description": "UTF-8 text with a maximum of 128 bytes",
+                    "x-combo-maxUtf8Bytes": 128
+                  },
+                  "reasoningEffort": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high", "xhigh"]
+                  },
+                  "creatorFunded": { "type": "boolean", "enum": [true] }
+                },
+                "required": ["schemaVersion", "model", "reasoningEffort", "creatorFunded"],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "snapshotDigest",
+              "behaviorContract",
+              "runtimePolicy",
+              "ioContract",
+              "codexRuntime",
+              "modelPolicy"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": ["verifiedSnapshotId", "manifest"],
+        "additionalProperties": false
+      },
+      "AgentVersionView": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "agentVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "ordinal": { "type": "integer", "minimum": 1 },
+          "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "snapshotDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "availability": { "type": "string", "enum": ["ACTIVE", "DEPRECATED", "REVOKED"] },
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "protocol",
+          "agentVersionId",
+          "agentId",
+          "ordinal",
+          "versionDigest",
+          "snapshotDigest",
+          "availability",
+          "createdAt"
+        ],
+        "additionalProperties": false
+      },
+      "DeploymentMutation": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "desiredState": { "type": "string", "enum": ["ONLINE"] },
+              "desiredVersionId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              }
+            },
+            "required": ["desiredState", "desiredVersionId"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "desiredState": { "type": "string", "enum": ["OFFLINE"] },
+              "mode": { "type": "string", "enum": ["DRAIN", "IMMEDIATE"] }
+            },
+            "required": ["desiredState", "mode"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "DeploymentView": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "desiredState": { "type": "string", "enum": ["ONLINE", "OFFLINE"] },
+          "desiredVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
+          "servingVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
+          "observedState": {
+            "type": "string",
+            "enum": [
+              "OFFLINE",
+              "PREPARING",
+              "ONLINE",
+              "UPDATING",
+              "DRAINING",
+              "DEGRADED",
+              "BLOCKED"
+            ]
+          },
+          "generation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 19,
+            "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+          },
+          "lastErrorCode": {
+            "type": "string",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])*$",
+            "description": "String containing 0 to 128 Unicode code points",
+            "nullable": true,
+            "minLength": 0,
+            "maxLength": 128,
+            "x-combo-unicodeCodePoints": { "minimum": 0, "maximum": 128 }
+          },
+          "updatedAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "protocol",
+          "agentId",
+          "desiredState",
+          "desiredVersionId",
+          "servingVersionId",
+          "observedState",
+          "generation",
+          "lastErrorCode",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "CreateConversationRequest": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "ConversationView": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "conversationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "agentId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "agentVersionId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "state": {
+            "type": "string",
+            "enum": [
+              "OPENING",
+              "IDLE",
+              "BUSY",
+              "SUSPENDED",
+              "CLOSING",
+              "CLOSED",
+              "FAILED",
+              "EXPIRED"
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "protocol",
+          "conversationId",
+          "agentId",
+          "agentVersionId",
+          "versionDigest",
+          "state",
+          "createdAt",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "SendConversationMessageRequest": {
+        "type": "object",
+        "properties": {
+          "clientMessageId": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16384,
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "UTF-8 text with a maximum of 16384 bytes",
+            "x-combo-maxUtf8Bytes": 16384
+          }
+        },
+        "required": ["clientMessageId", "text"],
+        "additionalProperties": false
+      },
+      "InvocationAcceptedResponse": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "invocationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "state": { "type": "string", "enum": ["ACCEPTED", "QUEUED"] }
+        },
+        "required": ["protocol", "invocationId", "state"],
+        "additionalProperties": false
+      },
+      "InvocationView": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "invocationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "conversationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "ACCEPTED",
+              "QUEUED",
+              "DISPATCH_PENDING",
+              "PERSISTED",
+              "STARTING",
+              "RUNNING",
+              "CANCEL_REQUESTED",
+              "RECONCILING",
+              "SUCCEEDED",
+              "FAILED",
+              "CANCELLED",
+              "UNCERTAIN",
+              "EXPIRED"
+            ]
+          },
+          "resultDigest": {
+            "type": "string",
+            "pattern": "^hmac-sha256:[a-f0-9]{64}$",
+            "nullable": true
+          },
+          "error": {
+            "type": "object",
+            "properties": {
+              "code": {
+                "type": "string",
+                "enum": [
+                  "INVALID_INPUT",
+                  "UNAUTHORIZED",
+                  "FORBIDDEN",
+                  "RATE_LIMITED",
+                  "IDEMPOTENCY_CONFLICT",
+                  "SNAPSHOT_EMPTY",
+                  "SNAPSHOT_SOURCE_CHANGED",
+                  "SNAPSHOT_LIMIT_EXCEEDED",
+                  "SNAPSHOT_PATH_REJECTED",
+                  "SNAPSHOT_SECRET_DETECTED",
+                  "AGENT_OFFLINE",
+                  "AGENT_BUSY",
+                  "QUEUE_FULL",
+                  "VERSION_UNAVAILABLE",
+                  "VERSION_DIGEST_MISMATCH",
+                  "SNAPSHOT_DIGEST_MISMATCH",
+                  "CONVERSATION_BUSY",
+                  "CONVERSATION_EXPIRED",
+                  "CONVERSATION_CONTEXT_LIMIT",
+                  "INVOCATION_EXPIRED",
+                  "WORKER_OFFLINE_TIMEOUT",
+                  "MODEL_QUOTA_EXHAUSTED",
+                  "STALE_LEASE",
+                  "STALE_FENCE",
+                  "PROTOCOL_INCOMPATIBLE",
+                  "EXECUTION_CAPABILITY_INVALID",
+                  "SANDBOX_ATTESTATION_FAILED",
+                  "RUNTIME_START_FAILED",
+                  "TURN_TIMEOUT",
+                  "TURN_FAILED",
+                  "CANCEL_NOT_CONFIRMED",
+                  "EXECUTION_STATE_UNKNOWN",
+                  "SSE_CURSOR_EXPIRED"
+                ]
+              },
+              "retryPolicy": {
+                "type": "string",
+                "enum": [
+                  "REPLAY_SAME_REQUEST",
+                  "NEW_INVOCATION_ALLOWED",
+                  "DO_NOT_AUTO_RETRY",
+                  "NOT_RETRYABLE"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                "description": "String containing 1 to 512 Unicode code points",
+                "minLength": 1,
+                "maxLength": 512,
+                "x-combo-unicodeCodePoints": { "minimum": 1, "maximum": 512 }
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                "description": "String containing 8 to 128 Unicode code points",
+                "minLength": 8,
+                "maxLength": 128,
+                "x-combo-unicodeCodePoints": { "minimum": 8, "maximum": 128 }
+              }
+            },
+            "required": ["code", "retryPolicy", "message", "requestId"],
+            "additionalProperties": false,
+            "nullable": true
+          },
+          "retryOfInvocationId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time"
+          },
+          "terminalAt": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "protocol",
+          "invocationId",
+          "conversationId",
+          "state",
+          "resultDigest",
+          "error",
+          "retryOfInvocationId",
+          "createdAt",
+          "terminalAt"
+        ],
+        "additionalProperties": false
+      },
+      "CancelInvocationRequest": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "RetryInvocationRequest": {
+        "type": "object",
+        "properties": {
+          "clientMessageId": {
+            "type": "string",
+            "minLength": 36,
+            "maxLength": 36,
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "format": "uuid"
+          }
+        },
+        "required": ["clientMessageId"],
+        "additionalProperties": false
+      },
+      "ConversationTranscript": {
+        "type": "object",
+        "properties": {
+          "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+          "conversation": {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.creator-agent-http/1"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "agentId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "agentVersionId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "versionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "OPENING",
+                  "IDLE",
+                  "BUSY",
+                  "SUSPENDED",
+                  "CLOSING",
+                  "CLOSED",
+                  "FAILED",
+                  "EXPIRED"
+                ]
+              },
+              "createdAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "expiresAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
+            },
+            "required": [
+              "protocol",
+              "conversationId",
+              "agentId",
+              "agentVersionId",
+              "versionDigest",
+              "state",
+              "createdAt",
+              "expiresAt"
+            ],
+            "additionalProperties": false
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "messageId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid"
+                },
+                "invocationId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                  "format": "uuid",
+                  "nullable": true
+                },
+                "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
+                "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
+                "text": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32768,
+                  "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                  "description": "UTF-8 text with a maximum of 32768 bytes",
+                  "x-combo-maxUtf8Bytes": 32768
+                },
+                "createdAt": {
+                  "type": "string",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                  "format": "date-time"
+                }
+              },
+              "required": ["messageId", "invocationId", "turnNo", "role", "text", "createdAt"],
+              "additionalProperties": false
+            },
+            "maxItems": 40
+          },
+          "latestEventId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 19,
+            "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+          }
+        },
+        "required": ["protocol", "conversation", "messages", "latestEventId"],
+        "additionalProperties": false
+      },
+      "ConsumerEvent": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 19,
+                "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+              },
+              "type": { "type": "string", "enum": ["invocation.state"] },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "ACCEPTED",
+                  "QUEUED",
+                  "DISPATCH_PENDING",
+                  "PERSISTED",
+                  "STARTING",
+                  "RUNNING",
+                  "CANCEL_REQUESTED",
+                  "RECONCILING",
+                  "SUCCEEDED",
+                  "FAILED",
+                  "CANCELLED",
+                  "UNCERTAIN",
+                  "EXPIRED"
+                ]
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
+            },
+            "required": ["id", "type", "invocationId", "state", "occurredAt"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 19,
+                "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+              },
+              "type": { "type": "string", "enum": ["invocation.delta"] },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8192,
+                "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                "description": "UTF-8 text with a maximum of 8192 bytes",
+                "x-combo-maxUtf8Bytes": 8192
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
+            },
+            "required": ["id", "type", "invocationId", "text", "occurredAt"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 19,
+                "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+              },
+              "type": { "type": "string", "enum": ["conversation.message"] },
+              "message": {
+                "type": "object",
+                "properties": {
+                  "messageId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "format": "uuid"
+                  },
+                  "invocationId": {
+                    "type": "string",
+                    "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                    "format": "uuid",
+                    "nullable": true
+                  },
+                  "turnNo": { "type": "integer", "minimum": 1, "maximum": 20 },
+                  "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
+                  "text": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 32768,
+                    "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                    "description": "UTF-8 text with a maximum of 32768 bytes",
+                    "x-combo-maxUtf8Bytes": 32768
+                  },
+                  "createdAt": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                    "format": "date-time"
+                  }
+                },
+                "required": ["messageId", "invocationId", "turnNo", "role", "text", "createdAt"],
+                "additionalProperties": false
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
+            },
+            "required": ["id", "type", "message", "occurredAt"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 19,
+                "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+              },
+              "type": { "type": "string", "enum": ["conversation.presence"] },
+              "status": { "type": "string", "enum": ["ONLINE", "BUSY", "OFFLINE"] },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              }
+            },
+            "required": ["id", "type", "status", "occurredAt"],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 19,
+                "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+              },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "payload": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["SUCCEEDED"] },
+                      "assistantMessageId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "resultDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+                      "errorCode": { "enum": ["null"], "nullable": true }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["FAILED"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": {
+                        "type": "string",
+                        "enum": [
+                          "INVALID_INPUT",
+                          "UNAUTHORIZED",
+                          "FORBIDDEN",
+                          "RATE_LIMITED",
+                          "IDEMPOTENCY_CONFLICT",
+                          "SNAPSHOT_EMPTY",
+                          "SNAPSHOT_SOURCE_CHANGED",
+                          "SNAPSHOT_LIMIT_EXCEEDED",
+                          "SNAPSHOT_PATH_REJECTED",
+                          "SNAPSHOT_SECRET_DETECTED",
+                          "AGENT_OFFLINE",
+                          "AGENT_BUSY",
+                          "QUEUE_FULL",
+                          "VERSION_UNAVAILABLE",
+                          "VERSION_DIGEST_MISMATCH",
+                          "SNAPSHOT_DIGEST_MISMATCH",
+                          "CONVERSATION_BUSY",
+                          "CONVERSATION_EXPIRED",
+                          "CONVERSATION_CONTEXT_LIMIT",
+                          "INVOCATION_EXPIRED",
+                          "WORKER_OFFLINE_TIMEOUT",
+                          "MODEL_QUOTA_EXHAUSTED",
+                          "STALE_LEASE",
+                          "STALE_FENCE",
+                          "PROTOCOL_INCOMPATIBLE",
+                          "EXECUTION_CAPABILITY_INVALID",
+                          "SANDBOX_ATTESTATION_FAILED",
+                          "RUNTIME_START_FAILED",
+                          "TURN_TIMEOUT",
+                          "TURN_FAILED",
+                          "CANCEL_NOT_CONFIRMED",
+                          "EXECUTION_STATE_UNKNOWN",
+                          "SSE_CURSOR_EXPIRED"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["CANCELLED"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": { "enum": ["null"], "nullable": true }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["UNCERTAIN"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": { "type": "string", "enum": ["EXECUTION_STATE_UNKNOWN"] }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+                      "schemaVersion": { "type": "number", "enum": [1] },
+                      "type": { "type": "string", "enum": ["invocation.terminal"] },
+                      "conversationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "invocationId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                        "format": "uuid"
+                      },
+                      "occurredAt": {
+                        "type": "string",
+                        "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                        "format": "date-time"
+                      },
+                      "terminalState": { "type": "string", "enum": ["EXPIRED"] },
+                      "assistantMessageId": { "enum": ["null"], "nullable": true },
+                      "resultDigest": { "enum": ["null"], "nullable": true },
+                      "errorCode": { "type": "string", "enum": ["INVOCATION_EXPIRED"] }
+                    },
+                    "required": [
+                      "protocol",
+                      "schemaVersion",
+                      "type",
+                      "conversationId",
+                      "invocationId",
+                      "occurredAt",
+                      "terminalState",
+                      "assistantMessageId",
+                      "resultDigest",
+                      "errorCode"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": ["id", "type", "payload"],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ConsumerTerminalEventPayload": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["SUCCEEDED"] },
+              "assistantMessageId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "resultDigest": { "type": "string", "pattern": "^hmac-sha256:[a-f0-9]{64}$" },
+              "errorCode": { "enum": ["null"], "nullable": true }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["FAILED"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": {
+                "type": "string",
+                "enum": [
+                  "INVALID_INPUT",
+                  "UNAUTHORIZED",
+                  "FORBIDDEN",
+                  "RATE_LIMITED",
+                  "IDEMPOTENCY_CONFLICT",
+                  "SNAPSHOT_EMPTY",
+                  "SNAPSHOT_SOURCE_CHANGED",
+                  "SNAPSHOT_LIMIT_EXCEEDED",
+                  "SNAPSHOT_PATH_REJECTED",
+                  "SNAPSHOT_SECRET_DETECTED",
+                  "AGENT_OFFLINE",
+                  "AGENT_BUSY",
+                  "QUEUE_FULL",
+                  "VERSION_UNAVAILABLE",
+                  "VERSION_DIGEST_MISMATCH",
+                  "SNAPSHOT_DIGEST_MISMATCH",
+                  "CONVERSATION_BUSY",
+                  "CONVERSATION_EXPIRED",
+                  "CONVERSATION_CONTEXT_LIMIT",
+                  "INVOCATION_EXPIRED",
+                  "WORKER_OFFLINE_TIMEOUT",
+                  "MODEL_QUOTA_EXHAUSTED",
+                  "STALE_LEASE",
+                  "STALE_FENCE",
+                  "PROTOCOL_INCOMPATIBLE",
+                  "EXECUTION_CAPABILITY_INVALID",
+                  "SANDBOX_ATTESTATION_FAILED",
+                  "RUNTIME_START_FAILED",
+                  "TURN_TIMEOUT",
+                  "TURN_FAILED",
+                  "CANCEL_NOT_CONFIRMED",
+                  "EXECUTION_STATE_UNKNOWN",
+                  "SSE_CURSOR_EXPIRED"
+                ]
+              }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["CANCELLED"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": { "enum": ["null"], "nullable": true }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["UNCERTAIN"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": { "type": "string", "enum": ["EXECUTION_STATE_UNKNOWN"] }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "protocol": { "type": "string", "enum": ["combo.consumer-event-outbox/1"] },
+              "schemaVersion": { "type": "number", "enum": [1] },
+              "type": { "type": "string", "enum": ["invocation.terminal"] },
+              "conversationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "invocationId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "format": "uuid"
+              },
+              "occurredAt": {
+                "type": "string",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                "format": "date-time"
+              },
+              "terminalState": { "type": "string", "enum": ["EXPIRED"] },
+              "assistantMessageId": { "enum": ["null"], "nullable": true },
+              "resultDigest": { "enum": ["null"], "nullable": true },
+              "errorCode": { "type": "string", "enum": ["INVOCATION_EXPIRED"] }
+            },
+            "required": [
+              "protocol",
+              "schemaVersion",
+              "type",
+              "conversationId",
+              "invocationId",
+              "occurredAt",
+              "terminalState",
+              "assistantMessageId",
+              "resultDigest",
+              "errorCode"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "VnextErrorResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INVALID_INPUT",
+              "UNAUTHORIZED",
+              "FORBIDDEN",
+              "RATE_LIMITED",
+              "IDEMPOTENCY_CONFLICT",
+              "SNAPSHOT_EMPTY",
+              "SNAPSHOT_SOURCE_CHANGED",
+              "SNAPSHOT_LIMIT_EXCEEDED",
+              "SNAPSHOT_PATH_REJECTED",
+              "SNAPSHOT_SECRET_DETECTED",
+              "AGENT_OFFLINE",
+              "AGENT_BUSY",
+              "QUEUE_FULL",
+              "VERSION_UNAVAILABLE",
+              "VERSION_DIGEST_MISMATCH",
+              "SNAPSHOT_DIGEST_MISMATCH",
+              "CONVERSATION_BUSY",
+              "CONVERSATION_EXPIRED",
+              "CONVERSATION_CONTEXT_LIMIT",
+              "INVOCATION_EXPIRED",
+              "WORKER_OFFLINE_TIMEOUT",
+              "MODEL_QUOTA_EXHAUSTED",
+              "STALE_LEASE",
+              "STALE_FENCE",
+              "PROTOCOL_INCOMPATIBLE",
+              "EXECUTION_CAPABILITY_INVALID",
+              "SANDBOX_ATTESTATION_FAILED",
+              "RUNTIME_START_FAILED",
+              "TURN_TIMEOUT",
+              "TURN_FAILED",
+              "CANCEL_NOT_CONFIRMED",
+              "EXECUTION_STATE_UNKNOWN",
+              "SSE_CURSOR_EXPIRED"
+            ]
+          },
+          "retryPolicy": {
+            "type": "string",
+            "enum": [
+              "REPLAY_SAME_REQUEST",
+              "NEW_INVOCATION_ALLOWED",
+              "DO_NOT_AUTO_RETRY",
+              "NOT_RETRYABLE"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "pattern": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "String containing 1 to 512 Unicode code points",
+            "minLength": 1,
+            "maxLength": 512,
+            "x-combo-unicodeCodePoints": { "minimum": 1, "maximum": 512 }
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+            "description": "String containing 8 to 128 Unicode code points",
+            "minLength": 8,
+            "maxLength": 128,
+            "x-combo-unicodeCodePoints": { "minimum": 8, "maximum": 128 }
+          }
+        },
+        "required": ["code", "retryPolicy", "message", "requestId"],
+        "additionalProperties": false
+      },
+      "PublicAgentSlug": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]{1,62}[a-z0-9])?$"
+      },
+      "DeploymentGenerationEtag": {
+        "type": "string",
+        "minLength": 14,
+        "maxLength": 32,
+        "pattern": "^\"generation-(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)\"$"
+      },
+      "LastEventId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 19,
+        "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+      },
+      "IdempotencyKey": {
+        "type": "string",
+        "minLength": 36,
+        "maxLength": 36,
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "format": "uuid"
+      },
+      "ServerId": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "format": "uuid",
+        "minLength": 36,
+        "maxLength": 36
+      }
+    }
+  }
+}

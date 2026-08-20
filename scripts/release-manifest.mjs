@@ -4,7 +4,8 @@ import { lstatSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const RELEASE_MANIFEST_SCHEMA_VERSION = 1;
+export const LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION = 1;
+export const RELEASE_MANIFEST_SCHEMA_VERSION = 2;
 
 const SOURCE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const MIGRATION_HEAD_PATTERN = /^[0-9]{4}_[a-z0-9_]+\.sql$/;
@@ -13,9 +14,13 @@ const UTC_TIMESTAMP_PATTERN = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-
 
 export const IMAGE_REPOSITORIES = Object.freeze({
   api: 'ghcr.io/dangdang-tech/combo-api',
+  agentGateway: 'ghcr.io/dangdang-tech/combo-agent-gateway',
   runtime: 'ghcr.io/dangdang-tech/combo-runtime',
   web: 'ghcr.io/dangdang-tech/combo-web',
 });
+
+const LEGACY_IMAGE_NAMES = Object.freeze(['api', 'runtime', 'web']);
+const CURRENT_IMAGE_NAMES = Object.freeze(['api', 'agentGateway', 'runtime', 'web']);
 
 function fail(message) {
   throw new Error(`Invalid release manifest: ${message}`);
@@ -77,8 +82,13 @@ export function validateReleaseManifest(value) {
     'root',
   );
 
-  if (value.schemaVersion !== RELEASE_MANIFEST_SCHEMA_VERSION) {
-    fail(`schemaVersion must be ${RELEASE_MANIFEST_SCHEMA_VERSION}`);
+  if (
+    value.schemaVersion !== LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION &&
+    value.schemaVersion !== RELEASE_MANIFEST_SCHEMA_VERSION
+  ) {
+    fail(
+      `schemaVersion must be ${LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION} or ${RELEASE_MANIFEST_SCHEMA_VERSION}`,
+    );
   }
   if (typeof value.sourceSha !== 'string' || !SOURCE_SHA_PATTERN.test(value.sourceSha)) {
     fail('sourceSha must be a complete lowercase commit SHA');
@@ -87,8 +97,12 @@ export function validateReleaseManifest(value) {
     fail('releaseId must be the deterministic release-<sourceSha> identity');
   }
   if (!isRecord(value.images)) fail('images must be an object');
-  assertExactKeys(value.images, Object.keys(IMAGE_REPOSITORIES), 'images');
-  for (const name of Object.keys(IMAGE_REPOSITORIES)) validateImage(name, value.images[name]);
+  const imageNames =
+    value.schemaVersion === LEGACY_RELEASE_MANIFEST_SCHEMA_VERSION
+      ? LEGACY_IMAGE_NAMES
+      : CURRENT_IMAGE_NAMES;
+  assertExactKeys(value.images, imageNames, 'images');
+  for (const name of imageNames) validateImage(name, value.images[name]);
   if (
     typeof value.migrationHead !== 'string' ||
     !MIGRATION_HEAD_PATTERN.test(value.migrationHead)
@@ -100,15 +114,12 @@ export function validateReleaseManifest(value) {
     fail('webAssetManifest must be a lowercase sha256 digest');
   }
 
+  const images = Object.fromEntries(imageNames.map((name) => [name, value.images[name]]));
   return {
-    schemaVersion: RELEASE_MANIFEST_SCHEMA_VERSION,
+    schemaVersion: value.schemaVersion,
     sourceSha: value.sourceSha,
     releaseId: value.releaseId,
-    images: {
-      api: value.images.api,
-      runtime: value.images.runtime,
-      web: value.images.web,
-    },
+    images,
     migrationHead: value.migrationHead,
     builtAt: value.builtAt,
     webAssetManifest: value.webAssetManifest,
@@ -173,6 +184,7 @@ function createFromOptions(options) {
     'output',
     'source-sha',
     'api-image',
+    'agent-gateway-image',
     'runtime-image',
     'web-image',
     'migration-head',
@@ -186,6 +198,7 @@ function createFromOptions(options) {
     releaseId: releaseIdForSource(sourceSha),
     images: {
       api: required(options, 'api-image'),
+      agentGateway: required(options, 'agent-gateway-image'),
       runtime: required(options, 'runtime-image'),
       web: required(options, 'web-image'),
     },

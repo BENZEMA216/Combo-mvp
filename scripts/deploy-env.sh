@@ -90,6 +90,40 @@ require_secret() {
   fi
 }
 
+render_contains_agent_gateway() {
+  "${K[@]}" apply --dry-run=client -f "$WORK/apps.yaml" -o name \
+    | grep -Fxq 'deployment.apps/agent-gateway'
+}
+
+retire_test_gateway_if_omitted() {
+  [[ "$ENVIRONMENT" == test ]] || return 0
+  if render_contains_agent_gateway; then return 0; fi
+
+  local resource
+  local resource_name
+  local managed_by
+  local existing=()
+  for resource in deployment.apps/agent-gateway service/agent-gateway; do
+    resource_name=$("${K[@]}" -n "$NAMESPACE" get "$resource" \
+      --ignore-not-found -o name) || fatal "failed to inspect $resource before retirement"
+    [[ -n "$resource_name" ]] || continue
+    managed_by=$("${K[@]}" -n "$NAMESPACE" get "$resource" \
+      -o 'jsonpath={.metadata.labels.combo\.build/managed-by}') || \
+      fatal "failed to inspect $resource ownership before retirement"
+    [[ "$managed_by" == release-v2 ]] || \
+      fatal "$resource exists without the release-v2 ownership label; refusing deletion"
+    existing+=("$resource")
+  done
+  if [[ ${#existing[@]} -gt 0 ]]; then
+    "${K[@]}" -n "$NAMESPACE" delete "${existing[@]}" --wait=true --timeout=60s
+    for resource in "${existing[@]}"; do
+      resource_name=$("${K[@]}" -n "$NAMESPACE" get "$resource" \
+        --ignore-not-found -o name) || fatal "failed to verify retirement of $resource"
+      [[ -z "$resource_name" ]] || fatal "$resource remained after the schema-v1 retirement"
+    done
+  fi
+}
+
 foundation_lock() {
   mkdir -p "$HOME/data"
   exec 9>"$HOME/data/combo-foundation-$FOUNDATION_SET.lock"
@@ -116,7 +150,11 @@ wait_ready() {
       fi
       ;;
     apps)
-      for deploy in api worker runtime web; do
+      local deployments=(api worker runtime web)
+      if render_contains_agent_gateway; then
+        deployments+=(agent-gateway)
+      fi
+      for deploy in "${deployments[@]}"; do
         "${K[@]}" -n "$NAMESPACE" rollout status "deployment/$deploy" --timeout=300s || {
           "${K[@]}" -n "$NAMESPACE" describe "deployment/$deploy" >&2 || true
           fatal "rollout of $deploy failed"
@@ -151,6 +189,10 @@ case "$COMMAND" in
     require_secret "$NAMESPACE" ghcr-pull
     render_phase apps
     "${K[@]}" apply -f "$WORK/apps.yaml"
+    # `kubectl apply` never removes resources omitted by a rollback manifest. A canonical schema
+    # v1 Test release promises zero Gateway authority, so retire only the exact v2-managed pair;
+    # an unknown owner is a hard stop rather than an unsafe broad delete.
+    retire_test_gateway_if_omitted
     [[ "$WAIT" == 1 ]] && wait_ready apps
     ;;
 esac

@@ -1,0 +1,16 @@
+{
+  "protocol": "combo.vnext-evidence-bundle/1",
+  "schemaVersion": 1,
+  "rcId": "vnext-alpha-rc-001",
+  "manifestDigest": "sha256:19b51d5e517a70cdf11f9d5daef4f7d9545c73b954ff5a3e87084c713de638e8",
+  "reviewerId": "independent-reviewer-001",
+  "reviewerKeyId": "reviewer-key-2026-08",
+  "reviewerRole": "independent-security-release-reviewer",
+  "verdict": "BLOCKED",
+  "reviewedGates": ["G0"],
+  "reviewedAt": "2026-08-13T09:30:00.000Z",
+  "nonce": "MDE5OGYwMGQtcmV2aWV3ZXItbm9uY2U",
+  "signatureAlgorithm": "ES256",
+  "signatureEncoding": "ieee-p1363",
+  "signature": "IPP_ezH4KFxez2aidCCv-rKkFuwd5HgdfSCI4RPWUNM_4EPeYrqbgGlBD5PWvUit0Cns2UoxS7cEwpeFkKTiHQ"
+}

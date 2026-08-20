@@ -1,0 +1,627 @@
+{
+  "protocol": "combo.protocol-utf8-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "utf8-byte-limits-only",
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "brokerContract": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
+    "openApi": "sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350"
+  },
+  "scalarControlParity": {
+    "canaryPrefix": "UTF8_SCALAR_CONTROL_CANARY_",
+    "portablePatternSource": "^(?:[\\u0009\\u000A\\u000D]|[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+    "strictPatternSource": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+    "strictRuntimeOwnerIds": [
+      "runtime-resolved-model",
+      "model-policy-model",
+      "codex-runtime-version",
+      "sandbox-spec-adapter-version",
+      "sandbox-attestation-adapter-version",
+      "sandbox-attestation-codex-version",
+      "create-agent-name",
+      "agent-view-name",
+      "broker-handshake-worker-version",
+      "execution-capability-model",
+      "version-rejected-error-code"
+    ],
+    "strictArtifactPointers": [
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentRequest/definitions/CreateAgentRequest/properties/name"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentView/definitions/AgentView/properties/name"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentRequest/properties/name"
+      },
+      { "artifact": "openapi", "pointer": "/components/schemas/AgentView/properties/name" },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/resolvedModel"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/codexRuntime/properties/version"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/modelPolicy/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/workerVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/1/anyOf/3/properties/body/properties/errorCode"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/ExecutionCapabilityUnsigned/definitions/ExecutionCapabilityUnsigned/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/model"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxSpec/definitions/SandboxSpec/properties/adapterVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestationUnsigned/definitions/SandboxAttestationUnsigned/properties/adapterVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestationUnsigned/definitions/SandboxAttestationUnsigned/properties/codexVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/adapterVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/codexVersion"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/version"
+      },
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model"
+      },
+      {
+        "artifact": "broker-contract",
+        "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/workerVersion"
+      },
+      {
+        "artifact": "broker-contract",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model"
+      },
+      {
+        "artifact": "broker-contract",
+        "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/1/anyOf/3/properties/body/properties/errorCode"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/version"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model"
+      }
+    ],
+    "runtimeOwners": [
+      {
+        "id": "behavior-role",
+        "source": "src/agent-version.ts:BehaviorContractSchema.role",
+        "runtimeParser": "BehaviorContractSchema",
+        "instancePointer": "/role",
+        "maxBytes": 512
+      },
+      {
+        "id": "behavior-objective",
+        "source": "src/agent-version.ts:BehaviorContractSchema.objective",
+        "runtimeParser": "BehaviorContractSchema",
+        "instancePointer": "/objective",
+        "maxBytes": 2048
+      },
+      {
+        "id": "behavior-developer-instruction",
+        "source": "src/agent-version.ts:BehaviorContractSchema.developerInstructions.items",
+        "runtimeParser": "BehaviorContractSchema",
+        "instancePointer": "/developerInstructions/0",
+        "maxBytes": 2048
+      },
+      {
+        "id": "runtime-resolved-model",
+        "source": "src/agent-version.ts:RuntimePolicySchema.resolvedModel",
+        "runtimeParser": "RuntimePolicySchema",
+        "instancePointer": "/resolvedModel",
+        "maxBytes": 128
+      },
+      {
+        "id": "model-policy-model",
+        "source": "src/agent-version.ts:ModelPolicySchema.model",
+        "runtimeParser": "ModelPolicySchema",
+        "instancePointer": "/model",
+        "maxBytes": 128
+      },
+      {
+        "id": "codex-runtime-version",
+        "source": "src/agent-version.ts:AgentVersionManifestSchema.codexRuntime.version",
+        "runtimeParser": "AgentVersionManifestSchema",
+        "instancePointer": "/codexRuntime/version",
+        "maxBytes": 128
+      },
+      {
+        "id": "sandbox-spec-adapter-version",
+        "source": "src/sandbox.ts:SandboxSpecSchema.adapterVersion",
+        "runtimeParser": "SandboxSpecSchema",
+        "instancePointer": "/adapterVersion",
+        "maxBytes": 128
+      },
+      {
+        "id": "sandbox-attestation-adapter-version",
+        "source": "src/sandbox.ts:SandboxAttestationUnsignedSchema.adapterVersion",
+        "runtimeParser": "SandboxAttestationUnsignedSchema",
+        "instancePointer": "/adapterVersion",
+        "maxBytes": 128
+      },
+      {
+        "id": "sandbox-attestation-codex-version",
+        "source": "src/sandbox.ts:SandboxAttestationUnsignedSchema.codexVersion",
+        "runtimeParser": "SandboxAttestationUnsignedSchema",
+        "instancePointer": "/codexVersion",
+        "maxBytes": 128
+      },
+      {
+        "id": "create-agent-name",
+        "source": "src/http.ts:CreateAgentRequestSchema.name",
+        "runtimeParser": "CreateAgentRequestSchema",
+        "instancePointer": "/name",
+        "maxBytes": 120
+      },
+      {
+        "id": "create-agent-description",
+        "source": "src/http.ts:CreateAgentRequestSchema.description",
+        "runtimeParser": "CreateAgentRequestSchema",
+        "instancePointer": "/description",
+        "maxBytes": 1024
+      },
+      {
+        "id": "agent-view-name",
+        "source": "src/http.ts:AgentViewSchema.name",
+        "runtimeParser": "AgentViewSchema",
+        "instancePointer": "/name",
+        "maxBytes": 120
+      },
+      {
+        "id": "agent-view-description",
+        "source": "src/http.ts:AgentViewSchema.description",
+        "runtimeParser": "AgentViewSchema",
+        "instancePointer": "/description",
+        "maxBytes": 1024
+      },
+      {
+        "id": "send-conversation-message-text",
+        "source": "src/http.ts:SendConversationMessageRequestSchema.text",
+        "runtimeParser": "SendConversationMessageRequestSchema",
+        "instancePointer": "/text",
+        "maxBytes": 16384
+      },
+      {
+        "id": "consumer-message-text",
+        "source": "src/http.ts:ConsumerMessageSchema.text",
+        "runtimeParser": "ConsumerMessageSchema",
+        "instancePointer": "/text",
+        "maxBytes": 32768
+      },
+      {
+        "id": "consumer-delta-text",
+        "source": "src/http.ts:ConsumerEventSchema.invocation.delta.text",
+        "runtimeParser": "ConsumerEventSchema",
+        "instancePointer": "/text",
+        "maxBytes": 8192
+      },
+      {
+        "id": "broker-handshake-worker-version",
+        "source": "src/broker.ts:BrokerHandshakeUnsignedSchema.workerVersion",
+        "runtimeParser": "BrokerHandshakeUnsignedSchema",
+        "instancePointer": "/workerVersion",
+        "maxBytes": 128
+      },
+      {
+        "id": "execution-capability-model",
+        "source": "src/broker.ts:ExecutionCapabilityUnsignedSchema.model",
+        "runtimeParser": "ExecutionCapabilityUnsignedSchema",
+        "instancePointer": "/model",
+        "maxBytes": 128
+      },
+      {
+        "id": "version-rejected-error-code",
+        "source": "src/broker.ts:BrokerEventSchema.version.rejected.errorCode",
+        "runtimeParser": "BrokerEventSchema",
+        "instancePointer": "/body/errorCode",
+        "maxBytes": 128
+      }
+    ],
+    "artifactCoverage": {
+      "excludedPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path",
+          "reason": "SnapshotPathSchema-has-independent-strict-pattern"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/mediaType",
+          "reason": "SnapshotFileSchema-mediaType-has-independent-ASCII-pattern-census"
+        }
+      ],
+      "expectedCounts": { "contractSchemas": 30, "brokerContract": 3, "openApi": 14, "total": 47 }
+    },
+    "probes": [
+      { "id": "tab", "codeUnits": [9], "expected": "accepted" },
+      { "id": "lf", "codeUnits": [10], "expected": "accepted" },
+      { "id": "cr", "codeUnits": [13], "expected": "accepted" },
+      { "id": "astral", "codeUnits": [55357, 56832], "expected": "accepted" },
+      { "id": "high-surrogate", "codeUnits": [55296], "expected": "rejected" },
+      { "id": "low-surrogate", "codeUnits": [56320], "expected": "rejected" },
+      { "id": "nul", "codeUnits": [0], "expected": "rejected" },
+      { "id": "other-c0", "codeUnits": [31], "expected": "rejected" },
+      { "id": "del", "codeUnits": [127], "expected": "rejected" },
+      { "id": "c1", "codeUnits": [159], "expected": "rejected" }
+    ]
+  },
+  "strictStructuralParity": {
+    "canaryPrefix": "SIGNED_PUT_URL_CANARY_",
+    "patternSource": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+    "runtimeTargetOwners": [
+      {
+        "id": "archive-signed-put-target",
+        "runtimeParser": "SnapshotArchiveSignedPutTargetSchema",
+        "responseInstancePointer": "/uploads/archive/putUrl"
+      },
+      {
+        "id": "manifest-signed-put-target",
+        "runtimeParser": "SnapshotManifestSignedPutTargetSchema",
+        "responseInstancePointer": "/uploads/manifest/putUrl"
+      }
+    ],
+    "physicalPublicNodes": [
+      {
+        "artifact": "contract-schemas",
+        "pointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "artifact": "openapi",
+        "pointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl"
+      }
+    ],
+    "semanticResponseOwners": [
+      {
+        "id": "contract-archive-put-url",
+        "artifact": "contract-schemas",
+        "semanticPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl",
+        "responseInstancePointer": "/uploads/archive/putUrl",
+        "physicalPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "id": "contract-manifest-put-url",
+        "artifact": "contract-schemas",
+        "semanticPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl",
+        "responseInstancePointer": "/uploads/manifest/putUrl",
+        "physicalPointer": "/schemas/SnapshotUploadCreateResponse/definitions/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "id": "openapi-archive-put-url",
+        "artifact": "openapi",
+        "semanticPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl",
+        "responseInstancePointer": "/uploads/archive/putUrl",
+        "physicalPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/archive/properties/putUrl"
+      },
+      {
+        "id": "openapi-manifest-put-url",
+        "artifact": "openapi",
+        "semanticPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl",
+        "responseInstancePointer": "/uploads/manifest/putUrl",
+        "physicalPointer": "/components/schemas/SnapshotUploadCreateResponse/properties/uploads/properties/manifest/properties/putUrl"
+      }
+    ],
+    "probes": [
+      { "id": "ascii", "codeUnits": [65], "expected": "accepted" },
+      { "id": "cjk", "codeUnits": [30028], "expected": "accepted" },
+      { "id": "astral", "codeUnits": [55357, 56832], "expected": "accepted" },
+      { "id": "high-surrogate", "codeUnits": [55296], "expected": "rejected" },
+      { "id": "low-surrogate", "codeUnits": [56320], "expected": "rejected" },
+      { "id": "nul", "codeUnits": [0], "expected": "rejected" },
+      { "id": "tab", "codeUnits": [9], "expected": "rejected" },
+      { "id": "lf", "codeUnits": [10], "expected": "rejected" },
+      { "id": "cr", "codeUnits": [13], "expected": "rejected" },
+      { "id": "other-c0", "codeUnits": [31], "expected": "rejected" },
+      { "id": "del", "codeUnits": [127], "expected": "rejected" },
+      { "id": "c1", "codeUnits": [159], "expected": "rejected" }
+    ]
+  },
+  "boundaries": [
+    {
+      "maxBytes": 120,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentRequest/definitions/CreateAgentRequest/properties/name"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentView/definitions/AgentView/properties/name"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentRequest/properties/name"
+        },
+        { "artifact": "openapi", "pointer": "/components/schemas/AgentView/properties/name" }
+      ]
+    },
+    {
+      "maxBytes": 128,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/resolvedModel"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/codexRuntime/properties/version"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/modelPolicy/properties/model"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/workerVersion"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/1/anyOf/3/properties/body/properties/errorCode"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/ExecutionCapabilityUnsigned/definitions/ExecutionCapabilityUnsigned/properties/model"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/model"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/mediaType"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SandboxSpec/definitions/SandboxSpec/properties/adapterVersion"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SandboxAttestationUnsigned/definitions/SandboxAttestationUnsigned/properties/adapterVersion"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SandboxAttestationUnsigned/definitions/SandboxAttestationUnsigned/properties/codexVersion"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/adapterVersion"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/codexVersion"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/version"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/workerVersion"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/model"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/1/anyOf/3/properties/body/properties/errorCode"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/resolvedModel"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/codexRuntime/properties/version"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/modelPolicy/properties/model"
+        }
+      ]
+    },
+    {
+      "maxBytes": 512,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/behaviorContract/properties/role"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/role"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/role"
+        }
+      ]
+    },
+    {
+      "maxBytes": 1024,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentRequest/definitions/CreateAgentRequest/properties/description"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentView/definitions/AgentView/properties/description"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentRequest/properties/description"
+        },
+        { "artifact": "openapi", "pointer": "/components/schemas/AgentView/properties/description" }
+      ]
+    },
+    {
+      "maxBytes": 2048,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/behaviorContract/properties/objective"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/behaviorContract/properties/developerInstructions/items"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/objective"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/developerInstructions/items"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/objective"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/developerInstructions/items"
+        }
+      ]
+    },
+    {
+      "maxBytes": 8192,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/ConsumerEvent/definitions/ConsumerEvent/anyOf/1/properties/text"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/ConsumerEvent/anyOf/1/properties/text"
+        }
+      ]
+    },
+    {
+      "maxBytes": 16384,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SendConversationMessageRequest/definitions/SendConversationMessageRequest/properties/text"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SendConversationMessageRequest/properties/text"
+        }
+      ]
+    },
+    {
+      "maxBytes": 32768,
+      "generators": ["ascii", "cjk", "emoji"],
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/ConversationTranscript/definitions/ConversationTranscript/properties/messages/items/properties/text"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/ConsumerEvent/definitions/ConsumerEvent/anyOf/2/properties/message/properties/text"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/ConversationTranscript/properties/messages/items/properties/text"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/ConsumerEvent/anyOf/2/properties/message/properties/text"
+        }
+      ]
+    }
+  ],
+  "ownerCases": [
+    {
+      "id": "snapshot-manifest-path",
+      "maxBytes": 512,
+      "runtimeParser": "SnapshotManifestSchema",
+      "fixturePath": "snapshot-manifest.v1.json",
+      "fixtureDigest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088",
+      "instancePointer": "/files/0/path",
+      "artifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path",
+      "generators": ["ascii", "cjk", "emoji"]
+    }
+  ],
+  "remainingBoundaryClasses": [
+    "structural-string-length",
+    "array-count",
+    "decoded-bytes",
+    "wire-bytes",
+    "canonical-json-bytes",
+    "numeric-bytes"
+  ]
+}

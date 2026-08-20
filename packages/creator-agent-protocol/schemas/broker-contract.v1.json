@@ -1,0 +1,3163 @@
+{
+  "protocol": "combo.creator-broker-contract/1",
+  "schemaVersion": 1,
+  "wireProtocol": "combo.creator-broker/1",
+  "canonicalization": "combo-rfc8785-jcs/1",
+  "connectPath": "/v1/worker/connect",
+  "maxFrameBytes": 65536,
+  "closeCodes": {
+    "NORMAL": 1000,
+    "GOING_AWAY": 1001,
+    "INTERNAL_ERROR": 1011,
+    "SESSION_REPLACED": 4001,
+    "PROTOCOL_ERROR": 4002,
+    "AUTH_FAILED": 4003,
+    "CAPACITY": 4004,
+    "REPLAY_REQUIRED": 4009
+  },
+  "closeReasons": {
+    "STOPPING": "STOPPING",
+    "SERVER_STOPPED": "SERVER_STOPPED",
+    "SESSION_REPLACED": "SESSION_REPLACED",
+    "PROTOCOL_ERROR": "PROTOCOL_ERROR",
+    "TRANSPORT_ERROR": "TRANSPORT_ERROR",
+    "TRANSPORT_FAILED": "TRANSPORT_FAILED",
+    "AUTHENTICATION_REJECTED": "AUTHENTICATION_REJECTED",
+    "HANDSHAKE_TIMEOUT": "HANDSHAKE_TIMEOUT",
+    "LEASE_GRANT_TIMEOUT": "LEASE_GRANT_TIMEOUT",
+    "SESSION_EXPIRED": "SESSION_EXPIRED",
+    "INSTALLATION_REVOKED": "INSTALLATION_REVOKED",
+    "WORKER_INCOMPATIBLE": "WORKER_INCOMPATIBLE",
+    "NOT_ACCEPTING": "NOT_ACCEPTING",
+    "TRANSPORT_CAPACITY": "TRANSPORT_CAPACITY",
+    "REPLAY_REQUIRED": "REPLAY_REQUIRED",
+    "LEASE_EXPIRED": "LEASE_EXPIRED",
+    "AUTHORITY_FAILED": "AUTHORITY_FAILED",
+    "INTERNAL_ERROR": "INTERNAL_ERROR"
+  },
+  "schemas": {
+    "BrokerRegistrationCapabilities": {
+      "$ref": "#/definitions/BrokerRegistrationCapabilities",
+      "definitions": {
+        "BrokerRegistrationCapabilities": {
+          "type": "object",
+          "properties": {
+            "codexRuntimeArtifacts": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "codexProtocolSchemaDigests": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/BrokerRegistrationCapabilities/properties/codexRuntimeArtifacts/items"
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "isolationModes": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["apple-container-v1", "lima-vz-v1"] },
+              "minItems": 1,
+              "maxItems": 2
+            },
+            "brokerContractDigest": {
+              "$ref": "#/definitions/BrokerRegistrationCapabilities/properties/codexRuntimeArtifacts/items"
+            }
+          },
+          "required": [
+            "codexRuntimeArtifacts",
+            "codexProtocolSchemaDigests",
+            "isolationModes",
+            "brokerContractDigest"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerHandshake": {
+      "$ref": "#/definitions/BrokerHandshake",
+      "definitions": {
+        "BrokerHandshake": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "installationId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "workerVersion": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+              "description": "UTF-8 text with a maximum of 128 bytes",
+              "x-combo-maxUtf8Bytes": 128
+            },
+            "supportedProtocolVersions": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1,
+              "items": [{ "type": "number", "const": 1 }]
+            },
+            "codexRuntimeArtifacts": {
+              "type": "array",
+              "items": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "codexProtocolSchemaDigests": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/BrokerHandshake/properties/codexRuntimeArtifacts/items"
+              },
+              "minItems": 1,
+              "maxItems": 8
+            },
+            "isolationModes": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["apple-container-v1", "lima-vz-v1"] },
+              "minItems": 1,
+              "maxItems": 2
+            },
+            "brokerContractDigest": {
+              "$ref": "#/definitions/BrokerHandshake/properties/codexRuntimeArtifacts/items"
+            },
+            "capacity": {
+              "type": "object",
+              "properties": {
+                "maxActiveConversations": { "type": "number", "const": 1 },
+                "maxActiveTurns": { "type": "number", "const": 1 }
+              },
+              "required": ["maxActiveConversations", "maxActiveTurns"],
+              "additionalProperties": false
+            },
+            "challengeId": { "$ref": "#/definitions/BrokerHandshake/properties/installationId" },
+            "challengeSignature": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$",
+              "minLength": 86,
+              "maxLength": 86,
+              "description": "Canonical base64url encoding of exactly 64 bytes",
+              "x-combo-canonicalBase64UrlBytes": { "minimum": 64, "maximum": 64 }
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "installationId",
+            "workerVersion",
+            "supportedProtocolVersions",
+            "codexRuntimeArtifacts",
+            "codexProtocolSchemaDigests",
+            "isolationModes",
+            "brokerContractDigest",
+            "capacity",
+            "challengeId",
+            "challengeSignature"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerEnvelope": {
+      "$ref": "#/definitions/BrokerEnvelope",
+      "definitions": {
+        "BrokerEnvelope": {
+          "anyOf": [
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+                    "schemaVersion": { "type": "number", "const": 1 },
+                    "messageId": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                      "format": "uuid"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 19,
+                      "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+                    },
+                    "sentAt": {
+                      "type": "string",
+                      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+                      "format": "date-time"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "lease.grant" },
+                    "lease": {
+                      "type": "object",
+                      "properties": {
+                        "deploymentId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        }
+                      },
+                      "required": ["deploymentId", "leaseId", "workerSessionId", "fence"],
+                      "additionalProperties": false
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "leaseExpiresAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        },
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        }
+                      },
+                      "required": ["leaseExpiresAt", "workerSessionId", "generation"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "lease.revoke" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "SESSION_REPLACED",
+                            "DRAIN",
+                            "IMMEDIATE",
+                            "SECURITY",
+                            "INSTALLATION_REVOKED"
+                          ]
+                        },
+                        "effectiveAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["reason", "effectiveAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "version.prepare" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        }
+                      },
+                      "required": [
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "generation"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "deployment.drain" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "mode": { "type": "string", "enum": ["DRAIN", "IMMEDIATE"] },
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "deadlineAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["mode", "generation", "deadlineAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "conversation.open" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "visibleTranscriptDigest": {
+                          "type": "string",
+                          "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                        },
+                        "openAuthority": {
+                          "type": "object",
+                          "properties": {
+                            "deploymentId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "installationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "workerSessionId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "leaseId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "fence": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                            }
+                          },
+                          "required": [
+                            "deploymentId",
+                            "installationId",
+                            "workerSessionId",
+                            "leaseId",
+                            "fence"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "conversationId",
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "visibleTranscriptDigest",
+                        "openAuthority"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "conversation.close" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": ["USER", "EXPIRED", "DRAIN", "SECURITY"]
+                        }
+                      },
+                      "required": ["conversationId", "reason"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.prepare" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "clientMessageId": {
+                          "type": "string",
+                          "minLength": 36,
+                          "maxLength": 36,
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                          "format": "uuid"
+                        },
+                        "requestDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                        },
+                        "userMessageCiphertext": {
+                          "type": "object",
+                          "properties": {
+                            "algorithm": { "type": "string", "const": "aes-256-gcm/v1" },
+                            "keyScope": { "type": "string", "const": "worker-session" },
+                            "keyId": {
+                              "type": "string",
+                              "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
+                            },
+                            "nonce": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 16,
+                              "maxLength": 16,
+                              "description": "Canonical base64url encoding of exactly 12 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 12, "maximum": 12 }
+                            },
+                            "ciphertext": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 2,
+                              "maxLength": 61440,
+                              "description": "Canonical base64url encoding of 1 to 46080 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 1, "maximum": 46080 }
+                            },
+                            "authTag": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 22,
+                              "maxLength": 22,
+                              "description": "Canonical base64url encoding of exactly 16 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 16, "maximum": 16 }
+                            },
+                            "cipherDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                            },
+                            "aad": {
+                              "type": "object",
+                              "properties": {
+                                "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+                                "schemaVersion": { "type": "number", "const": 1 },
+                                "envelopeType": {
+                                  "type": "string",
+                                  "enum": [
+                                    "invocation.prepare",
+                                    "invocation.delta",
+                                    "invocation.succeeded"
+                                  ]
+                                },
+                                "messageId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "workerSessionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "role": { "type": "string", "enum": ["USER", "ASSISTANT"] },
+                                "keyId": {
+                                  "type": "string",
+                                  "pattern": "^[a-z0-9][a-z0-9._:-]{2,127}$"
+                                }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "envelopeType",
+                                "messageId",
+                                "conversationId",
+                                "invocationId",
+                                "workerSessionId",
+                                "role",
+                                "keyId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "aadDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                            },
+                            "aadVersion": { "type": "number", "const": 1 }
+                          },
+                          "required": [
+                            "algorithm",
+                            "keyScope",
+                            "keyId",
+                            "nonce",
+                            "ciphertext",
+                            "authTag",
+                            "cipherDigest",
+                            "aad",
+                            "aadDigest",
+                            "aadVersion"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "deadlineAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        },
+                        "executionCapability": {
+                          "type": "object",
+                          "properties": {
+                            "protocol": {
+                              "type": "string",
+                              "const": "combo.execution-capability/1"
+                            },
+                            "schemaVersion": { "type": "number", "const": 1 },
+                            "capabilityId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "invocationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "conversationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "deploymentId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "agentVersionId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "agentVersionDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                            },
+                            "workerInstallationId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "leaseId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "fence": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                            },
+                            "providerRequestId": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            "requestDigest": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                            },
+                            "model": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 128,
+                              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+                              "description": "UTF-8 text with a maximum of 128 bytes",
+                              "x-combo-maxUtf8Bytes": 128
+                            },
+                            "reasoningEffort": {
+                              "type": "string",
+                              "enum": ["low", "medium", "high", "xhigh"]
+                            },
+                            "budget": {
+                              "type": "object",
+                              "properties": {
+                                "maxInputTokens": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 200000
+                                },
+                                "maxOutputTokens": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 32768
+                                },
+                                "maxCostMicros": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 100000000
+                                }
+                              },
+                              "required": ["maxInputTokens", "maxOutputTokens", "maxCostMicros"],
+                              "additionalProperties": false
+                            },
+                            "notBefore": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                            },
+                            "expiresAt": {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                            },
+                            "nonce": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 22,
+                              "maxLength": 128
+                            },
+                            "signatureAlgorithm": { "type": "string", "const": "ES256" },
+                            "signatureEncoding": { "type": "string", "const": "ieee-p1363" },
+                            "signature": {
+                              "type": "string",
+                              "pattern": "^[A-Za-z0-9_-]+$",
+                              "minLength": 86,
+                              "maxLength": 86,
+                              "description": "Canonical base64url encoding of exactly 64 bytes",
+                              "x-combo-canonicalBase64UrlBytes": { "minimum": 64, "maximum": 64 }
+                            }
+                          },
+                          "required": [
+                            "protocol",
+                            "schemaVersion",
+                            "capabilityId",
+                            "invocationId",
+                            "conversationId",
+                            "deploymentId",
+                            "agentVersionId",
+                            "agentVersionDigest",
+                            "workerInstallationId",
+                            "leaseId",
+                            "fence",
+                            "providerRequestId",
+                            "requestDigest",
+                            "model",
+                            "reasoningEffort",
+                            "budget",
+                            "notBefore",
+                            "expiresAt",
+                            "nonce",
+                            "signatureAlgorithm",
+                            "signatureEncoding",
+                            "signature"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "invocationId",
+                        "conversationId",
+                        "clientMessageId",
+                        "requestDigest",
+                        "userMessageCiphertext",
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "deadlineAt",
+                        "executionCapability"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.start" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "prepareCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "executionCapabilityId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        }
+                      },
+                      "required": ["invocationId", "prepareCommandId", "executionCapabilityId"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.cancel" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "CONSUMER_REQUEST",
+                            "DRAIN_DEADLINE",
+                            "SECURITY_REVOKE",
+                            "DEADLINE"
+                          ]
+                        }
+                      },
+                      "required": ["invocationId", "reason"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "invocation.reconcile" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "cloudState": {
+                          "type": "string",
+                          "enum": [
+                            "ACCEPTED",
+                            "QUEUED",
+                            "DISPATCH_PENDING",
+                            "PERSISTED",
+                            "STARTING",
+                            "RUNNING",
+                            "CANCEL_REQUESTED",
+                            "RECONCILING"
+                          ]
+                        },
+                        "reconciliationDeadlineAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["invocationId", "cloudState", "reconciliationDeadlineAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "command" },
+                    "type": { "type": "string", "const": "ping" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "nonce": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 16,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": ["nonce"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "lease.accepted" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "leaseExpiresAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["leaseExpiresAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "lease.renewed" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "leaseExpiresAt": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                        }
+                      },
+                      "required": ["leaseExpiresAt"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "version.ready" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "smokeAttestationDigest": {
+                          "type": "string",
+                          "pattern": "^sha256:[a-f0-9]{64}$"
+                        }
+                      },
+                      "required": ["generation", "agentVersionDigest", "smokeAttestationDigest"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "version.rejected" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "generation": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "errorCode": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 128,
+                          "pattern": "^(?:[^\\u0000-\\u001f\\u007f-\\u009f\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
+                          "description": "UTF-8 text with a maximum of 128 bytes",
+                          "x-combo-maxUtf8Bytes": 128
+                        }
+                      },
+                      "required": ["generation", "errorCode"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "conversation.ready" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "type": "string",
+                          "const": "combo.worker-conversation-ready-fact/1"
+                        },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "type": { "type": "string", "const": "conversation.ready" },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "openCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "deploymentId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "installationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "sandboxInstanceId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "runtimeThreadId": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 256,
+                          "pattern": "^[A-Za-z0-9._:-]+$"
+                        },
+                        "readyEvidenceDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "type",
+                        "sourceEventId",
+                        "conversationId",
+                        "openCommandId",
+                        "deploymentId",
+                        "agentVersionId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "installationId",
+                        "workerSessionId",
+                        "leaseId",
+                        "fence",
+                        "sandboxInstanceId",
+                        "runtimeThreadId",
+                        "readyEvidenceDigest",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.prepared" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": { "type": "string", "const": "combo.worker-invocation-fact/1" },
+                        "schemaVersion": { "type": "number", "const": 1 },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "executionCapabilityDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "type": { "type": "string", "const": "invocation.prepared" },
+                        "requestDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                        },
+                        "prepareCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "sourceEventId",
+                        "invocationId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "executionCapabilityDigest",
+                        "leaseId",
+                        "fence",
+                        "type",
+                        "requestDigest",
+                        "prepareCommandId",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.started" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/schemaVersion"
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "executionCapabilityDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "type": { "type": "string", "const": "invocation.started" },
+                        "startCommandId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "runtimeThreadId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                        },
+                        "runtimeTurnId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                        },
+                        "dispatchReceiptDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "sandboxAttestationDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "sourceEventId",
+                        "invocationId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "executionCapabilityDigest",
+                        "leaseId",
+                        "fence",
+                        "type",
+                        "startCommandId",
+                        "runtimeThreadId",
+                        "runtimeTurnId",
+                        "dispatchReceiptDigest",
+                        "sandboxAttestationDigest",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.delta" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "deltaSequence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "deltaCiphertext": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext"
+                        }
+                      },
+                      "required": [
+                        "invocationId",
+                        "conversationId",
+                        "deltaSequence",
+                        "deltaCiphertext"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.succeeded" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/schemaVersion"
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "executionCapabilityDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "type": { "type": "string", "const": "invocation.succeeded" },
+                        "runtimeThreadId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                        },
+                        "runtimeTurnId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                        },
+                        "startedFactDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "resultDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/4/properties/body/properties/visibleTranscriptDigest"
+                        },
+                        "localResultCipherDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "conversationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "resultCiphertext": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext"
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "sourceEventId",
+                        "invocationId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "executionCapabilityDigest",
+                        "leaseId",
+                        "fence",
+                        "type",
+                        "runtimeThreadId",
+                        "runtimeTurnId",
+                        "startedFactDigest",
+                        "resultDigest",
+                        "localResultCipherDigest",
+                        "conversationId",
+                        "resultCiphertext",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.failed" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/schemaVersion"
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "executionCapabilityDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "type": { "type": "string", "const": "invocation.failed" },
+                        "errorCode": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{1,127}$" },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "sourceEventId",
+                        "invocationId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "executionCapabilityDigest",
+                        "leaseId",
+                        "fence",
+                        "type",
+                        "errorCode",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.cancelled" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/schemaVersion"
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "executionCapabilityDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "type": { "type": "string", "const": "invocation.cancelled" },
+                        "interruptReceiptDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                        },
+                        "interruptReceipt": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "protocol": {
+                                  "type": "string",
+                                  "const": "combo.worker-interrupt-receipt/1"
+                                },
+                                "schemaVersion": { "type": "number", "const": 1 },
+                                "installationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "snapshotDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "leaseId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "fence": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                                },
+                                "executionCapabilityDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "cancelCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "cancelReason": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/8/properties/body/properties/reason"
+                                },
+                                "interruptNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "outcome": { "type": "string", "const": "PROVED_NOT_EXECUTED" },
+                                "evidenceAuthority": {
+                                  "type": "string",
+                                  "const": "LOCAL_DISPATCH_COUNTER"
+                                },
+                                "dispatchAttemptCount": { "type": "number", "const": 0 },
+                                "runtimeThreadId": { "type": "null" },
+                                "runtimeTurnId": { "type": "null" },
+                                "dispatchReceiptDigest": { "type": "null" },
+                                "sandboxInstanceId": { "type": "null" },
+                                "sandboxAttestationDigest": { "type": "null" },
+                                "hostTerminalDigest": { "type": "null" },
+                                "startCommandId": { "type": "null" },
+                                "dispatchNonce": { "type": "null" }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "installationId",
+                                "invocationId",
+                                "conversationId",
+                                "agentVersionId",
+                                "agentVersionDigest",
+                                "snapshotDigest",
+                                "leaseId",
+                                "fence",
+                                "executionCapabilityDigest",
+                                "cancelCommandId",
+                                "cancelReason",
+                                "interruptNonce",
+                                "outcome",
+                                "evidenceAuthority",
+                                "dispatchAttemptCount",
+                                "runtimeThreadId",
+                                "runtimeTurnId",
+                                "dispatchReceiptDigest",
+                                "sandboxInstanceId",
+                                "sandboxAttestationDigest",
+                                "hostTerminalDigest",
+                                "startCommandId",
+                                "dispatchNonce"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "protocol": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/protocol"
+                                },
+                                "schemaVersion": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/schemaVersion"
+                                },
+                                "installationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "snapshotDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "leaseId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "fence": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                                },
+                                "executionCapabilityDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "cancelCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "cancelReason": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/8/properties/body/properties/reason"
+                                },
+                                "interruptNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "outcome": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/outcome"
+                                },
+                                "evidenceAuthority": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/evidenceAuthority"
+                                },
+                                "dispatchAttemptCount": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/dispatchAttemptCount"
+                                },
+                                "runtimeThreadId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/runtimeThreadId"
+                                },
+                                "runtimeTurnId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/runtimeTurnId"
+                                },
+                                "dispatchReceiptDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/dispatchReceiptDigest"
+                                },
+                                "sandboxInstanceId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/sandboxInstanceId"
+                                },
+                                "sandboxAttestationDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/sandboxAttestationDigest"
+                                },
+                                "hostTerminalDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/hostTerminalDigest"
+                                },
+                                "startCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "dispatchNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "installationId",
+                                "invocationId",
+                                "conversationId",
+                                "agentVersionId",
+                                "agentVersionDigest",
+                                "snapshotDigest",
+                                "leaseId",
+                                "fence",
+                                "executionCapabilityDigest",
+                                "cancelCommandId",
+                                "cancelReason",
+                                "interruptNonce",
+                                "outcome",
+                                "evidenceAuthority",
+                                "dispatchAttemptCount",
+                                "runtimeThreadId",
+                                "runtimeTurnId",
+                                "dispatchReceiptDigest",
+                                "sandboxInstanceId",
+                                "sandboxAttestationDigest",
+                                "hostTerminalDigest",
+                                "startCommandId",
+                                "dispatchNonce"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "protocol": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/protocol"
+                                },
+                                "schemaVersion": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/10/properties/body/properties/interruptReceipt/anyOf/0/properties/schemaVersion"
+                                },
+                                "installationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "invocationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "conversationId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "agentVersionDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "snapshotDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "leaseId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "fence": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                                },
+                                "executionCapabilityDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                                },
+                                "cancelCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "cancelReason": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/8/properties/body/properties/reason"
+                                },
+                                "interruptNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "outcome": { "type": "string", "const": "INTERRUPTED" },
+                                "evidenceAuthority": { "type": "string", "const": "HOST" },
+                                "dispatchAttemptCount": { "type": "number", "const": 1 },
+                                "startCommandId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "dispatchNonce": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "runtimeThreadId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                                },
+                                "runtimeTurnId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/4/properties/body/properties/runtimeThreadId"
+                                },
+                                "dispatchReceiptDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                                },
+                                "sandboxInstanceId": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                                },
+                                "sandboxAttestationDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                                },
+                                "hostTerminalDigest": {
+                                  "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/2/properties/body/properties/smokeAttestationDigest"
+                                }
+                              },
+                              "required": [
+                                "protocol",
+                                "schemaVersion",
+                                "installationId",
+                                "invocationId",
+                                "conversationId",
+                                "agentVersionId",
+                                "agentVersionDigest",
+                                "snapshotDigest",
+                                "leaseId",
+                                "fence",
+                                "executionCapabilityDigest",
+                                "cancelCommandId",
+                                "cancelReason",
+                                "interruptNonce",
+                                "outcome",
+                                "evidenceAuthority",
+                                "dispatchAttemptCount",
+                                "startCommandId",
+                                "dispatchNonce",
+                                "runtimeThreadId",
+                                "runtimeTurnId",
+                                "dispatchReceiptDigest",
+                                "sandboxInstanceId",
+                                "sandboxAttestationDigest",
+                                "hostTerminalDigest"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "sourceEventId",
+                        "invocationId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "executionCapabilityDigest",
+                        "leaseId",
+                        "fence",
+                        "type",
+                        "interruptReceiptDigest",
+                        "interruptReceipt",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "invocation.uncertain" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "protocol": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/protocol"
+                        },
+                        "schemaVersion": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/1/anyOf/5/properties/body/properties/schemaVersion"
+                        },
+                        "sourceEventId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "invocationId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "agentVersionDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "snapshotDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "executionCapabilityDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        },
+                        "leaseId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "fence": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                        },
+                        "type": { "type": "string", "const": "invocation.uncertain" },
+                        "reason": {
+                          "type": "string",
+                          "enum": [
+                            "START_DISPATCH_UNKNOWN",
+                            "HOST_EVIDENCE_LOST",
+                            "MODEL_ATTEMPT_UNKNOWN",
+                            "CANCEL_NOT_CONFIRMED",
+                            "JOURNAL_LOST"
+                          ]
+                        },
+                        "factDigest": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/2/properties/body/properties/agentVersionDigest"
+                        }
+                      },
+                      "required": [
+                        "protocol",
+                        "schemaVersion",
+                        "sourceEventId",
+                        "invocationId",
+                        "agentVersionDigest",
+                        "snapshotDigest",
+                        "executionCapabilityDigest",
+                        "leaseId",
+                        "fence",
+                        "type",
+                        "reason",
+                        "factDigest"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "heartbeat" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "workerSessionId": {
+                          "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                        },
+                        "runtimeReady": { "type": "boolean" },
+                        "proxyReady": { "type": "boolean" },
+                        "journalReady": { "type": "boolean" },
+                        "activeInvocationId": {
+                          "anyOf": [
+                            {
+                              "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                            },
+                            { "type": "null" }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "workerSessionId",
+                        "runtimeReady",
+                        "proxyReady",
+                        "journalReady",
+                        "activeInvocationId"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "protocol": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                    },
+                    "schemaVersion": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                    },
+                    "messageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "correlationId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "connectionId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "sequence": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                    },
+                    "sentAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "expiresAt": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                    },
+                    "kind": { "type": "string", "const": "event" },
+                    "type": { "type": "string", "const": "pong" },
+                    "lease": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                    },
+                    "body": {
+                      "type": "object",
+                      "properties": {
+                        "nonce": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]+$",
+                          "minLength": 16,
+                          "maxLength": 128
+                        }
+                      },
+                      "required": ["nonce"],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "protocol",
+                    "schemaVersion",
+                    "messageId",
+                    "correlationId",
+                    "connectionId",
+                    "sequence",
+                    "sentAt",
+                    "expiresAt",
+                    "kind",
+                    "type",
+                    "lease",
+                    "body"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "protocol": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/protocol"
+                },
+                "schemaVersion": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/schemaVersion"
+                },
+                "messageId": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                },
+                "correlationId": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                },
+                "connectionId": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                },
+                "sequence": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sequence"
+                },
+                "sentAt": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                },
+                "expiresAt": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/sentAt"
+                },
+                "kind": { "type": "string", "const": "ack" },
+                "type": { "type": "string", "const": "message.ack" },
+                "lease": {
+                  "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/lease"
+                },
+                "body": {
+                  "type": "object",
+                  "properties": {
+                    "acknowledgedMessageId": {
+                      "$ref": "#/definitions/BrokerEnvelope/anyOf/0/anyOf/0/properties/messageId"
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": ["RECEIVED", "PERSISTED", "CLOUD_COMMITTED"]
+                    },
+                    "decision": {
+                      "type": "string",
+                      "enum": [
+                        "APPLIED",
+                        "IDEMPOTENT_REPLAY",
+                        "NOOP_TERMINAL",
+                        "RECONCILE",
+                        "SECURITY_BLOCK"
+                      ]
+                    }
+                  },
+                  "required": ["acknowledgedMessageId", "level", "decision"],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "protocol",
+                "schemaVersion",
+                "messageId",
+                "correlationId",
+                "connectionId",
+                "sequence",
+                "sentAt",
+                "expiresAt",
+                "kind",
+                "type",
+                "lease",
+                "body"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerConversationOpenAuthority": {
+      "$ref": "#/definitions/BrokerConversationOpenAuthority",
+      "definitions": {
+        "BrokerConversationOpenAuthority": {
+          "type": "object",
+          "properties": {
+            "deploymentId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "installationId": {
+              "$ref": "#/definitions/BrokerConversationOpenAuthority/properties/deploymentId"
+            },
+            "workerSessionId": {
+              "$ref": "#/definitions/BrokerConversationOpenAuthority/properties/deploymentId"
+            },
+            "leaseId": {
+              "$ref": "#/definitions/BrokerConversationOpenAuthority/properties/deploymentId"
+            },
+            "fence": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 19,
+              "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+            }
+          },
+          "required": ["deploymentId", "installationId", "workerSessionId", "leaseId", "fence"],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerConversationOpenCommand": {
+      "$ref": "#/definitions/BrokerConversationOpenCommand",
+      "definitions": {
+        "BrokerConversationOpenCommand": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "messageId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "correlationId": {
+              "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+            },
+            "connectionId": {
+              "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+            },
+            "sequence": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 19,
+              "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+            },
+            "sentAt": {
+              "type": "string",
+              "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$",
+              "format": "date-time"
+            },
+            "expiresAt": {
+              "$ref": "#/definitions/BrokerConversationOpenCommand/properties/sentAt"
+            },
+            "kind": { "type": "string", "const": "command" },
+            "type": { "type": "string", "const": "conversation.open" },
+            "lease": {
+              "type": "object",
+              "properties": {
+                "deploymentId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "leaseId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "workerSessionId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "fence": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/sequence"
+                }
+              },
+              "required": ["deploymentId", "leaseId", "workerSessionId", "fence"],
+              "additionalProperties": false
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "conversationId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                },
+                "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/BrokerConversationOpenCommand/properties/body/properties/agentVersionDigest"
+                },
+                "visibleTranscriptDigest": {
+                  "type": "string",
+                  "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                },
+                "openAuthority": {
+                  "type": "object",
+                  "properties": {
+                    "deploymentId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "installationId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "workerSessionId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "leaseId": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/messageId"
+                    },
+                    "fence": {
+                      "$ref": "#/definitions/BrokerConversationOpenCommand/properties/sequence"
+                    }
+                  },
+                  "required": [
+                    "deploymentId",
+                    "installationId",
+                    "workerSessionId",
+                    "leaseId",
+                    "fence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "visibleTranscriptDigest",
+                "openAuthority"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "messageId",
+            "correlationId",
+            "connectionId",
+            "sequence",
+            "sentAt",
+            "expiresAt",
+            "kind",
+            "type",
+            "lease",
+            "body"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "BrokerConversationOpenLogicalCommand": {
+      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand",
+      "definitions": {
+        "BrokerConversationOpenLogicalCommand": {
+          "type": "object",
+          "properties": {
+            "protocol": { "type": "string", "const": "combo.creator-broker/1" },
+            "schemaVersion": { "type": "number", "const": 1 },
+            "kind": { "type": "string", "const": "command" },
+            "type": { "type": "string", "const": "conversation.open" },
+            "messageId": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "format": "uuid"
+            },
+            "correlationId": {
+              "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+            },
+            "body": {
+              "type": "object",
+              "properties": {
+                "conversationId": {
+                  "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                },
+                "agentVersionId": {
+                  "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                },
+                "agentVersionDigest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                "snapshotDigest": {
+                  "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/body/properties/agentVersionDigest"
+                },
+                "visibleTranscriptDigest": {
+                  "type": "string",
+                  "pattern": "^hmac-sha256:[a-f0-9]{64}$"
+                },
+                "openAuthority": {
+                  "type": "object",
+                  "properties": {
+                    "deploymentId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "installationId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "workerSessionId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "leaseId": {
+                      "$ref": "#/definitions/BrokerConversationOpenLogicalCommand/properties/messageId"
+                    },
+                    "fence": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 19,
+                      "pattern": "^(?:0|[1-9]\\d{0,17}|[1-8]\\d{18}|9[0-1]\\d{17}|92[0-1]\\d{16}|922[0-2]\\d{15}|9223[0-2]\\d{14}|92233[0-6]\\d{13}|922337[0-1]\\d{12}|92233720[0-2]\\d{10}|922337203[0-5]\\d{9}|9223372036[0-7]\\d{8}|92233720368[0-4]\\d{7}|922337203685[0-3]\\d{6}|9223372036854[0-6]\\d{5}|92233720368547[0-6]\\d{4}|922337203685477[0-4]\\d{3}|9223372036854775[0-7]\\d{2}|922337203685477580[0-6]|9223372036854775807)$"
+                    }
+                  },
+                  "required": [
+                    "deploymentId",
+                    "installationId",
+                    "workerSessionId",
+                    "leaseId",
+                    "fence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "conversationId",
+                "agentVersionId",
+                "agentVersionDigest",
+                "snapshotDigest",
+                "visibleTranscriptDigest",
+                "openAuthority"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "protocol",
+            "schemaVersion",
+            "kind",
+            "type",
+            "messageId",
+            "correlationId",
+            "body"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    }
+  },
+  "runtimeConstraints": {
+    "BrokerRegistrationCapabilities": [
+      "brokerContractDigest is singular, required, and MUST equal currentBrokerContractDigest()",
+      "registration capabilities MUST pass BrokerRegistrationCapabilitiesSchema with no unknown key"
+    ],
+    "BrokerHandshake": [
+      "brokerContractDigest is part of brokerHandshakeSigningBytes and MUST equal currentBrokerContractDigest()",
+      "codexRuntimeArtifacts/codexProtocolSchemaDigests/isolationModes/brokerContractDigest MUST exactly match the registered BrokerRegistrationCapabilities",
+      "all Broker handshakes MUST pass the authoritative runtime BrokerHandshakeSchema parser after structural JSON Schema validation"
+    ],
+    "BrokerEnvelope": [
+      "sensitive.cipherDigest == sha256(JCS({protocol:\"combo.creator-broker/1\",schemaVersion:1,nonce,ciphertext,authTag}))",
+      "sensitive.aadDigest == sha256(JCS(sensitive.aad))",
+      "sensitive.keyId == sensitive.aad.keyId",
+      "sensitive.aad.envelopeType == type",
+      "sensitive.aad.messageId == messageId",
+      "sensitive.aad.conversationId == body.conversationId",
+      "sensitive.aad.invocationId == body.invocationId",
+      "sensitive.aad.workerSessionId == lease.workerSessionId",
+      "sensitive.aad.role == USER for invocation.prepare, ASSISTANT otherwise",
+      "conversation.ready body.factDigest == sha256(JCS(exact combo.worker-conversation-ready-fact/1 fields))",
+      "conversation.ready sourceEventId == openCommandId, sourceEventId != re-envelope messageId, and correlationId == conversationId",
+      "conversation.ready fact installationId/workerSessionId/leaseId/fence bind original open authority and MAY differ from the current outer transport authority after authorized re-enveloping",
+      "conversation.open correlationId == body.conversationId and messageId != correlationId",
+      "conversation.open lease.deploymentId == body.openAuthority.deploymentId",
+      "conversation.open body.openAuthority is immutable while outer connection/sequence/time/session/lease/fence MAY change after authorized re-enveloping",
+      "Worker invocation event body.factDigest == sha256(JCS(exact combo.worker-invocation-fact/1 fields))",
+      "Worker invocation sourceEventId == prepareCommandId for prepared, startCommandId for started, and invocationId for terminal facts; it MUST NOT equal the re-envelope messageId",
+      "Worker invocation fact leaseId/fence bind original execution authority and MAY differ from the current outer transport lease after authorized re-enveloping",
+      "invocation.cancelled interruptReceiptDigest == sha256(JCS(exact combo.worker-interrupt-receipt/1 fields)) and receipt invocation/version/snapshot/capability/lease/fence fields equal the cancelled fact",
+      "prepared/started commandId == correlationId; delta and terminal correlationId == invocationId",
+      "all Broker frames MUST pass the authoritative runtime BrokerEnvelopeSchema parser after structural JSON Schema validation"
+    ],
+    "BrokerConversationOpenAuthority": [],
+    "BrokerConversationOpenCommand": [
+      "correlationId == body.conversationId and messageId != correlationId",
+      "lease.deploymentId == body.openAuthority.deploymentId",
+      "body.openAuthority binds the original deployment/installation/session/lease/fence authority",
+      "outer connectionId/sequence/sentAt/expiresAt/leaseId/workerSessionId/fence MAY change after authorized re-enveloping",
+      "all conversation.open commands MUST pass BrokerConversationOpenCommandSchema"
+    ],
+    "BrokerConversationOpenLogicalCommand": [
+      "logical digest preimage contains only protocol/schemaVersion/kind/type/messageId/correlationId/body",
+      "connectionId/sequence/sentAt/expiresAt/current outer lease are excluded from the logical digest"
+    ]
+  }
+}

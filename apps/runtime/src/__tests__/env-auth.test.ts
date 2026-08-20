@@ -3,6 +3,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const MANAGED_KEYS = [
   'NODE_ENV',
   'DATABASE_URL',
+  'CREATOR_AGENT_DATABASE_URL',
+  'CREATOR_AGENT_PUBLIC_ENABLED',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION',
+  'CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE',
+  'CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER',
+  'CREATOR_AGENT_MESSAGE_KEYRING_FILE',
+  'CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER',
+  'CREATOR_AGENT_EXECUTION_AUTHORITY_FILE',
   'REDIS_URL',
   'S3_ENDPOINT',
   'S3_ACCESS_KEY',
@@ -38,6 +49,7 @@ afterEach(() => {
 function setProductionInfrastructure(): void {
   process.env.NODE_ENV = 'production';
   process.env.DATABASE_URL = 'postgres://runtime:runtime@database.invalid/runtime';
+  process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'false';
   process.env.REDIS_URL = 'redis://redis.invalid:6379';
   process.env.S3_ENDPOINT = 'https://objects.invalid';
   process.env.S3_ACCESS_KEY = 'test-placeholder';
@@ -131,6 +143,90 @@ describe('runtime authentication configuration', () => {
     expect(message).toContain('RUNTIME_BILLING_FREE_USES');
     expect(message).toContain('RUNTIME_BILLING_UNIT_PRICE_CENTS');
     expect(message).not.toMatch(/identity|issuer|jwks|audience|session.*secret/i);
+  });
+
+  it('keeps the VNext public API off by default and requires a dedicated URL when enabled', async () => {
+    setProductionInfrastructure();
+    delete process.env.CREATOR_AGENT_DATABASE_URL;
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'false';
+    vi.resetModules();
+
+    let loaded = await import('../platform/config/env.js');
+    expect(loaded.loadEnv().CREATOR_AGENT_PUBLIC_ENABLED).toBe(false);
+
+    vi.resetModules();
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'true';
+    loaded = await import('../platform/config/env.js');
+    expect(() => loaded.loadEnv()).toThrowError('CREATOR_AGENT_DATABASE_URL');
+  });
+
+  it('allows only the Test Secret-file provider and non-secret routing metadata', async () => {
+    setProductionInfrastructure();
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'true';
+    process.env.CREATOR_AGENT_DATABASE_URL =
+      'postgres://consumer:consumer@database.invalid/runtime';
+    vi.resetModules();
+
+    let loaded = await import('../platform/config/env.js');
+    expect(() => loaded.loadEnv()).toThrowError('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE');
+
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE = 'combo/visible-transcript';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX =
+      'k8s-secret://combo-test/visible-transcript/';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION = '7';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER = 'test-k8s-secret-file';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE =
+      '/var/run/secrets/combo/visible-transcript/keyring.json';
+    process.env.CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER = 'test-k8s-secret-file';
+    process.env.CREATOR_AGENT_MESSAGE_KEYRING_FILE =
+      '/var/run/secrets/combo/agent-gateway/keyring.json';
+    process.env.CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER = 'test-k8s-secret-file';
+    process.env.CREATOR_AGENT_EXECUTION_AUTHORITY_FILE =
+      '/var/run/secrets/combo/runtime/execution-authority.json';
+    process.env.COMBO_ENVIRONMENT = 'test';
+    vi.resetModules();
+    loaded = await import('../platform/config/env.js');
+    const env = loaded.loadEnv() as unknown as Record<string, unknown>;
+    expect(env).toMatchObject({
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: 'combo/visible-transcript',
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX:
+        'k8s-secret://combo-test/visible-transcript/',
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION: 7,
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER: 'test-k8s-secret-file',
+      CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE:
+        '/var/run/secrets/combo/visible-transcript/keyring.json',
+      CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER: 'test-k8s-secret-file',
+      CREATOR_AGENT_MESSAGE_KEYRING_FILE: '/var/run/secrets/combo/agent-gateway/keyring.json',
+      CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER: 'test-k8s-secret-file',
+      CREATOR_AGENT_EXECUTION_AUTHORITY_FILE:
+        '/var/run/secrets/combo/runtime/execution-authority.json',
+    });
+    expect(
+      Object.keys(env).some((key) =>
+        /^CREATOR_AGENT_VISIBLE_TRANSCRIPT.*(?:SECRET|RAW|KEY_BYTES|KEY_BASE64)$/iu.test(key),
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects the Test Secret-file provider in Preview or Production even while the flag is off', async () => {
+    setProductionInfrastructure();
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER = 'test-k8s-secret-file';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE =
+      '/var/run/secrets/combo/visible-transcript/keyring.json';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    expect(() => loadEnv()).toThrowError('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER');
+  });
+
+  it('never falls back to feature-off defaults after a malformed public-provider request', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.CREATOR_AGENT_PUBLIC_ENABLED = 'true';
+    process.env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER = 'not-a-provider';
+    vi.resetModules();
+
+    const { loadEnv } = await import('../platform/config/env.js');
+    expect(() => loadEnv()).toThrowError('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER');
   });
 
   it('validates configurable free uses and integer cent price', async () => {

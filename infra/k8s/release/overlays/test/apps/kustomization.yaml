@@ -3,6 +3,8 @@ kind: Kustomization
 namespace: combo-test
 resources:
   - ../../../base/apps
+patches:
+  - path: runtime-visible-transcript-test-keyring.patch.yaml
 labels:
   - includeSelectors: true
     pairs:

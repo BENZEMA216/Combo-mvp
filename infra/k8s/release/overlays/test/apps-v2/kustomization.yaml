@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: combo-test
+resources:
+  - ../apps
+  - agent-gateway.yaml
+images:
+  - name: ghcr.io/dangdang-tech/combo-agent-gateway
+    newName: ghcr.io/dangdang-tech/combo-agent-gateway
+    digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd

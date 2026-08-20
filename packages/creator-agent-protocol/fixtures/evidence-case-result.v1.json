@@ -1,0 +1,14 @@
+{
+  "protocol": "combo.vnext-evidence-bundle/1",
+  "schemaVersion": 1,
+  "testCaseId": "SCH-001",
+  "status": "PASS",
+  "evidenceLevel": "E1",
+  "environmentId": "T0-LINUX-CI",
+  "releaseTupleDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "startedAt": "2026-08-13T08:00:00.000Z",
+  "finishedAt": "2026-08-13T08:00:01.000Z",
+  "assertionCount": 12,
+  "artifactDigests": ["sha256:2222222222222222222222222222222222222222222222222222222222222222"],
+  "blockerCode": null
+}

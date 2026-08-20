@@ -1,0 +1,38 @@
+{
+  "protocol": "combo.creator-broker/1",
+  "schemaVersion": 1,
+  "kind": "event",
+  "messageId": "0198f00d-4000-7000-8000-000000000080",
+  "type": "conversation.ready",
+  "correlationId": "0198f00d-3000-7000-8000-000000000010",
+  "connectionId": "0198f00d-4000-7000-8000-000000000081",
+  "sequence": "9007199254740992",
+  "sentAt": "2026-08-13T08:00:01.000Z",
+  "expiresAt": "2026-08-13T08:00:31.000Z",
+  "lease": {
+    "deploymentId": "0198f00d-3000-7000-8000-000000000004",
+    "leaseId": "0198f00d-4000-7000-8000-000000000083",
+    "workerSessionId": "0198f00d-4000-7000-8000-000000000082",
+    "fence": "43"
+  },
+  "body": {
+    "protocol": "combo.worker-conversation-ready-fact/1",
+    "schemaVersion": 1,
+    "type": "conversation.ready",
+    "sourceEventId": "0198f00d-3000-7000-8000-000000000001",
+    "conversationId": "0198f00d-3000-7000-8000-000000000010",
+    "openCommandId": "0198f00d-3000-7000-8000-000000000001",
+    "deploymentId": "0198f00d-3000-7000-8000-000000000004",
+    "agentVersionId": "0198f00d-3000-7000-8000-000000000020",
+    "agentVersionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "snapshotDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "installationId": "0198f00d-1111-7111-8111-111111111111",
+    "workerSessionId": "0198f00d-1111-7111-8111-111111111112",
+    "leaseId": "0198f00d-3000-7000-8000-000000000005",
+    "fence": "42",
+    "sandboxInstanceId": "0198f00d-3000-7000-8000-000000000030",
+    "runtimeThreadId": "thread-conversation-001",
+    "readyEvidenceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "factDigest": "c5f74842f7d380de1c5f665843b4f067d3f04082627e209eb74b0b6f7aeaceb4"
+  }
+}

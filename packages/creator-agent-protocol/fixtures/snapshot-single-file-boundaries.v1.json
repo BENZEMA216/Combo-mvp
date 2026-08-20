@@ -1,0 +1,61 @@
+{
+  "protocol": "combo.snapshot-single-file-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "snapshot-single-file-bytes-only",
+  "authority": {
+    "technicalPlanSection": "技术方案 §5.2 Alpha 输入边界",
+    "testPlanCases": ["SNP-004", "SNP-005"],
+    "decisionRegistryId": "ADR-VNEXT-003"
+  },
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b"
+  },
+  "baseFixture": {
+    "path": "snapshot-manifest.v1.json",
+    "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
+  },
+  "contentRecipe": {
+    "algorithm": "sha256-counter-hex-block-repeat/1",
+    "seedUtf8": "combo:snapshot-single-file-boundary:v1",
+    "counterEncoding": "uint32be",
+    "digestEncoding": "lowercase-hex",
+    "sourceBlockBytes": 1048576,
+    "filePath": "boundary.txt",
+    "mediaType": "text/plain; charset=utf-8"
+  },
+  "boundary": {
+    "id": "snapshot-single-file-bytes",
+    "maximum": 10485760,
+    "jsonSchemaKeyword": "maximum",
+    "fileInstancePath": "/size",
+    "manifestInstancePath": "/files/0/size",
+    "contractArtifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/size",
+    "probes": [
+      {
+        "delta": -1,
+        "expected": "accepted",
+        "fileBytes": 10485759,
+        "contentDigest": "sha256:7cde415b28217c337e36f56fe8394ab5f8827eeca57b6af6ca6f49eb32decb58",
+        "canonicalManifestDigest": "sha256:b6cec8f9d2e4ffcecf61e6cfef6eee3a238ab5d133608dcded254b5300f88e3b",
+        "snapshotDigest": "sha256:b6cec8f9d2e4ffcecf61e6cfef6eee3a238ab5d133608dcded254b5300f88e3b",
+        "archiveDigest": "sha256:9175958135e85b262b23de22592a2abe078649385841d4647e453946897d477b"
+      },
+      {
+        "delta": 0,
+        "expected": "accepted",
+        "fileBytes": 10485760,
+        "contentDigest": "sha256:7e8b3fc6938139c3feb84121a12f031c3bac0e0fb1fd91dcb973bdc722d0d97d",
+        "canonicalManifestDigest": "sha256:d88ebb407db97f81c3acdb07825a5efea0f2bfb31a0fb925e95717d1a50f9e83",
+        "snapshotDigest": "sha256:d88ebb407db97f81c3acdb07825a5efea0f2bfb31a0fb925e95717d1a50f9e83",
+        "archiveDigest": "sha256:996423f5e5e29c444650e798ab190123aef051724eb929a95abbcd9ec225e6a7"
+      },
+      {
+        "delta": 1,
+        "expected": "rejected",
+        "fileBytes": 10485761,
+        "contentDigest": "sha256:b64de5fa5ae98691e865d224ec302407b029cf27f1194e1c0ea9c4a4e255b32f",
+        "canonicalManifestDigest": "sha256:cbaf8e3a15f3b0cc021c9e129e5fab879526cfadeee37b04d3659b2097617555"
+      }
+    ]
+  }
+}

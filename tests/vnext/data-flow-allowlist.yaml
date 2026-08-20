@@ -1,0 +1,375 @@
+protocol: combo.vnext-data-flow-allowlist/1
+schemaVersion: 1
+unlistedLocationDisposition: SECURITY_LEAK
+globallyForbiddenDataClasses: [absolute-path, credential, reasoning]
+fields:
+  - fieldId: answer.broker.invocation-delta-ciphertext
+    fieldClass: answer
+    contentKind: real
+    system: broker-wss
+    container: invocation.delta.body
+    field: deltaCiphertext
+    protection: session-aead
+    algorithm: worker-session-aes-256-gcm/v1
+    keyOwner: combo-kms-and-worker-keychain
+    aadBindings: [conversationId, invocationId, keyId, messageId, schemaVersion, workerSessionId]
+    retention: request-lifetime
+    deletionOrHold: 仅在单次 WSS 投递和 bounded reconnect 内存中存在；不写日志、Redis 事实或普通 journal。
+  - fieldId: answer.broker.invocation-succeeded-ciphertext
+    fieldClass: answer
+    contentKind: real
+    system: broker-wss
+    container: invocation.succeeded.body
+    field: resultCiphertext
+    protection: session-aead
+    algorithm: worker-session-aes-256-gcm/v1
+    keyOwner: combo-kms-and-worker-keychain
+    aadBindings:
+      [conversationId, invocationId, keyId, messageId, role, schemaVersion, workerSessionId]
+    retention: request-lifetime
+    deletionOrHold: 仅在 final 上行与 bounded retry 内存存在；Cloud commit 后由 PG 密文成为事实源。
+  - fieldId: answer.browser.chat-message-text
+    fieldClass: answer
+    contentKind: real
+    system: browser
+    container: agent-chat-dom
+    field: messages[].text
+    protection: browser-memory-only
+    algorithm: memory-only
+    keyOwner: none
+    aadBindings: []
+    retention: browser-session
+    deletionOrHold: 只在已认证页面内存和可见 DOM 中存在；禁止 URL、history、referrer、console 与所有 persistent storage。
+  - fieldId: answer.evidence-vault.synthetic-transcript
+    fieldClass: answer
+    contentKind: synthetic-test-only
+    system: evidence-vault
+    container: synthetic-transcript
+    field: answerCiphertext
+    protection: evidence-aead
+    algorithm: independent-test-aes-256-gcm/v1
+    keyOwner: independent-test-kek
+    aadBindings: [artifactPath, rcId, schemaVersion]
+    retention: evidence-vault-7-days
+    deletionOrHold: 只允许每次随机 synthetic canary；Reviewer 完成后七天内可验证删除，绝不含真实回答。
+  - fieldId: answer.pg-backup.agent-messages-content-ciphertext
+    fieldClass: answer
+    contentKind: real
+    system: postgresql-backup
+    container: agent_messages
+    field: content_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings: [conversationId, messageId, ownerId, role, schemaVersion]
+    retention: backup-14-daily-8-weekly
+    deletionOrHold: 备份按14个daily与8个weekly到期；合法 hold 在独立审计层记录，不改写在线 row。
+  - fieldId: answer.postgresql.agent-messages-content-ciphertext
+    fieldClass: answer
+    contentKind: real
+    system: postgresql
+    container: agent_messages
+    field: content_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings: [conversationId, messageId, ownerId, role, schemaVersion]
+    retention: conversation-30-days
+    deletionOrHold: Conversation 删除或30天到期清理；合法 hold 只延长独立审计保留，不把正文复制进事件或日志。
+  - fieldId: answer.worker-backup.local-invocations-result-ciphertext
+    fieldClass: answer
+    contentKind: real
+    system: worker-backup
+    container: local_invocations
+    field: result_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: worker-keychain
+    aadBindings:
+      [agentVersionDigest, conversationId, installationId, invocationId, role, schemaVersion]
+    retention: worker-cloud-committed-plus-7-days
+    deletionOrHold: 加密备份只保留 CLOUD_COMMITTED 后七天；不含 Device、OpenAI 或 Combo 长期凭据。
+  - fieldId: answer.worker-sqlite.local-invocations-result-ciphertext
+    fieldClass: answer
+    contentKind: real
+    system: worker-sqlite
+    container: local_invocations
+    field: result_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: worker-keychain
+    aadBindings:
+      [agentVersionDigest, conversationId, installationId, invocationId, role, schemaVersion]
+    retention: worker-cloud-committed-plus-7-days
+    deletionOrHold: 只在 final durable retry 窗口存在；CLOUD_COMMITTED 后七天清理并 checkpoint WAL。
+  - fieldId: context.evidence-vault.synthetic-context-fragment
+    fieldClass: context
+    contentKind: synthetic-test-only
+    system: evidence-vault
+    container: isolation-probe
+    field: contextCanaryCiphertext
+    protection: evidence-aead
+    algorithm: independent-test-aes-256-gcm/v1
+    keyOwner: independent-test-kek
+    aadBindings: [artifactPath, rcId, schemaVersion]
+    retention: evidence-vault-7-days
+    deletionOrHold: 仅随机 synthetic context canary，Reviewer 完成后七天内可验证删除。
+  - fieldId: context.minio-backup.context-snapshot-archive-cipher-object
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: object_key.archive-cipher-object
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: Snapshot 有 serving/reference 时保留；最后引用下线30天后受审 Reclaimer 清理，备份按策略过期。
+  - fieldId: context.minio-backup.context-snapshot-manifest-cipher-object
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: manifest_object_key.manifest-cipher-object
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 加密 Manifest 与 archive 使用同一 Snapshot DEK 和独立 nonce；引用与备份保留策略一致。
+  - fieldId: context.minio-backup.context-snapshot-publication-commit-marker
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: publication_commit_marker.body
+    protection: digest-linked-metadata
+    algorithm: sha-256/v1
+    keyOwner: none
+    aadBindings: []
+    retention: referenced-plus-30-days
+    deletionOrHold: 只保存 Creator/Snapshot、固定派生的 preparation key 与 canonical preparation digest；不含 Envelope、wrapped DEK、Context 正文或调用方提供的任意对象 key。与被引用 Snapshot 同期保留并在恢复时最后恢复。
+  - fieldId: context.minio-backup.context-snapshot-publication-preparation-marker
+    fieldClass: context
+    contentKind: real
+    system: minio-backup
+    container: context_snapshots
+    field: publication_preparation_marker.body
+    protection: wrapped-key-envelope-metadata
+    algorithm: rfc3394-aes-256-kw/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 私有 canonical body 只保存经完整验证后选中的双 Envelope、checksum、计数和 upload ID；wrapped DEK 是 RFC3394 key ciphertext，普通 reader/backup 无 unwrap authority。禁止复制到 user metadata、URL、日志、浏览器、Gateway 或模型输入；与密文对象同期受审清理。
+  - fieldId: context.minio.context-snapshot-archive-cipher-object
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: object_key.archive-cipher-object
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: Snapshot 有 serving/reference 时保留；最后引用下线30天后受审 Reclaimer 清理。
+  - fieldId: context.minio.context-snapshot-manifest-cipher-object
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: manifest_object_key.manifest-cipher-object
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 加密 Manifest 与 archive 使用同一 Snapshot DEK 和独立 nonce；最后引用下线30天后受审 Reclaimer 清理。
+  - fieldId: context.minio.context-snapshot-publication-commit-marker
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: publication_commit_marker.body
+    protection: digest-linked-metadata
+    algorithm: sha-256/v1
+    keyOwner: none
+    aadBindings: []
+    retention: referenced-plus-30-days
+    deletionOrHold: 只保存 Creator/Snapshot、固定派生的 preparation key 与 canonical preparation digest；它是唯一读可见性权威，不含 Envelope、wrapped DEK、Context 正文或调用方提供的任意对象 key，最后引用下线30天后受审清理。
+  - fieldId: context.minio.context-snapshot-publication-preparation-marker
+    fieldClass: context
+    contentKind: real
+    system: minio
+    container: context_snapshots
+    field: publication_preparation_marker.body
+    protection: wrapped-key-envelope-metadata
+    algorithm: rfc3394-aes-256-kw/v1
+    keyOwner: combo-kms
+    aadBindings:
+      [
+        archiveDigest,
+        cipherObjectFormat,
+        creatorId,
+        keyId,
+        objectKey,
+        plaintextBytes,
+        protocol,
+        schemaVersion,
+        snapshotDigest,
+      ]
+    retention: referenced-plus-30-days
+    deletionOrHold: 私有 canonical body 只保存经完整验证后选中的双 Envelope、checksum、计数和 upload ID；wrapped DEK 是 RFC3394 key ciphertext，只有 Verifier/Recovery 可按完整 tenant AAD 请求 KMS unwrap。禁止进入 user metadata、URL、日志、浏览器、Gateway 或模型输入；最后引用下线30天后受审清理。
+  - fieldId: context.model-request.selected-context
+    fieldClass: context
+    contentKind: real
+    system: model-request
+    container: codex-provider-request
+    field: selectedContext
+    protection: request-memory-only
+    algorithm: memory-only
+    keyOwner: none
+    aadBindings: []
+    retention: request-lifetime
+    deletionOrHold: 只在隔离 VM 与受审 Model Proxy 的单次请求内存中存在；Provider 保留受其政策约束并向 Creator 明示。
+  - fieldId: prompt.broker.invocation-prepare-ciphertext
+    fieldClass: prompt
+    contentKind: real
+    system: broker-wss
+    container: invocation.prepare.body
+    field: userMessageCiphertext
+    protection: session-aead
+    algorithm: worker-session-aes-256-gcm/v1
+    keyOwner: combo-kms-and-worker-keychain
+    aadBindings:
+      [conversationId, invocationId, keyId, messageId, role, schemaVersion, workerSessionId]
+    retention: request-lifetime
+    deletionOrHold: 仅在 command 投递和 bounded retry 内存存在；Worker SQLite commit 后不留 Broker 明文或普通日志。
+  - fieldId: prompt.browser.composer-text
+    fieldClass: prompt
+    contentKind: real
+    system: browser
+    container: agent-chat-composer
+    field: draftText
+    protection: browser-memory-only
+    algorithm: memory-only
+    keyOwner: none
+    aadBindings: []
+    retention: browser-session
+    deletionOrHold: 只在页面内存；禁止 URL、history、referrer、console、localStorage、sessionStorage、IndexedDB 和 cache。
+  - fieldId: prompt.evidence-vault.synthetic-transcript
+    fieldClass: prompt
+    contentKind: synthetic-test-only
+    system: evidence-vault
+    container: synthetic-transcript
+    field: promptCiphertext
+    protection: evidence-aead
+    algorithm: independent-test-aes-256-gcm/v1
+    keyOwner: independent-test-kek
+    aadBindings: [artifactPath, rcId, schemaVersion]
+    retention: evidence-vault-7-days
+    deletionOrHold: 仅每次随机 synthetic prompt；Reviewer 完成后七天内可验证删除，绝不含真实问题。
+  - fieldId: prompt.model-request.user-message
+    fieldClass: prompt
+    contentKind: real
+    system: model-request
+    container: codex-provider-request
+    field: userMessage
+    protection: request-memory-only
+    algorithm: memory-only
+    keyOwner: none
+    aadBindings: []
+    retention: request-lifetime
+    deletionOrHold: 只在隔离 VM 与受审 Model Proxy 单次请求中存在；Provider 保留受其政策约束并向 Creator 明示。
+  - fieldId: prompt.pg-backup.agent-messages-content-ciphertext
+    fieldClass: prompt
+    contentKind: real
+    system: postgresql-backup
+    container: agent_messages
+    field: content_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings: [conversationId, messageId, ownerId, role, schemaVersion]
+    retention: backup-14-daily-8-weekly
+    deletionOrHold: 备份按14个daily与8个weekly到期；合法 hold 在独立审计层记录，不复制明文。
+  - fieldId: prompt.postgresql.agent-messages-content-ciphertext
+    fieldClass: prompt
+    contentKind: real
+    system: postgresql
+    container: agent_messages
+    field: content_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: combo-kms
+    aadBindings: [conversationId, messageId, ownerId, role, schemaVersion]
+    retention: conversation-30-days
+    deletionOrHold: Conversation 删除或30天到期清理；合法 hold 仅在独立审计层记录。
+  - fieldId: prompt.worker-sqlite.local-invocations-prompt-ciphertext
+    fieldClass: prompt
+    contentKind: real
+    system: worker-sqlite
+    container: local_invocations
+    field: prompt_ciphertext
+    protection: application-aead
+    algorithm: aes-256-gcm/v1
+    keyOwner: worker-keychain
+    aadBindings:
+      [agentVersionDigest, conversationId, installationId, invocationId, role, schemaVersion]
+    retention: request-lifetime
+    deletionOrHold: invocation.prepare 与 Broker session AEAD 解密验证后必须在同一 SQLite 事务转封装为 Worker Keychain application AEAD；只允许受审 Host Adapter 凭一次性 dispatch permit 在内部精确解密，公开 API 不返回 Prompt 或密文。Host receipt 确认或 Invocation 进入 UNCERTAIN/CANCELLED 后立即删除并 checkpoint WAL，禁止进入 Worker backup。
+updatedAt: 2026-08-14T00:00:00.000Z

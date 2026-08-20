@@ -1,0 +1,20 @@
+{
+  "protocol": "combo.vnext-evidence-bundle/1",
+  "schemaVersion": 1,
+  "environments": [
+    {
+      "protocol": "combo.vnext-evidence-bundle/1",
+      "schemaVersion": 1,
+      "environmentId": "T0-LINUX-CI",
+      "os": "ubuntu-24.04",
+      "architecture": "arm64",
+      "runtimeVersions": {
+        "node": "24.6.0",
+        "pnpm": "11.0.9"
+      },
+      "realComponents": ["creator-agent-protocol"],
+      "substitutedComponents": ["codex", "creator-worker", "postgresql", "sandbox"],
+      "capturedAt": "2026-08-13T08:00:00.000Z"
+    }
+  ]
+}

@@ -11,6 +11,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  vnext-t0:
+    name: CI / VNext T0 G0
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vnext-t0.yml
+    with:
+      revision: ${{ github.sha }}
+      disposition: ADVISORY_ONLY
+      caller_workflow_path: .github/workflows/pr-ci.yml
+      caller_workflow_name: PR checks
+      event_name: pull_request
+      git_ref: ${{ github.ref }}
+      ref_protected: ${{ github.ref_protected }}
+      base_sha: ${{ github.event.pull_request.base.sha }}
+      head_sha: ${{ github.event.pull_request.head.sha }}
+      merge_sha: ${{ github.sha }}
+
   quality:
     name: CI / quality
     runs-on: ubuntu-latest
@@ -59,7 +76,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build shared first
-        run: pnpm -F @cb/shared build
+        run: |
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
 
       - name: Format check
         run: pnpm format:check
@@ -85,10 +104,78 @@ jobs:
           sudo apt-get install -y shellcheck
           shellcheck \
             scripts/*.sh \
+            scripts/gates/*.sh \
             scripts/integration/*.sh \
             infra/entrypoint.sh \
             infra/minio/init-buckets.sh \
             infra/k8s/overlays/sandbox-tools/maintenance/*.sh
+
+  vnext-r3-pg:
+    name: CI / VNext R3 PostgreSQL vertical
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      MERGE_SHA: ${{ github.sha }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Check out the exact pull request merge source for R3
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the R3 merge identity
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == pull_request ]]
+          [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(git rev-parse HEAD)" == "$MERGE_SHA" ]]
+          [[ "$(git rev-parse HEAD^1)" == "$BASE_SHA" ]]
+          [[ "$(git rev-parse HEAD^2)" == "$HEAD_SHA" ]]
+          git diff --quiet
+          git diff --cached --quiet
+
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
+        with:
+          version: 11.0.9
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install the frozen R3 dependency graph
+        run: pnpm install --frozen-lockfile
+
+      - name: Install the isolated PostgreSQL runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            libpq-dev \
+            postgresql \
+            postgresql-client
+          pg_bindir="$(pg_config --bindir)"
+          [[ -x "$pg_bindir/initdb" ]]
+          [[ -x "$pg_bindir/postgres" ]]
+          [[ -x "$pg_bindir/pg_isready" ]]
+          [[ -x "$pg_bindir/createdb" ]]
+          [[ -x "$pg_bindir/dropdb" ]]
+          printf 'INITDB_BIN=%s/initdb\n' "$pg_bindir" >> "$GITHUB_ENV"
+          printf 'POSTGRES_BIN=%s/postgres\n' "$pg_bindir" >> "$GITHUB_ENV"
+          printf 'PG_ISREADY_BIN=%s/pg_isready\n' "$pg_bindir" >> "$GITHUB_ENV"
+          printf 'CREATEDB_BIN=%s/createdb\n' "$pg_bindir" >> "$GITHUB_ENV"
+          printf 'DROPDB_BIN=%s/dropdb\n' "$pg_bindir" >> "$GITHUB_ENV"
+
+      - name: R3 isolated PostgreSQL product vertical
+        run: pnpm vnext:test:r3:pg
 
   billing-pg:
     name: CI / billing PostgreSQL
@@ -127,7 +214,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build shared first
-        run: pnpm -F @cb/shared build
+        run: |
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
 
       - name: Install database client
         run: |
@@ -141,7 +230,55 @@ jobs:
           POSTGRES_API_PASSWORD: ci-api-role-password
           POSTGRES_WORKER_PASSWORD: ci-worker-role-password
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
         run: bash scripts/integration/db-migrate.sh
+
+      - name: Creator Agent PostgreSQL authority gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          CREATOR_AGENT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-hosted-agent-vnext.pg.test.ts
+
+      - name: Creator Agent Cloud Journal and Conversation PostgreSQL gates
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
+          CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
+          CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'
+        run: |
+          set -euo pipefail
+          pnpm --dir db exec vitest run \
+            __tests__/creator-agent-consumer-message-v1-decommission.pg.test.ts
+          pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
+          pnpm --dir apps/runtime exec vitest run \
+            src/modules/creator-agent-conversation/repo.pg.test.ts
+
+      - name: Creator Agent Gateway PostgreSQL authority gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          CREATOR_AGENT_GATEWAY_PG_TEST: '1'
+        run: pnpm -F @cb/agent-gateway test
+
+      - name: Creator Agent Gateway to Worker SQLite vertical gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'
+        run: pnpm -F @cb/creator-worker-broker-client test:pg-vertical
 
       - name: Authoring billing PostgreSQL invariants
         env:
@@ -156,3 +293,23 @@ jobs:
           BILLING_TEST_DATABASE_URL: postgres://agora:agora@localhost:5432/agora
           BILLING_RUNTIME_TEST_DATABASE_URL: postgres://combo_runtime:ci-runtime-role-password@localhost:5432/agora
         run: pnpm --dir apps/runtime exec vitest run src/__tests__/billing.pg.test.ts
+
+      # All remaining gates replay role DDL in child databases, which is cluster-global. Keep
+      # them after every suite that logs in as a combo_* application role.
+      - name: Creator Agent Broker delivery contract PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-broker-delivery-contract.pg.test.ts
+
+      - name: Creator Agent conversation.ready fact PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_READY_FACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-conversation-ready-fact.pg.test.ts
+
+      - name: Creator Agent persistent 0012 to 0017 upgrade gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_UPGRADE_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-consumer-upgrade.pg.test.ts

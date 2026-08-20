@@ -25,10 +25,25 @@ env:
   SOURCE_SHA: ${{ inputs.revision || github.sha }}
 
 jobs:
+  vnext-t0:
+    name: CI / VNext T0 G0
+    permissions:
+      contents: read
+    uses: ./.github/workflows/vnext-t0.yml
+    with:
+      revision: ${{ inputs.revision || github.sha }}
+      disposition: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.ref_protected && 'FORMAL' || 'ADVISORY_ONLY' }}
+      caller_workflow_path: .github/workflows/ci.yml
+      caller_workflow_name: Release build
+      event_name: ${{ github.event_name }}
+      git_ref: ${{ github.ref }}
+      ref_protected: ${{ github.ref_protected }}
+
   gate:
     name: lint / typecheck / build / test
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    needs: vnext-t0
     steps:
       - name: Check out the exact source
         uses: actions/checkout@v4
@@ -68,7 +83,9 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build shared first
-        run: pnpm -F @cb/shared build
+        run: |
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
 
       - name: Lint
         run: pnpm lint
@@ -101,6 +118,9 @@ jobs:
           POSTGRES_API_PASSWORD: ci-api-role
           POSTGRES_WORKER_PASSWORD: ci-worker-role
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role
           S3_ACCESS_KEY: ci
           S3_SECRET_KEY: ci
           PUBLIC_APP_ORIGINS: https://ci.example.test
@@ -121,6 +141,7 @@ jobs:
           sudo apt-get install -y shellcheck
           shellcheck \
             scripts/*.sh \
+            scripts/gates/*.sh \
             scripts/integration/*.sh \
             infra/entrypoint.sh \
             infra/minio/init-buckets.sh \
@@ -183,7 +204,9 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Build shared first
-        run: pnpm -F @cb/shared build
+        run: |
+          pnpm -F @cb/shared build
+          pnpm -F @cb/creator-agent-protocol build
 
       - name: Install database and Redis clients
         run: |
@@ -204,11 +227,59 @@ jobs:
           POSTGRES_API_PASSWORD: ci-api-role-password
           POSTGRES_WORKER_PASSWORD: ci-worker-role-password
           POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
           APPLICATION_ROLE_PG_TEST: '1'
         run: |
           set -euo pipefail
           bash scripts/integration/db-migrate.sh
           pnpm --dir db exec vitest run __tests__/application-database-roles.pg.test.ts
+
+      - name: Creator Agent PostgreSQL authority gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          CREATOR_AGENT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-hosted-agent-vnext.pg.test.ts
+
+      - name: Creator Agent Cloud Journal and Conversation PostgreSQL gates
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          POSTGRES_AGENT_RECONCILER_PASSWORD: ci-agent-reconciler-role-password
+          POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password
+          POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password
+          CREATOR_AGENT_PERSISTENCE_PG_TEST: '1'
+          CREATOR_AGENT_CONVERSATION_PG_TEST: '1'
+          CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'
+        run: |
+          set -euo pipefail
+          pnpm --dir db exec vitest run \
+            __tests__/creator-agent-consumer-message-v1-decommission.pg.test.ts
+          pnpm -F @cb/creator-agent-persistence exec vitest run src/cloud-journal.pg.test.ts
+          pnpm --dir apps/runtime exec vitest run \
+            src/modules/creator-agent-conversation/repo.pg.test.ts
+
+      - name: Creator Agent Gateway PostgreSQL authority gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          CREATOR_AGENT_GATEWAY_PG_TEST: '1'
+        run: pnpm -F @cb/agent-gateway test
+
+      - name: Creator Agent Gateway to Worker SQLite vertical gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password
+          POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password
+          CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'
+        run: pnpm -F @cb/creator-worker-broker-client test:pg-vertical
 
       - name: First-party authentication PostgreSQL invariants
         env:
@@ -251,6 +322,26 @@ jobs:
 
       - name: First-party email authentication integration
         run: bash scripts/integration/resend-auth-e2e.sh
+
+      # All remaining gates replay role DDL in child databases, which is cluster-global. Keep
+      # them after every suite that logs in as a combo_* application role.
+      - name: Creator Agent Broker delivery contract PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-broker-delivery-contract.pg.test.ts
+
+      - name: Creator Agent conversation.ready fact PostgreSQL gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_READY_FACT_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-conversation-ready-fact.pg.test.ts
+
+      - name: Creator Agent persistent 0012 to 0017 upgrade gate
+        env:
+          DATABASE_URL: postgres://agora:agora@localhost:5432/agora
+          CREATOR_AGENT_UPGRADE_PG_TEST: '1'
+        run: pnpm --dir db exec vitest run __tests__/creator-agent-consumer-upgrade.pg.test.ts
 
   sandbox-integration:
     name: sandbox protocol / process / path
@@ -300,6 +391,9 @@ jobs:
           - key: api
             repository: ghcr.io/dangdang-tech/combo-api
             dockerfile: infra/Dockerfile.api
+          - key: agent-gateway
+            repository: ghcr.io/dangdang-tech/combo-agent-gateway
+            dockerfile: infra/Dockerfile.agent-gateway
           - key: runtime
             repository: ghcr.io/dangdang-tech/combo-runtime
             dockerfile: infra/Dockerfile.runtime
@@ -480,7 +574,7 @@ jobs:
       - name: Install the release tooling dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Download the three image digests from this run
+      - name: Download the four image digests from this run
         uses: actions/download-artifact@v4
         with:
           pattern: combo-image-digest-${{ env.SOURCE_SHA }}-${{ github.run_attempt }}-*
@@ -507,9 +601,11 @@ jobs:
           mkdir -p "$bundle/metadata"
 
           api_image=$(<"$RUNNER_TEMP/image-digests/api.image")
+          agent_gateway_image=$(<"$RUNNER_TEMP/image-digests/agent-gateway.image")
           runtime_image=$(<"$RUNNER_TEMP/image-digests/runtime.image")
           web_image=$(<"$RUNNER_TEMP/image-digests/web.image")
           [[ "$api_image" =~ ^ghcr\.io/dangdang-tech/combo-api@sha256:[0-9a-f]{64}$ ]]
+          [[ "$agent_gateway_image" =~ ^ghcr\.io/dangdang-tech/combo-agent-gateway@sha256:[0-9a-f]{64}$ ]]
           [[ "$runtime_image" =~ ^ghcr\.io/dangdang-tech/combo-runtime@sha256:[0-9a-f]{64}$ ]]
           [[ "$web_image" =~ ^ghcr\.io/dangdang-tech/combo-web@sha256:[0-9a-f]{64}$ ]]
 
@@ -543,6 +639,7 @@ jobs:
             --output "$bundle/metadata/release.json" \
             --source-sha "$SOURCE_SHA" \
             --api-image "$api_image" \
+            --agent-gateway-image "$agent_gateway_image" \
             --runtime-image "$runtime_image" \
             --web-image "$web_image" \
             --migration-head "$migration_head" \

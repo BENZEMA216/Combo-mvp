@@ -1,0 +1,101 @@
+{
+  "protocol": "combo.snapshot-path-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "snapshot-relative-path-boundaries",
+  "authority": {
+    "technicalPlanSection": "技术方案 §5.2 Alpha 输入边界",
+    "testPlanCases": ["SCH-004", "SCH-005", "SNP-009", "SNP-010"],
+    "pathPolicyDecisionId": "ADR-VNEXT-004"
+  },
+  "checkedDependencies": {
+    "utf8BoundaryCorpus": {
+      "path": "protocol-utf8-boundaries.v1.json",
+      "digest": "sha256:420e3afd8b8307fa56fad257987012f3fec33071104dad9667bdced84385ee40"
+    },
+    "baseManifest": {
+      "path": "snapshot-manifest.v1.json",
+      "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
+    },
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b"
+  },
+  "pathRecipe": {
+    "algorithm": "segmented-ascii-cjk-astral/1",
+    "firstSegment": "a",
+    "firstSegmentCodePoints": 250,
+    "secondSegment": "b",
+    "secondSegmentCodePoints": 250,
+    "tailSegment": "c",
+    "tailBaseCodePoints": 3,
+    "cjkSuffix": "界",
+    "astralSuffix": "😀",
+    "separator": "/",
+    "contentUtf8": "snapshot path boundary fixture\n",
+    "contentBytes": 31,
+    "contentDigest": "sha256:57af1904099f86cb97614b2617eeebd75aaa4d5b7a29c34830bc9604c8d4ad1f",
+    "mediaType": "text/plain; charset=utf-8"
+  },
+  "boundary": {
+    "id": "snapshot-relative-path-utf8-bytes",
+    "maximumUtf8Bytes": 512,
+    "jsonSchemaKeyword": "x-combo-maxUtf8Bytes",
+    "pathInstancePath": "",
+    "fileInstancePath": "/path",
+    "manifestInstancePath": "/files/0/path",
+    "contractArtifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files/items/properties/path",
+    "probes": [
+      {
+        "delta": -1,
+        "expected": "accepted",
+        "pathUtf8Bytes": 511,
+        "pathCodePoints": 506,
+        "pathDigest": "sha256:f7a5c2673b12dc24d0ef871202b1df5abbbee2d7989b218bd2b490b1830f6feb",
+        "candidateManifestDigest": "sha256:000c1e80c5847d67b11ca3385e24e0795f92380fc56427f19815f33eaf5522a1",
+        "snapshotDigest": "sha256:000c1e80c5847d67b11ca3385e24e0795f92380fc56427f19815f33eaf5522a1",
+        "archiveDigest": "sha256:570af01e1ba48c8d7b083f3259f98ed0a1fcb5a8680ec034d3cc419cb35eada2"
+      },
+      {
+        "delta": 0,
+        "expected": "accepted",
+        "pathUtf8Bytes": 512,
+        "pathCodePoints": 507,
+        "pathDigest": "sha256:679aefd9e3cb9ec72f25bbb7e0d476860dd8082fdcbddde02af0fdac33074f9d",
+        "candidateManifestDigest": "sha256:cdc0628d972eb95b59413ed1e05f4259e0362d4f6951acc121613d25f63f9d7a",
+        "snapshotDigest": "sha256:cdc0628d972eb95b59413ed1e05f4259e0362d4f6951acc121613d25f63f9d7a",
+        "archiveDigest": "sha256:6fcf0e46ade82d047341d1a0138ef8fa7236f31802bfaffbd0fd5c69526b18b4"
+      },
+      {
+        "delta": 1,
+        "expected": "rejected",
+        "pathUtf8Bytes": 513,
+        "pathCodePoints": 508,
+        "pathDigest": "sha256:fd1f41cdb1f530b686db71f40f8f8f3ae983d38a39db82d6aad9ea0e3ec063b8",
+        "candidateManifestDigest": "sha256:27c39ef1d3fdca7e1407a4b6442a1e670e7c938414f8ade97db4674392496abb"
+      }
+    ]
+  },
+  "hostileUnicode": {
+    "canaryPrefix": "SNAPSHOT_PATH_HOSTILE_CANARY_",
+    "forbiddenControlRanges": [
+      { "id": "c0", "start": 0, "end": 31 },
+      { "id": "c1", "start": 127, "end": 159 }
+    ],
+    "loneSurrogates": [
+      { "id": "high-surrogate", "codeUnit": 55296 },
+      { "id": "low-surrogate", "codeUnit": 56320 }
+    ],
+    "runtimeOwners": [
+      "SnapshotPathSchema",
+      "SnapshotManifestSchema",
+      "canonicalizeSnapshotPath",
+      "parseSnapshotManifest"
+    ],
+    "expectedCounts": {
+      "forbiddenControls": 65,
+      "loneSurrogates": 2,
+      "probes": 67,
+      "runtimeOwners": 4,
+      "outcomes": 268
+    }
+  },
+  "remainingBoundaryClasses": ["filesystem-component-255-byte-policy-not-frozen"]
+}

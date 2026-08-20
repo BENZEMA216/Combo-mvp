@@ -47,6 +47,79 @@ const EnvSchema = z
 
     // PostgreSQL：与创作端同一个库（capabilities 只读 + 试用层四表读写）。
     DATABASE_URL: z.string().default('postgres://combo:combo@localhost:5432/combo'),
+    // Dedicated Consumer-only authority URL. This may never fall back to DATABASE_URL or use
+    // combo_agent_api; readiness proves the exact role and capability set before traffic is ready.
+    // Supported deployments still omit it while the public feature flag remains false.
+    CREATOR_AGENT_DATABASE_URL: z.preprocess(emptyToUndefined, z.string().optional()),
+    // VNext Consumer API remains unreachable until the complete authorization/revoke and
+    // Conversation open/ready chain is explicitly enabled for a disposable environment.
+    CREATOR_AGENT_PUBLIC_ENABLED: booleanFromString,
+    // Non-secret routing policy for the injected visible-transcript KMS HMAC port. Runtime never
+    // accepts a raw HMAC key or a local fallback key through env.
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER: z
+      .enum(['disabled', 'test-k8s-secret-file'])
+      .default('disabled'),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9._:/-]{0,127}$/u)
+        .optional(),
+    ),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}$/u)
+        .optional(),
+    ),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .default(1),
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .min(2)
+        .max(1_024)
+        .refine((value) => value.startsWith('/') && !containsControlCharacter(value), {
+          message: 'the Test keyring file must use an absolute path without control characters',
+        })
+        .optional(),
+    ),
+    // Durable USER/ASSISTANT message keys share the Gateway Test mount protocol. The execution
+    // signer is intentionally a separate Runtime-only mount and is never accepted as env text.
+    CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER: z
+      .enum(['disabled', 'test-k8s-secret-file'])
+      .default('disabled'),
+    CREATOR_AGENT_MESSAGE_KEYRING_FILE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .min(2)
+        .max(1_024)
+        .refine((value) => value.startsWith('/') && !containsControlCharacter(value), {
+          message: 'the Test message keyring file must be an absolute safe path',
+        })
+        .optional(),
+    ),
+    CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER: z
+      .enum(['disabled', 'test-k8s-secret-file'])
+      .default('disabled'),
+    CREATOR_AGENT_EXECUTION_AUTHORITY_FILE: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .min(2)
+        .max(1_024)
+        .refine((value) => value.startsWith('/') && !containsControlCharacter(value), {
+          message: 'the Test execution authority file must be an absolute safe path',
+        })
+        .optional(),
+    ),
     REDIS_URL: z.string().trim().min(1).default('redis://localhost:6379'),
 
     // ObjectStore（MinIO/S3）：按 capabilities.storage_key 读能力定义 + 读写产物内容。
@@ -117,6 +190,97 @@ const EnvSchema = z
     SANDBOX_SWEEP_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   })
   .superRefine((env, ctx) => {
+    if (env.CREATOR_AGENT_PUBLIC_ENABLED && !env.CREATOR_AGENT_DATABASE_URL) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_DATABASE_URL'],
+        message: 'CREATOR_AGENT_DATABASE_URL is required when the VNext public API is enabled',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER === 'test-k8s-secret-file' &&
+      env.COMBO_ENVIRONMENT !== 'test'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER'],
+        message: 'the Kubernetes Secret file provider is restricted to the Test environment',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER === 'test-k8s-secret-file' &&
+      !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE'],
+        message: 'a read-only keyring file is required for the Test provider',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_PUBLIC_ENABLED &&
+      env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER === 'disabled'
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER'],
+        message:
+          'a visible transcript key provider is required when the VNext public API is enabled',
+      });
+    }
+    if (env.CREATOR_AGENT_PUBLIC_ENABLED && !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE'],
+        message: 'a non-secret KMS namespace is required when the VNext public API is enabled',
+      });
+    }
+    if (
+      env.CREATOR_AGENT_PUBLIC_ENABLED &&
+      !env.CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX'],
+        message: 'a KMS keyRef prefix is required when the VNext public API is enabled',
+      });
+    }
+    for (const [providerKey, provider, fileKey, file] of [
+      [
+        'CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER',
+        env.CREATOR_AGENT_MESSAGE_AUTHORITY_PROVIDER,
+        'CREATOR_AGENT_MESSAGE_KEYRING_FILE',
+        env.CREATOR_AGENT_MESSAGE_KEYRING_FILE,
+      ],
+      [
+        'CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER',
+        env.CREATOR_AGENT_EXECUTION_AUTHORITY_PROVIDER,
+        'CREATOR_AGENT_EXECUTION_AUTHORITY_FILE',
+        env.CREATOR_AGENT_EXECUTION_AUTHORITY_FILE,
+      ],
+    ] as const) {
+      if (provider === 'test-k8s-secret-file' && env.COMBO_ENVIRONMENT !== 'test') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [providerKey],
+          message: 'the mounted Test authority is restricted to the Test environment',
+        });
+      }
+      if (provider === 'test-k8s-secret-file' && !file) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [fileKey],
+          message: 'the mounted Test authority requires a read-only file',
+        });
+      }
+      if (env.CREATOR_AGENT_PUBLIC_ENABLED && provider === 'disabled') {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [providerKey],
+          message: 'the VNext public API requires an explicit mounted authority',
+        });
+      }
+    }
     if (!env.SANDBOX_TOOLS_ENABLED) return;
     if (!env.SANDBOX_IMAGE) {
       ctx.addIssue({
@@ -262,7 +426,12 @@ export function loadEnv(): Env {
     const sandboxSetting = process.env.SANDBOX_TOOLS_ENABLED?.trim();
     const sandboxWasRequested =
       sandboxSetting !== undefined && sandboxSetting !== '' && sandboxSetting !== 'false';
-    if (isProduction || sandboxWasRequested) {
+    const creatorAgentSetting = process.env.CREATOR_AGENT_PUBLIC_ENABLED?.trim();
+    const creatorAgentWasRequested =
+      creatorAgentSetting !== undefined &&
+      creatorAgentSetting !== '' &&
+      creatorAgentSetting !== 'false';
+    if (isProduction || sandboxWasRequested || creatorAgentWasRequested) {
       throw new Error(
         `[env] 环境变量校验失败：${Object.keys(parsed.error.flatten().fieldErrors).join(', ')}`,
       );

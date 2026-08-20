@@ -81,7 +81,7 @@ describe('migrations', () => {
   });
 
   it('the full chain creates only the current data model', () => {
-    const created = [...allSql().matchAll(/CREATE TABLE\s+([a-z][a-z0-9_]*)\s*\(/gi)]
+    const created = [...allSql().matchAll(/CREATE TABLE\s+(?:public\.)?([a-z][a-z0-9_]*)\s*\(/gi)]
       .map((match) => match[1]!.toLowerCase())
       .sort();
     expect(created).toEqual(
@@ -99,6 +99,37 @@ describe('migrations', () => {
         'payment_attempts',
         'payment_callback_events',
         'wallet_ledger',
+        'snapshot_uploads',
+        'context_snapshots',
+        'agents',
+        'agent_access_grants',
+        'agent_versions',
+        'agent_version_controls',
+        'deployments',
+        'worker_installations',
+        'worker_leases',
+        'agent_conversations',
+        'agent_messages',
+        'agent_invocations',
+        'agent_invocation_events',
+        'creator_agent_cancelled_terminal_receipts',
+        'creator_agent_failed_terminal_receipts',
+        'creator_agent_journal_integrity_alerts',
+        'creator_agent_success_seal_preflights',
+        'creator_agent_succeeded_terminal_receipts',
+        'broker_outbox',
+        'consumer_event_streams',
+        'consumer_event_outbox',
+        'conversation_ready_fact_receipts',
+        'conversation_ready_receipts',
+        'worker_auth_challenges',
+        'worker_gateway_sessions',
+        'worker_auth_security_events',
+        'worker_gateway_operation_receipts',
+        'worker_gateway_frame_receipts',
+        'worker_gateway_security_events',
+        'worker_gateway_outbound_frames',
+        'worker_gateway_sequence_gaps',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -186,12 +217,31 @@ describe('migrations', () => {
 
   it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
     const list = files();
-    expect(list.slice(-5)).toEqual([
+    expect(list.slice(-24)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
+      '0012_creator_hosted_agent_vnext.sql',
+      '0013_creator_agent_consumer_create.sql',
+      '0014_creator_agent_consumer_open_ready.sql',
+      '0015_creator_agent_gateway_authority.sql',
+      '0016_creator_agent_invocation_lifecycle.sql',
+      '0017_creator_agent_conversation_ready_fact.sql',
+      '0018_creator_agent_broker_delivery_contract.sql',
+      '0019_creator_agent_broker_outbox_publisher.sql',
+      '0020_creator_agent_confirmed_failure_fact.sql',
+      '0021_creator_agent_context_admission.sql',
+      '0022_creator_agent_consumer_message_accept.sql',
+      '0023_creator_agent_event_integrity.sql',
+      '0024_creator_agent_reconciliation_source_admission.sql',
+      '0025_creator_agent_prepared_fact_admission.sql',
+      '0026_creator_agent_started_fact_admission.sql',
+      '0027_creator_agent_failed_fact_admission.sql',
+      '0028_creator_agent_success_fact_admission.sql',
+      '0029_creator_agent_cancelled_fact_admission.sql',
+      '0030_creator_agent_runtime_product_wiring.sql',
     ]);
   });
 

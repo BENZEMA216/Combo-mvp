@@ -1,0 +1,6 @@
+protocol: combo.vnext-broker-contract-registry/1
+schemaVersion: 1
+contracts:
+  - wireProtocol: combo.creator-broker/1
+    artifactPath: packages/creator-agent-protocol/schemas/broker-contract.v1.json
+    contractDigest: sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4

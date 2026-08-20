@@ -1,0 +1,18 @@
+{
+  "protocol": "combo.creator-broker/1",
+  "schemaVersion": 1,
+  "installationId": "0198f00d-1010-7010-8010-101010101010",
+  "workerVersion": "1.0.0-alpha.0",
+  "supportedProtocolVersions": [1],
+  "codexRuntimeArtifacts": [
+    "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  ],
+  "codexProtocolSchemaDigests": [
+    "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  ],
+  "isolationModes": ["lima-vz-v1"],
+  "capacity": { "maxActiveConversations": 1, "maxActiveTurns": 1 },
+  "challengeId": "0198f00d-2020-7020-8020-202020202020",
+  "challengeSignature": "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQg",
+  "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4"
+}

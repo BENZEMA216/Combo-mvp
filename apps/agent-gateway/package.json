@@ -1,0 +1,41 @@
+{
+  "name": "@cb/agent-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Combo Creator-hosted Agent VNext 的 Worker WebSocket Gateway。",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/processes/gateway.js",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-agent-persistence build",
+    "test": "vitest run",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@cb/creator-agent-broker-journal": "workspace:*",
+    "@cb/creator-agent-persistence": "workspace:*",
+    "@cb/creator-agent-protocol": "workspace:*",
+    "pg": "^8.13.1",
+    "ws": "8.21.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "@types/ws": "8.18.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

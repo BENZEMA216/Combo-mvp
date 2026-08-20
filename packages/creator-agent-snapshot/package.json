@@ -1,0 +1,40 @@
+{
+  "name": "@cb/creator-agent-snapshot",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Creator-hosted Agent VNext 的确定性 Snapshot、加密对象和不可变 AgentVersion 核心",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "test": "pnpm build && vitest run --exclude 'src/**/*.integration.test.ts'",
+    "test:avr-digests": "pnpm build && vitest run src/__tests__/agent-version-digest-semantics.test.ts src/__tests__/agent-version.test.ts",
+    "test:snp008": "pnpm build && vitest run src/__tests__/compressed-exact-boundary.test.ts",
+    "test:object-storage": "pnpm build && vitest run src/__tests__/object-storage.test.ts",
+    "test:minio:e2": "pnpm build && node scripts/run-minio-e2.mjs",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.726.1",
+    "@aws-sdk/s3-request-presigner": "^3.726.1",
+    "@cb/creator-agent-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

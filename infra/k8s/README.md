@@ -14,9 +14,23 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## 应用清单
 
-`api.yaml`、`worker.yaml`、`runtime.yaml`、`web.yaml` 是四业务面的基础清单，引用 `combo-env` Secret（凭证）与 `ghcr-pull`（镜像拉取）并带环境占位符。`release/base/apps/` 与 `release/base/migrate/` 提供发布专用补丁（`envFrom: combo-release` ConfigMap、迁移 PGHOST），`release/overlays/{test,preview,production}/` 按环境设置 namespace。发布渲染由 `scripts/render-env.mjs` 完成，把占位符替换为每环境实际主机名、公开入口与 Secret 名。
+`api.yaml`、`worker.yaml`、`runtime.yaml`、`web.yaml` 是四个共享业务面的基础清单，引用 `combo-env` Secret（凭证）与 `ghcr-pull`（镜像拉取）并带环境占位符。`release/base/apps/` 与 `release/base/migrate/` 提供发布专用补丁（`envFrom: combo-release` ConfigMap、迁移 PGHOST），`release/overlays/{test,preview,production}/` 按环境设置 namespace。schema v2 的 `release/overlays/test/apps-v2/` 额外加入独立 Agent Gateway 镜像、ClusterIP Service 和两个 hardened Deployment 副本；Preview、Production 与 legacy schema v1 不含该资源。发布渲染由 `scripts/render-env.mjs` 完成，把占位符替换为每环境实际主机名、公开入口与 Secret 名。
 
-所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只通过 `scripts/configure-first-party-auth-secrets.sh` 原位轮换，不删除重建。
+所有应用与迁移镜像必须使用 `repository@sha256` 摘要引用，不允许可移动标签。`combo-env` 必须包含 PostgreSQL 管理密码、三个独立应用角色密码、S3、Resend、OTP HMAC 和 LLM 配置。凭据只允许在受信任运维边界原位轮换，不删除重建；现有 helper 尚不生成 VNext Gateway 键，部署前必须另行以不回显方式预置。
+
+### Test-only Agent Gateway
+
+schema v2 Test 清单要求 `POSTGRES_AGENT_API_PASSWORD`、`POSTGRES_AGENT_BROKER_PASSWORD`、`POSTGRES_AGENT_RECONCILER_PASSWORD` 成组存在。Test migration 的三个引用均为 optional，以便旧 Test Secret 在三键全缺时继续迁移并保留 NOLOGIN；部分键存在会由角色 provision 脚本拒绝，三键齐全才原子 provision。Gateway Pod 只读取 `POSTGRES_AGENT_BROKER_PASSWORD`，不读取 API/Reconciler 密码或管理员 `PGPASSWORD`。
+
+四个 compatibility policy 键 `AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS`、`AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS`、`AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS`、`AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES` 必须是应用契约接受的非空等长 JSON 数组，并按索引组成 exact profile；Worker version 是不可重复的 profile key，各数组不是独立 allowlist。缺键、长度不等或重复 Worker version 都会让 Pod fail closed。publisher 显式为 false，publisher Deployment allowlist 可缺；未来打开 publisher 时必须同时提供非空的 `AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST`。Service 仅暴露集群内 3300 WebSocket，3301 只供 Pod `/health` 与 `/ready` 探针，Preview/Production 不创建 Gateway Service 或 Deployment。
+
+### Test-only visible transcript keyring
+
+`release/overlays/test/apps/` 只给 Test Runtime 配置 `test-k8s-secret-file`，并把 `combo-visible-transcript-test-keyring` Secret 的 `keyring.json` 以 `0400`、`readOnly: true` 挂载到 `/var/run/secrets/combo/visible-transcript/keyring.json`。Secret 引用是 optional，且公开 flag 在清单中显式保持 false：未开始 VNext 联调时 Pod 可以没有该 Secret，Runtime 也执行零 keyring 读取；如果未来只在 Test 临时打开公开 flag，缺失或不合法 keyring 会让 `/ready` 返回 503，fresh create 同样失败关闭。
+
+仓库不包含 Secret resource、生成命令或任何 key 值。由受信任的 Test 运维边界预置的文件必须是严格 JSON：顶层 `protocol` 为 `combo.visible-transcript-test-keyring/1`，包含匹配配置的 `keyNamespace`、十进制字符串 `activeKeyVersion`，以及最多 16 个唯一的 `keys`；每项包含唯一 `keyId`、`keyVersion`、允许 prefix 内的 `keyRef` 和无 padding 的 canonical 32-byte `keyBase64Url`。轮换通过新增 immutable version 并原子切换 active version 完成，active version 不得低于部署 policy。
+
+Preview 和 Production overlay 不配置 provider、keyring path 或 volume。这个 Test Secret 文件 adapter 会让 root key 进入 Runtime 内存，因此不是 production KMS，也不是真实腾讯云 provider。生产方案必须由外部 authority 在不导出 raw key 的前提下完成 domain-separated HMAC，并通过真实腾讯云凭据 contract test；在能力选择和验证完成前保持 BLOCKED。
 
 ## 可选 Sandbox Tools
 

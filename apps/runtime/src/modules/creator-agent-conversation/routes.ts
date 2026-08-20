@@ -1,0 +1,78 @@
+import type { FastifyInstance } from 'fastify';
+import { registerEndpoints, type EndpointDecl } from '../../platform/http/_helpers.js';
+import { registerVnextJsonBodyParser } from '../../platform/http/vnext-json-body.js';
+import {
+  createConsumerConversationHandler,
+  getConsumerConversationTranscriptHandler,
+  getConsumerEventsHandler,
+  getConsumerInvocationHandler,
+  sendConsumerMessageHandler,
+} from './handlers.js';
+import {
+  requireVnextAuth,
+  requireVnextBodySchema,
+  requireVnextMutationOrigin,
+  sendVnextError,
+} from './http-boundary.js';
+
+export const CREATOR_AGENT_CONVERSATION_ENDPOINTS: EndpointDecl[] = [
+  {
+    method: 'POST',
+    url: '/v1/public/agents/:slug/conversations',
+    preHandlers: [
+      requireVnextMutationOrigin(),
+      requireVnextBodySchema('CreateConversationRequest'),
+      requireVnextAuth(),
+    ],
+    handler: createConsumerConversationHandler(),
+  },
+  {
+    method: 'POST',
+    url: '/v1/conversations/:conversationId/messages',
+    preHandlers: [
+      requireVnextMutationOrigin(),
+      requireVnextBodySchema('SendConversationMessageRequest'),
+      requireVnextAuth(),
+    ],
+    handler: sendConsumerMessageHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/v1/conversations/:conversationId',
+    preHandlers: [requireVnextAuth()],
+    handler: getConsumerConversationTranscriptHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/v1/invocations/:invocationId',
+    preHandlers: [requireVnextAuth()],
+    handler: getConsumerInvocationHandler(),
+  },
+  {
+    method: 'GET',
+    url: '/v1/conversations/:conversationId/events',
+    preHandlers: [requireVnextAuth()],
+    handler: getConsumerEventsHandler(),
+  },
+];
+
+export async function registerCreatorAgentConversationRoutes(app: FastifyInstance): Promise<void> {
+  await app.register(async (scoped) => {
+    registerVnextJsonBodyParser(scoped);
+    scoped.setErrorHandler((error, req, reply) => {
+      const statusCode = (error as { statusCode?: number }).statusCode;
+      if (statusCode === 429) return sendVnextError(req, reply, 'RATE_LIMITED');
+      if (
+        (error as { validation?: unknown }).validation ||
+        statusCode === 400 ||
+        statusCode === 413 ||
+        statusCode === 415
+      ) {
+        return sendVnextError(req, reply, 'INVALID_INPUT');
+      }
+      req.log.error({ err: error, traceId: req.id }, 'VNext request failed');
+      return sendVnextError(req, reply, 'AGENT_OFFLINE');
+    });
+    registerEndpoints(scoped, CREATOR_AGENT_CONVERSATION_ENDPOINTS);
+  });
+}

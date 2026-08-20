@@ -1,0 +1,24 @@
+{
+  "protocol": "combo.snapshot-envelope/1",
+  "schemaVersion": 1,
+  "cipherObjectFormat": "combo.snapshot-binary/1",
+  "algorithm": "aes-256-gcm/v1",
+  "keyWrapAlgorithm": "rfc3394-aes-256-kw/v1",
+  "aad": {
+    "protocol": "combo.snapshot-envelope/1",
+    "schemaVersion": 1,
+    "cipherObjectFormat": "combo.snapshot-binary/1",
+    "creatorId": "0198f00d-8000-7000-8000-000000000001",
+    "snapshotDigest": "05b3abf2579a5eb66403cd78be557fd860633a1fe2103c7642030defe32c657f",
+    "archiveDigest": "59b430c694a6b4dc0faf03d1aaaab29a2dfb083c00a1fe9916afd5e532431378",
+    "objectKey": "creators/0198f00d-8000-7000-8000-000000000001/snapshots/sha256/05/05b3abf2579a5eb66403cd78be557fd860633a1fe2103c7642030defe32c657f.tar.zst.enc",
+    "plaintextBytes": 37,
+    "keyId": "combo-kek/test-2026-08"
+  },
+  "aadDigest": "66583db71c725d152aef1224efbb0095c438927c67da51e1db750871dbeeaff9",
+  "nonce": "IiIiIiIiIiIiIiIi",
+  "authTag": "brRDgzM0Ry8zYLiJafMsOQ",
+  "wrappedDek": "RERERERERERERERERERERERERERERERERERERERERERERERERERERA",
+  "cipherDigest": "f96235754e8e06a0e0c79913b925a7e171a1a390cd76ecb3066add507d0c35b5",
+  "cipherBytes": 73
+}

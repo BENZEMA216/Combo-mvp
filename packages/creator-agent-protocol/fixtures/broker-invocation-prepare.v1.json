@@ -1,0 +1,78 @@
+{
+  "protocol": "combo.creator-broker/1",
+  "schemaVersion": 1,
+  "kind": "command",
+  "messageId": "0198f00d-3000-7000-8000-000000000001",
+  "type": "invocation.prepare",
+  "correlationId": "0198f00d-3000-7000-8000-000000000002",
+  "connectionId": "0198f00d-3000-7000-8000-000000000003",
+  "sequence": "187",
+  "sentAt": "2026-08-13T08:00:00.000Z",
+  "expiresAt": "2026-08-13T08:00:30.000Z",
+  "lease": {
+    "deploymentId": "0198f00d-3000-7000-8000-000000000004",
+    "leaseId": "0198f00d-3000-7000-8000-000000000005",
+    "workerSessionId": "0198f00d-1111-7111-8111-111111111112",
+    "fence": "42"
+  },
+  "body": {
+    "invocationId": "0198f00d-3000-7000-8000-000000000002",
+    "conversationId": "0198f00d-3000-7000-8000-000000000006",
+    "clientMessageId": "550e8400-e29b-41d4-a716-446655440000",
+    "requestDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "userMessageCiphertext": {
+      "algorithm": "aes-256-gcm/v1",
+      "keyScope": "worker-session",
+      "keyId": "worker-session-key-001",
+      "nonce": "AAAAAAAAAAAAAAAA",
+      "ciphertext": "c3ludGhldGljLXByb21wdA",
+      "authTag": "AAAAAAAAAAAAAAAAAAAAAA",
+      "cipherDigest": "b1a8dd8e719ced67db91deccd6a76e4dc93590a24ac0344d04e49d041418a817",
+      "aad": {
+        "protocol": "combo.creator-broker/1",
+        "schemaVersion": 1,
+        "envelopeType": "invocation.prepare",
+        "messageId": "0198f00d-3000-7000-8000-000000000001",
+        "conversationId": "0198f00d-3000-7000-8000-000000000006",
+        "invocationId": "0198f00d-3000-7000-8000-000000000002",
+        "workerSessionId": "0198f00d-1111-7111-8111-111111111112",
+        "role": "USER",
+        "keyId": "worker-session-key-001"
+      },
+      "aadDigest": "c737a982722b6d23981489d73d2f94e08f52bff7ea9447f027fb8ce348d174e2",
+      "aadVersion": 1
+    },
+    "agentVersionId": "0198f00d-3000-7000-8000-000000000008",
+    "agentVersionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "snapshotDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "deadlineAt": "2026-08-13T08:02:00.000Z",
+    "executionCapability": {
+      "protocol": "combo.execution-capability/1",
+      "schemaVersion": 1,
+      "capabilityId": "0198f00d-3000-7000-8000-000000000009",
+      "invocationId": "0198f00d-3000-7000-8000-000000000002",
+      "conversationId": "0198f00d-3000-7000-8000-000000000006",
+      "deploymentId": "0198f00d-3000-7000-8000-000000000004",
+      "agentVersionId": "0198f00d-3000-7000-8000-000000000008",
+      "agentVersionDigest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "workerInstallationId": "0198f00d-1111-7111-8111-111111111111",
+      "leaseId": "0198f00d-3000-7000-8000-000000000005",
+      "fence": "42",
+      "providerRequestId": "0198f00d-3000-7000-8000-000000000010",
+      "requestDigest": "hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "model": "gpt-5.6",
+      "reasoningEffort": "high",
+      "budget": {
+        "maxInputTokens": 64000,
+        "maxOutputTokens": 8192,
+        "maxCostMicros": 5000000
+      },
+      "notBefore": "2026-08-13T07:59:59.000Z",
+      "expiresAt": "2026-08-13T08:02:30.000Z",
+      "nonce": "MDE5OGYwMGQtZXhlY3V0aW9uLW5vbmNl",
+      "signatureAlgorithm": "ES256",
+      "signatureEncoding": "ieee-p1363",
+      "signature": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  }
+}

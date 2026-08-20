@@ -1,0 +1,30 @@
+{
+  "protocol": "combo.consumer-event-outbox/1",
+  "schemaVersion": 1,
+  "cursor": "901",
+  "ownerId": "0198f00d-6000-7000-8000-000000000004",
+  "conversationId": "0198f00d-6000-7000-8000-000000000001",
+  "invocationId": "0198f00d-6000-7000-8000-000000000002",
+  "sourceEventId": "188",
+  "eventType": "invocation.terminal",
+  "payload": {
+    "protocol": "combo.consumer-event-outbox/1",
+    "schemaVersion": 1,
+    "type": "invocation.terminal",
+    "conversationId": "0198f00d-6000-7000-8000-000000000001",
+    "invocationId": "0198f00d-6000-7000-8000-000000000002",
+    "terminalState": "SUCCEEDED",
+    "assistantMessageId": "0198f00d-6000-7000-8000-000000000003",
+    "resultDigest": "hmac-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "errorCode": null,
+    "occurredAt": "2026-08-13T08:00:10.000Z"
+  },
+  "payloadDigest": "537f52c5c1412044527a83a660abb304e06167e0405e14f5106ba65bbb5dc921",
+  "dedupeKey": "e03e7bbcf12c72ac64142add9756058cda8e0d0bc17127387d711b698b629752",
+  "state": "PENDING",
+  "attemptCount": 0,
+  "nextAttemptAt": "2026-08-13T08:00:10.000Z",
+  "createdAt": "2026-08-13T08:00:10.000Z",
+  "publishedAt": null,
+  "retainedUntil": "2026-08-20T08:00:10.000Z"
+}

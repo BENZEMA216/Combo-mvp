@@ -1,0 +1,94 @@
+{
+  "protocol": "combo.broker-capacity-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "broker-handshake-capacity-singleton-only",
+  "evidenceClass": "contract-and-real-transport-handshake-only",
+  "authority": {
+    "technicalPlanSections": ["技术方案 §11.1 Worker 握手", "技术方案 §7.3、§12.8、§17.3 WIP=1"],
+    "testPlanSections": [
+      "测试方案 §6.1 SCH-004",
+      "测试方案 §3.2 E3 Contract/Fake System",
+      "测试方案 §21.2 Alpha 容量场景"
+    ],
+    "testCaseId": "SCH-004"
+  },
+  "exclusions": [
+    "agent-version-runtime-policy-max-active-turns",
+    "creator-and-conversation-wip-enforcement",
+    "queue-postgresql-advisory-and-sqlite-capacity",
+    "creator-http-openapi",
+    "tls-wss-termination-and-public-ingress",
+    "real-inference-cloud-capacity-and-soak"
+  ],
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "brokerContract": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
+    "advertisedBrokerContract": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4"
+  },
+  "baseFixture": {
+    "path": "broker-handshake.v1.json",
+    "digest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
+  },
+  "runtimeOwners": [
+    "BrokerCapacitySchema",
+    "BrokerHandshakeUnsignedSchema",
+    "BrokerHandshakeSchema",
+    "parseBrokerHandshake"
+  ],
+  "advertisedConstraints": [
+    {
+      "artifact": "contractSchemas",
+      "field": "maxActiveConversations",
+      "jsonSchemaKeyword": "const",
+      "artifactPointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/capacity/properties/maxActiveConversations"
+    },
+    {
+      "artifact": "contractSchemas",
+      "field": "maxActiveTurns",
+      "jsonSchemaKeyword": "const",
+      "artifactPointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/capacity/properties/maxActiveTurns"
+    },
+    {
+      "artifact": "brokerContract",
+      "field": "maxActiveConversations",
+      "jsonSchemaKeyword": "const",
+      "artifactPointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/capacity/properties/maxActiveConversations"
+    },
+    {
+      "artifact": "brokerContract",
+      "field": "maxActiveTurns",
+      "jsonSchemaKeyword": "const",
+      "artifactPointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/capacity/properties/maxActiveTurns"
+    }
+  ],
+  "transportOwners": ["AgentGateway.acceptHandshake", "WorkerBrokerClient.createHandshake"],
+  "outcomeCounts": {
+    "protocolRuntime": 24,
+    "advertisedArtifacts": 12,
+    "gatewayTransport": 6,
+    "workerTransport": 2,
+    "total": 44
+  },
+  "boundaries": [
+    {
+      "id": "broker-capacity-max-active-conversations",
+      "field": "maxActiveConversations",
+      "maximum": 1,
+      "probes": [
+        { "delta": -1, "value": 0, "expected": "rejected" },
+        { "delta": 0, "value": 1, "expected": "accepted" },
+        { "delta": 1, "value": 2, "expected": "rejected" }
+      ]
+    },
+    {
+      "id": "broker-capacity-max-active-turns",
+      "field": "maxActiveTurns",
+      "maximum": 1,
+      "probes": [
+        { "delta": -1, "value": 0, "expected": "rejected" },
+        { "delta": 0, "value": 1, "expected": "accepted" },
+        { "delta": 1, "value": 2, "expected": "rejected" }
+      ]
+    }
+  ]
+}

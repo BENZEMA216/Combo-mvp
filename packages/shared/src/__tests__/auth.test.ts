@@ -230,6 +230,7 @@ describe('认证安全错误与健康依赖', () => {
 
   it('readiness 不再依赖外部身份或邮件供应商', () => {
     expect(REQUIRED_DEPENDENCIES).toEqual(['db', 'redis_queue', 'redis_hot', 'minio']);
+    expect(DependencyNameSchema.safeParse('visible_transcript_kms').success).toBe(true);
     expect(DependencyNameSchema.safeParse('external_auth').success).toBe(false);
     expect(DependencyNameSchema.safeParse('resend').success).toBe(false);
   });

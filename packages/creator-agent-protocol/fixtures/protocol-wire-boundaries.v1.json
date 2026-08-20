@@ -1,0 +1,77 @@
+{
+  "protocol": "combo.protocol-wire-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "broker-wire-and-parsed-evidence-json-bytes-only",
+  "evidenceClass": "adr-vnext-034-product-policy-and-runtime-alignment",
+  "authorities": { "brokerFrameBytes": 65536, "structuredEvidenceJsonBytes": 1048576 },
+  "baseFixtures": [
+    {
+      "parser": "parseBrokerHandshake",
+      "path": "broker-handshake.v1.json",
+      "digest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
+    },
+    {
+      "parser": "parseBrokerFrame",
+      "path": "broker-invocation-prepare.v1.json",
+      "digest": "sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de"
+    },
+    {
+      "parser": "validateEvidenceBundleChain",
+      "path": "evidence-environments.v1.json",
+      "digest": "sha256:6a3a489eadf43ca092c7cfe65e148f0fc986033f7b5adfc59889d58fc26ef168"
+    },
+    {
+      "parser": "validateEvidenceBundleChain",
+      "path": "evidence-privacy-scan.v1.json",
+      "digest": "sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0"
+    }
+  ],
+  "structuredEvidenceOwners": [
+    "index",
+    "caseResults",
+    "testCaseRegistry",
+    "manifest",
+    "signoff",
+    "supportingArtifacts.environment.json",
+    "supportingArtifacts.privacy-scan.json"
+  ],
+  "sizeOffsets": [-1, 0, 1],
+  "paddingByteHex": "20",
+  "malformedUtf8Hex": ["80", "c0af", "e282", "eda080", "f4908080"],
+  "duplicateKeyOwners": ["root", "nested"],
+  "ingressOwners": [
+    "protocol",
+    "agent-gateway-loopback-websocket",
+    "worker-broker-client-loopback-websocket"
+  ],
+  "advertisedBoundary": {
+    "artifact": "schemas/broker-contract.v1.json",
+    "digest": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
+    "pointer": "/maxFrameBytes",
+    "maximumBytes": 65536,
+    "authorityKind": "adr-vnext-034-product-policy"
+  },
+  "actualIngressPhases": [
+    "agent-gateway-handshake",
+    "agent-gateway-established-frame",
+    "worker-broker-client-first-lease",
+    "worker-broker-client-established-frame"
+  ],
+  "outcomeCounts": { "protocolParsers": 6, "actualIngress": 12, "total": 18 },
+  "actualIngressExclusions": [
+    "tls-and-public-wss",
+    "fragmentation-and-extension-negotiation",
+    "load-and-backpressure",
+    "e3-public-cloud-ingress",
+    "production",
+    "product-policy-frozen-by-adr-vnext-034",
+    "does-not-complete-sch-004"
+  ],
+  "remainingBoundaryClasses": [
+    "other-structural-string-patterns",
+    "array-count",
+    "map-property-count",
+    "numeric-maximum",
+    "canonical-json-bytes"
+  ]
+}

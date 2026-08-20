@@ -10,7 +10,7 @@
 - `errors.ts` 定义对外错误信封（只含人话文案、退路动作、可否重试和 traceId，绝不含内部错误码）、内部错误码常量表 `ErrorCode`、每个码对应 HTTP 状态与缺省文案的分类表 `ERROR_CLASSIFICATION`，以及按码组装错误体的 `errorBodyFor`。
 - `progress.ts` 定义任务进度视图（总百分比、量化文案、子任务清单）和提取流水线的子任务标准顺序 `PIPELINE_SUBTASKS`。
 - `sse.ts` 定义 SSE（服务端事件推送）的帧协议：七种帧类型的枚举、各帧内容的 schema 和默认心跳间隔常量。
-- `health.ts` 定义 `/health` 与 `/ready` 两个探针的响应契约。数据库、两个 Redis 连接和 MinIO 计入就绪，模型服务只影响降级状态；外部邮件供应商不计入就绪。
+- `health.ts` 定义 `/health` 与 `/ready` 两个探针的响应契约。数据库、两个 Redis 连接和 MinIO 计入基础就绪；Runtime 在 Creator Agent 公开 flag 开启时还会报告 required `creator_agent_db` 与 `visible_transcript_kms`。模型服务只影响降级状态；外部邮件供应商不计入就绪。
 - `trace.ts` 提供 traceId 工具：UUID 与 W3C traceparent 请求头格式互转、从请求头或 URL 参数提取 traceId、生成新的 traceId 和 spanId。
 - `release.ts` 定义运行时发布身份 schema、环境变量映射和无缓存加载函数。加载函数校验完整 source SHA、确定性 releaseId、构建时间及两个摘要，并把网络、HTTP 和畸形响应收敛成稳定失败分类。
 - `index.ts` 汇总转出以上全部文件。

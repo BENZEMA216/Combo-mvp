@@ -6,6 +6,10 @@ const PASSWORD_KEYS = [
   'POSTGRES_API_PASSWORD',
   'POSTGRES_WORKER_PASSWORD',
   'POSTGRES_RUNTIME_PASSWORD',
+  'POSTGRES_AGENT_API_PASSWORD',
+  'POSTGRES_AGENT_BROKER_PASSWORD',
+  'POSTGRES_AGENT_RECONCILER_PASSWORD',
+  'POSTGRES_AGENT_CONSUMER_API_PASSWORD',
 ] as const;
 
 afterEach(() => {
@@ -15,7 +19,7 @@ afterEach(() => {
 function clientDouble() {
   const query = vi.fn(async (sql: string, values?: unknown[]) => {
     if (sql.includes('SELECT format(')) {
-      const role = sql.match(/ALTER ROLE (combo_[a-z]+)/)?.[1];
+      const role = sql.match(/ALTER ROLE (combo_[a-z_]+)/)?.[1];
       return { rows: [{ statement: `ALTER ROLE ${role} LOGIN PASSWORD '<server-formatted>'` }] };
     }
     return { rows: [], rowCount: 0, values };
@@ -62,6 +66,55 @@ describe('application database role login provisioning', () => {
     for (const key of PASSWORD_KEYS) expect(sqlText).not.toContain(process.env[key]);
     expect(client.query.mock.calls.at(0)?.[0]).toBe('BEGIN');
     expect(client.query.mock.calls.at(-1)?.[0]).toBe('COMMIT');
+  });
+
+  it('provisions the three VNext services as a separate complete role group', async () => {
+    process.env.POSTGRES_AGENT_API_PASSWORD = 'agent-api-secret';
+    process.env.POSTGRES_AGENT_BROKER_PASSWORD = 'agent-broker-secret';
+    process.env.POSTGRES_AGENT_RECONCILER_PASSWORD = 'agent-reconciler-secret';
+    const client = clientDouble();
+
+    await expect(provisionApplicationRoleLogins(client)).resolves.toBe(true);
+
+    const formatCalls = client.query.mock.calls.filter(([sql]) =>
+      String(sql).includes('SELECT format('),
+    );
+    expect(formatCalls).toHaveLength(3);
+    expect(formatCalls.map(([, values]) => values)).toEqual([
+      ['agent-api-secret'],
+      ['agent-broker-secret'],
+      ['agent-reconciler-secret'],
+    ]);
+    const executed = client.query.mock.calls.map(([sql]) => String(sql));
+    for (const role of ['combo_agent_api', 'combo_agent_broker', 'combo_agent_reconciler']) {
+      expect(executed).toContain(`ALTER ROLE ${role} LOGIN PASSWORD '<server-formatted>'`);
+    }
+  });
+
+  it('rejects a partial VNext role group without requiring the legacy group', async () => {
+    process.env.POSTGRES_AGENT_API_PASSWORD = 'agent-api-only';
+    const client = clientDouble();
+
+    await expect(provisionApplicationRoleLogins(client)).rejects.toThrow(
+      /POSTGRES_AGENT_BROKER_PASSWORD, POSTGRES_AGENT_RECONCILER_PASSWORD/,
+    );
+    expect(client.query).not.toHaveBeenCalled();
+  });
+
+  it('provisions the Consumer-only login as an independent enablement boundary', async () => {
+    process.env.POSTGRES_AGENT_CONSUMER_API_PASSWORD = 'consumer-api-secret';
+    const client = clientDouble();
+
+    await expect(provisionApplicationRoleLogins(client)).resolves.toBe(true);
+
+    const formatCalls = client.query.mock.calls.filter(([sql]) =>
+      String(sql).includes('SELECT format('),
+    );
+    expect(formatCalls).toHaveLength(1);
+    expect(formatCalls[0]?.[1]).toEqual(['consumer-api-secret']);
+    expect(client.query.mock.calls.map(([sql]) => String(sql))).toContain(
+      "ALTER ROLE combo_agent_consumer_api LOGIN PASSWORD '<server-formatted>'",
+    );
   });
 
   it('replaces PostgreSQL diagnostics with a stable error that cannot echo a password', async () => {

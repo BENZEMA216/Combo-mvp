@@ -10,6 +10,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = resolve(__dirname, '..', 'migrations');
 const MIGRATION_FILE_PATTERN = /^([0-9]{4})_[a-z0-9_]+\.sql$/;
 const MIGRATION_LOCK_KEY = 1_122_026_072_4;
+const LEGACY_0022_TEST_HEAD = '0022_creator_agent_consumer_message_accept.sql';
+const LEGACY_0022_TEST_DATABASE = 'combo_vnext_legacy_0022';
+const LEGACY_0022_TEST_CLUSTER = 'combo-vnext-r3-ephemeral';
 
 export function listMigrations(): string[] {
   const files = readdirSync(MIGRATIONS_DIR)
@@ -38,6 +41,33 @@ export function validateMigrationFiles(input: readonly string[]): string[] {
 export function migrationHead(input: readonly string[]): string {
   const files = validateMigrationFiles(input);
   return files[files.length - 1]!;
+}
+
+/**
+ * Historical migration gates need the exact 0022 schema in one fixed child database inside the
+ * disposable R3 PostgreSQL cluster. Production migration remains full-head only: there is no
+ * caller-selected target, and the historical mode is pinned to this one retired contract.
+ */
+export function migrationFilesForRun(
+  sourceInput: readonly string[],
+  legacy0022TestMode: string | undefined,
+  isolatedR3Cluster: string | undefined,
+): string[] {
+  const source = validateMigrationFiles(sourceInput);
+  if (legacy0022TestMode === undefined) return source;
+  if (legacy0022TestMode !== '1') {
+    throw new Error('CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST must be exactly 1 when set');
+  }
+  if (isolatedR3Cluster !== '1') {
+    throw new Error(
+      'CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST requires CREATOR_AGENT_R3_PG_ISOLATED=1',
+    );
+  }
+  const targetIndex = source.indexOf(LEGACY_0022_TEST_HEAD);
+  if (targetIndex < 0) {
+    throw new Error(`missing fixed historical migration ${LEGACY_0022_TEST_HEAD}`);
+  }
+  return source.slice(0, targetIndex + 1);
 }
 
 export interface MigrationPlan {
@@ -167,8 +197,18 @@ function migrationClient(): Client {
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
-  const files = listMigrations();
-  const sourcePlan = planMigrations(files, [], options.expectedHead);
+  const sourceFiles = listMigrations();
+  const sourcePlan = planMigrations(sourceFiles, [], options.expectedHead);
+  const legacy0022TestMode = process.env.CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST?.trim();
+  const files = migrationFilesForRun(
+    sourceFiles,
+    legacy0022TestMode || undefined,
+    process.env.CREATOR_AGENT_R3_PG_ISOLATED?.trim() || undefined,
+  );
+  const runHead = migrationHead(files);
+  if (legacy0022TestMode && (options.statusOnly || options.printHead)) {
+    throw new Error('historical 0022 migration mode cannot be combined with --status or --head');
+  }
 
   if (options.printHead) {
     console.log(sourcePlan.head);
@@ -188,6 +228,41 @@ async function main(): Promise<void> {
   const client = migrationClient();
   await client.connect();
   try {
+    if (legacy0022TestMode) {
+      if (options.migrationRuns !== 2) {
+        throw new Error('historical 0022 migration mode requires MIGRATION_RUNS=2');
+      }
+      if (process.env.CREATOR_AGENT_R3_PG_CLUSTER_NAME?.trim() !== LEGACY_0022_TEST_CLUSTER) {
+        throw new Error(
+          `historical 0022 migration mode requires cluster marker ${LEGACY_0022_TEST_CLUSTER}`,
+        );
+      }
+      const databaseIdentity = await client.query<{
+        database_name: string;
+        cluster_name: string;
+        empty_database: boolean;
+      }>(
+        `SELECT current_database() AS database_name,
+                current_setting('cluster_name') AS cluster_name,
+                NOT EXISTS (
+                  SELECT 1
+                    FROM pg_class AS relation
+                    JOIN pg_namespace AS schema ON schema.oid = relation.relnamespace
+                   WHERE relation.relkind IN ('r', 'p')
+                     AND schema.nspname NOT IN ('pg_catalog', 'information_schema')
+                     AND schema.nspname NOT LIKE 'pg_toast%'
+                ) AS empty_database`,
+      );
+      if (
+        databaseIdentity.rows[0]?.database_name !== LEGACY_0022_TEST_DATABASE ||
+        databaseIdentity.rows[0]?.cluster_name !== LEGACY_0022_TEST_CLUSTER ||
+        databaseIdentity.rows[0]?.empty_database !== true
+      ) {
+        throw new Error(
+          `historical 0022 migration mode requires empty ${LEGACY_0022_TEST_DATABASE} in ${LEGACY_0022_TEST_CLUSTER}`,
+        );
+      }
+    }
     let ledgerExists = (
       await client.query<{ exists: boolean }>(
         `SELECT to_regclass('public.schema_migrations') IS NOT NULL AS exists`,
@@ -256,7 +331,7 @@ async function main(): Promise<void> {
           'migration ledger mismatch: non-empty schema cannot use an empty migration ledger',
         );
       }
-      const plan = planMigrations(files, applied, options.expectedHead);
+      const plan = planMigrations(files, applied, runHead);
       const appliedSet = new Set(plan.applied);
       for (const file of files) {
         console.log(`${appliedSet.has(file) ? '[x]' : '[ ]'} ${file}`);
@@ -274,7 +349,7 @@ async function main(): Promise<void> {
         );
       }
       // 每一遍都重新验证 release head 和完整 ledger，而不是把第二遍降级为无条件成功。
-      const plan = planMigrations(files, applied, options.expectedHead);
+      const plan = planMigrations(files, applied, runHead);
 
       for (const file of plan.pending) {
         const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf-8');
@@ -294,7 +369,7 @@ async function main(): Promise<void> {
       const finalApplied = (
         await client.query<{ filename: string }>('SELECT filename FROM schema_migrations')
       ).rows.map((row) => row.filename);
-      const finalPlan = planMigrations(files, finalApplied, options.expectedHead);
+      const finalPlan = planMigrations(files, finalApplied, runHead);
       if (finalPlan.pending.length > 0) {
         throw new Error(
           `migration ledger mismatch: runner stopped before expected head ${finalPlan.head}`,

@@ -6,6 +6,10 @@ Runtime 是 Capability 试用与 Studio 编辑的独立后端。它管理普通�
 
 Runtime 与 authoring 共用 PostgreSQL 和对象存储，但不引用 authoring 源码。它只读 `users`、`auth_sessions` 和 Capability 定义，读写 `sessions`、`turns`、`messages`、`artifacts`、用量计费表与钱包扣费流水，并且只能更新 `capabilities.ui_artifact_id`。浏览器认证只接受 authoring 签发的不透明会话 Cookie：`SESSION_COOKIE_SECURE=true` 时读取 `__Host-cb_session`，为 false 时读取 `cb_session`。Runtime 只计算 Cookie 摘要并查询 PostgreSQL，不签发会话、不创建用户，也不接受 Bearer 或查询参数令牌。
 
+默认关闭的 VNext Consumer surface 使用完全独立的 `CREATOR_AGENT_DATABASE_URL`，readiness 要求 direct-login `combo_agent_consumer_api` 且 `current_user=session_user`、非 superuser、非 `BYPASSRLS`、双向零 role membership、当前数据库只能 `CONNECT` 与使用 PostgreSQL 默认的 session-local `TEMP`（不能 `CREATE` 持久 schema）、不能使用或改写任何 public sequence，权限集合精确。该角色没有 Creator control-plane 写权，也没有任何业务表直接 DML；create 与 fresh send 只能经数据库 owner 控制的窄 definer 完成，UUIDv7 也由专用 Consumer definer 签发。send 的只读 preflight、进程外 Message seal/Execution Capability 签名、短 finalize transaction 分离；finalize 一次提交 durable USER、Invocation journal、signed payload-v2 prepare command 与 Conversation projection。ADR-VNEXT-033 将 public `Idempotency-Key` 与 send/retry `clientMessageId` 冻结为 canonical lowercase UUIDv4，服务端 ID 继续使用 UUIDv7。
+
+当前 HTTP 已接通 create、send、conversation transcript、Invocation read 与 terminal-only Consumer Event SSE。SSE 只从 PostgreSQL durable outbox 做 RLS read-only replay，按 `Last-Event-ID` 返回有界页面后关闭；过期 cursor 为固定 410。Transcript 在短快照提交后才逐条按 exact AAD 解密，超过冻结的 40 条上限失败关闭。Message keyring 与 Execution signer 仅实现严格 0600 mounted-file 的 Test adapter；Preview/Production 没有 provider。cancel/retry producer、terminal ACK 与竞态语义尚未实现，因此对应 routes 不注册；所有受支持部署仍保持 feature flag false。
+
 所有浏览器写请求必须来自 `PUBLIC_APP_ORIGINS` 的严格白名单。凭据型 CORS 也只反射其中的精确 origin。Test、Preview 与 Production 的 production 构建都必须使用 Secure Cookie 和 HTTPS origin；只有非 production 的本地开发可以显式使用非 Secure Cookie。模型、模型凭据、Pi 会话和流式事件都留在 Runtime 内。
 
 ## 源码结构

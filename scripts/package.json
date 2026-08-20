@@ -11,7 +11,8 @@
     "acceptance:smoke": "./acceptance-smoke.sh",
     "sandbox:e2e": "./integration/sandbox-tools-local.sh",
     "typecheck": "tsc -b",
-    "test": "node --test resend-sent-email.test.mjs render-env.test.mjs"
+    "typecheck:test": "tsc -p tsconfig.integration.json",
+    "test": "node --test deploy-env.test.mjs resend-sent-email.test.mjs release-manifest.test.mjs render-env.test.mjs"
   },
   "dependencies": {
     "@cb/shared": "workspace:*",
@@ -19,6 +20,11 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
-    "typescript": "^5.7.3"
+    "@types/pg": "^8.11.10",
+    "@types/ws": "8.18.1",
+    "pg": "^8.13.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8",
+    "ws": "8.21.0"
   }
 }

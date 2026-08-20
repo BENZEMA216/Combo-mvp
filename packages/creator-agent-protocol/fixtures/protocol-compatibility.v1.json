@@ -1,0 +1,129 @@
+{
+  "protocol": "combo.protocol-version-corpus/1",
+  "schemaVersion": 1,
+  "current": {
+    "profileId": "worker-n",
+    "wireProtocol": "combo.creator-broker/1",
+    "wireSchemaVersion": 1,
+    "workerVersion": "1.0.0-alpha.1",
+    "supportedProtocolVersions": [1],
+    "codexRuntimeArtifacts": [
+      "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ],
+    "codexProtocolSchemaDigests": [
+      "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    ],
+    "isolationModes": ["apple-container-v1"],
+    "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
+    "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.v1.json",
+    "handshakeFixtureDigest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
+  },
+  "declaredPrevious": [
+    {
+      "profileId": "worker-n-minus-one",
+      "wireProtocol": "combo.creator-broker/1",
+      "wireSchemaVersion": 1,
+      "workerVersion": "1.0.0-alpha.0",
+      "supportedProtocolVersions": [1],
+      "codexRuntimeArtifacts": [
+        "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      ],
+      "codexProtocolSchemaDigests": [
+        "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      ],
+      "isolationModes": ["lima-vz-v1"],
+      "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
+      "handshakeFixture": "packages/creator-agent-protocol/fixtures/broker-handshake.n-minus-one.v1.json",
+      "handshakeFixtureDigest": "sha256:85a1feb185556f98cd44cad92693e6e6ace152424be1fae2993662d2fb910bcc"
+    }
+  ],
+  "gatewayReleases": [
+    {
+      "releaseId": "gateway-n-minus-one",
+      "wireProtocol": "combo.creator-broker/1",
+      "wireSchemaVersion": 1,
+      "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
+      "matcher": "combo.exact-worker-profile-matcher/1",
+      "acceptedWorkerProfileIds": ["worker-n-minus-one", "worker-n"]
+    },
+    {
+      "releaseId": "gateway-n",
+      "wireProtocol": "combo.creator-broker/1",
+      "wireSchemaVersion": 1,
+      "brokerContractDigest": "sha256:38158253459c0ccc15fce25ffdeb02dc2ad3b71fc33dee81c3e6a8333fad80b4",
+      "matcher": "combo.exact-worker-profile-matcher/1",
+      "acceptedWorkerProfileIds": ["worker-n-minus-one", "worker-n"]
+    }
+  ],
+  "declaredPairs": [
+    { "gatewayReleaseId": "gateway-n-minus-one", "workerProfileId": "worker-n-minus-one" },
+    { "gatewayReleaseId": "gateway-n-minus-one", "workerProfileId": "worker-n" },
+    { "gatewayReleaseId": "gateway-n", "workerProfileId": "worker-n-minus-one" },
+    { "gatewayReleaseId": "gateway-n", "workerProfileId": "worker-n" }
+  ],
+  "rejectedRegistrations": [
+    {
+      "id": "future-protocol-v2",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [2],
+      "advertisedValue": null,
+      "expectedError": "WORKER_REGISTRATION_INCOMPATIBLE"
+    },
+    {
+      "id": "future-worker-version",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "1.0.0-alpha.2",
+      "expectedError": "WORKER_VERSION_INCOMPATIBLE"
+    },
+    {
+      "id": "unknown-capability-key",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "future-v2",
+      "expectedError": "WORKER_REGISTRATION_INCOMPATIBLE"
+    },
+    {
+      "id": "native-macos",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "native-macos",
+      "expectedError": "WORKER_REGISTRATION_INCOMPATIBLE"
+    },
+    {
+      "id": "stale-broker-contract",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:9db3770041d2da6ee3daae07c1a0a4ce05094cb3852887a72c20f4f8f2319b73",
+      "expectedError": "BROKER_CONTRACT_INCOMPATIBLE"
+    },
+    {
+      "id": "unaccepted-codex-runtime",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "expectedError": "CODEX_RUNTIME_INCOMPATIBLE"
+    },
+    {
+      "id": "unaccepted-codex-protocol",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:abababababababababababababababababababababababababababababababab",
+      "expectedError": "CODEX_PROTOCOL_INCOMPATIBLE"
+    },
+    {
+      "id": "unaccepted-isolation",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "lima-vz-v1",
+      "expectedError": "ISOLATION_INCOMPATIBLE"
+    },
+    {
+      "id": "undeclared-cross-mix",
+      "advertisementLocus": "creator-oauth-registration",
+      "protocolVersions": [1],
+      "advertisedValue": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "expectedError": "CODEX_RUNTIME_INCOMPATIBLE"
+    }
+  ]
+}

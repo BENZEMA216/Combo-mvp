@@ -1,0 +1,241 @@
+{
+  "protocol": "combo.creator-agent-fixtures/1",
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "path": "agent-version-digest-semantics.v1.json",
+      "bytes": 8394,
+      "digest": "sha256:b6ee748468b35c06bc2d319970bc781c73d1c9f3671fc0204be9977c8c62c6a9"
+    },
+    {
+      "path": "agent-version-manifest.v1.json",
+      "bytes": 1955,
+      "digest": "sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
+    },
+    {
+      "path": "agent-version-resource-boundaries.v1.json",
+      "bytes": 4309,
+      "digest": "sha256:9842b670a1ce1e30cd7d0e87f11f7233aff04066c5c4f3594e6e7608145b9246"
+    },
+    {
+      "path": "broker-capacity-boundaries.v1.json",
+      "bytes": 3427,
+      "digest": "sha256:ec268c7a097d3bfefe3973326b51100259949ec12ecc2eea4a62d46c30c35aa6"
+    },
+    {
+      "path": "broker-conversation-open.v1.json",
+      "bytes": 1353,
+      "digest": "sha256:a6c588b874e5a671d5adac579be505f2c150728d31c1df76240bce0e8d1366e4"
+    },
+    {
+      "path": "broker-conversation-ready.v1.json",
+      "bytes": 1743,
+      "digest": "sha256:010396a5802e80d3603ffc6b4f27faa1f2bfcacb29cc88d7ccb199e8882dd889"
+    },
+    {
+      "path": "broker-handshake.n-minus-one.v1.json",
+      "bytes": 802,
+      "digest": "sha256:85a1feb185556f98cd44cad92693e6e6ace152424be1fae2993662d2fb910bcc"
+    },
+    {
+      "path": "broker-handshake.v1.json",
+      "bytes": 810,
+      "digest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
+    },
+    {
+      "path": "broker-invocation-cancel.v1.json",
+      "bytes": 717,
+      "digest": "sha256:3bbaeba00c44f4c429e8ec3f078f6ed7153b0c1960b11802fd8aa8220fef80a1"
+    },
+    {
+      "path": "broker-invocation-cancelled.v1.json",
+      "bytes": 3017,
+      "digest": "sha256:c791cf93ff882c89408585a9b7ee529b0b52928ed095561ac7885b00ca390615"
+    },
+    {
+      "path": "broker-invocation-prepare.v1.json",
+      "bytes": 3501,
+      "digest": "sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de"
+    },
+    {
+      "path": "broker-invocation-prepared.v1.json",
+      "bytes": 1463,
+      "digest": "sha256:fa98d56ca62e234788668df4cf53a384251ff3e2eca8c1140c18db6ed358dc81"
+    },
+    {
+      "path": "broker-invocation-started.v1.json",
+      "bytes": 1657,
+      "digest": "sha256:da5d2ec27b581e76ac76a3936f497779b472f7ecea9d8a04e14c7c9f0d837c9f"
+    },
+    {
+      "path": "broker-invocation-succeeded.v1.json",
+      "bytes": 2687,
+      "digest": "sha256:9ba0722d26c12c76f5ccfbd2b546427bc896aaa4adb7067b8f05b7344f88e371"
+    },
+    {
+      "path": "canonical-vectors.v1.json",
+      "bytes": 724,
+      "digest": "sha256:7e6b9b195e6f70a5b9ebe0bc522a083279fbc1b252cc87667cbaf4214db4e184"
+    },
+    {
+      "path": "consumer-terminal-event-outbox.v1.json",
+      "bytes": 1217,
+      "digest": "sha256:627ee0c59c91edfb067bdf534c4ef9e24d4d0279835cc934fd174b52c9702d4a"
+    },
+    {
+      "path": "context-tools-closed-world-boundaries.v1.json",
+      "bytes": 6461,
+      "digest": "sha256:2a146dbe04c93b307fc21a064a61f829f60eca5c2772bc3c87d795a15649c598"
+    },
+    {
+      "path": "evidence-bundle-index.v1.json",
+      "bytes": 1541,
+      "digest": "sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb"
+    },
+    {
+      "path": "evidence-bundle-manifest.v1.json",
+      "bytes": 2551,
+      "digest": "sha256:99bb2e91df30706472c02acbcf7d23a5dcc772f16fd28754266f584d8f5a0f4a"
+    },
+    {
+      "path": "evidence-case-result.v1.json",
+      "bytes": 509,
+      "digest": "sha256:a4fb707bd3b5e82a0125ee8b3cf0dd3a7e24f31f5a554c2d4cf1289212c1fd4f"
+    },
+    {
+      "path": "evidence-environment.v1.json",
+      "bytes": 401,
+      "digest": "sha256:5f6d858f2269537861bdd4dad925033e3851a541633037e48da2c50c61a8e3f8"
+    },
+    {
+      "path": "evidence-environments.v1.json",
+      "bytes": 554,
+      "digest": "sha256:6a3a489eadf43ca092c7cfe65e148f0fc986033f7b5adfc59889d58fc26ef168"
+    },
+    {
+      "path": "evidence-privacy-scan.v1.json",
+      "bytes": 1756,
+      "digest": "sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0"
+    },
+    {
+      "path": "evidence-reviewer-signoff.v1.json",
+      "bytes": 661,
+      "digest": "sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b"
+    },
+    {
+      "path": "execution-capability-upstream-count-boundaries.v1.json",
+      "bytes": 3258,
+      "digest": "sha256:f8a98f60e7dc1226e145d1c6ac04f956364f241453d3435fb0cd836aee0f714c"
+    },
+    {
+      "path": "http-idempotency-key-boundaries.v1.json",
+      "bytes": 1936,
+      "digest": "sha256:b6cd84315dcae7f3ed7f0aef760dff04fad0f78f8ef759706e78d0457406825a"
+    },
+    {
+      "path": "invocation-state-machine.v1.json",
+      "bytes": 1059,
+      "digest": "sha256:ce3711d8e99c371c7c4b360a0f7673ac7bf1e299e0d452ce177a4ba7d7103cf2"
+    },
+    {
+      "path": "protocol-compatibility.v1.json",
+      "bytes": 5164,
+      "digest": "sha256:440dc50139245c740b6b93da8e688a063205ad262bc0b7de4fa01173e994d660"
+    },
+    {
+      "path": "protocol-decoded-boundaries.v1.json",
+      "bytes": 13901,
+      "digest": "sha256:7f3d291d5c96d8484f7535d36f652f07adcae84175d8802da18b76f56d97742e"
+    },
+    {
+      "path": "protocol-raw-ingress-hostile-boundaries.v1.json",
+      "bytes": 7057,
+      "digest": "sha256:1e9a73c8b8e1b93085dbea8183bdeadd940a6ebb74068fbbe0caeed458bf86b3"
+    },
+    {
+      "path": "protocol-structural-boundaries.v1.json",
+      "bytes": 35026,
+      "digest": "sha256:3ca02f495a45c2d8a7bbeebb452466ca9fa3763699146c67725fa8802a628810"
+    },
+    {
+      "path": "protocol-utf8-boundaries.v1.json",
+      "bytes": 26348,
+      "digest": "sha256:420e3afd8b8307fa56fad257987012f3fec33071104dad9667bdced84385ee40"
+    },
+    {
+      "path": "protocol-wire-boundaries.v1.json",
+      "bytes": 2584,
+      "digest": "sha256:836b6fa7b081e89bac1eaa0a7ca8dbc335ffc1720852b54f3ab2fdeaae5311e7"
+    },
+    {
+      "path": "public-boundary-closure.v1.json",
+      "bytes": 1524617,
+      "digest": "sha256:ca24f1bc2348a3acd0a4ace84f768abdf4678a398dceac47ce778e4640b4de54"
+    },
+    {
+      "path": "public-manual-cap-outcomes.v1.json",
+      "bytes": 4042,
+      "digest": "sha256:0867f2d3889c7b9baadc10d31c74033666b2329d6a8bdc3ed6957486a9449df2"
+    },
+    {
+      "path": "sandbox-attestation.v1.json",
+      "bytes": 1889,
+      "digest": "sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91"
+    },
+    {
+      "path": "sandbox-spec.v1.json",
+      "bytes": 1351,
+      "digest": "sha256:e4b9749843a479a2669950a6c33cd9be4f90ddea8dd00c2436bf7dbdc6fb9a0a"
+    },
+    {
+      "path": "snapshot-compressed-boundaries.v1.json",
+      "bytes": 7951,
+      "digest": "sha256:c3ee4bf1915b12d6142b92970dcb6502f31c22b960ce0499584e9bb5594f919a"
+    },
+    {
+      "path": "snapshot-compressed-exact-boundary.v1.json",
+      "bytes": 5342,
+      "digest": "sha256:3a95d99be3cb60d68b80e2fd1b829baadfb71e2f064704cdf6d6362ce583794e"
+    },
+    {
+      "path": "snapshot-compression-ratio-boundaries.v1.json",
+      "bytes": 4560,
+      "digest": "sha256:47dcc8a01fac526e0a52b58989a0067123fe7f1289e338c0a24ace2098e2047b"
+    },
+    {
+      "path": "snapshot-envelope.v1.json",
+      "bytes": 1134,
+      "digest": "sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9"
+    },
+    {
+      "path": "snapshot-manifest-envelope.v1.json",
+      "bytes": 1080,
+      "digest": "sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd"
+    },
+    {
+      "path": "snapshot-manifest.v1.json",
+      "bytes": 1296,
+      "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
+    },
+    {
+      "path": "snapshot-path-boundaries.v1.json",
+      "bytes": 3883,
+      "digest": "sha256:1ee646b62893f7eade68a7937890f0bd77eeb15f4c1a0ce74b1af90c83bf4a92"
+    },
+    {
+      "path": "snapshot-resource-boundaries.v1.json",
+      "bytes": 3685,
+      "digest": "sha256:3cfb6800ec2af0e5166b91aa262f2a97ae1abdbd34acf8679284ba59ee9d2320"
+    },
+    {
+      "path": "snapshot-single-file-boundaries.v1.json",
+      "bytes": 2592,
+      "digest": "sha256:513560d9e423287279b3a813c84a7c244272a0c06af05c6d3fbf9520af12a198"
+    },
+    {
+      "path": "worker-interrupt-receipt.v1.json",
+      "bytes": 1483,
+      "digest": "sha256:b88fcb470e4c11fb3ccc95010db299646fdf577eef21ff4cce416b9785b3fa71"
+    }
+  ]
+}

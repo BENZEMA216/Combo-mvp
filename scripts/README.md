@@ -16,7 +16,9 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 ## 部署脚本
 
-`render-env.mjs` 按环境渲染 k8s 清单。它读取 canonical 发布清单（`release-manifest.mjs` 生成），把镜像 digest、`combo-release` ConfigMap（release 元数据）和每环境占位符注入应用 overlay。占位符包括 `combo-env`、`ghcr-pull`、`combo-postgres-host`、`combo-public-app-origin`、`combo-session-cookie-secure`，以及 `postgres:5432`、`redis-queue:6379`、`redis-hot:6379`、`minio:9000` 主机名。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。支持三个 phase：`apps`、`migrate`、`foundation`。渲染结果只含 Service、Deployment、Job 与允许的 ConfigMap，绝不含 Secret。
+`render-env.mjs` 按环境渲染 k8s 清单。它读取 canonical 发布清单（`release-manifest.mjs` 生成），把镜像 digest、`combo-release` ConfigMap（release 元数据）和每环境占位符注入应用 overlay。占位符包括 `combo-env`、`ghcr-pull`、`combo-postgres-host`、`combo-public-app-origin`、`combo-session-cookie-secure`，以及 `postgres:5432`、`redis-queue:6379`、`redis-hot:6379`、`minio:9000` 主机名。Preview/Production 的 Postgres/Redis/MinIO 主机解析为 `combo-foundation` 的跨 namespace 服务名。支持三个 phase：`apps`、`migrate`、`foundation`。schema v2 只在 Test 渲染 Agent Gateway Service 与双副本 Deployment；Preview/Production 以及 legacy schema v1 都渲染零个 Gateway 资源。渲染结果只含 Service、Deployment、Job 与允许的 ConfigMap，绝不含 Secret。
+
+apps render 还强制 visible transcript provider 的环境边界：Test 必须是 `test-k8s-secret-file`、公开 flag=false、精确非敏感 policy/path 和 optional `0400` read-only Secret volume；Preview/Production 出现 provider、keyring path 或 volume 会直接 render 失败。render 与测试只检查 Secret 名称/键名/文件权限，不读取或输出 Secret 值，也不证明 production KMS 或真实腾讯云 provider。
 
 `deploy-env.sh` 在主机上执行部署，三个子命令：
 
@@ -26,7 +28,9 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 `deploy-env.sh` 支持 `--render-dir`：workflow 在 runner 上先渲染 YAML，再上传到主机用预渲染文件执行。
 
-`release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。清单把一个完整源码 SHA 唯一映射到 API、Runtime、Web 三个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。
+`release-manifest.mjs` 创建和校验 canonical、不可覆盖的发布清单。新建清单使用 schema v2，把一个完整源码 SHA 唯一映射到 API、Agent Gateway、Runtime、Web 四个 `repository@sha256` 镜像、迁移头和 Web 静态资源摘要。Worker 与 migration 固定使用 API 镜像。校验器继续接受 canonical schema v1；旧清单不含 Gateway 镜像，并安全渲染为零 Gateway 资源。
+
+Agent Gateway 目前是严格 Test-only：`combo-env` 必须预置三个 VNext 角色密码及四个非空 JSON compatibility allowlist。Test migration 对三个角色密码使用 `optional: true` 以兼容旧 Secret：三键全缺时保留 NOLOGIN，部分提供时迁移失败关闭，三键齐全才 provision 可登录最小角色。Gateway Pod 只读取 broker 密码；publisher 默认关闭，`AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST` 因而可缺，只有显式启用 publisher 时才必须是非空精确 Deployment UUID allowlist。仓库清单只引用键名，不包含或输出任何值。
 
 `web-asset-manifest.mjs` 为 Web 与 Runtime Web 的实际构建文件生成严格、确定性的内容摘要清单。正式 CI 从最终 Web 镜像中提取并复验这份清单，而不是从标签或宿主构建目录推断。
 
@@ -45,4 +49,10 @@ Preview 与 Production 共用一套 Postgres、Redis（queue/hot）和 MinIO，�
 
 - `start.sh` / `smoke.sh` / `migrate.sh` / `acceptance-smoke.sh`：本地开发与冒烟。
 - `check-production-artifacts.sh`：CI gate，校验生产构建产物不含测试文件、测试邮件基础设施或已废弃认证栈。
+- `run-vnext-g0.mjs`：唯一的 VNext G0 命令编排器。它以固定 base seed、100 个唯一 seed 和每个 property model 合计 100,000 runs 执行 Protocol，并补齐 Snapshot、Gateway 与 Runtime 的全部 T0 SCH-001..010 登记文件；两个真实 PostgreSQL 文件明确留给 T1。
+- `integration/vnext-r3-ephemeral-pg.mjs`：R3 本地 PostgreSQL 验收器。它创建只监听临时 Unix socket 的一次性 PostgreSQL 集群，在隔离集群内应用完整迁移，验证 0030 权限/validator、Session replacement 后 immutable execution authority、Runtime↔Gateway 两个真实 mounted-keyring adapter 的 USER/ASSISTANT 双向 roundtrip，以及 Gateway prepare/start lifecycle 实库链；最后执行 `integration/vnext-r3-worker-host.pg.test.ts`，把真实 Runtime send/repo、Gateway lifecycle authority/projector、Worker Broker/SQLite command pump 和 deterministic Host 组合为 send、prepare、start、Host success、Cloud SUCCEEDED、Runtime ASSISTANT transcript 的单次纵向链，并验证 exact replay 不会第二次 dispatch Host。验收器在执行测试前通过 `@cb/scripts typecheck:test` 使用 `tsconfig.integration.json` 对两份跨包 TypeScript Gate 做严格语义检查；最后停止进程并删除临时数据，固定应用角色的迁移不会触碰共享开发数据库。跨 adapter 测试只存在于 `integration/vnext-r3-crypto-boundary.test.ts` 与该 Worker/Host 纵向测试，不会在产品包之间引入运行时依赖。
+- `source-integrity.test.mjs`：扫描 Git tracked 的源码与配置文件，禁止真实 NUL 字节把文本源码降级为 binary diff。
+- `vnext-gate-honesty.test.mjs`：进程级验证 E4-E7/T1 骨架 fail-closed、空 evidence 不落盘，并锁定 CI 的 Gate ShellCheck 覆盖。
+- `vnext-golden-decision-table.test.mjs`：把 FLT-001..020 的 kill/expected 文本逐行绑定到冻结测试方案 §12.2，禁止仅靠“20 行存在”冒充语义一致。
+- `vnext-t0-evidence.mjs`：为 reusable `vnext-t0.yml` 创建、严格验证和输出脱敏摘要。canonical evidence 绑定测试前后clean的tested/tree SHA、top-level caller与实际reusable job workflow身份、runner/toolchain、source tuple和五份exact file-set、非空零skip JUnit；PR与分支build只能是 `ADVISORY_ONLY`，仅GitHub标记为protected的main push可以是 `FORMAL`。command是否执行与真实exit code独立保存，source-integrity失败或未执行记`BLOCKED`，不会伪造成命令`FAIL`。只有独立validation step确认的静态目录会上传，随后下载同一immutable artifact再复验；命令失败时删除可能含诊断正文的JUnit并只记录`NOT_PRODUCED`，artifact 中不保存raw log、Prompt、答案或凭据。
 - `scripts/integration/`：CI 集成测试脚本。

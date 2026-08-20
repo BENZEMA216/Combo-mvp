@@ -1,0 +1,693 @@
+protocol: combo.vnext-decision-registry/1
+schemaVersion: 1
+decisions:
+  - id: ADR-VNEXT-001
+    title: Project staging mutation fails closed
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: Project 在 enumerate/open/read/close/restat 任一阶段改变时，当前发布尝试以 SNAPSHOT_SOURCE_CHANGED 终止；不得在同一 upload、Idempotency-Key 或 staging 目录上自动重试。Creator 必须重新 Preview，并以新请求创建完整一致的 staging。错误分类为 NOT_RETRYABLE，意思是原请求不可重放，不妨碍用户明确发起新发布。
+    alternatives:
+      - 自动重读变化文件直到稳定；拒绝，因为会混合时点且无法界定结束。
+      - 锁住或修改活 Project；拒绝，因为发布器承诺不改 Creator Project。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §8.4 TOCTOU barriers
+      - SNAPSHOT_SOURCE_CHANGED stable error classification
+    securityImpact: 防止恶意 rename/symlink race 把 Host canary 或新旧混合 bytes 装入 Snapshot；失败信息不得包含绝对路径或正文。
+    reversalTriggers:
+      - 引入可证明的一致 filesystem snapshot primitive，且通过同一 TOCTOU corpus。
+    protocolVersions: [combo.snapshot-manifest/1, combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-001.md
+
+  - id: ADR-VNEXT-002
+    title: Exact canonical archive implementation identity
+    status: accepted
+    owner: Protocol
+    decidedAt: 2026-08-13
+    decision: JSON 使用 combo-rfc8785-jcs/1；tar 使用受审自有 combo-ustar-pax/1，省略 directory entries，文件 mode 0444、uid/gid/mtime 为 0；压缩使用 Node zlib 链接的 zstd 1.5.7，level=9、checksum/content-size on、dictionary-id off、workers=0。任何实现或参数变化都是新协议身份并须重跑 golden bytes。
+    alternatives:
+      - 声称 tar-stream 版本；拒绝，因为实际 builder 没有使用该依赖。
+      - 只冻结 tar/zstd 格式不冻结实现参数；拒绝，因为不能复现 artifact bytes。
+    evidence:
+      - SnapshotManifest/1 runtime schema and golden fixture
+      - Track A deterministic custom packer/parser cross-contract test
+    securityImpact: 精确身份阻止实现漂移、歧义 parser 与假 deterministic；canonicalizer 对 sparse array、undefined、非有限数 fail closed。
+    reversalTriggers:
+      - Node 或 zstd 版本不可获得，或 custom parser 安全审查要求替换；必须升级 Snapshot protocol。
+    protocolVersions:
+      [combo-rfc8785-jcs/1, combo.snapshot-manifest/1, combo.agent-version-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-002.md
+
+  - id: ADR-VNEXT-003
+    title: Archive compression ratio and byte limits
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: Snapshot 同时执行 compressedBytes<=50MiB、expandedBytes<=200MiB、单文件<=10MiB、fileCount<=2000 和 expanded/compressed<=100。任何一项超限即在 VERIFIED 前拒绝；compressedBytes 必须大于 0，阈值按整数 bytes 比较，边界值允许，+1 拒绝。
+    alternatives:
+      - 只限制 expanded bytes；拒绝，因为异常压缩比仍会消耗 CPU/内存。
+      - 自适应或按 Creator 配额放宽；拒绝，因为 Alpha 需要统一可测试边界。
+    evidence:
+      - SnapshotManifest/1 constants and isCompressionRatioAllowed tests
+      - creator-hosted-agent-vnext-test-plan.md §8.2 and §8.3
+    securityImpact: 限制 zstd/tar bomb、资源 DoS 与 verifier tmpfs 膨胀；错误只返回稳定代码。
+    reversalTriggers:
+      - 真实 Alpha 数据显示合法项目持续超限，并完成容量、DoS 与成本复审。
+    protocolVersions: [combo.snapshot-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-003.md
+
+  - id: ADR-VNEXT-004
+    title: Snapshot path normalization and case collision
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: Wire path 必须是 UTF-8 NFC、相对路径、正斜杠、按 UTF-8 bytes 严格排序；NFC 后逐路径做 Unicode lowercase collision key，任何重复或 collision 整包拒绝，不做自动改名。禁止项按 lowercase 检查，包括 .git、.gitmodules、.env*、.ssh、.codex、.aws、node_modules、特殊路径和全部 C0/C1。
+    alternatives:
+      - 保留 NFD 或区分大小写冲突；拒绝，因为 macOS/Linux 恢复语义不一致。
+      - 自动重命名冲突项；拒绝，因为会改变 Creator 确认的 Context。
+    evidence:
+      - SnapshotPathSchema case-fold/control tests
+      - project-hostile-paths design fixture
+    securityImpact: 防 traversal、跨平台覆盖和危险配置目录泄漏；发布与解包必须复用同一 authoritative schema。
+    reversalTriggers:
+      - 采用 Unicode full case-fold 新版本并完成跨文件系统迁移/golden 审查。
+    protocolVersions: [combo.snapshot-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-004.md
+
+  - id: ADR-VNEXT-005
+    title: Grant revocation makes open conversations read only
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Consumer grant 撤销对新请求立即生效。已打开 Conversation 保留消费者读取自己已提交 transcript 的权利，但进入 SUSPENDED/read-only，禁止新 Message、Invocation 和 reconnect dispatch；在途 Invocation 按 ADR-VNEXT-014 安全撤销。撤销前已在云端 durable commit 的 terminal/final 可读，撤销后迟到 final 不发布。
+    alternatives:
+      - 已打开 Conversation 继续执行到关闭；拒绝，因为撤销不是新会话提示而是授权边界。
+      - 删除消费者历史；拒绝，因为会破坏用户可见事实和审计。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §18.1 auth matrix
+      - INV-017 tenant isolation
+    securityImpact: 消除旧 session/grant 继续花费 Creator quota 或读取 Context 的窗口，同时不伪造/删除已发生的用户事实。
+    reversalTriggers:
+      - 产品引入有时限的 offline grant token，且撤销 SLA、法律与费用模型另行评审。
+    protocolVersions: [combo.creator-agent-http/1, combo.invocation-state-machine/1]
+    document: docs/vnext/adr/ADR-VNEXT-005.md
+
+  - id: ADR-VNEXT-006
+    title: Conversation history limits close without truncation
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha 最多 20 个已接受用户 turn，visible history 是所有已持久化 USER/ASSISTANT 正文 UTF-8 bytes 之和，最大 65536。若新 USER 正文会使任一上限超出，在写 Message/Invocation/Outbox 前返回 CONVERSATION_CONTEXT_LIMIT，使 Conversation SUSPENDED/read-only并提示创建新 Conversation；不截断、不总结、不静默丢历史。
+    alternatives:
+      - 滑动窗口丢弃最旧消息；拒绝，因为改变多轮语义且无法向用户证明。
+      - 模型自动总结；拒绝，因为摘要不确定且会创建隐藏执行。
+    evidence:
+      - RuntimePolicy maxConversationTurns/maxVisibleHistoryBytes
+      - creator-hosted-agent-vnext-architecture.md §7.3-7.4
+    securityImpact: 在执行前限制 token/费用 DoS，且避免截断导致安全指令或授权上下文消失。
+    reversalTriggers:
+      - 有版本化、可见、可审计的 summarization contract 并通过语义/费用 Gate。
+    protocolVersions: [combo.agent-version-manifest/1, combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-006.md
+
+  - id: ADR-VNEXT-007
+    title: SSE cursor retention and transcript recovery
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: terminal PG transaction 必须原子写 ASSISTANT message、Invocation terminal/resultDigest、append-only invocation event、Conversation IDLE/SUSPENDED 和恰好一条独立 consumer_event_outbox；broker_outbox、Redis、进程内 event 均不能代替。outbox 冻结字段为 cursor bigint identity PK、owner/conversation/invocation/source_event、event_type、strict allowlist payload、payload_digest、dedupe_key、PENDING|PUBLISHED、attempt/retry/publish/retain timestamps，UNIQUE(owner_id,source_event_id) 与 UNIQUE(owner_id,dedupe_key)，tenant composite FK + FORCE RLS。event_type 统一为 invocation.terminal；source_event_id 是同一 PG transaction 插入的 append-only Invocation Event bigint id，不是 Worker/Broker 的自由文本 sourceEventId。payload 只含 protocol/schema/type、Conversation/Invocation ID、terminalState、assistantMessageId、resultDigest、errorCode、occurredAt，禁止正文、delta、Credential。consumer_event_streams 以 owner+conversation 为 PK，保存 latest_cursor 与 expired_through_cursor。普通事件从 createdAt 精确保留 7 天；prune 只删除按 cursor 排序的连续到期前缀，并在同 transaction 推进 expired watermark，绝不越过仍保留的较小 cursor。legal/security hold 进入独立审计保留层，不能延长或改写普通 wire outbox row。publisher 只在 PG commit 后 SKIP LOCKED并以 at-least-once投影 Redis/SSE；PUBLISHED 必须清空 nextAttemptAt。decimal Last-Event-ID 非零且 <=expired_through 时返回 410 SSE_CURSOR_EXPIRED，否则按 owner+conversation+cursor严格递增 replay。token delta 可丢且不作为完成事实；过期后客户端 GET 权威 transcript/terminal 再从 latest durable cursor 重开，绝不从 partial delta 拼 final。
+    alternatives:
+      - 永久保留所有 delta；拒绝，因为成本和敏感面不必要。
+      - cursor 过期后从 0 静默重放；拒绝，因为可能漏/重复并掩盖 retention。
+    evidence:
+      - OpenAPI SSE endpoint and SSE_CURSOR_EXPIRED error policy
+      - ConsumerEventOutboxRecordSchema golden binding and replay-watermark tests
+      - creator-hosted-agent-vnext-test-plan.md §10.3 terminal transaction
+      - creator-hosted-agent-vnext-test-plan.md §18.3
+    securityImpact: cursor 仍受 Conversation owner/RLS 检查；猜测 cursor 不得跨租户读取。
+    reversalTriggers:
+      - 产品需要合规审计长回放并为加密存储、删除和成本建立新策略。
+    protocolVersions: [combo.creator-agent-http/1, combo.consumer-event-outbox/1]
+    document: docs/vnext/adr/ADR-VNEXT-007.md
+
+  - id: ADR-VNEXT-008
+    title: Worker SQLite migration and corruption recovery
+    status: accepted
+    owner: Creator Worker
+    decidedAt: 2026-08-13
+    decision: Worker Journal 使用 WAL、synchronous=FULL、foreign_keys=ON 和 forward-only schema version。迁移前 fsync 加密备份，迁移在单事务完成并跑 integrity_check/foreign_key_check；失败恢复原备份并 BLOCKED，禁止 downgrade schema。检测 corruption 时隔离原 DB、停止 READY/dispatch，不得创建空库冒充首次启动；仅从已验证加密备份恢复。若 Cloud 保留已 dispatch 的 PERSISTED Invocation 而本地 Journal/Host dispatch 证据永久丢失，唯一合法路径是 PERSISTED --LOSE_EXECUTION_EVIDENCE--> RECONCILING，在 5 分钟有界对账耗尽后进入 UNCERTAIN；该路径 Host 新调用必须为 0，新安装不得接管或重跑旧 invocationId。
+    alternatives:
+      - corruption 后删除 DB 重建；拒绝，因为会把可能已执行的请求当未执行。
+      - 双向可逆 migration；拒绝，因为状态机语义回滚风险不可控。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §11.1 and §11.6
+      - INV-014 and INV-015
+    securityImpact: 防本地 journal 丢失导致重复推理、伪 terminal 或凭据混入备份；备份不含长期凭据。
+    reversalTriggers:
+      - 引入经验证的云端恢复协议，仍须保持 dispatch evidence 与 at-most-once 边界。
+    protocolVersions: [combo.worker-journal/1, combo.invocation-state-machine/1]
+    document: docs/vnext/adr/ADR-VNEXT-008.md
+
+  - id: ADR-VNEXT-009
+    title: Sandbox TTL rebuilds from visible transcript only
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: Sandbox 空闲 10 分钟销毁 VM、thread 和 scratch；下一条消息创建全新 Sandbox，只从固定 AgentVersion、BehaviorContract、只读 Snapshot 与云端消费者可见 transcript 重建。Alpha 不持久化 state volume，不恢复 hidden reasoning，也不声称与旧 thread 内部状态逐字等价。
+    alternatives:
+      - Conversation state volume 跨 VM 复用；拒绝，尚未证明隔离、清理和版本绑定。
+      - 永久在线 Sandbox；拒绝，资源与跨会话攻击面过大。
+    evidence:
+      - SandboxSpec/1 lifecycle schema
+      - creator-hosted-agent-vnext-architecture.md §7.4
+    securityImpact: 销毁后不保留消费者 scratch/hidden state；rebuild 仍须新 Attestation 与 active-instance binding。
+    reversalTriggers:
+      - 固定 Codex 提供版本化 resume artifact，且 state volume 通过 isolation/retention/backup Gate。
+    protocolVersions:
+      [combo.sandbox-spec/1, combo.sandbox-attestation/1, combo.agent-version-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-009.md
+
+  - id: ADR-VNEXT-010
+    title: Signed one-use model execution capability
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: Cloud 以注册 P-256 key 对 canonical unsigned ExecutionCapability 作 ES256 IEEE-P1363 签名；精确绑定 Capability/Invocation/Conversation/Deployment/Version/Worker/Lease/Fence/providerRequestId/requestDigest/model/effort/budget/notBefore/expiresAt/nonce。Proxy 先验签再绑定，durable use ledger 仅允许 UNUSED→DISPATCHED→DURABLE_RESULT 或 REVOKED；exact replay 只查询旧状态/结果，任何变化安全阻断，provider upstream count<=1。
+    alternatives:
+      - Caller 传入 capabilityValid boolean；拒绝，因为无法证明签名或字段绑定。
+      - 可重复 bearer token；拒绝，因为第二 turn 和预算重放不可控。
+    evidence:
+      - ExecutionCapabilitySchema, verifier and 100000-run use property model
+      - creator-hosted-agent-vnext-test-plan.md §9.4 and §16.2
+    securityImpact: capability 最坏权限仅为一个 Invocation 的一次限定模型预算；不可访问 Combo API、MinIO、任意 URL 或刷新自身。
+    reversalTriggers:
+      - 改用硬件签名或外部 capability service；必须保持 exact binding 和 durable one-use proof。
+    protocolVersions: [combo.execution-capability/1, combo.creator-broker/1]
+    document: docs/vnext/adr/ADR-VNEXT-010.md
+
+  - id: ADR-VNEXT-011
+    title: Snapshot envelope encryption format
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: 每个 Snapshot 用 CSPRNG 生成独立 256-bit DEK，archive 与 canonical manifest 共享该 DEK、各自使用唯一 96-bit CSPRNG nonce，严禁复用。两者均为 AES-256-GCM、16-byte tag、cipherBytes=plaintextBytes+36、cipherDigest覆盖完整对象；archive 使用 combo.snapshot-envelope/1 与 ASCII("CSNPENC1")，AAD 绑定 creatorId/snapshotDigest/archiveDigest/final objectKey/plaintextBytes/keyId；manifest 使用 combo.snapshot-manifest-envelope/1 与 ASCII("CSNPMAN1")，AAD 绑定 creatorId/snapshotDigest/final manifest objectKey/plaintextBytes/keyId。DEK 用 RFC3394 AES-256-KW 包裹，32-byte DEK 的 wrappedDek固定40 bytes；nonce/tag/wrappedDek使用canonical base64url。Worker 必须先完成两个加密对象，再以完整 Envelope、cipherBytes、cipherDigest和canonical base64 checksum创建upload session；云端一次返回两个绑定temp key、长度、checksum、If-None-Match和完整metadata的15分钟Signed PUT。Verifier先完整读取并认证两个temp对象并重算manifest/archive/snapshot digest；随后以If-None-Match写固定 preparation marker，冻结首个已验证的双Envelope、checksum、计数和selectedUploadId，再条件物化两个正式密文，完整读回验证后才以固定commit marker原子发布。Reader只以commit marker为可见性权威，preparation或单/双final存在但无commit时均不可见。preparation body是data-flow allowlist明确授权的私有wrapped-key Envelope控制元数据；wrappedDek/keyId不得进入S3 user metadata、URL、日志、浏览器、Gateway或模型输入，普通reader无unwrap authority。崩溃恢复优先重放所选temp；原temp丢失时，新上传必须先用自己的Envelope完成双AEAD、canonical manifest/archive/逐文件和全部明文身份验证，随后只允许用prepared DEK/nonce/AAD对同一明文做exact replay，并在PUT前匹配原tag/cipherDigest/cipherBytes/checksum；任何身份/AAD不一致都必须在复用旧nonce前拒绝。真实RFC3394/KMS、正式IAM/Object Lock、PG inventory和DR仍是独立未完成Gate，不得由本协议或测试key冒充。
+    alternatives:
+      - 仅 MinIO 磁盘加密；拒绝，因为对象/备份泄露可读。
+      - 复用一个长期 DEK；拒绝，因为 nonce 管理和爆炸半径不可接受。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §8.5 and §23.4
+      - ContextSnapshot envelope encryption architecture
+      - Snapshot publication crash failpoints on fake S3 and disposable real MinIO
+    securityImpact: bit flip、跨 Creator/Object swap、错误 KEK 均在解包前失败；commit marker消除双final的部分可见窗口，preparation保留经授权的wrapped key ciphertext以无删除恢复；旧DEK/nonce只允许相同AAD和明文的exact replay。KEK 与数据备份必须分故障域，hash link不替代正式IAM/Object Lock或外部签名。
+    reversalTriggers:
+      - 迁移云 KMS 原生 wrap 算法或 Creator-held key；必须发布新 envelope version 和迁移方案。
+    protocolVersions:
+      [
+        combo.creator-agent-http/1,
+        combo.snapshot-binary/1,
+        combo.snapshot-envelope/1,
+        combo.snapshot-manifest-binary/1,
+        combo.snapshot-manifest-envelope/1,
+        combo.snapshot-manifest/1,
+        combo.snapshot-object-storage/1,
+        combo.snapshot-publication-commit/1,
+        combo.snapshot-publication-preparation/1,
+      ]
+    document: docs/vnext/adr/ADR-VNEXT-011.md
+
+  - id: ADR-VNEXT-012
+    title: Evidence backup chat and snapshot retention
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: Chat 正文在线保留至 Conversation 最后活动后 30 天；Snapshot 在 serving/Conversation 引用期间保留，最后引用释放后再保留 30 天；Worker 已 CLOUD_COMMITTED terminal/outbox 保留 7 天。PG/MinIO 加密备份滚动保留 30 天，WAL 连续归档保留 7 天；Evidence Bundle 和脱敏审计 metadata 保留 90 天，Evidence Vault synthetic raw 最长 7 天。到期删除可验证，legal/security hold 必须单独审计和披露。
+    alternatives:
+      - 全部永久保留；拒绝，扩大隐私和密钥暴露面。
+      - terminal 后立即删除；拒绝，破坏恢复、对账和 Consumer transcript。
+    evidence:
+      - data-flow-allowlist/1
+      - creator-hosted-agent-vnext-test-plan.md §23 and §20.1
+    securityImpact: 正文始终 AEAD，备份删除延迟最多到 30 天滚动窗口；hold 不得成为无期限默认。
+    reversalTriggers:
+      - 法律辖区或正式付费产品改变保留义务；须更新用户披露与删除演练。
+    protocolVersions:
+      [combo.vnext-data-flow-allowlist/1, combo.vnext-evidence-bundle/1, combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-012.md
+
+  - id: ADR-VNEXT-013
+    title: Project code execution is forbidden
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: Alpha 把 Project 作为只读 Context，不执行任何 Project bytes。Guest 仅内置 read_context/list_context/search_context，绑定启动 root fd、Version 和 Conversation；shell、解释器、编译器、dynamic loader、external tool 与 Host Context Tool Broker 均关闭。复制到 scratch、memfd、execve/execveat/dlopen 也必须由机器策略拒绝。
+    alternatives:
+      - 依赖 Prompt 告诉模型不要执行；拒绝，Prompt 不是安全边界。
+      - Host 上执行只读命令；拒绝，会打开 Creator HOME/凭据边界。
+    evidence:
+      - AgentVersion RuntimePolicy and SandboxSpec/1 literals
+      - creator-hosted-agent-vnext-test-plan.md §15.5
+    securityImpact: 将公开 Agent 的能力固定为问答，不成为 RCE/供应链执行服务；失败不得回退 native runtime。
+    reversalTriggers:
+      - 新产品明确需要 Action，必须独立 capability、隔离、审批和协议立项，不能沿用本 Gate。
+    protocolVersions: [combo.agent-version-manifest/1, combo.sandbox-spec/1]
+    document: docs/vnext/adr/ADR-VNEXT-013.md
+
+  - id: ADR-VNEXT-014
+    title: Security revoke forces cancellation or uncertainty
+    status: accepted
+    owner: Cloud/Broker
+    decidedAt: 2026-08-13
+    decision: Security revoke 以云端 effectiveAt 为界，原子停止新 dispatch、撤销 Worker session/Lease/Execution Capability并要求 Sandbox 销毁。effectiveAt 前已云端提交的 terminal 不改；其余 Invocation 进入 CANCEL_REQUESTED。能证明未执行或 interrupt confirmed 才 CANCELLED；可能已 dispatch 但证据不足在 5 分钟内对账，仍不明则 UNCERTAIN。effectiveAt 后 final 永不发布且不转 SUCCEEDED。
+    alternatives:
+      - 等在途自然结束；拒绝，因为继续访问被撤销 Context/预算。
+      - 一律标 CANCELLED；拒绝，因为无法证明模型未执行。
+    evidence:
+      - Invocation state machine cancellation evidence rules
+      - creator-hosted-agent-vnext-test-plan.md §9.3 and FLT-014/015/016
+    securityImpact: 安全下线优先于可用性，同时保持终态事实不可篡改、不自动重跑。
+    reversalTriggers:
+      - Provider 提供可证明 atomic cancel-before-execute receipt，可缩短 UNCERTAIN 路径。
+    protocolVersions:
+      [combo.invocation-state-machine/1, combo.creator-broker/1, combo.execution-capability/1]
+    document: docs/vnext/adr/ADR-VNEXT-014.md
+
+  - id: ADR-VNEXT-015
+    title: Model quota exhaustion is degraded not online
+    status: accepted
+    owner: Cloud/Broker
+    decidedAt: 2026-08-13
+    decision: Worker 心跳正常但 Creator 模型 quota synthetic probe 失败时，desiredState 保持 ONLINE，observedState 变为 DEGRADED，lastErrorCode=MODEL_QUOTA_EXHAUSTED；Consumer 新消息在创建 Invocation/Outbox 前快速失败 503，已有 transcript 可读。连续一次受限 probe 成功且其他 readiness 全绿后自动回 ONLINE，不创建新 AgentVersion。
+    alternatives:
+      - 继续显示 ONLINE，直到每次 turn 失败；拒绝，产生 false-online 和费用困惑。
+      - 标记 Worker OFFLINE；拒绝，掩盖真正故障层且阻碍诊断。
+    evidence:
+      - DeploymentView observedState and stable error classification
+      - INV-020 readiness invariant
+    securityImpact: probe 使用最小固定预算、无用户正文且不泄漏凭据；quota 失败不得触发替代模型或降级 Runtime。
+    reversalTriggers:
+      - Provider 提供可信实时 quota API，可替换 synthetic probe但保持 DEGRADED 语义。
+    protocolVersions: [combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-015.md
+
+  - id: ADR-VNEXT-016
+    title: Exact reconciliation reclaim and capability deadlines
+    status: accepted
+    owner: Cloud/Broker
+    decidedAt: 2026-08-13
+    decision: 执行证据丢失时从首个 durable lost-evidence timestamp 起 300 秒内 reconcile，边界到达仍不明即 UNCERTAIN；孤儿 Sandbox/scratch/lease 立即回收并在 300 秒内完成或使 Deployment BLOCKED。Execution Capability expiresAt 不得晚于 Invocation deadlineAt+30秒，且 revoke 可更早失效；所有 deadline 用云端 UTC，测试覆盖前1ms、等于、后1ms。
+    alternatives:
+      - 无限期 reconcile；拒绝，会永久 stuck 且保留权限。
+      - Lease 过期立即把在途标失败；拒绝，会覆盖真实已执行事实。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §12.4 and §30.16
+      - Invocation reconciliation property rules
+    securityImpact: bounded capability 与资源寿命缩短重放窗口；超时不意味着可重跑。
+    reversalTriggers:
+      - 真实 provider/host receipt 能缩短窗口；延长必须重新评估费用和攻击面。
+    protocolVersions:
+      [combo.invocation-state-machine/1, combo.execution-capability/1, combo.creator-broker/1]
+    document: docs/vnext/adr/ADR-VNEXT-016.md
+
+  - id: ADR-VNEXT-017
+    title: Twenty four hour soak leak budget
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: Alpha RC 用同一 release tuple 和 max-alpha-load 连续运行 24 小时；前 30 分钟 warmup 不计 slope，每 10 秒采样，采样空洞>60秒 BLOCKED。warmup 后 Worker RSS 净增<=64MiB且线性 slope<=1MiB/hour，FD 净增<=8，tmp/outbox disk 净增<=64MiB；orphan Sandbox/scratch 数须在5分钟归零。重复 final、第二 provider attempt、false-online、跨租户泄漏必须为0；核心 p95 相对上个接受 RC 回退>20%即 BLOCKED。Evidence taxonomy 中 E7 专指同 release tuple 的 24h soak，E8 专指 off-machine PG/MinIO/KEK DR；两者都可在冻结的 T7-DR 实验环境执行，但不得以 E7 soak 替代 E8 异机恢复。
+    alternatives:
+      - 只跑 8 小时冒充 Alpha soak；拒绝，DoD 明确要求 24 小时。
+      - 只看最终 RSS；拒绝，隐藏中途峰值、重启和样本空洞。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §21, §25 and §31
+      - max-alpha-load fixture definition
+    securityImpact: 资源泄漏会触发保护模式而非通过自动重启掩盖；测试不得含真实用户数据。
+    reversalTriggers:
+      - 硬件规格或 Alpha load envelope 改变；新基线必须与旧 tuple 并行测量。
+    protocolVersions: [combo.vnext-evidence-bundle/1]
+    document: docs/vnext/adr/ADR-VNEXT-017.md
+
+  - id: ADR-VNEXT-018
+    title: Data flow encryption RLS and service roles
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: 字段落点以 data-flow-allowlist/1 为唯一真源。Snapshot archive Context对象的AAD精确绑定archiveDigest/cipherObjectFormat/creatorId/keyId/objectKey/plaintextBytes/protocol/schemaVersion/snapshotDigest；Snapshot生成早于AgentVersion，不得伪造agentVersionDigest绑定。Chat/Worker result 用 AES-256-GCM、随机唯一96-bit nonce和JCS AAD；云端 AAD 绑定 ownerId/conversationId/messageId/role/schemaVersion，本地再绑定 installationId/invocationId/agentVersionDigest。Broker 中 prompt/delta/final 也必须使用 worker-session AES-256-GCM，AAD 精确绑定 protocol/schemaVersion/envelopeType/messageId/conversationId/invocationId/workerSessionId/role/keyId，并分别重算 aadDigest 与 nonce/ciphertext/tag 的 cipherDigest；frame 禁止敏感明文。Worker 收到 prepare 后必须在同一 SQLite 事务将已认证 Prompt 从 session AEAD 转封装为 Worker-Keychain application AEAD，只能由受审 Host Adapter 凭一次性 dispatch permit 在内部解密，公开 API 不返回 Prompt 或密文；Host receipt 或 UNCERTAIN/CANCELLED 后立即删除并 checkpoint，不进入 backup。tenant/version key 90天轮换，旧 key仅在保留期 decrypt。PG 对全部tenant表启用 FORCE RLS并加复合owner FK；事务 SET LOCAL app.creator_id/app.consumer_id，缺失即 deny。runtime roles固定 combo_agent_api、combo_agent_broker、combo_agent_reconciler，均非owner/NOBYPASSRLS；combo_agent_migrator仅DDL，combo_agent_maintenance为NOLOGIN受审break-glass。
+    alternatives:
+      - 只靠 Repo owner filter；拒绝，漏一条 query 即跨租户。
+      - 单一 combo_app role；拒绝，不满足每服务最小权限和故障隔离。
+    evidence:
+      - data-flow-allowlist.yaml executable schema
+      - creator-hosted-agent-vnext-test-plan.md §10.4, §20.2 and §22.6
+    securityImpact: RLS 与复合 FK defense-in-depth；Broker/Reconciler 跨租户工作只经限权 view/SECURITY DEFINER claim 后逐租户 SET LOCAL，不能直接读正文。密钥不进模型、argv/env/log。
+    reversalTriggers:
+      - 数据库拆分为物理 per-tenant 或服务边界变化；必须保持等价隔离与迁移负向测试。
+    protocolVersions:
+      [combo.vnext-data-flow-allowlist/1, combo.message-envelope/1, combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-018.md
+
+  - id: ADR-VNEXT-019
+    title: Local Control API trusts the signed-in macOS user
+    status: accepted
+    owner: Creator Worker
+    decidedAt: 2026-08-13
+    decision: Alpha release Local Control 只监听 parent 0700、socket 0600 的 Unix domain socket；禁用 loopback HTTP。每次连接验证 socket inode/owner/device、peer uid和macOS audit token；状态变更生成短期 nonce并要求 Creator Console 前台确认后由安装 Device key签名，nonce一次性且60秒失效。威胁模型明确不防已控制同一macOS账号且能自动化用户界面的恶意进程；此边界必须在产品/证据中披露。
+    alternatives:
+      - 仅 Host/Origin loopback token；拒绝，不是正式本地身份边界。
+      - Alpha 即拆独立 OS user/XPC privileged service；暂缓，复杂度高且需单独安装/升级模型。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §17.2
+      - Creator Console confirmation architecture
+    securityImpact: 同 UID 进程不能仅凭 socket 请求静默 publish/online；长期 credential 和绝对路径不进入 argv/env/log。不能宣传防本机账号失陷。
+    reversalTriggers:
+      - 面向非受控 Creator 或要求抵抗同UID恶意进程时，升级独立OS user/XPC/code-signing ACL。
+    protocolVersions: [combo.local-control/1]
+    document: docs/vnext/adr/ADR-VNEXT-019.md
+
+  - id: ADR-VNEXT-020
+    title: Protection mode thresholds and recovery hysteresis
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: root free<35GiB告警；root<25GiB或<15%阻止新Snapshot。data>70%告警，>80%阻止新发布并只允许安全Reclaimer，>90%再拒绝新Conversation。available RAM<2GiB停止后台Job/rollout；swap持续增长或OOM停止扩大Alpha。backup age>1小时或最近恢复演练失败立即记RPO breach并阻止发布，2小时后已有Conversation只读且拒绝新Invocation。恢复须 root>=30GiB且>=20%、data<=75%、RAM>=3GiB、backup<=1小时、恢复演练PASS并连续稳定15分钟。
+    alternatives:
+      - 仅告警不自动阻断；拒绝，单节点资源耗尽会破坏权威数据。
+      - 阈值恢复即刻解除；拒绝，会在边界抖动。
+    evidence:
+      - creator-hosted-agent-vnext-test-plan.md §22.4
+      - creator-hosted-agent-vnext-architecture.md §17.5
+    securityImpact: Protection Mode 不修改 terminal、不删除被引用 Snapshot、不以清理掩盖备份失败；动作和恢复均写脱敏审计。
+    reversalTriggers:
+      - 节点/磁盘拓扑、备份 RPO 或容量模型变化，需真实阈值 probe 重新定标。
+    protocolVersions: [combo.creator-agent-http/1, combo.vnext-evidence-bundle/1]
+    document: docs/vnext/adr/ADR-VNEXT-020.md
+
+  - id: ADR-VNEXT-021
+    architectureDecisionId: D001
+    architectureDecisionSummary: 推理运行在 Creator Codex，Combo 不运行 Creator Runtime
+    title: 推理运行在 Creator Codex，Combo 不运行 Creator Runtime
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: 消费者消息由 Combo Broker 转发到 Creator Mac；Creator Worker 在每个 Conversation 独占的隔离环境中运行固定 Codex app-server，真正的模型推理由 OpenAI 模型服务完成。Combo 云负责身份、AgentVersion、Snapshot、Broker、Journal 和聊天记录，不运行 Creator 的 Codex Runtime。
+    alternatives:
+      - Combo 自建云端 Creator Runtime；拒绝，因为本版本产品定义是 Creator-hosted，Cloud K3s Sandbox 明确不采用。
+      - 把 Creator Worker 绑定在某个 Codex 对话内；拒绝，因为 Worker 是独立本地守护进程。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §0.1-0.4
+      - creator-hosted-agent-vnext-architecture.md §3
+    securityImpact: Creator Mac 不开放公网入站；Combo 云不能被描述成 Creator Runtime，Creator-hosted 也不等于 24×7 托管服务。
+    reversalTriggers:
+      - 产品明确转向 managed runtime 时，重新评审运行位置、凭据、隔离、费用和 SLA，不能沿用本 ADR 宣称等价。
+    protocolVersions: [combo.agent-version-manifest/1, combo.creator-broker/1, combo.sandbox-spec/1]
+    document: docs/vnext/adr/ADR-VNEXT-021.md
+
+  - id: ADR-VNEXT-022
+    architectureDecisionId: D002
+    architectureDecisionSummary: 云端保存 Creator 明确确认的不可变 Snapshot
+    title: 云端保存 Creator 明确确认的不可变 Snapshot
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: Creator 先预览文件数量、大小、阻断项和公开边界并明确确认；Worker 从一致 staging 生成 deterministic manifest/archive 和 digest，经私有加密对象上传及云端重新校验后形成不可覆盖的 Snapshot。只有 VERIFIED Snapshot 能创建不可变 AgentVersion，活 Project 后续变化不改变旧版本。
+    alternatives:
+      - 运行时直接读取 Creator 活 Project；拒绝，因为会产生版本漂移和扫描/运行 TOCTOU。
+      - 让 Codex 充当 Context 长期存储；拒绝，因为 Context、Runtime 和 Model 必须分离。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §3.1
+      - creator-hosted-agent-vnext-architecture.md §5.1-5.5
+      - creator-hosted-agent-vnext-architecture.md §14.1
+    securityImpact: Snapshot 不可覆盖、按 digest 校验并限制路径、类型和大小；Creator 必须看见 Context 会上传 Combo 云且内容可能出现在回答中。
+    reversalTriggers:
+      - 若不再由云端保存权威 Snapshot，必须重新证明不可变身份、恢复、回滚和运行时不读取活 Project。
+    protocolVersions:
+      [combo.snapshot-manifest/1, combo.snapshot-envelope/1, combo.agent-version-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-022.md
+
+  - id: ADR-VNEXT-023
+    architectureDecisionId: D003
+    architectureDecisionSummary: Alpha 中 Combo 可解密 Context 和聊天正文；明示且限制保留
+    title: Alpha 中 Combo 可解密 Context 和聊天正文；明示且限制保留
+    status: accepted
+    owner: Security/SRE
+    decidedAt: 2026-08-13
+    decision: Alpha 使用 Combo 管理的 envelope encryption；这能防普通磁盘、对象和备份泄露，但不能防 Combo 特权运维读取 Context。Consumer 聊天正文默认保留 30 天，日志禁止记录 Prompt、答案、Project 正文、Signed URL、Token、绝对路径、Host stderr 和隐藏 reasoning；产品必须明示模型服务仍会收到回答所需 Context。
+    alternatives:
+      - 把当前方案描述成零知识或端到端加密；拒绝，因为 Alpha 的 Combo 管理密钥允许特权运维解密。
+      - Alpha 使用 Creator-held Context key；后置，因为设备迁移和恢复协议尚未设计。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §5.6
+      - creator-hosted-agent-vnext-architecture.md §16.5-16.6
+      - creator-hosted-agent-vnext-architecture.md §22.1
+    securityImpact: 明确 Combo 的隐私责任、正文保留和删除边界；不得以磁盘加密扩大为 Combo 无法读取，也不得把正文写入普通日志。
+    reversalTriggers:
+      - 未来承诺 Combo 看不到 Context 时，必须另做 Creator-held key、设备迁移和恢复协议。
+    protocolVersions:
+      [combo.snapshot-envelope/1, combo.message-envelope/1, combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-023.md
+
+  - id: ADR-VNEXT-024
+    architectureDecisionId: D004
+    architectureDecisionSummary: External Alpha 要求每 Conversation OS/VM 隔离
+    title: External Alpha 要求每 Conversation OS/VM 隔离
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: 每个 AgentVersion 共享不可变 Context image；每个 Conversation 独占 Sandbox、Codex thread、scratch 和 tmp，实例只在活跃期存在。Sandbox 不得挂载 Creator HOME、活 Project、其他 Project、长期凭据或其他 Conversation state；External Alpha 禁止 Native macOS 运行路径。
+    alternatives:
+      - 每 Agent 共享 VM；拒绝，因为不同消费者会共享进程、scratch 和潜在残留。
+      - 每 Turn 新 VM；拒绝，因为会破坏多轮并增加冷启动和恢复复杂度。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §2.2
+      - creator-hosted-agent-vnext-architecture.md §7.1-7.5
+      - creator-hosted-agent-vnext-architecture.md §22.2
+    securityImpact: OS/VM 边界强制阻断 Prompt 读取 Snapshot 外的 Creator 文件、长期凭据和其他会话；软件 Attestation 不能被描述成硬件远程证明。
+    reversalTriggers:
+      - 替换 Sandbox adapter 前必须通过同一真实 Isolation Gate；安全 Gate 失败不得回退 Native unisolated Runtime。
+    protocolVersions: [combo.sandbox-spec/1, combo.sandbox-attestation/1]
+    document: docs/vnext/adr/ADR-VNEXT-024.md
+
+  - id: ADR-VNEXT-025
+    architectureDecisionId: D005
+    architectureDecisionSummary: 采用至少一次传输、幂等、Fence、UNCERTAIN，不宣称 exactly once
+    title: 采用至少一次传输、幂等、Fence、UNCERTAIN，不宣称 exactly once
+    status: accepted
+    owner: Protocol
+    decidedAt: 2026-08-13
+    decision: Codex dispatch 前采用 at-least-once delivery 和幂等处理；dispatch 后只允许 at-most-once automatic execution。Lease/Fence 阻断 stale Worker；无法证明是否越过 dispatch 或无法确认终态时进入 UNCERTAIN，不自动二次执行。Codex/模型 Provider 未证明按平台 idempotency key 去重，因此不宣称 exactly-once inference。
+    alternatives:
+      - 宣称 exactly-once inference；拒绝，因为 Host/Provider 没有可验证的端到端去重保证。
+      - 将超时或断线直接视为可重试失败；拒绝，因为可能覆盖已经发生的真实执行和费用。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §2.4
+      - creator-hosted-agent-vnext-architecture.md §11.5
+      - creator-hosted-agent-vnext-architecture.md §12.1-12.7
+    securityImpact: 幂等、Lease/Fence 和两本 Durable Journal 限制重放与 stale 写入；UNCERTAIN 防止故障恢复导致重复推理、重复 final 和重复收费。
+    reversalTriggers:
+      - 只有 Codex 与模型 Provider 提供可验证的端到端 idempotency receipt 后，才可重新评审 exactly-once 表述。
+    protocolVersions:
+      [combo.invocation-state-machine/1, combo.creator-broker/1, combo.worker-journal/1]
+    document: docs/vnext/adr/ADR-VNEXT-025.md
+
+  - id: ADR-VNEXT-026
+    architectureDecisionId: D006
+    architectureDecisionSummary: Alpha 模型额度由 Creator 承担
+    title: Alpha 模型额度由 Creator 承担
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha 的真实模型调用使用 Creator 的 OpenAI/Codex 凭据与额度；发布 Preview 必须明确展示该费用边界。邀请、配额、WIP、速率限制和一次性 Execution Capability 用于限制滥用；本版本不提供精细计费或 Marketplace。
+    alternatives:
+      - Alpha 由 Combo 提供模型额度和精细计费；后置，因为精细计费和 Marketplace 明确不在本版本范围。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §14.1
+      - creator-hosted-agent-vnext-architecture.md §20.3
+      - creator-hosted-agent-vnext-architecture.md §22.1 and §24
+    securityImpact: Creator 模型额度是主要资产；Capability、邀请、限流和 WIP 必须防止消费者或重放路径产生未授权费用。
+    reversalTriggers:
+      - Creator 不接受承担模型额度和机器在线成本时触发 Product Kill/Pivot；新的付费方或计费模型须另行决策。
+    protocolVersions: [combo.execution-capability/1, combo.agent-version-manifest/1]
+    document: docs/vnext/adr/ADR-VNEXT-026.md
+
+  - id: ADR-VNEXT-027
+    architectureDecisionId: D007
+    architectureDecisionSummary: Codex Runtime、artifact 和 schema exact pin
+    title: Codex Runtime、artifact 和 schema exact pin
+    status: accepted
+    owner: Protocol
+    decidedAt: 2026-08-13
+    decision: AgentVersion 身份包含 Codex Runtime artifact digest 和 app-server schema digest；每个受支持的 Codex、image 和 Sandbox adapter 使用精确版本及 digest，并通过真实 app-server conformance、三轮多轮、interrupt、Proxy、隔离和资源证据后才能进入 Runtime RC。缺登录、版本不符或安全 probe 失败均为 BLOCKED。
+    alternatives:
+      - 自动兼容任意 Codex 版本；拒绝，因为任意版本自动兼容是 Alpha 非目标，experimental protocol 升级可能破坏契约。
+      - 只固定版本字符串而不固定 artifact/schema digest；拒绝，因为不能阻断供应链替换和 schema 漂移。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §4.1
+      - creator-hosted-agent-vnext-architecture.md §7.6-7.7
+      - creator-hosted-agent-vnext-architecture.md §19.4 and §21.1
+    securityImpact: exact digest、SBOM、签名和 allowlist 限制 Runtime 供应链替换；未验证版本不得被 skip 或 fallback 冒充通过。
+    reversalTriggers:
+      - Codex 提供新的正式稳定接口时可以升级协议，但仍须形成新 pin 并重跑 conformance 与 Isolation Gate。
+    protocolVersions:
+      [combo.agent-version-manifest/1, combo.sandbox-attestation/1, combo.creator-broker/1]
+    document: docs/vnext/adr/ADR-VNEXT-027.md
+
+  - id: ADR-VNEXT-028
+    architectureDecisionId: D008
+    architectureDecisionSummary: Worker offline 时快速失败；online busy 时 bounded queue
+    title: Worker offline 时快速失败；online busy 时 bounded queue
+    status: accepted
+    owner: Cloud/Broker
+    decidedAt: 2026-08-13
+    decision: Worker 离线时不接受新队列，直接向消费者返回 Agent offline。Worker online 且 busy 时使用有界队列：Deployment 最多 10 个 queued Invocation、每 Consumer 最多 1 个、Conversation 内 WIP=1、Queue TTL 120 秒，并按 Conversation round-robin；到期在 dispatch 前进入 EXPIRED。
+    alternatives:
+      - Worker 离线时继续积压请求；拒绝，因为 Creator-hosted Alpha 不承诺 24×7 且必须准确显示 offline。
+      - online busy 时使用无界队列；拒绝，因为会扩大费用、等待时间和资源 DoS。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §12.8
+      - creator-hosted-agent-vnext-architecture.md §15.2
+      - creator-hosted-agent-vnext-architecture.md §18.4
+    securityImpact: 有界 queue、TTL、WIP 和公平调度限制资源/费用 DoS；offline 不能显示假在线或在无 Worker 时积压隐藏工作。
+    reversalTriggers:
+      - 转向 managed runtime、多 Creator 自动调度或新的容量模型时，重新冻结 presence、queue 和费用边界。
+    protocolVersions: [combo.creator-agent-http/1, combo.invocation-state-machine/1]
+    document: docs/vnext/adr/ADR-VNEXT-028.md
+
+  - id: ADR-VNEXT-029
+    architectureDecisionId: D009
+    architectureDecisionSummary: Model 和 reasoning effort 固定在 AgentVersion
+    title: Model 和 reasoning effort 固定在 AgentVersion
+    status: accepted
+    owner: Snapshot/Version
+    decidedAt: 2026-08-13
+    decision: ModelPolicy 是 AgentVersion 的不可变组成，model 和 reasoning effort 均 pinned-by-version，并与 RuntimePolicy 的 resolvedModel/reasoningEffort 一致。模型或 effort 任一变化都会改变 versionDigest 并创建新 AgentVersion；Deployment 更新只影响新 Conversation。
+    alternatives:
+      - 在不创建新 Version 的情况下动态切换 model 或 effort；拒绝，因为会改变费用和推理语义却保留旧执行身份。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §0.3
+      - creator-hosted-agent-vnext-architecture.md §4.1-4.3
+      - creator-hosted-agent-vnext-architecture.md §15.3
+    securityImpact: 固定 model/effort 防止静默模型替换、费用漂移和同一 Version 下不可审计的语义变化；Capability 仍须绑定同一模型与预算。
+    reversalTriggers:
+      - 若产品引入动态模型路由，必须定义新的版本身份、消费者披露、费用和可复现性契约。
+    protocolVersions: [combo.agent-version-manifest/1, combo.execution-capability/1]
+    document: docs/vnext/adr/ADR-VNEXT-029.md
+
+  - id: ADR-VNEXT-030
+    architectureDecisionId: D010
+    architectureDecisionSummary: Consumer 必须登录且受邀
+    title: Consumer 必须登录且受邀
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha Consumer 必须登录 Combo，并被 Creator 邀请或拥有 Agent access grant；只能读取自己的 Conversation。分享 URL slug 只定位 Agent，不是授权凭证；账号、IP、Agent 和 Conversation 四层限流与 WIP=1 同时执行。
+    alternatives:
+      - 匿名无限公开聊天；拒绝，因为它是 Alpha 明确非目标且会扩大授权、费用与滥用风险。
+      - 把分享 slug 当作 bearer credential；拒绝，因为定位符不能替代登录、grant 和 owner authorization。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §1.2-1.3
+      - creator-hosted-agent-vnext-architecture.md §13.4
+      - creator-hosted-agent-vnext-architecture.md §15.4
+    securityImpact: 登录、grant、owner authorization 和限流共同防止未授权读取、跨 Consumer 访问及 Creator 额度滥用；slug 泄漏不授予访问权。
+    reversalTriggers:
+      - 支持匿名公开访问前必须新增长期滥用、费用、隐私、内容安全和授权 Gate。
+    protocolVersions: [combo.creator-agent-http/1]
+    document: docs/vnext/adr/ADR-VNEXT-030.md
+
+  - id: ADR-VNEXT-031
+    architectureDecisionId: D011
+    architectureDecisionSummary: Alpha 仅 text-in/text-out、无外部 Action
+    title: Alpha 仅 text-in/text-out、无外部 Action
+    status: accepted
+    owner: Product/Web
+    decidedAt: 2026-08-13
+    decision: Alpha IOContract 只允许 UTF-8 text input/output，files=false、actions=false、rawReasoning=false；RuntimePolicy 禁用 external tools、Project execution、任意网络和 Host credentials。Guest 仅有闭世界 read_context/list_context/search_context，只读 Snapshot 且不执行 Project bytes。
+    alternatives:
+      - 支持文件、多模态、外部写操作或第三方工具；后置，因为这些能力明确不在 Alpha 范围且需要新的权限与安全协议。
+      - 提供通用 shell、解释器或任意 exec；拒绝，因为 Project bytes 必须 noexec 且安全不能依赖 Prompt。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §1.3
+      - creator-hosted-agent-vnext-architecture.md §4.3-4.4
+      - creator-hosted-agent-vnext-architecture.md §7.8 and §23.2
+    securityImpact: text-only 和无 Action 限制 Prompt 注入造成外部副作用；闭世界 Context Reader、noexec 和 model-proxy-only 缩小文件与网络能力。
+    reversalTriggers:
+      - 引入文件、多模态、外部工具或写操作前，必须新增独立 capability、数据流、授权、审计和安全 Gate。
+    protocolVersions:
+      [combo.agent-version-manifest/1, combo.creator-agent-http/1, combo.sandbox-spec/1]
+    document: docs/vnext/adr/ADR-VNEXT-031.md
+
+  - id: ADR-VNEXT-032
+    architectureDecisionId: D012
+    architectureDecisionSummary: Apple Container 为首选候选，Lima/VZ 为备选；均需 Gate
+    title: Apple Container 为首选候选，Lima/VZ 为备选；均需 Gate
+    status: accepted
+    owner: Runtime/Sandbox
+    decidedAt: 2026-08-13
+    decision: External Alpha 首选候选是精确 pin 的 Apple container；Lima/VZ 是 Linux Codex 兼容性和独立 VM 备选，并必须关闭默认 mounts/forwarding。Spike A 验证 Linux arm64 Codex 可运行，Spike B 验证 Apple Container 隔离；任一支持组合都必须通过真实 Runtime 与 Isolation Gate，失败不得回退 Native macOS。
+    alternatives:
+      - Colima 或 Docker；仅用于 trusted internal prototype，不能作为 External Alpha 隔离证明。
+      - 自研 Virtualization.framework VMM；只有 Apple Container 失败且确有必要时再投资。
+      - Native macOS Runtime；外部消费者路径禁止。
+    evidence:
+      - creator-hosted-agent-vnext-architecture.md §0.3
+      - creator-hosted-agent-vnext-architecture.md §7.6-7.7
+      - creator-hosted-agent-vnext-architecture.md §19.4 and §22.2
+    securityImpact: adapter 名称不等于隔离证据；必须真实验证 Host mount、Credential、网络、跨会话和资源边界，Apple container 1.0 前还必须 exact pin。
+    reversalTriggers:
+      - Apple Container Gate 失败时只能评估已冻结的 Lima/VZ 备选；若候选均未通过，External Alpha 不上线而不是回退 Native。
+    protocolVersions: [combo.sandbox-spec/1, combo.sandbox-attestation/1]
+    document: docs/vnext/adr/ADR-VNEXT-032.md
+
+  - id: ADR-VNEXT-033
+    title: Client idempotency identity uses canonical UUIDv4
+    status: accepted
+    owner: Protocol
+    decidedAt: 2026-08-18
+    decision: Public Creator/Consumer HTTP 的九个 Idempotency-Key、send clientMessageId 与 retry clientMessageId 共用独立 ClientIdempotencyKeySchema，只接受36字符 canonical lowercase RFC 9562 UUIDv4；服务端 ID 继续使用 UUIDv7。send/retry 的 header 与 body alias 必须逐字相同。客户端对一次逻辑操作只生成并持久化一个 key，HTTP timeout、断网、double-submit 与 transport retry 必须复用；用户显式创建新消息或获准 Retry 时生成新的 UUIDv4，并另以 retryOfInvocationId 关联旧 Invocation。Key 是 opaque dedupe input，不是 credential、时间、排序或授权材料；唯一性按 authenticated principal 加 operation/resource scope 建立，并与 requestDigest 绑定，同 key 不同 digest fail closed。持久层可保留 bounded text/uuid 兼容形态以 exact replay 已有 Test-only legacy 行，但只有 replay 查询命中后可返回旧事实，fresh admission 必须通过 UUIDv4；public API 不暴露 legacy 例外。PostgreSQL uuid 类型会在 trigger 前规范化文本，因此 Conversation DB trigger只证明版本位，canonical lowercase由HTTP parser证明；Message text authority同时证明版本与canonical形式。日志只记录域分离hash，key不进入模型输入。
+    alternatives:
+      - UUIDv7 only；拒绝，因为浏览器没有原生生成接口，客户端时钟与排序不具权威性，并会把服务端 ID 语义错误带入 dedupe input。
+      - UUIDv4 或 UUIDv7；拒绝，因为只为现有 Test fixture 扩大永久 public 验证面，并保留不可使用的时间排序暗示。
+      - Generic UUID 或任意字符串；拒绝，因为会接受无关版本、大小写别名和不一致 validator 语义，无法形成 exact contract。
+    evidence:
+      - http-idempotency-key-boundaries.v1.json runtime JSON Schema and OpenAPI parity
+      - Nine OpenAPI headers share one component; send/retry aliases publish equivalent constraints and binding extensions
+      - 0022 fresh UUIDv4 and legacy replay-only PostgreSQL tests
+      - Browser timeout double-submit and offline retry key-reuse tests remain required with the future send/retry routes
+    securityImpact: UUIDv4 提供122位 CSPRNG 随机空间；碰撞或恶意复用只能命中同 scope 的 replay/conflict，不能覆盖旧 requestDigest、绕过 RLS/tenant FK、创建第二次推理或充当授权。Canonical lowercase 格式消除文本别名；key hash 仍不替代 AEAD、鉴权或 Execution Capability。
+    reversalTriggers:
+      - 新 public protocol version 提供迁移与兼容证据，并证明另一种 client identity 在真实规模下有必要且不会被用于排序或授权。
+      - 浏览器原生能力变化本身不足以反转；必须同时通过 runtime OpenAPI DB Broker Worker 和产品重试 Gate。
+    protocolVersions: [combo.creator-agent-http/1, combo.creator-broker/1]
+    document: docs/vnext/adr/ADR-VNEXT-033.md
+
+  - id: ADR-VNEXT-034
+    title: Public protocol resource limits require an exact closure ledger
+    status: accepted
+    owner: Protocol/Security
+    decidedAt: 2026-08-18
+    decision: 所有进入 ContractSchemaDefinitions、Broker contract、OpenAPI 或公开 raw parser 的长度、计数、properties、数值资源和 bytes cap 必须登记在 digest-bound public-boundary closure ledger；source AST、实际Zod row、全部生成artifact physical constraint与ledger row必须exact闭合，unknown、unclassified、implementation remaining和unreachable均为零后，SCH-004方可标记implemented。每个row必须绑定authority、实际runtime root/parser或已执行N-1/N/N+1的精确委托测试，fragment AJV只能证明advertised keyword，不能替代root refine、raw bytes、签名、transport或storage。当前repository closure满足implementation条件；正式T0 Linux仍以NOT_RUN单列，未绑定clean source SHA和workflow run前不得写Gate PASS。既有ADR-VNEXT-003/006/010/011的Snapshot、Conversation与Capability语义不变；本ADR额外冻结AgentVersion developerInstructions<=32，Evidence cloudImageDigests/runtimeVersions各<=64 properties，Broker frame<=65536 bytes，Evidence structured JSON<=1048576 bytes，Snapshot mediaType<=128 bytes、可达canonical manifest语义maximum=2536575 bytes、encrypted/raw defense maximum=4194304 bytes，Broker registration artifact/digest/mode counts<=8/8/2，Execution Capability input/output/cost预算<=200000/32768/100000000，Consumer transcript messages<=40、outbox attemptCount<=1000000，以及Evidence/Registry当前公开array/numeric limits。Registry YAML public alias expansion maximum为1000；yaml library使用strict threshold，因此内部maxAliasCount=1001仅是适配细节，不能冒充产品上限。Snapshot preparation marker使用由全字段合法最大值经RFC 8785 JCS得到的可达2992-byte maximum，2991/2992接受、2993在JSON parse前拒绝；commit marker所有字段均固定宽度或exact-derived，合法canonical bytes固定为456，455/457按exact length拒绝，不伪造padding、unknown key或whitespace。所有record property cap必须同时进入runtime与公开JSON Schema maxProperties。
+    alternatives:
+      - 只维护若干 boundary fixture；拒绝，因为 fixture 存在不能证明没有第十五类遗漏 owner。
+      - 只扫描生成 JSON Schema 或只用 fragment AJV；拒绝，因为 Zod refine、raw-byte cap、签名与跨字段语义不可见。
+      - publication preparation/commit 共用任意16KiB cap；拒绝，因为该值不是可达 exact boundary，commit也不是 variable maximum。
+      - Evidence map 保持无界；拒绝，因为攻击者可在单个合法对象内制造不受控 properties 和 canonicalization 成本。
+    evidence:
+      - public-boundary-closure.v1.json implemented zero-remaining source/artifact/manual-cap ledger
+      - public-boundary-row-probes.test.ts and public-string-pattern-census.test.ts actual per-row runtime probes
+      - public-source-ast-census.test.ts physical source census and exact owner reconciliation
+      - publication-marker-byte-boundaries.test.ts real canonical parser probes
+      - manifest-canonical-byte-maximum.test.ts reachable semantic and encrypted raw-defense probes
+      - Evidence cloudImageDigests and runtimeVersions maxProperties runtime and contract probes
+      - creator-hosted-agent-vnext-test-plan.md §6.1 SCH-004
+    securityImpact: fail-closed census阻止新增或漂移的公开资源上限绕过G0；bounded maps/raw bytes降低解析、canonicalization和内存DoS；实际root/parser验证避免局部Schema绿色却在运行路径失效。Ledger不证明SNP-008真实50MiB archive、TLS/WSS、对象存储、数据库或Production。
+    reversalTriggers:
+      - 任一上限调整必须新增协议/迁移与成本、DoS、兼容证据，并重新生成全量closure ledger。
+      - public root、Schema generator或raw ingress机制变化时，必须先使source/artifact/ledger exact set重新归零。
+    protocolVersions:
+      [
+        combo.agent-version-manifest/1,
+        combo.creator-agent-http/1,
+        combo.creator-broker/1,
+        combo.vnext-evidence-bundle/1,
+        combo.snapshot-publication-preparation/1,
+        combo.snapshot-publication-commit/1,
+      ]
+    document: docs/vnext/adr/ADR-VNEXT-034.md

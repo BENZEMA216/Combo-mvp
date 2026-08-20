@@ -1,7 +1,7 @@
 // 路由注册自检 + session 端点 owner 守卫（非本人与不存在同样 404，不暴露存在性）。
 import { describe, expect, it, vi } from 'vitest';
 import type { FastifyReply, FastifyRequest, RouteHandlerMethod } from 'fastify';
-import { ALL_ENDPOINTS } from '../bootstrap/routes.js';
+import { ALL_ENDPOINTS, ALWAYS_ENABLED_ENDPOINTS } from '../bootstrap/routes.js';
 import {
   archiveSessionHandler,
   createSessionHandler,
@@ -72,8 +72,19 @@ async function createDirectArtifactTool(input: {
 }
 
 describe('route registry self-check', () => {
-  it('registers exactly 11 endpoints (capability 1 + session 9 + artifact 1)', () => {
-    expect(ALL_ENDPOINTS).toHaveLength(11);
+  it('declares 11 always-on endpoints plus five separately gated VNext endpoints', () => {
+    expect(ALL_ENDPOINTS).toHaveLength(16);
+    expect(ALWAYS_ENABLED_ENDPOINTS).toHaveLength(11);
+    expect(ALL_ENDPOINTS.map(({ method, url }) => `${String(method)} ${url}`)).toEqual(
+      expect.arrayContaining([
+        'POST /v1/public/agents/:slug/conversations',
+        'POST /v1/conversations/:conversationId/messages',
+        'GET /v1/conversations/:conversationId',
+        'GET /v1/conversations/:conversationId/events',
+        'GET /v1/invocations/:invocationId',
+      ]),
+    );
+    expect(ALL_ENDPOINTS.some(({ url }) => /cancel|retry/u.test(url))).toBe(false);
   });
 
   it('no duplicate (method,url) pairs', () => {

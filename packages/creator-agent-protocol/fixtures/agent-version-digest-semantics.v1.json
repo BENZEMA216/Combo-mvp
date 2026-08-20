@@ -1,0 +1,163 @@
+{
+  "protocol": "combo.agent-version-digest-semantics/1",
+  "schemaVersion": 1,
+  "scope": "agent-version-canonical-identity-semantics",
+  "evidenceClass": "production-builder",
+  "authority": {
+    "testPlanCases": ["AVR-001", "AVR-003", "AVR-004", "AVR-006"],
+    "technicalPlanSection": "技术方案 §4.1 AgentVersion 组成",
+    "testPlanSection": "测试方案 §7.1 AgentVersion Digest",
+    "decisionRegistryIds": ["ADR-VNEXT-002", "ADR-VNEXT-027", "ADR-VNEXT-029"]
+  },
+  "baseFixture": {
+    "path": "agent-version-manifest.v1.json",
+    "bytes": 1955,
+    "sha256": "63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
+  },
+  "materializations": [
+    {
+      "id": "fixture-pretty",
+      "derivation": "base-fixture-bytes",
+      "bytes": 1955,
+      "sha256": "63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
+    },
+    {
+      "id": "compact",
+      "derivation": "JSON.stringify(parsed-base)",
+      "bytes": 1597,
+      "sha256": "22bd988f7d0b67b165587be434f7e423a2ace34667ca95df9def0c9f5c287c56"
+    },
+    {
+      "id": "recursive-reverse-pretty",
+      "derivation": "recursively-reverse-object-keys-then-JSON.stringify-space-2-plus-LF",
+      "bytes": 1979,
+      "sha256": "18fa4c53245c76e3adf519475d2a03f05bad1ece5955f4838f2cb398828f70ee"
+    }
+  ],
+  "baseExpected": {
+    "manifestBytes": 1597,
+    "manifestSha256": "46f72e788393da88dff3fc627f8feaf17b36da3a7a6bd68bb518e3f3966e120f",
+    "behaviorContractDigest": "cda357046f6f2ad4bbd4d30b2bb69d6990ed3e7beb9f34475a11b7b7943f4531",
+    "runtimePolicyDigest": "58c6b6a89d7952c53a61f60a2705d2e1e5169e98f5dc828e69b3bffa088837d3",
+    "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+    "derivedCodexRuntimeDigest": "5ed2948a6779df3a8f47f3d92c04115e9819f6cf8c0fdc690860327744752c07",
+    "modelPolicyDigest": "fd2ee46699abde63ed9815e74d8cad11f0b35bebd4e963afba13f790e7dac860",
+    "versionDigest": "46f72e788393da88dff3fc627f8feaf17b36da3a7a6bd68bb518e3f3966e120f"
+  },
+  "mutations": [
+    {
+      "id": "snapshot-digest-one-byte",
+      "testPlanCase": "AVR-003",
+      "path": "/snapshotDigest",
+      "operation": "replace-last-ascii-byte",
+      "from": "a",
+      "to": "d",
+      "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaad",
+      "expected": {
+        "manifestBytes": 1597,
+        "manifestSha256": "de0435c0d34bb5d67c2301a7704ee5d6651db3e2afe2c62d6fa89eec1a44c454",
+        "behaviorContractDigest": "cda357046f6f2ad4bbd4d30b2bb69d6990ed3e7beb9f34475a11b7b7943f4531",
+        "runtimePolicyDigest": "58c6b6a89d7952c53a61f60a2705d2e1e5169e98f5dc828e69b3bffa088837d3",
+        "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+        "derivedCodexRuntimeDigest": "5ed2948a6779df3a8f47f3d92c04115e9819f6cf8c0fdc690860327744752c07",
+        "modelPolicyDigest": "fd2ee46699abde63ed9815e74d8cad11f0b35bebd4e963afba13f790e7dac860",
+        "versionDigest": "de0435c0d34bb5d67c2301a7704ee5d6651db3e2afe2c62d6fa89eec1a44c454"
+      }
+    },
+    {
+      "id": "behavior-objective-one-byte",
+      "testPlanCase": "AVR-004",
+      "path": "/behaviorContract/objective",
+      "operation": "append-one-ascii-byte",
+      "from": "只根据已发布资料回答受邀消费者的问题",
+      "to": "只根据已发布资料回答受邀消费者的问题!",
+      "value": "只根据已发布资料回答受邀消费者的问题!",
+      "expected": {
+        "manifestBytes": 1598,
+        "manifestSha256": "388c578bb60d0ae46ac4d0241b416c199898cbba7c732ad0723b734f835a9dd6",
+        "behaviorContractDigest": "4c73f05e0223d4f00de452624c920fd036f08be793e5910062c4e5002ce2cc5e",
+        "runtimePolicyDigest": "58c6b6a89d7952c53a61f60a2705d2e1e5169e98f5dc828e69b3bffa088837d3",
+        "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+        "derivedCodexRuntimeDigest": "5ed2948a6779df3a8f47f3d92c04115e9819f6cf8c0fdc690860327744752c07",
+        "modelPolicyDigest": "fd2ee46699abde63ed9815e74d8cad11f0b35bebd4e963afba13f790e7dac860",
+        "versionDigest": "388c578bb60d0ae46ac4d0241b416c199898cbba7c732ad0723b734f835a9dd6"
+      }
+    },
+    {
+      "id": "codex-artifact-digest-one-byte",
+      "testPlanCase": "AVR-006",
+      "path": "/codexRuntime/artifactDigest",
+      "operation": "replace-last-ascii-byte",
+      "from": "b",
+      "to": "d",
+      "value": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbd",
+      "expected": {
+        "manifestBytes": 1597,
+        "manifestSha256": "0cc810cfdc75bb6d523499dadc3f53ed57de5eb2a9556273b7d3e3a737f9f5fb",
+        "behaviorContractDigest": "cda357046f6f2ad4bbd4d30b2bb69d6990ed3e7beb9f34475a11b7b7943f4531",
+        "runtimePolicyDigest": "58c6b6a89d7952c53a61f60a2705d2e1e5169e98f5dc828e69b3bffa088837d3",
+        "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+        "derivedCodexRuntimeDigest": "6cbf413fce8573196bb57f3b6cbeb81b1de68c6da3d653761a6e6bbe2cfa83a2",
+        "modelPolicyDigest": "fd2ee46699abde63ed9815e74d8cad11f0b35bebd4e963afba13f790e7dac860",
+        "versionDigest": "0cc810cfdc75bb6d523499dadc3f53ed57de5eb2a9556273b7d3e3a737f9f5fb"
+      }
+    },
+    {
+      "id": "protocol-schema-digest-one-byte",
+      "testPlanCase": "AVR-006",
+      "path": "/codexRuntime/protocolSchemaDigest",
+      "operation": "replace-last-ascii-byte",
+      "from": "c",
+      "to": "e",
+      "value": "sha256:ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccce",
+      "expected": {
+        "manifestBytes": 1597,
+        "manifestSha256": "58bf42890bec75cf6ceae27b5e6530243a7f0db9c56b893fd37763bc82c4e7b7",
+        "behaviorContractDigest": "cda357046f6f2ad4bbd4d30b2bb69d6990ed3e7beb9f34475a11b7b7943f4531",
+        "runtimePolicyDigest": "58c6b6a89d7952c53a61f60a2705d2e1e5169e98f5dc828e69b3bffa088837d3",
+        "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+        "derivedCodexRuntimeDigest": "17cc85266bea1e82ead726ffebe8a7d317a75d78507835ea882f9e4cc726b9e4",
+        "modelPolicyDigest": "fd2ee46699abde63ed9815e74d8cad11f0b35bebd4e963afba13f790e7dac860",
+        "versionDigest": "58bf42890bec75cf6ceae27b5e6530243a7f0db9c56b893fd37763bc82c4e7b7"
+      }
+    },
+    {
+      "id": "resolved-model-one-byte",
+      "testPlanCase": "AVR-006",
+      "path": "/runtimePolicy/resolvedModel+/modelPolicy/model",
+      "operation": "replace-one-ascii-byte-in-both-bound-fields",
+      "from": "gpt-5.6",
+      "to": "gpt-5.7",
+      "value": "gpt-5.7",
+      "expected": {
+        "manifestBytes": 1597,
+        "manifestSha256": "dec1f63496be57db27dbfe91359510d4149b591b3dc8cc47c9da95d2308d77ed",
+        "behaviorContractDigest": "cda357046f6f2ad4bbd4d30b2bb69d6990ed3e7beb9f34475a11b7b7943f4531",
+        "runtimePolicyDigest": "0d165051d990412a715a0775b56fb988e0f153d644832e4afcb75d19d73145ee",
+        "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+        "derivedCodexRuntimeDigest": "5ed2948a6779df3a8f47f3d92c04115e9819f6cf8c0fdc690860327744752c07",
+        "modelPolicyDigest": "e9922329eb568ff10324855de9b4d84ab9a0a60dc8e0e074dec3578fca7a89bf",
+        "versionDigest": "dec1f63496be57db27dbfe91359510d4149b591b3dc8cc47c9da95d2308d77ed"
+      }
+    },
+    {
+      "id": "reasoning-effort-one-byte",
+      "testPlanCase": "AVR-006",
+      "path": "/runtimePolicy/reasoningEffort+/modelPolicy/reasoningEffort",
+      "operation": "insert-one-ascii-byte-in-both-bound-fields",
+      "from": "high",
+      "to": "xhigh",
+      "value": "xhigh",
+      "expected": {
+        "manifestBytes": 1599,
+        "manifestSha256": "1c6e3e9a25c5ca93a5ff8b021497c266c5aaefaef729bb1ed0a6c9f7427e0fdd",
+        "behaviorContractDigest": "cda357046f6f2ad4bbd4d30b2bb69d6990ed3e7beb9f34475a11b7b7943f4531",
+        "runtimePolicyDigest": "f5b573272defde17e2780fde07271e94dbd3595a7ec241b56d04a44310d8ad47",
+        "ioContractDigest": "05c1071ba5af0a6058549e840366e7c9dcb270f6870bc2ac4cf23931b342d895",
+        "derivedCodexRuntimeDigest": "5ed2948a6779df3a8f47f3d92c04115e9819f6cf8c0fdc690860327744752c07",
+        "modelPolicyDigest": "e623d7ccec56879108e2a26bc9c7eaa654d56b3175bc7386a06e290966cc9fd3",
+        "versionDigest": "1c6e3e9a25c5ca93a5ff8b021497c266c5aaefaef729bb1ed0a6c9f7427e0fdd"
+      }
+    }
+  ]
+}

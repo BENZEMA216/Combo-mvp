@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "incremental": false,
+    "noEmit": true,
+    "sourceMap": false,
+    "types": ["node", "vitest/globals"]
+  },
+  "include": [
+    "integration/vnext-r3-crypto-boundary.test.ts",
+    "integration/vnext-r3-worker-host.pg.test.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

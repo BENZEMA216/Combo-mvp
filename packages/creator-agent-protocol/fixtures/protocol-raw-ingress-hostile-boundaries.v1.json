@@ -1,0 +1,205 @@
+{
+  "protocol": "combo.protocol-raw-ingress-hostile-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "broker-marker-evidence-and-snapshot-json-ingress-only",
+  "evidenceClass": "direct-public-parser-hostile-matrix-only",
+  "authority": {
+    "testCaseId": "SCH-005",
+    "invariants": ["INV-002", "INV-019"],
+    "snapshotCaseId": "SNP-010",
+    "testPlanSection": "测试方案 §6.1 SCH-005 / §8.3 SNP-010"
+  },
+  "baseFixtures": [
+    {
+      "path": "broker-handshake.v1.json",
+      "digest": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4"
+    },
+    {
+      "path": "broker-invocation-prepare.v1.json",
+      "digest": "sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de"
+    },
+    {
+      "path": "snapshot-envelope.v1.json",
+      "digest": "sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9"
+    },
+    {
+      "path": "snapshot-manifest-envelope.v1.json",
+      "digest": "sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd"
+    },
+    {
+      "path": "evidence-bundle-index.v1.json",
+      "digest": "sha256:654759f29954dbead6bdeb3b13301a90afc3d328460d9292c1b2332ffaf0a2cb"
+    },
+    {
+      "path": "evidence-bundle-manifest.v1.json",
+      "digest": "sha256:99bb2e91df30706472c02acbcf7d23a5dcc772f16fd28754266f584d8f5a0f4a"
+    },
+    {
+      "path": "evidence-case-result.v1.json",
+      "digest": "sha256:a4fb707bd3b5e82a0125ee8b3cf0dd3a7e24f31f5a554c2d4cf1289212c1fd4f"
+    },
+    {
+      "path": "evidence-environment.v1.json",
+      "digest": "sha256:5f6d858f2269537861bdd4dad925033e3851a541633037e48da2c50c61a8e3f8"
+    },
+    {
+      "path": "evidence-privacy-scan.v1.json",
+      "digest": "sha256:a99eb81b3747adf032306fd7cc2c992859ec1e09a3a981eee4a937b15e17a9d0"
+    },
+    {
+      "path": "evidence-reviewer-signoff.v1.json",
+      "digest": "sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b"
+    },
+    {
+      "path": "snapshot-manifest.v1.json",
+      "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
+    }
+  ],
+  "owners": [
+    {
+      "id": "broker-handshake",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "parseBrokerHandshake",
+      "fixtureRecipe": "broker-handshake-fixture",
+      "targetPointer": "/workerVersion",
+      "expectedCode": "BROKER_HANDSHAKE_INVALID"
+    },
+    {
+      "id": "broker-frame",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "parseBrokerFrame",
+      "fixtureRecipe": "broker-prepare-fixture",
+      "targetPointer": "/body/executionCapability/model",
+      "expectedCode": "BROKER_FRAME_INVALID"
+    },
+    {
+      "id": "snapshot-publication-preparation-marker",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "parseSnapshotPublicationPreparationMarker",
+      "fixtureRecipe": "derived-preparation-marker",
+      "targetPointer": "/request/archive/envelope/aad/keyId",
+      "expectedCode": "SNAPSHOT_PREPARATION_MARKER_INVALID"
+    },
+    {
+      "id": "snapshot-publication-commit-marker",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "parseSnapshotPublicationCommitMarker",
+      "fixtureRecipe": "derived-commit-marker",
+      "targetPointer": "/preparationKey",
+      "expectedCode": "SNAPSHOT_COMMIT_MARKER_INVALID"
+    },
+    {
+      "id": "evidence-index",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "index",
+      "targetPointer": "/artifacts/0/path",
+      "expectedRawReason": "index-json",
+      "expectedSchemaReason": "index-schema"
+    },
+    {
+      "id": "evidence-case-results",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "caseResults",
+      "targetPointer": "/0/testCaseId",
+      "expectedRawReason": "case-results-json",
+      "expectedSchemaReason": "case-results-schema"
+    },
+    {
+      "id": "evidence-test-case-registry",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "testCaseRegistry",
+      "targetPointer": "/cases/0/title",
+      "expectedRawReason": "test-case-registry-json",
+      "expectedSchemaReason": "test-case-registry-schema"
+    },
+    {
+      "id": "evidence-manifest",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "manifest",
+      "targetPointer": "/rcId",
+      "expectedRawReason": "manifest-json",
+      "expectedSchemaReason": "manifest-schema"
+    },
+    {
+      "id": "evidence-signoff",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "signoff",
+      "targetPointer": "/reviewerKeyId",
+      "expectedRawReason": "signoff-json",
+      "expectedSchemaReason": "signoff-schema"
+    },
+    {
+      "id": "evidence-environment",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "supportingArtifacts.environment.json",
+      "targetPointer": "/environments/0/runtimeVersions/node",
+      "expectedRawReason": "artifact:environment.json:json",
+      "expectedSchemaReason": "environment-schema"
+    },
+    {
+      "id": "evidence-privacy-scan",
+      "package": "@cb/creator-agent-protocol",
+      "parser": "validateEvidenceBundleChain",
+      "inputOwner": "supportingArtifacts.privacy-scan.json",
+      "targetPointer": "/scannerId",
+      "expectedRawReason": "artifact:privacy-scan.json:json",
+      "expectedSchemaReason": "privacy-scan-schema"
+    },
+    {
+      "id": "snapshot-manifest",
+      "package": "@cb/creator-agent-snapshot",
+      "parser": "parseSnapshotManifest",
+      "fixtureRecipe": "snapshot-manifest-fixture",
+      "targetPointer": "/files/0/path",
+      "expectedCode": "SNAPSHOT_ARCHIVE_INVALID"
+    }
+  ],
+  "probes": {
+    "canaryPrefix": "RAW_INGRESS_HOSTILE_CANARY_",
+    "malformedUtf8Hex": ["80", "c0af", "e282", "eda080", "f4908080"],
+    "loneSurrogateEscapes": ["\\ud800", "\\udc00"],
+    "forbiddenControlRanges": [
+      { "start": 0, "end": 31 },
+      { "start": 127, "end": 159 }
+    ],
+    "allowedControlCodeUnits": [9, 10, 13],
+    "structural": [
+      "bom",
+      "syntax",
+      "duplicate-root",
+      "duplicate-nested",
+      "unknown-root",
+      "unknown-nested"
+    ]
+  },
+  "outcomeCounts": {
+    "owners": 12,
+    "perOwner": 76,
+    "acceptedBaselines": 12,
+    "malformedUtf8": 60,
+    "loneSurrogates": 24,
+    "forbiddenControls": 744,
+    "structural": 72,
+    "rejected": 900,
+    "protocolRawErrors": 304,
+    "evidenceReasons": 532,
+    "snapshotErrors": 76,
+    "total": 912
+  },
+  "exclusions": [
+    "real-gateway-worker-socket-full-matrix",
+    "object-storage-business-side-effects",
+    "http-request-roots-covered-by-sch-005-closure",
+    "runtime-json-bytes-covered-by-vnext-json-body-test",
+    "registry-yaml-public-errors",
+    "content-encoding-and-chunked-ingress",
+    "t0-linux-ci-evidence",
+    "does-not-complete-snp-010"
+  ]
+}

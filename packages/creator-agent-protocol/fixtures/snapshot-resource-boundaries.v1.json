@@ -1,0 +1,98 @@
+{
+  "protocol": "combo.snapshot-resource-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "snapshot-manifest-file-count-and-expanded-bytes-only",
+  "authority": {
+    "technicalPlanSection": "技术方案 §5.2 Alpha 输入边界",
+    "testPlanCases": ["SNP-002", "SNP-003", "SNP-006", "SNP-007"]
+  },
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "openApi": "sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350"
+  },
+  "baseFixture": {
+    "path": "snapshot-manifest.v1.json",
+    "digest": "sha256:d77fc869ee4f4c9b616fb8277b482515b22e9fe957214c63964436d302359088"
+  },
+  "cases": [
+    {
+      "id": "snapshot-manifest-file-count",
+      "maximum": 2000,
+      "probes": [
+        {
+          "delta": -1,
+          "fileCount": 1999,
+          "expandedBytes": 1999,
+          "canonicalDigest": "sha256:f07070e8da79cb15b18beab4538a02261e6c28737b6e4d9f858c468a2eddad30"
+        },
+        {
+          "delta": 0,
+          "fileCount": 2000,
+          "expandedBytes": 2000,
+          "canonicalDigest": "sha256:86604d840acb1628daac149be7ed34d377920cb1e1debb082eba29771392460d"
+        },
+        {
+          "delta": 1,
+          "fileCount": 2001,
+          "expandedBytes": 2001,
+          "canonicalDigest": "sha256:a0d515656eef7568b791a162226fb5ac97b8d4b14ac30acf6795ca79464e28b0"
+        }
+      ],
+      "manifestConstraints": [
+        {
+          "instancePath": "/files",
+          "jsonSchemaKeyword": "maxItems",
+          "contractArtifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/files"
+        },
+        {
+          "instancePath": "/totals/fileCount",
+          "jsonSchemaKeyword": "maximum",
+          "contractArtifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/totals/properties/fileCount"
+        }
+      ],
+      "requestConstraint": {
+        "instancePath": "/fileCount",
+        "jsonSchemaKeyword": "maximum",
+        "contractArtifactPointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/fileCount",
+        "openApiArtifactPointer": "/components/schemas/SnapshotUploadCreateRequest/properties/fileCount"
+      }
+    },
+    {
+      "id": "snapshot-manifest-expanded-bytes",
+      "maximum": 209715200,
+      "probes": [
+        {
+          "delta": -1,
+          "fileCount": 200,
+          "expandedBytes": 209715199,
+          "canonicalDigest": "sha256:4727286493250ece96de441b7331d6d001b9d76834bf55a144dd25e5b00397cb"
+        },
+        {
+          "delta": 0,
+          "fileCount": 200,
+          "expandedBytes": 209715200,
+          "canonicalDigest": "sha256:510cd24f3aebb0b33efbe6cfe5f5bc7bdd552ed1824977961ca09ed47be38d18"
+        },
+        {
+          "delta": 1,
+          "fileCount": 201,
+          "expandedBytes": 209715201,
+          "canonicalDigest": "sha256:5e8f02cf63fc1ac5c2f5de058899e4ff3c861b51cfb0f7e2f70c238d5dda549f"
+        }
+      ],
+      "manifestConstraints": [
+        {
+          "instancePath": "/totals/expandedBytes",
+          "jsonSchemaKeyword": "maximum",
+          "contractArtifactPointer": "/schemas/SnapshotManifest/definitions/SnapshotManifest/properties/totals/properties/expandedBytes"
+        }
+      ],
+      "requestConstraint": {
+        "instancePath": "/expandedBytes",
+        "jsonSchemaKeyword": "maximum",
+        "contractArtifactPointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/expandedBytes",
+        "openApiArtifactPointer": "/components/schemas/SnapshotUploadCreateRequest/properties/expandedBytes"
+      }
+    }
+  ]
+}

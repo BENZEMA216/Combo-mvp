@@ -1,0 +1,51 @@
+{
+  "protocol": "combo.vnext-evidence-bundle/1",
+  "schemaVersion": 1,
+  "artifacts": [
+    {
+      "path": "environment.json",
+      "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "bytes": 1024
+    },
+    {
+      "path": "junit/index.json",
+      "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "bytes": 2048
+    },
+    {
+      "path": "contract-fixtures/index.json",
+      "digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "bytes": 1024
+    },
+    {
+      "path": "digests/index.json",
+      "digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "bytes": 1024
+    },
+    {
+      "path": "metrics-summary.json",
+      "digest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      "bytes": 2048
+    },
+    {
+      "path": "fault-summary.json",
+      "digest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "bytes": 2048
+    },
+    {
+      "path": "isolation-summary.json",
+      "digest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "bytes": 2048
+    },
+    {
+      "path": "dr-summary.json",
+      "digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+      "bytes": 2048
+    },
+    {
+      "path": "privacy-scan.json",
+      "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 2048
+    }
+  ]
+}

@@ -5,20 +5,25 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { parseAllDocuments } from 'yaml';
 import { releaseManifestDigest, serializeReleaseManifest } from './release-manifest.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 
-function fixtureManifest() {
+function fixtureManifest(schemaVersion = 1) {
+  const images = {
+    api: 'ghcr.io/dangdang-tech/combo-api@sha256:' + '1'.repeat(64),
+    runtime: 'ghcr.io/dangdang-tech/combo-runtime@sha256:' + '2'.repeat(64),
+    web: 'ghcr.io/dangdang-tech/combo-web@sha256:' + '3'.repeat(64),
+  };
+  if (schemaVersion === 2) {
+    images.agentGateway = 'ghcr.io/dangdang-tech/combo-agent-gateway@sha256:' + '5'.repeat(64);
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion,
     sourceSha: 'a'.repeat(40),
     releaseId: 'release-' + 'a'.repeat(40),
-    images: {
-      api: 'ghcr.io/dangdang-tech/combo-api@sha256:' + '1'.repeat(64),
-      runtime: 'ghcr.io/dangdang-tech/combo-runtime@sha256:' + '2'.repeat(64),
-      web: 'ghcr.io/dangdang-tech/combo-web@sha256:' + '3'.repeat(64),
-    },
+    images,
     migrationHead: '0009_billing.sql',
     builtAt: '2026-01-01T00:00:00.000Z',
     webAssetManifest: 'sha256:' + '4'.repeat(64),
@@ -44,6 +49,13 @@ function render(environment, phase, manifestPath, digest) {
   const content = readFileSync(output, 'utf8');
   rmSync(dirname(output), { recursive: true, force: true });
   return content;
+}
+
+function resources(content) {
+  return parseAllDocuments(content).map((document) => {
+    assert.equal(document.errors.length, 0);
+    return document.toJS();
+  });
 }
 
 test('renders apps for all three environments into their namespaces', () => {
@@ -73,7 +85,16 @@ test('renders apps for all three environments into their namespaces', () => {
     assert.match(apps, new RegExp(`COMBO_ENVIRONMENT: ${environment}`));
     assert.ok(apps.includes(origin), `${environment} public origin`);
     assert.ok(apps.includes(redisQueue), `${environment} redis queue host`);
+    assert.ok(
+      apps.includes(`agent-gateway.${namespace}.svc.cluster.local`),
+      `${environment} Agent Gateway namespace host`,
+    );
+    assert.ok(
+      !apps.includes('agent-gateway.combo.svc.cluster.local'),
+      `${environment} must not retain the base namespace placeholder`,
+    );
     assert.ok(apps.includes(`ghcr.io/dangdang-tech/combo-api@sha256:${'1'.repeat(64)}`));
+    assert.doesNotMatch(apps, /name: agent-gateway\n/u);
     assert.ok(
       apps.includes('combo.build/source-sha'),
       `${environment} pod template stamps source SHA`,
@@ -82,6 +103,71 @@ test('renders apps for all three environments into their namespaces', () => {
     assert.match(migrate, new RegExp(`namespace: ${namespace}`));
     assert.match(migrate, /kind: Job/);
     assert.match(migrate, /name: migrate/);
+  }
+  rmSync(dirname(path), { recursive: true, force: true });
+});
+
+test('schema v2 renders the independent Agent Gateway only in Test', () => {
+  const manifest = fixtureManifest(2);
+  const path = join(mkdtempSync(join(tmpdir(), 'render-env-gateway-')), 'release.json');
+  writeFileSync(path, serializeReleaseManifest(manifest));
+  const digest = releaseManifestDigest(manifest);
+
+  const testApps = resources(render('test', 'apps', path, digest));
+  const deployments = testApps.filter((resource) => resource.kind === 'Deployment');
+  const services = testApps.filter((resource) => resource.kind === 'Service');
+  assert.deepEqual(deployments.map((resource) => resource.metadata.name).sort(), [
+    'agent-gateway',
+    'api',
+    'runtime',
+    'web',
+    'worker',
+  ]);
+  assert.deepEqual(services.map((resource) => resource.metadata.name).sort(), [
+    'agent-gateway',
+    'api',
+    'runtime',
+    'web',
+  ]);
+  const gateway = deployments.find((resource) => resource.metadata.name === 'agent-gateway');
+  const container = gateway.spec.template.spec.containers[0];
+  assert.equal(gateway.spec.replicas, 2);
+  assert.equal(gateway.spec.strategy.rollingUpdate.maxUnavailable, 0);
+  assert.equal(gateway.spec.template.spec.automountServiceAccountToken, false);
+  assert.equal(container.image, manifest.images.agentGateway);
+  assert.equal(container.livenessProbe.httpGet.port, 'health');
+  assert.equal(container.readinessProbe.httpGet.path, '/ready');
+  assert.equal(container.securityContext.readOnlyRootFilesystem, true);
+  const environmentVariables = new Map(container.env.map((entry) => [entry.name, entry]));
+  assert.equal(environmentVariables.get('AGENT_GATEWAY_PUBLISHER_ENABLED').value, 'false');
+  assert.equal(environmentVariables.has('PGPASSWORD'), false);
+  assert.equal(
+    environmentVariables.get('POSTGRES_AGENT_BROKER_PASSWORD').valueFrom.secretKeyRef.key,
+    'POSTGRES_AGENT_BROKER_PASSWORD',
+  );
+
+  const testMigration = resources(render('test', 'migrate', path, digest))[0];
+  const migrationEnvironment = new Map(
+    testMigration.spec.template.spec.containers[0].env.map((entry) => [entry.name, entry]),
+  );
+  for (const name of [
+    'POSTGRES_AGENT_API_PASSWORD',
+    'POSTGRES_AGENT_BROKER_PASSWORD',
+    'POSTGRES_AGENT_RECONCILER_PASSWORD',
+  ]) {
+    assert.equal(migrationEnvironment.get(name).valueFrom.secretKeyRef.optional, true);
+  }
+
+  for (const environment of ['preview', 'production']) {
+    const renderedApps = resources(render(environment, 'apps', path, digest));
+    assert.equal(
+      renderedApps.some((resource) => resource.metadata?.name === 'agent-gateway'),
+      false,
+    );
+    assert.equal(JSON.stringify(renderedApps).includes('combo-agent-gateway'), false);
+    const migration = resources(render(environment, 'migrate', path, digest))[0];
+    const serializedMigration = JSON.stringify(migration);
+    assert.equal(serializedMigration.includes('POSTGRES_AGENT_BROKER_PASSWORD'), false);
   }
   rmSync(dirname(path), { recursive: true, force: true });
 });
@@ -124,5 +210,50 @@ test('renders the billing payment wiring into api and the fixed policy into runt
   }
   assert.match(apps, /name: RUNTIME_BILLING_FREE_USES\s*\n\s+value: "3"/);
   assert.match(apps, /name: RUNTIME_BILLING_UNIT_PRICE_CENTS\s*\n\s+value: "1"/);
+  rmSync(dirname(path), { recursive: true, force: true });
+});
+
+test('renders the read-only visible transcript keyring provider only in Test', () => {
+  const manifest = fixtureManifest();
+  const path = join(mkdtempSync(join(tmpdir(), 'render-env-visible-transcript-')), 'release.json');
+  writeFileSync(path, serializeReleaseManifest(manifest));
+  const digest = releaseManifestDigest(manifest);
+
+  const testResources = resources(render('test', 'apps', path, digest));
+  const runtime = testResources.find(
+    (resource) => resource.kind === 'Deployment' && resource.metadata?.name === 'runtime',
+  );
+  const runtimeContainer = runtime.spec.template.spec.containers.find(
+    (container) => container.name === 'runtime',
+  );
+  const values = new Map(runtimeContainer.env.map((entry) => [entry.name, entry.value]));
+  assert.equal(values.get('CREATOR_AGENT_PUBLIC_ENABLED'), 'false');
+  assert.equal(values.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER'), 'test-k8s-secret-file');
+  assert.equal(
+    values.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE'),
+    '/var/run/secrets/combo/visible-transcript/keyring.json',
+  );
+  const mount = runtimeContainer.volumeMounts.find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+  assert.equal(mount.readOnly, true);
+  const volume = runtime.spec.template.spec.volumes.find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+  assert.equal(volume.secret.secretName, 'combo-visible-transcript-test-keyring');
+  assert.equal(volume.secret.optional, true);
+  assert.equal(volume.secret.defaultMode, 0o400);
+  assert.equal(volume.secret.items[0].mode, 0o400);
+  assert.equal(
+    testResources.some((resource) => resource.kind === 'Secret'),
+    false,
+  );
+
+  for (const environment of ['preview', 'production']) {
+    const rendered = render(environment, 'apps', path, digest);
+    assert.doesNotMatch(rendered, /CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER/);
+    assert.doesNotMatch(rendered, /CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE/);
+    assert.doesNotMatch(rendered, /visible-transcript-test-keyring/);
+  }
   rmSync(dirname(path), { recursive: true, force: true });
 });

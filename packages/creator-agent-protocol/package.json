@@ -1,0 +1,50 @@
+{
+  "name": "@cb/creator-agent-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Creator-hosted Agent VNext 的跨进程协议、状态机和验收契约真源",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "schemas",
+    "openapi"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "test": "vitest run",
+    "test:g0": "vitest run src/__tests__/canonical.test.ts src/__tests__/internal-plain-ingress.test.ts src/__tests__/schemas.test.ts src/__tests__/artifacts.test.ts src/__tests__/registry.test.ts src/__tests__/http-idempotency-key-boundaries.test.ts src/__tests__/sch-005-closure.test.ts src/__tests__/public-boundary-closure.test.ts src/__tests__/public-boundary-row-probes.test.ts src/__tests__/public-boundary-actual-roots.test.ts src/__tests__/public-string-pattern-census.test.ts src/__tests__/public-source-ast-census.test.ts src/__tests__/publication-marker-byte-boundaries.test.ts src/__tests__/utf8-boundaries.test.ts src/__tests__/decoded-boundaries.test.ts src/__tests__/structural-boundaries.test.ts src/__tests__/resource-boundaries.test.ts src/__tests__/broker-capacity-boundaries.test.ts src/__tests__/context-tools-closed-world-boundaries.test.ts src/__tests__/execution-capability-upstream-count-boundaries.test.ts src/__tests__/raw-ingress-hostile-boundaries.test.ts src/__tests__/snapshot-resource-boundaries.test.ts src/__tests__/snapshot-single-file-boundaries.test.ts src/__tests__/snapshot-compressed-boundaries.test.ts src/__tests__/snapshot-compression-ratio-boundaries.test.ts src/__tests__/snapshot-path-boundaries.test.ts src/__tests__/wire-boundaries.test.ts src/__tests__/invocation.test.ts src/__tests__/invocation-facts.test.ts src/__tests__/interrupt-receipt.test.ts src/__tests__/conversation-ready-facts.test.ts src/__tests__/consumer-events.test.ts src/__tests__/property-matrix.test.ts src/__tests__/invocation.property.test.ts src/__tests__/conversation-ready-facts.property.test.ts src/__tests__/broker-contract.property.test.ts src/__tests__/capability.property.test.ts src/__tests__/host-interrupt-terminal.test.ts src/__tests__/host-turn-terminal.test.ts",
+    "test:fast": "pnpm check:contracts && pnpm check:adr && pnpm typecheck:test && pnpm test:g0",
+    "test:registries": "vitest run src/__tests__/registry.test.ts",
+    "test:property": "node scripts/run-property.mjs",
+    "generate:contracts": "pnpm build && node scripts/generate-contract-artifacts.mjs && node scripts/generate-public-boundary-closure.mjs && node scripts/generate-contract-artifacts.mjs",
+    "check:contracts": "pnpm build && node scripts/check-contract-artifacts.mjs && node scripts/generate-public-boundary-closure.mjs --check",
+    "generate:broker-contract": "pnpm build && node scripts/generate-contract-artifacts.mjs",
+    "check:broker-contract": "pnpm build && node scripts/check-contract-artifacts.mjs",
+    "generate:adr": "pnpm build && node scripts/generate-vnext-adr.mjs",
+    "check:adr": "pnpm build && node scripts/generate-vnext-adr.mjs --check",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "yaml": "2.9.0",
+    "zod": "^3.24.1",
+    "zod-to-json-schema": "3.25.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "ajv": "8.20.0",
+    "prettier": "^3.4.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

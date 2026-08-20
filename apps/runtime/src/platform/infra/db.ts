@@ -32,21 +32,34 @@ export interface TxPool {
 export type RuntimeDb = Queryable & TxPool;
 
 let pool: Pool | undefined;
+let creatorAgentPool: Pool | undefined;
+
+function createPool(connectionString: string): Pool {
+  const created = new Pool({
+    connectionString,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 2_000,
+  });
+  created.on('error', () => {
+    /* swallow idle-client errors; handled at query call sites */
+  });
+  return created;
+}
 
 /** PG 连接池单例。 */
 export function getPool(env: Env): Pool {
-  if (!pool) {
-    pool = new Pool({
-      connectionString: env.DATABASE_URL,
-      max: 10,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 2_000,
-    });
-    pool.on('error', () => {
-      /* swallow idle-client errors; handled at query call sites */
-    });
-  }
+  if (!pool) pool = createPool(env.DATABASE_URL);
   return pool;
+}
+
+/** Creator-hosted Consumer transaction pool; always uses its future dedicated role URL. */
+export function getCreatorAgentPool(env: Env): Pool {
+  if (!env.CREATOR_AGENT_PUBLIC_ENABLED || !env.CREATOR_AGENT_DATABASE_URL) {
+    throw new Error('Creator Agent database is disabled');
+  }
+  if (!creatorAgentPool) creatorAgentPool = createPool(env.CREATOR_AGENT_DATABASE_URL);
+  return creatorAgentPool;
 }
 
 /** 把 pg.Pool 适配成 RuntimeDb（生产用）；测试直接注入 FakeDb。 */
@@ -211,8 +224,314 @@ export async function pingDb(env: Env): Promise<boolean> {
   }
 }
 
+interface CreatorAgentReadinessRow {
+  current_user_name: string;
+  session_user_name: string;
+  can_login: boolean;
+  superuser: boolean;
+  bypass_rls: boolean;
+  create_database: boolean;
+  create_role: boolean;
+  inherit_privileges: boolean;
+  replicate: boolean;
+  database_connect: boolean;
+  database_create: boolean;
+  database_temporary: boolean;
+  exact_capabilities: boolean;
+}
+
+export function isExactCreatorAgentConsumerAuthority(
+  row: CreatorAgentReadinessRow | undefined,
+): boolean {
+  return (
+    row?.current_user_name === 'combo_agent_consumer_api' &&
+    row.session_user_name === 'combo_agent_consumer_api' &&
+    row.current_user_name === row.session_user_name &&
+    row.can_login === true &&
+    row.superuser === false &&
+    row.bypass_rls === false &&
+    row.create_database === false &&
+    row.create_role === false &&
+    row.inherit_privileges === false &&
+    row.replicate === false &&
+    row.database_connect === true &&
+    row.database_create === false &&
+    row.database_temporary === true &&
+    row.exact_capabilities === true
+  );
+}
+
+/** Readiness proves the URL uses the exact Consumer-only identity and capability boundary. */
+export async function pingCreatorAgentDb(env: Env): Promise<boolean> {
+  if (!env.CREATOR_AGENT_PUBLIC_ENABLED) return true;
+  try {
+    const client = await getCreatorAgentPool(env).connect();
+    try {
+      const result = await client.query<CreatorAgentReadinessRow>(
+        `WITH expected_select(table_name, column_name) AS (
+           VALUES
+             ('agent_access_grants', 'agent_id'),
+             ('agent_access_grants', 'consumer_subject_id'),
+             ('agent_access_grants', 'creator_id'),
+             ('agent_access_grants', 'state'),
+             ('agent_conversations', 'agent_id'),
+             ('agent_conversations', 'agent_version_id'),
+             ('agent_conversations', 'consumer_subject_id'),
+             ('agent_conversations', 'created_at'),
+             ('agent_conversations', 'creator_id'),
+             ('agent_conversations', 'expires_at'),
+             ('agent_conversations', 'id'),
+             ('agent_conversations', 'idempotency_key'),
+             ('agent_conversations', 'request_digest'),
+             ('agent_conversations', 'state'),
+             ('agent_conversations', 'version_digest'),
+             ('agent_invocations', 'consumer_subject_id'),
+             ('agent_invocations', 'conversation_id'),
+             ('agent_invocations', 'created_at'),
+             ('agent_invocations', 'creator_id'),
+             ('agent_invocations', 'error_code'),
+             ('agent_invocations', 'id'),
+             ('agent_invocations', 'result_digest'),
+             ('agent_invocations', 'retry_of_invocation_id'),
+             ('agent_invocations', 'state'),
+             ('agent_invocations', 'terminal_at'),
+             ('agent_messages', 'content_aad_version'),
+             ('agent_messages', 'content_algorithm'),
+             ('agent_messages', 'content_auth_tag'),
+             ('agent_messages', 'content_cipher_digest'),
+             ('agent_messages', 'content_ciphertext'),
+             ('agent_messages', 'content_digest'),
+             ('agent_messages', 'content_key_id'),
+             ('agent_messages', 'content_nonce'),
+             ('agent_messages', 'consumer_subject_id'),
+             ('agent_messages', 'conversation_id'),
+             ('agent_messages', 'created_at'),
+             ('agent_messages', 'creator_id'),
+             ('agent_messages', 'id'),
+             ('agent_messages', 'invocation_id'),
+             ('agent_messages', 'role'),
+             ('agent_messages', 'turn_no'),
+             ('agent_version_controls', 'availability'),
+             ('agent_version_controls', 'creator_id'),
+             ('agent_version_controls', 'version_id'),
+             ('agent_versions', 'agent_id'),
+             ('agent_versions', 'creator_id'),
+             ('agent_versions', 'id'),
+             ('agent_versions', 'version_digest'),
+             ('agents', 'creator_id'),
+             ('agents', 'id'),
+             ('agents', 'lifecycle'),
+             ('agents', 'public_slug'),
+             ('deployments', 'agent_id'),
+             ('deployments', 'creator_id'),
+             ('deployments', 'desired_state'),
+             ('deployments', 'environment'),
+             ('deployments', 'generation'),
+             ('deployments', 'id'),
+             ('deployments', 'lease_fence'),
+             ('deployments', 'observed_generation'),
+             ('deployments', 'observed_state'),
+             ('deployments', 'observed_worker_id'),
+             ('deployments', 'serving_version_id'),
+             ('consumer_event_outbox', 'conversation_id'),
+             ('consumer_event_outbox', 'cursor'),
+             ('consumer_event_outbox', 'event_type'),
+             ('consumer_event_outbox', 'invocation_id'),
+             ('consumer_event_outbox', 'owner_id'),
+             ('consumer_event_outbox', 'payload'),
+             ('consumer_event_outbox', 'retained_until'),
+             ('consumer_event_streams', 'conversation_id'),
+             ('consumer_event_streams', 'expired_through_cursor'),
+             ('consumer_event_streams', 'latest_cursor'),
+             ('consumer_event_streams', 'owner_id'),
+             ('consumer_event_streams', 'updated_at')
+         ), actual_select AS (
+           SELECT relation.relname::text AS table_name,
+                  attribute.attname::text AS column_name
+             FROM pg_class AS relation
+             JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+             JOIN pg_attribute AS attribute
+               ON attribute.attrelid = relation.oid
+              AND attribute.attnum > 0
+              AND NOT attribute.attisdropped
+            WHERE namespace.nspname = 'public'
+              AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+              AND has_column_privilege(
+                    current_user,
+                    relation.oid,
+                    attribute.attnum,
+                    'SELECT'
+                  )
+         )
+         SELECT current_user AS current_user_name,
+                session_user AS session_user_name,
+                role.rolcanlogin AS can_login,
+                role.rolsuper AS superuser,
+                role.rolbypassrls AS bypass_rls,
+                role.rolcreatedb AS create_database,
+                role.rolcreaterole AS create_role,
+                role.rolinherit AS inherit_privileges,
+                role.rolreplication AS replicate,
+                has_database_privilege(
+                  current_user,
+                  current_database(),
+                  'CONNECT'
+                ) AS database_connect,
+                has_database_privilege(
+                  current_user,
+                  current_database(),
+                  'CREATE'
+                ) AS database_create,
+                has_database_privilege(
+                  current_user,
+                  current_database(),
+                  'TEMPORARY'
+                ) AS database_temporary,
+                (
+                  has_schema_privilege(current_user, 'public', 'USAGE')
+                  AND NOT has_schema_privilege(current_user, 'public', 'CREATE')
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_namespace AS namespace
+                     WHERE namespace.nspname NOT IN ('information_schema', 'pg_catalog', 'public')
+                       AND (
+                         has_schema_privilege(current_user, namespace.oid, 'USAGE')
+                         OR has_schema_privilege(current_user, namespace.oid, 'CREATE')
+                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_auth_members AS membership
+                     WHERE membership.member = role.oid
+                        OR membership.roleid = role.oid
+                  )
+                  AND NOT EXISTS (
+                    SELECT expected.table_name, expected.column_name FROM expected_select AS expected
+                    EXCEPT
+                    SELECT actual.table_name, actual.column_name FROM actual_select AS actual
+                  )
+                  AND NOT EXISTS (
+                    SELECT actual.table_name, actual.column_name FROM actual_select AS actual
+                    EXCEPT
+                    SELECT expected.table_name, expected.column_name FROM expected_select AS expected
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_class AS relation
+                      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                     WHERE namespace.nspname = 'public'
+                       AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+                       AND (
+                         has_table_privilege(current_user, relation.oid, 'SELECT')
+                         OR has_table_privilege(current_user, relation.oid, 'INSERT')
+                         OR has_table_privilege(current_user, relation.oid, 'UPDATE')
+                         OR has_table_privilege(current_user, relation.oid, 'DELETE')
+                         OR has_table_privilege(current_user, relation.oid, 'TRUNCATE')
+                         OR has_table_privilege(current_user, relation.oid, 'REFERENCES')
+                         OR has_table_privilege(current_user, relation.oid, 'TRIGGER')
+                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_class AS sequence
+                      JOIN pg_namespace AS namespace ON namespace.oid = sequence.relnamespace
+                     WHERE namespace.nspname = 'public'
+                       AND sequence.relkind = 'S'
+                       AND (
+                         has_sequence_privilege(current_user, sequence.oid, 'USAGE')
+                         OR has_sequence_privilege(current_user, sequence.oid, 'SELECT')
+                         OR has_sequence_privilege(current_user, sequence.oid, 'UPDATE')
+                       )
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_class AS relation
+                      JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                      JOIN pg_attribute AS attribute
+                        ON attribute.attrelid = relation.oid
+                       AND attribute.attnum > 0
+                       AND NOT attribute.attisdropped
+                     WHERE namespace.nspname = 'public'
+                       AND relation.relkind IN ('r', 'p', 'v', 'm', 'f')
+                       AND (
+                         has_column_privilege(
+                           current_user,
+                           relation.oid,
+                           attribute.attnum,
+                           'INSERT'
+                         )
+                         OR has_column_privilege(
+                           current_user,
+                           relation.oid,
+                           attribute.attnum,
+                           'UPDATE'
+                         )
+                         OR has_column_privilege(
+                           current_user,
+                           relation.oid,
+                           attribute.attnum,
+                           'REFERENCES'
+                         )
+                       )
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_create_opening_conversation_v2(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text)',
+                    'EXECUTE'
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_issue_runtime_product_ids_v2(integer)',
+                    'EXECUTE'
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_preflight_consumer_message_v2(uuid,uuid,text,text)',
+                    'EXECUTE'
+                  )
+                  AND has_function_privilege(
+                    current_user,
+                    'creator_agent_finalize_consumer_message_v2(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer,jsonb,text)',
+                    'EXECUTE'
+                  )
+                  AND NOT has_function_privilege(
+                    current_user,
+                    'creator_agent_create_opening_conversation(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer)',
+                    'EXECUTE'
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1
+                      FROM pg_proc AS procedure
+                      JOIN pg_namespace AS namespace ON namespace.oid = procedure.pronamespace
+                     WHERE namespace.nspname NOT IN ('information_schema', 'pg_catalog')
+                       AND procedure.prosecdef
+                       AND has_function_privilege(current_user, procedure.oid, 'EXECUTE')
+                       AND procedure.oid NOT IN (
+                         'public.creator_agent_create_opening_conversation_v2(uuid,uuid,uuid,uuid,uuid,uuid,text,text,uuid,bigint,integer,text,text,bigint,text)'::regprocedure,
+                         'public.creator_agent_issue_runtime_product_ids_v2(integer)'::regprocedure,
+                         'public.creator_agent_preflight_consumer_message_v2(uuid,uuid,text,text)'::regprocedure,
+                         'public.creator_agent_finalize_consumer_message_v2(uuid,uuid,uuid,uuid,uuid,uuid,uuid,uuid,text,text,text,text,bytea,bytea,bytea,text,text,integer,jsonb,text)'::regprocedure
+                       )
+                  )
+                ) AS exact_capabilities
+           FROM pg_roles AS role
+          WHERE role.rolname = current_user`,
+      );
+      return isExactCreatorAgentConsumerAuthority(result.rows[0]);
+    } finally {
+      client.release();
+    }
+  } catch {
+    return false;
+  }
+}
+
 /** 优雅关闭连接池。 */
 export async function closeDb(): Promise<void> {
-  await pool?.end().catch(() => undefined);
+  await Promise.all([
+    pool?.end().catch(() => undefined),
+    creatorAgentPool?.end().catch(() => undefined),
+  ]);
   pool = undefined;
+  creatorAgentPool = undefined;
 }

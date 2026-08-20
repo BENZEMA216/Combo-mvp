@@ -1,0 +1,74 @@
+{
+  "protocol": "combo.agent-version-resource-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "agent-version-variable-cardinality-and-numeric-maximums-only",
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "openApi": "sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350"
+  },
+  "baseFixture": {
+    "path": "agent-version-manifest.v1.json",
+    "digest": "sha256:63d55f5ad38df489c1bdae9146b69aa7712ee34e85fe5895607afe8c700106e4"
+  },
+  "verifiedSnapshotId": "0198f00d-6000-7000-8000-000000000001",
+  "cases": [
+    {
+      "id": "behavior-contract-developer-instructions",
+      "valueKind": "array-cardinality",
+      "maximum": 32,
+      "jsonSchemaKeyword": "maxItems",
+      "manifestInstancePath": "/behaviorContract/developerInstructions",
+      "requestInstancePath": "/manifest/behaviorContract/developerInstructions",
+      "artifactPointers": {
+        "contractAgentVersionManifest": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/behaviorContract/properties/developerInstructions",
+        "contractCreateAgentVersionRequest": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/developerInstructions",
+        "openApiCreateAgentVersionRequest": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/behaviorContract/properties/developerInstructions"
+      }
+    },
+    {
+      "id": "runtime-policy-max-turn-seconds",
+      "valueKind": "integer-maximum",
+      "maximum": 120,
+      "jsonSchemaKeyword": "maximum",
+      "manifestInstancePath": "/runtimePolicy/maxTurnSeconds",
+      "requestInstancePath": "/manifest/runtimePolicy/maxTurnSeconds",
+      "artifactPointers": {
+        "contractAgentVersionManifest": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/maxTurnSeconds",
+        "contractCreateAgentVersionRequest": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/maxTurnSeconds",
+        "openApiCreateAgentVersionRequest": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/maxTurnSeconds"
+      }
+    },
+    {
+      "id": "runtime-policy-max-conversation-turns",
+      "valueKind": "integer-maximum",
+      "maximum": 20,
+      "jsonSchemaKeyword": "maximum",
+      "manifestInstancePath": "/runtimePolicy/maxConversationTurns",
+      "requestInstancePath": "/manifest/runtimePolicy/maxConversationTurns",
+      "artifactPointers": {
+        "contractAgentVersionManifest": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/maxConversationTurns",
+        "contractCreateAgentVersionRequest": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/maxConversationTurns",
+        "openApiCreateAgentVersionRequest": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/maxConversationTurns"
+      }
+    },
+    {
+      "id": "runtime-policy-max-visible-history-bytes",
+      "valueKind": "integer-maximum",
+      "maximum": 65536,
+      "jsonSchemaKeyword": "maximum",
+      "manifestInstancePath": "/runtimePolicy/maxVisibleHistoryBytes",
+      "requestInstancePath": "/manifest/runtimePolicy/maxVisibleHistoryBytes",
+      "artifactPointers": {
+        "contractAgentVersionManifest": "/schemas/AgentVersionManifest/definitions/AgentVersionManifest/properties/runtimePolicy/properties/maxVisibleHistoryBytes",
+        "contractCreateAgentVersionRequest": "/schemas/CreateAgentVersionRequest/definitions/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/maxVisibleHistoryBytes",
+        "openApiCreateAgentVersionRequest": "/components/schemas/CreateAgentVersionRequest/properties/manifest/properties/runtimePolicy/properties/maxVisibleHistoryBytes"
+      }
+    }
+  ],
+  "excludedLiteralFields": [
+    "/runtimePolicy/contextTools",
+    "/runtimePolicy/maxActiveTurns",
+    "/ioContract/input/maxUtf8Bytes",
+    "/ioContract/output/maxUtf8Bytes"
+  ]
+}

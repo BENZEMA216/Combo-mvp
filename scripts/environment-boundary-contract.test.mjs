@@ -232,3 +232,213 @@ test('CI runs both billing PostgreSQL suites against the migrated ephemeral data
     'ci.yml must not hardcode the migration file list',
   );
 });
+
+test('PR and Main CI run non-skipping Consumer, Broker, Gateway, and Worker SQLite gates', () => {
+  for (const workflow of ['.github/workflows/pr-ci.yml', '.github/workflows/ci.yml']) {
+    const source = text(workflow);
+    assert.equal(
+      (
+        source.match(
+          /POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password/g,
+        ) ?? []
+      ).length,
+      2,
+      `${workflow} must pass the Consumer credential to migration and Conversation PG gates`,
+    );
+    assert.match(source, /CREATOR_AGENT_CONVERSATION_PG_TEST: '1'/);
+    assert.equal(
+      (source.match(/CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'/g) ?? []).length,
+      1,
+      `${workflow} must enable the final 0030 Consumer v1 decommission suite exactly once`,
+    );
+    assert.doesNotMatch(
+      source,
+      /CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/,
+      `${workflow} must not run the historical 0022 accept authority on the final schema`,
+    );
+    const consumerAcceptStep = capture(
+      source,
+      /\n {6}- name: Creator Agent Cloud Journal and Conversation PostgreSQL gates\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} Consumer accept PostgreSQL step`,
+    );
+    assert.match(consumerAcceptStep, /POSTGRES_RUNTIME_PASSWORD: ci-runtime-role-password/);
+    assert.match(
+      consumerAcceptStep,
+      /POSTGRES_AGENT_CONSUMER_API_PASSWORD: ci-agent-consumer-api-role-password/,
+    );
+    assert.match(consumerAcceptStep, /CREATOR_AGENT_CONSUMER_V1_DECOMMISSION_PG_TEST: '1'/);
+    assert.match(
+      consumerAcceptStep,
+      /pnpm --dir db exec vitest run \\\n+\s+__tests__\/creator-agent-consumer-message-v1-decommission\.pg\.test\.ts/,
+    );
+    assert.match(source, /Creator Agent Gateway PostgreSQL authority gate/);
+    assert.match(source, /CREATOR_AGENT_GATEWAY_PG_TEST: '1'/);
+    assert.match(source, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
+    assert.match(source, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
+    assert.match(source, /run: pnpm -F @cb\/agent-gateway test/);
+    assert.equal(
+      (source.match(/Creator Agent Broker delivery contract PostgreSQL gate/g) ?? []).length,
+      1,
+      `${workflow} must define exactly one 0018 Broker delivery PostgreSQL gate`,
+    );
+    assert.equal(
+      (source.match(/CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'/g) ?? []).length,
+      1,
+      `${workflow} must enable the real 0018 Broker delivery suite exactly once`,
+    );
+    const brokerContractStep = capture(
+      source,
+      /\n {6}- name: Creator Agent Broker delivery contract PostgreSQL gate\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} 0018 Broker delivery step`,
+    );
+    assert.match(
+      brokerContractStep,
+      /DATABASE_URL: postgres:\/\/agora:agora@localhost:5432\/agora/,
+    );
+    assert.match(brokerContractStep, /CREATOR_AGENT_BROKER_CONTRACT_PG_TEST: '1'/);
+    assert.match(
+      brokerContractStep,
+      /run: pnpm --dir db exec vitest run __tests__\/creator-agent-broker-delivery-contract\.pg\.test\.ts/,
+    );
+    assert.doesNotMatch(
+      brokerContractStep,
+      /POSTGRES_[A-Z_]+_PASSWORD/,
+      `${workflow} 0018 child-database gate must not receive application-role credentials`,
+    );
+    assert.equal(
+      (source.match(/Creator Agent conversation\.ready fact PostgreSQL gate/g) ?? []).length,
+      1,
+      `${workflow} must define exactly one durable conversation.ready PostgreSQL gate`,
+    );
+    const readyFactStep = capture(
+      source,
+      /\n {6}- name: Creator Agent conversation\.ready fact PostgreSQL gate\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} conversation.ready fact step`,
+    );
+    assert.match(readyFactStep, /CREATOR_AGENT_READY_FACT_PG_TEST: '1'/);
+    assert.match(
+      readyFactStep,
+      /pnpm --dir db exec vitest run __tests__\/creator-agent-conversation-ready-fact\.pg\.test\.ts/,
+    );
+    assert.equal(
+      (source.match(/Creator Agent Gateway to Worker SQLite vertical gate/g) ?? []).length,
+      1,
+      `${workflow} must define exactly one Worker SQLite vertical gate`,
+    );
+    assert.equal(
+      (source.match(/CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'/g) ?? []).length,
+      1,
+      `${workflow} must enable the real vertical suite in exactly one step`,
+    );
+    const verticalStep = capture(
+      source,
+      /\n {6}- name: Creator Agent Gateway to Worker SQLite vertical gate\n([\s\S]*?)(?=\n {6}- name:)/,
+      `${workflow} Worker SQLite vertical step`,
+    );
+    assert.match(verticalStep, /DATABASE_URL: postgres:\/\/agora:agora@localhost:5432\/agora/);
+    assert.match(verticalStep, /POSTGRES_AGENT_API_PASSWORD: ci-agent-api-role-password/);
+    assert.match(verticalStep, /POSTGRES_AGENT_BROKER_PASSWORD: ci-agent-broker-role-password/);
+    assert.match(verticalStep, /CREATOR_AGENT_VERTICAL_PG_SQLITE_TEST: '1'/);
+    assert.match(verticalStep, /run: pnpm -F @cb\/creator-worker-broker-client test:pg-vertical/);
+    assert.match(source, /Creator Agent persistent 0012 to 0017 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0016 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0015 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0014 upgrade gate/);
+    assert.doesNotMatch(source, /Creator Agent persistent 0012 to 0013 upgrade gate/);
+    assert.ok(
+      source.indexOf('Creator Agent Cloud Journal and Conversation PostgreSQL gates') <
+        source.indexOf('Creator Agent Broker delivery contract PostgreSQL gate'),
+      `${workflow} must run the Consumer accept login gate before role-mutating child DB gates`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent Gateway PostgreSQL authority gate') <
+        source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate'),
+      `${workflow} must run the Gateway authority gate before the vertical gate`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent Gateway to Worker SQLite vertical gate') <
+        source.indexOf('Creator Agent Broker delivery contract PostgreSQL gate'),
+      `${workflow} must run every role-login vertical before role-mutating child DB gates`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent Broker delivery contract PostgreSQL gate') <
+        source.indexOf('Creator Agent conversation.ready fact PostgreSQL gate'),
+      `${workflow} must run the 0018 gate before the durable ready gate`,
+    );
+    assert.ok(
+      source.indexOf('Creator Agent conversation.ready fact PostgreSQL gate') <
+        source.indexOf('Creator Agent persistent 0012 to 0017 upgrade gate'),
+      `${workflow} must run the vertical gate before the role-mutating upgrade gate`,
+    );
+  }
+
+  const r3Gate = text('scripts/integration/vnext-r3-ephemeral-pg.mjs');
+  assert.equal(
+    (r3Gate.match(/CREATOR_AGENT_CONSUMER_ACCEPT_PG_TEST: '1'/g) ?? []).length,
+    1,
+    'the isolated PR R3 gate must run the historical 0022 PostgreSQL suite exactly once',
+  );
+  assert.match(r3Gate, /CREATOR_AGENT_LEGACY_0022_MIGRATION_TEST: '1'/);
+  assert.match(r3Gate, /__tests__\/creator-agent-consumer-message-accept\.pg\.test\.ts/);
+});
+
+test('release CI builds and binds an independent fourth Agent Gateway image', () => {
+  const workflow = text('.github/workflows/ci.yml');
+  const imageJob = capture(workflow, /\n {2}image:\n([\s\S]*?)\n {2}release:\n/, 'image job');
+  assert.match(
+    imageJob,
+    /- key: agent-gateway\s+repository: ghcr\.io\/dangdang-tech\/combo-agent-gateway\s+dockerfile: infra\/Dockerfile\.agent-gateway/u,
+  );
+  assert.equal(
+    (imageJob.match(/\n\s+- key: (?:api|agent-gateway|runtime|web)\n/gu) ?? []).length,
+    4,
+  );
+  assert.match(workflow, /agent_gateway_image=.*agent-gateway\.image/u);
+  assert.match(workflow, /--agent-gateway-image "\$agent_gateway_image"/u);
+
+  const dockerfile = text('infra/Dockerfile.agent-gateway');
+  assert.match(dockerfile, /pnpm -F @cb\/agent-gateway build/u);
+  assert.match(dockerfile, /RUN pnpm install --prod --frozen-lockfile/u);
+  assert.match(dockerfile, /USER node/u);
+  assert.match(dockerfile, /CMD \["node", "dist\/processes\/gateway\.js"\]/u);
+  assert.doesNotMatch(dockerfile, /COPY (?:--from=build )?\.?(?:\/app\/)?db(?:\s|\/)/u);
+});
+
+test('Agent Gateway release resources and role provisioning remain Test-only', () => {
+  const testGateway = text('infra/k8s/release/overlays/test/apps-v2/agent-gateway.yaml');
+  const testMigration = text(
+    'infra/k8s/release/overlays/test/migrate/vnext-role-passwords.patch.yaml',
+  );
+  const baseApps = text('infra/k8s/release/base/apps/kustomization.yaml');
+  const baseMigration = text('infra/k8s/job-migrate.yaml');
+  const previewApps = text('infra/k8s/release/overlays/preview/apps/kustomization.yaml');
+  const productionApps = text('infra/k8s/release/overlays/production/apps/kustomization.yaml');
+
+  assert.match(testGateway, /replicas: 2/u);
+  assert.match(testGateway, /automountServiceAccountToken: false/u);
+  assert.match(testGateway, /readOnlyRootFilesystem: true/u);
+  assert.match(testGateway, /name: AGENT_GATEWAY_PUBLISHER_ENABLED\s+value: 'false'/u);
+  assert.match(testGateway, /name: POSTGRES_AGENT_BROKER_PASSWORD/u);
+  assert.doesNotMatch(testGateway, /name: PGPASSWORD/u);
+  assert.match(testGateway, /path: \/health\s+port: health/u);
+  assert.match(testGateway, /path: \/ready\s+port: health/u);
+  assert.match(testGateway, /type: ClusterIP/u);
+  assert.doesNotMatch(testGateway, /nodePort:/u);
+
+  for (const role of ['API', 'BROKER', 'RECONCILER']) {
+    assert.match(
+      testMigration,
+      new RegExp(`name: POSTGRES_AGENT_${role}_PASSWORD[\\s\\S]*?optional: true`, 'u'),
+    );
+  }
+  for (const source of [baseApps, baseMigration, previewApps, productionApps]) {
+    assert.doesNotMatch(source, /combo-agent-gateway|POSTGRES_AGENT_BROKER_PASSWORD/u);
+  }
+
+  const deploy = text('scripts/deploy-env.sh');
+  assert.match(deploy, /apply --dry-run=client -f "\$WORK\/apps\.yaml" -o name/u);
+  assert.match(deploy, /deployments\+=\(agent-gateway\)/u);
+  assert.match(deploy, /\[\[ "\$ENVIRONMENT" == test \]\] \|\| return 0/u);
+  assert.match(deploy, /managed_by.*release-v2/u);
+  assert.match(deploy, /delete "\$\{existing\[@\]\}" --wait=true --timeout=60s/u);
+});

@@ -1,0 +1,343 @@
+{
+  "protocol": "combo.protocol-decoded-boundaries/1",
+  "schemaVersion": 1,
+  "scope": "decoded-and-canonical-base64url-owner-boundaries",
+  "checkedArtifactDigests": {
+    "contractSchemas": "sha256:1d7671ec9b5d65e5e9d20adcd3024413c0fc4ee45ad6b141db068a9542c75c1b",
+    "brokerContract": "sha256:01c2f3441953bd6267184211d689bb7647c54e869d1830f8d9336fcb1e1a6d9d",
+    "openApi": "sha256:9efd2e6193be36ea8496670e036d4492941571fa0dcd9c509a7e903027358350"
+  },
+  "baseFixtureDigests": {
+    "brokerHandshake": "sha256:1dc8a8f56948c9e17f711b401a2ac04bea7ffc1e98c4e95fabf19b60fb4afcf4",
+    "brokerInvocationPrepare": "sha256:74e7f1da4c8d9380a3e03b5e9d0cca65ba44cb1aeeeefd41e2504e583a44d2de",
+    "sandboxAttestation": "sha256:e77223f03dee5b23d3b7ecaa4e64530dfb0876d592780e23c462ddb7cbe47f91",
+    "evidenceReviewerSignoff": "sha256:8168d6903059304a5eaf836f620eb7acc3a0fce7688499ef3e52042f8d10b92b",
+    "snapshotEnvelope": "sha256:4beebe50ab28e454e3136c908feefb7df3fe97dc02e846882231614722a3dfe9",
+    "snapshotManifestEnvelope": "sha256:5daaeaccbcabf1eac51dc06e467c8464b4b65b7fd12cfbaae0d450c1581940fd"
+  },
+  "boundaries": [
+    {
+      "id": "p256-p1363-signature",
+      "minimumBytes": 64,
+      "maximumBytes": 64,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/challengeSignature"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/signature"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/ExecutionCapability/definitions/ExecutionCapability/properties/signature"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SandboxAttestation/definitions/SandboxAttestation/properties/supervisorSignature"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/EvidenceReviewerSignoff/definitions/EvidenceReviewerSignoff/properties/signature"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerHandshake/definitions/BrokerHandshake/properties/challengeSignature"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/executionCapability/properties/signature"
+        }
+      ]
+    },
+    {
+      "id": "snapshot-nonce",
+      "minimumBytes": 12,
+      "maximumBytes": 12,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotArchiveEnvelope/definitions/SnapshotArchiveEnvelope/properties/nonce"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifestEnvelope/definitions/SnapshotManifestEnvelope/properties/nonce"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/archive/properties/envelope/properties/nonce"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/manifest/properties/envelope/properties/nonce"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/nonce"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/nonce"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/nonce"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/nonce"
+        }
+      ]
+    },
+    {
+      "id": "snapshot-auth-tag",
+      "minimumBytes": 16,
+      "maximumBytes": 16,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotArchiveEnvelope/definitions/SnapshotArchiveEnvelope/properties/authTag"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifestEnvelope/definitions/SnapshotManifestEnvelope/properties/authTag"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/archive/properties/envelope/properties/authTag"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/manifest/properties/envelope/properties/authTag"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/authTag"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/authTag"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/authTag"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/authTag"
+        }
+      ]
+    },
+    {
+      "id": "snapshot-wrapped-dek",
+      "minimumBytes": 40,
+      "maximumBytes": 40,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotArchiveEnvelope/definitions/SnapshotArchiveEnvelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotManifestEnvelope/definitions/SnapshotManifestEnvelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/archive/properties/envelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotPublicationPreparationMarker/definitions/SnapshotPublicationPreparationMarker/properties/request/properties/manifest/properties/envelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/SnapshotUploadCreateRequest/definitions/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/archive/properties/envelope/properties/wrappedDek"
+        },
+        {
+          "artifact": "openapi",
+          "pointer": "/components/schemas/SnapshotUploadCreateRequest/properties/manifest/properties/envelope/properties/wrappedDek"
+        }
+      ]
+    },
+    {
+      "id": "broker-sensitive-nonce",
+      "minimumBytes": 12,
+      "maximumBytes": 12,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/nonce"
+        }
+      ]
+    },
+    {
+      "id": "broker-sensitive-ciphertext",
+      "minimumBytes": 1,
+      "maximumBytes": 46080,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/ciphertext"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/ciphertext"
+        }
+      ]
+    },
+    {
+      "id": "broker-sensitive-auth-tag",
+      "minimumBytes": 16,
+      "maximumBytes": 16,
+      "artifactPointers": [
+        {
+          "artifact": "contract-schemas",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/authTag"
+        },
+        {
+          "artifact": "broker-contract",
+          "pointer": "/schemas/BrokerEnvelope/definitions/BrokerEnvelope/anyOf/0/anyOf/6/properties/body/properties/userMessageCiphertext/properties/authTag"
+        }
+      ]
+    }
+  ],
+  "ownerCases": [
+    {
+      "id": "broker-handshake-signature",
+      "boundaryId": "p256-p1363-signature",
+      "runtimeParser": "BrokerHandshakeSchema",
+      "fixturePath": "broker-handshake.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/challengeSignature",
+      "repair": "none"
+    },
+    {
+      "id": "execution-capability-signature",
+      "boundaryId": "p256-p1363-signature",
+      "runtimeParser": "ExecutionCapabilitySchema",
+      "fixturePath": "broker-invocation-prepare.v1.json",
+      "ownerPointer": "/body/executionCapability",
+      "valuePointer": "/signature",
+      "repair": "none"
+    },
+    {
+      "id": "sandbox-supervisor-signature",
+      "boundaryId": "p256-p1363-signature",
+      "runtimeParser": "SandboxAttestationSchema",
+      "fixturePath": "sandbox-attestation.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/supervisorSignature",
+      "repair": "none"
+    },
+    {
+      "id": "evidence-reviewer-signature",
+      "boundaryId": "p256-p1363-signature",
+      "runtimeParser": "EvidenceReviewerSignoffSchema",
+      "fixturePath": "evidence-reviewer-signoff.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/signature",
+      "repair": "none"
+    },
+    {
+      "id": "snapshot-archive-nonce",
+      "boundaryId": "snapshot-nonce",
+      "runtimeParser": "SnapshotArchiveEnvelopeSchema",
+      "fixturePath": "snapshot-envelope.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/nonce",
+      "repair": "none"
+    },
+    {
+      "id": "snapshot-archive-auth-tag",
+      "boundaryId": "snapshot-auth-tag",
+      "runtimeParser": "SnapshotArchiveEnvelopeSchema",
+      "fixturePath": "snapshot-envelope.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/authTag",
+      "repair": "none"
+    },
+    {
+      "id": "snapshot-archive-wrapped-dek",
+      "boundaryId": "snapshot-wrapped-dek",
+      "runtimeParser": "SnapshotArchiveEnvelopeSchema",
+      "fixturePath": "snapshot-envelope.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/wrappedDek",
+      "repair": "none"
+    },
+    {
+      "id": "snapshot-manifest-nonce",
+      "boundaryId": "snapshot-nonce",
+      "runtimeParser": "SnapshotManifestEnvelopeSchema",
+      "fixturePath": "snapshot-manifest-envelope.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/nonce",
+      "repair": "none"
+    },
+    {
+      "id": "snapshot-manifest-auth-tag",
+      "boundaryId": "snapshot-auth-tag",
+      "runtimeParser": "SnapshotManifestEnvelopeSchema",
+      "fixturePath": "snapshot-manifest-envelope.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/authTag",
+      "repair": "none"
+    },
+    {
+      "id": "snapshot-manifest-wrapped-dek",
+      "boundaryId": "snapshot-wrapped-dek",
+      "runtimeParser": "SnapshotManifestEnvelopeSchema",
+      "fixturePath": "snapshot-manifest-envelope.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/wrappedDek",
+      "repair": "none"
+    },
+    {
+      "id": "broker-prepare-nonce",
+      "boundaryId": "broker-sensitive-nonce",
+      "runtimeParser": "BrokerEnvelopeSchema",
+      "fixturePath": "broker-invocation-prepare.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/body/userMessageCiphertext/nonce",
+      "repair": "broker-sensitive-cipher-digest"
+    },
+    {
+      "id": "broker-prepare-ciphertext",
+      "boundaryId": "broker-sensitive-ciphertext",
+      "runtimeParser": "BrokerEnvelopeSchema",
+      "fixturePath": "broker-invocation-prepare.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/body/userMessageCiphertext/ciphertext",
+      "repair": "broker-sensitive-cipher-digest"
+    },
+    {
+      "id": "broker-prepare-auth-tag",
+      "boundaryId": "broker-sensitive-auth-tag",
+      "runtimeParser": "BrokerEnvelopeSchema",
+      "fixturePath": "broker-invocation-prepare.v1.json",
+      "ownerPointer": "",
+      "valuePointer": "/body/userMessageCiphertext/authTag",
+      "repair": "broker-sensitive-cipher-digest"
+    }
+  ],
+  "remainingBoundaryClasses": [
+    "structural-string-length",
+    "array-count",
+    "wire-bytes",
+    "canonical-json-bytes",
+    "numeric-bytes"
+  ]
+}

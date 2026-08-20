@@ -18,6 +18,7 @@ import { buildInfra, createRedisInterruptBus } from '../platform/infra/index.js'
 import { registerHealthRoutes } from '../platform/http/health.js';
 import { corsOriginPolicy } from '../platform/http/browser-origin.js';
 import { registerVersionRoute } from '../platform/http/version.js';
+import { RUNTIME_HTTP_BODY_LIMIT_BYTES } from '../platform/http/vnext-json-body.js';
 import {
   currentTraceId,
   currentTraceLogFields,
@@ -65,7 +66,7 @@ export interface BuildAppOptions {
 export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInstance> {
   const env = opts.env ?? loadEnv();
   const app = Fastify({
-    bodyLimit: 4 * 1024 * 1024,
+    bodyLimit: RUNTIME_HTTP_BODY_LIMIT_BYTES,
     logger: {
       level: env.LOG_LEVEL,
       base: { service: env.OTEL_SERVICE_NAME, process: 'runtime-api' },

@@ -8,7 +8,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseAllDocuments, stringify } from 'yaml';
-import { readReleaseManifest, releaseManifestDigest } from './release-manifest.mjs';
+import {
+  readReleaseManifest,
+  RELEASE_MANIFEST_SCHEMA_VERSION,
+  releaseManifestDigest,
+} from './release-manifest.mjs';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = resolve(SCRIPT_DIR, '..');
@@ -57,6 +61,7 @@ const FOUNDATION_NAMESPACES = Object.freeze({
 
 const FIXTURE_DIGESTS = Object.freeze({
   api: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  agentGateway: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
   runtime: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   web: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
 });
@@ -103,6 +108,9 @@ function replaceFixtureDigests(root, manifest) {
     join(root, 'base', 'apps', 'kustomization.yaml'),
     join(root, 'base', 'migrate', 'kustomization.yaml'),
   ];
+  if (manifest.images.agentGateway) {
+    files.push(join(root, 'overlays', 'test', 'apps-v2', 'kustomization.yaml'));
+  }
   for (const file of files) {
     let source = readFileSync(file, 'utf8');
     const replacements = {
@@ -110,6 +118,9 @@ function replaceFixtureDigests(root, manifest) {
       [FIXTURE_DIGESTS.runtime]: imageDigest(manifest.images.runtime),
       [FIXTURE_DIGESTS.web]: imageDigest(manifest.images.web),
     };
+    if (manifest.images.agentGateway) {
+      replacements[FIXTURE_DIGESTS.agentGateway] = imageDigest(manifest.images.agentGateway);
+    }
     for (const [from, to] of Object.entries(replacements)) source = source.replaceAll(from, to);
     if (Object.keys(replacements).some((fixture) => source.includes(fixture))) {
       fail(`fixture image digest remains in ${file}`);
@@ -129,6 +140,10 @@ function replaceScalars(value, environment) {
   return value
     .replaceAll('api.combo.svc.cluster.local', `api.${config.namespace}.svc.cluster.local`)
     .replaceAll('runtime.combo.svc.cluster.local', `runtime.${config.namespace}.svc.cluster.local`)
+    .replaceAll(
+      'agent-gateway.combo.svc.cluster.local',
+      `agent-gateway.${config.namespace}.svc.cluster.local`,
+    )
     .replaceAll('postgres:5432', `${config.postgresHost}:5432`)
     .replaceAll('redis-queue:6379', `${config.redisQueueHost}:6379`)
     .replaceAll('redis-hot:6379', `${config.redisHotHost}:6379`)
@@ -155,6 +170,61 @@ function containerImage(resource, name) {
   const container = podTemplate(resource)?.spec?.containers?.find((item) => item.name === name);
   if (!container) fail(`${resource.kind}/${resource.metadata?.name} lacks container ${name}`);
   return container.image;
+}
+
+function validateVisibleTranscriptTestProvider(runtime, environment) {
+  const podSpec = podTemplate(runtime)?.spec;
+  const container = podSpec?.containers?.find((item) => item.name === 'runtime');
+  if (!container) fail('Deployment/runtime lacks container runtime');
+  const environmentVariables = new Map(
+    (container.env ?? []).map((entry) => [entry.name, entry.value]),
+  );
+  const provider = environmentVariables.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER');
+  const keyringFile = environmentVariables.get('CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE');
+  const mount = (container.volumeMounts ?? []).find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+  const volume = (podSpec?.volumes ?? []).find(
+    (entry) => entry.name === 'visible-transcript-test-keyring',
+  );
+
+  if (environment !== 'test') {
+    if (provider !== undefined || keyringFile !== undefined || mount || volume) {
+      fail('Preview and Production must not render the visible transcript Test key provider');
+    }
+    return;
+  }
+
+  const expected = {
+    CREATOR_AGENT_PUBLIC_ENABLED: 'false',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_PROVIDER: 'test-k8s-secret-file',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_NAMESPACE: 'combo/visible-transcript',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEY_REF_PREFIX:
+      'k8s-secret://combo-test/visible-transcript/',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_MIN_KEY_VERSION: '1',
+    CREATOR_AGENT_VISIBLE_TRANSCRIPT_KMS_KEYRING_FILE:
+      '/var/run/secrets/combo/visible-transcript/keyring.json',
+  };
+  for (const [name, value] of Object.entries(expected)) {
+    if (environmentVariables.get(name) !== value) fail(`Test Runtime lacks exact ${name}`);
+  }
+  if (
+    !mount ||
+    mount.mountPath !== '/var/run/secrets/combo/visible-transcript' ||
+    mount.readOnly !== true
+  ) {
+    fail('Test visible transcript keyring mount must be read-only');
+  }
+  const item = volume?.secret?.items?.find((entry) => entry.key === 'keyring.json');
+  if (
+    volume?.secret?.secretName !== 'combo-visible-transcript-test-keyring' ||
+    volume.secret.optional !== true ||
+    volume.secret.defaultMode !== 0o400 ||
+    item?.path !== 'keyring.json' ||
+    item.mode !== 0o400
+  ) {
+    fail('Test visible transcript keyring must use the optional 0400 Secret volume item');
+  }
 }
 
 function assertNames(resources, expected, kind) {
@@ -209,8 +279,21 @@ function validateApps(resources, environment, manifest) {
   const deployments = resources.filter((resource) => resource.kind === 'Deployment');
   const services = resources.filter((resource) => resource.kind === 'Service');
   const configMaps = resources.filter((resource) => resource.kind === 'ConfigMap');
-  const expectedDeployments = ['api', 'runtime', 'web', 'worker'].sort();
-  const expectedServices = ['api', 'runtime', 'web'].sort();
+  const rendersAgentGateway =
+    environment === 'test' && manifest.schemaVersion === RELEASE_MANIFEST_SCHEMA_VERSION;
+  const expectedDeployments = [
+    'api',
+    ...(rendersAgentGateway ? ['agent-gateway'] : []),
+    'runtime',
+    'web',
+    'worker',
+  ].sort();
+  const expectedServices = [
+    'api',
+    ...(rendersAgentGateway ? ['agent-gateway'] : []),
+    'runtime',
+    'web',
+  ].sort();
   const expectedConfigMaps = [];
   assertNames(deployments, expectedDeployments, 'Deployment');
   assertNames(services, expectedServices, 'Service');
@@ -226,8 +309,108 @@ function validateApps(resources, environment, manifest) {
   if (containerImage(deployment('runtime'), 'runtime') !== manifest.images.runtime) {
     fail('Runtime image mismatch');
   }
+  validateVisibleTranscriptTestProvider(deployment('runtime'), environment);
   if (containerImage(deployment('web'), 'web') !== manifest.images.web) fail('Web image mismatch');
+  if (rendersAgentGateway) {
+    if (
+      containerImage(deployment('agent-gateway'), 'agent-gateway') !== manifest.images.agentGateway
+    ) {
+      fail('Agent Gateway image mismatch');
+    }
+    validateAgentGatewayTestContract(
+      deployment('agent-gateway'),
+      services.find((service) => service.metadata?.name === 'agent-gateway'),
+    );
+  }
   validateServices(services);
+}
+
+function validateAgentGatewayTestContract(deployment, service) {
+  if (deployment.spec?.replicas !== 2) fail('Test Agent Gateway must have exactly two replicas');
+  if (
+    deployment.spec?.strategy?.type !== 'RollingUpdate' ||
+    deployment.spec.strategy.rollingUpdate?.maxUnavailable !== 0
+  ) {
+    fail('Test Agent Gateway rollout must keep an available replica');
+  }
+  const podSpec = podTemplate(deployment)?.spec;
+  if (podSpec?.automountServiceAccountToken !== false) {
+    fail('Test Agent Gateway must not mount a service account token');
+  }
+  if (!Number.isInteger(podSpec?.terminationGracePeriodSeconds)) {
+    fail('Test Agent Gateway must declare a drain grace period');
+  }
+  if (
+    podSpec?.securityContext?.runAsNonRoot !== true ||
+    podSpec.securityContext.seccompProfile?.type !== 'RuntimeDefault'
+  ) {
+    fail('Test Agent Gateway must use the non-root RuntimeDefault pod profile');
+  }
+  const container = podSpec?.containers?.find((item) => item.name === 'agent-gateway');
+  if (
+    container?.securityContext?.allowPrivilegeEscalation !== false ||
+    container.securityContext.readOnlyRootFilesystem !== true ||
+    !container.securityContext.capabilities?.drop?.includes('ALL')
+  ) {
+    fail('Test Agent Gateway container security profile is incomplete');
+  }
+  const values = new Map((container.env ?? []).map((entry) => [entry.name, entry.value]));
+  const exactValues = {
+    AGENT_GATEWAY_ENABLED: 'true',
+    AGENT_GATEWAY_PUBLISHER_ENABLED: 'false',
+    AGENT_GATEWAY_HOST: '0.0.0.0',
+    AGENT_GATEWAY_PORT: '3300',
+    AGENT_GATEWAY_HEALTH_HOST: '0.0.0.0',
+    AGENT_GATEWAY_HEALTH_PORT: '3301',
+    PGUSER: 'combo_agent_broker',
+  };
+  for (const [name, value] of Object.entries(exactValues)) {
+    if (values.get(name) !== value) fail(`Test Agent Gateway lacks exact ${name}`);
+  }
+  if (values.has('PGPASSWORD')) fail('Test Agent Gateway must not receive PGPASSWORD');
+  const secretKeys = new Map(
+    (container.env ?? [])
+      .filter((entry) => entry.valueFrom?.secretKeyRef)
+      .map((entry) => [entry.name, entry.valueFrom.secretKeyRef]),
+  );
+  const requiredKeys = [
+    'POSTGRES_AGENT_BROKER_PASSWORD',
+    'AGENT_GATEWAY_ACCEPTED_WORKER_VERSIONS',
+    'AGENT_GATEWAY_ACCEPTED_CODEX_RUNTIME_ARTIFACTS',
+    'AGENT_GATEWAY_ACCEPTED_CODEX_PROTOCOL_SCHEMA_DIGESTS',
+    'AGENT_GATEWAY_ACCEPTED_ISOLATION_MODES',
+  ];
+  for (const name of requiredKeys) {
+    const reference = secretKeys.get(name);
+    if (reference?.name !== 'combo-env' || reference.key !== name || reference.optional === true) {
+      fail(`Test Agent Gateway must require combo-env/${name}`);
+    }
+  }
+  if (secretKeys.get('AGENT_GATEWAY_PUBLISHER_DEPLOYMENT_ALLOWLIST')?.optional !== true) {
+    fail('disabled Test Agent Gateway publisher allowlist must be optional');
+  }
+  if (
+    container.livenessProbe?.httpGet?.path !== '/health' ||
+    container.livenessProbe.httpGet.port !== 'health' ||
+    container.readinessProbe?.httpGet?.path !== '/ready' ||
+    container.readinessProbe.httpGet.port !== 'health'
+  ) {
+    fail('Test Agent Gateway must expose separate health and readiness probes');
+  }
+  if (
+    container.resources?.requests?.['ephemeral-storage'] === undefined ||
+    container.resources?.limits?.['ephemeral-storage'] === undefined
+  ) {
+    fail('Test Agent Gateway must bound ephemeral storage');
+  }
+  if (
+    service?.spec?.type !== 'ClusterIP' ||
+    service.spec.ports?.length !== 1 ||
+    service.spec.ports[0]?.port !== 3300 ||
+    service.spec.ports[0]?.targetPort !== 'websocket'
+  ) {
+    fail('Test Agent Gateway Service must expose only the ClusterIP WebSocket port');
+  }
 }
 
 function validateMigrate(resources, environment, manifest) {
@@ -242,6 +425,29 @@ function validateMigrate(resources, environment, manifest) {
   }
   if (containerImage(resources[0], 'migrate') !== manifest.images.api) {
     fail('migration must use the API image');
+  }
+  const container = podTemplate(resources[0])?.spec?.containers?.find(
+    (item) => item.name === 'migrate',
+  );
+  const roleVariables = [
+    'POSTGRES_AGENT_API_PASSWORD',
+    'POSTGRES_AGENT_BROKER_PASSWORD',
+    'POSTGRES_AGENT_RECONCILER_PASSWORD',
+  ];
+  const environmentVariables = new Map((container?.env ?? []).map((entry) => [entry.name, entry]));
+  for (const name of roleVariables) {
+    const entry = environmentVariables.get(name);
+    if (environment !== 'test') {
+      if (entry !== undefined) fail(`${environment} migration must not receive ${name}`);
+      continue;
+    }
+    if (
+      entry?.valueFrom?.secretKeyRef?.name !== 'combo-env' ||
+      entry.valueFrom.secretKeyRef.key !== name ||
+      entry.valueFrom.secretKeyRef.optional !== true
+    ) {
+      fail(`Test migration must expand-compatibly read combo-env/${name}`);
+    }
   }
 }
 
@@ -305,7 +511,13 @@ function run(argv) {
         fail('manifest digest mismatch');
       }
       replaceFixtureDigests(join(copiedRoot, 'release'), manifest);
-      const overlay = join(copiedRoot, 'release', 'overlays', options.environment, options.phase);
+      const phaseOverlay =
+        options.phase === 'apps' &&
+        options.environment === 'test' &&
+        manifest.schemaVersion === RELEASE_MANIFEST_SCHEMA_VERSION
+          ? 'apps-v2'
+          : options.phase;
+      const overlay = join(copiedRoot, 'release', 'overlays', options.environment, phaseOverlay);
       const raw = kustomize(overlay);
       for (const doc of parseAllDocuments(raw)) {
         if (doc.errors.length > 0) fail(`invalid rendered YAML: ${doc.errors[0].message}`);

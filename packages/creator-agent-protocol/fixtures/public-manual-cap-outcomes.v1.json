@@ -1,0 +1,118 @@
+{
+  "protocol": "combo.public-manual-cap-outcomes/1",
+  "schemaVersion": 1,
+  "authority": "ADR-VNEXT-034",
+  "rows": [
+    { "probeId": "manual-cap:broker-frame:n-minus-one-n-plus-one", "delta": -1, "accepted": true },
+    { "probeId": "manual-cap:broker-frame:n-minus-one-n-plus-one", "delta": 0, "accepted": true },
+    { "probeId": "manual-cap:broker-frame:n-minus-one-n-plus-one", "delta": 1, "accepted": false },
+    {
+      "probeId": "manual-cap:commit-marker:exact-n-minus-one-n-plus-one",
+      "delta": -1,
+      "accepted": false
+    },
+    {
+      "probeId": "manual-cap:commit-marker:exact-n-minus-one-n-plus-one",
+      "delta": 0,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:commit-marker:exact-n-minus-one-n-plus-one",
+      "delta": 1,
+      "accepted": false
+    },
+    { "probeId": "manual-cap:evidence-json:n-minus-one-n-plus-one", "delta": -1, "accepted": true },
+    { "probeId": "manual-cap:evidence-json:n-minus-one-n-plus-one", "delta": 0, "accepted": true },
+    { "probeId": "manual-cap:evidence-json:n-minus-one-n-plus-one", "delta": 1, "accepted": false },
+    {
+      "probeId": "manual-cap:preparation-marker:n-minus-one-n-plus-one",
+      "delta": -1,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:preparation-marker:n-minus-one-n-plus-one",
+      "delta": 0,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:preparation-marker:n-minus-one-n-plus-one",
+      "delta": 1,
+      "accepted": false
+    },
+    {
+      "probeId": "manual-cap:registry-yaml-alias:n-minus-one-n-plus-one",
+      "delta": -1,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:registry-yaml-alias:n-minus-one-n-plus-one",
+      "delta": 0,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:registry-yaml-alias:n-minus-one-n-plus-one",
+      "delta": 1,
+      "accepted": false
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-canonical:n-minus-one-n-plus-one",
+      "delta": -1,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-canonical:n-minus-one-n-plus-one",
+      "delta": 0,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-canonical:n-minus-one-n-plus-one",
+      "delta": 1,
+      "accepted": false
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-raw-defense:n-minus-one-n-plus-one",
+      "delta": -1,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-raw-defense:n-minus-one-n-plus-one",
+      "delta": 0,
+      "accepted": true
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-raw-defense:n-minus-one-n-plus-one",
+      "delta": 1,
+      "accepted": false
+    }
+  ],
+  "consumers": [
+    {
+      "probeId": "manual-cap:broker-frame:n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-protocol/src/__tests__/wire-boundaries.test.ts"
+    },
+    {
+      "probeId": "manual-cap:commit-marker:exact-n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-protocol/src/__tests__/publication-marker-byte-boundaries.test.ts"
+    },
+    {
+      "probeId": "manual-cap:evidence-json:n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-protocol/src/__tests__/schemas.test.ts"
+    },
+    {
+      "probeId": "manual-cap:preparation-marker:n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-protocol/src/__tests__/publication-marker-byte-boundaries.test.ts"
+    },
+    {
+      "probeId": "manual-cap:registry-yaml-alias:n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-protocol/src/__tests__/public-boundary-closure.test.ts"
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-canonical:n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-snapshot/src/__tests__/manifest-canonical-byte-maximum.test.ts"
+    },
+    {
+      "probeId": "manual-cap:snapshot-manifest-raw-defense:n-minus-one-n-plus-one",
+      "testFile": "packages/creator-agent-snapshot/src/__tests__/manifest-canonical-byte-maximum.test.ts"
+    }
+  ]
+}

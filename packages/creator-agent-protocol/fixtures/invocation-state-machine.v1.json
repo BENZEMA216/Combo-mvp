@@ -1,0 +1,28 @@
+{
+  "protocol": "combo.invocation-state-machine/1",
+  "schemaVersion": 1,
+  "terminalStates": ["SUCCEEDED", "FAILED", "CANCELLED", "UNCERTAIN", "EXPIRED"],
+  "transitions": {
+    "ACCEPTED": ["QUEUED", "CANCELLED"],
+    "QUEUED": ["DISPATCH_PENDING", "CANCELLED", "EXPIRED"],
+    "DISPATCH_PENDING": ["PERSISTED", "QUEUED"],
+    "PERSISTED": ["STARTING", "CANCEL_REQUESTED", "RECONCILING"],
+    "STARTING": ["RUNNING", "RECONCILING"],
+    "RUNNING": ["SUCCEEDED", "FAILED", "CANCEL_REQUESTED", "RECONCILING"],
+    "CANCEL_REQUESTED": ["CANCELLED", "SUCCEEDED", "FAILED", "RECONCILING"],
+    "RECONCILING": ["RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "UNCERTAIN"],
+    "SUCCEEDED": [],
+    "FAILED": [],
+    "CANCELLED": [],
+    "UNCERTAIN": [],
+    "EXPIRED": []
+  },
+  "guards": {
+    "SUCCEEDED": "durableFinal",
+    "FAILED": "terminalFailureConfirmed",
+    "CANCELLED": "interruptConfirmed|provedNotExecuted",
+    "RECONCILING": "executionEvidenceLost",
+    "UNCERTAIN": "reconciliationExhausted",
+    "EXPIRED": "queueTtlExpiredBeforeDispatch"
+  }
+}
