@@ -2,7 +2,7 @@
   "name": "@cb/creator-agent-broker-journal",
   "version": "0.0.0",
   "private": true,
-  "description": "Creator Worker 的纯 Invocation 执行状态内核",
+  "description": "Creator Worker Invocation 内核与 fresh SQLite durable store",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -15,6 +15,10 @@
     "./host-executor": {
       "types": "./dist/host-executor.d.ts",
       "default": "./dist/host-executor.js"
+    },
+    "./sqlite-store": {
+      "types": "./dist/sqlite-store.d.ts",
+      "default": "./dist/sqlite-store.js"
     }
   },
   "files": [

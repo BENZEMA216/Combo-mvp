@@ -1,3 +1,10 @@
+export type {
+  CommittedWorkerInterruptHostEffect,
+  CommittedWorkerObserveHostOutcomeEffect,
+  CommittedWorkerStartHostEffect,
+  WorkerAfterCommitContext,
+  WorkerCommittedAfterCommitEffect,
+} from './effect-authority.js';
 export {
   executeWorkerHostInterrupt,
   executeWorkerHostStart,
