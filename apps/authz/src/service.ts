@@ -73,7 +73,12 @@ export interface AuthzServiceDependencies {
 }
 
 export type RequestOtpResult =
-  | { kind: 'accepted'; expiresInSeconds: number }
+  | {
+      kind: 'accepted';
+      expiresInSeconds: number;
+      /** 受理路径分类，供路由层记录日志（不含邮箱等 PII）。 */
+      via: 'email' | 'uniform_rejection' | 'dev_code';
+    }
   | { kind: 'invalid_input' }
   | { kind: 'unavailable' };
 
@@ -106,14 +111,18 @@ export async function requestOtp(
     }
     // 永久拒绝返回与受理一致的统一结果，不暴露邮箱可达性，也不回退明文。
     if (delivery === 'permanent_rejection') {
-      return { kind: 'accepted', expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS };
+      return {
+        kind: 'accepted',
+        expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS,
+        via: 'uniform_rejection',
+      };
     }
     await deps.store.replaceChallenge({
       targetDigest,
       codeDigest: digestEmailCode(deps.hmacSecret, targetDigest, code),
       expiresAt,
     });
-    return { kind: 'accepted', expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS };
+    return { kind: 'accepted', expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS, via: 'email' };
   }
 
   if (!deps.devOtpCode || !OTP_CODE_PATTERN.test(deps.devOtpCode)) {
@@ -124,7 +133,7 @@ export async function requestOtp(
     codeDigest: digestEmailCode(deps.hmacSecret, targetDigest, deps.devOtpCode),
     expiresAt,
   });
-  return { kind: 'accepted', expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS };
+  return { kind: 'accepted', expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS, via: 'dev_code' };
 }
 
 export type VerifyOtpResult =

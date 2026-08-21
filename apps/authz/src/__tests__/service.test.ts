@@ -62,6 +62,7 @@ describe('dev OTP login（未配发信通道，挑战写万能码）', () => {
     const { deps, storeState } = makeDeps();
     const result = await requestOtp(deps, { email: '  User@Example.COM ' });
     expect(result.kind).toBe('accepted');
+    if (result.kind === 'accepted') expect(result.via).toBe('dev_code');
 
     const challenge = storeState.challenges[0]!;
     const targetDigest = digestEmailTarget(SECRET, EMAIL);
@@ -149,6 +150,7 @@ describe('email delivery login（配置发信通道）', () => {
 
     const requested = await requestOtp(deps, { email: EMAIL });
     expect(requested.kind).toBe('accepted');
+    if (requested.kind === 'accepted') expect(requested.via).toBe('email');
     expect(mailerState.messages).toHaveLength(1);
     const sent = mailerState.messages[0]!;
     expect(sent.to).toBe(EMAIL);
@@ -199,6 +201,7 @@ describe('email delivery login（配置发信通道）', () => {
 
     const result = await requestOtp(deps, { email: EMAIL });
     expect(result.kind).toBe('accepted');
+    if (result.kind === 'accepted') expect(result.via).toBe('uniform_rejection');
     expect(storeState.challenges).toHaveLength(0);
     // 没有挑战可消费，真实验证码不能登录该邮箱（万能码旁路不受此限，见旁路用例）。
     expect((await verifyOtp(deps, { email: EMAIL, code: '000000' })).kind).toBe('invalid_code');

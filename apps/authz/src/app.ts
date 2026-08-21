@@ -120,6 +120,8 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
       const result = await requestOtp(serviceDeps, { email: parsed.data.email });
       if (result.kind === 'invalid_input') return sendError(req, reply, 400, 'invalid_request');
       if (result.kind === 'unavailable') return sendError(req, reply, 503, 'unavailable');
+      // 只记录受理路径分类，不记录邮箱与验证码。
+      req.log.info({ via: result.via }, 'otp challenge issued');
       return reply.code(202).send({
         data: { accepted: true as const, expiresInSeconds: OTP_CHALLENGE_TTL_SECONDS },
         meta: { traceId: req.id },
