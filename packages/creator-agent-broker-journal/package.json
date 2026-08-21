@@ -1,0 +1,39 @@
+{
+  "name": "@cb/creator-agent-broker-journal",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Creator Worker 的纯 Invocation 执行状态内核",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host-executor": {
+      "types": "./dist/host-executor.d.ts",
+      "default": "./dist/host-executor.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "pretest": "pnpm -F @cb/creator-agent-protocol build && tsc -b",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "@cb/creator-agent-protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

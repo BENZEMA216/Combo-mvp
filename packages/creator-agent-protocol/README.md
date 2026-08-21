@@ -6,7 +6,7 @@
 ## R1 保证
 
 - `HostThread` 必须携带 runtime ID、进程 generation，并确认 workspace roots 已被接受；generation 漂移就是另一条线程。
-- `CreatorHost.startTurn()` 只有拿到完整 thread/generation/turn binding 后才返回 handle。确定没有调用 Host 用 `HostTurnNotStartedError`；调用状态或证据丢失用 `HostTurnEvidenceLostError`。
+- `CreatorHost.startTurn()` 只有拿到完整 thread/generation/turn binding 后才返回 handle。消费者必须用 `verifyHostTurnHandle()` 验证 controller authority；start 拒绝也必须用 adapter factory 签发并经 `verifyHostTurnStartRejection()` 验证，裸 `new Error` 或结构体不是证据。
 - `HostTurnHandle.outcome` 是唯一终态。成功结果与 SUCCEEDED 终态原子返回；FAILED/CANCELLED 不携带结果。该 handle 自己的 `verifyOutcome()` 会返回冻结 clone，terminal 不能脱离 result 单独验证。
 - 每个 handle 只有一个私有 adapter controller，同时锁住一个终态和一条中断 lineage。`interrupt()` 只返回命令 disposition，不返回第二份终态。
 - `SENT` 只能由同步 Host 写入线性化回调产生。第一个成功写出的 reason/request ID 被 latch，后续调用返回同一回执；确定 `NOT_SENT` 后才允许新尝试。终态先赢则返回 `TERMINAL_ALREADY_OBSERVED` 且不得写 Host。
@@ -22,7 +22,7 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
 ## 出口与信任边界
 
 - `@cb/creator-agent-protocol` 与 `/host`：给组合根和消费者使用，只暴露严格输入、Host port、结果类型与 verify API。
-- `@cb/creator-agent-protocol/host-adapter`：只给受信 Host adapter 使用，创建每个 turn 私有的 controller，并接收同步 Host 写入线性化 callback。
+- `@cb/creator-agent-protocol/host-adapter`：只给受信 Host adapter 使用，创建每个 turn 私有的 controller、start rejection，并接收同步 Host 写入线性化 callback。
 - canonical JSON、通用 hash 和底层 primitives 都是包内实现，不是公共产品 API。
 
 R1 明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

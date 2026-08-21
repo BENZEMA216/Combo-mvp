@@ -1,21 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  HostInterruptNotSentError,
   HostStartTurnInputSchema,
   HostThreadSchema,
   HostTurnEvidenceLostError,
   HostTurnNotStartedError,
   sameHostThread,
+  verifyHostTurnHandle,
+  verifyHostTurnStartRejection,
   type CreatorHost,
   type HostThreadId,
 } from '../index.js';
 import {
   HOST_INTERRUPT_WRITE_LINEARIZED,
+  HostInterruptNotSentError,
   HostMessageIdSchema,
   HostThreadIdSchema,
   HostTurnIdSchema,
   createHostTurnAdapterController,
+  createHostTurnNotStartedError,
+  createHostTurnStartEvidenceLostError,
   type HostInterruptWriter,
   type HostInterruptWriteRequest,
   type HostTurnAdapterController,
@@ -274,6 +278,20 @@ describe('one handle-private atomic outcome', () => {
 });
 
 describe('first-sent interrupt lineage', () => {
+  it('verifies dispositions only against the exact handle that issued them', async () => {
+    const first = createController().controller;
+    const second = createController().controller;
+    const disposition = await first.handle.interrupt('USER_CANCEL');
+
+    expect(first.handle.verifyInterruptDisposition(disposition)).toBe(disposition);
+    expect(() =>
+      first.handle.verifyInterruptDisposition(JSON.parse(JSON.stringify(disposition))),
+    ).toThrow(/this Host turn authority/u);
+    expect(() => second.handle.verifyInterruptDisposition(disposition)).toThrow(
+      /this Host turn authority/u,
+    );
+  });
+
   it.each([
     ['USER_CANCEL', 'TIMEOUT', 'CANCELLED', null],
     ['TIMEOUT', 'USER_CANCEL', 'FAILED', 'TURN_TIMEOUT'],
@@ -304,9 +322,9 @@ describe('first-sent interrupt lineage', () => {
       }
       return HOST_INTERRUPT_WRITE_LINEARIZED;
     });
-    await expect(controller.handle.interrupt('USER_CANCEL')).rejects.toBeInstanceOf(
-      HostInterruptNotSentError,
-    );
+    const notSent = await controller.handle.interrupt('USER_CANCEL');
+    expect(notSent).toMatchObject({ disposition: 'NOT_SENT', reason: 'USER_CANCEL' });
+    expect(controller.handle.verifyInterruptDisposition(notSent)).toBe(notSent);
     const receipt = await controller.handle.interrupt('TIMEOUT');
     expect(receipt).toMatchObject({ disposition: 'SENT', reason: 'TIMEOUT' });
     expect(writes.map((request) => request.reason)).toEqual(['USER_CANCEL', 'TIMEOUT']);
@@ -466,7 +484,8 @@ describe('CreatorHost structural port and stable rejection classes', () => {
       startTurn: async () => controller.handle,
     };
     expect(await host.createThread()).toBe(thread);
-    expect(await host.startTurn(input)).toBe(controller.handle);
+    expect(verifyHostTurnHandle(await host.startTurn(input))).toBe(controller.handle);
+    expect(() => verifyHostTurnHandle({ ...controller.handle })).toThrow(/Host turn handle/u);
   });
 
   it('provides stable errors for proved-zero and evidence-lost boundaries', async () => {
@@ -479,6 +498,15 @@ describe('CreatorHost structural port and stable rejection classes', () => {
     expect(new HostTurnNotStartedError()).toMatchObject({ code: 'HOST_TURN_NOT_STARTED' });
     expect(new HostInterruptNotSentError()).toMatchObject({ code: 'HOST_INTERRUPT_NOT_SENT' });
     expect(() => new HostTurnEvidenceLostError('OTHER' as never)).toThrow();
+    expect(() => verifyHostTurnStartRejection(new HostTurnNotStartedError())).toThrow(
+      /start rejection/u,
+    );
+    expect(verifyHostTurnStartRejection(createHostTurnNotStartedError())).toBeInstanceOf(
+      HostTurnNotStartedError,
+    );
+    expect(
+      verifyHostTurnStartRejection(createHostTurnStartEvidenceLostError('HOST_SESSION_LOST')),
+    ).toMatchObject({ reason: 'HOST_SESSION_LOST' });
 
     const { controller } = createController();
     const outcomeRejection = expect(controller.handle.outcome).rejects.toBeInstanceOf(
