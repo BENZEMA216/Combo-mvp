@@ -477,7 +477,7 @@ function normalizeFailure(error: unknown): DriverFailure {
     typeof error === 'object' && error !== null && 'code' in error
       ? String(error.code)
       : 'TRANSPORT_FAILED';
-  if (code === 'SEQUENCE_GAP' || code === 'STORE_BUSY') {
+  if (code === 'SEQUENCE_GAP' || code === 'STORE_BUSY' || code === 'COMMAND_CAPACITY_REACHED') {
     return new DriverFailure(code, false, { cause: error });
   }
   if (code === 'LEASE_EXPIRED') return new DriverFailure(code, false, { cause: error });

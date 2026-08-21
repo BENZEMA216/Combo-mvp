@@ -114,7 +114,9 @@ class SqliteTransportRepository implements WorkerDurableTransportRepository {
     private readonly database: DatabaseSync,
     private readonly options: CheckedTransportRepositoryOptions,
   ) {
-    this.#readTransaction(() => validateAll(database, options.installationId, this.#now()));
+    this.#readTransaction(() =>
+      validateAll(database, options.installationId, options.maxPendingCommands, this.#now()),
+    );
   }
 
   public acquireOwner(input: Readonly<{ leaseMs?: number }> = {}): WorkerTransportOwner {
@@ -517,16 +519,19 @@ class SqliteTransportRepository implements WorkerDurableTransportRepository {
 
   public readPendingCommands(
     owner: WorkerTransportOwner,
+    limit = 32,
   ): readonly WorkerTransportCommandReference[] {
     this.#assertOwnerReadable(this.#owner(owner));
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
+      throw new TypeError('Command batch limit must be 1..100.');
     return Object.freeze(
       (
         this.database
           .prepare(
             `SELECT * FROM transport_inbound_deliveries WHERE state='PENDING'
-      ORDER BY delivery_sequence`,
+      ORDER BY delivery_sequence LIMIT ?`,
           )
-          .all() as Record<string, unknown>[]
+          .all(limit) as Record<string, unknown>[]
       ).map(commandRef),
     );
   }
@@ -673,6 +678,16 @@ class SqliteTransportRepository implements WorkerDurableTransportRepository {
       )
         fail('MESSAGE_CONFLICT', 'Command source changed.');
     } else {
+      const pending = asRow(
+        this.database
+          .prepare(
+            `SELECT COUNT(*) AS pending_count FROM transport_inbound_deliveries WHERE state='PENDING'`,
+          )
+          .get(),
+      );
+      if (integer(pending, 'pending_count') >= this.options.maxPendingCommands) {
+        fail('COMMAND_CAPACITY_REACHED', 'Pending command capacity is full.');
+      }
       const order = nextAppendOrder(
         this.database,
         'transport_inbound_deliveries',

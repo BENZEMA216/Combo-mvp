@@ -115,6 +115,58 @@ describe('Worker Broker WebSocket driver', () => {
     expect(repository.written.length).toBeGreaterThanOrEqual(66);
     await driver.stop();
   });
+  it('reconnects without ACK or cursor advance when durable command capacity is full', async () => {
+    const { owner, repository } = realRepository(1);
+    const acknowledged: string[] = [];
+    let connections = 0;
+    let sentOverflow = false;
+    let retrySocket: WebSocket | undefined;
+    const endpoint = await fakeBroker((socket) => {
+      const ordinal = ++connections;
+      const connectionId = `connection.capacity.${ordinal}`;
+      if (ordinal === 2) retrySocket = socket;
+      socket.send(lease(connectionId, ordinal).canonicalText);
+      socket.on('message', (data: RawData) => {
+        const outbound = parseBrokerTransportFrame(data.toString());
+        if (outbound.frame.body.type !== 'message.ack') return;
+        acknowledged.push(outbound.frame.body.acknowledgedMessageId);
+        if (
+          ordinal === 1 &&
+          outbound.frame.body.acknowledgedMessageId === 'command.capacity.1' &&
+          !sentOverflow
+        ) {
+          sentOverflow = true;
+          socket.send(command(connectionId, ordinal, 2, 'command.capacity.2').canonicalText);
+        }
+      });
+      if (ordinal === 1) {
+        socket.send(command(connectionId, ordinal, 1, 'command.capacity.1').canonicalText);
+      }
+    });
+    const driver = createDriver(endpoint, repository, {}, owner);
+    await driver.start();
+    await waitFor(
+      () =>
+        acknowledged.includes('command.capacity.1') &&
+        connections >= 2 &&
+        retrySocket !== undefined &&
+        driver.status === 'READY',
+    );
+    expect(acknowledged).not.toContain('command.capacity.2');
+    expect(
+      repository.readPendingCommands(owner, 100).map((item) => item.deliveryMessageId),
+    ).toEqual(['command.capacity.1']);
+
+    repository.markCommandApplied(owner, 'command.capacity.1');
+    if (retrySocket === undefined) throw new Error('Retry socket was not established.');
+    retrySocket.send(command('connection.capacity.2', 2, 1, 'command.capacity.2').canonicalText);
+    await waitFor(() => acknowledged.includes('command.capacity.2'));
+    expect(
+      repository.readPendingCommands(owner, 100).map((item) => item.deliveryMessageId),
+    ).toEqual(['command.capacity.2']);
+    expect(driver.status).toBe('READY');
+    await driver.stop();
+  });
   it.each([
     {
       label: 'malformed JSON',
@@ -397,7 +449,7 @@ function createDriver(
     ...extra,
   });
 }
-function realRepository() {
+function realRepository(maxPendingCommands = 256) {
   const created = mkdtempSync(join(tmpdir(), 'combo-r2c-driver-'));
   chmodSync(created, 0o700);
   const directory = realpathSync(created);
@@ -405,6 +457,7 @@ function realRepository() {
     filename: join(directory, 'transport.sqlite'),
     storeIdentity: 'transport.integration',
     installationId: INSTALLATION,
+    maxPendingCommands,
   });
   const owner = repository.acquireOwner({ leaseMs: 30_000 });
   cleanups.push(() => {

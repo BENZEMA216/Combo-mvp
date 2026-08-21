@@ -15,6 +15,7 @@ import {
   type WorkerDurableInvocationView,
   type WorkerOutboxFactReference,
 } from './sqlite-store-types.js';
+import { MAX_DURABLE_SEALED_ENVELOPE_BYTES } from './sqlite-store-internal.js';
 import {
   reduceWorkerInvocation,
   type WorkerDurableEffect,
@@ -237,8 +238,12 @@ export function validateWorkerSqliteDatabaseRows(database: WorkerSqliteValidatio
       workerStorageFingerprint(ENVELOPE_FINGERPRINT_DOMAIN, envelope),
       'Sealed envelope',
     );
-    if (rowInteger(row, 'envelope_bytes') !== utf8ByteLength(json)) {
+    const envelopeBytes = rowInteger(row, 'envelope_bytes');
+    if (envelopeBytes !== utf8ByteLength(json)) {
       throw corrupt('Sealed envelope byte length is inconsistent.');
+    }
+    if (envelopeBytes > MAX_DURABLE_SEALED_ENVELOPE_BYTES) {
+      throw corrupt('Sealed envelope exceeds the durable byte limit.');
     }
     seals.set(sealedResultId, row);
   }
@@ -247,6 +252,11 @@ export function validateWorkerSqliteDatabaseRows(database: WorkerSqliteValidatio
   const usedSeals = new Set<string>();
   for (const raw of database.prepare('SELECT * FROM worker_invocation_outbox').all()) {
     const row = requiredRow(raw, 'Outbox row is invalid.');
+    const createdAtMs = rowInteger(row, 'created_at_ms');
+    const transportEnqueuedAtMs = rowNullableInteger(row, 'transport_enqueued_at_ms');
+    if (transportEnqueuedAtMs !== null && transportEnqueuedAtMs < createdAtMs) {
+      throw corrupt('Outbox transport handoff predates fact creation.');
+    }
     const invocationId = rowString(row, 'invocation_id');
     const invocation = invocations.get(invocationId);
     if (invocation === undefined) throw corrupt('Outbox Invocation is missing.');
@@ -474,6 +484,15 @@ export function rowInteger(row: Record<string, unknown>, key: string): number {
   const value = row[key];
   if (typeof value !== 'number' || !Number.isSafeInteger(value)) {
     throw corrupt(`${key} is not a safe integer.`);
+  }
+  return value;
+}
+
+export function rowNullableInteger(row: Record<string, unknown>, key: string): number | null {
+  const value = row[key];
+  if (value === null) return null;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+    throw corrupt(`${key} is not a nullable non-negative safe integer.`);
   }
   return value;
 }

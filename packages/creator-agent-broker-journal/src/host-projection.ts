@@ -15,13 +15,16 @@ import {
 
 import {
   unwrapCommittedWorkerInterruptHostEffect,
+  unwrapCommittedWorkerObserveHostOutcomeEffect,
   unwrapCommittedWorkerStartHostEffect,
   type CommittedWorkerInterruptHostEffect,
+  type CommittedWorkerObserveHostOutcomeEffect,
   type CommittedWorkerStartHostEffect,
   type WorkerInterruptAttempt,
   type WorkerInvocationAttemptId,
 } from './effect-authority.js';
 import {
+  assertTrustedWorkerResultSealAuthority,
   sealExactWorkerResult,
   type WorkerResultSealAuthority,
   type WorkerSealedResultReceipt,
@@ -51,12 +54,21 @@ const sealedSuccesses = new WeakMap<
     task: Promise<Extract<WorkerHostTerminalProjection, { outcome: 'SUCCEEDED' }>>;
   }>
 >();
-const startEffectTasks = new WeakMap<object, Promise<WorkerHostStartDispositionProjection>>();
+const startEffectTasks = new WeakMap<object, Promise<WorkerHostStartTurnExecution>>();
+const startDispositionTasks = new WeakMap<object, Promise<WorkerHostStartDispositionProjection>>();
 const interruptEffectTasks = new WeakMap<
   object,
   Promise<WorkerHostInterruptDispositionProjection>
 >();
 const interruptEffectHandles = new WeakMap<object, HostTurnHandle>();
+const outcomeObservationTasks = new WeakMap<
+  object,
+  Readonly<{
+    handle: HostTurnHandle;
+    authority: object;
+    task: Promise<WorkerHostTerminalProjection>;
+  }>
+>();
 
 type WorkerHostBindingValue = Readonly<{
   thread: HostThread;
@@ -93,6 +105,16 @@ export type WorkerHostStartDispositionProjection =
       attemptId: WorkerInvocationAttemptId;
       hostReason: HostTurnEvidenceLostError['reason'];
       readonly [workerHostStartDispositionBrand]: never;
+    }>;
+
+export type WorkerHostStartTurnExecution =
+  | Readonly<{
+      disposition: Extract<WorkerHostStartDispositionProjection, { disposition: 'STARTED' }>;
+      handle: HostTurnHandle;
+    }>
+  | Readonly<{
+      disposition: Exclude<WorkerHostStartDispositionProjection, { disposition: 'STARTED' }>;
+      handle: null;
     }>;
 
 export type WorkerHostInterruptRequestProjection = Readonly<{
@@ -196,42 +218,64 @@ export function executeWorkerHostStart(
   committed: CommittedWorkerStartHostEffect,
   startTurn: () => Promise<HostTurnHandle>,
 ): Promise<WorkerHostStartDispositionProjection> {
+  const execution = executeWorkerHostStartTurn(committed, startTurn);
+  const existing = startDispositionTasks.get(committed);
+  if (existing !== undefined) return existing;
+  const disposition = execution.then((result) => result.disposition);
+  startDispositionTasks.set(committed, disposition);
+  return disposition;
+}
+
+export function executeWorkerHostStartTurn(
+  committed: CommittedWorkerStartHostEffect,
+  startTurn: () => Promise<HostTurnHandle>,
+): Promise<WorkerHostStartTurnExecution> {
   const effect = unwrapCommittedWorkerStartHostEffect(committed);
   if (typeof startTurn !== 'function')
     throw new TypeError('Host start executor must be a function.');
   const existing = startEffectTasks.get(committed);
   if (existing !== undefined) return existing;
 
-  const deferred = createDeferred<WorkerHostStartDispositionProjection>();
+  const deferred = createDeferred<WorkerHostStartTurnExecution>();
   startEffectTasks.set(committed, deferred.promise);
-  void (async (): Promise<WorkerHostStartDispositionProjection> => {
+  void (async (): Promise<WorkerHostStartTurnExecution> => {
     try {
       const handle = await startTurn();
-      return markTrustedStartDisposition({
+      const disposition = markTrustedStartDisposition({
         disposition: 'STARTED',
         attemptId: effect.attemptId,
         binding: bindingForHostTurn(handle),
       });
+      return Object.freeze({ disposition, handle });
     } catch (error) {
       try {
         const rejection = verifyHostTurnStartRejection(error);
         if (rejection instanceof HostTurnNotStartedError) {
-          return markTrustedStartDisposition({
-            disposition: 'NOT_STARTED',
-            attemptId: effect.attemptId,
-            reason: 'RUNTIME_START_FAILED',
+          return Object.freeze({
+            disposition: markTrustedStartDisposition({
+              disposition: 'NOT_STARTED',
+              attemptId: effect.attemptId,
+              reason: 'RUNTIME_START_FAILED',
+            }),
+            handle: null,
           });
         }
-        return markTrustedStartDisposition({
-          disposition: 'EVIDENCE_LOST',
-          attemptId: effect.attemptId,
-          hostReason: rejection.reason,
+        return Object.freeze({
+          disposition: markTrustedStartDisposition({
+            disposition: 'EVIDENCE_LOST',
+            attemptId: effect.attemptId,
+            hostReason: rejection.reason,
+          }),
+          handle: null,
         });
       } catch {
-        return markTrustedStartDisposition({
-          disposition: 'EVIDENCE_LOST',
-          attemptId: effect.attemptId,
-          hostReason: 'HOST_PROTOCOL_ERROR',
+        return Object.freeze({
+          disposition: markTrustedStartDisposition({
+            disposition: 'EVIDENCE_LOST',
+            attemptId: effect.attemptId,
+            hostReason: 'HOST_PROTOCOL_ERROR',
+          }),
+          handle: null,
         });
       }
     }
@@ -380,6 +424,53 @@ export async function sealAndFinalizeWorkerHostSuccess<TEnvelope extends object>
   return deferred.promise;
 }
 
+/**
+ * Consumes one committed OBSERVE capability and keeps plaintext inside the Host executor. Replays
+ * of the exact capability, handle, and seal authority coalesce onto the same terminal-only task.
+ */
+export function executeWorkerHostOutcomeObservation<TEnvelope extends object>(
+  committed: CommittedWorkerObserveHostOutcomeEffect,
+  handle: HostTurnHandle,
+  sealAuthority: WorkerResultSealAuthority<TEnvelope>,
+): Promise<WorkerHostTerminalProjection> {
+  const effect = unwrapCommittedWorkerObserveHostOutcomeEffect(committed);
+  const trustedHandle = verifyHostTurnHandle(handle);
+  const binding = bindingForHostTurn(trustedHandle);
+  if (bindingHandles.get(effect.binding) !== trustedHandle) {
+    throw new TypeError('Worker outcome observation belongs to another Host handle.');
+  }
+  assertBinding(effect.binding, binding, 'Worker outcome observation');
+  assertTrustedWorkerResultSealAuthority(sealAuthority);
+
+  const existing = outcomeObservationTasks.get(committed);
+  if (existing !== undefined) {
+    if (existing.handle !== trustedHandle || existing.authority !== sealAuthority) {
+      throw new TypeError(
+        'Worker outcome observation is already bound to another Host execution authority.',
+      );
+    }
+    return existing.task;
+  }
+
+  const deferred = createDeferred<WorkerHostTerminalProjection>();
+  outcomeObservationTasks.set(
+    committed,
+    Object.freeze({ handle: trustedHandle, authority: sealAuthority, task: deferred.promise }),
+  );
+  void (async (): Promise<WorkerHostTerminalProjection> => {
+    const input = await trustedHandle.outcome;
+    assertCurrentOutcomeObservation(committed, effect);
+    const verified = verifyAndProjectHostOutcome(trustedHandle, input);
+    const terminal =
+      verified.status === 'SUCCESS_REQUIRES_SEAL'
+        ? await sealAndFinalizeWorkerHostSuccess(verified, sealAuthority)
+        : verified.terminal;
+    assertCurrentOutcomeObservation(committed, effect);
+    return terminal;
+  })().then(deferred.resolve, deferred.reject);
+  return deferred.promise;
+}
+
 /** Calls interrupt and binds its exact disposition to one post-COMMIT effect capability. */
 export function executeWorkerHostInterrupt(
   committed: CommittedWorkerInterruptHostEffect,
@@ -507,6 +598,15 @@ function assertBinding(
   }
 }
 
+function assertCurrentOutcomeObservation(
+  committed: CommittedWorkerObserveHostOutcomeEffect,
+  expected: ReturnType<typeof unwrapCommittedWorkerObserveHostOutcomeEffect>,
+): void {
+  if (unwrapCommittedWorkerObserveHostOutcomeEffect(committed) !== expected) {
+    throw new TypeError('Committed Worker outcome observation changed identity.');
+  }
+}
+
 function markTrustedInterruptDisposition(
   input:
     | Readonly<{
@@ -533,25 +633,30 @@ function markTrustedInterruptDisposition(
   return disposition;
 }
 
-function markTrustedStartDisposition(
-  input:
-    | Readonly<{
-        disposition: 'STARTED';
-        attemptId: WorkerInvocationAttemptId;
-        binding: WorkerHostBinding;
-      }>
-    | Readonly<{
-        disposition: 'NOT_STARTED';
-        attemptId: WorkerInvocationAttemptId;
-        reason: 'RUNTIME_START_FAILED';
-      }>
-    | Readonly<{
-        disposition: 'EVIDENCE_LOST';
-        attemptId: WorkerInvocationAttemptId;
-        hostReason: HostTurnEvidenceLostError['reason'];
-      }>,
-): WorkerHostStartDispositionProjection {
-  const disposition = Object.freeze(input) as WorkerHostStartDispositionProjection;
+type WorkerHostStartDispositionInput =
+  | Readonly<{
+      disposition: 'STARTED';
+      attemptId: WorkerInvocationAttemptId;
+      binding: WorkerHostBinding;
+    }>
+  | Readonly<{
+      disposition: 'NOT_STARTED';
+      attemptId: WorkerInvocationAttemptId;
+      reason: 'RUNTIME_START_FAILED';
+    }>
+  | Readonly<{
+      disposition: 'EVIDENCE_LOST';
+      attemptId: WorkerInvocationAttemptId;
+      hostReason: HostTurnEvidenceLostError['reason'];
+    }>;
+
+function markTrustedStartDisposition<T extends WorkerHostStartDispositionInput>(
+  input: T,
+): Extract<WorkerHostStartDispositionProjection, { disposition: T['disposition'] }> {
+  const disposition = Object.freeze(input) as unknown as Extract<
+    WorkerHostStartDispositionProjection,
+    { disposition: T['disposition'] }
+  >;
   trustedStartDispositions.add(disposition);
   return disposition;
 }

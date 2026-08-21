@@ -15,7 +15,10 @@ import {
   readExactWorkerSealedResultEnvelope,
   type WorkerResultSealAuthority,
 } from './result-seal.js';
-import { type WorkerSqliteFaultPoint } from './sqlite-store-internal.js';
+import {
+  MAX_DURABLE_SEALED_ENVELOPE_BYTES,
+  type WorkerSqliteFaultPoint,
+} from './sqlite-store-internal.js';
 import {
   assertSafeWorkerSqliteSidecars,
   openWorkerSqliteDatabase,
@@ -38,6 +41,7 @@ import {
   recoverySnapshot,
   requiredRow,
   rowInteger,
+  rowNullableInteger,
   rowString,
   terminalSuccess,
   validateWorkerSqliteDatabaseRows,
@@ -48,6 +52,8 @@ import {
   WorkerSqliteStoreError,
   type WorkerDurableInvocationView,
   type WorkerInvocationCursor,
+  type WorkerOutboxFact,
+  type WorkerOutboxFactHandoff,
   type WorkerOutboxFactReference,
   type WorkerSqliteAcquireResult,
   type WorkerSqliteCommitResult,
@@ -70,6 +76,8 @@ export { WorkerSqliteStoreError } from './sqlite-store-types.js';
 export type {
   WorkerDurableInvocationView,
   WorkerInvocationCursor,
+  WorkerOutboxFact,
+  WorkerOutboxFactHandoff,
   WorkerOutboxFactReference,
   WorkerSqliteAcquireResult,
   WorkerSqliteCommitResult,
@@ -83,7 +91,8 @@ export type {
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 const DEFAULT_OWNER_LEASE_MS = 30_000;
 const MAX_OWNER_LEASE_MS = 300_000;
-const MAX_SEALED_ENVELOPE_BYTES = 65_536;
+const DEFAULT_PENDING_FACT_LIMIT = 64;
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
 type OwnerRecord = {
   tokenDigest: string;
@@ -483,8 +492,8 @@ class SqliteStore implements WorkerSqliteStore {
         const envelope = readExactWorkerSealedResultEnvelope(resultSealAuthority, receipt);
         const envelopeJson = canonicalWorkerJson(envelope);
         const envelopeBytes = utf8ByteLength(envelopeJson);
-        if (envelopeBytes > MAX_SEALED_ENVELOPE_BYTES) {
-          throw storeError('SEALED_RESULT_INVALID', 'Sealed result envelope exceeds 64 KiB.');
+        if (envelopeBytes > MAX_DURABLE_SEALED_ENVELOPE_BYTES) {
+          throw storeError('SEALED_RESULT_INVALID', 'Sealed result envelope exceeds 32 KiB.');
         }
         const envelopeFingerprint = workerStorageFingerprint(ENVELOPE_FINGERPRINT_DOMAIN, envelope);
         sealedResultId = receipt.sealedResultId;
@@ -598,20 +607,92 @@ class SqliteStore implements WorkerSqliteStore {
     return raw === undefined ? null : durableView(decodeInvocationRow(raw));
   }
 
-  public readPendingFacts(owner: WorkerSqliteOwner): readonly WorkerOutboxFactReference[] {
+  public readPendingFacts(
+    owner: WorkerSqliteOwner,
+    limit = DEFAULT_PENDING_FACT_LIMIT,
+  ): readonly WorkerOutboxFactReference[] {
     const ownerRecord = this.#ownerRecord(owner);
     this.#assertOwnerReadable(ownerRecord);
+    const checkedLimit = validatePendingFactLimit(limit);
     return Object.freeze(
       (
         this.database
           .prepare(
             `SELECT fact_id, invocation_id, operation_id, fact_type,
                     payload_fingerprint, sealed_result_id
-               FROM worker_invocation_outbox ORDER BY outbox_sequence`,
+               FROM worker_invocation_outbox
+              WHERE transport_enqueued_at_ms IS NULL
+              ORDER BY outbox_sequence LIMIT ?`,
           )
-          .all() as Record<string, unknown>[]
+          .all(checkedLimit) as Record<string, unknown>[]
       ).map(decodeOutboxReference),
     );
+  }
+
+  public readOutboxFact<TEnvelope extends object = Record<string, unknown>>(
+    owner: WorkerSqliteOwner,
+    input: WorkerOutboxFactReference,
+  ): WorkerOutboxFact<TEnvelope> {
+    const ownerRecord = this.#ownerRecord(owner);
+    const reference = snapshotOutboxReference(input);
+    this.#assertOwnerReadable(ownerRecord);
+    const row = this.#readExactOutboxRow(reference);
+    const payloadValue = parseCanonicalWorkerJson(rowString(row, 'payload_json'));
+    const payload = validateDurableWorkerEffect(payloadValue) as Readonly<Record<string, unknown>>;
+    assertFingerprint(
+      rowString(row, 'payload_fingerprint'),
+      workerStorageFingerprint(OUTBOX_FINGERPRINT_DOMAIN, payload),
+      'Outbox payload',
+    );
+    if (durableFactType(payload) !== reference.factType) {
+      throw storeError('STORE_CORRUPT', 'Outbox fact type does not match its payload.');
+    }
+    const sealedEnvelope =
+      reference.sealedResultId === null
+        ? null
+        : this.readSealedEnvelope<TEnvelope>(owner, reference.sealedResultId);
+    return Object.freeze({
+      reference,
+      payload,
+      sealedEnvelope,
+      transportEnqueuedAtMs: rowNullableInteger(row, 'transport_enqueued_at_ms'),
+    });
+  }
+
+  public markFactEnqueued(
+    owner: WorkerSqliteOwner,
+    input: WorkerOutboxFactReference,
+  ): WorkerOutboxFactHandoff {
+    const ownerRecord = this.#ownerRecord(owner);
+    const reference = snapshotOutboxReference(input);
+    return this.#transaction(() => {
+      const now = checkedNow(this.#now());
+      this.#assertOwnerInTransaction(ownerRecord, now);
+      const row = this.#readExactOutboxRow(reference);
+      const existing = rowNullableInteger(row, 'transport_enqueued_at_ms');
+      if (existing !== null) {
+        return Object.freeze({
+          disposition: 'EXACT_REPLAY' as const,
+          reference,
+          transportEnqueuedAtMs: existing,
+        });
+      }
+      const enqueuedAtMs = Math.max(now, rowInteger(row, 'created_at_ms'));
+      const updated = this.database
+        .prepare(
+          `UPDATE worker_invocation_outbox SET transport_enqueued_at_ms = ?
+            WHERE fact_id = ? AND transport_enqueued_at_ms IS NULL`,
+        )
+        .run(enqueuedAtMs, reference.factId);
+      if (Number(updated.changes) !== 1) {
+        throw storeError('OUTBOX_FACT_CONFLICT', 'Outbox transport handoff lost its exact row.');
+      }
+      return Object.freeze({
+        disposition: 'APPLIED' as const,
+        reference,
+        transportEnqueuedAtMs: enqueuedAtMs,
+      });
+    });
   }
 
   public readSealedEnvelope<TEnvelope extends object>(
@@ -810,6 +891,21 @@ class SqliteStore implements WorkerSqliteStore {
     );
   }
 
+  #readExactOutboxRow(reference: WorkerOutboxFactReference): Record<string, unknown> {
+    const raw = this.database
+      .prepare('SELECT * FROM worker_invocation_outbox WHERE fact_id = ?')
+      .get(reference.factId);
+    if (raw === undefined) {
+      throw storeError('OUTBOX_FACT_UNKNOWN', 'Outbox fact does not exist.');
+    }
+    const row = requiredRow(raw, 'Outbox fact row is invalid.');
+    const stored = decodeOutboxReference(row);
+    if (canonicalWorkerJson(stored) !== canonicalWorkerJson(reference)) {
+      throw storeError('OUTBOX_FACT_CONFLICT', 'Outbox fact reference changed.');
+    }
+    return row;
+  }
+
   #mintCursor(
     owner: WorkerSqliteOwner,
     invocationId: string,
@@ -992,10 +1088,47 @@ class SqliteStore implements WorkerSqliteStore {
 }
 
 function validateIdentifier(input: string, label: string): string {
-  if (typeof input !== 'string' || !IDENTIFIER_PATTERN.test(input)) {
+  if (!isIdentifier(input)) {
     throw storeError('INVOCATION_CONFLICT', `${label} is invalid.`);
   }
   return input;
+}
+
+function isIdentifier(input: unknown): input is string {
+  return typeof input === 'string' && IDENTIFIER_PATTERN.test(input);
+}
+
+function validatePendingFactLimit(input: number): number {
+  if (!Number.isSafeInteger(input) || input < 1 || input > 100) {
+    throw new TypeError('Pending fact limit must be 1..100.');
+  }
+  return input;
+}
+
+function snapshotOutboxReference(input: WorkerOutboxFactReference): WorkerOutboxFactReference {
+  if (typeof input !== 'object' || input === null) {
+    throw storeError('OUTBOX_FACT_CONFLICT', 'Outbox fact reference is invalid.');
+  }
+  const { factId, invocationId, operationId, factType, payloadFingerprint, sealedResultId } = input;
+  if (
+    !isIdentifier(factId) ||
+    !isIdentifier(invocationId) ||
+    !isIdentifier(operationId) ||
+    (factType !== 'STARTED' && factType !== 'TERMINAL') ||
+    typeof payloadFingerprint !== 'string' ||
+    !SHA256_PATTERN.test(payloadFingerprint) ||
+    (sealedResultId !== null && !isIdentifier(sealedResultId))
+  ) {
+    throw storeError('OUTBOX_FACT_CONFLICT', 'Outbox fact reference is invalid.');
+  }
+  return Object.freeze({
+    factId,
+    invocationId,
+    operationId,
+    factType,
+    payloadFingerprint,
+    sealedResultId,
+  });
 }
 
 function validateLease(input: number): number {

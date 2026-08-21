@@ -206,9 +206,14 @@ export function wireView(row: Row): NonNullable<WorkerTransportDelivery['activeW
   });
 }
 
-export function validateAll(database: DatabaseSync, installationId: string, now: number): void {
+export function validateAll(
+  database: DatabaseSync,
+  installationId: string,
+  maxPendingCommands: number,
+  now: number,
+): void {
   try {
-    validateAllRecords(database, installationId, now);
+    validateAllRecords(database, installationId, maxPendingCommands, now);
   } catch (error) {
     const code = (error as { code?: unknown } | null)?.code;
     if (
@@ -224,9 +229,17 @@ export function validateAll(database: DatabaseSync, installationId: string, now:
   }
 }
 
-function validateAllRecords(database: DatabaseSync, installationId: string, now: number): void {
+function validateAllRecords(
+  database: DatabaseSync,
+  installationId: string,
+  maxPendingCommands: number,
+  now: number,
+): void {
   const meta = asRow(database.prepare(`SELECT * FROM transport_meta WHERE singleton=1`).get());
-  if (text(meta, 'installation_id') !== installationId)
+  if (
+    text(meta, 'installation_id') !== installationId ||
+    integer(meta, 'max_pending_commands') !== maxPendingCommands
+  )
     fail('Installation binding changed.', 'STORE_SCHEMA_MISMATCH');
   validateAppendSequence(
     database,
@@ -260,7 +273,7 @@ function validateAllRecords(database: DatabaseSync, installationId: string, now:
   const inbound = validateInbound(database, connections);
   const logical = validateLogical(database);
   const wires = validateWires(database, connections, logical);
-  validateCommands(database, inbound);
+  validateCommands(database, inbound, maxPendingCommands);
   validateTerminals(connections, inbound, logical, wires, now);
   const inboundStats = new Map<string, SequenceStats>();
   const wireStats = new Map<string, SequenceStats>();
@@ -435,7 +448,12 @@ function validateWires(
   return wires;
 }
 
-function validateCommands(database: DatabaseSync, inbound: Map<string, Inbound>): void {
+function validateCommands(
+  database: DatabaseSync,
+  inbound: Map<string, Inbound>,
+  maxPendingCommands: number,
+): void {
+  let pendingCommands = 0;
   for (const raw of database.prepare(`SELECT * FROM transport_inbound_deliveries`).all() as Row[]) {
     const row = asRow(raw);
     const source = inbound.get(`${text(row, 'connection_id')}:${integer(row, 'sequence')}`);
@@ -444,6 +462,7 @@ function validateCommands(database: DatabaseSync, inbound: Map<string, Inbound>)
     const body = frame.body;
     const payload = parseCanonical(text(row, 'payload_json'));
     const state = text(row, 'state');
+    if (state === 'PENDING') pendingCommands += 1;
     const applied = row.applied_at_ms;
     if (
       body.type !== 'command' ||
@@ -460,6 +479,7 @@ function validateCommands(database: DatabaseSync, inbound: Map<string, Inbound>)
     )
       fail('Command delivery is corrupt.');
   }
+  if (pendingCommands > maxPendingCommands) fail('Pending command capacity is corrupt.');
   for (const { parsed } of inbound.values()) {
     if (
       parsed.frame.body.type === 'command' &&

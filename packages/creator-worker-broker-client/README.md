@@ -11,9 +11,17 @@ connection、sequence 与 canonical wire bytes，但不能更换逻辑身份。`
 提交，driver 才允许发送 ACK。离线入库的 logical body 会按最坏 authority envelope 预留 frame
 空间，避免未来 lease 激活时产生无法封装的持久毒丸。
 
+fresh store 会把 `maxPendingCommands` 持久化为 schema 绑定，默认值是 256，合法范围是
+1..10000；后续 open 必须提供完全一致的值。新的 command 在同一事务内检查 `PENDING` 容量，
+满载时以 `COMMAND_CAPACITY_REACHED` 回滚 inbound、cursor 与 ACK，driver 随后释放连接并重连。
+exact replay 和已有 command 不重复占用容量。pump 通过 `readPendingCommands(owner, limit)` 按
+durable `delivery_sequence` 分批读取，默认 32 条且单批最多 100 条，并在业务落地后调用
+`markCommandApplied` 释放容量。
+
 公开子路径：
 
-- `./sqlite-repository`：fresh SQLite repository、owner/connection capability 与 exact replay。
+- `./sqlite-repository`：fresh SQLite repository、owner/connection capability、bounded command admission
+  与 exact replay。
 - `./websocket-driver`：严格 URL、bounded text frame、串行持久化、重连与有界停止。
 
 本切片仍是 Test-only 重建层。它不包含 OAuth、Secure Enclave、正式 Broker challenge、签名租约、
