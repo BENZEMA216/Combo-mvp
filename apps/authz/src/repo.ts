@@ -43,7 +43,7 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
         await tx.query(
           `UPDATE v2_auth_challenges
               SET invalidated_at = now()
-            WHERE channel = 'phone'
+            WHERE channel = 'email'
               AND purpose = 'login'
               AND target_digest = $1
               AND consumed_at IS NULL
@@ -54,7 +54,7 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
         // 入参保留在端口签名里供假实现使用。
         await tx.query(
           `INSERT INTO v2_auth_challenges (channel, purpose, target_digest, code_digest, expires_at)
-           VALUES ('phone', 'login', $1, $2, now() + interval '5 minutes')`,
+           VALUES ('email', 'login', $1, $2, now() + interval '5 minutes')`,
           [targetDigest, codeDigest],
         );
       });
@@ -69,7 +69,7 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
         }>(
           `SELECT id, code_digest, attempt_count
              FROM v2_auth_challenges
-            WHERE channel = 'phone'
+            WHERE channel = 'email'
               AND purpose = 'login'
               AND target_digest = $1
               AND consumed_at IS NULL
@@ -106,10 +106,10 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
       });
     },
 
-    async findOrCreatePhoneUser(phone) {
+    async findOrCreateEmailUser(email) {
       const existing = await pool.query<{ user_id: string }>(
-        `SELECT user_id FROM v2_identities WHERE type = 'phone' AND identifier = $1 LIMIT 1`,
-        [phone],
+        `SELECT user_id FROM v2_identities WHERE type = 'email' AND identifier = $1 LIMIT 1`,
+        [email],
       );
       if (existing.rows[0]) return existing.rows[0].user_id;
 
@@ -120,8 +120,8 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
           );
           const userId = user.rows[0]!.id;
           await tx.query(
-            `INSERT INTO v2_identities (user_id, type, identifier) VALUES ($1, 'phone', $2)`,
-            [userId, phone],
+            `INSERT INTO v2_identities (user_id, type, identifier) VALUES ($1, 'email', $2)`,
+            [userId, email],
           );
           return userId;
         });
@@ -129,8 +129,8 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
         // 并发首登撞唯一约束时回落到查询，由胜出事务的行提供服务。
         if ((error as { code?: string }).code !== '23505') throw error;
         const raced = await pool.query<{ user_id: string }>(
-          `SELECT user_id FROM v2_identities WHERE type = 'phone' AND identifier = $1 LIMIT 1`,
-          [phone],
+          `SELECT user_id FROM v2_identities WHERE type = 'email' AND identifier = $1 LIMIT 1`,
+          [email],
         );
         if (!raced.rows[0]) throw error;
         return raced.rows[0].user_id;
@@ -142,7 +142,7 @@ export function createPgAuthzStore(pool: Pool): AuthzStore {
       // 应用时钟与数据库时钟的毫秒差会让约束失败）；入参保留在端口签名里供假实现使用。
       const inserted = await pool.query<{ id: string; user_id: string; expires_at: Date }>(
         `INSERT INTO v2_sessions (user_id, token_digest, auth_method, expires_at)
-         VALUES ($1, $2, 'dev_phone_otp', now() + interval '7 days')
+         VALUES ($1, $2, 'email_otp', now() + interval '7 days')
          RETURNING id, user_id, expires_at`,
         [userId, tokenDigest],
       );

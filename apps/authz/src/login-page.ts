@@ -40,10 +40,10 @@ export function loginPageHtml(next: string): string {
 <body>
 <main>
   <h1>登录</h1>
-  <p class="hint">验证环境，验证码使用万能码。</p>
+  <p class="hint">验证码发到你的邮箱；验证环境也可用万能码。</p>
   <form id="login-form">
-    <label for="phone">手机号</label>
-    <input id="phone" name="phone" inputmode="tel" autocomplete="tel" required>
+    <label for="email">邮箱</label>
+    <input id="email" name="email" type="email" autocomplete="email" required>
     <div id="code-row">
       <label for="code">验证码</label>
       <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6">
@@ -56,7 +56,7 @@ export function loginPageHtml(next: string): string {
 <script>
 (function () {
   var NEXT = ${nextJson};
-  var phone = document.getElementById('phone');
+  var email = document.getElementById('email');
   var codeRow = document.getElementById('code-row');
   var code = document.getElementById('code');
   var send = document.getElementById('send');
@@ -75,9 +75,9 @@ export function loginPageHtml(next: string): string {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ phone: phone.value.trim() }),
+      body: JSON.stringify({ email: email.value.trim() }),
     }).then(function (res) {
-      if (res.status !== 202) throw new Error(res.status === 400 ? '手机号格式不正确' : '服务暂时不可用，请稍后重试');
+      if (res.status !== 202) throw new Error(res.status === 400 ? '邮箱格式不正确' : '服务暂时不可用，请稍后重试');
       codeRow.style.display = 'block';
       submit.style.display = 'block';
       send.textContent = '重新发送验证码';
@@ -97,7 +97,7 @@ export function loginPageHtml(next: string): string {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ phone: phone.value.trim(), code: code.value.trim() }),
+      body: JSON.stringify({ email: email.value.trim(), code: code.value.trim() }),
     }).then(function (res) {
       if (res.status === 401) throw new Error('验证码不正确或已过期');
       if (res.status !== 200) throw new Error('服务暂时不可用，请稍后重试');

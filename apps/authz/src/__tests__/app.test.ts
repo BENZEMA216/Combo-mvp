@@ -9,7 +9,7 @@ import { createFakeCache, createFakeStore } from './fakes.js';
 
 const SECRET = 's'.repeat(32);
 const DEV_CODE = '246810';
-const PHONE = '13800138000';
+const EMAIL = 'user@example.com';
 
 function generatePrivateKeyPem(): string {
   const { privateKey } = generateKeyPairSync('ed25519');
@@ -63,14 +63,14 @@ async function injectLogin(instance: FastifyInstance) {
   const challenge = await instance.inject({
     method: 'POST',
     url: '/authz/otp/challenges',
-    payload: { phone: PHONE },
+    payload: { email: EMAIL },
   });
   expect(challenge.statusCode).toBe(202);
 
   const verification = await instance.inject({
     method: 'POST',
     url: '/authz/otp/verifications',
-    payload: { phone: PHONE, code: DEV_CODE },
+    payload: { email: EMAIL, code: DEV_CODE },
   });
   return verification;
 }
@@ -153,29 +153,29 @@ describe('authz HTTP surface', () => {
     await instance.inject({
       method: 'POST',
       url: '/authz/otp/challenges',
-      payload: { phone: PHONE },
+      payload: { email: EMAIL },
     });
 
     const wrong = await instance.inject({
       method: 'POST',
       url: '/authz/otp/verifications',
-      payload: { phone: PHONE, code: '000000' },
+      payload: { email: EMAIL, code: '000000' },
     });
     expect(wrong.statusCode).toBe(401);
 
     const malformed = await instance.inject({
       method: 'POST',
       url: '/authz/otp/verifications',
-      payload: { phone: PHONE, code: '12' },
+      payload: { email: EMAIL, code: '12' },
     });
     expect(malformed.statusCode).toBe(400);
 
-    const badPhone = await instance.inject({
+    const badEmail = await instance.inject({
       method: 'POST',
       url: '/authz/otp/challenges',
-      payload: { phone: 'not a phone at all' },
+      payload: { email: 'not an email at all' },
     });
-    expect(badPhone.statusCode).toBe(400);
+    expect(badEmail.statusCode).toBe(400);
   });
 
   it('logout revokes the session and blocks further assertions', async () => {
@@ -290,7 +290,7 @@ describe('authz HTTP surface', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/authz/otp/challenges',
-      payload: { phone: PHONE },
+      payload: { email: EMAIL },
     });
     expect(response.statusCode).toBe(503);
   });

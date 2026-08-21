@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   OTP_MAX_ATTEMPTS,
   V2_SESSION_COOKIE_VALUE_PATTERN,
-  digestPhoneCode,
-  digestPhoneTarget,
+  digestEmailCode,
+  digestEmailTarget,
   digestSessionCookieValue,
 } from '../crypto.js';
 import {
@@ -14,11 +14,11 @@ import {
   type AuthzServiceDependencies,
   type ResolvedSession,
 } from '../service.js';
-import { createFakeCache, createFakeStore } from './fakes.js';
+import { createFakeCache, createFakeMailer, createFakeStore } from './fakes.js';
 
 const SECRET = 's'.repeat(32);
 const DEV_CODE = '246810';
-const PHONE = '13800138000';
+const EMAIL = 'user@example.com';
 
 function makeDeps(overrides: Partial<AuthzServiceDependencies> = {}) {
   const now = () => overrides.now?.() ?? Date.now();
@@ -34,94 +34,174 @@ function makeDeps(overrides: Partial<AuthzServiceDependencies> = {}) {
   return { deps, storeState, cacheState };
 }
 
-async function login(deps: AuthzServiceDependencies, phone = PHONE) {
-  await requestOtp(deps, { phone });
-  return verifyOtp(deps, { phone, code: DEV_CODE });
+async function login(deps: AuthzServiceDependencies, email = EMAIL) {
+  await requestOtp(deps, { email });
+  return verifyOtp(deps, { email, code: DEV_CODE });
 }
 
-describe('dev OTP login', () => {
-  it('creates the user and phone identity on first login and reuses them later', async () => {
+describe('dev OTP login（未配发信通道，挑战写万能码）', () => {
+  it('creates the user and email identity on first login and reuses them later', async () => {
     const { deps, storeState } = makeDeps();
 
     const first = await login(deps);
     expect(first.kind).toBe('ok');
     if (first.kind !== 'ok') return;
     expect(V2_SESSION_COOKIE_VALUE_PATTERN.test(first.sessionCookie)).toBe(true);
-    expect(storeState.usersByPhone.get(PHONE)).toBe(first.userId);
+    expect(storeState.usersByEmail.get(EMAIL)).toBe(first.userId);
 
     const second = await login(deps);
     expect(second.kind).toBe('ok');
     if (second.kind !== 'ok') return;
     expect(second.userId).toBe(first.userId);
     expect(second.sessionCookie).not.toBe(first.sessionCookie);
-    expect(storeState.usersByPhone.size).toBe(1);
+    expect(storeState.usersByEmail.size).toBe(1);
     expect(storeState.sessions.size).toBe(2);
+  });
+
+  it('normalizes the email before digesting and storing the identity', async () => {
+    const { deps, storeState } = makeDeps();
+    const result = await requestOtp(deps, { email: '  User@Example.COM ' });
+    expect(result.kind).toBe('accepted');
+
+    const challenge = storeState.challenges[0]!;
+    const targetDigest = digestEmailTarget(SECRET, EMAIL);
+    expect(challenge.targetDigest.equals(targetDigest)).toBe(true);
+    expect(challenge.codeDigest.equals(digestEmailCode(SECRET, targetDigest, DEV_CODE))).toBe(true);
+
+    const verified = await verifyOtp(deps, { email: 'USER@example.com', code: DEV_CODE });
+    expect(verified.kind).toBe('ok');
+    if (verified.kind !== 'ok') return;
+    expect(storeState.usersByEmail.get(EMAIL)).toBe(verified.userId);
   });
 
   it('stores only digests for the challenge, never the plaintext code', async () => {
     const { deps, storeState } = makeDeps();
 
-    const result = await requestOtp(deps, { phone: PHONE });
+    const result = await requestOtp(deps, { email: EMAIL });
     expect(result.kind).toBe('accepted');
 
     const challenge = storeState.challenges[0]!;
-    const targetDigest = digestPhoneTarget(SECRET, PHONE);
+    const targetDigest = digestEmailTarget(SECRET, EMAIL);
     expect(challenge.targetDigest.equals(targetDigest)).toBe(true);
-    expect(challenge.codeDigest.equals(digestPhoneCode(SECRET, targetDigest, DEV_CODE))).toBe(true);
+    expect(challenge.codeDigest.equals(digestEmailCode(SECRET, targetDigest, DEV_CODE))).toBe(true);
   });
 
   it('rejects a wrong code and locks the challenge after five attempts', async () => {
     const { deps, storeState } = makeDeps();
-    await requestOtp(deps, { phone: PHONE });
+    await requestOtp(deps, { email: EMAIL });
 
     for (let attempt = 1; attempt <= OTP_MAX_ATTEMPTS; attempt += 1) {
-      const result = await verifyOtp(deps, { phone: PHONE, code: '000000' });
+      const result = await verifyOtp(deps, { email: EMAIL, code: '000000' });
       expect(result.kind).toBe('invalid_code');
     }
     expect(storeState.challenges[0]!.invalidated).toBe(true);
 
-    const afterLock = await verifyOtp(deps, { phone: PHONE, code: DEV_CODE });
+    const afterLock = await verifyOtp(deps, { email: EMAIL, code: DEV_CODE });
     expect(afterLock.kind).toBe('invalid_code');
   });
 
   it('rejects an expired challenge', async () => {
     let clock = 1_000_000;
     const { deps } = makeDeps({ now: () => clock });
-    await requestOtp(deps, { phone: PHONE });
+    await requestOtp(deps, { email: EMAIL });
 
     clock += 6 * 60 * 1000;
-    const result = await verifyOtp(deps, { phone: PHONE, code: DEV_CODE });
+    const result = await verifyOtp(deps, { email: EMAIL, code: DEV_CODE });
     expect(result.kind).toBe('invalid_code');
   });
 
   it('a fresh challenge invalidates the previous unfinished one', async () => {
     const { deps, storeState } = makeDeps();
-    await requestOtp(deps, { phone: PHONE });
-    await requestOtp(deps, { phone: PHONE });
+    await requestOtp(deps, { email: EMAIL });
+    await requestOtp(deps, { email: EMAIL });
 
     expect(storeState.challenges).toHaveLength(2);
     expect(storeState.challenges[0]!.invalidated).toBe(true);
-    const result = await verifyOtp(deps, { phone: PHONE, code: DEV_CODE });
+    const result = await verifyOtp(deps, { email: EMAIL, code: DEV_CODE });
     expect(result.kind).toBe('ok');
   });
 
-  it('is unavailable without a configured dev code or a strong hmac secret', async () => {
+  it('is unavailable without a dev code when no mailer is configured', async () => {
     const noCode = makeDeps({ devOtpCode: undefined });
-    expect((await requestOtp(noCode.deps, { phone: PHONE })).kind).toBe('unavailable');
+    expect((await requestOtp(noCode.deps, { email: EMAIL })).kind).toBe('unavailable');
 
     const weakSecret = makeDeps({ hmacSecret: 'short' });
-    expect((await requestOtp(weakSecret.deps, { phone: PHONE })).kind).toBe('unavailable');
-    expect((await verifyOtp(weakSecret.deps, { phone: PHONE, code: DEV_CODE })).kind).toBe(
+    expect((await requestOtp(weakSecret.deps, { email: EMAIL })).kind).toBe('unavailable');
+    expect((await verifyOtp(weakSecret.deps, { email: EMAIL, code: DEV_CODE })).kind).toBe(
       'unavailable',
     );
   });
 
-  it('rejects malformed phone or code without touching the store', async () => {
+  it('rejects malformed email or code without touching the store', async () => {
     const { deps, storeState } = makeDeps();
-    expect((await requestOtp(deps, { phone: 'not-a-phone' })).kind).toBe('invalid_input');
-    expect((await verifyOtp(deps, { phone: PHONE, code: '12' })).kind).toBe('invalid_input');
-    expect((await verifyOtp(deps, { phone: '0123', code: DEV_CODE })).kind).toBe('invalid_input');
+    expect((await requestOtp(deps, { email: 'not-an-email' })).kind).toBe('invalid_input');
+    expect((await verifyOtp(deps, { email: EMAIL, code: '12' })).kind).toBe('invalid_input');
+    expect((await verifyOtp(deps, { email: 'a@', code: DEV_CODE })).kind).toBe('invalid_input');
     expect(storeState.challenges).toHaveLength(0);
+  });
+});
+
+describe('email delivery login（配置发信通道）', () => {
+  it('delivers a random code by email and verifies it, never the dev code in the message', async () => {
+    const { deps, storeState } = makeDeps();
+    const { mailer, state: mailerState } = createFakeMailer();
+    deps.mailer = mailer;
+
+    const requested = await requestOtp(deps, { email: EMAIL });
+    expect(requested.kind).toBe('accepted');
+    expect(mailerState.messages).toHaveLength(1);
+    const sent = mailerState.messages[0]!;
+    expect(sent.to).toBe(EMAIL);
+    expect(sent.code).toMatch(/^[0-9]{6}$/);
+    expect(sent.challengeId).toBeTruthy();
+    // 邮件里是随机码，不是万能码；挑战落库的是随机码摘要。
+    expect(sent.code).not.toBe(DEV_CODE);
+    const targetDigest = digestEmailTarget(SECRET, EMAIL);
+    expect(
+      storeState.challenges[0]!.codeDigest.equals(digestEmailCode(SECRET, targetDigest, sent.code)),
+    ).toBe(true);
+
+    const verified = await verifyOtp(deps, { email: EMAIL, code: sent.code });
+    expect(verified.kind).toBe('ok');
+  });
+
+  it('keeps the dev code usable even when the mailer is configured（万能码旁路）', async () => {
+    const { deps } = makeDeps();
+    const { mailer, state: mailerState } = createFakeMailer();
+    deps.mailer = mailer;
+
+    await requestOtp(deps, { email: EMAIL });
+    expect(mailerState.messages[0]!.code).not.toBe(DEV_CODE);
+
+    const verified = await verifyOtp(deps, { email: EMAIL, code: DEV_CODE });
+    expect(verified.kind).toBe('ok');
+  });
+
+  it('maps transient and configuration delivery failures to unavailable', async () => {
+    const { deps, storeState } = makeDeps();
+    const { mailer, state: mailerState } = createFakeMailer();
+    deps.mailer = mailer;
+
+    mailerState.defaultResult = 'transient_failure';
+    expect((await requestOtp(deps, { email: EMAIL })).kind).toBe('unavailable');
+
+    mailerState.defaultResult = 'configuration_failure';
+    expect((await requestOtp(deps, { email: EMAIL })).kind).toBe('unavailable');
+    // 失败不落库挑战，也不回退明文码。
+    expect(storeState.challenges).toHaveLength(0);
+  });
+
+  it('returns a uniform acceptance for permanent rejections without storing a challenge', async () => {
+    const { deps, storeState } = makeDeps();
+    const { mailer, state: mailerState } = createFakeMailer();
+    deps.mailer = mailer;
+    mailerState.results.set(EMAIL, 'permanent_rejection');
+
+    const result = await requestOtp(deps, { email: EMAIL });
+    expect(result.kind).toBe('accepted');
+    expect(storeState.challenges).toHaveLength(0);
+    // 没有挑战可消费，真实验证码不能登录该邮箱（万能码旁路不受此限，见旁路用例）。
+    expect((await verifyOtp(deps, { email: EMAIL, code: '000000' })).kind).toBe('invalid_code');
   });
 });
 

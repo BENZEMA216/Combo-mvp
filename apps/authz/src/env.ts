@@ -10,8 +10,12 @@ export interface AuthzEnv {
   REDIS_URL: string;
   /** 目标与验证码摘要的 HMAC 密钥，至少 32 字符。 */
   HMAC_SECRET: string;
-  /** 开发态 OTP 万能码；未配置时登录接口返回 503。 */
+  /** 开发态 OTP 万能码；无论是否配置 Resend 都可通过校验，与 Resend 同时缺失时登录接口返回 503。 */
   DEV_OTP_CODE?: string;
+  /** Resend 发信；两键必须同时配置或同时缺省，缺省时登录只走万能码。 */
+  RESEND_API_KEY?: string;
+  RESEND_FROM_EMAIL?: string;
+  RESEND_API_BASE_URL: string;
   /** 共享域 Cookie 的 Domain 属性（如 .buildwithcombo.com）；缺省为主机限定 Cookie。 */
   SESSION_COOKIE_DOMAIN?: string;
   SESSION_COOKIE_SECURE: boolean;
@@ -58,6 +62,29 @@ function parseAssertionTtl(value: string | undefined): number {
   return ttl;
 }
 
+const OFFICIAL_RESEND_API_BASE_URL = 'https://api.resend.com';
+// 与 V1 相同的发件人形态：裸邮箱或 `显示名 <邮箱>`。
+const RESEND_MAILBOX_PATTERN = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+$/;
+
+function isValidResendFromAddress(value: string): boolean {
+  const displayForm = value.match(/<([^>]+)>\s*$/);
+  return RESEND_MAILBOX_PATTERN.test(displayForm ? displayForm[1]! : value);
+}
+
+function parseResendBaseUrl(value: string | undefined): string {
+  const raw = value || OFFICIAL_RESEND_API_BASE_URL;
+  let url: URL;
+  try {
+    url = new URL(raw.endsWith('/') ? raw : `${raw}/`);
+  } catch {
+    throw new Error('RESEND_API_BASE_URL must be an http(s) URL');
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    throw new Error('RESEND_API_BASE_URL must be an http(s) URL');
+  }
+  return raw;
+}
+
 export function loadEnv(): AuthzEnv {
   const hmacSecret = required('AUTHZ_HMAC_SECRET');
   if (hmacSecret.length < 32) {
@@ -71,6 +98,14 @@ export function loadEnv(): AuthzEnv {
   if (cookieDomain !== undefined && !/^\.?[a-z0-9.-]+\.[a-z]{2,}$/i.test(cookieDomain)) {
     throw new Error('AUTHZ_SESSION_COOKIE_DOMAIN must be a domain like .buildwithcombo.com');
   }
+  const resendApiKey = optional('RESEND_API_KEY');
+  const resendFromEmail = optional('RESEND_FROM_EMAIL');
+  if ((resendApiKey === undefined) !== (resendFromEmail === undefined)) {
+    throw new Error('RESEND_API_KEY and RESEND_FROM_EMAIL must be configured together');
+  }
+  if (resendFromEmail !== undefined && !isValidResendFromAddress(resendFromEmail)) {
+    throw new Error('RESEND_FROM_EMAIL must be a mailbox or `Display <mailbox>` form');
+  }
   const nodeEnv = process.env.NODE_ENV ?? 'development';
   return {
     NODE_ENV: nodeEnv,
@@ -80,6 +115,9 @@ export function loadEnv(): AuthzEnv {
     REDIS_URL: required('REDIS_URL'),
     HMAC_SECRET: hmacSecret,
     DEV_OTP_CODE: devOtpCode,
+    RESEND_API_KEY: resendApiKey,
+    RESEND_FROM_EMAIL: resendFromEmail,
+    RESEND_API_BASE_URL: parseResendBaseUrl(process.env.RESEND_API_BASE_URL),
     SESSION_COOKIE_DOMAIN: cookieDomain,
     SESSION_COOKIE_SECURE: parseBoolean('AUTHZ_SESSION_COOKIE_SECURE', nodeEnv === 'production'),
     ASSERTION_PRIVATE_KEY: required('AUTHZ_ASSERTION_PRIVATE_KEY'),

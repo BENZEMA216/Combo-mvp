@@ -63,6 +63,14 @@ spec:
             - name: AUTHZ_DEV_OTP_CODE
               valueFrom:
                 secretKeyRef: { name: combo-env, key: AUTHZ_DEV_OTP_CODE }
+            # 验证码经 Resend 真实投递；发件人与 base URL 不是密钥，与三环境 api.yaml 同值。
+            - name: RESEND_API_KEY
+              valueFrom:
+                secretKeyRef: { name: combo-env, key: RESEND_API_KEY }
+            - name: RESEND_FROM_EMAIL
+              value: 'Combo <auth@buildwithcombo.com>'
+            - name: RESEND_API_BASE_URL
+              value: https://api.resend.com
             - name: AUTHZ_ASSERTION_PRIVATE_KEY
               valueFrom:
                 secretKeyRef: { name: combo-env, key: AUTHZ_ASSERTION_PRIVATE_KEY }

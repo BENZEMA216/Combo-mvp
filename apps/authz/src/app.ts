@@ -10,6 +10,7 @@ import {
   V2_SESSION_TTL_SECONDS,
 } from './crypto.js';
 import { loginPageHtml, sanitizeLoginNext } from './login-page.js';
+import type { OtpMailer } from './resend.js';
 import {
   logout,
   requestOtp,
@@ -24,6 +25,8 @@ export interface AuthzAppDependencies {
   cache: SessionCache;
   signer: AssertionSigner;
   hmacSecret: string;
+  /** 真实发信端口；未配置时挑战退化为万能码（仅验证期）。 */
+  mailer?: OtpMailer;
   devOtpCode?: string;
   sessionCookieDomain?: string;
   sessionCookieSecure: boolean;
@@ -32,9 +35,9 @@ export interface AuthzAppDependencies {
   logger?: boolean | object;
 }
 
-const ChallengeBodySchema = z.object({ phone: z.string().min(5).max(16) }).strict();
+const ChallengeBodySchema = z.object({ email: z.string().min(3).max(254) }).strict();
 const VerificationBodySchema = z
-  .object({ phone: z.string().min(5).max(16), code: z.string().regex(/^[0-9]{6}$/) })
+  .object({ email: z.string().min(3).max(254), code: z.string().regex(/^[0-9]{6}$/) })
   .strict();
 const LogoutBodySchema = z.object({}).strict();
 const AssertQuerySchema = z
@@ -80,6 +83,7 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
     store: deps.store,
     cache: deps.cache,
     hmacSecret: deps.hmacSecret,
+    mailer: deps.mailer,
     devOtpCode: deps.devOtpCode,
   };
 
@@ -113,7 +117,7 @@ export async function buildApp(deps: AuthzAppDependencies): Promise<FastifyInsta
     if (!parsed.success) return sendError(req, reply, 400, 'invalid_request');
 
     try {
-      const result = await requestOtp(serviceDeps, { phone: parsed.data.phone });
+      const result = await requestOtp(serviceDeps, { email: parsed.data.email });
       if (result.kind === 'invalid_input') return sendError(req, reply, 400, 'invalid_request');
       if (result.kind === 'unavailable') return sendError(req, reply, 503, 'unavailable');
       return reply.code(202).send({

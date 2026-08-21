@@ -1,6 +1,7 @@
-// 内存版 AuthzStore / SessionCache：忠实复刻 repo.ts 与 cache.ts 的语义，
-// 供不依赖 PostgreSQL / Redis 的单元与路由测试注入。
+// 内存版 AuthzStore / SessionCache / OtpMailer：忠实复刻 repo.ts、cache.ts 与
+// resend.ts 端口语义，供不依赖 PostgreSQL / Redis / Resend 的单元与路由测试注入。
 import { OTP_MAX_ATTEMPTS } from '../crypto.js';
+import type { LoginCodeMessage, OtpDeliveryResult, OtpMailer } from '../resend.js';
 import type { AuthzStore, ResolvedSession, SessionCache } from '../service.js';
 
 export interface FakeChallenge {
@@ -15,7 +16,7 @@ export interface FakeChallenge {
 export function createFakeStore(now: () => number = () => Date.now()) {
   const state = {
     challenges: [] as FakeChallenge[],
-    usersByPhone: new Map<string, string>(),
+    usersByEmail: new Map<string, string>(),
     sessions: new Map<string, ResolvedSession & { revoked: boolean }>(),
     resolveCalls: 0,
     revokeCalls: 0,
@@ -61,11 +62,11 @@ export function createFakeStore(now: () => number = () => Date.now()) {
       if (challenge.attempts >= OTP_MAX_ATTEMPTS) challenge.invalidated = true;
       return false;
     },
-    async findOrCreatePhoneUser(phone) {
-      const existing = state.usersByPhone.get(phone);
+    async findOrCreateEmailUser(email) {
+      const existing = state.usersByEmail.get(email);
       if (existing) return existing;
       const userId = `user-${(state.nextUser += 1)}`;
-      state.usersByPhone.set(phone, userId);
+      state.usersByEmail.set(email, userId);
       return userId;
     },
     async insertSession({ userId, tokenDigest, expiresAt }) {
@@ -117,4 +118,20 @@ export function createFakeCache() {
     },
   };
   return { cache, state };
+}
+
+/** 内存版发信端口：记录每次投递请求，可按收件人预设投递结果分类。 */
+export function createFakeMailer() {
+  const state = {
+    messages: [] as LoginCodeMessage[],
+    results: new Map<string, OtpDeliveryResult>(),
+    defaultResult: 'accepted' as OtpDeliveryResult,
+  };
+  const mailer: OtpMailer = {
+    async sendLoginCode(message) {
+      state.messages.push(message);
+      return state.results.get(message.to) ?? state.defaultResult;
+    },
+  };
+  return { mailer, state };
 }

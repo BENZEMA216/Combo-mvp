@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0013`，已经发布的 `0000` 至 `0006` 保持原样；第一方邮箱认证、应用数据库角色和共享 Agent 计费只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0014`，已经发布的 `0000` 至 `0006` 保持原样；第一方邮箱认证、应用数据库角色和共享 Agent 计费只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
 
 ## 迁移文件
 
@@ -18,8 +18,9 @@
 - `0011_recharge_qr_only.sql` 移除 H5「手机收银台」渠道，把历史 `h5` 订单迁到 `qr`，并把支付方式约束收窄为只允许 `qr`。
 - `0012_v2_end_user_identity.sql` 创建 V2 终端用户体系的用户、登录身份、验证码挑战与不透明会话表，并创建 authz 进程专用的最小权限角色。
 - `0013_v2_billing.sql` 创建 V2 计费的钱包四表、预授权与计量事件表，流水与计量事件只允许追加，并创建 billing 进程专用的最小权限角色。
+- `0014_v2_email_login.sql` 把 V2 终端用户登录标识从手机号切换为邮箱：身份类型允许 `email`、identifier 放宽为通用非空/长度约束并取消手机号格式约束，挑战渠道允许 `email`，会话认证方式允许 `email_otp`；存量 phone 行全部保持合法。
 
-`users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。`v2_users` 是 V2 终端用户主体真源，`v2_identities` 保存手机号与微信身份及 `union_id`，`v2_auth_challenges` 与 `v2_sessions` 同样只存摘要；`v2_` 前缀的终端用户身份域与 V1 创作者域的 `auth_` 表互不引用。`v2_wallets`、`v2_ledger`、`v2_orders` 与 `v2_packages` 是 V2 钱包四表，余额分本金、赠送与冻结三桶，资金流水带唯一幂等键且只允许追加；`v2_holds` 保存五分钟期限的预授权，`v2_metering_events` 是计量事实源，同样只允许追加。
+`users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。`v2_users` 是 V2 终端用户主体真源，`v2_identities` 保存邮箱身份（0014 起；此前为手机号，存量 phone 行保留）与微信身份及 `union_id`，`v2_auth_challenges` 与 `v2_sessions` 同样只存摘要；`v2_` 前缀的终端用户身份域与 V1 创作者域的 `auth_` 表互不引用。`v2_wallets`、`v2_ledger`、`v2_orders` 与 `v2_packages` 是 V2 钱包四表，余额分本金、赠送与冻结三桶，资金流水带唯一幂等键且只允许追加；`v2_holds` 保存五分钟期限的预授权，`v2_metering_events` 是计量事实源，同样只允许追加。
 
 ## 认证与权限
 
@@ -37,7 +38,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0013_v2_billing.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0014_v2_email_login.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test

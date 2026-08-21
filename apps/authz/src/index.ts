@@ -7,8 +7,20 @@ import { buildApp } from './app.js';
 import { createRedisSessionCache } from './cache.js';
 import { loadEnv } from './env.js';
 import { createPgAuthzStore } from './repo.js';
+import { createResendMailer } from './resend.js';
 
 const env = loadEnv();
+
+// 配置了 Resend 两键时验证码经邮件真实投递；缺省时挑战退化为万能码（仅验证期），
+// 万能码本身无论是否配置 Resend 都可通过校验。
+const mailer =
+  env.RESEND_API_KEY && env.RESEND_FROM_EMAIL
+    ? createResendMailer({
+        RESEND_API_KEY: env.RESEND_API_KEY,
+        RESEND_FROM_EMAIL: env.RESEND_FROM_EMAIL,
+        RESEND_API_BASE_URL: env.RESEND_API_BASE_URL,
+      })
+    : undefined;
 
 const pool = new Pool({
   connectionString: env.DATABASE_URL,
@@ -32,6 +44,7 @@ const app = await buildApp({
     ttlSeconds: env.ASSERTION_TTL_SECONDS,
   }),
   hmacSecret: env.HMAC_SECRET,
+  mailer,
   devOtpCode: env.DEV_OTP_CODE,
   sessionCookieDomain: env.SESSION_COOKIE_DOMAIN,
   sessionCookieSecure: env.SESSION_COOKIE_SECURE,
@@ -45,6 +58,12 @@ const app = await buildApp({
   },
   logger: true,
 });
+
+if (mailer) {
+  app.log.info('resend mailer enabled: OTP codes are delivered by email');
+} else {
+  app.log.warn('resend not configured: challenges fall back to AUTHZ_DEV_OTP_CODE (dev bypass)');
+}
 
 async function shutdown(signal: string): Promise<void> {
   app.log.info({ signal }, 'shutting down');

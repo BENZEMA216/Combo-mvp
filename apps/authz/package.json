@@ -2,7 +2,7 @@
   "name": "@cb/authz",
   "version": "0.0.0",
   "private": true,
-  "description": "V2 用户体系：登录（验证期为开发态 OTP）、session 管理、JWT(EdDSA) 断言签发与 JWKS 公钥端点。",
+  "description": "V2 用户体系：邮箱验证码登录（Resend 真实投递 + 验证期万能码旁路）、session 管理、JWT(EdDSA) 断言签发与 JWKS 公钥端点。",
   "type": "module",
   "main": "./dist/index.js",
   "scripts": {
