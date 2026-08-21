@@ -1,8 +1,8 @@
 {
-  "name": "@cb/creator-agent-protocol",
+  "name": "@cb/creator-worker-broker-client",
   "version": "0.0.0",
   "private": true,
-  "description": "Creator-hosted Agent 的 Host 与 Broker transport 合约",
+  "description": "Creator Worker 的持久 Broker transport 与 WebSocket driver",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -12,17 +12,13 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./host": {
-      "types": "./dist/host.d.ts",
-      "default": "./dist/host.js"
+    "./sqlite-repository": {
+      "types": "./dist/sqlite-repository.d.ts",
+      "default": "./dist/sqlite-repository.js"
     },
-    "./host-adapter": {
-      "types": "./dist/host-adapter.d.ts",
-      "default": "./dist/host-adapter.js"
-    },
-    "./broker-transport": {
-      "types": "./dist/broker-transport.d.ts",
-      "default": "./dist/broker-transport.js"
+    "./websocket-driver": {
+      "types": "./dist/websocket-driver.d.ts",
+      "default": "./dist/websocket-driver.js"
     }
   },
   "files": [
@@ -32,14 +28,18 @@
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "pretest": "pnpm -F @cb/creator-agent-protocol build && tsc -b",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
   "dependencies": {
-    "zod": "^3.24.1"
+    "@cb/creator-agent-protocol": "workspace:*",
+    "ws": "8.21.0"
   },
   "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/ws": "8.18.1",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }

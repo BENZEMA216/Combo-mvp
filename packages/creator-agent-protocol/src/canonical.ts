@@ -11,7 +11,7 @@ const CANONICAL_JSON_IMPLEMENTATION = 'combo-rfc8785-jcs/1' as const;
  * Serializes one in-memory JSON value using RFC 8785 ordering and ECMAScript number encoding.
  * Values that JSON.stringify would silently erase or invoke are rejected instead.
  */
-function canonicalizeJson(value: unknown): string {
+export function canonicalizeJson(value: unknown): string {
   return serialize(value, '$', new Set<object>());
 }
 

@@ -1,7 +1,8 @@
 # @cb/creator-agent-protocol
 
-这个包是 Creator-hosted Agent 重建链路的最小 Host 合约。R1 只冻结 Host
-边界，不承载数据库、Broker、网络、密钥、进程管理或产品路由。
+这个包是 Creator-hosted Agent 重建链路的严格协议合约。根出口保持 R1 最小 Host
+边界；显式 `broker-transport` 子路径提供 R2C Worker 与 Broker 之间的 canonical wire frame，
+不承载数据库、WebSocket、密钥、进程管理或产品路由。
 
 ## R1 保证
 
@@ -23,11 +24,11 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
 
 - `@cb/creator-agent-protocol` 与 `/host`：给组合根和消费者使用，只暴露严格输入、Host port、结果类型与 verify API。
 - `@cb/creator-agent-protocol/host-adapter`：只给受信 Host adapter 使用，创建每个 turn 私有的 controller、start rejection，并接收同步 Host 写入线性化 callback。
-- canonical JSON、通用 hash 和底层 primitives 都是包内实现，不是公共产品 API。
+- `@cb/creator-agent-protocol/broker-transport`：只暴露严格 canonical frame、四类 body、方向、fingerprint 与 transport-value canonicalizer；它不建立网络连接，也不签发 owner、Lease 或 Cloud authority。
+- canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
-R1 明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、
-Execution Capability、Snapshot、OpenAPI、生成 Schema 或大规模 corpus。这些模块只在
-首个生产消费者出现时进入后续小 PR。
+本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、
+WebSocket driver、Execution Capability、Snapshot、OpenAPI、生成 Schema 或大规模 corpus。
 
 ## 验证
 
