@@ -1,0 +1,38 @@
+{
+  "protocol": "combo.vnext-rebaseline-budget/1",
+  "schemaVersion": 1,
+  "scopeId": "vnext-r1-r3-test-only",
+  "baseSha": "d15a985c67c2b9b5e08a5b8bc03a772fb543aecb",
+  "donorSha": "871c8f43b0725fa2f471173b2fbcf380ccfba930",
+  "compatibility": {
+    "preservePostgresMigrationHistory": false,
+    "preserveWorkerSqliteSchemaHistory": false
+  },
+  "allowedFiles": [
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "scripts/package.json",
+    "scripts/tsconfig.integration.json",
+    "tsconfig.e2e.json"
+  ],
+  "allowedPathPrefixes": [
+    "apps/agent-gateway/",
+    "apps/creator-worker/",
+    "apps/runtime/",
+    "db/",
+    "packages/creator-agent-broker-journal/",
+    "packages/creator-agent-persistence/",
+    "packages/creator-agent-protocol/",
+    "packages/creator-worker-broker-client/",
+    "packages/shared/",
+    "scripts/integration/",
+    "tests/e2e/",
+    "tests/vnext/"
+  ],
+  "limits": {
+    "maxChangedFilesPerPullRequest": 30,
+    "maxChangedLinesPerFile": 1200,
+    "maxChangedLinesPerPullRequest": 5000,
+    "maxChangedLinesFromBase": 70000
+  }
+}
