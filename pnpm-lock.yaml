@@ -124,6 +124,31 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.21)(jsdom@25.0.1)
 
+  apps/creator-worker:
+    dependencies:
+      '@cb/creator-agent-broker-journal':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-broker-journal
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-protocol
+      '@cb/creator-worker-broker-client':
+        specifier: workspace:*
+        version: link:../../packages/creator-worker-broker-client
+      zod:
+        specifier: ^3.24.1
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@24.13.3)(jsdom@25.0.1)
+
   apps/runtime:
     dependencies:
       '@ag-ui/core':
