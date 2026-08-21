@@ -73,9 +73,10 @@ describe('fresh SQLite durable transport repository', () => {
         'storeIdentity',
         'installationId',
         'busyTimeoutMs',
+        'maxPendingCommands',
         workerTransportRepositoryTestHooks,
       ].map((key) => reads.get(key)),
-    ).toEqual([1, 1, 1, 1, 1]);
+    ).toEqual([1, 1, 1, 1, 1, 1]);
     expect(lstatSync(options.filename).mode & 0o777).toBe(0o600);
     expect(() => openExistingWorkerDurableTransportRepository(options)).toThrow(
       expect.objectContaining({ code: 'STORE_BUSY' }),
@@ -85,6 +86,9 @@ describe('fresh SQLite durable transport repository', () => {
     expect(() =>
       openExistingWorkerDurableTransportRepository({ ...options, installationId: 'install.other' }),
     ).toThrow(expect.objectContaining({ code: 'STORE_SCHEMA_MISMATCH' }));
+    expect(() =>
+      openExistingWorkerDurableTransportRepository({ ...options, maxPendingCommands: 257 }),
+    ).toThrow(expect.objectContaining({ code: 'STORE_SCHEMA_MISMATCH' }));
     const reopened = track(openExistingWorkerDurableTransportRepository(options));
     const owner = remember(reopened, reopened.acquireOwner({ leaseMs: 50 }));
     expect(() => reopened.close()).toThrow(expect.objectContaining({ code: 'OWNER_STALE' }));
@@ -93,6 +97,16 @@ describe('fresh SQLite durable transport repository', () => {
     expect(() => reopened.renewOwner(owner, 100)).toThrow(
       expect.objectContaining({ code: 'OWNER_EXPIRED' }),
     );
+  });
+
+  it('rejects command capacity outside the persisted 1..10000 contract', () => {
+    const { options } = optionsAt();
+    expect(() =>
+      createFreshWorkerDurableTransportRepository({ ...options, maxPendingCommands: 0 }),
+    ).toThrow(expect.objectContaining({ code: 'STORE_PATH_INVALID' }));
+    expect(() =>
+      createFreshWorkerDurableTransportRepository({ ...options, maxPendingCommands: 10_001 }),
+    ).toThrow(expect.objectContaining({ code: 'STORE_PATH_INVALID' }));
   });
 
   it('persists an exact lease activation and rejects stale fences or structural materialization lies', () => {
@@ -228,6 +242,63 @@ describe('fresh SQLite durable transport repository', () => {
       sourceId: 1,
     });
     expect(payloadReads).toBe(1);
+  });
+
+  it('returns bounded command batches in durable delivery order', () => {
+    const fixture = setup();
+    for (let index = 0; index < 35; index += 1) {
+      fixture.repository.commitInbound(
+        fixture.owner,
+        fixture.cursor,
+        command(
+          fixture.base,
+          index + 1,
+          index === 0 ? 'command.z' : index === 1 ? 'command.a' : `command.${index}`,
+          {},
+        ),
+      );
+    }
+    expect(fixture.repository.readPendingCommands(fixture.owner)).toHaveLength(32);
+    expect(
+      fixture.repository
+        .readPendingCommands(fixture.owner, 2)
+        .map((item) => item.deliveryMessageId),
+    ).toEqual(['command.z', 'command.a']);
+    expect(fixture.repository.readPendingCommands(fixture.owner, 100)).toHaveLength(35);
+    expect(() => fixture.repository.readPendingCommands(fixture.owner, 0)).toThrow(TypeError);
+    expect(() => fixture.repository.readPendingCommands(fixture.owner, 101)).toThrow(TypeError);
+  });
+
+  it('rolls back a full command admission and accepts its exact retry after pump progress', () => {
+    const configured = optionsAt();
+    const options = { ...configured.options, maxPendingCommands: 1 };
+    const repository = track(createFreshWorkerDurableTransportRepository(options));
+    const owner = remember(repository, repository.acquireOwner());
+    const base = binding('conn.capacity', 1);
+    const cursor = repository.activateLease(owner, grant(base, configured.clock.now + 5_000));
+    const first = command(base, 1, 'command.capacity.1', { ordinal: 1 });
+    const second = command(base, 2, 'command.capacity.2', { ordinal: 2 });
+
+    expect(repository.commitInbound(owner, cursor, first).disposition).toBe('APPLIED');
+    expect(repository.commitInbound(owner, cursor, first).disposition).toBe('EXACT_REPLAY');
+    expect(() => repository.commitInbound(owner, cursor, second)).toThrow(
+      expect.objectContaining({ code: 'COMMAND_CAPACITY_REACHED' }),
+    );
+    expect(
+      repository.readPendingCommands(owner, 100).map((item) => item.deliveryMessageId),
+    ).toEqual(['command.capacity.1']);
+    const acknowledged = repository.prepareSendable(owner, cursor, 16).map((sendable) => {
+      const body = parseBrokerTransportFrame(unwrapWorkerTransportSendable(sendable).frameText)
+        .frame.body;
+      return body.type === 'message.ack' ? body.acknowledgedMessageId : null;
+    });
+    expect(acknowledged).not.toContain('command.capacity.2');
+
+    expect(repository.markCommandApplied(owner, 'command.capacity.1').state).toBe('APPLIED');
+    expect(repository.commitInbound(owner, cursor, second).disposition).toBe('APPLIED');
+    expect(
+      repository.readPendingCommands(owner, 100).map((item) => item.deliveryMessageId),
+    ).toEqual(['command.capacity.2']);
   });
 
   it('durably enqueues before/after a live lease and reframes exact replays in causal order', () => {

@@ -1,4 +1,5 @@
 import { workerStorageFingerprint } from './durable-codec.js';
+import { MAX_DURABLE_SEALED_ENVELOPE_BYTES } from './sqlite-store-internal.js';
 
 export const WORKER_SQLITE_APPLICATION_ID = 0x4342494a;
 export const WORKER_SQLITE_SCHEMA_VERSION = 1;
@@ -135,6 +136,9 @@ const schemaObjects: readonly CatalogObject[] = Object.freeze([
       ),
       sealed_result_id TEXT,
       created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
+      transport_enqueued_at_ms INTEGER CHECK (
+        transport_enqueued_at_ms IS NULL OR transport_enqueued_at_ms >= created_at_ms
+      ),
       CHECK (fact_type = 'TERMINAL' OR sealed_result_id IS NULL),
       UNIQUE (operation_id, fact_type),
       FOREIGN KEY (operation_id, invocation_id)
@@ -166,7 +170,9 @@ const schemaObjects: readonly CatalogObject[] = Object.freeze([
         AND substr(envelope_fingerprint, 1, 7) = 'sha256:'
         AND substr(envelope_fingerprint, 8) NOT GLOB '*[^0-9a-f]*'
       ),
-      envelope_bytes INTEGER NOT NULL CHECK (envelope_bytes >= 2),
+      envelope_bytes INTEGER NOT NULL CHECK (
+        envelope_bytes BETWEEN 2 AND ${MAX_DURABLE_SEALED_ENVELOPE_BYTES}
+      ),
       created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
       UNIQUE (invocation_id),
       UNIQUE (operation_id),
@@ -211,6 +217,12 @@ const schemaObjects: readonly CatalogObject[] = Object.freeze([
     'worker_invocation_outbox',
     `CREATE INDEX worker_invocation_outbox_invocation
       ON worker_invocation_outbox(invocation_id, operation_id)`,
+  ),
+  catalogIndex(
+    'worker_invocation_outbox_pending',
+    'worker_invocation_outbox',
+    `CREATE INDEX worker_invocation_outbox_pending
+      ON worker_invocation_outbox(transport_enqueued_at_ms, outbox_sequence)`,
   ),
 ]);
 

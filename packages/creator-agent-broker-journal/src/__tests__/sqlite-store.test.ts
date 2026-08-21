@@ -842,6 +842,93 @@ describe('Worker SQLite store', () => {
     expect(running.startHost).toHaveBeenCalledTimes(1);
   });
 
+  it('hands off exact outbox facts durably without claiming a transport ACK', async () => {
+    const faults = faultController();
+    const filename = privateDatabasePath();
+    const tracked = fresh(filename, faults.hooks);
+    const owner = acquire(tracked);
+    const running = await advanceToRunning(tracked, 'invocation.handoff', 'handoff');
+    const envelope = { ciphertext: 'opaque', nested: { keyVersion: 3 } };
+    const sealed = await successfulTerminal(
+      running.controller,
+      'ephemeral handoff result',
+      'handoff',
+      envelope,
+    );
+    tracked.store.commitInvocationEvent(owner, running.cursor, {
+      operationId: 'terminal.handoff',
+      event: { type: 'HOST_TERMINAL_CONFIRMED', terminal: sealed.terminal },
+      resultSealAuthority: sealed.authority,
+    });
+
+    expect(() => tracked.store.readPendingFacts(owner, 0)).toThrow(/1\.\.100/u);
+    expect(() => tracked.store.readPendingFacts(owner, 101)).toThrow(/1\.\.100/u);
+    const pending = tracked.store.readPendingFacts(owner);
+    expect(tracked.store.readPendingFacts(owner, 1)).toEqual([pending[0]]);
+    expect(pending.map(({ factType }) => factType)).toEqual(['STARTED', 'TERMINAL']);
+    const startedReference = pending[0]!;
+    const terminalReference = pending[1]!;
+    const started = tracked.store.readOutboxFact(owner, startedReference);
+    const terminal = tracked.store.readOutboxFact<typeof envelope>(owner, terminalReference);
+    expect(started).toMatchObject({
+      reference: startedReference,
+      payload: { type: 'ENQUEUE_STARTED_FACT' },
+      sealedEnvelope: null,
+      transportEnqueuedAtMs: null,
+    });
+    expect(terminal).toMatchObject({
+      reference: terminalReference,
+      payload: { type: 'ENQUEUE_TERMINAL_FACT' },
+      sealedEnvelope: envelope,
+      transportEnqueuedAtMs: null,
+    });
+    expect(Object.isFrozen(terminal.payload)).toBe(true);
+    expect(Object.isFrozen(terminal.payload.terminal)).toBe(true);
+    expect(Object.isFrozen(terminal.sealedEnvelope?.nested)).toBe(true);
+
+    expectStoreError(
+      () =>
+        tracked.store.readOutboxFact(owner, {
+          ...startedReference,
+          payloadFingerprint: `sha256:${'c'.repeat(64)}`,
+        }),
+      'OUTBOX_FACT_CONFLICT',
+    );
+    expectStoreError(
+      () => tracked.store.readOutboxFact(owner, { ...startedReference, factId: 'fact.unknown' }),
+      'OUTBOX_FACT_UNKNOWN',
+    );
+
+    faults.arm('BEFORE_SQL_COMMIT');
+    expectStoreError(() => tracked.store.markFactEnqueued(owner, startedReference), 'STORE_IO');
+    expect(tracked.store.readPendingFacts(owner)).toEqual(pending);
+    const applied = tracked.store.markFactEnqueued(owner, startedReference);
+    const replayed = tracked.store.markFactEnqueued(owner, startedReference);
+    expect(applied).toMatchObject({ disposition: 'APPLIED', reference: startedReference });
+    expect(replayed).toEqual({ ...applied, disposition: 'EXACT_REPLAY' });
+    expect(tracked.store.readPendingFacts(owner)).toEqual([terminalReference]);
+    expect(tracked.store.readOutboxFact(owner, startedReference).transportEnqueuedAtMs).toBe(
+      applied.transportEnqueuedAtMs,
+    );
+    faults.arm('AFTER_SQL_COMMIT');
+    expectStoreError(
+      () => tracked.store.markFactEnqueued(owner, terminalReference),
+      'STORE_COMMIT_UNKNOWN',
+    );
+    expectStoreError(() => tracked.store.readPendingFacts(owner), 'STORE_CLOSED');
+
+    faults.setNow(TEST_NOW + 10_001);
+    const reopened = reopen(filename, faults.hooks);
+    const reopenedOwner = acquire(reopened);
+    expect(reopened.store.readPendingFacts(reopenedOwner)).toEqual([]);
+    expect(reopened.store.markFactEnqueued(reopenedOwner, terminalReference).disposition).toBe(
+      'EXACT_REPLAY',
+    );
+    expect(
+      reopened.store.readOutboxFact(reopenedOwner, startedReference).transportEnqueuedAtMs,
+    ).toBe(applied.transportEnqueuedAtMs);
+  });
+
   it.each([
     { label: 'equal timestamps', startedAt: TEST_NOW, terminalAt: TEST_NOW },
     { label: 'a backward wall clock', startedAt: TEST_NOW + 1_000, terminalAt: TEST_NOW + 500 },
@@ -934,7 +1021,7 @@ describe('Worker SQLite store', () => {
       running.controller,
       'ephemeral oversized result',
       'oversized',
-      { ciphertext: 'x'.repeat(65_536) },
+      { ciphertext: 'x'.repeat(32_752) },
     );
 
     expectStoreError(

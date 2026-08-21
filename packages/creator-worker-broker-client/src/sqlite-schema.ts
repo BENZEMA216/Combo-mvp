@@ -17,6 +17,7 @@ const objects: readonly CatalogObject[] = Object.freeze([
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), store_identity TEXT NOT NULL,
       installation_id TEXT NOT NULL,
       schema_contract_digest TEXT NOT NULL, catalog_digest TEXT NOT NULL,
+      max_pending_commands INTEGER NOT NULL CHECK (max_pending_commands BETWEEN 1 AND 10000),
       highest_owner_epoch INTEGER NOT NULL DEFAULT 0 CHECK (highest_owner_epoch >= 0),
       created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0)
     ) STRICT`,
@@ -129,7 +130,7 @@ const objects: readonly CatalogObject[] = Object.freeze([
   index(
     'transport_pending_commands',
     'transport_inbound_deliveries',
-    `CREATE INDEX transport_pending_commands ON transport_inbound_deliveries(state, created_at_ms, delivery_message_id)`,
+    `CREATE INDEX transport_pending_commands ON transport_inbound_deliveries(state, delivery_sequence)`,
   ),
   index(
     'transport_pending_wire',

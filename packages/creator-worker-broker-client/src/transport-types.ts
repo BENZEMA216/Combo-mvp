@@ -26,6 +26,7 @@ export type WorkerTransportRepositoryErrorCode =
   | 'LEASE_EXPIRED'
   | 'SEQUENCE_GAP'
   | 'SEQUENCE_CONFLICT'
+  | 'COMMAND_CAPACITY_REACHED'
   | 'MESSAGE_CONFLICT'
   | 'DELIVERY_UNKNOWN'
   | 'DELIVERY_STATE_INVALID';
@@ -102,6 +103,7 @@ export type WorkerTransportRepositoryOptions = Readonly<{
   storeIdentity: string;
   installationId: string;
   busyTimeoutMs?: number;
+  maxPendingCommands?: number;
 }>;
 
 export type WorkerMessageEnqueueInput = Readonly<{
@@ -138,7 +140,10 @@ export interface WorkerDurableTransportRepository {
     cursor: WorkerTransportConnectionCursor,
     sendable: WorkerTransportSendable,
   ): WorkerTransportDelivery;
-  readPendingCommands(owner: WorkerTransportOwner): readonly WorkerTransportCommandReference[];
+  readPendingCommands(
+    owner: WorkerTransportOwner,
+    limit?: number,
+  ): readonly WorkerTransportCommandReference[];
   readCommandPayload(
     owner: WorkerTransportOwner,
     deliveryMessageId: string,

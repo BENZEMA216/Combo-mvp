@@ -7,7 +7,9 @@ export type {
 } from './effect-authority.js';
 export {
   executeWorkerHostInterrupt,
+  executeWorkerHostOutcomeObservation,
   executeWorkerHostStart,
+  executeWorkerHostStartTurn,
   sealAndFinalizeWorkerHostSuccess,
   verifyAndProjectHostOutcome,
   type VerifiedWorkerHostOutcome,
@@ -15,6 +17,7 @@ export {
   type WorkerHostInterruptDispositionProjection,
   type WorkerHostInterruptRequestProjection,
   type WorkerHostStartDispositionProjection,
+  type WorkerHostStartTurnExecution,
   type WorkerHostSuccessCandidate,
   type WorkerHostTerminalProjection,
 } from './host-projection.js';

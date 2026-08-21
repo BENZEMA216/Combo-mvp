@@ -6,6 +6,8 @@ export type WorkerSqliteFaultPoint =
   | 'BEFORE_SQL_COMMIT'
   | 'AFTER_SQL_COMMIT';
 
+export const MAX_DURABLE_SEALED_ENVELOPE_BYTES = 32_768;
+
 export type WorkerSqliteStoreTestHooks = Readonly<{
   now?: () => number;
   fault?: (point: WorkerSqliteFaultPoint) => void;

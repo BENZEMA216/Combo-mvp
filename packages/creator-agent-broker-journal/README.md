@@ -17,6 +17,7 @@ port 调用绑定。它们把
 - 若 interrupted terminal 比同一次 interrupt disposition 更早入队，reducer 先持久暂存低敏 terminal；只有 exact SENT request 到达并逐字段匹配后才终结，重启则保守进入 `UNCERTAIN`。
 - R1 outcome/disposition 只能通过同一个 handle 投影；JSON clone、普通结构体、foreign handle 与 generation/turn 漂移都会失败。
 - SUCCEEDED 在 seal authority 返回 process-local receipt 前没有 reducer authority；authority 先复制并深冻结 plain-data envelope，terminal plan 原子携带 sealed result receipt，不保留回答正文或 caller-owned 引用。
+- committed `OBSERVE_HOST_OUTCOME` 由 Host executor 正式消费；同一 committed capability、handle 与 seal authority 只观察并 seal 一次，调用方最终只取得低敏 terminal projection。
 - 所有 `UNCERTAIN` 终态保留 start attempt、binding 与完整 interrupt audit snapshot，不把 USER_CANCEL/TIMEOUT 或 request ID 抹平。
 - execution terminal 与未来 fact delivery/Cloud ACK 正交；本状态机不存在 `CLOUD_COMMITTED`。
 
@@ -43,12 +44,19 @@ sealed result 的同事务提交。重启只重建 PREPARED cursor；未观察�
 Host effect 只有在 SQLite COMMIT 后才获得可执行 wrapper；wrapper 还绑定当前 live owner，close、
 poison 或 owner 失效后会在 Host callback 前拒绝。SUCCEEDED transaction 通过同一 seal authority 读取
 immutable opaque envelope，并与 terminal snapshot、receipt 和 outbox 逐字段交叉绑定。outbox 使用持久
-自增序列保持因果顺序，不依赖可能相同或回拨的墙钟。
+自增序列保持因果顺序，不依赖可能相同或回拨的墙钟。`readOutboxFact()` 只接受 exact reference，
+返回深冻结 payload，并在成功终态返回同库 sealed envelope；envelope 的 durable canonical JSON 上限
+为 32 KiB，为 R2C 64 KiB full frame 的 terminal/authority metadata 留出确定余量。
+
+`readPendingFacts()` 只返回尚未 handoff 的事实，默认 64、允许 1..100；
+`markFactEnqueued()` 持久记录本地 transport `ENQUEUED` 且 exact replay 幂等。这个 marker 只证明事实
+已经交给持久 transport repository，不是 Broker/Cloud ACK，也不允许把 execution terminal 解释成
+Cloud committed。
 
 ## 明确不包含
 
 本包没有 WebSocket、Broker envelope、Cloud reducer、HTTP error map、Prompt/回答明文持久化、
-fact delivery ACK 或产品进程。SQLite 只从显式 `./sqlite-store` 子路径暴露；根出口仍是 I/O-free
+Broker/Cloud delivery ACK 或产品进程。SQLite 只从显式 `./sqlite-store` 子路径暴露；根出口仍是 I/O-free
 reducer。R2C/R2D/R2E 再依次加入 transport、Host pump 与唯一组合根；本切片不迁移 donor 的
 SQLite v1-v5 历史或 legacy recovery 文件。
 

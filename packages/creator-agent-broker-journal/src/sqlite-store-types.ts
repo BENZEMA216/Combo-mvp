@@ -22,6 +22,8 @@ export type WorkerSqliteStoreErrorCode =
   | 'CURSOR_STALE'
   | 'OPERATION_CONFLICT'
   | 'INVOCATION_CONFLICT'
+  | 'OUTBOX_FACT_UNKNOWN'
+  | 'OUTBOX_FACT_CONFLICT'
   | 'SEALED_RESULT_REQUIRED'
   | 'SEALED_RESULT_INVALID';
 
@@ -65,6 +67,19 @@ export type WorkerOutboxFactReference = Readonly<{
   factType: 'STARTED' | 'TERMINAL';
   payloadFingerprint: string;
   sealedResultId: string | null;
+}>;
+
+export type WorkerOutboxFact<TEnvelope extends object = Record<string, unknown>> = Readonly<{
+  reference: WorkerOutboxFactReference;
+  payload: Readonly<Record<string, unknown>>;
+  sealedEnvelope: Readonly<TEnvelope> | null;
+  transportEnqueuedAtMs: number | null;
+}>;
+
+export type WorkerOutboxFactHandoff = Readonly<{
+  disposition: 'APPLIED' | 'EXACT_REPLAY';
+  reference: WorkerOutboxFactReference;
+  transportEnqueuedAtMs: number;
 }>;
 
 export type WorkerSqliteRecoveryRecord = Readonly<{
@@ -122,7 +137,15 @@ export interface WorkerSqliteStore {
     owner: WorkerSqliteOwner,
     invocationId: string,
   ): WorkerDurableInvocationView | null;
-  readPendingFacts(owner: WorkerSqliteOwner): readonly WorkerOutboxFactReference[];
+  readPendingFacts(owner: WorkerSqliteOwner, limit?: number): readonly WorkerOutboxFactReference[];
+  readOutboxFact<TEnvelope extends object = Record<string, unknown>>(
+    owner: WorkerSqliteOwner,
+    reference: WorkerOutboxFactReference,
+  ): WorkerOutboxFact<TEnvelope>;
+  markFactEnqueued(
+    owner: WorkerSqliteOwner,
+    reference: WorkerOutboxFactReference,
+  ): WorkerOutboxFactHandoff;
   readSealedEnvelope<TEnvelope extends object>(
     owner: WorkerSqliteOwner,
     sealedResultId: string,

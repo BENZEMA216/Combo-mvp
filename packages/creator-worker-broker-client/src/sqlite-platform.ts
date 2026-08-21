@@ -29,12 +29,14 @@ import {
 
 const ID = /^[A-Za-z0-9._:-]{1,256}$/u;
 const DEFAULT_BUSY_TIMEOUT_MS = 1_000;
+const DEFAULT_MAX_PENDING_COMMANDS = 256;
 
 export type CheckedTransportRepositoryOptions = Readonly<{
   filename: string;
   storeIdentity: string;
   installationId: string;
   busyTimeoutMs: number;
+  maxPendingCommands: number;
   hooks: WorkerTransportRepositoryTestHooks;
 }>;
 
@@ -84,13 +86,15 @@ function initializeFresh(database: DatabaseSync, options: CheckedTransportReposi
       .prepare(
         `INSERT INTO transport_meta
           (singleton, store_identity, installation_id, schema_contract_digest, catalog_digest,
-           highest_owner_epoch, created_at_ms) VALUES (1, ?, ?, ?, ?, 0, ?)`,
+           max_pending_commands, highest_owner_epoch, created_at_ms)
+         VALUES (1, ?, ?, ?, ?, ?, 0, ?)`,
       )
       .run(
         options.storeIdentity,
         options.installationId,
         TRANSPORT_SQLITE_SCHEMA_CONTRACT_DIGEST,
         transportSqliteCatalogDigest(database),
+        options.maxPendingCommands,
         Date.now(),
       );
     database.exec('COMMIT');
@@ -115,7 +119,8 @@ function verifyExisting(database: DatabaseSync, options: CheckedTransportReposit
   const meta = row(database.prepare('SELECT * FROM transport_meta WHERE singleton = 1').get());
   if (
     text(meta, 'store_identity') !== options.storeIdentity ||
-    text(meta, 'installation_id') !== options.installationId
+    text(meta, 'installation_id') !== options.installationId ||
+    integer(meta, 'max_pending_commands') !== options.maxPendingCommands
   )
     fail('STORE_SCHEMA_MISMATCH', 'Transport store identity does not match.');
   exact(text(meta, 'schema_contract_digest'), TRANSPORT_SQLITE_SCHEMA_CONTRACT_DIGEST, 'schema');
@@ -164,6 +169,7 @@ function validateOptions(
   const storeIdentity = options.storeIdentity;
   const installationId = options.installationId;
   const busyTimeoutInput = options.busyTimeoutMs;
+  const maxPendingCommandsInput = options.maxPendingCommands;
   const hooks = (
     options as WorkerTransportRepositoryOptions & WorkerTransportRepositoryInternalOptions
   )[workerTransportRepositoryTestHooks];
@@ -180,11 +186,20 @@ function validateOptions(
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > 10_000) {
     fail('STORE_PATH_INVALID', 'SQLite busy timeout must be 1..10000 ms.');
   }
+  const maxPendingCommands = maxPendingCommandsInput ?? DEFAULT_MAX_PENDING_COMMANDS;
+  if (
+    !Number.isSafeInteger(maxPendingCommands) ||
+    maxPendingCommands < 1 ||
+    maxPendingCommands > 10_000
+  ) {
+    fail('STORE_PATH_INVALID', 'Pending command capacity must be 1..10000.');
+  }
   return Object.freeze({
     filename,
     storeIdentity,
     installationId,
     busyTimeoutMs,
+    maxPendingCommands,
     hooks: hooks ?? {},
   });
 }
@@ -293,6 +308,10 @@ function row(value: unknown): Record<string, unknown> {
 function text(value: Record<string, unknown>, key: string): string {
   if (typeof value[key] !== 'string') fail('STORE_CORRUPT', `SQLite ${key} is invalid.`);
   return value[key] as string;
+}
+function integer(value: Record<string, unknown>, key: string): number {
+  if (!Number.isSafeInteger(value[key])) fail('STORE_CORRUPT', `SQLite ${key} is invalid.`);
+  return value[key] as number;
 }
 function exact(actual: string, expected: string, label: string): void {
   if (actual !== expected) fail('STORE_SCHEMA_MISMATCH', `Transport SQLite ${label} mismatch.`);

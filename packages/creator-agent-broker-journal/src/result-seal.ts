@@ -86,6 +86,15 @@ export function createWorkerResultSealAuthority<TEnvelope extends object>(
   return authority;
 }
 
+/** Package-internal runtime gate for Host executor composition. */
+export function assertTrustedWorkerResultSealAuthority<TEnvelope extends object>(
+  authority: WorkerResultSealAuthority<TEnvelope>,
+): void {
+  if (typeof authority !== 'object' || authority === null || !trustedAuthorities.has(authority)) {
+    throw new TypeError('Worker result seal authority was not created by this package.');
+  }
+}
+
 function immutablePlainDataSnapshot<T extends object>(input: T): Readonly<T> {
   let cloned: unknown;
   try {

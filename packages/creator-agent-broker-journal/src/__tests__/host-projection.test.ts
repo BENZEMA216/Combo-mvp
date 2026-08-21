@@ -19,19 +19,24 @@ import {
 import {
   bindingForHostTurn,
   executeWorkerHostInterrupt,
+  executeWorkerHostOutcomeObservation,
   executeWorkerHostStart,
+  executeWorkerHostStartTurn,
   sealAndFinalizeWorkerHostSuccess,
   verifyAndProjectHostOutcome,
 } from '../host-projection.js';
 import {
   commitWorkerAfterCommitEffects,
   createWorkerInterruptHostEffect,
+  createWorkerObserveHostOutcomeEffect,
   createWorkerStartHostEffect,
   workerInvocationAttemptId,
   workerInterruptAttempt,
   type CommittedWorkerInterruptHostEffect,
+  type CommittedWorkerObserveHostOutcomeEffect,
   type CommittedWorkerStartHostEffect,
   type WorkerInterruptHostEffect,
+  type WorkerObserveHostOutcomeEffect,
   type WorkerStartHostEffect,
 } from '../effect-authority.js';
 import {
@@ -67,6 +72,17 @@ function commitInterrupt(effect: WorkerInterruptHostEffect): CommittedWorkerInte
   const committed = commitWorkerAfterCommitEffects([effect], commitContext, assertCurrentOwner)[0];
   if (committed?.type !== 'INTERRUPT_HOST') {
     throw new Error('expected committed INTERRUPT_HOST');
+  }
+  return committed;
+}
+
+function commitObserve(
+  effect: WorkerObserveHostOutcomeEffect,
+  assertCurrent: () => void = assertCurrentOwner,
+): CommittedWorkerObserveHostOutcomeEffect {
+  const committed = commitWorkerAfterCommitEffects([effect], commitContext, assertCurrent)[0];
+  if (committed?.type !== 'OBSERVE_HOST_OUTCOME') {
+    throw new Error('expected committed OBSERVE_HOST_OUTCOME');
   }
   return committed;
 }
@@ -307,11 +323,12 @@ describe('R1 Host projection', () => {
     const sameEffect = createWorkerStartHostEffect(workerInvocationAttemptId('start.worker.once'));
     const committedSameEffect = commitStart(sameEffect);
     const startTurn = vi.fn(async () => controller.handle);
-    const [first, replayed] = await Promise.all([
-      executeWorkerHostStart(committedSameEffect, startTurn),
-      executeWorkerHostStart(committedSameEffect, startTurn),
-    ]);
-    expect(first).toBe(replayed);
+    const executionTask = executeWorkerHostStartTurn(committedSameEffect, startTurn);
+    const replayTask = executeWorkerHostStart(committedSameEffect, startTurn);
+    expect(executeWorkerHostStart(committedSameEffect, startTurn)).toBe(replayTask);
+    const [execution, replayed] = await Promise.all([executionTask, replayTask]);
+    expect(execution.handle).toBe(controller.handle);
+    expect(replayed).toBe(execution.disposition);
     expect(startTurn).toHaveBeenCalledOnce();
     expect(() =>
       executeWorkerHostStart(
@@ -411,6 +428,107 @@ describe('R1 Host projection', () => {
     const sealed = await outerSeal;
     expect(await nestedSeal).toBe(sealed);
     expect(sealCalls).toBe(1);
+  });
+
+  it('consumes committed outcome observation once and returns terminal-only authority', async () => {
+    const controller = createController();
+    const committed = commitObserve(
+      createWorkerObserveHostOutcomeEffect(bindingForHostTurn(controller.handle)),
+    );
+    let nested: ReturnType<typeof executeWorkerHostOutcomeObservation> | undefined;
+    const seal = vi.fn(async () => {
+      nested ??= executeWorkerHostOutcomeObservation(committed, controller.handle, authority);
+      return {
+        sealedResultId: 'sealed.result.observation',
+        sealedFingerprint,
+        envelope: Object.freeze({ ciphertext: 'opaque' }),
+      };
+    });
+    const authority = createWorkerResultSealAuthority(seal);
+    const first = executeWorkerHostOutcomeObservation(committed, controller.handle, authority);
+    const replayed = executeWorkerHostOutcomeObservation(committed, controller.handle, authority);
+    controller.settle(settledObservation(), { text: 'executor plaintext' });
+
+    const terminal = await first;
+    expect(await replayed).toBe(terminal);
+    expect(await nested).toBe(terminal);
+    expect(seal).toHaveBeenCalledOnce();
+    expect(terminal).toMatchObject({ outcome: 'SUCCEEDED', binding: { thread, turnId } });
+    expect(JSON.stringify(terminal)).not.toContain('executor plaintext');
+
+    const foreignAuthority = createWorkerResultSealAuthority(async () => ({
+      sealedResultId: 'sealed.result.foreign-observation',
+      sealedFingerprint,
+      envelope: Object.freeze({ ciphertext: 'foreign' }),
+    }));
+    expect(() =>
+      executeWorkerHostOutcomeObservation(committed, controller.handle, foreignAuthority),
+    ).toThrow(/another Host execution authority/u);
+  });
+
+  it('fences outcome observation before and after await and rejects foreign handles', async () => {
+    const controller = createController();
+    let current = true;
+    const ownerLost = new Error('owner fence lost');
+    const assertCurrent = vi.fn(() => {
+      if (!current) throw ownerLost;
+    });
+    const committed = commitObserve(
+      createWorkerObserveHostOutcomeEffect(bindingForHostTurn(controller.handle)),
+      assertCurrent,
+    );
+    const seal = vi.fn(async () => ({
+      sealedResultId: 'sealed.result.must-not-run',
+      sealedFingerprint,
+      envelope: Object.freeze({ ciphertext: 'opaque' }),
+    }));
+    const authority = createWorkerResultSealAuthority(seal);
+    const observation = executeWorkerHostOutcomeObservation(
+      committed,
+      controller.handle,
+      authority,
+    );
+    current = false;
+    controller.settle(settledObservation(), { text: 'stale plaintext' });
+    await expect(observation).rejects.toBe(ownerLost);
+    expect(assertCurrent).toHaveBeenCalledTimes(2);
+    expect(seal).not.toHaveBeenCalled();
+
+    const first = createController();
+    const second = createController();
+    const foreign = commitObserve(
+      createWorkerObserveHostOutcomeEffect(bindingForHostTurn(first.handle)),
+    );
+    expect(() => executeWorkerHostOutcomeObservation(foreign, second.handle, authority)).toThrow(
+      /another Host handle/u,
+    );
+    expect(() =>
+      executeWorkerHostOutcomeObservation(
+        { type: 'OBSERVE_HOST_OUTCOME', commit: commitContext } as never,
+        first.handle,
+        authority,
+      ),
+    ).toThrow(/Committed Worker OBSERVE_HOST_OUTCOME effect/u);
+  });
+
+  it('propagates Host outcome evidence loss without invoking the sealer', async () => {
+    const controller = createController();
+    const committed = commitObserve(
+      createWorkerObserveHostOutcomeEffect(bindingForHostTurn(controller.handle)),
+    );
+    const seal = vi.fn(async () => ({
+      sealedResultId: 'sealed.result.unreachable',
+      sealedFingerprint,
+      envelope: Object.freeze({ ciphertext: 'opaque' }),
+    }));
+    const observation = executeWorkerHostOutcomeObservation(
+      committed,
+      controller.handle,
+      createWorkerResultSealAuthority(seal),
+    );
+    controller.markEvidenceLost('HOST_SESSION_LOST');
+    await expect(observation).rejects.toMatchObject({ reason: 'HOST_SESSION_LOST' });
+    expect(seal).not.toHaveBeenCalled();
   });
 
   it('turns a writer NOT_SENT into a handle-verifiable disposition with request identity', async () => {
