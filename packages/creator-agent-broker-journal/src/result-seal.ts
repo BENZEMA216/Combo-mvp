@@ -6,10 +6,12 @@ type HostResultFingerprint = NonNullable<HostTurnOutcome['terminal']['resultFing
 
 const RESULT_ID_PATTERN = /^[A-Za-z0-9._:-]{1,256}$/u;
 const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/u;
-const trustedAuthorities = new WeakMap<
-  object,
-  (input: WorkerResultSealInput) => Promise<WorkerSealedResultReceipt>
->();
+const trustedAuthorities = new WeakMap<object, TrustedSealAuthority>();
+
+type TrustedSealAuthority = Readonly<{
+  seal: (input: WorkerResultSealInput) => Promise<WorkerSealedResultReceipt>;
+  read: (receipt: unknown) => Readonly<object>;
+}>;
 
 export type WorkerSealedResultReceipt = Readonly<{
   sealedResultId: string;
@@ -80,7 +82,7 @@ export function createWorkerResultSealAuthority<TEnvelope extends object>(
 
   const read = (receipt: unknown): TEnvelope => envelopes.get(verifyReceipt(receipt))!;
   const authority = Object.freeze({ read });
-  trustedAuthorities.set(authority, seal);
+  trustedAuthorities.set(authority, Object.freeze({ seal, read }));
   return authority;
 }
 
@@ -149,9 +151,21 @@ export function sealExactWorkerResult<TEnvelope extends object>(
   authority: WorkerResultSealAuthority<TEnvelope>,
   input: WorkerResultSealInput,
 ): Promise<WorkerSealedResultReceipt> {
-  const sealExact = trustedAuthorities.get(authority);
-  if (sealExact === undefined) {
+  const exact = trustedAuthorities.get(authority);
+  if (exact === undefined) {
     throw new TypeError('Worker result seal authority was not created by this package.');
   }
-  return sealExact(input);
+  return exact.seal(input);
+}
+
+/** Package-internal: journal persistence must read through the exact receipt authority. */
+export function readExactWorkerSealedResultEnvelope<TEnvelope extends object>(
+  authority: WorkerResultSealAuthority<TEnvelope>,
+  receipt: unknown,
+): Readonly<TEnvelope> {
+  const exact = trustedAuthorities.get(authority);
+  if (exact === undefined) {
+    throw new TypeError('Worker result seal authority was not created by this package.');
+  }
+  return exact.read(receipt) as Readonly<TEnvelope>;
 }

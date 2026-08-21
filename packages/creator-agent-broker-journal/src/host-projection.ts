@@ -14,12 +14,12 @@ import {
 } from '@cb/creator-agent-protocol/host';
 
 import {
-  assertTrustedWorkerInterruptHostEffect,
-  assertTrustedWorkerStartHostEffect,
+  unwrapCommittedWorkerInterruptHostEffect,
+  unwrapCommittedWorkerStartHostEffect,
+  type CommittedWorkerInterruptHostEffect,
+  type CommittedWorkerStartHostEffect,
   type WorkerInterruptAttempt,
-  type WorkerInterruptHostEffect,
   type WorkerInvocationAttemptId,
-  type WorkerStartHostEffect,
 } from './effect-authority.js';
 import {
   sealExactWorkerResult,
@@ -193,16 +193,18 @@ export function bindingForHostTurn(handle: HostTurnHandle): WorkerHostBinding {
 }
 
 export function executeWorkerHostStart(
-  effect: WorkerStartHostEffect,
+  committed: CommittedWorkerStartHostEffect,
   startTurn: () => Promise<HostTurnHandle>,
 ): Promise<WorkerHostStartDispositionProjection> {
-  assertTrustedWorkerStartHostEffect(effect);
+  const effect = unwrapCommittedWorkerStartHostEffect(committed);
   if (typeof startTurn !== 'function')
     throw new TypeError('Host start executor must be a function.');
-  const existing = startEffectTasks.get(effect);
+  const existing = startEffectTasks.get(committed);
   if (existing !== undefined) return existing;
 
-  const task = (async (): Promise<WorkerHostStartDispositionProjection> => {
+  const deferred = createDeferred<WorkerHostStartDispositionProjection>();
+  startEffectTasks.set(committed, deferred.promise);
+  void (async (): Promise<WorkerHostStartDispositionProjection> => {
     try {
       const handle = await startTurn();
       return markTrustedStartDisposition({
@@ -233,9 +235,8 @@ export function executeWorkerHostStart(
         });
       }
     }
-  })();
-  startEffectTasks.set(effect, task);
-  return task;
+  })().then(deferred.resolve, deferred.reject);
+  return deferred.promise;
 }
 
 export function sameWorkerHostBinding(
@@ -349,86 +350,101 @@ export async function sealAndFinalizeWorkerHostSuccess<TEnvelope extends object>
     }
     return existing.task;
   }
-  const task: Promise<Extract<WorkerHostTerminalProjection, { outcome: 'SUCCEEDED' }>> =
-    sealExactWorkerResult(authority, {
+  const deferred =
+    createDeferred<Extract<WorkerHostTerminalProjection, { outcome: 'SUCCEEDED' }>>();
+  sealedSuccesses.set(verified.candidate, Object.freeze({ authority, task: deferred.promise }));
+  try {
+    void sealExactWorkerResult(authority, {
       result: exact.outcome.result,
       resultFingerprint: verified.candidate.resultFingerprint,
-    }).then((sealedResult) =>
-      markTrustedTerminal({
-        outcome: 'SUCCEEDED' as const,
-        binding: verified.candidate.binding,
-        terminalFingerprint: verified.candidate.terminalFingerprint,
-        resultFingerprint: verified.candidate.resultFingerprint,
-        sealedResult,
-        interruptRequest: null,
-      }),
-    );
-  sealedSuccesses.set(verified.candidate, Object.freeze({ authority, task }));
-  void task.catch(() => {
-    if (sealedSuccesses.get(verified.candidate)?.task === task) {
+    })
+      .then((sealedResult) =>
+        markTrustedTerminal({
+          outcome: 'SUCCEEDED' as const,
+          binding: verified.candidate.binding,
+          terminalFingerprint: verified.candidate.terminalFingerprint,
+          resultFingerprint: verified.candidate.resultFingerprint,
+          sealedResult,
+          interruptRequest: null,
+        }),
+      )
+      .then(deferred.resolve, deferred.reject);
+  } catch (error) {
+    deferred.reject(error);
+  }
+  void deferred.promise.catch(() => {
+    if (sealedSuccesses.get(verified.candidate)?.task === deferred.promise) {
       sealedSuccesses.delete(verified.candidate);
     }
   });
-  return task;
+  return deferred.promise;
 }
 
-/** Calls interrupt and binds its exact disposition to one reducer-issued after-commit effect. */
+/** Calls interrupt and binds its exact disposition to one post-COMMIT effect capability. */
 export function executeWorkerHostInterrupt(
-  effect: WorkerInterruptHostEffect,
+  committed: CommittedWorkerInterruptHostEffect,
   handle: HostTurnHandle,
 ): Promise<WorkerHostInterruptDispositionProjection> {
-  assertTrustedWorkerInterruptHostEffect(effect);
+  const effect = unwrapCommittedWorkerInterruptHostEffect(committed);
   const trustedHandle = verifyHostTurnHandle(handle);
   const binding = bindingForHostTurn(trustedHandle);
   if (bindingHandles.get(effect.binding) !== trustedHandle) {
     throw new TypeError('Worker interrupt effect belongs to another Host handle.');
   }
   assertBinding(effect.binding, binding, 'Worker interrupt effect');
-  const existingHandle = interruptEffectHandles.get(effect);
+  const existingHandle = interruptEffectHandles.get(committed);
   if (existingHandle !== undefined && existingHandle !== trustedHandle) {
     throw new TypeError('Worker interrupt effect was already bound to another Host handle.');
   }
-  interruptEffectHandles.set(effect, trustedHandle);
-  const existing = interruptEffectTasks.get(effect);
+  interruptEffectHandles.set(committed, trustedHandle);
+  const existing = interruptEffectTasks.get(committed);
   if (existing !== undefined) return existing;
 
-  const task = trustedHandle.interrupt(effect.reason).then((input) => {
-    const disposition = trustedHandle.verifyInterruptDisposition(input);
-    if (disposition.disposition === 'TERMINAL_ALREADY_OBSERVED') {
-      assertBinding(
-        { thread: disposition.thread, turnId: disposition.turnId },
-        binding,
-        'Host terminal-observed disposition',
-      );
-      return markTrustedInterruptDisposition({
-        disposition: 'TERMINAL_ALREADY_OBSERVED',
-        attemptId: effect.attemptId,
-        attempt: effect.attempt,
-        binding,
-      });
-    }
+  const deferred = createDeferred<WorkerHostInterruptDispositionProjection>();
+  interruptEffectTasks.set(committed, deferred.promise);
+  try {
+    void trustedHandle
+      .interrupt(effect.reason)
+      .then((input) => {
+        const disposition = trustedHandle.verifyInterruptDisposition(input);
+        if (disposition.disposition === 'TERMINAL_ALREADY_OBSERVED') {
+          assertBinding(
+            { thread: disposition.thread, turnId: disposition.turnId },
+            binding,
+            'Host terminal-observed disposition',
+          );
+          return markTrustedInterruptDisposition({
+            disposition: 'TERMINAL_ALREADY_OBSERVED',
+            attemptId: effect.attemptId,
+            attempt: effect.attempt,
+            binding,
+          });
+        }
 
-    assertBinding(
-      { thread: disposition.thread, turnId: disposition.turnId },
-      binding,
-      'Host interrupt receipt',
-    );
-    if (disposition.reason !== effect.reason) {
-      throw new TypeError('Host interrupt disposition changed the reducer-issued reason.');
-    }
-    return markTrustedInterruptDisposition({
-      disposition: disposition.disposition,
-      attemptId: effect.attemptId,
-      attempt: effect.attempt,
-      request: Object.freeze({
-        requestId: disposition.requestId,
-        reason: disposition.reason,
-        binding,
-      }),
-    });
-  });
-  interruptEffectTasks.set(effect, task);
-  return task;
+        assertBinding(
+          { thread: disposition.thread, turnId: disposition.turnId },
+          binding,
+          'Host interrupt receipt',
+        );
+        if (disposition.reason !== effect.reason) {
+          throw new TypeError('Host interrupt disposition changed the reducer-issued reason.');
+        }
+        return markTrustedInterruptDisposition({
+          disposition: disposition.disposition,
+          attemptId: effect.attemptId,
+          attempt: effect.attempt,
+          request: Object.freeze({
+            requestId: disposition.requestId,
+            reason: disposition.reason,
+            binding,
+          }),
+        });
+      })
+      .then(deferred.resolve, deferred.reject);
+  } catch (error) {
+    deferred.reject(error);
+  }
+  return deferred.promise;
 }
 
 /** Package-internal runtime authority checks used by the pure reducer. */
@@ -538,6 +554,20 @@ function markTrustedStartDisposition(
   const disposition = Object.freeze(input) as WorkerHostStartDispositionProjection;
   trustedStartDispositions.add(disposition);
   return disposition;
+}
+
+function createDeferred<T>(): Readonly<{
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}> {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return Object.freeze({ promise, resolve, reject });
 }
 
 function markTrustedTerminal<T extends object>(

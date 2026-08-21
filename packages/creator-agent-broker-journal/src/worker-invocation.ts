@@ -5,10 +5,12 @@ import {
 
 import {
   createWorkerInterruptHostEffect,
+  createWorkerObserveHostOutcomeEffect,
   createWorkerStartHostEffect,
   type WorkerInterruptAttempt,
   type WorkerInterruptHostEffect,
   type WorkerInvocationAttemptId,
+  type WorkerObserveHostOutcomeEffect,
   type WorkerStartHostEffect,
 } from './effect-authority.js';
 import {
@@ -191,10 +193,7 @@ export type WorkerDurableEffect =
 
 export type WorkerAfterCommitEffect =
   | WorkerStartHostEffect
-  | Readonly<{
-      type: 'OBSERVE_HOST_OUTCOME';
-      binding: WorkerHostBinding;
-    }>
+  | WorkerObserveHostOutcomeEffect
   | WorkerInterruptHostEffect;
 
 export type WorkerInvocationReduction = Readonly<{
@@ -227,7 +226,9 @@ export function createPreparedWorkerInvocation(): WorkerInvocationState {
 
 /**
  * Pure semantic reducer. Its caller must commit `next` and every `durable` effect atomically,
- * then execute `afterCommit` in order. It never performs I/O or command replay arbitration.
+ * then mark and execute `afterCommit` in order. Raw effects have no Host I/O authority until the
+ * package-internal post-COMMIT marker signs them. This reducer never performs I/O or command
+ * replay arbitration.
  */
 export function reduceWorkerInvocation(
   state: WorkerInvocationState,
@@ -360,7 +361,7 @@ function startConfirmed(
       }),
     );
   }
-  afterCommit.push(Object.freeze({ type: 'OBSERVE_HOST_OUTCOME', binding }));
+  afterCommit.push(createWorkerObserveHostOutcomeEffect(binding));
   return reduction(
     Object.freeze({
       phase: 'RUNNING',

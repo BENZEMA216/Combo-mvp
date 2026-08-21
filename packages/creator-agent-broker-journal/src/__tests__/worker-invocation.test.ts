@@ -19,10 +19,12 @@ import {
   verifyAndProjectHostOutcome,
 } from '../host-projection.js';
 import {
+  commitWorkerAfterCommitEffects,
+  unwrapCommittedWorkerObserveHostOutcomeEffect,
   workerInvocationAttemptId,
   workerInterruptAttempt,
-  type WorkerInterruptHostEffect,
-  type WorkerStartHostEffect,
+  type CommittedWorkerInterruptHostEffect,
+  type CommittedWorkerStartHostEffect,
 } from '../effect-authority.js';
 import { createWorkerResultSealAuthority } from '../result-seal.js';
 import {
@@ -46,6 +48,12 @@ const interruptAttempt2 = workerInvocationAttemptId('interrupt.attempt.002');
 const interruptSequence1 = workerInterruptAttempt(1);
 const interruptSequence2 = workerInterruptAttempt(2);
 const sealedFingerprint = `sha256:${'b'.repeat(64)}`;
+const commitContext = Object.freeze({
+  invocationId: 'invocation.reducer.001',
+  revision: 1,
+  ownerEpoch: 3,
+});
+const assertCurrentOwner = () => undefined;
 
 function createController(
   writeInterrupt: HostInterruptWriter = () => HOST_INTERRUPT_WRITE_LINEARIZED,
@@ -94,17 +102,27 @@ function dispatchingState(): WorkerInvocationState {
   return dispatchPlan().next;
 }
 
-function startEffect(plan: ReturnType<typeof dispatchPlan>): WorkerStartHostEffect {
-  const effect = plan.afterCommit[0];
-  if (effect?.type !== 'START_HOST') throw new Error('expected START_HOST effect');
+function startEffect(plan: ReturnType<typeof dispatchPlan>): CommittedWorkerStartHostEffect {
+  const effect = commitWorkerAfterCommitEffects(
+    plan.afterCommit,
+    commitContext,
+    assertCurrentOwner,
+  )[0];
+  if (effect?.type !== 'START_HOST') throw new Error('expected committed START_HOST effect');
   return effect;
 }
 
 function interruptEffect(
   plan: ReturnType<typeof reduceWorkerInvocation>,
-): WorkerInterruptHostEffect {
-  const effect = plan.afterCommit[0];
-  if (effect?.type !== 'INTERRUPT_HOST') throw new Error('expected INTERRUPT_HOST effect');
+): CommittedWorkerInterruptHostEffect {
+  const effect = commitWorkerAfterCommitEffects(
+    plan.afterCommit,
+    commitContext,
+    assertCurrentOwner,
+  )[0];
+  if (effect?.type !== 'INTERRUPT_HOST') {
+    throw new Error('expected committed INTERRUPT_HOST effect');
+  }
   return effect;
 }
 
@@ -290,6 +308,40 @@ describe('Worker invocation execution reducer', () => {
         binding: startDisposition.binding,
       },
     ]);
+    const committed = commitWorkerAfterCommitEffects(
+      started.afterCommit,
+      commitContext,
+      assertCurrentOwner,
+    );
+    expect(committed.map((effect) => effect.type)).toEqual([
+      'INTERRUPT_HOST',
+      'OBSERVE_HOST_OUTCOME',
+    ]);
+    expect(committed.every((effect) => effect.commit === committed[0]?.commit)).toBe(true);
+    const rawObserve = started.afterCommit[1];
+    const committedObserve = committed[1];
+    if (
+      rawObserve?.type !== 'OBSERVE_HOST_OUTCOME' ||
+      committedObserve?.type !== 'OBSERVE_HOST_OUTCOME'
+    ) {
+      throw new Error('expected raw and committed OBSERVE_HOST_OUTCOME effects');
+    }
+    expect(() => unwrapCommittedWorkerObserveHostOutcomeEffect(rawObserve)).toThrow(
+      /Committed Worker OBSERVE_HOST_OUTCOME effect/u,
+    );
+    expect(unwrapCommittedWorkerObserveHostOutcomeEffect(committedObserve)).toBe(rawObserve);
+    expect(() =>
+      commitWorkerAfterCommitEffects(
+        [
+          {
+            type: 'OBSERVE_HOST_OUTCOME',
+            binding: startDisposition.binding,
+          } as never,
+        ],
+        commitContext,
+        assertCurrentOwner,
+      ),
+    ).toThrow(/Worker OBSERVE_HOST_OUTCOME effect/u);
   });
 
   it('preserves start and pending-interrupt lineage in every DISPATCHING uncertainty', async () => {

@@ -24,12 +24,20 @@ import {
   verifyAndProjectHostOutcome,
 } from '../host-projection.js';
 import {
+  commitWorkerAfterCommitEffects,
   createWorkerInterruptHostEffect,
   createWorkerStartHostEffect,
   workerInvocationAttemptId,
   workerInterruptAttempt,
+  type CommittedWorkerInterruptHostEffect,
+  type CommittedWorkerStartHostEffect,
+  type WorkerInterruptHostEffect,
+  type WorkerStartHostEffect,
 } from '../effect-authority.js';
-import { createWorkerResultSealAuthority } from '../result-seal.js';
+import {
+  createWorkerResultSealAuthority,
+  readExactWorkerSealedResultEnvelope,
+} from '../result-seal.js';
 
 const thread = HostThreadSchema.parse({
   id: 'thread.worker',
@@ -42,6 +50,26 @@ const interruptAttempt = workerInvocationAttemptId('interrupt.worker.001');
 const otherAttempt = workerInvocationAttemptId('interrupt.worker.002');
 const interruptSequence = workerInterruptAttempt(1);
 const sealedFingerprint = `sha256:${'a'.repeat(64)}`;
+const commitContext = Object.freeze({
+  invocationId: 'invocation.worker.001',
+  revision: 1,
+  ownerEpoch: 7,
+});
+const assertCurrentOwner = () => undefined;
+
+function commitStart(effect: WorkerStartHostEffect): CommittedWorkerStartHostEffect {
+  const committed = commitWorkerAfterCommitEffects([effect], commitContext, assertCurrentOwner)[0];
+  if (committed?.type !== 'START_HOST') throw new Error('expected committed START_HOST');
+  return committed;
+}
+
+function commitInterrupt(effect: WorkerInterruptHostEffect): CommittedWorkerInterruptHostEffect {
+  const committed = commitWorkerAfterCommitEffects([effect], commitContext, assertCurrentOwner)[0];
+  if (committed?.type !== 'INTERRUPT_HOST') {
+    throw new Error('expected committed INTERRUPT_HOST');
+  }
+  return committed;
+}
 
 function createController(
   writeInterrupt: HostInterruptWriter = () => HOST_INTERRUPT_WRITE_LINEARIZED,
@@ -111,8 +139,17 @@ describe('R1 Host projection', () => {
       interruptRequest: null,
     });
     expect(authority.read(receipt)).toEqual({ ciphertext: 'opaque' });
+    expect(readExactWorkerSealedResultEnvelope(authority, receipt)).toEqual({
+      ciphertext: 'opaque',
+    });
     expect(JSON.stringify(terminal)).not.toContain('secret answer');
     expect(() => authority.read(JSON.parse(JSON.stringify(receipt)))).toThrow(/seal authority/u);
+    expect(() =>
+      readExactWorkerSealedResultEnvelope(
+        { read: () => Object.freeze({ ciphertext: 'forged' }) },
+        receipt,
+      ),
+    ).toThrow(/not created by this package/u);
 
     const foreignSeal = vi.fn(async () => ({
       sealedResultId: 'sealed.result.foreign',
@@ -120,6 +157,9 @@ describe('R1 Host projection', () => {
       envelope: Object.freeze({ ciphertext: 'foreign' }),
     }));
     const foreignAuthority = createWorkerResultSealAuthority(foreignSeal);
+    expect(() => readExactWorkerSealedResultEnvelope(foreignAuthority, receipt)).toThrow(
+      /this seal authority/u,
+    );
     await expect(sealAndFinalizeWorkerHostSuccess(verified, foreignAuthority)).rejects.toThrow(
       /another seal authority/u,
     );
@@ -175,12 +215,14 @@ describe('R1 Host projection', () => {
     ] as const) {
       const controller = createController();
       const interrupt = await executeWorkerHostInterrupt(
-        createWorkerInterruptHostEffect({
-          attemptId: interruptAttempt,
-          attempt: interruptSequence,
-          binding: bindingForHostTurn(controller.handle),
-          reason,
-        }),
+        commitInterrupt(
+          createWorkerInterruptHostEffect({
+            attemptId: interruptAttempt,
+            attempt: interruptSequence,
+            binding: bindingForHostTurn(controller.handle),
+            reason,
+          }),
+        ),
         controller.handle,
       );
       const verified = verifyAndProjectHostOutcome(
@@ -205,8 +247,9 @@ describe('R1 Host projection', () => {
   it('projects STARTED, NOT_STARTED, and evidence loss against one exact attempt', async () => {
     const controller = createController();
     expect(
-      await executeWorkerHostStart(createWorkerStartHostEffect(startAttempt), async () =>
-        Promise.resolve(controller.handle),
+      await executeWorkerHostStart(
+        commitStart(createWorkerStartHostEffect(startAttempt)),
+        async () => Promise.resolve(controller.handle),
       ),
     ).toMatchObject({
       disposition: 'STARTED',
@@ -214,9 +257,12 @@ describe('R1 Host projection', () => {
       binding: { thread, turnId },
     });
     expect(
-      await executeWorkerHostStart(createWorkerStartHostEffect(otherAttempt), async () => {
-        throw createHostTurnNotStartedError();
-      }),
+      await executeWorkerHostStart(
+        commitStart(createWorkerStartHostEffect(otherAttempt)),
+        async () => {
+          throw createHostTurnNotStartedError();
+        },
+      ),
     ).toEqual({
       disposition: 'NOT_STARTED',
       attemptId: otherAttempt,
@@ -224,9 +270,12 @@ describe('R1 Host projection', () => {
     });
     const lostAttempt = workerInvocationAttemptId('start.worker.lost');
     expect(
-      await executeWorkerHostStart(createWorkerStartHostEffect(lostAttempt), async () => {
-        throw createHostTurnStartEvidenceLostError('HOST_SESSION_LOST');
-      }),
+      await executeWorkerHostStart(
+        commitStart(createWorkerStartHostEffect(lostAttempt)),
+        async () => {
+          throw createHostTurnStartEvidenceLostError('HOST_SESSION_LOST');
+        },
+      ),
     ).toEqual({
       disposition: 'EVIDENCE_LOST',
       attemptId: lostAttempt,
@@ -234,7 +283,7 @@ describe('R1 Host projection', () => {
     });
     const fakeAttempt = workerInvocationAttemptId('start.worker.fake');
     await expect(
-      executeWorkerHostStart(createWorkerStartHostEffect(fakeAttempt), async () => {
+      executeWorkerHostStart(commitStart(createWorkerStartHostEffect(fakeAttempt)), async () => {
         throw new HostTurnNotStartedError();
       }),
     ).resolves.toEqual({
@@ -244,28 +293,124 @@ describe('R1 Host projection', () => {
     });
     const ambiguousAttempt = workerInvocationAttemptId('start.worker.ambiguous');
     await expect(
-      executeWorkerHostStart(createWorkerStartHostEffect(ambiguousAttempt), async () => {
-        throw new HostTurnEvidenceLostError('HOST_SESSION_LOST');
-      }),
+      executeWorkerHostStart(
+        commitStart(createWorkerStartHostEffect(ambiguousAttempt)),
+        async () => {
+          throw new HostTurnEvidenceLostError('HOST_SESSION_LOST');
+        },
+      ),
     ).resolves.toEqual({
       disposition: 'EVIDENCE_LOST',
       attemptId: ambiguousAttempt,
       hostReason: 'HOST_PROTOCOL_ERROR',
     });
     const sameEffect = createWorkerStartHostEffect(workerInvocationAttemptId('start.worker.once'));
+    const committedSameEffect = commitStart(sameEffect);
     const startTurn = vi.fn(async () => controller.handle);
     const [first, replayed] = await Promise.all([
-      executeWorkerHostStart(sameEffect, startTurn),
-      executeWorkerHostStart(sameEffect, startTurn),
+      executeWorkerHostStart(committedSameEffect, startTurn),
+      executeWorkerHostStart(committedSameEffect, startTurn),
     ]);
     expect(first).toBe(replayed);
     expect(startTurn).toHaveBeenCalledOnce();
     expect(() =>
       executeWorkerHostStart(
-        { type: 'START_HOST', attemptId: startAttempt } as never,
+        { type: 'START_HOST', commit: commitContext } as never,
         async () => controller.handle,
       ),
-    ).toThrow(/Worker START_HOST effect/u);
+    ).toThrow(/Committed Worker START_HOST effect/u);
+  });
+
+  it('requires the exact post-COMMIT wrapper and fences one raw effect to one context', async () => {
+    const controller = createController();
+    const raw = createWorkerStartHostEffect(workerInvocationAttemptId('start.worker.commit'));
+    const startTurn = vi.fn(async () => controller.handle);
+
+    expect(() => executeWorkerHostStart(raw as never, startTurn)).toThrow(
+      /Committed Worker START_HOST effect/u,
+    );
+    const committed = commitStart(raw);
+    const replayed = commitWorkerAfterCommitEffects(
+      [raw],
+      { ...commitContext },
+      assertCurrentOwner,
+    )[0];
+    expect(replayed).toBe(committed);
+    expect(() =>
+      commitWorkerAfterCommitEffects([raw], { ...commitContext, revision: 2 }, assertCurrentOwner),
+    ).toThrow(/another commit authority/u);
+
+    await expect(executeWorkerHostStart(committed, startTurn)).resolves.toMatchObject({
+      disposition: 'STARTED',
+      attemptId: raw.attemptId,
+    });
+    expect(startTurn).toHaveBeenCalledOnce();
+  });
+
+  it('coalesces synchronous re-entry before invoking Host or seal ports', async () => {
+    const startController = createController();
+    const committedStart = commitStart(
+      createWorkerStartHostEffect(workerInvocationAttemptId('start.worker.reentrant')),
+    );
+    let nestedStart: ReturnType<typeof executeWorkerHostStart> | undefined;
+    let startCalls = 0;
+    const startTurn = async () => {
+      startCalls += 1;
+      nestedStart ??= executeWorkerHostStart(committedStart, startTurn);
+      return startController.handle;
+    };
+    const outerStart = executeWorkerHostStart(committedStart, startTurn);
+    const startDisposition = await outerStart;
+    expect(await nestedStart).toBe(startDisposition);
+    expect(startCalls).toBe(1);
+
+    let nestedInterrupt: ReturnType<typeof executeWorkerHostInterrupt> | undefined;
+    let interruptCalls = 0;
+    const interruptController = createController(() => {
+      interruptCalls += 1;
+      nestedInterrupt ??= executeWorkerHostInterrupt(
+        committedInterrupt,
+        interruptController.handle,
+      );
+      return HOST_INTERRUPT_WRITE_LINEARIZED;
+    });
+    const committedInterrupt: CommittedWorkerInterruptHostEffect = commitInterrupt(
+      createWorkerInterruptHostEffect({
+        attemptId: interruptAttempt,
+        attempt: interruptSequence,
+        binding: bindingForHostTurn(interruptController.handle),
+        reason: 'USER_CANCEL',
+      }),
+    );
+    const outerInterrupt = executeWorkerHostInterrupt(
+      committedInterrupt,
+      interruptController.handle,
+    );
+    const interruptDisposition = await outerInterrupt;
+    expect(await nestedInterrupt).toBe(interruptDisposition);
+    expect(interruptCalls).toBe(1);
+
+    const successController = createController();
+    const verified = verifyAndProjectHostOutcome(
+      successController.handle,
+      successController.settle(settledObservation(), { text: 'seal once' }),
+    );
+    if (verified.status !== 'SUCCESS_REQUIRES_SEAL') throw new Error('expected success');
+    let nestedSeal: ReturnType<typeof sealAndFinalizeWorkerHostSuccess> | undefined;
+    let sealCalls = 0;
+    const authority = createWorkerResultSealAuthority(async () => {
+      sealCalls += 1;
+      nestedSeal ??= sealAndFinalizeWorkerHostSuccess(verified, authority);
+      return {
+        sealedResultId: 'sealed.result.reentrant',
+        sealedFingerprint,
+        envelope: Object.freeze({ ciphertext: 'opaque' }),
+      };
+    });
+    const outerSeal = sealAndFinalizeWorkerHostSuccess(verified, authority);
+    const sealed = await outerSeal;
+    expect(await nestedSeal).toBe(sealed);
+    expect(sealCalls).toBe(1);
   });
 
   it('turns a writer NOT_SENT into a handle-verifiable disposition with request identity', async () => {
@@ -278,8 +423,12 @@ describe('R1 Host projection', () => {
       binding: bindingForHostTurn(controller.handle),
       reason: 'USER_CANCEL',
     });
-    const projected = await executeWorkerHostInterrupt(effect, controller.handle);
-    const replayed = await executeWorkerHostInterrupt(effect, controller.handle);
+    expect(() => executeWorkerHostInterrupt(effect as never, controller.handle)).toThrow(
+      /Committed Worker INTERRUPT_HOST effect/u,
+    );
+    const committed = commitInterrupt(effect);
+    const projected = await executeWorkerHostInterrupt(committed, controller.handle);
+    const replayed = await executeWorkerHostInterrupt(committed, controller.handle);
     expect(replayed).toBe(projected);
     expect(projected).toMatchObject({
       disposition: 'NOT_SENT',
@@ -287,8 +436,8 @@ describe('R1 Host projection', () => {
       attempt: interruptSequence,
       request: { reason: 'USER_CANCEL', binding: { thread, turnId } },
     });
-    expect(() => executeWorkerHostInterrupt({ ...effect } as never, controller.handle)).toThrow(
-      /Worker INTERRUPT_HOST effect/u,
+    expect(() => executeWorkerHostInterrupt({ ...committed } as never, controller.handle)).toThrow(
+      /Committed Worker INTERRUPT_HOST effect/u,
     );
   });
 
@@ -309,7 +458,9 @@ describe('R1 Host projection', () => {
       binding: bindingForHostTurn(first.handle),
       reason: 'USER_CANCEL',
     });
-    expect(() => executeWorkerHostInterrupt(effect, second.handle)).toThrow(/another Host handle/u);
+    expect(() => executeWorkerHostInterrupt(commitInterrupt(effect), second.handle)).toThrow(
+      /another Host handle/u,
+    );
   });
 
   it('rejects structural handles before they can mint projection authority', async () => {
@@ -322,7 +473,7 @@ describe('R1 Host projection', () => {
       interrupt: async () => ({ disposition: 'TERMINAL_ALREADY_OBSERVED', thread, turnId }),
     };
     await expect(
-      executeWorkerHostStart(createWorkerStartHostEffect(startAttempt), async () =>
+      executeWorkerHostStart(commitStart(createWorkerStartHostEffect(startAttempt)), async () =>
         Promise.resolve(fakeHandle as never),
       ),
     ).resolves.toMatchObject({ disposition: 'EVIDENCE_LOST', hostReason: 'HOST_PROTOCOL_ERROR' });
@@ -334,7 +485,7 @@ describe('R1 Host projection', () => {
       binding: bindingForHostTurn(controller.handle),
       reason: 'TIMEOUT',
     });
-    expect(() => executeWorkerHostInterrupt(effect, fakeHandle as never)).toThrow(
+    expect(() => executeWorkerHostInterrupt(commitInterrupt(effect), fakeHandle as never)).toThrow(
       /Host turn handle/u,
     );
   });
