@@ -38,7 +38,7 @@ pnpm install
 
 工作区包含 `packages/shared`、Creator Agent 相关协议与持久化包、`apps/creator-worker`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
 
-Agent 开发 SDK（`@cb/agent-sdk`）与 Next.js 模板已迁至独立仓库 [dangdang-tech/agent-sdk](https://github.com/dangdang-tech/agent-sdk)，不在本工作区维护。
+Agent 开发 SDK（`@cb/agent-sdk`）与 Next.js 模板已迁至独立仓库 [dangdang-tech/combo-agent-sdk](https://github.com/dangdang-tech/combo-agent-sdk)，不在本工作区维护。
 
 ---
 
