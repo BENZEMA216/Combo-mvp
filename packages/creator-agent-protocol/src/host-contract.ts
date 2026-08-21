@@ -25,6 +25,9 @@ declare const terminalEvidenceTypeBrand: unique symbol;
 declare const terminalOutcomeTypeBrand: unique symbol;
 declare const interruptSentTypeBrand: unique symbol;
 
+const trustedHostTurnHandles = new WeakSet<object>();
+const trustedHostStartRejections = new WeakSet<object>();
+
 export const HostThreadSchema = z
   .object({
     id: HostThreadIdSchema,
@@ -141,12 +144,18 @@ const interruptRequestPayloadSchema = interruptWriteRequestSchema.unwrap().exten
 });
 type HostInterruptRequestPayload = z.infer<typeof interruptRequestPayloadSchema>;
 
+const interruptNotSentPayloadSchema = interruptWriteRequestSchema.unwrap().extend({
+  disposition: z.literal('NOT_SENT'),
+});
+type HostInterruptNotSentPayload = z.infer<typeof interruptNotSentPayloadSchema>;
+
 export type HostInterruptSentReceipt = Readonly<
   HostInterruptRequestPayload & { readonly [interruptSentTypeBrand]: never }
 >;
 
 export type HostInterruptDisposition =
   | HostInterruptSentReceipt
+  | Readonly<HostInterruptNotSentPayload>
   | Readonly<{
       disposition: 'TERMINAL_ALREADY_OBSERVED';
       thread: HostThread;
@@ -341,6 +350,8 @@ export class HostInterruptNotSentError extends Error {
   }
 }
 
+export type HostTurnStartRejection = HostTurnNotStartedError | HostTurnEvidenceLostError;
+
 export interface HostTurnHandle {
   readonly thread: HostThread;
   readonly turnId: HostTurnId;
@@ -348,10 +359,12 @@ export interface HostTurnHandle {
   readonly outcome: Promise<HostTurnOutcome>;
   /** Verify an outcome against this exact handle's private authority and return a frozen clone. */
   verifyOutcome(input: unknown): HostTurnOutcome;
+  /** Verify a disposition returned directly by this exact handle's interrupt call. */
+  verifyInterruptDisposition(input: unknown): HostInterruptDisposition;
   /**
    * The first successfully linearized write is latched. Later calls return that same receipt;
-   * terminal-first calls return TERMINAL_ALREADY_OBSERVED without writing. The method never
-   * returns a second terminal authority.
+   * a proved-unsent write returns NOT_SENT and permits a new attempt; terminal-first calls return
+   * TERMINAL_ALREADY_OBSERVED without writing. The method never returns terminal authority.
    */
   interrupt(reason: HostInterruptReason): Promise<HostInterruptDisposition>;
 }
@@ -386,6 +399,33 @@ export function sameHostThread(left: HostThread, right: HostThread): boolean {
   );
 }
 
+/** Consumer-side runtime check for a handle issued by the trusted R1 adapter controller. */
+export function verifyHostTurnHandle(input: unknown): HostTurnHandle {
+  assertTrusted(input, trustedHostTurnHandles, 'Host turn handle');
+  return input as HostTurnHandle;
+}
+
+/** Consumer-side runtime check for a start rejection issued by the trusted Host adapter. */
+export function verifyHostTurnStartRejection(input: unknown): HostTurnStartRejection {
+  assertTrusted(input, trustedHostStartRejections, 'Host turn start rejection');
+  if (input instanceof HostTurnNotStartedError || input instanceof HostTurnEvidenceLostError) {
+    return input;
+  }
+  throw new TypeError('Host turn start rejection has an unknown type.');
+}
+
+/** Adapter-only producer for a proof that no Host turn was started. */
+export function createHostTurnNotStartedError(): HostTurnNotStartedError {
+  return markTrusted(new HostTurnNotStartedError(), trustedHostStartRejections);
+}
+
+/** Adapter-only producer for an ambiguous or lost Host start outcome. */
+export function createHostTurnStartEvidenceLostError(
+  reason: HostTurnEvidenceLostReason,
+): HostTurnEvidenceLostError {
+  return markTrusted(new HostTurnEvidenceLostError(reason), trustedHostStartRejections);
+}
+
 /**
  * Creates one handle-private authority. The writer must synchronously return only at its exact
  * Host IPC write-linearization point and must not re-enter this controller.
@@ -406,6 +446,7 @@ export function createHostTurnAdapterController(
   const trustedTerminalEvidence = new WeakSet<object>();
   const trustedTerminalOutcomes = new WeakSet<object>();
   const trustedInterruptReceipts = new WeakSet<object>();
+  const trustedInterruptDispositions = new WeakSet<object>();
 
   let state: 'OPEN' | 'SETTLED' | 'EVIDENCE_LOST' = 'OPEN';
   let sentReceipt: HostInterruptSentReceipt | undefined;
@@ -491,10 +532,20 @@ export function createHostTurnAdapterController(
       trustedTerminalOutcomes,
     );
 
+  const verifyInterruptDisposition = (candidate: unknown): HostInterruptDisposition => {
+    assertTrusted(candidate, trustedInterruptDispositions, 'Host interrupt disposition');
+    return candidate as HostInterruptDisposition;
+  };
+
   const interrupt = async (rawReason: HostInterruptReason): Promise<HostInterruptDisposition> => {
     const reason = HostInterruptReasonSchema.parse(rawReason);
     if (sentReceipt !== undefined) return sentReceipt;
-    if (state === 'SETTLED') return terminalAlreadyObserved(thread, turnId);
+    if (state === 'SETTLED') {
+      return markTrusted(
+        terminalAlreadyObserved(thread, turnId),
+        trustedInterruptDispositions,
+      ) as HostInterruptDisposition;
+    }
     if (currentState() === 'EVIDENCE_LOST') throw evidenceLostError;
     if (interruptWriteInProgress) {
       markEvidenceLost('HOST_PROTOCOL_ERROR');
@@ -515,7 +566,12 @@ export function createHostTurnAdapterController(
     } catch (error) {
       interruptWriteInProgress = false;
       if (currentState() === 'EVIDENCE_LOST') throw evidenceLostError;
-      if (error instanceof HostInterruptNotSentError) throw error;
+      if (error instanceof HostInterruptNotSentError) {
+        return markTrusted(
+          interruptNotSentPayloadSchema.parse({ ...request, disposition: 'NOT_SENT' }),
+          trustedInterruptDispositions,
+        ) as HostInterruptDisposition;
+      }
       const lost =
         error instanceof HostTurnEvidenceLostError
           ? error
@@ -531,6 +587,7 @@ export function createHostTurnAdapterController(
     }
     const receipt = interruptRequestPayloadSchema.parse({ ...request, disposition: 'SENT' });
     sentReceipt = markTrusted(receipt, trustedInterruptReceipts) as HostInterruptSentReceipt;
+    markTrusted(sentReceipt, trustedInterruptDispositions);
     return sentReceipt;
   };
 
@@ -539,8 +596,10 @@ export function createHostTurnAdapterController(
     turnId,
     outcome: outcomePromise,
     verifyOutcome,
+    verifyInterruptDisposition,
     interrupt,
   });
+  trustedHostTurnHandles.add(handle);
   return Object.freeze({ handle, settle, settleInterrupted, markEvidenceLost });
 }
 

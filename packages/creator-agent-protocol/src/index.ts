@@ -2,7 +2,6 @@ export {
   HOST_INTERRUPT_REQUEST_PROTOCOL,
   HOST_TURN_TERMINAL_PROTOCOL,
   MAX_HOST_RESULT_UTF8_BYTES,
-  HostInterruptNotSentError,
   HostInterruptReasonSchema,
   HostStartTurnInputSchema,
   HostThreadSchema,
@@ -11,6 +10,8 @@ export {
   HostTurnNotStartedError,
   HostTurnResultSchema,
   sameHostThread,
+  verifyHostTurnHandle,
+  verifyHostTurnStartRejection,
   type CreatorHost,
   type HostGeneration,
   type HostInterruptDisposition,
@@ -25,4 +26,5 @@ export {
   type HostTurnId,
   type HostTurnOutcome,
   type HostTurnResult,
+  type HostTurnStartRejection,
 } from './host.js';

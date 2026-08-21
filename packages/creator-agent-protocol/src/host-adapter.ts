@@ -13,8 +13,12 @@ export {
   HostTurnEvidenceLostReasonSchema,
   HostTurnNotStartedError,
   HostTurnResultSchema,
+  createHostTurnNotStartedError,
+  createHostTurnStartEvidenceLostError,
   createHostTurnAdapterController,
   sameHostThread,
+  verifyHostTurnHandle,
+  verifyHostTurnStartRejection,
   type CreatorHost,
   type HostInterruptedTerminalObservation,
   type HostInterruptDisposition,
@@ -30,6 +34,7 @@ export {
   type HostTurnHandle,
   type HostTurnOutcome,
   type HostTurnResult,
+  type HostTurnStartRejection,
 } from './host-contract.js';
 export {
   HostGenerationSchema,
