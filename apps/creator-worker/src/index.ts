@@ -28,3 +28,10 @@ export {
   type CreatorWorkerRuntimeStorageMode,
 } from './runtime-contract.js';
 export { createCreatorWorkerRuntime } from './worker-runtime.js';
+export {
+  BundledCodexHostError,
+  createBundledCodexHost,
+  type BundledCodexHostDiagnostic,
+  type BundledCodexHostErrorCode,
+  type BundledCodexHostOptions,
+} from './codex-app-server-host.js';

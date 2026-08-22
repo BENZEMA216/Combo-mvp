@@ -1,9 +1,10 @@
 # @cb/creator-worker
 
-本应用包实现 Creator Worker 的 R2D 串行 pump，以及 R2E 唯一运行时组合根
-`createCreatorWorkerRuntime()`。组合根用一个明确的 `CREATE_FRESH | OPEN_EXISTING` 模式打开两份互不
-重叠的 SQLite，启动可信 Host、获取两个 owner、构造 WebSocket driver 与 pump，并运行单一自调度
-tick 循环。它不暴露 store、owner、driver 或 pump capability。
+本应用包实现 Creator Worker 的 R2D 串行 pump、R2E 唯一运行时组合根
+`createCreatorWorkerRuntime()`，以及 R2F bundled Codex Host。组合根用一个明确的
+`CREATE_FRESH | OPEN_EXISTING` 模式打开两份互不重叠的 SQLite，启动可信 Host、获取两个 owner、构造
+WebSocket driver 与 pump，并运行单一自调度 tick 循环。它不暴露 store、owner、driver 或 pump
+capability。
 
 `start()` 只有在 Host 已启动、Journal recovery 已提交、两个 owner 已获取、Broker 首个 lease 已持久化且
 首个 pump tick 成功后才进入 `READY`；这不代表 Cloud 已确认任何业务结果。暂时离线时默认保持
@@ -34,8 +35,21 @@ pump fail-closed，并把 Invocation 留在 RUNNING，不会产生无法 handoff
 同一 pump 内重试 Host 或 seal；组合根应停止并按保守 recovery 处理。只有 transport enqueue 已提交
 后，journal 才标记 handoff 完成。
 
-低层 `createWorkerSerialPump()` 仍可用于定向测试与后续 adapter 组合；它本身不拥有外部资源。
-R2E 目前是 production-shaped、Test-only 的程序化 composition root：没有 CLI/process entry、OS signal
-接线、真实 Codex Desktop Host adapter、OAuth、Secure Enclave、正式 Broker challenge、Gateway、Cloud
-PostgreSQL、指标告警或部署清单。集成测试使用真实 Node 24 SQLite 与真实本地 WebSocket，Broker 和 Host
-仍是测试端口，因此当前 Preview/Production 不会自动启用这条新链路。
+`createBundledCodexHost()` 只接受真实 Project 路径与固定 developer instructions，并强制调用方显式传入
+`allowUnisolatedRead: true`。这个确认项表示当前 core shell 与桌面用户同 UID，仍可能读取 Project 外的
+用户文件，包括原始 Codex 配置或登录文件；私有 HOME/CODEX_HOME 只缩小默认配置面，不构成凭据隔离。
+因此 R2F 只能用于受控的本机测试 Project 和受控 prompt，不得接入不可信用户或公网流量。它不从 PATH
+fallback，而是在桥接 `auth.json` 前校验 ChatGPT.app 内的 Codex 版本；每次运行使用私有
+HOME/CODEX_HOME，关闭
+MCP、Apps、Plugins、Hooks、memory、browser、web search 与动态工具，并要求 app-server 精确回读 Project
+root、`:read-only` 和 `networkAccess=false`。这些 workspace roots 是协议事实，不是 OS 级 Project-only
+文件可见性证明；内置 code-mode host 只保留为当前 Codex 调用只读 core shell 的编排层，不开放 MCP、
+browser、web search 或模型可调用的动态网络工具，并要求工具沙箱回读 `networkAccess=false`；app-server
+自身仍需认证和模型推理网络，公网 Worker 仍需后续 isolation supervisor。adapter 的 `timeoutMs` 只会把
+缺失终态记为 evidence lost 并停止该 Host，不会绕过 Journal 的 durable timeout intent 自行伪造
+TURN_TIMEOUT。
+
+低层 `createWorkerSerialPump()` 仍可用于定向测试；它本身不拥有外部资源。R2F 仍是 Test-only 的程序化
+Host：没有 CLI/process entry、OS signal 接线、OAuth、Secure Enclave、正式 Broker challenge、Gateway、
+Cloud PostgreSQL、指标告警或部署清单。集成测试中的 Broker 仍是本地端口，因此当前 Preview/Production
+不会自动启用这条新链路。
