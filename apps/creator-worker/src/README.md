@@ -12,10 +12,18 @@
 - `codex-app-server-host.ts` 把真实 thread/turn/interrupt/terminal 映射成 R1 handle-private authority；
   只有精确 workspace root、`:read-only` 与工具无网络回读同时成立才签发 Host thread，并要求调用方显式
   确认当前尚无 OS 级 Project-only 读隔离。
+- `local-alpha-contract.ts` 定义单用户本地体验入口、结果、诊断与安全错误合同。
+- `local-alpha-broker.ts` 在随机 loopback 端口实现真实 R2C lease、command、PERSISTED ACK 与
+  CLOUD_COMMITTED ACK，并严格绑定 terminal message、Host source、attempt 与 sealed-result marker；它不
+  开放公网监听或 Cloud 身份能力。
+- `local-alpha-runner.ts` 把本地 Broker、bundled Codex 与 R2E Runtime 组合成一次 fresh-state invocation；
+  prompt 与回答只保留在内存，durable envelope 只写低敏关联 marker，旧 run state 不复用。
+- `local-alpha-cli.ts` 是 `combo-creator-worker` 进程入口，解析显式风险确认、终端 prompt 和 signal，并在
+  完整停止后把回答写 stdout。
 - `index.ts` 是应用包的唯一公共出口。
 - `__tests__/` 使用真实两份 SQLite、真实本地 WebSocket 与真实 R1 handle authority 验证完整接线和
   崩溃边界。
 
-`worker-runtime.ts` 是唯一允许创建 SQLite、建立 WebSocket 并关闭这些运行时资源的文件；bundled
-Codex 子进程只由 `codex-app-server-process.ts` 创建和停止。pump 继续只负责串行执行。Runtime 不提供
-进程入口、信号处理或公网身份接线，不能从本目录推断已部署。
+`worker-runtime.ts` 仍是唯一允许创建 SQLite、建立 Worker WebSocket driver 并关闭这些资源的文件；
+`local-alpha-broker.ts` 只拥有相反方向的 loopback server。bundled Codex 子进程只由
+`codex-app-server-process.ts` 创建和停止，pump 继续只负责串行执行。本地 CLI 不代表公网身份接线或已部署。

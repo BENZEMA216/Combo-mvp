@@ -14,7 +14,14 @@
   sanitized Project 执行一轮真实只读回答，并验证项目内容未变化。
 - `host-adapter-import-boundary.test.ts` 扫描应用与包源码，确保生产环境只有 bundled Codex adapter 能
   导入 R1 producer 子路径，测试代码之外的新增 authority mint 入口会直接让 CI 失败。
+- `local-alpha.test.ts` 用 Fake Host 但真实 Broker、双 SQLite、driver、pump 与 Runtime 连跑两次，覆盖
+  fresh run、命令 ACK、Transport SQLite 中 exact terminal ACKED、强制断线换 lease 后继续、终态防伪、
+  干净停止、旧/不完整/非空状态拒绝、signal/prepare 竞态、管道输入有界中断、CLI 参数与 prompt/回答
+  不落库。
+- `local-alpha.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时运行完整本地闭环；它从 Broker command 一直
+  经过真实 bundled Codex 到 terminal ACK，并验证 sanitized Project 零变化与两库无正文。
 
 测试使用真实 Node 24 `node:sqlite` 文件和真实 R1 adapter controller；R2E 测试还使用真实 `ws` client /
-server；真实 Codex gate 也只证明本机 bundled Host。它们不会证明公网身份、Cloud durability、OS 级
+server；真实 Codex Host gate 与本地 Alpha gate 都只证明本机受控环境。本地 Alpha 的 loopback Broker
+不是 Cloud Broker；这些测试不会证明公网身份、Cloud durability、进程崩溃后恢复回答、OS 级
 Project-only 隔离或生产部署。

@@ -16,12 +16,17 @@
   "files": [
     "dist"
   ],
+  "bin": {
+    "combo-creator-worker": "./dist/local-alpha-cli.js"
+  },
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-worker-broker-client build && tsc -b",
     "test": "vitest run",
+    "local": "tsc -b && node dist/local-alpha-cli.js",
+    "test:real-local": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/local-alpha.real.test.ts --reporter=verbose",
     "test:real-codex": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/codex-app-server-host.real.test.ts --reporter=verbose",
     "test:watch": "vitest",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
@@ -30,13 +35,13 @@
     "@cb/creator-agent-broker-journal": "workspace:*",
     "@cb/creator-agent-protocol": "workspace:*",
     "@cb/creator-worker-broker-client": "workspace:*",
+    "ws": "8.21.0",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/ws": "8.18.1",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8",
-    "ws": "8.21.0"
+    "vitest": "^2.1.8"
   }
 }

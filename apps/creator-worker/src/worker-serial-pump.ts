@@ -207,6 +207,7 @@ class SerialPump<TEnvelope extends object> implements WorkerSerialPump {
     for (const reference of references) {
       const fact = this.#journal.readOutboxFact<TEnvelope>(this.#journalOwner, reference);
       const payload = BrokerTransportPayloadSchema.parse({
+        invocationId: reference.invocationId,
         fact: fact.payload,
         sealedEnvelope: fact.sealedEnvelope,
       });

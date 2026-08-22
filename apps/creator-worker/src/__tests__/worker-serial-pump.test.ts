@@ -93,7 +93,11 @@ describe('WorkerSerialPump', () => {
         messageType: index === 0 ? 'worker.started' : 'worker.terminal',
         sourceId: fact.reference.factId,
         sourceFingerprint: fact.reference.payloadFingerprint,
-        payload: { fact: fact.payload, sealedEnvelope: fact.sealedEnvelope },
+        payload: {
+          invocationId: fact.reference.invocationId,
+          fact: fact.payload,
+          sealedEnvelope: fact.sealedEnvelope,
+        },
       });
     }
     expect(exactFacts[0]?.sealedEnvelope).toBeNull();
