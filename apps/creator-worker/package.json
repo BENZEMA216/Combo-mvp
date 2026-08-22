@@ -2,7 +2,7 @@
   "name": "@cb/creator-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Creator Worker 的可靠执行 pump 与唯一运行时组合根",
+  "description": "Creator Worker 的可靠执行、运行时组合与 bundled Codex Host",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -22,6 +22,7 @@
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-worker-broker-client build && tsc -b",
     "test": "vitest run",
+    "test:real-codex": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/codex-app-server-host.real.test.ts --reporter=verbose",
     "test:watch": "vitest",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
   },
