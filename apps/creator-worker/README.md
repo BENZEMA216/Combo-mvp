@@ -1,5 +1,33 @@
 # @cb/creator-worker
 
+## 本地 Alpha 闭环
+
+本包现在提供一个仅供单用户、受控环境体验的完整本地入口：
+
+```bash
+pnpm --silent --dir apps/creator-worker local \
+  --project "/absolute/path/to/project" \
+  --allow-unisolated-read
+```
+
+命令会在终端询问任务；也可用 `--prompt "非敏感任务"` 做自动化，但命令行文本会进入 shell history 和
+进程列表。入口在 `127.0.0.1` 随机端口启动进程内 Broker，依次接通真实 bundled Codex、R2E Runtime、
+Journal SQLite、Transport SQLite 和串行 pump。stdout 只输出最终回答，运行状态写 stderr；端口、authority
+ID、fingerprint、auth 路径与原始协议帧不会输出。
+
+默认每次运行都在 Project 外创建新的
+`~/Library/Application Support/Combo/creator-worker-alpha/<project-hash>/runs/<run-id>/`。显式
+`--state-dir` 也必须尚不存在或为空目录；非空目录不会被改权限或写入，两库只剩一份或已属于旧运行时
+都会 fail-closed。当前 prompt 与回答正文
+只在内存，SQLite 只保存 fingerprint、执行事实与低敏结果 marker。因此正常运行和同一进程内 WebSocket
+重连有完整闭环，但进程在 terminal commit 后、打印前崩溃时无法恢复回答，也不会在重启后继续同一
+Codex turn。旧状态会保留用于诊断，R2E 自身的 reopen/recovery 能力继续由底层测试验证。
+
+成功回答只有在本地 Broker 收到当前 invocation 的 TERMINAL fact、发送 exact `CLOUD_COMMITTED` ACK、
+Runtime 从 Transport SQLite 确认这条 logical delivery 已变为 `ACKED`，且 bundled Codex 与 Runtime 都
+干净停止后才打印。这个入口不绕过 durable intent、Host authority、terminal commit 或 ACK commit；本地
+Broker 只替代尚未存在的 Cloud Broker。
+
 本应用包实现 Creator Worker 的 R2D 串行 pump、R2E 唯一运行时组合根
 `createCreatorWorkerRuntime()`，以及 R2F bundled Codex Host。组合根用一个明确的
 `CREATE_FRESH | OPEN_EXISTING` 模式打开两份互不重叠的 SQLite，启动可信 Host、获取两个 owner、构造
@@ -49,7 +77,7 @@ browser、web search 或模型可调用的动态网络工具，并要求工具�
 缺失终态记为 evidence lost 并停止该 Host，不会绕过 Journal 的 durable timeout intent 自行伪造
 TURN_TIMEOUT。
 
-低层 `createWorkerSerialPump()` 仍可用于定向测试；它本身不拥有外部资源。R2F 仍是 Test-only 的程序化
-Host：没有 CLI/process entry、OS signal 接线、OAuth、Secure Enclave、正式 Broker challenge、Gateway、
-Cloud PostgreSQL、指标告警或部署清单。集成测试中的 Broker 仍是本地端口，因此当前 Preview/Production
-不会自动启用这条新链路。
+低层 `createWorkerSerialPump()` 仍可用于定向测试；它本身不拥有外部资源。本地 Alpha 已有 CLI/process
+entry 与 SIGINT/SIGTERM 有界停止，但仍没有 OAuth、Secure Enclave、正式 Broker challenge、Gateway、
+Cloud PostgreSQL、指标告警或部署清单。本地 Broker 只监听 loopback，因此当前 Preview/Production 不会
+自动启用这条新链路。

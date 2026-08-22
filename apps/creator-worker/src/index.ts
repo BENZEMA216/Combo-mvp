@@ -35,3 +35,11 @@ export {
   type BundledCodexHostErrorCode,
   type BundledCodexHostOptions,
 } from './codex-app-server-host.js';
+export {
+  CreatorWorkerLocalAlphaError,
+  type CreatorWorkerLocalAlphaDiagnostic,
+  type CreatorWorkerLocalAlphaErrorCode,
+  type CreatorWorkerLocalAlphaOptions,
+  type CreatorWorkerLocalAlphaResult,
+} from './local-alpha-contract.js';
+export { runCreatorWorkerLocalAlpha } from './local-alpha-runner.js';

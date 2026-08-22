@@ -135,6 +135,9 @@ importers:
       '@cb/creator-worker-broker-client':
         specifier: workspace:*
         version: link:../../packages/creator-worker-broker-client
+      ws:
+        specifier: 8.21.0
+        version: 8.21.0
       zod:
         specifier: ^3.24.1
         version: 3.25.76
@@ -151,9 +154,6 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@24.13.3)(jsdom@25.0.1)
-      ws:
-        specifier: 8.21.0
-        version: 8.21.0
 
   apps/runtime:
     dependencies:

@@ -38,6 +38,18 @@ const DEFAULT_TICK_INTERVAL_MS = 100;
 const DEFAULT_HOST_LIFECYCLE_TIMEOUT_MS = 30_000;
 const JOURNAL_OWNER_HEARTBEAT_MS = 5_000;
 const TEARDOWN_QUIESCE_GRACE_MS = 35_000;
+const DELIVERY_ACK_POLL_MS = 20;
+
+type DeliveryAckWaitInput = Readonly<{
+  deliveryMessageId: string;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}>;
+
+const deliveryAckReaders = new WeakMap<
+  CreatorWorkerRuntime,
+  (input: DeliveryAckWaitInput) => Promise<void>
+>();
 
 type CheckedOptions<TEnvelope extends object> = Readonly<{
   storageMode: CreatorWorkerRuntimeStorageMode;
@@ -63,7 +75,21 @@ type Deferred<T> = Readonly<{
 export function createCreatorWorkerRuntime<TEnvelope extends object>(
   options: CreatorWorkerRuntimeOptions<TEnvelope>,
 ): CreatorWorkerRuntime {
-  return new Runtime(snapshotOptions(options));
+  const runtime = new Runtime(snapshotOptions(options));
+  deliveryAckReaders.set(runtime, (input) => runtime.waitForDeliveryAcknowledgement(input));
+  return runtime;
+}
+
+/** Package-private local experience hook; intentionally absent from the package root export. */
+export function waitForCreatorWorkerDeliveryAcknowledgement(
+  runtime: CreatorWorkerRuntime,
+  input: DeliveryAckWaitInput,
+): Promise<void> {
+  const reader = deliveryAckReaders.get(runtime);
+  if (reader === undefined) {
+    return Promise.reject(new TypeError('Creator Worker Runtime authority is invalid.'));
+  }
+  return reader(input);
 }
 
 class Runtime<TEnvelope extends object> implements CreatorWorkerRuntime {
@@ -163,6 +189,44 @@ class Runtime<TEnvelope extends object> implements CreatorWorkerRuntime {
       .then(claimed.resolve, claimed.reject);
     void this.#stopTask.catch(() => undefined);
     return this.#stopTask;
+  }
+
+  public async waitForDeliveryAcknowledgement(input: DeliveryAckWaitInput): Promise<void> {
+    if (
+      typeof input !== 'object' ||
+      input === null ||
+      typeof input.deliveryMessageId !== 'string' ||
+      input.deliveryMessageId.length === 0 ||
+      input.deliveryMessageId.length > 256 ||
+      !Number.isSafeInteger(input.timeoutMs) ||
+      input.timeoutMs < 20 ||
+      input.timeoutMs > 60_000 ||
+      (input.signal !== undefined && !(input.signal instanceof AbortSignal))
+    ) {
+      throw new TypeError('Delivery acknowledgement wait input is invalid.');
+    }
+    const deadline = Date.now() + input.timeoutMs;
+    while (true) {
+      if (input.signal?.aborted) throw runtimeStopped();
+      if (this.#state === 'BLOCKED') throw this.#failure ?? runtimeBlocked();
+      if (this.#state !== 'READY') throw runtimeStopped();
+      const transport = this.#transport;
+      const owner = this.#transportOwner;
+      if (transport === undefined || owner === undefined) throw runtimeStopped();
+      const delivery = transport.readDelivery(owner, input.deliveryMessageId);
+      if (delivery?.state === 'ACKED') return;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new CreatorWorkerRuntimeError(
+          'RUNTIME_BLOCKED',
+          'Broker delivery did not reach durable CLOUD_COMMITTED acknowledgement in time.',
+        );
+      }
+      await abortableDelay(
+        Math.min(DELIVERY_ACK_POLL_MS, remaining),
+        input.signal ?? this.#lifecycle.signal,
+      );
+    }
   }
 
   async #startOnce(): Promise<CreatorWorkerRuntimeStartResult> {
