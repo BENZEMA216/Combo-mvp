@@ -2,7 +2,7 @@
   "name": "@cb/creator-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Creator Worker 的 R2D 串行 Invocation pump 与 Host executor 接线",
+  "description": "Creator Worker 的可靠执行 pump 与唯一运行时组合根",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -33,7 +33,9 @@
   },
   "devDependencies": {
     "@types/node": "^24.13.3",
+    "@types/ws": "8.18.1",
     "typescript": "^5.7.3",
-    "vitest": "^2.1.8"
+    "vitest": "^2.1.8",
+    "ws": "8.21.0"
   }
 }
