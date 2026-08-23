@@ -13,11 +13,16 @@
   只有精确 workspace root、`:read-only` 与工具无网络回读同时成立才签发 Host thread，并要求调用方显式
   确认当前尚无 OS 级 Project-only 读隔离。
 - `local-alpha-contract.ts` 定义单用户本地体验入口、结果、诊断与安全错误合同。
+- `agent-local-contract.ts` 定义 immutable AgentVersion 本地执行的公开输入、结果和 fail-closed 错误。
+- `agent-local-runner.ts` 验证 AgentVersion 与本机 Git object 中的 exact commit/tree，仅从 blob
+  materialize 私有 tracked-tree execution snapshot，再把固定 instructions/version binding 交给现有本地
+  Worker 闭环；它不读取 mutable Draft、可变工作区、ignored 文件或 Codex task 原文。
 - `local-alpha-broker.ts` 在随机 loopback 端口实现真实 R2C lease、command、PERSISTED ACK 与
   CLOUD_COMMITTED ACK，并严格绑定 terminal message、Host source、attempt 与 sealed-result marker；它不
   开放公网监听或 Cloud 身份能力。
 - `local-alpha-runner.ts` 把本地 Broker、bundled Codex 与 R2E Runtime 组合成一次 fresh-state invocation；
-  prompt 与回答只保留在内存，durable envelope 只写低敏关联 marker，旧 run state 不复用。
+  prompt 与回答只保留在内存，durable envelope 只写低敏关联 marker，旧 run state 不复用；内部 execution
+  profile 允许 Agent runner 精确绑定一个已验证 Version，而普通 Local Alpha 仍使用固定默认 instructions。
 - `local-alpha-cli.ts` 是 `combo-creator-worker` 进程入口，解析显式风险确认、终端 prompt 和 signal，并在
   完整停止后把回答写 stdout。
 - `index.ts` 是应用包的唯一公共出口。

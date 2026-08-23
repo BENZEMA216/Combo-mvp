@@ -2,7 +2,7 @@
   "name": "@cb/creator-agent-protocol",
   "version": "0.0.0",
   "private": true,
-  "description": "Creator-hosted Agent 的 Host 与 Broker transport 合约",
+  "description": "Creator Agent 的 Draft、不可变 Version、Host 与 Broker transport 合约",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -23,6 +23,10 @@
     "./broker-transport": {
       "types": "./dist/broker-transport.d.ts",
       "default": "./dist/broker-transport.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "default": "./dist/agent.js"
     }
   },
   "files": [
