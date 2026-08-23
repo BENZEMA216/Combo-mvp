@@ -13,12 +13,19 @@ import { DatabaseSync } from 'node:sqlite';
 
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+  createCreatorAgentDefinitionV2,
   createCreatorAgentDraftHandoff,
+  createCreatorAgentDraftHandoffV2,
   createCreatorAgentDraftSnapshot,
+  createCreatorAgentDraftSnapshotV2,
+  createCreatorAgentProjectSourceLedger,
   freezeCreatorAgentVersion,
   serializeCreatorAgentDraftSnapshot,
   serializeCreatorAgentDraftHandoff,
+  serializeCreatorAgentDraftHandoffV2,
   serializeCreatorAgentVersion,
+  type CreatorAgentDraftSnapshot,
   type CreatorAgentDraftSnapshotV1,
 } from '@cb/creator-agent-protocol/agent';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -126,6 +133,38 @@ describe('Creator Agent SQLite catalog', () => {
     ).toThrow(expect.objectContaining({ code: 'CATALOG_DRAFT_CONFLICT' }));
     expect(() => catalog.importDraftHandoff(handoffText(draft(3, firstVersion.versionId)))).toThrow(
       expect.objectContaining({ code: 'CATALOG_DRAFT_CONFLICT' }),
+    );
+  });
+
+  it('imports, freezes, and reopens V1 and V2 rows without a schema migration', () => {
+    const fixture = catalogFixture();
+    const catalog = track(createFreshCreatorAgentCatalog(fixture.options));
+    const v1 = draft(1, null);
+    const v2 = projectDraft();
+    catalog.importDraftHandoff(handoffText(v1));
+    catalog.importDraftHandoff(projectHandoffText(v2));
+    const v1Review = catalog.createFreezeReview(ref(v1));
+    const v2Review = catalog.createFreezeReview(ref(v2));
+    const v1Version = catalog.freezeDraft({
+      ref: ref(v1),
+      confirmationText: v1Review.confirmationText,
+    }).version;
+    const v2Version = catalog.freezeDraft({
+      ref: ref(v2),
+      confirmationText: v2Review.confirmationText,
+    }).version;
+    catalog.close();
+
+    const reopened = track(openExistingCreatorAgentCatalog(fixture.options));
+    expect(reopened.importDraftHandoff(projectHandoffText(v2))).toMatchObject({
+      disposition: 'EXACT_REPLAY',
+      draft: v2,
+    });
+    expect(reopened.readVersion({ agentId: v1.agentId, versionId: v1Version.versionId })).toEqual(
+      v1Version,
+    );
+    expect(reopened.readVersion({ agentId: v2.agentId, versionId: v2Version.versionId })).toEqual(
+      v2Version,
     );
   });
 
@@ -472,7 +511,46 @@ function handoffText(value: CreatorAgentDraftSnapshotV1): string {
   return serializeCreatorAgentDraftHandoff(createCreatorAgentDraftHandoff({ draft: value }));
 }
 
-function ref(value: CreatorAgentDraftSnapshotV1) {
+function projectDraft() {
+  const sourceLedger = createCreatorAgentProjectSourceLedger({
+    contextRootDigest: `sha256:${'c'.repeat(64)}`,
+    coverage: {
+      indexedEntryCount: 7,
+      indexedFileCount: 5,
+      indexedByteCount: 2048,
+      hiddenEntryCount: 2,
+      trackedEntryCount: 2,
+      untrackedEntryCount: 1,
+      ignoredEntryCount: 1,
+      gitAdminEntryCount: 1,
+      authoringOnlyEntryCount: 5,
+    },
+    citedSources: [
+      {
+        path: 'README.md',
+        digest: `sha256:${'d'.repeat(64)}`,
+        executionAvailability: 'FIXED_GIT_TREE',
+      },
+    ],
+  });
+  return createCreatorAgentDraftSnapshotV2({
+    agentId: 'agent.project-context',
+    draftId: 'draft.project-context',
+    draftRevision: 1,
+    baseVersionId: null,
+    definition: createCreatorAgentDefinitionV2({
+      ...draft(1, null).definition,
+      protocol: CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+      authoringSource: { kind: 'project_context_compiler', sourceLedger },
+    }),
+  });
+}
+
+function projectHandoffText(value: ReturnType<typeof projectDraft>): string {
+  return serializeCreatorAgentDraftHandoffV2(createCreatorAgentDraftHandoffV2({ draft: value }));
+}
+
+function ref(value: CreatorAgentDraftSnapshot) {
   return Object.freeze({
     agentId: value.agentId,
     draftId: value.draftId,

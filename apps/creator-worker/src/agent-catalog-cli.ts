@@ -1,9 +1,19 @@
 #!/usr/bin/env node
 
 import { randomUUID } from 'node:crypto';
-import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { pathToFileURL } from 'node:url';
 
@@ -16,11 +26,17 @@ import {
   type CreatorAgentDraftRef,
   type CreatorAgentVersionRef,
 } from '@cb/creator-agent-persistence';
-import type { CreatorAgentVersionV1 } from '@cb/creator-agent-protocol/agent';
+import type { CreatorAgentVersion } from '@cb/creator-agent-protocol/agent';
 
 import type { CreatorAgentLocalTurnOptions } from './agent-local-contract.js';
 import { runCreatorAgentLocalTurn } from './agent-local-runner.js';
 import { localAlphaSignalExitCodeForTesting } from './local-alpha-cli.js';
+import {
+  CreatorAgentProjectCompilerError,
+  compileCreatorAgentProject,
+  type CreatorAgentProjectCompilationOptions,
+  type CreatorAgentProjectCompilationResult,
+} from './project-context-compiler.js';
 
 const CATALOG_IDENTITY = 'combo.local.creator-agent-catalog.v1';
 const MAX_HANDOFF_BYTES = 65_536;
@@ -37,15 +53,23 @@ type CliIo = Readonly<{
 }>;
 type CliDependencies = Readonly<{
   runAgentTurn(options: CreatorAgentLocalTurnOptions): Promise<Readonly<{ text: string }>>;
+  compileProject(
+    options: CreatorAgentProjectCompilationOptions,
+  ): Promise<CreatorAgentProjectCompilationResult>;
 }>;
 
 const productionDependencies: CliDependencies = Object.freeze({
   runAgentTurn: runCreatorAgentLocalTurn,
+  compileProject: compileCreatorAgentProject,
 });
 
 const HELP = `Combo Creator Agent — local unpublished catalog
 
 Commands:
+  create --project <absolute-project> [--catalog <absolute.sqlite>]
+         --allow-unisolated-read --allow-sensitive-project-context [--allow-loopback-proxy]
+         [--compiler-timeout-ms <30000..1800000>]
+         [--run-prompt <text> | --run-prompt-file <file>] [--state-dir <fresh-directory>]
   init --catalog <absolute.sqlite>
   import --catalog <path> --handoff-file <canonical-json>
   review --catalog <path> --agent-id <id> --draft-id <id> --draft-revision <n>
@@ -57,9 +81,10 @@ Commands:
       (--prompt <text> | --prompt-file <file>) --allow-unisolated-read
       [--state-dir <fresh-directory>] [--allow-loopback-proxy]
 
-The handoff must be exact combo.creator-agent-draft-handoff/1 canonical JSON. Freeze always
-renders the complete Draft and requires the Catalog-issued confirmation text verbatim. There is
-no --yes, --force, implicit latest Version, hidden Codex task reader, or public-share side effect.
+Create performs a complete read-only Project index, asks bundled Codex to compile a Draft, renders
+the Draft plus coverage, and freezes it after one explicit FREEZE confirmation. The legacy handoff
+commands remain available for exact diagnostics. There is no --yes, --force, implicit latest
+Version, or public-share side effect.
 `;
 
 export async function runCreatorAgentCatalogCli(argv = process.argv.slice(2)): Promise<number> {
@@ -111,6 +136,108 @@ export async function executeCreatorAgentCatalogCli(
   }
   const flags = parseFlags(arguments_);
   signal.throwIfAborted();
+  if (command === 'create') {
+    assertOnly(flags, [
+      'catalog',
+      'project',
+      'allow-unisolated-read',
+      'allow-sensitive-project-context',
+      'allow-loopback-proxy',
+      'compiler-timeout-ms',
+      'run-prompt',
+      'run-prompt-file',
+      'state-dir',
+    ]);
+    if (flags.get('allow-unisolated-read') !== 'true') {
+      throw cliError(
+        'AGENT_CLI_INVALID',
+        '--allow-unisolated-read is required for Project compilation and the current Host.',
+        true,
+      );
+    }
+    if (flags.get('allow-sensitive-project-context') !== 'true') {
+      throw new CreatorAgentProjectCompilerError(
+        'PROJECT_CONTEXT_AUTHORIZATION_REQUIRED',
+        '--allow-sensitive-project-context is required because .env, logs and task records may be sent to the bundled Codex model service.',
+      );
+    }
+    const projectPath = requiredAbsolute(flags, 'project');
+    const catalogPath =
+      flags.get('catalog') === undefined
+        ? defaultCatalogPath()
+        : requiredAbsolute(flags, 'catalog');
+    assertCreateConfirmationAvailable(io);
+    const runPrompt = readOptionalRunPrompt(flags);
+    const explicitStateDirectory =
+      flags.get('state-dir') === undefined ? undefined : requiredAbsolute(flags, 'state-dir');
+    assertOutsideProject(projectPath, catalogPath, explicitStateDirectory);
+    if (explicitStateDirectory !== undefined) assertFreshStateDirectory(explicitStateDirectory);
+    const compilation = await dependencies.compileProject({
+      projectPath,
+      allowUnisolatedRead: true,
+      allowSensitiveProjectContext: true,
+      ...(flags.get('allow-loopback-proxy') === 'true' ? { allowLoopbackProxy: true } : {}),
+      ...(flags.get('compiler-timeout-ms') === undefined
+        ? {}
+        : { turnTimeoutMs: boundedInteger(flags, 'compiler-timeout-ms', 30_000, 1_800_000) }),
+      signal,
+      diagnosticSink: (event) => io.stderr.write(`Project 编译：${event}\n`),
+    });
+    signal.throwIfAborted();
+    const options = ensureCatalog(catalogPath, flags.get('catalog') === undefined);
+    const imported = withCatalog(options, (catalog) =>
+      catalog.importDraftHandoff(compilation.handoffText),
+    );
+    const ref: CreatorAgentDraftRef = Object.freeze({
+      agentId: imported.draft.agentId,
+      draftId: imported.draft.draftId,
+      draftRevision: imported.draft.draftRevision,
+    });
+    const review = withCatalog(options, (catalog) => catalog.createFreezeReview(ref));
+    writeCompilationReview(io.stderr, compilation, review);
+    const confirmation = await readCreateConfirmation(io, signal);
+    if (confirmation !== 'FREEZE') {
+      throw cliError(
+        'AGENT_CONFIRMATION_MISMATCH',
+        'Create confirmation does not bind this exact reviewed Draft.',
+        false,
+      );
+    }
+    signal.throwIfAborted();
+    const frozen = withCatalog(options, (catalog) =>
+      catalog.freezeDraft({ ref, confirmationText: review.confirmationText }),
+    );
+    const version = withCatalog(options, (catalog) =>
+      catalog.readVersion({ agentId: frozen.version.agentId, versionId: frozen.version.versionId }),
+    );
+    io.stdout.write(
+      `${terminalSafeJson({
+        disposition: frozen.disposition,
+        agentId: version.agentId,
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        versionFingerprint: version.versionFingerprint,
+        contextRootDigest: compilation.report.contextRootDigest,
+      })}\n`,
+    );
+    if (runPrompt !== undefined) {
+      const stateDirectory =
+        explicitStateDirectory === undefined ? defaultRunState(version) : explicitStateDirectory;
+      signal.throwIfAborted();
+      const result = await dependencies.runAgentTurn({
+        version,
+        projectPath,
+        prompt: runPrompt,
+        stateDirectory,
+        allowUnisolatedRead: true,
+        ...(flags.get('allow-loopback-proxy') === 'true' ? { allowLoopbackProxy: true } : {}),
+        signal,
+      });
+      signal.throwIfAborted();
+      io.stdout.write(`${result.text}\n`);
+    }
+    return 0;
+  }
   if (command === 'init') {
     assertOnly(flags, ['catalog']);
     const options = catalogOptions(required(flags, 'catalog'));
@@ -237,7 +364,7 @@ function readReview(flags: ReadonlyMap<string, string>) {
   return withCatalog(options, (catalog) => catalog.createFreezeReview(draftRef(flags)));
 }
 
-function readVersion(flags: ReadonlyMap<string, string>): CreatorAgentVersionV1 {
+function readVersion(flags: ReadonlyMap<string, string>): CreatorAgentVersion {
   const options = catalogOptions(required(flags, 'catalog'));
   const ref: CreatorAgentVersionRef = Object.freeze({
     agentId: required(flags, 'agent-id'),
@@ -254,6 +381,36 @@ function writeReview(
   writer.write(`${terminalSafeJson(review.draft)}\n`);
   writer.write('逐字确认文本：\n');
   writer.write(`${review.confirmationText}\n`);
+}
+
+function writeCompilationReview(
+  writer: CliWriter,
+  compilation: CreatorAgentProjectCompilationResult,
+  review: ReturnType<CreatorAgentCatalog['createFreezeReview']>,
+): void {
+  writer.write('Project 全量索引与 Agent 编译报告：\n');
+  writer.write(`${terminalSafeJson(compilation.report)}\n`);
+  writer.write(
+    '完整 Draft（全量索引不等于模型理解了每个字节；运行时只读取 commit-pinned tracked tree）：\n',
+  );
+  writer.write(`${terminalSafeJson(review.draft)}\n`);
+  writer.write(`Draft fingerprint：${review.draft.draftFingerprint}\n`);
+  writer.write('确认冻结请输入 FREEZE。\n');
+}
+
+async function readCreateConfirmation(io: CliIo, signal: AbortSignal): Promise<string> {
+  assertCreateConfirmationAvailable(io);
+  return io.readConfirmation(signal);
+}
+
+function assertCreateConfirmationAvailable(io: CliIo): void {
+  if (!io.stdinIsTty || !io.stderrIsTty) {
+    throw cliError(
+      'AGENT_CONFIRMATION_REQUIRED',
+      'Create requires a visible TTY confirmation after rendering the exact Draft.',
+      true,
+    );
+  }
 }
 
 function draftRef(flags: ReadonlyMap<string, string>): CreatorAgentDraftRef {
@@ -273,6 +430,76 @@ function catalogOptions(filename: string): CreatorAgentCatalogOptions {
     throw cliError('AGENT_CLI_INVALID', '--catalog must be a canonical absolute path.', true);
   }
   return Object.freeze({ filename, catalogIdentity: CATALOG_IDENTITY });
+}
+
+function defaultCatalogPath(): string {
+  return join(
+    homedir(),
+    'Library',
+    'Application Support',
+    'Combo',
+    'creator-agent',
+    'catalog',
+    'creator-agents.sqlite',
+  );
+}
+
+function ensureCatalog(filename: string, createDefaultParent: boolean): CreatorAgentCatalogOptions {
+  if (createDefaultParent) {
+    const parent = dirname(filename);
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    chmodSync(parent, 0o700);
+  }
+  const options = catalogOptions(filename);
+  try {
+    lstatSync(filename);
+    const opened = openExistingCreatorAgentCatalog(options);
+    closeAfterSuccess(opened);
+  } catch (error) {
+    if (!isErrno(error, 'ENOENT')) throw error;
+    const created = createFreshCreatorAgentCatalog(options);
+    closeAfterSuccess(created);
+  }
+  return options;
+}
+
+function assertOutsideProject(
+  projectPath: string,
+  catalogPath: string,
+  stateDirectory: string | undefined,
+): void {
+  if (isWithin(projectPath, catalogPath)) {
+    throw cliError('AGENT_CLI_INVALID', 'Catalog must be outside the compiled Project.', true);
+  }
+  if (stateDirectory !== undefined) {
+    if (!isAbsolute(stateDirectory) || resolve(stateDirectory) !== stateDirectory) {
+      throw cliError('AGENT_CLI_INVALID', '--state-dir must be canonical and absolute.', true);
+    }
+    if (isWithin(projectPath, stateDirectory)) {
+      throw cliError('AGENT_CLI_INVALID', 'Run state must be outside the compiled Project.', true);
+    }
+  }
+}
+
+function assertFreshStateDirectory(stateDirectory: string): void {
+  try {
+    const stat = lstatSync(stateDirectory);
+    if (!stat.isDirectory() || readdirSync(stateDirectory).length !== 0) {
+      throw cliError(
+        'AGENT_CLI_INVALID',
+        '--state-dir must be absent or an empty real directory.',
+        true,
+      );
+    }
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return;
+    throw error;
+  }
+}
+
+function isWithin(parent: string, candidate: string): boolean {
+  const child = relative(parent, candidate);
+  return child === '' || (!child.startsWith('../') && child !== '..' && !isAbsolute(child));
 }
 
 function withCatalog<Value>(
@@ -302,7 +529,11 @@ function parseFlags(arguments_: readonly string[]): ReadonlyMap<string, string> 
   const values = new Map<string, string>();
   for (let index = 0; index < arguments_.length; index += 1) {
     const token = arguments_[index];
-    if (token === '--allow-unisolated-read' || token === '--allow-loopback-proxy') {
+    if (
+      token === '--allow-unisolated-read' ||
+      token === '--allow-sensitive-project-context' ||
+      token === '--allow-loopback-proxy'
+    ) {
       if (values.has(token.slice(2))) duplicateFlag(token);
       values.set(token.slice(2), 'true');
       continue;
@@ -371,6 +602,45 @@ function readPrompt(flags: ReadonlyMap<string, string>): string {
   return prompt;
 }
 
+function readOptionalRunPrompt(flags: ReadonlyMap<string, string>): string | undefined {
+  const inline = flags.get('run-prompt');
+  const file = flags.get('run-prompt-file');
+  if (inline === undefined && file === undefined) return undefined;
+  if (inline !== undefined && file !== undefined) {
+    throw cliError(
+      'AGENT_CLI_INVALID',
+      'Only one of --run-prompt or --run-prompt-file may be provided.',
+      true,
+    );
+  }
+  const prompt = file === undefined ? inline! : readBoundedUtf8File(file, MAX_PROMPT_BYTES);
+  if (
+    prompt.length === 0 ||
+    prompt.includes('\0') ||
+    Buffer.byteLength(prompt, 'utf8') > MAX_PROMPT_BYTES
+  ) {
+    throw cliError('AGENT_CLI_INVALID', 'Run prompt is empty or exceeds 32768 UTF-8 bytes.', true);
+  }
+  return prompt;
+}
+
+function boundedInteger(
+  flags: ReadonlyMap<string, string>,
+  key: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const value = Number(required(flags, key));
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw cliError(
+      'AGENT_CLI_INVALID',
+      `--${key} must be an integer from ${minimum} through ${maximum}.`,
+      true,
+    );
+  }
+  return value;
+}
+
 function readBoundedUtf8File(filename: string, maximumBytes: number): string {
   if (!isAbsolute(filename) || resolve(filename) !== filename) {
     throw cliError('AGENT_CLI_INVALID', 'Input file path must be canonical and absolute.', true);
@@ -408,7 +678,7 @@ function terminalSafeJson(value: unknown): string {
   );
 }
 
-function defaultRunState(version: CreatorAgentVersionV1): string {
+function defaultRunState(version: CreatorAgentVersion): string {
   return join(
     homedir(),
     'Library',
@@ -463,6 +733,17 @@ function safeError(error: unknown): Readonly<{ code: string; message: string; us
       usage: error.code === 'CATALOG_PATH_INVALID' || error.code === 'CATALOG_NOT_FOUND',
     });
   }
+  if (error instanceof CreatorAgentProjectCompilerError) {
+    return Object.freeze({
+      code: error.code,
+      message: 'Project 上下文编译未完成，Catalog 中不会出现部分 Version。',
+      usage:
+        error.code === 'PROJECT_CONTEXT_PATH_INVALID' ||
+        error.code === 'PROJECT_CONTEXT_AUTHORIZATION_REQUIRED' ||
+        error.code === 'PROJECT_COMPILER_CONFIGURATION_INVALID' ||
+        error.code === 'PROJECT_COMPILER_GIT_INVALID',
+    });
+  }
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code =
       typeof error.code === 'string' && /^[A-Z0-9_]{1,64}$/u.test(error.code)
@@ -475,6 +756,10 @@ function safeError(error: unknown): Readonly<{ code: string; message: string; us
     message: '本地 Agent 操作未完成。',
     usage: false,
   });
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
 
 function abortError(): Error & { code: string } {

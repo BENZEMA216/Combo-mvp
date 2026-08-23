@@ -2,20 +2,33 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
   CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL,
   createCreatorAgentDraftHandoff,
+  createCreatorAgentDraftHandoffV2,
   createCreatorAgentDefinition,
   createCreatorAgentDraftSnapshot,
+  createCreatorAgentDraftSnapshotV2,
+  createCreatorAgentDefinitionV2,
+  createCreatorAgentProjectSourceLedger,
   fingerprintCreatorAgentDefinition,
   freezeCreatorAgentVersion,
+  freezeCreatorAgentVersionAny,
+  freezeCreatorAgentVersionV2,
+  parseCreatorAgentDraftHandoffAny,
+  parseCreatorAgentDraftHandoffV2,
   parseCreatorAgentDraftHandoff,
   parseCreatorAgentVersion,
+  parseCreatorAgentVersionAny,
+  serializeCreatorAgentDraftHandoffV2,
+  serializeCreatorAgentVersionV2,
   serializeCreatorAgentDraftSnapshot,
   serializeCreatorAgentDraftHandoff,
   serializeCreatorAgentVersion,
   verifyCreatorAgentDraftSnapshot,
   verifyCreatorAgentDraftHandoff,
   verifyCreatorAgentVersion,
+  verifyCreatorAgentVersionV2,
   type CreatorAgentDefinitionV1,
 } from '../agent.js';
 
@@ -76,6 +89,190 @@ function frozenVersion() {
 }
 
 describe('Creator Agent contract', () => {
+  it('round-trips a V2 Project source ledger without changing any V1 bytes', () => {
+    const v1Text = serializeCreatorAgentVersion(frozenVersion());
+    const sourceLedger = createCreatorAgentProjectSourceLedger({
+      contextRootDigest: `sha256:${'c'.repeat(64)}`,
+      coverage: {
+        indexedEntryCount: 12,
+        indexedFileCount: 8,
+        indexedByteCount: 4096,
+        hiddenEntryCount: 3,
+        trackedEntryCount: 4,
+        untrackedEntryCount: 2,
+        ignoredEntryCount: 2,
+        gitAdminEntryCount: 2,
+        authoringOnlyEntryCount: 8,
+      },
+      citedSources: [
+        {
+          path: 'README.md',
+          digest: `sha256:${'d'.repeat(64)}`,
+          executionAvailability: 'FIXED_GIT_TREE',
+        },
+        {
+          path: 'logs/creator.jsonl',
+          digest: `sha256:${'e'.repeat(64)}`,
+          executionAvailability: 'AUTHORING_ONLY',
+        },
+      ],
+    });
+    const definitionV2 = createCreatorAgentDefinitionV2({
+      ...definition(),
+      protocol: CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+      authoringSource: { kind: 'project_context_compiler', sourceLedger },
+    });
+    const draft = createCreatorAgentDraftSnapshotV2({
+      agentId: 'agent.context-review',
+      draftId: 'draft.context-review.1',
+      draftRevision: 1,
+      baseVersionId: null,
+      definition: definitionV2,
+    });
+    const handoff = createCreatorAgentDraftHandoffV2({ draft });
+    const handoffText = serializeCreatorAgentDraftHandoffV2(handoff);
+    const version = freezeCreatorAgentVersionV2({
+      versionId: 'version.context-review.1',
+      versionNumber: 1,
+      createdAtMs: 1_787_413_200_000,
+      draft,
+    });
+    const versionText = serializeCreatorAgentVersionV2(version);
+
+    expect(parseCreatorAgentDraftHandoffV2(handoffText)).toEqual(handoff);
+    expect(parseCreatorAgentDraftHandoffAny(handoffText)).toEqual(handoff);
+    expect(parseCreatorAgentVersionAny(versionText)).toEqual(version);
+    expect(parseCreatorAgentVersion(v1Text)).toEqual(frozenVersion());
+    expect(() =>
+      verifyCreatorAgentVersionV2({
+        ...version,
+        definition: {
+          ...version.definition,
+          authoringSource: {
+            ...version.definition.authoringSource,
+            sourceLedger: {
+              ...sourceLedger,
+              citedSources: [
+                { ...sourceLedger.citedSources[0]!, executionAvailability: 'AUTHORING_ONLY' },
+                sourceLedger.citedSources[1]!,
+              ],
+            },
+          },
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentProjectSourceLedger({
+        contextRootDigest: `sha256:${'c'.repeat(64)}`,
+        coverage: {
+          indexedEntryCount: 0,
+          indexedFileCount: 1,
+          indexedByteCount: 1,
+          hiddenEntryCount: 1,
+          trackedEntryCount: 1,
+          untrackedEntryCount: 1,
+          ignoredEntryCount: 1,
+          gitAdminEntryCount: 1,
+          authoringOnlyEntryCount: 1,
+        },
+        citedSources: [
+          {
+            path: 'README.md',
+            digest: `sha256:${'d'.repeat(64)}`,
+            executionAvailability: 'FIXED_GIT_TREE',
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentProjectSourceLedger({
+        contextRootDigest: `sha256:${'c'.repeat(64)}`,
+        coverage: {
+          indexedEntryCount: 100,
+          indexedFileCount: 1,
+          indexedByteCount: 1,
+          hiddenEntryCount: 0,
+          trackedEntryCount: 1,
+          untrackedEntryCount: 0,
+          ignoredEntryCount: 0,
+          gitAdminEntryCount: 0,
+          authoringOnlyEntryCount: 1,
+        },
+        citedSources: [
+          {
+            path: 'README.md',
+            digest: `sha256:${'d'.repeat(64)}`,
+            executionAvailability: 'FIXED_GIT_TREE',
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('rejects accessor and Proxy inputs on V2 handoff and generic freeze dispatch', () => {
+    const sourceLedger = createCreatorAgentProjectSourceLedger({
+      contextRootDigest: `sha256:${'c'.repeat(64)}`,
+      coverage: {
+        indexedEntryCount: 1,
+        indexedFileCount: 1,
+        indexedByteCount: 1,
+        hiddenEntryCount: 0,
+        trackedEntryCount: 1,
+        untrackedEntryCount: 0,
+        ignoredEntryCount: 0,
+        gitAdminEntryCount: 0,
+        authoringOnlyEntryCount: 0,
+      },
+      citedSources: [
+        {
+          path: 'README.md',
+          digest: `sha256:${'d'.repeat(64)}`,
+          executionAvailability: 'FIXED_GIT_TREE',
+        },
+      ],
+    });
+    const draft = createCreatorAgentDraftSnapshotV2({
+      agentId: 'agent.context-accessor',
+      draftId: 'draft.context-accessor.1',
+      draftRevision: 1,
+      baseVersionId: null,
+      definition: createCreatorAgentDefinitionV2({
+        ...definition(),
+        protocol: CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+        authoringSource: { kind: 'project_context_compiler', sourceLedger },
+      }),
+    });
+    let getterReads = 0;
+    const accessorInput = Object.defineProperty({}, 'draft', {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return draft;
+      },
+    });
+    expect(() => createCreatorAgentDraftHandoffV2(accessorInput as never)).toThrow(
+      /data properties/u,
+    );
+    expect(getterReads).toBe(0);
+
+    let proxyReads = 0;
+    const proxiedDraft = new Proxy(draft, {
+      get(target, key, receiver) {
+        proxyReads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect(() =>
+      freezeCreatorAgentVersionAny({
+        versionId: 'version.context-accessor.1',
+        versionNumber: 1,
+        createdAtMs: 1,
+        draft: proxiedDraft,
+      }),
+    ).toThrow(/Proxy/u);
+    expect(proxyReads).toBe(0);
+  });
+
   it('freezes one detached Definition, Draft, and immutable Version', () => {
     const callerOwned = definition();
     const draft = createCreatorAgentDraftSnapshot({

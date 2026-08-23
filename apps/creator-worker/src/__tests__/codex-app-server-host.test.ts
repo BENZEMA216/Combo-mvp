@@ -303,6 +303,35 @@ describe('bundled Codex Host authority mapping', () => {
     });
   });
 
+  it('binds one detached fixed output schema to every turn in a structured Host', async () => {
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['answer'],
+      properties: { answer: { type: 'string', maxLength: 80 } },
+    };
+    const rig = useRig({ outputSchema: schema });
+    schema.properties.answer.maxLength = 1;
+    const thread = await startThread(rig);
+    rig.spawner.onTurnStart = (request, child) => {
+      sendStarted(child, thread.id, 'turn.structured');
+      sendAgentMessage(child, thread.id, 'turn.structured', '{"answer":"ok"}');
+      sendTerminal(child, thread.id, 'turn.structured', 'completed');
+      child.respond(request, { turn: turn('turn.structured', 'inProgress') });
+    };
+
+    const handle = await rig.host.startTurn(turnInput(thread, 'structured'));
+    await handle.outcome;
+    expect(onlyRequest(rig, 'turn/start').params).toMatchObject({
+      outputSchema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['answer'],
+        properties: { answer: { type: 'string', maxLength: 80 } },
+      },
+    });
+  });
+
   it('rejects output that arrives after an early terminal', async () => {
     const rig = useRig();
     const thread = await startThread(rig);
@@ -508,6 +537,7 @@ describe('bundled Codex Host authority mapping', () => {
 function useRig(
   options: Readonly<{
     authentication?: boolean;
+    outputSchema?: unknown;
     onDiagnostic?: CreateRigOptions['onDiagnostic'];
   }> = {},
 ): CodexHostTestRig {

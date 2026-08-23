@@ -12,6 +12,7 @@ import {
 
 import {
   createBundledCodexHostForTesting,
+  createBundledCodexStructuredHostForTesting,
   type BundledCodexHostDiagnostic,
 } from '../codex-app-server-host.js';
 import {
@@ -186,6 +187,7 @@ export type CodexHostTestRig = {
 export function createCodexHostTestRig(
   options: Readonly<{
     authentication?: boolean;
+    outputSchema?: unknown;
     onDiagnostic?: (event: BundledCodexHostDiagnostic, host: CreatorHost) => void;
   }> = {},
 ): CodexHostTestRig {
@@ -206,20 +208,25 @@ export function createCodexHostTestRig(
   const spawner = new FakeCodexSpawner();
   const diagnostics: BundledCodexHostDiagnostic[] = [];
   const context: { host?: CreatorHost } = {};
-  const host = createBundledCodexHostForTesting(
-    {
-      projectPath,
-      developerInstructions: 'Stay inside the read-only test Project and answer the exact task.',
-      allowUnisolatedRead: true,
-      rpcTimeoutMs: 500,
-      processTerminationGraceMs: 10,
-      diagnosticSink: (event) => {
-        diagnostics.push(event);
-        if (context.host !== undefined) options.onDiagnostic?.(event, context.host);
-      },
+  const hostOptions = {
+    projectPath,
+    developerInstructions: 'Stay inside the read-only test Project and answer the exact task.',
+    allowUnisolatedRead: true,
+    rpcTimeoutMs: 500,
+    processTerminationGraceMs: 10,
+    diagnosticSink: (event: BundledCodexHostDiagnostic) => {
+      diagnostics.push(event);
+      if (context.host !== undefined) options.onDiagnostic?.(event, context.host);
     },
-    spawner.dependencies,
-  );
+  } as const;
+  const host =
+    options.outputSchema === undefined
+      ? createBundledCodexHostForTesting(hostOptions, spawner.dependencies)
+      : createBundledCodexStructuredHostForTesting(
+          hostOptions,
+          options.outputSchema,
+          spawner.dependencies,
+        );
   context.host = host;
   let cleaned = false;
   return {
