@@ -6,12 +6,7 @@
     "tsBuildInfoFile": "./tsconfig.tsbuildinfo",
     "types": ["node"]
   },
-  "references": [
-    { "path": "../../packages/creator-agent-protocol" },
-    { "path": "../../packages/creator-agent-persistence" },
-    { "path": "../../packages/creator-agent-broker-journal" },
-    { "path": "../../packages/creator-worker-broker-client" }
-  ],
+  "references": [{ "path": "../creator-agent-protocol" }],
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/__tests__/**"]
 }

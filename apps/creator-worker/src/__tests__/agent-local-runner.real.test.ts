@@ -1,14 +1,19 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  createCreatorAgentDraftHandoff,
   createCreatorAgentDraftSnapshot,
-  freezeCreatorAgentVersion,
+  serializeCreatorAgentDraftHandoff,
 } from '@cb/creator-agent-protocol/agent';
+import {
+  createFreshCreatorAgentCatalog,
+  openExistingCreatorAgentCatalog,
+} from '@cb/creator-agent-persistence';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { runCreatorAgentLocalTurn } from '../index.js';
@@ -23,8 +28,8 @@ afterEach(async () => {
 });
 
 describe.runIf(enabled)('immutable Creator Agent real gate', () => {
-  it('runs one frozen Version through bundled Codex and the durable local Worker', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'combo-real-creator-agent-'));
+  it('freezes, reopens, and runs one exact Version through bundled Codex', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'combo-real-creator-agent-')));
     temporaryDirectories.push(root);
     const projectPath = join(root, 'creator-project');
     const stateDirectory = join(root, 'state');
@@ -38,50 +43,75 @@ describe.runIf(enabled)('immutable Creator Agent real gate', () => {
     await writeFile(join(projectPath, 'CANARY.txt'), `${answer}\n`, { mode: 0o600 });
     git(projectPath, ['add', 'CANARY.txt']);
     git(projectPath, ['commit', '-m', 'test: immutable agent fixture']);
-    const version = freezeCreatorAgentVersion({
-      versionId: 'version.real.canary.1',
-      versionNumber: 1,
-      createdAtMs: Date.now(),
-      draft: createCreatorAgentDraftSnapshot({
-        agentId: 'agent.real.canary',
-        draftId: 'draft.real.canary.1',
-        draftRevision: 1,
-        baseVersionId: null,
-        definition: {
-          protocol: CREATOR_AGENT_DEFINITION_PROTOCOL,
-          name: 'Exact canary reader',
-          description: 'Reads one fixed canary from an immutable Project snapshot.',
-          projectSnapshot: {
-            kind: 'git',
-            repositoryUrl: 'https://github.com/dangdang-tech/Combo.git',
-            sourceRef: 'refs/heads/main',
-            commitSha: git(projectPath, ['rev-parse', 'HEAD^{commit}']),
-            treeSha: git(projectPath, ['rev-parse', 'HEAD^{tree}']),
-          },
-          behavior: {
-            instructions:
-              'Read CANARY.txt when asked and return only its single line without punctuation.',
-            starterPrompts: ['Read the immutable canary.'],
-          },
-          requirements: {
-            codexVersion: '0.148.0-alpha.15',
-            commands: [],
-            plugins: [],
-            environmentVariableNames: [],
-          },
-          authoringSource: { kind: 'codex_current_task', rawStored: false },
-          runtime: {
-            contextProfile: 'PROJECT_TREE_READ_ONLY_V1',
-            permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
-            skills: [],
-            dynamicTools: [],
-            toolNetworkAccess: false,
-            output: { kind: 'text', description: 'The exact canary line.' },
-            turnTimeoutMs: 120_000,
-          },
+    const draft = createCreatorAgentDraftSnapshot({
+      agentId: 'agent.real.canary',
+      draftId: 'draft.real.canary.1',
+      draftRevision: 1,
+      baseVersionId: null,
+      definition: {
+        protocol: CREATOR_AGENT_DEFINITION_PROTOCOL,
+        name: 'Exact canary reader',
+        description: 'Reads one fixed canary from an immutable Project snapshot.',
+        projectSnapshot: {
+          kind: 'git',
+          repositoryUrl: 'https://github.com/dangdang-tech/Combo.git',
+          sourceRef: 'refs/heads/main',
+          commitSha: git(projectPath, ['rev-parse', 'HEAD^{commit}']),
+          treeSha: git(projectPath, ['rev-parse', 'HEAD^{tree}']),
         },
-      }),
+        behavior: {
+          instructions:
+            'Read CANARY.txt when asked and return only its single line without punctuation.',
+          starterPrompts: ['Read the immutable canary.'],
+        },
+        requirements: {
+          codexVersion: '0.148.0-alpha.15',
+          commands: [],
+          plugins: [],
+          environmentVariableNames: [],
+        },
+        authoringSource: { kind: 'codex_current_task', rawStored: false },
+        runtime: {
+          contextProfile: 'PROJECT_TREE_READ_ONLY_V1',
+          permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+          skills: [],
+          dynamicTools: [],
+          toolNetworkAccess: false,
+          output: { kind: 'text', description: 'The exact canary line.' },
+          turnTimeoutMs: 120_000,
+        },
+      },
     });
+    const catalogPath = join(root, 'agent-catalog.sqlite');
+    const catalogOptions = Object.freeze({
+      filename: catalogPath,
+      catalogIdentity: 'catalog.real.creator-agent',
+    });
+    const catalog = createFreshCreatorAgentCatalog(catalogOptions);
+    catalog.importDraftHandoff(
+      serializeCreatorAgentDraftHandoff(createCreatorAgentDraftHandoff({ draft })),
+    );
+    const review = catalog.createFreezeReview({
+      agentId: draft.agentId,
+      draftId: draft.draftId,
+      draftRevision: draft.draftRevision,
+    });
+    const frozen = catalog.freezeDraft({
+      ref: {
+        agentId: draft.agentId,
+        draftId: draft.draftId,
+        draftRevision: draft.draftRevision,
+      },
+      confirmationText: review.confirmationText,
+    }).version;
+    catalog.close();
+    const reopened = openExistingCreatorAgentCatalog(catalogOptions);
+    const version = reopened.readVersion({
+      agentId: frozen.agentId,
+      versionId: frozen.versionId,
+    });
+    reopened.close();
+    expect(version).toEqual(frozen);
     const before = await snapshotDirectory(projectPath);
 
     const result = await runCreatorAgentLocalTurn({
@@ -98,6 +128,10 @@ describe.runIf(enabled)('immutable Creator Agent real gate', () => {
     const durable = await readDurableBytes(stateDirectory);
     expect(durable).not.toContain(promptMarker);
     expect(durable).not.toContain(answer);
+    const catalogBytes = await readFile(catalogPath, 'utf8');
+    expect(catalogBytes).not.toContain(promptMarker);
+    expect(catalogBytes).not.toContain(answer);
+    expect(catalogBytes).not.toContain(projectPath);
   }, 180_000);
 });
 

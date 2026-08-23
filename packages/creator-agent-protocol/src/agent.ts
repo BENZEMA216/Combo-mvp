@@ -1,3 +1,5 @@
+import { isProxy } from 'node:util/types';
+
 import { z } from 'zod';
 
 import { canonicalFingerprint, canonicalizeJson } from './canonical.js';
@@ -5,6 +7,7 @@ import { Sha256DigestSchema, containsLoneSurrogate, type Sha256Digest } from './
 
 export const CREATOR_AGENT_DEFINITION_PROTOCOL = 'combo.creator-agent-definition/1' as const;
 export const CREATOR_AGENT_DRAFT_PROTOCOL = 'combo.creator-agent-draft/1' as const;
+export const CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL = 'combo.creator-agent-draft-handoff/1' as const;
 export const CREATOR_AGENT_VERSION_PROTOCOL = 'combo.creator-agent-version/1' as const;
 export const CREATOR_AGENT_MAX_CANONICAL_BYTES = 65_536;
 
@@ -130,6 +133,16 @@ export const CreatorAgentDraftSnapshotV1Schema = z
   .readonly();
 export type CreatorAgentDraftSnapshotV1 = z.infer<typeof CreatorAgentDraftSnapshotV1Schema>;
 
+export const CreatorAgentDraftHandoffV1Schema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL),
+    intent: z.literal('import_local_draft'),
+    draft: CreatorAgentDraftSnapshotV1Schema,
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentDraftHandoffV1 = z.infer<typeof CreatorAgentDraftHandoffV1Schema>;
+
 const CreatorAgentVersionSourceDraftSchema = z
   .object({
     draftId: IdentifierSchema,
@@ -174,6 +187,10 @@ export type FreezeCreatorAgentVersionInput = Readonly<{
   draft: unknown;
 }>;
 
+export type CreateCreatorAgentDraftHandoffInput = Readonly<{
+  draft: unknown;
+}>;
+
 const CreateCreatorAgentDraftSnapshotInputSchema = z
   .object({
     agentId: IdentifierSchema,
@@ -192,6 +209,11 @@ const FreezeCreatorAgentVersionInputSchema = z
     createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     draft: CreatorAgentDraftSnapshotV1Schema,
   })
+  .strict()
+  .readonly();
+
+const CreateCreatorAgentDraftHandoffInputSchema = z
+  .object({ draft: CreatorAgentDraftSnapshotV1Schema })
   .strict()
   .readonly();
 
@@ -249,6 +271,64 @@ export function verifyCreatorAgentDraftSnapshot(input: unknown): CreatorAgentDra
     throw new TypeError('Agent draft fingerprint does not match');
   }
   return draft;
+}
+
+export function serializeCreatorAgentDraftSnapshot(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentDraftSnapshot(input));
+}
+
+export function createCreatorAgentDraftHandoff(
+  input: CreateCreatorAgentDraftHandoffInput,
+): CreatorAgentDraftHandoffV1 {
+  const snapshot = exactDetached(
+    CreateCreatorAgentDraftHandoffInputSchema,
+    input,
+    'Agent draft handoff input',
+  );
+  const draft = verifyCreatorAgentDraftSnapshot(snapshot.draft);
+  return verifyCreatorAgentDraftHandoff({
+    protocol: CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL,
+    intent: 'import_local_draft',
+    draft,
+  });
+}
+
+export function verifyCreatorAgentDraftHandoff(input: unknown): CreatorAgentDraftHandoffV1 {
+  const handoff = exactDetached(CreatorAgentDraftHandoffV1Schema, input, 'Agent draft handoff');
+  const draft = verifyCreatorAgentDraftSnapshot(handoff.draft);
+  if (
+    draft.definition.authoringSource.kind !== 'codex_current_task' ||
+    draft.definition.authoringSource.rawStored !== false
+  ) {
+    throw new TypeError('Agent draft handoff must come from visible Codex task context');
+  }
+  return exactDetached(
+    CreatorAgentDraftHandoffV1Schema,
+    { protocol: handoff.protocol, intent: handoff.intent, draft },
+    'Agent draft handoff',
+  );
+}
+
+export function serializeCreatorAgentDraftHandoff(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentDraftHandoff(input));
+}
+
+export function parseCreatorAgentDraftHandoff(text: string): CreatorAgentDraftHandoffV1 {
+  if (typeof text !== 'string') throw new TypeError('Agent draft handoff must be JSON text');
+  if (Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_MAX_CANONICAL_BYTES) {
+    throw new TypeError('Agent draft handoff exceeds the canonical byte limit');
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text) as unknown;
+  } catch {
+    throw new TypeError('Agent draft handoff is not valid JSON');
+  }
+  const handoff = verifyCreatorAgentDraftHandoff(value);
+  if (canonicalizeJson(handoff) !== text) {
+    throw new TypeError('Agent draft handoff is not exact canonical JSON');
+  }
+  return handoff;
 }
 
 export function freezeCreatorAgentVersion(
@@ -368,6 +448,7 @@ function preflightAgentValue(input: unknown): void {
       continue;
     }
     if (typeof value !== 'object') throw new TypeError('Agent value is not canonical JSON');
+    if (isProxy(value)) throw new TypeError('Agent value must not contain Proxy objects');
     if (current.ancestors.includes(value)) throw new TypeError('Agent value contains a cycle');
     const childAncestors = [...current.ancestors, value];
     const prototype = Object.getPrototypeOf(value);

@@ -1,9 +1,11 @@
-# Source responsibilities
+# 源码职责
 
 - `primitives.ts`：Host 合约内部使用的最小、名义隔离值域。
 - `canonical.ts`：内部 consistency fingerprint；拒绝循环、getter、稀疏数组、非有限数字和 malformed Unicode。
 - `broker-transport.ts`：显式子路径的 canonical Worker/Broker wire frame、方向规则、语义 fingerprint 与完整 wire fingerprint。
-- `agent.ts`：显式 `./agent` 子路径的 Agent Definition、按 revision 修订的不可变 DraftSnapshot 与不可变 AgentVersion；固定 Git Project 快照、只读本机执行 profile 和 domain-separated fingerprint。
+- `agent.ts`：显式 `./agent` 子路径的 Agent Definition、按 revision 修订的不可变 DraftSnapshot、strict
+  current-task Draft handoff 与不可变 AgentVersion；固定 Git Project 快照、只读本机执行 profile、canonical
+  serializer 和 domain-separated fingerprint。
 - `host-contract.ts`：Host structural port、原子 outcome、handle-private controller 与 first-sent interrupt lineage。
 - `host.ts`：消费者出口；不暴露 producer 或通用 canonical helper。
 - `host-adapter.ts`：受信 Host adapter 出口；R2 接线时必须用 import-boundary gate 限制生产导入方。

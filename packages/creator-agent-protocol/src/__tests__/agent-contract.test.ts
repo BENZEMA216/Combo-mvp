@@ -2,13 +2,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL,
+  createCreatorAgentDraftHandoff,
   createCreatorAgentDefinition,
   createCreatorAgentDraftSnapshot,
   fingerprintCreatorAgentDefinition,
   freezeCreatorAgentVersion,
+  parseCreatorAgentDraftHandoff,
   parseCreatorAgentVersion,
+  serializeCreatorAgentDraftSnapshot,
+  serializeCreatorAgentDraftHandoff,
   serializeCreatorAgentVersion,
   verifyCreatorAgentDraftSnapshot,
+  verifyCreatorAgentDraftHandoff,
   verifyCreatorAgentVersion,
   type CreatorAgentDefinitionV1,
 } from '../agent.js';
@@ -111,6 +117,146 @@ describe('Creator Agent contract', () => {
     expect(Object.isFrozen(parsed)).toBe(true);
     expect(() => parseCreatorAgentVersion(`${text}\n`)).toThrow(/canonical/u);
     expect(() => parseCreatorAgentVersion(JSON.stringify(version, null, 2))).toThrow(/canonical/u);
+  });
+
+  it('serializes equivalent Draft key orders to one canonical snapshot', () => {
+    const version = frozenVersion();
+    const draft = createCreatorAgentDraftSnapshot({
+      agentId: version.agentId,
+      draftId: 'draft.release-review.canonical',
+      draftRevision: 1,
+      baseVersionId: version.versionId,
+      definition: version.definition,
+    });
+    const reordered = {
+      draftFingerprint: draft.draftFingerprint,
+      definitionFingerprint: draft.definitionFingerprint,
+      definition: draft.definition,
+      baseVersionId: draft.baseVersionId,
+      draftRevision: draft.draftRevision,
+      draftId: draft.draftId,
+      agentId: draft.agentId,
+      protocol: draft.protocol,
+    };
+    expect(serializeCreatorAgentDraftSnapshot(reordered)).toBe(
+      serializeCreatorAgentDraftSnapshot(draft),
+    );
+  });
+
+  it('round-trips a strict visible-task Draft handoff without raw task state', () => {
+    const version = frozenVersion();
+    const draft = createCreatorAgentDraftSnapshot({
+      agentId: version.agentId,
+      draftId: 'draft.release-review.8',
+      draftRevision: 8,
+      baseVersionId: version.versionId,
+      definition: version.definition,
+    });
+    const handoff = createCreatorAgentDraftHandoff({ draft });
+    const text = serializeCreatorAgentDraftHandoff(handoff);
+
+    expect(handoff).toMatchObject({
+      protocol: CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL,
+      intent: 'import_local_draft',
+      draft,
+    });
+    expect(Object.isFrozen(handoff)).toBe(true);
+    expect(parseCreatorAgentDraftHandoff(text)).toEqual(handoff);
+    expect(() => parseCreatorAgentDraftHandoff(`${text}\n`)).toThrow(/canonical/u);
+    expect(() => parseCreatorAgentDraftHandoff(JSON.stringify(handoff, null, 2))).toThrow(
+      /canonical/u,
+    );
+    expect(() =>
+      verifyCreatorAgentDraftHandoff({ ...handoff, rawTask: 'forbidden transcript' }),
+    ).toThrow();
+  });
+
+  it('rejects manual or tampered Drafts on the current-task handoff route', () => {
+    const version = frozenVersion();
+    const manual = createCreatorAgentDraftSnapshot({
+      agentId: 'agent.manual',
+      draftId: 'draft.manual.1',
+      draftRevision: 1,
+      baseVersionId: null,
+      definition: {
+        ...version.definition,
+        authoringSource: { kind: 'manual', rawStored: false },
+      },
+    });
+    expect(() => createCreatorAgentDraftHandoff({ draft: manual })).toThrow(/visible Codex task/u);
+
+    const taskDraft = createCreatorAgentDraftSnapshot({
+      agentId: version.agentId,
+      draftId: 'draft.release-review.tamper',
+      draftRevision: 1,
+      baseVersionId: version.versionId,
+      definition: version.definition,
+    });
+    expect(() =>
+      createCreatorAgentDraftHandoff({ draft: { ...taskDraft, draftRevision: 2 } }),
+    ).toThrow(/draft fingerprint/u);
+    expect(() =>
+      createCreatorAgentDraftHandoff({ draft: taskDraft, taskId: 'hidden' } as never),
+    ).toThrow();
+  });
+
+  it('rejects Proxy-backed handoff inputs without reading their traps', () => {
+    const version = frozenVersion();
+    const draft = createCreatorAgentDraftSnapshot({
+      agentId: version.agentId,
+      draftId: 'draft.release-review.proxy',
+      draftRevision: 1,
+      baseVersionId: version.versionId,
+      definition: version.definition,
+    });
+    let draftReads = 0;
+    const proxiedDraft = new Proxy(draft, {
+      get(target, key, receiver) {
+        draftReads += 1;
+        return Reflect.get(target, key, receiver);
+      },
+    });
+    expect(() => createCreatorAgentDraftHandoff({ draft: proxiedDraft })).toThrow(/Proxy/u);
+    expect(draftReads).toBe(0);
+
+    let outerReads = 0;
+    const proxiedInput = new Proxy(
+      { draft },
+      {
+        get(target, key, receiver) {
+          outerReads += 1;
+          return Reflect.get(target, key, receiver);
+        },
+      },
+    );
+    expect(() => createCreatorAgentDraftHandoff(proxiedInput)).toThrow(/Proxy/u);
+    expect(outerReads).toBe(0);
+  });
+
+  it('rejects ambiguous, over-complex, and unrelated handoff wire text', () => {
+    const version = frozenVersion();
+    const draft = createCreatorAgentDraftSnapshot({
+      agentId: version.agentId,
+      draftId: 'draft.release-review.wire',
+      draftRevision: 1,
+      baseVersionId: version.versionId,
+      definition: version.definition,
+    });
+    const text = serializeCreatorAgentDraftHandoff(createCreatorAgentDraftHandoff({ draft }));
+    expect(() =>
+      parseCreatorAgentDraftHandoff(text.replace('"intent":', '"intent":"wrong","intent":')),
+    ).toThrow(/canonical/u);
+    expect(() =>
+      parseCreatorAgentDraftHandoff(`{"unknown":${'['.repeat(20_000)}0${']'.repeat(20_000)}}`),
+    ).toThrow(/complexity/u);
+    expect(() =>
+      parseCreatorAgentDraftHandoff(
+        JSON.stringify({
+          schemaVersion: 'combo.creator-bootstrap-handoff/1',
+          continueIntent: 'create_codex_agent_share',
+        }),
+      ),
+    ).toThrow();
   });
 
   it('keeps behavior identity separate from draft and version identity', () => {
