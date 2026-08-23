@@ -1,5 +1,32 @@
 # @cb/creator-worker
 
+## 不可变 AgentVersion 执行
+
+本包现在能让同一个经过完整性校验的 `AgentVersion` 在本地可靠执行。调用
+`runCreatorAgentLocalTurn()` 时，Worker 会先验证 Version fingerprint、canonical origin 与本机对象库中的
+commit/tree，再只从 Git blob 创建一个私有的临时 execution snapshot。bundled Codex 读取这份固定的 tracked
+tree，不读取可变工作区、ignored/untracked 文件、Git attributes/filter 或本机 index 状态；原工作区即使有
+未提交改动，也不会改变这次 Version 的行为。AgentVersion instructions 会编译成该次 Host 的固定 developer
+instructions，version fingerprint 同时进入 invocation input fingerprint，运行中不会读取可变 Draft 或
+“当前版本”。临时 snapshot 不含 `.git` 元数据，并在 Host、Runtime 与 Broker 完整停止后删除。
+
+`AgentDraft` 与 `AgentVersion` 的纯值合同位于 `@cb/creator-agent-protocol/agent`：Draft 通过新 revision
+修订且不可执行，每个 DraftSnapshot 本身不可变；Version 从一个精确 Draft revision 冻结并可 canonical
+JSON round-trip。Version 不保存本机绝对路径、Codex
+task transcript、prompt 或回答。本阶段可对同一 Version 发起多个彼此隔离的 fresh run；它们各有独立
+ephemeral thread 和双 SQLite，尚不共享多轮 Conversation 记忆，也不能在进程重启后续接旧 thread。
+
+“从当前 Codex task 生成 Draft”本 PR 只提供严格 handoff/contract 接缝，不会读取 task/session JSONL 或
+隐藏 Host 状态。自动提取、逐字确认、持久 Draft catalog、Conversation 记忆与发布分享是后续切片，不能把
+当前单轮执行冒充成已经完成的 Agent 产品入口。
+
+这里的 `combo.creator-agent-version/1` 是尚未发布的本地执行合同，当前既不等同于公开分享链的
+`combo.codex-agent-share/1`，也不是旧 `CapabilityDefinition`。二者如何投影或迁移必须在后续切片单独定案；
+本 PR 不声称已经兼容现有分享、Capability catalog 或云端运行入口。
+
+本机显式真实门槛为 `pnpm -F @cb/creator-worker test:real-agent`；它用 sanitized 临时 Git Project
+运行一轮 frozen Version → bundled Codex → 双 SQLite → terminal ACK，并核对原 Project 零变化与正文不落库。
+
 ## 本地 Alpha 闭环
 
 本包现在提供一个仅供单用户、受控环境体验的完整本地入口：

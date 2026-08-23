@@ -43,7 +43,7 @@ type CheckedOptions = Readonly<{
   diagnosticSink?: (event: CreatorWorkerLocalAlphaDiagnostic) => void;
 }>;
 
-type LocalAlphaDependencies = Readonly<{
+export type LocalAlphaDependencies = Readonly<{
   createHost(
     options: Readonly<{
       projectPath: string;
@@ -55,23 +55,39 @@ type LocalAlphaDependencies = Readonly<{
   createBroker(installationId: string): Promise<LocalAlphaBroker>;
 }>;
 
+export type LocalAlphaExecutionProfile = Readonly<{
+  developerInstructions: string;
+  executionBinding: string;
+}>;
+
 const productionDependencies: LocalAlphaDependencies = Object.freeze({
   createHost: createBundledCodexHost,
   createBroker: createLocalAlphaBroker,
 });
 
+const defaultExecutionProfile: LocalAlphaExecutionProfile = Object.freeze({
+  developerInstructions: DEVELOPER_INSTRUCTIONS,
+  executionBinding: 'combo.creator-worker.local-alpha/default',
+});
+
 export function runCreatorWorkerLocalAlpha(
   options: CreatorWorkerLocalAlphaOptions,
 ): Promise<CreatorWorkerLocalAlphaResult> {
-  return runCreatorWorkerLocalAlphaWithDependencies(options, productionDependencies);
+  return runCreatorWorkerLocalAlphaWithDependencies(
+    options,
+    productionDependencies,
+    defaultExecutionProfile,
+  );
 }
 
 /** Internal test seam; intentionally absent from the package root export. */
 export async function runCreatorWorkerLocalAlphaWithDependencies(
   input: CreatorWorkerLocalAlphaOptions,
   dependencies: LocalAlphaDependencies,
+  profile: LocalAlphaExecutionProfile = defaultExecutionProfile,
 ): Promise<CreatorWorkerLocalAlphaResult> {
   const options = snapshotOptions(input);
+  const executionProfile = snapshotExecutionProfile(profile);
   const projectIdentity = digest(`combo.creator-worker.local-project/1\0${options.projectPath}`);
   const identitySuffix = projectIdentity.slice('sha256:'.length, 'sha256:'.length + 24);
   const installationId = `installation.local.${identitySuffix}`;
@@ -83,7 +99,7 @@ export async function runCreatorWorkerLocalAlphaWithDependencies(
   const startAttemptId = `attempt.local.${randomUUID()}`;
   const inputRef = `input.local.${randomUUID()}`;
   const inputFingerprint = digest(
-    `combo.creator-worker.local-input/1\0${invocationId}\0${options.prompt}`,
+    `combo.creator-worker.local-input/2\0${executionProfile.executionBinding}\0${invocationId}\0${options.prompt}`,
   );
   const sealedResultId = `sealed.local.${randomUUID()}`;
   const answers = new Map<
@@ -93,7 +109,7 @@ export async function runCreatorWorkerLocalAlphaWithDependencies(
   assertNotAborted(options.signal);
   const host = dependencies.createHost({
     projectPath: options.projectPath,
-    developerInstructions: DEVELOPER_INSTRUCTIONS,
+    developerInstructions: executionProfile.developerInstructions,
     allowUnisolatedRead: true,
     allowLoopbackProxy: options.allowLoopbackProxy,
   });
@@ -248,6 +264,29 @@ export async function runCreatorWorkerLocalAlphaWithDependencies(
     invocationId,
     text: answer,
   });
+}
+
+function snapshotExecutionProfile(input: LocalAlphaExecutionProfile): LocalAlphaExecutionProfile {
+  let developerInstructions: unknown;
+  let executionBinding: unknown;
+  try {
+    developerInstructions = input.developerInstructions;
+    executionBinding = input.executionBinding;
+  } catch (error) {
+    invalid('Local Alpha execution profile is invalid.', error);
+  }
+  if (
+    typeof developerInstructions !== 'string' ||
+    developerInstructions.length === 0 ||
+    developerInstructions.length > 20_000 ||
+    /[\0\r]/u.test(developerInstructions) ||
+    typeof executionBinding !== 'string' ||
+    (!/^sha256:[0-9a-f]{64}$/u.test(executionBinding) &&
+      executionBinding !== 'combo.creator-worker.local-alpha/default')
+  ) {
+    invalid('Local Alpha execution profile is invalid.');
+  }
+  return Object.freeze({ developerInstructions, executionBinding });
 }
 
 function snapshotOptions(input: CreatorWorkerLocalAlphaOptions): CheckedOptions {

@@ -20,6 +20,11 @@
   不落库。
 - `local-alpha.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时运行完整本地闭环；它从 Broker command 一直
   经过真实 bundled Codex 到 terminal ACK，并验证 sanitized Project 零变化与两库无正文。
+- `agent-local-runner.test.ts` 用 commit-pinned Git fixture、Fake Host、真实 Broker、双 SQLite、driver、pump
+  与 Runtime 证明同一 immutable AgentVersion 可运行两次且 instructions 不漂移；Host 只看到 blob
+  materialize 的 fixed tree，源工作区并发漂移不会进入执行，错误 origin 与 symlink tree 会在 Host 副作用前拒绝。
+- `agent-local-runner.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时让一个 frozen AgentVersion 经过真实
+  bundled Codex、私有 tracked-tree snapshot、双 SQLite 与 terminal ACK，验证原 Project 零变化且正文不落库。
 
 测试使用真实 Node 24 `node:sqlite` 文件和真实 R1 adapter controller；R2E 测试还使用真实 `ws` client /
 server；真实 Codex Host gate 与本地 Alpha gate 都只证明本机受控环境。本地 Alpha 的 loopback Broker

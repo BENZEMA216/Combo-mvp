@@ -9,3 +9,6 @@ outcome、跨 handle 拒绝、first-sent interrupt lineage、generation/turn bin
 
 `broker-transport.test.ts` 锁定 65536 UTF-8 byte 上限、exact canonical JSON、四类 body 的
 方向与 sequence、语义身份以及完整 wire 身份。它不证明 SQLite、WebSocket 或 Cloud ACK。
+
+`agent-contract.test.ts` 锁定 Definition → Draft → immutable Version、canonical round-trip、
+深冻结、定义/版本 fingerprint、严格字段和当前本机只读 Runtime profile；它不证明 Agent 已发布或已执行。

@@ -43,3 +43,13 @@ export {
   type CreatorWorkerLocalAlphaResult,
 } from './local-alpha-contract.js';
 export { runCreatorWorkerLocalAlpha } from './local-alpha-runner.js';
+export {
+  CreatorAgentLocalError,
+  type CreatorAgentLocalErrorCode,
+  type CreatorAgentLocalTurnOptions,
+  type CreatorAgentLocalTurnResult,
+} from './agent-local-contract.js';
+export {
+  compileCreatorAgentDeveloperInstructions,
+  runCreatorAgentLocalTurn,
+} from './agent-local-runner.js';
