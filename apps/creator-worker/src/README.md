@@ -17,6 +17,9 @@
 - `agent-local-runner.ts` 验证 AgentVersion 与本机 Git object 中的 exact commit/tree，仅从 blob
   materialize 私有 tracked-tree execution snapshot，再把固定 instructions/version binding 交给现有本地
   Worker 闭环；它不读取 mutable Draft、可变工作区、ignored 文件或 Codex task 原文。
+- `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口，执行 strict handoff import、terminal-safe 完整
+  Draft review、逐字 freeze confirmation、Catalog close/reopen 与 exact Version run；它不读取隐藏 task 状态，
+  也不提供隐式 latest、force 或公开分享副作用。
 - `local-alpha-broker.ts` 在随机 loopback 端口实现真实 R2C lease、command、PERSISTED ACK 与
   CLOUD_COMMITTED ACK，并严格绑定 terminal message、Host source、attempt 与 sealed-result marker；它不
   开放公网监听或 Cloud 身份能力。

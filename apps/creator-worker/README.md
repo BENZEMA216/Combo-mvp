@@ -1,5 +1,38 @@
 # @cb/creator-worker
 
+## 从当前任务冻结并运行一个本地 Agent
+
+本包现在提供 `combo-creator-agent` 的最小本地 authoring/执行入口：一个 Codex task 可把**用户看得见并已
+检查**的需求写成 strict `combo.creator-agent-draft-handoff/1` 文件；CLI 把它导入独立 Catalog，完整显示
+Draft，要求逐字确认后冻结 immutable AgentVersion，再从关闭并重开的 Catalog 读取 exact Version 运行。
+它不会读取 task/session JSONL、SQLite、日志、隐藏 Host 状态、system/developer prompt 或 raw tool output。
+
+```bash
+CATALOG="/absolute/private-directory/creator-agents.sqlite"
+
+pnpm --silent --dir apps/creator-worker agent -- init --catalog "$CATALOG"
+pnpm --silent --dir apps/creator-worker agent -- import \
+  --catalog "$CATALOG" --handoff-file "/absolute/draft-handoff.json"
+pnpm --silent --dir apps/creator-worker agent -- review \
+  --catalog "$CATALOG" --agent-id agent.example --draft-id draft.example --draft-revision 1
+pnpm --silent --dir apps/creator-worker agent -- freeze \
+  --catalog "$CATALOG" --agent-id agent.example --draft-id draft.example --draft-revision 1
+pnpm --silent --dir apps/creator-worker agent -- run \
+  --catalog "$CATALOG" --agent-id agent.example --version-id "<freeze 输出的 versionId>" \
+  --project "/absolute/project" --prompt "完成这次任务" --allow-unisolated-read
+```
+
+Catalog 路径必须是 canonical realpath；macOS 临时目录应使用 `/private/tmp/...`，不能使用会经 symlink
+解析的 `/tmp/...`。父目录必须已经存在、由当前用户拥有且不可被 group/other 访问。`freeze` 会重新显示完整 Draft；TTY
+中必须逐字输入 Catalog 给出的确认句，自动化只能显式提供不带额外换行的 `--confirmation-file`。没有
+`--yes`、`--force`、隐式 latest Version 或 Draft JSON fallback。`run` 只接受 exact `agentId+versionId`，并在
+创建 Host/state 前依次打开 Catalog、读取 Version 并关闭 Catalog。
+
+Catalog 会保存已经审阅的 Definition、Draft 与 Version 内容，所以 Draft 中不得夹带私密原始对话；
+`rawStored=false` 不是自动脱敏证明。Catalog 不保存运行 prompt、回答、本机 Project 绝对路径、task/thread/
+session ID。这个流程仍是 local unpublished Agent，不会创建 `combo.codex-agent-share/1`、Capability、Cloud
+Catalog 或多轮 Conversation。
+
 ## 不可变 AgentVersion 执行
 
 本包现在能让同一个经过完整性校验的 `AgentVersion` 在本地可靠执行。调用
@@ -16,9 +49,9 @@ JSON round-trip。Version 不保存本机绝对路径、Codex
 task transcript、prompt 或回答。本阶段可对同一 Version 发起多个彼此隔离的 fresh run；它们各有独立
 ephemeral thread 和双 SQLite，尚不共享多轮 Conversation 记忆，也不能在进程重启后续接旧 thread。
 
-“从当前 Codex task 生成 Draft”本 PR 只提供严格 handoff/contract 接缝，不会读取 task/session JSONL 或
-隐藏 Host 状态。自动提取、逐字确认、持久 Draft catalog、Conversation 记忆与发布分享是后续切片，不能把
-当前单轮执行冒充成已经完成的 Agent 产品入口。
+“从当前 Codex task 生成 Draft”仍是一个显式、用户可见的 handoff 动作，不会读取 task/session JSONL 或
+隐藏 Host 状态。本切片已经完成逐字确认与持久 Draft/Version Catalog；自动隐藏提取、Conversation 记忆与
+发布分享仍是后续切片，不能把当前单轮本地 Agent 冒充成公开产品入口。
 
 这里的 `combo.creator-agent-version/1` 是尚未发布的本地执行合同，当前既不等同于公开分享链的
 `combo.codex-agent-share/1`，也不是旧 `CapabilityDefinition`。二者如何投影或迁移必须在后续切片单独定案；

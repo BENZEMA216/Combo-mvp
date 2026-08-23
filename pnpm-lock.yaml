@@ -129,6 +129,9 @@ importers:
       '@cb/creator-agent-broker-journal':
         specifier: workspace:*
         version: link:../../packages/creator-agent-broker-journal
+      '@cb/creator-agent-persistence':
+        specifier: workspace:*
+        version: link:../../packages/creator-agent-persistence
       '@cb/creator-agent-protocol':
         specifier: workspace:*
         version: link:../../packages/creator-agent-protocol
@@ -404,6 +407,22 @@ importers:
         specifier: workspace:*
         version: link:../creator-agent-protocol
     devDependencies:
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@24.13.3)(jsdom@25.0.1)
+
+  packages/creator-agent-persistence:
+    dependencies:
+      '@cb/creator-agent-protocol':
+        specifier: workspace:*
+        version: link:../creator-agent-protocol
+    devDependencies:
+      '@types/node':
+        specifier: ^24.13.3
+        version: 24.13.3
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
