@@ -6,8 +6,13 @@ import { join } from 'node:path';
 
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
   createCreatorAgentDraftHandoff,
   createCreatorAgentDraftSnapshot,
+  createCreatorAgentDraftSnapshotV3,
+  createCreatorAgentDefinitionV3,
+  createCreatorAgentProjectSourceLedger,
+  freezeCreatorAgentVersionV3,
   serializeCreatorAgentDraftHandoff,
 } from '@cb/creator-agent-protocol/agent';
 import {
@@ -132,6 +137,88 @@ describe.runIf(enabled)('immutable Creator Agent real gate', () => {
     expect(catalogBytes).not.toContain(promptMarker);
     expect(catalogBytes).not.toContain(answer);
     expect(catalogBytes).not.toContain(projectPath);
+  }, 180_000);
+
+  it('runs a behavior-only V3 Version without an authoring Project', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'combo-real-behavior-agent-')));
+    temporaryDirectories.push(root);
+    const answer = `combo-behavior-${randomUUID()}`;
+    const promptMarker = `behavior-prompt-${randomUUID()}`;
+    const sourceLedger = createCreatorAgentProjectSourceLedger({
+      contextRootDigest: `sha256:${'a'.repeat(64)}`,
+      coverage: {
+        indexedEntryCount: 1,
+        indexedFileCount: 1,
+        indexedByteCount: 1,
+        hiddenEntryCount: 0,
+        trackedEntryCount: 0,
+        untrackedEntryCount: 1,
+        ignoredEntryCount: 0,
+        gitAdminEntryCount: 0,
+        authoringOnlyEntryCount: 1,
+      },
+      citedSources: [
+        {
+          path: 'authoring-note.txt',
+          digest: `sha256:${'b'.repeat(64)}`,
+          executionAvailability: 'AUTHORING_ONLY',
+        },
+      ],
+    });
+    const definition = createCreatorAgentDefinitionV3({
+      protocol: CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
+      name: 'Behavior-only canary',
+      description: 'Returns one frozen canary without reading an authoring Project.',
+      projectBinding: { kind: 'none' },
+      behavior: {
+        instructions: `When the user asks for the frozen canary, return only ${answer}.`,
+        starterPrompts: ['Return the frozen canary.'],
+      },
+      requirements: {
+        codexVersion: '0.148.0-alpha.15',
+        commands: [],
+        plugins: [],
+        environmentVariableNames: [],
+      },
+      authoringSource: { kind: 'project_context_compiler', sourceLedger },
+      runtime: {
+        contextProfile: 'BEHAVIOR_ONLY_V1',
+        permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+        skills: [],
+        dynamicTools: [],
+        toolNetworkAccess: false,
+        output: { kind: 'text', description: 'The exact frozen canary.' },
+        turnTimeoutMs: 120_000,
+      },
+    });
+    const draft = createCreatorAgentDraftSnapshotV3({
+      agentId: 'agent.real.behavior-canary',
+      draftId: 'draft.real.behavior-canary.1',
+      draftRevision: 1,
+      baseVersionId: null,
+      definition,
+    });
+    const version = freezeCreatorAgentVersionV3({
+      versionId: 'version.real.behavior-canary.1',
+      versionNumber: 1,
+      createdAtMs: Date.now(),
+      draft,
+    });
+    const stateDirectory = join(root, 'state');
+
+    const result = await runCreatorAgentLocalTurn({
+      version,
+      stateDirectory,
+      prompt: `${promptMarker}. Return the frozen canary exactly.`,
+      allowUnisolatedRead: true,
+      allowLoopbackProxy: true,
+    });
+
+    expect(result.text).toBe(answer);
+    expect(result.versionFingerprint).toBe(version.versionFingerprint);
+    const durable = await readDurableBytes(stateDirectory);
+    expect(durable).not.toContain(promptMarker);
+    expect(durable).not.toContain(answer);
   }, 180_000);
 });
 

@@ -3,25 +3,33 @@ import { describe, expect, it } from 'vitest';
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
   CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
   CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL,
   createCreatorAgentDraftHandoff,
   createCreatorAgentDraftHandoffV2,
+  createCreatorAgentDraftHandoffV3,
   createCreatorAgentDefinition,
   createCreatorAgentDraftSnapshot,
   createCreatorAgentDraftSnapshotV2,
+  createCreatorAgentDraftSnapshotV3,
   createCreatorAgentDefinitionV2,
+  createCreatorAgentDefinitionV3,
   createCreatorAgentProjectSourceLedger,
   fingerprintCreatorAgentDefinition,
   freezeCreatorAgentVersion,
   freezeCreatorAgentVersionAny,
   freezeCreatorAgentVersionV2,
+  freezeCreatorAgentVersionV3,
   parseCreatorAgentDraftHandoffAny,
   parseCreatorAgentDraftHandoffV2,
+  parseCreatorAgentDraftHandoffV3,
   parseCreatorAgentDraftHandoff,
   parseCreatorAgentVersion,
   parseCreatorAgentVersionAny,
   serializeCreatorAgentDraftHandoffV2,
+  serializeCreatorAgentDraftHandoffV3,
   serializeCreatorAgentVersionV2,
+  serializeCreatorAgentVersionV3,
   serializeCreatorAgentDraftSnapshot,
   serializeCreatorAgentDraftHandoff,
   serializeCreatorAgentVersion,
@@ -29,6 +37,7 @@ import {
   verifyCreatorAgentDraftHandoff,
   verifyCreatorAgentVersion,
   verifyCreatorAgentVersionV2,
+  verifyCreatorAgentVersionV3,
   type CreatorAgentDefinitionV1,
 } from '../agent.js';
 
@@ -207,6 +216,142 @@ describe('Creator Agent contract', () => {
         ],
       }),
     ).toThrow();
+  });
+
+  it('round-trips a V3 behavior-only Agent without adding a Project snapshot', () => {
+    const sourceLedger = createCreatorAgentProjectSourceLedger({
+      contextRootDigest: `sha256:${'c'.repeat(64)}`,
+      coverage: {
+        indexedEntryCount: 3,
+        indexedFileCount: 2,
+        indexedByteCount: 4096,
+        hiddenEntryCount: 1,
+        trackedEntryCount: 0,
+        untrackedEntryCount: 2,
+        ignoredEntryCount: 0,
+        gitAdminEntryCount: 1,
+        authoringOnlyEntryCount: 3,
+      },
+      citedSources: [
+        {
+          path: 'notes/method.md',
+          digest: `sha256:${'d'.repeat(64)}`,
+          executionAvailability: 'AUTHORING_ONLY',
+        },
+      ],
+    });
+    const definitionV3 = createCreatorAgentDefinitionV3({
+      protocol: CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
+      name: definition().name,
+      description: definition().description,
+      projectBinding: { kind: 'none' },
+      behavior: definition().behavior,
+      requirements: { ...definition().requirements, commands: [] },
+      authoringSource: { kind: 'project_context_compiler', sourceLedger },
+      runtime: {
+        ...definition().runtime,
+        contextProfile: 'BEHAVIOR_ONLY_V1',
+      },
+    });
+    const draft = createCreatorAgentDraftSnapshotV3({
+      agentId: 'agent.aggregate-context',
+      draftId: 'draft.aggregate-context.1',
+      draftRevision: 1,
+      baseVersionId: null,
+      definition: definitionV3,
+    });
+    const handoff = createCreatorAgentDraftHandoffV3({ draft });
+    const handoffText = serializeCreatorAgentDraftHandoffV3(handoff);
+    const version = freezeCreatorAgentVersionV3({
+      versionId: 'version.aggregate-context.1',
+      versionNumber: 1,
+      createdAtMs: 1_787_413_200_000,
+      draft,
+    });
+    const versionText = serializeCreatorAgentVersionV3(version);
+
+    expect('projectSnapshot' in version.definition).toBe(false);
+    expect(parseCreatorAgentDraftHandoffV3(handoffText)).toEqual(handoff);
+    expect(parseCreatorAgentDraftHandoffAny(handoffText)).toEqual(handoff);
+    expect(parseCreatorAgentVersionAny(versionText)).toEqual(version);
+    expect(
+      freezeCreatorAgentVersionAny({
+        versionId: version.versionId,
+        versionNumber: version.versionNumber,
+        createdAtMs: version.createdAtMs,
+        draft,
+      }),
+    ).toEqual(version);
+    expect(() =>
+      verifyCreatorAgentVersionV3({
+        ...version,
+        definition: { ...version.definition, name: 'tampered' },
+      }),
+    ).toThrow(/definition fingerprint/u);
+  });
+
+  it('rejects V3 source evidence that claims runtime Project availability', () => {
+    const validLedger = createCreatorAgentProjectSourceLedger({
+      contextRootDigest: `sha256:${'c'.repeat(64)}`,
+      coverage: {
+        indexedEntryCount: 2,
+        indexedFileCount: 1,
+        indexedByteCount: 64,
+        hiddenEntryCount: 0,
+        trackedEntryCount: 1,
+        untrackedEntryCount: 0,
+        ignoredEntryCount: 0,
+        gitAdminEntryCount: 1,
+        authoringOnlyEntryCount: 2,
+      },
+      citedSources: [
+        {
+          path: 'README.md',
+          digest: `sha256:${'d'.repeat(64)}`,
+          executionAvailability: 'AUTHORING_ONLY',
+        },
+      ],
+    });
+    const input = {
+      protocol: CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
+      name: definition().name,
+      description: definition().description,
+      projectBinding: { kind: 'none' },
+      behavior: definition().behavior,
+      requirements: { ...definition().requirements, commands: [] },
+      authoringSource: { kind: 'project_context_compiler', sourceLedger: validLedger },
+      runtime: { ...definition().runtime, contextProfile: 'BEHAVIOR_ONLY_V1' },
+    } as const;
+
+    expect(() =>
+      createCreatorAgentDefinitionV3({
+        ...input,
+        authoringSource: {
+          kind: 'project_context_compiler',
+          sourceLedger: {
+            ...validLedger,
+            citedSources: [
+              {
+                ...validLedger.citedSources[0],
+                executionAvailability: 'FIXED_GIT_TREE',
+              },
+            ],
+          },
+        },
+      }),
+    ).toThrow(/authoring-only/u);
+    expect(() =>
+      createCreatorAgentDefinitionV3({
+        ...input,
+        authoringSource: {
+          kind: 'project_context_compiler',
+          sourceLedger: {
+            ...validLedger,
+            coverage: { ...validLedger.coverage, authoringOnlyEntryCount: 1 },
+          },
+        },
+      }),
+    ).toThrow(/authoring-only/u);
   });
 
   it('rejects accessor and Proxy inputs on V2 handoff and generic freeze dispatch', () => {

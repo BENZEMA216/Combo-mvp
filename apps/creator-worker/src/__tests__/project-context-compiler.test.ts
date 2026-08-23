@@ -1,7 +1,9 @@
 import { execFileSync } from 'node:child_process';
 import {
   appendFileSync,
+  chmodSync,
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -16,7 +18,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { parseCreatorAgentDraftHandoffV2 } from '@cb/creator-agent-protocol/agent';
+import {
+  parseCreatorAgentDraftHandoffV2,
+  parseCreatorAgentDraftHandoffV3,
+} from '@cb/creator-agent-protocol/agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -112,16 +117,76 @@ describe('Project Context Compiler', () => {
     const oversizedFixture = projectFixture();
     const oversized = join(oversizedFixture.project, 'oversized.sparse');
     writeFileSync(oversized, '');
-    truncateSync(oversized, 8 * 1024 * 1024 * 1024 + 1);
-    expect(() => scanProjectContext(oversizedFixture.project)).toThrowError(
-      expect.objectContaining({ code: 'PROJECT_CONTEXT_SCAN_LIMIT' }),
-    );
+    truncateSync(oversized, 2 * 1024 * 1024);
+    expect(() =>
+      scanProjectContextWithHooks(oversizedFixture.project, {
+        maximumUniqueBytes: 1024 * 1024,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'PROJECT_CONTEXT_SCAN_LIMIT' }));
 
     const sensitiveFixture = projectFixture();
     writeFileSync(join(sensitiveFixture.project, '.env'), Buffer.alloc(1024 * 1024 + 1, 0x61));
     expect(() => scanProjectContext(sensitiveFixture.project)).toThrowError(
       expect.objectContaining({ code: 'PROJECT_CONTEXT_SCAN_LIMIT' }),
     );
+  });
+
+  it('indexes an unborn aggregate root and hashes hardlink content only once', () => {
+    const fixture = aggregateProjectFixture();
+    const original = join(fixture.project, 'shared-context.txt');
+    const aliasA = join(fixture.project, 'shared-context-a.txt');
+    const aliasB = join(fixture.project, 'shared-context-b.txt');
+    writeFileSync(original, 'one physical creator context\n');
+    linkSync(original, aliasA);
+    linkSync(original, aliasB);
+    const opened: string[] = [];
+
+    const scan = scanProjectContextWithHooks(fixture.project, {
+      afterFileOpened: (path) => opened.push(path),
+    });
+
+    expect(scan.index.entries.map(({ path }) => path)).toEqual(
+      expect.arrayContaining([
+        '.git/HEAD',
+        'nested-a/.git/HEAD',
+        'nested-b/.git/HEAD',
+        'root-notes.md',
+        'shared-context.txt',
+        'shared-context-a.txt',
+        'shared-context-b.txt',
+      ]),
+    );
+    expect(scan.index.hardlinkAliasCount).toBe(2);
+    expect(scan.index.byteCount - scan.index.uniqueByteCount).toBe(
+      Buffer.byteLength('one physical creator context\n') * 2,
+    );
+    expect(
+      opened.filter((path) =>
+        ['shared-context.txt', 'shared-context-a.txt', 'shared-context-b.txt'].includes(path),
+      ),
+    ).toHaveLength(1);
+    expect(entry(scan, 'nested-a/README.md').executionAvailability).toBe('AUTHORING_ONLY');
+    expect(entry(scan, 'nested-b/README.md').executionAvailability).toBe('AUTHORING_ONLY');
+    expect(scan.index.categories.git).toBeGreaterThan(3);
+  });
+
+  it('records a stable post-read ctime when macOS changes provenance on first content access', () => {
+    const fixture = projectFixture();
+    const readme = join(fixture.project, 'README.md');
+    let normalized = false;
+    const first = scanProjectContextWithHooks(fixture.project, {
+      afterFileOpened: (path) => {
+        if (path !== 'README.md' || normalized) return;
+        normalized = true;
+        chmodSync(readme, 0o700);
+        chmodSync(readme, 0o600);
+      },
+    });
+    const second = scanProjectContext(fixture.project);
+
+    expect(normalized).toBe(true);
+    expect(first.index.rootDigest).toBe(second.index.rootDigest);
+    expect(entry(first, 'README.md').changedAtMs).toBe(entry(second, 'README.md').changedAtMs);
   });
 
   it('never follows a directory that is replaced by an external symlink before expansion', () => {
@@ -190,6 +255,9 @@ describe('Project Context Compiler', () => {
     expect(result.draft.definition.name).toBe('Evidence release reviewer');
     expect(result.draft.definition.runtime.turnTimeoutMs).toBe(300_000);
     expect(result.draft.protocol).toBe('combo.creator-agent-draft/2');
+    if (result.draft.protocol !== 'combo.creator-agent-draft/2') {
+      throw new Error('Expected a Git-backed V2 Draft');
+    }
     expect(result.draft.definition.authoringSource.kind).toBe('project_context_compiler');
     expect(result.draft.definition.authoringSource.sourceLedger.contextRootDigest).toBe(
       result.report.contextRootDigest,
@@ -215,6 +283,47 @@ describe('Project Context Compiler', () => {
     expect(host.inputs[0]?.text).toContain('trusted scanner indexed');
     expect(observedOutputSchema).toBe(PROJECT_COMPILER_OUTPUT_SCHEMA);
     expect(host.stopCalls).toBe(1);
+  });
+
+  it('compiles an unborn aggregate directory into a behavior-only V3 Agent', async () => {
+    const fixture = aggregateProjectFixture();
+    const host = new FakeHost();
+    const pending = compileCreatorAgentProjectWithDependencies(
+      {
+        projectPath: fixture.project,
+        allowUnisolatedRead: true,
+        allowSensitiveProjectContext: true,
+      },
+      {
+        scanProject: scanProjectContext,
+        createHost: () => host,
+        randomId: () => 'fedcba98-7654-3210-fedc-ba9876543210',
+      },
+    );
+    await vi.waitFor(() => expect(host.controllers).toHaveLength(1));
+    settleCompilerHost(
+      host,
+      generatedCompilation({
+        sourcePaths: ['root-notes.md', 'nested-a/README.md', 'nested-b/README.md'],
+        coverageSummary: 'Used the aggregate root and both nested repositories for authoring.',
+      }),
+    );
+
+    const result = await pending;
+
+    expect(result.draft.protocol).toBe('combo.creator-agent-draft/3');
+    expect(result.draft.definition.protocol).toBe('combo.creator-agent-definition/3');
+    expect(result.draft.definition.runtime.contextProfile).toBe('BEHAVIOR_ONLY_V1');
+    expect('projectSnapshot' in result.draft.definition).toBe(false);
+    expect(result.draft.definition).toMatchObject({ projectBinding: { kind: 'none' } });
+    expect(result.report.runtimeContext).toBe('BEHAVIOR_ONLY');
+    expect(
+      result.report.citedSources.every(
+        ({ executionAvailability }) => executionAvailability === 'AUTHORING_ONLY',
+      ),
+    ).toBe(true);
+    expect(parseCreatorAgentDraftHandoffV3(result.handoffText)).toEqual(result.handoff);
+    expect(host.inputs[0]?.text).toContain('runtime will have no authoring Project files');
   });
 
   it('rejects secret echo, unknown citations, and Project drift before producing a Draft', async () => {
@@ -390,25 +499,33 @@ describe('Project Context Compiler', () => {
     expect(unauthorizedScan).not.toHaveBeenCalled();
   });
 
-  it('rejects a non-canonical Git origin before opening the compiler Host', async () => {
+  it('uses behavior-only V3 when the formal root cannot become a canonical Git snapshot', async () => {
     const fixture = projectFixture();
     git(fixture.project, ['remote', 'set-url', 'origin', 'git@github.com:dangdang-tech/Combo.git']);
-    const createHost = vi.fn();
-    await expect(
-      compileCreatorAgentProjectWithDependencies(
-        {
-          projectPath: fixture.project,
-          allowUnisolatedRead: true,
-          allowSensitiveProjectContext: true,
-        },
-        {
-          scanProject: scanProjectContext,
-          createHost,
-          randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
-        },
+    const host = new FakeHost();
+    const pending = compileCreatorAgentProjectWithDependencies(
+      {
+        projectPath: fixture.project,
+        allowUnisolatedRead: true,
+        allowSensitiveProjectContext: true,
+      },
+      {
+        scanProject: scanProjectContext,
+        createHost: () => host,
+        randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
+      },
+    );
+    await vi.waitFor(() => expect(host.controllers).toHaveLength(1));
+    settleCompilerHost(host, generatedCompilation());
+
+    const result = await pending;
+    expect(result.draft.protocol).toBe('combo.creator-agent-draft/3');
+    expect(result.report.runtimeContext).toBe('BEHAVIOR_ONLY');
+    expect(
+      result.report.citedSources.every(
+        ({ executionAvailability }) => executionAvailability === 'AUTHORING_ONLY',
       ),
-    ).rejects.toMatchObject({ code: 'PROJECT_COMPILER_GIT_INVALID' });
-    expect(createHost).not.toHaveBeenCalled();
+    ).toBe(true);
   });
 
   it('detects a changed full index deterministically', () => {
@@ -489,6 +606,26 @@ function projectFixture() {
     { mode: 0o600 },
   );
   writeFileSync(join(project, 'untracked.txt'), 'untracked creator note\n', { mode: 0o600 });
+  return Object.freeze({ root, project: realpathSync(project) });
+}
+
+function aggregateProjectFixture() {
+  const root = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), 'combo-aggregate-test-')));
+  roots.push(root);
+  const project = join(root, 'project');
+  mkdirSync(project, { mode: 0o700 });
+  git(root, ['init', '--initial-branch=main', project]);
+  writeFileSync(join(project, 'root-notes.md'), '# Aggregate creator corpus\n');
+  for (const name of ['nested-a', 'nested-b']) {
+    const nested = join(project, name);
+    git(project, ['init', '--initial-branch=main', nested]);
+    git(nested, ['config', 'user.name', 'Combo Test']);
+    git(nested, ['config', 'user.email', 'combo-test@example.invalid']);
+    git(nested, ['remote', 'add', 'origin', `https://github.com/dangdang-tech/${name}.git`]);
+    writeFileSync(join(nested, 'README.md'), `# ${name}\n`);
+    git(nested, ['add', 'README.md']);
+    git(nested, ['commit', '-m', `test: ${name}`]);
+  }
   return Object.freeze({ root, project: realpathSync(project) });
 }
 

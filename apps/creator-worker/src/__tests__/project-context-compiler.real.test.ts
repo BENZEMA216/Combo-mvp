@@ -81,6 +81,9 @@ describe.runIf(enabled)('Project Context Compiler real gate', () => {
     });
 
     expect(compiled.draft.protocol).toBe('combo.creator-agent-draft/2');
+    if (compiled.draft.protocol !== 'combo.creator-agent-draft/2') {
+      throw new Error('Expected a Git-backed V2 Draft');
+    }
     expect(
       compiled.draft.definition.authoringSource.sourceLedger.coverage.hiddenEntryCount,
     ).toBeGreaterThan(0);

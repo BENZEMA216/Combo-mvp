@@ -16,7 +16,7 @@ import {
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
 
 const MAX_INDEX_ENTRIES = 500_000;
-const MAX_INDEX_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_UNIQUE_INDEX_BYTES = 32 * 1024 * 1024 * 1024;
 const MAX_SENSITIVE_FILE_BYTES = 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES = 256 * 1024 * 1024;
 const READ_BUFFER_BYTES = 128 * 1024;
@@ -58,7 +58,11 @@ export type ProjectContextIndex = Readonly<{
   rootDigest: `sha256:${string}`;
   entryCount: number;
   fileCount: number;
+  /** Sum of every regular-file path, including hardlink aliases. */
   byteCount: number;
+  /** Sum of unique regular-file inodes actually hashed. */
+  uniqueByteCount: number;
+  hardlinkAliasCount: number;
   categories: Readonly<Record<ProjectContextCategory, number>>;
   coverage: Readonly<{
     indexedEntryCount: number;
@@ -91,6 +95,7 @@ type ProjectContextIndexHooks = Readonly<{
   beforeDirectoryRead?: (relativePath: string) => void;
   afterFileOpened?: (relativePath: string) => void;
   maximumEntries?: number;
+  maximumUniqueBytes?: number;
 }>;
 
 export class ProjectContextIndexError extends Error {
@@ -115,20 +120,33 @@ export function scanProjectContextWithHooks(
 ): ProjectContextScan {
   const projectPath = canonicalProjectPath(rawProjectPath);
   const maximumEntries = hooks.maximumEntries ?? MAX_INDEX_ENTRIES;
+  const maximumUniqueBytes = hooks.maximumUniqueBytes ?? MAX_UNIQUE_INDEX_BYTES;
   if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1) {
     throw new ProjectContextIndexError(
       'PROJECT_CONTEXT_SCAN_LIMIT',
       'Project context entry limit is invalid.',
     );
   }
+  if (!Number.isSafeInteger(maximumUniqueBytes) || maximumUniqueBytes < 1) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_SCAN_LIMIT',
+      'Project context byte limit is invalid.',
+    );
+  }
   const entries: ProjectContextEntry[] = [];
   const sensitiveLiterals = new Set<string>();
+  const hardlinks = new Map<
+    string,
+    Readonly<{ content: ReturnType<typeof hashFile>; stat: Stats }>
+  >();
   const gitClassification = readGitClassification(projectPath);
   const rootStat = lstatSync(projectPath);
   const pending: Array<
     Readonly<{ logicalParent: string; absoluteParent: string; expected: Stats }>
   > = [{ logicalParent: '', absoluteParent: projectPath, expected: rootStat }];
   let byteCount = 0;
+  let uniqueByteCount = 0;
+  let hardlinkAliasCount = 0;
   let fileCount = 0;
 
   while (pending.length > 0) {
@@ -164,25 +182,47 @@ export function scanProjectContextWithHooks(
         entry = projectEntry(path, 'directory', category, gitClass, stat, digestText('directory'));
         pending.push({ logicalParent: path, absoluteParent: absolute, expected: stat });
       } else if (stat.isFile()) {
-        if (stat.size > MAX_INDEX_BYTES - byteCount) {
-          throw new ProjectContextIndexError(
-            'PROJECT_CONTEXT_SCAN_LIMIT',
-            'Project context exceeds the bounded full-index limit.',
+        const hardlinkKey = `${stat.dev}:${stat.ino}`;
+        const cached = hardlinks.get(hardlinkKey);
+        let content: ReturnType<typeof hashFile>;
+        if (cached === undefined) {
+          if (stat.size > maximumUniqueBytes - uniqueByteCount) {
+            throw new ProjectContextIndexError(
+              'PROJECT_CONTEXT_SCAN_LIMIT',
+              'Project context exceeds the bounded unique-content limit.',
+            );
+          }
+          content = hashFile(absolute, stat, isSensitiveCandidate(path), () =>
+            hooks.afterFileOpened?.(path),
           );
+          hardlinks.set(hardlinkKey, Object.freeze({ content, stat: content.stableStat }));
+          uniqueByteCount += stat.size;
+        } else {
+          assertSameFile(cached.stat, stat);
+          hardlinkAliasCount += 1;
+          content = cached.content;
+          if (isSensitiveCandidate(path) && content.sensitiveText === undefined) {
+            content = hashFile(absolute, stat, true, () => hooks.afterFileOpened?.(path));
+            hardlinks.set(hardlinkKey, Object.freeze({ content, stat: content.stableStat }));
+          }
         }
-        const content = hashFile(absolute, stat, isSensitiveCandidate(path), () =>
-          hooks.afterFileOpened?.(path),
-        );
+        const stableStat = content.stableStat;
         const gitClass = classifyGitPath(path, gitClassification, {
-          mode: stat.mode & 0o111 ? '100755' : '100644',
+          mode: stableStat.mode & 0o111 ? '100755' : '100644',
           objectId: content.gitBlobSha,
         });
-        byteCount += stat.size;
+        byteCount += stableStat.size;
+        if (!Number.isSafeInteger(byteCount)) {
+          throw new ProjectContextIndexError(
+            'PROJECT_CONTEXT_SCAN_LIMIT',
+            'Project context logical byte count exceeds the supported range.',
+          );
+        }
         fileCount += 1;
         if (content.sensitiveText !== undefined) {
           collectSensitiveLiterals(content.sensitiveText, sensitiveLiterals);
         }
-        entry = projectEntry(path, 'file', category, gitClass, stat, content.digest);
+        entry = projectEntry(path, 'file', category, gitClass, stableStat, content.digest);
       } else if (stat.isSymbolicLink()) {
         let target: string;
         try {
@@ -211,7 +251,7 @@ export function scanProjectContextWithHooks(
       }
       entries.push(entry);
       assertDirectoryPathStable(absoluteParent, expected);
-      if (byteCount > MAX_INDEX_BYTES) {
+      if (uniqueByteCount > maximumUniqueBytes) {
         throw new ProjectContextIndexError(
           'PROJECT_CONTEXT_SCAN_LIMIT',
           'Project context exceeds the bounded full-index limit.',
@@ -237,6 +277,8 @@ export function scanProjectContextWithHooks(
     entryCount: entries.length,
     fileCount,
     byteCount,
+    uniqueByteCount,
+    hardlinkAliasCount,
     categories,
     coverage,
     entries,
@@ -320,7 +362,9 @@ export function assertSameProjectContext(
     before.rootDigest !== after.rootDigest ||
     before.entryCount !== after.entryCount ||
     before.fileCount !== after.fileCount ||
-    before.byteCount !== after.byteCount
+    before.byteCount !== after.byteCount ||
+    before.uniqueByteCount !== after.uniqueByteCount ||
+    before.hardlinkAliasCount !== after.hardlinkAliasCount
   ) {
     throw new ProjectContextIndexError(
       'PROJECT_CONTEXT_CHANGED',
@@ -364,6 +408,7 @@ function hashFile(
 ): Readonly<{
   digest: `sha256:${string}`;
   gitBlobSha: string;
+  stableStat: Stats;
   sensitiveText?: string;
 }> {
   if (retainSensitiveText && expected.size > MAX_SENSITIVE_FILE_BYTES) {
@@ -378,15 +423,24 @@ function hashFile(
     const opened = fstatSync(descriptor);
     assertSameFile(expected, opened);
     afterOpen();
+    const probe = Buffer.allocUnsafe(1);
+    if (opened.size > 0 && readSync(descriptor, probe, 0, 1, 0) !== 1) {
+      throw new ProjectContextIndexError(
+        'PROJECT_CONTEXT_CHANGED',
+        'A Project file changed while it was being indexed.',
+      );
+    }
+    const stableStat = fstatSync(descriptor);
+    assertSameFileExceptChangedAt(opened, stableStat);
     const hash = createHash('sha256');
     const gitHash = createHash('sha1');
-    gitHash.update(`blob ${expected.size}\0`);
+    gitHash.update(`blob ${stableStat.size}\0`);
     const buffer = Buffer.allocUnsafe(READ_BUFFER_BYTES);
     const retained: Buffer[] = [];
     let retainedBytes = 0;
     let bytesRead = 0;
-    while (bytesRead < expected.size) {
-      const requested = Math.min(buffer.length, expected.size - bytesRead);
+    while (bytesRead < stableStat.size) {
+      const requested = Math.min(buffer.length, stableStat.size - bytesRead);
       const read = readSync(descriptor, buffer, 0, requested, null);
       if (read === 0) {
         throw new ProjectContextIndexError(
@@ -404,21 +458,24 @@ function hashFile(
         retainedBytes += keep;
       }
     }
-    assertSameFile(expected, fstatSync(descriptor));
+    assertSameFile(stableStat, fstatSync(descriptor));
     const digest = `sha256:${hash.digest('hex')}` as const;
     const gitBlobSha = gitHash.digest('hex');
+    const frozenStat = Object.freeze(stableStat);
     if (!retainSensitiveText || retained.length === 0) {
-      return Object.freeze({ digest, gitBlobSha });
+      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat });
     }
     const bytes = Buffer.concat(retained);
-    if (bytes.includes(0)) return Object.freeze({ digest, gitBlobSha });
+    if (bytes.includes(0)) {
+      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat });
+    }
     let sensitiveText: string;
     try {
       sensitiveText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
-      return Object.freeze({ digest, gitBlobSha });
+      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat });
     }
-    return Object.freeze({ digest, gitBlobSha, sensitiveText });
+    return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat, sensitiveText });
   } catch (error) {
     if (error instanceof ProjectContextIndexError) throw error;
     throw indexError('PROJECT_CONTEXT_SCAN_FAILED', error);
@@ -433,9 +490,31 @@ function assertSameFile(expected: Stats, actual: Stats): void {
     expected.dev !== actual.dev ||
     expected.ino !== actual.ino ||
     expected.size !== actual.size ||
-    expected.mtimeMs !== actual.mtimeMs ||
-    expected.ctimeMs !== actual.ctimeMs ||
-    expected.mode !== actual.mode
+    normalizedTimestamp(expected.mtimeMs) !== normalizedTimestamp(actual.mtimeMs) ||
+    normalizedTimestamp(expected.ctimeMs) !== normalizedTimestamp(actual.ctimeMs) ||
+    expected.mode !== actual.mode ||
+    expected.uid !== actual.uid ||
+    expected.gid !== actual.gid ||
+    expected.nlink !== actual.nlink
+  ) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_CHANGED',
+      'A Project file changed while it was being indexed.',
+    );
+  }
+}
+
+function assertSameFileExceptChangedAt(expected: Stats, actual: Stats): void {
+  if (
+    !actual.isFile() ||
+    expected.dev !== actual.dev ||
+    expected.ino !== actual.ino ||
+    expected.size !== actual.size ||
+    normalizedTimestamp(expected.mtimeMs) !== normalizedTimestamp(actual.mtimeMs) ||
+    expected.mode !== actual.mode ||
+    expected.uid !== actual.uid ||
+    expected.gid !== actual.gid ||
+    expected.nlink !== actual.nlink
   ) {
     throw new ProjectContextIndexError(
       'PROJECT_CONTEXT_CHANGED',
@@ -466,17 +545,26 @@ function projectEntry(
     hidden: path.split('/').some((segment) => segment.startsWith('.')),
     executionAvailability: gitClass === 'TRACKED_CLEAN' ? 'FIXED_GIT_TREE' : 'AUTHORING_ONLY',
     mode: stat.mode & 0o7777,
-    modifiedAtMs: stat.mtimeMs,
-    changedAtMs: stat.ctimeMs,
+    modifiedAtMs: normalizedTimestamp(stat.mtimeMs),
+    changedAtMs: normalizedTimestamp(stat.ctimeMs),
     sizeBytes: stat.size,
     digest,
   });
 }
 
+function normalizedTimestamp(value: number): number {
+  return Math.trunc(value);
+}
+
 function classify(path: string): ProjectContextCategory {
   const lower = path.toLowerCase();
   const name = basename(lower);
-  if (lower === '.git' || lower.startsWith('.git/')) {
+  if (
+    lower === '.git' ||
+    lower.startsWith('.git/') ||
+    lower.endsWith('/.git') ||
+    lower.includes('/.git/')
+  ) {
     return 'git';
   }
   if (/(^|\/)(\.env(?:\.|$)|auth\.json$|\.npmrc$|\.pypirc$)/u.test(lower)) {
@@ -574,8 +662,16 @@ type GitClassification = Readonly<{
 
 function readGitClassification(projectPath: string): GitClassification {
   try {
+    const insideWorktree = optionalGitOutput(projectPath, ['rev-parse', '--is-inside-work-tree']);
+    if (insideWorktree?.trim() !== 'true') return emptyGitClassification();
+    const root = optionalGitOutput(projectPath, ['rev-parse', '--show-toplevel']);
+    if (root === undefined || realpathSync(root.trim()) !== projectPath) {
+      return emptyGitClassification();
+    }
+    const hasHead =
+      optionalGitOutput(projectPath, ['rev-parse', '--verify', 'HEAD^{commit}']) !== undefined;
     return Object.freeze({
-      tracked: gitTreeEntries(projectPath),
+      tracked: hasHead ? gitTreeEntries(projectPath) : new Map(),
       staged: gitIndexPaths(projectPath),
       untracked: gitPathSet(projectPath, ['ls-files', '--others', '--exclude-standard', '-z']),
       ignored: gitPathSet(projectPath, [
@@ -589,6 +685,15 @@ function readGitClassification(projectPath: string): GitClassification {
   } catch (error) {
     throw indexError('PROJECT_CONTEXT_SCAN_FAILED', error);
   }
+}
+
+function emptyGitClassification(): GitClassification {
+  return Object.freeze({
+    tracked: new Map<string, Readonly<{ mode: string; objectId: string }>>(),
+    staged: new Set<string>(),
+    untracked: new Set<string>(),
+    ignored: new Set<string>(),
+  });
 }
 
 function gitTreeEntries(
@@ -649,12 +754,25 @@ function gitOutput(projectPath: string, arguments_: readonly string[]): string {
   );
 }
 
+function optionalGitOutput(projectPath: string, arguments_: readonly string[]): string | undefined {
+  try {
+    return gitOutput(projectPath, arguments_);
+  } catch {
+    return undefined;
+  }
+}
+
 function classifyGitPath(
   path: string,
   classification: GitClassification,
   observed?: Readonly<{ mode: string; objectId: string }>,
 ): ProjectContextGitClass {
-  if (path === '.git' || path.startsWith('.git/')) {
+  if (
+    path === '.git' ||
+    path.startsWith('.git/') ||
+    path.endsWith('/.git') ||
+    path.includes('/.git/')
+  ) {
     return 'GIT_ADMIN';
   }
   const tracked = classification.tracked.get(path);

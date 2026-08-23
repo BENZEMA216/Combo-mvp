@@ -4,8 +4,10 @@ import {
   existsSync,
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
@@ -15,9 +17,15 @@ import { deflateSync } from 'node:zlib';
 
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
   createCreatorAgentDraftSnapshot,
+  createCreatorAgentDraftSnapshotV3,
+  createCreatorAgentDefinitionV3,
+  createCreatorAgentProjectSourceLedger,
   freezeCreatorAgentVersion,
+  freezeCreatorAgentVersionV3,
   type CreatorAgentVersionV1,
+  type CreatorAgentVersionV3,
 } from '@cb/creator-agent-protocol/agent';
 import type { HostStartTurnInput } from '@cb/creator-agent-protocol/host';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -198,6 +206,64 @@ describe('local immutable Creator Agent execution', () => {
       expect.objectContaining({ code: 'CREATOR_AGENT_RUNTIME_UNSUPPORTED' }),
     );
   });
+
+  it('runs a behavior-only V3 Agent in an empty disposable Project', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'combo-creator-agent-behavior-test-'));
+    roots.push(root);
+    chmodSync(root, 0o700);
+    const authoringProject = join(root, 'authoring-corpus');
+    mkdirSync(authoringProject, { mode: 0o700 });
+    writeFileSync(join(authoringProject, 'private-method.md'), 'authoring only\n', { mode: 0o600 });
+    const version = behaviorOnlyVersion();
+    rmSync(authoringProject, { recursive: true, force: true });
+    let executionProject = '';
+
+    const result = await runCreatorAgentLocalTurnWithDependencies(
+      {
+        version,
+        prompt: 'apply the frozen method',
+        stateDirectory: join(root, 'state.behavior'),
+        allowUnisolatedRead: true,
+      },
+      {
+        createHost(options) {
+          executionProject = options.projectPath;
+          expect(readdirSync(executionProject)).toEqual([]);
+          expect(statSync(executionProject).mode & 0o777).toBe(0o500);
+          return new AutoSuccessHost();
+        },
+        createBroker: createLocalAlphaBroker,
+      },
+    );
+
+    expect(result).toMatchObject({ versionId: version.versionId, text: ANSWER });
+    expect(executionProject).not.toBe(authoringProject);
+    expect(existsSync(executionProject)).toBe(false);
+    expect(compileCreatorAgentDeveloperInstructions(version)).toContain(
+      'No authoring Project is mounted',
+    );
+
+    let hostFactories = 0;
+    await expect(
+      runCreatorAgentLocalTurnWithDependencies(
+        {
+          version,
+          projectPath: root,
+          prompt: 'must not mount the authoring Project',
+          stateDirectory: join(root, 'state.rejected'),
+          allowUnisolatedRead: true,
+        },
+        {
+          createHost() {
+            hostFactories += 1;
+            return new AutoSuccessHost();
+          },
+          createBroker: createLocalAlphaBroker,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'CREATOR_AGENT_PROJECT_MISMATCH' });
+    expect(hostFactories).toBe(0);
+  });
 });
 
 class AutoSuccessHost extends FakeHost {
@@ -310,6 +376,64 @@ function agentVersion(fixture: ProjectFixture): CreatorAgentVersionV1 {
   });
   return freezeCreatorAgentVersion({
     versionId: 'version.local.release-review.1',
+    versionNumber: 1,
+    createdAtMs: 1_787_413_200_000,
+    draft,
+  });
+}
+
+function behaviorOnlyVersion(): CreatorAgentVersionV3 {
+  const sourceLedger = createCreatorAgentProjectSourceLedger({
+    contextRootDigest: `sha256:${'a'.repeat(64)}`,
+    coverage: {
+      indexedEntryCount: 1,
+      indexedFileCount: 1,
+      indexedByteCount: 15,
+      hiddenEntryCount: 0,
+      trackedEntryCount: 0,
+      untrackedEntryCount: 1,
+      ignoredEntryCount: 0,
+      gitAdminEntryCount: 0,
+      authoringOnlyEntryCount: 1,
+    },
+    citedSources: [
+      {
+        path: 'private-method.md',
+        digest: `sha256:${'b'.repeat(64)}`,
+        executionAvailability: 'AUTHORING_ONLY',
+      },
+    ],
+  });
+  const definition = createCreatorAgentDefinitionV3({
+    protocol: CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
+    name: 'Behavior-only reviewer',
+    description: 'Applies one frozen review method without the authoring corpus.',
+    projectBinding: { kind: 'none' },
+    behavior: {
+      instructions: 'Apply the frozen review method using only the user prompt.',
+      starterPrompts: ['Review this request.'],
+    },
+    requirements: { commands: [], plugins: [], environmentVariableNames: [] },
+    authoringSource: { kind: 'project_context_compiler', sourceLedger },
+    runtime: {
+      contextProfile: 'BEHAVIOR_ONLY_V1',
+      permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+      skills: [],
+      dynamicTools: [],
+      toolNetworkAccess: false,
+      output: { kind: 'text', description: 'A concise review.' },
+      turnTimeoutMs: 10_000,
+    },
+  });
+  const draft = createCreatorAgentDraftSnapshotV3({
+    agentId: 'agent.local.behavior-review',
+    draftId: 'draft.local.behavior-review.1',
+    draftRevision: 1,
+    baseVersionId: null,
+    definition,
+  });
+  return freezeCreatorAgentVersionV3({
+    versionId: 'version.local.behavior-review.1',
     versionNumber: 1,
     createdAtMs: 1_787_413_200_000,
     draft,

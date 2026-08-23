@@ -15,17 +15,20 @@
   会把经过大小、深度和值域校验的 detached JSON Schema 固定到每一次 turn。
 - `local-alpha-contract.ts` 定义单用户本地体验入口、结果、诊断与安全错误合同。
 - `agent-local-contract.ts` 定义 immutable AgentVersion 本地执行的公开输入、结果和 fail-closed 错误。
-- `agent-local-runner.ts` 验证 V1 或 V2 AgentVersion 与本机 Git object 中的 exact commit/tree，仅从 blob
-  materialize 私有 tracked-tree execution snapshot，再把固定 instructions/version binding 交给现有本地
-  Worker 闭环；它不读取 mutable Draft、可变工作区或 ignored 文件，并提供冻结前 exact tree 可运行性预检。
+- `agent-local-runner.ts` 验证 V1/V2 AgentVersion 与本机 Git object 中的 exact commit/tree，仅从 blob
+  materialize 私有 tracked-tree execution snapshot；V3 behavior-only Agent 则拒绝 authoring Project 路径，
+  使用空的私有临时目录。两类执行都会把固定 instructions/version binding 交给现有本地 Worker 闭环，并在
+  完整停止后删除临时目录。
 - `project-context-index.ts` 对 canonical Project 的全部物理后代执行有界只读索引，哈希 regular file，记录
   symlink 本身而不跟随外部目标，并区分 tracked-clean、tracked-dirty、untracked、ignored、Git admin 与
   authoring-only evidence。它覆盖 hidden、日志、task/session、`.env` 和物理 `.git`，不会执行 Project 脚本
-  或 Git clean filter；linked worktree 的 `.git` pointer 不会扩展到 Project 外的共享目录。
+  或 Git clean filter；linked worktree 的 `.git` pointer 不会扩展到 Project 外的共享目录。文件首次读取时
+  允许 macOS 只更新系统 provenance/ctime，并以同一文件描述符上的 post-read stat 作为稳定索引基线。
 - `project-context-compiler.ts` 在编译前后核对完整 Project digest，把 fixed output schema 与有界 coverage
-  摘要交给 bundled Codex；Codex 直接在只读 Project 中选择相关证据。编译器把严格输出转换为带 compact
-  source ledger 的 V2 Draft 和 handoff，并在交付前执行 source citation、best-effort secret taint 与 Runtime
-  物化预检。full inventory 只存在扫描器内存中，不序列化到临时文件或 Catalog。
+  摘要交给 bundled Codex；Codex 直接在只读 Project 中选择相关证据。formal 根能形成 canonical Git snapshot
+  时生成 V2，否则生成不自动选择嵌套仓库的 V3 behavior-only Draft。V3 的全部 citation 都固定为
+  authoring-only。编译器还执行 best-effort secret taint 与 Runtime 预检；full inventory 只存在扫描器内存中，
+  不序列化到临时文件或 Catalog。
 - `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。它以 `create` 完成全量索引、bundled Codex 编译、
   terminal-safe 完整 review、可见 TTY 中一次 `FREEZE`、Catalog close/reopen 和可选 exact Version run；
   `init/import/review/freeze/run` 只保留作诊断与 V1 兼容。它不提供隐式 latest、force 或公开分享副作用。
@@ -39,7 +42,7 @@
   完整停止后把回答写 stdout。
 - `index.ts` 是应用包的唯一公共出口。
 - `__tests__/` 使用真实 Catalog/Worker SQLite、真实本地 WebSocket 与真实 R1 handle authority 验证完整
-  接线、Project Context Compiler、V1/V2 兼容和崩溃边界；opt-in real gate 还会调用真实 bundled Codex。
+  接线、Project Context Compiler、V1/V2/V3 兼容和崩溃边界；opt-in real gate 还会调用真实 bundled Codex。
 
 `worker-runtime.ts` 仍是唯一允许创建 SQLite、建立 Worker WebSocket driver 并关闭这些资源的文件；
 `local-alpha-broker.ts` 只拥有相反方向的 loopback server。bundled Codex 子进程只由

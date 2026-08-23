@@ -14,6 +14,11 @@ export const CREATOR_AGENT_DRAFT_V2_PROTOCOL = 'combo.creator-agent-draft/2' as 
 export const CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL =
   'combo.creator-agent-draft-handoff/2' as const;
 export const CREATOR_AGENT_VERSION_V2_PROTOCOL = 'combo.creator-agent-version/2' as const;
+export const CREATOR_AGENT_DEFINITION_V3_PROTOCOL = 'combo.creator-agent-definition/3' as const;
+export const CREATOR_AGENT_DRAFT_V3_PROTOCOL = 'combo.creator-agent-draft/3' as const;
+export const CREATOR_AGENT_DRAFT_HANDOFF_V3_PROTOCOL =
+  'combo.creator-agent-draft-handoff/3' as const;
+export const CREATOR_AGENT_VERSION_V3_PROTOCOL = 'combo.creator-agent-version/3' as const;
 export const CREATOR_AGENT_SOURCE_LEDGER_PROTOCOL =
   'combo.creator-agent-project-source-ledger/1' as const;
 export const CREATOR_AGENT_MAX_CANONICAL_BYTES = 65_536;
@@ -24,6 +29,9 @@ const VERSION_FINGERPRINT_DOMAIN = 'combo.creator-agent-version/1' as const;
 const DEFINITION_V2_FINGERPRINT_DOMAIN = 'combo.creator-agent-definition/2' as const;
 const DRAFT_V2_FINGERPRINT_DOMAIN = 'combo.creator-agent-draft/2' as const;
 const VERSION_V2_FINGERPRINT_DOMAIN = 'combo.creator-agent-version/2' as const;
+const DEFINITION_V3_FINGERPRINT_DOMAIN = 'combo.creator-agent-definition/3' as const;
+const DRAFT_V3_FINGERPRINT_DOMAIN = 'combo.creator-agent-draft/3' as const;
+const VERSION_V3_FINGERPRINT_DOMAIN = 'combo.creator-agent-version/3' as const;
 const SOURCE_LEDGER_FINGERPRINT_DOMAIN = 'combo.creator-agent-project-source-ledger/1' as const;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
@@ -82,6 +90,29 @@ const CreatorAgentRequirementsSchema = z
 const CreatorAgentRuntimeSchema = z
   .object({
     contextProfile: z.literal('PROJECT_TREE_READ_ONLY_V1'),
+    permissionProfile: z.literal('LOCAL_UNISOLATED_READ_ONLY_V1'),
+    skills: z.array(z.never()).length(0).readonly(),
+    dynamicTools: z.array(z.never()).length(0).readonly(),
+    toolNetworkAccess: z.literal(false),
+    output: z
+      .object({
+        kind: z.literal('text'),
+        description: SafeText(1, 1_000),
+      })
+      .strict()
+      .readonly(),
+    turnTimeoutMs: z
+      .number()
+      .int()
+      .min(10_000)
+      .max(30 * 60_000),
+  })
+  .strict()
+  .readonly();
+
+const CreatorAgentBehaviorOnlyRuntimeSchema = z
+  .object({
+    contextProfile: z.literal('BEHAVIOR_ONLY_V1'),
     permissionProfile: z.literal('LOCAL_UNISOLATED_READ_ONLY_V1'),
     skills: z.array(z.never()).length(0).readonly(),
     dynamicTools: z.array(z.never()).length(0).readonly(),
@@ -210,6 +241,38 @@ export const CreatorAgentDefinitionV2Schema = z
   .readonly();
 export type CreatorAgentDefinitionV2 = z.infer<typeof CreatorAgentDefinitionV2Schema>;
 
+export const CreatorAgentDefinitionV3Schema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_DEFINITION_V3_PROTOCOL),
+    name: SafeText(1, 80),
+    description: SafeText(1, 500),
+    projectBinding: z
+      .object({ kind: z.literal('none') })
+      .strict()
+      .readonly(),
+    behavior: CreatorAgentBehaviorSchema,
+    requirements: CreatorAgentRequirementsSchema,
+    authoringSource: CreatorAgentAuthoringSourceV2Schema,
+    runtime: CreatorAgentBehaviorOnlyRuntimeSchema,
+  })
+  .strict()
+  .superRefine((definition, context) => {
+    const { sourceLedger } = definition.authoringSource;
+    if (
+      sourceLedger.coverage.authoringOnlyEntryCount !== sourceLedger.coverage.indexedEntryCount ||
+      sourceLedger.citedSources.some(
+        ({ executionAvailability }) => executionAvailability !== 'AUTHORING_ONLY',
+      )
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Behavior-only Agent source evidence must be authoring-only',
+      });
+    }
+  })
+  .readonly();
+export type CreatorAgentDefinitionV3 = z.infer<typeof CreatorAgentDefinitionV3Schema>;
+
 const creatorAgentDraftShape = {
   protocol: z.literal(CREATOR_AGENT_DRAFT_PROTOCOL),
   agentId: IdentifierSchema,
@@ -317,9 +380,67 @@ export const CreatorAgentVersionV2Schema = z
   .readonly();
 export type CreatorAgentVersionV2 = z.infer<typeof CreatorAgentVersionV2Schema>;
 
-export type CreatorAgentDraftSnapshot = CreatorAgentDraftSnapshotV1 | CreatorAgentDraftSnapshotV2;
-export type CreatorAgentDraftHandoff = CreatorAgentDraftHandoffV1 | CreatorAgentDraftHandoffV2;
-export type CreatorAgentVersion = CreatorAgentVersionV1 | CreatorAgentVersionV2;
+const creatorAgentDraftV3Shape = {
+  protocol: z.literal(CREATOR_AGENT_DRAFT_V3_PROTOCOL),
+  agentId: IdentifierSchema,
+  draftId: IdentifierSchema,
+  draftRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  baseVersionId: IdentifierSchema.nullable(),
+  definition: CreatorAgentDefinitionV3Schema,
+  definitionFingerprint: Sha256DigestSchema,
+} as const;
+const CreatorAgentDraftV3WithoutFingerprintSchema = z
+  .object(creatorAgentDraftV3Shape)
+  .strict()
+  .readonly();
+export const CreatorAgentDraftSnapshotV3Schema = z
+  .object({ ...creatorAgentDraftV3Shape, draftFingerprint: Sha256DigestSchema })
+  .strict()
+  .readonly();
+export type CreatorAgentDraftSnapshotV3 = z.infer<typeof CreatorAgentDraftSnapshotV3Schema>;
+
+export const CreatorAgentDraftHandoffV3Schema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_DRAFT_HANDOFF_V3_PROTOCOL),
+    intent: z.literal('import_behavior_only_project_context_draft'),
+    draft: CreatorAgentDraftSnapshotV3Schema,
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentDraftHandoffV3 = z.infer<typeof CreatorAgentDraftHandoffV3Schema>;
+
+const creatorAgentVersionV3Shape = {
+  protocol: z.literal(CREATOR_AGENT_VERSION_V3_PROTOCOL),
+  agentId: IdentifierSchema,
+  versionId: IdentifierSchema,
+  versionNumber: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  sourceDraft: CreatorAgentVersionSourceDraftSchema,
+  definition: CreatorAgentDefinitionV3Schema,
+  definitionFingerprint: Sha256DigestSchema,
+} as const;
+const CreatorAgentVersionV3WithoutFingerprintSchema = z
+  .object(creatorAgentVersionV3Shape)
+  .strict()
+  .readonly();
+export const CreatorAgentVersionV3Schema = z
+  .object({ ...creatorAgentVersionV3Shape, versionFingerprint: Sha256DigestSchema })
+  .strict()
+  .readonly();
+export type CreatorAgentVersionV3 = z.infer<typeof CreatorAgentVersionV3Schema>;
+
+export type CreatorAgentDraftSnapshot =
+  | CreatorAgentDraftSnapshotV1
+  | CreatorAgentDraftSnapshotV2
+  | CreatorAgentDraftSnapshotV3;
+export type CreatorAgentDraftHandoff =
+  | CreatorAgentDraftHandoffV1
+  | CreatorAgentDraftHandoffV2
+  | CreatorAgentDraftHandoffV3;
+export type CreatorAgentVersion =
+  | CreatorAgentVersionV1
+  | CreatorAgentVersionV2
+  | CreatorAgentVersionV3;
 
 export type CreateCreatorAgentDraftSnapshotInput = Readonly<{
   agentId: string;
@@ -387,6 +508,22 @@ export type FreezeCreatorAgentVersionV2Input = Readonly<{
 export type CreateCreatorAgentDraftHandoffV2Input = Readonly<{
   draft: unknown;
 }>;
+export type CreateCreatorAgentDraftSnapshotV3Input = Readonly<{
+  agentId: string;
+  draftId: string;
+  draftRevision: number;
+  baseVersionId: string | null;
+  definition: unknown;
+}>;
+export type FreezeCreatorAgentVersionV3Input = Readonly<{
+  versionId: string;
+  versionNumber: number;
+  createdAtMs: number;
+  draft: unknown;
+}>;
+export type CreateCreatorAgentDraftHandoffV3Input = Readonly<{
+  draft: unknown;
+}>;
 
 const CreateCreatorAgentProjectSourceLedgerInputSchema = z
   .object({
@@ -424,12 +561,39 @@ const CreateCreatorAgentDraftHandoffV2InputSchema = z
   .object({ draft: CreatorAgentDraftSnapshotV2Schema })
   .strict()
   .readonly();
+const CreateCreatorAgentDraftSnapshotV3InputSchema = z
+  .object({
+    agentId: IdentifierSchema,
+    draftId: IdentifierSchema,
+    draftRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    baseVersionId: IdentifierSchema.nullable(),
+    definition: CreatorAgentDefinitionV3Schema,
+  })
+  .strict()
+  .readonly();
+const FreezeCreatorAgentVersionV3InputSchema = z
+  .object({
+    versionId: IdentifierSchema,
+    versionNumber: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    draft: CreatorAgentDraftSnapshotV3Schema,
+  })
+  .strict()
+  .readonly();
+const CreateCreatorAgentDraftHandoffV3InputSchema = z
+  .object({ draft: CreatorAgentDraftSnapshotV3Schema })
+  .strict()
+  .readonly();
 const FreezeCreatorAgentVersionAnyInputSchema = z
   .object({
     versionId: IdentifierSchema,
     versionNumber: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-    draft: z.union([CreatorAgentDraftSnapshotV1Schema, CreatorAgentDraftSnapshotV2Schema]),
+    draft: z.union([
+      CreatorAgentDraftSnapshotV1Schema,
+      CreatorAgentDraftSnapshotV2Schema,
+      CreatorAgentDraftSnapshotV3Schema,
+    ]),
   })
   .strict()
   .readonly();
@@ -832,8 +996,174 @@ export function parseCreatorAgentVersionV2(text: string): CreatorAgentVersionV2 
   return version;
 }
 
+export function createCreatorAgentDefinitionV3(input: unknown): CreatorAgentDefinitionV3 {
+  const definition = exactDetached(CreatorAgentDefinitionV3Schema, input, 'Agent definition v3');
+  verifyCreatorAgentProjectSourceLedger(definition.authoringSource.sourceLedger);
+  return definition;
+}
+
+export function fingerprintCreatorAgentDefinitionV3(input: unknown): Sha256Digest {
+  return canonicalFingerprint(
+    DEFINITION_V3_FINGERPRINT_DOMAIN,
+    createCreatorAgentDefinitionV3(input),
+  );
+}
+
+export function createCreatorAgentDraftSnapshotV3(
+  input: CreateCreatorAgentDraftSnapshotV3Input,
+): CreatorAgentDraftSnapshotV3 {
+  const snapshot = exactDetached(
+    CreateCreatorAgentDraftSnapshotV3InputSchema,
+    input,
+    'Agent draft v3 input',
+  );
+  const definition = createCreatorAgentDefinitionV3(snapshot.definition);
+  const withoutFingerprint = exactDetached(
+    CreatorAgentDraftV3WithoutFingerprintSchema,
+    {
+      protocol: CREATOR_AGENT_DRAFT_V3_PROTOCOL,
+      agentId: snapshot.agentId,
+      draftId: snapshot.draftId,
+      draftRevision: snapshot.draftRevision,
+      baseVersionId: snapshot.baseVersionId,
+      definition,
+      definitionFingerprint: fingerprintCreatorAgentDefinitionV3(definition),
+    },
+    'Agent draft v3',
+  );
+  return exactDetached(
+    CreatorAgentDraftSnapshotV3Schema,
+    {
+      ...withoutFingerprint,
+      draftFingerprint: canonicalFingerprint(DRAFT_V3_FINGERPRINT_DOMAIN, withoutFingerprint),
+    },
+    'Agent draft v3',
+  );
+}
+
+export function verifyCreatorAgentDraftSnapshotV3(input: unknown): CreatorAgentDraftSnapshotV3 {
+  const draft = exactDetached(CreatorAgentDraftSnapshotV3Schema, input, 'Agent draft v3');
+  if (draft.definitionFingerprint !== fingerprintCreatorAgentDefinitionV3(draft.definition)) {
+    throw new TypeError('Agent draft v3 definition fingerprint does not match');
+  }
+  const { draftFingerprint: _fingerprint, ...withoutFingerprint } = draft;
+  if (
+    draft.draftFingerprint !== canonicalFingerprint(DRAFT_V3_FINGERPRINT_DOMAIN, withoutFingerprint)
+  ) {
+    throw new TypeError('Agent draft v3 fingerprint does not match');
+  }
+  return draft;
+}
+
+export function createCreatorAgentDraftHandoffV3(
+  input: CreateCreatorAgentDraftHandoffV3Input,
+): CreatorAgentDraftHandoffV3 {
+  const snapshot = exactDetached(
+    CreateCreatorAgentDraftHandoffV3InputSchema,
+    input,
+    'Agent draft handoff v3 input',
+  );
+  const draft = verifyCreatorAgentDraftSnapshotV3(snapshot.draft);
+  return verifyCreatorAgentDraftHandoffV3({
+    protocol: CREATOR_AGENT_DRAFT_HANDOFF_V3_PROTOCOL,
+    intent: 'import_behavior_only_project_context_draft',
+    draft,
+  });
+}
+
+export function verifyCreatorAgentDraftHandoffV3(input: unknown): CreatorAgentDraftHandoffV3 {
+  const handoff = exactDetached(CreatorAgentDraftHandoffV3Schema, input, 'Agent draft handoff v3');
+  const draft = verifyCreatorAgentDraftSnapshotV3(handoff.draft);
+  return exactDetached(
+    CreatorAgentDraftHandoffV3Schema,
+    { protocol: handoff.protocol, intent: handoff.intent, draft },
+    'Agent draft handoff v3',
+  );
+}
+
+export function serializeCreatorAgentDraftHandoffV3(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentDraftHandoffV3(input));
+}
+
+export function parseCreatorAgentDraftHandoffV3(text: string): CreatorAgentDraftHandoffV3 {
+  const value = parseCanonicalAgentJson(text, 'Agent draft handoff v3');
+  const handoff = verifyCreatorAgentDraftHandoffV3(value);
+  if (canonicalizeJson(handoff) !== text) {
+    throw new TypeError('Agent draft handoff v3 is not exact canonical JSON');
+  }
+  return handoff;
+}
+
+export function freezeCreatorAgentVersionV3(
+  input: FreezeCreatorAgentVersionV3Input,
+): CreatorAgentVersionV3 {
+  const snapshot = exactDetached(
+    FreezeCreatorAgentVersionV3InputSchema,
+    input,
+    'Agent version v3 input',
+  );
+  const draft = verifyCreatorAgentDraftSnapshotV3(snapshot.draft);
+  const withoutFingerprint = exactDetached(
+    CreatorAgentVersionV3WithoutFingerprintSchema,
+    {
+      protocol: CREATOR_AGENT_VERSION_V3_PROTOCOL,
+      agentId: draft.agentId,
+      versionId: snapshot.versionId,
+      versionNumber: snapshot.versionNumber,
+      createdAtMs: snapshot.createdAtMs,
+      sourceDraft: {
+        draftId: draft.draftId,
+        draftRevision: draft.draftRevision,
+        draftFingerprint: draft.draftFingerprint,
+      },
+      definition: draft.definition,
+      definitionFingerprint: draft.definitionFingerprint,
+    },
+    'Agent version v3',
+  );
+  return exactDetached(
+    CreatorAgentVersionV3Schema,
+    {
+      ...withoutFingerprint,
+      versionFingerprint: canonicalFingerprint(VERSION_V3_FINGERPRINT_DOMAIN, withoutFingerprint),
+    },
+    'Agent version v3',
+  );
+}
+
+export function verifyCreatorAgentVersionV3(input: unknown): CreatorAgentVersionV3 {
+  const version = exactDetached(CreatorAgentVersionV3Schema, input, 'Agent version v3');
+  if (version.definitionFingerprint !== fingerprintCreatorAgentDefinitionV3(version.definition)) {
+    throw new TypeError('Agent version v3 definition fingerprint does not match');
+  }
+  const { versionFingerprint: _fingerprint, ...withoutFingerprint } = version;
+  if (
+    version.versionFingerprint !==
+    canonicalFingerprint(VERSION_V3_FINGERPRINT_DOMAIN, withoutFingerprint)
+  ) {
+    throw new TypeError('Agent version v3 fingerprint does not match');
+  }
+  return version;
+}
+
+export function serializeCreatorAgentVersionV3(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentVersionV3(input));
+}
+
+export function parseCreatorAgentVersionV3(text: string): CreatorAgentVersionV3 {
+  const value = parseCanonicalAgentJson(text, 'Agent version v3');
+  const version = verifyCreatorAgentVersionV3(value);
+  if (canonicalizeJson(version) !== text) {
+    throw new TypeError('Agent version v3 is not exact canonical JSON');
+  }
+  return version;
+}
+
 export function parseCreatorAgentDraftHandoffAny(text: string): CreatorAgentDraftHandoff {
   const value = parseCanonicalAgentJson(text, 'Agent draft handoff');
+  if (protocolValue(value) === CREATOR_AGENT_DRAFT_HANDOFF_V3_PROTOCOL) {
+    return parseCreatorAgentDraftHandoffV3(text);
+  }
   if (protocolValue(value) === CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL) {
     return parseCreatorAgentDraftHandoffV2(text);
   }
@@ -841,6 +1171,9 @@ export function parseCreatorAgentDraftHandoffAny(text: string): CreatorAgentDraf
 }
 
 export function serializeCreatorAgentDraftHandoffAny(input: unknown): string {
+  if (protocolValue(input) === CREATOR_AGENT_DRAFT_HANDOFF_V3_PROTOCOL) {
+    return serializeCreatorAgentDraftHandoffV3(input);
+  }
   if (protocolValue(input) === CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL) {
     return serializeCreatorAgentDraftHandoffV2(input);
   }
@@ -848,6 +1181,9 @@ export function serializeCreatorAgentDraftHandoffAny(input: unknown): string {
 }
 
 export function serializeCreatorAgentDraftSnapshotAny(input: unknown): string {
+  if (protocolValue(input) === CREATOR_AGENT_DRAFT_V3_PROTOCOL) {
+    return canonicalizeJson(verifyCreatorAgentDraftSnapshotV3(input));
+  }
   if (protocolValue(input) === CREATOR_AGENT_DRAFT_V2_PROTOCOL) {
     return canonicalizeJson(verifyCreatorAgentDraftSnapshotV2(input));
   }
@@ -856,6 +1192,9 @@ export function serializeCreatorAgentDraftSnapshotAny(input: unknown): string {
 
 export function parseCreatorAgentVersionAny(text: string): CreatorAgentVersion {
   const value = parseCanonicalAgentJson(text, 'Agent version');
+  if (protocolValue(value) === CREATOR_AGENT_VERSION_V3_PROTOCOL) {
+    return parseCreatorAgentVersionV3(text);
+  }
   if (protocolValue(value) === CREATOR_AGENT_VERSION_V2_PROTOCOL) {
     return parseCreatorAgentVersionV2(text);
   }
@@ -863,6 +1202,9 @@ export function parseCreatorAgentVersionAny(text: string): CreatorAgentVersion {
 }
 
 export function serializeCreatorAgentVersionAny(input: unknown): string {
+  if (protocolValue(input) === CREATOR_AGENT_VERSION_V3_PROTOCOL) {
+    return serializeCreatorAgentVersionV3(input);
+  }
   if (protocolValue(input) === CREATOR_AGENT_VERSION_V2_PROTOCOL) {
     return serializeCreatorAgentVersionV2(input);
   }
@@ -882,6 +1224,9 @@ export function freezeCreatorAgentVersionAny(
     input,
     'Agent version input',
   );
+  if (protocolValue(snapshot.draft) === CREATOR_AGENT_DRAFT_V3_PROTOCOL) {
+    return freezeCreatorAgentVersionV3(snapshot);
+  }
   if (protocolValue(snapshot.draft) === CREATOR_AGENT_DRAFT_V2_PROTOCOL) {
     return freezeCreatorAgentVersionV2(snapshot);
   }

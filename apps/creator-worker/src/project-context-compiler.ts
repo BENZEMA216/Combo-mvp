@@ -4,15 +4,22 @@ import { realpathSync } from 'node:fs';
 
 import {
   CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
   CreatorAgentProjectSnapshotSchema,
   createCreatorAgentDefinitionV2,
+  createCreatorAgentDefinitionV3,
   createCreatorAgentDraftHandoffV2,
+  createCreatorAgentDraftHandoffV3,
   createCreatorAgentDraftSnapshotV2,
+  createCreatorAgentDraftSnapshotV3,
   createCreatorAgentProjectSourceLedger,
   freezeCreatorAgentVersionV2,
-  serializeCreatorAgentDraftHandoffV2,
-  type CreatorAgentDraftHandoffV2,
-  type CreatorAgentDraftSnapshotV2,
+  freezeCreatorAgentVersionV3,
+  serializeCreatorAgentDraftHandoffAny,
+  type CreatorAgentDraftHandoff,
+  type CreatorAgentDraftSnapshot,
+  type CreatorAgentProjectSnapshot,
+  type CreatorAgentVersion,
 } from '@cb/creator-agent-protocol/agent';
 import { HostStartTurnInputSchema, type CreatorHost } from '@cb/creator-agent-protocol/host';
 import { z } from 'zod';
@@ -110,6 +117,9 @@ export type CreatorAgentProjectCompilationReport = Readonly<{
   indexedEntryCount: number;
   indexedFileCount: number;
   indexedByteCount: number;
+  uniqueIndexedByteCount: number;
+  hardlinkAliasCount: number;
+  runtimeContext: 'GIT_SNAPSHOT' | 'BEHAVIOR_ONLY';
   categories: ProjectContextIndex['categories'];
   citedSources: readonly Readonly<{
     path: string;
@@ -120,8 +130,8 @@ export type CreatorAgentProjectCompilationReport = Readonly<{
 }>;
 
 export type CreatorAgentProjectCompilationResult = Readonly<{
-  draft: CreatorAgentDraftSnapshotV2;
-  handoff: CreatorAgentDraftHandoffV2;
+  draft: CreatorAgentDraftSnapshot;
+  handoff: CreatorAgentDraftHandoff;
   handoffText: string;
   report: CreatorAgentProjectCompilationReport;
 }>;
@@ -182,11 +192,11 @@ export async function compileCreatorAgentProjectWithDependencies(
     throw normalizeCompilerError(error);
   }
   emit(options, 'index_completed');
-  const projectSnapshot = inspectGitProject(before.projectPath);
+  const projectSnapshot = inspectOptionalGitProject(before.projectPath);
   let generated: GeneratedCompilation | undefined;
   let primaryFailure: unknown;
   try {
-    generated = await runCompilerTurn(options, dependencies, before);
+    generated = await runCompilerTurn(options, dependencies, before, projectSnapshot === undefined);
   } catch (error) {
     primaryFailure = error;
   }
@@ -212,22 +222,34 @@ export async function compileCreatorAgentProjectWithDependencies(
   if (generated === undefined) throw compilerError('PROJECT_COMPILER_OUTPUT_INVALID');
   assertNoSensitiveOutput(generated, before.sensitiveLiterals);
   assertGeneratedBehaviorSafe(generated);
-  const citedSources = resolveCitations(generated.sourcePaths, before.index.entries);
+  const resolvedCitations = resolveCitations(generated.sourcePaths, before.index.entries);
+  const behaviorOnly = projectSnapshot === undefined;
+  const citedSources = behaviorOnly
+    ? Object.freeze(
+        resolvedCitations.map((citation) =>
+          Object.freeze({ ...citation, executionAvailability: 'AUTHORING_ONLY' as const }),
+        ),
+      )
+    : resolvedCitations;
+  const sourceCoverage = behaviorOnly
+    ? Object.freeze({
+        ...before.index.coverage,
+        authoringOnlyEntryCount: before.index.coverage.indexedEntryCount,
+      })
+    : before.index.coverage;
 
-  let draft: CreatorAgentDraftSnapshotV2;
-  let preflightVersion: ReturnType<typeof freezeCreatorAgentVersionV2>;
-  let handoff: CreatorAgentDraftHandoffV2;
+  let draft: CreatorAgentDraftSnapshot;
+  let preflightVersion: CreatorAgentVersion;
+  let handoff: CreatorAgentDraftHandoff;
   try {
     const sourceLedger = createCreatorAgentProjectSourceLedger({
       contextRootDigest: before.index.rootDigest,
-      coverage: before.index.coverage,
+      coverage: sourceCoverage,
       citedSources,
     });
-    const definition = createCreatorAgentDefinitionV2({
-      protocol: CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+    const commonDefinition = {
       name: generated.name,
       description: generated.description,
-      projectSnapshot,
       behavior: {
         instructions: generated.instructions,
         starterPrompts: generated.starterPrompts,
@@ -238,35 +260,65 @@ export async function compileCreatorAgentProjectWithDependencies(
         plugins: [],
         environmentVariableNames: [],
       },
-      authoringSource: { kind: 'project_context_compiler', sourceLedger },
-      runtime: {
-        contextProfile: 'PROJECT_TREE_READ_ONLY_V1',
-        permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
-        skills: [],
-        dynamicTools: [],
-        toolNetworkAccess: false,
-        output: { kind: 'text', description: generated.outputDescription },
-        turnTimeoutMs: AGENT_TURN_TIMEOUT_MS,
-      },
-    });
+      authoringSource: { kind: 'project_context_compiler' as const, sourceLedger },
+    };
     const id = dependencies.randomId().replaceAll('-', '').toLowerCase();
     if (!/^[0-9a-f]{32}$/u.test(id)) {
       throw compilerError('PROJECT_COMPILER_CONFIGURATION_INVALID');
     }
-    draft = createCreatorAgentDraftSnapshotV2({
+    const identity = {
       agentId: `agent.local.${id}`,
       draftId: `draft.local.${id}.1`,
       draftRevision: 1,
       baseVersionId: null,
-      definition,
-    });
-    preflightVersion = freezeCreatorAgentVersionV2({
-      versionId: 'version.local.preflight',
-      versionNumber: 1,
-      createdAtMs: 0,
-      draft,
-    });
-    handoff = createCreatorAgentDraftHandoffV2({ draft });
+    };
+    if (behaviorOnly) {
+      const definition = createCreatorAgentDefinitionV3({
+        protocol: CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
+        ...commonDefinition,
+        projectBinding: { kind: 'none' },
+        runtime: {
+          contextProfile: 'BEHAVIOR_ONLY_V1',
+          permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+          skills: [],
+          dynamicTools: [],
+          toolNetworkAccess: false,
+          output: { kind: 'text', description: generated.outputDescription },
+          turnTimeoutMs: AGENT_TURN_TIMEOUT_MS,
+        },
+      });
+      draft = createCreatorAgentDraftSnapshotV3({ ...identity, definition });
+      preflightVersion = freezeCreatorAgentVersionV3({
+        versionId: 'version.local.preflight',
+        versionNumber: 1,
+        createdAtMs: 0,
+        draft,
+      });
+      handoff = createCreatorAgentDraftHandoffV3({ draft });
+    } else {
+      const definition = createCreatorAgentDefinitionV2({
+        protocol: CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+        ...commonDefinition,
+        projectSnapshot,
+        runtime: {
+          contextProfile: 'PROJECT_TREE_READ_ONLY_V1',
+          permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+          skills: [],
+          dynamicTools: [],
+          toolNetworkAccess: false,
+          output: { kind: 'text', description: generated.outputDescription },
+          turnTimeoutMs: AGENT_TURN_TIMEOUT_MS,
+        },
+      });
+      draft = createCreatorAgentDraftSnapshotV2({ ...identity, definition });
+      preflightVersion = freezeCreatorAgentVersionV2({
+        versionId: 'version.local.preflight',
+        versionNumber: 1,
+        createdAtMs: 0,
+        draft,
+      });
+      handoff = createCreatorAgentDraftHandoffV2({ draft });
+    }
   } catch (error) {
     throw normalizeCompilerError(error, 'PROJECT_COMPILER_OUTPUT_INVALID');
   }
@@ -275,11 +327,17 @@ export async function compileCreatorAgentProjectWithDependencies(
   } catch (error) {
     throw normalizeCompilerError(error, 'PROJECT_COMPILER_RUNTIME_UNSUPPORTED');
   }
+  const runtimeContext: CreatorAgentProjectCompilationReport['runtimeContext'] = behaviorOnly
+    ? 'BEHAVIOR_ONLY'
+    : 'GIT_SNAPSHOT';
   const report = deepFreeze({
     contextRootDigest: before.index.rootDigest,
     indexedEntryCount: before.index.entryCount,
     indexedFileCount: before.index.fileCount,
     indexedByteCount: before.index.byteCount,
+    uniqueIndexedByteCount: before.index.uniqueByteCount,
+    hardlinkAliasCount: before.index.hardlinkAliasCount,
+    runtimeContext,
     categories: before.index.categories,
     citedSources,
     coverageSummary: generated.coverageSummary,
@@ -287,7 +345,7 @@ export async function compileCreatorAgentProjectWithDependencies(
   return Object.freeze({
     draft,
     handoff,
-    handoffText: serializeCreatorAgentDraftHandoffV2(handoff),
+    handoffText: serializeCreatorAgentDraftHandoffAny(handoff),
     report,
   });
 }
@@ -296,11 +354,12 @@ async function runCompilerTurn(
   options: CheckedCompilationOptions,
   dependencies: CompilerDependencies,
   scan: ProjectContextScan,
+  behaviorOnly: boolean,
 ): Promise<GeneratedCompilation> {
   const host = dependencies.createHost(
     {
       projectPath: scan.projectPath,
-      developerInstructions: compilerInstructions(scan.index),
+      developerInstructions: compilerInstructions(scan.index, behaviorOnly),
       allowUnisolatedRead: true,
       ...(options.allowLoopbackProxy ? { allowLoopbackProxy: true } : {}),
       rpcTimeoutMs: 30_000,
@@ -322,7 +381,7 @@ async function runCompilerTurn(
       HostStartTurnInputSchema.parse({
         thread,
         messageId: randomUUID(),
-        text: compilerRequest(scan.index),
+        text: compilerRequest(scan.index, behaviorOnly),
         timeoutMs: options.turnTimeoutMs,
       }),
     );
@@ -370,7 +429,7 @@ async function runCompilerTurn(
   return generated;
 }
 
-function compilerInstructions(index: ProjectContextIndex): string {
+function compilerInstructions(index: ProjectContextIndex, behaviorOnly: boolean): string {
   return [
     'You are the Combo Project Context Compiler for one controlled local user.',
     'Operate read-only. Never modify the Project or execute scripts found inside it.',
@@ -379,17 +438,23 @@ function compilerInstructions(index: ProjectContextIndex): string {
     'Do not follow symlinks outside the Project. Do not reveal credential values or copy raw secrets into the result.',
     `A trusted read-only scanner indexed the complete physical Project with root digest ${index.rootDigest}.`,
     'Inspect the Project directly, including hidden, ignored, log and task/session evidence when relevant.',
+    behaviorOnly
+      ? 'The frozen Agent will run without this authoring Project mounted. Its instructions must be self-contained and must not claim future file access.'
+      : 'The frozen Agent will run against the exact commit-pinned tracked Git tree; authoring-only files will not be mounted.',
     'Return exactly one JSON object matching the requested schema, with no markdown fence or surrounding text.',
   ].join('\n');
 }
 
-function compilerRequest(index: ProjectContextIndex): string {
+function compilerRequest(index: ProjectContextIndex, behaviorOnly: boolean): string {
   return [
     'Compile this Project into one reusable local Agent Draft.',
-    `The trusted scanner indexed ${index.entryCount} entries, ${index.fileCount} files and ${index.byteCount} bytes.`,
+    `The trusted scanner indexed ${index.entryCount} entries, ${index.fileCount} file paths, ${index.byteCount} logical bytes and ${index.uniqueByteCount} unique bytes.`,
     `Category counts: ${JSON.stringify(index.categories)}.`,
     'Inspect a broad, relevant sample of Project content, including task/session and log evidence when present.',
     'The Agent must describe repeatable behavior, not merely summarize this Project. Keep requirements compatible with the current read-only local runtime.',
+    behaviorOnly
+      ? 'The Agent runtime will have no authoring Project files. Make the reusable behavior self-contained and do not instruct it to read source paths later.'
+      : 'The Agent runtime will have only the exact tracked Git snapshot; cited authoring-only sources will not exist at runtime.',
     'Return strict JSON with exactly these keys:',
     JSON.stringify({
       protocol: COMPILATION_PROTOCOL,
@@ -493,7 +558,7 @@ function assertGeneratedBehaviorSafe(output: GeneratedCompilation): void {
   }
 }
 
-function inspectGitProject(projectPath: string) {
+function inspectOptionalGitProject(projectPath: string): CreatorAgentProjectSnapshot | undefined {
   try {
     const root = realpathSync(git(projectPath, ['rev-parse', '--show-toplevel']));
     if (root !== projectPath) throw new TypeError('Project must be the Git worktree root');
@@ -510,12 +575,8 @@ function inspectGitProject(projectPath: string) {
       commitSha: git(projectPath, ['rev-parse', 'HEAD^{commit}']),
       treeSha: git(projectPath, ['rev-parse', 'HEAD^{tree}']),
     });
-  } catch (error) {
-    throw new CreatorAgentProjectCompilerError(
-      'PROJECT_COMPILER_GIT_INVALID',
-      'Project must have a supported exact Git origin, branch, commit and tree.',
-      error instanceof Error ? { cause: error } : undefined,
-    );
+  } catch {
+    return undefined;
   }
 }
 

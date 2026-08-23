@@ -21,20 +21,23 @@
   不落库。
 - `local-alpha.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时运行完整本地闭环；它从 Broker command 一直
   经过真实 bundled Codex 到 terminal ACK，并验证 sanitized Project 零变化与两库无正文。
-- `agent-local-runner.test.ts` 用 commit-pinned Git fixture、Fake Host、真实 Broker、双 SQLite、driver、pump
-  与 Runtime 证明同一 immutable AgentVersion 可运行两次且 instructions 不漂移；Host 只看到 blob
-  materialize 的 fixed tree，源工作区并发漂移不会进入执行，错误 origin 与 symlink tree 会在 Host 副作用前拒绝。
+- `agent-local-runner.test.ts` 用 Fake Host、真实 Broker、双 SQLite、driver、pump 与 Runtime 证明同一 immutable
+  AgentVersion 可运行两次且 instructions 不漂移。V1/V2 Host 只看到 blob materialize 的 fixed tree；V3 Host
+  只看到空的 0500 临时目录，原 authoring Project 不存在也能运行，传入 Project path 会在 Host 副作用前拒绝。
 - `project-context-compiler.test.ts` 覆盖 tracked-clean、tracked-dirty、untracked、ignored、hidden、日志、
   task/session、`.env`、物理 `.git` 与 symlink 索引，验证 linked worktree pointer 不扩展到外部 Git admin
   目录、Git filter 不执行、特殊文件与稀疏超限文件 fail-closed、目录替换不越出 Project、fixed output
-  schema、source digest 引用、best-effort secret taint、敏感上下文授权和编译前后 Project 漂移拒绝。
+  schema、source digest 引用、best-effort secret taint、敏感上下文授权和编译前后 Project 漂移拒绝。它还
+  覆盖 unborn 聚合根、两个嵌套仓库、hardlink 去重预算，以及不选择嵌套仓库的 V3 behavior-only 编译。
+  ctime-only 回归模拟 macOS 首次读取时的 provenance 更新，要求索引记录 post-read 稳定 stat，同时继续
+  拒绝 size、mtime、mode、identity 或内容漂移。
 - `agent-catalog-cli.test.ts` 用独立真实 Catalog SQLite 覆盖一条 `create` 命令中的编译、完整 review、可见
   TTY 一次 `FREEZE`、freeze、close/reopen 与可选运行，也覆盖 strict V1/V2 handoff import、手工 exact
   confirmation、旧 Version 精确选择、无隐式 latest、非法 UTF-8 与 prompt/回答/Project path 不落 Catalog；
   compiler 与 run 使用 Fake Host seam。
-- `agent-local-runner.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时 import Draft、逐字确认冻结、关闭并重开
-  Catalog，再让 exact AgentVersion 经过真实 bundled Codex、私有 tracked-tree snapshot、双 SQLite 与 terminal
-  ACK，验证原 Project 零变化且正文不落 Catalog/运行库。
+- `agent-local-runner.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时验证两种真实运行：V1/V2 经过 Catalog
+  freeze/reopen、私有 tracked-tree snapshot、双 SQLite 与 terminal ACK；V3 在没有 authoring Project 的空临时
+  目录中仅使用冻结行为。两者都验证正文不落持久库。
 - `project-context-compiler.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时对含 hidden、ignored 日志、
   task/session 和 `.env` 的 sanitized Project 完成全量索引、真实 bundled Codex 编译、V2 Catalog import、
   review、freeze、close/reopen 与 exact Version 运行，并验证原 Project 不变且敏感值、运行 prompt 和回答

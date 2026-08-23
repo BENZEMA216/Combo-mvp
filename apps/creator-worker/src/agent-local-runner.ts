@@ -17,6 +17,7 @@ import {
   parseCreatorAgentVersionAny,
   serializeCreatorAgentVersionAny,
   type CreatorAgentVersion,
+  type CreatorAgentVersionV3,
 } from '@cb/creator-agent-protocol/agent';
 
 import {
@@ -59,9 +60,17 @@ export async function runCreatorAgentLocalTurnWithDependencies(
     throw agentError('CREATOR_AGENT_VERSION_INVALID', error);
   }
   assertSupportedRuntime(version);
-  const sourceProject = assertVersionSource(input.projectPath, version);
-  assertStateOutsideSource(sourceProject, input.stateDirectory);
-  const snapshot = materializeVersionSnapshot(sourceProject, version);
+  let snapshot: string;
+  if (isBehaviorOnlyVersion(version)) {
+    if (input.projectPath !== undefined) {
+      throw agentError('CREATOR_AGENT_PROJECT_MISMATCH');
+    }
+    snapshot = materializeBehaviorOnlySnapshot();
+  } else {
+    const sourceProject = assertVersionSource(input.projectPath, version);
+    assertStateOutsideSource(sourceProject, input.stateDirectory);
+    snapshot = materializeVersionSnapshot(sourceProject, version);
+  }
   try {
     const result = await runCreatorWorkerLocalAlphaWithDependencies(
       {
@@ -112,6 +121,11 @@ export function assertCreatorAgentVersionRunnable(projectPath: string, input: un
     throw agentError('CREATOR_AGENT_VERSION_INVALID', error);
   }
   assertSupportedRuntime(version);
+  if (isBehaviorOnlyVersion(version)) {
+    const snapshot = materializeBehaviorOnlySnapshot();
+    rmSync(snapshot, { recursive: true, force: true });
+    return;
+  }
   const sourceProject = assertVersionSource(projectPath, version);
   const snapshot = materializeVersionSnapshot(sourceProject, version);
   rmSync(snapshot, { recursive: true, force: true });
@@ -129,6 +143,9 @@ function compileDeveloperInstructions(version: CreatorAgentVersion): string {
     'Runtime contract:',
     '- Treat the mounted Project as read-only and do not modify files.',
     '- Do not use browser, web search, model-exposed network access, plugins, or dynamic tools.',
+    definition.runtime.contextProfile === 'BEHAVIOR_ONLY_V1'
+      ? '- No authoring Project is mounted. Use only this frozen behavior and the user prompt; never claim current access to the source corpus.'
+      : '- Only the immutable commit-pinned tracked Project tree is mounted; authoring-only evidence is unavailable.',
     `- Produce this result: ${definition.runtime.output.description}`,
   ].join('\n');
 }
@@ -139,7 +156,7 @@ function assertSupportedRuntime(version: CreatorAgentVersion): void {
     runtime.skills.length !== 0 ||
     runtime.dynamicTools.length !== 0 ||
     runtime.toolNetworkAccess !== false ||
-    runtime.contextProfile !== 'PROJECT_TREE_READ_ONLY_V1' ||
+    !['PROJECT_TREE_READ_ONLY_V1', 'BEHAVIOR_ONLY_V1'].includes(runtime.contextProfile) ||
     runtime.permissionProfile !== 'LOCAL_UNISOLATED_READ_ONLY_V1' ||
     requirements.commands.length !== 0 ||
     requirements.plugins.length !== 0 ||
@@ -151,9 +168,29 @@ function assertSupportedRuntime(version: CreatorAgentVersion): void {
   }
 }
 
-function assertVersionSource(projectPath: string, version: CreatorAgentVersion): string {
+function isBehaviorOnlyVersion(version: CreatorAgentVersion): version is CreatorAgentVersionV3 {
+  return version.definition.runtime.contextProfile === 'BEHAVIOR_ONLY_V1';
+}
+
+function materializeBehaviorOnlySnapshot(): string {
+  let root: string | undefined;
+  try {
+    root = mkdtempSync(join(tmpdir(), 'combo-creator-agent-behavior-only-'));
+    chmodSync(root, 0o500);
+    return root;
+  } catch (error) {
+    if (root !== undefined) rmSync(root, { recursive: true, force: true });
+    throw agentError('CREATOR_AGENT_PROJECT_MISMATCH', error);
+  }
+}
+
+function assertVersionSource(
+  projectPath: string | undefined,
+  version: Exclude<CreatorAgentVersion, CreatorAgentVersionV3>,
+): string {
   let canonicalProject: string;
   try {
+    if (projectPath === undefined) throw new TypeError('Project path is required');
     canonicalProject = realpathSync(projectPath);
     if (!statSync(canonicalProject).isDirectory()) throw new TypeError('not a directory');
   } catch (error) {
@@ -190,7 +227,10 @@ function assertVersionSource(projectPath: string, version: CreatorAgentVersion):
   }
 }
 
-function materializeVersionSnapshot(projectPath: string, version: CreatorAgentVersion): string {
+function materializeVersionSnapshot(
+  projectPath: string,
+  version: Exclude<CreatorAgentVersion, CreatorAgentVersionV3>,
+): string {
   let root: string | undefined;
   try {
     const inspection = inspectVerifiedSnapshot(
