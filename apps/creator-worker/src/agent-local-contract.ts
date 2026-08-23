@@ -20,7 +20,8 @@ export class CreatorAgentLocalError extends Error {
 
 export type CreatorAgentLocalTurnOptions = Readonly<{
   version: CreatorAgentVersion;
-  projectPath: string;
+  /** Required for Git-backed V1/V2; must be absent for behavior-only V3. */
+  projectPath?: string;
   prompt: string;
   stateDirectory: string;
   allowUnisolatedRead: true;

@@ -6,11 +6,11 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 数据库、WebSocket、密钥、文件扫描、进程管理或产品路由。
 
 Agent Draft 通过新 revision 修订但不能执行；每个 DraftSnapshot 本身都是不可变值。AgentVersion 从一个
-精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter prompts、Git Project 快照和当前
-已实现的本机只读 Runtime profile。它不保存本机绝对路径、运行 prompt 或回答；当前版本对 skills 与动态
-工具保持空集，不把尚未实现的能力写进合同。
+精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter prompts、source ledger，以及 Git
+Project snapshot 或明确的无 Project binding。它不保存本机绝对路径、运行 prompt 或回答；当前版本对
+skills 与动态工具保持空集，不把尚未实现的能力写进合同。
 
-## Agent V1 与 V2
+## Agent V1、V2 与 V3
 
 V1 的 `combo.creator-agent-definition/1`、`combo.creator-agent-draft/1`、
 `combo.creator-agent-draft-handoff/1` 和 `combo.creator-agent-version/1` 保持原字节与解析兼容。V1 handoff
@@ -21,7 +21,7 @@ Project Context Compiler 使用独立的 `combo.creator-agent-definition/2`、`c
 `combo.creator-agent-draft-handoff/2` 和 `combo.creator-agent-version/2`。V2 Definition 的
 `authoringSource` 固定为 `project_context_compiler`，并嵌入
 `combo.creator-agent-project-source-ledger/1`。通用 parser、serializer 和 freeze dispatcher 会按明确的
-protocol 字段分派 V1 或 V2；未知协议会 fail-closed。
+protocol 字段分派 V1、V2 或 V3；未知协议会 fail-closed。
 
 V2 compact source ledger 只保存扫描 profile、完整 Project root digest、coverage counts，以及最多 32 个
 被引用 source 的相对路径、内容 digest 和 `FIXED_GIT_TREE` 或 `AUTHORING_ONLY` 可用性。它不另存 full
@@ -33,7 +33,12 @@ V2 创建时可以让 hidden、ignored、untracked、日志、task/session、`.e
 authoring，但 Runtime 仍只使用 Version 绑定的 commit-pinned tracked Git tree。标为 `AUTHORING_ONLY` 的
 证据可以影响已冻结行为，却不会成为运行 snapshot 中可读取的文件。
 
-`combo.creator-agent-version/1` 和 `combo.creator-agent-version/2` 都是 local unpublished execution
+当 formal Project 根不能形成受支持的 canonical Git snapshot 时，Project Context Compiler 使用独立的
+V3 Definition、Draft、handoff 与 Version。V3 固定 `projectBinding=none` 和 `BEHAVIOR_ONLY_V1`，并在协议
+层要求全部 citation 为 `AUTHORING_ONLY`、authoring-only coverage 等于完整 entry coverage。Runtime 因此
+只能使用冻结行为和本轮用户输入，不能重新挂载 authoring corpus，也不能自动选择某个嵌套仓库。
+
+`combo.creator-agent-version/1`、`combo.creator-agent-version/2` 和 `combo.creator-agent-version/3` 都是 local unpublished execution
 contract。它们不等同于公开分享协议 `combo.codex-agent-share/1`，也不等同于旧
 `CapabilityDefinition`。本包没有声明这些体系的兼容、继承或迁移关系；后续必须通过显式投影或迁移合同
 连接，不能靠相似字段或名称隐式转换。
@@ -59,7 +64,7 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
 - `@cb/creator-agent-protocol` 与 `/host`：给组合根和消费者使用，只暴露严格输入、Host port、结果类型与 verify API。
 - `@cb/creator-agent-protocol/host-adapter`：只给受信 Host adapter 使用，创建每个 turn 私有的 controller、start rejection，并接收同步 Host 写入线性化 callback。
 - `@cb/creator-agent-protocol/broker-transport`：只暴露严格 canonical frame、四类 body、方向、fingerprint 与 transport-value canonicalizer；它不建立网络连接，也不签发 owner、Lease 或 Cloud authority。
-- `@cb/creator-agent-protocol/agent`：暴露严格的 V1/V2 Definition、Draft、handoff、Version、V2 compact
+- `@cb/creator-agent-protocol/agent`：暴露严格的 V1/V2/V3 Definition、Draft、handoff、Version、compact
   source ledger、freeze/verify 和 canonical 序列化；它不执行 Project 扫描，也不证明作者身份、模型读取
   覆盖、实际脱敏、用户确认、Git remote 可达或 OS 级 Project 隔离。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。

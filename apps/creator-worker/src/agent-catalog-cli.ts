@@ -77,7 +77,7 @@ Commands:
          [--confirmation-file <exact-text>]
   list --catalog <path>
   show-version --catalog <path> --agent-id <id> --version-id <id>
-  run --catalog <path> --agent-id <id> --version-id <id> --project <absolute-project>
+  run --catalog <path> --agent-id <id> --version-id <id> [--project <absolute-project>]
       (--prompt <text> | --prompt-file <file>) --allow-unisolated-read
       [--state-dir <fresh-directory>] [--allow-loopback-proxy]
 
@@ -218,6 +218,7 @@ export async function executeCreatorAgentCatalogCli(
         versionNumber: version.versionNumber,
         versionFingerprint: version.versionFingerprint,
         contextRootDigest: compilation.report.contextRootDigest,
+        runtimeContext: compilation.report.runtimeContext,
       })}\n`,
     );
     if (runPrompt !== undefined) {
@@ -226,7 +227,7 @@ export async function executeCreatorAgentCatalogCli(
       signal.throwIfAborted();
       const result = await dependencies.runAgentTurn({
         version,
-        projectPath,
+        ...(requiresGitProject(version) ? { projectPath } : {}),
         prompt: runPrompt,
         stateDirectory,
         allowUnisolatedRead: true,
@@ -336,7 +337,22 @@ export async function executeCreatorAgentCatalogCli(
       );
     }
     const version = readVersion(flags);
-    const projectPath = requiredAbsolute(flags, 'project');
+    const projectPath =
+      flags.get('project') === undefined ? undefined : requiredAbsolute(flags, 'project');
+    if (requiresGitProject(version) && projectPath === undefined) {
+      throw cliError(
+        'AGENT_CLI_INVALID',
+        '--project is required for a Git-backed AgentVersion.',
+        true,
+      );
+    }
+    if (!requiresGitProject(version) && projectPath !== undefined) {
+      throw cliError(
+        'AGENT_CLI_INVALID',
+        '--project must be omitted for a behavior-only AgentVersion.',
+        true,
+      );
+    }
     const prompt = readPrompt(flags);
     const stateDirectory =
       flags.get('state-dir') === undefined
@@ -345,7 +361,7 @@ export async function executeCreatorAgentCatalogCli(
     signal.throwIfAborted();
     const result = await dependencies.runAgentTurn({
       version,
-      projectPath,
+      ...(projectPath === undefined ? {} : { projectPath }),
       prompt,
       stateDirectory,
       allowUnisolatedRead: true,
@@ -391,7 +407,9 @@ function writeCompilationReview(
   writer.write('Project 全量索引与 Agent 编译报告：\n');
   writer.write(`${terminalSafeJson(compilation.report)}\n`);
   writer.write(
-    '完整 Draft（全量索引不等于模型理解了每个字节；运行时只读取 commit-pinned tracked tree）：\n',
+    compilation.report.runtimeContext === 'BEHAVIOR_ONLY'
+      ? '完整 Draft（全量索引不等于模型理解了每个字节；运行时不挂载原 Project）：\n'
+      : '完整 Draft（全量索引不等于模型理解了每个字节；运行时只读取 commit-pinned tracked tree）：\n',
   );
   writer.write(`${terminalSafeJson(review.draft)}\n`);
   writer.write(`Draft fingerprint：${review.draft.draftFingerprint}\n`);
@@ -690,6 +708,10 @@ function defaultRunState(version: CreatorAgentVersion): string {
     'runs',
     randomUUID(),
   );
+}
+
+function requiresGitProject(version: CreatorAgentVersion): boolean {
+  return version.definition.runtime.contextProfile === 'PROJECT_TREE_READ_ONLY_V1';
 }
 
 async function readTerminalConfirmation(

@@ -10,14 +10,19 @@ import {
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
   CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
   createCreatorAgentDefinitionV2,
+  createCreatorAgentDefinitionV3,
   createCreatorAgentDraftHandoff,
   createCreatorAgentDraftHandoffV2,
+  createCreatorAgentDraftHandoffV3,
   createCreatorAgentDraftSnapshot,
   createCreatorAgentDraftSnapshotV2,
+  createCreatorAgentDraftSnapshotV3,
   createCreatorAgentProjectSourceLedger,
   serializeCreatorAgentDraftHandoff,
   serializeCreatorAgentDraftHandoffV2,
+  serializeCreatorAgentDraftHandoffV3,
   type CreatorAgentVersion,
   type CreatorAgentDraftSnapshotV1,
 } from '@cb/creator-agent-protocol/agent';
@@ -52,6 +57,9 @@ describe('Creator Agent Catalog CLI', () => {
         indexedEntryCount: 9,
         indexedFileCount: 7,
         indexedByteCount: 1234,
+        uniqueIndexedByteCount: 1234,
+        hardlinkAliasCount: 0,
+        runtimeContext: 'GIT_SNAPSHOT',
         categories: Object.freeze({
           configuration: 1,
           documentation: 1,
@@ -110,6 +118,96 @@ describe('Creator Agent Catalog CLI', () => {
     const catalog = openCatalog(fixture.catalog);
     expect(catalog.listVersions(compiledDraft.agentId)).toHaveLength(1);
     catalog.close();
+  });
+
+  it('freezes and runs a behavior-only create result without mounting the authoring Project', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'aggregate-project-')));
+    const compiledDraft = compiledDraftV3();
+    const handoff = createCreatorAgentDraftHandoffV3({ draft: compiledDraft });
+    const compilation: CreatorAgentProjectCompilationResult = Object.freeze({
+      draft: compiledDraft,
+      handoff,
+      handoffText: serializeCreatorAgentDraftHandoffV3(handoff),
+      report: Object.freeze({
+        contextRootDigest: `sha256:${'e'.repeat(64)}`,
+        indexedEntryCount: 12,
+        indexedFileCount: 8,
+        indexedByteCount: 2048,
+        uniqueIndexedByteCount: 1024,
+        hardlinkAliasCount: 2,
+        runtimeContext: 'BEHAVIOR_ONLY',
+        categories: Object.freeze({
+          configuration: 1,
+          documentation: 2,
+          git: 3,
+          log: 1,
+          secret_candidate: 1,
+          source: 2,
+          task_record: 1,
+          other: 1,
+        }),
+        citedSources: Object.freeze([
+          Object.freeze({
+            path: 'root-notes.md',
+            digest: `sha256:${'f'.repeat(64)}` as const,
+            executionAvailability: 'AUTHORING_ONLY' as const,
+          }),
+        ]),
+        coverageSummary: 'Used the aggregate authoring corpus to freeze reusable behavior.',
+      }),
+    });
+    const runAgentTurn = vi.fn(async () => Object.freeze({ text: 'behavior-only answer' }));
+
+    const result = await invoke(
+      [
+        'create',
+        '--catalog',
+        fixture.catalog,
+        '--project',
+        project,
+        '--allow-unisolated-read',
+        '--allow-sensitive-project-context',
+        '--run-prompt',
+        'Use the behavior-only Agent.',
+      ],
+      runAgentTurn,
+      async () => compilation,
+      'FREEZE',
+    );
+
+    expect(result.exit).toBe(0);
+    expect(result.stderr).toContain('运行时不挂载原 Project');
+    expect(result.stdout).toContain('"runtimeContext": "BEHAVIOR_ONLY"');
+    expect(runAgentTurn).toHaveBeenCalledWith(
+      expect.not.objectContaining({ projectPath: expect.anything() }),
+    );
+    const catalog = openCatalog(fixture.catalog);
+    const [version] = catalog.listVersions(compiledDraft.agentId);
+    catalog.close();
+    expect(version?.definition.protocol).toBe(CREATOR_AGENT_DEFINITION_V3_PROTOCOL);
+
+    const manualRun = vi.fn(async () => Object.freeze({ text: 'must not run' }));
+    await expect(
+      invoke(
+        [
+          'run',
+          '--catalog',
+          fixture.catalog,
+          '--agent-id',
+          compiledDraft.agentId,
+          '--version-id',
+          String(version?.versionId),
+          '--project',
+          project,
+          '--prompt',
+          'Do not mount the corpus.',
+          '--allow-unisolated-read',
+        ],
+        manualRun,
+      ),
+    ).rejects.toMatchObject({ code: 'AGENT_CLI_INVALID' });
+    expect(manualRun).not.toHaveBeenCalled();
   });
 
   it('requires explicit sensitive-context authorization before scanning or opening a catalog', async () => {
@@ -533,6 +631,62 @@ function compiledDraftV2() {
         dynamicTools: [],
         toolNetworkAccess: false,
         output: { kind: 'text', description: 'An evidence-backed review.' },
+        turnTimeoutMs: 300_000,
+      },
+    }),
+  });
+}
+
+function compiledDraftV3() {
+  const sourceLedger = createCreatorAgentProjectSourceLedger({
+    contextRootDigest: `sha256:${'e'.repeat(64)}`,
+    coverage: {
+      indexedEntryCount: 12,
+      indexedFileCount: 8,
+      indexedByteCount: 2048,
+      hiddenEntryCount: 2,
+      trackedEntryCount: 0,
+      untrackedEntryCount: 7,
+      ignoredEntryCount: 2,
+      gitAdminEntryCount: 3,
+      authoringOnlyEntryCount: 12,
+    },
+    citedSources: [
+      {
+        path: 'root-notes.md',
+        digest: `sha256:${'f'.repeat(64)}`,
+        executionAvailability: 'AUTHORING_ONLY',
+      },
+    ],
+  });
+  return createCreatorAgentDraftSnapshotV3({
+    agentId: 'agent.compiled.aggregate-review',
+    draftId: 'draft.compiled.aggregate-review',
+    draftRevision: 1,
+    baseVersionId: null,
+    definition: createCreatorAgentDefinitionV3({
+      protocol: CREATOR_AGENT_DEFINITION_V3_PROTOCOL,
+      name: 'Aggregate behavior reviewer',
+      description: 'Applies behavior compiled from an aggregate authoring corpus.',
+      projectBinding: { kind: 'none' },
+      behavior: {
+        instructions: 'Apply the frozen method without claiming access to source files.',
+        starterPrompts: ['Review this request.'],
+      },
+      requirements: {
+        codexVersion: '0.148.0-alpha.15',
+        commands: [],
+        plugins: [],
+        environmentVariableNames: [],
+      },
+      authoringSource: { kind: 'project_context_compiler', sourceLedger },
+      runtime: {
+        contextProfile: 'BEHAVIOR_ONLY_V1',
+        permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+        skills: [],
+        dynamicTools: [],
+        toolNetworkAccess: false,
+        output: { kind: 'text', description: 'A concise behavior-only review.' },
         turnTimeoutMs: 300_000,
       },
     }),

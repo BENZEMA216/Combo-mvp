@@ -3,9 +3,10 @@
 ## 从整个 Project 创建并运行一个本地 Agent
 
 `combo-creator-agent create` 是当前面向用户的主入口。一次命令会索引 canonical Project、让 bundled Codex
-把 Project 上下文编译为 `combo.creator-agent-draft/2`、显示完整编译报告和 Draft，并在用户确认后冻结
-immutable AgentVersion。也可以在同一命令中传入 `--run-prompt` 或 `--run-prompt-file`，立即运行刚刚冻结
-并从 Catalog 重开的 exact Version。
+把 Project 上下文编译为 Draft、显示完整编译报告，并在用户确认后冻结 immutable AgentVersion。formal
+Project 根能形成受支持的 Git snapshot 时产出 V2；根目录不是 Git worktree、尚无首个 commit，或不能形成
+canonical snapshot 时产出 V3 behavior-only Agent。它不会自动选择某个嵌套仓库。也可以在同一命令中传入
+`--run-prompt` 或 `--run-prompt-file`，立即运行刚刚冻结并从 Catalog 重开的 exact Version。
 
 ```bash
 combo-creator-agent create \
@@ -23,15 +24,22 @@ ignored、hidden 文件，以及源码、文档、配置、日志、task/session
 `.git` 内容。普通检出中的 `.git` 目录属于扫描范围；linked worktree 中的 `.git` pointer 只作为 Project
 内的物理文件处理，不会继续遍历 Project 外的 shared common directory 或 sibling worktree。symlink 会按
 链接本身及其目标文本建索引，但不会跟随到外部路径；特殊文件会 fail-closed。扫描器不会执行 Project 中
-发现的脚本，也不会触发 Git clean filter。单次 authoring scan 最多接受 500,000 个条目、8 GiB regular
-file 内容与 256 MiB Git 路径输出；单个 secret-candidate 文件最多 1 MiB。超过任一边界都会明确失败，
-不会静默漏扫。
+发现的脚本，也不会触发 Git clean filter。单次 authoring scan 最多接受 500,000 个条目、32 GiB unique
+regular-file 内容与 256 MiB Git 路径输出；单个 secret-candidate 文件最多 1 MiB。hardlink 的每个路径都会
+进入索引和 root digest，但同一 inode 只读取并计入 unique byte budget 一次；报告同时显示 logical bytes、
+unique bytes 与 alias 数。超过任一边界都会明确失败，不会静默漏扫。
 
 扫描器在编译前后分别计算完整索引，期间 Project 发生可见漂移会拒绝产出 Draft。“全量索引”只表示可信
 扫描器读取并哈希了所有可支持的物理条目，不表示模型语义上理解了每个字节。编译报告会另外列出模型声明
-实际查看的 source path；这些引用会以相对路径、内容 digest 和 `FIXED_GIT_TREE` 或 `AUTHORING_ONLY`
-可用性写入 V2 compact source ledger。Project 内出现的 system/developer 文本、tool output 和历史对话都
-只被当作 authoring evidence，不会获得指令权限。
+实际查看的 source path；这些引用会以相对路径、内容 digest 和执行可用性写入 compact source ledger。
+V2 可以区分 `FIXED_GIT_TREE` 与 `AUTHORING_ONLY`；V3 的全部引用及 coverage 都强制为
+`AUTHORING_ONLY`。Project 内出现的 system/developer 文本、tool output 和历史对话都只被当作 authoring
+evidence，不会获得指令权限。
+
+扫描器本身不发起 Project 写操作。macOS 可能在文件第一次被读取时更新系统管理的
+`com.apple.provenance` 与 ctime；扫描器会先完成一次有界的一字节读并把随后稳定的 ctime 纳入索引，避免
+把这种平台归一化误判为内容漂移。因而当前 Alpha 保证内容、路径、权限、mtime 与稳定后的 ctime 在编译
+期间一致，但不承诺首次读取前后的全部扩展属性与 ctime 逐字节不变。
 
 敏感输出检查会阻止已识别 credential literal 和常见密钥格式进入 Draft，但它只是 best-effort taint
 检查，不是自动脱敏或保密证明。用户仍需在冻结前检查完整 Draft。Catalog 持久化 V2 handoff 中的 Draft、
@@ -41,8 +49,9 @@ Draft 自由文本仍可能包含 Project 摘录。运行 prompt、回答和本�
 
 `create` 只允许在可见 TTY 中确认。命令显示编译报告、完整 Draft 和 fingerprint 后，用户只输入一次
 `FREEZE`；它不接受 `--confirmation-file`、`--yes`、`--force` 或非交互式确认。冻结前还会验证这个 Draft
-能够从 exact Git commit/tree 物化为当前 Runtime 可执行的 tracked tree，冻结后则关闭并重新打开 Catalog，
-按 exact `agentId+versionId` 读取 Version。
+满足当前 Runtime 合同。V2 必须能从 exact Git commit/tree 物化 tracked tree；V3 必须声明
+`projectBinding=none`，且全部 source evidence 只用于 authoring。冻结后命令会关闭并重新打开 Catalog，按
+exact `agentId+versionId` 读取 Version。
 
 默认 Catalog 位于
 `~/Library/Application Support/Combo/creator-agent/catalog/creator-agents.sqlite`。显式 Catalog 路径必须
@@ -71,6 +80,9 @@ combo-creator-agent run \
   --project "/absolute/project" --prompt-file "/absolute/prompt.txt" --allow-unisolated-read
 ```
 
+手工运行 V1/V2 时必须提供 `--project`；运行 behavior-only V3 时必须省略 `--project`。后者使用新的空私有
+临时目录，不会重新读取创建 Agent 时的 authoring Project。
+
 这仍是 controlled single-user local Alpha。它不会创建 `combo.codex-agent-share/1`、Capability、Cloud
 Catalog 或多轮 Conversation，也没有操作系统级的 Project-only 文件隔离，因此不得用于不可信用户、
 不可信 Project 或公网流量。扫描器会检测常见路径替换并 fail-closed，但不声称能够抵御同 UID 恶意进程
@@ -78,28 +90,30 @@ Catalog 或多轮 Conversation，也没有操作系统级的 Project-only 文件
 
 ## 不可变 AgentVersion 执行
 
-本包现在能让同一个经过完整性校验的 `AgentVersion` 在本地可靠执行。调用
-`runCreatorAgentLocalTurn()` 时，Worker 会先验证 Version fingerprint、canonical origin 与本机对象库中的
-commit/tree，再只从 Git blob 创建一个私有的临时 execution snapshot。bundled Codex 读取这份固定的 tracked
-tree，不读取可变工作区、ignored/untracked 文件、Git attributes/filter 或本机 index 状态；原工作区即使有
-未提交改动，也不会改变这次 Version 的行为。AgentVersion instructions 会编译成该次 Host 的固定 developer
+本包现在能让同一个经过完整性校验的 `AgentVersion` 在本地可靠执行。对 V1/V2，Worker 会验证 Version
+fingerprint、canonical origin 与本机对象库中的 commit/tree，再只从 Git blob 创建一个私有 tracked-tree
+execution snapshot。对 V3，Worker 拒绝调用方传入 authoring Project，改为创建一个空的私有临时目录；
+bundled Codex 只能使用冻结行为和本轮用户输入，不能声称运行时仍能读取创作语料。两类临时目录都在 Host、
+Runtime 与 Broker 完整停止后删除。AgentVersion instructions 会编译成该次 Host 的固定 developer
 instructions，version fingerprint 同时进入 invocation input fingerprint，运行中不会读取可变 Draft 或
-“当前版本”。临时 snapshot 不含 `.git` 元数据，并在 Host、Runtime 与 Broker 完整停止后删除。
+“当前版本”。
 
 `AgentDraft` 与 `AgentVersion` 的纯值合同位于 `@cb/creator-agent-protocol/agent`。V1 保留 current-task
-或 manual handoff 兼容；Project Context Compiler 产生独立的 V2 Definition、Draft、handoff 与 Version，
-并把 compact source ledger 绑定到全部下游 fingerprint。两代 Draft 都通过新 revision 修订且不可执行，
+或 manual handoff 兼容；Project Context Compiler 根据 formal 根的 Git 能力产生 V2 Git-backed 或 V3
+behavior-only Definition、Draft、handoff 与 Version，并把 compact source ledger 绑定到全部下游
+fingerprint。三代 Draft 都通过新 revision 修订且不可执行，
 每个 DraftSnapshot 本身不可变；Version 从一个精确 Draft revision 冻结并可 canonical JSON round-trip。
 Version 不保存本机绝对路径、运行 prompt 或回答。本阶段可对同一 Version 发起多个彼此隔离的 fresh run；
 它们各有独立 ephemeral thread 和双 SQLite，尚不共享多轮 Conversation 记忆，也不能在进程重启后续接旧
 thread。
 
-创建时，ignored、untracked、日志和 task/session 内容可以参与 Agent authoring；冻结后的实际运行只物化
-Version 绑定的 commit-pinned tracked Git tree。V2 ledger 中标为 `AUTHORING_ONLY` 的证据不会被偷偷复制
-进运行 snapshot，因而可能塑造 Agent instructions，却不能作为运行期文件读取。手工 current-task handoff
-只保留作诊断兼容路径，不能再用它描述新的主流程。
+创建时，ignored、untracked、日志和 task/session 内容可以参与 Agent authoring。冻结后的 V2 只物化
+Version 绑定的 commit-pinned tracked Git tree；V3 完全不挂载原 Project，只运行已冻结的行为。所有标为
+`AUTHORING_ONLY` 的证据都不会被偷偷复制进运行目录，因而可能塑造 Agent instructions，却不能作为运行期
+文件读取。手工 current-task handoff 只保留作诊断兼容路径，不能再用它描述新的主流程。
 
-这里的 `combo.creator-agent-version/1` 和 `combo.creator-agent-version/2` 都是尚未发布的本地执行合同。
+这里的 `combo.creator-agent-version/1`、`combo.creator-agent-version/2` 和
+`combo.creator-agent-version/3` 都是尚未发布的本地执行合同。
 它们既不等同于公开分享链的 `combo.codex-agent-share/1`，也不是旧 `CapabilityDefinition`。后续必须通过
 显式投影或迁移合同连接这些体系，不能把当前 local Alpha 描述成现有分享、Capability catalog 或云端运行
 入口。
@@ -109,6 +123,8 @@ Project Context Compiler 的本机显式真实门槛为
 真实 bundled Codex 编译、V2 Catalog import、review、freeze、close/reopen 和 exact Version 本地运行，并
 核对原 Project 零变化及敏感内容、prompt 和回答不落 Catalog 或 Worker SQLite。原有
 `pnpm -F @cb/creator-worker test:real-agent` 继续验证预制 frozen Version 的底层执行链。
+该 real gate 同时包含 V3 behavior-only 一轮，证明真实 bundled Codex 能在不挂载 authoring Project 的空临时
+目录中完成任务。
 
 ## 本地 Alpha 闭环
 
