@@ -9,16 +9,26 @@ import {
 } from '@cb/creator-agent-persistence';
 import {
   CREATOR_AGENT_DEFINITION_PROTOCOL,
+  CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+  createCreatorAgentDefinitionV2,
   createCreatorAgentDraftHandoff,
+  createCreatorAgentDraftHandoffV2,
   createCreatorAgentDraftSnapshot,
+  createCreatorAgentDraftSnapshotV2,
+  createCreatorAgentProjectSourceLedger,
   serializeCreatorAgentDraftHandoff,
+  serializeCreatorAgentDraftHandoffV2,
+  type CreatorAgentVersion,
   type CreatorAgentDraftSnapshotV1,
-  type CreatorAgentVersionV1,
 } from '@cb/creator-agent-protocol/agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { executeCreatorAgentCatalogCli } from '../agent-catalog-cli.js';
 import type { CreatorAgentLocalTurnOptions } from '../agent-local-contract.js';
+import type {
+  CreatorAgentProjectCompilationOptions,
+  CreatorAgentProjectCompilationResult,
+} from '../project-context-compiler.js';
 
 const roots: string[] = [];
 const CATALOG_IDENTITY = 'combo.local.creator-agent-catalog.v1';
@@ -28,6 +38,132 @@ afterEach(() => {
 });
 
 describe('Creator Agent Catalog CLI', () => {
+  it('compiles, reviews, confirms, freezes, reopens, and optionally runs in one create command', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'compiled-project-')));
+    const compiledDraft = compiledDraftV2();
+    const handoff = createCreatorAgentDraftHandoffV2({ draft: compiledDraft });
+    const compilation: CreatorAgentProjectCompilationResult = Object.freeze({
+      draft: compiledDraft,
+      handoff,
+      handoffText: serializeCreatorAgentDraftHandoffV2(handoff),
+      report: Object.freeze({
+        contextRootDigest: `sha256:${'c'.repeat(64)}`,
+        indexedEntryCount: 9,
+        indexedFileCount: 7,
+        indexedByteCount: 1234,
+        categories: Object.freeze({
+          configuration: 1,
+          documentation: 1,
+          git: 1,
+          log: 1,
+          secret_candidate: 1,
+          source: 2,
+          task_record: 1,
+          other: 1,
+        }),
+        citedSources: Object.freeze([
+          Object.freeze({
+            path: 'README.md',
+            digest: `sha256:${'d'.repeat(64)}` as const,
+            executionAvailability: 'FIXED_GIT_TREE' as const,
+          }),
+        ]),
+        coverageSummary: 'Indexed the complete Project and cited the behavior-defining sources.',
+      }),
+    });
+    const compileProject = vi.fn(async () => compilation);
+    const runAgentTurn = vi.fn(async () => Object.freeze({ text: 'created agent answer' }));
+
+    const result = await invoke(
+      [
+        'create',
+        '--catalog',
+        fixture.catalog,
+        '--project',
+        project,
+        '--allow-unisolated-read',
+        '--allow-sensitive-project-context',
+        '--run-prompt',
+        'Use the new Agent.',
+      ],
+      runAgentTurn,
+      compileProject,
+      'FREEZE',
+    );
+
+    expect(result.exit).toBe(0);
+    expect(result.stderr).toContain('Project 全量索引与 Agent 编译报告');
+    expect(result.stderr).toContain(compiledDraft.draftFingerprint);
+    expect(result.stdout).toContain('"contextRootDigest"');
+    expect(result.stdout).toContain('created agent answer');
+    expect(compileProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectPath: project,
+        allowUnisolatedRead: true,
+        allowSensitiveProjectContext: true,
+      }),
+    );
+    expect(runAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: 'Use the new Agent.', projectPath: project }),
+    );
+    const catalog = openCatalog(fixture.catalog);
+    expect(catalog.listVersions(compiledDraft.agentId)).toHaveLength(1);
+    catalog.close();
+  });
+
+  it('requires explicit sensitive-context authorization before scanning or opening a catalog', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'unauthorized-project-')));
+    const compileProject = vi.fn();
+
+    await expect(
+      invoke(
+        ['create', '--catalog', fixture.catalog, '--project', project, '--allow-unisolated-read'],
+        undefined,
+        compileProject,
+        'FREEZE',
+      ),
+    ).rejects.toMatchObject({ code: 'PROJECT_CONTEXT_AUTHORIZATION_REQUIRED' });
+    expect(compileProject).not.toHaveBeenCalled();
+    expect(() => openCatalog(fixture.catalog)).toThrow();
+  });
+
+  it('preflights TTY, run input, and explicit state before compiling or freezing', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'preflight-project-')));
+    const promptFile = join(fixture.root, 'prompt.txt');
+    writePrivate(promptFile, 'prompt');
+    const compileProject = vi.fn();
+    const base = [
+      'create',
+      '--catalog',
+      fixture.catalog,
+      '--project',
+      project,
+      '--allow-unisolated-read',
+      '--allow-sensitive-project-context',
+    ] as const;
+
+    await expect(invoke(base, undefined, compileProject)).rejects.toMatchObject({
+      code: 'AGENT_CONFIRMATION_REQUIRED',
+    });
+    await expect(
+      invoke(
+        [...base, '--run-prompt', 'inline', '--run-prompt-file', promptFile],
+        undefined,
+        compileProject,
+        'FREEZE',
+      ),
+    ).rejects.toMatchObject({ code: 'AGENT_CLI_INVALID' });
+    await expect(
+      invoke([...base, '--state-dir', fixture.root], undefined, compileProject, 'FREEZE'),
+    ).rejects.toMatchObject({ code: 'AGENT_CLI_INVALID' });
+
+    expect(compileProject).not.toHaveBeenCalled();
+    expect(() => openCatalog(fixture.catalog)).toThrow();
+  });
+
   it('imports, reviews, freezes, reopens, and runs one exact Version', async () => {
     const fixture = cliFixture();
     await invoke(['init', '--catalog', fixture.catalog]);
@@ -82,7 +218,7 @@ describe('Creator Agent Catalog CLI', () => {
     const answer = 'ANSWER_MUST_NOT_ENTER_CATALOG';
     const project = realpathSync(mkdtempSync(join(realpathSync(tmpdir()), 'agent-project-')));
     roots.push(project);
-    const observed: CreatorAgentVersionV1[] = [];
+    const observed: CreatorAgentVersion[] = [];
     const result = await invoke(
       [
         'run',
@@ -275,6 +411,12 @@ async function invoke(
   runAgentTurn: (
     options: CreatorAgentLocalTurnOptions,
   ) => Promise<Readonly<{ text: string }>> = async () => Object.freeze({ text: 'unused' }),
+  compileProject: (
+    options: CreatorAgentProjectCompilationOptions,
+  ) => Promise<CreatorAgentProjectCompilationResult> = async () => {
+    throw new Error('unused compiler');
+  },
+  interactiveConfirmation?: string,
 ) {
   let stdout = '';
   let stderr = '';
@@ -283,11 +425,11 @@ async function invoke(
     {
       stdout: { write: (chunk) => (stdout += chunk) },
       stderr: { write: (chunk) => (stderr += chunk) },
-      stdinIsTty: false,
-      stderrIsTty: false,
-      readConfirmation: async () => '',
+      stdinIsTty: interactiveConfirmation !== undefined,
+      stderrIsTty: interactiveConfirmation !== undefined,
+      readConfirmation: async () => interactiveConfirmation ?? '',
     },
-    { runAgentTurn },
+    { runAgentTurn, compileProject },
     new AbortController().signal,
   );
   return Object.freeze({ exit, stdout, stderr });
@@ -332,6 +474,68 @@ function draft(
         turnTimeoutMs: 300_000,
       },
     },
+  });
+}
+
+function compiledDraftV2() {
+  const sourceLedger = createCreatorAgentProjectSourceLedger({
+    contextRootDigest: `sha256:${'c'.repeat(64)}`,
+    coverage: {
+      indexedEntryCount: 9,
+      indexedFileCount: 7,
+      indexedByteCount: 1234,
+      hiddenEntryCount: 2,
+      trackedEntryCount: 3,
+      untrackedEntryCount: 1,
+      ignoredEntryCount: 1,
+      gitAdminEntryCount: 1,
+      authoringOnlyEntryCount: 6,
+    },
+    citedSources: [
+      {
+        path: 'README.md',
+        digest: `sha256:${'d'.repeat(64)}`,
+        executionAvailability: 'FIXED_GIT_TREE',
+      },
+    ],
+  });
+  return createCreatorAgentDraftSnapshotV2({
+    agentId: 'agent.compiled.release-review',
+    draftId: 'draft.compiled.release-review',
+    draftRevision: 1,
+    baseVersionId: null,
+    definition: createCreatorAgentDefinitionV2({
+      protocol: CREATOR_AGENT_DEFINITION_V2_PROTOCOL,
+      name: 'Compiled release reviewer',
+      description: 'Reviews releases from complete Project authoring evidence.',
+      projectSnapshot: {
+        kind: 'git',
+        repositoryUrl: 'https://github.com/dangdang-tech/Combo.git',
+        sourceRef: 'refs/heads/main',
+        commitSha: 'a'.repeat(40),
+        treeSha: 'b'.repeat(40),
+      },
+      behavior: {
+        instructions: 'Use all reviewed Project evidence consistently.',
+        starterPrompts: ['Review this release.'],
+      },
+      requirements: {
+        codexVersion: '0.148.0-alpha.15',
+        commands: [],
+        plugins: [],
+        environmentVariableNames: [],
+      },
+      authoringSource: { kind: 'project_context_compiler', sourceLedger },
+      runtime: {
+        contextProfile: 'PROJECT_TREE_READ_ONLY_V1',
+        permissionProfile: 'LOCAL_UNISOLATED_READ_ONLY_V1',
+        skills: [],
+        dynamicTools: [],
+        toolNetworkAccess: false,
+        output: { kind: 'text', description: 'An evidence-backed review.' },
+        turnTimeoutMs: 300_000,
+      },
+    }),
   });
 }
 

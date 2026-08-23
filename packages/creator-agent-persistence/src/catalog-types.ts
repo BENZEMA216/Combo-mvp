@@ -1,6 +1,6 @@
 import type {
-  CreatorAgentDraftSnapshotV1,
-  CreatorAgentVersionV1,
+  CreatorAgentDraftSnapshot,
+  CreatorAgentVersion,
 } from '@cb/creator-agent-protocol/agent';
 
 export type CreatorAgentCatalogErrorCode =
@@ -57,24 +57,24 @@ export type CreatorAgentCatalogAgent = Readonly<{
 
 export type CreatorAgentDraftImportResult = Readonly<{
   disposition: 'IMPORTED' | 'EXACT_REPLAY';
-  draft: CreatorAgentDraftSnapshotV1;
+  draft: CreatorAgentDraftSnapshot;
 }>;
 
 export type CreatorAgentFreezeReview = Readonly<{
-  draft: CreatorAgentDraftSnapshotV1;
+  draft: CreatorAgentDraftSnapshot;
   confirmationText: string;
 }>;
 
 export type CreatorAgentFreezeResult = Readonly<{
   disposition: 'CREATED' | 'EXACT_REPLAY';
-  version: CreatorAgentVersionV1;
+  version: CreatorAgentVersion;
 }>;
 
 export interface CreatorAgentCatalog {
   importDraftHandoff(text: string): CreatorAgentDraftImportResult;
   listAgents(): readonly CreatorAgentCatalogAgent[];
-  listDrafts(agentId: string): readonly CreatorAgentDraftSnapshotV1[];
-  readDraft(ref: CreatorAgentDraftRef): CreatorAgentDraftSnapshotV1;
+  listDrafts(agentId: string): readonly CreatorAgentDraftSnapshot[];
+  readDraft(ref: CreatorAgentDraftRef): CreatorAgentDraftSnapshot;
   createFreezeReview(ref: CreatorAgentDraftRef): CreatorAgentFreezeReview;
   freezeDraft(
     input: Readonly<{
@@ -82,7 +82,7 @@ export interface CreatorAgentCatalog {
       confirmationText: string;
     }>,
   ): CreatorAgentFreezeResult;
-  listVersions(agentId: string): readonly CreatorAgentVersionV1[];
-  readVersion(ref: CreatorAgentVersionRef): CreatorAgentVersionV1;
+  listVersions(agentId: string): readonly CreatorAgentVersion[];
+  readVersion(ref: CreatorAgentVersionRef): CreatorAgentVersion;
   close(): void;
 }

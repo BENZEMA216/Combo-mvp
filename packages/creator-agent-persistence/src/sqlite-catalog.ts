@@ -3,14 +3,14 @@ import type { DatabaseSync } from 'node:sqlite';
 import { isProxy } from 'node:util/types';
 
 import {
-  freezeCreatorAgentVersion,
-  parseCreatorAgentDraftHandoff,
-  parseCreatorAgentVersion,
-  serializeCreatorAgentDraftSnapshot,
-  serializeCreatorAgentDraftHandoff,
-  serializeCreatorAgentVersion,
-  type CreatorAgentDraftSnapshotV1,
-  type CreatorAgentVersionV1,
+  freezeCreatorAgentVersionAny,
+  parseCreatorAgentDraftHandoffAny,
+  parseCreatorAgentVersionAny,
+  serializeCreatorAgentDraftHandoffAny,
+  serializeCreatorAgentDraftSnapshotAny,
+  serializeCreatorAgentVersionAny,
+  type CreatorAgentDraftSnapshot,
+  type CreatorAgentVersion,
 } from '@cb/creator-agent-protocol/agent';
 
 import {
@@ -68,7 +68,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
     this.#assertOpen();
     let handoff;
     try {
-      handoff = parseCreatorAgentDraftHandoff(text);
+      handoff = parseCreatorAgentDraftHandoffAny(text);
     } catch (error) {
       throw catalogError(
         'CATALOG_HANDOFF_INVALID',
@@ -77,7 +77,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
       );
     }
     const { draft } = handoff;
-    const draftJson = serializeCreatorAgentDraftSnapshot(draft);
+    const draftJson = serializeCreatorAgentDraftSnapshotAny(draft);
     const now = Date.now();
     try {
       this.database.exec('BEGIN IMMEDIATE');
@@ -181,7 +181,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
     }
   }
 
-  public listDrafts(agentId: string): readonly CreatorAgentDraftSnapshotV1[] {
+  public listDrafts(agentId: string): readonly CreatorAgentDraftSnapshot[] {
     this.#assertOpen();
     assertIdentifier(agentId, 'agentId');
     try {
@@ -198,7 +198,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
     }
   }
 
-  public readDraft(input: CreatorAgentDraftRef): CreatorAgentDraftSnapshotV1 {
+  public readDraft(input: CreatorAgentDraftRef): CreatorAgentDraftSnapshot {
     this.#assertOpen();
     const ref = snapshotDraftRef(input);
     const row = this.#draftRow(ref);
@@ -251,7 +251,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
           .get(draft.agentId),
       );
       const versionNumber = rowInteger(agent, 'latest_version_number') + 1;
-      const version = freezeCreatorAgentVersion({
+      const version = freezeCreatorAgentVersionAny({
         versionId: `version.local.${randomUUID()}`,
         versionNumber,
         createdAtMs: Date.now(),
@@ -274,7 +274,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
           version.sourceDraft.draftFingerprint,
           version.definitionFingerprint,
           version.versionFingerprint,
-          serializeCreatorAgentVersion(version),
+          serializeCreatorAgentVersionAny(version),
           version.createdAtMs,
         );
       this.database
@@ -292,7 +292,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
     }
   }
 
-  public listVersions(agentId: string): readonly CreatorAgentVersionV1[] {
+  public listVersions(agentId: string): readonly CreatorAgentVersion[] {
     this.#assertOpen();
     assertIdentifier(agentId, 'agentId');
     try {
@@ -309,7 +309,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
     }
   }
 
-  public readVersion(input: CreatorAgentVersionRef): CreatorAgentVersionV1 {
+  public readVersion(input: CreatorAgentVersionRef): CreatorAgentVersion {
     this.#assertOpen();
     const ref = snapshotVersionRef(input);
     try {
@@ -387,7 +387,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
   }
 
   #draftRow(
-    ref: CreatorAgentDraftRef | CreatorAgentDraftSnapshotV1,
+    ref: CreatorAgentDraftRef | CreatorAgentDraftSnapshot,
   ): Record<string, unknown> | undefined {
     return this.database
       .prepare(
@@ -407,34 +407,34 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
     });
   }
 
-  #parseDraftRow(row: Record<string, unknown>): CreatorAgentDraftSnapshotV1 {
+  #parseDraftRow(row: Record<string, unknown>): CreatorAgentDraftSnapshot {
     let handoff;
     try {
-      handoff = parseCreatorAgentDraftHandoff(rowString(row, 'handoff_json'));
+      handoff = parseCreatorAgentDraftHandoffAny(rowString(row, 'handoff_json'));
     } catch (error) {
       throw catalogError('CATALOG_CORRUPT', 'Stored Agent Draft handoff is invalid.', error);
     }
     const { draft } = handoff;
     nonnegativeInteger(rowInteger(row, 'imported_at_ms'));
     if (
-      serializeCreatorAgentDraftSnapshot(draft) !== rowString(row, 'draft_json') ||
+      serializeCreatorAgentDraftSnapshotAny(draft) !== rowString(row, 'draft_json') ||
       draft.agentId !== rowString(row, 'agent_id') ||
       draft.draftId !== rowString(row, 'draft_id') ||
       draft.draftRevision !== rowInteger(row, 'draft_revision') ||
       draft.baseVersionId !== rowNullableString(row, 'base_version_id') ||
       draft.definitionFingerprint !== rowString(row, 'definition_fingerprint') ||
       draft.draftFingerprint !== rowString(row, 'draft_fingerprint') ||
-      serializeCreatorAgentDraftHandoff(handoff) !== rowString(row, 'handoff_json')
+      serializeCreatorAgentDraftHandoffAny(handoff) !== rowString(row, 'handoff_json')
     ) {
       throw catalogError('CATALOG_CORRUPT', 'Stored Agent Draft columns do not match.');
     }
     return draft;
   }
 
-  #parseVersionRow(row: Record<string, unknown>): CreatorAgentVersionV1 {
+  #parseVersionRow(row: Record<string, unknown>): CreatorAgentVersion {
     let version;
     try {
-      version = parseCreatorAgentVersion(rowString(row, 'version_json'));
+      version = parseCreatorAgentVersionAny(rowString(row, 'version_json'));
     } catch (error) {
       throw catalogError('CATALOG_CORRUPT', 'Stored Agent Version is invalid.', error);
     }
@@ -448,14 +448,14 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
       version.definitionFingerprint !== rowString(row, 'definition_fingerprint') ||
       version.versionFingerprint !== rowString(row, 'version_fingerprint') ||
       version.createdAtMs !== rowInteger(row, 'created_at_ms') ||
-      serializeCreatorAgentVersion(version) !== rowString(row, 'version_json')
+      serializeCreatorAgentVersionAny(version) !== rowString(row, 'version_json')
     ) {
       throw catalogError('CATALOG_CORRUPT', 'Stored Agent Version columns do not match.');
     }
     return version;
   }
 
-  #assertCurrentDraft(draft: CreatorAgentDraftSnapshotV1): void {
+  #assertCurrentDraft(draft: CreatorAgentDraftSnapshot): void {
     const agent = this.database
       .prepare(
         'SELECT latest_draft_revision, draft_id FROM agent_catalog_agents WHERE agent_id = ?',
@@ -483,7 +483,7 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
   }
 }
 
-function confirmationText(draft: CreatorAgentDraftSnapshotV1): string {
+function confirmationText(draft: CreatorAgentDraftSnapshot): string {
   return `我已逐字检查这个 Creator Agent Draft，并授权冻结 agentId=${draft.agentId}、draftId=${draft.draftId}、draftRevision=${draft.draftRevision}、draftFingerprint=${draft.draftFingerprint}；若任一值变化，停止。`;
 }
 

@@ -9,11 +9,22 @@ export const CREATOR_AGENT_DEFINITION_PROTOCOL = 'combo.creator-agent-definition
 export const CREATOR_AGENT_DRAFT_PROTOCOL = 'combo.creator-agent-draft/1' as const;
 export const CREATOR_AGENT_DRAFT_HANDOFF_PROTOCOL = 'combo.creator-agent-draft-handoff/1' as const;
 export const CREATOR_AGENT_VERSION_PROTOCOL = 'combo.creator-agent-version/1' as const;
+export const CREATOR_AGENT_DEFINITION_V2_PROTOCOL = 'combo.creator-agent-definition/2' as const;
+export const CREATOR_AGENT_DRAFT_V2_PROTOCOL = 'combo.creator-agent-draft/2' as const;
+export const CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL =
+  'combo.creator-agent-draft-handoff/2' as const;
+export const CREATOR_AGENT_VERSION_V2_PROTOCOL = 'combo.creator-agent-version/2' as const;
+export const CREATOR_AGENT_SOURCE_LEDGER_PROTOCOL =
+  'combo.creator-agent-project-source-ledger/1' as const;
 export const CREATOR_AGENT_MAX_CANONICAL_BYTES = 65_536;
 
 const DEFINITION_FINGERPRINT_DOMAIN = 'combo.creator-agent-definition/1' as const;
 const DRAFT_FINGERPRINT_DOMAIN = 'combo.creator-agent-draft/1' as const;
 const VERSION_FINGERPRINT_DOMAIN = 'combo.creator-agent-version/1' as const;
+const DEFINITION_V2_FINGERPRINT_DOMAIN = 'combo.creator-agent-definition/2' as const;
+const DRAFT_V2_FINGERPRINT_DOMAIN = 'combo.creator-agent-draft/2' as const;
+const VERSION_V2_FINGERPRINT_DOMAIN = 'combo.creator-agent-version/2' as const;
+const SOURCE_LEDGER_FINGERPRINT_DOMAIN = 'combo.creator-agent-project-source-ledger/1' as const;
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/u;
 const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/u;
 const REQUIREMENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/u;
@@ -114,6 +125,91 @@ export const CreatorAgentDefinitionV1Schema = z
   .readonly();
 export type CreatorAgentDefinitionV1 = z.infer<typeof CreatorAgentDefinitionV1Schema>;
 
+const CreatorAgentSourceCitationSchema = z
+  .object({
+    path: SafeText(1, 512).refine(isSafeRelativeProjectPath, 'Project source path is unsafe'),
+    digest: Sha256DigestSchema,
+    executionAvailability: z.enum(['FIXED_GIT_TREE', 'AUTHORING_ONLY']),
+  })
+  .strict()
+  .readonly();
+
+type SourceCoverageValue = Readonly<{
+  indexedEntryCount: number;
+  indexedFileCount: number;
+  indexedByteCount: number;
+  hiddenEntryCount: number;
+  trackedEntryCount: number;
+  untrackedEntryCount: number;
+  ignoredEntryCount: number;
+  gitAdminEntryCount: number;
+  authoringOnlyEntryCount: number;
+}>;
+
+const SourceCoverageSchema = z
+  .object({
+    indexedEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    indexedFileCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    indexedByteCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    hiddenEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    trackedEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    untrackedEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    ignoredEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    gitAdminEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    authoringOnlyEntryCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict()
+  .superRefine(validateSourceCoverage)
+  .readonly();
+
+const creatorAgentSourceLedgerShape = {
+  protocol: z.literal(CREATOR_AGENT_SOURCE_LEDGER_PROTOCOL),
+  scanProfile: z.literal('FULL_PROJECT_READ_ONLY_V1'),
+  rawStored: z.literal(false),
+  contextRootDigest: Sha256DigestSchema,
+  coverage: SourceCoverageSchema,
+  citedSources: z
+    .array(CreatorAgentSourceCitationSchema)
+    .min(1)
+    .max(32)
+    .superRefine(uniqueSourcePaths)
+    .readonly(),
+} as const;
+const CreatorAgentSourceLedgerWithoutFingerprintSchema = z
+  .object(creatorAgentSourceLedgerShape)
+  .strict()
+  .superRefine(validateSourceLedgerCoverage)
+  .readonly();
+export const CreatorAgentProjectSourceLedgerSchema = z
+  .object({ ...creatorAgentSourceLedgerShape, ledgerFingerprint: Sha256DigestSchema })
+  .strict()
+  .superRefine(validateSourceLedgerCoverage)
+  .readonly();
+export type CreatorAgentProjectSourceLedger = z.infer<typeof CreatorAgentProjectSourceLedgerSchema>;
+
+const CreatorAgentAuthoringSourceV2Schema = z
+  .object({
+    kind: z.literal('project_context_compiler'),
+    sourceLedger: CreatorAgentProjectSourceLedgerSchema,
+  })
+  .strict()
+  .readonly();
+
+export const CreatorAgentDefinitionV2Schema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_DEFINITION_V2_PROTOCOL),
+    name: SafeText(1, 80),
+    description: SafeText(1, 500),
+    projectSnapshot: CreatorAgentProjectSnapshotSchema,
+    behavior: CreatorAgentBehaviorSchema,
+    requirements: CreatorAgentRequirementsSchema,
+    authoringSource: CreatorAgentAuthoringSourceV2Schema,
+    runtime: CreatorAgentRuntimeSchema,
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentDefinitionV2 = z.infer<typeof CreatorAgentDefinitionV2Schema>;
+
 const creatorAgentDraftShape = {
   protocol: z.literal(CREATOR_AGENT_DRAFT_PROTOCOL),
   agentId: IdentifierSchema,
@@ -172,6 +268,59 @@ export const CreatorAgentVersionV1Schema = z
   .readonly();
 export type CreatorAgentVersionV1 = z.infer<typeof CreatorAgentVersionV1Schema>;
 
+const creatorAgentDraftV2Shape = {
+  protocol: z.literal(CREATOR_AGENT_DRAFT_V2_PROTOCOL),
+  agentId: IdentifierSchema,
+  draftId: IdentifierSchema,
+  draftRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  baseVersionId: IdentifierSchema.nullable(),
+  definition: CreatorAgentDefinitionV2Schema,
+  definitionFingerprint: Sha256DigestSchema,
+} as const;
+const CreatorAgentDraftV2WithoutFingerprintSchema = z
+  .object(creatorAgentDraftV2Shape)
+  .strict()
+  .readonly();
+export const CreatorAgentDraftSnapshotV2Schema = z
+  .object({ ...creatorAgentDraftV2Shape, draftFingerprint: Sha256DigestSchema })
+  .strict()
+  .readonly();
+export type CreatorAgentDraftSnapshotV2 = z.infer<typeof CreatorAgentDraftSnapshotV2Schema>;
+
+export const CreatorAgentDraftHandoffV2Schema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL),
+    intent: z.literal('import_project_context_draft'),
+    draft: CreatorAgentDraftSnapshotV2Schema,
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentDraftHandoffV2 = z.infer<typeof CreatorAgentDraftHandoffV2Schema>;
+
+const creatorAgentVersionV2Shape = {
+  protocol: z.literal(CREATOR_AGENT_VERSION_V2_PROTOCOL),
+  agentId: IdentifierSchema,
+  versionId: IdentifierSchema,
+  versionNumber: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+  sourceDraft: CreatorAgentVersionSourceDraftSchema,
+  definition: CreatorAgentDefinitionV2Schema,
+  definitionFingerprint: Sha256DigestSchema,
+} as const;
+const CreatorAgentVersionV2WithoutFingerprintSchema = z
+  .object(creatorAgentVersionV2Shape)
+  .strict()
+  .readonly();
+export const CreatorAgentVersionV2Schema = z
+  .object({ ...creatorAgentVersionV2Shape, versionFingerprint: Sha256DigestSchema })
+  .strict()
+  .readonly();
+export type CreatorAgentVersionV2 = z.infer<typeof CreatorAgentVersionV2Schema>;
+
+export type CreatorAgentDraftSnapshot = CreatorAgentDraftSnapshotV1 | CreatorAgentDraftSnapshotV2;
+export type CreatorAgentDraftHandoff = CreatorAgentDraftHandoffV1 | CreatorAgentDraftHandoffV2;
+export type CreatorAgentVersion = CreatorAgentVersionV1 | CreatorAgentVersionV2;
+
 export type CreateCreatorAgentDraftSnapshotInput = Readonly<{
   agentId: string;
   draftId: string;
@@ -214,6 +363,74 @@ const FreezeCreatorAgentVersionInputSchema = z
 
 const CreateCreatorAgentDraftHandoffInputSchema = z
   .object({ draft: CreatorAgentDraftSnapshotV1Schema })
+  .strict()
+  .readonly();
+
+export type CreateCreatorAgentProjectSourceLedgerInput = Readonly<{
+  contextRootDigest: string;
+  coverage: unknown;
+  citedSources: unknown;
+}>;
+export type CreateCreatorAgentDraftSnapshotV2Input = Readonly<{
+  agentId: string;
+  draftId: string;
+  draftRevision: number;
+  baseVersionId: string | null;
+  definition: unknown;
+}>;
+export type FreezeCreatorAgentVersionV2Input = Readonly<{
+  versionId: string;
+  versionNumber: number;
+  createdAtMs: number;
+  draft: unknown;
+}>;
+export type CreateCreatorAgentDraftHandoffV2Input = Readonly<{
+  draft: unknown;
+}>;
+
+const CreateCreatorAgentProjectSourceLedgerInputSchema = z
+  .object({
+    contextRootDigest: Sha256DigestSchema,
+    coverage: SourceCoverageSchema,
+    citedSources: z
+      .array(CreatorAgentSourceCitationSchema)
+      .min(1)
+      .max(32)
+      .superRefine(uniqueSourcePaths)
+      .readonly(),
+  })
+  .strict()
+  .readonly();
+const CreateCreatorAgentDraftSnapshotV2InputSchema = z
+  .object({
+    agentId: IdentifierSchema,
+    draftId: IdentifierSchema,
+    draftRevision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    baseVersionId: IdentifierSchema.nullable(),
+    definition: CreatorAgentDefinitionV2Schema,
+  })
+  .strict()
+  .readonly();
+const FreezeCreatorAgentVersionV2InputSchema = z
+  .object({
+    versionId: IdentifierSchema,
+    versionNumber: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    draft: CreatorAgentDraftSnapshotV2Schema,
+  })
+  .strict()
+  .readonly();
+const CreateCreatorAgentDraftHandoffV2InputSchema = z
+  .object({ draft: CreatorAgentDraftSnapshotV2Schema })
+  .strict()
+  .readonly();
+const FreezeCreatorAgentVersionAnyInputSchema = z
+  .object({
+    versionId: IdentifierSchema,
+    versionNumber: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    createdAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    draft: z.union([CreatorAgentDraftSnapshotV1Schema, CreatorAgentDraftSnapshotV2Schema]),
+  })
   .strict()
   .readonly();
 
@@ -404,6 +621,293 @@ export function parseCreatorAgentVersion(text: string): CreatorAgentVersionV1 {
   return version;
 }
 
+export function createCreatorAgentProjectSourceLedger(
+  input: CreateCreatorAgentProjectSourceLedgerInput,
+): CreatorAgentProjectSourceLedger {
+  const snapshot = exactDetached(
+    CreateCreatorAgentProjectSourceLedgerInputSchema,
+    input,
+    'Agent Project source ledger input',
+  );
+  const withoutFingerprint = exactDetached(
+    CreatorAgentSourceLedgerWithoutFingerprintSchema,
+    {
+      protocol: CREATOR_AGENT_SOURCE_LEDGER_PROTOCOL,
+      scanProfile: 'FULL_PROJECT_READ_ONLY_V1',
+      rawStored: false,
+      contextRootDigest: snapshot.contextRootDigest,
+      coverage: snapshot.coverage,
+      citedSources: snapshot.citedSources,
+    },
+    'Agent Project source ledger',
+  );
+  return exactDetached(
+    CreatorAgentProjectSourceLedgerSchema,
+    {
+      ...withoutFingerprint,
+      ledgerFingerprint: canonicalFingerprint(SOURCE_LEDGER_FINGERPRINT_DOMAIN, withoutFingerprint),
+    },
+    'Agent Project source ledger',
+  );
+}
+
+export function verifyCreatorAgentProjectSourceLedger(
+  input: unknown,
+): CreatorAgentProjectSourceLedger {
+  const ledger = exactDetached(
+    CreatorAgentProjectSourceLedgerSchema,
+    input,
+    'Agent Project source ledger',
+  );
+  const { ledgerFingerprint: _fingerprint, ...withoutFingerprint } = ledger;
+  if (
+    ledger.ledgerFingerprint !==
+    canonicalFingerprint(SOURCE_LEDGER_FINGERPRINT_DOMAIN, withoutFingerprint)
+  ) {
+    throw new TypeError('Agent Project source ledger fingerprint does not match');
+  }
+  return ledger;
+}
+
+export function createCreatorAgentDefinitionV2(input: unknown): CreatorAgentDefinitionV2 {
+  const definition = exactDetached(CreatorAgentDefinitionV2Schema, input, 'Agent definition v2');
+  verifyCreatorAgentProjectSourceLedger(definition.authoringSource.sourceLedger);
+  return definition;
+}
+
+export function fingerprintCreatorAgentDefinitionV2(input: unknown): Sha256Digest {
+  return canonicalFingerprint(
+    DEFINITION_V2_FINGERPRINT_DOMAIN,
+    createCreatorAgentDefinitionV2(input),
+  );
+}
+
+export function createCreatorAgentDraftSnapshotV2(
+  input: CreateCreatorAgentDraftSnapshotV2Input,
+): CreatorAgentDraftSnapshotV2 {
+  const snapshot = exactDetached(
+    CreateCreatorAgentDraftSnapshotV2InputSchema,
+    input,
+    'Agent draft v2 input',
+  );
+  const definition = createCreatorAgentDefinitionV2(snapshot.definition);
+  const withoutFingerprint = exactDetached(
+    CreatorAgentDraftV2WithoutFingerprintSchema,
+    {
+      protocol: CREATOR_AGENT_DRAFT_V2_PROTOCOL,
+      agentId: snapshot.agentId,
+      draftId: snapshot.draftId,
+      draftRevision: snapshot.draftRevision,
+      baseVersionId: snapshot.baseVersionId,
+      definition,
+      definitionFingerprint: fingerprintCreatorAgentDefinitionV2(definition),
+    },
+    'Agent draft v2',
+  );
+  return exactDetached(
+    CreatorAgentDraftSnapshotV2Schema,
+    {
+      ...withoutFingerprint,
+      draftFingerprint: canonicalFingerprint(DRAFT_V2_FINGERPRINT_DOMAIN, withoutFingerprint),
+    },
+    'Agent draft v2',
+  );
+}
+
+export function verifyCreatorAgentDraftSnapshotV2(input: unknown): CreatorAgentDraftSnapshotV2 {
+  const draft = exactDetached(CreatorAgentDraftSnapshotV2Schema, input, 'Agent draft v2');
+  if (draft.definitionFingerprint !== fingerprintCreatorAgentDefinitionV2(draft.definition)) {
+    throw new TypeError('Agent draft v2 definition fingerprint does not match');
+  }
+  const { draftFingerprint: _fingerprint, ...withoutFingerprint } = draft;
+  if (
+    draft.draftFingerprint !== canonicalFingerprint(DRAFT_V2_FINGERPRINT_DOMAIN, withoutFingerprint)
+  ) {
+    throw new TypeError('Agent draft v2 fingerprint does not match');
+  }
+  return draft;
+}
+
+export function createCreatorAgentDraftHandoffV2(
+  input: CreateCreatorAgentDraftHandoffV2Input,
+): CreatorAgentDraftHandoffV2 {
+  const snapshot = exactDetached(
+    CreateCreatorAgentDraftHandoffV2InputSchema,
+    input,
+    'Agent draft handoff v2 input',
+  );
+  const draft = verifyCreatorAgentDraftSnapshotV2(snapshot.draft);
+  return verifyCreatorAgentDraftHandoffV2({
+    protocol: CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL,
+    intent: 'import_project_context_draft',
+    draft,
+  });
+}
+
+export function verifyCreatorAgentDraftHandoffV2(input: unknown): CreatorAgentDraftHandoffV2 {
+  const handoff = exactDetached(CreatorAgentDraftHandoffV2Schema, input, 'Agent draft handoff v2');
+  const draft = verifyCreatorAgentDraftSnapshotV2(handoff.draft);
+  return exactDetached(
+    CreatorAgentDraftHandoffV2Schema,
+    { protocol: handoff.protocol, intent: handoff.intent, draft },
+    'Agent draft handoff v2',
+  );
+}
+
+export function serializeCreatorAgentDraftHandoffV2(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentDraftHandoffV2(input));
+}
+
+export function parseCreatorAgentDraftHandoffV2(text: string): CreatorAgentDraftHandoffV2 {
+  const value = parseCanonicalAgentJson(text, 'Agent draft handoff v2');
+  const handoff = verifyCreatorAgentDraftHandoffV2(value);
+  if (canonicalizeJson(handoff) !== text) {
+    throw new TypeError('Agent draft handoff v2 is not exact canonical JSON');
+  }
+  return handoff;
+}
+
+export function freezeCreatorAgentVersionV2(
+  input: FreezeCreatorAgentVersionV2Input,
+): CreatorAgentVersionV2 {
+  const snapshot = exactDetached(
+    FreezeCreatorAgentVersionV2InputSchema,
+    input,
+    'Agent version v2 input',
+  );
+  const draft = verifyCreatorAgentDraftSnapshotV2(snapshot.draft);
+  const withoutFingerprint = exactDetached(
+    CreatorAgentVersionV2WithoutFingerprintSchema,
+    {
+      protocol: CREATOR_AGENT_VERSION_V2_PROTOCOL,
+      agentId: draft.agentId,
+      versionId: snapshot.versionId,
+      versionNumber: snapshot.versionNumber,
+      createdAtMs: snapshot.createdAtMs,
+      sourceDraft: {
+        draftId: draft.draftId,
+        draftRevision: draft.draftRevision,
+        draftFingerprint: draft.draftFingerprint,
+      },
+      definition: draft.definition,
+      definitionFingerprint: draft.definitionFingerprint,
+    },
+    'Agent version v2',
+  );
+  return exactDetached(
+    CreatorAgentVersionV2Schema,
+    {
+      ...withoutFingerprint,
+      versionFingerprint: canonicalFingerprint(VERSION_V2_FINGERPRINT_DOMAIN, withoutFingerprint),
+    },
+    'Agent version v2',
+  );
+}
+
+export function verifyCreatorAgentVersionV2(input: unknown): CreatorAgentVersionV2 {
+  const version = exactDetached(CreatorAgentVersionV2Schema, input, 'Agent version v2');
+  if (version.definitionFingerprint !== fingerprintCreatorAgentDefinitionV2(version.definition)) {
+    throw new TypeError('Agent version v2 definition fingerprint does not match');
+  }
+  const { versionFingerprint: _fingerprint, ...withoutFingerprint } = version;
+  if (
+    version.versionFingerprint !==
+    canonicalFingerprint(VERSION_V2_FINGERPRINT_DOMAIN, withoutFingerprint)
+  ) {
+    throw new TypeError('Agent version v2 fingerprint does not match');
+  }
+  return version;
+}
+
+export function serializeCreatorAgentVersionV2(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentVersionV2(input));
+}
+
+export function parseCreatorAgentVersionV2(text: string): CreatorAgentVersionV2 {
+  const value = parseCanonicalAgentJson(text, 'Agent version v2');
+  const version = verifyCreatorAgentVersionV2(value);
+  if (canonicalizeJson(version) !== text) {
+    throw new TypeError('Agent version v2 is not exact canonical JSON');
+  }
+  return version;
+}
+
+export function parseCreatorAgentDraftHandoffAny(text: string): CreatorAgentDraftHandoff {
+  const value = parseCanonicalAgentJson(text, 'Agent draft handoff');
+  if (protocolValue(value) === CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL) {
+    return parseCreatorAgentDraftHandoffV2(text);
+  }
+  return parseCreatorAgentDraftHandoff(text);
+}
+
+export function serializeCreatorAgentDraftHandoffAny(input: unknown): string {
+  if (protocolValue(input) === CREATOR_AGENT_DRAFT_HANDOFF_V2_PROTOCOL) {
+    return serializeCreatorAgentDraftHandoffV2(input);
+  }
+  return serializeCreatorAgentDraftHandoff(input);
+}
+
+export function serializeCreatorAgentDraftSnapshotAny(input: unknown): string {
+  if (protocolValue(input) === CREATOR_AGENT_DRAFT_V2_PROTOCOL) {
+    return canonicalizeJson(verifyCreatorAgentDraftSnapshotV2(input));
+  }
+  return serializeCreatorAgentDraftSnapshot(input);
+}
+
+export function parseCreatorAgentVersionAny(text: string): CreatorAgentVersion {
+  const value = parseCanonicalAgentJson(text, 'Agent version');
+  if (protocolValue(value) === CREATOR_AGENT_VERSION_V2_PROTOCOL) {
+    return parseCreatorAgentVersionV2(text);
+  }
+  return parseCreatorAgentVersion(text);
+}
+
+export function serializeCreatorAgentVersionAny(input: unknown): string {
+  if (protocolValue(input) === CREATOR_AGENT_VERSION_V2_PROTOCOL) {
+    return serializeCreatorAgentVersionV2(input);
+  }
+  return serializeCreatorAgentVersion(input);
+}
+
+export function freezeCreatorAgentVersionAny(
+  input: Readonly<{
+    versionId: string;
+    versionNumber: number;
+    createdAtMs: number;
+    draft: unknown;
+  }>,
+): CreatorAgentVersion {
+  const snapshot = exactDetached(
+    FreezeCreatorAgentVersionAnyInputSchema,
+    input,
+    'Agent version input',
+  );
+  if (protocolValue(snapshot.draft) === CREATOR_AGENT_DRAFT_V2_PROTOCOL) {
+    return freezeCreatorAgentVersionV2(snapshot);
+  }
+  return freezeCreatorAgentVersion(snapshot);
+}
+
+function parseCanonicalAgentJson(text: string, label: string): unknown {
+  if (typeof text !== 'string') throw new TypeError(`${label} must be JSON text`);
+  if (Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_MAX_CANONICAL_BYTES) {
+    throw new TypeError(`${label} exceeds the canonical byte limit`);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new TypeError(`${label} is not valid JSON`);
+  }
+}
+
+function protocolValue(input: unknown): unknown {
+  if (typeof input !== 'object' || input === null || isProxy(input)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(input, 'protocol');
+  return descriptor !== undefined && descriptor.enumerable && 'value' in descriptor
+    ? descriptor.value
+    : undefined;
+}
+
 function exactDetached<Schema extends z.ZodTypeAny>(
   schema: Schema,
   input: unknown,
@@ -492,6 +996,98 @@ function uniqueStrings(values: readonly string[], context: z.RefinementCtx): voi
   if (new Set(values).size !== values.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'Values must be unique' });
   }
+}
+
+function uniqueSourcePaths(
+  values: readonly Readonly<{ path: string }>[],
+  context: z.RefinementCtx,
+): void {
+  if (new Set(values.map(({ path }) => path)).size !== values.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Source paths must be unique' });
+  }
+}
+
+function validateSourceCoverage(coverage: SourceCoverageValue, context: z.RefinementCtx): void {
+  const entryBoundCounts = [
+    coverage.indexedFileCount,
+    coverage.hiddenEntryCount,
+    coverage.trackedEntryCount,
+    coverage.untrackedEntryCount,
+    coverage.ignoredEntryCount,
+    coverage.gitAdminEntryCount,
+    coverage.authoringOnlyEntryCount,
+  ];
+  if (entryBoundCounts.some((count) => count > coverage.indexedEntryCount)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Source coverage count exceeds indexed entries',
+    });
+  }
+  if (
+    coverage.trackedEntryCount +
+      coverage.untrackedEntryCount +
+      coverage.ignoredEntryCount +
+      coverage.gitAdminEntryCount >
+    coverage.indexedEntryCount
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Source coverage Git classes exceed indexed entries',
+    });
+  }
+  if (
+    coverage.untrackedEntryCount + coverage.ignoredEntryCount + coverage.gitAdminEntryCount >
+    coverage.authoringOnlyEntryCount
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Source coverage authoring-only count is inconsistent',
+    });
+  }
+  if (coverage.trackedEntryCount + coverage.authoringOnlyEntryCount < coverage.indexedEntryCount) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Source coverage leaves entries without execution availability',
+    });
+  }
+  if (coverage.indexedFileCount === 0 && coverage.indexedByteCount !== 0) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Source coverage bytes require at least one indexed file',
+    });
+  }
+}
+
+function validateSourceLedgerCoverage(
+  ledger: Readonly<{
+    coverage: SourceCoverageValue;
+    citedSources: readonly z.infer<typeof CreatorAgentSourceCitationSchema>[];
+  }>,
+  context: z.RefinementCtx,
+): void {
+  const fixedCount = ledger.citedSources.filter(
+    ({ executionAvailability }) => executionAvailability === 'FIXED_GIT_TREE',
+  ).length;
+  const authoringOnlyCount = ledger.citedSources.length - fixedCount;
+  if (
+    ledger.citedSources.length > ledger.coverage.indexedEntryCount ||
+    fixedCount > ledger.coverage.trackedEntryCount ||
+    authoringOnlyCount > ledger.coverage.authoringOnlyEntryCount
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Source citations exceed their declared coverage',
+    });
+  }
+}
+
+function isSafeRelativeProjectPath(value: string): boolean {
+  return (
+    !value.startsWith('/') &&
+    !value.startsWith('\\') &&
+    !value.includes('\\') &&
+    !value.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..')
+  );
 }
 
 function isCanonicalGitHubRepository(value: string): boolean {

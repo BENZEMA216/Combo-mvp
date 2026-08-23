@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from 'node:fs';
+import { types as utilTypes } from 'node:util';
 
 import type { CreatorHost, HostThread, HostTurnHandle } from '@cb/creator-agent-protocol/host';
 import {
@@ -86,6 +87,9 @@ export type BundledCodexHostOptions = Readonly<{
   diagnosticSink?: (event: BundledCodexHostDiagnostic) => void;
 }>;
 
+type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
+type JsonObject = Readonly<{ [key: string]: JsonValue }>;
+
 type HostState = 'IDLE' | 'STARTING' | 'READY' | 'STOPPING' | 'STOPPED' | 'FAILED';
 
 type ActiveTurn = {
@@ -112,12 +116,33 @@ export function createBundledCodexHost(options: BundledCodexHostOptions): Creato
   return new BundledCodexHost(options, createCodexAppServerProcessDependencies());
 }
 
+/** Internal structured-output profile; intentionally absent from the package root export. */
+export function createBundledCodexStructuredHost(
+  options: BundledCodexHostOptions,
+  outputSchema: unknown,
+): CreatorHost {
+  return new BundledCodexHost(
+    options,
+    createCodexAppServerProcessDependencies(),
+    snapshotOutputSchema(outputSchema),
+  );
+}
+
 /** Internal test seam. It is intentionally absent from the package root export. */
 export function createBundledCodexHostForTesting(
   options: BundledCodexHostOptions,
   dependencies: CodexAppServerProcessDependencies,
 ): CreatorHost {
   return new BundledCodexHost(options, dependencies);
+}
+
+/** Internal structured-output test seam; intentionally absent from the package root export. */
+export function createBundledCodexStructuredHostForTesting(
+  options: BundledCodexHostOptions,
+  outputSchema: unknown,
+  dependencies: CodexAppServerProcessDependencies,
+): CreatorHost {
+  return new BundledCodexHost(options, dependencies, snapshotOutputSchema(outputSchema));
 }
 
 class BundledCodexHost implements CreatorHost {
@@ -128,6 +153,7 @@ class BundledCodexHost implements CreatorHost {
   readonly #processTerminationGraceMs: number;
   readonly #diagnosticSink?: (event: BundledCodexHostDiagnostic) => void;
   readonly #dependencies: CodexAppServerProcessDependencies;
+  readonly #outputSchema?: JsonObject;
 
   #state: HostState = 'IDLE';
   #generation = 0;
@@ -141,6 +167,7 @@ class BundledCodexHost implements CreatorHost {
   public constructor(
     rawOptions: BundledCodexHostOptions,
     dependencies: CodexAppServerProcessDependencies,
+    outputSchema?: JsonObject,
   ) {
     const options = snapshotOptions(rawOptions);
     this.#projectPath = options.projectPath;
@@ -150,6 +177,7 @@ class BundledCodexHost implements CreatorHost {
     this.#processTerminationGraceMs = options.processTerminationGraceMs;
     this.#diagnosticSink = options.diagnosticSink;
     this.#dependencies = dependencies;
+    this.#outputSchema = outputSchema;
   }
 
   public start(): Promise<void> {
@@ -356,6 +384,7 @@ class BundledCodexHost implements CreatorHost {
         runtimeWorkspaceRoots: [this.#projectPath],
         approvalPolicy: 'never',
         permissions: ':read-only',
+        ...(this.#outputSchema === undefined ? {} : { outputSchema: this.#outputSchema }),
       }).response;
       invocation.writeLinearized = true;
       this.#armWatchdog(connection, invocation, input.timeoutMs);
@@ -649,6 +678,71 @@ class BundledCodexHost implements CreatorHost {
       // Diagnostics are observational and must never change Host authority.
     }
   }
+}
+
+function snapshotOutputSchema(input: unknown): JsonObject {
+  const budget = { nodes: 0 };
+  const value = snapshotJsonValue(input, 0, budget);
+  if (Array.isArray(value) || value === null || typeof value !== 'object') {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+  }
+  return value as JsonObject;
+}
+
+function snapshotJsonValue(input: unknown, depth: number, budget: { nodes: number }): JsonValue {
+  budget.nodes += 1;
+  if (budget.nodes > 512 || depth > 16) {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+  }
+  if (
+    input === null ||
+    typeof input === 'boolean' ||
+    (typeof input === 'number' && Number.isFinite(input))
+  ) {
+    return input;
+  }
+  if (typeof input === 'string') {
+    if (Buffer.byteLength(input, 'utf8') > 8_192 || input.includes('\0')) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+    }
+    return input;
+  }
+  if (typeof input !== 'object' || utilTypes.isProxy(input)) {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+  }
+  if (Array.isArray(input)) {
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const keys = Object.keys(descriptors).filter((key) => key !== 'length');
+    if (keys.length !== input.length || keys.some((key, index) => key !== String(index))) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+    }
+    return Object.freeze(
+      keys.map((key) => {
+        const descriptor = descriptors[key];
+        if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+          throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+        }
+        return snapshotJsonValue(descriptor.value, depth + 1, budget);
+      }),
+    );
+  }
+  if (Object.getPrototypeOf(input) !== Object.prototype) {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+  }
+  const output: Record<string, JsonValue> = {};
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(input))) {
+    if (
+      !descriptor.enumerable ||
+      !('value' in descriptor) ||
+      key === '__proto__' ||
+      key === 'prototype' ||
+      key === 'constructor'
+    ) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+    }
+    output[key] = snapshotJsonValue(descriptor.value, depth + 1, budget);
+  }
+  return Object.freeze(output);
 }
 
 function snapshotOptions(options: BundledCodexHostOptions): Required<

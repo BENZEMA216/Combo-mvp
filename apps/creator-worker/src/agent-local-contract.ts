@@ -1,4 +1,4 @@
-import type { CreatorAgentVersionV1 } from '@cb/creator-agent-protocol/agent';
+import type { CreatorAgentVersion } from '@cb/creator-agent-protocol/agent';
 
 import type { CreatorWorkerLocalAlphaDiagnostic } from './local-alpha-contract.js';
 
@@ -19,7 +19,7 @@ export class CreatorAgentLocalError extends Error {
 }
 
 export type CreatorAgentLocalTurnOptions = Readonly<{
-  version: CreatorAgentVersionV1;
+  version: CreatorAgentVersion;
   projectPath: string;
   prompt: string;
   stateDirectory: string;

@@ -14,8 +14,9 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import {
-  verifyCreatorAgentVersion,
-  type CreatorAgentVersionV1,
+  parseCreatorAgentVersionAny,
+  serializeCreatorAgentVersionAny,
+  type CreatorAgentVersion,
 } from '@cb/creator-agent-protocol/agent';
 
 import {
@@ -51,9 +52,9 @@ export async function runCreatorAgentLocalTurnWithDependencies(
   input: CreatorAgentLocalTurnOptions,
   dependencies: LocalAlphaDependencies,
 ): Promise<CreatorAgentLocalTurnResult> {
-  let version: CreatorAgentVersionV1;
+  let version: CreatorAgentVersion;
   try {
-    version = verifyCreatorAgentVersion(input.version);
+    version = verifyVersion(input.version);
   } catch (error) {
     throw agentError('CREATOR_AGENT_VERSION_INVALID', error);
   }
@@ -92,9 +93,9 @@ export async function runCreatorAgentLocalTurnWithDependencies(
 }
 
 export function compileCreatorAgentDeveloperInstructions(input: unknown): string {
-  let version: CreatorAgentVersionV1;
+  let version: CreatorAgentVersion;
   try {
-    version = verifyCreatorAgentVersion(input);
+    version = verifyVersion(input);
   } catch (error) {
     throw agentError('CREATOR_AGENT_VERSION_INVALID', error);
   }
@@ -102,7 +103,25 @@ export function compileCreatorAgentDeveloperInstructions(input: unknown): string
   return compileDeveloperInstructions(version);
 }
 
-function compileDeveloperInstructions(version: CreatorAgentVersionV1): string {
+/** Internal authoring preflight; intentionally absent from the package root export. */
+export function assertCreatorAgentVersionRunnable(projectPath: string, input: unknown): void {
+  let version: CreatorAgentVersion;
+  try {
+    version = verifyVersion(input);
+  } catch (error) {
+    throw agentError('CREATOR_AGENT_VERSION_INVALID', error);
+  }
+  assertSupportedRuntime(version);
+  const sourceProject = assertVersionSource(projectPath, version);
+  const snapshot = materializeVersionSnapshot(sourceProject, version);
+  rmSync(snapshot, { recursive: true, force: true });
+}
+
+function verifyVersion(input: unknown): CreatorAgentVersion {
+  return parseCreatorAgentVersionAny(serializeCreatorAgentVersionAny(input));
+}
+
+function compileDeveloperInstructions(version: CreatorAgentVersion): string {
   const { definition } = version;
   return [
     `You are the Combo Creator Agent “${definition.name}”.`,
@@ -114,7 +133,7 @@ function compileDeveloperInstructions(version: CreatorAgentVersionV1): string {
   ].join('\n');
 }
 
-function assertSupportedRuntime(version: CreatorAgentVersionV1): void {
+function assertSupportedRuntime(version: CreatorAgentVersion): void {
   const { requirements, runtime } = version.definition;
   if (
     runtime.skills.length !== 0 ||
@@ -132,7 +151,7 @@ function assertSupportedRuntime(version: CreatorAgentVersionV1): void {
   }
 }
 
-function assertVersionSource(projectPath: string, version: CreatorAgentVersionV1): string {
+function assertVersionSource(projectPath: string, version: CreatorAgentVersion): string {
   let canonicalProject: string;
   try {
     canonicalProject = realpathSync(projectPath);
@@ -171,7 +190,7 @@ function assertVersionSource(projectPath: string, version: CreatorAgentVersionV1
   }
 }
 
-function materializeVersionSnapshot(projectPath: string, version: CreatorAgentVersionV1): string {
+function materializeVersionSnapshot(projectPath: string, version: CreatorAgentVersion): string {
   let root: string | undefined;
   try {
     const inspection = inspectVerifiedSnapshot(
