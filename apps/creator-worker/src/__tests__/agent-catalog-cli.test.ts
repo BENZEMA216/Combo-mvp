@@ -210,6 +210,101 @@ describe('Creator Agent Catalog CLI', () => {
     expect(manualRun).not.toHaveBeenCalled();
   });
 
+  it('runs a Git-backed local experience non-interactively from one Project argument', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'experience-git-project-')));
+    const compilation = compiledResultV2();
+    const compileProject = vi.fn(async () => compilation);
+    const runAgentTurn = vi.fn(async () => Object.freeze({ text: 'one-command answer' }));
+
+    const result = await invoke(
+      ['experience', project],
+      runAgentTurn,
+      compileProject,
+      undefined,
+      fixture.catalog,
+    );
+
+    expect(result.exit).toBe(0);
+    expect(result.confirmationReads).toBe(0);
+    expect(result.stderr).toContain('本地体验模式');
+    expect(result.stderr).toContain('[4/4]');
+    expect(result.stdout).toContain('one-command answer');
+    expect(compileProject).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectPath: project,
+        allowUnisolatedRead: true,
+        allowSensitiveProjectContext: true,
+        allowLoopbackProxy: true,
+      }),
+    );
+    expect(runAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectPath: project,
+        prompt: compilation.draft.definition.behavior.starterPrompts[0],
+      }),
+    );
+    const catalog = openCatalog(fixture.catalog);
+    expect(catalog.listVersions(compilation.draft.agentId)).toHaveLength(1);
+    catalog.close();
+  });
+
+  it('runs a behavior-only local experience without mounting its authoring Project', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'experience-aggregate-')));
+    const compilation = compiledResultV3();
+    const runAgentTurn = vi.fn(async () => Object.freeze({ text: 'behavior-only experience' }));
+
+    const result = await invoke(
+      ['experience', project],
+      runAgentTurn,
+      async () => compilation,
+      undefined,
+      fixture.catalog,
+    );
+
+    expect(result.exit).toBe(0);
+    expect(result.confirmationReads).toBe(0);
+    expect(result.stdout).toContain('behavior-only experience');
+    expect(runAgentTurn).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: compilation.draft.definition.behavior.starterPrompts[0] }),
+    );
+    expect(runAgentTurn).toHaveBeenCalledWith(
+      expect.not.objectContaining({ projectPath: expect.anything() }),
+    );
+  });
+
+  it('reports that the exact Agent exists when only the experience trial fails', async () => {
+    const fixture = cliFixture();
+    const project = realpathSync(mkdtempSync(join(fixture.root, 'experience-trial-failure-')));
+    const compilation = compiledResultV3();
+    const trialFailure = new Error('TRIAL_CANARY');
+
+    let failure: unknown;
+    try {
+      await invoke(
+        ['experience', project],
+        async () => Promise.reject(trialFailure),
+        async () => compilation,
+        undefined,
+        fixture.catalog,
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    const catalog = openCatalog(fixture.catalog);
+    const [version] = catalog.listVersions(compilation.draft.agentId);
+    catalog.close();
+    expect(version).toBeDefined();
+    expect(failure).toMatchObject({
+      code: 'AGENT_EXPERIENCE_RUN_FAILED',
+      cause: trialFailure,
+      message: expect.stringContaining(`versionId=${version?.versionId}`),
+    });
+    expect((failure as Error).message).toContain('请不要重复运行 experience');
+  });
+
   it('requires explicit sensitive-context authorization before scanning or opening a catalog', async () => {
     const fixture = cliFixture();
     const project = realpathSync(mkdtempSync(join(fixture.root, 'unauthorized-project-')));
@@ -515,9 +610,11 @@ async function invoke(
     throw new Error('unused compiler');
   },
   interactiveConfirmation?: string,
+  defaultCatalog = join(realpathSync(tmpdir()), 'unused-creator-agent-catalog.sqlite'),
 ) {
   let stdout = '';
   let stderr = '';
+  let confirmationReads = 0;
   const exit = await executeCreatorAgentCatalogCli(
     argv,
     {
@@ -525,12 +622,61 @@ async function invoke(
       stderr: { write: (chunk) => (stderr += chunk) },
       stdinIsTty: interactiveConfirmation !== undefined,
       stderrIsTty: interactiveConfirmation !== undefined,
-      readConfirmation: async () => interactiveConfirmation ?? '',
+      readConfirmation: async () => {
+        confirmationReads += 1;
+        return interactiveConfirmation ?? '';
+      },
     },
-    { runAgentTurn, compileProject },
+    { runAgentTurn, compileProject, defaultCatalogPath: () => defaultCatalog },
     new AbortController().signal,
   );
-  return Object.freeze({ exit, stdout, stderr });
+  return Object.freeze({ exit, stdout, stderr, confirmationReads });
+}
+
+function compiledResultV2(): CreatorAgentProjectCompilationResult {
+  const draft = compiledDraftV2();
+  const handoff = createCreatorAgentDraftHandoffV2({ draft });
+  return Object.freeze({
+    draft,
+    handoff,
+    handoffText: serializeCreatorAgentDraftHandoffV2(handoff),
+    report: compilationReport('GIT_SNAPSHOT'),
+  });
+}
+
+function compiledResultV3(): CreatorAgentProjectCompilationResult {
+  const draft = compiledDraftV3();
+  const handoff = createCreatorAgentDraftHandoffV3({ draft });
+  return Object.freeze({
+    draft,
+    handoff,
+    handoffText: serializeCreatorAgentDraftHandoffV3(handoff),
+    report: compilationReport('BEHAVIOR_ONLY'),
+  });
+}
+
+function compilationReport(runtimeContext: 'GIT_SNAPSHOT' | 'BEHAVIOR_ONLY') {
+  return Object.freeze({
+    contextRootDigest: `sha256:${'a'.repeat(64)}` as const,
+    indexedEntryCount: 4,
+    indexedFileCount: 3,
+    indexedByteCount: 256,
+    uniqueIndexedByteCount: 256,
+    hardlinkAliasCount: 0,
+    runtimeContext,
+    categories: Object.freeze({
+      configuration: 0,
+      documentation: 1,
+      git: 1,
+      log: 1,
+      secret_candidate: 0,
+      source: 1,
+      task_record: 0,
+      other: 0,
+    }),
+    citedSources: Object.freeze([]),
+    coverageSummary: 'Compiled the relevant Project evidence.',
+  });
 }
 
 function draft(

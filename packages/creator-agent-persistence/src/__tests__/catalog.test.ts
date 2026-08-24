@@ -108,6 +108,41 @@ describe('Creator Agent SQLite catalog', () => {
     expect(reopened.listVersions(first.agentId)).toEqual([created.version]);
   });
 
+  it('auto-freezes only one exact local unpublished Draft without claiming review', () => {
+    const fixture = catalogFixture();
+    const catalog = track(createFreshCreatorAgentCatalog(fixture.options));
+    const first = draft(1, null);
+    catalog.importDraftHandoff(handoffText(first));
+
+    expect(() =>
+      catalog.freezeDraftForLocalExperience({
+        ref: ref(first),
+        draftFingerprint: `sha256:${'f'.repeat(64)}` as typeof first.draftFingerprint,
+        authorization: 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1',
+      }),
+    ).toThrow(expect.objectContaining({ code: 'CATALOG_CONFIRMATION_MISMATCH' }));
+    expect(catalog.listVersions(first.agentId)).toEqual([]);
+
+    const request = {
+      ref: ref(first),
+      draftFingerprint: first.draftFingerprint,
+      authorization: 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1' as const,
+    };
+    const created = catalog.freezeDraftForLocalExperience(request);
+    expect(created.disposition).toBe('CREATED');
+    expect(catalog.freezeDraftForLocalExperience(request)).toEqual({
+      disposition: 'EXACT_REPLAY',
+      version: created.version,
+    });
+
+    catalog.close();
+    const reopened = track(openExistingCreatorAgentCatalog(fixture.options));
+    expect(reopened.freezeDraftForLocalExperience(request)).toEqual({
+      disposition: 'EXACT_REPLAY',
+      version: created.version,
+    });
+  });
+
   it('enforces a dense Draft lineage and exact base Version', () => {
     const fixture = catalogFixture();
     const catalog = track(createFreshCreatorAgentCatalog(fixture.options));
@@ -233,6 +268,22 @@ describe('Creator Agent SQLite catalog', () => {
     expect(() => catalog.freezeDraft(revokedFreeze.proxy as never)).toThrow(
       expect.objectContaining({ code: 'CATALOG_CONFIRMATION_MISMATCH' }),
     );
+    let fingerprintReads = 0;
+    const unsafeExperienceFreeze = {
+      ref: ref(first),
+      authorization: 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1',
+    } as Record<string, unknown>;
+    Object.defineProperty(unsafeExperienceFreeze, 'draftFingerprint', {
+      enumerable: true,
+      get() {
+        fingerprintReads += 1;
+        return first.draftFingerprint;
+      },
+    });
+    expect(() => catalog.freezeDraftForLocalExperience(unsafeExperienceFreeze as never)).toThrow(
+      expect.objectContaining({ code: 'CATALOG_CONFIRMATION_MISMATCH' }),
+    );
+    expect(fingerprintReads).toBe(0);
   });
 
   it('rejects noncanonical handoffs and conflicting Draft identity before writes', () => {

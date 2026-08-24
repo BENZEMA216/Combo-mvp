@@ -23,14 +23,17 @@
   symlink 本身而不跟随外部目标，并区分 tracked-clean、tracked-dirty、untracked、ignored、Git admin 与
   authoring-only evidence。它覆盖 hidden、日志、task/session、`.env` 和物理 `.git`，不会执行 Project 脚本
   或 Git clean filter；linked worktree 的 `.git` pointer 不会扩展到 Project 外的共享目录。文件首次读取时
-  允许 macOS 只更新系统 provenance/ctime，并以同一文件描述符上的 post-read stat 作为稳定索引基线。
-- `project-context-compiler.ts` 在编译前后核对完整 Project digest，把 fixed output schema 与有界 coverage
-  摘要交给 bundled Codex；Codex 直接在只读 Project 中选择相关证据。formal 根能形成 canonical Git snapshot
+  允许 macOS 只更新系统 provenance/ctime，并以同一文件描述符上的 post-read stat 作为稳定索引基线。首轮
+  内容哈希后，它还保留仅在内存的 bigint 元数据 manifest，用完整 namespace 与文件身份复验替代第二次正文
+  读取，并输出有界扫描进度。
+- `project-context-compiler.ts` 在编译前做一次完整内容索引、模型返回后做完整 namespace 与 Git snapshot
+  复验，把 fixed output schema 与有界 coverage 摘要交给 bundled Codex；Codex 直接在只读 Project 中选择相关证据。formal 根能形成 canonical Git snapshot
   时生成 V2，否则生成不自动选择嵌套仓库的 V3 behavior-only Draft。V3 的全部 citation 都固定为
   authoring-only。编译器还执行 best-effort secret taint 与 Runtime 预检；full inventory 只存在扫描器内存中，
   不序列化到临时文件或 Catalog。
-- `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。它以 `create` 完成全量索引、bundled Codex 编译、
-  terminal-safe 完整 review、可见 TTY 中一次 `FREEZE`、Catalog close/reopen 和可选 exact Version run；
+- `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。`experience` 以一个 Project 路径完成索引、编译、
+  本地未发布 Version 自动冻结、Catalog close/reopen 与第一条 frozen starter 的真实运行，不读取确认输入；
+  严格 `create` 继续执行 terminal-safe 完整 review、可见 TTY 中一次 `FREEZE` 和可选 exact Version run；
   `init/import/review/freeze/run` 只保留作诊断与 V1 兼容。它不提供隐式 latest、force 或公开分享副作用。
 - `local-alpha-broker.ts` 在随机 loopback 端口实现真实 R2C lease、command、PERSISTED ACK 与
   CLOUD_COMMITTED ACK，并严格绑定 terminal message、Host source、attempt 与 sealed-result marker；它不

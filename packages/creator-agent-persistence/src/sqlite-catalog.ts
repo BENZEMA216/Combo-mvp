@@ -22,6 +22,7 @@ import {
   type CreatorAgentDraftRef,
   type CreatorAgentFreezeResult,
   type CreatorAgentFreezeReview,
+  type CreatorAgentLocalExperienceFreezeRequest,
   type CreatorAgentVersionRef,
 } from './catalog-types.js';
 import { normalizeCatalogError, openCreatorAgentCatalogDatabase } from './sqlite-platform.js';
@@ -220,17 +221,41 @@ class SqliteCreatorAgentCatalog implements CreatorAgentCatalog {
   ): CreatorAgentFreezeResult {
     this.#assertOpen();
     const { ref, confirmationText: suppliedConfirmation } = snapshotFreezeRequest(input);
-    try {
-      this.database.exec('BEGIN IMMEDIATE');
-      const row = this.#draftRow(ref);
-      if (row === undefined) throw catalogError('CATALOG_NOT_FOUND', 'Agent Draft was not found.');
-      const draft = this.#parseDraftRow(row);
+    return this.#freezeDraft(ref, (draft) => {
       if (suppliedConfirmation !== confirmationText(draft)) {
         throw catalogError(
           'CATALOG_CONFIRMATION_MISMATCH',
           'Freeze confirmation does not bind the current Draft.',
         );
       }
+    });
+  }
+
+  public freezeDraftForLocalExperience(
+    input: CreatorAgentLocalExperienceFreezeRequest,
+  ): CreatorAgentFreezeResult {
+    this.#assertOpen();
+    const request = snapshotLocalExperienceFreezeRequest(input);
+    return this.#freezeDraft(request.ref, (draft) => {
+      if (draft.draftFingerprint !== request.draftFingerprint) {
+        throw catalogError(
+          'CATALOG_CONFIRMATION_MISMATCH',
+          'Local experience authorization does not bind the current Draft.',
+        );
+      }
+    });
+  }
+
+  #freezeDraft(
+    ref: CreatorAgentDraftRef,
+    authorize: (draft: CreatorAgentDraftSnapshot) => void,
+  ): CreatorAgentFreezeResult {
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      const row = this.#draftRow(ref);
+      if (row === undefined) throw catalogError('CATALOG_NOT_FOUND', 'Agent Draft was not found.');
+      const draft = this.#parseDraftRow(row);
+      authorize(draft);
       const existing = this.database
         .prepare(
           `SELECT * FROM agent_catalog_versions
@@ -516,6 +541,27 @@ function snapshotFreezeRequest(input: unknown): Readonly<{
   return frozen({
     ref: snapshotDraftRef(values.get('ref') as CreatorAgentDraftRef),
     confirmationText: confirmation,
+  });
+}
+
+function snapshotLocalExperienceFreezeRequest(
+  input: unknown,
+): CreatorAgentLocalExperienceFreezeRequest {
+  const invalid = () =>
+    catalogError('CATALOG_CONFIRMATION_MISMATCH', 'Local experience freeze request is invalid.');
+  const values = snapshotDataRecord(input, ['ref', 'draftFingerprint', 'authorization'], invalid);
+  const draftFingerprint = values.get('draftFingerprint');
+  if (
+    typeof draftFingerprint !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/u.test(draftFingerprint) ||
+    values.get('authorization') !== 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1'
+  ) {
+    throw invalid();
+  }
+  return frozen({
+    ref: snapshotDraftRef(values.get('ref') as CreatorAgentDraftRef),
+    draftFingerprint: draftFingerprint as CreatorAgentDraftSnapshot['draftFingerprint'],
+    authorization: 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1',
   });
 }
 
