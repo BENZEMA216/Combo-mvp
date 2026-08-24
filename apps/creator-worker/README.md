@@ -1,5 +1,51 @@
 # @cb/creator-worker
 
+## 智能体包原生推理侧
+
+本包现在提供独立于旧版 `AgentVersion` 的 `AgentPackageSession`。智能体包（Agent Package）是真正的可加载
+工件：规范化的 `agent.json` 绑定完整文件清单，根 `AGENT.md` 提供智能体级语义，
+`skills/*/SKILL.md` 及其局部资源提供 Codex 原生能力。运行时先验证整个目录与智能体包摘要，再把
+`AGENT.md` 作为固定开发者指令注入一个专属的内置 `Codex app-server`。验证后的字节会先物化到会话私有的
+只读快照，所有文件固定为不可执行的 `0400`，目录固定为 `0500`；后续运行不再读取可变的来源目录，关闭
+会话时删除快照。运行时通过 `skills/extraRoots/set` 注册快照中的技能根，并用
+`skills/list(forceReload=true)` 核对每个声明技能的精确路径、名称和启用状态。任何篡改、额外文件、技能
+解析错误或路径漂移都会在创建任务线程前停止。
+
+消费接口保持最小：
+
+```ts
+import { startCreatorAgentPackageSession } from '@cb/creator-worker';
+
+const session = await startCreatorAgentPackageSession({
+  packagePath: '/absolute/release-reviewer.combo-agent',
+  projectPath: '/absolute/consumer-project',
+  allowUnisolatedRead: true,
+});
+try {
+  const first = await session.send('检查这次发布。');
+  const followUp = await session.send('根据刚才的发现，只列阻断项。');
+  console.log(first, followUp);
+} finally {
+  await session.close();
+}
+```
+
+一个会话独占一个 `app-server` 进程和一个 Codex 任务线程；多次 `send()` 只创建新的原生轮次，因此上下文
+由 Codex 原生推理框架维护。Combo 没有实现模型循环、工具循环或对话记录拼接。全局 `skill_search` 继续
+关闭；运行时把智能体包精确声明的技能作为 Codex 原生 `SkillUserInput` 随每轮提交，因此系统或项目中未被
+智能体包摘要绑定的技能不会加入智能体能力集合。核心命令行工具仍由 Codex 在固定的只读项目中调用。
+`Worker`、`Broker`、`Journal`、传输数据库和确认消息不进入这条推理接口，它们继续作为以后可选的远程可靠交付
+外层。
+
+当前智能体包运行时只承诺 `AGENT.md`、本地 Codex 技能、同一任务线程中的多轮交互和只读项目工具。MCP、
+应用、动态工具、智能体包发布签名、安装目录与崩溃后恢复会话尚未接入；不得把智能体包摘要当作发布者
+身份，也不得把只读工作区根目录当作操作系统级的项目隔离。旧版 V1/V2/V3 `AgentVersion`、目录数据库、
+`experience` 和 `Worker` 路径保持原字节与行为，不会被隐式转换成智能体包。
+
+`combo.agent-package/1` 只允许零个或一个原生技能。这样每轮显式提交的是一个精确绑定的智能体包技能，
+不会把多个互斥能力全量装入上下文，也不会假装 Combo 已经实现路由。包内原生按需多技能路由需要独立的
+后续主机合同，不能通过重新开启会暴露系统与项目技能的全局 `skill_search` 冒充。
+
 ## 一条命令体验本地 Agent
 
 当前单用户受控 Alpha 的消费入口只有一条命令：
@@ -111,10 +157,11 @@ combo-creator-agent run \
 手工运行 V1/V2 时必须提供 `--project`；运行 behavior-only V3 时必须省略 `--project`。后者使用新的空私有
 临时目录，不会重新读取创建 Agent 时的 authoring Project。
 
-这仍是 controlled single-user local Alpha。它不会创建 `combo.codex-agent-share/1`、Capability、Cloud
-Catalog 或多轮 Conversation，也没有操作系统级的 Project-only 文件隔离，因此不得用于不可信用户、
-不可信 Project 或公网流量。扫描器会检测常见路径替换并 fail-closed，但不声称能够抵御同 UID 恶意进程
-在每个文件系统调用之间实施的精确竞态；这种 hostile local-process isolation 仍属于后续 supervisor。
+这仍是受控的单用户本地 Alpha。旧版 `experience` 不会创建 `combo.codex-agent-share/1`、能力对象、云端目录
+或多轮会话；新的 `AgentPackageSession` 只提供进程内同一任务线程的多轮交互。两者都没有操作系统级的
+项目文件隔离，因此不得用于不可信用户、不可信项目或公网流量。扫描器会检测常见路径替换并在异常时停止，
+但不声称能够抵御同一用户身份的恶意进程在每个文件系统调用之间实施的精确竞态；这种本机进程隔离仍属于
+后续监管进程。
 
 ## 不可变 AgentVersion 执行
 

@@ -8,11 +8,15 @@
   scheduler，并执行自动 BLOCKED 收敛和反向停止。
 - `codex-app-server-protocol.ts` 只解析 bundled Codex 0.148 中 R1 Host 所需的窄协议子集。
 - `codex-app-server-process.ts` 固定并校验 ChatGPT.app 内的 Codex，建立私有 auth bridge，管理有界
-  NDJSON/RPC 与子进程停止；不从 PATH 选择可执行文件。
+  NDJSON/RPC 与子进程停止；不从 PATH 选择可执行文件，并继续禁用全局技能搜索。
 - `codex-app-server-host.ts` 把真实 thread/turn/interrupt/terminal 映射成 R1 handle-private authority；
   只有精确 workspace root、`:read-only` 与工具无网络回读同时成立才签发 Host thread，并要求调用方显式
   确认当前尚无 OS 级 Project-only 读隔离。它还提供仅供包内编译器使用的 fixed structured-output Host，
   会把经过大小、深度和值域校验的 detached JSON Schema 固定到每一次 turn。
+- `infrastructure/agent-package-loader.ts` 对 `agent.json` 和完整智能体包目录执行规范化、普通文件、路径、
+  长度与原始字节摘要校验，拒绝符号链接、特殊文件、缺失和额外资源；它把已验证字节物化成会话私有的
+  只读、不可执行快照，只返回该快照中的 `AGENT.md`、智能体包摘要、原生技能路径和有界清理能力，不创建
+  会话。
 - `infrastructure/codex/index.ts` 是 application composition 使用的 bundled Codex 窄入口；Host 与 Process
   实现仍保持内部文件，不向创作层或执行层暴露具体构造责任。
 - `local-alpha-contract.ts` 定义单用户本地体验入口、结果、诊断与安全错误合同。
@@ -43,7 +47,11 @@
 - `project-context-compiler.ts` 是旧内部路径的薄兼容入口，保留错误类、Schema、类型与测试 seam 的同一身份，
   并从 application composition re-export 生产用编译函数。
 - `application/creator-agent-composition.ts` 是唯一同时绑定创作、执行、bundled Codex、loopback Broker 与
-  Worker Runtime 的 Agent 组合根。它保留原生产 API，并把测试使用的底层依赖转换为执行层 invocation port。
+  Worker Runtime 的智能体组合根。它保留原生产接口，把测试使用的底层依赖转换为执行层调用端口，并把
+  已验证的智能体包加载器与专属原生技能主机绑定到 `AgentPackageSession`。
+- `application/agent-package-session.ts` 定义最小的 `send()` 与 `close()` 接口；一个实例只创建一个主机和一个
+  Codex 任务线程，顺序多轮复用该任务线程，并在每轮显式提交智能体包声明的 Codex 原生技能，关闭时清理
+  智能体包快照。它不导入 `Worker`、`Broker`、`Journal`、SQLite 或旧版 `AgentVersion`。
 - `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。`experience` 以一个 Project 路径完成索引、编译、
   本地未发布 Version 自动冻结、Catalog close/reopen 与第一条 frozen starter 的真实运行，不读取确认输入；
   严格 `create` 继续执行 terminal-safe 完整 review、可见 TTY 中一次 `FREEZE` 和可选 exact Version run；

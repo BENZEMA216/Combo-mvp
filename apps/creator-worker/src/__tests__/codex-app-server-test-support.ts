@@ -12,6 +12,7 @@ import {
 
 import {
   createBundledCodexHostForTesting,
+  createBundledCodexAgentPackageHostForTesting,
   createBundledCodexStructuredHostForTesting,
   type BundledCodexHostDiagnostic,
 } from '../codex-app-server-host.js';
@@ -187,11 +188,12 @@ export type CodexHostTestRig = {
 export function createCodexHostTestRig(
   options: Readonly<{
     authentication?: boolean;
+    nativeSkills?: readonly Readonly<{ name: string; description: string }>[];
     outputSchema?: unknown;
     onDiagnostic?: (event: BundledCodexHostDiagnostic, host: CreatorHost) => void;
   }> = {},
 ): CodexHostTestRig {
-  const root = mkdtempSync(join(tmpdir(), 'combo-r2f-host-test-'));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'combo-r2f-host-test-')));
   chmodSync(root, 0o700);
   const projectDirectory = join(root, 'project');
   const sourceCodexHomeDirectory = join(root, 'source-codex-home');
@@ -206,6 +208,46 @@ export function createCodexHostTestRig(
   const priorCodexHome = process.env.CODEX_HOME;
   process.env.CODEX_HOME = sourceCodexHome;
   const spawner = new FakeCodexSpawner();
+  let nativeSkills:
+    | Readonly<{ root: string; skills: readonly Readonly<{ name: string; path: string }>[] }>
+    | undefined;
+  if (options.nativeSkills !== undefined) {
+    const skillsRoot = join(root, 'package-skills');
+    mkdirSync(skillsRoot, { mode: 0o700 });
+    const skills = options.nativeSkills.map(({ name, description }) => {
+      const directory = join(skillsRoot, name);
+      mkdirSync(directory, { mode: 0o700 });
+      const path = join(directory, 'SKILL.md');
+      writeFileSync(
+        path,
+        `---\nname: ${name}\ndescription: ${description}\n---\n\nReturn the test result.\n`,
+        { mode: 0o600 },
+      );
+      return Object.freeze({ name, path: realpathSync(path) });
+    });
+    nativeSkills = Object.freeze({ root: realpathSync(skillsRoot), skills: Object.freeze(skills) });
+    spawner.onAppFrame = (frame, child) => {
+      if (frame.method === 'skills/extraRoots/set') {
+        child.respond(frame, {});
+      } else if (frame.method === 'skills/list') {
+        child.respond(frame, {
+          data: [
+            {
+              cwd: skillsRoot,
+              skills: options.nativeSkills!.map(({ name, description }) => ({
+                name,
+                description,
+                path: join(skillsRoot, name, 'SKILL.md'),
+                scope: 'user',
+                enabled: true,
+              })),
+              errors: [],
+            },
+          ],
+        });
+      }
+    };
+  }
   const diagnostics: BundledCodexHostDiagnostic[] = [];
   const context: { host?: CreatorHost } = {};
   const hostOptions = {
@@ -220,13 +262,19 @@ export function createCodexHostTestRig(
     },
   } as const;
   const host =
-    options.outputSchema === undefined
-      ? createBundledCodexHostForTesting(hostOptions, spawner.dependencies)
-      : createBundledCodexStructuredHostForTesting(
+    nativeSkills !== undefined
+      ? createBundledCodexAgentPackageHostForTesting(
           hostOptions,
-          options.outputSchema,
+          nativeSkills,
           spawner.dependencies,
-        );
+        )
+      : options.outputSchema === undefined
+        ? createBundledCodexHostForTesting(hostOptions, spawner.dependencies)
+        : createBundledCodexStructuredHostForTesting(
+            hostOptions,
+            options.outputSchema,
+            spawner.dependencies,
+          );
   context.host = host;
   let cleaned = false;
   return {

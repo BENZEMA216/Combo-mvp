@@ -5,6 +5,22 @@
 Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact source ledger。本包不承载
 数据库、WebSocket、密钥、文件扫描、进程管理或产品路由。
 
+## 智能体包
+
+显式 `agent-package` 子路径定义新的 `combo.agent-package/1`，它与旧版 `AgentVersion` 完全隔离。最终工件
+是一个内容寻址目录：规范化的 `agent.json` 是机器索引，根 `AGENT.md` 是智能体的语义总入口，
+`skills/<name>/SKILL.md` 及同目录下的脚本、参考资料和资源文件是 Codex 原生技能内容。`agent.json` 保存
+除自身外的完整排序文件清单、精确字节长度和原始字节 SHA-256 摘要；智能体包摘要是规范化 `agent.json`
+的 UTF-8 字节摘要，因此间接绑定包内全部内容。缺失、额外、重复、大小写冲突、未声明技能、文件祖先
+冲突、路径逃逸和非规范 JSON 都会被拒绝。V1 不把来源文件模式作为内容；运行时必须把已验证字节物化为
+固定只读且不可执行的资源，脚本只能由明确的解释器调用。V1 只声明零个或一个原生技能；包内原生多技能
+路由需要后续协议版本。
+
+智能体包不保存项目、模型、Codex 安装路径、任务线程、超时、权限结果、凭据、Worker 命令或确认消息。
+`AGENT.md` 也不是 Codex 自动发现的项目 `AGENTS.md`；Combo 运行时必须在创建原生 Codex 任务线程时显式
+注入它，并用 Codex 技能注册表激活包内技能。智能体包摘要是内容完整性标识，不是发布者签名或运行成功
+证明。
+
 Agent Draft 通过新 revision 修订但不能执行；每个 DraftSnapshot 本身都是不可变值。AgentVersion 从一个
 精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter prompts、source ledger，以及 Git
 Project snapshot 或明确的无 Project binding。它不保存本机绝对路径、运行 prompt 或回答；当前版本对
@@ -67,6 +83,8 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
 - `@cb/creator-agent-protocol/agent`：暴露严格的 V1/V2/V3 Definition、Draft、handoff、Version、compact
   source ledger、freeze/verify 和 canonical 序列化；它不执行 Project 扫描，也不证明作者身份、模型读取
   覆盖、实际脱敏、用户确认、Git remote 可达或 OS 级 Project 隔离。
+- `@cb/creator-agent-protocol/agent-package`：暴露独立的智能体包清单、原始文件摘要、智能体包摘要与规范化
+  解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
 本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

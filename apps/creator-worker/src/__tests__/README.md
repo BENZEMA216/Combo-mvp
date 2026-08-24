@@ -13,6 +13,13 @@
   停止。
 - `codex-app-server-host.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时运行固定 bundled Codex，对临时
   sanitized Project 执行一轮真实只读回答，并验证项目内容未变化。
+- `agent-package-loader.test.ts` 验证规范化智能体包目录、完整文件清单、原始字节摘要、`AGENT.md`、技能
+  路径、额外或缺失文件、符号链接、非法 UTF-8 与无技能智能体包。
+- `agent-package-session.test.ts` 用 R1 受信句柄验证一个主机、一个任务线程、顺序多轮、并发拒绝、终态
+  失败、启动补偿和幂等关闭；它明确不创建 `Worker`、`Broker` 或 SQLite。
+- `agent-package-session.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时让真实内置 Codex 加载智能体包的
+  `AGENT.md` 与原生技能。第一轮输出绑定只存在于技能中的随机规则，第二轮取回只存在于上一条消息的随机
+  标记，从而同时证明技能激活与同一 Codex 任务线程的多轮上下文；项目与智能体包内容保持不变。
 - `host-adapter-import-boundary.test.ts` 扫描应用与包源码，确保生产环境只有 bundled Codex adapter 能
   导入 R1 producer 子路径，测试代码之外的新增 authority mint 入口会直接让 CI 失败。
 - `agent-layer-import-boundary.test.ts` 解析生产 TypeScript 的普通 import、re-export 与 dynamic import，

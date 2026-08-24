@@ -8,12 +8,15 @@
   绑定 Project root digest、coverage counts、source citation digest 与固定 Git Project，V3 则固定无 Project
   binding 并要求所有 evidence 仅供 authoring。该文件还定义只读本机执行 profile、按 protocol 分派的
   canonical serializer/parser 和 domain-separated fingerprint。
+- `agent-package.ts`：显式 `./agent-package` 子路径的独立内容寻址智能体包清单。它绑定根 `AGENT.md`、
+  Codex 原生技能入口及全部智能体包文件的路径、长度和原始字节 SHA-256 摘要，不包含项目、会话或 Worker
+  运行字段，也不进入旧版 `AgentVersion` 分派器。
 - `host-contract.ts`：Host structural port、原子 outcome、handle-private controller 与 first-sent interrupt lineage。
 - `host.ts`：消费者出口；不暴露 producer 或通用 canonical helper。
 - `host-adapter.ts`：受信 Host adapter 出口；R2 接线时必须用 import-boundary gate 限制生产导入方。
 - `index.ts`：与 `host.ts` 等价的显式根出口；不得使用通配导出。
-- `__tests__/`：R1 Host 合约、R2C Broker canonical wire，以及 V1/V2/V3 Agent canonical round-trip、兼容与
-  fingerprint tamper 回归。
+- `__tests__/`：R1 Host 合约、R2C Broker 规范传输格式、V1/V2/V3 智能体规范往返，以及独立智能体包的
+  规范字节、内容摘要、严格路径与篡改回归。
 
 该目录不得导入应用、数据库、Broker、文件系统或部署代码。source ledger 是已扫描事实的 compact 合同，
 不另存 full inventory 或 Project 文件附件，也不证明模型理解了每个字节；Draft 自由文本仍可能含 Project
