@@ -14,7 +14,7 @@
 消费接口保持最小：
 
 ```ts
-import { startCreatorAgentPackageSession } from '@cb/creator-worker';
+import { startCreatorAgentPackageSession } from '@cb/creator-worker/agent-package-session';
 
 const session = await startCreatorAgentPackageSession({
   packagePath: '/absolute/release-reviewer.combo-agent',

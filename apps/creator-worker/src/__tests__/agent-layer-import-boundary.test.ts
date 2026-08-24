@@ -123,7 +123,7 @@ function classify(root: string, path: string): Layer | undefined {
   if (name === 'project-context-compiler.ts' || name === 'agent-local-runner.ts') {
     return 'compatibility';
   }
-  if (name === 'index.ts') return 'public';
+  if (name === 'index.ts' || name === 'agent-package-session.ts') return 'public';
   if (
     name.startsWith('infrastructure/') ||
     /^(?:cli-signal|codex-|local-alpha-|pump-|runtime-|worker-)/u.test(name)

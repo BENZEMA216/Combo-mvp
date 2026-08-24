@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./agent-package-session": {
+      "types": "./dist/agent-package-session.d.ts",
+      "default": "./dist/agent-package-session.js"
     }
   },
   "files": [

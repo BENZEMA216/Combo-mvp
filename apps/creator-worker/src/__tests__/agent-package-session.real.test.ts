@@ -11,7 +11,7 @@ import {
 } from '@cb/creator-agent-protocol/agent-package';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { startCreatorAgentPackageSession } from '../index.js';
+import { startCreatorAgentPackageSession } from '../agent-package-session.js';
 
 const enabled = process.env.COMBO_REAL_CODEX_E2E === '1';
 const temporaryDirectories: string[] = [];
