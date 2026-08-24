@@ -8,5 +8,16 @@ export {
   type CreatorAgentProjectCompilationResult,
   type CreatorAgentProjectCompilerDependencies,
   type CreatorAgentProjectCompilerErrorCode,
-} from './authoring/project-context-compiler.js';
-export { compileCreatorAgentProject } from './application/creator-agent-composition.js';
+} from './project-context-compiler.js';
+export {
+  assertSameProjectContext,
+  revalidateProjectContext,
+  scanProjectContext,
+  type ProjectContextIndexProgress,
+  type ProjectContextScan,
+} from '../project-context-index.js';
+export type {
+  StructuredAuthoringHostOptions,
+  StructuredAuthoringHostPort,
+  VersionExecutionPreflightPort,
+} from './ports.js';

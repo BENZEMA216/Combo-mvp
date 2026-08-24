@@ -1,6 +1,14 @@
 import type { CreatorAgentVersion } from '@cb/creator-agent-protocol/agent';
 
-import type { CreatorWorkerLocalAlphaDiagnostic } from './local-alpha-contract.js';
+type CreatorAgentLocalDiagnostic =
+  | 'broker_listening'
+  | 'runtime_starting'
+  | 'runtime_ready'
+  | 'thread_ready'
+  | 'turn_submitted'
+  | 'terminal_committed'
+  | 'stopping'
+  | 'stopped';
 
 export type CreatorAgentLocalErrorCode =
   | 'CREATOR_AGENT_VERSION_INVALID'
@@ -27,7 +35,7 @@ export type CreatorAgentLocalTurnOptions = Readonly<{
   allowUnisolatedRead: true;
   allowLoopbackProxy?: boolean;
   signal?: AbortSignal;
-  diagnosticSink?: (event: CreatorWorkerLocalAlphaDiagnostic) => void;
+  diagnosticSink?: (event: CreatorAgentLocalDiagnostic) => void;
 }>;
 
 export type CreatorAgentLocalTurnResult = Readonly<{

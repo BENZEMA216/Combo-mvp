@@ -11,6 +11,9 @@ import {
   CreatorWorkerLocalAlphaError,
   type CreatorWorkerLocalAlphaDiagnostic,
 } from './local-alpha-contract.js';
+import { localSignalExitCode } from './cli-signal.js';
+
+export { localSignalExitCode as localAlphaSignalExitCodeForTesting } from './cli-signal.js';
 
 type CliOptions = Readonly<{
   projectPath: string;
@@ -78,7 +81,7 @@ export async function runLocalAlphaCli(argv = process.argv.slice(2)): Promise<nu
     process.stdout.write(`${result.text}\n`);
     return 0;
   } catch (error) {
-    const signalExit = localAlphaSignalExitCodeForTesting(signalName, error);
+    const signalExit = localSignalExitCode(signalName, error);
     if (signalExit !== undefined) return signalExit;
     const safe = safeError(error);
     process.stderr.write(`本地 Creator Worker 失败 [${safe.code}]：${safe.message}\n`);
@@ -188,29 +191,6 @@ function readPipedPrompt(signal: AbortSignal): Promise<string> {
     if (signal.aborted) aborted();
     else process.stdin.resume();
   });
-}
-
-/** Internal CLI seam; intentionally absent from the package root export. */
-export function localAlphaSignalExitCodeForTesting(
-  signal: NodeJS.Signals | undefined,
-  error: unknown,
-): number | undefined {
-  if (signal === undefined || !isCancellationError(error)) return undefined;
-  return signal === 'SIGINT' ? 130 : 143;
-}
-
-function isCancellationError(error: unknown): boolean {
-  if (
-    error instanceof CreatorWorkerLocalAlphaError &&
-    error.code === 'LOCAL_ALPHA_TURN_CANCELLED'
-  ) {
-    return true;
-  }
-  if (typeof error !== 'object' || error === null) return false;
-  return (
-    ('name' in error && error.name === 'AbortError') ||
-    ('code' in error && error.code === 'ABORT_ERR')
-  );
 }
 
 function defaultStateDirectory(projectPath: string): string {

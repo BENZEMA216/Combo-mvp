@@ -34,7 +34,7 @@ export {
   type BundledCodexHostDiagnostic,
   type BundledCodexHostErrorCode,
   type BundledCodexHostOptions,
-} from './codex-app-server-host.js';
+} from './infrastructure/codex/index.js';
 export {
   CreatorWorkerLocalAlphaError,
   type CreatorWorkerLocalAlphaDiagnostic,
@@ -52,4 +52,4 @@ export {
 export {
   compileCreatorAgentDeveloperInstructions,
   runCreatorAgentLocalTurn,
-} from './agent-local-runner.js';
+} from './application/creator-agent-composition.js';

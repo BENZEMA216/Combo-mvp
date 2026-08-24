@@ -15,6 +15,8 @@
   sanitized Project 执行一轮真实只读回答，并验证项目内容未变化。
 - `host-adapter-import-boundary.test.ts` 扫描应用与包源码，确保生产环境只有 bundled Codex adapter 能
   导入 R1 producer 子路径，测试代码之外的新增 authority mint 入口会直接让 CI 失败。
+- `agent-layer-import-boundary.test.ts` 解析生产 TypeScript 的普通 import、re-export 与 dynamic import，
+  确保 Agent 创作层、执行层和基础设施保持单向依赖，并要求每个 Creator Worker 生产文件都有明确分层。
 - `local-alpha.test.ts` 用 Fake Host 但真实 Broker、双 SQLite、driver、pump 与 Runtime 连跑两次，覆盖
   fresh run、命令 ACK、Transport SQLite 中 exact terminal ACKED、强制断线换 lease 后继续、终态防伪、
   干净停止、旧/不完整/非空状态拒绝、signal/prepare 竞态、管道输入有界中断、CLI 参数与 prompt/回答

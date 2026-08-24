@@ -24,6 +24,8 @@ import {
 } from '@cb/creator-agent-protocol/agent';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { assertCreatorAgentVersionRunnable } from '../application/creator-agent-composition.js';
+import { SUPPORTED_BUNDLED_CODEX_VERSION } from '../infrastructure/codex/index.js';
 import {
   PROJECT_COMPILER_OUTPUT_SCHEMA,
   compileCreatorAgentProjectWithDependencies,
@@ -39,6 +41,10 @@ import { FakeHost } from './test-fixture.js';
 
 const roots: string[] = [];
 const SECRET = 'super-secret-context-value-123456789';
+const runtimePreflight = Object.freeze({
+  supportedCodexVersion: SUPPORTED_BUNDLED_CODEX_VERSION,
+  assertRunnable: assertCreatorAgentVersionRunnable,
+});
 
 afterEach(() => {
   for (const root of roots.splice(0).reverse()) rmSync(root, { recursive: true, force: true });
@@ -274,6 +280,7 @@ describe('Project Context Compiler', () => {
           observedOutputSchema = outputSchema;
           return host;
         },
+        runtimePreflight,
         randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
       },
     );
@@ -329,6 +336,7 @@ describe('Project Context Compiler', () => {
         scanProject: scanProjectContext,
         revalidateProject: revalidateProjectContext,
         createHost: () => host,
+        runtimePreflight,
         randomId: () => 'fedcba98-7654-3210-fedc-ba9876543210',
       },
     );
@@ -428,6 +436,7 @@ describe('Project Context Compiler', () => {
       {
         scanProject: scanProjectContext,
         createHost: () => host,
+        runtimePreflight,
         randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
       },
     );
@@ -456,6 +465,7 @@ describe('Project Context Compiler', () => {
         {
           scanProject: scanProjectContext,
           createHost: () => host,
+          runtimePreflight,
           randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
         },
       );
@@ -476,6 +486,7 @@ describe('Project Context Compiler', () => {
     const dependencies = {
       scanProject,
       createHost: () => host,
+      runtimePreflight,
       randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
     };
     const pending = compileCreatorAgentProjectWithDependencies(
@@ -502,6 +513,7 @@ describe('Project Context Compiler', () => {
       {
         scanProject: scanProjectContext,
         createHost: () => combinedHost,
+        runtimePreflight,
         randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
       },
     );
@@ -544,6 +556,7 @@ describe('Project Context Compiler', () => {
       {
         scanProject: scanProjectContext,
         createHost: () => host,
+        runtimePreflight,
         randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
       },
     );
@@ -600,6 +613,7 @@ async function expectCompilationFailure(
     {
       scanProject: scanProjectContext,
       createHost: () => host,
+      runtimePreflight,
       randomId: () => '01234567-89ab-cdef-0123-456789abcdef',
     },
   );
