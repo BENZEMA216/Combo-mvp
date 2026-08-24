@@ -30,15 +30,17 @@ import {
 import type { CreatorAgentVersion } from '@cb/creator-agent-protocol/agent';
 
 import type { CreatorAgentLocalTurnOptions } from './agent-local-contract.js';
-import { runCreatorAgentLocalTurn } from './agent-local-runner.js';
-import { localAlphaSignalExitCodeForTesting } from './local-alpha-cli.js';
+import {
+  compileCreatorAgentProject,
+  runCreatorAgentLocalTurn,
+} from './application/creator-agent-composition.js';
+import { localSignalExitCode } from './cli-signal.js';
 import {
   CreatorAgentProjectCompilerError,
-  compileCreatorAgentProject,
   type CreatorAgentProjectCompilationDiagnostic,
   type CreatorAgentProjectCompilationOptions,
   type CreatorAgentProjectCompilationResult,
-} from './project-context-compiler.js';
+} from './authoring/index.js';
 
 const CATALOG_IDENTITY = 'combo.local.creator-agent-catalog.v1';
 const MAX_HANDOFF_BYTES = 65_536;
@@ -118,7 +120,7 @@ export async function runCreatorAgentCatalogCli(argv = process.argv.slice(2)): P
       cancellation.signal,
     );
   } catch (error) {
-    const signalExit = localAlphaSignalExitCodeForTesting(signalName, error);
+    const signalExit = localSignalExitCode(signalName, error);
     if (signalExit !== undefined) return signalExit;
     const safe = safeError(error);
     process.stderr.write(`Creator Agent 命令失败 [${safe.code}]：${safe.message}\n`);

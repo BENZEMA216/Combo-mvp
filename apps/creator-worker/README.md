@@ -21,6 +21,19 @@ Project 根能形成受支持 Git snapshot 时产出 V2；聚合目录、尚无�
 严格 `create`，其 TTY 与 `FREEZE` 合同没有被放宽。如果 Version 已创建而首次试跑失败，命令会明确输出
 exact agentId/versionId 并说明不要重新创建；这个失败不会回滚已冻结的本地 Agent。
 
+## Agent 创作与执行边界
+
+Project Context Compiler 属于 Agent 创作层，只负责索引 Project、调用结构化 authoring Host、生成 Draft
+并通过一个窄的运行兼容性端口做冻结前预检。immutable AgentVersion 是创作层与执行层之间唯一的数据边界。
+执行层只验证并运行 exact Version，不读取可变 Draft，也不依赖 Project Context Compiler。具体 bundled
+Codex Host、loopback Broker 和 Worker Runtime 只在 application composition 中接线；CLI 负责顺序调用这些
+用例，但不成为二者共享的领域实现。仓库测试会拒绝创作层反向导入执行实现、执行层导入创作实现，以及基础
+设施反向依赖任一 Agent 领域层。
+
+当前仍保留旧的内部文件名作为薄兼容入口，避免改变根导出、测试 seam 与两个 CLI bin。它们只做 re-export，
+不再承载创作或执行逻辑。这个拆分不新增 Conversation，也不改变 Catalog schema、V1/V2/V3 canonical bytes、
+fingerprint、Developer Instructions 或真实运行行为。
+
 可信扫描器会读取并哈希 canonical Project 根目录内的全部物理后代，包括 tracked、dirty、untracked、
 ignored、hidden 文件，以及源码、文档、配置、日志、task/session 记录、raw tool output、`.env` 和物理
 `.git` 内容。普通检出中的 `.git` 目录属于扫描范围；linked worktree 中的 `.git` pointer 只作为 Project

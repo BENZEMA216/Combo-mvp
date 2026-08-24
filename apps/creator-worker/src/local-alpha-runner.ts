@@ -8,7 +8,7 @@ import type {
   WorkerResultSealOutput,
 } from '@cb/creator-agent-broker-journal/host-executor';
 
-import { createBundledCodexHost } from './codex-app-server-host.js';
+import { createBundledCodexHost } from './infrastructure/codex/index.js';
 import { createLocalAlphaBroker, type LocalAlphaBroker } from './local-alpha-broker.js';
 import {
   CreatorWorkerLocalAlphaError,
@@ -80,7 +80,7 @@ export function runCreatorWorkerLocalAlpha(
   );
 }
 
-/** Internal test seam; intentionally absent from the package root export. */
+/** Internal composition seam; intentionally absent from the package root export. */
 export async function runCreatorWorkerLocalAlphaWithDependencies(
   input: CreatorWorkerLocalAlphaOptions,
   dependencies: LocalAlphaDependencies,
