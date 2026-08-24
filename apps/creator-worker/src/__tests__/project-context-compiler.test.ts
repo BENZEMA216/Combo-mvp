@@ -31,6 +31,7 @@ import {
 import type { CreatorAgentProjectCompilerError } from '../project-context-compiler.js';
 import {
   assertSameProjectContext,
+  revalidateProjectContext,
   scanProjectContext,
   scanProjectContextWithHooks,
 } from '../project-context-index.js';
@@ -226,6 +227,34 @@ describe('Project Context Compiler', () => {
     ).toThrowError(expect.objectContaining({ code: 'PROJECT_CONTEXT_CHANGED' }));
   });
 
+  it('revalidates the full namespace without rereading regular-file bodies', () => {
+    const fixture = projectFixture();
+    const scan = scanProjectContext(fixture.project);
+    const progress: Array<{
+      phase: string;
+      entryCount: number;
+      fileCount: number;
+      uniqueBytesRead: number;
+    }> = [];
+
+    revalidateProjectContext(scan, (event) => progress.push(event));
+
+    expect(progress.at(-1)).toMatchObject({
+      phase: 'METADATA_REVALIDATION',
+      entryCount: scan.index.entryCount,
+      fileCount: scan.index.fileCount,
+      uniqueBytesRead: 0,
+    });
+
+    const note = join(fixture.project, '.hidden-note');
+    const stat = statSync(note);
+    writeFileSync(note, 'changed creator judgment\n');
+    utimesSync(note, stat.atime, stat.mtime);
+    expect(() => revalidateProjectContext(scan)).toThrowError(
+      expect.objectContaining({ code: 'PROJECT_CONTEXT_CHANGED' }),
+    );
+  });
+
   it('compiles a strict Draft, binds cited source digests, and revalidates the full Project', async () => {
     const fixture = projectFixture();
     const host = new FakeHost();
@@ -240,6 +269,7 @@ describe('Project Context Compiler', () => {
       },
       {
         scanProject: scanProjectContext,
+        revalidateProject: revalidateProjectContext,
         createHost: (_options, outputSchema) => {
           observedOutputSchema = outputSchema;
           return host;
@@ -278,6 +308,7 @@ describe('Project Context Compiler', () => {
       'index_completed',
       'compiler_started',
       'compiler_completed',
+      'revalidation_started',
       'project_revalidated',
     ]);
     expect(host.inputs[0]?.text).toContain('trusted scanner indexed');
@@ -296,6 +327,7 @@ describe('Project Context Compiler', () => {
       },
       {
         scanProject: scanProjectContext,
+        revalidateProject: revalidateProjectContext,
         createHost: () => host,
         randomId: () => 'fedcba98-7654-3210-fedc-ba9876543210',
       },

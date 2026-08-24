@@ -33,9 +33,11 @@ import { SUPPORTED_BUNDLED_CODEX_VERSION } from './codex-app-server-process.js';
 import {
   ProjectContextIndexError,
   assertSameProjectContext,
+  revalidateProjectContext,
   scanProjectContext,
   type ProjectContextEntry,
   type ProjectContextIndex,
+  type ProjectContextIndexProgress,
   type ProjectContextScan,
 } from './project-context-index.js';
 
@@ -100,6 +102,7 @@ export type CreatorAgentProjectCompilationDiagnostic =
   | 'index_completed'
   | 'compiler_started'
   | 'compiler_completed'
+  | 'revalidation_started'
   | 'project_revalidated';
 
 export type CreatorAgentProjectCompilationOptions = Readonly<{
@@ -110,6 +113,7 @@ export type CreatorAgentProjectCompilationOptions = Readonly<{
   signal?: AbortSignal;
   turnTimeoutMs?: number;
   diagnosticSink?: (event: CreatorAgentProjectCompilationDiagnostic) => void;
+  indexProgressSink?: (progress: ProjectContextIndexProgress) => void;
 }>;
 
 export type CreatorAgentProjectCompilationReport = Readonly<{
@@ -159,13 +163,21 @@ export class CreatorAgentProjectCompilerError extends Error {
 }
 
 type CompilerDependencies = Readonly<{
-  scanProject(path: string): ProjectContextScan;
+  scanProject(
+    path: string,
+    onProgress?: (progress: ProjectContextIndexProgress) => void,
+  ): ProjectContextScan;
+  revalidateProject?(
+    scan: ProjectContextScan,
+    onProgress?: (progress: ProjectContextIndexProgress) => void,
+  ): void;
   createHost(options: BundledCodexHostOptions, outputSchema: unknown): CreatorHost;
   randomId(): string;
 }>;
 
 const productionDependencies: CompilerDependencies = Object.freeze({
   scanProject: scanProjectContext,
+  revalidateProject: revalidateProjectContext,
   createHost: createBundledCodexStructuredHost,
   randomId: randomUUID,
 });
@@ -187,7 +199,7 @@ export async function compileCreatorAgentProjectWithDependencies(
   emit(options, 'index_started');
   let before: ProjectContextScan;
   try {
-    before = dependencies.scanProject(options.projectPath);
+    before = dependencies.scanProject(options.projectPath, options.indexProgressSink);
   } catch (error) {
     throw normalizeCompilerError(error);
   }
@@ -201,8 +213,14 @@ export async function compileCreatorAgentProjectWithDependencies(
     primaryFailure = error;
   }
   try {
-    const after = dependencies.scanProject(before.projectPath);
-    assertSameProjectContext(before.index, after.index);
+    emit(options, 'revalidation_started');
+    if (dependencies.revalidateProject === undefined) {
+      const after = dependencies.scanProject(before.projectPath, options.indexProgressSink);
+      assertSameProjectContext(before.index, after.index);
+    } else {
+      dependencies.revalidateProject(before, options.indexProgressSink);
+    }
+    assertSameProjectSnapshot(projectSnapshot, inspectOptionalGitProject(before.projectPath));
   } catch (error) {
     const revalidationFailure = normalizeCompilerError(error);
     if (primaryFailure === undefined) throw revalidationFailure;
@@ -580,6 +598,24 @@ function inspectOptionalGitProject(projectPath: string): CreatorAgentProjectSnap
   }
 }
 
+function assertSameProjectSnapshot(
+  before: CreatorAgentProjectSnapshot | undefined,
+  after: CreatorAgentProjectSnapshot | undefined,
+): void {
+  if (
+    before?.repositoryUrl !== after?.repositoryUrl ||
+    before?.sourceRef !== after?.sourceRef ||
+    before?.commitSha !== after?.commitSha ||
+    before?.treeSha !== after?.treeSha ||
+    (before === undefined) !== (after === undefined)
+  ) {
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_CHANGED',
+      'Project Git snapshot changed while the Agent Draft was being compiled.',
+    );
+  }
+}
+
 function git(cwd: string, arguments_: readonly string[]): string {
   return execFileSync(GIT_EXECUTABLE, ['--no-optional-locks', ...arguments_], {
     cwd,
@@ -602,6 +638,7 @@ type CheckedCompilationOptions = Readonly<{
   signal?: AbortSignal;
   turnTimeoutMs: number;
   diagnosticSink?: (event: CreatorAgentProjectCompilationDiagnostic) => void;
+  indexProgressSink?: (progress: ProjectContextIndexProgress) => void;
 }>;
 
 function snapshotOptions(input: CreatorAgentProjectCompilationOptions): CheckedCompilationOptions {
@@ -613,7 +650,8 @@ function snapshotOptions(input: CreatorAgentProjectCompilationOptions): CheckedC
     typeof input.projectPath !== 'string' ||
     (input.allowLoopbackProxy !== undefined && typeof input.allowLoopbackProxy !== 'boolean') ||
     (input.signal !== undefined && !(input.signal instanceof AbortSignal)) ||
-    (input.diagnosticSink !== undefined && typeof input.diagnosticSink !== 'function')
+    (input.diagnosticSink !== undefined && typeof input.diagnosticSink !== 'function') ||
+    (input.indexProgressSink !== undefined && typeof input.indexProgressSink !== 'function')
   ) {
     throw compilerError(
       input.allowSensitiveProjectContext === true
@@ -635,6 +673,9 @@ function snapshotOptions(input: CreatorAgentProjectCompilationOptions): CheckedC
     turnTimeoutMs,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
     ...(input.diagnosticSink === undefined ? {} : { diagnosticSink: input.diagnosticSink }),
+    ...(input.indexProgressSink === undefined
+      ? {}
+      : { indexProgressSink: input.indexProgressSink }),
   });
 }
 

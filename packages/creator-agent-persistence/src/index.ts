@@ -12,5 +12,6 @@ export {
   type CreatorAgentDraftRef,
   type CreatorAgentFreezeResult,
   type CreatorAgentFreezeReview,
+  type CreatorAgentLocalExperienceFreezeRequest,
   type CreatorAgentVersionRef,
 } from './catalog-types.js';

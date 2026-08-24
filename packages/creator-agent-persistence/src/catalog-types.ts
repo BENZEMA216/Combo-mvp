@@ -70,6 +70,12 @@ export type CreatorAgentFreezeResult = Readonly<{
   version: CreatorAgentVersion;
 }>;
 
+export type CreatorAgentLocalExperienceFreezeRequest = Readonly<{
+  ref: CreatorAgentDraftRef;
+  draftFingerprint: CreatorAgentDraftSnapshot['draftFingerprint'];
+  authorization: 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1';
+}>;
+
 export interface CreatorAgentCatalog {
   importDraftHandoff(text: string): CreatorAgentDraftImportResult;
   listAgents(): readonly CreatorAgentCatalogAgent[];
@@ -81,6 +87,9 @@ export interface CreatorAgentCatalog {
       ref: CreatorAgentDraftRef;
       confirmationText: string;
     }>,
+  ): CreatorAgentFreezeResult;
+  freezeDraftForLocalExperience(
+    input: CreatorAgentLocalExperienceFreezeRequest,
   ): CreatorAgentFreezeResult;
   listVersions(agentId: string): readonly CreatorAgentVersion[];
   readVersion(ref: CreatorAgentVersionRef): CreatorAgentVersion;

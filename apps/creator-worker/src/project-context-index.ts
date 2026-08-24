@@ -11,6 +11,7 @@ import {
   readlinkSync,
   realpathSync,
   statSync,
+  type BigIntStats,
   type Stats,
 } from 'node:fs';
 import { basename, isAbsolute, join, relative, resolve } from 'node:path';
@@ -20,6 +21,8 @@ const MAX_UNIQUE_INDEX_BYTES = 32 * 1024 * 1024 * 1024;
 const MAX_SENSITIVE_FILE_BYTES = 1024 * 1024;
 const MAX_GIT_OUTPUT_BYTES = 256 * 1024 * 1024;
 const READ_BUFFER_BYTES = 128 * 1024;
+const PROGRESS_ENTRY_INTERVAL = 1_000;
+const PROGRESS_BYTE_INTERVAL = 256 * 1024 * 1024;
 
 export type ProjectContextEntryKind = 'directory' | 'file' | 'symlink' | 'special';
 export type ProjectContextCategory =
@@ -85,6 +88,13 @@ export type ProjectContextScan = Readonly<{
   sensitiveLiterals: ReadonlySet<string>;
 }>;
 
+export type ProjectContextIndexProgress = Readonly<{
+  phase: 'CONTENT_SCAN' | 'METADATA_REVALIDATION';
+  entryCount: number;
+  fileCount: number;
+  uniqueBytesRead: number;
+}>;
+
 export type ProjectContextIndexErrorCode =
   | 'PROJECT_CONTEXT_PATH_INVALID'
   | 'PROJECT_CONTEXT_SCAN_FAILED'
@@ -96,7 +106,35 @@ type ProjectContextIndexHooks = Readonly<{
   afterFileOpened?: (relativePath: string) => void;
   maximumEntries?: number;
   maximumUniqueBytes?: number;
+  onProgress?: (progress: ProjectContextIndexProgress) => void;
 }>;
+
+type VerificationSignature = Readonly<{
+  kind: ProjectContextEntryKind | 'root';
+  dev: bigint;
+  ino: bigint;
+  mode: bigint;
+  uid: bigint;
+  gid: bigint;
+  nlink: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}>;
+
+type VerificationRecord = Readonly<{
+  path: string;
+  signature: VerificationSignature;
+  symlinkTarget?: string;
+}>;
+
+type VerificationManifest = Readonly<{
+  root: VerificationSignature;
+  gitFingerprint: `sha256:${string}`;
+  entries: readonly VerificationRecord[];
+}>;
+
+const verificationManifests = new WeakMap<ProjectContextIndex, VerificationManifest>();
 
 export class ProjectContextIndexError extends Error {
   public constructor(
@@ -109,8 +147,14 @@ export class ProjectContextIndexError extends Error {
   }
 }
 
-export function scanProjectContext(rawProjectPath: string): ProjectContextScan {
-  return scanProjectContextWithHooks(rawProjectPath, {});
+export function scanProjectContext(
+  rawProjectPath: string,
+  onProgress?: (progress: ProjectContextIndexProgress) => void,
+): ProjectContextScan {
+  return scanProjectContextWithHooks(
+    rawProjectPath,
+    onProgress === undefined ? {} : { onProgress },
+  );
 }
 
 /** Internal race-test seam; intentionally absent from the package root export. */
@@ -134,10 +178,15 @@ export function scanProjectContextWithHooks(
     );
   }
   const entries: ProjectContextEntry[] = [];
+  const verificationRecords: VerificationRecord[] = [];
   const sensitiveLiterals = new Set<string>();
   const hardlinks = new Map<
     string,
-    Readonly<{ content: ReturnType<typeof hashFile>; stat: Stats }>
+    Readonly<{
+      content: ReturnType<typeof hashFile>;
+      stat: Stats;
+      verification: VerificationSignature;
+    }>
   >();
   const gitClassification = readGitClassification(projectPath);
   const rootStat = lstatSync(projectPath);
@@ -148,6 +197,23 @@ export function scanProjectContextWithHooks(
   let uniqueByteCount = 0;
   let hardlinkAliasCount = 0;
   let fileCount = 0;
+  let bytesReadForProgress = 0;
+  let nextProgressEntry = PROGRESS_ENTRY_INTERVAL;
+  let nextProgressByte = PROGRESS_BYTE_INTERVAL;
+
+  const emitProgress = (force = false) => {
+    if (!force && entries.length < nextProgressEntry && bytesReadForProgress < nextProgressByte) {
+      return;
+    }
+    nextProgressEntry = entries.length + PROGRESS_ENTRY_INTERVAL;
+    nextProgressByte = bytesReadForProgress + PROGRESS_BYTE_INTERVAL;
+    safeProgress(hooks.onProgress, {
+      phase: 'CONTENT_SCAN',
+      entryCount: entries.length,
+      fileCount,
+      uniqueBytesRead: bytesReadForProgress,
+    });
+  };
 
   while (pending.length > 0) {
     const parent = pending.pop();
@@ -177,9 +243,11 @@ export function scanProjectContextWithHooks(
       }
       const category = classify(path);
       let entry: ProjectContextEntry;
+      let verification: VerificationRecord;
       if (stat.isDirectory()) {
         const gitClass = classifyGitPath(path, gitClassification);
         entry = projectEntry(path, 'directory', category, gitClass, stat, digestText('directory'));
+        verification = verificationRecord(path, 'directory', lstatBigInt(absolute));
         pending.push({ logicalParent: path, absoluteParent: absolute, expected: stat });
       } else if (stat.isFile()) {
         const hardlinkKey = `${stat.dev}:${stat.ino}`;
@@ -192,18 +260,49 @@ export function scanProjectContextWithHooks(
               'Project context exceeds the bounded unique-content limit.',
             );
           }
-          content = hashFile(absolute, stat, isSensitiveCandidate(path), () =>
-            hooks.afterFileOpened?.(path),
+          content = hashFile(
+            absolute,
+            stat,
+            isSensitiveCandidate(path),
+            () => hooks.afterFileOpened?.(path),
+            (bytes) => {
+              bytesReadForProgress += bytes;
+              emitProgress();
+            },
           );
-          hardlinks.set(hardlinkKey, Object.freeze({ content, stat: content.stableStat }));
+          hardlinks.set(
+            hardlinkKey,
+            Object.freeze({
+              content,
+              stat: content.stableStat,
+              verification: content.verification,
+            }),
+          );
           uniqueByteCount += stat.size;
         } else {
           assertSameFile(cached.stat, stat);
+          assertVerificationSignature(cached.verification, lstatBigInt(absolute));
           hardlinkAliasCount += 1;
           content = cached.content;
           if (isSensitiveCandidate(path) && content.sensitiveText === undefined) {
-            content = hashFile(absolute, stat, true, () => hooks.afterFileOpened?.(path));
-            hardlinks.set(hardlinkKey, Object.freeze({ content, stat: content.stableStat }));
+            content = hashFile(
+              absolute,
+              stat,
+              true,
+              () => hooks.afterFileOpened?.(path),
+              (bytes) => {
+                bytesReadForProgress += bytes;
+                emitProgress();
+              },
+            );
+            hardlinks.set(
+              hardlinkKey,
+              Object.freeze({
+                content,
+                stat: content.stableStat,
+                verification: content.verification,
+              }),
+            );
           }
         }
         const stableStat = content.stableStat;
@@ -223,6 +322,7 @@ export function scanProjectContextWithHooks(
           collectSensitiveLiterals(content.sensitiveText, sensitiveLiterals);
         }
         entry = projectEntry(path, 'file', category, gitClass, stableStat, content.digest);
+        verification = Object.freeze({ path, signature: content.verification });
       } else if (stat.isSymbolicLink()) {
         let target: string;
         try {
@@ -243,6 +343,7 @@ export function scanProjectContextWithHooks(
           stat,
           digestText(`symlink\0${target}`),
         );
+        verification = verificationRecord(path, 'symlink', lstatBigInt(absolute), target);
       } else {
         throw new ProjectContextIndexError(
           'PROJECT_CONTEXT_SCAN_FAILED',
@@ -250,6 +351,8 @@ export function scanProjectContextWithHooks(
         );
       }
       entries.push(entry);
+      verificationRecords.push(verification);
+      emitProgress();
       assertDirectoryPathStable(absoluteParent, expected);
       if (uniqueByteCount > maximumUniqueBytes) {
         throw new ProjectContextIndexError(
@@ -283,6 +386,16 @@ export function scanProjectContextWithHooks(
     coverage,
     entries,
   });
+  verificationRecords.sort((left, right) => compareStrings(left.path, right.path));
+  verificationManifests.set(
+    index,
+    Object.freeze({
+      root: verificationSignature('root', lstatBigInt(projectPath)),
+      gitFingerprint: fingerprintGitClassification(gitClassification),
+      entries: Object.freeze(verificationRecords),
+    }),
+  );
+  emitProgress(true);
   return Object.freeze({
     projectPath,
     index,
@@ -373,6 +486,108 @@ export function assertSameProjectContext(
   }
 }
 
+export function revalidateProjectContext(
+  scan: ProjectContextScan,
+  onProgress?: (progress: ProjectContextIndexProgress) => void,
+): void {
+  const projectPath = canonicalProjectPath(scan.projectPath);
+  const manifest = verificationManifests.get(scan.index);
+  if (manifest === undefined) {
+    const after = scanProjectContext(projectPath, onProgress);
+    assertSameProjectContext(scan.index, after.index);
+    return;
+  }
+  const expectedByPath = new Map(manifest.entries.map((entry) => [entry.path, entry]));
+  const seen = new Set<string>();
+  let fileCount = 0;
+  let nextProgressEntry = PROGRESS_ENTRY_INTERVAL;
+  const emitProgress = (force = false) => {
+    if (!force && seen.size < nextProgressEntry) return;
+    nextProgressEntry = seen.size + PROGRESS_ENTRY_INTERVAL;
+    safeProgress(onProgress, {
+      phase: 'METADATA_REVALIDATION',
+      entryCount: seen.size,
+      fileCount,
+      uniqueBytesRead: 0,
+    });
+  };
+  try {
+    assertVerificationSignature(manifest.root, lstatBigInt(projectPath));
+    assertGitClassificationFingerprint(projectPath, manifest.gitFingerprint);
+    const rootStat = lstatSync(projectPath);
+    const pending: Array<
+      Readonly<{ logicalParent: string; absoluteParent: string; expected: Stats }>
+    > = [{ logicalParent: '', absoluteParent: projectPath, expected: rootStat }];
+    while (pending.length > 0) {
+      const parent = pending.pop();
+      if (parent === undefined) break;
+      const { logicalParent, absoluteParent, expected } = parent;
+      const names = readStableDirectoryNames(
+        absoluteParent,
+        expected,
+        manifest.entries.length - seen.size + 1,
+      );
+      for (const name of names) {
+        assertDirectoryPathStable(absoluteParent, expected);
+        const path = logicalParent.length === 0 ? name : `${logicalParent}/${name}`;
+        const record = expectedByPath.get(path);
+        if (record === undefined || seen.has(path)) throw projectContextChanged();
+        const absolute = join(absoluteParent, name);
+        const observed = lstatBigInt(absolute);
+        assertVerificationSignature(record.signature, observed);
+        if (record.signature.kind === 'directory') {
+          pending.push({
+            logicalParent: path,
+            absoluteParent: absolute,
+            expected: lstatSync(absolute),
+          });
+        } else if (record.signature.kind === 'file') {
+          verifyRegularFileMetadata(absolute, record.signature);
+          fileCount += 1;
+        } else if (record.signature.kind === 'symlink') {
+          if (readlinkSync(absolute) !== record.symlinkTarget) throw projectContextChanged();
+        } else {
+          throw projectContextChanged();
+        }
+        seen.add(path);
+        emitProgress();
+        assertDirectoryPathStable(absoluteParent, expected);
+      }
+    }
+    if (seen.size !== manifest.entries.length) throw projectContextChanged();
+    assertVerificationSignature(manifest.root, lstatBigInt(projectPath));
+    assertGitClassificationFingerprint(projectPath, manifest.gitFingerprint);
+    emitProgress(true);
+  } catch (error) {
+    if (error instanceof ProjectContextIndexError && error.code === 'PROJECT_CONTEXT_CHANGED') {
+      throw error;
+    }
+    throw new ProjectContextIndexError(
+      'PROJECT_CONTEXT_CHANGED',
+      'Project context changed while the Agent Draft was being compiled.',
+      error instanceof Error ? { cause: error } : undefined,
+    );
+  }
+}
+
+function verifyRegularFileMetadata(filename: string, expected: VerificationSignature): void {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(filename, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    assertVerificationSignature(expected, fstatSync(descriptor, { bigint: true }));
+    assertVerificationSignature(expected, lstatBigInt(filename));
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
+function projectContextChanged(): ProjectContextIndexError {
+  return new ProjectContextIndexError(
+    'PROJECT_CONTEXT_CHANGED',
+    'Project context changed while the Agent Draft was being compiled.',
+  );
+}
+
 function canonicalProjectPath(rawProjectPath: string): string {
   if (
     typeof rawProjectPath !== 'string' ||
@@ -405,10 +620,12 @@ function hashFile(
   expected: Stats,
   retainSensitiveText: boolean,
   afterOpen: () => void,
+  onRead: (bytes: number) => void,
 ): Readonly<{
   digest: `sha256:${string}`;
   gitBlobSha: string;
   stableStat: Stats;
+  verification: VerificationSignature;
   sensitiveText?: string;
 }> {
   if (retainSensitiveText && expected.size > MAX_SENSITIVE_FILE_BYTES) {
@@ -432,6 +649,8 @@ function hashFile(
     }
     const stableStat = fstatSync(descriptor);
     assertSameFileExceptChangedAt(opened, stableStat);
+    const stableBigIntStat = fstatSync(descriptor, { bigint: true });
+    const verification = verificationSignature('file', stableBigIntStat);
     const hash = createHash('sha256');
     const gitHash = createHash('sha1');
     gitHash.update(`blob ${stableStat.size}\0`);
@@ -449,6 +668,7 @@ function hashFile(
         );
       }
       bytesRead += read;
+      onRead(read);
       const chunk = buffer.subarray(0, read);
       hash.update(chunk);
       gitHash.update(chunk);
@@ -459,23 +679,30 @@ function hashFile(
       }
     }
     assertSameFile(stableStat, fstatSync(descriptor));
+    assertVerificationSignature(verification, fstatSync(descriptor, { bigint: true }));
     const digest = `sha256:${hash.digest('hex')}` as const;
     const gitBlobSha = gitHash.digest('hex');
     const frozenStat = Object.freeze(stableStat);
     if (!retainSensitiveText || retained.length === 0) {
-      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat });
+      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat, verification });
     }
     const bytes = Buffer.concat(retained);
     if (bytes.includes(0)) {
-      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat });
+      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat, verification });
     }
     let sensitiveText: string;
     try {
       sensitiveText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     } catch {
-      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat });
+      return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat, verification });
     }
-    return Object.freeze({ digest, gitBlobSha, stableStat: frozenStat, sensitiveText });
+    return Object.freeze({
+      digest,
+      gitBlobSha,
+      stableStat: frozenStat,
+      verification,
+      sensitiveText,
+    });
   } catch (error) {
     if (error instanceof ProjectContextIndexError) throw error;
     throw indexError('PROJECT_CONTEXT_SCAN_FAILED', error);
@@ -554,6 +781,71 @@ function projectEntry(
 
 function normalizedTimestamp(value: number): number {
   return Math.trunc(value);
+}
+
+function lstatBigInt(path: string): BigIntStats {
+  try {
+    return lstatSync(path, { bigint: true });
+  } catch (error) {
+    throw indexError('PROJECT_CONTEXT_SCAN_FAILED', error);
+  }
+}
+
+function verificationRecord(
+  path: string,
+  kind: ProjectContextEntryKind,
+  stat: BigIntStats,
+  symlinkTarget?: string,
+): VerificationRecord {
+  return Object.freeze({
+    path,
+    signature: verificationSignature(kind, stat),
+    ...(symlinkTarget === undefined ? {} : { symlinkTarget }),
+  });
+}
+
+function verificationSignature(
+  kind: VerificationSignature['kind'],
+  stat: BigIntStats,
+): VerificationSignature {
+  const matchesKind =
+    kind === 'root' || kind === 'directory'
+      ? stat.isDirectory()
+      : kind === 'file'
+        ? stat.isFile()
+        : kind === 'symlink'
+          ? stat.isSymbolicLink()
+          : false;
+  if (!matchesKind) throw projectContextChanged();
+  return Object.freeze({
+    kind,
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: stat.mode,
+    uid: stat.uid,
+    gid: stat.gid,
+    nlink: stat.nlink,
+    size: stat.size,
+    mtimeNs: stat.mtimeNs,
+    ctimeNs: stat.ctimeNs,
+  });
+}
+
+function assertVerificationSignature(expected: VerificationSignature, actual: BigIntStats): void {
+  const observed = verificationSignature(expected.kind, actual);
+  if (
+    expected.dev !== observed.dev ||
+    expected.ino !== observed.ino ||
+    expected.mode !== observed.mode ||
+    expected.uid !== observed.uid ||
+    expected.gid !== observed.gid ||
+    expected.nlink !== observed.nlink ||
+    expected.size !== observed.size ||
+    expected.mtimeNs !== observed.mtimeNs ||
+    expected.ctimeNs !== observed.ctimeNs
+  ) {
+    throw projectContextChanged();
+  }
 }
 
 function classify(path: string): ProjectContextCategory {
@@ -696,6 +988,33 @@ function emptyGitClassification(): GitClassification {
   });
 }
 
+function fingerprintGitClassification(classification: GitClassification): `sha256:${string}` {
+  const hash = createHash('sha256');
+  hash.update('combo.creator-agent-project-context-git-classification/1\0');
+  for (const [path, value] of [...classification.tracked].sort(([left], [right]) =>
+    compareStrings(left, right),
+  )) {
+    hash.update(`tracked\0${path}\0${value.mode}\0${value.objectId}\n`);
+  }
+  for (const [label, paths] of [
+    ['staged', classification.staged],
+    ['untracked', classification.untracked],
+    ['ignored', classification.ignored],
+  ] as const) {
+    for (const path of [...paths].sort(compareStrings)) hash.update(`${label}\0${path}\n`);
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function assertGitClassificationFingerprint(
+  projectPath: string,
+  expected: `sha256:${string}`,
+): void {
+  if (fingerprintGitClassification(readGitClassification(projectPath)) !== expected) {
+    throw projectContextChanged();
+  }
+}
+
 function gitTreeEntries(
   projectPath: string,
 ): ReadonlyMap<string, Readonly<{ mode: string; objectId: string }>> {
@@ -797,6 +1116,17 @@ function digestText(value: string): `sha256:${string}` {
 
 function compareStrings(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function safeProgress(
+  sink: ((progress: ProjectContextIndexProgress) => void) | undefined,
+  progress: ProjectContextIndexProgress,
+): void {
+  try {
+    sink?.(Object.freeze(progress));
+  } catch {
+    // Progress is observational and never affects index authority.
+  }
 }
 
 function indexError(code: ProjectContextIndexErrorCode, cause: unknown): ProjectContextIndexError {

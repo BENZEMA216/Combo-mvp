@@ -24,6 +24,7 @@ import {
   type CreatorAgentCatalog,
   type CreatorAgentCatalogOptions,
   type CreatorAgentDraftRef,
+  type CreatorAgentFreezeResult,
   type CreatorAgentVersionRef,
 } from '@cb/creator-agent-persistence';
 import type { CreatorAgentVersion } from '@cb/creator-agent-protocol/agent';
@@ -34,6 +35,7 @@ import { localAlphaSignalExitCodeForTesting } from './local-alpha-cli.js';
 import {
   CreatorAgentProjectCompilerError,
   compileCreatorAgentProject,
+  type CreatorAgentProjectCompilationDiagnostic,
   type CreatorAgentProjectCompilationOptions,
   type CreatorAgentProjectCompilationResult,
 } from './project-context-compiler.js';
@@ -56,16 +58,19 @@ type CliDependencies = Readonly<{
   compileProject(
     options: CreatorAgentProjectCompilationOptions,
   ): Promise<CreatorAgentProjectCompilationResult>;
+  defaultCatalogPath(): string;
 }>;
 
 const productionDependencies: CliDependencies = Object.freeze({
   runAgentTurn: runCreatorAgentLocalTurn,
   compileProject: compileCreatorAgentProject,
+  defaultCatalogPath,
 });
 
 const HELP = `Combo Creator Agent — local unpublished catalog
 
 Commands:
+  experience <absolute-project>
   create --project <absolute-project> [--catalog <absolute.sqlite>]
          --allow-unisolated-read --allow-sensitive-project-context [--allow-loopback-proxy]
          [--compiler-timeout-ms <30000..1800000>]
@@ -81,7 +86,9 @@ Commands:
       (--prompt <text> | --prompt-file <file>) --allow-unisolated-read
       [--state-dir <fresh-directory>] [--allow-loopback-proxy]
 
-Create performs a complete read-only Project index, asks bundled Codex to compile a Draft, renders
+Experience is the non-interactive single-user path. The command itself authorizes full local
+Project authoring, automatic freeze of one local unpublished Version, and a run of its first frozen
+starter prompt. Create performs a complete read-only Project index, asks bundled Codex to compile a Draft, renders
 the Draft plus coverage, and freezes it after one explicit FREEZE confirmation. The legacy handoff
 commands remain available for exact diagnostics. There is no --yes, --force, implicit latest
 Version, or public-share side effect.
@@ -134,110 +141,19 @@ export async function executeCreatorAgentCatalogCli(
     io.stdout.write(HELP);
     return command === undefined ? 2 : 0;
   }
-  const flags = parseFlags(arguments_);
   signal.throwIfAborted();
-  if (command === 'create') {
-    assertOnly(flags, [
-      'catalog',
-      'project',
-      'allow-unisolated-read',
-      'allow-sensitive-project-context',
-      'allow-loopback-proxy',
-      'compiler-timeout-ms',
-      'run-prompt',
-      'run-prompt-file',
-      'state-dir',
-    ]);
-    if (flags.get('allow-unisolated-read') !== 'true') {
-      throw cliError(
-        'AGENT_CLI_INVALID',
-        '--allow-unisolated-read is required for Project compilation and the current Host.',
-        true,
-      );
-    }
-    if (flags.get('allow-sensitive-project-context') !== 'true') {
-      throw new CreatorAgentProjectCompilerError(
-        'PROJECT_CONTEXT_AUTHORIZATION_REQUIRED',
-        '--allow-sensitive-project-context is required because .env, logs and task records may be sent to the bundled Codex model service.',
-      );
-    }
-    const projectPath = requiredAbsolute(flags, 'project');
-    const catalogPath =
-      flags.get('catalog') === undefined
-        ? defaultCatalogPath()
-        : requiredAbsolute(flags, 'catalog');
-    assertCreateConfirmationAvailable(io);
-    const runPrompt = readOptionalRunPrompt(flags);
-    const explicitStateDirectory =
-      flags.get('state-dir') === undefined ? undefined : requiredAbsolute(flags, 'state-dir');
-    assertOutsideProject(projectPath, catalogPath, explicitStateDirectory);
-    if (explicitStateDirectory !== undefined) assertFreshStateDirectory(explicitStateDirectory);
-    const compilation = await dependencies.compileProject({
-      projectPath,
-      allowUnisolatedRead: true,
-      allowSensitiveProjectContext: true,
-      ...(flags.get('allow-loopback-proxy') === 'true' ? { allowLoopbackProxy: true } : {}),
-      ...(flags.get('compiler-timeout-ms') === undefined
-        ? {}
-        : { turnTimeoutMs: boundedInteger(flags, 'compiler-timeout-ms', 30_000, 1_800_000) }),
+  if (command === 'experience') {
+    return executeCreateCommand(
+      experienceFlags(arguments_),
+      io,
+      dependencies,
       signal,
-      diagnosticSink: (event) => io.stderr.write(`Project 编译：${event}\n`),
-    });
-    signal.throwIfAborted();
-    const options = ensureCatalog(catalogPath, flags.get('catalog') === undefined);
-    const imported = withCatalog(options, (catalog) =>
-      catalog.importDraftHandoff(compilation.handoffText),
+      'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1',
     );
-    const ref: CreatorAgentDraftRef = Object.freeze({
-      agentId: imported.draft.agentId,
-      draftId: imported.draft.draftId,
-      draftRevision: imported.draft.draftRevision,
-    });
-    const review = withCatalog(options, (catalog) => catalog.createFreezeReview(ref));
-    writeCompilationReview(io.stderr, compilation, review);
-    const confirmation = await readCreateConfirmation(io, signal);
-    if (confirmation !== 'FREEZE') {
-      throw cliError(
-        'AGENT_CONFIRMATION_MISMATCH',
-        'Create confirmation does not bind this exact reviewed Draft.',
-        false,
-      );
-    }
-    signal.throwIfAborted();
-    const frozen = withCatalog(options, (catalog) =>
-      catalog.freezeDraft({ ref, confirmationText: review.confirmationText }),
-    );
-    const version = withCatalog(options, (catalog) =>
-      catalog.readVersion({ agentId: frozen.version.agentId, versionId: frozen.version.versionId }),
-    );
-    io.stdout.write(
-      `${terminalSafeJson({
-        disposition: frozen.disposition,
-        agentId: version.agentId,
-        versionId: version.versionId,
-        versionNumber: version.versionNumber,
-        versionFingerprint: version.versionFingerprint,
-        contextRootDigest: compilation.report.contextRootDigest,
-        runtimeContext: compilation.report.runtimeContext,
-      })}\n`,
-    );
-    if (runPrompt !== undefined) {
-      const stateDirectory =
-        explicitStateDirectory === undefined ? defaultRunState(version) : explicitStateDirectory;
-      signal.throwIfAborted();
-      const result = await dependencies.runAgentTurn({
-        version,
-        ...(requiresGitProject(version) ? { projectPath } : {}),
-        prompt: runPrompt,
-        stateDirectory,
-        allowUnisolatedRead: true,
-        ...(flags.get('allow-loopback-proxy') === 'true' ? { allowLoopbackProxy: true } : {}),
-        signal,
-      });
-      signal.throwIfAborted();
-      io.stdout.write(`${result.text}\n`);
-    }
-    return 0;
+  }
+  const flags = parseFlags(arguments_);
+  if (command === 'create') {
+    return executeCreateCommand(flags, io, dependencies, signal, 'EXPLICIT_REVIEW');
   }
   if (command === 'init') {
     assertOnly(flags, ['catalog']);
@@ -373,6 +289,225 @@ export async function executeCreatorAgentCatalogCli(
     return 0;
   }
   throw cliError('AGENT_CLI_INVALID', 'Unknown command.', true);
+}
+
+type CreateMode = 'EXPLICIT_REVIEW' | 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1';
+
+async function executeCreateCommand(
+  flags: ReadonlyMap<string, string>,
+  io: CliIo,
+  dependencies: CliDependencies,
+  signal: AbortSignal,
+  mode: CreateMode,
+): Promise<number> {
+  assertOnly(flags, [
+    'catalog',
+    'project',
+    'allow-unisolated-read',
+    'allow-sensitive-project-context',
+    'allow-loopback-proxy',
+    'compiler-timeout-ms',
+    'run-prompt',
+    'run-prompt-file',
+    'state-dir',
+  ]);
+  if (flags.get('allow-unisolated-read') !== 'true') {
+    throw cliError(
+      'AGENT_CLI_INVALID',
+      '--allow-unisolated-read is required for Project compilation and the current Host.',
+      true,
+    );
+  }
+  if (flags.get('allow-sensitive-project-context') !== 'true') {
+    throw new CreatorAgentProjectCompilerError(
+      'PROJECT_CONTEXT_AUTHORIZATION_REQUIRED',
+      '--allow-sensitive-project-context is required because .env, logs and task records may be sent to the bundled Codex model service.',
+    );
+  }
+  const projectPath = requiredAbsolute(flags, 'project');
+  const catalogPath =
+    flags.get('catalog') === undefined
+      ? dependencies.defaultCatalogPath()
+      : requiredAbsolute(flags, 'catalog');
+  if (mode === 'EXPLICIT_REVIEW') assertCreateConfirmationAvailable(io);
+  const requestedRunPrompt = mode === 'EXPLICIT_REVIEW' ? readOptionalRunPrompt(flags) : undefined;
+  const explicitStateDirectory =
+    flags.get('state-dir') === undefined ? undefined : requiredAbsolute(flags, 'state-dir');
+  assertOutsideProject(projectPath, catalogPath, explicitStateDirectory);
+  if (explicitStateDirectory !== undefined) assertFreshStateDirectory(explicitStateDirectory);
+  if (mode === 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1') {
+    io.stderr.write(
+      '本地体验模式：将全量读取 Project（包括 .env、日志和任务记录），相关内容可能进入模型服务；通过全部校验后会自动冻结一个仅存本机、尚未公开的 AgentVersion。\n',
+    );
+  }
+  const compilation = await dependencies.compileProject({
+    projectPath,
+    allowUnisolatedRead: true,
+    allowSensitiveProjectContext: true,
+    ...(flags.get('allow-loopback-proxy') === 'true' ? { allowLoopbackProxy: true } : {}),
+    ...(flags.get('compiler-timeout-ms') === undefined
+      ? {}
+      : { turnTimeoutMs: boundedInteger(flags, 'compiler-timeout-ms', 30_000, 1_800_000) }),
+    signal,
+    diagnosticSink: (event) => io.stderr.write(`${diagnosticMessage(event)}\n`),
+    indexProgressSink: (progress) =>
+      io.stderr.write(
+        progress.phase === 'CONTENT_SCAN'
+          ? `[1/4] 已索引 ${progress.entryCount} 个条目、${progress.fileCount} 个文件，读取 ${formatBytes(progress.uniqueBytesRead)}。\n`
+          : `[2/4] 已复验 ${progress.entryCount} 个条目、${progress.fileCount} 个文件；扫描器读取工作树普通文件正文 0 字节。\n`,
+      ),
+  });
+  signal.throwIfAborted();
+  const options = ensureCatalog(catalogPath, flags.get('catalog') === undefined);
+  const imported = withCatalog(options, (catalog) =>
+    catalog.importDraftHandoff(compilation.handoffText),
+  );
+  const ref: CreatorAgentDraftRef = Object.freeze({
+    agentId: imported.draft.agentId,
+    draftId: imported.draft.draftId,
+    draftRevision: imported.draft.draftRevision,
+  });
+  let frozen: CreatorAgentFreezeResult;
+  if (mode === 'EXPLICIT_REVIEW') {
+    const review = withCatalog(options, (catalog) => catalog.createFreezeReview(ref));
+    writeCompilationReview(io.stderr, compilation, review);
+    const confirmation = await readCreateConfirmation(io, signal);
+    if (confirmation !== 'FREEZE') {
+      throw cliError(
+        'AGENT_CONFIRMATION_MISMATCH',
+        'Create confirmation does not bind this exact reviewed Draft.',
+        false,
+      );
+    }
+    signal.throwIfAborted();
+    frozen = withCatalog(options, (catalog) =>
+      catalog.freezeDraft({ ref, confirmationText: review.confirmationText }),
+    );
+  } else {
+    writeExperienceCompilationSummary(io.stderr, compilation);
+    frozen = withCatalog(options, (catalog) =>
+      catalog.freezeDraftForLocalExperience({
+        ref,
+        draftFingerprint: compilation.draft.draftFingerprint,
+        authorization: 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1',
+      }),
+    );
+    io.stderr.write('[3/4] 本地 AgentVersion 已自动冻结；正在关闭并重新读取 exact Version。\n');
+  }
+  const version = withCatalog(options, (catalog) =>
+    catalog.readVersion({ agentId: frozen.version.agentId, versionId: frozen.version.versionId }),
+  );
+  io.stdout.write(
+    `${terminalSafeJson({
+      disposition: frozen.disposition,
+      agentId: version.agentId,
+      versionId: version.versionId,
+      versionNumber: version.versionNumber,
+      versionFingerprint: version.versionFingerprint,
+      name: version.definition.name,
+      description: version.definition.description,
+      contextRootDigest: compilation.report.contextRootDigest,
+      runtimeContext: compilation.report.runtimeContext,
+    })}\n`,
+  );
+  const runPrompt =
+    mode === 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1'
+      ? version.definition.behavior.starterPrompts[0]
+      : requestedRunPrompt;
+  if (runPrompt !== undefined) {
+    const stateDirectory =
+      explicitStateDirectory === undefined ? defaultRunState(version) : explicitStateDirectory;
+    signal.throwIfAborted();
+    if (mode === 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1') {
+      io.stderr.write('[4/4] 正在使用冻结 Version 的第一条示例任务完成真实试跑。\n');
+    }
+    let result: Readonly<{ text: string }>;
+    try {
+      result = await dependencies.runAgentTurn({
+        version,
+        ...(requiresGitProject(version) ? { projectPath } : {}),
+        prompt: runPrompt,
+        stateDirectory,
+        allowUnisolatedRead: true,
+        ...(flags.get('allow-loopback-proxy') === 'true' ? { allowLoopbackProxy: true } : {}),
+        signal,
+      });
+    } catch (error) {
+      if (signal.aborted) signal.throwIfAborted();
+      if (mode === 'LOCAL_UNPUBLISHED_AUTO_FREEZE_V1') {
+        throw cliError(
+          'AGENT_EXPERIENCE_RUN_FAILED',
+          `Agent 已成功创建并保存在本地 Catalog（agentId=${version.agentId}, versionId=${version.versionId}）；只有首次试跑失败，请不要重复运行 experience 创建新 Agent。`,
+          false,
+          error instanceof Error ? { cause: error } : undefined,
+        );
+      }
+      throw error;
+    }
+    signal.throwIfAborted();
+    io.stdout.write(`${result.text}\n`);
+  }
+  return 0;
+}
+
+function experienceFlags(arguments_: readonly string[]): ReadonlyMap<string, string> {
+  const values = arguments_[0] === '--' ? arguments_.slice(1) : arguments_;
+  if (values.length !== 1 || values[0] === undefined || values[0].startsWith('--')) {
+    throw cliError(
+      'AGENT_CLI_INVALID',
+      'Experience requires exactly one absolute Project path.',
+      true,
+    );
+  }
+  return new Map([
+    ['project', values[0]],
+    ['allow-unisolated-read', 'true'],
+    ['allow-sensitive-project-context', 'true'],
+    ['allow-loopback-proxy', 'true'],
+  ]);
+}
+
+function diagnosticMessage(event: CreatorAgentProjectCompilationDiagnostic): string {
+  switch (event) {
+    case 'index_started':
+      return '[1/4] 正在全量读取并校验 Project；大目录可能需要几分钟。';
+    case 'index_completed':
+      return '[1/4] Project 全量索引完成。';
+    case 'compiler_started':
+      return '[2/4] 正在把 Project 上下文编译为 Agent Draft。';
+    case 'compiler_completed':
+      return '[2/4] Agent Draft 已生成。';
+    case 'revalidation_started':
+      return '[2/4] 正在复验完整目录结构与文件身份；不会再次读取普通文件正文。';
+    case 'project_revalidated':
+      return '[2/4] Project 复验通过。';
+  }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+}
+
+function writeExperienceCompilationSummary(
+  writer: CliWriter,
+  compilation: CreatorAgentProjectCompilationResult,
+): void {
+  writer.write('Agent 草稿已通过结构、敏感输出与运行时校验：\n');
+  writer.write(
+    `${terminalSafeJson({
+      name: compilation.draft.definition.name,
+      description: compilation.draft.definition.description,
+      runtimeContext: compilation.report.runtimeContext,
+      indexedEntryCount: compilation.report.indexedEntryCount,
+      indexedFileCount: compilation.report.indexedFileCount,
+      logicalBytes: compilation.report.indexedByteCount,
+      uniqueBytes: compilation.report.uniqueIndexedByteCount,
+      citedSourceCount: compilation.report.citedSources.length,
+    })}\n`,
+  );
 }
 
 function readReview(flags: ReadonlyMap<string, string>) {
@@ -734,14 +869,20 @@ class CreatorAgentCliError extends Error {
     public readonly code: string,
     message: string,
     public readonly usage: boolean,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'CreatorAgentCliError';
   }
 }
 
-function cliError(code: string, message: string, usage: boolean): CreatorAgentCliError {
-  return new CreatorAgentCliError(code, message, usage);
+function cliError(
+  code: string,
+  message: string,
+  usage: boolean,
+  options?: ErrorOptions,
+): CreatorAgentCliError {
+  return new CreatorAgentCliError(code, message, usage, options);
 }
 
 function safeError(error: unknown): Readonly<{ code: string; message: string; usage: boolean }> {

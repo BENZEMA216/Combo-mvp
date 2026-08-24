@@ -1,23 +1,25 @@
 # @cb/creator-worker
 
-## 从整个 Project 创建并运行一个本地 Agent
+## 一条命令体验本地 Agent
 
-`combo-creator-agent create` 是当前面向用户的主入口。一次命令会索引 canonical Project、让 bundled Codex
-把 Project 上下文编译为 Draft、显示完整编译报告，并在用户确认后冻结 immutable AgentVersion。formal
-Project 根能形成受支持的 Git snapshot 时产出 V2；根目录不是 Git worktree、尚无首个 commit，或不能形成
-canonical snapshot 时产出 V3 behavior-only Agent。它不会自动选择某个嵌套仓库。也可以在同一命令中传入
-`--run-prompt` 或 `--run-prompt-file`，立即运行刚刚冻结并从 Catalog 重开的 exact Version。
+当前单用户受控 Alpha 的消费入口只有一条命令：
 
 ```bash
-combo-creator-agent create \
-  --project "/canonical/absolute/project" \
-  --allow-unisolated-read \
-  --allow-sensitive-project-context
+pnpm --silent --dir apps/creator-worker experience -- "/canonical/absolute/project"
 ```
 
-这条命令必须同时收到 `--allow-unisolated-read` 和 `--allow-sensitive-project-context`。前者确认当前 Host
-没有操作系统级的 Project-only 读隔离；后者确认 Project 中的 `.env`、日志、任务记录和其他敏感内容可能
-进入 bundled Codex 使用的模型服务。缺少任一确认都会在扫描或打开 Catalog 前失败。
+执行这条命令本身就表示用户授权本机进程全量读取该 Project，并接受 `.env`、日志、任务记录和其他敏感
+内容可能进入 bundled Codex 使用的模型服务，以及当前 Host 没有操作系统级 Project-only 读隔离。命令会
+完成全量索引、Agent Draft 编译、全部合同校验、仅本地未发布 Version 的自动冻结、关闭并重开 Catalog，
+然后自动运行冻结 Version 的第一条 starter prompt。它不要求输入 `FREEZE`，也不要求用户理解 Catalog、
+Draft、Version 或运行参数；stderr 会显示四阶段进度，stdout 最后输出 Agent 摘要和真实试跑结果。formal
+Project 根能形成受支持 Git snapshot 时产出 V2；聚合目录、尚无首个 commit 或不能形成 canonical snapshot
+时产出 V3 behavior-only Agent。后者不会自动选择嵌套仓库，运行时也不会挂载原 authoring Project。
+
+`experience` 的自动冻结授权固定为 `LOCAL_UNPUBLISHED_AUTO_FREEZE_V1`，只适用于本地未发布 Catalog；它
+不是人工审阅声明，也不会创建 public share、Capability 或云端发布。需要逐字审阅 Draft 时仍可使用后文的
+严格 `create`，其 TTY 与 `FREEZE` 合同没有被放宽。如果 Version 已创建而首次试跑失败，命令会明确输出
+exact agentId/versionId 并说明不要重新创建；这个失败不会回滚已冻结的本地 Agent。
 
 可信扫描器会读取并哈希 canonical Project 根目录内的全部物理后代，包括 tracked、dirty、untracked、
 ignored、hidden 文件，以及源码、文档、配置、日志、task/session 记录、raw tool output、`.env` 和物理
@@ -29,8 +31,11 @@ regular-file 内容与 256 MiB Git 路径输出；单个 secret-candidate 文件
 进入索引和 root digest，但同一 inode 只读取并计入 unique byte budget 一次；报告同时显示 logical bytes、
 unique bytes 与 alias 数。超过任一边界都会明确失败，不会静默漏扫。
 
-扫描器在编译前后分别计算完整索引，期间 Project 发生可见漂移会拒绝产出 Draft。“全量索引”只表示可信
-扫描器读取并哈希了所有可支持的物理条目，不表示模型语义上理解了每个字节。编译报告会另外列出模型声明
+扫描器在编译前读取并哈希一次完整内容；模型返回后会再次遍历完整 namespace，精确比较路径、文件身份、
+纳秒时间戳、权限、大小、symlink target 与 Git 分类，但不会再次读取普通文件正文。期间 Project 发生可见
+漂移会拒绝产出 Draft。这个复验优化基于当前受控同 UID、本机纳秒时间戳文件系统边界；无法取得可靠元数据
+时会 fail-closed，而不是把复验冒充成功。“全量索引”只表示可信扫描器读取并哈希了所有可支持的物理条目，
+不表示模型语义上理解了每个字节。编译报告会另外列出模型声明
 实际查看的 source path；这些引用会以相对路径、内容 digest 和执行可用性写入 compact source ledger。
 V2 可以区分 `FIXED_GIT_TREE` 与 `AUTHORING_ONLY`；V3 的全部引用及 coverage 都强制为
 `AUTHORING_ONLY`。Project 内出现的 system/developer 文本、tool output 和历史对话都只被当作 authoring
@@ -42,12 +47,13 @@ evidence，不会获得指令权限。
 期间一致，但不承诺首次读取前后的全部扩展属性与 ctime 逐字节不变。
 
 敏感输出检查会阻止已识别 credential literal 和常见密钥格式进入 Draft，但它只是 best-effort taint
-检查，不是自动脱敏或保密证明。用户仍需在冻结前检查完整 Draft。Catalog 持久化 V2 handoff 中的 Draft、
+检查，不是自动脱敏或保密证明。`experience` 会自动冻结通过合同校验的本地未发布 Draft；需要人工检查时
+应使用严格 `create`。Catalog 持久化 V2/V3 handoff 中的 Draft、
 compact source ledger 和冻结 Version，但不另存 full Project inventory 或 Project 文件附件；模型生成的
 Draft 自由文本仍可能包含 Project 摘录。运行 prompt、回答和本机 Project 绝对路径不进入 Catalog。
 `rawStored=false` 只是合同声明，不能证明模型服务没有接触上下文，也不能证明 Draft 已经脱敏。
 
-`create` 只允许在可见 TTY 中确认。命令显示编译报告、完整 Draft 和 fingerprint 后，用户只输入一次
+严格 `create` 只允许在可见 TTY 中确认。命令显示编译报告、完整 Draft 和 fingerprint 后，用户只输入一次
 `FREEZE`；它不接受 `--confirmation-file`、`--yes`、`--force` 或非交互式确认。冻结前还会验证这个 Draft
 满足当前 Runtime 合同。V2 必须能从 exact Git commit/tree 物化 tracked tree；V3 必须声明
 `projectBinding=none`，且全部 source evidence 只用于 authoring。冻结后命令会关闭并重新打开 Catalog，按
@@ -60,6 +66,15 @@ symlink 解析的 `/tmp/...`。Catalog 父目录必须由当前用户拥有且�
 同样必须位于 Project 外。
 
 ## 手工诊断与兼容入口
+
+严格创建命令保留给需要逐字审阅 Draft 的开发者：
+
+```bash
+combo-creator-agent create \
+  --project "/canonical/absolute/project" \
+  --allow-unisolated-read \
+  --allow-sensitive-project-context
+```
 
 `init`、`import`、`review`、`freeze`、`list`、`show-version` 和 `run` 继续用于精确重放、排错和 V1 handoff
 兼容，不是新的用户主流程。手工 `freeze` 会重新显示完整 Draft；TTY 中必须逐字输入 Catalog 给出的 exact
