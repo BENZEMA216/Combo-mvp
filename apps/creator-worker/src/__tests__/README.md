@@ -20,6 +20,8 @@
 - `agent-package-session.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时让真实内置 Codex 加载智能体包的
   `AGENT.md` 与原生技能。第一轮输出绑定只存在于技能中的随机规则，第二轮取回只存在于上一条消息的随机
   标记，从而同时证明技能激活与同一 Codex 任务线程的多轮上下文；项目与智能体包内容保持不变。
+- `agent-package-import-boundary.test.ts` 从正式包子路径加载生产会话，要求公共函数可用，并证明模块翻译阶段
+  不会进入旧版 Worker、Broker、Journal、SQLite、本地执行或旧版智能体组合根。
 - `host-adapter-import-boundary.test.ts` 扫描应用与包源码，确保生产环境只有 bundled Codex adapter 能
   导入 R1 producer 子路径，测试代码之外的新增 authority mint 入口会直接让 CI 失败。
 - `agent-layer-import-boundary.test.ts` 解析生产 TypeScript 的普通 import、re-export 与 dynamic import，

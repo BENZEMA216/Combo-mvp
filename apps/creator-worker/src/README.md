@@ -47,11 +47,14 @@
 - `project-context-compiler.ts` 是旧内部路径的薄兼容入口，保留错误类、Schema、类型与测试 seam 的同一身份，
   并从 application composition re-export 生产用编译函数。
 - `application/creator-agent-composition.ts` 是唯一同时绑定创作、执行、bundled Codex、loopback Broker 与
-  Worker Runtime 的智能体组合根。它保留原生产接口，把测试使用的底层依赖转换为执行层调用端口，并把
-  已验证的智能体包加载器与专属原生技能主机绑定到 `AgentPackageSession`。
+  Worker Runtime 的旧版智能体组合根。它保留原生产接口，并把测试使用的底层依赖转换为执行层调用端口。
+- `application/agent-package-composition.ts` 只把智能体包加载器与专属原生技能主机绑定到
+  `AgentPackageSession`；它不导入旧版智能体组合根、Worker、Broker、Journal 或 SQLite。
 - `application/agent-package-session.ts` 定义最小的 `send()` 与 `close()` 接口；一个实例只创建一个主机和一个
   Codex 任务线程，顺序多轮复用该任务线程，并在每轮显式提交智能体包声明的 Codex 原生技能，关闭时清理
   智能体包快照。它不导入 `Worker`、`Broker`、`Journal`、SQLite 或旧版 `AgentVersion`。
+- `agent-package-session.ts` 是独立的公共推理子路径。消费者应从
+  `@cb/creator-worker/agent-package-session` 导入，避免加载包根中的旧版 Worker 与本地执行模块。
 - `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。`experience` 以一个 Project 路径完成索引、编译、
   本地未发布 Version 自动冻结、Catalog close/reopen 与第一条 frozen starter 的真实运行，不读取确认输入；
   严格 `create` 继续执行 terminal-safe 完整 review、可见 TTY 中一次 `FREEZE` 和可选 exact Version run；

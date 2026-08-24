@@ -3,11 +3,6 @@ import { randomUUID } from 'node:crypto';
 import type { CreatorAgentVersion } from '@cb/creator-agent-protocol/agent';
 
 import {
-  startCreatorAgentPackageSessionWithDependencies,
-  type CreatorAgentPackageSession,
-  type CreatorAgentPackageSessionOptions,
-} from './agent-package-session.js';
-import {
   compileCreatorAgentProjectWithDependencies,
   revalidateProjectContext,
   scanProjectContext,
@@ -25,14 +20,12 @@ import type {
   CreatorAgentLocalTurnResult,
 } from '../agent-local-contract.js';
 import { createLocalAlphaBroker } from '../local-alpha-broker.js';
-import { loadCreatorAgentPackage } from '../infrastructure/agent-package-loader.js';
 import {
   runCreatorWorkerLocalAlphaWithDependencies,
   type LocalAlphaDependencies,
 } from '../local-alpha-runner.js';
 import {
   createBundledCodexHost,
-  createBundledCodexAgentPackageHost,
   createBundledCodexStructuredHost,
   SUPPORTED_BUNDLED_CODEX_VERSION,
 } from '../infrastructure/codex/index.js';
@@ -40,12 +33,6 @@ import {
 const productionInvocationDependencies: LocalAlphaDependencies = Object.freeze({
   createHost: createBundledCodexHost,
   createBroker: createLocalAlphaBroker,
-});
-
-const productionAgentPackageDependencies = Object.freeze({
-  loadPackage: loadCreatorAgentPackage,
-  createHost: createBundledCodexAgentPackageHost,
-  randomId: randomUUID,
 });
 
 const runtimePreflight = Object.freeze({
@@ -79,15 +66,6 @@ export function runCreatorAgentLocalTurn(
   return executeCreatorAgentLocalTurn(
     options,
     executionDependencies(productionInvocationDependencies),
-  );
-}
-
-export function startCreatorAgentPackageSession(
-  options: CreatorAgentPackageSessionOptions,
-): Promise<CreatorAgentPackageSession> {
-  return startCreatorAgentPackageSessionWithDependencies(
-    options,
-    productionAgentPackageDependencies,
   );
 }
 
