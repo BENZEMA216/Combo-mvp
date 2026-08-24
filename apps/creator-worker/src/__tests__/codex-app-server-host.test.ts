@@ -7,7 +7,11 @@ import {
   BUNDLED_CODEX_BINARY,
   SUPPORTED_BUNDLED_CODEX_VERSION,
 } from '../codex-app-server-process.js';
-import { createBundledCodexHost, type BundledCodexHostOptions } from '../codex-app-server-host.js';
+import {
+  createBundledCodexAgentPackageHost,
+  createBundledCodexHost,
+  type BundledCodexHostOptions,
+} from '../codex-app-server-host.js';
 import {
   createCodexHostTestRig,
   sendAgentMessage,
@@ -43,6 +47,44 @@ describe('bundled Codex process boundary', () => {
       } as BundledCodexHostOptions),
     );
     expect(error).toMatchObject({ code: 'BUNDLED_CODEX_CONFIGURATION_INVALID' });
+  });
+
+  it('keeps legacy instruction limits while accepting bounded CRLF AGENT.md bytes', () => {
+    const rig = useRig();
+    const shared = {
+      projectPath: rig.projectPath,
+      allowUnisolatedRead: true as const,
+    };
+    expect(() =>
+      createBundledCodexHost({ ...shared, developerInstructions: 'x'.repeat(20_001) }),
+    ).toThrow(expect.objectContaining({ code: 'BUNDLED_CODEX_CONFIGURATION_INVALID' }));
+    expect(() =>
+      createBundledCodexAgentPackageHost({
+        ...shared,
+        developerInstructions: '包'.repeat(21_000),
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createBundledCodexAgentPackageHost({
+        ...shared,
+        developerInstructions: '包'.repeat(22_000),
+      }),
+    ).toThrow(expect.objectContaining({ code: 'BUNDLED_CODEX_CONFIGURATION_INVALID' }));
+    expect(() =>
+      createBundledCodexHost({ ...shared, developerInstructions: '# Agent\r\nLegacy.\r\n' }),
+    ).toThrow(expect.objectContaining({ code: 'BUNDLED_CODEX_CONFIGURATION_INVALID' }));
+    expect(() =>
+      createBundledCodexAgentPackageHost({
+        ...shared,
+        developerInstructions: '# Agent\r\nPackage instructions.\r\n',
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createBundledCodexAgentPackageHost({
+        ...shared,
+        developerInstructions: '# Agent\0invalid',
+      }),
+    ).toThrow(expect.objectContaining({ code: 'BUNDLED_CODEX_CONFIGURATION_INVALID' }));
   });
 
   it('does not let a diagnostic stop make start or createThread report false success', async () => {
@@ -121,6 +163,7 @@ describe('bundled Codex process boundary', () => {
     expect(appRecord?.args).toContain('never');
     expect(appRecord?.args).toContain('mcp_servers={}');
     expect(appRecord?.args).toContain('web_search="disabled"');
+    expect(appRecord?.args).toContain('skill_search');
     expect(appRecord?.args.slice(-3)).toEqual(['app-server', '--listen', 'stdio://']);
     expect(appRecord?.options).toMatchObject({ shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
     expect(appRecord?.options.env).toMatchObject({
@@ -143,6 +186,106 @@ describe('bundled Codex process boundary', () => {
       developerInstructions: 'Stay inside the read-only test Project and answer the exact task.',
       experimentalRawEvents: false,
     });
+  });
+
+  it('registers and verifies only Agent Package Skills before creating a thread', async () => {
+    const rig = useRig({
+      nativeSkills: [
+        {
+          name: 'release-review',
+          description: 'Verify a release with exact evidence.',
+        },
+      ],
+    });
+    const thread = await startThread(rig);
+
+    expect(thread.id).toBe('thread.r2f');
+    expect(rig.spawner.requests('skills/extraRoots/set')).toHaveLength(1);
+    expect(onlyRequest(rig, 'skills/extraRoots/set').params).toEqual({
+      extraRoots: [`${rig.root}/package-skills`],
+    });
+    expect(onlyRequest(rig, 'skills/list').params).toEqual({
+      cwds: [`${rig.root}/package-skills`],
+      forceReload: true,
+    });
+    expect(rig.diagnostics).toContain('skills_registered');
+    const appArgs = rig.spawner.records.find((record) => record.args.includes('app-server'))?.args;
+    expect(appArgs).toContain('skill_search');
+    expect(
+      rig.spawner.app?.frames
+        .filter((frame) => typeof frame.id === 'number')
+        .map((frame) => frame.method),
+    ).toEqual(['initialize', 'skills/extraRoots/set', 'skills/list', 'thread/start']);
+  });
+
+  it('rejects a disabled Agent Package Skill before creating a thread', async () => {
+    const rig = useRig({
+      nativeSkills: [
+        {
+          name: 'release-review',
+          description: 'Verify a release with exact evidence.',
+        },
+      ],
+    });
+    rig.spawner.onAppFrame = (frame, child) => {
+      if (frame.method === 'skills/extraRoots/set') child.respond(frame, {});
+      if (frame.method === 'skills/list') {
+        child.respond(frame, {
+          data: [
+            {
+              cwd: `${rig.root}/package-skills`,
+              skills: [
+                {
+                  name: 'release-review',
+                  description: 'Verify a release with exact evidence.',
+                  path: `${rig.root}/package-skills/release-review/SKILL.md`,
+                  scope: 'user',
+                  enabled: false,
+                },
+              ],
+              errors: [],
+            },
+          ],
+        });
+      }
+    };
+
+    await expect(rig.host.start()).rejects.toMatchObject({
+      code: 'BUNDLED_CODEX_PROTOCOL_ERROR',
+    });
+    expect(rig.spawner.requests('thread/start')).toHaveLength(0);
+  });
+
+  it('submits only declared Package Skills explicitly', async () => {
+    const rig = useRig({
+      nativeSkills: [
+        {
+          name: 'release-review',
+          description: 'Verify a release with exact evidence.',
+        },
+      ],
+    });
+    const thread = await startThread(rig);
+    rig.spawner.onTurnStart = (request, child) =>
+      child.respond(request, { turn: turn('turn.package-skill', 'inProgress') });
+    const handle = await rig.host.startTurn(turnInput(thread, 'package-skill'));
+    expect(onlyRequest(rig, 'turn/start').params).toMatchObject({
+      input: [
+        {
+          type: 'text',
+          text: 'Return the deterministic test answer package-skill.',
+          text_elements: [],
+        },
+        {
+          type: 'skill',
+          name: 'release-review',
+          path: `${rig.root}/package-skills/release-review/SKILL.md`,
+        },
+      ],
+    });
+    sendAgentMessage(requiredApp(rig), thread.id, handle.turnId, 'package skill used');
+    sendTerminal(requiredApp(rig), thread.id, handle.turnId, 'completed');
+    await expect(handle.outcome).resolves.toBeDefined();
   });
 
   it('rejects a non-reviewed version without spawning or authenticating app-server', async () => {
@@ -534,13 +677,7 @@ describe('bundled Codex Host authority mapping', () => {
   });
 });
 
-function useRig(
-  options: Readonly<{
-    authentication?: boolean;
-    outputSchema?: unknown;
-    onDiagnostic?: CreateRigOptions['onDiagnostic'];
-  }> = {},
-): CodexHostTestRig {
+function useRig(options: CreateRigOptions = {}): CodexHostTestRig {
   const rig = createCodexHostTestRig(options);
   rigs.push(rig);
   return rig;

@@ -52,4 +52,12 @@ export {
 export {
   compileCreatorAgentDeveloperInstructions,
   runCreatorAgentLocalTurn,
+  startCreatorAgentPackageSession,
 } from './application/creator-agent-composition.js';
+export {
+  CreatorAgentPackageSessionError,
+  type CreatorAgentPackageSession,
+  type CreatorAgentPackageSessionErrorCode,
+  type CreatorAgentPackageSessionOptions,
+  type CreatorAgentPackageSessionState,
+} from './application/agent-package-session.js';

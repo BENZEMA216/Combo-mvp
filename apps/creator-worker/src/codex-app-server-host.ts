@@ -1,4 +1,5 @@
 import { realpathSync, statSync } from 'node:fs';
+import { relative } from 'node:path';
 import { types as utilTypes } from 'node:util';
 
 import type { CreatorHost, HostThread, HostTurnHandle } from '@cb/creator-agent-protocol/host';
@@ -49,6 +50,7 @@ const DEFAULT_PROCESS_TERMINATION_GRACE_MS = 1_000;
 export type BundledCodexHostDiagnostic =
   | 'process_started'
   | 'initialized'
+  | 'skills_registered'
   | 'thread_created'
   | 'turn_start_written'
   | 'turn_bound'
@@ -87,10 +89,26 @@ export type BundledCodexHostOptions = Readonly<{
   diagnosticSink?: (event: BundledCodexHostDiagnostic) => void;
 }>;
 
+export type BundledCodexNativeSkill = Readonly<{
+  name: string;
+  path: string;
+}>;
+
+export type BundledCodexNativeSkills = Readonly<{
+  root: string;
+  skills: readonly BundledCodexNativeSkill[];
+}>;
+
 type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
 type JsonObject = Readonly<{ [key: string]: JsonValue }>;
 
 type HostState = 'IDLE' | 'STARTING' | 'READY' | 'STOPPING' | 'STOPPED' | 'FAILED';
+
+type InternalHostProfile = Readonly<{
+  agentPackage?: true;
+  outputSchema?: JsonObject;
+  nativeSkills?: BundledCodexNativeSkills;
+}>;
 
 type ActiveTurn = {
   readonly thread: HostThread;
@@ -121,11 +139,20 @@ export function createBundledCodexStructuredHost(
   options: BundledCodexHostOptions,
   outputSchema: unknown,
 ): CreatorHost {
-  return new BundledCodexHost(
-    options,
-    createCodexAppServerProcessDependencies(),
-    snapshotOutputSchema(outputSchema),
-  );
+  return new BundledCodexHost(options, createCodexAppServerProcessDependencies(), {
+    outputSchema: snapshotOutputSchema(outputSchema),
+  });
+}
+
+/** Internal Agent Package profile; intentionally absent from the package root export. */
+export function createBundledCodexAgentPackageHost(
+  options: BundledCodexHostOptions,
+  nativeSkills?: BundledCodexNativeSkills,
+): CreatorHost {
+  return new BundledCodexHost(options, createCodexAppServerProcessDependencies(), {
+    agentPackage: true,
+    ...(nativeSkills === undefined ? {} : { nativeSkills: snapshotNativeSkills(nativeSkills) }),
+  });
 }
 
 /** Internal test seam. It is intentionally absent from the package root export. */
@@ -142,7 +169,21 @@ export function createBundledCodexStructuredHostForTesting(
   outputSchema: unknown,
   dependencies: CodexAppServerProcessDependencies,
 ): CreatorHost {
-  return new BundledCodexHost(options, dependencies, snapshotOutputSchema(outputSchema));
+  return new BundledCodexHost(options, dependencies, {
+    outputSchema: snapshotOutputSchema(outputSchema),
+  });
+}
+
+/** Internal Agent Package test seam; intentionally absent from the package root export. */
+export function createBundledCodexAgentPackageHostForTesting(
+  options: BundledCodexHostOptions,
+  nativeSkills: BundledCodexNativeSkills | undefined,
+  dependencies: CodexAppServerProcessDependencies,
+): CreatorHost {
+  return new BundledCodexHost(options, dependencies, {
+    agentPackage: true,
+    ...(nativeSkills === undefined ? {} : { nativeSkills: snapshotNativeSkills(nativeSkills) }),
+  });
 }
 
 class BundledCodexHost implements CreatorHost {
@@ -154,6 +195,7 @@ class BundledCodexHost implements CreatorHost {
   readonly #diagnosticSink?: (event: BundledCodexHostDiagnostic) => void;
   readonly #dependencies: CodexAppServerProcessDependencies;
   readonly #outputSchema?: JsonObject;
+  readonly #nativeSkills?: BundledCodexNativeSkills;
 
   #state: HostState = 'IDLE';
   #generation = 0;
@@ -167,9 +209,9 @@ class BundledCodexHost implements CreatorHost {
   public constructor(
     rawOptions: BundledCodexHostOptions,
     dependencies: CodexAppServerProcessDependencies,
-    outputSchema?: JsonObject,
+    profile: InternalHostProfile = {},
   ) {
-    const options = snapshotOptions(rawOptions);
+    const options = snapshotOptions(rawOptions, profile.agentPackage === true);
     this.#projectPath = options.projectPath;
     this.#developerInstructions = options.developerInstructions;
     this.#allowLoopbackProxy = options.allowLoopbackProxy;
@@ -177,7 +219,8 @@ class BundledCodexHost implements CreatorHost {
     this.#processTerminationGraceMs = options.processTerminationGraceMs;
     this.#diagnosticSink = options.diagnosticSink;
     this.#dependencies = dependencies;
-    this.#outputSchema = outputSchema;
+    this.#outputSchema = profile.outputSchema;
+    this.#nativeSkills = profile.nativeSkills;
   }
 
   public start(): Promise<void> {
@@ -231,6 +274,9 @@ class BundledCodexHost implements CreatorHost {
       ) {
         throw hostError('BUNDLED_CODEX_VERSION_UNSUPPORTED');
       }
+      if (this.#nativeSkills !== undefined) {
+        await this.#registerNativeSkills(connection, this.#nativeSkills);
+      }
       if (this.#connection !== connection || this.#state !== 'STARTING') {
         throw hostError('BUNDLED_CODEX_SESSION_LOST');
       }
@@ -250,6 +296,29 @@ class BundledCodexHost implements CreatorHost {
       }
       if (this.#connection === connection) this.#connection = undefined;
       throw normalizeLifecycleError(error);
+    }
+  }
+
+  async #registerNativeSkills(
+    connection: CodexAppServerProcess,
+    nativeSkills: BundledCodexNativeSkills,
+  ): Promise<void> {
+    try {
+      const acknowledgement = await connection.sendRequestLinearized('skills/extraRoots/set', {
+        extraRoots: [nativeSkills.root],
+      }).response;
+      if (!isEmptyObject(acknowledgement)) {
+        throw new TypeError('Codex rejected the native Skill root acknowledgement.');
+      }
+      const listing = await connection.sendRequestLinearized('skills/list', {
+        cwds: [nativeSkills.root],
+        forceReload: true,
+      }).response;
+      assertNativeSkillListing(listing, nativeSkills.root, nativeSkills);
+      this.#diagnostic('skills_registered');
+    } catch (error) {
+      connection.poison('PROTOCOL');
+      throw hostError('BUNDLED_CODEX_PROTOCOL_ERROR', error);
     }
   }
 
@@ -379,7 +448,14 @@ class BundledCodexHost implements CreatorHost {
       response = connection.sendRequestLinearized('turn/start', {
         threadId: input.thread.id,
         clientUserMessageId: input.messageId,
-        input: [{ type: 'text', text: input.text, text_elements: [] }],
+        input: [
+          { type: 'text', text: input.text, text_elements: [] },
+          ...(this.#nativeSkills?.skills.map((skill) => ({
+            type: 'skill' as const,
+            name: skill.name,
+            path: skill.path,
+          })) ?? []),
+        ],
         cwd: this.#projectPath,
         runtimeWorkspaceRoots: [this.#projectPath],
         approvalPolicy: 'never',
@@ -680,6 +756,123 @@ class BundledCodexHost implements CreatorHost {
   }
 }
 
+function snapshotNativeSkills(input: BundledCodexNativeSkills): BundledCodexNativeSkills {
+  if (typeof input !== 'object' || input === null || utilTypes.isProxy(input)) {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const rootDescriptor = descriptors.root;
+  const skillsDescriptor = descriptors.skills;
+  if (
+    Object.keys(descriptors).length !== 2 ||
+    rootDescriptor === undefined ||
+    !rootDescriptor.enumerable ||
+    !('value' in rootDescriptor) ||
+    skillsDescriptor === undefined ||
+    !skillsDescriptor.enumerable ||
+    !('value' in skillsDescriptor) ||
+    typeof rootDescriptor.value !== 'string' ||
+    !Array.isArray(skillsDescriptor.value) ||
+    utilTypes.isProxy(skillsDescriptor.value) ||
+    skillsDescriptor.value.length < 1 ||
+    skillsDescriptor.value.length > 1
+  ) {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+  }
+  let root: string;
+  try {
+    root = realpathSync(rootDescriptor.value);
+    if (!statSync(root).isDirectory()) throw new TypeError('Skill root is not a directory.');
+  } catch (error) {
+    throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID', error);
+  }
+  const skills: BundledCodexNativeSkill[] = [];
+  let previousName = '';
+  for (const rawSkill of skillsDescriptor.value as unknown[]) {
+    if (typeof rawSkill !== 'object' || rawSkill === null || utilTypes.isProxy(rawSkill)) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+    }
+    const fields = Object.getOwnPropertyDescriptors(rawSkill);
+    const name = fields.name;
+    const path = fields.path;
+    if (
+      Object.keys(fields).length !== 2 ||
+      name === undefined ||
+      !name.enumerable ||
+      !('value' in name) ||
+      path === undefined ||
+      !path.enumerable ||
+      !('value' in path) ||
+      typeof name.value !== 'string' ||
+      typeof path.value !== 'string' ||
+      !/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u.test(name.value) ||
+      name.value.includes('--') ||
+      name.value <= previousName
+    ) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+    }
+    let canonicalPath: string;
+    try {
+      canonicalPath = realpathSync(path.value);
+      if (!statSync(canonicalPath).isFile()) throw new TypeError('Skill path is not a file.');
+    } catch (error) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID', error);
+    }
+    if (relative(root, canonicalPath) !== `${name.value}/SKILL.md`) {
+      throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
+    }
+    previousName = name.value;
+    skills.push(Object.freeze({ name: name.value, path: canonicalPath }));
+  }
+  return Object.freeze({ root, skills: Object.freeze(skills) });
+}
+
+function assertNativeSkillListing(
+  input: unknown,
+  projectPath: string,
+  expected: BundledCodexNativeSkills,
+): void {
+  if (!isObjectRecord(input) || !Array.isArray(input.data) || input.data.length !== 1) {
+    throw new TypeError('Codex returned an invalid Skill listing.');
+  }
+  const entry = input.data[0];
+  if (
+    !isObjectRecord(entry) ||
+    entry.cwd !== projectPath ||
+    !Array.isArray(entry.skills) ||
+    !Array.isArray(entry.errors) ||
+    entry.errors.length !== 0
+  ) {
+    throw new TypeError('Codex returned an invalid Skill listing entry.');
+  }
+  const expectedByPath = new Map(expected.skills.map((skill) => [skill.path, skill]));
+  const found = new Set<string>();
+  for (const rawSkill of entry.skills) {
+    if (!isObjectRecord(rawSkill) || typeof rawSkill.path !== 'string') continue;
+    const pathWithinRoot = relative(expected.root, rawSkill.path);
+    if (pathWithinRoot === '..' || pathWithinRoot.startsWith('../')) continue;
+    const declared = expectedByPath.get(rawSkill.path);
+    if (
+      declared === undefined ||
+      found.has(rawSkill.path) ||
+      rawSkill.name !== declared.name ||
+      rawSkill.enabled !== true ||
+      typeof rawSkill.description !== 'string' ||
+      rawSkill.description.length < 1
+    ) {
+      throw new TypeError('Codex Skill listing did not match the Agent Package.');
+    }
+    found.add(rawSkill.path);
+  }
+  if (found.size !== expected.skills.length) {
+    throw new TypeError('Codex did not activate every Agent Package Skill.');
+  }
+}
+
+function isObjectRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === 'object' && input !== null && !Array.isArray(input);
+}
+
 function snapshotOutputSchema(input: unknown): JsonObject {
   const budget = { nodes: 0 };
   const value = snapshotJsonValue(input, 0, budget);
@@ -745,9 +938,10 @@ function snapshotJsonValue(input: unknown, depth: number, budget: { nodes: numbe
   return Object.freeze(output);
 }
 
-function snapshotOptions(options: BundledCodexHostOptions): Required<
-  Omit<BundledCodexHostOptions, 'diagnosticSink'>
-> & {
+function snapshotOptions(
+  options: BundledCodexHostOptions,
+  agentPackageProfile = false,
+): Required<Omit<BundledCodexHostOptions, 'diagnosticSink'>> & {
   diagnosticSink?: (event: BundledCodexHostDiagnostic) => void;
 } {
   let raw: {
@@ -796,8 +990,11 @@ function snapshotOptions(options: BundledCodexHostOptions): Required<
   if (
     projectPath.length > 2_048 ||
     !raw.developerInstructions ||
-    raw.developerInstructions.length > 20_000 ||
-    /[\0\r]/u.test(raw.developerInstructions)
+    (agentPackageProfile
+      ? Buffer.byteLength(raw.developerInstructions, 'utf8') > 65_536
+      : raw.developerInstructions.length > 20_000) ||
+    /\0/u.test(raw.developerInstructions) ||
+    (!agentPackageProfile && /\r/u.test(raw.developerInstructions))
   ) {
     throw hostError('BUNDLED_CODEX_CONFIGURATION_INVALID');
   }

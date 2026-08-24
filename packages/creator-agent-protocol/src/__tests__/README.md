@@ -15,3 +15,7 @@ outcome、跨 handle 拒绝、first-sent interrupt lineage、generation/turn bin
 dispatcher。测试会篡改 cited source 的执行可用性以确认 ledger 进入下游 fingerprint，并继续覆盖深冻结、
 严格字段和当前本机只读 Runtime profile。它不证明 Project 已被扫描、模型理解了每个字节、Agent 已发布
 或 Agent 已执行。
+
+`agent-package-contract.test.ts` 锁定独立 `combo.agent-package/1` 的规范 `agent.json`、原始文件摘要、
+内容寻址智能体包摘要、完整排序文件清单、技能路径、深度冻结，以及属性读取器、代理对象、非规范 JSON
+和旧版版本对象混用的拒绝。它不读取真实智能体包目录，也不证明 Codex 已激活技能。
