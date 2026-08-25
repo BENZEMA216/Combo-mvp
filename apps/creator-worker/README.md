@@ -86,6 +86,9 @@ pnpm --silent --dir apps/creator-worker package-experience -- \
   "/canonical/absolute/consumer-project"
 ```
 
+这里的 `--` 是包管理器转发参数时使用的分隔符，命令行会明确接受它；直接调用
+`combo-agent-package experience` 时可以不写该分隔符。
+
 该命令不要求确认输入。执行命令本身表示用户授权全量读取受控的创作者来源目录，并接受相关内容可能进入
 本机 Codex 使用的模型服务。命令会创建并重载不可变智能体包，再在独立消费者目录中启动一个新的 Codex
 任务线程，顺序执行包内第一条示例任务和一条连续任务。它不做裸 Codex 对比、不写两个 Project、不发布或
