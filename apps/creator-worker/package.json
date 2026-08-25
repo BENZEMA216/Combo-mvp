@@ -15,12 +15,17 @@
     "./agent-package-session": {
       "types": "./dist/agent-package-session.d.ts",
       "default": "./dist/agent-package-session.js"
+    },
+    "./agent-package-authoring": {
+      "types": "./dist/agent-package-authoring.d.ts",
+      "default": "./dist/agent-package-authoring.js"
     }
   },
   "files": [
     "dist"
   ],
   "bin": {
+    "combo-agent-package": "./dist/agent-package-cli.js",
     "combo-creator-agent": "./dist/agent-catalog-cli.js",
     "combo-creator-worker": "./dist/local-alpha-cli.js"
   },
@@ -32,10 +37,12 @@
     "test": "vitest run",
     "agent": "pnpm -F @cb/creator-agent-persistence build && tsc -b && node dist/agent-catalog-cli.js",
     "experience": "pnpm -F @cb/creator-agent-persistence build && tsc -b && node dist/agent-catalog-cli.js experience",
+    "package-experience": "tsc -b && node dist/agent-package-cli.js experience",
     "local": "tsc -b && node dist/local-alpha-cli.js",
     "test:real-agent": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-local-runner.real.test.ts --reporter=verbose",
     "test:real-context-compiler": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/project-context-compiler.real.test.ts --reporter=verbose",
     "test:real-package": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-package-session.real.test.ts --reporter=verbose",
+    "test:real-package-authoring": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-package-authoring.real.test.ts --reporter=verbose",
     "test:real-local": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/local-alpha.real.test.ts --reporter=verbose",
     "test:real-codex": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/codex-app-server-host.real.test.ts --reporter=verbose",
     "test:watch": "vitest",
