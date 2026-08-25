@@ -1,6 +1,8 @@
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   digestCreatorAgentPackageFile,
@@ -72,6 +74,71 @@ describe('Agent Package experience CLI', () => {
     expect(writes.stderr).toContain('已索引 12 个条目、8 个文件，读取 2.0 KiB');
     expect(writes.stderr).toContain('[5/5]');
   });
+
+  it('accepts the pnpm separator after experience and rejects additional separators', async () => {
+    const fixture = cliFixture();
+    const authorPackage = vi.fn(async () => authored(fixture.package));
+    const session = new FakeSession();
+
+    await expect(
+      executeCreatorAgentPackageCli(
+        ['experience', '--', fixture.source, fixture.consumer],
+        silentIo(),
+        {
+          authorPackage,
+          startSession: async () => session,
+          defaultStoreDirectory: () => fixture.store,
+          prepareStore: (path) => path,
+        },
+        new AbortController().signal,
+      ),
+    ).resolves.toBe(0);
+    expect(authorPackage).toHaveBeenCalledTimes(1);
+
+    await expect(
+      executeCreatorAgentPackageCli(
+        ['experience', '--', '--', fixture.source, fixture.consumer],
+        silentIo(),
+        {
+          authorPackage,
+          startSession: async () => new FakeSession(),
+          defaultStoreDirectory: () => fixture.store,
+          prepareStore: (path) => path,
+        },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({
+      code: 'AGENT_PACKAGE_CLI_INVALID',
+      message: 'Experience requires exactly two absolute Project paths.',
+    });
+    expect(authorPackage).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs the documented pnpm wrapper and reports the actionable overlap error', () => {
+    const fixture = cliFixture();
+    const withSeparator = runPackageExperience(['--', fixture.source, fixture.source]);
+    const withoutSeparator = runPackageExperience([fixture.source, fixture.source]);
+
+    for (const result of [withSeparator, withoutSeparator]) {
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('AGENT_PACKAGE_CLI_INVALID');
+      expect(result.stderr).toContain('Source and consumer Projects must be separate directories.');
+      expect(result.stderr).not.toContain(
+        'Experience requires exactly two absolute Project paths.',
+      );
+      expect(result.stderr).not.toContain('CreatorAgentPackageCliError');
+    }
+
+    const missingPath = join(fixture.source, 'missing');
+    const unknownFailure = runPackageExperience(['--', missingPath, fixture.consumer]);
+    expect(unknownFailure.status).toBe(1);
+    expect(unknownFailure.stderr).toBe(
+      'Agent Package 流程失败 [ENOENT]：未完成的阶段已安全停止。\n',
+    );
+    expect(unknownFailure.stderr).not.toContain(missingPath);
+    expect(unknownFailure.stderr).not.toContain('no such file');
+    expect(unknownFailure.stderr).not.toContain('Error:');
+  }, 30_000);
 
   it('rejects overlapping Projects before authoring and closes the Session after a turn failure', async () => {
     const fixture = cliFixture();
@@ -189,4 +256,21 @@ function authored(packagePath: string) {
 
 function silentIo() {
   return { stdout: { write: () => undefined }, stderr: { write: () => undefined } };
+}
+
+function runPackageExperience(arguments_: readonly string[]) {
+  const npmExecPath = process.env.npm_execpath;
+  const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  const command = npmExecPath === undefined ? 'pnpm' : process.execPath;
+  const prefix = npmExecPath === undefined ? [] : [npmExecPath];
+  return spawnSync(
+    command,
+    [...prefix, '--silent', '--dir', 'apps/creator-worker', 'package-experience', ...arguments_],
+    {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: { ...process.env, NO_COLOR: '1' },
+      timeout: 20_000,
+    },
+  );
 }

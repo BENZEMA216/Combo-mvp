@@ -60,7 +60,7 @@ export async function runCreatorAgentPackageCli(argv = process.argv.slice(2)): P
   process.once('SIGTERM', interrupted);
   try {
     return await executeCreatorAgentPackageCli(
-      argv[0] === '--' ? argv.slice(1) : argv,
+      argv,
       { stdout: process.stdout, stderr: process.stderr },
       productionDependencies,
       cancellation.signal,
@@ -72,7 +72,12 @@ export async function runCreatorAgentPackageCli(argv = process.argv.slice(2)): P
     const signalExit = localSignalExitCode(signalName, error);
     if (signalExit !== undefined) return signalExit;
     const code = safeCode(error);
-    process.stderr.write(`Agent Package 流程失败 [${code}]：未完成的阶段已安全停止。\n`);
+    const publicMessage = safeCliPublicMessage(error);
+    process.stderr.write(
+      publicMessage === undefined
+        ? `Agent Package 流程失败 [${code}]：未完成的阶段已安全停止。\n`
+        : `Agent Package 流程失败 [${code}]：${publicMessage}\n`,
+    );
     return code === 'AGENT_PACKAGE_CLI_INVALID' ? 2 : 1;
   } finally {
     process.removeListener('SIGINT', interrupted);
@@ -88,7 +93,7 @@ export async function executeCreatorAgentPackageCli(
   signal: AbortSignal,
   sessionSink: (session: CreatorAgentPackageSession | undefined) => void = () => undefined,
 ): Promise<number> {
-  const [command, ...arguments_] = argv;
+  const [command, ...arguments_] = normalizeCliArgv(argv);
   if (command === '--help' || command === '-h') {
     io.stdout.write(HELP);
     return 0;
@@ -246,6 +251,10 @@ function safeCode(error: unknown): string {
   return 'AGENT_PACKAGE_FLOW_FAILED';
 }
 
+function safeCliPublicMessage(error: unknown): string | undefined {
+  return error instanceof CreatorAgentPackageCliError ? error.publicMessage : undefined;
+}
+
 function safePackagePath(error: unknown): string | undefined {
   return error instanceof CreatorAgentPackageAuthoringError &&
     error.packagePath !== undefined &&
@@ -266,8 +275,25 @@ function writeTrialRecovery(writer: Writer, packagePath: string): void {
   );
 }
 
-function cliError(message: string): Error & { code: string } {
-  return Object.assign(new Error(message), { code: 'AGENT_PACKAGE_CLI_INVALID' });
+function normalizeCliArgv(argv: readonly string[]): readonly string[] {
+  const normalized = argv[0] === '--' ? argv.slice(1) : [...argv];
+  if (normalized[0] === 'experience' && normalized[1] === '--') {
+    return [normalized[0], ...normalized.slice(2)];
+  }
+  return normalized;
+}
+
+class CreatorAgentPackageCliError extends Error {
+  public readonly code = 'AGENT_PACKAGE_CLI_INVALID';
+
+  public constructor(public readonly publicMessage: string) {
+    super(publicMessage);
+    this.name = 'CreatorAgentPackageCliError';
+  }
+}
+
+function cliError(message: string): CreatorAgentPackageCliError {
+  return new CreatorAgentPackageCliError(message);
 }
 
 function abortError(): Error & { code: string } {
