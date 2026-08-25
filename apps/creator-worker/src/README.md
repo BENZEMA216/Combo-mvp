@@ -17,6 +17,8 @@
   长度与原始字节摘要校验，拒绝符号链接、特殊文件、缺失和额外资源；它把已验证字节物化成会话私有的
   只读、不可执行快照，只返回该快照中的 `AGENT.md`、智能体包摘要、原生技能路径和有界清理能力，不创建
   会话。
+- `infrastructure/agent-package-publisher.ts` 把已编译的智能体包资源写入私有同文件系统临时目录，逐文件同步
+  后按内容摘要原子提交；已存在的摘要目录不会被覆盖，随后仍须经过正式加载器验证。
 - `infrastructure/codex/index.ts` 是 application composition 使用的 bundled Codex 窄入口；Host 与 Process
   实现仍保持内部文件，不向创作层或执行层暴露具体构造责任。
 - `local-alpha-contract.ts` 定义单用户本地体验入口、结果、诊断与安全错误合同。
@@ -43,6 +45,8 @@
   时生成 V2，否则生成不自动选择嵌套仓库的 V3 behavior-only Draft。V3 的全部 citation 都固定为
   authoring-only。编译器还执行 best-effort secret taint 与 Runtime 预检；full inventory 只存在扫描器内存中，
   不序列化到临时文件或 Catalog。
+- `authoring/agent-package-builder.ts` 把经过复验的 Project 语义提取结果确定性编译为根 `AGENT.md`、一个
+  `extracted-method` 原生技能和规范 `agent.json`，并生成不含来源绝对路径的来源摘要回执。
 - `authoring/index.ts` 是 application composition 使用的创作层内部出口。
 - `project-context-compiler.ts` 是旧内部路径的薄兼容入口，保留错误类、Schema、类型与测试 seam 的同一身份，
   并从 application composition re-export 生产用编译函数。
@@ -53,8 +57,16 @@
 - `application/agent-package-session.ts` 定义最小的 `send()` 与 `close()` 接口；一个实例只创建一个主机和一个
   Codex 任务线程，顺序多轮复用该任务线程，并在每轮显式提交智能体包声明的 Codex 原生技能，关闭时清理
   智能体包快照。它不导入 `Worker`、`Broker`、`Journal`、SQLite 或旧版 `AgentVersion`。
+- `application/agent-package-authoring.ts` 编排 Project 语义提取、确定性包构建、原子发布和正式加载器重开，
+  并返回内容摘要、示例任务与来源摘要；它不创建旧版 Catalog 或 `AgentVersion`。
+- `application/agent-package-authoring-composition.ts` 只为智能体包创作绑定扫描器、结构化 Codex Host、构建器、
+  发布器与加载器，不导入旧版执行组合根。
 - `agent-package-session.ts` 是独立的公共推理子路径。消费者应从
   `@cb/creator-worker/agent-package-session` 导入，避免加载包根中的旧版 Worker 与本地执行模块。
+- `agent-package-authoring.ts` 是独立的公共创作子路径。消费者应从
+  `@cb/creator-worker/agent-package-authoring` 导入，得到内容寻址包路径与来源摘要后再显式创建推理会话。
+- `agent-package-cli.ts` 是 `combo-agent-package` 进程入口。`experience` 接受彼此独立的创作者来源目录与
+  消费者目录，不读取确认输入，顺序完成创作、正式重载和同一 Codex 任务线程中的两轮消费。
 - `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。`experience` 以一个 Project 路径完成索引、编译、
   本地未发布 Version 自动冻结、Catalog close/reopen 与第一条 frozen starter 的真实运行，不读取确认输入；
   严格 `create` 继续执行 terminal-safe 完整 review、可见 TTY 中一次 `FREEZE` 和可选 exact Version run；

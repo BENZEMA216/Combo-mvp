@@ -20,8 +20,16 @@
 - `agent-package-session.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时让真实内置 Codex 加载智能体包的
   `AGENT.md` 与原生技能。第一轮输出绑定只存在于技能中的随机规则，第二轮取回只存在于上一条消息的随机
   标记，从而同时证明技能激活与同一 Codex 任务线程的多轮上下文；项目与智能体包内容保持不变。
+- `agent-package-authoring.test.ts` 覆盖 Project 语义结果到 `AGENT.md`、原生技能和规范清单的确定性编译，
+  私有摘要目录的原子发布、正式加载器重开、相同内容重放、路径前置拒绝和清理错误可见性。
+- `agent-package-cli.test.ts` 覆盖无确认的单命令创作、摘要绑定、同一会话两轮消费、来源与消费者目录隔离，
+  以及第一轮失败后仍关闭会话且不重新创作。
+- `agent-package-authoring.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时先让真实内置 Codex 从创作者来源
+  提取方法并冻结智能体包，之后才创建包含随机证据的消费者目录；正式智能体包会话第一轮应用提取方法，
+  第二轮取回只存在于上一轮的随机标记，并验证来源、消费者、包目录和临时资源均保持闭合。
 - `agent-package-import-boundary.test.ts` 从正式包子路径加载生产会话，要求公共函数可用，并证明模块翻译阶段
-  不会进入旧版 Worker、Broker、Journal、SQLite、本地执行或旧版智能体组合根。
+  不会进入旧版 Worker、Broker、Journal、SQLite、本地执行或旧版智能体组合根；同一测试也验证智能体包
+  创作子路径不会反向加载旧版执行链。
 - `host-adapter-import-boundary.test.ts` 扫描应用与包源码，确保生产环境只有 bundled Codex adapter 能
   导入 R1 producer 子路径，测试代码之外的新增 authority mint 入口会直接让 CI 失败。
 - `agent-layer-import-boundary.test.ts` 解析生产 TypeScript 的普通 import、re-export 与 dynamic import，

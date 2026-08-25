@@ -119,11 +119,23 @@ function classify(root: string, path: string): Layer | undefined {
   const name = relative(root, path);
   if (name.startsWith('authoring/') || name === 'project-context-index.ts') return 'authoring';
   if (name.startsWith('execution/') || name === 'agent-local-contract.ts') return 'execution';
-  if (name.startsWith('application/') || name === 'agent-catalog-cli.ts') return 'application';
+  if (
+    name.startsWith('application/') ||
+    name === 'agent-catalog-cli.ts' ||
+    name === 'agent-package-cli.ts'
+  ) {
+    return 'application';
+  }
   if (name === 'project-context-compiler.ts' || name === 'agent-local-runner.ts') {
     return 'compatibility';
   }
-  if (name === 'index.ts' || name === 'agent-package-session.ts') return 'public';
+  if (
+    name === 'index.ts' ||
+    name === 'agent-package-session.ts' ||
+    name === 'agent-package-authoring.ts'
+  ) {
+    return 'public';
+  }
   if (
     name.startsWith('infrastructure/') ||
     /^(?:cli-signal|codex-|local-alpha-|pump-|runtime-|worker-)/u.test(name)

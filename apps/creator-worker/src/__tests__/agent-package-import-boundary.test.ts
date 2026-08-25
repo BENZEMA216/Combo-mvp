@@ -17,11 +17,14 @@ const FORBIDDEN_PACKAGE = new Set([
   '@cb/creator-agent-persistence',
   '@cb/creator-worker-broker-client',
 ]);
+const AUTHORING_FORBIDDEN_SOURCE =
+  /^(?:execution)\/|^(?:creator-agent-composition|agent-local-runner|local-alpha-|worker-runtime|worker-serial-pump|worker-websocket|pump-|runtime-|agent-package-session)/u;
 
 describe('Agent Package public import boundary', () => {
   it('keeps the legacy package root free of the new Session API', () => {
     expect(rootApi).not.toHaveProperty('startCreatorAgentPackageSession');
     expect(rootApi).not.toHaveProperty('CreatorAgentPackageSessionError');
+    expect(rootApi).not.toHaveProperty('createCreatorAgentPackageFromProject');
   });
 
   it('keeps the source dependency closure outside legacy execution layers', () => {
@@ -43,6 +46,7 @@ describe('Agent Package public import boundary', () => {
         cwd: process.cwd(),
         encoding: 'utf8',
         env: { ...process.env, NODE_DEBUG: 'esm' },
+        maxBuffer: 16 * 1024 * 1024,
       },
     );
 
@@ -51,9 +55,38 @@ describe('Agent Package public import boundary', () => {
     expect(result.stderr).toContain('/dist/application/agent-package-composition.js');
     expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
   });
+
+  it('keeps Package authoring in its own public subpath without loading legacy execution', () => {
+    expect(
+      sourceClosureViolations(
+        join(sourceRoot, 'agent-package-authoring.ts'),
+        AUTHORING_FORBIDDEN_SOURCE,
+      ),
+    ).toEqual([]);
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        [
+          "const api = await import('@cb/creator-worker/agent-package-authoring');",
+          'console.log(`${typeof api.createCreatorAgentPackageFromProject}:${typeof api.CreatorAgentPackageAuthoringError}`);',
+        ].join(''),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: { ...process.env, NODE_DEBUG: 'esm' },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('function:function');
+    expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
+  });
 });
 
-function sourceClosureViolations(entry: string): string[] {
+function sourceClosureViolations(entry: string, forbiddenSource = FORBIDDEN_SOURCE): string[] {
   const pending = [entry];
   const visited = new Set<string>();
   const violations: string[] = [];
@@ -76,7 +109,7 @@ function sourceClosureViolations(entry: string): string[] {
       const target = resolveSourceImport(importer, specifier);
       if (target === undefined || !target.startsWith(`${sourceRoot}/`)) continue;
       const targetName = relative(sourceRoot, target);
-      if (FORBIDDEN_SOURCE.test(targetName)) {
+      if (forbiddenSource.test(targetName)) {
         violations.push(`${relative(sourceRoot, importer)} -> ${targetName}`);
         continue;
       }

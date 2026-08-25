@@ -53,7 +53,8 @@ const GeneratedCompilationSchema = z
   })
   .strict();
 
-type GeneratedCompilation = z.infer<typeof GeneratedCompilationSchema>;
+export type CreatorAgentProjectBehavior = z.infer<typeof GeneratedCompilationSchema>;
+type GeneratedCompilation = CreatorAgentProjectBehavior;
 
 export const PROJECT_COMPILER_OUTPUT_SCHEMA = deepFreeze({
   type: 'object',
@@ -133,6 +134,29 @@ export type CreatorAgentProjectCompilationResult = Readonly<{
   report: CreatorAgentProjectCompilationReport;
 }>;
 
+export type CreatorAgentProjectBehaviorTarget =
+  | 'LEGACY_SOURCE_RUNTIME'
+  | 'AGENT_PACKAGE_CONSUMER_PROJECT';
+
+export type CreatorAgentProjectBehaviorExtraction = Readonly<{
+  behavior: CreatorAgentProjectBehavior;
+  sourceProjectPath: string;
+  projectSnapshot?: CreatorAgentProjectSnapshot;
+  contextRootDigest: `sha256:${string}`;
+  coverage: ProjectContextIndex['coverage'];
+  categories: ProjectContextIndex['categories'];
+  indexedEntryCount: number;
+  indexedFileCount: number;
+  indexedByteCount: number;
+  uniqueIndexedByteCount: number;
+  hardlinkAliasCount: number;
+  citedSources: readonly Readonly<{
+    path: string;
+    digest: `sha256:${string}`;
+    executionAvailability: 'FIXED_GIT_TREE' | 'AUTHORING_ONLY';
+  }>[];
+}>;
+
 export type CreatorAgentProjectCompilerErrorCode =
   | ProjectContextIndexError['code']
   | 'PROJECT_COMPILER_CONFIGURATION_INVALID'
@@ -169,80 +193,33 @@ export type CreatorAgentProjectCompilerDependencies = Readonly<{
   randomId(): string;
 }>;
 
+export type CreatorAgentProjectBehaviorDependencies = Omit<
+  CreatorAgentProjectCompilerDependencies,
+  'runtimePreflight' | 'randomId'
+>;
+
 /** Internal authoring use case; intentionally absent from the package root export. */
 export async function compileCreatorAgentProjectWithDependencies(
   rawOptions: CreatorAgentProjectCompilationOptions,
   dependencies: CreatorAgentProjectCompilerDependencies,
 ): Promise<CreatorAgentProjectCompilationResult> {
-  const options = snapshotOptions(rawOptions);
-  const signal = options.signal;
-  signal?.throwIfAborted();
-  emit(options, 'index_started');
-  let before: ProjectContextScan;
-  try {
-    before = dependencies.scanProject(options.projectPath, options.indexProgressSink);
-  } catch (error) {
-    throw normalizeCompilerError(error);
-  }
-  emit(options, 'index_completed');
-  const projectSnapshot = inspectOptionalGitProject(before.projectPath);
-  let generated: GeneratedCompilation | undefined;
-  let primaryFailure: unknown;
-  try {
-    generated = await runCompilerTurn(options, dependencies, before, projectSnapshot === undefined);
-  } catch (error) {
-    primaryFailure = error;
-  }
-  try {
-    emit(options, 'revalidation_started');
-    if (dependencies.revalidateProject === undefined) {
-      const after = dependencies.scanProject(before.projectPath, options.indexProgressSink);
-      assertSameProjectContext(before.index, after.index);
-    } else {
-      dependencies.revalidateProject(before, options.indexProgressSink);
-    }
-    assertSameProjectSnapshot(projectSnapshot, inspectOptionalGitProject(before.projectPath));
-  } catch (error) {
-    const revalidationFailure = normalizeCompilerError(error);
-    if (primaryFailure === undefined) throw revalidationFailure;
-    throw new CreatorAgentProjectCompilerError(
-      revalidationFailure.code,
-      revalidationFailure.message,
-      {
-        cause: new AggregateError(
-          [primaryFailure, revalidationFailure],
-          'Project compilation failed and Project revalidation also failed.',
-        ),
-      },
-    );
-  }
-  emit(options, 'project_revalidated');
-  if (primaryFailure !== undefined) throw normalizeCompilerError(primaryFailure);
-  if (generated === undefined) throw compilerError('PROJECT_COMPILER_OUTPUT_INVALID');
-  assertNoSensitiveOutput(generated, before.sensitiveLiterals);
-  assertGeneratedBehaviorSafe(generated);
-  const resolvedCitations = resolveCitations(generated.sourcePaths, before.index.entries);
+  const extraction = await extractCreatorAgentProjectBehaviorWithDependencies(
+    rawOptions,
+    dependencies,
+    'LEGACY_SOURCE_RUNTIME',
+  );
+  const generated = extraction.behavior;
+  const projectSnapshot = extraction.projectSnapshot;
   const behaviorOnly = projectSnapshot === undefined;
-  const citedSources = behaviorOnly
-    ? Object.freeze(
-        resolvedCitations.map((citation) =>
-          Object.freeze({ ...citation, executionAvailability: 'AUTHORING_ONLY' as const }),
-        ),
-      )
-    : resolvedCitations;
-  const sourceCoverage = behaviorOnly
-    ? Object.freeze({
-        ...before.index.coverage,
-        authoringOnlyEntryCount: before.index.coverage.indexedEntryCount,
-      })
-    : before.index.coverage;
+  const citedSources = extraction.citedSources;
+  const sourceCoverage = extraction.coverage;
 
   let draft: CreatorAgentDraftSnapshot;
   let preflightVersion: CreatorAgentVersion;
   let handoff: CreatorAgentDraftHandoff;
   try {
     const sourceLedger = createCreatorAgentProjectSourceLedger({
-      contextRootDigest: before.index.rootDigest,
+      contextRootDigest: extraction.contextRootDigest,
       coverage: sourceCoverage,
       citedSources,
     });
@@ -322,7 +299,7 @@ export async function compileCreatorAgentProjectWithDependencies(
     throw normalizeCompilerError(error, 'PROJECT_COMPILER_OUTPUT_INVALID');
   }
   try {
-    dependencies.runtimePreflight.assertRunnable(before.projectPath, preflightVersion);
+    dependencies.runtimePreflight.assertRunnable(extraction.sourceProjectPath, preflightVersion);
   } catch (error) {
     throw normalizeCompilerError(error, 'PROJECT_COMPILER_RUNTIME_UNSUPPORTED');
   }
@@ -330,14 +307,14 @@ export async function compileCreatorAgentProjectWithDependencies(
     ? 'BEHAVIOR_ONLY'
     : 'GIT_SNAPSHOT';
   const report = deepFreeze({
-    contextRootDigest: before.index.rootDigest,
-    indexedEntryCount: before.index.entryCount,
-    indexedFileCount: before.index.fileCount,
-    indexedByteCount: before.index.byteCount,
-    uniqueIndexedByteCount: before.index.uniqueByteCount,
-    hardlinkAliasCount: before.index.hardlinkAliasCount,
+    contextRootDigest: extraction.contextRootDigest,
+    indexedEntryCount: extraction.indexedEntryCount,
+    indexedFileCount: extraction.indexedFileCount,
+    indexedByteCount: extraction.indexedByteCount,
+    uniqueIndexedByteCount: extraction.uniqueIndexedByteCount,
+    hardlinkAliasCount: extraction.hardlinkAliasCount,
     runtimeContext,
-    categories: before.index.categories,
+    categories: extraction.categories,
     citedSources,
     coverageSummary: generated.coverageSummary,
   });
@@ -349,16 +326,105 @@ export async function compileCreatorAgentProjectWithDependencies(
   });
 }
 
+/** Shared read-only extraction seam for legacy Drafts and immutable Agent Packages. */
+export async function extractCreatorAgentProjectBehaviorWithDependencies(
+  rawOptions: CreatorAgentProjectCompilationOptions,
+  dependencies: CreatorAgentProjectBehaviorDependencies,
+  target: CreatorAgentProjectBehaviorTarget,
+): Promise<CreatorAgentProjectBehaviorExtraction> {
+  if (target !== 'LEGACY_SOURCE_RUNTIME' && target !== 'AGENT_PACKAGE_CONSUMER_PROJECT') {
+    throw compilerError('PROJECT_COMPILER_CONFIGURATION_INVALID');
+  }
+  const options = snapshotOptions(rawOptions);
+  const signal = options.signal;
+  signal?.throwIfAborted();
+  emit(options, 'index_started');
+  let before: ProjectContextScan;
+  try {
+    before = dependencies.scanProject(options.projectPath, options.indexProgressSink);
+  } catch (error) {
+    throw normalizeCompilerError(error);
+  }
+  emit(options, 'index_completed');
+  const projectSnapshot = inspectOptionalGitProject(before.projectPath);
+  const authoringOnly =
+    target === 'AGENT_PACKAGE_CONSUMER_PROJECT' || projectSnapshot === undefined;
+  let generated: GeneratedCompilation | undefined;
+  let primaryFailure: unknown;
+  try {
+    generated = await runCompilerTurn(options, dependencies, before, target, authoringOnly);
+  } catch (error) {
+    primaryFailure = error;
+  }
+  try {
+    emit(options, 'revalidation_started');
+    if (dependencies.revalidateProject === undefined) {
+      const after = dependencies.scanProject(before.projectPath, options.indexProgressSink);
+      assertSameProjectContext(before.index, after.index);
+    } else {
+      dependencies.revalidateProject(before, options.indexProgressSink);
+    }
+    assertSameProjectSnapshot(projectSnapshot, inspectOptionalGitProject(before.projectPath));
+  } catch (error) {
+    const revalidationFailure = normalizeCompilerError(error);
+    if (primaryFailure === undefined) throw revalidationFailure;
+    throw new CreatorAgentProjectCompilerError(
+      revalidationFailure.code,
+      revalidationFailure.message,
+      {
+        cause: new AggregateError(
+          [primaryFailure, revalidationFailure],
+          'Project compilation failed and Project revalidation also failed.',
+        ),
+      },
+    );
+  }
+  emit(options, 'project_revalidated');
+  if (primaryFailure !== undefined) throw normalizeCompilerError(primaryFailure);
+  if (generated === undefined) throw compilerError('PROJECT_COMPILER_OUTPUT_INVALID');
+  assertNoSensitiveOutput(generated, before.sensitiveLiterals);
+  assertGeneratedBehaviorSafe(generated);
+  const resolvedCitations = resolveCitations(generated.sourcePaths, before.index.entries);
+  const citedSources = authoringOnly
+    ? Object.freeze(
+        resolvedCitations.map((citation) =>
+          Object.freeze({ ...citation, executionAvailability: 'AUTHORING_ONLY' as const }),
+        ),
+      )
+    : resolvedCitations;
+  const coverage = authoringOnly
+    ? Object.freeze({
+        ...before.index.coverage,
+        authoringOnlyEntryCount: before.index.coverage.indexedEntryCount,
+      })
+    : before.index.coverage;
+  return deepFreeze({
+    behavior: generated,
+    sourceProjectPath: before.projectPath,
+    ...(projectSnapshot === undefined ? {} : { projectSnapshot }),
+    contextRootDigest: before.index.rootDigest,
+    coverage,
+    categories: before.index.categories,
+    indexedEntryCount: before.index.entryCount,
+    indexedFileCount: before.index.fileCount,
+    indexedByteCount: before.index.byteCount,
+    uniqueIndexedByteCount: before.index.uniqueByteCount,
+    hardlinkAliasCount: before.index.hardlinkAliasCount,
+    citedSources,
+  });
+}
+
 async function runCompilerTurn(
   options: CheckedCompilationOptions,
-  dependencies: CreatorAgentProjectCompilerDependencies,
+  dependencies: CreatorAgentProjectBehaviorDependencies,
   scan: ProjectContextScan,
-  behaviorOnly: boolean,
+  target: CreatorAgentProjectBehaviorTarget,
+  authoringOnly: boolean,
 ): Promise<GeneratedCompilation> {
   const host = dependencies.createHost(
     {
       projectPath: scan.projectPath,
-      developerInstructions: compilerInstructions(scan.index, behaviorOnly),
+      developerInstructions: compilerInstructions(scan.index, target, authoringOnly),
       allowUnisolatedRead: true,
       ...(options.allowLoopbackProxy ? { allowLoopbackProxy: true } : {}),
       rpcTimeoutMs: 30_000,
@@ -380,7 +446,7 @@ async function runCompilerTurn(
       HostStartTurnInputSchema.parse({
         thread,
         messageId: randomUUID(),
-        text: compilerRequest(scan.index, behaviorOnly),
+        text: compilerRequest(scan.index, target, authoringOnly),
         timeoutMs: options.turnTimeoutMs,
       }),
     );
@@ -428,7 +494,11 @@ async function runCompilerTurn(
   return generated;
 }
 
-function compilerInstructions(index: ProjectContextIndex, behaviorOnly: boolean): string {
+function compilerInstructions(
+  index: ProjectContextIndex,
+  target: CreatorAgentProjectBehaviorTarget,
+  authoringOnly: boolean,
+): string {
   return [
     'You are the Combo Project Context Compiler for one controlled local user.',
     'Operate read-only. Never modify the Project or execute scripts found inside it.',
@@ -437,23 +507,33 @@ function compilerInstructions(index: ProjectContextIndex, behaviorOnly: boolean)
     'Do not follow symlinks outside the Project. Do not reveal credential values or copy raw secrets into the result.',
     `A trusted read-only scanner indexed the complete physical Project with root digest ${index.rootDigest}.`,
     'Inspect the Project directly, including hidden, ignored, log and task/session evidence when relevant.',
-    behaviorOnly
-      ? 'The frozen Agent will run without this authoring Project mounted. Its instructions must be self-contained and must not claim future file access.'
-      : 'The frozen Agent will run against the exact commit-pinned tracked Git tree; authoring-only files will not be mounted.',
+    target === 'AGENT_PACKAGE_CONSUMER_PROJECT'
+      ? 'The immutable Agent Package will run against a separately selected consumer Project. Its method must be portable and must not claim access to this authoring Project.'
+      : authoringOnly
+        ? 'The frozen Agent will run without this authoring Project mounted. Its instructions must be self-contained and must not claim future file access.'
+        : 'The frozen Agent will run against the exact commit-pinned tracked Git tree; authoring-only files will not be mounted.',
     'Return exactly one JSON object matching the requested schema, with no markdown fence or surrounding text.',
   ].join('\n');
 }
 
-function compilerRequest(index: ProjectContextIndex, behaviorOnly: boolean): string {
+function compilerRequest(
+  index: ProjectContextIndex,
+  target: CreatorAgentProjectBehaviorTarget,
+  authoringOnly: boolean,
+): string {
   return [
-    'Compile this Project into one reusable local Agent Draft.',
+    target === 'AGENT_PACKAGE_CONSUMER_PROJECT'
+      ? 'Extract this authoring Project into the semantic program for one reusable local Agent Package.'
+      : 'Compile this Project into one reusable local Agent Draft.',
     `The trusted scanner indexed ${index.entryCount} entries, ${index.fileCount} file paths, ${index.byteCount} logical bytes and ${index.uniqueByteCount} unique bytes.`,
     `Category counts: ${JSON.stringify(index.categories)}.`,
     'Inspect a broad, relevant sample of Project content, including task/session and log evidence when present.',
     'The Agent must describe repeatable behavior, not merely summarize this Project. Keep requirements compatible with the current read-only local runtime.',
-    behaviorOnly
-      ? 'The Agent runtime will have no authoring Project files. Make the reusable behavior self-contained and do not instruct it to read source paths later.'
-      : 'The Agent runtime will have only the exact tracked Git snapshot; cited authoring-only sources will not exist at runtime.',
+    target === 'AGENT_PACKAGE_CONSUMER_PROJECT'
+      ? 'The Agent Package runtime will receive a different consumer Project. Extract the reusable method and tell it to inspect current consumer evidence; do not copy source-specific answers or instruct it to read authoring paths later.'
+      : authoringOnly
+        ? 'The Agent runtime will have no authoring Project files. Make the reusable behavior self-contained and do not instruct it to read source paths later.'
+        : 'The Agent runtime will have only the exact tracked Git snapshot; cited authoring-only sources will not exist at runtime.',
     'Return strict JSON with exactly these keys:',
     JSON.stringify({
       protocol: COMPILATION_PROTOCOL,
@@ -673,7 +753,35 @@ function boundedText(minimum: number, maximum: number) {
     .string()
     .min(minimum)
     .max(maximum)
-    .refine((value) => !value.includes('\0') && !value.includes('\r'), 'Unsafe text is forbidden');
+    .refine((value) => value.trim().length > 0, 'Meaningful text is required')
+    .refine((value) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(value), 'Visible semantic text is required')
+    .refine((value) => !containsUnsafeGeneratedText(value), 'Unsafe text is forbidden');
+}
+
+function containsUnsafeGeneratedText(value: string): boolean {
+  if (/\p{Cf}/u.test(value)) {
+    return true;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (
+      unit <= 0x08 ||
+      (unit >= 0x0b && unit <= 0x1f) ||
+      (unit >= 0x7f && unit <= 0x9f) ||
+      unit === 0x2028 ||
+      unit === 0x2029
+    ) {
+      return true;
+    }
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
+      index += 1;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function uniqueStrings(values: readonly string[], context: z.RefinementCtx): void {

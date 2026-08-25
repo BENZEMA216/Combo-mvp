@@ -46,7 +46,61 @@ try {
 不会把多个互斥能力全量装入上下文，也不会假装 Combo 已经实现路由。包内原生按需多技能路由需要独立的
 后续主机合同，不能通过重新开启会暴露系统与项目技能的全局 `skill_search` 冒充。
 
-## 一条命令体验本地 Agent
+## 从 Project 直接创建并消费 Agent Package
+
+新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用可信的 Project 全量扫描、结构化 Codex 提取
+和完整复验机制，随后由代码确定性生成根 `AGENT.md`、一个 `extracted-method` 原生技能与规范
+`agent.json`。输出先写入私有同文件系统临时目录，完成文件同步后按包摘要原子改名；摘要目标已存在时不会
+覆盖。正式加载器会立即关闭创作阶段并重新打开已发布目录，只有文件清单、摘要和规范清单完全一致才返回。
+
+创作接口与推理接口分别位于两个公共子路径：
+
+```ts
+import { createCreatorAgentPackageFromProject } from '@cb/creator-worker/agent-package-authoring';
+import { startCreatorAgentPackageSession } from '@cb/creator-worker/agent-package-session';
+
+const built = await createCreatorAgentPackageFromProject({
+  sourceProjectPath: '/absolute/creator-source',
+  storeDirectory: '/absolute/private-package-store',
+  allowUnisolatedRead: true,
+  allowSensitiveProjectContext: true,
+});
+const session = await startCreatorAgentPackageSession({
+  packagePath: built.packagePath,
+  projectPath: '/absolute/consumer-project',
+  allowUnisolatedRead: true,
+});
+try {
+  console.log(await session.send('处理这个消费者项目中的真实任务。'));
+  console.log(await session.send('继续刚才的任务，只返回已验证的下一步。'));
+} finally {
+  await session.close();
+}
+```
+
+单用户本机体验可直接运行一条命令：
+
+```bash
+pnpm --silent --dir apps/creator-worker package-experience -- \
+  "/canonical/absolute/creator-source" \
+  "/canonical/absolute/consumer-project"
+```
+
+该命令不要求确认输入。执行命令本身表示用户授权全量读取受控的创作者来源目录，并接受相关内容可能进入
+本机 Codex 使用的模型服务。命令会创建并重载不可变智能体包，再在独立消费者目录中启动一个新的 Codex
+任务线程，顺序执行包内第一条示例任务和一条连续任务。它不做裸 Codex 对比、不写两个 Project、不发布或
+分享智能体包。创作者来源目录和消费者目录必须是彼此独立的真实绝对目录；私有包默认保存到
+`~/Library/Application Support/Combo/agent-packages`。
+
+智能体包摘要和保存路径会在试跑前输出。若后续会话启动、任一轮或关闭失败，命令会明确说明智能体包已经
+保留且只有试跑未完成；此时不要重新提取，可以用已输出的 `packagePath` 通过公共会话接口继续消费。
+
+创作结果包含来源根摘要、引用文件摘要、智能体包摘要与正式重载通过标记。这个结果能证明来源、产物和消费
+之间的技术连续性，但不能证明模型理解了全部来源，也不能证明提取效果优于裸 Codex。当前 Host 与桌面用户
+同一身份，消费者目录的物理分离仍不是操作系统级信息隔离；严格未知测试材料必须在包冻结后才创建，或在
+独立用户和容器中执行。
+
+## 旧版 AgentVersion 一条命令体验
 
 当前单用户受控 Alpha 的消费入口只有一条命令：
 
@@ -69,8 +123,10 @@ exact agentId/versionId 并说明不要重新创建；这个失败不会回滚�
 
 ## Agent 创作与执行边界
 
-Project Context Compiler 属于 Agent 创作层，只负责索引 Project、调用结构化 authoring Host、生成 Draft
-并通过一个窄的运行兼容性端口做冻结前预检。immutable AgentVersion 是创作层与执行层之间唯一的数据边界。
+Project Context Compiler 属于 Agent 创作层，负责索引 Project、调用结构化 authoring Host，并输出可被
+旧版 Draft 或新智能体包编译器消费的语义提取结果。旧版路径继续生成 Draft，并通过一个窄的运行兼容性端口
+做冻结前预检；新路径直接生成不可变智能体包，不创建 Catalog 或 `AgentVersion`。immutable AgentVersion
+仍是旧版创作层与执行层之间的数据边界。
 执行层只验证并运行 exact Version，不读取可变 Draft，也不依赖 Project Context Compiler。具体 bundled
 Codex Host、loopback Broker 和 Worker Runtime 只在 application composition 中接线；CLI 负责顺序调用这些
 用例，但不成为二者共享的领域实现。仓库测试会拒绝创作层反向导入执行实现、执行层导入创作实现，以及基础
