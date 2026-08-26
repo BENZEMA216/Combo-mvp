@@ -7,7 +7,6 @@ import {
   createCreatorAgentPackageDraftSnapshot,
   reviseCreatorAgentPackageDraft,
   verifyCreatorAgentPackageCreatorRequest,
-  verifyCreatorAgentPackageDraftSnapshot,
   type CreatorAgentPackageCreatorRequest,
   type CreatorAgentPackageDraftContent,
   type CreatorAgentPackageDraftRevisionRequest,
@@ -95,10 +94,9 @@ export async function createCreatorAgentPackageDraftFromCurrentProjectWithDepend
     );
   }
   const sourceProject = bindCanonicalProject(options.currentProjectPath);
-  const currentProjectPath = sourceProject.path;
   options.signal?.throwIfAborted();
   const extraction = await dependencies.extractProject({
-    projectPath: currentProjectPath,
+    projectPath: sourceProject.path,
     creatorRequest: request.request,
     allowUnisolatedRead: true,
     allowSensitiveProjectContext: true,
@@ -181,12 +179,11 @@ export async function createCreatorAgentPackageDraftFromCurrentProjectWithDepend
 }
 
 function compileBoundCreatorAgentPackageDraft(
-  rawDraft: CreatorAgentPackageDraftSnapshot,
+  draft: CreatorAgentPackageDraftSnapshot,
   sourceProject: SourceProjectBinding,
   rawStoreDirectory: string,
   dependencies: CreatorAgentPackageCreatorDependencies,
 ): CreatorAgentPackageDraftCompilationResult {
-  const draft = verifyCreatorAgentPackageDraftSnapshot(rawDraft);
   let storeDirectory: string;
   try {
     assertSourceProjectBinding(sourceProject);
@@ -195,7 +192,6 @@ function compileBoundCreatorAgentPackageDraft(
       throw new TypeError('Agent Package store must be outside the source Project.');
     }
   } catch (error) {
-    if (error instanceof CreatorAgentPackageCreatorError) throw error;
     throw new CreatorAgentPackageCreatorError(
       'AGENT_PACKAGE_DRAFT_CONFIGURATION_INVALID',
       'Agent Package Draft compilation paths are invalid.',
@@ -307,7 +303,6 @@ function snapshotOptions(
           }),
     });
   } catch (error) {
-    if (error instanceof CreatorAgentPackageCreatorError) throw error;
     throw new CreatorAgentPackageCreatorError(
       'AGENT_PACKAGE_DRAFT_CONFIGURATION_INVALID',
       'Agent Package creator configuration is invalid.',
@@ -353,7 +348,6 @@ function snapshotCompilationRequest(
       storeDirectory,
     });
   } catch (error) {
-    if (error instanceof CreatorAgentPackageCreatorError) throw error;
     throw new CreatorAgentPackageCreatorError(
       'AGENT_PACKAGE_DRAFT_CONFIGURATION_INVALID',
       'Agent Package Draft compilation request is invalid.',

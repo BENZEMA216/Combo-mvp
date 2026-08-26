@@ -47,6 +47,8 @@
 - `authoring/project-context-compiler.ts` 是旧版 AgentVersion 编译适配层。它把纯行为提取结果投影成 V2，
   或在 formal 根不能形成 canonical Git snapshot 时投影成不自动选择嵌套仓库的 V3 behavior-only Draft，
   并在本文件内定义旧版本地 Runtime 预检端口；Package Creator 不导入这个适配层。
+- `authoring/agent-text-safety.ts` 集中实现创作提取器与 Package 构建器共用的文本安全判定，不扩大协议包的
+  公共导出。
 - `authoring/agent-package-builder.ts` 把经过复验的 Project 语义提取结果或 exact Package Draft 确定性编译为
   根 `AGENT.md`、一个 `extracted-method` 原生技能和规范 `agent.json`。完整脱敏来源回执只返回给创作端；
   可分享 Package 仅清单绑定一个不含文件名和来源摘要的 opaque provenance digest。

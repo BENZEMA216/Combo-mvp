@@ -93,11 +93,8 @@ export async function runCreatorAgentPackageCli(argv = process.argv.slice(2)): P
     if (signalExit !== undefined) return signalExit;
     const code = safeCode(error);
     const publicMessage = safeCliPublicMessage(error);
-    process.stderr.write(
-      publicMessage === undefined
-        ? `Agent Package 流程失败 [${code}]：未完成的阶段已安全停止。\n`
-        : `Agent Package 流程失败 [${code}]：${publicMessage}\n`,
-    );
+    const message = publicMessage ?? '未完成的阶段已安全停止。';
+    process.stderr.write(`Agent Package 流程失败 [${code}]：${message}\n`);
     return code === 'AGENT_PACKAGE_CLI_INVALID' ? 2 : 1;
   } finally {
     process.removeListener('SIGINT', interrupted);
@@ -147,11 +144,7 @@ export async function executeCreatorAgentPackageCli(
       signal,
       diagnosticSink: (event) => io.stderr.write(`${authoringDiagnosticMessage(event)}\n`),
       indexProgressSink: (progress) =>
-        io.stderr.write(
-          progress.phase === 'CONTENT_SCAN'
-            ? `[Draft 1/2] 已索引 ${progress.entryCount} 个条目、${progress.fileCount} 个文件，读取 ${formatBytes(progress.uniqueBytesRead)}。\n`
-            : `[Draft 1/2] 已复验 ${progress.entryCount} 个条目、${progress.fileCount} 个文件；没有再次读取普通文件正文。\n`,
-        ),
+        io.stderr.write(`${indexProgressMessage('[Draft 1/2]', progress)}\n`),
     });
     signal.throwIfAborted();
     io.stdout.write(`${serializeCreatorAgentPackageDraftSnapshot(created.readDraft())}\n`);
@@ -192,11 +185,7 @@ export async function executeCreatorAgentPackageCli(
       signal,
       diagnosticSink: (event) => io.stderr.write(`${authoringDiagnosticMessage(event)}\n`),
       indexProgressSink: (progress) =>
-        io.stderr.write(
-          progress.phase === 'CONTENT_SCAN'
-            ? `[1/5] 已索引 ${progress.entryCount} 个条目、${progress.fileCount} 个文件，读取 ${formatBytes(progress.uniqueBytesRead)}。\n`
-            : `[1/5] 已复验 ${progress.entryCount} 个条目、${progress.fileCount} 个文件；没有再次读取普通文件正文。\n`,
-        ),
+        io.stderr.write(`${indexProgressMessage('[1/5]', progress)}\n`),
     });
   } catch (error) {
     const packagePath = safePackagePath(error);
@@ -249,13 +238,13 @@ export async function executeCreatorAgentPackageCli(
   try {
     await session.close();
   } catch (error) {
-    finalFailure =
-      primaryFailure === undefined
-        ? error
-        : new AggregateError(
-            [primaryFailure, error],
-            'Agent Package turns and cleanup both failed.',
-          );
+    finalFailure = error;
+    if (primaryFailure !== undefined) {
+      finalFailure = new AggregateError(
+        [primaryFailure, error],
+        'Agent Package turns and cleanup both failed.',
+      );
+    }
   } finally {
     sessionSink(undefined);
   }
@@ -403,6 +392,17 @@ function authoringDiagnosticMessage(
     case 'project_revalidated':
       return '[1/5] 来源 Project 复验通过。';
   }
+}
+
+type IndexProgress = Parameters<
+  NonNullable<CreatorAgentPackageAuthoringOptions['indexProgressSink']>
+>[0];
+
+function indexProgressMessage(stage: string, progress: IndexProgress): string {
+  if (progress.phase === 'CONTENT_SCAN') {
+    return `${stage} 已索引 ${progress.entryCount} 个条目、${progress.fileCount} 个文件，读取 ${formatBytes(progress.uniqueBytesRead)}。`;
+  }
+  return `${stage} 已复验 ${progress.entryCount} 个条目、${progress.fileCount} 个文件；没有再次读取普通文件正文。`;
 }
 
 function formatBytes(bytes: number): string {

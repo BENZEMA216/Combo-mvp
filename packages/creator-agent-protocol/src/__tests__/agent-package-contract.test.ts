@@ -12,8 +12,10 @@ import {
   digestCreatorAgentPackageSourceReceipt,
   parseCreatorAgentPackageManifest,
   parseCreatorAgentPackageProvenance,
+  parseCreatorAgentPackageSourceReceipt,
   serializeCreatorAgentPackageManifest,
   serializeCreatorAgentPackageProvenance,
+  serializeCreatorAgentPackageSourceReceipt,
   verifyCreatorAgentPackageManifest,
 } from '../agent-package.js';
 import {
@@ -119,6 +121,9 @@ describe('Creator Agent Package contract', () => {
     });
     const text = serializeCreatorAgentPackageProvenance(provenance);
 
+    expect(
+      parseCreatorAgentPackageSourceReceipt(serializeCreatorAgentPackageSourceReceipt(receipt)),
+    ).toEqual(receipt);
     expect(parseCreatorAgentPackageProvenance(text)).toEqual(provenance);
     expect(text).not.toContain('private-client-method.md');
     expect(text).not.toContain('Release documentation');
@@ -378,6 +383,24 @@ describe('Agent Package creator request and Draft contract', () => {
   });
 
   it('rejects local references without rejecting Chinese prose or relative Project paths', () => {
+    for (const request of [
+      '坏\u0001输入',
+      '坏\u007f输入',
+      '坏\u2028输入',
+      '坏\u2029输入',
+      '\ud800',
+    ]) {
+      expect(() =>
+        createCreatorAgentPackageCreatorRequest({ ...creatorRequest(), request }),
+      ).toThrow();
+    }
+    expect(() =>
+      createCreatorAgentPackageCreatorRequest({
+        ...creatorRequest(),
+        request: '请提炼🙂\n\t发布流程。',
+      }),
+    ).not.toThrow();
+
     const unsafeRequests = [
       '请读取 /Users/alice/private.md',
       '请读取/Users/alice/private.md',
