@@ -35,6 +35,7 @@ afterEach(() => {
 
 describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex real closure', () => {
   it('creates a reviewable Draft, reloads its immutable Package, and uses it for two held-out turns', async () => {
+    // Source 只提供创作方法；先保存快照，最后用同一基线证明整个流程没有改写它。
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'combo-real-package-authoring-')));
     roots.push(root);
     const source = join(root, 'source');
@@ -69,6 +70,7 @@ describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex rea
     const sourceBefore = snapshotDirectory(source);
     const runtimeSnapshotsBefore = runtimeSnapshotNames();
 
+    // 一句话创建 Draft；来源绝对路径只留在受信任务绑定中，不能进入可分享内容。
     const authoringTask = await createCreatorAgentPackageDraftFromCurrentProject({
       request: createCreatorAgentPackageCreatorRequest({
         protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
@@ -86,6 +88,7 @@ describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex rea
     expect(draft.creatorRequest.request).toContain('AGENT_METHOD.md');
     expect(draft.source.citedSources.map(({ path }) => path)).toContain('AGENT_METHOD.md');
     expect(JSON.stringify(draft)).not.toContain(source);
+    // 编译必须绑定用户实际看到的 exact Draft revision，避免并发修订后静默编译另一版。
     const authored = authoringTask.compile({
       draftId: draft.draftId,
       draftRevision: draft.revision,
@@ -101,6 +104,7 @@ describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex rea
     const packageBefore = snapshotDirectory(authored.packagePath);
     const packageText = packageBefore.map(({ text }) => text).join('\n');
     expect(packageText).toContain(methodMarker);
+    // 冻结后移走 Source，再生成随机消费事实，证明运行时只依赖 Package 与 Consumer。
     renameSync(source, retiredSource);
 
     const candidateSha = createHash('sha256').update(randomUUID()).digest('hex');
@@ -120,6 +124,7 @@ describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex rea
     expect(packageText).not.toContain(candidateSha);
     expect(packageText).not.toContain(conversationToken);
 
+    // 同一 Session 只创建一个 Codex thread；连续 send 用来验证跨轮上下文仍然存在。
     const session = await startCreatorAgentPackageSession({
       packagePath: authored.packagePath,
       projectPath: consumer,
@@ -141,6 +146,7 @@ describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex rea
       await session.close();
     }
 
+    // 最后同时核对三处内容与临时资源，避免“回答正确但留下副作用”的假通过。
     expect(snapshotDirectory(retiredSource)).toEqual(sourceBefore);
     expect(snapshotDirectory(consumer)).toEqual(consumerBefore);
     expect(snapshotDirectory(authored.packagePath)).toEqual(packageBefore);
