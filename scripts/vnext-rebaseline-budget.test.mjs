@@ -176,6 +176,52 @@ test('product edits must stay inside the declared rebuild surface', () => {
   );
 });
 
+test('Agent Package Release scope opens only its named Authoring module and exact wiring files', () => {
+  const allowedAuthoringFiles = [
+    'apps/authoring/README.md',
+    'apps/authoring/package.json',
+    'apps/authoring/src/README.md',
+    'apps/authoring/src/__tests__/README.md',
+    'apps/authoring/src/__tests__/agent-package-release.pg.test.ts',
+    'apps/authoring/src/__tests__/agent-package-release.test.ts',
+    'apps/authoring/src/__tests__/routes.test.ts',
+    'apps/authoring/src/bootstrap/README.md',
+    'apps/authoring/src/bootstrap/routes.ts',
+    'apps/authoring/src/modules/README.md',
+    'apps/authoring/tsconfig.json',
+    'apps/authoring/tsconfig.vitest.json',
+  ];
+  const allowedAuthoringPrefixes = ['apps/authoring/src/modules/agent-package-release/'];
+  const releaseSlice = [
+    ...allowedAuthoringFiles,
+    'apps/authoring/src/modules/agent-package-release/service.ts',
+  ].map((path) => entry(path));
+  assert.equal(assessPullRequest(contract, releaseSlice).mode, 'PRODUCT');
+
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/')),
+    allowedAuthoringFiles,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter((path) => path.startsWith('apps/authoring/')),
+    allowedAuthoringPrefixes,
+  );
+  for (const path of [
+    'apps/authoring/src/bootstrap/app.ts',
+    'apps/authoring/src/modules/agent-package-release-legacy/routes.ts',
+    'apps/authoring/src/modules/capability/handlers.ts',
+    'apps/authoring/src/platform/infra/object-store.ts',
+    'apps/authoring/src/processes/api.ts',
+    'apps/authoring/src/__tests__/account-auth.test.ts',
+    'apps/authoring/src/__tests__/fakes.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+});
+
 test('per-pull-request file, line, and per-file ceilings are exact', () => {
   const thirty = Array.from({ length: 30 }, (_, index) =>
     entry(`apps/runtime/src/file-${index}.ts`, index === 0 ? 1200 : 1),
