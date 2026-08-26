@@ -1,8 +1,8 @@
-# 创作者中心主链路 · monorepo
+# Combo · 可分享 Agent monorepo
 
-Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shared`）+ 四层应用（api / web / db / infra）。
-本阶段交付的是 **可编译、可启动的骨架**：脚手架 / 配置 / 迁移 / 基础设施 / 共享类型全部真实可用、`tsc` 通过；
-业务路由按契约挂好路径 / 方法 / 鉴权链 / 幂等 scope，handler 暂为 `501` 占位（Phase 3 填）。
+Combo 让用户把已经完成的对话、Project 或工作旅程制作成可分享的 Agent。仓库以不可变、可验证和可加载的 Agent Package 作为唯一交付物，同时承载创作、分享、运行、网页、数据库和部署基础设施。
+
+当前代码已经具备本地 Agent Package 创作、正式重载和原生 Codex 多轮运行机制；跨用户发布、接收和 Studio 产品闭环仍在开发中。已确认的产品基线见 [`PROJECT.md`](PROJECT.md)，可调整的工程拆解与进度见 [`ENGINEERING.md`](ENGINEERING.md)。
 
 三条硬规则贯穿全栈：**永不裸转圈**、**绝不裸露错误码**（统一 `ErrorEnvelope`，只给 `userMessage` + `action`）、**已生成内容不丢**。
 
@@ -10,23 +10,23 @@ Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shar
 
 ## 前置要求
 
-| 工具   | 版本                                  | 说明                                                      |
-| ------ | ------------------------------------- | --------------------------------------------------------- |
-| Node   | `>= 24`（仓库锁 `.nvmrc` = 24）       | 用到 `--experimental-strip-types` 直跑迁移 TS             |
-| pnpm   | `>= 11`（`packageManager` 锁 11.0.9） | 唯一包管理器，`corepack enable` 即可                      |
-| Docker | 仅「compose 起全栈」需要              | **当前开发机无 Docker，全栈启动推迟**；本地子集开发不需要 |
+| 工具   | 版本                                  | 说明                                          |
+| ------ | ------------------------------------- | --------------------------------------------- |
+| Node   | `>= 24`（仓库锁 `.nvmrc` = 24）       | 用到 `--experimental-strip-types` 直跑迁移 TS |
+| pnpm   | `>= 11`（`packageManager` 锁 11.0.9） | 唯一包管理器，`corepack enable` 即可          |
+| Docker | 仅「compose 起全栈」需要              | 本地子集开发与普通源码门禁不需要 Docker       |
 
-> **文档真源（对人和 AI agent 都是硬规则）**
+> **文档权威关系（对人和 AI agent 都是硬规则）**
 >
-> 本项目的 PRD 与技术方案，唯一权威真源是飞书知识库「[产研方案集合](https://enbmphajlu.feishu.cn/wiki/AyvDw5SkZiinkDkjxe6cLcZInNe)」，按链路分组：
->
+> - [`PROJECT.md`](PROJECT.md) 是用户已经确认的唯一产品基线，定义产品目标、目标用户体验和唯一产物模型。
+> - [`ENGINEERING.md`](ENGINEERING.md) 是从产品基线推导的工程工作稿，在真实开发中持续验证和调整，不能覆盖产品基线。
+> - 飞书知识库「[产研方案集合](https://enbmphajlu.feishu.cn/wiki/AyvDw5SkZiinkDkjxe6cLcZInNe)」记录既有阶段的详细 PRD 与技术方案，按链路分组：
 > - [生产链路（上传与发布）](https://enbmphajlu.feishu.cn/wiki/Sn3xwHpw8inq99kTRNQcmPMjnAe)：能力上传 PRD（2 步精简版）、服务端方案、服务端代码梳理
 > - [试用与消费链路](https://enbmphajlu.feishu.cn/wiki/NL8WwPYwmih55UknIdtcCqB5nGg)：试用链路 PRD、试用/消费服务端方案
 > - [横切方案](https://enbmphajlu.feishu.cn/wiki/Di6awjArji4oXKkAxetc4Y1enLc)：能力包契约、登录与账号体系、后端仓库结构规范
 > - [运维与环境](https://enbmphajlu.feishu.cn/wiki/QHEQwaEd9iki3vkSITlcXfcMn6f)、[归档](https://enbmphajlu.feishu.cn/wiki/Jd00wpfavi2ToPkGUD7cTTg3n1c)（归档内为已被取代的旧方案，勿作依据）
 >
-> 仓库原 `docs/` 目录（详细技术方案、contracts 契约、验收矩阵等）内容已过期，于 2026-07-04 整体删除（需要时可从 git 历史找回）。
-> **需求口径、验收标准、设计决策一律以上述飞书文档为准；不要参考仓库历史文档、被删除的 `docs/`、或代码里的旧阶段注释（如「501 占位」）。** 接口的运行时契约以 `packages/shared` 源码为准。
+> 具体文档与产品基线冲突时必须停止并说明，不能自行选择旧口径继续开发。HTTP 与应用共享契约以 `packages/shared` 源码为准，Agent Package 与 Creator Host 协议以 `packages/creator-agent-protocol` 源码为准，数据库结构以 `db/migrations/` 为准，部署拓扑以 [`docs/deployment-topology.md`](docs/deployment-topology.md) 为准。
 
 ---
 
@@ -36,7 +36,7 @@ Combo「创作者中心主链路」的生产栈骨架：脊柱契约（`@cb/shar
 pnpm install
 ```
 
-工作区包含 `packages/shared`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
+工作区包含 `packages/shared`、Creator Agent 相关协议与持久化包、`apps/creator-worker`、`apps/authoring`、`apps/runtime`、`apps/runtime-web`、`apps/sandboxd`、`apps/web`、`db`、`infra` 与 `scripts`。
 
 ---
 
@@ -105,7 +105,7 @@ PROCESS=worker node apps/authoring/dist/processes/worker.js
 
 ## 数据库迁移
 
-DDL 真源在 `db/migrations/`（`0000` 至 `0010`，共 11 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`；冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把两者混作同一份线上证据。
+DDL 真源在 `db/migrations/`（`0000` 至 `0011`，共 12 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`；`0011` 移除 H5 收银台渠道并把历史订单迁移到 `qr`。冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把两者混作同一份线上证据。
 Runner 自带记账表 `schema_migrations`，**幂等可重入**：已应用文件跳过、逐文件单事务、失败即止。
 
 ```bash
@@ -126,7 +126,7 @@ pnpm -F @cb/db migrate:status  # 列清单（无连接也能列）
 
 > 以下 Compose 命令只用于独立开发环境，不作为 Test、Preview 或 Production 的验收证据。tecent2 源码检查不运行这些命令。
 
-编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0010` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
+编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000` 至 `0011` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
 
 要点：
 
@@ -177,23 +177,26 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 ```
 .                      # 仓库根 = 本 monorepo（@cb/root）
 ├── packages/shared/   # @cb/shared 脊柱：DTO / zod / ErrorEnvelope / SSE 协议 / 常量 / 端口 / OpenAPI 真源
+├── packages/creator-*/       # Creator Agent 协议、持久化、Broker Journal 与 Worker 客户端
 ├── apps/authoring/    # @cb/authoring  创作 API 与任务 Worker
+├── apps/creator-worker/ # Agent Package 创作、正式加载与原生 Codex 会话
 ├── apps/runtime/      # @cb/runtime  会话、Turn、Artifact 与 Runtime SSE
 ├── apps/web/          # @cb/web  创作端 React/Vite 应用
 ├── apps/runtime-web/  # @cb/runtime-web  试用与 Studio React/Vite 应用
+├── apps/sandboxd/     # @cb/sandboxd  运行沙箱协议与进程边界
 ├── db/                # @cb/db   PostgreSQL 迁移 + 幂等 runner
 ├── infra/             # @cb/infra 编排、发布拓扑、k8s 清单、Nginx 与基础设施配置
 ├── scripts/           # @cb/scripts 发布渲染 / 部署 / 验收 / 集成脚本
 └── .github/workflows/ # PR checks（pr-ci.yml）、Release build（ci.yml）与部署（deploy.yml）
 ```
 
-更细的各包职责与设计决策，见文首「文档真源」指向的飞书文档。
+更细的产品目标与工程拆解见 `PROJECT.md` 和 `ENGINEERING.md`；各包当前职责见对应目录中的 `README.md`。
 
 ---
 
 ## 验证
 
-源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0010`、再次幂等执行、应用角色权限和异常账本拒绝。
+源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0011`、再次幂等执行、应用角色权限和异常账本拒绝。
 
 Test、Preview 与 Production 的环境证据来自 tecent2 K3s 的 `combo-test`、`combo-preview` 与 `combo-prod` namespace。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；每次部署都核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要并验证环境域名返回对应 SHA。源码目录中的普通测试不启动 Docker 或 Docker Compose。
 
