@@ -31,6 +31,10 @@
     "./agent-package": {
       "types": "./dist/agent-package.d.ts",
       "default": "./dist/agent-package.js"
+    },
+    "./agent-package-draft": {
+      "types": "./dist/agent-package-draft.d.ts",
+      "default": "./dist/agent-package-draft.js"
     }
   },
   "files": [

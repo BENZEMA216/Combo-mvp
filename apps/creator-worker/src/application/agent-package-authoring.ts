@@ -12,7 +12,7 @@ import type {
   CreatorAgentProjectCompilationDiagnostic,
   CreatorAgentProjectCompilationOptions,
   CreatorAgentProjectBehaviorExtraction,
-} from '../authoring/project-context-compiler.js';
+} from '../authoring/project-behavior-extractor.js';
 import type { ProjectContextIndexProgress } from '../project-context-index.js';
 import type {
   BuiltCreatorAgentPackage,
@@ -108,6 +108,30 @@ export async function createCreatorAgentPackageFromProjectWithDependencies(
     throw new CreatorAgentPackageAuthoringError(
       'AGENT_PACKAGE_AUTHORING_OUTPUT_INVALID',
       'Extracted behavior could not be compiled into a bounded Agent Package.',
+      { cause: error },
+    );
+  }
+  return publishCreatorAgentPackageBuildWithDependencies(build, storeDirectory, dependencies);
+}
+
+export type CreatorAgentPackagePublicationDependencies = Pick<
+  CreatorAgentPackageAuthoringDependencies,
+  'publishPackage' | 'loadPackage'
+>;
+
+/** Internal Package publication seam shared by direct authoring and reviewable Draft compilation. */
+export function publishCreatorAgentPackageBuildWithDependencies(
+  build: BuiltCreatorAgentPackage,
+  rawStoreDirectory: string,
+  dependencies: CreatorAgentPackagePublicationDependencies,
+): CreatorAgentPackageAuthoringResult {
+  let storeDirectory: string;
+  try {
+    storeDirectory = canonicalDirectory(rawStoreDirectory, 'Agent Package store', true);
+  } catch (error) {
+    throw new CreatorAgentPackageAuthoringError(
+      'AGENT_PACKAGE_AUTHORING_CONFIGURATION_INVALID',
+      'Agent Package store is invalid.',
       { cause: error },
     );
   }

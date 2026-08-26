@@ -1,14 +1,19 @@
+import { randomUUID } from 'node:crypto';
+
+import {
+  buildCreatorAgentPackageFromDraft,
+  normalizeCreatorAgentPackageDraftContent,
+} from '../authoring/agent-package-builder.js';
 import { extractCreatorAgentProjectBehaviorWithDependencies } from '../authoring/project-behavior-extractor.js';
 import { revalidateProjectContext, scanProjectContext } from '../project-context-index.js';
-import { buildCreatorAgentPackage } from '../authoring/agent-package-builder.js';
 import { createBundledCodexStructuredHost } from '../infrastructure/codex/index.js';
 import { loadCreatorAgentPackage } from '../infrastructure/agent-package-loader.js';
 import { publishBuiltCreatorAgentPackage } from '../infrastructure/agent-package-publisher.js';
 import {
-  createCreatorAgentPackageFromProjectWithDependencies,
-  type CreatorAgentPackageAuthoringOptions,
-  type CreatorAgentPackageAuthoringResult,
-} from './agent-package-authoring.js';
+  createCreatorAgentPackageDraftFromCurrentProjectWithDependencies,
+  type CreatorAgentPackageDraftAuthoringTask,
+  type CreatorAgentPackageDraftCreationOptions,
+} from './agent-package-creator.js';
 
 const extractionDependencies = Object.freeze({
   scanProject: scanProjectContext,
@@ -25,13 +30,18 @@ const productionDependencies = Object.freeze({
       extractionDependencies,
       'AGENT_PACKAGE_AUTHORING',
     ),
-  buildPackage: buildCreatorAgentPackage,
+  normalizeDraftContent: normalizeCreatorAgentPackageDraftContent,
+  buildPackage: buildCreatorAgentPackageFromDraft,
   publishPackage: publishBuiltCreatorAgentPackage,
   loadPackage: loadCreatorAgentPackage,
+  randomId: randomUUID,
 });
 
-export function createCreatorAgentPackageFromProject(
-  options: CreatorAgentPackageAuthoringOptions,
-): Promise<CreatorAgentPackageAuthoringResult> {
-  return createCreatorAgentPackageFromProjectWithDependencies(options, productionDependencies);
+export function createCreatorAgentPackageDraftFromCurrentProject(
+  options: CreatorAgentPackageDraftCreationOptions,
+): Promise<CreatorAgentPackageDraftAuthoringTask> {
+  return createCreatorAgentPackageDraftFromCurrentProjectWithDependencies(
+    options,
+    productionDependencies,
+  );
 }

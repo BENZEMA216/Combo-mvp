@@ -14,9 +14,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import {
+  CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+  createCreatorAgentPackageCreatorRequest,
+} from '@cb/creator-agent-protocol/agent-package-draft';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createCreatorAgentPackageFromProject } from '../agent-package-authoring.js';
+import { createCreatorAgentPackageDraftFromCurrentProject } from '../agent-package-creator.js';
 import { startCreatorAgentPackageSession } from '../agent-package-session.js';
 
 const enabled = process.env.COMBO_REAL_CODEX_E2E === '1';
@@ -29,8 +33,8 @@ afterEach(() => {
   }
 });
 
-describe.runIf(enabled)('Project to Agent Package to Codex real closure', () => {
-  it('extracts a source method, reloads the immutable Package, and uses it for two held-out turns', async () => {
+describe.runIf(enabled)('Creator sentence to Draft to Agent Package to Codex real closure', () => {
+  it('creates a reviewable Draft, reloads its immutable Package, and uses it for two held-out turns', async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'combo-real-package-authoring-')));
     roots.push(root);
     const source = join(root, 'source');
@@ -65,13 +69,28 @@ describe.runIf(enabled)('Project to Agent Package to Codex real closure', () => 
     const sourceBefore = snapshotDirectory(source);
     const runtimeSnapshotsBefore = runtimeSnapshotNames();
 
-    const authored = await createCreatorAgentPackageFromProject({
-      sourceProjectPath: source,
-      storeDirectory: store,
+    const authoringTask = await createCreatorAgentPackageDraftFromCurrentProject({
+      request: createCreatorAgentPackageCreatorRequest({
+        protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+        intent: 'create_agent_package_from_current_project',
+        request:
+          '请阅读 AGENT_METHOD.md，把这个目录里已经跑通的发布证据流程提炼成一个可复用 Agent。',
+      }),
+      currentProjectPath: source,
       allowUnisolatedRead: true,
       allowSensitiveProjectContext: true,
       allowLoopbackProxy: true,
       turnTimeoutMs: 300_000,
+    });
+    const draft = authoringTask.readDraft();
+    expect(draft.creatorRequest.request).toContain('AGENT_METHOD.md');
+    expect(draft.source.citedSources.map(({ path }) => path)).toContain('AGENT_METHOD.md');
+    expect(JSON.stringify(draft)).not.toContain(source);
+    const authored = authoringTask.compile({
+      draftId: draft.draftId,
+      draftRevision: draft.revision,
+      draftFingerprint: draft.draftFingerprint,
+      storeDirectory: store,
     });
 
     expect(authored.reloadVerified).toBe(true);

@@ -19,6 +19,10 @@
     "./agent-package-authoring": {
       "types": "./dist/agent-package-authoring.d.ts",
       "default": "./dist/agent-package-authoring.js"
+    },
+    "./agent-package-creator": {
+      "types": "./dist/agent-package-creator.d.ts",
+      "default": "./dist/agent-package-creator.js"
     }
   },
   "files": [
@@ -38,6 +42,7 @@
     "agent": "pnpm -F @cb/creator-agent-persistence build && tsc -b && node dist/agent-catalog-cli.js",
     "experience": "pnpm -F @cb/creator-agent-persistence build && tsc -b && node dist/agent-catalog-cli.js experience",
     "package-experience": "tsc -b && node dist/agent-package-cli.js experience",
+    "package-draft": "tsc -b && node dist/agent-package-cli.js draft-current",
     "local": "tsc -b && node dist/local-alpha-cli.js",
     "test:real-agent": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-local-runner.real.test.ts --reporter=verbose",
     "test:real-context-compiler": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/project-context-compiler.real.test.ts --reporter=verbose",

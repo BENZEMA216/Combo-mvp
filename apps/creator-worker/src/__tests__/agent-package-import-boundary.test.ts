@@ -13,6 +13,7 @@ const sourceRoot = resolve(import.meta.dirname, '..');
 const FORBIDDEN_SOURCE =
   /^(?:authoring|execution)\/|^(?:creator-agent-composition|agent-local-runner|local-alpha-|worker-runtime|worker-serial-pump|worker-websocket|pump-|runtime-)/u;
 const FORBIDDEN_PACKAGE = new Set([
+  '@cb/creator-agent-protocol/agent',
   '@cb/creator-agent-broker-journal',
   '@cb/creator-agent-persistence',
   '@cb/creator-worker-broker-client',
@@ -25,6 +26,7 @@ describe('Agent Package public import boundary', () => {
     expect(rootApi).not.toHaveProperty('startCreatorAgentPackageSession');
     expect(rootApi).not.toHaveProperty('CreatorAgentPackageSessionError');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageFromProject');
+    expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftFromCurrentProject');
   });
 
   it('keeps the source dependency closure outside legacy execution layers', () => {
@@ -82,6 +84,35 @@ describe('Agent Package public import boundary', () => {
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('function:function');
+    expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
+  });
+
+  it('keeps the Creator Draft bridge in one narrow public subpath', () => {
+    expect(
+      sourceClosureViolations(
+        join(sourceRoot, 'agent-package-creator.ts'),
+        AUTHORING_FORBIDDEN_SOURCE,
+      ),
+    ).toEqual([]);
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        [
+          "const api = await import('@cb/creator-worker/agent-package-creator');",
+          'console.log(`${typeof api.createCreatorAgentPackageDraftFromCurrentProject}:${Object.hasOwn(api, "compileCreatorAgentPackageDraft")}`);',
+        ].join(''),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: { ...process.env, NODE_DEBUG: 'esm' },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('function:false');
     expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
   });
 });

@@ -6,11 +6,22 @@ import { isAbsolute, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import {
+  CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+  createCreatorAgentPackageCreatorRequest,
+  serializeCreatorAgentPackageDraftSnapshot,
+} from '@cb/creator-agent-protocol/agent-package-draft';
+
+import {
   CreatorAgentPackageAuthoringError,
   createCreatorAgentPackageFromProject,
   type CreatorAgentPackageAuthoringOptions,
   type CreatorAgentPackageAuthoringResult,
 } from './agent-package-authoring.js';
+import {
+  createCreatorAgentPackageDraftFromCurrentProject,
+  type CreatorAgentPackageDraftAuthoringTask,
+  type CreatorAgentPackageDraftCreationOptions,
+} from './agent-package-creator.js';
 import {
   startCreatorAgentPackageSession,
   type CreatorAgentPackageSession,
@@ -25,13 +36,19 @@ type AgentPackageCliDependencies = Readonly<{
     options: CreatorAgentPackageAuthoringOptions,
   ): Promise<CreatorAgentPackageAuthoringResult>;
   startSession(options: CreatorAgentPackageSessionOptions): Promise<CreatorAgentPackageSession>;
+  authorDraft?(
+    options: CreatorAgentPackageDraftCreationOptions,
+  ): Promise<CreatorAgentPackageDraftAuthoringTask>;
+  currentProjectDirectory?(): string;
   defaultStoreDirectory(): string;
   prepareStore(path: string): string;
 }>;
 
 const productionDependencies: AgentPackageCliDependencies = Object.freeze({
   authorPackage: createCreatorAgentPackageFromProject,
+  authorDraft: createCreatorAgentPackageDraftFromCurrentProject,
   startSession: startCreatorAgentPackageSession,
+  currentProjectDirectory: () => process.env.INIT_CWD ?? process.cwd(),
   defaultStoreDirectory,
   prepareStore,
 });
@@ -39,8 +56,11 @@ const productionDependencies: AgentPackageCliDependencies = Object.freeze({
 const HELP = `Combo Agent Package — Project to native Codex Agent
 
 Commands:
+  draft-current <natural-language-creator-request>
   experience <absolute-source-project> <absolute-consumer-project>
 
+Draft-current binds the process current working Project, reads the creator request, and
+returns one canonical reviewable Agent Package Draft. It does not compile, publish, or run the Draft.
 Experience fully reads the controlled source Project, creates and reloads one immutable local
 Agent Package, then runs its first starter task and one follow-up turn in the consumer Project.
 The command itself authorizes local sensitive-context authoring and same-user read-only Codex access.
@@ -96,6 +116,46 @@ export async function executeCreatorAgentPackageCli(
   const [command, ...arguments_] = normalizeCliArgv(argv);
   if (command === '--help' || command === '-h') {
     io.stdout.write(HELP);
+    return 0;
+  }
+  if (command === 'draft-current') {
+    if (arguments_.length !== 1) {
+      throw cliError('Draft-current requires exactly one natural-language creator request.');
+    }
+    if (
+      dependencies.authorDraft === undefined ||
+      dependencies.currentProjectDirectory === undefined
+    ) {
+      throw new Error('AGENT_PACKAGE_DRAFT_ENTRY_UNAVAILABLE');
+    }
+    signal.throwIfAborted();
+    const creatorRequestText = arguments_[0]!;
+    const request = creatorRequest(creatorRequestText);
+    const currentProjectPath = canonicalDirectory(
+      dependencies.currentProjectDirectory(),
+      'current working Project',
+    );
+    io.stderr.write(
+      '[Draft 1/2] 正在从当前工作目录 Project 提取可修订的 Agent；相关内容可能进入本机 Codex 模型服务。\n',
+    );
+    const created = await dependencies.authorDraft({
+      request,
+      currentProjectPath,
+      allowUnisolatedRead: true,
+      allowSensitiveProjectContext: true,
+      allowLoopbackProxy: true,
+      signal,
+      diagnosticSink: (event) => io.stderr.write(`${authoringDiagnosticMessage(event)}\n`),
+      indexProgressSink: (progress) =>
+        io.stderr.write(
+          progress.phase === 'CONTENT_SCAN'
+            ? `[Draft 1/2] 已索引 ${progress.entryCount} 个条目、${progress.fileCount} 个文件，读取 ${formatBytes(progress.uniqueBytesRead)}。\n`
+            : `[Draft 1/2] 已复验 ${progress.entryCount} 个条目、${progress.fileCount} 个文件；没有再次读取普通文件正文。\n`,
+        ),
+    });
+    signal.throwIfAborted();
+    io.stdout.write(`${serializeCreatorAgentPackageDraftSnapshot(created.readDraft())}\n`);
+    io.stderr.write('[Draft 2/2] 可修订 Agent Package Draft 已生成；尚未编译、发布或运行。\n');
     return 0;
   }
   if (command !== 'experience' || arguments_.length !== 2) {
@@ -277,10 +337,33 @@ function writeTrialRecovery(writer: Writer, packagePath: string): void {
 
 function normalizeCliArgv(argv: readonly string[]): readonly string[] {
   const normalized = argv[0] === '--' ? argv.slice(1) : [...argv];
-  if (normalized[0] === 'experience' && normalized[1] === '--') {
+  if (
+    (normalized[0] === 'experience' || normalized[0] === 'draft-current') &&
+    normalized[1] === '--'
+  ) {
     return [normalized[0], ...normalized.slice(2)];
   }
   return normalized;
+}
+
+function creatorRequest(input: string) {
+  const request = input.normalize('NFC').trim();
+  if (!request || request.length > 2_000) {
+    throw cliError(
+      'Draft-current requires one non-empty creator request of at most 2000 characters.',
+    );
+  }
+  try {
+    return createCreatorAgentPackageCreatorRequest({
+      protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+      intent: 'create_agent_package_from_current_project',
+      request,
+    });
+  } catch {
+    throw cliError(
+      'Draft-current creator request must be meaningful text without local absolute paths, URLs, or task identifiers.',
+    );
+  }
 }
 
 class CreatorAgentPackageCliError extends Error {

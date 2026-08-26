@@ -47,3 +47,77 @@ export function containsLoneSurrogate(value: string): boolean {
   }
   return false;
 }
+
+const COMMON_POSIX_ROOT_SEGMENTS = new Set([
+  'applications',
+  'bin',
+  'boot',
+  'dev',
+  'etc',
+  'home',
+  'lib',
+  'lib64',
+  'library',
+  'media',
+  'mnt',
+  'opt',
+  'private',
+  'proc',
+  'root',
+  'run',
+  'sbin',
+  'srv',
+  'sys',
+  'system',
+  'tmp',
+  'users',
+  'usr',
+  'var',
+  'volumes',
+  'workspace',
+]);
+
+/**
+ * Detects machine-local references in free text while preserving ordinary
+ * Project-relative references such as `docs/release.md` and Chinese phrases
+ * such as `输入/输出`.
+ */
+export function containsNonPortableAgentReference(value: string): boolean {
+  if (
+    value.includes('\\') ||
+    /~[A-Za-z0-9._-]*\/|[A-Za-z]:\/|\b[A-Za-z][A-Za-z0-9+.-]*:\/{1,2}/u.test(value) ||
+    /\b[A-Za-z]:[A-Za-z0-9._-]+\//u.test(value) ||
+    /(?:\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\}|%[A-Za-z_][A-Za-z0-9_]*%)\//u.test(
+      value,
+    ) ||
+    /\$env:[A-Za-z_][A-Za-z0-9_]*\//iu.test(value) ||
+    /\bwww\.[A-Za-z0-9.-]+|\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}\.)+)[A-Za-z]{2,63}(?::\d{1,5})?\//iu.test(
+      value,
+    ) ||
+    /\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+:\d{1,5}\//u.test(value) ||
+    /\b[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[^\s]+/u.test(value) ||
+    /\blocalhost(?::\d{1,5})?(?:\/|\b)|\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?:\/|\b)|\[[0-9A-Fa-f:]+\](?::\d{1,5})?(?:\/|\b)/iu.test(
+      value,
+    ) ||
+    /\b(?:task|session|thread)[-_ ]?id\s*[:=]/iu.test(value)
+  ) {
+    return true;
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (value[index] !== '/') continue;
+    if (index === 0) return true;
+    const previous = value[index - 1]!;
+    if (/[\s\p{P}\p{S}]/u.test(previous)) return true;
+
+    const segmentMatch = /^[A-Za-z0-9._-]+/u.exec(value.slice(index + 1));
+    const segment = segmentMatch?.[0].toLowerCase();
+    if (
+      segment !== undefined &&
+      COMMON_POSIX_ROOT_SEGMENTS.has(segment) &&
+      !/[A-Za-z0-9._-]/u.test(previous)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}

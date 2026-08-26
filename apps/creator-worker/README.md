@@ -46,6 +46,49 @@ try {
 不会把多个互斥能力全量装入上下文，也不会假装 Combo 已经实现路由。包内原生按需多技能路由需要独立的
 后续主机合同，不能通过重新开启会暴露系统与项目技能的全局 `skill_search` 冒充。
 
+## 从一句制作要求创建可修订 Draft
+
+新的 `agent-package-creator` 子路径提供 Draft 创作内核，并把创作拆成两个明确阶段。调用方先把创作者的
+一句制作要求与它已经确认的当前 Project 绑定，经过完整扫描和结构化提取后只返回
+`combo.agent-package-draft/1`；这个 Draft 含身份、方法、示例任务、输出合同、来源摘要、revision 和
+fingerprint，但不含本机 Project 绝对路径，也不会自动编译、发布或运行。创作任务在服务端私下保留来源
+绑定，调用方只能针对当前 exact revision 提交修订，不能在编译时替换来源。只有用户选择编译后，第二阶段
+才生成内容寻址 Package、原子保存并用正式加载器重新打开。Combo Plugin 的一句话路由和可视化 Studio
+仍需在后续切片接入这个内核。
+
+```ts
+import { createCreatorAgentPackageDraftFromCurrentProject } from '@cb/creator-worker/agent-package-creator';
+import {
+  CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+  createCreatorAgentPackageCreatorRequest,
+} from '@cb/creator-agent-protocol/agent-package-draft';
+
+const authoringTask = await createCreatorAgentPackageDraftFromCurrentProject({
+  request: createCreatorAgentPackageCreatorRequest({
+    protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+    intent: 'create_agent_package_from_current_project',
+    request: '请阅读 combo.workflow.md，把当前目录跑通的方法提炼成一个 Agent。',
+  }),
+  currentProjectPath: hostBoundCurrentProject,
+  allowUnisolatedRead: true,
+  allowSensitiveProjectContext: true,
+});
+
+// Studio 展示 authoringTask.readDraft()，并通过 authoringTask.revise(...) 提交 exact 修订。
+// 来源 Project 只保留在这个服务端任务中，不能由 Studio 重新提交。
+const reviewedDraft = authoringTask.readDraft();
+const compiled = authoringTask.compile({
+  draftId: reviewedDraft.draftId,
+  draftRevision: reviewedDraft.revision,
+  draftFingerprint: reviewedDraft.draftFingerprint,
+  storeDirectory: privatePackageStore,
+});
+```
+
+开发者还可以在一个已安装该命令的当前 Project 中运行
+`combo-agent-package draft-current "一句制作要求"`，得到规范 Draft JSON。该命令只用于验证 Draft 创作
+内核的参数与输出合同，不是最终用户需要理解的终端流程，也不代表 Codex 已经提供焦点 Project 绑定。
+
 ## 从 Project 直接创建并消费 Agent Package
 
 新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用可信的 Project 全量扫描、结构化 Codex 提取
