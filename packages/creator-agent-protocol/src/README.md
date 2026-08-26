@@ -15,6 +15,8 @@
 - `agent-package-draft.ts`：显式 `./agent-package-draft` 子路径的一句制作要求、Package Draft 快照和乐观
   revision 合同。它用 domain-separated fingerprint 绑定可编辑行为、来源摘要和 revision 链，不保存本机
   Project 绝对路径，也不把 Draft 冒充可运行 Package。
+- `agent-package-release.ts`：显式 `./agent-package-release` 子路径的不可变 Release 引用，只把稳定 Release
+  ID 绑定到 exact Package digest，不保存分享链接、发布者资料、Package 内容或运行状态。
 - `host-contract.ts`：Host structural port、原子 outcome、handle-private controller 与 first-sent interrupt lineage。
 - `host.ts`：消费者出口；不暴露 producer 或通用 canonical helper。
 - `host-adapter.ts`：受信 Host adapter 出口；R2 接线时必须用 import-boundary gate 限制生产导入方。

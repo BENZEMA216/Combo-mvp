@@ -27,6 +27,13 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 制作要求摘要只是不可逆的一致性绑定，不是保密或身份认证证明；随机 Draft ID、revision 和 fingerprint
 保留在私有创作状态中，不进入 Package 摘要。
 
+显式 `agent-package-release` 子路径定义 `combo.agent-package-release/1`。一条 Release 只保存不可变
+Release ID 和 exact Package digest，作为 Registry、分享入口与 Receiver 共同使用的最小公开引用。它不
+复制 Package 清单、行为文本或来源信息，也不保存发布者资料、URL、Project、Prompt、权限、会话或运行
+结果。Release ID 由 Registry 使用密码学安全随机数生成，是公开标识而不是授权凭据。Release 合同只绑定
+身份与内容；无状态校验无法阻止同一个 Release ID 被重新配到另一摘要，Registry 必须用一次写入和冲突
+比对实现不可变性。持久化、公开解析、下载授权和发布者认证属于后续 Registry 服务。
+
 显式 `agent-package-draft` 子路径定义 `combo.agent-package-creator-request/1` 与
 `combo.agent-package-draft/1`。前者只携带创作者的一句制作要求，不保存本机路径、任务标识或来源正文；
 受信调用方负责把它绑定到已经确认的当前 Project，终端验证入口暂时只绑定当前工作目录，Combo Plugin 的
@@ -102,6 +109,8 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
 - `@cb/creator-agent-protocol/agent-package-draft`：暴露一句制作要求、可修订 Package Draft、乐观 revision
   请求、draft fingerprint 与规范化解析；它不保存绝对 Project 路径，也不执行提取、编译、发布或推理。
+- `@cb/creator-agent-protocol/agent-package-release`：暴露不可变 Release ID 到 exact Package digest 的最小
+  规范引用；它不保存或解析链接，不访问 Registry，也不复制 Agent 定义。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
 本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

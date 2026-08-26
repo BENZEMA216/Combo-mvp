@@ -21,3 +21,7 @@ dispatcher。测试会篡改 cited source 的执行可用性以确认 ledger 进
 和旧版版本对象混用的拒绝。该文件也锁定一句制作要求、无绝对路径的 Package Draft、revision 父链、乐观
 并发基线、domain-separated fingerprint、规范往返和篡改拒绝。它不读取真实智能体包目录，也不证明
 Studio 已展示、Package 已编译或 Codex 已激活技能。
+
+`agent-package-release-contract.test.ts` 锁定 `combo.agent-package-release/1` 的 exact Release ID、Package
+digest、规范 JSON、深冻结、严格字段，以及属性读取器、代理对象和旧版 AgentVersion 混用的拒绝。它不
+证明 Registry 已持久化 Package、分享入口已解析或 Receiver 已加载 Release。
