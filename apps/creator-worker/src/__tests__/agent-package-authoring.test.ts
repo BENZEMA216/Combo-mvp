@@ -87,6 +87,20 @@ describe('Agent Package authoring', () => {
         behavior: { ...invalid.behavior, instructions: '\u200b' },
       }),
     ).toThrow(/unsafe/u);
+    for (const instructions of ['坏\u0001输入', '坏\u007f输入', '坏\u2028输入', '坏\u2029输入']) {
+      expect(() =>
+        buildCreatorAgentPackage({
+          ...invalid,
+          behavior: { ...invalid.behavior, instructions },
+        }),
+      ).toThrow(/unsafe/u);
+    }
+    expect(() =>
+      buildCreatorAgentPackage({
+        ...invalid,
+        behavior: { ...invalid.behavior, instructions: '先检查🙂\n\t再验证。' },
+      }),
+    ).not.toThrow();
     expect(() =>
       buildCreatorAgentPackage({
         ...invalid,

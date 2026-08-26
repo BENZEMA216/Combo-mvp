@@ -48,6 +48,31 @@ export function containsLoneSurrogate(value: string): boolean {
   return false;
 }
 
+export function containsUnsafeAgentText(value: string): boolean {
+  if (containsLoneSurrogate(value) || /\p{Cf}/u.test(value)) return true;
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index);
+    if (
+      unit <= 0x08 ||
+      (unit >= 0x0b && unit <= 0x1f) ||
+      (unit >= 0x7f && unit <= 0x9f) ||
+      unit === 0x2028 ||
+      unit === 0x2029
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isProjectRelativeAgentPath(value: string): boolean {
+  return (
+    !value.startsWith('/') &&
+    !value.includes('\\') &&
+    value.split('/').every((segment) => segment.length > 0 && segment !== '.' && segment !== '..')
+  );
+}
+
 const COMMON_POSIX_ROOT_SEGMENTS = new Set([
   'applications',
   'bin',

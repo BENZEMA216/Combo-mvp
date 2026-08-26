@@ -8,6 +8,8 @@ import {
   Sha256DigestSchema,
   containsLoneSurrogate,
   containsNonPortableAgentReference,
+  containsUnsafeAgentText,
+  isProjectRelativeAgentPath,
   type Sha256Digest,
 } from './primitives.js';
 
@@ -31,16 +33,10 @@ const ProjectRelativeSourcePathSchema = z
   .min(1)
   .max(512)
   .refine(
-    (value) =>
-      !value.startsWith('/') &&
-      !value.includes('\\') &&
-      !containsLoneSurrogate(value) &&
-      value
-        .split('/')
-        .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..'),
+    (value) => isProjectRelativeAgentPath(value) && !containsLoneSurrogate(value),
     'Source receipt path must be Project-relative',
   )
-  .refine((value) => !containsUnsafeSourceSummary(value), 'Source receipt path is unsafe');
+  .refine((value) => !containsUnsafeAgentText(value), 'Source receipt path is unsafe');
 
 const SourceReceiptSummarySchema = z
   .string()
@@ -49,7 +45,7 @@ const SourceReceiptSummarySchema = z
   .refine((value) => value.normalize('NFC') === value, 'Source summary must use NFC')
   .refine((value) => value.trim() === value, 'Source summary must be canonical')
   .refine((value) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(value), 'Source summary must be visible')
-  .refine((value) => !containsUnsafeSourceSummary(value), 'Source summary is malformed or unsafe')
+  .refine((value) => !containsUnsafeAgentText(value), 'Source summary is malformed or unsafe')
   .refine(
     (value) => !containsNonPortableAgentReference(value),
     'Source summary cannot contain local paths, URLs, or task identifiers',
@@ -266,22 +262,11 @@ export function serializeCreatorAgentPackageSourceReceipt(input: unknown): strin
 export function parseCreatorAgentPackageSourceReceipt(
   text: string,
 ): CreatorAgentPackageSourceReceipt {
-  if (typeof text !== 'string')
-    throw new TypeError('Agent Package source receipt must be JSON text');
-  if (Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_PACKAGE_MAX_MANIFEST_BYTES) {
-    throw new TypeError('Agent Package source receipt exceeds the canonical byte limit');
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(text) as unknown;
-  } catch {
-    throw new TypeError('Agent Package source receipt is not valid JSON');
-  }
-  const receipt = verifyCreatorAgentPackageSourceReceipt(value);
-  if (canonicalizeJson(receipt) !== text) {
-    throw new TypeError('Agent Package source receipt is not exact canonical JSON');
-  }
-  return receipt;
+  return parseExactPackageJson(
+    text,
+    verifyCreatorAgentPackageSourceReceipt,
+    'Agent Package source receipt',
+  );
 }
 
 export function digestCreatorAgentPackageSourceReceipt(input: unknown): Sha256Digest {
@@ -305,21 +290,11 @@ export function serializeCreatorAgentPackageProvenance(input: unknown): string {
 }
 
 export function parseCreatorAgentPackageProvenance(text: string): CreatorAgentPackageProvenance {
-  if (typeof text !== 'string') throw new TypeError('Agent Package provenance must be JSON text');
-  if (Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_PACKAGE_MAX_MANIFEST_BYTES) {
-    throw new TypeError('Agent Package provenance exceeds the canonical byte limit');
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(text) as unknown;
-  } catch {
-    throw new TypeError('Agent Package provenance is not valid JSON');
-  }
-  const provenance = verifyCreatorAgentPackageProvenance(value);
-  if (canonicalizeJson(provenance) !== text) {
-    throw new TypeError('Agent Package provenance is not exact canonical JSON');
-  }
-  return provenance;
+  return parseExactPackageJson(
+    text,
+    verifyCreatorAgentPackageProvenance,
+    'Agent Package provenance',
+  );
 }
 
 export function digestCreatorAgentPackage(input: unknown): CreatorAgentPackageDigest {
@@ -355,21 +330,29 @@ export function serializeCreatorAgentPackageManifest(input: unknown): string {
 }
 
 export function parseCreatorAgentPackageManifest(text: string): CreatorAgentPackageManifest {
-  if (typeof text !== 'string') throw new TypeError('Agent Package manifest must be JSON text');
+  return parseExactPackageJson(text, verifyCreatorAgentPackageManifest, 'Agent Package manifest');
+}
+
+function parseExactPackageJson<Value>(
+  text: string,
+  verify: (input: unknown) => Value,
+  label: string,
+): Value {
+  if (typeof text !== 'string') throw new TypeError(`${label} must be JSON text`);
   if (Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_PACKAGE_MAX_MANIFEST_BYTES) {
-    throw new TypeError('Agent Package manifest exceeds the canonical byte limit');
+    throw new TypeError(`${label} exceeds the canonical byte limit`);
   }
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
   } catch {
-    throw new TypeError('Agent Package manifest is not valid JSON');
+    throw new TypeError(`${label} is not valid JSON`);
   }
-  const manifest = verifyCreatorAgentPackageManifest(value);
-  if (canonicalizeJson(manifest) !== text) {
-    throw new TypeError('Agent Package manifest is not exact canonical JSON');
+  const verified = verify(value);
+  if (canonicalizeJson(verified) !== text) {
+    throw new TypeError(`${label} is not exact canonical JSON`);
   }
-  return manifest;
+  return verified;
 }
 
 function exactDetached<Schema extends z.ZodTypeAny>(
@@ -460,23 +443,6 @@ function deepFreeze(value: unknown): void {
   if (value === null || typeof value !== 'object') return;
   if (!Object.isFrozen(value)) Object.freeze(value);
   for (const child of Object.values(value)) deepFreeze(child);
-}
-
-function containsUnsafeSourceSummary(value: string): boolean {
-  if (containsLoneSurrogate(value) || /\p{Cf}/u.test(value)) return true;
-  for (let index = 0; index < value.length; index += 1) {
-    const unit = value.charCodeAt(index);
-    if (
-      unit <= 0x08 ||
-      (unit >= 0x0b && unit <= 0x1f) ||
-      (unit >= 0x7f && unit <= 0x9f) ||
-      unit === 0x2028 ||
-      unit === 0x2029
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function rawDigest(bytes: Uint8Array): Sha256Digest {

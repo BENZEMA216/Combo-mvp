@@ -181,7 +181,7 @@ export async function compileCreatorAgentProjectWithDependencies(
   const runtimeContext: CreatorAgentProjectCompilationReport['runtimeContext'] = behaviorOnly
     ? 'BEHAVIOR_ONLY'
     : 'GIT_SNAPSHOT';
-  const report = deepFreeze({
+  const report = Object.freeze({
     contextRootDigest: extraction.contextRootDigest,
     indexedEntryCount: extraction.indexedEntryCount,
     indexedFileCount: extraction.indexedFileCount,
@@ -215,12 +215,4 @@ function compilerError(
   code: CreatorAgentProjectCompilerErrorCode,
 ): CreatorAgentProjectCompilerError {
   return new CreatorAgentProjectCompilerError(code, 'Project context compilation failed.');
-}
-
-function deepFreeze<Value>(value: Value): Value {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const child of Object.values(value)) deepFreeze(child);
-  }
-  return value;
 }

@@ -8,6 +8,8 @@ import {
   Sha256DigestSchema,
   containsLoneSurrogate,
   containsNonPortableAgentReference,
+  containsUnsafeAgentText,
+  isProjectRelativeAgentPath,
   type Sha256Digest,
 } from './primitives.js';
 
@@ -33,7 +35,7 @@ const SafeText = (minimum: number, maximum: number) =>
     .refine((value) => value.trim() === value, 'Draft text must not have outer whitespace')
     .refine((value) => value.trim().length > 0, 'Meaningful text is required')
     .refine((value) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(value), 'Visible text is required')
-    .refine((value) => !containsUnsafeText(value), 'Draft text is malformed or unsafe')
+    .refine((value) => !containsUnsafeAgentText(value), 'Draft text is malformed or unsafe')
     .refine(
       (value) => !containsNonPortableAgentReference(value),
       'Draft text cannot contain local paths, URLs, or task identifiers',
@@ -48,16 +50,8 @@ const ProjectRelativePathSchema = z
   .string()
   .min(1)
   .max(512)
-  .refine(
-    (value) =>
-      !value.startsWith('/') &&
-      !value.includes('\\') &&
-      value
-        .split('/')
-        .every((segment) => segment.length > 0 && segment !== '.' && segment !== '..'),
-    'Source path must be a Project-relative path',
-  )
-  .refine((value) => !containsUnsafeText(value), 'Source path is malformed or unsafe');
+  .refine(isProjectRelativeAgentPath, 'Source path must be a Project-relative path')
+  .refine((value) => !containsUnsafeAgentText(value), 'Source path is malformed or unsafe');
 
 const CitedSourceSchema = z
   .object({
@@ -379,23 +373,6 @@ function requireUnique(values: readonly string[], context: z.RefinementCtx): voi
   if (new Set(values).size !== values.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'Values must be unique' });
   }
-}
-
-function containsUnsafeText(value: string): boolean {
-  if (containsLoneSurrogate(value) || /\p{Cf}/u.test(value)) return true;
-  for (let index = 0; index < value.length; index += 1) {
-    const unit = value.charCodeAt(index);
-    if (
-      unit <= 0x08 ||
-      (unit >= 0x0b && unit <= 0x1f) ||
-      (unit >= 0x7f && unit <= 0x9f) ||
-      unit === 0x2028 ||
-      unit === 0x2029
-    ) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function exactDetached<Schema extends z.ZodTypeAny>(

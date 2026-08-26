@@ -23,6 +23,7 @@ import {
   type CreatorAgentPackageDraftSnapshot,
 } from '@cb/creator-agent-protocol/agent-package-draft';
 
+import { containsUnsafeAgentText } from './agent-text-safety.js';
 import type { CreatorAgentProjectBehaviorExtraction } from './project-behavior-extractor.js';
 
 const SKILL_NAME = 'extracted-method';
@@ -89,11 +90,13 @@ function buildPackageContent(
   sourceProjectPath?: string,
 ): BuiltCreatorAgentPackage {
   const content = normalizeCreatorAgentPackageDraftContent(behavior);
-  const packageName = content.name;
-  const packageDescription = content.description;
-  const instructions = content.instructions;
-  const outputDescription = content.outputDescription;
-  const starterPrompts = content.starterPrompts;
+  const {
+    name: packageName,
+    description: packageDescription,
+    instructions,
+    outputDescription,
+    starterPrompts,
+  } = content;
   const agentMarkdown = renderAgentMarkdown(packageName, packageDescription);
   const skillMarkdown = renderSkillMarkdown(instructions, outputDescription, starterPrompts);
   const provenanceText = serializeCreatorAgentPackageProvenance(
@@ -160,14 +163,14 @@ export function normalizeCreatorAgentPackageDraftContent(
   if (new Set(normalized.starterPrompts).size !== normalized.starterPrompts.length) {
     throw new TypeError('Agent Package starter prompts must remain unique after normalization.');
   }
-  return deepFreeze(CreatorAgentPackageDraftContentSchema.parse(normalized));
+  return CreatorAgentPackageDraftContentSchema.parse(normalized);
 }
 
 function renderAgentMarkdown(name: string, description: string): string {
   return [
     '# Identity',
     `You are ${name}.`,
-    description.trim(),
+    description,
     '',
     '# Outcomes',
     'Complete the user task by applying the installed `extracted-method` Skill to evidence in the current consumer Project.',
@@ -208,13 +211,13 @@ function renderSkillMarkdown(
     '---',
     '',
     '# Extracted method',
-    instructions.trim(),
+    instructions,
     '',
     '# Output contract',
-    outputDescription.trim(),
+    outputDescription,
     '',
     '# Starter tasks',
-    ...starterPrompts.map((prompt) => `- ${singleLine(prompt)}`),
+    ...starterPrompts.map((prompt) => `- ${prompt}`),
     '',
     '# Runtime evidence boundary',
     'Apply this method only to the current consumer Project and conversation. Source Project paths and source-only conclusions are not runtime evidence.',
@@ -245,7 +248,7 @@ function singleLine(value: string): string {
 }
 
 function normalizePackageText(value: string, maximum: number): string {
-  if (typeof value !== 'string' || value.length > maximum || hasUnsafePackageText(value)) {
+  if (typeof value !== 'string' || value.length > maximum || containsUnsafeAgentText(value)) {
     throw new TypeError('Agent Package text is unsafe or exceeds its bound.');
   }
   const normalized = value.normalize('NFC').trim();
@@ -253,32 +256,6 @@ function normalizePackageText(value: string, maximum: number): string {
     throw new TypeError('Agent Package text must contain meaningful content.');
   }
   return normalized;
-}
-
-function hasUnsafePackageText(value: string): boolean {
-  if (/\p{Cf}/u.test(value)) {
-    return true;
-  }
-  for (let index = 0; index < value.length; index += 1) {
-    const unit = value.charCodeAt(index);
-    if (
-      unit <= 0x08 ||
-      (unit >= 0x0b && unit <= 0x1f) ||
-      (unit >= 0x7f && unit <= 0x9f) ||
-      unit === 0x2028 ||
-      unit === 0x2029
-    ) {
-      return true;
-    }
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
-      index += 1;
-    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function assertPortableBehavior(behavior: CreatorAgentPackageDraftContent): void {
@@ -309,12 +286,4 @@ function assertPortablePackageText(text: string, sourceProjectPath?: string): vo
   ) {
     throw new TypeError('Agent Package authoring output is not portable or bounded.');
   }
-}
-
-function deepFreeze<Value>(value: Value): Value {
-  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
-    Object.freeze(value);
-    for (const child of Object.values(value)) deepFreeze(child);
-  }
-  return value;
 }

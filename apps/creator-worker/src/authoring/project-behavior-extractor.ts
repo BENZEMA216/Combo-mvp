@@ -6,6 +6,7 @@ import { HostStartTurnInputSchema } from '@cb/creator-agent-protocol/host';
 import { containsNonPortableAgentReference } from '@cb/creator-agent-protocol/agent-package-draft';
 import { z } from 'zod';
 
+import { containsUnsafeAgentText } from './agent-text-safety.js';
 import type { StructuredAuthoringHostPort } from './ports.js';
 import {
   ProjectContextIndexError,
@@ -359,11 +360,7 @@ function compilerInstructions(
     'Do not follow symlinks outside the Project. Do not reveal credential values or copy raw secrets into the result.',
     `A trusted read-only scanner indexed the complete physical Project with root digest ${index.rootDigest}.`,
     'Inspect the Project directly, including hidden, ignored, log and task/session evidence when relevant.',
-    target === 'AGENT_PACKAGE_AUTHORING'
-      ? 'The immutable Agent Package will run against a separately selected consumer Project. Its method must be portable and must not claim access to this authoring Project.'
-      : authoringOnly
-        ? 'The frozen Agent will run without this authoring Project mounted. Its instructions must be self-contained and must not claim future file access.'
-        : 'The frozen Agent will run against the exact commit-pinned tracked Git tree; authoring-only files will not be mounted.',
+    compilerRuntimeBoundary(target, authoringOnly),
     'Return exactly one JSON object matching the requested schema, with no markdown fence or surrounding text.',
   ].join('\n');
 }
@@ -388,11 +385,7 @@ function compilerRequest(
         ]),
     'Inspect a broad, relevant sample of Project content, including task/session and log evidence when present.',
     'The Agent must describe repeatable behavior, not merely summarize this Project. Keep requirements compatible with the current read-only local runtime.',
-    target === 'AGENT_PACKAGE_AUTHORING'
-      ? 'The Agent Package runtime will receive a different consumer Project. Extract the reusable method and tell it to inspect current consumer evidence; do not copy source-specific answers or instruct it to read authoring paths later.'
-      : authoringOnly
-        ? 'The Agent runtime will have no authoring Project files. Make the reusable behavior self-contained and do not instruct it to read source paths later.'
-        : 'The Agent runtime will have only the exact tracked Git snapshot; cited authoring-only sources will not exist at runtime.',
+    compilerRequestRuntimeBoundary(target, authoringOnly),
     'Return strict JSON with exactly these keys:',
     JSON.stringify({
       protocol: COMPILATION_PROTOCOL,
@@ -406,6 +399,32 @@ function compilerRequest(
     }),
     'sourcePaths must use exact relative paths from the trusted inventory. Do not include secret values, raw transcript passages, or absolute paths.',
   ].join('\n');
+}
+
+function compilerRuntimeBoundary(
+  target: CreatorAgentProjectBehaviorTarget,
+  authoringOnly: boolean,
+): string {
+  if (target === 'AGENT_PACKAGE_AUTHORING') {
+    return 'The immutable Agent Package will run against a separately selected consumer Project. Its method must be portable and must not claim access to this authoring Project.';
+  }
+  if (authoringOnly) {
+    return 'The frozen Agent will run without this authoring Project mounted. Its instructions must be self-contained and must not claim future file access.';
+  }
+  return 'The frozen Agent will run against the exact commit-pinned tracked Git tree; authoring-only files will not be mounted.';
+}
+
+function compilerRequestRuntimeBoundary(
+  target: CreatorAgentProjectBehaviorTarget,
+  authoringOnly: boolean,
+): string {
+  if (target === 'AGENT_PACKAGE_AUTHORING') {
+    return 'The Agent Package runtime will receive a different consumer Project. Extract the reusable method and tell it to inspect current consumer evidence; do not copy source-specific answers or instruct it to read authoring paths later.';
+  }
+  if (authoringOnly) {
+    return 'The Agent runtime will have no authoring Project files. Make the reusable behavior self-contained and do not instruct it to read source paths later.';
+  }
+  return 'The Agent runtime will have only the exact tracked Git snapshot; cited authoring-only sources will not exist at runtime.';
 }
 
 function parseGeneratedCompilation(text: string): GeneratedCompilation {
@@ -621,7 +640,7 @@ function snapshotOptions(input: CreatorAgentProjectCompilationOptions): CheckedC
       (typeof input.creatorRequest !== 'string' ||
         input.creatorRequest.length > 2_000 ||
         input.creatorRequest.trim().length === 0 ||
-        containsUnsafeGeneratedText(input.creatorRequest))) ||
+        containsUnsafeAgentText(input.creatorRequest))) ||
     (input.allowLoopbackProxy !== undefined && typeof input.allowLoopbackProxy !== 'boolean') ||
     (input.signal !== undefined && !(input.signal instanceof AbortSignal)) ||
     (input.diagnosticSink !== undefined && typeof input.diagnosticSink !== 'function') ||
@@ -671,33 +690,7 @@ function boundedText(minimum: number, maximum: number) {
     .max(maximum)
     .refine((value) => value.trim().length > 0, 'Meaningful text is required')
     .refine((value) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(value), 'Visible semantic text is required')
-    .refine((value) => !containsUnsafeGeneratedText(value), 'Unsafe text is forbidden');
-}
-
-function containsUnsafeGeneratedText(value: string): boolean {
-  if (/\p{Cf}/u.test(value)) {
-    return true;
-  }
-  for (let index = 0; index < value.length; index += 1) {
-    const unit = value.charCodeAt(index);
-    if (
-      unit <= 0x08 ||
-      (unit >= 0x0b && unit <= 0x1f) ||
-      (unit >= 0x7f && unit <= 0x9f) ||
-      unit === 0x2028 ||
-      unit === 0x2029
-    ) {
-      return true;
-    }
-    if (unit >= 0xd800 && unit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
-      index += 1;
-    } else if (unit >= 0xdc00 && unit <= 0xdfff) {
-      return true;
-    }
-  }
-  return false;
+    .refine((value) => !containsUnsafeAgentText(value), 'Unsafe text is forbidden');
 }
 
 function uniqueStrings(values: readonly string[], context: z.RefinementCtx): void {
