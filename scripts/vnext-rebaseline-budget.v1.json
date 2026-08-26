@@ -9,6 +9,10 @@
     "preserveWorkerSqliteSchemaHistory": false
   },
   "allowedFiles": [
+    "AGENTS.md",
+    "ENGINEERING.md",
+    "PROJECT.md",
+    "README.md",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
     "scripts/package.json",

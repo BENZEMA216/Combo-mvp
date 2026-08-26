@@ -1,5 +1,6 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -21,6 +22,46 @@ const hardCeilings = Object.freeze({
   maxChangedLinesPerPullRequest: 5000,
   maxChangedLinesFromBase: 70000,
 });
+
+export const productGoalLock = Object.freeze({
+  goalId: 'G-001@v1',
+  semanticName: '可分享 Agent',
+  text: '让用户把一段和自己AGENT的对话、项目或旅程变成一个可分享的 Agent，让其他人打开链接就能使用它，或是用一段话就能让自己的AGENT获取对应能力。',
+  sha256: 'd1fcc3355deca962632194c4fbfcd26c4ce5f4494f1af0f813c7ff0a4d7be9ee',
+  projectSha256: '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+  headings: Object.freeze(['## 一、唯一产品目标', '## 二、目标用户体验', '## 三、唯一产物模型']),
+});
+
+const requiredProductAgentPrelude = Object.freeze([
+  '# 项目级智能体协作约定',
+  '- 开始任何任务前，必须先读取根目录 `PROJECT.md`、`CLAUDE.md`、本文件，以及任务涉及目录中的说明文件。涉及产品设计、工程拆解、路线或验收时，还必须读取 `ENGINEERING.md`。',
+  '- `PROJECT.md` 是用户已经确认的唯一产品基线，定义当前产品目标、目标用户体验和唯一产物模型。除非用户明确要求修改，否则不得改写；需求或实现与其冲突时必须停止并说明冲突，不能自行调整目标。',
+  '- `ENGINEERING.md` 是从 `PROJECT.md` 推导出的可变工程工作稿，可在开发中验证和修订，但不得反向覆盖 `PROJECT.md`。任务执行期间若 `PROJECT.md` 发生变化，必须重新读取后再继续。',
+]);
+
+export const productBaselineBootstrap = Object.freeze({
+  baseSha: 'bc2b6d5693cb9344c343a64dadf7091618fbfe40',
+  paths: Object.freeze([
+    contractPath,
+    'scripts/vnext-rebaseline-budget.mjs',
+    'scripts/vnext-rebaseline-budget.test.mjs',
+  ]),
+});
+
+const productBaselineFiles = Object.freeze([
+  'AGENTS.md',
+  'ENGINEERING.md',
+  'PROJECT.md',
+  'README.md',
+]);
+
+const requiredEngineeringPrelude = [
+  '# Combo 工程假设与开发记录',
+  '',
+  '> `WORKING DRAFT` · 开发中验证',
+  '>',
+  '> [PROJECT.md](./PROJECT.md) 定义已经确认的产品基线。本文记录为实现该产品而提出的工程假设，可随真实开发和用户体验持续调整；发生冲突时，以 `PROJECT.md` 为准。',
+].join('\n');
 
 function invariant(condition, message) {
   if (!condition) throw new Error(message);
@@ -215,6 +256,87 @@ export function assessCumulative(contract, entries) {
   return summary;
 }
 
+export function isExactProductBaselineBootstrap({ comparisonBase, entries, contract }) {
+  const changedPaths = entries.map(({ path }) => path).sort();
+  return (
+    comparisonBase === productBaselineBootstrap.baseSha &&
+    JSON.stringify(changedPaths) === JSON.stringify([...productBaselineBootstrap.paths].sort()) &&
+    productBaselineFiles.every((path) => contract.allowedFiles.includes(path))
+  );
+}
+
+export function verifyProductBaselineSources({
+  projectSource,
+  agentsSource,
+  engineeringSource,
+  allowBootstrapWithoutProject = false,
+}) {
+  if (projectSource === undefined) {
+    invariant(
+      allowBootstrapWithoutProject,
+      'PROJECT.md product baseline is required before product changes',
+    );
+    return { status: 'BOOTSTRAP_PENDING' };
+  }
+
+  invariant(typeof agentsSource === 'string', 'AGENTS.md product baseline rules are required');
+  invariant(typeof engineeringSource === 'string', 'ENGINEERING.md working draft is required');
+  const computedGoalSha256 = createHash('sha256').update(productGoalLock.text).digest('hex');
+  invariant(computedGoalSha256 === productGoalLock.sha256, 'internal product goal digest changed');
+  invariant(
+    projectSource.includes(`> **${productGoalLock.text}**`),
+    'PROJECT.md product goal text changed',
+  );
+  invariant(
+    projectSource.includes(`### \`${productGoalLock.goalId}\` · ${productGoalLock.semanticName}`),
+    'PROJECT.md product goal ID or semantic name changed',
+  );
+  invariant(
+    projectSource.includes(`目标文本 SHA-256：\`${productGoalLock.sha256}\``),
+    'PROJECT.md product goal digest changed',
+  );
+  const headings = projectSource.match(/^## .+$/gm) ?? [];
+  invariant(
+    JSON.stringify(headings) === JSON.stringify(productGoalLock.headings),
+    'PROJECT.md must contain exactly the three confirmed product sections',
+  );
+  const activeAgentLines = agentsSource.split('\n').filter((line) => line.length > 0);
+  invariant(
+    JSON.stringify(activeAgentLines.slice(0, requiredProductAgentPrelude.length)) ===
+      JSON.stringify(requiredProductAgentPrelude),
+    'AGENTS.md must begin with the active product baseline rules',
+  );
+  for (const line of activeAgentLines.slice(requiredProductAgentPrelude.length)) {
+    invariant(
+      !line.includes('PROJECT.md') && !line.includes('ENGINEERING.md'),
+      'AGENTS.md contains an additional product baseline directive',
+    );
+  }
+  invariant(
+    engineeringSource.startsWith(`${requiredEngineeringPrelude}\n`),
+    'ENGINEERING.md must begin with the active subordinate working-draft notice',
+  );
+  const engineeringBody = engineeringSource.slice(requiredEngineeringPrelude.length);
+  for (const forbiddenClaim of [
+    '最终工程真源',
+    '唯一工程真源',
+    '最终真源',
+    '唯一真源',
+    '以 ENGINEERING.md 为准',
+    '以 `ENGINEERING.md` 为准',
+    '覆盖 PROJECT.md',
+    '覆盖 `PROJECT.md`',
+  ]) {
+    invariant(
+      !engineeringBody.includes(forbiddenClaim),
+      'ENGINEERING.md cannot claim authority over PROJECT.md',
+    );
+  }
+  const projectSha256 = createHash('sha256').update(projectSource).digest('hex');
+  invariant(projectSha256 === productGoalLock.projectSha256, 'PROJECT.md product baseline changed');
+  return { status: 'LOCKED', goalId: productGoalLock.goalId, sha256: productGoalLock.sha256 };
+}
+
 function git(args, options = {}) {
   return execFileSync('git', args, { cwd: repoRoot, encoding: 'utf8', ...options });
 }
@@ -281,15 +403,35 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
       'the donor branch must never be merged into the rebuild',
     );
   }
-  const pullRequest = assessPullRequest(contract, collectDiff(comparisonBase));
+  const pullRequestEntries = collectDiff(comparisonBase);
+  const pullRequest = assessPullRequest(contract, pullRequestEntries);
+  const projectPath = join(repoRoot, 'PROJECT.md');
+  const agentsPath = join(repoRoot, 'AGENTS.md');
+  const engineeringPath = join(repoRoot, 'ENGINEERING.md');
+  const productBaseline = verifyProductBaselineSources({
+    projectSource: existsSync(projectPath) ? readFileSync(projectPath, 'utf8') : undefined,
+    agentsSource: existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : undefined,
+    engineeringSource: existsSync(engineeringPath)
+      ? readFileSync(engineeringPath, 'utf8')
+      : undefined,
+    allowBootstrapWithoutProject:
+      pullRequest.mode === 'GOVERNANCE_ONLY' &&
+      isAncestor(productBaselineBootstrap.baseSha, 'HEAD') &&
+      isExactProductBaselineBootstrap({
+        comparisonBase: productBaselineBootstrap.baseSha,
+        entries: collectDiff(productBaselineBootstrap.baseSha),
+        contract,
+      }),
+  });
   const cumulative = assessCumulative(contract, collectDiff(contract.baseSha));
   return {
     pullRequest,
+    productBaseline,
     cumulative,
   };
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href) {
   try {
     process.stdout.write(`${JSON.stringify(verifyRepository())}\n`);
   } catch (error) {
