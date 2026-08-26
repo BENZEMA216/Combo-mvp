@@ -132,7 +132,8 @@ function classify(root: string, path: string): Layer | undefined {
   if (
     name === 'index.ts' ||
     name === 'agent-package-session.ts' ||
-    name === 'agent-package-authoring.ts'
+    name === 'agent-package-authoring.ts' ||
+    name === 'agent-package-creator.ts'
   ) {
     return 'public';
   }

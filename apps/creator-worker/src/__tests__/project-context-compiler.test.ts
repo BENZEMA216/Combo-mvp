@@ -30,7 +30,7 @@ import {
   PROJECT_COMPILER_OUTPUT_SCHEMA,
   compileCreatorAgentProjectWithDependencies,
 } from '../project-context-compiler.js';
-import { extractCreatorAgentProjectBehaviorWithDependencies } from '../authoring/project-context-compiler.js';
+import { extractCreatorAgentProjectBehaviorWithDependencies } from '../authoring/project-behavior-extractor.js';
 import type { CreatorAgentProjectCompilerError } from '../project-context-compiler.js';
 import {
   assertSameProjectContext,
@@ -330,6 +330,7 @@ describe('Project Context Compiler', () => {
     const pending = extractCreatorAgentProjectBehaviorWithDependencies(
       {
         projectPath: fixture.project,
+        creatorRequest: '请读取 README.md，把证据验收流程提炼成一个 Agent。',
         allowUnisolatedRead: true,
         allowSensitiveProjectContext: true,
       },
@@ -351,6 +352,7 @@ describe('Project Context Compiler', () => {
     ).toBe(true);
     expect(extraction.coverage.authoringOnlyEntryCount).toBe(extraction.indexedEntryCount);
     expect(host.inputs[0]?.text).toContain('different consumer Project');
+    expect(host.inputs[0]?.text).toContain('请读取 README.md，把证据验收流程提炼成一个 Agent。');
     expect(host.inputs[0]?.text).not.toContain('Agent Draft');
     expect(host.stopCalls).toBe(1);
   });
@@ -459,6 +461,11 @@ describe('Project Context Compiler', () => {
     await expectCompilationFailure(
       projectFixture().project,
       generatedCompilation({ instructions: 'Read //Volumes/Creator/private.txt first.' }),
+      'PROJECT_COMPILER_OUTPUT_INVALID',
+    );
+    await expectCompilationFailure(
+      projectFixture().project,
+      generatedCompilation({ instructions: '请读取 ~alice/private.md 后执行验收。' }),
       'PROJECT_COMPILER_OUTPUT_INVALID',
     );
     await expectCompilationFailure(

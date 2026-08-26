@@ -10,12 +10,15 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { serializeCreatorAgentPackageManifest } from '@cb/creator-agent-protocol/agent-package';
+import {
+  parseCreatorAgentPackageProvenance,
+  serializeCreatorAgentPackageManifest,
+} from '@cb/creator-agent-protocol/agent-package';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { buildCreatorAgentPackage } from '../authoring/agent-package-builder.js';
-import type { CreatorAgentProjectBehaviorExtraction } from '../authoring/project-context-compiler.js';
+import type { CreatorAgentProjectBehaviorExtraction } from '../authoring/project-behavior-extractor.js';
 import {
   createCreatorAgentPackageFromProjectWithDependencies,
   type CreatorAgentPackageAuthoringDependencies,
@@ -44,6 +47,7 @@ describe('Agent Package authoring', () => {
     expect(first.files.map(({ path }) => path)).toEqual([
       'AGENT.md',
       'skills/extracted-method/SKILL.md',
+      'skills/extracted-method/provenance.json',
     ]);
     expect(first.files[0]?.text).toContain('# Operating Loop');
     expect(first.files[1]?.text).toContain('Apply evidence gate ALPHA before shipping.');
@@ -52,6 +56,17 @@ describe('Agent Package authoring', () => {
       contextRootDigest: DIGEST_A,
       citedSources: [{ path: 'method.md', digest: DIGEST_B }],
     });
+    const provenance = parseCreatorAgentPackageProvenance(first.files[2]!.text);
+    expect(provenance).toMatchObject({
+      sourceKind: 'current_project',
+      creatorRequestDigest: null,
+    });
+    expect(first.files[2]!.text).not.toContain('method.md');
+    const changedSource = buildCreatorAgentPackage({
+      ...extraction(fixture.source),
+      contextRootDigest: `sha256:${'c'.repeat(64)}`,
+    });
+    expect(changedSource.packageDigest).not.toBe(first.packageDigest);
 
     const invalid = extraction(fixture.source);
     expect(() =>
@@ -72,6 +87,15 @@ describe('Agent Package authoring', () => {
         behavior: { ...invalid.behavior, instructions: '\u200b' },
       }),
     ).toThrow(/unsafe/u);
+    expect(() =>
+      buildCreatorAgentPackage({
+        ...invalid,
+        behavior: {
+          ...invalid.behavior,
+          instructions: '请读取 $HOME/.ssh/config 后执行验收。',
+        },
+      }),
+    ).toThrow(/non-portable/u);
     expect(() =>
       buildCreatorAgentPackage({
         ...invalid,

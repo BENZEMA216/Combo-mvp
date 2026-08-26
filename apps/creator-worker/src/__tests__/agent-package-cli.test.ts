@@ -8,12 +8,19 @@ import {
   digestCreatorAgentPackageFile,
   type CreatorAgentPackageManifest,
 } from '@cb/creator-agent-protocol/agent-package';
+import {
+  CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL,
+  createCreatorAgentPackageDraftSnapshot,
+  parseCreatorAgentPackageDraftSnapshot,
+} from '@cb/creator-agent-protocol/agent-package-draft';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { executeCreatorAgentPackageCli } from '../agent-package-cli.js';
 import {
   CreatorAgentPackageAuthoringError,
   type CreatorAgentPackageAuthoringOptions,
+  type CreatorAgentPackageAuthoringResult,
 } from '../application/agent-package-authoring.js';
 import type { CreatorAgentPackageSession } from '../application/agent-package-session.js';
 
@@ -25,6 +32,93 @@ afterEach(() => {
 });
 
 describe('Agent Package experience CLI', () => {
+  it('creates a reviewable Draft from one sentence and the bound working Project without path input', async () => {
+    const fixture = cliFixture();
+    const writes = { stdout: '', stderr: '' };
+    const draft = draftFixture();
+    const authorDraft = vi.fn(async () => ({
+      readDraft: () => draft,
+      revise: () => draft,
+      compile: () => ({
+        ...authored(fixture.package),
+        draftId: draft.draftId,
+        draftRevision: draft.revision,
+        draftFingerprint: draft.draftFingerprint,
+      }),
+    }));
+    const startSession = vi.fn(async () => new FakeSession());
+
+    const exit = await executeCreatorAgentPackageCli(
+      ['draft-current', '--', '请把当前目录跑通的发布流程提炼成一个 Agent。'],
+      {
+        stdout: { write: (chunk) => (writes.stdout += chunk) },
+        stderr: { write: (chunk) => (writes.stderr += chunk) },
+      },
+      {
+        authorPackage: async () => authored(fixture.package),
+        authorDraft,
+        startSession,
+        currentProjectDirectory: () => fixture.source,
+        defaultStoreDirectory: () => fixture.store,
+        prepareStore: (path) => path,
+      },
+      new AbortController().signal,
+    );
+
+    expect(exit).toBe(0);
+    expect(authorDraft).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+          intent: 'create_agent_package_from_current_project',
+        }),
+        currentProjectPath: fixture.source,
+      }),
+    );
+    expect(parseCreatorAgentPackageDraftSnapshot(writes.stdout.trim())).toEqual(draft);
+    expect(writes.stdout).not.toContain(fixture.source);
+    expect(writes.stderr).toContain('[Draft 1/2]');
+    expect(writes.stderr).toContain('[Draft 2/2]');
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty or non-portable creator sentence with an actionable CLI error', async () => {
+    const fixture = cliFixture();
+    const authorDraft = vi.fn();
+    const dependencies = {
+      authorPackage: async () => authored(fixture.package),
+      authorDraft,
+      startSession: async () => new FakeSession(),
+      currentProjectDirectory: () => fixture.source,
+      defaultStoreDirectory: () => fixture.store,
+      prepareStore: (path: string) => path,
+    };
+
+    for (const request of ['   ', '请读取 /Users/alice/private.md']) {
+      await expect(
+        executeCreatorAgentPackageCli(
+          ['draft-current', request],
+          silentIo(),
+          dependencies,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        code: 'AGENT_PACKAGE_CLI_INVALID',
+        message: expect.stringContaining('Draft-current'),
+      });
+    }
+    expect(authorDraft).not.toHaveBeenCalled();
+  });
+
+  it('runs the package-draft wrapper and preserves its separator contract', () => {
+    const result = runPackageScript('package-draft', ['--', '   ']);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('AGENT_PACKAGE_CLI_INVALID');
+    expect(result.stderr).toContain('Draft-current requires one non-empty creator request');
+    expect(result.stderr).not.toContain('CreatorAgentPackageCliError');
+  }, 30_000);
+
   it('authors, reloads, and consumes the exact Package for two turns without confirmation', async () => {
     const fixture = cliFixture();
     const writes = { stdout: '', stderr: '' };
@@ -236,7 +330,7 @@ function cliFixture() {
   return { source, consumer, store, package: packagePath };
 }
 
-function authored(packagePath: string) {
+function authored(packagePath: string): CreatorAgentPackageAuthoringResult {
   return {
     disposition: 'CREATED' as const,
     packagePath,
@@ -244,14 +338,47 @@ function authored(packagePath: string) {
     manifest: {} as CreatorAgentPackageManifest,
     starterPrompts: ['Review the consumer release.'],
     sourceReceipt: {
-      contextRootDigest: `sha256:${'b'.repeat(64)}` as const,
+      protocol: 'combo.agent-package-source-receipt/1' as const,
+      sourceKind: 'current_project' as const,
+      contextRootDigest: DIGEST,
       indexedEntryCount: 1,
       indexedFileCount: 1,
       uniqueIndexedByteCount: 10,
-      citedSources: [],
+      coverageSummary: 'One release method shaped this Agent.',
+      citedSources: [{ path: 'method.md', digest: DIGEST }],
     },
     reloadVerified: true as const,
   };
+}
+
+function draftFixture() {
+  return createCreatorAgentPackageDraftSnapshot({
+    protocol: CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL,
+    draftId: `draft.agent-package.${'1'.repeat(32)}`,
+    revision: 1,
+    parentDraftFingerprint: null,
+    creatorRequest: {
+      protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+      intent: 'create_agent_package_from_current_project',
+      request: '请把当前目录跑通的发布流程提炼成一个 Agent。',
+    },
+    source: {
+      kind: 'current_project',
+      contextRootDigest: `sha256:${'c'.repeat(64)}`,
+      indexedEntryCount: 1,
+      indexedFileCount: 1,
+      uniqueIndexedByteCount: 10,
+      coverageSummary: '发布流程定义了可复用方法。',
+      citedSources: [{ path: 'combo.workflow.md', digest: `sha256:${'d'.repeat(64)}` }],
+    },
+    content: {
+      name: '发布验收 Agent',
+      description: '根据项目证据执行发布验收。',
+      instructions: '核对版本身份、运行门槛和发布证据。',
+      starterPrompts: ['检查这个发布候选。'],
+      outputDescription: '返回结论、阻断项和证据。',
+    },
+  });
 }
 
 function silentIo() {
@@ -259,13 +386,20 @@ function silentIo() {
 }
 
 function runPackageExperience(arguments_: readonly string[]) {
+  return runPackageScript('package-experience', arguments_);
+}
+
+function runPackageScript(
+  script: 'package-draft' | 'package-experience',
+  arguments_: readonly string[],
+) {
   const npmExecPath = process.env.npm_execpath;
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
   const command = npmExecPath === undefined ? 'pnpm' : process.execPath;
   const prefix = npmExecPath === undefined ? [] : [npmExecPath];
   return spawnSync(
     command,
-    [...prefix, '--silent', '--dir', 'apps/creator-worker', 'package-experience', ...arguments_],
+    [...prefix, '--silent', '--dir', 'apps/creator-worker', script, ...arguments_],
     {
       cwd: repositoryRoot,
       encoding: 'utf8',

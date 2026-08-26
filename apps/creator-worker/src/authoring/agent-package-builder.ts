@@ -1,28 +1,35 @@
 import {
+  CREATOR_AGENT_PACKAGE_PROVENANCE_PROTOCOL,
   CREATOR_AGENT_PACKAGE_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+  createCreatorAgentPackageProvenance,
   createCreatorAgentPackageManifest,
   digestCreatorAgentPackage,
   digestCreatorAgentPackageFile,
+  digestCreatorAgentPackageSourceReceipt,
+  createCreatorAgentPackageSourceReceipt,
   serializeCreatorAgentPackageManifest,
+  serializeCreatorAgentPackageProvenance,
   type CreatorAgentPackageDigest,
   type CreatorAgentPackageManifest,
+  type CreatorAgentPackageSourceReceipt as ProtocolCreatorAgentPackageSourceReceipt,
 } from '@cb/creator-agent-protocol/agent-package';
+import {
+  CreatorAgentPackageDraftContentSchema,
+  containsNonPortableAgentReference,
+  digestCreatorAgentPackageCreatorRequest,
+  verifyCreatorAgentPackageDraftSnapshot,
+  type CreatorAgentPackageDraftContent,
+  type CreatorAgentPackageDraftSnapshot,
+} from '@cb/creator-agent-protocol/agent-package-draft';
 
-import type { CreatorAgentProjectBehaviorExtraction } from './project-context-compiler.js';
+import type { CreatorAgentProjectBehaviorExtraction } from './project-behavior-extractor.js';
 
 const SKILL_NAME = 'extracted-method';
 const SKILL_PATH = `skills/${SKILL_NAME}/SKILL.md` as const;
+const PROVENANCE_PATH = `skills/${SKILL_NAME}/provenance.json` as const;
 
-export type CreatorAgentPackageSourceReceipt = Readonly<{
-  contextRootDigest: `sha256:${string}`;
-  indexedEntryCount: number;
-  indexedFileCount: number;
-  uniqueIndexedByteCount: number;
-  citedSources: readonly Readonly<{
-    path: string;
-    digest: `sha256:${string}`;
-  }>[];
-}>;
+export type CreatorAgentPackageSourceReceipt = ProtocolCreatorAgentPackageSourceReceipt;
 
 export type BuiltCreatorAgentPackage = Readonly<{
   manifest: CreatorAgentPackageManifest;
@@ -36,31 +43,74 @@ export type BuiltCreatorAgentPackage = Readonly<{
 export function buildCreatorAgentPackage(
   extraction: CreatorAgentProjectBehaviorExtraction,
 ): BuiltCreatorAgentPackage {
-  const behavior = extraction.behavior;
-  const packageName = packageNameFrom(normalizePackageText(behavior.name, 80));
-  const packageDescription = packageDescriptionFrom(
-    normalizePackageText(behavior.description, 500),
+  return buildPackageContent(
+    extraction.behavior,
+    createCreatorAgentPackageSourceReceipt({
+      protocol: CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+      sourceKind: 'current_project',
+      contextRootDigest: extraction.contextRootDigest,
+      indexedEntryCount: extraction.indexedEntryCount,
+      indexedFileCount: extraction.indexedFileCount,
+      uniqueIndexedByteCount: extraction.uniqueIndexedByteCount,
+      coverageSummary: extraction.behavior.coverageSummary.normalize('NFC').trim(),
+      citedSources: extraction.citedSources
+        .map(({ path, digest }) => ({ path, digest }))
+        .sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0)),
+    }),
+    null,
+    extraction.sourceProjectPath,
   );
-  const instructions = normalizePackageText(behavior.instructions, 8_000);
-  const outputDescription = normalizePackageText(behavior.outputDescription, 1_000);
-  const starterPrompts = Object.freeze(
-    behavior.starterPrompts.map((prompt) => singleLine(normalizePackageText(prompt, 1_000))),
+}
+
+export function buildCreatorAgentPackageFromDraft(
+  rawDraft: CreatorAgentPackageDraftSnapshot,
+): BuiltCreatorAgentPackage {
+  const draft = verifyCreatorAgentPackageDraftSnapshot(rawDraft);
+  return buildPackageContent(
+    draft.content,
+    createCreatorAgentPackageSourceReceipt({
+      protocol: CREATOR_AGENT_PACKAGE_SOURCE_RECEIPT_PROTOCOL,
+      sourceKind: 'current_project',
+      contextRootDigest: draft.source.contextRootDigest as `sha256:${string}`,
+      indexedEntryCount: draft.source.indexedEntryCount,
+      indexedFileCount: draft.source.indexedFileCount,
+      uniqueIndexedByteCount: draft.source.uniqueIndexedByteCount,
+      coverageSummary: draft.source.coverageSummary,
+      citedSources: draft.source.citedSources.map(({ path, digest }) => ({ path, digest })),
+    }),
+    digestCreatorAgentPackageCreatorRequest(draft.creatorRequest),
   );
-  if (starterPrompts.some((prompt) => !prompt)) {
-    throw new TypeError(
-      'Agent Package starter prompts must remain meaningful after normalization.',
-    );
-  }
-  if (new Set(starterPrompts).size !== starterPrompts.length) {
-    throw new TypeError('Agent Package starter prompts must remain unique after normalization.');
-  }
+}
+
+function buildPackageContent(
+  behavior: CreatorAgentPackageDraftContent,
+  sourceReceipt: CreatorAgentPackageSourceReceipt,
+  creatorRequestDigest: ReturnType<typeof digestCreatorAgentPackageCreatorRequest> | null,
+  sourceProjectPath?: string,
+): BuiltCreatorAgentPackage {
+  const content = normalizeCreatorAgentPackageDraftContent(behavior);
+  const packageName = content.name;
+  const packageDescription = content.description;
+  const instructions = content.instructions;
+  const outputDescription = content.outputDescription;
+  const starterPrompts = content.starterPrompts;
   const agentMarkdown = renderAgentMarkdown(packageName, packageDescription);
   const skillMarkdown = renderSkillMarkdown(instructions, outputDescription, starterPrompts);
-  assertPortablePackageText(agentMarkdown, extraction.sourceProjectPath);
-  assertPortablePackageText(skillMarkdown, extraction.sourceProjectPath);
+  const provenanceText = serializeCreatorAgentPackageProvenance(
+    createCreatorAgentPackageProvenance({
+      protocol: CREATOR_AGENT_PACKAGE_PROVENANCE_PROTOCOL,
+      sourceKind: 'current_project',
+      sourceReceiptDigest: digestCreatorAgentPackageSourceReceipt(sourceReceipt),
+      creatorRequestDigest,
+    }),
+  );
+  assertPortablePackageText(agentMarkdown, sourceProjectPath);
+  assertPortablePackageText(skillMarkdown, sourceProjectPath);
+  assertPortablePackageText(provenanceText, sourceProjectPath);
   const files = Object.freeze([
     Object.freeze({ path: 'AGENT.md', text: agentMarkdown }),
     Object.freeze({ path: SKILL_PATH, text: skillMarkdown }),
+    Object.freeze({ path: PROVENANCE_PATH, text: provenanceText }),
   ]);
   const manifest = createCreatorAgentPackageManifest({
     protocol: CREATOR_AGENT_PACKAGE_PROTOCOL,
@@ -79,15 +129,6 @@ export function buildCreatorAgentPackage(
   });
   const manifestText = serializeCreatorAgentPackageManifest(manifest);
   const packageDigest = digestCreatorAgentPackage(manifest);
-  const sourceReceipt = Object.freeze({
-    contextRootDigest: extraction.contextRootDigest,
-    indexedEntryCount: extraction.indexedEntryCount,
-    indexedFileCount: extraction.indexedFileCount,
-    uniqueIndexedByteCount: extraction.uniqueIndexedByteCount,
-    citedSources: Object.freeze(
-      extraction.citedSources.map(({ path, digest }) => Object.freeze({ path, digest })),
-    ),
-  });
   return Object.freeze({
     manifest,
     manifestText,
@@ -96,6 +137,30 @@ export function buildCreatorAgentPackage(
     starterPrompts,
     sourceReceipt,
   });
+}
+
+export function normalizeCreatorAgentPackageDraftContent(
+  behavior: CreatorAgentPackageDraftContent,
+): CreatorAgentPackageDraftContent {
+  assertPortableBehavior(behavior);
+  const normalized = {
+    name: packageNameFrom(normalizePackageText(behavior.name, 80)),
+    description: packageDescriptionFrom(normalizePackageText(behavior.description, 500)),
+    instructions: normalizePackageText(behavior.instructions, 8_000),
+    starterPrompts: behavior.starterPrompts.map((prompt) =>
+      singleLine(normalizePackageText(prompt, 1_000)),
+    ),
+    outputDescription: normalizePackageText(behavior.outputDescription, 1_000),
+  };
+  if (normalized.starterPrompts.some((prompt) => !prompt)) {
+    throw new TypeError(
+      'Agent Package starter prompts must remain meaningful after normalization.',
+    );
+  }
+  if (new Set(normalized.starterPrompts).size !== normalized.starterPrompts.length) {
+    throw new TypeError('Agent Package starter prompts must remain unique after normalization.');
+  }
+  return deepFreeze(CreatorAgentPackageDraftContentSchema.parse(normalized));
 }
 
 function renderAgentMarkdown(name: string, description: string): string {
@@ -216,14 +281,40 @@ function hasUnsafePackageText(value: string): boolean {
   return false;
 }
 
-function assertPortablePackageText(text: string, sourceProjectPath: string): void {
+function assertPortableBehavior(behavior: CreatorAgentPackageDraftContent): void {
+  const text = [
+    behavior.name,
+    behavior.description,
+    behavior.instructions,
+    ...behavior.starterPrompts,
+    behavior.outputDescription,
+  ].join('\n');
+  if (
+    containsNonPortableAgentReference(text) ||
+    /https?:\/\/|\b(?:curl|wget|scp|ssh|netcat|nc)\b|\b(?:task|session|thread)[-_ ]?id\s*[:=]/iu.test(
+      text,
+    )
+  ) {
+    throw new TypeError('Agent Package Draft contains non-portable behavior.');
+  }
+}
+
+function assertPortablePackageText(text: string, sourceProjectPath?: string): void {
   if (
     !text ||
     text.includes('\0') ||
     text.charCodeAt(0) === 0xfeff ||
-    text.includes(sourceProjectPath) ||
+    (sourceProjectPath !== undefined && text.includes(sourceProjectPath)) ||
     Buffer.byteLength(text, 'utf8') > 65_536
   ) {
     throw new TypeError('Agent Package authoring output is not portable or bounded.');
   }
+}
+
+function deepFreeze<Value>(value: Value): Value {
+  if (value !== null && typeof value === 'object' && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
 }

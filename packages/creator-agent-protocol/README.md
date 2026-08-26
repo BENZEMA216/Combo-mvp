@@ -21,8 +21,23 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 注入它，并用 Codex 技能注册表激活包内技能。智能体包摘要是内容完整性标识，不是发布者签名或运行成功
 证明。
 
-Agent Draft 通过新 revision 修订但不能执行；每个 DraftSnapshot 本身都是不可变值。AgentVersion 从一个
-精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter prompts、source ledger，以及 Git
+创作端可以生成一份含 Project 根摘要、覆盖统计与相对引用的私有来源回执。可分享 Package 不携带这份
+回执、来源文件名或覆盖摘要，只在清单绑定的 `provenance.json` 中保存回执摘要和可选制作要求摘要；
+因此 exact Package 仍绑定确定性的创作来源与意图，而消费者不能从 Package 直接读取创作者的来源清单。
+制作要求摘要只是不可逆的一致性绑定，不是保密或身份认证证明；随机 Draft ID、revision 和 fingerprint
+保留在私有创作状态中，不进入 Package 摘要。
+
+显式 `agent-package-draft` 子路径定义 `combo.agent-package-creator-request/1` 与
+`combo.agent-package-draft/1`。前者只携带创作者的一句制作要求，不保存本机路径、任务标识或来源正文；
+受信调用方负责把它绑定到已经确认的当前 Project，终端验证入口暂时只绑定当前工作目录，Combo Plugin 的
+焦点 Project 绑定尚未接入。后者是 Package 创作期间可查看和修订的不可变快照，绑定
+制作要求、Project 根摘要、来源引用、可编辑行为字段、revision 链和 draft fingerprint。修订请求必须带
+exact base revision 与 fingerprint，过期编辑会被拒绝。Draft 不能直接运行或分享；只有从 exact Draft
+确定性编译出的 `combo.agent-package/1` 才是可加载产物。
+
+旧版 `agent` 子路径中的 Agent Draft 通过新 revision 修订但不能执行；每个 DraftSnapshot 本身都是不可变
+值。旧版 AgentVersion 从一个精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter
+prompts、source ledger，以及 Git
 Project snapshot 或明确的无 Project binding。它不保存本机绝对路径、运行 prompt 或回答；当前版本对
 skills 与动态工具保持空集，不把尚未实现的能力写进合同。
 
@@ -85,6 +100,8 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   覆盖、实际脱敏、用户确认、Git remote 可达或 OS 级 Project 隔离。
 - `@cb/creator-agent-protocol/agent-package`：暴露独立的智能体包清单、原始文件摘要、智能体包摘要与规范化
   解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
+- `@cb/creator-agent-protocol/agent-package-draft`：暴露一句制作要求、可修订 Package Draft、乐观 revision
+  请求、draft fingerprint 与规范化解析；它不保存绝对 Project 路径，也不执行提取、编译、发布或推理。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
 本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

@@ -13,6 +13,7 @@ export {
   type CreatorAgentProjectCompilationResult,
   type CreatorAgentProjectCompilerDependencies,
   type CreatorAgentProjectCompilerErrorCode,
+  type VersionExecutionPreflightPort,
 } from './project-context-compiler.js';
 export {
   assertSameProjectContext,
@@ -21,8 +22,4 @@ export {
   type ProjectContextIndexProgress,
   type ProjectContextScan,
 } from '../project-context-index.js';
-export type {
-  StructuredAuthoringHostOptions,
-  StructuredAuthoringHostPort,
-  VersionExecutionPreflightPort,
-} from './ports.js';
+export type { StructuredAuthoringHostOptions, StructuredAuthoringHostPort } from './ports.js';

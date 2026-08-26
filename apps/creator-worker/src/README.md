@@ -38,15 +38,18 @@
   允许 macOS 只更新系统 provenance/ctime，并以同一文件描述符上的 post-read stat 作为稳定索引基线。首轮
   内容哈希后，它还保留仅在内存的 bigint 元数据 manifest，用完整 namespace 与文件身份复验替代第二次正文
   读取，并输出有界扫描进度。
-- `authoring/ports.ts` 定义结构化 authoring Host 与 Version 执行兼容性两个窄端口；创作核心不再导入
+- `authoring/ports.ts` 只定义结构化 authoring Host 窄端口；纯 Package 提取核心不导入旧版 AgentVersion、
   Agent runner、Codex Process 或具体 Host factory。
-- `authoring/project-context-compiler.ts` 在编译前做一次完整内容索引、模型返回后做完整 namespace 与 Git snapshot
-  复验，把 fixed output schema 与有界 coverage 摘要交给 bundled Codex；Codex 直接在只读 Project 中选择相关证据。formal 根能形成 canonical Git snapshot
-  时生成 V2，否则生成不自动选择嵌套仓库的 V3 behavior-only Draft。V3 的全部 citation 都固定为
-  authoring-only。编译器还执行 best-effort secret taint 与 Runtime 预检；full inventory 只存在扫描器内存中，
-  不序列化到临时文件或 Catalog。
-- `authoring/agent-package-builder.ts` 把经过复验的 Project 语义提取结果确定性编译为根 `AGENT.md`、一个
-  `extracted-method` 原生技能和规范 `agent.json`，并生成不含来源绝对路径的来源摘要回执。
+- `authoring/project-behavior-extractor.ts` 在提取前做一次完整内容索引、模型返回后做完整 namespace 与 Git
+  snapshot 复验，把 fixed output schema 与有界 coverage 摘要交给 bundled Codex，并返回不含旧版 Draft 或
+  AgentVersion 的可移植行为与来源事实。Codex 直接在只读 Project 中选择相关证据；full inventory 只存在
+  扫描器内存中，不序列化到临时文件或 Catalog。
+- `authoring/project-context-compiler.ts` 是旧版 AgentVersion 编译适配层。它把纯行为提取结果投影成 V2，
+  或在 formal 根不能形成 canonical Git snapshot 时投影成不自动选择嵌套仓库的 V3 behavior-only Draft，
+  并在本文件内定义旧版本地 Runtime 预检端口；Package Creator 不导入这个适配层。
+- `authoring/agent-package-builder.ts` 把经过复验的 Project 语义提取结果或 exact Package Draft 确定性编译为
+  根 `AGENT.md`、一个 `extracted-method` 原生技能和规范 `agent.json`。完整脱敏来源回执只返回给创作端；
+  可分享 Package 仅清单绑定一个不含文件名和来源摘要的 opaque provenance digest。
 - `authoring/index.ts` 是 application composition 使用的创作层内部出口。
 - `project-context-compiler.ts` 是旧内部路径的薄兼容入口，保留错误类、Schema、类型与测试 seam 的同一身份，
   并从 application composition re-export 生产用编译函数。
@@ -61,12 +64,19 @@
   并返回内容摘要、示例任务与来源摘要；它不创建旧版 Catalog 或 `AgentVersion`。
 - `application/agent-package-authoring-composition.ts` 只为智能体包创作绑定扫描器、结构化 Codex Host、构建器、
   发布器与加载器，不导入旧版执行组合根。
+- `application/agent-package-creator.ts` 把 Host 提供的当前 Project 与一句制作要求绑定成不可变 Package Draft，
+  并把 exact Draft 编译、原子发布和正式重载组合成第二个显式动作；Draft 阶段不产生可运行 Package。
+- `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定扫描器、结构化 Codex Host、Draft
+  规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
 - `agent-package-session.ts` 是独立的公共推理子路径。消费者应从
   `@cb/creator-worker/agent-package-session` 导入，避免加载包根中的旧版 Worker 与本地执行模块。
 - `agent-package-authoring.ts` 是独立的公共创作子路径。消费者应从
   `@cb/creator-worker/agent-package-authoring` 导入，得到内容寻址包路径与来源摘要后再显式创建推理会话。
+- `agent-package-creator.ts` 是独立的 Creator Draft 公共子路径。Combo Plugin 或 Studio 用它把一句制作要求
+  与 Host 已绑定的当前 Project 变成可修订 Draft，并在明确编译动作后得到 exact Package digest。
 - `agent-package-cli.ts` 是 `combo-agent-package` 进程入口。`experience` 接受彼此独立的创作者来源目录与
-  消费者目录，不读取确认输入，顺序完成创作、正式重载和同一 Codex 任务线程中的两轮消费。
+  消费者目录，不读取确认输入，顺序完成创作、正式重载和同一 Codex 任务线程中的两轮消费；
+  `draft-current` 则只使用当前工作目录和一句制作要求生成规范 Draft，不编译或运行。
 - `agent-catalog-cli.ts` 是 `combo-creator-agent` 进程入口。`experience` 以一个 Project 路径完成索引、编译、
   本地未发布 Version 自动冻结、Catalog close/reopen 与第一条 frozen starter 的真实运行，不读取确认输入；
   严格 `create` 继续执行 terminal-safe 完整 review、可见 TTY 中一次 `FREEZE` 和可选 exact Version run；
