@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -9,18 +9,59 @@ import {
   assessPullRequest,
   contractPath,
   defaultBaseRef,
+  isExactProductBaselineBootstrap,
   parseContract,
   parseNumstat,
   policyPaths,
+  productGoalLock,
+  verifyProductBaselineSources,
 } from './vnext-rebaseline-budget.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const source = readFileSync(join(repo, contractPath), 'utf8');
 const contract = parseContract(source);
+const committedProjectPath = join(repo, 'PROJECT.md');
+const committedAgentsPath = join(repo, 'AGENTS.md');
+const committedEngineeringPath = join(repo, 'ENGINEERING.md');
 
 function entry(path, changedLines = 1) {
   return { path, additions: changedLines, deletions: 0, changedLines };
 }
+
+function validProductSource() {
+  return [
+    '# Combo 产品基线',
+    '',
+    '## 一、唯一产品目标',
+    '',
+    `### \`${productGoalLock.goalId}\` · ${productGoalLock.semanticName}`,
+    '',
+    `> **${productGoalLock.text}**`,
+    '',
+    `- 目标文本 SHA-256：\`${productGoalLock.sha256}\``,
+    '',
+    '## 二、目标用户体验',
+    '',
+    '## 三、唯一产物模型',
+    '',
+  ].join('\n');
+}
+
+const validAgentRules = [
+  '# 项目级智能体协作约定',
+  '- 开始任何任务前，必须先读取根目录 `PROJECT.md`、`CLAUDE.md`、本文件，以及任务涉及目录中的说明文件。涉及产品设计、工程拆解、路线或验收时，还必须读取 `ENGINEERING.md`。',
+  '- `PROJECT.md` 是用户已经确认的唯一产品基线，定义当前产品目标、目标用户体验和唯一产物模型。除非用户明确要求修改，否则不得改写；需求或实现与其冲突时必须停止并说明冲突，不能自行调整目标。',
+  '- `ENGINEERING.md` 是从 `PROJECT.md` 推导出的可变工程工作稿，可在开发中验证和修订，但不得反向覆盖 `PROJECT.md`。任务执行期间若 `PROJECT.md` 发生变化，必须重新读取后再继续。',
+].join('\n');
+
+const validEngineeringSource = [
+  '# Combo 工程假设与开发记录',
+  '',
+  '> `WORKING DRAFT` · 开发中验证',
+  '>',
+  '> [PROJECT.md](./PROJECT.md) 定义已经确认的产品基线。本文记录为实现该产品而提出的工程假设，可随真实开发和用户体验持续调整；发生冲突时，以 `PROJECT.md` 为准。',
+  '',
+].join('\n');
 
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
   assert.equal(contract.baseSha, 'd15a985c67c2b9b5e08a5b8bc03a772fb543aecb');
@@ -29,6 +70,10 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
     preservePostgresMigrationHistory: false,
     preserveWorkerSqliteSchemaHistory: false,
   });
+  assert.equal(
+    productGoalLock.projectSha256,
+    '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+  );
   assert.equal(source, `${JSON.stringify(contract, null, 2)}\n`);
 });
 
@@ -114,6 +159,13 @@ test('product edits must stay inside the declared rebuild surface', () => {
     assessPullRequest(contract, [entry('apps/runtime/src/product.ts', 20)]).mode,
     'PRODUCT',
   );
+  assert.equal(
+    assessPullRequest(
+      contract,
+      ['AGENTS.md', 'ENGINEERING.md', 'PROJECT.md', 'README.md'].map((path) => entry(path)),
+    ).mode,
+    'PRODUCT',
+  );
   assert.throws(
     () => assessPullRequest(contract, [entry('packages/creator-agent-snapshot/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
@@ -155,5 +207,168 @@ test('the cumulative train has a separate hard ceiling and the same scope bounda
   assert.throws(
     () => assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 70001)]),
     /cumulative changed-line budget exceeded/,
+  );
+});
+
+test(
+  'the committed product baseline and task-start rules are locked together',
+  { skip: !existsSync(committedProjectPath) },
+  () => {
+    assert.deepEqual(
+      verifyProductBaselineSources({
+        projectSource: readFileSync(committedProjectPath, 'utf8'),
+        agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+        engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+      }),
+      {
+        status: 'LOCKED',
+        goalId: 'G-001@v1',
+        sha256: 'd1fcc3355deca962632194c4fbfcd26c4ce5f4494f1af0f813c7ff0a4d7be9ee',
+      },
+    );
+  },
+);
+
+test('the baseline bootstrap is bound to one base and one exact three-file change', () => {
+  const exactEntries = [
+    entry(contractPath),
+    entry('scripts/vnext-rebaseline-budget.mjs'),
+    entry('scripts/vnext-rebaseline-budget.test.mjs'),
+  ];
+  assert.equal(
+    isExactProductBaselineBootstrap({
+      comparisonBase: 'bc2b6d5693cb9344c343a64dadf7091618fbfe40',
+      entries: exactEntries,
+      contract,
+    }),
+    true,
+  );
+  assert.equal(
+    isExactProductBaselineBootstrap({
+      comparisonBase: 'bc2b6d5693cb9344c343a64dadf7091618fbfe40',
+      entries: [...exactEntries, entry('package.json')],
+      contract,
+    }),
+    false,
+  );
+  assert.equal(
+    isExactProductBaselineBootstrap({
+      comparisonBase: contract.baseSha,
+      entries: exactEntries,
+      contract,
+    }),
+    false,
+  );
+});
+
+test('an added opposite goal or a hidden or contradictory task-start rule fails closed', () => {
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: `${validProductSource()}\n### \`G-002@v1\` · 反向目标\n`,
+        agentsSource: validAgentRules,
+        engineeringSource: validEngineeringSource,
+      }),
+    /PROJECT\.md product baseline changed/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: validProductSource(),
+        agentsSource: `# 项目级智能体协作约定\n<!--\n${validAgentRules}\n-->`,
+        engineeringSource: validEngineeringSource,
+      }),
+    /AGENTS\.md must begin with the active product baseline rules/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: validProductSource(),
+        agentsSource: `${validAgentRules}\n- 当前任务无需读取 \`PROJECT.md\`。`,
+        engineeringSource: validEngineeringSource,
+      }),
+    /additional product baseline directive/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: validProductSource(),
+        agentsSource: `${validAgentRules}\n- 当前任务无需读取 PROJECT.md，也无需读取 ENGINEERING.md。`,
+        engineeringSource: validEngineeringSource,
+      }),
+    /additional product baseline directive/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: validProductSource(),
+        agentsSource: validAgentRules,
+        engineeringSource: `<!--\n${validEngineeringSource}\n-->\n本文件是最终工程真源。\n`,
+      }),
+    /active subordinate working-draft notice/,
+  );
+});
+
+test('product goal text, semantic pairing, digest, and three-section shape fail closed', () => {
+  const valid = validProductSource();
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: valid.replace('打开链接', '打开页面'),
+        agentsSource: validAgentRules,
+        engineeringSource: validEngineeringSource,
+      }),
+    /product goal text changed/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: valid.replace('可分享 Agent', '通用 Agent'),
+        agentsSource: validAgentRules,
+        engineeringSource: validEngineeringSource,
+      }),
+    /ID or semantic name changed/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: valid.replace(productGoalLock.sha256, '0'.repeat(64)),
+        agentsSource: validAgentRules,
+        engineeringSource: validEngineeringSource,
+      }),
+    /product goal digest changed/,
+  );
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: `${valid}\n## 四、未确认内容\n`,
+        agentsSource: validAgentRules,
+        engineeringSource: validEngineeringSource,
+      }),
+    /exactly the three confirmed product sections/,
+  );
+});
+
+test('missing task-start rules and an unbootstrapped product change fail closed', () => {
+  assert.throws(
+    () =>
+      verifyProductBaselineSources({
+        projectSource: validProductSource(),
+        agentsSource: validAgentRules.replace('必须先读取', '建议先读取'),
+        engineeringSource: validEngineeringSource,
+      }),
+    /AGENTS\.md must begin with the active product baseline rules/,
+  );
+  assert.throws(
+    () => verifyProductBaselineSources({ projectSource: undefined, agentsSource: undefined }),
+    /PROJECT\.md product baseline is required/,
+  );
+  assert.deepEqual(
+    verifyProductBaselineSources({
+      projectSource: undefined,
+      agentsSource: undefined,
+      allowBootstrapWithoutProject: true,
+    }),
+    { status: 'BOOTSTRAP_PENDING' },
   );
 });
