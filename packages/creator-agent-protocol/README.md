@@ -35,6 +35,12 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 exact base revision 与 fingerprint，过期编辑会被拒绝。Draft 不能直接运行或分享；只有从 exact Draft
 确定性编译出的 `combo.agent-package/1` 才是可加载产物。
 
+同一子路径还定义 `combo.agent-package-creator-bootstrap-handoff/1`。Combo Plugin 先对白名单中的官方
+创建指南地址完成路由，再把地址归一化成固定指南版本；handoff 只携带该版本、已有的制作要求和
+`codex_host_current_saved_project` 绑定声明。它不允许 Project 路径、Project ID、任务 ID、线程 ID 或
+网页地址进入跨进程数据。Creator Bridge 的成功输出直接是规范 `combo.agent-package-draft/1`，不会再包一层
+临时结果合同。
+
 旧版 `agent` 子路径中的 Agent Draft 通过新 revision 修订但不能执行；每个 DraftSnapshot 本身都是不可变
 值。旧版 AgentVersion 从一个精确 Draft revision 冻结，并以 canonical fingerprint 绑定行为、starter
 prompts、source ledger，以及 Git
@@ -101,7 +107,8 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
 - `@cb/creator-agent-protocol/agent-package`：暴露独立的智能体包清单、原始文件摘要、智能体包摘要与规范化
   解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
 - `@cb/creator-agent-protocol/agent-package-draft`：暴露一句制作要求、可修订 Package Draft、乐观 revision
-  请求、draft fingerprint 与规范化解析；它不保存绝对 Project 路径，也不执行提取、编译、发布或推理。
+  请求、Creator bootstrap handoff、draft fingerprint 与规范化解析；它不保存绝对 Project 路径，也不执行
+  提取、编译、发布或推理。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
 本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

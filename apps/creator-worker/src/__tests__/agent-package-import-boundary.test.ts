@@ -115,6 +115,15 @@ describe('Agent Package public import boundary', () => {
     expect(result.stdout.trim()).toBe('function:false');
     expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
   });
+
+  it('keeps the distributable Creator Bridge outside legacy execution and AgentVersion', () => {
+    expect(
+      sourceClosureViolations(
+        join(sourceRoot, 'agent-package-creator-bridge.ts'),
+        AUTHORING_FORBIDDEN_SOURCE,
+      ),
+    ).toEqual([]);
+  });
 });
 
 function sourceClosureViolations(entry: string, forbiddenSource = FORBIDDEN_SOURCE): string[] {

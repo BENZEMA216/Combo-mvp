@@ -17,6 +17,12 @@ export { containsNonPortableAgentReference } from './primitives.js';
 
 export const CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL =
   'combo.agent-package-creator-request/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL =
+  'combo.agent-package-creator-bootstrap-handoff/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_GUIDE = 'combo.agent-package-creator-guide/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING =
+  'codex_host_current_saved_project' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES = 8_192;
 export const CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL = 'combo.agent-package-draft/1' as const;
 export const CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL =
   'combo.agent-package-draft-revision/1' as const;
@@ -136,6 +142,19 @@ export type CreatorAgentPackageCreatorRequest = z.infer<
   typeof CreatorAgentPackageCreatorRequestSchema
 >;
 
+const CreatorAgentPackageCreatorBootstrapHandoffSchema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL),
+    creatorGuide: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_GUIDE),
+    sourceBinding: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING),
+    creatorRequest: CreatorAgentPackageCreatorRequestSchema,
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentPackageCreatorBootstrapHandoff = z.infer<
+  typeof CreatorAgentPackageCreatorBootstrapHandoffSchema
+>;
+
 const DraftFingerprintInputObjectSchema = z
   .object({
     protocol: z.literal(CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL),
@@ -228,6 +247,38 @@ export function parseCreatorAgentPackageCreatorRequest(
   return parseExact(text, verifyCreatorAgentPackageCreatorRequest, 'Agent Package creator request');
 }
 
+export function createCreatorAgentPackageCreatorBootstrapHandoff(
+  input: unknown,
+): CreatorAgentPackageCreatorBootstrapHandoff {
+  return exactDetached(
+    CreatorAgentPackageCreatorBootstrapHandoffSchema,
+    input,
+    'Agent Package creator bootstrap handoff',
+    CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES,
+  );
+}
+
+export function verifyCreatorAgentPackageCreatorBootstrapHandoff(
+  input: unknown,
+): CreatorAgentPackageCreatorBootstrapHandoff {
+  return createCreatorAgentPackageCreatorBootstrapHandoff(input);
+}
+
+export function serializeCreatorAgentPackageCreatorBootstrapHandoff(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentPackageCreatorBootstrapHandoff(input));
+}
+
+export function parseCreatorAgentPackageCreatorBootstrapHandoff(
+  text: string,
+): CreatorAgentPackageCreatorBootstrapHandoff {
+  return parseExact(
+    text,
+    verifyCreatorAgentPackageCreatorBootstrapHandoff,
+    'Agent Package creator bootstrap handoff',
+    CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES,
+  );
+}
+
 export function createCreatorAgentPackageDraftSnapshot(
   input: z.input<typeof DraftFingerprintInputSchema>,
 ): CreatorAgentPackageDraftSnapshot {
@@ -311,11 +362,13 @@ export function parseCreatorAgentPackageDraftSnapshot(
   return parseExact(text, verifyCreatorAgentPackageDraftSnapshot, 'Agent Package Draft');
 }
 
-function parseExact<Value>(text: string, verify: (input: unknown) => Value, label: string): Value {
-  if (
-    typeof text !== 'string' ||
-    Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES
-  ) {
+function parseExact<Value>(
+  text: string,
+  verify: (input: unknown) => Value,
+  label: string,
+  maximumBytes = CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES,
+): Value {
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > maximumBytes) {
     throw new TypeError(`${label} exceeds the canonical byte limit`);
   }
   let value: unknown;
@@ -379,10 +432,11 @@ function exactDetached<Schema extends z.ZodTypeAny>(
   schema: Schema,
   input: unknown,
   label: string,
+  maximumBytes = CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES,
 ): z.output<Schema> {
-  const snapshot = snapshotJson(input, 0, { nodes: 0, bytes: 0 });
+  const snapshot = snapshotJson(input, 0, { nodes: 0, bytes: 0 }, maximumBytes);
   const before = canonicalizeJson(snapshot);
-  if (Buffer.byteLength(before, 'utf8') > CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES) {
+  if (Buffer.byteLength(before, 'utf8') > maximumBytes) {
     throw new TypeError(`${label} exceeds the canonical byte limit`);
   }
   const parsed = schema.parse(snapshot);
@@ -397,6 +451,7 @@ function snapshotJson(
   input: unknown,
   depth: number,
   budget: { nodes: number; bytes: number },
+  maximumBytes: number,
 ): unknown {
   budget.nodes += 1;
   if (budget.nodes > 2_048 || depth > 16) {
@@ -409,7 +464,7 @@ function snapshotJson(
   }
   if (typeof input === 'string') {
     budget.bytes += Buffer.byteLength(input, 'utf8');
-    if (budget.bytes > CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES || containsLoneSurrogate(input)) {
+    if (budget.bytes > maximumBytes || containsLoneSurrogate(input)) {
       throw new TypeError('Agent Package Draft exceeds the canonical byte limit');
     }
     return input;
@@ -431,7 +486,7 @@ function snapshotJson(
       if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
         throw new TypeError('Draft properties must be enumerable data properties');
       }
-      return snapshotJson(descriptor.value, depth + 1, budget);
+      return snapshotJson(descriptor.value, depth + 1, budget, maximumBytes);
     });
   }
   const prototype = Object.getPrototypeOf(input);
@@ -448,7 +503,7 @@ function snapshotJson(
     if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
       throw new TypeError('Draft properties must be enumerable data properties');
     }
-    output[key] = snapshotJson(descriptor.value, depth + 1, budget);
+    output[key] = snapshotJson(descriptor.value, depth + 1, budget, maximumBytes);
   }
   return output;
 }

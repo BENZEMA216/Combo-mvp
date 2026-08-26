@@ -122,7 +122,8 @@ function classify(root: string, path: string): Layer | undefined {
   if (
     name.startsWith('application/') ||
     name === 'agent-catalog-cli.ts' ||
-    name === 'agent-package-cli.ts'
+    name === 'agent-package-cli.ts' ||
+    name === 'agent-package-creator-bridge.ts'
   ) {
     return 'application';
   }

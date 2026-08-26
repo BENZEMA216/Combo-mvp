@@ -19,17 +19,24 @@ import {
   verifyCreatorAgentPackageManifest,
 } from '../agent-package.js';
 import {
+  CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES,
+  CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CREATOR_GUIDE,
   CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING,
   CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL,
   CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL,
+  createCreatorAgentPackageCreatorBootstrapHandoff,
   createCreatorAgentPackageCreatorRequest,
   createCreatorAgentPackageDraftRevisionRequest,
   createCreatorAgentPackageDraftSnapshot,
   digestCreatorAgentPackageCreatorRequest,
+  parseCreatorAgentPackageCreatorBootstrapHandoff,
   parseCreatorAgentPackageCreatorRequest,
   parseCreatorAgentPackageDraftRevisionRequest,
   parseCreatorAgentPackageDraftSnapshot,
   reviseCreatorAgentPackageDraft,
+  serializeCreatorAgentPackageCreatorBootstrapHandoff,
   serializeCreatorAgentPackageCreatorRequest,
   serializeCreatorAgentPackageDraftRevisionRequest,
   serializeCreatorAgentPackageDraftSnapshot,
@@ -261,6 +268,92 @@ function creatorRequest() {
     request: '请阅读 combo.workflow.md，把这个目录中已经跑通的发布流程提炼成一个 Agent。',
   };
 }
+
+function creatorBootstrapHandoff() {
+  return {
+    protocol: CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL,
+    creatorGuide: CREATOR_AGENT_PACKAGE_CREATOR_GUIDE,
+    sourceBinding: CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING,
+    creatorRequest: creatorRequest(),
+  };
+}
+
+describe('Agent Package creator bootstrap handoff contract', () => {
+  it('carries only the normalized guide version, Host binding, and portable request', () => {
+    const input = creatorBootstrapHandoff();
+    const handoff = createCreatorAgentPackageCreatorBootstrapHandoff(input);
+    input.creatorRequest.request = 'mutated after creation';
+    const text = serializeCreatorAgentPackageCreatorBootstrapHandoff(handoff);
+
+    expect(text).toBe(
+      '{"creatorGuide":"combo.agent-package-creator-guide/1","creatorRequest":{"intent":"create_agent_package_from_current_project","protocol":"combo.agent-package-creator-request/1","request":"请阅读 combo.workflow.md，把这个目录中已经跑通的发布流程提炼成一个 Agent。"},"protocol":"combo.agent-package-creator-bootstrap-handoff/1","sourceBinding":"codex_host_current_saved_project"}',
+    );
+    expect(parseCreatorAgentPackageCreatorBootstrapHandoff(text)).toEqual(handoff);
+    expect(Object.isFrozen(handoff)).toBe(true);
+    expect(Object.isFrozen(handoff.creatorRequest)).toBe(true);
+    expect(text).not.toMatch(/https?:|projectPath|projectId|taskId|threadId/u);
+  });
+
+  it('rejects paths, URLs, identifiers, extra fields, and non-canonical transport bytes', () => {
+    expect(() =>
+      createCreatorAgentPackageCreatorBootstrapHandoff({
+        ...creatorBootstrapHandoff(),
+        projectPath: '/Users/alice/private-project',
+      }),
+    ).toThrow();
+    expect(() =>
+      createCreatorAgentPackageCreatorBootstrapHandoff({
+        ...creatorBootstrapHandoff(),
+        creatorRequest: {
+          ...creatorRequest(),
+          request:
+            '请阅读 https://buildwithcombo.com/agent/create/v1，把当前目录提炼成一个 Agent。',
+        },
+      }),
+    ).toThrow(/local paths, URLs, or task identifiers/u);
+
+    const canonical =
+      serializeCreatorAgentPackageCreatorBootstrapHandoff(creatorBootstrapHandoff());
+    expect(() => parseCreatorAgentPackageCreatorBootstrapHandoff(`${canonical}\n`)).toThrow(
+      /not exact canonical/u,
+    );
+    expect(() =>
+      createCreatorAgentPackageCreatorBootstrapHandoff({
+        ...creatorBootstrapHandoff(),
+        creatorGuide: 'x'.repeat(CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES + 1),
+      }),
+    ).toThrow(/byte limit/u);
+  });
+
+  it('rejects accessors and nested Proxy values without executing either', () => {
+    let reads = 0;
+    const accessor = {
+      ...creatorBootstrapHandoff(),
+      get sourceBinding() {
+        reads += 1;
+        return CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING;
+      },
+    };
+    expect(() => createCreatorAgentPackageCreatorBootstrapHandoff(accessor)).toThrow(
+      /data properties/u,
+    );
+    expect(reads).toBe(0);
+
+    const nested = new Proxy(creatorRequest(), {
+      ownKeys(target) {
+        reads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    expect(() =>
+      createCreatorAgentPackageCreatorBootstrapHandoff({
+        ...creatorBootstrapHandoff(),
+        creatorRequest: nested,
+      }),
+    ).toThrow(/plain JSON/u);
+    expect(reads).toBe(0);
+  });
+});
 
 function firstDraftInput() {
   return {

@@ -89,6 +89,24 @@ const compiled = authoringTask.compile({
 `combo-agent-package draft-current "一句制作要求"`，得到规范 Draft JSON。该命令只用于验证 Draft 创作
 内核的参数与输出合同，不是最终用户需要理解的终端流程，也不代表 Codex 已经提供焦点 Project 绑定。
 
+为 Combo Plugin 提供的 `combo-agent-package-creator-bridge` 是另一个独立进程入口。创作者最终说出的完整
+句子可以包含官方创建指南地址；Plugin 只用白名单地址选择固定的
+`combo.agent-package-creator-guide/1`，不会把网页地址写入制作要求。Plugin 随后在已经正式绑定当前 Project
+的 Codex 子任务中启动桥接文件，并把该 Project 作为命令工作目录。桥接进程不接受路径参数，只从标准输入
+读取一个规范 `combo.agent-package-creator-bootstrap-handoff/1`，完成真实扫描和结构化提取后只在标准输出
+返回一个规范 `combo.agent-package-draft/1`。这条桥接链不会编译、试跑、发布或分享 Package；可视化 Studio
+和 Plugin 的一句话路由属于后续切片。
+
+桥接进程还要求受信 adapter 设置固定的
+`COMBO_AGENT_PACKAGE_CREATOR_HOST_BINDING=codex_host_current_saved_project` 标记；没有标记时会在扫描前
+拒绝。该标记不携带路径，也不是密码或 Host 身份证明。真正的 Project 权威仍来自 Plugin 创建的
+同 Project Codex 子任务；Plugin 集成测试必须同时核对该子任务的 Project ID、命令工作目录和桥接文件摘要。
+因此直接从普通终端设置环境变量运行桥接文件不属于受支持的用户入口。
+
+构建产物 `dist/agent-package-creator-bridge.mjs` 是面向 Node 24 的单文件模块，已把工作区 JavaScript 依赖
+打包进去，运行时只保留 Node 内置模块、Git、桌面内置 Codex 与本机认证依赖。它供 Plugin 固定摘要后携带，
+不是要求普通用户在终端里执行的入口。
+
 ## 从 Project 直接创建并消费 Agent Package
 
 新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用可信的 Project 全量扫描、结构化 Codex 提取
