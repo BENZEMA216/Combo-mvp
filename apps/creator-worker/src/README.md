@@ -70,12 +70,18 @@
   并把 exact Draft 编译、原子发布和正式重载组合成第二个显式动作；Draft 阶段不产生可运行 Package。
 - `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定扫描器、结构化 Codex Host、Draft
   规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
+- `application/agent-package-creator-bridge.ts` 验证 Plugin 交来的版本化 handoff，只从受信 Host adapter
+  解析当前 Project，再调用现有 Creator Draft 用例并核对返回 Draft 仍绑定原制作要求。
 - `agent-package-session.ts` 是独立的公共推理子路径。消费者应从
   `@cb/creator-worker/agent-package-session` 导入，避免加载包根中的旧版 Worker 与本地执行模块。
 - `agent-package-authoring.ts` 是独立的公共创作子路径。消费者应从
   `@cb/creator-worker/agent-package-authoring` 导入，得到内容寻址包路径与来源摘要后再显式创建推理会话。
 - `agent-package-creator.ts` 是独立的 Creator Draft 公共子路径。Combo Plugin 或 Studio 用它把一句制作要求
   与 Host 已绑定的当前 Project 变成可修订 Draft，并在明确编译动作后得到 exact Package digest。
+- `agent-package-creator-bridge.ts` 是供 Combo Plugin 携带的单次进程入口。它不接收 Project 路径参数，读取
+  一个规范 Creator handoff，返回一个规范 Draft；构建阶段会把该入口及其 JavaScript 依赖打成 Node 24
+  单文件模块。进程会在扫描前检查无路径的 Host adapter 启动标记；Project ID 与命令工作目录的权威核对
+  仍由 Plugin 的同 Project 子任务负责。
 - `agent-package-cli.ts` 是 `combo-agent-package` 进程入口。`experience` 接受彼此独立的创作者来源目录与
   消费者目录，不读取确认输入，顺序完成创作、正式重载和同一 Codex 任务线程中的两轮消费；
   `draft-current` 则只使用当前工作目录和一句制作要求生成规范 Draft，不编译或运行。

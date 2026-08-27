@@ -19,5 +19,6 @@ dispatcher。测试会篡改 cited source 的执行可用性以确认 ledger 进
 `agent-package-contract.test.ts` 锁定独立 `combo.agent-package/1` 的规范 `agent.json`、原始文件摘要、
 内容寻址智能体包摘要、完整排序文件清单、技能路径、深度冻结，以及属性读取器、代理对象、非规范 JSON
 和旧版版本对象混用的拒绝。该文件也锁定一句制作要求、无绝对路径的 Package Draft、revision 父链、乐观
-并发基线、domain-separated fingerprint、规范往返和篡改拒绝。它不读取真实智能体包目录，也不证明
-Studio 已展示、Package 已编译或 Codex 已激活技能。
+并发基线、Creator bootstrap handoff、domain-separated fingerprint、规范往返和篡改拒绝。handoff 测试
+会拒绝网页地址、Project 路径、任务标识、额外字段、属性读取器和代理对象。该文件不读取真实智能体包目录，
+也不证明 Studio 已展示、Package 已编译或 Codex 已激活技能。

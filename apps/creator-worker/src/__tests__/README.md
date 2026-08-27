@@ -25,6 +25,11 @@
 - `agent-package-creator.test.ts` 覆盖一句制作要求与受信调用方当前 Project 的绑定、无绝对路径 Draft、来源
   回执、exact revision 修订、不同 revision 编译出不同 Package digest、正式重载、来源目录移动后的编译拒绝，
   以及篡改和 getter 的零副作用拒绝。
+- `agent-package-creator-bridge.test.ts` 覆盖官方指南版本 handoff、Host 当前 Project 的单次绑定、制作要求
+  不可换绑、取消与安全错误，以及单文件构建产物在空 `NODE_PATH` 下拒绝任何路径参数。
+- `agent-package-creator-bridge.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时从 Host 绑定的临时 Project
+  启动实际单文件桥接入口，调用真实内置 Codex 提取一个带随机方法标记的 Draft，并验证来源文件零变化、
+  Draft 不含绝对路径或官方网页地址。
 - `agent-package-cli.test.ts` 覆盖无确认的单命令创作、包管理器参数分隔符、真实包脚本转发、可行动参数错误、
   摘要绑定、同一会话两轮消费、来源与消费者目录隔离，以及第一轮失败后仍关闭会话且不重新创作。
 - `agent-package-authoring.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时从一句制作要求和受信调用方当前 Project
