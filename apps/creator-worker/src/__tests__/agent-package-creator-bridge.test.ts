@@ -18,8 +18,16 @@ import {
 } from '@cb/creator-agent-protocol/agent-package-draft';
 import { describe, expect, it, vi } from 'vitest';
 
-import { CreatorAgentProjectCompilerError } from '../authoring/project-behavior-extractor.js';
+import {
+  CreatorAgentProjectCompilerError,
+  type CreatorAgentProjectCompilerErrorCode,
+} from '../authoring/project-behavior-extractor.js';
+import { CreatorAgentPackageCreatorError } from '../application/agent-package-creator.js';
 import { createCreatorAgentPackageDraftFromBootstrapHandoffWithDependencies } from '../application/agent-package-creator-bridge.js';
+import {
+  CREATOR_AGENT_PACKAGE_CREATOR_BRIDGE_ERROR_PROTOCOL,
+  createCreatorAgentPackageCreatorBridgeErrorEnvelope,
+} from '../agent-package-creator-bridge.js';
 
 const ROOT_DIGEST = `sha256:${'a'.repeat(64)}` as const;
 const SOURCE_DIGEST = `sha256:${'b'.repeat(64)}` as const;
@@ -130,24 +138,87 @@ describe('Agent Package Creator Bridge', () => {
   });
 
   it.each([
-    ['PROJECT_CONTEXT_SCAN_LIMIT', 'SOURCE_LIMIT'],
-    ['PROJECT_CONTEXT_CHANGED', 'SOURCE_CHANGED'],
-  ] as const)('maps %s to the actionable bridge code %s', async (compilerCode, bridgeCode) => {
-    await expect(
-      createCreatorAgentPackageDraftFromBootstrapHandoffWithDependencies(
-        creatorHandoff(),
-        {},
-        {
-          resolveHostBoundCurrentProject: () => '/host-bound-project',
-          createDraft: async () => {
-            throw new CreatorAgentProjectCompilerError(compilerCode, 'private compiler detail');
+    ['PROJECT_CONTEXT_PATH_INVALID', 'CURRENT_PROJECT_UNAVAILABLE', 'BIND_CURRENT_PROJECT'],
+    ['PROJECT_CONTEXT_SCAN_FAILED', 'SOURCE_READ_FAILED', 'EXTRACT_DRAFT'],
+    ['PROJECT_CONTEXT_SCAN_LIMIT', 'SOURCE_LIMIT', 'EXTRACT_DRAFT'],
+    ['PROJECT_CONTEXT_CHANGED', 'SOURCE_CHANGED', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_CONFIGURATION_INVALID', 'INTERNAL', 'EXTRACT_DRAFT'],
+    ['PROJECT_CONTEXT_AUTHORIZATION_REQUIRED', 'INTERNAL', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_GIT_INVALID', 'INTERNAL', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_HOST_FAILED', 'HOST_FAILED', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_OUTPUT_INVALID', 'OUTPUT_INVALID', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_SAFETY_REJECTED', 'OUTPUT_REJECTED', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_RUNTIME_UNSUPPORTED', 'INTERNAL', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_SECRET_OUTPUT', 'OUTPUT_REJECTED', 'EXTRACT_DRAFT'],
+    ['PROJECT_COMPILER_STOP_INCOMPLETE', 'CLEANUP_INCOMPLETE', 'EXTRACT_DRAFT'],
+  ] satisfies readonly (readonly [CreatorAgentProjectCompilerErrorCode, string, string])[])(
+    'maps %s to the stable bridge code %s',
+    async (compilerCode, bridgeCode, stage) => {
+      const privateDetail = `/private/project/${compilerCode}/secret-value`;
+      let failure: unknown;
+
+      try {
+        await createCreatorAgentPackageDraftFromBootstrapHandoffWithDependencies(
+          creatorHandoff(),
+          {},
+          {
+            resolveHostBoundCurrentProject: () => '/host-bound-project',
+            createDraft: async () => {
+              throw new CreatorAgentProjectCompilerError(compilerCode, privateDetail, {
+                cause: new Error(`private cause for ${compilerCode}`),
+              });
+            },
           },
-        },
+        );
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({ code: bridgeCode, stage });
+      expect((failure as Error).message).not.toContain(privateDetail);
+      expect((failure as Error).message).not.toContain('private cause');
+      const envelope = createCreatorAgentPackageCreatorBridgeErrorEnvelope(
+        failure,
+        new AbortController().signal,
+      );
+      expect(Object.keys(envelope)).toEqual(['code', 'message', 'protocol', 'stage']);
+      expect(envelope.protocol).toBe(CREATOR_AGENT_PACKAGE_CREATOR_BRIDGE_ERROR_PROTOCOL);
+      expect(JSON.stringify(envelope)).not.toMatch(/private|cause|stack|secret-value/u);
+    },
+  );
+
+  it('fails closed on unexpected Creator configuration and internal extraction failures', async () => {
+    const failures = [
+      new CreatorAgentPackageCreatorError(
+        'AGENT_PACKAGE_DRAFT_CONFIGURATION_INVALID',
+        '/private/project/configuration detail',
       ),
-    ).rejects.toMatchObject({ code: bridgeCode, stage: 'EXTRACT_DRAFT' });
+      new Error('/private/project/unexpected internal detail'),
+    ];
+
+    for (const injected of failures) {
+      let failure: unknown;
+      try {
+        await createCreatorAgentPackageDraftFromBootstrapHandoffWithDependencies(
+          creatorHandoff(),
+          {},
+          {
+            resolveHostBoundCurrentProject: () => '/host-bound-project',
+            createDraft: async () => {
+              throw injected;
+            },
+          },
+        );
+      } catch (error) {
+        failure = error;
+      }
+
+      expect(failure).toMatchObject({ code: 'INTERNAL', stage: 'EXTRACT_DRAFT' });
+      expect((failure as Error).message).not.toContain('/private/project');
+    }
   });
 
-  it('maps a scanner path rejection back to the Host Project binding stage', async () => {
+  it('preserves an actionable Host Project error after Creator path binding fails', async () => {
     await expect(
       createCreatorAgentPackageDraftFromBootstrapHandoffWithDependencies(
         creatorHandoff(),
@@ -155,9 +226,9 @@ describe('Agent Package Creator Bridge', () => {
         {
           resolveHostBoundCurrentProject: () => '/host-bound-project',
           createDraft: async () => {
-            throw new CreatorAgentProjectCompilerError(
-              'PROJECT_CONTEXT_PATH_INVALID',
-              'private path detail',
+            throw new CreatorAgentPackageCreatorError(
+              'AGENT_PACKAGE_DRAFT_PROJECT_UNAVAILABLE',
+              '/private/project/path race detail',
             );
           },
         },
@@ -165,6 +236,45 @@ describe('Agent Package Creator Bridge', () => {
     ).rejects.toMatchObject({
       code: 'CURRENT_PROJECT_UNAVAILABLE',
       stage: 'BIND_CURRENT_PROJECT',
+      message: 'Codex Host 当前 Project 无法被可靠绑定。',
+    });
+  });
+
+  it('serializes arbitrary internal failures as one closed cause-free CLI envelope', () => {
+    const privateCanary = '/private/project/never-serialize-this';
+    const envelope = createCreatorAgentPackageCreatorBridgeErrorEnvelope(
+      new Error(privateCanary),
+      new AbortController().signal,
+    );
+
+    expect(envelope).toEqual({
+      code: 'INTERNAL',
+      message: 'Creator Bridge 未完成，且没有暴露内部错误信息。',
+      protocol: CREATOR_AGENT_PACKAGE_CREATOR_BRIDGE_ERROR_PROTOCOL,
+      stage: 'VALIDATE_DRAFT',
+    });
+    expect(Object.keys(envelope)).toEqual(['code', 'message', 'protocol', 'stage']);
+    expect(JSON.stringify(envelope)).not.toMatch(/private|cause|stack|never-serialize/u);
+  });
+
+  it('keeps Draft construction rejection separate from structured Host output rejection', async () => {
+    await expect(
+      createCreatorAgentPackageDraftFromBootstrapHandoffWithDependencies(
+        creatorHandoff(),
+        {},
+        {
+          resolveHostBoundCurrentProject: () => '/host-bound-project',
+          createDraft: async () => {
+            throw new CreatorAgentPackageCreatorError(
+              'AGENT_PACKAGE_DRAFT_OUTPUT_INVALID',
+              'private Draft construction detail',
+            );
+          },
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: 'DRAFT_INVALID',
+      stage: 'VALIDATE_DRAFT',
     });
   });
 

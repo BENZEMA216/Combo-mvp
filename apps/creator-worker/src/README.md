@@ -80,7 +80,8 @@
 - `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定 Creator 来源扫描器、只读 Host
   投影、结构化 Codex Host、Draft 规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
 - `application/agent-package-creator-bridge.ts` 验证 Plugin 交来的版本化 handoff，只从受信 Host adapter
-  解析当前 Project，再调用现有 Creator Draft 用例并核对返回 Draft 仍绑定原制作要求。
+  解析当前 Project，再调用现有 Creator Draft 用例并核对返回 Draft 仍绑定原制作要求。它穷尽映射来源、
+  Host、结构、安全策略和清理错误；Creator 内部配置与未知异常统一停止为不含内部详情的 `INTERNAL`。
 - `agent-package-session.ts` 是独立的公共推理子路径。消费者应从
   `@cb/creator-worker/agent-package-session` 导入，避免加载包根中的旧版 Worker 与本地执行模块。
 - `agent-package-authoring.ts` 是独立的公共创作子路径。消费者应从
@@ -90,7 +91,8 @@
 - `agent-package-creator-bridge.ts` 是供 Combo Plugin 携带的单次进程入口。它不接收 Project 路径参数，读取
   一个规范 Creator handoff，返回一个规范 Draft；构建阶段会把该入口及其 JavaScript 依赖打成 Node 24
   单文件模块。进程会在扫描前检查无路径的 Host adapter 启动标记；Project ID 与命令工作目录的权威核对
-  仍由 Plugin 的同 Project 子任务负责。
+  仍由 Plugin 的同 Project 子任务负责。失败行只序列化固定协议、错误 code、阶段和安全文案，不序列化
+  cause、stack、Host 原始错误或 Project 字节，也不会自动重试。
 - `agent-package-cli.ts` 是 `combo-agent-package` 进程入口。`experience` 接受彼此独立的创作者来源目录与
   消费者目录，不读取确认输入，顺序完成创作、正式重载和同一 Codex 任务线程中的两轮消费；
   `draft-current` 则只使用当前工作目录和一句制作要求生成规范 Draft，不编译或运行。
