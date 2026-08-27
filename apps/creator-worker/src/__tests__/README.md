@@ -25,6 +25,11 @@
 - `agent-package-creator.test.ts` 覆盖一句制作要求与受信调用方当前 Project 的绑定、无绝对路径 Draft、来源
   回执、exact revision 修订、不同 revision 编译出不同 Package digest、正式重载、来源目录移动后的编译拒绝，
   以及篡改和 getter 的零副作用拒绝。
+- `creator-project-source-boundary.test.ts` 覆盖 Creator 专属 `.git`、`.codex`、Host metadata 与 symlink
+  剪枝，linked-worktree pointer、纯管理变化摘要稳定、Git CLI 禁用、私有只读投影、递归权限、零来源写入、
+  root 前置拒绝、scan/projection 中间目录置换的 pre-read path binding、excluded `000` 状态下的投影与复验、
+  unsafe 路径 fail-closed、exact NFD 路径、O(1) identity lookup、citation 硬拒绝、投影清理错误和旧版全物理
+  扫描兼容。
 - `agent-package-creator-bridge.test.ts` 覆盖官方指南版本 handoff、Host 当前 Project 的单次绑定、制作要求
   不可换绑、取消与安全错误，以及单文件构建产物在空 `NODE_PATH` 下拒绝任何路径参数。
 - `agent-package-creator-bridge.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时从 Host 绑定的临时 Project

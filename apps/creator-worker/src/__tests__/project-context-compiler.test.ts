@@ -25,6 +25,7 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { assertCreatorAgentVersionRunnable } from '../application/creator-agent-composition.js';
+import { materializeCreatorProjectSourceProjection } from '../authoring/creator-project-source-projection.js';
 import { SUPPORTED_BUNDLED_CODEX_VERSION } from '../infrastructure/codex/index.js';
 import {
   PROJECT_COMPILER_OUTPUT_SCHEMA,
@@ -35,6 +36,7 @@ import type { CreatorAgentProjectCompilerError } from '../project-context-compil
 import {
   assertSameProjectContext,
   revalidateProjectContext,
+  scanCreatorProjectSourceContext,
   scanProjectContext,
   scanProjectContextWithHooks,
 } from '../project-context-index.js';
@@ -335,8 +337,9 @@ describe('Project Context Compiler', () => {
         allowSensitiveProjectContext: true,
       },
       {
-        scanProject: scanProjectContext,
+        scanProject: scanCreatorProjectSourceContext,
         revalidateProject: revalidateProjectContext,
+        materializeHostProject: materializeCreatorProjectSourceProjection,
         createHost: () => host,
       },
       'AGENT_PACKAGE_CONSUMER_PROJECT',

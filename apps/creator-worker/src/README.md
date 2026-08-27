@@ -31,19 +31,28 @@
   完整停止后删除临时目录。
 - `execution/index.ts` 是 application composition 使用的执行层内部出口。
 - `agent-local-runner.ts` 是旧内部路径的薄兼容入口，只 re-export application composition 已绑定的执行用例。
-- `project-context-index.ts` 对 canonical Project 的全部物理后代执行有界只读索引，哈希 regular file，记录
-  symlink 本身而不跟随外部目标，并区分 tracked-clean、tracked-dirty、untracked、ignored、Git admin 与
-  authoring-only evidence。它覆盖 hidden、日志、task/session、`.env` 和物理 `.git`，不会执行 Project 脚本
-  或 Git clean filter；linked worktree 的 `.git` pointer 不会扩展到 Project 外的共享目录。文件首次读取时
+- `project-context-index.ts` 保留旧版全物理 profile，并新增 Agent Package Creator 来源 profile。旧 profile
+  对 canonical Project 的全部物理后代执行有界只读索引，记录 symlink 本身，并区分 Git 分类；Creator
+  profile 在遍历和打开前剪枝 `.git`、`.codex`、exact Codex Host task/thread/session 元数据和所有 symlink，
+  不执行 Git 分类或 Git CLI。Creator 摘要与复验忽略被排除管理项造成的目录 metadata 变化，但仍以允许
+  namespace 和普通文件身份拒绝真实来源漂移；不可安全表示的非私有路径会 fail closed，well-formed Unicode
+  路径保留文件系统 exact 形式。Creator 正文读取前后还核对 canonical containment、lexical path、fd 与来源
+  identity；这覆盖稳定符号链接和一次性置换，不证明同 UID 反复竞态下的 OS 隔离。两个 profile 都不会执行 Project 脚本或 Git clean filter。文件首次读取时
   允许 macOS 只更新系统 provenance/ctime，并以同一文件描述符上的 post-read stat 作为稳定索引基线。首轮
   内容哈希后，它还保留仅在内存的 bigint 元数据 manifest，用完整 namespace 与文件身份复验替代第二次正文
   读取，并输出有界扫描进度。
+- `authoring/creator-project-source-projection.ts` 只接受 scanner 签发的 exact Creator-profile scan，把允许
+  普通文件按摘要复验后复制到临时 `0400`/`0500` Host workspace；原 Project 路径、私有 metadata 和 symlink
+  不进入投影，复制前后会以 O(1) manifest lookup 复验 scan inode，投影身份异常或清理失败都会显式报错。
+- `authoring/file-descriptor-path-binding.ts` 在 Creator 初扫与投影正文读取前后核对 lexical path、canonical
+  Project containment 及已打开 fd 的 dev/ino；这是 Node 无 `openat(2)` 时的一次性置换防线，不声称同 UID
+  反复竞态下的 OS 隔离。
 - `authoring/ports.ts` 只定义结构化 authoring Host 窄端口；纯 Package 提取核心不导入旧版 AgentVersion、
   Agent runner、Codex Process 或具体 Host factory。
-- `authoring/project-behavior-extractor.ts` 在提取前做一次完整内容索引、模型返回后做完整 namespace 与 Git
-  snapshot 复验，把 fixed output schema 与有界 coverage 摘要交给 bundled Codex，并返回不含旧版 Draft 或
-  AgentVersion 的可移植行为与来源事实。Codex 直接在只读 Project 中选择相关证据；full inventory 只存在
-  扫描器内存中，不序列化到临时文件或 Catalog。
+- `authoring/project-behavior-extractor.ts` 在提取前做一次来源索引、模型返回后做同 profile 复验，把 fixed
+  output schema 与有界 coverage 摘要交给 bundled Codex，并返回不含旧版 Draft 或 AgentVersion 的可移植
+  行为与来源事实。旧版目标继续直接读取原 Project 并复验 Git snapshot；Agent Package Creator 必须提供
+  私有来源投影，缺少投影即配置失败，且 citation 会再次拒绝私有路径和非普通文件。
 - `authoring/project-context-compiler.ts` 是旧版 AgentVersion 编译适配层。它把纯行为提取结果投影成 V2，
   或在 formal 根不能形成 canonical Git snapshot 时投影成不自动选择嵌套仓库的 V3 behavior-only Draft，
   并在本文件内定义旧版本地 Runtime 预检端口；Package Creator 不导入这个适配层。
@@ -64,12 +73,12 @@
   智能体包快照。它不导入 `Worker`、`Broker`、`Journal`、SQLite 或旧版 `AgentVersion`。
 - `application/agent-package-authoring.ts` 编排 Project 语义提取、确定性包构建、原子发布和正式加载器重开，
   并返回内容摘要、示例任务与来源摘要；它不创建旧版 Catalog 或 `AgentVersion`。
-- `application/agent-package-authoring-composition.ts` 只为智能体包创作绑定扫描器、结构化 Codex Host、构建器、
-  发布器与加载器，不导入旧版执行组合根。
+- `application/agent-package-authoring-composition.ts` 只为智能体包创作绑定 Creator 来源扫描器、只读 Host
+  投影、结构化 Codex Host、构建器、发布器与加载器，不导入旧版执行组合根。
 - `application/agent-package-creator.ts` 把 Host 提供的当前 Project 与一句制作要求绑定成不可变 Package Draft，
   并把 exact Draft 编译、原子发布和正式重载组合成第二个显式动作；Draft 阶段不产生可运行 Package。
-- `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定扫描器、结构化 Codex Host、Draft
-  规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
+- `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定 Creator 来源扫描器、只读 Host
+  投影、结构化 Codex Host、Draft 规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
 - `application/agent-package-creator-bridge.ts` 验证 Plugin 交来的版本化 handoff，只从受信 Host adapter
   解析当前 Project，再调用现有 Creator Draft 用例并核对返回 Draft 仍绑定原制作要求。
 - `agent-package-session.ts` 是独立的公共推理子路径。消费者应从

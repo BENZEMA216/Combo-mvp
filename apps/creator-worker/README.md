@@ -49,12 +49,28 @@ try {
 ## 从一句制作要求创建可修订 Draft
 
 新的 `agent-package-creator` 子路径提供 Draft 创作内核，并把创作拆成两个明确阶段。调用方先把创作者的
-一句制作要求与它已经确认的当前 Project 绑定，经过完整扫描和结构化提取后只返回
+一句制作要求与它已经确认的当前 Project 绑定，经过 Creator 来源允许列表扫描和结构化提取后只返回
 `combo.agent-package-draft/1`；这个 Draft 含身份、方法、示例任务、输出合同、来源摘要、revision 和
 fingerprint，但不含本机 Project 绝对路径，也不会自动编译、发布或运行。创作任务在服务端私下保留来源
 绑定，调用方只能针对当前 exact revision 提交修订，不能在编译时替换来源。只有用户选择编译后，第二阶段
 才生成内容寻址 Package、原子保存并用正式加载器重新打开。Combo Plugin 的一句话路由和可视化 Studio
 仍需在后续切片接入这个内核。
+
+Creator Draft 使用独立的来源允许列表，不复用旧版 Project Context Compiler 的全物理扫描语义。扫描器在
+下钻和打开内容前剪枝任意层级的 `.git`、`.codex`，以及 exact `codex-task.json`、
+`codex-thread.json`、`codex-session.json`；所有符号链接也不进入 Creator inventory。这个 profile 不读取
+Git classification，不调用 Git CLI，也不把这些排除项或其纯管理变化计入来源摘要。允许列表内的文件、目录
+和内容仍会完整哈希并在模型返回后复验，任何允许来源漂移都会拒绝 Draft。反斜杠、控制字符等不能安全表示
+为 Agent Package citation 的业务路径会明确停止，而不是被静默当作私有排除；well-formed Unicode 路径保留
+文件系统返回的 exact 形式，不做 Unicode 规范化。
+
+结构化 Creator Host 不直接挂载原 Project，而只收到一个临时允许列表投影。投影只含经过摘要复验的普通
+文件，文件权限固定为 `0400`，目录固定为 `0500`，Host 停止后必须清除；清除失败是可见的停止错误。模型
+返回的 citation 还会再次硬拒绝上述私有路径和非普通文件。这个投影闭合了当前 Project 内的 Creator 来源
+边界。Creator 初扫与投影复制会在正文读取前后核对 canonical containment、lexical path、已打开 fd 和来源
+身份，稳定符号链接及一次性中间目录置换会在消费正文前停止；Node 当前没有使用 `openat(2)` 逐段锁定路径，
+因此同 UID 对手反复竞态下的 OS 级隔离仍为 `NOT_PROVEN`。bundled Codex 也仍与桌面用户同 UID，不构成
+操作系统级的全盘读取隔离；不得把它描述为 Host 在操作系统层只能看到 Project。
 
 ```ts
 import { createCreatorAgentPackageDraftFromCurrentProject } from '@cb/creator-worker/agent-package-creator';
@@ -109,8 +125,8 @@ const compiled = authoringTask.compile({
 
 ## 从 Project 直接创建并消费 Agent Package
 
-新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用可信的 Project 全量扫描、结构化 Codex 提取
-和完整复验机制，随后由代码确定性生成根 `AGENT.md`、一个 `extracted-method` 原生技能与规范
+新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用 Creator 来源允许列表扫描、只读投影、
+结构化 Codex 提取和完整复验机制，随后由代码确定性生成根 `AGENT.md`、一个 `extracted-method` 原生技能与规范
 `agent.json`。输出先写入私有同文件系统临时目录，完成文件同步后按包摘要原子改名；摘要目标已存在时不会
 覆盖。正式加载器会立即关闭创作阶段并重新打开已发布目录，只有文件清单、摘要和规范清单完全一致才返回。
 
@@ -150,7 +166,7 @@ pnpm --silent --dir apps/creator-worker package-experience -- \
 这里的 `--` 是包管理器转发参数时使用的分隔符，命令行会明确接受它；直接调用
 `combo-agent-package experience` 时可以不写该分隔符。
 
-该命令不要求确认输入。执行命令本身表示用户授权全量读取受控的创作者来源目录，并接受相关内容可能进入
+该命令不要求确认输入。执行命令本身表示用户授权读取受控创作者来源目录中的 Creator 允许列表，并接受相关内容可能进入
 本机 Codex 使用的模型服务。命令会创建并重载不可变智能体包，再在独立消费者目录中启动一个新的 Codex
 任务线程，顺序执行包内第一条示例任务和一条连续任务。它不做裸 Codex 对比、不写两个 Project、不发布或
 分享智能体包。创作者来源目录和消费者目录必须是彼此独立的真实绝对目录；私有包默认保存到
@@ -200,7 +216,7 @@ Codex Host、loopback Broker 和 Worker Runtime 只在 application composition �
 不再承载创作或执行逻辑。这个拆分不新增 Conversation，也不改变 Catalog schema、V1/V2/V3 canonical bytes、
 fingerprint、Developer Instructions 或真实运行行为。
 
-可信扫描器会读取并哈希 canonical Project 根目录内的全部物理后代，包括 tracked、dirty、untracked、
+旧版 Project Context Compiler 的可信扫描器会读取并哈希 canonical Project 根目录内的全部物理后代，包括 tracked、dirty、untracked、
 ignored、hidden 文件，以及源码、文档、配置、日志、task/session 记录、raw tool output、`.env` 和物理
 `.git` 内容。普通检出中的 `.git` 目录属于扫描范围；linked worktree 中的 `.git` pointer 只作为 Project
 内的物理文件处理，不会继续遍历 Project 外的 shared common directory 或 sibling worktree。symlink 会按
