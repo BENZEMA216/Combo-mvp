@@ -31,7 +31,8 @@
   unsafe 路径 fail-closed、exact NFD 路径、O(1) identity lookup、citation 硬拒绝、投影清理错误和旧版全物理
   扫描兼容。
 - `agent-package-creator-bridge.test.ts` 覆盖官方指南版本 handoff、Host 当前 Project 的单次绑定、制作要求
-  不可换绑、取消与安全错误，以及单文件构建产物在空 `NODE_PATH` 下拒绝任何路径参数。
+  不可换绑、取消、全部编译器错误的稳定分类、内部失败的保守停止、固定无泄漏错误 envelope，以及单文件
+  构建产物在空 `NODE_PATH` 下拒绝任何路径参数。
 - `agent-package-creator-bridge.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时从 Host 绑定的临时 Project
   启动实际单文件桥接入口，调用真实内置 Codex 提取一个带随机方法标记的 Draft，并验证来源文件零变化、
   Draft 不含绝对路径或官方网页地址。
@@ -60,7 +61,8 @@
   task/session、`.env`、物理 `.git` 与 symlink 索引，验证 linked worktree pointer 不扩展到外部 Git admin
   目录、Git filter 不执行、特殊文件与稀疏超限文件 fail-closed、目录替换不越出 Project、fixed output
   schema、source digest 引用、best-effort secret taint、敏感上下文授权和编译前后 Project 漂移拒绝。它还
-  覆盖 unborn 聚合根、两个嵌套仓库、hardlink 去重预算，以及不选择嵌套仓库的 V3 behavior-only 编译。
+  覆盖 unborn 聚合根、两个嵌套仓库、hardlink 去重预算、不选择嵌套仓库的 V3 behavior-only 编译，以及
+  Package 提取 Host 生命周期、结构输出、citation、secret 与可移植性策略的真实错误分类。
   ctime-only 回归模拟 macOS 首次读取时的 provenance 更新，要求索引记录 post-read 稳定 stat，同时继续
   拒绝 size、mtime、mode、identity 或内容漂移。
 - `agent-catalog-cli.test.ts` 用独立真实 Catalog SQLite 覆盖一条 `create` 命令中的编译、完整 review、可见

@@ -123,6 +123,15 @@ const compiled = authoringTask.compile({
 打包进去，运行时只保留 Node 内置模块、Git、桌面内置 Codex 与本机认证依赖。它供 Plugin 固定摘要后携带，
 不是要求普通用户在终端里执行的入口。
 
+桥接失败只输出一个 `combo.agent-package-creator-bridge-error/1` JSON 对象，字段固定为 `protocol`、`code`、
+`stage` 和安全文案。正常 Creator 路径会区分 Project 绑定、来源读取、来源上限、来源变化、Host 失败、
+结构无效、策略拒绝、Draft 无效和清理不完整；内部配置、旧版 Runtime 分支与任意未知异常统一停止为
+`INTERNAL`。对应稳定 code 为 `CURRENT_PROJECT_UNAVAILABLE`、`SOURCE_READ_FAILED`、`SOURCE_LIMIT`、
+`SOURCE_CHANGED`、`HOST_FAILED`、`OUTPUT_INVALID`、`OUTPUT_REJECTED`、`DRAFT_INVALID` 和
+`CLEANUP_INCOMPLETE`。`OUTPUT_REJECTED` 不说明触发了哪条安全规则，也不暴露 Project 值；cause、stack、
+Host 原始错误和 Project 字节都不会进入标准错误输出。`EXTRACTION_FAILED` 只为旧版同协议生产者保留，
+不由当前正常分类路径发出。Bridge 不会对任何失败自动重试，避免重复模型轮次、费用或不确定副作用。
+
 ## 从 Project 直接创建并消费 Agent Package
 
 新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用 Creator 来源允许列表扫描、只读投影、

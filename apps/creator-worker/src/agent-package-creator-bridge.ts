@@ -18,7 +18,8 @@ import {
   type CreatorAgentPackageCreatorBridgeStage,
 } from './application/agent-package-creator-bridge.js';
 
-const ERROR_PROTOCOL = 'combo.agent-package-creator-bridge-error/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_BRIDGE_ERROR_PROTOCOL =
+  'combo.agent-package-creator-bridge-error/1' as const;
 const PROGRESS_PROTOCOL = 'combo.agent-package-creator-bridge-progress/1' as const;
 const HOST_BINDING_ENVIRONMENT = 'COMBO_AGENT_PACKAGE_CREATOR_HOST_BINDING' as const;
 
@@ -31,6 +32,13 @@ The Combo Plugin starts this bridge inside a Codex task that is already bound to
 current saved Project. The bridge accepts no Project path and returns one canonical
 combo.agent-package-draft/1 JSON document. It does not compile, run, or publish a Package.
 `;
+
+export type CreatorAgentPackageCreatorBridgeErrorEnvelope = Readonly<{
+  code: CreatorAgentPackageCreatorBridgeErrorCode;
+  message: string;
+  protocol: typeof CREATOR_AGENT_PACKAGE_CREATOR_BRIDGE_ERROR_PROTOCOL;
+  stage: CreatorAgentPackageCreatorBridgeStage;
+}>;
 
 const productionDependencies = Object.freeze({
   resolveHostBoundCurrentProject: () => {
@@ -91,15 +99,8 @@ export async function runCreatorAgentPackageCreatorBridge(
     process.stdout.write(`${serializeCreatorAgentPackageDraftSnapshot(draft)}\n`);
     return 0;
   } catch (error) {
-    const safe = safeBridgeError(error, cancellation.signal);
-    process.stderr.write(
-      `${JSON.stringify({
-        code: safe.code,
-        message: safe.message,
-        protocol: ERROR_PROTOCOL,
-        stage: safe.stage,
-      })}\n`,
-    );
+    const safe = createCreatorAgentPackageCreatorBridgeErrorEnvelope(error, cancellation.signal);
+    process.stderr.write(`${JSON.stringify(safe)}\n`);
     if (safe.code === 'CANCELLED' && signalName !== undefined) {
       return signalName === 'SIGINT' ? 130 : 143;
     }
@@ -209,6 +210,20 @@ function safeBridgeError(
     stage: 'VALIDATE_DRAFT',
     message: 'Creator Bridge 未完成，且没有暴露内部错误信息。',
   };
+}
+
+export function createCreatorAgentPackageCreatorBridgeErrorEnvelope(
+  error: unknown,
+  signal: AbortSignal,
+): CreatorAgentPackageCreatorBridgeErrorEnvelope {
+  const safe = safeBridgeError(error, signal);
+  // Only this closed record is serialized; Error cause, stack and private Host text stay internal.
+  return Object.freeze({
+    code: safe.code,
+    message: safe.message,
+    protocol: CREATOR_AGENT_PACKAGE_CREATOR_BRIDGE_ERROR_PROTOCOL,
+    stage: safe.stage,
+  });
 }
 
 function isDirectExecution(): boolean {

@@ -141,6 +141,7 @@ export type CreatorAgentProjectCompilerErrorCode =
   | 'PROJECT_COMPILER_GIT_INVALID'
   | 'PROJECT_COMPILER_HOST_FAILED'
   | 'PROJECT_COMPILER_OUTPUT_INVALID'
+  | 'PROJECT_COMPILER_SAFETY_REJECTED'
   | 'PROJECT_COMPILER_RUNTIME_UNSUPPORTED'
   | 'PROJECT_COMPILER_SECRET_OUTPUT'
   | 'PROJECT_COMPILER_STOP_INCOMPLETE';
@@ -231,6 +232,22 @@ export async function extractCreatorAgentProjectBehaviorWithDependencies(
   } catch (error) {
     const revalidationFailure = normalizeCompilerError(error);
     if (primaryFailure === undefined) throw revalidationFailure;
+    // Preserve an observed cleanup failure without inferring codes from arbitrary cause chains.
+    if (
+      primaryFailure instanceof CreatorAgentProjectCompilerError &&
+      primaryFailure.code === 'PROJECT_COMPILER_STOP_INCOMPLETE'
+    ) {
+      throw new CreatorAgentProjectCompilerError(
+        'PROJECT_COMPILER_STOP_INCOMPLETE',
+        'Project compiler cleanup was incomplete and Project revalidation also failed.',
+        {
+          cause: new AggregateError(
+            [primaryFailure, revalidationFailure],
+            'Project cleanup and Project revalidation both failed.',
+          ),
+        },
+      );
+    }
     throw new CreatorAgentProjectCompilerError(
       revalidationFailure.code,
       revalidationFailure.message,
@@ -246,6 +263,7 @@ export async function extractCreatorAgentProjectBehaviorWithDependencies(
   if (primaryFailure !== undefined) throw normalizeCompilerError(primaryFailure);
   if (generated === undefined) throw compilerError('PROJECT_COMPILER_OUTPUT_INVALID');
   assertNoSensitiveOutput(generated, before.sensitiveLiterals);
+  // Parsed contract failures are OUTPUT_INVALID; this step rejects only valid-shaped unsafe output.
   assertGeneratedBehaviorSafe(generated);
   const resolvedCitations = resolveCitations(
     generated.sourcePaths,
@@ -612,21 +630,23 @@ function assertNoSensitiveOutput(
 }
 
 function assertGeneratedBehaviorSafe(output: GeneratedCompilation): void {
-  const behavior = [
+  const behaviorFields = [
     output.name,
     output.description,
     output.instructions,
     ...output.starterPrompts,
     output.outputDescription,
     output.coverageSummary,
-  ].join('\n');
+  ];
+  const behavior = behaviorFields.join('\n');
   if (
+    [...behaviorFields, ...output.sourcePaths].some(containsUnsafeAgentText) ||
     containsNonPortableAgentReference(behavior) ||
     /https?:\/\/|\b(?:curl|wget|scp|ssh|netcat|nc)\b|\b(?:task|session|thread)[-_ ]?id\s*[:=]/iu.test(
       behavior,
     )
   ) {
-    throw compilerError('PROJECT_COMPILER_OUTPUT_INVALID');
+    throw compilerError('PROJECT_COMPILER_SAFETY_REJECTED');
   }
 }
 
@@ -805,8 +825,7 @@ function boundedText(minimum: number, maximum: number) {
     .min(minimum)
     .max(maximum)
     .refine((value) => value.trim().length > 0, 'Meaningful text is required')
-    .refine((value) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(value), 'Visible semantic text is required')
-    .refine((value) => !containsUnsafeAgentText(value), 'Unsafe text is forbidden');
+    .refine((value) => /[\p{L}\p{N}\p{P}\p{S}]/u.test(value), 'Visible semantic text is required');
 }
 
 function uniqueStrings(values: readonly string[], context: z.RefinementCtx): void {
