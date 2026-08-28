@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
@@ -65,6 +66,31 @@ const validEngineeringSource = [
   '',
 ].join('\n');
 
+function approvedNextProjectSource(current = readFileSync(committedProjectPath, 'utf8')) {
+  const currentSha256 = createHash('sha256').update(current).digest('hex');
+  if (currentSha256 === 'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea') {
+    return current;
+  }
+  assert.equal(currentSha256, '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098');
+  const approvedInstruction = current.replace(
+    '复制一段AGENT的制作指令给自己的Codex，把刚才的工作做成 Agent',
+    '用一句自然语言告诉自己的 Codex，把刚才的工作做成 Agent',
+  );
+  const creatorDescription =
+    '创建动作由一句自然语言直接发起，不要求用户理解文件路径、Manifest、Digest、Draft 或冻结命令。Agent Studio 是创作者查看、修订和试跑 Agent 的产品界面，可在codex中被使用。';
+  return approvedInstruction.replace(
+    creatorDescription,
+    [
+      creatorDescription,
+      '',
+      '当前对话是默认创作来源：用户在 Codex Desktop 当前任务发出上述指令时，只同意使用该任务中用户可见的对话，',
+      '不授权读取 Project。系统必须绑定用户正在操作的当前任务，不接受业务调用方、Plugin 或 MCP 通过 task、thread、',
+      'session 标识或 raw transcript 选择其他来源。普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，',
+      '也不需要复制内部协议。Project 或工作旅程只能由用户另行明确选择，不能作为当前对话失败后的自动回退。',
+    ].join('\n'),
+  );
+}
+
 test('the committed budget contract is canonical and pinned to the clean rebuild', () => {
   assert.equal(contract.baseSha, 'd15a985c67c2b9b5e08a5b8bc03a772fb543aecb');
   assert.equal(contract.donorSha, '871c8f43b0725fa2f471173b2fbcf380ccfba930');
@@ -75,10 +101,10 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
   assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
   assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
   assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
-  assert.equal(
-    productGoalLock.projectSha256,
+  assert.deepEqual(productGoalLock.approvedProjectSha256s, [
     '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
-  );
+    'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+  ]);
   assert.equal(source, `${JSON.stringify(contract, null, 2)}\n`);
 });
 
@@ -311,6 +337,59 @@ test(
         sha256: 'd1fcc3355deca962632194c4fbfcd26c4ce5f4494f1af0f813c7ff0a4d7be9ee',
       },
     );
+  },
+);
+
+test(
+  'the exact user-approved conversation-first product baseline is accepted',
+  { skip: !existsSync(committedProjectPath) },
+  () => {
+    const projectSource = approvedNextProjectSource();
+    assert.equal(
+      createHash('sha256').update(projectSource).digest('hex'),
+      'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+    );
+    assert.equal(approvedNextProjectSource(projectSource), projectSource);
+    assert.equal(
+      verifyProductBaselineSources({
+        projectSource,
+        agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+        engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+      }).status,
+      'LOCKED',
+    );
+  },
+);
+
+test(
+  'a one-byte edit and an unknown third product baseline revision fail closed',
+  { skip: !existsSync(committedProjectPath) },
+  () => {
+    const approved = approvedNextProjectSource();
+    const candidates = [
+      approved.replace('Codex Desktop', 'Codex desktop'),
+      approved.replace(
+        '用一句自然语言告诉自己的 Codex，把刚才的工作做成 Agent',
+        '用一句话告诉自己的 Codex，把刚才的工作做成 Agent',
+      ),
+    ];
+    for (const projectSource of candidates) {
+      assert.equal(
+        productGoalLock.approvedProjectSha256s.includes(
+          createHash('sha256').update(projectSource).digest('hex'),
+        ),
+        false,
+      );
+      assert.throws(
+        () =>
+          verifyProductBaselineSources({
+            projectSource,
+            agentsSource: readFileSync(committedAgentsPath, 'utf8'),
+            engineeringSource: readFileSync(committedEngineeringPath, 'utf8'),
+          }),
+        /PROJECT\.md product baseline changed/,
+      );
+    }
   },
 );
 

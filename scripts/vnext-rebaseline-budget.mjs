@@ -28,7 +28,10 @@ export const productGoalLock = Object.freeze({
   semanticName: '可分享 Agent',
   text: '让用户把一段和自己AGENT的对话、项目或旅程变成一个可分享的 Agent，让其他人打开链接就能使用它，或是用一段话就能让自己的AGENT获取对应能力。',
   sha256: 'd1fcc3355deca962632194c4fbfcd26c4ce5f4494f1af0f813c7ff0a4d7be9ee',
-  projectSha256: '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+  approvedProjectSha256s: Object.freeze([
+    '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+    'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+  ]),
   headings: Object.freeze(['## 一、唯一产品目标', '## 二、目标用户体验', '## 三、唯一产物模型']),
 });
 
@@ -377,7 +380,10 @@ export function verifyProductBaselineSources({
     );
   }
   const projectSha256 = createHash('sha256').update(projectSource).digest('hex');
-  invariant(projectSha256 === productGoalLock.projectSha256, 'PROJECT.md product baseline changed');
+  invariant(
+    productGoalLock.approvedProjectSha256s.includes(projectSha256),
+    'PROJECT.md product baseline changed',
+  );
   return { status: 'LOCKED', goalId: productGoalLock.goalId, sha256: productGoalLock.sha256 };
 }
 
