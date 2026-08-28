@@ -10,6 +10,8 @@ import {
   contractPath,
   defaultBaseRef,
   isExactProductBaselineBootstrap,
+  isExactMaintenanceModeBootstrap,
+  maintenanceModeBootstrap,
   parseContract,
   parseNumstat,
   policyPaths,
@@ -70,6 +72,9 @@ test('the committed budget contract is canonical and pinned to the clean rebuild
     preservePostgresMigrationHistory: false,
     preserveWorkerSqliteSchemaHistory: false,
   });
+  assert.equal(contract.maintenanceFile, 'apps/web/src/pages/LoginPage.test.tsx');
+  assert.equal(contract.allowedFiles.includes(contract.maintenanceFile), false);
+  assert.equal(contract.allowedPathPrefixes.includes('apps/web/'), false);
   assert.equal(
     productGoalLock.projectSha256,
     '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
@@ -129,6 +134,13 @@ test('unknown fields, duplicate keys, unsafe paths, and relaxed ceilings fail cl
     () => parseContract(`${JSON.stringify(relaxed, null, 2)}\n`),
     /from 1 through 5000/,
   );
+
+  const overlapping = structuredClone(contract);
+  overlapping.maintenanceFile = 'apps/runtime/src/product.ts';
+  assert.throws(
+    () => parseContract(`${JSON.stringify(overlapping, null, 2)}\n`),
+    /cannot be both product and maintenance/,
+  );
 });
 
 test('numstat counts additions and deletions and retains mode-only files', () => {
@@ -150,6 +162,71 @@ test('governance edits cannot share a pull request with product edits', () => {
   assert.equal(assessPullRequest(contract, governance).mode, 'GOVERNANCE_ONLY');
   assert.throws(
     () => assessPullRequest(contract, [...governance, entry('apps/runtime/src/product.ts')]),
+    /governance-only/,
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [...governance, entry('apps/web/src/pages/LoginPage.test.tsx')]),
+    /governance-only/,
+  );
+});
+
+test('maintenance edits use exact paths and cannot share a product pull request', () => {
+  assert.equal(assessPullRequest(contract, []).mode, 'PRODUCT');
+  assert.equal(
+    assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.test.tsx', 2)]).mode,
+    'MAINTENANCE',
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry('apps/web/src/pages/LoginPage.test.tsx'),
+        entry('apps/runtime/src/product.ts'),
+      ]),
+    /maintenance-only/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.tsx')]),
+    /outside the R1-R3 rebuild scope/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.a11y.test.ts')]),
+    /outside the R1-R3 rebuild scope/,
+  );
+  assert.throws(
+    () => assessPullRequest(contract, [entry('apps/web/src/pages/LoginPage.test.tsx', 1201)]),
+    /per-file changed-line budget exceeded/,
+  );
+});
+
+test('the one-time maintenance bootstrap is pinned to one base and four exact paths', () => {
+  const entries = maintenanceModeBootstrap.paths.map((path) => entry(path));
+  assert.equal(
+    isExactMaintenanceModeBootstrap({
+      comparisonBase: maintenanceModeBootstrap.baseSha,
+      entries,
+      contract,
+    }),
+    true,
+  );
+  assert.equal(
+    assessPullRequest(contract, entries, { comparisonBase: maintenanceModeBootstrap.baseSha }).mode,
+    'GOVERNANCE_MAINTENANCE_BOOTSTRAP',
+  );
+  assert.equal(
+    isExactMaintenanceModeBootstrap({
+      comparisonBase: contract.baseSha,
+      entries,
+      contract,
+    }),
+    false,
+  );
+  assert.throws(() => assessPullRequest(contract, entries), /governance-only/);
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [...entries, entry('apps/runtime/src/product.ts')], {
+        comparisonBase: maintenanceModeBootstrap.baseSha,
+      }),
     /governance-only/,
   );
 });
@@ -207,6 +284,14 @@ test('the cumulative train has a separate hard ceiling and the same scope bounda
   assert.throws(
     () => assessCumulative(contract, [entry('apps/creator-worker/src/root.ts', 70001)]),
     /cumulative changed-line budget exceeded/,
+  );
+  assert.equal(
+    assessCumulative(contract, [entry('apps/web/src/pages/LoginPage.test.tsx', 2)]).changedLines,
+    2,
+  );
+  assert.throws(
+    () => assessCumulative(contract, [entry('apps/web/src/pages/LoginPage.a11y.test.ts')]),
+    /cumulative path is outside the R1-R3 rebuild scope/,
   );
 });
 
