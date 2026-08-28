@@ -27,6 +27,7 @@ describe('Agent Package public import boundary', () => {
     expect(rootApi).not.toHaveProperty('CreatorAgentPackageSessionError');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageFromProject');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftFromCurrentProject');
+    expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftWithHostAuthorization');
   });
 
   it('keeps the source dependency closure outside legacy execution layers', () => {

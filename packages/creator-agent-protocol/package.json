@@ -35,13 +35,17 @@
     "./agent-package-draft": {
       "types": "./dist/agent-package-draft.d.ts",
       "default": "./dist/agent-package-draft.js"
+    },
+    "./creator-authorization": {
+      "types": "./dist/creator-authorization.d.ts",
+      "default": "./dist/creator-authorization.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "pnpm run clean && tsc -b",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "test": "vitest run",

@@ -25,6 +25,12 @@
 - `agent-package-creator.test.ts` 覆盖一句制作要求与受信调用方当前 Project 的绑定、无绝对路径 Draft、来源
   回执、exact revision 修订、不同 revision 编译出不同 Package digest、正式重载、来源目录移动后的编译拒绝，
   以及篡改和 getter 的零副作用拒绝。
+- `agent-package-creator-authorized.test.ts` 用仅存在于测试目录的 Fake one-shot redemption port 锁定顺序：
+  request 校验与取消先于 redemption，redemption 成功先于 Project work，exact request/executor 摘要错配与
+  Host 拒绝、过期、撤销、重放、证据丢失都零 Draft work；成功后 Project identity 会在 scanner 首读边界
+  再次核对，Host dispatch/workspace generation 在 redemption 后漂移也会由 lease `assertCurrent()` 拒绝；
+  返回面不暴露 Package compile。业务 options 不能提交 handle、execution 或 Project 字段。Fake 只证明应用
+  编排，不证明真实 Host authority、UI 点击、authenticated IPC 或 Host ledger。
 - `creator-project-source-boundary.test.ts` 覆盖 Creator 专属 `.git`、`.codex`、Host metadata 与 symlink
   剪枝，linked-worktree pointer、纯管理变化摘要稳定、Git CLI 禁用、私有只读投影、递归权限、零来源写入、
   root 前置拒绝、scan/projection 中间目录置换的 pre-read path binding、excluded `000` 状态下的投影与复验、
@@ -45,7 +51,9 @@
   不会进入旧版 Worker、Broker、Journal、SQLite、本地执行或旧版智能体组合根；同一测试也验证智能体包
   创作与 Creator Draft 子路径不会反向加载旧版执行链或旧版 AgentVersion 协议。
 - `host-adapter-import-boundary.test.ts` 扫描应用与包源码，确保生产环境只有 bundled Codex adapter 能
-  导入 R1 producer 子路径，测试代码之外的新增 authority mint 入口会直接让 CI 失败。
+  导入 R1 producer 子路径；Creator authorization 不得出现 mint/consume 实现，内部 redemption ordering
+  seam 在真实顶层 Host UI adapter 接入前也必须保持零生产导入方。测试还扫描 clean build 的两份 `dist`
+  inventory，拒绝旧 producer、public wrapper、composition 或内部 seam 残留。
 - `agent-layer-import-boundary.test.ts` 解析生产 TypeScript 的普通 import、re-export 与 dynamic import，
   确保 Agent 创作层、执行层和基础设施保持单向依赖，并要求每个 Creator Worker 生产文件都有明确分层。
 - `local-alpha.test.ts` 用 Fake Host 但真实 Broker、双 SQLite、driver、pump 与 Runtime 连跑两次，覆盖
