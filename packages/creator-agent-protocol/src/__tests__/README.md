@@ -7,6 +7,11 @@ outcome、跨 handle 拒绝、first-sent interrupt lineage、generation/turn bin
 测试只使用内存 fake，证明的是协议合同，不是真实 Codex Host、IPC 写入或并发 adapter
 实现的集成证据。
 
+`creator-authorization-contract.test.ts` 锁定 `combo.creator-authorization/1` 的严格 path-free claims、
+最长五分钟、exact thread/turn/item/Project/request/executor 绑定、Draft-only scope、same-UID 隔离披露和
+固定错误分类；它也证明公开子路径不导出 mint、handle、consume 或私有 Project authority。该测试只验证
+授权卡语义，不证明 Codex Desktop 已显示卡片、用户完成点击、Host ledger 原子消费或 authenticated IPC。
+
 `broker-transport.test.ts` 锁定 65536 UTF-8 byte 上限、exact canonical JSON、四类 body 的
 方向与 sequence、语义身份以及完整 wire 身份。它不证明 SQLite、WebSocket 或 Cloud ACK。
 

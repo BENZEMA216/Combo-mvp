@@ -192,7 +192,7 @@ export function scanCreatorProjectSourceContext(
   );
 }
 
-/** Internal race-test seam; intentionally absent from the package root export. */
+/** Internal race/binding seam; intentionally absent from the package root export. */
 export function scanCreatorProjectSourceContextWithHooks(
   rawProjectPath: string,
   hooks: ProjectContextIndexHooks,

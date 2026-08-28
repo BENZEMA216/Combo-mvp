@@ -105,6 +105,34 @@ const compiled = authoringTask.compile({
 `combo-agent-package draft-current "一句制作要求"`，得到规范 Draft JSON。该命令只用于验证 Draft 创作
 内核的参数与输出合同，不是最终用户需要理解的终端流程，也不代表 Codex 已经提供焦点 Project 绑定。
 
+### 原生 Creator 授权语义与旧 Hook 兼容路径
+
+长期入口的目标不是让 Skill、MCP 或 Combo 自己签发授权，而是由顶层 Codex Host 展示一次性 Creator
+授权卡，并在自己的受认证 ledger 中绑定当前 thread、turn、item、Project generation、制作要求摘要和 exact
+executor。仓库当前只冻结了 path-free 授权卡 claims 和一个内部 ordering seam：它先向未来
+`CreatorAuthorizationRedemptionPort` 兑换当前 Host dispatch，再把兑换得到的内部 Project lease 交给
+Draft 内核。该 lease 包含 canonical path/device/inode 和同步 `assertCurrent()`；scanner 在首个目录读取
+边界必须同时重新核对 ambient Host dispatch/workspace generation 与本地目录 identity。返回面只有 Draft
+读取与修订，不暴露 Package compile。
+
+业务调用方不能提交 authorization handle、thread、turn、item、Project binding、workspace generation 或
+executor。生产包也没有 Creator mint/consume API、没有公开 authorized 子路径，且没有任何生产 composition
+导入该内部 seam；clean production build 也不携带该内部文件。因此当前没有真实 Host adapter 时，这条长期
+入口就是不可调用的 fail-closed 状态，不会回退到 legacy Bridge。
+
+授权 scope 固定为只生成 Draft、零 Project mutation、向 Codex 模型服务发送选定的 Creator Project 上下文，
+并只向 Combo 返回 Draft 与相对引用；它显式标记读取隔离为
+`same_uid_unisolated_not_os_enforced`，不能把 Project 绑定冒充 OS 沙箱。Project path/device/inode 仅属于
+未来 authenticated adapter 到应用层的内部 lease，不进入 public claims、handoff、模型 prompt、Draft 或
+Package。同步 lease 只是本地应用端口要求，不是已经冻结的跨进程 wire；真实实现也可以改为 Host 打开的
+目录 descriptor。
+
+当前状态是 `HOST_AUTHORIZATION_SEMANTICS_AND_ORDERING_READY`，不是普通用户 UAT 完成。Codex
+`0.148.0-alpha.15` 没有向 Combo 暴露 Creator 自定义审批卡 API；真实完成仍要求顶层 Host UI、用户点击、
+mutual-auth IPC、Host 侧一次性原子 ledger、workspace generation 核对和 exact executor dispatch。仓内
+Fake redemption port 只证明调用顺序，不能冒充 Host authority。现有 0.8.3 Hook / Bridge 保持独立的
+`LEGACY_HOOK_COMPAT_V1` 路径；Hook 失败、用户拒绝或原生授权失败不得静默降级。
+
 为 Combo Plugin 提供的 `combo-agent-package-creator-bridge` 是另一个独立进程入口。创作者最终说出的完整
 句子可以包含官方创建指南地址；Plugin 只用白名单地址选择固定的
 `combo.agent-package-creator-guide/1`，不会把网页地址写入制作要求。Plugin 随后在已经正式绑定当前 Project

@@ -35,7 +35,7 @@
     "combo-creator-worker": "./dist/local-alpha-cli.js"
   },
   "scripts": {
-    "build": "tsc -b && esbuild dist/agent-package-creator-bridge.js --bundle --packages=bundle --platform=node --format=esm --target=node24 --charset=utf8 --legal-comments=none --outfile=dist/agent-package-creator-bridge.mjs",
+    "build": "pnpm run clean && tsc -b && esbuild dist/agent-package-creator-bridge.js --bundle --packages=bundle --platform=node --format=esm --target=node24 --charset=utf8 --legal-comments=none --outfile=dist/agent-package-creator-bridge.mjs",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
     "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-persistence build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-worker-broker-client build && pnpm run build",

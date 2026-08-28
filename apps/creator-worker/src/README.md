@@ -77,6 +77,17 @@
   投影、结构化 Codex Host、构建器、发布器与加载器，不导入旧版执行组合根。
 - `application/agent-package-creator.ts` 把 Host 提供的当前 Project 与一句制作要求绑定成不可变 Package Draft，
   并把 exact Draft 编译、原子发布和正式重载组合成第二个显式动作；Draft 阶段不产生可运行 Package。
+- `application/agent-package-creator-authorized.ts` 是未接线的原生 Host authorization ordering seam：业务
+  options 只含制作要求与普通运行控制；它先把本地计算的 request digest 和受信 executor digest 交给未来
+  dispatch-scoped redemption port，验证返回的 claims 与内部 Project lease 后才调用 Draft 内核；lease 的
+  `assertCurrent()` 会在外层绑定和 scanner 首读点分别核对 Host 状态。返回面只有 Draft 读取与修订，没有
+  Package 编译能力，也不解析旧 Hook grant。
+- `application/host-authorized-creator-project-source.ts` 在 Creator scanner 的首个目录读取边界核对 Host 私有
+  lease 的 ambient dispatch/workspace generation 与 canonical path/device/inode；随后复用 scanner 已有的
+  目录、文件描述符和终态复验，避免外层检查后重新绑定另一个 Project。
+- 当前没有生产 composition 导入上述两个 authorization 文件；真实 authenticated Host adapter 出现前，它们
+  只构成内部顺序与首读绑定 seam，不是可运行入口。production tsconfig 与 clean build 也排除这两个文件；
+  它们只由测试 tsconfig 编译，不能作为深路径运行产物。
 - `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定 Creator 来源扫描器、只读 Host
   投影、结构化 Codex Host、Draft 规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
 - `application/agent-package-creator-bridge.ts` 验证 Plugin 交来的版本化 handoff，只从受信 Host adapter

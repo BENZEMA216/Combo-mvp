@@ -105,18 +105,18 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 
 ## 三、工程责任边界
 
-| Module                                   | 责任                                                             | 当前仓库主要承载位置                                                                           | 服务的 Capability                                                                            |
-| ---------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `MOD-CREATOR-BRIDGE` · Agent 制作入口    | 接收制作指令，绑定对话、Project 或工作旅程并创建 Authoring Task  | 需要新增 Combo Plugin 或等价 Agent handoff                                                     | `CAP-010` · 创作来源绑定                                                                     |
-| `MOD-CREATOR-UI` · 创作者体验            | Agent Studio、创建进度、审阅修订和发布动作                       | `apps/web/`、可复用 `apps/runtime-web/` 的 Studio 外壳                                         | `CAP-030` · Studio 审阅试跑、`CAP-040` · Package 发布                                        |
-| `MOD-AUTHORING` · Agent 创作             | 来源读取、Draft 提取和 Package 编译编排                          | `apps/authoring/`；Agent Package 编译核心需要正式接入                                          | `CAP-010` · 创作来源绑定、`CAP-020` · Draft 提取与 Package 编译、`CAP-030` · Studio 审阅试跑 |
-| `MOD-PACKAGE` · Package 核心             | Agent Package 协议、构建、摘要、加载和只读快照                   | `packages/creator-agent-protocol/`、`apps/creator-worker/` 中的 Package 构建器、发布器与加载器 | `CAP-020` · Draft 提取与 Package 编译、`CAP-070` · Package 推理运行                          |
-| `MOD-REGISTRY` · Package 注册            | 保存不可变 Package、发布版本和解析 digest                        | `apps/authoring/`、`db/`、对象存储端口；需要新增 Package Release 语义                          | `CAP-040` · Package 发布、`CAP-050` · 双入口分享、`CAP-080` · 安装与会话恢复                 |
-| `MOD-SHARE` · 分享服务                   | 生成分享链接与能力获取指令，并把两者解析到 exact Release         | `apps/web/`、`apps/authoring/`；需要新增 Package Entry Resolver                                | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收                                           |
-| `MOD-RECEIVER` · Agent 能力接收          | 接收链接或能力获取指令，校验并加载对应 Agent Package             | 需要新增 Combo Plugin Receiver 或等价 Agent handoff                                            | `CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                                     |
-| `MOD-WEB-PREVIEW` · Web 试跑预览         | 在网页中展示试跑过程、对话和产物                                 | `apps/runtime/`、`apps/runtime-web/`                                                           | `CAP-030` · Studio 审阅试跑                                                                  |
-| `MOD-CODEX-HOST` · 原生 Codex Agent 运行 | 正式加载 Package、挂载 Skill、绑定当前 Project 并维持 Codex 线程 | `apps/creator-worker/` 中的 Agent Package Session 与 Bundled Codex Host                        | `CAP-070` · Package 推理运行、`CAP-080` · 安装与会话恢复                                     |
-| `MOD-SHARED` · 共享基础设施              | 跨服务合同、认证、存储、事件和错误模型                           | `packages/shared/`、`db/`、`infra/`                                                            | `CAP-010` · 创作来源绑定至 `CAP-080` · 安装与会话恢复的跨模块基础设施                        |
+| Module                                   | 责任                                                                                    | 当前仓库主要承载位置                                                                              | 服务的 Capability                                                                            |
+| ---------------------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `MOD-CREATOR-BRIDGE` · Agent 制作入口    | 接收制作指令，绑定对话、Project 或工作旅程并创建 Authoring Task                         | 需要新增 Combo Plugin 或等价 Agent handoff                                                        | `CAP-010` · 创作来源绑定                                                                     |
+| `MOD-CREATOR-UI` · 创作者体验            | Agent Studio、创建进度、审阅修订和发布动作                                              | `apps/web/`、可复用 `apps/runtime-web/` 的 Studio 外壳                                            | `CAP-030` · Studio 审阅试跑、`CAP-040` · Package 发布                                        |
+| `MOD-AUTHORING` · Agent 创作             | 来源读取、Draft 提取和 Package 编译编排                                                 | `apps/authoring/`；Agent Package 编译核心需要正式接入                                             | `CAP-010` · 创作来源绑定、`CAP-020` · Draft 提取与 Package 编译、`CAP-030` · Studio 审阅试跑 |
+| `MOD-PACKAGE` · Package 核心             | Agent Package 协议、构建、摘要、加载和只读快照                                          | `packages/creator-agent-protocol/`、`apps/creator-worker/` 中的 Package 构建器、发布器与加载器    | `CAP-020` · Draft 提取与 Package 编译、`CAP-070` · Package 推理运行                          |
+| `MOD-REGISTRY` · Package 注册            | 保存不可变 Package、发布版本和解析 digest                                               | `apps/authoring/`、`db/`、对象存储端口；需要新增 Package Release 语义                             | `CAP-040` · Package 发布、`CAP-050` · 双入口分享、`CAP-080` · 安装与会话恢复                 |
+| `MOD-SHARE` · 分享服务                   | 生成分享链接与能力获取指令，并把两者解析到 exact Release                                | `apps/web/`、`apps/authoring/`；需要新增 Package Entry Resolver                                   | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收                                           |
+| `MOD-RECEIVER` · Agent 能力接收          | 接收链接或能力获取指令，校验并加载对应 Agent Package                                    | 需要新增 Combo Plugin Receiver 或等价 Agent handoff                                               | `CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                                     |
+| `MOD-WEB-PREVIEW` · Web 试跑预览         | 在网页中展示试跑过程、对话和产物                                                        | `apps/runtime/`、`apps/runtime-web/`                                                              | `CAP-030` · Studio 审阅试跑                                                                  |
+| `MOD-CODEX-HOST` · 原生 Codex Agent 运行 | 正式加载 Package、挂载 Skill、未来签发 Creator 来源授权、绑定 Project 并维持 Codex 线程 | `apps/creator-worker/` 中的 Agent Package Session、CreatorAuthorization 语义与 Bundled Codex Host | `CAP-010` · 创作来源绑定、`CAP-070` · Package 推理运行、`CAP-080` · 安装与会话恢复           |
+| `MOD-SHARED` · 共享基础设施              | 跨服务合同、认证、存储、事件和错误模型                                                  | `packages/shared/`、`db/`、`infra/`                                                               | `CAP-010` · 创作来源绑定至 `CAP-080` · 安装与会话恢复的跨模块基础设施                        |
 
 当前 `Capability`、旧 `AgentVersion` 或 Catalog 数据可以作为迁移来源、管理投影或历史兼容层，但不能与 Agent Package 并列成为新的交付真相。
 
@@ -137,10 +137,15 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 - `AGENT.md` 注入、Package Skill 注册、私有只读运行快照。
 - Bundled Codex 的同一线程多轮推理。
 - Source Project 与 Consumer Project 分离的真实流程测试。
+- `CreatorAuthorization/1` 的 path-free 授权卡 claims、固定 Draft-only scope，以及未接线的内部 redemption
+  ordering / dispatch-scoped lease / scanner 首读绑定 seam；当前没有生产 adapter 或可运行入口。
 
 ### 尚未形成产品闭环的部分
 
 - 对话、Project 或工作旅程通过 Agent 制作指令进入 Agent Studio 的直接入口。
+- 顶层 Codex Host 的原生 Creator 授权卡、用户点击、mutual-auth IPC、Host 一次性 ledger、workspace
+  generation 核对、exact executor dispatch 与真实 Desktop UAT。Codex `0.148.0-alpha.15` 当前没有可由
+  Combo 直接复用的自定义 Creator approval API；旧 Hook 只能作为显式兼容路径，不能冒充该 Host authority。
 - Agent Package Draft 的可视化查看、修订和重新编译。
 - Agent Package 与 Authoring API、Web、数据库和对象存储的正式连接。
 - `AgentPackageRelease`、云端 Package Registry、稳定分享链接和能力获取指令。
@@ -185,6 +190,8 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 工程工作：
 
 - 建立 Agent 制作指令到 Authoring Task 的 Creator Bridge，并支持对话、Project 和工作旅程三类来源。
+- 在 Project 读取前由顶层 Codex Host 展示一次性授权，绑定 exact thread、turn、item、Project、制作要求和
+  executor；拒绝、超时、重放或错配必须零来源工作且不得降级到 Hook。
 - 将 Agent Package Authoring 接入 Agent Studio。
 - 展示提取进度、Agent 身份、能力、来源和试跑结果。
 - 支持修订 Draft，并重新编译出新的 Package digest。
@@ -230,16 +237,17 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 
 ## 六、产品不变量
 
-| Invariant                             | 规则                                                     | 必须提供的证明                                                        |
-| ------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------------- |
-| `INV-010` · 唯一分享工件              | Agent Package 是唯一分享工件                             | 分享链接与能力获取指令都解析到同一 exact Package digest               |
-| `INV-020` · 发布内容不可变            | 已发布 Package 的内容不可变                              | 同一 Release 在任意时间加载得到相同 bytes 和 digest                   |
-| `INV-030` · 会话版本锁定              | 使用者运行的是接收时锁定的 Package                       | Session receipt 记录 Release 与 Package digest                        |
-| `INV-040` · 创作来源不外泄            | 分享内容不携带创作者的原始对话、Project 或完整工作旅程   | Package inventory、Release payload 与公开对象存储扫描通过             |
-| `INV-050` · 使用上下文与 Package 分离 | 使用者当前 Project 和对话是运行上下文，不是 Package 内容 | Package digest 不因使用者上下文变化而改变，运行收据单独记录上下文绑定 |
-| `INV-060` · 已完成产物可恢复          | 已完成产物在后续失败时仍可恢复                           | 故障测试能够重新打开已生成 Package 或 Release                         |
-| `INV-070` · 重试幂等                  | 重试不会重复创建、发布或安装                             | 幂等测试得到同一对象或明确冲突                                        |
-| `INV-080` · 旅程验收不可替代          | 模块测试不能替代完整用户旅程验收                         | Release Gate 单独展示 Contract、E2E、Host、Security、UAT 状态         |
+| Invariant                             | 规则                                                        | 必须提供的证明                                                        |
+| ------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| `INV-010` · 唯一分享工件              | Agent Package 是唯一分享工件                                | 分享链接与能力获取指令都解析到同一 exact Package digest               |
+| `INV-020` · 发布内容不可变            | 已发布 Package 的内容不可变                                 | 同一 Release 在任意时间加载得到相同 bytes 和 digest                   |
+| `INV-030` · 会话版本锁定              | 使用者运行的是接收时锁定的 Package                          | Session receipt 记录 Release 与 Package digest                        |
+| `INV-040` · 创作来源不外泄            | 分享内容不携带创作者的原始对话、Project 或完整工作旅程      | Package inventory、Release payload 与公开对象存储扫描通过             |
+| `INV-050` · 使用上下文与 Package 分离 | 使用者当前 Project 和对话是运行上下文，不是 Package 内容    | Package digest 不因使用者上下文变化而改变，运行收据单独记录上下文绑定 |
+| `INV-060` · 已完成产物可恢复          | 已完成产物在后续失败时仍可恢复                              | 故障测试能够重新打开已生成 Package 或 Release                         |
+| `INV-070` · 重试幂等                  | 重试不会重复创建、发布或安装                                | 幂等测试得到同一对象或明确冲突                                        |
+| `INV-080` · 旅程验收不可替代          | 模块测试不能替代完整用户旅程验收                            | Release Gate 单独展示 Contract、E2E、Host、Security、UAT 状态         |
+| `INV-090` · 创作来源先授权            | Creator 只有消费顶层 Host 的一次性 exact 授权后才能读取来源 | 拒绝、过期、重放、绑定错配的零来源读取测试与真实 Host 授权卡 UAT      |
 
 这些规则约束实现，但不改写唯一产品目标。
 
