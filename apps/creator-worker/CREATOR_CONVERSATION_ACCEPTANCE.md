@@ -6,6 +6,12 @@ Draft 的第一段旅程，不证明 Package 编译、试跑、发布、接收�
 ## 当前结论
 
 - 流程合同已经启用。
+- current-conversation V2 协议已由公开 `agent-package-draft` 子路径进入 production build；它只定义 path-free
+  request、Draft 与脱敏 provenance，不提供 Host snapshot 或任务选择能力。内部 fail-closed ordering seam
+  已有 source-level 实现，但两个 Worker 文件被 production tsconfig 排除、没有 public subpath 或真实 Desktop
+  importer；Fake port 只用于测试，属于 non-acceptance evidence。
+- `ACC-CONTRACT-011A` 的协议实现已存在，但尚未产生绑定 exact candidate commit 的正式
+  `CONTRACT_TEST_REPORT`，因此状态是 `NOT_RUN`，不是 `PASS`。
 - 当前对话生产入口是 `NOT_IMPLEMENTED`。
 - 真实 Codex Desktop Host 验收是 `NOT_IMPLEMENTED`。
 - 普通用户 UAT 是 `NOT_RUN`。
@@ -34,11 +40,16 @@ Draft 的第一段旅程，不证明 Package 编译、试跑、发布、接收�
 | ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ACC-CONTRACT-011A` · 当前对话 Draft 合同 | 新合同表达 `current_conversation` 来源；不接受 Project 路径、Hook 字段、环境 trust flag、调用方 task/thread/session ID 或 raw transcript            |
 | `ACC-UNIT-011B` · 对话提取                | 随机方法标记只存在于选定对话；Project 诱饵不得进入 Draft；Project scanner、projection、Bridge 和 child process 调用为零                             |
-| `ACC-SEC-011C` · 零旁路                   | 对话缺失、压缩不完整、漂移或输出非法时停止；不得回退到 Project scan、raw session、Hook / Bridge、CLI 或手贴 handoff                                 |
+| `ACC-SEC-011C` · 零旁路                   | 对话缺失、压缩不完整、漂移、Host egress 拒绝/receipt 错绑或输出非法时停止；不得回退到 Project scan、raw session、Hook / Bridge、CLI 或手贴 handoff  |
 | `ACC-HOST-011D` · Desktop 原生链路        | 真实 Desktop 证明 `DESKTOP_ATTESTED_ACTIVE_CURRENT_TASK_SOURCE_BOUNDARY`；同一任务一句话看到 Draft，且不打开 Terminal、不 trust Hook 或选择 Project |
 | `ACC-UAT-011E` · 普通用户体验             | 非开发用户独立完成流程；另一个任务中的随机标记不得出现在 Draft；用户无需理解任何内部协议                                                            |
 
 五层状态必须分别报告。Contract 或 Unit 通过不能替代 Host 和 UAT，真实 Host 单次成功也不能替代来源隔离与失败闭包。
+
+本合同中，`NOT_IMPLEMENTED` 表示生产候选仍缺少该能力；`NOT_RUN` 表示实现或体验对象已经存在，但尚无绑定
+exact candidate commit 的该层正式 evidence；`PASS` 必须满足下述证据规则。当前仅 Contract 层已达到
+“实现存在、正式 evidence 未运行”，Unit / Security / Host 仍因 Worker seam 未进入 production 而保持
+`NOT_IMPLEMENTED`，UAT 仍为 `NOT_RUN`。
 
 ## 最小测试语料
 

@@ -144,6 +144,12 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 - `CreatorAuthorization/1` 的 path-free Project 授权卡 claims、固定 Draft-only scope，以及未接线的内部
   redemption ordering / dispatch-scoped lease / scanner 首读绑定 seam；它只服务未来显式 Project 来源，当前没有
   生产 adapter 或可运行入口。
+- `agent-package-creator-request/2` 与 `agent-package-draft/2` 的 current-conversation path-free 合同，以及
+  未接线的内部 ambient lease ordering seam。它锁定 direct-user、active-task、user-visible-only、完整性、
+  trigger 前快照边界、制作要求语义绑定、Host-owned verbatim/credential egress receipt、前后漂移核对、close
+  和零 Project/Bridge/child-process import。V2 协议会随公开
+  `agent-package-draft` 子路径进入 production build；两个 Worker ordering 文件则被 production tsconfig 排除，
+  没有 public export、真实 Host adapter 或 Studio surface。
 
 ### 尚未形成产品闭环的部分
 
@@ -287,11 +293,16 @@ Draft。显式 Project、工作旅程、Package 编译、正式重载和真实�
 
 | Acceptance                                | 证明内容                                                                                                 | 当前状态          |
 | ----------------------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------- |
-| `ACC-CONTRACT-011A` · 当前对话 Draft 合同 | source 明确为当前可见对话，禁止 Project 路径、Hook 字段、调用方 task/thread/session ID 和 raw transcript | `NOT_IMPLEMENTED` |
+| `ACC-CONTRACT-011A` · 当前对话 Draft 合同 | source 明确为当前可见对话，禁止 Project 路径、Hook 字段、调用方 task/thread/session ID 和 raw transcript | `NOT_RUN`         |
 | `ACC-UNIT-011B` · 对话提取                | 只使用选定对话，Project scanner、projection、Bridge 和 child process 为零                                | `NOT_IMPLEMENTED` |
-| `ACC-SEC-011C` · 零旁路                   | 缺失、漂移或失败时不回退到 Project、raw session、Hook 或 Terminal                                        | `NOT_IMPLEMENTED` |
+| `ACC-SEC-011C` · 零旁路                   | 缺失、漂移、egress 拒绝或失败时不回退到 Project、raw session、Hook 或 Terminal                           | `NOT_IMPLEMENTED` |
 | `ACC-HOST-011D` · Desktop 原生链路        | Desktop attested active-task 边界成立，当前任务一句话直接显示可审阅 Draft                                | `NOT_IMPLEMENTED` |
 | `ACC-UAT-011E` · 普通用户体验             | 非开发用户仅操作 Desktop，并证明跨任务来源隔离                                                           | `NOT_RUN`         |
+
+V2 协议与内部 Fake-port ordering seam 是实现准备，不是五层验收证据。公开 V2 合同已经实现，但尚无绑定
+exact candidate commit 的正式 `CONTRACT_TEST_REPORT`，所以 Contract 层为 `NOT_RUN`。两个 Worker ordering
+文件仍被 production tsconfig 排除，没有 Desktop importer，也没有真实 active-task snapshot；因此 Unit、
+Security 与 Host 层继续为 `NOT_IMPLEMENTED`。不能用 source-level 单元测试把任一层直接改成 `PASS`。
 
 只要任一层未通过，`J-011` 就保持 `BLOCKED`。机器合同测试通过只证明团队没有篡改验收定义，不证明产品路径存在。
 机器合同要求每个 `PASS` 分别绑定该层 evidence kind、artifact digest、运行环境和同一个顶层 `candidateCommit`；

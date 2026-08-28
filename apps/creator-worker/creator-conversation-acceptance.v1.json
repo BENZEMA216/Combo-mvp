@@ -12,7 +12,7 @@
   "gates": [
     {
       "id": "ACC-CONTRACT-011A",
-      "status": "NOT_IMPLEMENTED",
+      "status": "NOT_RUN",
       "evidence": []
     },
     {

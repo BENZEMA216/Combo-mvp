@@ -13,8 +13,10 @@ const sourceSuffixes = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.
 const creatorProducerPattern =
   /creator-authorization-host-adapter|createCreatorAuthorizationHostAdapterController|consumeCreatorAuthorization|readCreatorAuthorizedProjectBinding/u;
 const creatorOrderingModulePattern = /(?:^|\/)agent-package-creator-authorized(?:\.js)?$/u;
+const conversationOrderingModulePattern =
+  /(?:^|\/)agent-package-current-conversation-draft(?:\.js)?$/u;
 const forbiddenCreatorArtifactPattern =
-  /creator-authorization-host-adapter|agent-package-creator-authorized|host-authorized-creator-project-source/u;
+  /creator-authorization-host-adapter|agent-package-creator-authorized|host-authorized-creator-project-source|agent-package-current-conversation-draft|current-conversation-draft-extractor/u;
 
 describe('Host adapter producer import boundary', () => {
   it('allows only the bundled Codex adapter to mint production Host authority', () => {
@@ -73,6 +75,15 @@ describe('Host adapter producer import boundary', () => {
   it('keeps the internal Creator redemption ordering seam disconnected from production', () => {
     const importers = productionRepositoryFiles()
       .filter(importsCreatorOrderingSeam)
+      .map((path) => relative(repositoryRoot, path))
+      .sort();
+
+    expect(importers).toEqual([]);
+  });
+
+  it('keeps the current-conversation ordering seam disconnected from production', () => {
+    const importers = productionRepositoryFiles()
+      .filter(importsConversationOrderingSeam)
       .map((path) => relative(repositoryRoot, path))
       .sort();
 
@@ -141,5 +152,12 @@ function importsCreatorOrderingSeam(path: string): boolean {
   const source = readFileSync(path, 'utf8');
   return preProcessFile(source, true, true).importedFiles.some(({ fileName }) =>
     creatorOrderingModulePattern.test(fileName),
+  );
+}
+
+function importsConversationOrderingSeam(path: string): boolean {
+  const source = readFileSync(path, 'utf8');
+  return preProcessFile(source, true, true).importedFiles.some(({ fileName }) =>
+    conversationOrderingModulePattern.test(fileName),
   );
 }

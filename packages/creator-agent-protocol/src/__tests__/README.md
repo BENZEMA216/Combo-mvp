@@ -26,4 +26,7 @@ dispatcher。测试会篡改 cited source 的执行可用性以确认 ledger 进
 和旧版版本对象混用的拒绝。该文件也锁定一句制作要求、无绝对路径的 Package Draft、revision 父链、乐观
 并发基线、Creator bootstrap handoff、domain-separated fingerprint、规范往返和篡改拒绝。handoff 测试
 会拒绝网页地址、Project 路径、任务标识、额外字段、属性读取器和代理对象。该文件不读取真实智能体包目录，
-也不证明 Studio 已展示、Package 已编译或 Codex 已激活技能。
+也锁定 Project request/Draft V1 的 exact request digest 与 fingerprint 不漂移，以及并列
+current-conversation request/Draft V2 的 strict path-free 来源、互斥解析、独立 fingerprint 和 revision。
+V2 测试拒绝调用方 task/thread/session/item ID、Project 字段、消息数组和 raw transcript；它只证明协议字段
+与规范字节，不证明 Desktop active-task 来源、Studio 展示、Package 编译或 Codex 已激活技能。

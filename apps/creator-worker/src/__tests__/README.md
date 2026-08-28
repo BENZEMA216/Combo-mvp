@@ -21,10 +21,24 @@
   `AGENT.md` 与原生技能。第一轮输出绑定只存在于技能中的随机规则，第二轮取回只存在于上一条消息的随机
   标记，从而同时证明技能激活与同一 Codex 任务线程的多轮上下文；项目与智能体包内容保持不变。
 - `creator-conversation-acceptance.test.ts` 校验 `J-011` · 当前对话生成 Draft 的机器合同、五层门禁状态和
-  文档一致性。它同时锁定当前生产 Creator 仍是 Project-first，并把 Hook / Bridge、CLI、Fake Host 和既有
-  Project 测试标为非产品证据；该测试通过只证明验收口径真实，不证明 Desktop 路径已经实现。
+  文档一致性。它同时锁定 Project V1 不被扩宽、current-conversation V2 仍无 public Host entry，并把
+  Hook / Bridge、CLI、Fake Host 和既有 Project 测试标为非产品证据；该测试通过只证明验收口径真实，不证明
+  Desktop 路径已经实现。
+- `current-conversation-draft-extractor.test.ts` 用 Fake ambient lease 锁定 request digest 绑定、exact 制作要求进入
+  提取语义、direct-user、active-task、user-visible-only、完整性、单次结构化提取、前后漂移核对和所有路径
+  close；模型 schema 不含 egress receipt，receipt 只能由 Host wrapper 产生并绑定 snapshot/request/Draft digest。
+  raw transcript 或 credential canary 被 Fake Host 拒绝时不产生 receipt 或 Draft；不完整、错配、Host 失败、
+  恶意 getter、取消与 cleanup 失败都固定停止且不重试。Fake lease 不证明真实 Desktop Host。
+- `agent-package-current-conversation-draft.test.ts` 锁定业务调用方只能提交一句 V2 制作要求和普通运行控制，
+  Project/source/task/thread/session/item/transcript 字段在 Host 调用前拒绝；成功只返回可读/可修订 Draft，
+  没有 compile，Host 原始错误与路径不外泄。
+- `agent-package-current-conversation-import-boundary.test.ts` 静态证明两个内部 seam 不导入 Project scanner、
+  projection、Bridge、CLI、child process、bundled Codex、Package builder/publisher/loader、Session、Worker、
+  Broker、Journal 或 SQLite；`host-adapter-import-boundary.test.ts` 进一步要求它们没有生产 importer，clean
+  dist 也不携带这些文件。
 - `agent-package-authoring.test.ts` 覆盖 Project 语义结果到 `AGENT.md`、原生技能和规范清单的确定性编译，
   私有摘要目录的原子发布、正式加载器重开、相同内容重放、路径前置拒绝和清理错误可见性。
+  它还锁定现有 Project Package builder 在任何发布或加载前拒绝 current-conversation Draft V2。
 - `agent-package-creator.test.ts` 覆盖一句制作要求与受信调用方当前 Project 的绑定、无绝对路径 Draft、来源
   回执、exact revision 修订、不同 revision 编译出不同 Package digest、正式重载、来源目录移动后的编译拒绝，
   以及篡改和 getter 的零副作用拒绝。
