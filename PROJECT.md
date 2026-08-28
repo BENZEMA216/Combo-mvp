@@ -26,7 +26,7 @@ Combo 的唯一交付物是不可变、可验证、可分享和可加载的 **Ag
 创作者在当前 Codex 任务中完成了一项工作
                 │
                 ▼
-      复制一段AGENT的制作指令给自己的Codex，把刚才的工作做成 Agent
+      用一句自然语言告诉自己的 Codex，把刚才的工作做成 Agent
                 │
                 ▼
             Agent Studio
@@ -41,6 +41,11 @@ Combo 的唯一交付物是不可变、可验证、可分享和可加载的 **Ag
 ```
 
 创建动作由一句自然语言直接发起，不要求用户理解文件路径、Manifest、Digest、Draft 或冻结命令。Agent Studio 是创作者查看、修订和试跑 Agent 的产品界面，可在codex中被使用。
+
+当前对话是默认创作来源：用户在 Codex Desktop 当前任务发出上述指令时，只同意使用该任务中用户可见的对话，
+不授权读取 Project。系统必须绑定用户正在操作的当前任务，不接受业务调用方、Plugin 或 MCP 通过 task、thread、
+session 标识或 raw transcript 选择其他来源。普通用户不需要打开 Terminal、配置或信任 Hook、填写 Project 路径，
+也不需要复制内部协议。Project 或工作旅程只能由用户另行明确选择，不能作为当前对话失败后的自动回退。
 
 ### 使用者
 
