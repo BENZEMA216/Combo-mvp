@@ -105,6 +105,23 @@ const compiled = authoringTask.compile({
 `combo-agent-package draft-current "一句制作要求"`，得到规范 Draft JSON。该命令只用于验证 Draft 创作
 内核的参数与输出合同，不是最终用户需要理解的终端流程，也不代表 Codex 已经提供焦点 Project 绑定。
 
+### 当前对话优先的 Creator 验收
+
+普通用户 Golden Path 是在 Codex Desktop 当前任务中只输入一句自然语言制作指令，由 Desktop 运行时建立
+不可由业务调用方、Plugin 或 MCP 伪造的 active-task 来源边界，并在同一任务显示可审阅的 Agent Package
+Draft。具体 Host / Plugin API 尚未冻结；该路径不要求 Terminal、`/hooks`、手工 trust、Project 路径、环境
+标记或内部 JSON，默认不得扫描 Project，也不得读取 raw session 文件或让 Plugin / MCP 直读 thread store。
+
+仓库以 [`CREATOR_CONVERSATION_ACCEPTANCE.md`](CREATOR_CONVERSATION_ACCEPTANCE.md) 作为这条路径的人工验收说明，
+以 [`creator-conversation-acceptance.v1.json`](creator-conversation-acceptance.v1.json) 记录机器可读状态。当前五层
+门禁仍为 `NOT_IMPLEMENTED` 或 `NOT_RUN`，整体状态为 `BLOCKED`。相应合同测试只防止团队把 Project-first、
+Hook / Bridge、CLI 或 Fake Host 证据误报为产品通过；测试自身不证明 Desktop 用户路径存在。
+
+现有 Project Creator 代码与测试继续作为 `EXPLICIT_PROJECT_COMPAT` 维护。机器合同把
+`PROJECT_FIRST_CREATOR`、`PLUGIN_HOOK_OR_BRIDGE`、`CREATOR_CLI`、`FAKE_HOST_OR_PORT` 和
+`ISOLATED_BUNDLED_CODEX_THREAD` 全部列为 non-acceptance evidence。只有用户未来明确选择 Project 来源时，
+其中部分机制才可能成为该来源的底层实现；它们不属于当前对话 Golden Path，也不能作为普通用户体验 UAT。
+
 ### 原生 Creator 授权语义与旧 Hook 兼容路径
 
 长期入口的目标不是让 Skill、MCP 或 Combo 自己签发授权，而是由顶层 Codex Host 展示一次性 Creator
@@ -127,7 +144,8 @@ executor。生产包也没有 Creator mint/consume API、没有公开 authorized
 Package。同步 lease 只是本地应用端口要求，不是已经冻结的跨进程 wire；真实实现也可以改为 Host 打开的
 目录 descriptor。
 
-当前状态是 `HOST_AUTHORIZATION_SEMANTICS_AND_ORDERING_READY`，不是普通用户 UAT 完成。Codex
+当前状态是 `HOST_AUTHORIZATION_SEMANTICS_AND_ORDERING_READY`，只描述显式 Project 来源的未接线语义，不是
+当前对话实现或普通用户 UAT 完成。Codex
 `0.148.0-alpha.15` 没有向 Combo 暴露 Creator 自定义审批卡 API；真实完成仍要求顶层 Host UI、用户点击、
 mutual-auth IPC、Host 侧一次性原子 ledger、workspace generation 核对和 exact executor dispatch。仓内
 Fake redemption port 只证明调用顺序，不能冒充 Host authority。现有 0.8.3 Hook / Bridge 保持独立的

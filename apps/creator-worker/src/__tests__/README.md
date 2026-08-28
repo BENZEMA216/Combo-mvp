@@ -20,6 +20,9 @@
 - `agent-package-session.real.test.ts` 仅在 `COMBO_REAL_CODEX_E2E=1` 时让真实内置 Codex 加载智能体包的
   `AGENT.md` 与原生技能。第一轮输出绑定只存在于技能中的随机规则，第二轮取回只存在于上一条消息的随机
   标记，从而同时证明技能激活与同一 Codex 任务线程的多轮上下文；项目与智能体包内容保持不变。
+- `creator-conversation-acceptance.test.ts` 校验 `J-011` · 当前对话生成 Draft 的机器合同、五层门禁状态和
+  文档一致性。它同时锁定当前生产 Creator 仍是 Project-first，并把 Hook / Bridge、CLI、Fake Host 和既有
+  Project 测试标为非产品证据；该测试通过只证明验收口径真实，不证明 Desktop 路径已经实现。
 - `agent-package-authoring.test.ts` 覆盖 Project 语义结果到 `AGENT.md`、原生技能和规范清单的确定性编译，
   私有摘要目录的原子发布、正式加载器重开、相同内容重放、路径前置拒绝和清理错误可见性。
 - `agent-package-creator.test.ts` 覆盖一句制作要求与受信调用方当前 Project 的绑定、无绝对路径 Draft、来源
@@ -31,6 +34,14 @@
   再次核对，Host dispatch/workspace generation 在 redemption 后漂移也会由 lease `assertCurrent()` 拒绝；
   返回面不暴露 Package compile。业务 options 不能提交 handle、execution 或 Project 字段。Fake 只证明应用
   编排，不证明真实 Host authority、UI 点击、authenticated IPC 或 Host ledger。
+
+`agent-package-creator.test.ts`、`agent-package-creator-authorized.test.ts`、
+`agent-package-creator-bridge.test.ts`、`agent-package-creator-bridge.real.test.ts`、`agent-package-cli.test.ts`、
+`agent-package-authoring.real.test.ts`、`project-context-compiler.test.ts` 与对应 real 测试统一属于
+`EXPLICIT_PROJECT_COMPAT`。机器合同进一步把 Project-first Creator、Hook / Bridge、CLI、Fake Host / port 和
+独立 Bundled Codex thread 分别列为 non-acceptance evidence。它们仍负责保护 Project 来源的安全和兼容性，但
+不得计入当前对话 Golden Path 的 Contract、Host、Security 或 UAT 通过数。
+
 - `creator-project-source-boundary.test.ts` 覆盖 Creator 专属 `.git`、`.codex`、Host metadata 与 symlink
   剪枝，linked-worktree pointer、纯管理变化摘要稳定、Git CLI 禁用、私有只读投影、递归权限、零来源写入、
   root 前置拒绝、scan/projection 中间目录置换的 pre-read path binding、excluded `000` 状态下的投影与复验、
