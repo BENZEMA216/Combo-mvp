@@ -9,12 +9,16 @@
     "preserveWorkerSqliteSchemaHistory": false
   },
   "allowedFiles": [
+    ".github/workflows/ci.yml",
     "AGENTS.md",
     "ENGINEERING.md",
     "PROJECT.md",
     "README.md",
+    "docs/deployment-topology.md",
+    "docs/knowledge-agent-test-acceptance.md",
     "pnpm-lock.yaml",
     "pnpm-workspace.yaml",
+    "scripts/check-production-artifacts.sh",
     "scripts/package.json",
     "scripts/tsconfig.integration.json",
     "tsconfig.e2e.json"
@@ -22,8 +26,10 @@
   "allowedPathPrefixes": [
     "apps/agent-gateway/",
     "apps/creator-worker/",
+    "apps/runtime-web/",
     "apps/runtime/",
     "db/",
+    "infra/",
     "packages/creator-agent-broker-journal/",
     "packages/creator-agent-persistence/",
     "packages/creator-agent-protocol/",

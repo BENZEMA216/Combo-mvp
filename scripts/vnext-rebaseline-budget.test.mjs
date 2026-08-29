@@ -273,8 +273,53 @@ test('product edits must stay inside the declared rebuild surface', () => {
     () => assessPullRequest(contract, [entry('packages/creator-agent-snapshot/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
   );
+});
+
+test('the knowledge Agent Test scope opens only its named surfaces and control files', () => {
+  const allowedControlFiles = [
+    '.github/workflows/ci.yml',
+    'docs/deployment-topology.md',
+    'docs/knowledge-agent-test-acceptance.md',
+    'scripts/check-production-artifacts.sh',
+  ];
+  const allowedProductPrefixes = ['apps/runtime-web/', 'infra/'];
+  const knowledgeAgentTestSlice = [
+    'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
+    'infra/Dockerfile.runtime',
+    ...allowedControlFiles,
+  ].map((path) => entry(path));
+
+  assert.equal(assessPullRequest(contract, knowledgeAgentTestSlice).mode, 'PRODUCT');
+  assert.deepEqual(
+    contract.allowedFiles.filter(
+      (path) =>
+        path.startsWith('.github/') ||
+        path.startsWith('docs/') ||
+        path === 'scripts/check-production-artifacts.sh',
+    ),
+    allowedControlFiles,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter((path) => allowedProductPrefixes.includes(path)),
+    allowedProductPrefixes,
+  );
+
+  for (const path of [
+    '.github/workflows/deploy.yml',
+    '.github/workflows/knowledge-agent.yml',
+    'apps/web/src/pages/KnowledgeAgentPage.tsx',
+    'docs/knowledge-agent-production-acceptance.md',
+    'docs/leshouying-test-acceptance.md',
+    'scripts/deploy-env.sh',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+
   assert.throws(
-    () => assessPullRequest(contract, [entry('infra/k8s/production.yaml')]),
+    () => assessPullRequest(contract, [entry('apps/runtime-web-other/src/index.ts')]),
     /outside the R1-R3 rebuild scope/,
   );
 });
