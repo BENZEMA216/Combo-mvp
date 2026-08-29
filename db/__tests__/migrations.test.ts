@@ -99,11 +99,12 @@ describe('migrations', () => {
         'payment_attempts',
         'payment_callback_events',
         'wallet_ledger',
-        // Test already applied 0012-0015. These tables remain a legacy compatibility
-        // prefix and do not define the current Agent Package product model.
+        // The canonical Registry is the current Agent Package product model.
         'agent_packages',
         'agent_package_releases',
         'agent_usage_receipts',
+        // Test already applied 0012-0016. These tables remain a legacy compatibility
+        // prefix and do not define the current Agent Package product model.
         'agent_projects',
         'agent_revisions',
         'agent_releases',
@@ -115,6 +116,9 @@ describe('migrations', () => {
         'agent_tests',
         'agent_test_reviews',
         'project_agent_shares',
+        'project_history_agent_drafts',
+        'project_history_agent_confirmations',
+        'project_history_agent_shares',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -200,12 +204,12 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps authentication, roles, billing, the Test prefix, and Registry in sequence', () => {
+  it('keeps authentication, roles, billing, the Test prefix, Registry, and receipts in sequence', () => {
     const list = files();
     const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
 
     expect(firstCurrentIndex).toBeGreaterThan(0);
-    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 11)).toEqual([
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 12)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -215,8 +219,9 @@ describe('migrations', () => {
       '0013_external_mcp_oauth.sql',
       '0014_agent_test_reviews.sql',
       '0015_project_agent_shares.sql',
-      '0016_agent_package_registry.sql',
-      '0017_agent_session_usage_receipts.sql',
+      '0016_project_history_agent_flow.sql',
+      '0017_agent_package_registry.sql',
+      '0018_agent_session_usage_receipts.sql',
     ]);
   });
 

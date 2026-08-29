@@ -24,7 +24,7 @@ const migrationsDirectory = resolve(directory, '..', 'migrations');
 const migrationFiles = readdirSync(migrationsDirectory)
   .filter((file) => /^\d{4}_[a-z0-9_]+[.]sql$/.test(file))
   .sort();
-const migration0017 = '0017_agent_session_usage_receipts.sql';
+const migration0018 = '0018_agent_session_usage_receipts.sql';
 
 function connectionStringFor(databaseName: string): string {
   const url = new URL(databaseUrl!);
@@ -62,7 +62,7 @@ async function applyMigration(client: Client, filename: string): Promise<void> {
   }
 }
 
-pgDescribe('0016 to 0017 Agent Session receipt upgrade on PostgreSQL 16', () => {
+pgDescribe('Registry 0017 to receipts 0018 upgrade on PostgreSQL 16', () => {
   it('preserves committed legacy Session and charge rows while appending the new validated schema', async () => {
     const databaseName = `combo_receipts_upgrade_${randomUUID().replaceAll('-', '')}`;
     const admin = new Client({ connectionString: connectionStringFor('postgres') });
@@ -87,8 +87,8 @@ pgDescribe('0016 to 0017 Agent Session receipt upgrade on PostgreSQL 16', () => 
           )
         `);
 
-      const prefix = migrationFiles.slice(0, migrationFiles.indexOf(migration0017));
-      expect(prefix.at(-1)).toBe('0016_agent_package_registry.sql');
+      const prefix = migrationFiles.slice(0, migrationFiles.indexOf(migration0018));
+      expect(prefix.at(-1)).toBe('0017_agent_package_registry.sql');
       for (const filename of prefix) await applyMigration(upgrade, filename);
 
       expect(
@@ -97,7 +97,7 @@ pgDescribe('0016 to 0017 Agent Session receipt upgrade on PostgreSQL 16', () => 
             'SELECT filename FROM schema_migrations ORDER BY filename DESC LIMIT 1',
           )
         ).rows[0]?.filename,
-      ).toBe('0016_agent_package_registry.sql');
+      ).toBe('0017_agent_package_registry.sql');
       expect(
         (
           await upgrade.query<{ exists: boolean }>(
@@ -193,7 +193,7 @@ pgDescribe('0016 to 0017 Agent Session receipt upgrade on PostgreSQL 16', () => 
         )
       ).rows[0]!.id;
 
-      await applyMigration(upgrade, migration0017);
+      await applyMigration(upgrade, migration0018);
 
       const sessions = await upgrade.query<{
         id: string;
@@ -274,7 +274,7 @@ pgDescribe('0016 to 0017 Agent Session receipt upgrade on PostgreSQL 16', () => 
           'SELECT filename FROM schema_migrations ORDER BY filename',
         )
       ).rows.map(({ filename }) => filename);
-      expect(planMigrations(migrationFiles, applied, migration0017).pending).toEqual([]);
+      expect(planMigrations(migrationFiles, applied, migration0018).pending).toEqual([]);
     } finally {
       if (upgrade) await upgrade.end().catch(() => undefined);
       if (databaseCreated) {

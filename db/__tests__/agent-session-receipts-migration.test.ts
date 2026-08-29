@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const sql = readFileSync(
-  resolve(directory, '..', 'migrations', '0017_agent_session_usage_receipts.sql'),
+  resolve(directory, '..', 'migrations', '0018_agent_session_usage_receipts.sql'),
   'utf8',
 );
 
@@ -15,7 +15,7 @@ function tableDefinition(table: 'agent_usage_receipts'): string {
   return definition!;
 }
 
-describe('0017 Agent Package Session and knowledge usage receipts migration', () => {
+describe('0018 Agent Package Session and knowledge usage receipts migration', () => {
   it('is append-only and leaves old Session or charge writers on explicit legacy defaults', () => {
     expect(sql).toMatch(
       /ALTER TABLE sessions[\s\S]*product_kind text NOT NULL DEFAULT 'legacy_capability'/,

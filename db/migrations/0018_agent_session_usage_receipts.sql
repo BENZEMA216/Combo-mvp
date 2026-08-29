@@ -1,4 +1,4 @@
--- 0017 · Agent Package Session freeze and immutable knowledge usage receipts.
+-- 0018 · Agent Package Session freeze and immutable knowledge usage receipts.
 --
 -- This is an expand-only migration for rolling deployment. Existing Session and usage rows remain
 -- legacy by default. A knowledge Session must be born with one exact controlled-Test Release,

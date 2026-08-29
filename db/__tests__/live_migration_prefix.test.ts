@@ -24,10 +24,14 @@ const LIVE_TEST_PREFIX = [
     filename: '0015_project_agent_shares.sql',
     sha256: 'd5baf2cf5b8377d6d20a2911e68b0fd09ba83e35536b49a40ffaafdbbe4572fe',
   },
+  {
+    filename: '0016_project_history_agent_flow.sql',
+    sha256: '4244f64ce8419f033f89e8a1a33a95f0d79787c0039849d6b0c478db3cfba95c',
+  },
 ] as const;
 
 describe('live Test migration ledger compatibility', () => {
-  it('retains the already-applied 0012-0015 names as one exact source prefix', () => {
+  it('retains the already-applied 0012-0016 names as one exact source prefix', () => {
     const filenames = readdirSync(migrationsDirectory)
       .filter((filename) => filename.endsWith('.sql'))
       .sort();
