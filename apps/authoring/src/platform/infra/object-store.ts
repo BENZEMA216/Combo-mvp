@@ -139,11 +139,8 @@ function isObjectAlreadyCommitted(error: unknown): boolean {
     $metadata?: { httpStatusCode?: unknown };
   };
   const status = candidate.$metadata?.httpStatusCode;
-  return (
-    candidate.name === 'PreconditionFailed' ||
-    candidate.Code === 'PreconditionFailed' ||
-    status === 412
-  );
+  if (status !== undefined) return status === 412;
+  return candidate.name === 'PreconditionFailed' || candidate.Code === 'PreconditionFailed';
 }
 
 function normalizeBodyChunk(value: unknown): Uint8Array | null {
@@ -173,6 +170,21 @@ function cancelAsyncBody(body: unknown, iterator: AsyncIterator<unknown>): void 
     if (typeof iterator.return === 'function') {
       ignoreRejectedCleanup(iterator.return());
     }
+  } catch {
+    // 收尾不能覆盖原始的安全错误分类。
+  }
+}
+
+function cancelUnreadBody(body: unknown): void {
+  try {
+    const destroy = (body as { destroy?: unknown } | null)?.destroy;
+    if (typeof destroy === 'function') destroy.call(body);
+  } catch {
+    // 收尾不能覆盖原始的安全错误分类。
+  }
+  try {
+    const cancel = (body as { cancel?: unknown } | null)?.cancel;
+    if (typeof cancel === 'function') ignoreRejectedCleanup(cancel.call(body));
   } catch {
     // 收尾不能覆盖原始的安全错误分类。
   }
@@ -321,25 +333,32 @@ export function createImmutableObjectStore(
     validateMaxBytes(input.maxBytes);
     throwIfAborted(input.signal);
     try {
-      const response = (await sender.send(
+      const rawResponse = await sender.send(
         new GetObjectCommand({ Bucket: input.bucket, Key: input.key }),
         input.signal ? { abortSignal: input.signal } : undefined,
-      )) as { Body?: unknown; ContentLength?: unknown };
+      );
+      if (typeof rawResponse !== 'object' || rawResponse === null) {
+        throw new ImmutableObjectStoreError('invalid_response');
+      }
+      const response = rawResponse as { Body?: unknown; ContentLength?: unknown };
+      const body = response.Body;
       const declaredLength = response.ContentLength;
       if (
         declaredLength !== undefined &&
         (!Number.isSafeInteger(declaredLength) || (declaredLength as number) < 0)
       ) {
+        cancelUnreadBody(body);
         throw new ImmutableObjectStoreError('invalid_response');
       }
       if (typeof declaredLength === 'number' && declaredLength > input.maxBytes) {
+        cancelUnreadBody(body);
         throw new ImmutableObjectStoreError('too_large');
       }
-      if (response.Body == null) {
+      if (body == null) {
         if (declaredLength === 0) return new Uint8Array();
         throw new ImmutableObjectStoreError('invalid_response');
       }
-      const bytes = await readBodyBounded(response.Body, input.maxBytes, input.signal);
+      const bytes = await readBodyBounded(body, input.maxBytes, input.signal);
       if (typeof declaredLength === 'number' && declaredLength !== bytes.byteLength) {
         throw new ImmutableObjectStoreError('invalid_response');
       }
@@ -356,10 +375,10 @@ export function createImmutableObjectStore(
   ): Promise<{ outcome: 'created' | 'already_committed'; size: number }> {
     validateMaxBytes(input.maxBytes);
     throwIfAborted(input.signal);
-    const exactBytes = Uint8Array.from(input.bytes);
-    if (exactBytes.byteLength > input.maxBytes) {
+    if (input.bytes.byteLength > input.maxBytes) {
       throw new ImmutableObjectStoreError('too_large');
     }
+    const exactBytes = Uint8Array.from(input.bytes);
     try {
       await sender.send(
         new PutObjectCommand({

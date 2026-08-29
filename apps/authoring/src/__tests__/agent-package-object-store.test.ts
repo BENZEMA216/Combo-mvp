@@ -1,4 +1,5 @@
 import { GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import {
   createImmutableObjectStore,
@@ -15,11 +16,11 @@ function sender(
   return { send: vi.fn(implementation) };
 }
 
-function conditionalConflict(): Error {
-  return Object.assign(new Error('provider response must stay private'), {
-    name: 'PreconditionFailed',
-    $metadata: { httpStatusCode: 412 },
-  });
+function conditionalConflict(shape: 'name' | 'status' | 'code' = 'name'): Error {
+  const error = new Error('provider response must stay private');
+  if (shape === 'name') return Object.assign(error, { name: 'PreconditionFailed' });
+  if (shape === 'status') return Object.assign(error, { $metadata: { httpStatusCode: 412 } });
+  return Object.assign(error, { Code: 'PreconditionFailed' });
 }
 
 function expectSafeFailure(error: unknown, failure: ImmutableObjectStoreError['failure']): void {
@@ -64,31 +65,34 @@ describe('immutable Agent Package object storage', () => {
     expect(command.input.Body).not.toBe(bytes);
   });
 
-  it('accepts an identical retry only after a bounded byte-for-byte read-back', async () => {
-    const bytes = new Uint8Array([10, 20, 30, 40]);
-    const fake = sender(async (command) => {
-      if (command instanceof PutObjectCommand) throw conditionalConflict();
-      expect(command).toBeInstanceOf(GetObjectCommand);
-      return {
-        ContentLength: bytes.byteLength,
-        Body: {
-          async *[Symbol.asyncIterator]() {
-            yield bytes.subarray(0, 1);
-            yield bytes.subarray(1);
+  it.each(['name', 'status', 'code'] as const)(
+    'accepts an identical retry for a %s-only 412 shape after bounded byte comparison',
+    async (shape) => {
+      const bytes = new Uint8Array([10, 20, 30, 40]);
+      const fake = sender(async (command) => {
+        if (command instanceof PutObjectCommand) throw conditionalConflict(shape);
+        expect(command).toBeInstanceOf(GetObjectCommand);
+        return {
+          ContentLength: bytes.byteLength,
+          Body: {
+            async *[Symbol.asyncIterator]() {
+              yield bytes.subarray(0, 1);
+              yield bytes.subarray(1);
+            },
           },
-        },
-      };
-    });
-    const store = createImmutableObjectStore(fake);
+        };
+      });
+      const store = createImmutableObjectStore(fake);
 
-    await expect(
-      store.commit({ bucket: BUCKET, key: KEY, bytes, maxBytes: bytes.byteLength }),
-    ).resolves.toEqual({ outcome: 'already_committed', size: bytes.byteLength });
+      await expect(
+        store.commit({ bucket: BUCKET, key: KEY, bytes, maxBytes: bytes.byteLength }),
+      ).resolves.toEqual({ outcome: 'already_committed', size: bytes.byteLength });
 
-    expect(fake.send).toHaveBeenCalledTimes(2);
-    expect(fake.send.mock.calls[0]?.[0]).toBeInstanceOf(PutObjectCommand);
-    expect(fake.send.mock.calls[1]?.[0]).toBeInstanceOf(GetObjectCommand);
-  });
+      expect(fake.send).toHaveBeenCalledTimes(2);
+      expect(fake.send.mock.calls[0]?.[0]).toBeInstanceOf(PutObjectCommand);
+      expect(fake.send.mock.calls[1]?.[0]).toBeInstanceOf(GetObjectCommand);
+    },
+  );
 
   it('rejects an existing object whose bytes differ', async () => {
     const fake = sender(async (command) => {
@@ -110,23 +114,54 @@ describe('immutable Agent Package object storage', () => {
     }
   });
 
-  it('rejects an oversized ContentLength before touching a hostile body', async () => {
-    let iteratorRequested = false;
+  it('destroys an unconsumed Node Readable when ContentLength is invalid', async () => {
+    let readCount = 0;
+    const body = new Readable({
+      read() {
+        readCount += 1;
+        this.push(new Uint8Array([1]));
+        this.push(null);
+      },
+    });
     const fake = sender(async () => ({
-      ContentLength: 5,
-      Body: {
-        [Symbol.asyncIterator]() {
-          iteratorRequested = true;
-          throw new Error('body must not be consumed');
+      ContentLength: Number.NaN,
+      Body: body,
+    }));
+    const store = createImmutableObjectStore(fake);
+
+    await expect(store.read({ bucket: BUCKET, key: KEY, maxBytes: 4 })).rejects.toMatchObject({
+      failure: 'invalid_response',
+    });
+    expect(body.destroyed).toBe(true);
+    expect(readCount).toBe(0);
+  });
+
+  it('cancels an unconsumed Web stream when ContentLength exceeds maxBytes', async () => {
+    let pullCount = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pullCount += 1;
+          controller.enqueue(new Uint8Array([1]));
+        },
+        cancel() {
+          cancelled = true;
         },
       },
-    }));
+      { highWaterMark: 0 },
+    );
+    const fake = sender(async () => ({ ContentLength: 5, Body: body }));
     const store = createImmutableObjectStore(fake);
 
     await expect(store.read({ bucket: BUCKET, key: KEY, maxBytes: 4 })).rejects.toMatchObject({
       failure: 'too_large',
     });
-    expect(iteratorRequested).toBe(false);
+    expect(cancelled).toBe(true);
+    expect(pullCount).toBe(0);
+    const reader = body.getReader();
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    reader.releaseLock();
   });
 
   it('stops a hostile stream when accumulated bytes exceed maxBytes', async () => {
@@ -199,6 +234,89 @@ describe('immutable Agent Package object storage', () => {
     controller.abort();
 
     await expect(pending).rejects.toMatchObject({ failure: 'aborted' });
+    expect(returned).toBe(true);
+  });
+
+  it('rejects oversized commit bytes before copying or calling PUT/GET', async () => {
+    const bytes = new Uint8Array([1, 2]);
+    Object.defineProperty(bytes, Symbol.iterator, {
+      value() {
+        throw new Error('oversized bytes must not be copied');
+      },
+    });
+    const fake = sender(async () => {
+      throw new Error('object storage must not be called');
+    });
+    const store = createImmutableObjectStore(fake);
+
+    await expect(
+      store.commit({ bucket: BUCKET, key: KEY, bytes, maxBytes: 1 }),
+    ).rejects.toMatchObject({ failure: 'too_large' });
+    expect(fake.send).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      '409',
+      Object.assign(new Error(`${KEY} AKIA_TEST_CREDENTIAL provider diagnostic`), {
+        name: 'PreconditionFailed',
+        $metadata: { httpStatusCode: 409 },
+      }),
+    ],
+    [
+      '500',
+      Object.assign(new Error(`${KEY} AKIA_TEST_CREDENTIAL provider diagnostic`), {
+        name: 'InternalError',
+        Code: 'PreconditionFailed',
+        $metadata: { httpStatusCode: 500 },
+      }),
+    ],
+  ])('maps a %s PUT failure without issuing a speculative GET', async (_label, failure) => {
+    const fake = sender(async (command) => {
+      expect(command).toBeInstanceOf(PutObjectCommand);
+      throw failure;
+    });
+    const store = createImmutableObjectStore(fake);
+
+    try {
+      await store.commit({
+        bucket: BUCKET,
+        key: KEY,
+        bytes: new Uint8Array([1]),
+        maxBytes: 1,
+      });
+      expect.fail('non-412 PUT failure must fail closed');
+    } catch (error) {
+      expectSafeFailure(error, 'unavailable');
+    }
+    expect(fake.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('redacts a hostile stream rejection and closes its iterator', async () => {
+    let returned = false;
+    const fake = sender(async () => ({
+      Body: {
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<Uint8Array>> {
+              throw new Error(`${KEY} AKIA_TEST_CREDENTIAL stream diagnostic`);
+            },
+            async return() {
+              returned = true;
+              return { done: true as const, value: undefined };
+            },
+          };
+        },
+      },
+    }));
+    const store = createImmutableObjectStore(fake);
+
+    try {
+      await store.read({ bucket: BUCKET, key: KEY, maxBytes: 1024 });
+      expect.fail('stream failure must fail closed');
+    } catch (error) {
+      expectSafeFailure(error, 'unavailable');
+    }
     expect(returned).toBe(true);
   });
 
