@@ -63,6 +63,7 @@ const DEFAULT_EXPIRES_SEC = 900; // 15min 预签名默认有效期
 
 export type ImmutableObjectStoreFailure =
   | 'invalid_limit'
+  | 'invalid_input'
   | 'too_large'
   | 'aborted'
   | 'conflict'
@@ -71,6 +72,7 @@ export type ImmutableObjectStoreFailure =
 
 const IMMUTABLE_OBJECT_ERROR_MESSAGES: Readonly<Record<ImmutableObjectStoreFailure, string>> = {
   invalid_limit: 'immutable object byte limit is invalid',
+  invalid_input: 'immutable object bytes are invalid',
   too_large: 'immutable object exceeds the byte limit',
   aborted: 'immutable object operation was aborted',
   conflict: 'immutable object already exists with different bytes',
@@ -323,6 +325,42 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
+const TYPED_ARRAY_PROTOTYPE = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const GET_TYPED_ARRAY_BYTE_LENGTH = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  'byteLength',
+)?.get as ((this: Uint8Array) => number) | undefined;
+const GET_TYPED_ARRAY_BYTE_OFFSET = Object.getOwnPropertyDescriptor(
+  TYPED_ARRAY_PROTOTYPE,
+  'byteOffset',
+)?.get as ((this: Uint8Array) => number) | undefined;
+const GET_TYPED_ARRAY_BUFFER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'buffer')
+  ?.get as ((this: Uint8Array) => ArrayBufferLike) | undefined;
+
+function snapshotExactBytes(input: unknown, maxBytes: number): Uint8Array {
+  try {
+    if (!GET_TYPED_ARRAY_BYTE_LENGTH || !GET_TYPED_ARRAY_BYTE_OFFSET || !GET_TYPED_ARRAY_BUFFER) {
+      throw new ImmutableObjectStoreError('invalid_input');
+    }
+    const bytes = input as Uint8Array;
+    const byteLength = GET_TYPED_ARRAY_BYTE_LENGTH.call(bytes);
+    if (byteLength > maxBytes) throw new ImmutableObjectStoreError('too_large');
+    const byteOffset = GET_TYPED_ARRAY_BYTE_OFFSET.call(bytes);
+    const buffer = GET_TYPED_ARRAY_BUFFER.call(bytes);
+    const source = new Uint8Array(buffer, byteOffset, byteLength);
+    const snapshot = new Uint8Array(byteLength);
+    for (let index = 0; index < byteLength; index += 1) snapshot[index] = source[index] as number;
+    if (snapshot.byteLength > maxBytes) throw new ImmutableObjectStoreError('too_large');
+    if (snapshot.byteLength !== byteLength) {
+      throw new ImmutableObjectStoreError('invalid_input');
+    }
+    return snapshot;
+  } catch (error) {
+    if (error instanceof ImmutableObjectStoreError) throw error;
+    throw new ImmutableObjectStoreError('invalid_input');
+  }
+}
+
 /**
  * 创建一个不可覆盖的 exact-byte 对象原语。它不列举、删除或解析对象内容。
  */
@@ -375,10 +413,13 @@ export function createImmutableObjectStore(
   ): Promise<{ outcome: 'created' | 'already_committed'; size: number }> {
     validateMaxBytes(input.maxBytes);
     throwIfAborted(input.signal);
-    if (input.bytes.byteLength > input.maxBytes) {
-      throw new ImmutableObjectStoreError('too_large');
+    let exactBytes: Uint8Array;
+    try {
+      exactBytes = snapshotExactBytes(input.bytes, input.maxBytes);
+    } catch (error) {
+      if (error instanceof ImmutableObjectStoreError) throw error;
+      throw new ImmutableObjectStoreError('invalid_input');
     }
-    const exactBytes = Uint8Array.from(input.bytes);
     try {
       await sender.send(
         new PutObjectCommand({
@@ -399,7 +440,15 @@ export function createImmutableObjectStore(
       }
     }
 
-    const existing = await read(input);
+    let existing: Uint8Array;
+    try {
+      existing = await read(input);
+    } catch (error) {
+      if (error instanceof ImmutableObjectStoreError && error.failure === 'too_large') {
+        throw new ImmutableObjectStoreError('conflict');
+      }
+      throw error;
+    }
     if (!equalBytes(existing, exactBytes)) {
       throw new ImmutableObjectStoreError('conflict');
     }

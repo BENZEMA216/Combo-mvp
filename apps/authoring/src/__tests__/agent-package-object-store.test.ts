@@ -65,6 +65,28 @@ describe('immutable Agent Package object storage', () => {
     expect(command.input.Body).not.toBe(bytes);
   });
 
+  it('snapshots branded Uint8Array bytes without executing an expanding iterator', async () => {
+    const bytes = new Uint8Array([7]);
+    Object.defineProperty(bytes, Symbol.iterator, {
+      value: function* () {
+        yield 7;
+        yield 8;
+      },
+    });
+    const fake = sender(async () => ({ ETag: 'bounded-write' }));
+    const store = createImmutableObjectStore(fake);
+
+    await expect(store.commit({ bucket: BUCKET, key: KEY, bytes, maxBytes: 1 })).resolves.toEqual({
+      outcome: 'created',
+      size: 1,
+    });
+
+    expect(fake.send).toHaveBeenCalledTimes(1);
+    const command = fake.send.mock.calls[0]?.[0] as PutObjectCommand;
+    expect(command.input.ContentLength).toBe(1);
+    expect(command.input.Body).toEqual(new Uint8Array([7]));
+  });
+
   it.each(['name', 'status', 'code'] as const)(
     'accepts an identical retry for a %s-only 412 shape after bounded byte comparison',
     async (shape) => {
@@ -112,6 +134,62 @@ describe('immutable Agent Package object storage', () => {
     } catch (error) {
       expectSafeFailure(error, 'conflict');
     }
+  });
+
+  it('maps an oversized declared existing object to an immutable conflict', async () => {
+    const fake = sender(async (command) => {
+      if (command instanceof PutObjectCommand) throw conditionalConflict();
+      return { ContentLength: 2, Body: new Uint8Array([1, 2]) };
+    });
+    const store = createImmutableObjectStore(fake);
+
+    await expect(
+      store.commit({
+        bucket: BUCKET,
+        key: KEY,
+        bytes: new Uint8Array([1]),
+        maxBytes: 1,
+      }),
+    ).rejects.toMatchObject({ failure: 'conflict' });
+    expect(fake.send).toHaveBeenCalledTimes(2);
+  });
+
+  it('maps an existing object that crosses the streaming limit to an immutable conflict', async () => {
+    let returned = false;
+    const fake = sender(async (command) => {
+      if (command instanceof PutObjectCommand) throw conditionalConflict();
+      return {
+        ContentLength: 1,
+        Body: {
+          [Symbol.asyncIterator]() {
+            let index = 0;
+            return {
+              async next() {
+                index += 1;
+                if (index === 1) return { done: false as const, value: new Uint8Array([1]) };
+                return { done: false as const, value: new Uint8Array([2]) };
+              },
+              async return() {
+                returned = true;
+                return { done: true as const, value: undefined };
+              },
+            };
+          },
+        },
+      };
+    });
+    const store = createImmutableObjectStore(fake);
+
+    await expect(
+      store.commit({
+        bucket: BUCKET,
+        key: KEY,
+        bytes: new Uint8Array([1]),
+        maxBytes: 1,
+      }),
+    ).rejects.toMatchObject({ failure: 'conflict' });
+    expect(fake.send).toHaveBeenCalledTimes(2);
+    expect(returned).toBe(true);
   });
 
   it('destroys an unconsumed Node Readable when ContentLength is invalid', async () => {
