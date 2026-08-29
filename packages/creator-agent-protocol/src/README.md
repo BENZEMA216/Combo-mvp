@@ -12,6 +12,9 @@
   Codex 原生技能入口及全部智能体包文件的路径、长度和原始字节 SHA-256 摘要，并定义创作端私有来源
   回执与 Package 内不披露文件名的 opaque provenance 绑定；它不包含项目、会话或 Worker 运行字段，也不
   进入旧版 `AgentVersion` 分派器。
+- `knowledge-bundle.ts`：显式 `./knowledge-bundle` 子路径的有界静态知识合同。它固定 Package 内唯一知识
+  Skill、三文件 Test profile 与 Bundle 路径，校验排序分片、opaque source ID、不可解引用显示标签和 exact
+  UTF-8 内容摘要；它不读取对象存储、不接受 Package 外选择器，也不声称回答已被证据支持。
 - `agent-package-draft.ts`：显式 `./agent-package-draft` 子路径的两套互斥合同。V1 继续绑定一句制作要求、
   当前 Project 来源、Creator bootstrap handoff、Package Draft 快照与 revision；V2 单独绑定当前对话制作
   要求、`current_conversation` 脱敏来源投影和独立 fingerprint domain。V2 不定义 Host snapshot wire，也不
