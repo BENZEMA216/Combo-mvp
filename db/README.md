@@ -27,7 +27,9 @@
 
 当前 Registry 是单一可信、固定 controlled-Test publisher 的 first-writer 模型：Package digest 证明内容身份，不证明发布者身份或授权；publisher 只能从不可变 Release 关系推导，Session/receipt 不接受调用方独立声明 publisher。Runtime 与 consumers 对 Registry 只有解析所需的只读权限，不能注册 Package 或 Release；多 publisher 授权不在本迁移范围。
 
-终态知识 charge 与 Turn、receipt 必须在同一事务闭合：`answered` 对应 completed Turn/charge，`insufficient_evidence` 对应 completed Turn + released charge，`failed`/`interrupted` 对应同名 Turn + released charge，失败与中断结算恒为零；reserved charge 没有 outcome 或 receipt。validator code 使用受限映射，平台拒绝、不可用或协议错误可被审计但不能产生扣费。receipt 还固定 `execution_environment=test`、`runtime_release_id=release-<runtime_source_sha>` 与 40 位 source SHA，不额外声明没有共享 canonical serializer 支持的“密码学 receipt digest”。
+终态知识 charge 与 Turn、权威 response Message、receipt 必须在同一事务闭合：`answered` 对应 completed Turn/charge，`insufficient_evidence` 对应 completed Turn + released charge，两者都必须绑定同 Session/Turn 唯一的 completed assistant Message；`failed`/`interrupted` 对应同名 Turn + released charge且不绑定 response，失败与中断结算恒为零；reserved charge 没有 completed assistant response、outcome 或 receipt。insufficient receipt 不带 citations，interrupted 的 validator code 只能是 `not_run`；failed 可记录平台拒绝、不可用或协议错误但不能产生扣费。receipt 还固定 `execution_environment=test`、`runtime_release_id=release-<runtime_source_sha>` 与 40 位 source SHA，不额外声明没有共享 canonical serializer 支持的“密码学 receipt digest”。
+
+`response_message_id` 通过 `(id, session_id, turn_id)` exact FK 绑定现有 Message，并在 receipt 产生后禁止该 Message 更新或删除。`response_digest` 是 Runtime 对该 Message 中最终 answer exact UTF-8 文本计算的 SHA-256；Runtime/API 读取时必须复验。数据库不把可变的 JSON block 表示擅自当作 canonical response serializer。
 
 回答最多暴露 32 个 `chunk.knowledge.<id>` 引用，必须唯一并按 canonical 顺序保存。chunk ID 只有和 receipt 中冻结的 exact Package、固定 resource path 及 resource digest 一起解释，才间接绑定到实际内容；它本身不是跨 Package 的内容选择器。
 

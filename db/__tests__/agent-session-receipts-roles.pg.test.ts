@@ -93,6 +93,15 @@ pgDescribe('Agent usage receipt PostgreSQL roles', () => {
       (
         await owner.query<{ allowed: boolean }>(
           `SELECT has_column_privilege(
+             'combo_runtime', 'public.agent_usage_receipts', 'response_message_id', 'INSERT'
+           ) AS allowed`,
+        )
+      ).rows[0]?.allowed,
+    ).toBe(true);
+    expect(
+      (
+        await owner.query<{ allowed: boolean }>(
+          `SELECT has_column_privilege(
              'combo_runtime', 'public.usage_charges', 'execution_outcome', 'UPDATE'
            ) AS allowed`,
         )
@@ -111,6 +120,7 @@ pgDescribe('Agent usage receipt PostgreSQL roles', () => {
     for (const functionName of [
       'reject_agent_session_binding_mutation()',
       'reject_knowledge_usage_binding_mutation()',
+      'reject_receipted_response_message_mutation()',
       'guard_agent_usage_receipt_write()',
       'enforce_knowledge_usage_receipt_equation()',
     ]) {

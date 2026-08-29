@@ -100,6 +100,7 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
       'settled_cents',
       'execution_outcome',
       'validation_code',
+      'response_message_id',
       'response_digest',
       'citation_chunk_ids',
       'execution_environment',
@@ -114,6 +115,9 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
     expect(receipts).toContain('FOREIGN KEY (usage_charge_id, owner_user_id)');
     expect(receipts).toContain('FOREIGN KEY (session_id, capability_id, owner_user_id)');
     expect(receipts).toContain('FOREIGN KEY (turn_id, session_id)');
+    expect(receipts).toContain(
+      'FOREIGN KEY (response_message_id, session_id, turn_id)\n    REFERENCES messages (id, session_id, turn_id)',
+    );
     expect(receipts).toContain('FOREIGN KEY (release_id, package_digest)');
     expect(receipts).toContain("CHECK (execution_environment = 'test')");
     expect(receipts).toContain("runtime_release_id ~ '^release-[0-9a-f]{40}$'");
@@ -123,14 +127,28 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
     expect(receipts).toContain(
       "validation_code IN ('not_run', 'rejected', 'unavailable', 'protocol_invalid')",
     );
+    expect(receipts).toMatch(/execution_outcome = 'interrupted'\s+AND validation_code = 'not_run'/);
     expect(receipts).toMatch(
-      /execution_outcome = 'answered'[\s\S]*?response_digest IS NOT NULL[\s\S]*?response_digest ~/,
+      /execution_outcome = 'answered'[\s\S]*?response_message_id IS NOT NULL[\s\S]*?response_digest IS NOT NULL[\s\S]*?response_digest ~/,
     );
     expect(receipts).toMatch(
-      /execution_outcome = 'insufficient_evidence'[\s\S]*?response_digest IS NOT NULL[\s\S]*?response_digest ~/,
+      /execution_outcome = 'insufficient_evidence'[\s\S]*?response_message_id IS NOT NULL[\s\S]*?response_digest IS NOT NULL[\s\S]*?response_digest ~/,
+    );
+    expect(receipts).toMatch(
+      /execution_outcome = 'failed'[\s\S]*?response_message_id IS NULL[\s\S]*?response_digest IS NULL/,
+    );
+    expect(receipts).toMatch(
+      /execution_outcome = 'insufficient_evidence'[\s\S]*?cardinality\(citation_chunk_ids\) = 0/,
+    );
+    expect(sql).toContain(
+      'ADD CONSTRAINT uq_messages_id_session_turn UNIQUE (id, session_id, turn_id)',
+    );
+    expect(sql).toContain(
+      'CREATE INDEX idx_agent_usage_receipts_response_message\n  ON agent_usage_receipts (response_message_id)\n  WHERE response_message_id IS NOT NULL',
     );
     expect(sql).toContain('CREATE TRIGGER trg_agent_usage_receipts_write_guard');
     expect(sql).toContain('CREATE TRIGGER trg_agent_usage_receipts_no_truncate');
+    expect(sql).toContain('CREATE TRIGGER trg_receipted_response_message_immutable');
   });
 
   it('checks Turn, charge, receipt, citations, and exactly-one terminal state at commit', () => {
@@ -153,6 +171,22 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
     expect(chargeLock).toBeGreaterThan(turnLock);
     expect(sql).not.toContain('FOR UPDATE OF');
     expect(sql).not.toMatch(/FROM agent_usage_receipts[\s\S]{0,120}FOR UPDATE/);
+    const receiptGuard = sql.match(
+      /CREATE FUNCTION guard_agent_usage_receipt_write\(\) RETURNS trigger AS \$\$([\s\S]*?)\n\$\$/,
+    )?.[1];
+    expect(receiptGuard).toBeDefined();
+    const guardSessionLock = receiptGuard!.indexOf('FROM public.sessions');
+    const guardTurnLock = receiptGuard!.indexOf('FROM public.turns');
+    const guardChargeLock = receiptGuard!.lastIndexOf('FROM public.usage_charges');
+    const guardMessageLock = receiptGuard!.indexOf('FROM public.messages');
+    expect(guardSessionLock).toBeGreaterThan(-1);
+    expect(guardTurnLock).toBeGreaterThan(guardSessionLock);
+    expect(guardChargeLock).toBeGreaterThan(guardTurnLock);
+    expect(guardMessageLock).toBeGreaterThan(guardChargeLock);
+    expect(sql).toContain('completed_assistant_count <> 0');
+    expect(sql).toContain('receipt_row.response_message_id IS NULL');
+    expect(sql).toContain("response_message_row.role IS DISTINCT FROM 'assistant'");
+    expect(sql).toContain("response_message_row.status IS DISTINCT FROM 'completed'");
     expect(sql).toContain("charge_row.execution_outcome = 'answered'");
     expect(sql).toContain("turn_status = 'completed'");
     expect(sql).toContain("charge_row.execution_outcome = 'failed'");
@@ -165,6 +199,7 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
       'trg_turn_knowledge_usage_receipt_equation',
       'trg_usage_charge_knowledge_receipt_equation',
       'trg_agent_usage_receipt_equation',
+      'trg_message_knowledge_receipt_equation',
     ]) {
       expect(sql).toMatch(
         new RegExp(`CREATE CONSTRAINT TRIGGER ${trigger}[\\s\\S]*DEFERRABLE INITIALLY DEFERRED`),
@@ -183,6 +218,7 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
     expect(receiptInsertGrant).toBeDefined();
     expect(receiptInsertGrant).toContain('usage_charge_id');
     expect(receiptInsertGrant).toContain('runtime_release_id');
+    expect(receiptInsertGrant).toContain('response_message_id');
     const grantedColumns = receiptInsertGrant!.split(',').map((column) => column.trim());
     expect(grantedColumns).not.toContain('id');
     expect(grantedColumns).not.toContain('created_at');
@@ -194,6 +230,7 @@ describe('0017 Agent Package Session and knowledge usage receipts migration', ()
     for (const triggerFunction of [
       'reject_agent_session_binding_mutation',
       'reject_knowledge_usage_binding_mutation',
+      'reject_receipted_response_message_mutation',
       'guard_agent_usage_receipt_write',
       'enforce_knowledge_usage_receipt_equation',
     ]) {

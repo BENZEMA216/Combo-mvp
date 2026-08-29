@@ -160,6 +160,7 @@ log "真实 PostgreSQL 16 Agent Session freeze、terminal receipts、并发与�
 AGENT_SESSION_RECEIPTS_PG_TEST=1 \
   pnpm --dir "${ROOT_DIR}/db" exec vitest run \
     __tests__/agent-session-receipts.pg.test.ts \
+    __tests__/agent-session-response-message.pg.test.ts \
     __tests__/agent-session-receipts-roles.pg.test.ts
 
 log "真实 PostgreSQL 16 从 0016 升级到 0017 ..."

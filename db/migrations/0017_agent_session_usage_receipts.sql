@@ -141,6 +141,11 @@ CREATE INDEX idx_usage_charges_knowledge_terminal
   ON usage_charges (owner_user_id, finished_at DESC, id)
   WHERE product_kind = 'knowledge_agent_test' AND status IN ('completed', 'released');
 
+-- A terminal receipt names one exact response Message. The redundant scope columns make the FK
+-- prove that the selected Message belongs to the same Session and Turn without trusting a caller.
+ALTER TABLE messages
+  ADD CONSTRAINT uq_messages_id_session_turn UNIQUE (id, session_id, turn_id);
+
 -- One terminal knowledge charge has exactly one append-only receipt. Citation references are exact
 -- Knowledge Bundle chunk IDs, not mutable labels, paths, URLs, or independent retrieval selectors.
 CREATE TABLE agent_usage_receipts (
@@ -186,6 +191,7 @@ CREATE TABLE agent_usage_receipts (
   settled_cents              bigint      NOT NULL,
   execution_outcome          text        NOT NULL,
   validation_code            text        NOT NULL,
+  response_message_id        uuid,
   response_digest            text,
   citation_chunk_ids         text[]      NOT NULL DEFAULT '{}'::text[],
   execution_environment      text        NOT NULL
@@ -206,6 +212,10 @@ CREATE TABLE agent_usage_receipts (
   CONSTRAINT fk_agent_usage_receipt_turn_scope
     FOREIGN KEY (turn_id, session_id)
     REFERENCES turns (id, session_id)
+    DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT fk_agent_usage_receipt_response_scope
+    FOREIGN KEY (response_message_id, session_id, turn_id)
+    REFERENCES messages (id, session_id, turn_id)
     DEFERRABLE INITIALLY DEFERRED,
   CONSTRAINT fk_agent_usage_receipt_release
     FOREIGN KEY (release_id, package_digest)
@@ -247,6 +257,7 @@ CREATE TABLE agent_usage_receipts (
     (
       execution_outcome = 'answered'
       AND validation_code = 'accepted'
+      AND response_message_id IS NOT NULL
       AND response_digest IS NOT NULL
       AND response_digest ~ '^sha256:[a-f0-9]{64}$'
       AND cardinality(citation_chunk_ids) BETWEEN 1 AND 32
@@ -254,13 +265,24 @@ CREATE TABLE agent_usage_receipts (
     OR (
       execution_outcome = 'insufficient_evidence'
       AND validation_code = 'insufficient_evidence'
+      AND response_message_id IS NOT NULL
       AND response_digest IS NOT NULL
       AND response_digest ~ '^sha256:[a-f0-9]{64}$'
+      AND cardinality(citation_chunk_ids) = 0
       AND settled_cents = 0
     )
     OR (
-      execution_outcome IN ('failed', 'interrupted')
+      execution_outcome = 'failed'
       AND validation_code IN ('not_run', 'rejected', 'unavailable', 'protocol_invalid')
+      AND response_message_id IS NULL
+      AND response_digest IS NULL
+      AND cardinality(citation_chunk_ids) = 0
+      AND settled_cents = 0
+    )
+    OR (
+      execution_outcome = 'interrupted'
+      AND validation_code = 'not_run'
+      AND response_message_id IS NULL
       AND response_digest IS NULL
       AND cardinality(citation_chunk_ids) = 0
       AND settled_cents = 0
@@ -272,6 +294,9 @@ CREATE INDEX idx_agent_usage_receipts_owner_recent
   ON agent_usage_receipts (owner_user_id, created_at DESC, id);
 CREATE INDEX idx_agent_usage_receipts_session_recent
   ON agent_usage_receipts (session_id, created_at DESC, id);
+CREATE INDEX idx_agent_usage_receipts_response_message
+  ON agent_usage_receipts (response_message_id)
+  WHERE response_message_id IS NOT NULL;
 
 -- Session and knowledge-charge identity snapshots can only be supplied on INSERT. This protects the
 -- frozen tuple even from ordinary DML by the migration owner while retaining legacy Session updates.
@@ -375,6 +400,29 @@ CREATE TRIGGER trg_knowledge_usage_binding_immutable
   BEFORE UPDATE ON usage_charges
   FOR EACH ROW EXECUTE FUNCTION reject_knowledge_usage_binding_mutation();
 
+-- Once a receipt names the authoritative response, that exact Message cannot be rewritten or
+-- removed. The application re-verifies response_digest against the exact answer-text bytes; the
+-- database deliberately does not invent a canonical serializer for the existing JSON blocks.
+CREATE FUNCTION reject_receipted_response_message_mutation() RETURNS trigger AS $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public.agent_usage_receipts
+     WHERE response_message_id = OLD.id
+  ) THEN
+    RAISE EXCEPTION 'receipted response Message is immutable' USING ERRCODE = '55000';
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+   SECURITY INVOKER
+   SET search_path = pg_catalog, public;
+
+CREATE TRIGGER trg_receipted_response_message_immutable
+  BEFORE UPDATE OR DELETE ON messages
+  FOR EACH ROW EXECUTE FUNCTION reject_receipted_response_message_mutation();
+
 CREATE FUNCTION guard_agent_usage_receipt_write() RETURNS trigger AS $$
 DECLARE
   charge_session uuid;
@@ -401,6 +449,13 @@ BEGIN
       RAISE EXCEPTION 'agent usage receipt requires a knowledge charge'
         USING ERRCODE = '23514';
     END IF;
+    IF NEW.response_message_id IS NOT NULL THEN
+      -- The response row is last in the fixed lock order: Session, Turn, charge, Message.
+      PERFORM 1
+        FROM public.messages
+       WHERE id = NEW.response_message_id
+       FOR UPDATE;
+    END IF;
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'agent_usage_receipts is append-only' USING ERRCODE = '55000';
@@ -418,8 +473,9 @@ CREATE TRIGGER trg_agent_usage_receipts_no_truncate
   FOR EACH STATEMENT EXECUTE FUNCTION guard_agent_usage_receipt_write();
 
 -- At commit, every knowledge Turn is one of two coherent states: running with one reserved charge
--- and no receipt, or terminal with the mapped charge outcome and exactly one receipt. All mirrors
--- are compared after locking the Session, Turn, and charge rows, so concurrent replays serialize.
+-- and no completed response or receipt, or terminal with the mapped charge outcome, one exact
+-- response when applicable, and exactly one receipt. All mirrors are compared after explicitly
+-- locking the Session, Turn, charge, and bound response rows, so concurrent replays serialize.
 CREATE FUNCTION enforce_knowledge_usage_receipt_equation() RETURNS trigger AS $$
 DECLARE
   affected_turn uuid;
@@ -428,7 +484,9 @@ DECLARE
   turn_status text;
   charge_row record;
   receipt_row record;
+  response_message_row record;
   receipt_count bigint;
+  completed_assistant_count bigint;
   invalid_citation_count bigint;
   distinct_citation_count bigint;
   canonical_citation_ids text[];
@@ -437,13 +495,19 @@ BEGIN
     affected_turn := CASE WHEN TG_OP = 'DELETE' THEN OLD.id ELSE NEW.id END;
   ELSIF TG_TABLE_NAME = 'usage_charges' THEN
     affected_turn := CASE WHEN TG_OP = 'DELETE' THEN OLD.turn_id ELSE NEW.turn_id END;
-  ELSE
+  ELSIF TG_TABLE_NAME = 'agent_usage_receipts' THEN
     -- A receipt's charge is authoritative. Never let a caller select a different Turn for the
     -- deferred equation by supplying internally consistent but unrelated receipt scope columns.
     SELECT turn_id INTO affected_turn
       FROM usage_charges
      WHERE id = CASE WHEN TG_OP = 'DELETE' THEN OLD.usage_charge_id ELSE NEW.usage_charge_id END;
     IF NOT FOUND THEN
+      IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+      RETURN NEW;
+    END IF;
+  ELSE
+    affected_turn := CASE WHEN TG_OP = 'DELETE' THEN OLD.turn_id ELSE NEW.turn_id END;
+    IF affected_turn IS NULL THEN
       IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
       RETURN NEW;
     END IF;
@@ -547,11 +611,18 @@ BEGIN
     FROM agent_usage_receipts
    WHERE usage_charge_id = charge_row.id;
 
+  SELECT count(*) INTO completed_assistant_count
+    FROM messages
+   WHERE turn_id = affected_turn
+     AND role = 'assistant'
+     AND status = 'completed';
+
   IF charge_row.status = 'reserved' THEN
     IF turn_status <> 'running'
        OR charge_row.execution_outcome IS NOT NULL
-       OR receipt_count <> 0 THEN
-      RAISE EXCEPTION 'reserved knowledge usage must have a running Turn and no receipt'
+       OR receipt_count <> 0
+       OR completed_assistant_count <> 0 THEN
+      RAISE EXCEPTION 'reserved knowledge usage must have a running Turn and no response or receipt'
         USING ERRCODE = '23514';
     END IF;
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
@@ -586,6 +657,29 @@ BEGIN
   SELECT * INTO receipt_row
     FROM agent_usage_receipts
    WHERE usage_charge_id = charge_row.id;
+
+  IF charge_row.execution_outcome IN ('answered', 'insufficient_evidence') THEN
+    IF receipt_row.response_message_id IS NULL OR completed_assistant_count <> 1 THEN
+      RAISE EXCEPTION 'answered knowledge usage requires one authoritative response Message'
+        USING ERRCODE = '23514';
+    END IF;
+    SELECT id, session_id, turn_id, role, status
+      INTO response_message_row
+      FROM messages
+     WHERE id = receipt_row.response_message_id
+     FOR UPDATE;
+    IF NOT FOUND
+       OR response_message_row.session_id IS DISTINCT FROM charge_row.session_id
+       OR response_message_row.turn_id IS DISTINCT FROM charge_row.turn_id
+       OR response_message_row.role IS DISTINCT FROM 'assistant'
+       OR response_message_row.status IS DISTINCT FROM 'completed' THEN
+      RAISE EXCEPTION 'knowledge receipt response Message is invalid'
+        USING ERRCODE = '23514';
+    END IF;
+  ELSIF receipt_row.response_message_id IS NOT NULL OR completed_assistant_count <> 0 THEN
+    RAISE EXCEPTION 'failed knowledge usage cannot bind a completed response Message'
+      USING ERRCODE = '23514';
+  END IF;
 
   IF ROW(
     receipt_row.owner_user_id,
@@ -670,11 +764,18 @@ CREATE CONSTRAINT TRIGGER trg_agent_usage_receipt_equation
   DEFERRABLE INITIALLY DEFERRED
   FOR EACH ROW EXECUTE FUNCTION enforce_knowledge_usage_receipt_equation();
 
+CREATE CONSTRAINT TRIGGER trg_message_knowledge_receipt_equation
+  AFTER INSERT OR UPDATE OR DELETE ON messages
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION enforce_knowledge_usage_receipt_equation();
+
 REVOKE ALL PRIVILEGES ON agent_usage_receipts
   FROM PUBLIC, combo_api, combo_worker, combo_runtime;
 REVOKE ALL PRIVILEGES ON FUNCTION reject_agent_session_binding_mutation()
   FROM PUBLIC, combo_api, combo_worker, combo_runtime;
 REVOKE ALL PRIVILEGES ON FUNCTION reject_knowledge_usage_binding_mutation()
+  FROM PUBLIC, combo_api, combo_worker, combo_runtime;
+REVOKE ALL PRIVILEGES ON FUNCTION reject_receipted_response_message_mutation()
   FROM PUBLIC, combo_api, combo_worker, combo_runtime;
 REVOKE ALL PRIVILEGES ON FUNCTION guard_agent_usage_receipt_write()
   FROM PUBLIC, combo_api, combo_worker, combo_runtime;
@@ -682,7 +783,7 @@ REVOKE ALL PRIVILEGES ON FUNCTION enforce_knowledge_usage_receipt_equation()
   FROM PUBLIC, combo_api, combo_worker, combo_runtime;
 
 -- Runtime owns Session execution and therefore appends and reads its user-visible receipts. IDs and
--- commit timestamps remain database generated. The Authoring API, worker, consumers, and PUBLIC
+-- the transaction-time created_at are database generated. The API, worker, consumers, and PUBLIC
 -- cannot write Registry or receipt truth.
 GRANT SELECT ON agent_usage_receipts TO combo_runtime;
 GRANT INSERT (
@@ -708,6 +809,7 @@ GRANT INSERT (
   settled_cents,
   execution_outcome,
   validation_code,
+  response_message_id,
   response_digest,
   citation_chunk_ids,
   execution_environment,

@@ -37,8 +37,12 @@ const RUNTIME_SOURCE_SHA = '1'.repeat(40);
 const RUNTIME_RELEASE_ID = `release-${RUNTIME_SOURCE_SHA}`;
 const CITATION_ID = `chunk.knowledge.${'2'.repeat(32)}`;
 const CITATION_ID_SECOND = `chunk.knowledge.${'3'.repeat(32)}`;
-const ANSWER_RESPONSE_DIGEST = `sha256:${'4'.repeat(64)}`;
-const INSUFFICIENT_RESPONSE_DIGEST = `sha256:${'5'.repeat(64)}`;
+const ANSWER_TEXT = 'Combo 使用 exact Agent Package 作为唯一运行真相。';
+const INSUFFICIENT_TEXT = '当前 Knowledge Bundle 没有足够证据回答这个问题。';
+const ANSWER_RESPONSE_DIGEST = `sha256:${createHash('sha256').update(ANSWER_TEXT).digest('hex')}`;
+const INSUFFICIENT_RESPONSE_DIGEST = `sha256:${createHash('sha256')
+  .update(INSUFFICIENT_TEXT)
+  .digest('hex')}`;
 
 interface DatabaseError {
   code?: string;
@@ -56,6 +60,7 @@ interface KnowledgeFixture {
   releaseId: string;
   packageDigest: string;
   resourceDigest: string;
+  responseMessageId?: string;
 }
 
 let savepointSequence = 0;
@@ -254,84 +259,6 @@ async function seedKnowledgeUsage(
   }
 }
 
-async function seedAdditionalKnowledgeUsage(
-  owner: Client,
-  fixture: KnowledgeFixture,
-): Promise<KnowledgeFixture> {
-  const turnId = randomUUID();
-  const usageId = randomUUID();
-  await owner.query('BEGIN');
-  try {
-    await owner.query(
-      `UPDATE billing_free_allowances
-          SET free_reserved_count = free_reserved_count + 1, updated_at = now()
-        WHERE owner_user_id = $1 AND capability_id = $2`,
-      [fixture.ownerUserId, fixture.capabilityId],
-    );
-    const sessionId = (
-      await owner.query<{ id: string }>(
-        `INSERT INTO sessions (
-           capability_id, owner_user_id, mode, product_kind, capability_protocol,
-           release_id, package_digest, release_scope,
-           knowledge_resource_path, knowledge_resource_digest
-         ) VALUES (
-           $1, $2, 'consume', 'knowledge_agent_test', $3, $4, $5, $6, $7, $8
-         ) RETURNING id`,
-        [
-          fixture.capabilityId,
-          fixture.ownerUserId,
-          CAPABILITY_PROTOCOL,
-          fixture.releaseId,
-          fixture.packageDigest,
-          RELEASE_SCOPE,
-          RESOURCE_PATH,
-          fixture.resourceDigest,
-        ],
-      )
-    ).rows[0]!.id;
-    await owner.query(`INSERT INTO turns (id, session_id, status) VALUES ($1, $2, 'running')`, [
-      turnId,
-      sessionId,
-    ]);
-    const chargeId = (
-      await owner.query<{ id: string }>(
-        `INSERT INTO usage_charges (
-           owner_user_id, usage_id, capability_id, session_id, turn_id,
-           request_fingerprint, charge_source, status, unit_price_cents,
-           free_limit_snapshot, reserved_cents, settled_cents,
-           product_kind, capability_protocol, release_id, package_digest, release_scope,
-           knowledge_resource_path, knowledge_resource_digest,
-           billing_policy_version, validator_policy_version
-         ) VALUES (
-           $1, $2, $3, $4, $5, $6, 'free', 'reserved', 1, 3, 0, 0,
-           'knowledge_agent_test', $7, $8, $9, $10, $11, $12, $13, $14
-         ) RETURNING id`,
-        [
-          fixture.ownerUserId,
-          usageId,
-          fixture.capabilityId,
-          sessionId,
-          turnId,
-          createHash('sha256').update(randomUUID()).digest('hex'),
-          CAPABILITY_PROTOCOL,
-          fixture.releaseId,
-          fixture.packageDigest,
-          RELEASE_SCOPE,
-          RESOURCE_PATH,
-          fixture.resourceDigest,
-          BILLING_POLICY,
-          VALIDATOR_POLICY,
-        ],
-      )
-    ).rows[0]!.id;
-    await owner.query('COMMIT');
-    return { ...fixture, sessionId, turnId, chargeId, usageId };
-  } catch (error) {
-    await owner.query('ROLLBACK');
-    throw error;
-  }
-}
-
 function terminalShape(outcome: KnowledgeOutcome): {
   turnStatus: 'completed' | 'failed' | 'interrupted';
   chargeStatus: 'completed' | 'released';
@@ -366,14 +293,42 @@ function terminalShape(outcome: KnowledgeOutcome): {
   };
 }
 
+async function insertTurnMessage(
+  client: Client,
+  fixture: Pick<KnowledgeFixture, 'sessionId' | 'turnId'>,
+  options: {
+    role?: 'user' | 'assistant' | 'tool';
+    status?: 'completed' | 'failed';
+    text?: string;
+    sessionId?: string;
+    turnId?: string;
+  } = {},
+): Promise<string> {
+  const role = options.role ?? 'assistant';
+  const status = options.status ?? 'completed';
+  const sessionId = options.sessionId ?? fixture.sessionId;
+  const turnId = options.turnId ?? fixture.turnId;
+  const text = options.text ?? ANSWER_TEXT;
+  const inserted = await client.query<{ id: string }>(
+    `INSERT INTO messages (session_id, turn_id, idx, seq, role, content, status)
+     SELECT $1, $2, COALESCE(MAX(idx), 0) + 1, NULL, $3, $4::jsonb, $5
+       FROM messages
+      WHERE turn_id = $2
+     RETURNING id`,
+    [sessionId, turnId, role, JSON.stringify([{ type: 'text', text }]), status],
+  );
+  return inserted.rows[0]!.id;
+}
+
 async function insertReceipt(
   client: Client,
-  fixture: Pick<KnowledgeFixture, 'chargeId' | 'usageId'>,
+  fixture: Pick<KnowledgeFixture, 'chargeId' | 'usageId' | 'responseMessageId'>,
   outcome: KnowledgeOutcome,
   options: {
     citationIds?: string[];
     usageId?: string;
     validationCode?: ValidationCode;
+    responseMessageId?: string | null;
     responseDigest?: string | null;
     executionEnvironment?: string;
     runtimeReleaseId?: string;
@@ -388,7 +343,8 @@ async function insertReceipt(
        knowledge_resource_path, knowledge_resource_digest,
        billing_policy_version, validator_policy_version,
        unit_price_cents, free_limit_snapshot, charge_source, settled_cents,
-       execution_outcome, validation_code, response_digest, citation_chunk_ids,
+       execution_outcome, validation_code, response_message_id, response_digest,
+       citation_chunk_ids,
        execution_environment, runtime_release_id, runtime_source_sha
      )
      SELECT
@@ -397,7 +353,7 @@ async function insertReceipt(
        knowledge_resource_path, knowledge_resource_digest,
        billing_policy_version, validator_policy_version,
        unit_price_cents, free_limit_snapshot, charge_source, settled_cents,
-       execution_outcome, $4, $5, $6::text[], $7, $8, $9
+       execution_outcome, $4, $5::uuid, $6, $7::text[], $8, $9, $10
      FROM usage_charges
      WHERE id = $1
      RETURNING id`,
@@ -406,6 +362,11 @@ async function insertReceipt(
       RECEIPT_PROTOCOL,
       options.usageId ?? fixture.usageId,
       options.validationCode ?? shape.validationCode,
+      options.responseMessageId === undefined
+        ? outcome === 'answered' || outcome === 'insufficient_evidence'
+          ? (fixture.responseMessageId ?? null)
+          : null
+        : options.responseMessageId,
       options.responseDigest === undefined ? shape.responseDigest : options.responseDigest,
       options.citationIds ?? shape.citations,
       options.executionEnvironment ?? 'test',
@@ -414,90 +375,6 @@ async function insertReceipt(
     ],
   );
   return receipt.rows[0]!.id;
-}
-
-async function insertReceiptFromFrozenSnapshot(
-  client: Client,
-  fixture: KnowledgeFixture,
-  outcome: KnowledgeOutcome,
-): Promise<string> {
-  const shape = terminalShape(outcome);
-  const receipt = await client.query<{ id: string }>(
-    `INSERT INTO agent_usage_receipts (
-       protocol, usage_charge_id, owner_user_id, usage_id, capability_id, session_id, turn_id,
-       product_kind, capability_protocol, release_id, package_digest, release_scope,
-       knowledge_resource_path, knowledge_resource_digest,
-       billing_policy_version, validator_policy_version,
-       unit_price_cents, free_limit_snapshot, charge_source, settled_cents,
-       execution_outcome, validation_code, response_digest, citation_chunk_ids,
-       execution_environment, runtime_release_id, runtime_source_sha
-     ) VALUES (
-       $1, $2, $3, $4, $5, $6, $7,
-       'knowledge_agent_test', $8, $9, $10, $11, $12, $13,
-       $14, $15, 1, 3, 'free', 0, $16, $17, $18, $19,
-       'test', $20, $21
-     ) RETURNING id`,
-    [
-      RECEIPT_PROTOCOL,
-      fixture.chargeId,
-      fixture.ownerUserId,
-      fixture.usageId,
-      fixture.capabilityId,
-      fixture.sessionId,
-      fixture.turnId,
-      CAPABILITY_PROTOCOL,
-      fixture.releaseId,
-      fixture.packageDigest,
-      RELEASE_SCOPE,
-      RESOURCE_PATH,
-      fixture.resourceDigest,
-      BILLING_POLICY,
-      VALIDATOR_POLICY,
-      outcome,
-      shape.validationCode,
-      shape.responseDigest,
-      shape.citations,
-      RUNTIME_RELEASE_ID,
-      RUNTIME_SOURCE_SHA,
-    ],
-  );
-  return receipt.rows[0]!.id;
-}
-
-async function insertReceiptWithMismatchedCharge(
-  client: Client,
-  receiptChargeId: string,
-  snapshotChargeId: string,
-): Promise<void> {
-  await client.query(
-    `INSERT INTO agent_usage_receipts (
-       protocol, usage_charge_id, owner_user_id, usage_id, capability_id, session_id, turn_id,
-       product_kind, capability_protocol, release_id, package_digest, release_scope,
-       knowledge_resource_path, knowledge_resource_digest,
-       billing_policy_version, validator_policy_version,
-       unit_price_cents, free_limit_snapshot, charge_source, settled_cents,
-       execution_outcome, validation_code, response_digest, citation_chunk_ids,
-       execution_environment, runtime_release_id, runtime_source_sha
-     )
-     SELECT
-       $3, $1::uuid, owner_user_id, usage_id, capability_id, session_id, turn_id,
-       product_kind, capability_protocol, release_id, package_digest, release_scope,
-       knowledge_resource_path, knowledge_resource_digest,
-       billing_policy_version, validator_policy_version,
-       unit_price_cents, free_limit_snapshot, charge_source, 0,
-       'answered', 'accepted', $4, $5::text[], 'test', $6, $7
-     FROM usage_charges
-     WHERE id = $2`,
-    [
-      receiptChargeId,
-      snapshotChargeId,
-      RECEIPT_PROTOCOL,
-      ANSWER_RESPONSE_DIGEST,
-      [CITATION_ID],
-      RUNTIME_RELEASE_ID,
-      RUNTIME_SOURCE_SHA,
-    ],
-  );
 }
 
 async function prepareTerminal(
@@ -511,6 +388,13 @@ async function prepareTerminal(
   } = {},
 ): Promise<string | null> {
   const shape = terminalShape(outcome);
+  // Knowledge terminal writers follow the database lock contract before touching Turn/charge rows.
+  await client.query('SELECT 1 FROM sessions WHERE id = $1 FOR UPDATE', [fixture.sessionId]);
+  if (outcome === 'answered' || outcome === 'insufficient_evidence') {
+    fixture.responseMessageId = await insertTurnMessage(client, fixture, {
+      text: outcome === 'answered' ? ANSWER_TEXT : INSUFFICIENT_TEXT,
+    });
+  }
   await client.query(
     `UPDATE turns
         SET status = $2, finished_at = now()
@@ -874,6 +758,7 @@ pgDescribe('Agent Package Session and usage receipts on PostgreSQL 16', () => {
         charge_source: string;
         settled_cents: string;
         validation_code: string;
+        response_message_id: string | null;
         response_digest: string | null;
         citation_chunk_ids: string[];
         execution_environment: string;
@@ -884,7 +769,8 @@ pgDescribe('Agent Package Session and usage receipts on PostgreSQL 16', () => {
               r.id AS receipt_id, r.owner_user_id, r.usage_id, r.release_id,
               r.package_digest, r.knowledge_resource_digest AS resource_digest,
               r.billing_policy_version, r.validator_policy_version, r.charge_source,
-              r.settled_cents::text, r.validation_code, r.response_digest,
+              r.settled_cents::text, r.validation_code, r.response_message_id,
+              r.response_digest,
               r.citation_chunk_ids, r.execution_environment, r.runtime_release_id,
               r.runtime_source_sha
          FROM turns t
@@ -908,6 +794,10 @@ pgDescribe('Agent Package Session and usage receipts on PostgreSQL 16', () => {
         charge_source: 'free',
         settled_cents: '0',
         validation_code: shape.validationCode,
+        response_message_id:
+          outcome === 'answered' || outcome === 'insufficient_evidence'
+            ? fixture.responseMessageId
+            : null,
         citation_chunk_ids: shape.citations,
         execution_environment: 'test',
         runtime_release_id: RUNTIME_RELEASE_ID,
@@ -1066,100 +956,6 @@ pgDescribe('Agent Package Session and usage receipts on PostgreSQL 16', () => {
       );
     } finally {
       await runtime.query('ROLLBACK');
-    }
-  });
-
-  it('derives receipt scope from the authoritative charge instead of caller-supplied Turn fields', async () => {
-    const authoritative = await seedKnowledgeUsage(owner);
-    const unrelated = await seedAdditionalKnowledgeUsage(owner, authoritative);
-    const runtime = clients.get('combo_runtime')!;
-    await runtime.query('BEGIN');
-    try {
-      await insertReceiptWithMismatchedCharge(runtime, authoritative.chargeId, unrelated.chargeId);
-      await expect(runtime.query('SET CONSTRAINTS ALL IMMEDIATE')).rejects.toMatchObject({
-        code: '23514',
-      });
-    } finally {
-      await runtime.query('ROLLBACK');
-    }
-  });
-
-  it('serializes concurrent receipt replay to one committed immutable row', async () => {
-    const runtime = clients.get('combo_runtime')!;
-    const peer = new Client({ connectionString: roleConnectionString('combo_runtime') });
-    await peer.connect();
-    const fixture = await seedKnowledgeUsage(owner);
-
-    try {
-      await runtime.query('BEGIN');
-      const receiptId = await prepareTerminal(runtime, fixture, 'answered');
-
-      await peer.query('BEGIN');
-      const competingInsert = insertReceiptFromFrozenSnapshot(peer, fixture, 'answered');
-      const early = await Promise.race([
-        competingInsert.then(
-          () => 'resolved',
-          () => 'rejected',
-        ),
-        new Promise<'pending'>((resolvePending) =>
-          setTimeout(() => resolvePending('pending'), 100),
-        ),
-      ]);
-      expect(early).toBe('pending');
-
-      await runtime.query('COMMIT');
-      await expect(competingInsert).rejects.toMatchObject({ code: '23505' });
-      await peer.query('ROLLBACK');
-
-      const replay = await owner.query<{ id: string; count: string }>(
-        `SELECT min(id::text) AS id, count(*)::text AS count
-           FROM agent_usage_receipts
-          WHERE owner_user_id = $1 AND usage_id = $2`,
-        [fixture.ownerUserId, fixture.usageId],
-      );
-      expect(replay.rows[0]).toEqual({ id: receiptId, count: '1' });
-    } finally {
-      if (runtime) await runtime.query('ROLLBACK').catch(() => undefined);
-      await peer.query('ROLLBACK').catch(() => undefined);
-      await peer.end();
-    }
-  });
-
-  it('blocks binding and receipt mutation even for owner DML', async () => {
-    const fixture = await seedKnowledgeUsage(owner);
-    const runtime = clients.get('combo_runtime')!;
-    await completeTerminal(runtime, fixture, 'answered');
-
-    await owner.query('BEGIN');
-    try {
-      for (const operation of [
-        () =>
-          owner.query('UPDATE sessions SET knowledge_resource_digest = $2 WHERE id = $1', [
-            fixture.sessionId,
-            digest('owner-session-drift'),
-          ]),
-        () =>
-          owner.query(
-            `UPDATE usage_charges
-                SET billing_policy_version = 'drifted'
-              WHERE id = $1`,
-            [fixture.chargeId],
-          ),
-        () =>
-          owner.query(
-            'UPDATE agent_usage_receipts SET created_at = created_at WHERE usage_charge_id = $1',
-            [fixture.chargeId],
-          ),
-        () =>
-          owner.query('DELETE FROM agent_usage_receipts WHERE usage_charge_id = $1', [
-            fixture.chargeId,
-          ]),
-        () => owner.query('TRUNCATE agent_usage_receipts'),
-      ]) {
-        await expectDatabaseError(owner, operation, '55000');
-      }
-    } finally {
-      await owner.query('ROLLBACK');
     }
   });
 });
