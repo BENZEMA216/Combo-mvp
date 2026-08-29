@@ -6,7 +6,7 @@
 
 - `processes/` 放 API 与 worker 两个进程入口。
 - `bootstrap/` 组装 Fastify、基础设施、健康检查和业务路由。
-- `modules/` 按 account、task、capability 和 billing 四个业务领域组织代码。account 是第一方认证唯一写入方，billing 是外部充值与内部钱包入账的唯一写入方。
+- `modules/` 按 account、task、capability、agent-package-release 和 billing 五个业务领域组织代码。account 是第一方认证唯一写入方，agent-package-release 是受控 Test canonical Registry 的唯一写入方，billing 是外部充值与内部钱包入账的唯一写入方。
 - `platform/` 提供配置、HTTP 边界、PostgreSQL、Redis、队列、对象存储、Resend、本地会话校验、链路追踪和事件流等公共设施。
 
 依赖保持单向。processes 使用 bootstrap 与 modules，bootstrap 使用 modules 与 platform，modules 使用 platform，platform 不依赖业务模块。共享类型、错误信封、Cookie 常量和校验契约来自 `@cb/shared`。
@@ -23,6 +23,10 @@
 3. 浏览器只持有一枚 HttpOnly Cookie。HTTPS 发布入口显式配置根路径、Secure 且主机限定的 `__Host-cb_session`，本地 HTTP 开发入口显式配置根路径 `cb_session`，选择不依赖 `NODE_ENV`。authoring 的受保护路由只按当前安全策略对应的 Cookie 查询本地会话，不接受 Bearer 或 refresh 凭据。
 4. 创作者创建任务后，本机助手凭配对码上传分片。worker 消费任务，读取原文、解析、脱敏、调用大模型并写入能力项。
 5. 浏览器通过任务事件流读取进度，终态仍以 PostgreSQL 中的任务状态为准。
+
+## 受控 Test Package 发布
+
+唯一 gate 发布者通过登录 Cookie 提交规范 `agent.json` 和固定三个 Package 文件。API 在服务端验证 exact Package 与 Knowledge Bundle、按 digest 推导对象键并逐一不可覆盖提交和回读，最后才提交 `agent.json` 与 PostgreSQL Registry marker。gate 缺失或候选提交漂移时路由保持 404；Preview、Production 与 worker 不能配置该 gate。
 
 ## 充值主链路
 

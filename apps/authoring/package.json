@@ -20,6 +20,7 @@
     "@anthropic-ai/sdk": "^0.33.1",
     "@aws-sdk/client-s3": "^3.726.1",
     "@aws-sdk/s3-request-presigner": "^3.726.1",
+    "@cb/creator-agent-protocol": "workspace:*",
     "@cb/shared": "workspace:*",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.2",
