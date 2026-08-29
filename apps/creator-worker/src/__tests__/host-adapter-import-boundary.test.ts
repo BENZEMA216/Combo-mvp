@@ -13,6 +13,17 @@ const sourceSuffixes = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.
 const creatorProducerPattern =
   /creator-authorization-host-adapter|createCreatorAuthorizationHostAdapterController|consumeCreatorAuthorization|readCreatorAuthorizedProjectBinding/u;
 const creatorOrderingModulePattern = /(?:^|\/)agent-package-creator-authorized(?:\.js)?$/u;
+const conversationOrderingModulePattern =
+  /(?:^|\/)agent-package-current-conversation-draft(?:\.js)?$/u;
+const conversationHostInjectionModulePattern =
+  /(?:^|\/)current-conversation-draft-extractor(?:\.js)?$/u;
+const allowedConversationOrderingImporter =
+  'apps/creator-worker/src/application/agent-package-current-conversation-composition.ts';
+const allowedConversationHostInjectionImporters = [
+  'apps/creator-worker/src/application/agent-package-current-conversation-composition.ts',
+  'apps/creator-worker/src/application/agent-package-current-conversation-draft.ts',
+  'apps/creator-worker/src/application/unavailable-current-conversation-draft-host.ts',
+] as const;
 const forbiddenCreatorArtifactPattern =
   /creator-authorization-host-adapter|agent-package-creator-authorized|host-authorized-creator-project-source/u;
 
@@ -79,6 +90,24 @@ describe('Host adapter producer import boundary', () => {
     expect(importers).toEqual([]);
   });
 
+  it('lets only the fail-closed current-conversation composition import the ordering seam', () => {
+    const importers = productionRepositoryFiles()
+      .filter(importsConversationOrderingSeam)
+      .map((path) => relative(repositoryRoot, path))
+      .sort();
+
+    expect(importers).toEqual([allowedConversationOrderingImporter]);
+  });
+
+  it('allows only the reviewed fail-closed modules to import the ambient Host injection seam', () => {
+    const importers = productionRepositoryFiles()
+      .filter(importsConversationHostInjectionSeam)
+      .map((path) => relative(repositoryRoot, path))
+      .sort();
+
+    expect(importers).toEqual([...allowedConversationHostInjectionImporters].sort());
+  });
+
   it('detects a relative import of the internal Creator redemption ordering seam', () => {
     const root = mkdtempSync(join(tmpdir(), 'combo-creator-ordering-boundary-'));
     try {
@@ -87,6 +116,21 @@ describe('Host adapter producer import boundary', () => {
       const importer = join(source, 'unauthorized.ts');
       writeFileSync(importer, "import './application/agent-package-creator-authorized.js';\n");
       expect(productionSourceFiles(root).filter(importsCreatorOrderingSeam)).toEqual([importer]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('detects a relative import of the ambient current-conversation Host injection seam', () => {
+    const root = mkdtempSync(join(tmpdir(), 'combo-conversation-host-boundary-'));
+    try {
+      const source = join(root, 'src');
+      mkdirSync(source);
+      const importer = join(source, 'unauthorized.ts');
+      writeFileSync(importer, "import './authoring/current-conversation-draft-extractor.js';\n");
+      expect(productionSourceFiles(root).filter(importsConversationHostInjectionSeam)).toEqual([
+        importer,
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -141,5 +185,19 @@ function importsCreatorOrderingSeam(path: string): boolean {
   const source = readFileSync(path, 'utf8');
   return preProcessFile(source, true, true).importedFiles.some(({ fileName }) =>
     creatorOrderingModulePattern.test(fileName),
+  );
+}
+
+function importsConversationOrderingSeam(path: string): boolean {
+  const source = readFileSync(path, 'utf8');
+  return preProcessFile(source, true, true).importedFiles.some(({ fileName }) =>
+    conversationOrderingModulePattern.test(fileName),
+  );
+}
+
+function importsConversationHostInjectionSeam(path: string): boolean {
+  const source = readFileSync(path, 'utf8');
+  return preProcessFile(source, true, true).importedFiles.some(({ fileName }) =>
+    conversationHostInjectionModulePattern.test(fileName),
   );
 }

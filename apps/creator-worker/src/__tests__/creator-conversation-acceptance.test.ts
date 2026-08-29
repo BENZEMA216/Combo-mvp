@@ -151,6 +151,7 @@ const AcceptanceContractSchema = z
       z.literal('DIRECT_USER_CREATOR_ITEM'),
       z.literal('DESKTOP_ATTESTED_ACTIVE_CURRENT_TASK_SOURCE_BOUNDARY'),
       z.literal('EXACT_COMPONENT_VERSIONS'),
+      z.literal('SIGNED_DESKTOP_CURRENT_TASK_RUN_RECEIPT'),
       z.literal('SANITIZED_CONVERSATION_PROVENANCE'),
       z.literal('STUDIO_VISIBLE_AGENT_PACKAGE_DRAFT'),
       z.literal('ZERO_ADDITIONAL_CREATOR_PROJECT_SCANS'),
@@ -168,6 +169,7 @@ const AcceptanceContractSchema = z
       z.literal('CREATOR_CLI'),
       z.literal('FAKE_HOST_OR_PORT'),
       z.literal('ISOLATED_BUNDLED_CODEX_THREAD'),
+      z.literal('PRESENTATION_ONLY_DRAFT_CARD'),
     ]),
   })
   .strict()
@@ -201,6 +203,16 @@ const AcceptanceContractSchema = z
         message: 'all evidence must belong to the exact candidate commit',
       });
     }
+    if (
+      new Set(evidence.map((item) => item.artifactRef)).size !== evidence.length ||
+      new Set(evidence.map((item) => item.artifactSha256)).size !== evidence.length
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['gates'],
+        message: 'each acceptance layer requires its own evidence artifact and digest',
+      });
+    }
   });
 
 type AcceptanceContract = z.infer<typeof AcceptanceContractSchema>;
@@ -219,7 +231,7 @@ describe('conversation-first Creator product acceptance', () => {
     const contract = parseContract(readFileSync(contractPath, 'utf8'));
 
     expect(contract.gates).toEqual([
-      { id: 'ACC-CONTRACT-011A', status: 'NOT_IMPLEMENTED', evidence: [] },
+      { id: 'ACC-CONTRACT-011A', status: 'NOT_RUN', evidence: [] },
       { id: 'ACC-UNIT-011B', status: 'NOT_IMPLEMENTED', evidence: [] },
       { id: 'ACC-SEC-011C', status: 'NOT_IMPLEMENTED', evidence: [] },
       { id: 'ACC-HOST-011D', status: 'NOT_IMPLEMENTED', evidence: [] },
@@ -257,6 +269,7 @@ describe('conversation-first Creator product acceptance', () => {
       'CREATOR_CLI',
       'FAKE_HOST_OR_PORT',
       'ISOLATED_BUNDLED_CODEX_THREAD',
+      'PRESENTATION_ONLY_DRAFT_CARD',
     ]);
   });
 
@@ -288,6 +301,25 @@ describe('conversation-first Creator product acceptance', () => {
     expect(() => AcceptanceContractSchema.parse(value)).toThrow();
   });
 
+  it('rejects one fake artifact reused across all five acceptance layers', () => {
+    const value = JSON.parse(readFileSync(contractPath, 'utf8')) as Record<string, unknown>;
+    value.productStatus = 'PASS';
+    value.candidateCommit = candidateCommit;
+    value.gates = gateIds.map((id) => ({
+      id,
+      status: 'PASS',
+      evidence: [
+        {
+          ...passingEvidence(id),
+          artifactRef: 'acceptance-evidence:reused',
+          artifactSha256: `sha256:${'f'.repeat(64)}`,
+        },
+      ],
+    }));
+
+    expect(() => AcceptanceContractSchema.parse(value)).toThrow();
+  });
+
   it('keeps engineering and user-facing documentation aligned with the contract', () => {
     const engineering = read('ENGINEERING.md');
     const product = read('PROJECT.md');
@@ -311,16 +343,50 @@ describe('conversation-first Creator product acceptance', () => {
     expect(acceptance).toContain('DESKTOP_ATTESTED_ACTIVE_CURRENT_TASK_SOURCE_BOUNDARY');
   });
 
-  it('records that the current production Creator remains Project-first', () => {
+  it('keeps Project V1 isolated while the public conversation V2 facade fails closed without a Host adapter', () => {
     const requestAndDraft = read('packages/creator-agent-protocol/src/agent-package-draft.ts');
     const composition = read(
       'apps/creator-worker/src/application/agent-package-creator-composition.ts',
     );
+    const conversationApplication = read(
+      'apps/creator-worker/src/application/agent-package-current-conversation-draft.ts',
+    );
+    const conversationComposition = read(
+      'apps/creator-worker/src/application/agent-package-current-conversation-composition.ts',
+    );
+    const protocolPackage = JSON.parse(read('packages/creator-agent-protocol/package.json')) as {
+      exports: Record<string, unknown>;
+    };
+    const workerPackage = JSON.parse(read('apps/creator-worker/package.json')) as {
+      exports: Record<string, unknown>;
+    };
+    const workerTsconfig = JSON.parse(read('apps/creator-worker/tsconfig.json')) as {
+      exclude: string[];
+    };
+    const acceptance = read('apps/creator-worker/CREATOR_CONVERSATION_ACCEPTANCE.md');
 
     expect(requestAndDraft).toContain("z.literal('create_agent_package_from_current_project')");
     expect(requestAndDraft).toContain("kind: z.literal('current_project')");
-    expect(requestAndDraft).not.toContain("kind: z.literal('current_conversation')");
+    expect(requestAndDraft).toContain(
+      "z.literal('create_agent_package_from_current_conversation')",
+    );
+    expect(requestAndDraft).toContain("kind: z.literal('current_conversation')");
     expect(composition).toContain('scanCreatorProjectSourceContext');
     expect(composition).toContain('materializeCreatorProjectSourceProjection');
+    expect(conversationApplication).not.toMatch(/Project|Bridge|child_process|compile\s*[:(]/u);
+    expect(protocolPackage.exports).toHaveProperty('./agent-package-draft');
+    expect(workerPackage.exports).toHaveProperty('./agent-package-current-conversation-draft');
+    expect(workerTsconfig.exclude).not.toContain(
+      'src/application/agent-package-current-conversation-draft.ts',
+    );
+    expect(workerTsconfig.exclude).not.toContain(
+      'src/authoring/current-conversation-draft-extractor.ts',
+    );
+    expect(conversationComposition).toContain('unavailableCurrentConversationDraftHost');
+    expect(conversationComposition).not.toMatch(/Project|Bridge|session|child_process/u);
+    expect(acceptance).toContain(
+      'V2 协议已由公开 `agent-package-draft` 子路径进入 production build',
+    );
+    expect(acceptance).toContain('production fail-closed facade');
   });
 });

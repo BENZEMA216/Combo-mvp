@@ -23,24 +23,38 @@ import {
   CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL,
   CREATOR_AGENT_PACKAGE_CREATOR_GUIDE,
   CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL,
   CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING,
+  CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL,
   CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES,
   CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
   createCreatorAgentPackageCreatorBootstrapHandoff,
   createCreatorAgentPackageCreatorRequest,
+  createCreatorAgentPackageCreatorRequestV2,
   createCreatorAgentPackageDraftRevisionRequest,
   createCreatorAgentPackageDraftSnapshot,
+  createCreatorAgentPackageDraftSnapshotV2,
   digestCreatorAgentPackageCreatorRequest,
+  digestCreatorAgentPackageCreatorRequestV2,
+  digestCreatorAgentPackageConversationExtractionCandidate,
   parseCreatorAgentPackageCreatorBootstrapHandoff,
   parseCreatorAgentPackageCreatorRequest,
+  parseCreatorAgentPackageCreatorRequestV2,
   parseCreatorAgentPackageDraftRevisionRequest,
   parseCreatorAgentPackageDraftSnapshot,
+  parseCreatorAgentPackageDraftSnapshotV2,
   reviseCreatorAgentPackageDraft,
+  reviseCreatorAgentPackageDraftV2,
   serializeCreatorAgentPackageCreatorBootstrapHandoff,
   serializeCreatorAgentPackageCreatorRequest,
+  serializeCreatorAgentPackageCreatorRequestV2,
   serializeCreatorAgentPackageDraftRevisionRequest,
   serializeCreatorAgentPackageDraftSnapshot,
+  serializeCreatorAgentPackageDraftSnapshotV2,
   verifyCreatorAgentPackageDraftSnapshot,
+  verifyCreatorAgentPackageDraftSnapshotV2,
 } from '../agent-package-draft.js';
 
 const AGENT_DIGEST = `sha256:${'a'.repeat(64)}` as const;
@@ -382,6 +396,21 @@ function firstDraftInput() {
 }
 
 describe('Agent Package creator request and Draft contract', () => {
+  it('preserves the exact V1 Project request and Draft fingerprint', () => {
+    const request = createCreatorAgentPackageCreatorRequest(creatorRequest());
+    const draft = createCreatorAgentPackageDraftSnapshot(firstDraftInput());
+
+    expect(serializeCreatorAgentPackageCreatorRequest(request)).toBe(
+      '{"intent":"create_agent_package_from_current_project","protocol":"combo.agent-package-creator-request/1","request":"请阅读 combo.workflow.md，把这个目录中已经跑通的发布流程提炼成一个 Agent。"}',
+    );
+    expect(digestCreatorAgentPackageCreatorRequest(request)).toBe(
+      'sha256:2aa1e6d8e52ca9f30be855aa691dea5f01057a179b6e45888a6e14299192ad00',
+    );
+    expect(draft.draftFingerprint).toBe(
+      'sha256:8c88af37544a3ed0d75b7862972df0eafe2ccafcaf14652eaaa42f38b33beb08',
+    );
+  });
+
   it('creates one path-free creator request and canonical immutable Draft revision', () => {
     const request = createCreatorAgentPackageCreatorRequest(creatorRequest());
     const draft = createCreatorAgentPackageDraftSnapshot(firstDraftInput());
@@ -576,5 +605,267 @@ describe('Agent Package creator request and Draft contract', () => {
     });
     expect(() => createCreatorAgentPackageDraftSnapshot(proxy)).toThrow(/plain JSON/u);
     expect(reads).toBe(0);
+  });
+});
+
+function conversationCreatorRequest() {
+  return {
+    protocol: CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL,
+    intent: 'create_agent_package_from_current_conversation' as const,
+    request: '把我们刚才完成的工作做成一个 Agent。',
+  };
+}
+
+function conversationExtractionCandidate() {
+  return {
+    protocol: CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL,
+    name: '证据核验员',
+    description: '使用当前对话形成的方法检查任务。',
+    instructions: '先核对时间线，再对照代码、运行结果和用户可见体验。',
+    starterPrompts: ['检查这项任务。'],
+    outputDescription: '返回证据结论。',
+    coverageSummary: '当前任务中关于证据核验的讨论定义了这个 Agent。',
+  };
+}
+
+function firstConversationDraftInput() {
+  return {
+    protocol: CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
+    draftId: `draft.agent-package.${'2'.repeat(32)}`,
+    revision: 1,
+    parentDraftFingerprint: null,
+    creatorRequest: conversationCreatorRequest(),
+    source: {
+      kind: 'current_conversation' as const,
+      sourceBoundary: 'desktop_attested_active_current_task' as const,
+      snapshotBoundary: 'before_direct_creator_item' as const,
+      visibility: 'user_visible_items_only' as const,
+      snapshotCompleteness: 'complete' as const,
+      rawStored: false as const,
+      snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1' as const,
+      snapshotCommitment: SOURCE_DIGEST,
+      selectedVisibleItemCount: 7,
+      coverageSummary: '当前任务里关于证据门禁的讨论定义了这个 Agent。',
+    },
+    content: {
+      name: '证据门禁 Agent',
+      description: '用当前对话里形成的证据方法检查完成状态。',
+      instructions: '依次核对时间线、代码、运行结果和用户可见体验，证据不一致时标记未证明。',
+      starterPrompts: ['检查这项任务是否真的完成。'],
+      outputDescription: '返回结论、证据缺口和下一步。',
+    },
+  };
+}
+
+describe('current-conversation Agent Package request and Draft V2 contract', () => {
+  it('uses one canonical domain-separated egress-candidate digest', () => {
+    const first = digestCreatorAgentPackageConversationExtractionCandidate(
+      conversationExtractionCandidate(),
+    );
+    const reordered = {
+      coverageSummary: conversationExtractionCandidate().coverageSummary,
+      outputDescription: conversationExtractionCandidate().outputDescription,
+      starterPrompts: conversationExtractionCandidate().starterPrompts,
+      instructions: conversationExtractionCandidate().instructions,
+      description: conversationExtractionCandidate().description,
+      name: conversationExtractionCandidate().name,
+      protocol: conversationExtractionCandidate().protocol,
+    };
+
+    expect(digestCreatorAgentPackageConversationExtractionCandidate(reordered)).toBe(first);
+    expect(first).toBe('sha256:6945e2817ca7ccfdf57c5c9cb3308de1c8841003973379d41b6a745d8134b140');
+    expect(first).not.toBe(
+      createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()).draftFingerprint,
+    );
+
+    const oversized = conversationExtractionCandidate() as Record<string, unknown>;
+    Object.defineProperty(oversized, 'x'.repeat(CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES), {
+      enumerable: true,
+      value: null,
+    });
+    expect(() => digestCreatorAgentPackageConversationExtractionCandidate(oversized)).toThrow(
+      'byte limit',
+    );
+  });
+
+  it('creates a canonical immutable V2 request and sanitized Draft provenance', () => {
+    const request = createCreatorAgentPackageCreatorRequestV2(conversationCreatorRequest());
+    const draft = createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput());
+    const requestText = serializeCreatorAgentPackageCreatorRequestV2(request);
+    const draftText = serializeCreatorAgentPackageDraftSnapshotV2(draft);
+
+    expect(requestText).toBe(
+      '{"intent":"create_agent_package_from_current_conversation","protocol":"combo.agent-package-creator-request/2","request":"把我们刚才完成的工作做成一个 Agent。"}',
+    );
+    expect(digestCreatorAgentPackageCreatorRequestV2(request)).toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(parseCreatorAgentPackageCreatorRequestV2(requestText)).toEqual(request);
+    expect(parseCreatorAgentPackageDraftSnapshotV2(draftText)).toEqual(draft);
+    expect(verifyCreatorAgentPackageDraftSnapshotV2(draft)).toEqual(draft);
+    expect(draft.source).toEqual({
+      kind: 'current_conversation',
+      sourceBoundary: 'desktop_attested_active_current_task',
+      snapshotBoundary: 'before_direct_creator_item',
+      visibility: 'user_visible_items_only',
+      snapshotCompleteness: 'complete',
+      rawStored: false,
+      snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1',
+      snapshotCommitment: SOURCE_DIGEST,
+      selectedVisibleItemCount: 7,
+      coverageSummary: '当前任务里关于证据门禁的讨论定义了这个 Agent。',
+    });
+    expect(Object.keys(draft.source)).toEqual([
+      'kind',
+      'sourceBoundary',
+      'snapshotBoundary',
+      'visibility',
+      'snapshotCompleteness',
+      'rawStored',
+      'snapshotCommitmentScheme',
+      'snapshotCommitment',
+      'selectedVisibleItemCount',
+      'coverageSummary',
+    ]);
+    expect(draftText).not.toMatch(
+      /taskId|threadId|sessionId|itemId|projectPath|rawTranscript|messages|citedSources/u,
+    );
+    expect(Object.isFrozen(draft)).toBe(true);
+    expect(Object.isFrozen(draft.source)).toBe(true);
+    expect(Object.isFrozen(draft.content)).toBe(true);
+  });
+
+  it('keeps V1 and V2 parsers mutually exclusive', () => {
+    const projectRequestText = serializeCreatorAgentPackageCreatorRequest(creatorRequest());
+    const conversationRequestText = serializeCreatorAgentPackageCreatorRequestV2(
+      conversationCreatorRequest(),
+    );
+    const projectDraftText = serializeCreatorAgentPackageDraftSnapshot(
+      createCreatorAgentPackageDraftSnapshot(firstDraftInput()),
+    );
+    const conversationDraftText = serializeCreatorAgentPackageDraftSnapshotV2(
+      createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()),
+    );
+
+    expect(() => parseCreatorAgentPackageCreatorRequest(projectRequestText)).not.toThrow();
+    expect(() => parseCreatorAgentPackageCreatorRequestV2(conversationRequestText)).not.toThrow();
+    expect(() => parseCreatorAgentPackageCreatorRequest(conversationRequestText)).toThrow();
+    expect(() => parseCreatorAgentPackageCreatorRequestV2(projectRequestText)).toThrow();
+    expect(() => parseCreatorAgentPackageDraftSnapshot(conversationDraftText)).toThrow();
+    expect(() => parseCreatorAgentPackageDraftSnapshotV2(projectDraftText)).toThrow();
+  });
+
+  it('rejects caller-selected source identities, transcripts, Projects, and untrusted provenance', () => {
+    for (const field of [
+      'taskId',
+      'threadId',
+      'sessionId',
+      'itemId',
+      'rawTranscript',
+      'messages',
+      'items',
+      'projectPath',
+      'currentProjectPath',
+      'source',
+      'hostSnapshot',
+      'hook',
+      'trust',
+    ]) {
+      expect(() =>
+        createCreatorAgentPackageCreatorRequestV2({
+          ...conversationCreatorRequest(),
+          [field]: 'caller-controlled',
+        }),
+      ).toThrow();
+    }
+
+    for (const sourceChange of [
+      { rawStored: true },
+      { selectedVisibleItemCount: 0 },
+      { taskId: 'task-private' },
+      { threadId: 'thread-private' },
+      { sessionId: 'session-private' },
+      { itemId: 'item-private' },
+      { rawTranscript: 'private transcript' },
+      { projectPath: '/Users/alice/private' },
+      { citedSources: [{ path: 'private.md', digest: SOURCE_DIGEST }] },
+    ]) {
+      expect(() =>
+        createCreatorAgentPackageDraftSnapshotV2({
+          ...firstConversationDraftInput(),
+          source: { ...firstConversationDraftInput().source, ...sourceChange },
+        }),
+      ).toThrow();
+    }
+  });
+
+  it('fingerprints and revises V2 without changing its exact conversation provenance', () => {
+    const first = createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput());
+    const changedSource = createCreatorAgentPackageDraftSnapshotV2({
+      ...firstConversationDraftInput(),
+      source: {
+        ...firstConversationDraftInput().source,
+        snapshotCommitment: `sha256:${'d'.repeat(64)}`,
+      },
+    });
+    expect(changedSource.draftFingerprint).not.toBe(first.draftFingerprint);
+    expect(() =>
+      verifyCreatorAgentPackageDraftSnapshotV2({
+        ...first,
+        content: { ...first.content, name: '篡改后的 Agent' },
+      }),
+    ).toThrow(/fingerprint/u);
+
+    const revision = createCreatorAgentPackageDraftRevisionRequest({
+      protocol: CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL,
+      draftId: first.draftId,
+      baseRevision: first.revision,
+      baseDraftFingerprint: first.draftFingerprint,
+      changes: { description: '只接受当前任务中用户可见的证据。' },
+    });
+    const second = reviseCreatorAgentPackageDraftV2(first, revision);
+    expect(second.revision).toBe(2);
+    expect(second.creatorRequest).toEqual(first.creatorRequest);
+    expect(second.source).toEqual(first.source);
+    expect(() => reviseCreatorAgentPackageDraftV2(second, revision)).toThrow(/exact base/u);
+    expect(() =>
+      reviseCreatorAgentPackageDraftV2(
+        second,
+        createCreatorAgentPackageDraftRevisionRequest({
+          protocol: CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL,
+          draftId: second.draftId,
+          baseRevision: second.revision,
+          baseDraftFingerprint: second.draftFingerprint,
+          changes: { description: second.content.description },
+        }),
+      ),
+    ).toThrow(/must change/u);
+  });
+
+  it('does not execute V2 accessors or Proxy traps and rejects non-canonical bytes', () => {
+    let reads = 0;
+    const accessor = {
+      ...firstConversationDraftInput(),
+      get source() {
+        reads += 1;
+        return firstConversationDraftInput().source;
+      },
+    };
+    expect(() => createCreatorAgentPackageDraftSnapshotV2(accessor)).toThrow(/data properties/u);
+    expect(reads).toBe(0);
+
+    const proxy = new Proxy(firstConversationDraftInput(), {
+      ownKeys(target) {
+        reads += 1;
+        return Reflect.ownKeys(target);
+      },
+    });
+    expect(() => createCreatorAgentPackageDraftSnapshotV2(proxy)).toThrow(/plain JSON/u);
+    expect(reads).toBe(0);
+
+    const text = serializeCreatorAgentPackageDraftSnapshotV2(
+      createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()),
+    );
+    expect(() => parseCreatorAgentPackageDraftSnapshotV2(`${text}\n`)).toThrow(
+      /not exact canonical/u,
+    );
   });
 });

@@ -39,6 +39,10 @@
     "./creator-authorization": {
       "types": "./dist/creator-authorization.d.ts",
       "default": "./dist/creator-authorization.js"
+    },
+    "./desktop-current-conversation-receipt": {
+      "types": "./dist/desktop-current-conversation-receipt.d.ts",
+      "default": "./dist/desktop-current-conversation-receipt.js"
     }
   },
   "files": [

@@ -77,6 +77,23 @@
   投影、结构化 Codex Host、构建器、发布器与加载器，不导入旧版执行组合根。
 - `application/agent-package-creator.ts` 把 Host 提供的当前 Project 与一句制作要求绑定成不可变 Package Draft，
   并把 exact Draft 编译、原子发布和正式重载组合成第二个显式动作；Draft 阶段不产生可运行 Package。
+- `authoring/current-conversation-draft-extractor.ts` 定义未接线的 ambient Desktop current-task lease 合同：
+  只用制作要求 digest 打开 Host-owned 来源，要求 direct-user、active-task、user-visible-only、完整快照和
+  `rawStored=false`，且快照固定截止于 direct creator item 之前。digest 核对后，exact 制作要求作为独立指令
+  进入唯一一次无工具结构化提取；模型只看到 bare Draft output schema，Host 必须在 sealed snapshot 边界内做
+  verbatim/credential egress 检查，并在模型输出之外包装与 snapshot/request/extraction candidate
+  digest 绑定的 receipt。最终 V2 Draft fingerprint 属于另一摘要域，验收 receipt 以显式 projection 同时绑定二者。
+  receipt 缺失、拒绝或错绑均停止。提取前后核对 `assertStillCurrent()`，并在所有终态关闭。它不接收
+  Project、task/thread/session/item ID 或 transcript，也不导入 scanner、Bridge、child process、Package
+  builder、Session 或 Runtime。
+- `application/agent-package-current-conversation-draft.ts` 把上述脱敏提取结果封装为
+  `combo.agent-package-draft/2`，返回面只有 `readDraft()` 与 exact `revise()`，没有 compile 或 fallback。
+  它与 extractor 一样进入 production build，但只由
+  `application/agent-package-current-conversation-composition.ts` 导入；该 composition 当前绑定固定 unavailable
+  Host，并由 `agent-package-current-conversation-draft.ts` 暴露窄 public facade。真实 Host adapter 不存在时，
+  它只会固定安全停止，不能作为用户路径或 Host 验收证据。
+- `application/unavailable-current-conversation-draft-host.ts` 是当前唯一 production ambient Host 实现。它不
+  接收 task/thread/session、transcript 或 Project，也不读取任何来源；调用必然停止为 source unavailable。
 - `application/agent-package-creator-authorized.ts` 是未接线的原生 Host authorization ordering seam：业务
   options 只含制作要求与普通运行控制；它先把本地计算的 request digest 和受信 executor digest 交给未来
   dispatch-scoped redemption port，验证返回的 claims 与内部 Project lease 后才调用 Draft 内核；lease 的
@@ -85,9 +102,10 @@
 - `application/host-authorized-creator-project-source.ts` 在 Creator scanner 的首个目录读取边界核对 Host 私有
   lease 的 ambient dispatch/workspace generation 与 canonical path/device/inode；随后复用 scanner 已有的
   目录、文件描述符和终态复验，避免外层检查后重新绑定另一个 Project。
-- 当前没有生产 composition 导入上述两个 authorization 文件；真实 authenticated Host adapter 出现前，它们
-  只构成内部顺序与首读绑定 seam，不是可运行入口。production tsconfig 与 clean build 也排除这两个文件；
-  它们只由测试 tsconfig 编译，不能作为深路径运行产物。
+- 当前没有 production composition 导入上述两个 Project authorization 文件；真实 authenticated Project Host
+  adapter 出现前，它们只构成内部顺序、来源与首读绑定 seam，并继续由 production tsconfig 排除。
+  Current-conversation ordering seam 则由固定 unavailable composition 导入，生产调用不能成功，也不能接入
+  Fake 或业务方自带 Host。
 - `application/agent-package-creator-composition.ts` 为 Creator Draft 绑定 Creator 来源扫描器、只读 Host
   投影、结构化 Codex Host、Draft 规范化器、Package 构建器、发布器与加载器，不导入 Session 或旧版执行链。
 - `application/agent-package-creator-bridge.ts` 验证 Plugin 交来的版本化 handoff，只从受信 Host adapter
