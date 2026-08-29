@@ -326,8 +326,10 @@ pgDescribe('canonical Agent Package Registry on PostgreSQL 16', () => {
           owner.query('DELETE FROM agent_package_releases WHERE release_id = $1', [
             fixture.releaseId,
           ]),
-        () => owner.query('TRUNCATE agent_package_releases'),
-        () => owner.query('TRUNCATE agent_packages, agent_package_releases'),
+        // 0017 adds Session/charge/receipt FKs to exact Releases. CASCADE reaches the registry
+        // trigger instead of stopping first at PostgreSQL's schema-level TRUNCATE FK guard.
+        () => owner.query('TRUNCATE agent_package_releases CASCADE'),
+        () => owner.query('TRUNCATE agent_packages, agent_package_releases CASCADE'),
       ]) {
         await expectDatabaseError(owner, operation, '55000');
       }

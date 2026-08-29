@@ -103,6 +103,7 @@ describe('migrations', () => {
         // prefix and do not define the current Agent Package product model.
         'agent_packages',
         'agent_package_releases',
+        'agent_usage_receipts',
         'agent_projects',
         'agent_revisions',
         'agent_releases',
@@ -204,7 +205,7 @@ describe('migrations', () => {
     const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
 
     expect(firstCurrentIndex).toBeGreaterThan(0);
-    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 10)).toEqual([
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 11)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -215,6 +216,7 @@ describe('migrations', () => {
       '0014_agent_test_reviews.sql',
       '0015_project_agent_shares.sql',
       '0016_agent_package_registry.sql',
+      '0017_agent_session_usage_receipts.sql',
     ]);
   });
 

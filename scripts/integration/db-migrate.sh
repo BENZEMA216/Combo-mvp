@@ -22,7 +22,7 @@ command -v psql >/dev/null 2>&1 || fail "需要 psql（断言 schema 用）"
 
 # 1) 跑迁移
 log "执行迁移 ..."
-EXPECTED_MIGRATION_HEAD=0016_agent_package_registry.sql \
+EXPECTED_MIGRATION_HEAD=0017_agent_session_usage_receipts.sql \
   pnpm -C "$ROOT_DIR" -F @cb/db migrate
 
 # 2) 断言迁移文件全部记账
@@ -37,7 +37,7 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   auth_identities auth_otp_challenges auth_sessions auth_audit_events \
   billing_accounts billing_free_allowances usage_charges recharge_orders \
   payment_attempts payment_callback_events wallet_ledger \
-  agent_packages agent_package_releases \
+  agent_packages agent_package_releases agent_usage_receipts \
   agent_projects agent_revisions agent_tests agent_test_reviews agent_releases \
   project_agent_shares \
   oauth_clients oauth_authorization_requests oauth_authorization_codes \
@@ -45,7 +45,7 @@ for tbl in users tasks uploads capabilities sessions messages turns artifacts au
   exists="$(psql "$DATABASE_URL" -tAc "SELECT to_regclass('public.${tbl}') IS NOT NULL")"
   [ "$exists" = "t" ] || fail "缺基表 ${tbl}"
 done
-expected_tables='agent_package_releases,agent_packages,agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,project_agent_shares,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
+expected_tables='agent_package_releases,agent_packages,agent_projects,agent_releases,agent_revisions,agent_test_reviews,agent_tests,agent_usage_receipts,artifacts,audit_llm_calls,auth_audit_events,auth_identities,auth_otp_challenges,auth_sessions,billing_accounts,billing_free_allowances,capabilities,messages,oauth_access_tokens,oauth_authorization_codes,oauth_authorization_requests,oauth_clients,oauth_refresh_tokens,payment_attempts,payment_callback_events,project_agent_shares,recharge_orders,sessions,tasks,turns,uploads,usage_charges,users,wallet_ledger'
 actual_tables="$(psql "$DATABASE_URL" -tAc "
   SELECT string_agg(tablename, ',' ORDER BY tablename)
   FROM pg_tables
@@ -147,7 +147,7 @@ log "0006 历史重复检查与事务回滚齐全 ✓"
 
 # 5) 幂等：再跑一次不应报错、不应重复记账
 log "二次迁移（幂等）..."
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0016_agent_package_registry.sql \
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0017_agent_session_usage_receipts.sql \
   pnpm -C "$ROOT_DIR" -F @cb/db migrate
 applied2="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 [ "$applied2" = "$expected" ] || fail "二次迁移后记账数变化 ${applied2} != ${expected}"
@@ -155,5 +155,15 @@ applied2="$(psql "$DATABASE_URL" -tAc 'SELECT count(*) FROM schema_migrations')"
 log "真实 PostgreSQL 16 Agent Package Registry 约束与权限 ..."
 AGENT_PACKAGE_REGISTRY_PG_TEST=1 \
   pnpm --dir "${ROOT_DIR}/db" exec vitest run __tests__/agent-package-registry.pg.test.ts
+
+log "真实 PostgreSQL 16 Agent Session freeze、terminal receipts、并发与角色权限 ..."
+AGENT_SESSION_RECEIPTS_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run \
+    __tests__/agent-session-receipts.pg.test.ts \
+    __tests__/agent-session-receipts-roles.pg.test.ts
+
+log "真实 PostgreSQL 16 从 0016 升级到 0017 ..."
+AGENT_SESSION_RECEIPTS_UPGRADE_PG_TEST=1 \
+  pnpm --dir "${ROOT_DIR}/db" exec vitest run __tests__/agent-session-receipts-upgrade.pg.test.ts
 
 log "迁移集成全部通过 ✓"
