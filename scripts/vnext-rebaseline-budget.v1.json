@@ -14,6 +14,7 @@
     "ENGINEERING.md",
     "PROJECT.md",
     "README.md",
+    "apps/authoring/src/__tests__/README.md",
     "apps/authoring/src/__tests__/agent-package-object-store.test.ts",
     "apps/authoring/src/platform/infra/README.md",
     "apps/authoring/src/platform/infra/object-store.ts",
