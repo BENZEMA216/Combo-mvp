@@ -296,6 +296,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/authoring/README.md',
     'apps/authoring/package.json',
     'apps/authoring/src/README.md',
+    'apps/authoring/src/__tests__/README.md',
     'apps/authoring/src/__tests__/agent-package-release.pg.test.ts',
     'apps/authoring/src/__tests__/agent-package-release.test.ts',
     'apps/authoring/src/__tests__/routes.test.ts',
@@ -305,7 +306,13 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'apps/authoring/tsconfig.json',
     'apps/authoring/tsconfig.vitest.json',
   ];
-  const allowedInfraFiles = ['infra/Dockerfile.api', 'infra/Dockerfile.runtime'];
+  const allowedPublisherAuthoringFiles = [
+    'apps/authoring/src/__tests__/env-agent-package-release.test.ts',
+    'apps/authoring/src/platform/config/README.md',
+    'apps/authoring/src/platform/config/env.ts',
+  ];
+  const allowedKnowledgeInfraFiles = ['infra/Dockerfile.api', 'infra/Dockerfile.runtime'];
+  const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
   const allowedProductPrefixes = [
     'apps/authoring/src/modules/agent-package-release/',
     'apps/runtime-web/',
@@ -313,7 +320,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   const knowledgeAgentTestSlice = [
     'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
     ...allowedKnowledgeAuthoringFiles,
-    ...allowedInfraFiles,
+    ...allowedKnowledgeInfraFiles,
     ...allowedControlFiles,
   ].map((path) => entry(path));
 
@@ -343,11 +350,17 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/')),
-    [...allowedKnowledgeAuthoringFiles, ...allowedReleaseAuthoringFiles].sort(),
+    [
+      ...new Set([
+        ...allowedKnowledgeAuthoringFiles,
+        ...allowedPublisherAuthoringFiles,
+        ...allowedReleaseAuthoringFiles,
+      ]),
+    ].sort(),
   );
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
-    allowedInfraFiles,
+    [...allowedKnowledgeInfraFiles, ...allowedPublisherInfraFiles].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
@@ -396,6 +409,7 @@ test('Agent Package Release scope opens only its named Authoring module and exac
     'apps/authoring/README.md',
     'apps/authoring/package.json',
     'apps/authoring/src/README.md',
+    'apps/authoring/src/__tests__/README.md',
     'apps/authoring/src/__tests__/agent-package-release.pg.test.ts',
     'apps/authoring/src/__tests__/agent-package-release.test.ts',
     'apps/authoring/src/__tests__/routes.test.ts',
@@ -411,6 +425,11 @@ test('Agent Package Release scope opens only its named Authoring module and exac
     'apps/authoring/src/platform/infra/README.md',
     'apps/authoring/src/platform/infra/object-store.ts',
   ];
+  const allowedPublisherAuthoringFiles = [
+    'apps/authoring/src/__tests__/env-agent-package-release.test.ts',
+    'apps/authoring/src/platform/config/README.md',
+    'apps/authoring/src/platform/config/env.ts',
+  ];
   const allowedAuthoringPrefixes = ['apps/authoring/src/modules/agent-package-release/'];
   const releaseSlice = [
     ...allowedReleaseAuthoringFiles,
@@ -420,7 +439,13 @@ test('Agent Package Release scope opens only its named Authoring module and exac
 
   assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/')),
-    [...allowedKnowledgeAuthoringFiles, ...allowedReleaseAuthoringFiles].sort(),
+    [
+      ...new Set([
+        ...allowedKnowledgeAuthoringFiles,
+        ...allowedPublisherAuthoringFiles,
+        ...allowedReleaseAuthoringFiles,
+      ]),
+    ].sort(),
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter((path) => path.startsWith('apps/authoring/')),
@@ -434,6 +459,75 @@ test('Agent Package Release scope opens only its named Authoring module and exac
     'apps/authoring/src/processes/api.ts',
     'apps/authoring/src/__tests__/account-auth.test.ts',
     'apps/authoring/src/__tests__/fakes.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry(path)]),
+      /outside the R1-R3 rebuild scope/,
+    );
+  }
+});
+
+test('Agent Package Publisher Test scope opens only exact config and render wiring files', () => {
+  const allowedPublisherAuthoringFiles = [
+    'apps/authoring/src/__tests__/env-agent-package-release.test.ts',
+    'apps/authoring/src/platform/config/README.md',
+    'apps/authoring/src/platform/config/env.ts',
+  ];
+  const allowedPublisherInfraFiles = ['infra/k8s/README.md', 'infra/k8s/api.yaml'];
+  const allowedPublisherScriptFiles = ['scripts/render-env.test.mjs'];
+  const publisherSlice = [
+    ...allowedPublisherAuthoringFiles,
+    ...allowedPublisherInfraFiles,
+    ...allowedPublisherScriptFiles,
+  ].map((path) => entry(path));
+
+  assert.equal(assessPullRequest(contract, publisherSlice).mode, 'PRODUCT');
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/src/platform/config/')),
+    allowedPublisherAuthoringFiles.filter((path) => path.includes('/platform/config/')),
+  );
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('infra/k8s/')),
+    allowedPublisherInfraFiles,
+  );
+  assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('scripts/render-env')),
+    allowedPublisherScriptFiles,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter(
+      (path) =>
+        path.startsWith('apps/authoring/src/platform/config') ||
+        path.startsWith('infra/k8s') ||
+        path.startsWith('scripts/render-env'),
+    ),
+    [],
+  );
+
+  assert.equal(
+    assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml')]).mode,
+    'GOVERNANCE_ONLY',
+  );
+  assert.throws(
+    () =>
+      assessPullRequest(contract, [
+        entry('.github/workflows/pr-ci.yml'),
+        entry('apps/authoring/src/platform/config/env.ts'),
+      ]),
+    /governance-only/,
+  );
+
+  for (const path of [
+    'apps/authoring/src/platform/config/env.test.ts',
+    'apps/authoring/src/platform/config/index.ts',
+    'apps/authoring/src/platform/config/secrets.ts',
+    'apps/authoring/src/bootstrap/app.ts',
+    'apps/authoring/src/platform/infra/index.ts',
+    'infra/k8s/worker.yaml',
+    'infra/k8s/runtime.yaml',
+    'infra/docker-compose.yml',
+    'scripts/render-env.mjs',
+    'scripts/deploy-env.sh',
   ]) {
     assert.throws(
       () => assessPullRequest(contract, [entry(path)]),
