@@ -10,5 +10,7 @@
 - `billing_migration.test.ts` 静态核对全局钱包、按 Agent 免费额度、usageId 与 Turn 幂等、充值双状态、查单调度、低敏回调、不可变资金流水和计费角色隔离。
 - `provision-app-roles.test.ts` 核对角色密码必须完整成组提供，并确认密码只作为绑定值传给 PostgreSQL，不出现在 SQL 模板或错误中。
 - `live_migration_prefix.test.ts` 固定 Test 已应用的 `0012` 至 `0015` 文件名、顺序与逐字节 SHA-256，防止部署镜像与常驻 ledger 失配，同时允许新迁移从 `0016` 继续追加。
+- `agent-package-registry-migration.test.ts` 静态锁定 canonical Package digest、严格 Release、owner 组合外键、不可变触发器和最小角色权限，并拒绝旧 `agent_releases` 依赖或第二 Package 身份。
+- `agent-package-registry.pg.test.ts` 在显式 PostgreSQL 16 集成中真实执行 Package 与 Release 插入、约束失败、owner 绑定、幂等冲突、所有者防改和 Runtime/worker/PUBLIC 权限边界；全部数据位于回滚事务中。
 
-真实 PostgreSQL 的迁移执行、重复运行和非空门禁由 `scripts/integration/db-migrate.sh` 负责。应用角色测试还会核对充值与使用计费隔离和资金流水只追加；它只有在 `APPLICATION_ROLE_PG_TEST=1`、`DATABASE_URL` 和三项 `POSTGRES_*_PASSWORD` 都存在时运行。
+真实 PostgreSQL 的迁移执行、重复运行和非空门禁由 `scripts/integration/db-migrate.sh` 负责。Registry 测试由该脚本在 PostgreSQL 16 上以 `AGENT_PACKAGE_REGISTRY_PG_TEST=1` 显式运行。应用角色测试还会核对充值与使用计费隔离和资金流水只追加；它只有在 `APPLICATION_ROLE_PG_TEST=1`、`DATABASE_URL` 和三项 `POSTGRES_*_PASSWORD` 都存在时运行。

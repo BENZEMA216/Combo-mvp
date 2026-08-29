@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0015`。Test 常驻数据库已经记录 `0012` 至 `0015`，因此这四个文件按原文件名和精确字节恢复为不可变兼容前缀；新变化只能从 `0016` 继续追加。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0016`。Test 常驻数据库已经记录 `0012` 至 `0015`，因此这四个文件按原文件名和精确字节恢复为不可变兼容前缀；新的 canonical Agent Package Registry 只由后置的 `0016` 定义。
 
 ## 迁移文件
 
@@ -18,6 +18,7 @@
 - `0011_recharge_qr_only.sql` 移除 H5「手机收银台」渠道，把历史 `h5` 订单迁到 `qr`，并把支付方式约束收窄为只允许 `qr`。
 - `0012_agent_builder_v1.sql`、`0014_agent_test_reviews.sql` 与 `0015_project_agent_shares.sql` 恢复 Test 已应用的旧 Agent Builder、Test Review 与 Project Agent Share 结构。
 - `0013_external_mcp_oauth.sql` 恢复 Test 已应用的旧外部 MCP OAuth 结构。
+- `0016_agent_package_registry.sql` 创建 canonical `agent_packages` commit marker 与 `agent_package_releases`。Package digest 是唯一 Package 身份和读取选择器；Release 只绑定 exact Package、同一 owner 与当前 `controlled_test` 范围。
 
 这四个迁移只用于保持源码迁移前缀与 Test 的 `schema_migrations` 账本兼容，不表示当前应用已经激活对应旧业务协议。尤其是 `0012` 创建的 `agent_releases` 属于旧 Revision 与 Runtime Bundle 模型，不是 [PROJECT.md](../PROJECT.md) 定义的 `AgentPackageRelease` 真源。新的 Agent Package、知识 Agent、分享或计费能力不得把这些旧表复用为产品真相；所需新结构必须从 `0016` 追加，并显式绑定 exact Package digest 与 Release 合同。
 
@@ -31,6 +32,8 @@
 
 `0012` 至 `0015` 还保留这些迁移发布时授予 `combo_api` 与 `combo_runtime` 的历史权限，以保证已部署 schema 可复现。当前服务不得据此推断旧 Agent 或 OAuth 路径处于活动状态。
 
+`0016` 只允许 `combo_api` 查询和追加 canonical Package marker 与 Release。`combo_runtime` 只能按列读取解析 Release 和校验 Package 所需的 owner、digest、协议与受控 Test 范围，看不到幂等键、请求摘要或时间字段；`combo_worker` 与 `PUBLIC` 没有权限。两张表对迁移所有者也拒绝更新、删除和清空。
+
 计费约束在事务提交时强制验证 `可用余额 + 预留余额 = 不可变流水净额`、钱包预留与运行中使用记录一致、免费计数与免费使用记录一致，并双向核对成功充值/完成扣费与其唯一流水。应用不能只改余额或终态，也不能只伪造一条外观合法的流水。乐收赢付款时间属于外部秒级时钟，不与数据库订单创建时间硬比较；内部 `credited_at` 仍使用数据库时间。
 
 迁移容器使用数据库所有者连接。`0008` 先用 `NOLOGIN` 建立并收紧角色；全部迁移和账本复验成功后，Runner 才通过绑定参数设置三份独立密码并启用登录。密码不进入 SQL 文件、迁移账本、命令参数或日志。
@@ -41,7 +44,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_project_agent_shares.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0016_agent_package_registry.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test

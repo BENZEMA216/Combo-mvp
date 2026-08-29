@@ -101,6 +101,8 @@ describe('migrations', () => {
         'wallet_ledger',
         // Test already applied 0012-0015. These tables remain a legacy compatibility
         // prefix and do not define the current Agent Package product model.
+        'agent_packages',
+        'agent_package_releases',
         'agent_projects',
         'agent_revisions',
         'agent_releases',
@@ -197,12 +199,12 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps authentication, roles, billing and the Test compatibility prefix in sequence', () => {
+  it('keeps authentication, roles, billing, the Test prefix, and Registry in sequence', () => {
     const list = files();
     const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
 
     expect(firstCurrentIndex).toBeGreaterThan(0);
-    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 9)).toEqual([
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 10)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
@@ -212,6 +214,7 @@ describe('migrations', () => {
       '0013_external_mcp_oauth.sql',
       '0014_agent_test_reviews.sql',
       '0015_project_agent_shares.sql',
+      '0016_agent_package_registry.sql',
     ]);
   });
 
