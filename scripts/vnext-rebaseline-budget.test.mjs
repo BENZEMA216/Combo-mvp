@@ -275,17 +275,18 @@ test('product edits must stay inside the declared rebuild surface', () => {
   );
 });
 
-test('the knowledge Agent Test scope opens only its named surfaces and control files', () => {
+test('the knowledge Agent Test scope opens only its named surface and exact files', () => {
   const allowedControlFiles = [
     '.github/workflows/ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
     'scripts/check-production-artifacts.sh',
   ];
-  const allowedProductPrefixes = ['apps/runtime-web/', 'infra/'];
+  const allowedInfraFiles = ['infra/Dockerfile.runtime'];
+  const allowedProductPrefixes = ['apps/runtime-web/'];
   const knowledgeAgentTestSlice = [
     'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
-    'infra/Dockerfile.runtime',
+    ...allowedInfraFiles,
     ...allowedControlFiles,
   ].map((path) => entry(path));
 
@@ -300,7 +301,13 @@ test('the knowledge Agent Test scope opens only its named surfaces and control f
     allowedControlFiles,
   );
   assert.deepEqual(
-    contract.allowedPathPrefixes.filter((path) => allowedProductPrefixes.includes(path)),
+    contract.allowedFiles.filter((path) => path.startsWith('infra/')),
+    allowedInfraFiles,
+  );
+  assert.deepEqual(
+    contract.allowedPathPrefixes.filter(
+      (path) => path.startsWith('apps/runtime-web') || path.startsWith('infra'),
+    ),
     allowedProductPrefixes,
   );
 
@@ -310,6 +317,10 @@ test('the knowledge Agent Test scope opens only its named surfaces and control f
     'apps/web/src/pages/KnowledgeAgentPage.tsx',
     'docs/knowledge-agent-production-acceptance.md',
     'docs/leshouying-test-acceptance.md',
+    'infra/Dockerfile.api',
+    'infra/docker-compose.dev-test.yml',
+    'infra/k8s/runtime.yaml',
+    'infra-other/Dockerfile.runtime',
     'scripts/deploy-env.sh',
   ]) {
     assert.throws(
