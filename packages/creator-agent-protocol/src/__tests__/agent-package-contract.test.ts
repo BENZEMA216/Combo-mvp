@@ -25,7 +25,9 @@ import {
   CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL,
   CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL,
   CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING,
+  CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL,
   CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL,
+  CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES,
   CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL,
   CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
   createCreatorAgentPackageCreatorBootstrapHandoff,
@@ -36,6 +38,7 @@ import {
   createCreatorAgentPackageDraftSnapshotV2,
   digestCreatorAgentPackageCreatorRequest,
   digestCreatorAgentPackageCreatorRequestV2,
+  digestCreatorAgentPackageConversationExtractionCandidate,
   parseCreatorAgentPackageCreatorBootstrapHandoff,
   parseCreatorAgentPackageCreatorRequest,
   parseCreatorAgentPackageCreatorRequestV2,
@@ -613,6 +616,18 @@ function conversationCreatorRequest() {
   };
 }
 
+function conversationExtractionCandidate() {
+  return {
+    protocol: CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL,
+    name: '证据核验员',
+    description: '使用当前对话形成的方法检查任务。',
+    instructions: '先核对时间线，再对照代码、运行结果和用户可见体验。',
+    starterPrompts: ['检查这项任务。'],
+    outputDescription: '返回证据结论。',
+    coverageSummary: '当前任务中关于证据核验的讨论定义了这个 Agent。',
+  };
+}
+
 function firstConversationDraftInput() {
   return {
     protocol: CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
@@ -627,7 +642,8 @@ function firstConversationDraftInput() {
       visibility: 'user_visible_items_only' as const,
       snapshotCompleteness: 'complete' as const,
       rawStored: false as const,
-      snapshotDigest: SOURCE_DIGEST,
+      snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1' as const,
+      snapshotCommitment: SOURCE_DIGEST,
       selectedVisibleItemCount: 7,
       coverageSummary: '当前任务里关于证据门禁的讨论定义了这个 Agent。',
     },
@@ -642,6 +658,36 @@ function firstConversationDraftInput() {
 }
 
 describe('current-conversation Agent Package request and Draft V2 contract', () => {
+  it('uses one canonical domain-separated egress-candidate digest', () => {
+    const first = digestCreatorAgentPackageConversationExtractionCandidate(
+      conversationExtractionCandidate(),
+    );
+    const reordered = {
+      coverageSummary: conversationExtractionCandidate().coverageSummary,
+      outputDescription: conversationExtractionCandidate().outputDescription,
+      starterPrompts: conversationExtractionCandidate().starterPrompts,
+      instructions: conversationExtractionCandidate().instructions,
+      description: conversationExtractionCandidate().description,
+      name: conversationExtractionCandidate().name,
+      protocol: conversationExtractionCandidate().protocol,
+    };
+
+    expect(digestCreatorAgentPackageConversationExtractionCandidate(reordered)).toBe(first);
+    expect(first).toBe('sha256:6945e2817ca7ccfdf57c5c9cb3308de1c8841003973379d41b6a745d8134b140');
+    expect(first).not.toBe(
+      createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput()).draftFingerprint,
+    );
+
+    const oversized = conversationExtractionCandidate() as Record<string, unknown>;
+    Object.defineProperty(oversized, 'x'.repeat(CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES), {
+      enumerable: true,
+      value: null,
+    });
+    expect(() => digestCreatorAgentPackageConversationExtractionCandidate(oversized)).toThrow(
+      'byte limit',
+    );
+  });
+
   it('creates a canonical immutable V2 request and sanitized Draft provenance', () => {
     const request = createCreatorAgentPackageCreatorRequestV2(conversationCreatorRequest());
     const draft = createCreatorAgentPackageDraftSnapshotV2(firstConversationDraftInput());
@@ -662,7 +708,8 @@ describe('current-conversation Agent Package request and Draft V2 contract', () 
       visibility: 'user_visible_items_only',
       snapshotCompleteness: 'complete',
       rawStored: false,
-      snapshotDigest: SOURCE_DIGEST,
+      snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1',
+      snapshotCommitment: SOURCE_DIGEST,
       selectedVisibleItemCount: 7,
       coverageSummary: '当前任务里关于证据门禁的讨论定义了这个 Agent。',
     });
@@ -673,7 +720,8 @@ describe('current-conversation Agent Package request and Draft V2 contract', () 
       'visibility',
       'snapshotCompleteness',
       'rawStored',
-      'snapshotDigest',
+      'snapshotCommitmentScheme',
+      'snapshotCommitment',
       'selectedVisibleItemCount',
       'coverageSummary',
     ]);
@@ -755,7 +803,7 @@ describe('current-conversation Agent Package request and Draft V2 contract', () 
       ...firstConversationDraftInput(),
       source: {
         ...firstConversationDraftInput().source,
-        snapshotDigest: `sha256:${'d'.repeat(64)}`,
+        snapshotCommitment: `sha256:${'d'.repeat(64)}`,
       },
     });
     expect(changedSource.draftFingerprint).not.toBe(first.draftFingerprint);

@@ -18,9 +18,7 @@
     "dist",
     "src/**/*.test.ts",
     "src/__tests__/**",
-    "src/application/agent-package-current-conversation-draft.ts",
     "src/application/agent-package-creator-authorized.ts",
-    "src/authoring/current-conversation-draft-extractor.ts",
     "src/application/host-authorized-creator-project-source.ts"
   ]
 }

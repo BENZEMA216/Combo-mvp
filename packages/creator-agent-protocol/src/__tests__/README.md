@@ -30,3 +30,8 @@ dispatcher。测试会篡改 cited source 的执行可用性以确认 ledger 进
 current-conversation request/Draft V2 的 strict path-free 来源、互斥解析、独立 fingerprint 和 revision。
 V2 测试拒绝调用方 task/thread/session/item ID、Project 字段、消息数组和 raw transcript；它只证明协议字段
 与规范字节，不证明 Desktop active-task 来源、Studio 展示、Package 编译或 Codex 已激活技能。
+
+`desktop-current-conversation-receipt.test.ts` 锁定真实 UAT 收据的 exact candidate/version、脱敏 task binding、
+egress candidate/projection/final Draft fingerprint、事件 hash chain、Host 单权威端到端观测和绑定
+protocol/algorithm/issuer/key ID 的 Ed25519 signature message。测试使用临时 Test key，
+不证明 Codex Desktop 已签发真实收据，也不能把泛型 Draft 卡片升级为 Host evidence。

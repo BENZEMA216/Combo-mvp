@@ -1,9 +1,11 @@
 import { isProxy } from 'node:util/types';
-import { createHash } from 'node:crypto';
 
 import {
+  CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL,
+  CreatorAgentPackageConversationExtractionCandidateSchema,
   CreatorAgentPackageCurrentConversationSourceSchema,
   CreatorAgentPackageDraftContentSchema,
+  digestCreatorAgentPackageConversationExtractionCandidate,
   digestCreatorAgentPackageCreatorRequestV2,
   verifyCreatorAgentPackageCreatorRequestV2,
   type CreatorAgentPackageCurrentConversationSource,
@@ -13,7 +15,7 @@ import {
 import { z } from 'zod';
 
 export const CURRENT_CONVERSATION_DRAFT_EXTRACTION_PROTOCOL =
-  'combo.creator-conversation-draft-extraction/1' as const;
+  CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL;
 
 const DEFAULT_TURN_TIMEOUT_MS = 2 * 60_000;
 const MAX_TURN_TIMEOUT_MS = 5 * 60_000;
@@ -27,31 +29,22 @@ const CurrentConversationAttestationSchema = z
     visibility: z.literal('user_visible_items_only'),
     snapshotCompleteness: z.enum(['complete', 'incomplete']),
     rawStored: z.boolean(),
-    snapshotDigest: z.string().regex(SHA256_DIGEST_PATTERN),
+    snapshotCommitmentScheme: z.literal('host_hmac_sha256_per_run/1'),
+    snapshotCommitment: z.string().regex(SHA256_DIGEST_PATTERN),
     selectedVisibleItemCount: z.number().int().nonnegative().max(500_000),
     creatorRequestDigest: z.string().regex(SHA256_DIGEST_PATTERN),
   })
   .strict();
 
-const GeneratedConversationDraftSchema = z
-  .object({
-    protocol: z.literal(CURRENT_CONVERSATION_DRAFT_EXTRACTION_PROTOCOL),
-    name: z.string().min(1).max(80),
-    description: z.string().min(1).max(500),
-    instructions: z.string().min(1).max(8_000),
-    starterPrompts: z.array(z.string().min(1).max(1_000)).min(1).max(5),
-    outputDescription: z.string().min(1).max(1_000),
-    coverageSummary: z.string().min(1).max(1_000),
-  })
-  .strict();
+const GeneratedConversationDraftSchema = CreatorAgentPackageConversationExtractionCandidateSchema;
 
 const CurrentConversationEgressReceiptSchema = z
   .object({
     policy: z.literal('sealed_snapshot_verbatim_and_credential_scan/1'),
     verdict: z.literal('passed'),
-    snapshotDigest: z.string().regex(SHA256_DIGEST_PATTERN),
+    snapshotCommitment: z.string().regex(SHA256_DIGEST_PATTERN),
     creatorRequestDigest: z.string().regex(SHA256_DIGEST_PATTERN),
-    extractedDraftDigest: z.string().regex(SHA256_DIGEST_PATTERN),
+    extractedCandidateDigest: z.string().regex(SHA256_DIGEST_PATTERN),
   })
   .strict();
 
@@ -219,25 +212,32 @@ export async function extractCreatorAgentPackageDraftFromCurrentConversationWith
     throw extractionError('AGENT_PACKAGE_CONVERSATION_SOURCE_BINDING_INVALID');
   }
   let failure: CreatorAgentPackageCurrentConversationExtractionErrorCode | undefined;
+  if (signalAborted(options.signal)) failure = 'AGENT_PACKAGE_CONVERSATION_CANCELLED';
   let rawGenerated: unknown;
   let attestation: z.infer<typeof CurrentConversationAttestationSchema> | undefined;
   try {
-    try {
-      const rawAttestation = lease.readAttestation.call(lease.receiver);
-      attestation = CurrentConversationAttestationSchema.parse(snapshotJson(rawAttestation));
-      if (
-        attestation.snapshotCompleteness !== 'complete' ||
-        attestation.selectedVisibleItemCount < 1
-      ) {
-        failure = 'AGENT_PACKAGE_CONVERSATION_SOURCE_INCOMPLETE';
-      } else if (
-        attestation.rawStored !== false ||
-        attestation.creatorRequestDigest !== creatorRequestDigest
-      ) {
+    if (failure === undefined) {
+      try {
+        const rawAttestation = lease.readAttestation.call(lease.receiver);
+        attestation = CurrentConversationAttestationSchema.parse(snapshotJson(rawAttestation));
+        if (
+          attestation.snapshotCompleteness !== 'complete' ||
+          attestation.selectedVisibleItemCount < 1
+        ) {
+          failure = 'AGENT_PACKAGE_CONVERSATION_SOURCE_INCOMPLETE';
+        } else if (
+          attestation.rawStored !== false ||
+          attestation.creatorRequestDigest !== creatorRequestDigest
+        ) {
+          failure = 'AGENT_PACKAGE_CONVERSATION_SOURCE_BINDING_INVALID';
+        }
+      } catch {
         failure = 'AGENT_PACKAGE_CONVERSATION_SOURCE_BINDING_INVALID';
       }
-    } catch {
-      failure = 'AGENT_PACKAGE_CONVERSATION_SOURCE_BINDING_INVALID';
+    }
+
+    if (failure === undefined) {
+      if (signalAborted(options.signal)) failure = 'AGENT_PACKAGE_CONVERSATION_CANCELLED';
     }
 
     if (failure === undefined) {
@@ -246,6 +246,10 @@ export async function extractCreatorAgentPackageDraftFromCurrentConversationWith
       } catch {
         failure = 'AGENT_PACKAGE_CONVERSATION_SOURCE_CHANGED';
       }
+    }
+
+    if (failure === undefined && signalAborted(options.signal)) {
+      failure = 'AGENT_PACKAGE_CONVERSATION_CANCELLED';
     }
 
     if (failure === undefined) {
@@ -297,9 +301,9 @@ export async function extractCreatorAgentPackageDraftFromCurrentConversationWith
   }
   const generated = result.draft;
   if (
-    result.egressReceipt.snapshotDigest !== attestation.snapshotDigest ||
+    result.egressReceipt.snapshotCommitment !== attestation.snapshotCommitment ||
     result.egressReceipt.creatorRequestDigest !== creatorRequestDigest ||
-    result.egressReceipt.extractedDraftDigest !== digestGeneratedConversationDraft(generated)
+    result.egressReceipt.extractedCandidateDigest !== digestGeneratedConversationDraft(generated)
   ) {
     throw extractionError('AGENT_PACKAGE_CONVERSATION_OUTPUT_REJECTED');
   }
@@ -318,7 +322,8 @@ export async function extractCreatorAgentPackageDraftFromCurrentConversationWith
       visibility: attestation.visibility,
       snapshotCompleteness: 'complete',
       rawStored: false,
-      snapshotDigest: attestation.snapshotDigest,
+      snapshotCommitmentScheme: attestation.snapshotCommitmentScheme,
+      snapshotCommitment: attestation.snapshotCommitment,
       selectedVisibleItemCount: attestation.selectedVisibleItemCount,
       coverageSummary: generated.coverageSummary,
     });
@@ -366,8 +371,7 @@ export function digestGeneratedConversationDraftForEgress(input: unknown): strin
 function digestGeneratedConversationDraft(
   generated: z.infer<typeof GeneratedConversationDraftSchema>,
 ): string {
-  const bytes = JSON.stringify(generated);
-  return `sha256:${createHash('sha256').update(bytes, 'utf8').digest('hex')}`;
+  return digestCreatorAgentPackageConversationExtractionCandidate(generated);
 }
 
 function snapshotDependencies(input: unknown): Readonly<{

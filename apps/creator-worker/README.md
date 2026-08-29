@@ -122,15 +122,19 @@ Hook / Bridge、CLI 或 Fake Host 证据误报为产品通过；测试自身不�
 task/thread/session/item 标识。内部 ambient Host lease 必须绑定制作要求摘要，声明 direct-user、active-task、
 trigger 前快照、user-visible-only、complete 与 `rawStored=false`；摘要核对成功后，exact 制作要求会作为独立
 受信指令参与提取。Host 只把 bare Draft schema 交给模型，并在持有 sealed snapshot 的边界内检查逐字摘录与
-credential 泄漏；只有检查通过，Host 才能在模型输出之外包装绑定 snapshot、制作要求和 exact Draft digest 的
-egress receipt。缺失、拒绝或错绑 receipt 都不会形成 Draft。lease 还会在提取前后执行
+credential 泄漏；只有检查通过，Host 才能在模型输出之外包装绑定 snapshot、制作要求和 exact
+extraction candidate digest 的 egress receipt。最终 V2 Draft 使用独立 fingerprint domain，真实 Host receipt 必须再把
+该 candidate 摘要投影绑定到 exact typed Draft fingerprint；二者不得伪装成同一摘要。缺失、拒绝或错绑 receipt
+都不会形成 Draft。lease 还会在提取前后执行
 `assertStillCurrent()` 并在所有路径关闭。返回任务只有 Draft 读取和 exact revision，没有 compile。
 
-这两个内部 Worker 文件被 production tsconfig 排除，包也没有 public subpath 或 production composition
-导入它们；Fake port 测试只锁顺序、失败闭包和零 Project/Bridge/child-process import。因此它们是为未来
-Desktop adapter 准备的应用合同，不是已接线入口，也不会提升 `ACC-HOST-011D`、`ACC-UAT-011E` 或整体
-`J-011` 状态。真实 Desktop 仍需 Host-owned ambient lease、visible-item 过滤/完整性证明和同任务 Studio
-Draft surface。
+这两个 Worker 文件与 `agent-package-current-conversation-draft` public subpath 已进入 production build。当前
+production composition 只绑定一个固定 unavailable Host，所以合法调用也只会得到
+`AGENT_PACKAGE_CONVERSATION_SOURCE_UNAVAILABLE`；它不接受 Host/source 注入，也不会回退到 Project、session、
+Hook / Bridge、CLI 或第二个 Codex thread。Fake port 测试只锁顺序、失败闭包和零
+Project/Bridge/child-process import。因此这仍只是为未来 Desktop adapter 准备的 fail-closed facade，不会提升
+`ACC-HOST-011D`、`ACC-UAT-011E` 或整体 `J-011` 状态。真实 Desktop 仍需 Host-owned ambient lease、
+visible-item 过滤/完整性证明和同任务 Studio Draft surface。
 
 现有 Project Creator 代码与测试继续作为 `EXPLICIT_PROJECT_COMPAT` 维护。机器合同把
 `PROJECT_FIRST_CREATOR`、`PLUGIN_HOOK_OR_BRIDGE`、`CREATOR_CLI`、`FAKE_HOST_OR_PORT` 和

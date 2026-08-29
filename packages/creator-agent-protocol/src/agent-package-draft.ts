@@ -27,12 +27,16 @@ export const CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING =
 export const CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES = 8_192;
 export const CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL = 'combo.agent-package-draft/1' as const;
 export const CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL = 'combo.agent-package-draft/2' as const;
+export const CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL =
+  'combo.creator-conversation-draft-extraction/1' as const;
 export const CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL =
   'combo.agent-package-draft-revision/1' as const;
 export const CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES = 65_536;
 
 const DRAFT_FINGERPRINT_DOMAIN = 'combo.agent-package-draft/1:fingerprint';
 const DRAFT_V2_FINGERPRINT_DOMAIN = 'combo.agent-package-draft/2:fingerprint';
+const CONVERSATION_EXTRACTION_CANDIDATE_FINGERPRINT_DOMAIN =
+  'combo.creator-conversation-draft-extraction/1:egress-candidate';
 const DRAFT_ID_PATTERN = /^draft\.agent-package\.[0-9a-f]{32}$/u;
 const AGENT_NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._'-]{0,79}$/u;
 
@@ -134,6 +138,22 @@ export const CreatorAgentPackageDraftContentSchema =
   CreatorAgentPackageDraftContentObjectSchema.readonly();
 export type CreatorAgentPackageDraftContent = z.infer<typeof CreatorAgentPackageDraftContentSchema>;
 
+export const CreatorAgentPackageConversationExtractionCandidateSchema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL),
+    name: CreatorAgentPackageDraftContentObjectSchema.shape.name,
+    description: CreatorAgentPackageDraftContentObjectSchema.shape.description,
+    instructions: CreatorAgentPackageDraftContentObjectSchema.shape.instructions,
+    starterPrompts: CreatorAgentPackageDraftContentObjectSchema.shape.starterPrompts,
+    outputDescription: CreatorAgentPackageDraftContentObjectSchema.shape.outputDescription,
+    coverageSummary: SafeText(1, 1_000),
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentPackageConversationExtractionCandidate = z.infer<
+  typeof CreatorAgentPackageConversationExtractionCandidateSchema
+>;
+
 export const CreatorAgentPackageCreatorRequestSchema = z
   .object({
     protocol: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL),
@@ -166,7 +186,8 @@ export const CreatorAgentPackageCurrentConversationSourceSchema = z
     visibility: z.literal('user_visible_items_only'),
     snapshotCompleteness: z.literal('complete'),
     rawStored: z.literal(false),
-    snapshotDigest: Sha256DigestSchema,
+    snapshotCommitmentScheme: z.literal('host_hmac_sha256_per_run/1'),
+    snapshotCommitment: Sha256DigestSchema,
     selectedVisibleItemCount: z.number().int().min(1).max(500_000),
     coverageSummary: SafeText(1, 1_000),
   })
@@ -351,6 +372,25 @@ export function parseCreatorAgentPackageCreatorRequestV2(
     text,
     verifyCreatorAgentPackageCreatorRequestV2,
     'Conversation Agent Package creator request',
+  );
+}
+
+export function verifyCreatorAgentPackageConversationExtractionCandidate(
+  input: unknown,
+): CreatorAgentPackageConversationExtractionCandidate {
+  return exactDetached(
+    CreatorAgentPackageConversationExtractionCandidateSchema,
+    input,
+    'Conversation Agent Package extraction candidate',
+  );
+}
+
+export function digestCreatorAgentPackageConversationExtractionCandidate(
+  input: unknown,
+): Sha256Digest {
+  return canonicalFingerprint(
+    CONVERSATION_EXTRACTION_CANDIDATE_FINGERPRINT_DOMAIN,
+    verifyCreatorAgentPackageConversationExtractionCandidate(input),
   );
 }
 
@@ -690,6 +730,10 @@ function snapshotJson(
     const descriptor = descriptors[key];
     if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
       throw new TypeError('Draft properties must be enumerable data properties');
+    }
+    budget.bytes += Buffer.byteLength(key, 'utf8');
+    if (budget.bytes > maximumBytes) {
+      throw new TypeError('Agent Package Draft exceeds the canonical byte limit');
     }
     output[key] = snapshotJson(descriptor.value, depth + 1, budget, maximumBytes);
   }

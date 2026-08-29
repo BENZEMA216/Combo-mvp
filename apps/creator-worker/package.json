@@ -23,6 +23,10 @@
     "./agent-package-creator": {
       "types": "./dist/agent-package-creator.d.ts",
       "default": "./dist/agent-package-creator.js"
+    },
+    "./agent-package-current-conversation-draft": {
+      "types": "./dist/agent-package-current-conversation-draft.d.ts",
+      "default": "./dist/agent-package-current-conversation-draft.js"
     }
   },
   "files": [

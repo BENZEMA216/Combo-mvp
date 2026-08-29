@@ -21,7 +21,7 @@
   `AGENT.md` 与原生技能。第一轮输出绑定只存在于技能中的随机规则，第二轮取回只存在于上一条消息的随机
   标记，从而同时证明技能激活与同一 Codex 任务线程的多轮上下文；项目与智能体包内容保持不变。
 - `creator-conversation-acceptance.test.ts` 校验 `J-011` · 当前对话生成 Draft 的机器合同、五层门禁状态和
-  文档一致性。它同时锁定 Project V1 不被扩宽、current-conversation V2 仍无 public Host entry，并把
+  文档一致性。它同时锁定 Project V1 不被扩宽、current-conversation V2 public facade 只绑定 unavailable Host，并把
   Hook / Bridge、CLI、Fake Host 和既有 Project 测试标为非产品证据；该测试通过只证明验收口径真实，不证明
   Desktop 路径已经实现。
 - `current-conversation-draft-extractor.test.ts` 用 Fake ambient lease 锁定 request digest 绑定、exact 制作要求进入
@@ -32,13 +32,18 @@
 - `agent-package-current-conversation-draft.test.ts` 锁定业务调用方只能提交一句 V2 制作要求和普通运行控制，
   Project/source/task/thread/session/item/transcript 字段在 Host 调用前拒绝；成功只返回可读/可修订 Draft，
   没有 compile，Host 原始错误与路径不外泄。
-- `agent-package-current-conversation-import-boundary.test.ts` 静态证明两个内部 seam 不导入 Project scanner、
-  projection、Bridge、CLI、child process、bundled Codex、Package builder/publisher/loader、Session、Worker、
-  Broker、Journal 或 SQLite；`host-adapter-import-boundary.test.ts` 进一步要求它们没有生产 importer，clean
-  dist 也不携带这些文件。
+- `agent-package-current-conversation-import-boundary.test.ts` 静态证明 current-conversation seam 不导入 Project
+  scanner、projection、Bridge、CLI、child process、bundled Codex、Package builder/publisher/loader、Session、
+  Worker、Broker、Journal 或 SQLite；`host-adapter-import-boundary.test.ts` 进一步要求它们只有固定 unavailable
+  composition 这一条 production importer。clean dist 会携带 fail-closed facade 及其 ordering 文件，但不会携带
+  Project authorization 的 Fake producer 或未接线 composition。
 - `agent-package-authoring.test.ts` 覆盖 Project 语义结果到 `AGENT.md`、原生技能和规范清单的确定性编译，
   私有摘要目录的原子发布、正式加载器重开、相同内容重放、路径前置拒绝和清理错误可见性。
   它还锁定现有 Project Package builder 在任何发布或加载前拒绝 current-conversation Draft V2。
+- `agent-package-current-conversation-composition.test.ts` 锁定 production facade 在 Desktop Host capability 缺席时
+  只返回固定 source-unavailable 错误，并在任何 Host/source/Project caller 注入前停止。
+- `desktop-current-conversation-evidence.test.ts` 锁定 production protocol subpath 可加载 parse/verify/digest，且
+  不公开任何 receipt signer；验签与 candidate/digest/事件/零旁路负例由 protocol 测试覆盖。
 - `agent-package-creator.test.ts` 覆盖一句制作要求与受信调用方当前 Project 的绑定、无绝对路径 Draft、来源
   回执、exact revision 修订、不同 revision 编译出不同 Package digest、正式重载、来源目录移动后的编译拒绝，
   以及篡改和 getter 的零副作用拒绝。

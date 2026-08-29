@@ -15,7 +15,7 @@ import {
 } from '../application/agent-package-current-conversation-draft.js';
 import { CreatorAgentPackageCurrentConversationExtractionError } from '../authoring/current-conversation-draft-extractor.js';
 
-const SNAPSHOT_DIGEST = `sha256:${'a'.repeat(64)}` as const;
+const SNAPSHOT_COMMITMENT = `sha256:${'a'.repeat(64)}` as const;
 
 const source: CreatorAgentPackageCurrentConversationSource =
   CreatorAgentPackageCurrentConversationSourceSchema.parse({
@@ -25,7 +25,8 @@ const source: CreatorAgentPackageCurrentConversationSource =
     visibility: 'user_visible_items_only',
     snapshotCompleteness: 'complete',
     rawStored: false,
-    snapshotDigest: SNAPSHOT_DIGEST,
+    snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1',
+    snapshotCommitment: SNAPSHOT_COMMITMENT,
     selectedVisibleItemCount: 9,
     coverageSummary: '当前任务中关于证据三角的方法定义了这个 Agent。',
   });

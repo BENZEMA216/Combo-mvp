@@ -147,9 +147,14 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 - `agent-package-creator-request/2` 与 `agent-package-draft/2` 的 current-conversation path-free 合同，以及
   未接线的内部 ambient lease ordering seam。它锁定 direct-user、active-task、user-visible-only、完整性、
   trigger 前快照边界、制作要求语义绑定、Host-owned verbatim/credential egress receipt、前后漂移核对、close
-  和零 Project/Bridge/child-process import。V2 协议会随公开
-  `agent-package-draft` 子路径进入 production build；两个 Worker ordering 文件则被 production tsconfig 排除，
-  没有 public export、真实 Host adapter 或 Studio surface。
+  和零 Project/Bridge/child-process import。V2 协议会随公开 `agent-package-draft` 子路径进入 production
+  build；Worker ordering seam 与公开 production fail-closed facade 也进入 production build，但当前 composition
+  只绑定固定 unavailable Host，没有真实 Host adapter 或 Studio surface。
+- `desktop-current-conversation-run-receipt/1` 的 canonical Ed25519 验收收据与只读 verifier；它把 exact
+  candidate、组件版本、脱敏 task binding、完整 visible-only 来源、Host egress 候选摘要、候选到 typed
+  same-task Draft 的投影、事件 hash chain 和 Host 签名的端到端零旁路观测声明绑定到仓库外受信 Host key。
+  当前 Desktop 尚不能签发，因此它是未来真实验收的验证合同，不是 Host/UAT PASS 证据；本合同不虚构尚未
+  建立独立信任根的 Worker 第二签名。
 
 ### 尚未形成产品闭环的部分
 
@@ -299,10 +304,11 @@ Draft。显式 Project、工作旅程、Package 编译、正式重载和真实�
 | `ACC-HOST-011D` · Desktop 原生链路        | Desktop attested active-task 边界成立，当前任务一句话直接显示可审阅 Draft                                | `NOT_IMPLEMENTED` |
 | `ACC-UAT-011E` · 普通用户体验             | 非开发用户仅操作 Desktop，并证明跨任务来源隔离                                                           | `NOT_RUN`         |
 
-V2 协议与内部 Fake-port ordering seam 是实现准备，不是五层验收证据。公开 V2 合同已经实现，但尚无绑定
-exact candidate commit 的正式 `CONTRACT_TEST_REPORT`，所以 Contract 层为 `NOT_RUN`。两个 Worker ordering
-文件仍被 production tsconfig 排除，没有 Desktop importer，也没有真实 active-task snapshot；因此 Unit、
-Security 与 Host 层继续为 `NOT_IMPLEMENTED`。不能用 source-level 单元测试把任一层直接改成 `PASS`。
+V2 协议、Worker ordering seam 与 production fail-closed facade 是实现准备，不是五层验收证据。公开 V2 合同
+已经实现，但尚无绑定 exact candidate commit 的正式 `CONTRACT_TEST_REPORT`，所以 Contract 层为 `NOT_RUN`。
+Production composition 只绑定固定 unavailable Host，没有 Desktop importer、真实 active-task snapshot 或同任务
+Draft UI；因此 Unit、Security 与 Host 层继续为 `NOT_IMPLEMENTED`。不能用 source-level 单元测试或固定失败入口
+把任一层直接改成 `PASS`。
 
 只要任一层未通过，`J-011` 就保持 `BLOCKED`。机器合同测试通过只证明团队没有篡改验收定义，不证明产品路径存在。
 机器合同要求每个 `PASS` 分别绑定该层 evidence kind、artifact digest、运行环境和同一个顶层 `candidateCommit`；

@@ -38,7 +38,7 @@ exact base revision 与 fingerprint，过期编辑会被拒绝。Draft 不能直
 同一子路径并列定义 `combo.agent-package-creator-request/2` 与 `combo.agent-package-draft/2`，专门表达
 `current_conversation` 来源。V2 request 仍只有固定 intent 与一句制作要求；V2 Draft 的来源投影只保存
 `desktop_attested_active_current_task`、`before_direct_creator_item`、`user_visible_items_only`、完整性字面值、
-snapshot digest、选中可见 item 数量和脱敏 coverage summary。它不接受 task、thread、session、item 标识、Project 路径、citation、
+per-run Host HMAC snapshot commitment、选中可见 item 数量和脱敏 coverage summary。它不接受 task、thread、session、item 标识、Project 路径、citation、
 消息数组或 raw transcript。V1 与 V2 parser 互相拒绝，fingerprint domain 也彼此独立；现有 Project
 Creator、Bridge、Package builder 与来源回执继续只认 V1，不会因为 V2 合同出现而获得对话读取或编译能力。
 V2 provenance 只证明 Draft 内部字段一致，不证明 Desktop 已提供真实当前任务、快照完整或用户可见边界。
@@ -132,6 +132,11 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   transcript，也不执行提取、编译、发布或推理。
 - `@cb/creator-agent-protocol/creator-authorization`：只暴露 path-free 授权卡 claims schema、固定 scope
   与脱敏错误分类；不暴露 mint、handle、consume、redemption transport 或 Project identity。
+- `@cb/creator-agent-protocol/desktop-current-conversation-receipt`：只暴露真实 Desktop current-task Draft
+  receipt 的 strict schema、domain-separated canonical message、parse/verify/digest API；验签必须由调用方
+  提供仓库外受信 Host public key。它不暴露 signer、private key、Host snapshot transport，也不使一份 receipt
+  自动成为 Host/UAT PASS 证据。receipt 要求 snapshot 与 task binding 使用 per-run Host HMAC commitment，禁止
+  可跨运行关联或字典攻击的 raw transcript SHA；public key 必须来自 receipt 外的 pinned/revocable registry。
 - canonical JSON、通用 hash 和底层 primitives 仍是包内实现，不是公共产品 API。
 
 本包明确不包含 Invocation reducer、错误/重试 HTTP 映射、Cloud/Worker journal、

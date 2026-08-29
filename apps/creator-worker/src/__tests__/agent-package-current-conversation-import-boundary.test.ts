@@ -7,8 +7,11 @@ import { describe, expect, it } from 'vitest';
 
 const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const entrypoints = [
+  'agent-package-current-conversation-draft.ts',
+  'application/agent-package-current-conversation-composition.ts',
   'application/agent-package-current-conversation-draft.ts',
   'authoring/current-conversation-draft-extractor.ts',
+  'application/unavailable-current-conversation-draft-host.ts',
 ];
 const forbidden = [
   'node:child_process',

@@ -27,6 +27,7 @@ describe('Agent Package public import boundary', () => {
     expect(rootApi).not.toHaveProperty('CreatorAgentPackageSessionError');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageFromProject');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftFromCurrentProject');
+    expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftFromCurrentConversation');
     expect(rootApi).not.toHaveProperty('createCreatorAgentPackageDraftWithHostAuthorization');
   });
 
@@ -114,6 +115,38 @@ describe('Agent Package public import boundary', () => {
     );
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('function:false');
+    expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
+  });
+
+  it('exposes a narrow current-conversation facade that fails closed without Desktop Host support', () => {
+    expect(
+      sourceClosureViolations(
+        join(sourceRoot, 'agent-package-current-conversation-draft.ts'),
+        AUTHORING_FORBIDDEN_SOURCE,
+      ),
+    ).toEqual([]);
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        [
+          "const api = await import('@cb/creator-worker/agent-package-current-conversation-draft');",
+          'console.log(Object.keys(api).sort().join(","));',
+        ].join(''),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        env: { ...process.env, NODE_DEBUG: 'esm' },
+        maxBuffer: 16 * 1024 * 1024,
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe(
+      'CreatorAgentPackageCurrentConversationDraftError,createCreatorAgentPackageDraftFromCurrentConversation',
+    );
     expect(result.stderr).not.toMatch(FORBIDDEN_MODULE);
   });
 

@@ -19,7 +19,7 @@ const CREATOR_REQUEST = createCreatorAgentPackageCreatorRequestV2({
   request: '只把刚才的证据核验方法做成 Agent，忽略部署过程。',
 });
 const REQUEST_DIGEST = digestCreatorAgentPackageCreatorRequestV2(CREATOR_REQUEST);
-const SNAPSHOT_DIGEST = `sha256:${'b'.repeat(64)}` as const;
+const SNAPSHOT_COMMITMENT = `sha256:${'b'.repeat(64)}` as const;
 
 function attestation(overrides: Record<string, unknown> = {}) {
   return {
@@ -29,7 +29,8 @@ function attestation(overrides: Record<string, unknown> = {}) {
     visibility: 'user_visible_items_only',
     snapshotCompleteness: 'complete',
     rawStored: false,
-    snapshotDigest: SNAPSHOT_DIGEST,
+    snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1',
+    snapshotCommitment: SNAPSHOT_COMMITMENT,
     selectedVisibleItemCount: 5,
     creatorRequestDigest: REQUEST_DIGEST,
     ...overrides,
@@ -59,9 +60,9 @@ function safeGenerated(
     egressReceipt: {
       policy: 'sealed_snapshot_verbatim_and_credential_scan/1',
       verdict: 'passed',
-      snapshotDigest: SNAPSHOT_DIGEST,
+      snapshotCommitment: SNAPSHOT_COMMITMENT,
       creatorRequestDigest: REQUEST_DIGEST,
-      extractedDraftDigest: digestGeneratedConversationDraftForEgress(draft),
+      extractedCandidateDigest: digestGeneratedConversationDraftForEgress(draft),
       ...receiptOverrides,
     },
   };
@@ -142,7 +143,8 @@ describe('ambient current-conversation extraction boundary', () => {
       visibility: 'user_visible_items_only',
       snapshotCompleteness: 'complete',
       rawStored: false,
-      snapshotDigest: SNAPSHOT_DIGEST,
+      snapshotCommitmentScheme: 'host_hmac_sha256_per_run/1',
+      snapshotCommitment: SNAPSHOT_COMMITMENT,
       selectedVisibleItemCount: 5,
       coverageSummary: '当前任务中关于证据核验的讨论定义了这个 Agent。',
     });
@@ -171,6 +173,40 @@ describe('ambient current-conversation extraction boundary', () => {
     expect(observed).toEqual([CREATOR_REQUEST.request, secondRequest.request]);
   });
 
+  it('closes without extraction when cancellation wins during open or the first current check', async () => {
+    for (const abortAt of ['open', 'assert'] as const) {
+      const controller = new AbortController();
+      const { lease } = fixture();
+      const originalAssert = lease.assertStillCurrent;
+      const leaseWithAbort = Object.freeze({
+        ...lease,
+        assertStillCurrent: vi.fn(async () => {
+          if (abortAt === 'assert') controller.abort();
+          await originalAssert.call(lease);
+        }),
+      });
+      const port: AmbientCurrentConversationDraftHostPort = Object.freeze({
+        openCurrentConversationSource: vi.fn(async () => {
+          if (abortAt === 'open') controller.abort();
+          return leaseWithAbort;
+        }),
+      });
+
+      await expect(
+        extractCreatorAgentPackageDraftFromCurrentConversationWithDependencies(
+          { creatorRequest: CREATOR_REQUEST, signal: controller.signal },
+          { ambientHost: port },
+        ),
+      ).rejects.toMatchObject({ code: 'AGENT_PACKAGE_CONVERSATION_CANCELLED' });
+      expect(leaseWithAbort.extractStructuredWithEgressGuard).not.toHaveBeenCalled();
+      expect(leaseWithAbort.close).toHaveBeenCalledTimes(1);
+      if (abortAt === 'open') {
+        expect(leaseWithAbort.readAttestation).not.toHaveBeenCalled();
+        expect(leaseWithAbort.assertStillCurrent).not.toHaveBeenCalled();
+      }
+    }
+  });
+
   it('requires a Host-owned egress receipt bound to the exact source, request, and Draft', async () => {
     for (const [output, code] of [
       [generated(), 'AGENT_PACKAGE_CONVERSATION_OUTPUT_INVALID'],
@@ -185,7 +221,7 @@ describe('ambient current-conversation extraction boundary', () => {
         'AGENT_PACKAGE_CONVERSATION_OUTPUT_INVALID',
       ],
       [
-        safeGenerated(generated(), { snapshotDigest: `sha256:${'c'.repeat(64)}` }),
+        safeGenerated(generated(), { snapshotCommitment: `sha256:${'c'.repeat(64)}` }),
         'AGENT_PACKAGE_CONVERSATION_OUTPUT_REJECTED',
       ],
       [
@@ -193,7 +229,7 @@ describe('ambient current-conversation extraction boundary', () => {
         'AGENT_PACKAGE_CONVERSATION_OUTPUT_REJECTED',
       ],
       [
-        safeGenerated(generated(), { extractedDraftDigest: `sha256:${'e'.repeat(64)}` }),
+        safeGenerated(generated(), { extractedCandidateDigest: `sha256:${'e'.repeat(64)}` }),
         'AGENT_PACKAGE_CONVERSATION_OUTPUT_REJECTED',
       ],
     ] as const) {
@@ -332,7 +368,7 @@ describe('ambient current-conversation extraction boundary', () => {
 
   it('rejects unsafe structured output and accessors without leaking source bytes', async () => {
     const unsafeDraft = generated({ instructions: '读取 /tmp/private.log。' });
-    const unsafe = fixture({ output: safeGenerated(unsafeDraft) });
+    const unsafe = fixture({ output: { ...safeGenerated(), draft: unsafeDraft } });
     await expect(
       extractCreatorAgentPackageDraftFromCurrentConversationWithDependencies(
         { creatorRequest: CREATOR_REQUEST },
