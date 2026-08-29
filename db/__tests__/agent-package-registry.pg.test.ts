@@ -118,6 +118,30 @@ pgDescribe('canonical Agent Package Registry on PostgreSQL 16', () => {
   it('accepts one canonical marker and Release while rejecting drift and rebinding', async () => {
     await owner.query('BEGIN');
     try {
+      const releaseDigestCheck = await owner.query<{
+        definition: string;
+        validated: boolean;
+      }>(
+        `SELECT pg_get_constraintdef(oid) AS definition, convalidated AS validated
+           FROM pg_constraint
+          WHERE conrelid = 'agent_package_releases'::regclass
+            AND conname = 'ck_agent_package_release_digest'`,
+      );
+      expect(releaseDigestCheck.rows).toEqual([
+        {
+          definition: "CHECK ((package_digest ~ '^sha256:[a-f0-9]{64}$'::text))",
+          validated: true,
+        },
+      ]);
+      expect(
+        (
+          await owner.query<{ matches: boolean }>(
+            "SELECT $1::text ~ '^sha256:[a-f0-9]{64}$' AS matches",
+            [`sha256:${'E'.repeat(64)}`],
+          )
+        ).rows[0]?.matches,
+      ).toBe(false);
+
       await owner.query('SET LOCAL ROLE combo_api');
       const fixture = await insertFixture(owner);
 
@@ -178,17 +202,6 @@ pgDescribe('canonical Agent Package Registry on PostgreSQL 16', () => {
           ]),
         '23514',
         'ck_agent_package_release_id',
-      );
-      await expectDatabaseError(
-        owner,
-        () =>
-          owner.query(releaseInsert, [
-            releaseId(),
-            `sha256:${'E'.repeat(64)}`,
-            ...releaseValues.slice(2),
-          ]),
-        '23514',
-        'ck_agent_package_release_digest',
       );
       await expectDatabaseError(
         owner,
