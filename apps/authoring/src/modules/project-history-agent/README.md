@@ -48,8 +48,9 @@ Authoring API 路径挂在 `/api/v1`：
 - `POST /agent-package-runs/prepare`
 
 前三个 HTTP mutation 只接受 trusted browser Origin + owner Session Cookie。它们不是远程 MCP transport，不能由
-Plugin 伪造 Origin 调用。`mcp.ts` 提供五工具 definitions、draft-07 exact input/output JSON Schema
-和 service-bound dispatcher；`draft-app.ts` 提供 render tool 绑定的 MCP App resource 及严格 URI read。
+Plugin 伪造 Origin 调用。`mcp.ts` 提供五工具 definitions、兼容 MCP JSON Schema 2020-12 的 exact
+input/output schema 和 service-bound dispatcher；`draft-app.ts` 提供 render tool 绑定的 MCP App resource
+及严格 URI read。数组输入统一使用 object-valued `items`；必须固定顺序的来源限制仍由服务端 Zod 合同严格校验。
 
 正式 `/api/external-mcp/mcp` 已把 owner 工具映射到 `combo.agent:write` 并注入 OAuth principal user ID；
 public-by-link read/prepare 使用 `combo.agent:read`，service 不按 creator owner 过滤。create-share 仍保留独立
