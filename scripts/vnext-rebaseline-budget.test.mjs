@@ -278,18 +278,26 @@ test('product edits must stay inside the declared rebuild surface', () => {
 test('the knowledge Agent Test scope opens only its named surface and exact files', () => {
   const allowedControlFiles = [
     '.github/workflows/ci.yml',
+    '.github/workflows/pr-ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
     'scripts/check-production-artifacts.sh',
   ];
-  const allowedInfraFiles = ['infra/Dockerfile.runtime'];
+  const allowedAuthoringFiles = [
+    'apps/authoring/src/__tests__/agent-package-object-store.test.ts',
+    'apps/authoring/src/platform/infra/README.md',
+    'apps/authoring/src/platform/infra/object-store.ts',
+  ];
+  const allowedInfraFiles = ['infra/Dockerfile.api', 'infra/Dockerfile.runtime'];
   const allowedProductPrefixes = ['apps/runtime-web/'];
   const knowledgeAgentTestSlice = [
     'apps/runtime-web/src/pages/KnowledgeAgentPage.tsx',
+    ...allowedAuthoringFiles,
     ...allowedInfraFiles,
     ...allowedControlFiles,
   ].map((path) => entry(path));
 
+  assert.equal(policyPaths.includes('.github/workflows/pr-ci.yml'), false);
   assert.equal(assessPullRequest(contract, knowledgeAgentTestSlice).mode, 'PRODUCT');
   assert.deepEqual(
     contract.allowedFiles.filter(
@@ -301,12 +309,19 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     allowedControlFiles,
   );
   assert.deepEqual(
+    contract.allowedFiles.filter((path) => path.startsWith('apps/authoring/')),
+    allowedAuthoringFiles,
+  );
+  assert.deepEqual(
     contract.allowedFiles.filter((path) => path.startsWith('infra/')),
     allowedInfraFiles,
   );
   assert.deepEqual(
     contract.allowedPathPrefixes.filter(
-      (path) => path.startsWith('apps/runtime-web') || path.startsWith('infra'),
+      (path) =>
+        path.startsWith('apps/authoring') ||
+        path.startsWith('apps/runtime-web') ||
+        path.startsWith('infra'),
     ),
     allowedProductPrefixes,
   );
@@ -314,10 +329,17 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
   for (const path of [
     '.github/workflows/deploy.yml',
     '.github/workflows/knowledge-agent.yml',
+    '.github/workflows/pr-ci-extra.yml',
+    'apps/authoring/src/__tests__/agent-package-object-store.pg.test.ts',
+    'apps/authoring/src/platform/infra/db.ts',
+    'apps/authoring/src/platform/infra/leshouying/index.ts',
+    'apps/authoring/src/platform/infra/object-store-v2.ts',
     'apps/web/src/pages/KnowledgeAgentPage.tsx',
     'docs/knowledge-agent-production-acceptance.md',
     'docs/leshouying-test-acceptance.md',
-    'infra/Dockerfile.api',
+    'infra/Dockerfile.resend-mock',
+    'infra/Dockerfile.web',
+    'infra/docker-compose.yml',
     'infra/docker-compose.dev-test.yml',
     'infra/k8s/runtime.yaml',
     'infra-other/Dockerfile.runtime',

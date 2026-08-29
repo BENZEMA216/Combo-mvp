@@ -7,7 +7,6 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const contractPath = 'scripts/vnext-rebaseline-budget.v1.json';
 export const policyPaths = Object.freeze([
-  '.github/workflows/pr-ci.yml',
   'package.json',
   contractPath,
   'scripts/vnext-rebaseline-budget.mjs',
