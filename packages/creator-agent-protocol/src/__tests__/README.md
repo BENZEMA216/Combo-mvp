@@ -31,6 +31,11 @@ current-conversation request/Draft V2 的 strict path-free 来源、互斥解析
 V2 测试拒绝调用方 task/thread/session/item ID、Project 字段、消息数组和 raw transcript；它只证明协议字段
 与规范字节，不证明 Desktop active-task 来源、Studio 展示、Package 编译或 Codex 已激活技能。
 
+`knowledge-bundle-contract.test.ts` 锁定静态 Knowledge Bundle 的规范字节、分片内容摘要、排序、深冻结、
+敌意 getter/Proxy 拒绝、500 分片/32 KiB 分片/2 MiB Bundle 的 exact 边界，以及 knowledge Skill 三文件
+Test profile 和 Bundle 在 exact Package 内的固定清单路径。测试不读取真实 Package 或对象存储，不执行
+检索、模型回答、引用支持性验证、计费或 Test 部署。
+
 `desktop-current-conversation-receipt.test.ts` 锁定真实 UAT 收据的 exact candidate/version、脱敏 task binding、
 egress candidate/projection/final Draft fingerprint、事件 hash chain、Host 单权威端到端观测和绑定
 protocol/algorithm/issuer/key ID 的 Ed25519 signature message。测试使用临时 Test key，

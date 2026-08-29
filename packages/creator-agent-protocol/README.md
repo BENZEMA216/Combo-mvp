@@ -21,6 +21,14 @@ Agent Draft、immutable AgentVersion 与 Project Context Compiler 的 compact so
 注入它，并用 Codex 技能注册表激活包内技能。智能体包摘要是内容完整性标识，不是发布者签名或运行成功
 证明。
 
+显式 `knowledge-bundle` 子路径定义 `combo.knowledge-bundle/1`。知识内容只能作为 exact Package 清单内固定的
+`skills/knowledge/references/knowledge-bundle.json` 文件存在；运行时不得从 Capability、Release 或请求中
+接受另一条知识对象地址或独立摘要。受控 Test profile 只允许 `AGENT.md`、knowledge `SKILL.md` 和这一份
+Bundle 三个文件，避免额外 references 成为第二知识通道。Bundle 保存排序且有界的证据分片、opaque source
+ID、不可解引用的公开显示标签和每段 UTF-8 内容摘要，整个文件仍受 Package 的 2 MiB 单文件上限及清单
+摘要约束。该合同只绑定内容寻址字节与发布者提供的引用显示声明，不验证来源真实性，也不证明模型回答在
+语义上完整受证据支持；它不提供动态、私有或可变知识库。
+
 创作端可以生成一份含 Project 根摘要、覆盖统计与相对引用的私有来源回执。可分享 Package 不携带这份
 回执、来源文件名或覆盖摘要，只在清单绑定的 `provenance.json` 中保存回执摘要和可选制作要求摘要；
 因此 exact Package 仍绑定确定性的创作来源与意图，而消费者不能从 Package 直接读取创作者的来源清单。
@@ -126,6 +134,9 @@ Host 结果与完整终态事实会生成 deterministic SHA-256 fingerprint。fi
   覆盖、实际脱敏、用户确认、Git remote 可达或 OS 级 Project 隔离。
 - `@cb/creator-agent-protocol/agent-package`：暴露独立的智能体包清单、原始文件摘要、智能体包摘要与规范化
   解析和序列化函数；它不导入或升级旧版 `AgentVersion`，也不读取文件系统或启动 Host。
+- `@cb/creator-agent-protocol/knowledge-bundle`：暴露 exact Package 内固定知识资源路径、有界证据分片、
+  opaque source ID、不可解引用显示标签、内容摘要与规范化解析；它不接受独立 storage key，也不执行检索、
+  回答或语义支持性判断。
 - `@cb/creator-agent-protocol/agent-package-draft`：暴露一句制作要求、可修订 Package Draft、乐观 revision
   请求、Creator bootstrap handoff、Project V1 与 current-conversation V2 的 domain-separated draft
   fingerprint 和规范化解析；它不暴露 Host snapshot 或任务选择 API，不保存绝对 Project 路径或 raw
