@@ -80,7 +80,7 @@ describe('migrations', () => {
     }
   });
 
-  it('the full chain creates only the current data model', () => {
+  it('the full chain creates the current model plus the deployed compatibility prefix', () => {
     const created = [...allSql().matchAll(/CREATE TABLE\s+([a-z][a-z0-9_]*)\s*\(/gi)]
       .map((match) => match[1]!.toLowerCase())
       .sort();
@@ -99,6 +99,19 @@ describe('migrations', () => {
         'payment_attempts',
         'payment_callback_events',
         'wallet_ledger',
+        // Test already applied 0012-0015. These tables remain a legacy compatibility
+        // prefix and do not define the current Agent Package product model.
+        'agent_projects',
+        'agent_revisions',
+        'agent_releases',
+        'oauth_clients',
+        'oauth_authorization_requests',
+        'oauth_authorization_codes',
+        'oauth_access_tokens',
+        'oauth_refresh_tokens',
+        'agent_tests',
+        'agent_test_reviews',
+        'project_agent_shares',
       ].sort(),
     );
     expect(created.some((table) => /^rt_(?:chat|studio)_/.test(table))).toBe(false);
@@ -184,14 +197,21 @@ describe('migrations', () => {
     expect(sql).not.toMatch(/UPDATE\s+turns/i);
   });
 
-  it('keeps authentication, roles, and billing after Goal B schema migrations', () => {
+  it('keeps authentication, roles, billing and the Test compatibility prefix in sequence', () => {
     const list = files();
-    expect(list.slice(-5)).toEqual([
+    const firstCurrentIndex = list.indexOf('0007_first_party_email_auth.sql');
+
+    expect(firstCurrentIndex).toBeGreaterThan(0);
+    expect(list.slice(firstCurrentIndex, firstCurrentIndex + 9)).toEqual([
       '0007_first_party_email_auth.sql',
       '0008_application_database_roles.sql',
       '0009_billing.sql',
       '0010_recharge_qr_channel.sql',
       '0011_recharge_qr_only.sql',
+      '0012_agent_builder_v1.sql',
+      '0013_external_mcp_oauth.sql',
+      '0014_agent_test_reviews.sql',
+      '0015_project_agent_shares.sql',
     ]);
   });
 
