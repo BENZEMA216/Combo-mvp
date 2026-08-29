@@ -1,0 +1,70 @@
+{
+  "name": "@cb/creator-agent-protocol",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Creator Agent Package、legacy Draft/Version、Host 与 Broker transport 合约",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./host-adapter": {
+      "types": "./dist/host-adapter.d.ts",
+      "default": "./dist/host-adapter.js"
+    },
+    "./broker-transport": {
+      "types": "./dist/broker-transport.d.ts",
+      "default": "./dist/broker-transport.js"
+    },
+    "./agent": {
+      "types": "./dist/agent.d.ts",
+      "default": "./dist/agent.js"
+    },
+    "./agent-package": {
+      "types": "./dist/agent-package.d.ts",
+      "default": "./dist/agent-package.js"
+    },
+    "./agent-package-draft": {
+      "types": "./dist/agent-package-draft.d.ts",
+      "default": "./dist/agent-package-draft.js"
+    },
+    "./agent-package-share": {
+      "types": "./dist/agent-package-share.d.ts",
+      "default": "./dist/agent-package-share.js"
+    },
+    "./creator-authorization": {
+      "types": "./dist/creator-authorization.d.ts",
+      "default": "./dist/creator-authorization.js"
+    },
+    "./desktop-current-conversation-receipt": {
+      "types": "./dist/desktop-current-conversation-receipt.d.ts",
+      "default": "./dist/desktop-current-conversation-receipt.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm run clean && tsc -b",
+    "typecheck": "tsc -b --noEmit false",
+    "typecheck:test": "tsc -p tsconfig.vitest.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

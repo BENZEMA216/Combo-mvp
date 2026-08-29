@@ -424,7 +424,7 @@ describe('Combo Agent Builder MCP App bridge', () => {
     expect(app.outbound[0]).toMatchObject({
       method: 'ui/initialize',
       params: {
-        appInfo: { name: 'combo-agent-builder', version: '0.7.0' },
+        appInfo: { name: 'combo-agent-builder', version: '0.8.4' },
         appCapabilities: { availableDisplayModes: ['inline'] },
         protocolVersion: '2026-01-26',
       },

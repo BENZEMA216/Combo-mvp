@@ -6,7 +6,10 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "references": [{ "path": "../../packages/shared" }],
+  "references": [
+    { "path": "../../packages/shared" },
+    { "path": "../../packages/creator-agent-protocol" }
+  ],
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

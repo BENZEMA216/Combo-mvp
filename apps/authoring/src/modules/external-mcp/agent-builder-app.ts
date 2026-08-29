@@ -1,6 +1,6 @@
 export const AGENT_BUILDER_APP_URI = 'ui://combo/agent-builder/v1.html';
 export const AGENT_BUILDER_APP_HTML_SHA256 =
-  'fb17214df4ccf7de73e03107df20196d9efd5a6b0fa104b229987ed54247f763';
+  '04655ec709d28c57d5b98a74c619d980058378dca42b374e0d3b074a5049c3ad';
 
 export const AGENT_BUILDER_APP_RESOURCE = {
   uri: AGENT_BUILDER_APP_URI,
@@ -274,7 +274,7 @@ export const AGENT_BUILDER_APP_HTML = `<!doctype html>
           if (legacyPayload) render(legacyPayload);
           try {
             await request('ui/initialize', {
-              appInfo: { name: 'combo-agent-builder', version: '0.7.0' },
+              appInfo: { name: 'combo-agent-builder', version: '0.8.4' },
               appCapabilities: { availableDisplayModes: ['inline'] },
               protocolVersion: MCP_UI_PROTOCOL_VERSION
             });

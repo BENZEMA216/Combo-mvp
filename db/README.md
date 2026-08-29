@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0015`，共 16 个 SQL；已经发布的 `0000` 至 `0014` 保持原样，新结构只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0016`，共 17 个 SQL；已经发布的 `0000` 至 `0015` 保持原样，新结构只通过后续迁移追加。所有环境都从空业务数据建立当前结构，不提供旧身份或旧 Preview 数据桥接。
 
 ## 迁移文件
 
@@ -20,6 +20,11 @@
 - `0013_external_mcp_oauth.sql` 保存公开动态客户端元数据、短期授权事务、一次性 PKCE 授权码以及摘要化的访问令牌和轮换刷新令牌。授权页只用现有 `auth_sessions` 确认浏览器身份，任何 OAuth 表都不保存 Cookie 或令牌原文。
 - `0014_agent_test_reviews.sql` 创建不可变 Agent Test 质量复核，要求 normal、boundary 与 failure 三类案例分别保存执行终态和质量结论。例外接受必须保存理由、影响、复核用户和时间；新 Release 必须冻结同一 Test 的可发布复核 ID 与摘要，迁移前 Release 的复核字段保持为空并继续可读。
 - `0015_project_agent_shares.sql` 创建不可变 Project Agent 分享。每行冻结一份 Git Project manifest、owner 和创建幂等事实，并通过三十二字节随机的公开定位符读取；它不保存仓库文件、会话、凭据或环境变量值。
+- `0016_project_history_agent_flow.sql` 追加 strict typed Project-history Draft、由数据库 wall clock 原子签发且只存
+  摘要的五分钟单次确认、带完整 canonical JSON 摘要的不可变/不过期/不可撤回 public-by-link Agent Package
+  share，以及仅能有界清理已消费或已过期 confirmation 的受控函数。
+
+`0016` 是 forward-only 迁移。Test 若需回退应用，后续回退提交仍必须保留 `0016` 迁移源、账本前缀和当前 expected head；不得直接部署不含该迁移源的旧 `c54f751` 应用镜像，也不得删除或改写已经应用的表。
 
 `project_agent_shares` 独立冻结可公开读取的 Git Project manifest，不进入 Agent Runtime 模型。
 
@@ -47,7 +52,7 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_project_agent_shares.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0016_project_history_agent_flow.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test

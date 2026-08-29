@@ -21,4 +21,13 @@ describe('HTTP rate-limit store policy', () => {
       }),
     ).rejects.toThrow('in-memory HTTP rate limiting is only allowed in NODE_ENV=test');
   });
+
+  it('allows the exact logger-boundary capture stream only in tests', async () => {
+    await expect(
+      buildApp({
+        env: { ...loadEnv(), NODE_ENV: 'production' },
+        loggerStream: { write() {} },
+      }),
+    ).rejects.toThrow('custom logger streams are only allowed in NODE_ENV=test');
+  });
 });

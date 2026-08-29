@@ -47,6 +47,8 @@ export interface BuildAppOptions {
   env?: Env;
   /** 仅 NODE_ENV=test 可显式使用进程内计数；所有其他运行模式强制共享 redis_hot。 */
   httpRateLimitStore?: 'shared-redis' | 'memory';
+  /** Tests may capture the exact production logger boundary without changing log fields. */
+  loggerStream?: { write(message: string): void };
 }
 
 export function sharedHttpRateLimitOptions(env: Pick<Env, 'COMBO_ENVIRONMENT'>, redis: Redis) {
@@ -68,6 +70,9 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
   if (httpRateLimitStore === 'memory' && env.NODE_ENV !== 'test') {
     throw new Error('in-memory HTTP rate limiting is only allowed in NODE_ENV=test');
   }
+  if (opts.loggerStream && env.NODE_ENV !== 'test') {
+    throw new Error('custom logger streams are only allowed in NODE_ENV=test');
+  }
   const app = Fastify({
     // 请求体上限：助手分片上传是 JSON 体（单片 2MB 文本 + JSON 转义开销），8MB 足够且不失守。
     bodyLimit: 32 * 1024 * 1024, // 与 nginx client_max_body_size 32m 对齐；分片 2MB 文本 JSON 转义后仍有充分余量
@@ -79,6 +84,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       formatters: {
         log: (obj) => obj,
       },
+      ...(opts.loggerStream ? { stream: opts.loggerStream } : {}),
     },
     genReqId: (req) => resolveRequestTraceId(req.headers, req.url),
     // 关闭 Fastify 默认的原始 URL 请求日志；完成日志只记录路由模板与低敏元数据。
@@ -153,6 +159,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
       route.includes('/external-mcp/') ||
       route.includes('/.well-known/oauth-') ||
       route.endsWith('/codex-plugin');
+    const sensitiveRoute = authRoute || route.includes('/agent-package-');
     const oversizedMessage = authRoute
       ? '认证请求内容过大，请检查后重试。'
       : '这一片内容太大，重跑助手命令即可（新版脚本会切成更小的分片）。';
@@ -167,7 +174,7 @@ export async function buildApp(opts: BuildAppOptions = {}): Promise<FastifyInsta
     // 认证错误不附带原始异常，避免 parser 或供应商实现把请求内容带入日志。
     req.log.error(
       {
-        ...(authRoute ? {} : { err }),
+        ...(sensitiveRoute ? {} : { err }),
         code,
         ...currentTraceLogFields(req.id),
       },

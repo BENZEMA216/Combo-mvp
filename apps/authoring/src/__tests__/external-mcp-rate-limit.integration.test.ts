@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sharedHttpRateLimitOptions } from '../bootstrap/app.js';
+import { PROJECT_HISTORY_AGENT_ENDPOINTS } from '../modules/project-history-agent/routes.js';
 
 const redisUrl = process.env.MCP_RATE_LIMIT_REDIS_URL;
 const enabled = Boolean(redisUrl);
@@ -30,6 +31,14 @@ integrationDescribe('shared HTTP rate limiting across API replicas', () => {
       config: { rateLimit: { max: 2, timeWindow: '1 minute' } },
       handler: async () => ({ ok: true }),
     });
+    for (const endpoint of PROJECT_HISTORY_AGENT_ENDPOINTS) {
+      app.route({
+        method: endpoint.method,
+        url: endpoint.url,
+        config: endpoint.config,
+        handler: async () => ({ ok: true }),
+      });
+    }
     await app.ready();
     apps.push(app);
     return app;
@@ -63,5 +72,26 @@ integrationDescribe('shared HTTP rate limiting across API replicas', () => {
     client.disconnect();
     const response = await app.inject({ method: 'GET', url: '/shared-limit' });
     expect(response.statusCode).toBe(500);
+  });
+
+  it('fails every Project-history route closed when the shared Redis store is unavailable', async () => {
+    const app = await replica();
+    const client = clients.at(-1)!;
+    client.disconnect();
+    const token = 'R'.repeat(43);
+    const requests = [
+      { method: 'POST', url: '/agent-package-drafts' },
+      {
+        method: 'POST',
+        url: '/agent-package-drafts/draft.agent-package.' + 'a'.repeat(32) + '/render',
+      },
+      { method: 'POST', url: '/agent-package-shares' },
+      { method: 'GET', url: `/agent-package-shares/${token}` },
+      { method: 'POST', url: '/agent-package-runs/prepare' },
+    ] as const;
+
+    for (const request of requests) {
+      expect((await app.inject(request)).statusCode, `${request.method} ${request.url}`).toBe(500);
+    }
   });
 });
