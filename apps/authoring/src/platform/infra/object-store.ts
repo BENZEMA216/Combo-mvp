@@ -61,6 +61,345 @@ function getPresignClient(env: Env): S3Client {
 
 const DEFAULT_EXPIRES_SEC = 900; // 15min 预签名默认有效期
 
+export type ImmutableObjectStoreFailure =
+  | 'invalid_limit'
+  | 'too_large'
+  | 'aborted'
+  | 'conflict'
+  | 'invalid_response'
+  | 'unavailable';
+
+const IMMUTABLE_OBJECT_ERROR_MESSAGES: Readonly<Record<ImmutableObjectStoreFailure, string>> = {
+  invalid_limit: 'immutable object byte limit is invalid',
+  too_large: 'immutable object exceeds the byte limit',
+  aborted: 'immutable object operation was aborted',
+  conflict: 'immutable object already exists with different bytes',
+  invalid_response: 'immutable object storage returned an invalid response',
+  unavailable: 'immutable object storage is unavailable',
+};
+
+/**
+ * 不可变对象原语的稳定失败分类。错误文案不包含 bucket、key、SDK 响应或凭据。
+ */
+export class ImmutableObjectStoreError extends Error {
+  constructor(readonly failure: ImmutableObjectStoreFailure) {
+    super(IMMUTABLE_OBJECT_ERROR_MESSAGES[failure]);
+    this.name = 'ImmutableObjectStoreError';
+  }
+}
+
+export interface ImmutableObjectCommandSender {
+  send(
+    command: GetObjectCommand | PutObjectCommand,
+    options?: { abortSignal?: AbortSignal },
+  ): Promise<unknown>;
+}
+
+export interface ImmutableObjectReadInput {
+  bucket: Bucket;
+  key: string;
+  maxBytes: number;
+  signal?: AbortSignal;
+}
+
+export interface ImmutableObjectCommitInput extends ImmutableObjectReadInput {
+  bytes: Uint8Array;
+  contentType?: string;
+}
+
+export interface ImmutableObjectStore {
+  read(input: ImmutableObjectReadInput): Promise<Uint8Array>;
+  commit(
+    input: ImmutableObjectCommitInput,
+  ): Promise<{ outcome: 'created' | 'already_committed'; size: number }>;
+}
+
+function validateMaxBytes(maxBytes: number): void {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new ImmutableObjectStoreError('invalid_limit');
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new ImmutableObjectStoreError('aborted');
+}
+
+function isAbortFailure(error: unknown, signal: AbortSignal | undefined): boolean {
+  if (signal?.aborted) return true;
+  if (typeof error !== 'object' || error === null) return false;
+  const name = (error as { name?: unknown }).name;
+  return name === 'AbortError';
+}
+
+function isObjectAlreadyCommitted(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const candidate = error as {
+    name?: unknown;
+    Code?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+  };
+  const status = candidate.$metadata?.httpStatusCode;
+  return (
+    candidate.name === 'PreconditionFailed' ||
+    candidate.Code === 'PreconditionFailed' ||
+    status === 412
+  );
+}
+
+function normalizeBodyChunk(value: unknown): Uint8Array | null {
+  if (typeof value === 'string') return new TextEncoder().encode(value);
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  return null;
+}
+
+function ignoreRejectedCleanup(result: unknown): void {
+  if (typeof (result as { catch?: unknown } | null)?.catch === 'function') {
+    void (result as Promise<unknown>).catch(() => undefined);
+  }
+}
+
+function cancelAsyncBody(body: unknown, iterator: AsyncIterator<unknown>): void {
+  try {
+    const destroy = (body as { destroy?: unknown } | null)?.destroy;
+    if (typeof destroy === 'function') destroy.call(body);
+  } catch {
+    // 收尾不能覆盖原始的安全错误分类。
+  }
+  try {
+    if (typeof iterator.return === 'function') {
+      ignoreRejectedCleanup(iterator.return());
+    }
+  } catch {
+    // 收尾不能覆盖原始的安全错误分类。
+  }
+}
+
+async function awaitWithAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (!signal) return promise;
+  throwIfAborted(signal);
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new ImmutableObjectStoreError('aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function readAsyncBodyBounded(
+  body: AsyncIterable<unknown>,
+  maxBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<Uint8Array> {
+  const iterator = body[Symbol.asyncIterator]();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let complete = false;
+  try {
+    for (;;) {
+      const step = await awaitWithAbort(Promise.resolve(iterator.next()), signal);
+      if (step.done) {
+        complete = true;
+        break;
+      }
+      throwIfAborted(signal);
+      const chunk = normalizeBodyChunk(step.value);
+      if (!chunk) throw new ImmutableObjectStoreError('invalid_response');
+      if (chunk.byteLength > maxBytes - total) {
+        throw new ImmutableObjectStoreError('too_large');
+      }
+      chunks.push(Uint8Array.from(chunk));
+      total += chunk.byteLength;
+    }
+  } finally {
+    if (!complete) cancelAsyncBody(body, iterator);
+  }
+  return concatenateChunks(chunks, total);
+}
+
+async function readWebBodyBounded(
+  body: ReadableStream<unknown>,
+  maxBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<Uint8Array> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let complete = false;
+  try {
+    for (;;) {
+      const step = await awaitWithAbort(reader.read(), signal);
+      if (step.done) {
+        complete = true;
+        break;
+      }
+      throwIfAborted(signal);
+      const chunk = normalizeBodyChunk(step.value);
+      if (!chunk) throw new ImmutableObjectStoreError('invalid_response');
+      if (chunk.byteLength > maxBytes - total) {
+        throw new ImmutableObjectStoreError('too_large');
+      }
+      chunks.push(Uint8Array.from(chunk));
+      total += chunk.byteLength;
+    }
+  } finally {
+    if (!complete) {
+      try {
+        ignoreRejectedCleanup(reader.cancel());
+      } catch {
+        // 收尾不能覆盖原始的安全错误分类。
+      }
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // 收尾不能覆盖原始的安全错误分类。
+    }
+  }
+  return concatenateChunks(chunks, total);
+}
+
+function concatenateChunks(chunks: readonly Uint8Array[], total: number): Uint8Array {
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
+}
+
+async function readBodyBounded(
+  body: unknown,
+  maxBytes: number,
+  signal: AbortSignal | undefined,
+): Promise<Uint8Array> {
+  throwIfAborted(signal);
+  const direct = normalizeBodyChunk(body);
+  if (direct) {
+    if (direct.byteLength > maxBytes) throw new ImmutableObjectStoreError('too_large');
+    return Uint8Array.from(direct);
+  }
+  if (
+    typeof (body as { [Symbol.asyncIterator]?: unknown } | null)?.[Symbol.asyncIterator] ===
+    'function'
+  ) {
+    return readAsyncBodyBounded(body as AsyncIterable<unknown>, maxBytes, signal);
+  }
+  if (typeof (body as { getReader?: unknown } | null)?.getReader === 'function') {
+    return readWebBodyBounded(body as ReadableStream<unknown>, maxBytes, signal);
+  }
+  throw new ImmutableObjectStoreError('invalid_response');
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+/**
+ * 创建一个不可覆盖的 exact-byte 对象原语。它不列举、删除或解析对象内容。
+ */
+export function createImmutableObjectStore(
+  sender: ImmutableObjectCommandSender,
+): ImmutableObjectStore {
+  async function read(input: ImmutableObjectReadInput): Promise<Uint8Array> {
+    validateMaxBytes(input.maxBytes);
+    throwIfAborted(input.signal);
+    try {
+      const response = (await sender.send(
+        new GetObjectCommand({ Bucket: input.bucket, Key: input.key }),
+        input.signal ? { abortSignal: input.signal } : undefined,
+      )) as { Body?: unknown; ContentLength?: unknown };
+      const declaredLength = response.ContentLength;
+      if (
+        declaredLength !== undefined &&
+        (!Number.isSafeInteger(declaredLength) || (declaredLength as number) < 0)
+      ) {
+        throw new ImmutableObjectStoreError('invalid_response');
+      }
+      if (typeof declaredLength === 'number' && declaredLength > input.maxBytes) {
+        throw new ImmutableObjectStoreError('too_large');
+      }
+      if (response.Body == null) {
+        if (declaredLength === 0) return new Uint8Array();
+        throw new ImmutableObjectStoreError('invalid_response');
+      }
+      const bytes = await readBodyBounded(response.Body, input.maxBytes, input.signal);
+      if (typeof declaredLength === 'number' && declaredLength !== bytes.byteLength) {
+        throw new ImmutableObjectStoreError('invalid_response');
+      }
+      return bytes;
+    } catch (error) {
+      if (error instanceof ImmutableObjectStoreError) throw error;
+      if (isAbortFailure(error, input.signal)) throw new ImmutableObjectStoreError('aborted');
+      throw new ImmutableObjectStoreError('unavailable');
+    }
+  }
+
+  async function commit(
+    input: ImmutableObjectCommitInput,
+  ): Promise<{ outcome: 'created' | 'already_committed'; size: number }> {
+    validateMaxBytes(input.maxBytes);
+    throwIfAborted(input.signal);
+    const exactBytes = Uint8Array.from(input.bytes);
+    if (exactBytes.byteLength > input.maxBytes) {
+      throw new ImmutableObjectStoreError('too_large');
+    }
+    try {
+      await sender.send(
+        new PutObjectCommand({
+          Bucket: input.bucket,
+          Key: input.key,
+          Body: exactBytes,
+          ContentLength: exactBytes.byteLength,
+          IfNoneMatch: '*',
+          ...(input.contentType ? { ContentType: input.contentType } : {}),
+        }),
+        input.signal ? { abortSignal: input.signal } : undefined,
+      );
+      return { outcome: 'created', size: exactBytes.byteLength };
+    } catch (error) {
+      if (isAbortFailure(error, input.signal)) throw new ImmutableObjectStoreError('aborted');
+      if (!isObjectAlreadyCommitted(error)) {
+        throw new ImmutableObjectStoreError('unavailable');
+      }
+    }
+
+    const existing = await read(input);
+    if (!equalBytes(existing, exactBytes)) {
+      throw new ImmutableObjectStoreError('conflict');
+    }
+    return { outcome: 'already_committed', size: exactBytes.byteLength };
+  }
+
+  return { read, commit };
+}
+
+/** 生产 S3/MinIO 客户端的惰性组装入口。 */
+export function createS3ImmutableObjectStore(env: Env): ImmutableObjectStore {
+  const s3 = getClient(env);
+  return createImmutableObjectStore({
+    send(command, options) {
+      return s3.send(command, options);
+    },
+  });
+}
+
 /**
  * 把对象 Body（流/二进制）读成 utf-8 字符串——【统一正确读法】。所有 S3 对象文本读取走这里，杜绝读法分叉。
  *
