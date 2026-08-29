@@ -266,9 +266,21 @@ describe('external MCP through the real SDK client', () => {
       }
     ).properties.limitationReasons as Record<string, unknown>;
     expect(sourceSchema).toMatchObject({
-      items: expect.any(Array),
-      additionalItems: false,
+      minItems: 3,
+      maxItems: 3,
+      uniqueItems: true,
+      items: {
+        type: 'string',
+        enum: [
+          'READ_OUTPUT_BOUNDED_OR_TRUNCATED',
+          'READ_THREAD_SUMMARY_NOT_RAW_TRANSCRIPT',
+          'THREAD_LIST_GLOBAL_COVERAGE_NOT_ATTESTED',
+        ],
+      },
+      description: expect.stringContaining('canonical order'),
     });
+    expect(sourceSchema.items).not.toBeInstanceOf(Array);
+    expect(sourceSchema).not.toHaveProperty('additionalItems');
     expect(sourceSchema).not.toHaveProperty('prefixItems');
 
     const argumentsObject = {
@@ -327,8 +339,29 @@ describe('external MCP through the real SDK client', () => {
     ] as const) {
       const invalid = structuredClone(argumentsObject);
       invalid.sourceEvidence[field] = 0;
-      expect(validateCreateDraft(invalid), `${field}=0 must fail draft-07 validation`).toBe(false);
+      expect(validateCreateDraft(invalid), `${field}=0 must fail wire validation`).toBe(false);
     }
+
+    const wrongOrderArguments = structuredClone(argumentsObject);
+    const [firstReason, secondReason, thirdReason] =
+      wrongOrderArguments.sourceEvidence.limitationReasons;
+    if (!firstReason || !secondReason || !thirdReason) {
+      throw new Error('canonical limitation reasons fixture is incomplete');
+    }
+    wrongOrderArguments.sourceEvidence.limitationReasons = [secondReason, firstReason, thirdReason];
+    expect(
+      validateCreateDraft(wrongOrderArguments),
+      ajv.errorsText(validateCreateDraft.errors),
+    ).toBe(true);
+    const wrongOrder = await client.callTool({
+      name: 'create_agent_package_draft',
+      arguments: wrongOrderArguments,
+    });
+    expect(wrongOrder).toMatchObject({
+      isError: true,
+      structuredContent: { error: { category: 'validation_failed' } },
+    });
+    expect(draftRow).toBeUndefined();
 
     const called = await client.callTool({
       name: 'create_agent_package_draft',

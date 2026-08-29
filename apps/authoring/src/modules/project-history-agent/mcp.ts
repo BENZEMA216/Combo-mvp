@@ -100,12 +100,17 @@ const SOURCE_EVIDENCE_SCHEMA = {
       type: 'array',
       minItems: 3,
       maxItems: 3,
-      items: [
-        { type: 'string', const: 'READ_OUTPUT_BOUNDED_OR_TRUNCATED' },
-        { type: 'string', const: 'READ_THREAD_SUMMARY_NOT_RAW_TRANSCRIPT' },
-        { type: 'string', const: 'THREAD_LIST_GLOBAL_COVERAGE_NOT_ATTESTED' },
-      ],
-      additionalItems: false,
+      uniqueItems: true,
+      description:
+        'Exactly these three limitation reasons are accepted; canonical order is strictly validated by the service.',
+      items: {
+        type: 'string',
+        enum: [
+          'READ_OUTPUT_BOUNDED_OR_TRUNCATED',
+          'READ_THREAD_SUMMARY_NOT_RAW_TRANSCRIPT',
+          'THREAD_LIST_GLOBAL_COVERAGE_NOT_ATTESTED',
+        ],
+      },
     },
   },
 } as const;
