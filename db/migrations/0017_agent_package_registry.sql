@@ -1,4 +1,4 @@
--- 0016 · canonical Agent Package Registry。
+-- 0017 · canonical Agent Package Registry。
 --
 -- agent_packages 的不可变行是对象提交成功后的数据库 commit marker。对象键只由 exact
 -- Package digest 与协议固定的 manifest path 推导，owner 不参与 key；数据库不复制 Package

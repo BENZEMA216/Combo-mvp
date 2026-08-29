@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const sql = readFileSync(
-  resolve(directory, '..', 'migrations', '0016_agent_package_registry.sql'),
+  resolve(directory, '..', 'migrations', '0017_agent_package_registry.sql'),
   'utf8',
 );
 
@@ -15,7 +15,7 @@ function tableDefinition(table: 'agent_packages' | 'agent_package_releases'): st
   return definition!;
 }
 
-describe('0016 canonical Agent Package Registry migration', () => {
+describe('0017 canonical Agent Package Registry migration', () => {
   it('uses the Package digest as the only Package identity and keeps its marker minimal', () => {
     const packages = tableDefinition('agent_packages');
 
@@ -60,7 +60,7 @@ describe('0016 canonical Agent Package Registry migration', () => {
       'agent_revision_id',
       'runtime_bundle_sha256',
     ]) {
-      expect(sql, `0016 must not depend on ${legacy}`).not.toContain(legacy);
+      expect(sql, `0017 must not depend on ${legacy}`).not.toContain(legacy);
     }
   });
 
