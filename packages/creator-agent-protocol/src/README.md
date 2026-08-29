@@ -19,6 +19,9 @@
   冒充可运行 Package，现有 Package builder 仍只认 V1。
 - `agent-package-release.ts`：显式 `./agent-package-release` 子路径的不可变 Release 引用，只把稳定 Release
   ID 绑定到 exact Package digest，不保存分享链接、发布者资料、Package 内容或运行状态。
+- `agent-package-capability.ts`：显式 `./agent-package-capability` 子路径的严格 V2 迁移投影，只把旧
+  Capability 索引指向一个 exact Agent Package Release。它不复制 Package 行为、知识、工具、价格或运行
+  状态；只认识 V1 的旧 Runtime 会因 `version=2` fail closed。
 - `creator-authorization-contract.ts`：未来原生 Host 授权卡的 path-free claims、固定 Draft-only scope、
   最长五分钟语义和脱敏错误分类；它不实现 mint、handle、consume、IPC sealing 或私有 Project authority。
 - `creator-authorization.ts`：公开语义子路径，只显式导出上述 schema、常量、类型与固定错误。
