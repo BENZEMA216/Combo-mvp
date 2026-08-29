@@ -1,7 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import type { ArtifactView, SessionDetail } from '@cb/shared';
+import {
+  KnowledgeTurnResultSchema,
+  type ArtifactView,
+  type KnowledgeTurnResult,
+  type MessageView,
+  type SessionDetail,
+} from '@cb/shared';
 import { ChatPage } from './ChatPage.js';
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +20,7 @@ const mocks = vi.hoisted(() => ({
     message: string;
   } | null,
   errorMessage: null as string | null,
+  streamingText: null as string | null,
   artifact: null as ArtifactView | null,
   artifactContent: '<!doctype html><html><body><button>运行</button></body></html>',
   send: vi.fn(),
@@ -56,7 +63,7 @@ vi.mock('../api/useSessionStream.js', () => ({
       activeArtifactId: artifact?.id ?? null,
       artifacts: Object.fromEntries(artifactList.map((item) => [item.id, item])),
       artifactList,
-      streamingText: null,
+      streamingText: mocks.streamingText,
       running: mocks.running || restoredTurn !== null,
       activeRunId: mocks.activeRunId ?? restoredTurn?.id ?? null,
       terminalRun: mocks.terminalRun,
@@ -149,6 +156,81 @@ function sessionDetail(mode?: 'consume' | 'studio'): SessionDetail {
   } as SessionDetail;
 }
 
+function knowledgeResult(): KnowledgeTurnResult {
+  const sourceSha = 'd'.repeat(40);
+  return KnowledgeTurnResultSchema.parse({
+    protocol: 'combo.agent-usage-receipt/1',
+    receiptId: '33333333-3333-4333-8333-333333333333',
+    usageId: '44444444-4444-4444-8444-444444444444',
+    turnId: '55555555-5555-4555-8555-555555555555',
+    createdAt: '2026-08-30T01:00:02.000Z',
+    binding: {
+      productKind: 'knowledge_agent_test',
+      capability: {
+        id: '22222222-2222-4222-8222-222222222222',
+        protocol: 'combo.agent-package-capability/2',
+      },
+      release: {
+        protocol: 'combo.agent-package-release/1',
+        releaseId: `release.agent-package.${'a'.repeat(32)}`,
+        packageDigest: `sha256:${'b'.repeat(64)}`,
+      },
+      releaseScope: 'controlled_test',
+      knowledge: {
+        protocol: 'combo.knowledge-bundle/1',
+        resourcePath: 'skills/knowledge/references/knowledge-bundle.json',
+        resourceDigest: `sha256:${'c'.repeat(64)}`,
+      },
+    },
+    outcome: 'answered',
+    validation: { policyVersion: 'knowledge-test-v1', code: 'accepted' },
+    answer: {
+      messageId: '66666666-6666-4666-8666-666666666666',
+      text: 'AUTHORITATIVE_KNOWLEDGE_ANSWER',
+      responseDigest: `sha256:${'e'.repeat(64)}`,
+    },
+    citations: [
+      {
+        chunkId: `chunk.knowledge.${'1'.repeat(32)}`,
+        sourceId: `source.knowledge.${'2'.repeat(32)}`,
+        displayLabel: 'Combo 产品基线',
+      },
+    ],
+    billing: {
+      policyVersion: 'knowledge-test-v1',
+      source: 'wallet',
+      currency: 'CNY',
+      unitPriceCents: '100',
+      settledCents: '100',
+      freeLimitSnapshot: 3,
+    },
+    runtime: {
+      environment: 'test',
+      releaseId: `release-${sourceSha}`,
+      sourceSha,
+    },
+  });
+}
+
+function knowledgeSessionDetail(
+  messages: MessageView[] = [],
+  results: KnowledgeTurnResult[] = [],
+): SessionDetail {
+  const detail = sessionDetail('consume');
+  return {
+    ...detail,
+    capability: {
+      ...detail.capability,
+      name: 'Combo 知识助手',
+      kind: 'anything-hostile-tests-must-ignore',
+    },
+    messages,
+    artifacts: [],
+    agentBinding: knowledgeResult().binding,
+    knowledgeResults: results,
+  } as SessionDetail;
+}
+
 function LocationProbe() {
   const location = useLocation();
   return <output data-testid="location-probe">{`${location.pathname}${location.search}`}</output>;
@@ -197,6 +279,7 @@ beforeEach(() => {
   mocks.rechargeRequired = null;
   mocks.activeRechargeIntentId = null;
   mocks.resumeAfterRecharge.mockResolvedValue(undefined);
+  mocks.streamingText = null;
 });
 
 describe('ChatPage studio experience', () => {
@@ -515,6 +598,123 @@ describe('ChatPage studio experience', () => {
 
     await waitFor(() => expect(mocks.send).toHaveBeenCalledOnce());
     expect(mocks.send.mock.calls[0]?.[0]).toContain('[COMBO_DESIGN_OPERATION:critique]');
+  });
+});
+
+describe('ChatPage controlled knowledge experience', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.detail = knowledgeSessionDetail();
+    mocks.running = false;
+    mocks.activeRunId = null;
+    mocks.terminalRun = null;
+    mocks.errorMessage = null;
+    mocks.streamingText = null;
+    mocks.artifact = null;
+  });
+
+  it('recognizes an empty bound Session and mounts one full-height knowledge conversation', () => {
+    mocks.artifact = {
+      id: '77777777-7777-4777-8777-777777777777',
+      kind: 'html',
+      title: 'FORGED_ARTIFACT_TITLE',
+      createdAt: '2026-08-30T01:00:00.000Z',
+      updatedAt: '2026-08-30T01:00:00.000Z',
+    };
+
+    const page = renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('heading', { level: 1, name: 'Combo 知识助手' })).toBeInTheDocument();
+    expect(screen.getByText('已发布知识 · 权威使用收据')).toBeInTheDocument();
+    expect(screen.getByTestId('session-sidebar')).toHaveAttribute('data-experience', 'knowledge');
+    expect(screen.getByRole('region', { name: '知识问答' })).toBeInTheDocument();
+    expect(screen.getByText('从一个问题开始').closest('[role="status"]')).toBeInTheDocument();
+    expect(page.container.querySelector('.rt-knowledge-layout')).toBeInTheDocument();
+    expect(page.container.querySelector('.rt-genui__canvas')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_ARTIFACT_TITLE')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '开始生成 →' })).not.toBeInTheDocument();
+  });
+
+  it('restores only the authoritative result and hides forged Message, SSE, error, and artifact data', () => {
+    const user: MessageView = {
+      id: '77777777-7777-4777-8777-777777777777',
+      seq: 1,
+      turnId: '55555555-5555-4555-8555-555555555555',
+      role: 'user',
+      content: [{ type: 'text', text: '用户刷新前的问题' }],
+      status: 'completed',
+      createdAt: '2026-08-30T01:00:00.000Z',
+    };
+    const forgedAssistant: MessageView = {
+      id: '88888888-8888-4888-8888-888888888888',
+      seq: 2,
+      turnId: '55555555-5555-4555-8555-555555555555',
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'FORGED_ASSISTANT_CANDIDATE' },
+        { type: 'toolResult', text: 'FORGED_TOOL_CANDIDATE' },
+      ],
+      status: 'completed',
+      createdAt: '2026-08-30T01:00:01.000Z',
+    };
+    mocks.detail = knowledgeSessionDetail([user, forgedAssistant], [knowledgeResult()]);
+    mocks.streamingText = 'FORGED_SSE_CANDIDATE';
+    mocks.errorMessage = 'FORGED_SSE_ERROR';
+    mocks.artifact = {
+      id: '99999999-9999-4999-8999-999999999999',
+      kind: 'html',
+      title: 'FORGED_ARTIFACT_TITLE',
+      createdAt: '2026-08-30T01:00:00.000Z',
+      updatedAt: '2026-08-30T01:00:00.000Z',
+    };
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByText('用户刷新前的问题')).toBeInTheDocument();
+    expect(screen.getByText('AUTHORITATIVE_KNOWLEDGE_ANSWER')).toBeInTheDocument();
+    expect(screen.getByText('Combo 产品基线')).toBeInTheDocument();
+    expect(screen.getByText('使用收据 · 钱包 · 实际结算 ¥1.00')).toBeInTheDocument();
+    expect(screen.queryByText('FORGED_ASSISTANT_CANDIDATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_TOOL_CANDIDATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_SSE_CANDIDATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_SSE_ERROR')).not.toBeInTheDocument();
+    expect(screen.queryByText('FORGED_ARTIFACT_TITLE')).not.toBeInTheDocument();
+  });
+
+  it('fails closed when a bound knowledge detail omits its authoritative result collection', () => {
+    const missingResults = knowledgeSessionDetail();
+    delete missingResults.knowledgeResults;
+    mocks.detail = missingResults;
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByRole('alert')).toHaveTextContent('缺少权威知识结果');
+    expect(screen.getByRole('textbox', { name: '输入知识问题' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: '开始生成 →' })).not.toBeInTheDocument();
+  });
+
+  it('keeps credited recharge resume bound to the persisted replacement intent', async () => {
+    mocks.rechargeRequired = {
+      rechargeRequired: true,
+      rechargeIntentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      balanceCents: '0',
+      requiredCents: '100',
+    };
+    mocks.activeRechargeIntentId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    renderPage('/session/11111111-1111-4111-8111-111111111111');
+
+    expect(screen.getByTestId('recharge-dialog')).toHaveAttribute(
+      'data-active-intent',
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    );
+    fireEvent.click(screen.getByRole('button', { name: '模拟到账' }));
+    await waitFor(() =>
+      expect(mocks.resumeAfterRecharge).toHaveBeenCalledWith(
+        'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ),
+    );
+    expect(mocks.abandonRechargeUsage).not.toHaveBeenCalled();
   });
 });
 

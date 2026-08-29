@@ -5,7 +5,12 @@
 //   - 页面关闭只断订阅，不打断后端生成；打断必须显式点按钮。
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { ArtifactView, MessageView, SessionDetail } from '@cb/shared';
+import {
+  KNOWLEDGE_AGENT_PRODUCT_KIND,
+  type ArtifactView,
+  type MessageView,
+  type SessionDetail,
+} from '@cb/shared';
 import { ApiError, isUnauthenticated } from './client.js';
 import { goToLogin } from '../navigation/login.js';
 import {
@@ -17,6 +22,7 @@ import {
 import { reportClientEvent } from './telemetry.js';
 import {
   initialStreamUiState,
+  isCandidateTextEvent,
   isTerminalEvent,
   parseStreamEvent,
   streamUiReducer,
@@ -289,6 +295,7 @@ export function useSessionStream(
   const sendInFlightRef = useRef<{ sessionId: string; token: symbol } | null>(null);
   const pendingUsageRef = useRef<PendingUsageV2 | null>(null);
   const rechargeRequiredRef = useRef<RechargeRequired | null>(rechargeRequired);
+  const knowledgeSessionRef = useRef(false);
   const resumeInFlightRef = useRef<{
     sessionId: string;
     creditedIntentId: string;
@@ -300,6 +307,15 @@ export function useSessionStream(
   // session's reducer. A new session also gets its own submission lock immediately.
   activeSessionIdRef.current = sessionId;
   rechargeRequiredRef.current = rechargeRequired;
+  const detailSession = detail?.session;
+  const detailBinding = detail?.agentBinding;
+  const knowledgeSession = Boolean(
+    detailSession !== undefined &&
+    detailSession.id === sessionId &&
+    detailSession.mode === 'consume' &&
+    detailBinding?.productKind === KNOWLEDGE_AGENT_PRODUCT_KIND,
+  );
+  knowledgeSessionRef.current = knowledgeSession;
   if (sendInFlightRef.current && sendInFlightRef.current.sessionId !== sessionId) {
     sendInFlightRef.current = null;
   }
@@ -331,7 +347,9 @@ export function useSessionStream(
         if (!sessionIsCurrent()) return;
         const event = parseStreamEvent(data);
         if (!event) return;
-        dispatch({ kind: 'stream-event', event });
+        if (!knowledgeSessionRef.current || !isCandidateTextEvent(event)) {
+          dispatch({ kind: 'stream-event', event });
+        }
         if (isTerminalEvent(event)) {
           void qc.invalidateQueries({ queryKey: ['session', sessionId] });
           void qc.invalidateQueries({ queryKey: ['sessions'] });
@@ -344,6 +362,10 @@ export function useSessionStream(
       },
     });
   }, [sessionId, qc]);
+
+  useEffect(() => {
+    if (knowledgeSession) dispatch({ kind: 'discard-candidate-text' });
+  }, [knowledgeSession, sessionId]);
 
   // 声明在 reset/subscription effect 之后，保证首屏详情不会先协调后又被 reset 清空。
   // reducer 用 message turn ids 判定世代：同 active turn 只合并，确认终态才整表收敛。

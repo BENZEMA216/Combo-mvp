@@ -126,6 +126,70 @@ describe('runtime session EventSource fixed-session behavior', () => {
     expect(source.close).toHaveBeenCalled();
     expect(onMessage).not.toHaveBeenCalled();
   });
+
+  it('discards knowledge candidate text and refetches authoritative detail after a terminal event', async () => {
+    vi.stubGlobal('EventSource', MockEventSource);
+    const queryClient = testQueryClient();
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const { result, rerender } = renderHook(
+      ({ detail }: { detail: SessionDetail | undefined }) => useSessionStream(SESSION_A, detail),
+      {
+        initialProps: { detail: undefined as SessionDetail | undefined },
+        wrapper: testWrapper(queryClient),
+      },
+    );
+    const source = MockEventSource.instances[0]!;
+
+    act(() => {
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'TEXT_MESSAGE_START', runId: TURN_A }),
+        }),
+      );
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'TEXT_MESSAGE_CONTENT',
+            runId: TURN_A,
+            delta: 'FORGED_SSE_CANDIDATE',
+          }),
+        }),
+      );
+    });
+    expect(result.current.streamingText).toBe('FORGED_SSE_CANDIDATE');
+
+    rerender({ detail: knowledgeSessionDetail(SESSION_A) });
+    await vi.waitFor(() => expect(result.current.streamingText).toBeNull());
+    act(() => {
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'RUN_STARTED', runId: TURN_A }),
+        }),
+      );
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({
+            type: 'TEXT_MESSAGE_CONTENT',
+            runId: TURN_A,
+            delta: 'ANOTHER_FORGED_SSE_CANDIDATE',
+          }),
+        }),
+      );
+    });
+    expect(result.current.running).toBe(true);
+    expect(result.current.streamingText).toBeNull();
+
+    act(() => {
+      source.onmessage?.(
+        new MessageEvent('message', {
+          data: JSON.stringify({ type: 'RUN_FINISHED', runId: TURN_A }),
+        }),
+      );
+    });
+    expect(result.current.running).toBe(false);
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['session', SESSION_A] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['sessions'] });
+  });
 });
 
 describe('runtime session generation fencing', () => {
@@ -739,6 +803,33 @@ function sessionDetail(sessionId: string, sourceTurnId?: string): SessionDetail 
       : [],
     activeTurn: sourceTurnId ? { id: sourceTurnId, createdAt: '2026-07-25T00:00:01.000Z' } : null,
     currentUiArtifactId: null,
+  };
+}
+
+function knowledgeSessionDetail(sessionId: string): SessionDetail {
+  const detail = sessionDetail(sessionId);
+  return {
+    ...detail,
+    session: { ...detail.session, mode: 'consume' },
+    agentBinding: {
+      productKind: 'knowledge_agent_test',
+      capability: {
+        id: detail.capability.id,
+        protocol: 'combo.agent-package-capability/2',
+      },
+      release: {
+        protocol: 'combo.agent-package-release/1',
+        releaseId: `release.agent-package.${'a'.repeat(32)}`,
+        packageDigest: `sha256:${'b'.repeat(64)}`,
+      },
+      releaseScope: 'controlled_test',
+      knowledge: {
+        protocol: 'combo.knowledge-bundle/1',
+        resourcePath: 'skills/knowledge/references/knowledge-bundle.json',
+        resourceDigest: `sha256:${'c'.repeat(64)}`,
+      },
+    },
+    knowledgeResults: [],
   };
 }
 
