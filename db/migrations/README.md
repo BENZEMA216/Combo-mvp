@@ -7,3 +7,8 @@
 `0007_first_party_email_auth.sql` 仅允许空用户库切换到第一方邮箱验证码，并创建身份、验证码挑战、不透明会话与低敏审计表。`0008_application_database_roles.sql` 创建无登录的 API、worker 与 runtime 角色，撤销默认权限，并按当前服务职责授予最小表权限。`0009_billing.sql` 创建全局钱包、按用户与 Agent 隔离的免费额度、使用扣费、充值支付状态和不可变资金流水，以延迟约束守护账户、预留、业务终态与流水等式，并分别授予 API 与 Runtime 所需的最小权限。`0010_recharge_qr_channel.sql` 把扫码充值通道从聚合码 `aggregate_qr` 重命名为 C扫B 单渠道 `qr`（`/v3/prepay`），并迁移历史订单。`0011_recharge_qr_only.sql` 移除 H5「手机收银台」渠道，把历史 `h5` 订单迁到 `qr` 并把支付方式约束收窄为只允许 `qr`。`0012_agent_builder_v1.sql` 创建 owner-scoped Agent Project、不可变 Revision、固定 Revision 的 Runtime Test、不可变 Release 及相关幂等与 Head 一致性约束。`0013_external_mcp_oauth.sql` 创建动态客户端、短期授权请求、一次性 PKCE 授权码以及只保存摘要的访问令牌和轮换刷新令牌；同 family refresh 通过 advisory lock 串行。动态 client 由 SECURITY DEFINER 注册函数按 canonical digest 去重，在数据库锁内维持 4096 硬上限，并只在满额时淘汰超过十分钟且完全无引用的最旧 client；有界清理函数还负责删除超过三十天且无引用的 client。Authoring 只有实际读写列与两个受控函数权限，Runtime 只能只读 access-token 摘要。`0014_agent_test_reviews.sql` 创建不可变 Test 质量复核，按案例保存执行状态和质量结论，并让新 Release 冻结可发布复核；历史 Release 保持兼容。已经执行的迁移不可修改，新结构必须继续追加编号。
 
 `0015_project_agent_shares.sql` 创建不可变分享 manifest、owner-scoped 幂等创建事实和高熵公开定位符。现有表同时承载 `combo.project-agent-share/1` 与 `combo.codex-agent-share/1`，应用层按 schema version、URL 和幂等重放严格分流，因此新增 Codex Agent manifest 不需要修改已应用迁移。已经执行的迁移不可修改，新结构必须继续追加编号。
+
+`0016_project_history_agent_flow.sql` 追加 typed Project-history Draft、由数据库 wall clock 原子签发且只存 digest
+的一次性五分钟确认、带整份 canonical JSON digest 的不可变 public-by-link Agent Package share，以及每批最多
+100 条且只删除已消费/已过期 confirmation 的 SECURITY DEFINER 清理入口。`0012` 至 `0015` 的已应用字节保持
+不变；后续结构继续追加编号。

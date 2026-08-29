@@ -191,8 +191,8 @@ describe('external MCP root route integration', () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/^text\/html/);
     expect(response.body).toContain('/Applications/ChatGPT.app/Contents/Resources/codex');
-    expect(response.body).toContain('Combo Plugin 0.7.0 Test');
-    expect(response.body).toContain('Creator Bootstrap');
+    expect(response.body).toContain('Combo Plugin 0.8.4 Test');
+    expect(response.body).toContain('Project-history Agent Package');
     expect(response.body).toContain('plugin marketplace upgrade dangdang-tech-combo --json');
     expect(response.body).toContain('plugin list --json');
     expect(response.body).toContain('marketplaceInitiallyPresent');
@@ -211,7 +211,7 @@ describe('external MCP root route integration', () => {
     expect(marketplaceAddIndex).toBeGreaterThan(-1);
     expect(pluginAddIndex).toBeGreaterThan(marketplaceAddIndex);
     expect(finalCheckIndex).toBeGreaterThan(pluginAddIndex);
-    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.7.0');
+    expect(response.body).toContain('Plugin add 或刷新后得到有效 version&lt;0.8.4');
     expect(response.body).toContain('marketplace upgrade 最多执行一次');
     expect(response.body).toContain('官方 Marketplace 需要刷新');
     expect(response.body).toContain('--ref codex/combo-plugin-v2-ui');
@@ -228,6 +228,7 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain('仅 stay-current 分支');
     const continuationLoginIndex = response.body.indexOf(
       '&quot;/Applications/ChatGPT.app/Contents/Resources/codex&quot; mcp login combo',
+      finalCheckIndex,
     );
     const continuationCreateIndex = response.body.indexOf(
       'create_thread({prompt:creatorHandoff,target:{type:&quot;project&quot;',
@@ -262,7 +263,11 @@ describe('external MCP root route integration', () => {
     expect(response.body).toContain(
       'Plugin helper、本地文件、tracked guidance、Git 与 Git network 的调用数都为 0',
     );
-    expect(response.body).toContain('只有初始检查四工具与全部 metadata 已同时满足时才留在当前任务');
+    expect(response.body).toContain(
+      '只有初始检查既有四工具、新五工具与全部 metadata 已同时满足时才留在当前任务',
+    );
+    expect(response.body).toContain('新 Project-history 28-tool 流程要求 0.8.4');
+    expect(response.body).toContain('Legacy 兼容不变');
     expect(response.body).toContain('后三项即使为空也显式写 []');
     expect(response.body).toContain('navigate_to_codex_page(threadId)');
     expect(response.body).toContain('\\u003c');
@@ -398,6 +403,7 @@ describe('external MCP root route integration', () => {
       expect(cleanupQuery).toHaveBeenCalledTimes(6);
       for (const call of cleanupQuery.mock.calls) {
         expect(call[0]).toContain('cleanup_expired_oauth_artifacts($1)');
+        expect(call[0]).toContain('cleanup_retired_project_history_confirmations($1)');
         expect(call[1]).toEqual([100]);
       }
     } finally {
@@ -503,19 +509,23 @@ describe('external MCP stateless machine contract', () => {
     await app.close();
   });
 
-  async function call(method: string, params?: unknown) {
+  async function call(
+    method: string,
+    params?: unknown,
+    accept = 'application/json, text/event-stream',
+  ) {
     return app.inject({
       method: 'POST',
       url: '/api/external-mcp/mcp',
       headers: {
         authorization: `Bearer ${TOKEN}`,
-        accept: 'application/json, text/event-stream',
+        accept,
       },
       payload: { jsonrpc: '2.0', id: 7, method, ...(params === undefined ? {} : { params }) },
     });
   }
 
-  it('supports initialize and advertises the 20 compatible tools plus three Codex Agent tools', async () => {
+  it('supports initialize and advertises the exact 23 legacy plus five Package tools', async () => {
     const initialized = await call('initialize', {
       protocolVersion: '2025-11-25',
       capabilities: {},
@@ -528,7 +538,7 @@ describe('external MCP stateless machine contract', () => {
       result: {
         protocolVersion: '2025-11-25',
         capabilities: { tools: {}, resources: {} },
-        serverInfo: { version: '0.7.0' },
+        serverInfo: { version: '0.8.4' },
         instructions: expect.stringContaining('use create_codex_agent_share'),
       },
     });
@@ -573,8 +583,13 @@ describe('external MCP stateless machine contract', () => {
       'create_codex_agent_share',
       'read_codex_agent_share',
       'prepare_codex_agent_run',
+      'create_agent_package_draft',
+      'render_agent_package_draft',
+      'create_agent_package_share',
+      'read_agent_package_share',
+      'prepare_agent_package_run',
     ]);
-    expect(tools).toHaveLength(23);
+    expect(tools).toHaveLength(28);
     const run = tools.find((tool) => tool.name === 'run_agent_test')!;
     expect((run.inputSchema as { required: string[] }).required).toContain('revisionId');
     const readUi = tools.find((tool) => tool.name === 'read_agent_ui')!;
@@ -651,6 +666,11 @@ describe('external MCP stateless machine contract', () => {
             name: 'combo-agent-builder',
             mimeType: 'text/html;profile=mcp-app',
           },
+          {
+            uri: 'ui://combo/project-history-agent-draft/v1.html',
+            name: 'combo-project-history-agent-draft',
+            mimeType: 'text/html;profile=mcp-app',
+          },
         ],
       },
     });
@@ -673,6 +693,25 @@ describe('external MCP stateless machine contract', () => {
     expect(html).toContain("notify('ui/notifications/initialized'");
     expect(html).toContain("request('ui/message'");
     expect(html).toContain('window.openai.sendFollowUpMessage');
+  });
+
+  it.each([
+    'application/jsonp, text/event-streaming',
+    'application/json; q=0, text/event-stream',
+    'application/json, text/event-stream; q=0',
+    '*/*',
+  ])('rejects a non-exact or explicitly unacceptable MCP Accept header: %s', async (accept) => {
+    const response = await call('ping', undefined, accept);
+    expect(response.statusCode).toBe(406);
+  });
+
+  it('accepts exact MCP media types with case-insensitive tokens and positive parameters', async () => {
+    const response = await call(
+      'ping',
+      undefined,
+      'Application/JSON; charset=utf-8, Text/Event-Stream; q=0.5',
+    );
+    expect(response.statusCode).toBe(200);
   });
 
   it('rejects incomplete initialize params and negotiates an unsupported body version', async () => {

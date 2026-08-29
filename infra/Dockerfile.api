@@ -13,8 +13,8 @@ COPY packages ./packages
 COPY apps ./apps
 COPY db ./db
 RUN pnpm install --frozen-lockfile=false
-# shared 先 build（apps 依赖其 dist + .d.ts），再 build api
-RUN pnpm -F @cb/shared build && pnpm -F @cb/authoring build
+# shared 与 Creator Agent protocol 先 build（Authoring 依赖其 dist + .d.ts），再 build API。
+RUN pnpm -F @cb/shared build && pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/authoring build
 
 FROM node:24-slim AS runtime
 WORKDIR /app
@@ -25,12 +25,14 @@ RUN corepack enable && corepack prepare pnpm@11.0.9 --activate
 # 工作区清单 + 各包 package.json（--prod install 需要）
 COPY --from=build /app/pnpm-workspace.yaml /app/package.json /app/pnpm-lock.yaml* ./
 COPY --from=build /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=build /app/packages/creator-agent-protocol/package.json ./packages/creator-agent-protocol/package.json
 COPY --from=build /app/apps/authoring/package.json ./apps/authoring/package.json
 COPY --from=build /app/db/package.json ./db/package.json
 RUN pnpm install --prod --frozen-lockfile=false
 # 产物：shared dist + api dist + 迁移运行时白名单（migrate 容器用 --experimental-strip-types 直跑 TS）。
 # 不复制完整 db 源码树，避免把测试、fixture 或开发辅助文件带入生产镜像。
 COPY --from=build /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build /app/packages/creator-agent-protocol/dist ./packages/creator-agent-protocol/dist
 COPY --from=build /app/apps/authoring/dist ./apps/authoring/dist
 COPY --from=build /app/db/migrations ./db/migrations
 COPY --from=build /app/db/scripts/migrate.ts ./db/scripts/migrate.ts

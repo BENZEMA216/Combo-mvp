@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 全栈起栈（O-05）。固定启动顺序（硬性）：
-#   基础设施 → 0000–0015 业务迁移与应用角色配置 → API/Worker/Runtime/Web。
+#   基础设施 → 0000–0016 业务迁移与应用角色配置 → API/Worker/Runtime/Web。
 # 业务迁移失败即止、不起业务容器。任一步失败立刻退出（set -e + pipefail）。
 #
 # 本期【无 Docker】：脚本只写不跑；逻辑/顺序经评审，留作后续 compose up。

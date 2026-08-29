@@ -47,7 +47,7 @@ const OAUTH_CLEANUP_BATCH_SIZE = 100;
 const CODEX_LOOPBACK_HOST = '127.0.0.1';
 
 /**
- * 每个 API 进程至多每分钟触发一次 DB 侧有界清理。同步占领时间窗发生在 await 前，
+ * 每个 API 进程至多每分钟触发一次 OAuth + Project-history DB 侧有界清理。同步占领时间窗发生在 await 前，
  * 因而同进程并发 authorize 请求只会有一个调用清理函数。
  */
 export function createOAuthCleanupScheduler(
@@ -363,7 +363,12 @@ function tokenPair(scope: string): {
 export type TokenOutcome =
   | { kind: 'issued'; response: OAuthTokenResponse }
   | {
-      kind: 'invalid_request' | 'invalid_client' | 'invalid_grant' | 'unsupported_grant_type';
+      kind:
+        | 'invalid_request'
+        | 'invalid_client'
+        | 'invalid_grant'
+        | 'invalid_scope'
+        | 'unsupported_grant_type';
     };
 
 export async function issueTokens(
@@ -427,16 +432,21 @@ export async function issueTokens(
     if (!refreshToken || !MCP_REFRESH_TOKEN_PATTERN.test(refreshToken)) {
       return { kind: 'invalid_request' };
     }
+    const rawScope = form.get('scope');
+    const requestedScope = rawScope === null ? undefined : normalizeRequestedScope(rawScope);
+    if (rawScope !== null && !requestedScope) return { kind: 'invalid_scope' };
     const pair = tokenPair(MCP_OAUTH_DEFAULT_SCOPE);
     const rotated = await rotateRefreshToken(pool, {
       refreshTokenDigest: secretDigest(refreshToken),
       clientId,
       resourceUri: expectedResourceUri,
+      ...(requestedScope ? { requestedScope } : {}),
       nextAccessTokenDigest: secretDigest(pair.accessToken),
       nextRefreshTokenDigest: secretDigest(pair.refreshToken),
       accessTokenTtlSeconds: MCP_ACCESS_TOKEN_TTL_SECONDS,
       refreshTokenTtlSeconds: MCP_REFRESH_TOKEN_TTL_SECONDS,
     });
+    if (rotated.kind === 'invalid_scope') return rotated;
     if (rotated.kind !== 'issued') return { kind: 'invalid_grant' };
     pair.response.scope = rotated.scope;
     return { kind: 'issued', response: pair.response };

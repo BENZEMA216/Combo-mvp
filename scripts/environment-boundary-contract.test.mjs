@@ -492,6 +492,23 @@ test('trusted Main CI reaches candidate-owned MCP PostgreSQL and Redis contracts
   assert.match(migration, /bash "\$\{SCRIPT_DIR\}\/assert-disposable-postgres\.sh"/);
   assert.match(migration, /bash "\$\{SCRIPT_DIR\}\/external-mcp-pg\.sh"/);
   assert.match(mcpPostgres, /bash "\$\{SCRIPT_DIR\}\/assert-disposable-postgres\.sh"/);
+  const disposableGuard = mcpPostgres.indexOf('bash "${SCRIPT_DIR}/assert-disposable-postgres.sh"');
+  const protocolBuild = mcpPostgres.indexOf(
+    'pnpm -C "$ROOT_DIR" -F @cb/creator-agent-protocol build',
+  );
+  const firstPostgresSuite = mcpPostgres.indexOf(
+    'pnpm --dir "$ROOT_DIR/apps/authoring" exec vitest run',
+  );
+  assert.ok(protocolBuild > disposableGuard, 'MCP PG entrypoint must build after the DB guard');
+  assert.ok(
+    protocolBuild < firstPostgresSuite,
+    'MCP PG entrypoint must build creator protocol before the first PostgreSQL suite',
+  );
+  assert.equal(
+    (mcpPostgres.match(/pnpm -C "\$ROOT_DIR" -F @cb\/creator-agent-protocol build/g) ?? []).length,
+    1,
+    'MCP PG entrypoint must own one exact creator protocol build',
+  );
   assert.doesNotThrow(() => text(postgresGuard));
   assert.match(mcpPostgres, /external-mcp-refresh\.pg\.test\.ts/);
   assert.match(mcpPostgres, /external-mcp-dcr\.pg\.test\.ts/);

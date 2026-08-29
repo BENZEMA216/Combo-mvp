@@ -105,7 +105,7 @@ PROCESS=worker node apps/authoring/dist/processes/worker.js
 
 ## 数据库迁移
 
-DDL 真源在 `db/migrations/`（`0000` 至 `0015`，共 16 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`，`0011` 移除 H5 通道并只保留 `qr`；`0012` 增加 Agent Project、不可变 Revision、Runtime Test 与 Release；`0013` 增加远程 MCP OAuth 客户端、一次性 PKCE 授权码和摘要令牌；`0014` 在技术 Test 之上增加不可变三类案例质量复核；`0015` 增加不可变分享表，当前同时承载兼容的 Git Project Agent manifest 与按 schema 分流的当前任务 Codex Agent manifest。当前 `0014` 候选只允许在独立 Test foundation 验证；合入 Preview/Production 前必须按 [`docs/agent-review-v2-rollout.md`](docs/agent-review-v2-rollout.md) 拆成兼容、扩展与强制三个发布阶段。冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把它与当前迁移链混作同一份线上证据。
+DDL 真源在 `db/migrations/`（`0000` 至 `0016`，共 17 个 SQL，字典序即执行序）。`0009` 增加 Agent 使用计费、充值订单和不可变钱包流水；`0010` 把扫码充值通道从聚合码重命名为 C扫B 单渠道 `qr`，`0011` 移除 H5 通道并只保留 `qr`；`0012` 增加 Agent Project、不可变 Revision、Runtime Test 与 Release；`0013` 增加远程 MCP OAuth 客户端、一次性 PKCE 授权码和摘要令牌；`0014` 在技术 Test 之上增加不可变三类案例质量复核；`0015` 增加不可变分享表，当前同时承载兼容的 Git Project Agent manifest 与按 schema 分流的当前任务 Codex Agent manifest；`0016` 追加 typed Project-history Draft、digest-only 一次性确认和不可变 Agent Package share。当前 `0014` 候选只允许在独立 Test foundation 验证；合入 Preview/Production 前必须按 [`docs/agent-review-v2-rollout.md`](docs/agent-review-v2-rollout.md) 拆成兼容、扩展与强制三个发布阶段。冻结的 Goal B 部署证据仍停留在 `0008`，在显式开始后续部署目标前不能把它与当前迁移链混作同一份线上证据。
 Runner 自带记账表 `schema_migrations`，**幂等可重入**：已应用文件跳过、逐文件单事务、失败即止。
 
 ```bash
@@ -126,7 +126,7 @@ pnpm -F @cb/db migrate:status  # 列清单（无连接也能列）
 
 > 以下 Compose 命令只用于独立开发环境，不作为 Test、Preview 或 Production 的验收证据。tecent2 源码检查不运行这些命令。
 
-编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0015` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
+编排在 `infra/docker-compose.yml`。固定启动顺序由 `depends_on` 与健康条件约束：基础设施就绪后运行 `0000`–`0016` 迁移并配置三个固定数据库角色，成功后才启动 API、Worker、Runtime 和 Web。
 
 要点：
 
@@ -149,7 +149,9 @@ pnpm -F @cb/infra compose:down  # 拆栈
 
 本机直跑复制 `.env.local.example`；Compose 使用 `.env.compose.example`。本机完整公开体验的 canonical origin 是 Vite 的 `http://localhost:5173`，`/api`、`/.well-known`、`/codex-plugin`、`/health` 与 `/ready` 都由 Vite 代理到 Authoring `:3000`；直接访问 `:3000` 只是在调 API，不能代表 Project Agent 或 Codex Agent 公开页链路。生产式配置必须提供 `PUBLIC_APP_ORIGINS`、同列表中的规范 HTTPS `EXTERNAL_MCP_PUBLIC_ORIGIN`、固定 `MCP_RUNTIME_INTERNAL_BASE_URL`、三个数据库角色密码、`RESEND_API_KEY` 和 `OTP_HMAC_SECRET`。`scripts/start.sh` 会拒绝空值和已知弱默认值。
 
-Codex 插件不再需要 `COMBO_SESSION_COOKIE`。公开入口 `/codex-plugin` 当前只在 Test 输出 Creator Bootstrap 0.7 的 macOS Codex Desktop 内置 CLI 安装/升级序列，并固定 Test 候选 `codex/combo-plugin-v2-ui`。任何升级前必须确认 `dangdang-tech-combo` Marketplace name 的 Git source 精确等于官方仓库；同名异源立即停止，不能 remove 或覆盖。功能门要求 Plugin 已安装启用且有效 semver `>=0.7.0`，MCP name、启用状态、transport type 与 Test URL 都精确匹配；当前候选验收另要求 exact 0.7.0。Codex 检测/安装前只从当前顶层任务里用户实际表达且可见的内容生成 sanitized draft，此时不读 helper、文件、tracked guidance 或 Git；服务端不能证明 instructions 已脱敏。只有四项新工具与全部 metadata 初始即满足时才留在当前任务且不主动 OAuth login；只有工具明确返回 authorization 错误时才恰好登录一次并只重试原调用。否则 Creator 与 Receiver 先冻结各自 Host-safe handoff，完成安装或升级和 final metadata 后、任何 `create_thread` 前用绝对 bundled CLI 恰好执行一次 Codex-managed OAuth，失败或取消时零任务创建；成功后分别用 `combo.creator-bootstrap-handoff/1` same-Project 和 `combo.receiver-bootstrap-handoff/1` projectless 顶层任务续跑。handoff 不是确认，子任务 readiness、完整重显后必须在 assistant `agentMessage`（`phase=final_answer`）回证 exact marker，父任务排除 `userMessage`、`codexDelegation`、tool input 与 echo 后才自动导航给用户；新任务缺工具或 readiness 失败只能报告 catalog blocker，禁止再次登录或重建任务。V1 advertised sourceRef 仅允许 shell-safe 的完整 ASCII heads/tags ref，V0 不改。最终 Agent 接到 raw run envelope 时先恰好调用一次 `prepare_codex_agent_run` 做权威逐字节复核，再执行固定 Project preflight；chosen starter 实际开始后才由同类 assistant 输出回证 exact `COMBO_CODEX_AGENT_STARTED:<manifestSha256>`，父任务精确核对本次分享摘要后自动显示，任何失败都零执行或不导航。全程不要求手动 shell、二次粘贴或重启。Preview 不提供会错误连接 Test 的跨环境命令，Production 要等独立插件 release 将静态 MCP 地址切到 Production、合并 `main` 并验收后再开放。不要重复 `mcp add`，也不要在聊天中发送 Cookie、验证码或访问令牌。
+Codex 插件不再需要 `COMBO_SESSION_COOKIE`。公开入口 `/codex-plugin` 当前只在 Test 输出 Combo Plugin 0.8.4 的 macOS Codex Desktop 内置 CLI 安装/升级序列，并固定 Test 候选 `codex/combo-plugin-v2-ui`。任何升级前必须确认 `dangdang-tech-combo` Marketplace name 的 Git source 精确等于官方仓库；同名异源立即停止，不能 remove 或覆盖。新 Project-history Agent Package 流程要求 Plugin 已安装启用且有效 semver `>=0.8.4`，MCP name、启用状态、transport type 与 Test URL 都精确匹配；当前候选 UAT 另要求 exact 0.8.4。该流程从用户明确选择的 saved Project 做有界 reduced-history 读取，只把 strict Draft candidate 与固定 NOT_PROVEN 来源计数交给 Combo，不使用 Hook、Terminal session 文件、原始 transcript、Project 路径或 ID；render 后经固定确认创建 link-only 可匿名读取、不过期且不可撤回的 immutable Agent Package share，prepare 仍用权威 digest 防混淆。Legacy 兼容不变：Plugin 0.7.0 的既有四工具与旧 Project Agent share 仍可读取。只有工具明确返回 authorization 错误时才恰好登录一次并只重试原调用；安装或升级 continuation 在 final metadata 后、任何新任务前只做一次 Codex-managed OAuth，失败或取消时零任务创建。全程不要求手动 shell、二次粘贴或重启。Preview 不提供会错误连接 Test 的跨环境命令，Production 要等独立插件 release 将静态 MCP 地址切到 Production、合并 `main` 并验收后再开放。不要重复 `mcp add`，也不要在聊天中发送 Cookie、验证码或访问令牌。
+
+Project-history 计数语义固定：最多按稳定顺序选择并读完 20 个 eligible Codex 任务，`discoveredThreadCount=readThreadCount`；其余同 Project matching/non-Codex 任务计入上限 10,000 的 `omittedThreadCount`。Host 因 pinned 任务可返回超过 50 条，不得将总数强制为 50 或少报。
 
 环境变量真源是上述两个 `.env.*.example`，分两类消费者：`[app]`（Node 进程的环境 schema 校验）与 `[compose]`（compose 变量替换）。
 
@@ -195,7 +197,7 @@ Test、Preview、Production 三个环境运行在同一台 tecent2 主机的 k3s
 
 ## 验证
 
-源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0015`、再次幂等执行、应用角色权限和异常账本拒绝。
+源码门禁统一执行 `pnpm lint`、`pnpm format:check`、`pnpm typecheck`、`pnpm typecheck:test`、`pnpm build` 和 `pnpm test`。数据库集成检查使用一个可丢弃的 PostgreSQL，验证从空库执行 `0000` 至 `0016`、再次幂等执行、应用角色权限和异常账本拒绝。
 
 Test、Preview 与 Production 的环境证据来自 tecent2 K3s 的 `combo-test`、`combo-preview` 与 `combo-prod` namespace。受保护的 `main` 控制器可以部署自动产生的 `main` 候选，也可以部署手工选择的任意同仓库分支候选；每次部署都核对四个业务面的镜像摘要、迁移头、运行时发布身份、Web 资源摘要并验证环境域名返回对应 SHA。源码目录中的普通测试不启动 Docker 或 Docker Compose。
 
