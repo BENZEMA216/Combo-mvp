@@ -283,6 +283,7 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     'scripts/check-production-artifacts.sh',
   ];
   const allowedAuthoringFiles = [
+    'apps/authoring/src/__tests__/README.md',
     'apps/authoring/src/__tests__/agent-package-object-store.test.ts',
     'apps/authoring/src/platform/infra/README.md',
     'apps/authoring/src/platform/infra/object-store.ts',
@@ -342,6 +343,8 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     '.github/workflows/deploy.yml',
     '.github/workflows/knowledge-agent.yml',
     '.github/workflows/pr-ci-extra.yml',
+    'apps/authoring/src/README.md',
+    'apps/authoring/src/__tests__/README-extra.md',
     'apps/authoring/src/__tests__/agent-package-object-store.pg.test.ts',
     'apps/authoring/src/platform/infra/db.ts',
     'apps/authoring/src/platform/infra/leshouying/index.ts',
