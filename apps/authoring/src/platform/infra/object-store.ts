@@ -230,11 +230,9 @@ async function readAsyncBodyBounded(
       throwIfAborted(signal);
       const chunk = normalizeBodyChunk(step.value);
       if (!chunk) throw new ImmutableObjectStoreError('invalid_response');
-      if (chunk.byteLength > maxBytes - total) {
-        throw new ImmutableObjectStoreError('too_large');
-      }
-      chunks.push(Uint8Array.from(chunk));
-      total += chunk.byteLength;
+      const snapshot = snapshotBoundedBytes(chunk, maxBytes - total, 'invalid_response');
+      chunks.push(snapshot);
+      total += snapshot.byteLength;
     }
   } finally {
     if (!complete) cancelAsyncBody(body, iterator);
@@ -261,11 +259,9 @@ async function readWebBodyBounded(
       throwIfAborted(signal);
       const chunk = normalizeBodyChunk(step.value);
       if (!chunk) throw new ImmutableObjectStoreError('invalid_response');
-      if (chunk.byteLength > maxBytes - total) {
-        throw new ImmutableObjectStoreError('too_large');
-      }
-      chunks.push(Uint8Array.from(chunk));
-      total += chunk.byteLength;
+      const snapshot = snapshotBoundedBytes(chunk, maxBytes - total, 'invalid_response');
+      chunks.push(snapshot);
+      total += snapshot.byteLength;
     }
   } finally {
     if (!complete) {
@@ -302,8 +298,7 @@ async function readBodyBounded(
   throwIfAborted(signal);
   const direct = normalizeBodyChunk(body);
   if (direct) {
-    if (direct.byteLength > maxBytes) throw new ImmutableObjectStoreError('too_large');
-    return Uint8Array.from(direct);
+    return snapshotBoundedBytes(direct, maxBytes, 'invalid_response');
   }
   if (
     typeof (body as { [Symbol.asyncIterator]?: unknown } | null)?.[Symbol.asyncIterator] ===
@@ -337,10 +332,14 @@ const GET_TYPED_ARRAY_BYTE_OFFSET = Object.getOwnPropertyDescriptor(
 const GET_TYPED_ARRAY_BUFFER = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTOTYPE, 'buffer')
   ?.get as ((this: Uint8Array) => ArrayBufferLike) | undefined;
 
-function snapshotExactBytes(input: unknown, maxBytes: number): Uint8Array {
+function snapshotBoundedBytes(
+  input: unknown,
+  maxBytes: number,
+  invalidFailure: 'invalid_input' | 'invalid_response',
+): Uint8Array {
   try {
     if (!GET_TYPED_ARRAY_BYTE_LENGTH || !GET_TYPED_ARRAY_BYTE_OFFSET || !GET_TYPED_ARRAY_BUFFER) {
-      throw new ImmutableObjectStoreError('invalid_input');
+      throw new ImmutableObjectStoreError(invalidFailure);
     }
     const bytes = input as Uint8Array;
     const byteLength = GET_TYPED_ARRAY_BYTE_LENGTH.call(bytes);
@@ -350,14 +349,15 @@ function snapshotExactBytes(input: unknown, maxBytes: number): Uint8Array {
     const source = new Uint8Array(buffer, byteOffset, byteLength);
     const snapshot = new Uint8Array(byteLength);
     for (let index = 0; index < byteLength; index += 1) snapshot[index] = source[index] as number;
-    if (snapshot.byteLength > maxBytes) throw new ImmutableObjectStoreError('too_large');
-    if (snapshot.byteLength !== byteLength) {
-      throw new ImmutableObjectStoreError('invalid_input');
+    const snapshotByteLength = GET_TYPED_ARRAY_BYTE_LENGTH.call(snapshot);
+    if (snapshotByteLength > maxBytes) throw new ImmutableObjectStoreError('too_large');
+    if (snapshotByteLength !== byteLength) {
+      throw new ImmutableObjectStoreError(invalidFailure);
     }
     return snapshot;
   } catch (error) {
     if (error instanceof ImmutableObjectStoreError) throw error;
-    throw new ImmutableObjectStoreError('invalid_input');
+    throw new ImmutableObjectStoreError(invalidFailure);
   }
 }
 
@@ -415,7 +415,7 @@ export function createImmutableObjectStore(
     throwIfAborted(input.signal);
     let exactBytes: Uint8Array;
     try {
-      exactBytes = snapshotExactBytes(input.bytes, input.maxBytes);
+      exactBytes = snapshotBoundedBytes(input.bytes, input.maxBytes, 'invalid_input');
     } catch (error) {
       if (error instanceof ImmutableObjectStoreError) throw error;
       throw new ImmutableObjectStoreError('invalid_input');

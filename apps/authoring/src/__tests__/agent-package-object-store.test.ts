@@ -242,6 +242,76 @@ describe('immutable Agent Package object storage', () => {
     reader.releaseLock();
   });
 
+  it('reads direct typed-array backing bytes without executing an expanding iterator', async () => {
+    let iteratorCalls = 0;
+    const body = new Uint8Array([7]);
+    Object.defineProperty(body, Symbol.iterator, {
+      value: function* () {
+        iteratorCalls += 1;
+        yield 7;
+        yield 8;
+      },
+    });
+    const fake = sender(async () => ({ ContentLength: 1, Body: body }));
+    const store = createImmutableObjectStore(fake);
+
+    await expect(store.read({ bucket: BUCKET, key: KEY, maxBytes: 1 })).resolves.toEqual(
+      new Uint8Array([7]),
+    );
+    expect(iteratorCalls).toBe(0);
+  });
+
+  it('reads async typed-array chunks without executing an expanding iterator', async () => {
+    let iteratorCalls = 0;
+    const chunk = new Uint8Array([8]);
+    Object.defineProperty(chunk, Symbol.iterator, {
+      value: function* () {
+        iteratorCalls += 1;
+        yield 8;
+        yield 9;
+      },
+    });
+    const fake = sender(async () => ({
+      ContentLength: 1,
+      Body: {
+        async *[Symbol.asyncIterator]() {
+          yield chunk;
+        },
+      },
+    }));
+    const store = createImmutableObjectStore(fake);
+
+    await expect(store.read({ bucket: BUCKET, key: KEY, maxBytes: 1 })).resolves.toEqual(
+      new Uint8Array([8]),
+    );
+    expect(iteratorCalls).toBe(0);
+  });
+
+  it('reads Web typed-array chunks without executing an expanding iterator', async () => {
+    let iteratorCalls = 0;
+    const chunk = new Uint8Array([9]);
+    Object.defineProperty(chunk, Symbol.iterator, {
+      value: function* () {
+        iteratorCalls += 1;
+        yield 9;
+        yield 10;
+      },
+    });
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(chunk);
+        controller.close();
+      },
+    });
+    const fake = sender(async () => ({ ContentLength: 1, Body: body }));
+    const store = createImmutableObjectStore(fake);
+
+    await expect(store.read({ bucket: BUCKET, key: KEY, maxBytes: 1 })).resolves.toEqual(
+      new Uint8Array([9]),
+    );
+    expect(iteratorCalls).toBe(0);
+  });
+
   it('stops a hostile stream when accumulated bytes exceed maxBytes', async () => {
     let returned = false;
     const body: AsyncIterable<Uint8Array> = {
