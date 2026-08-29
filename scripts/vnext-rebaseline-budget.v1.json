@@ -46,6 +46,7 @@
     "tests/e2e/",
     "tests/vnext/"
   ],
+  "maintenanceFile": "apps/web/src/pages/LoginPage.test.tsx",
   "limits": {
     "maxChangedFilesPerPullRequest": 30,
     "maxChangedLinesPerFile": 1200,

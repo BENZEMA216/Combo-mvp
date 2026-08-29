@@ -221,6 +221,19 @@ describe('Agent Package creator Draft use case', () => {
     expect(publishPackage).not.toHaveBeenCalled();
   });
 
+  it('distinguishes an unavailable Host Project from an invalid Creator options object', async () => {
+    const fixture = creatorFixture();
+    const extractProject = vi.fn(async () => extraction(fixture.project));
+
+    await expect(
+      createCreatorAgentPackageDraftFromCurrentProjectWithDependencies(
+        creatorOptions(`${fixture.project}/.`),
+        creatorDependencies(extractProject),
+      ),
+    ).rejects.toMatchObject({ code: 'AGENT_PACKAGE_DRAFT_PROJECT_UNAVAILABLE' });
+    expect(extractProject).not.toHaveBeenCalled();
+  });
+
   it('rejects a Package store inside the source Project before building or publishing', async () => {
     const fixture = creatorFixture();
     const nestedStore = join(fixture.project, 'private-package-store');

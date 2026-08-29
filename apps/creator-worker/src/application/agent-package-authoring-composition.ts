@@ -1,6 +1,10 @@
-import { extractCreatorAgentProjectBehaviorWithDependencies } from '../authoring/project-behavior-extractor.js';
-import { revalidateProjectContext, scanProjectContext } from '../project-context-index.js';
 import { buildCreatorAgentPackage } from '../authoring/agent-package-builder.js';
+import { materializeCreatorProjectSourceProjection } from '../authoring/creator-project-source-projection.js';
+import { extractCreatorAgentProjectBehaviorWithDependencies } from '../authoring/project-behavior-extractor.js';
+import {
+  revalidateProjectContext,
+  scanCreatorProjectSourceContext,
+} from '../project-context-index.js';
 import { createBundledCodexStructuredHost } from '../infrastructure/codex/index.js';
 import { loadCreatorAgentPackage } from '../infrastructure/agent-package-loader.js';
 import { publishBuiltCreatorAgentPackage } from '../infrastructure/agent-package-publisher.js';
@@ -11,8 +15,9 @@ import {
 } from './agent-package-authoring.js';
 
 const extractionDependencies = Object.freeze({
-  scanProject: scanProjectContext,
+  scanProject: scanCreatorProjectSourceContext,
   revalidateProject: revalidateProjectContext,
+  materializeHostProject: materializeCreatorProjectSourceProjection,
   createHost: createBundledCodexStructuredHost,
 });
 

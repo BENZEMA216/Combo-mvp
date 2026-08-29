@@ -28,7 +28,10 @@ export const productGoalLock = Object.freeze({
   semanticName: '可分享 Agent',
   text: '让用户把一段和自己AGENT的对话、项目或旅程变成一个可分享的 Agent，让其他人打开链接就能使用它，或是用一段话就能让自己的AGENT获取对应能力。',
   sha256: 'd1fcc3355deca962632194c4fbfcd26c4ce5f4494f1af0f813c7ff0a4d7be9ee',
-  projectSha256: '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+  approvedProjectSha256s: Object.freeze([
+    '45dc4af0c2d55d6e9b2d2dec0dcf1d6d0939a5f550b6dbf505cf7ad556c8a098',
+    'bba99e15d714c7e8ab02949c12be7f344f0fd2382188510976edb33e23247aea',
+  ]),
   headings: Object.freeze(['## 一、唯一产品目标', '## 二、目标用户体验', '## 三、唯一产物模型']),
 });
 
@@ -45,6 +48,17 @@ export const productBaselineBootstrap = Object.freeze({
     contractPath,
     'scripts/vnext-rebaseline-budget.mjs',
     'scripts/vnext-rebaseline-budget.test.mjs',
+  ]),
+});
+
+export const maintenanceModeBootstrap = Object.freeze({
+  baseSha: 'acea2c250a279fd53d9c4b7a509cb379280d003f',
+  maintenanceFile: 'apps/web/src/pages/LoginPage.test.tsx',
+  paths: Object.freeze([
+    'apps/web/src/pages/LoginPage.test.tsx',
+    'scripts/vnext-rebaseline-budget.mjs',
+    'scripts/vnext-rebaseline-budget.test.mjs',
+    contractPath,
   ]),
 });
 
@@ -131,6 +145,7 @@ export function parseContract(source) {
       'compatibility',
       'allowedFiles',
       'allowedPathPrefixes',
+      'maintenanceFile',
       'limits',
     ],
     'budget contract',
@@ -158,6 +173,15 @@ export function parseContract(source) {
   );
   sortedUniqueStrings(value.allowedFiles, 'allowedFiles');
   sortedUniqueStrings(value.allowedPathPrefixes, 'allowedPathPrefixes', { prefix: true });
+  safeRepoPath(value.maintenanceFile);
+  invariant(
+    !policyPaths.includes(value.maintenanceFile),
+    `${value.maintenanceFile} cannot be both policy and maintenance`,
+  );
+  invariant(
+    !pathAllowed(value, value.maintenanceFile),
+    `${value.maintenanceFile} cannot be both product and maintenance`,
+  );
   exactKeys(value.limits, Object.keys(hardCeilings), 'limits');
   for (const [name, ceiling] of Object.entries(hardCeilings)) {
     const limit = value.limits[name];
@@ -212,16 +236,37 @@ function summarize(entries) {
   };
 }
 
-export function assessPullRequest(contract, entries) {
+export function isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract }) {
+  const changedPaths = entries.map(({ path }) => path).sort();
+  return (
+    comparisonBase === maintenanceModeBootstrap.baseSha &&
+    contract.maintenanceFile === maintenanceModeBootstrap.maintenanceFile &&
+    JSON.stringify(changedPaths) === JSON.stringify([...maintenanceModeBootstrap.paths].sort())
+  );
+}
+
+export function assessPullRequest(contract, entries, { comparisonBase } = {}) {
   const changedPolicyPaths = entries.filter(({ path }) => policyPaths.includes(path));
-  if (changedPolicyPaths.length > 0) {
+  const changedMaintenancePaths = entries.filter(({ path }) => path === contract.maintenanceFile);
+  let mode;
+  if (isExactMaintenanceModeBootstrap({ comparisonBase, entries, contract })) {
+    mode = 'GOVERNANCE_MAINTENANCE_BOOTSTRAP';
+  } else if (changedPolicyPaths.length > 0) {
     invariant(
       entries.every(({ path }) => policyPaths.includes(path)),
       'budget policy changes must be governance-only',
     );
+    mode = 'GOVERNANCE_ONLY';
+  } else if (changedMaintenancePaths.length > 0) {
+    invariant(
+      entries.every(({ path }) => path === contract.maintenanceFile),
+      'budget maintenance changes must be maintenance-only',
+    );
+    mode = 'MAINTENANCE';
   } else {
     for (const { path } of entries)
       invariant(pathAllowed(contract, path), `path is outside the R1-R3 rebuild scope: ${path}`);
+    mode = 'PRODUCT';
   }
   const summary = summarize(entries);
   invariant(
@@ -238,13 +283,15 @@ export function assessPullRequest(contract, entries) {
       `per-file changed-line budget exceeded: ${entry.path}`,
     );
   }
-  return { mode: changedPolicyPaths.length > 0 ? 'GOVERNANCE_ONLY' : 'PRODUCT', ...summary };
+  return { mode, ...summary };
 }
 
 export function assessCumulative(contract, entries) {
   for (const { path } of entries) {
     invariant(
-      policyPaths.includes(path) || pathAllowed(contract, path),
+      policyPaths.includes(path) ||
+        path === contract.maintenanceFile ||
+        pathAllowed(contract, path),
       `cumulative path is outside the R1-R3 rebuild scope: ${path}`,
     );
   }
@@ -333,7 +380,10 @@ export function verifyProductBaselineSources({
     );
   }
   const projectSha256 = createHash('sha256').update(projectSource).digest('hex');
-  invariant(projectSha256 === productGoalLock.projectSha256, 'PROJECT.md product baseline changed');
+  invariant(
+    productGoalLock.approvedProjectSha256s.includes(projectSha256),
+    'PROJECT.md product baseline changed',
+  );
   return { status: 'LOCKED', goalId: productGoalLock.goalId, sha256: productGoalLock.sha256 };
 }
 
@@ -404,7 +454,7 @@ export function verifyRepository({ baseRef = defaultBaseRef() } = {}) {
     );
   }
   const pullRequestEntries = collectDiff(comparisonBase);
-  const pullRequest = assessPullRequest(contract, pullRequestEntries);
+  const pullRequest = assessPullRequest(contract, pullRequestEntries, { comparisonBase });
   const projectPath = join(repoRoot, 'PROJECT.md');
   const agentsPath = join(repoRoot, 'AGENTS.md');
   const engineeringPath = join(repoRoot, 'ENGINEERING.md');

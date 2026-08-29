@@ -223,6 +223,7 @@ function compileBoundCreatorAgentPackageDraft(
 
 export type CreatorAgentPackageCreatorErrorCode =
   | 'AGENT_PACKAGE_DRAFT_CONFIGURATION_INVALID'
+  | 'AGENT_PACKAGE_DRAFT_PROJECT_UNAVAILABLE'
   | 'AGENT_PACKAGE_DRAFT_OUTPUT_INVALID'
   | 'AGENT_PACKAGE_DRAFT_REVISION_INVALID'
   | 'AGENT_PACKAGE_DRAFT_COMPILE_CONFLICT'
@@ -369,7 +370,7 @@ function bindCanonicalProject(path: string): SourceProjectBinding {
     return Object.freeze({ path: canonical, device: stat.dev, inode: stat.ino });
   } catch (error) {
     throw new CreatorAgentPackageCreatorError(
-      'AGENT_PACKAGE_DRAFT_CONFIGURATION_INVALID',
+      'AGENT_PACKAGE_DRAFT_PROJECT_UNAVAILABLE',
       'Current Codex Project could not be bound exactly.',
       error instanceof Error ? { cause: error } : undefined,
     );

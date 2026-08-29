@@ -23,6 +23,10 @@
     "./agent-package-creator": {
       "types": "./dist/agent-package-creator.d.ts",
       "default": "./dist/agent-package-creator.js"
+    },
+    "./agent-package-current-conversation-draft": {
+      "types": "./dist/agent-package-current-conversation-draft.d.ts",
+      "default": "./dist/agent-package-current-conversation-draft.js"
     }
   },
   "files": [
@@ -30,14 +34,15 @@
   ],
   "bin": {
     "combo-agent-package": "./dist/agent-package-cli.js",
+    "combo-agent-package-creator-bridge": "./dist/agent-package-creator-bridge.mjs",
     "combo-creator-agent": "./dist/agent-catalog-cli.js",
     "combo-creator-worker": "./dist/local-alpha-cli.js"
   },
   "scripts": {
-    "build": "tsc -b",
+    "build": "pnpm run clean && tsc -b && esbuild dist/agent-package-creator-bridge.js --bundle --packages=bundle --platform=node --format=esm --target=node24 --charset=utf8 --legal-comments=none --outfile=dist/agent-package-creator-bridge.mjs",
     "typecheck": "tsc -b --noEmit false",
     "typecheck:test": "tsc -p tsconfig.vitest.json",
-    "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-persistence build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-worker-broker-client build && tsc -b",
+    "pretest": "pnpm -F @cb/creator-agent-protocol build && pnpm -F @cb/creator-agent-persistence build && pnpm -F @cb/creator-agent-broker-journal build && pnpm -F @cb/creator-worker-broker-client build && pnpm run build",
     "test": "vitest run",
     "agent": "pnpm -F @cb/creator-agent-persistence build && tsc -b && node dist/agent-catalog-cli.js",
     "experience": "pnpm -F @cb/creator-agent-persistence build && tsc -b && node dist/agent-catalog-cli.js experience",
@@ -48,6 +53,7 @@
     "test:real-context-compiler": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/project-context-compiler.real.test.ts --reporter=verbose",
     "test:real-package": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-package-session.real.test.ts --reporter=verbose",
     "test:real-package-authoring": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-package-authoring.real.test.ts --reporter=verbose",
+    "test:real-package-creator-bridge": "pnpm run pretest && COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/agent-package-creator-bridge.real.test.ts --reporter=verbose",
     "test:real-local": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/local-alpha.real.test.ts --reporter=verbose",
     "test:real-codex": "COMBO_REAL_CODEX_E2E=1 vitest run src/__tests__/codex-app-server-host.real.test.ts --reporter=verbose",
     "test:watch": "vitest",
@@ -64,6 +70,7 @@
   "devDependencies": {
     "@types/node": "^24.13.3",
     "@types/ws": "8.18.1",
+    "esbuild": "0.25.12",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
   }
