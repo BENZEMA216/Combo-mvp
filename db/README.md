@@ -1,6 +1,6 @@
 # db PostgreSQL 迁移
 
-这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0015`。Test 常驻数据库已经记录 `0012` 至 `0015`，因此这四个文件按原文件名和精确字节恢复为不可变兼容前缀；新变化只能从 `0016` 继续追加。
+这个目录是数据库结构的唯一真源。当前迁移链从 `0000` 连续到 `0016`。Test 常驻数据库已经记录 `0012` 至 `0016`，因此这五个文件按原文件名和精确字节恢复为不可变兼容前缀；新变化只能从 `0017` 继续追加。
 
 ## 迁移文件
 
@@ -16,10 +16,9 @@
 - `0009_billing.sql` 创建全局钱包、按用户与 Agent 隔离的免费额度、使用预留、充值订单、支付尝试、低敏回调事件和不可变资金流水，并补充计费最小权限。
 - `0010_recharge_qr_channel.sql` 把扫码充值通道从聚合码 `aggregate_qr` 重命名为 C扫B 单渠道 `qr`（`/v3/prepay`），并把历史 `aggregate_qr` 订单一并迁移到 `qr`。
 - `0011_recharge_qr_only.sql` 移除 H5「手机收银台」渠道，把历史 `h5` 订单迁到 `qr`，并把支付方式约束收窄为只允许 `qr`。
-- `0012_agent_builder_v1.sql`、`0014_agent_test_reviews.sql` 与 `0015_project_agent_shares.sql` 恢复 Test 已应用的旧 Agent Builder、Test Review 与 Project Agent Share 结构。
-- `0013_external_mcp_oauth.sql` 恢复 Test 已应用的旧外部 MCP OAuth 结构。
+- `0012_agent_builder_v1.sql` 至 `0016_project_history_agent_flow.sql` 恢复 Test 已应用的旧 Agent Builder、外部 MCP OAuth、Test Review、Project Agent Share 与 Project-history Agent flow 结构。
 
-这四个迁移只用于保持源码迁移前缀与 Test 的 `schema_migrations` 账本兼容，不表示当前应用已经激活对应旧业务协议。尤其是 `0012` 创建的 `agent_releases` 属于旧 Revision 与 Runtime Bundle 模型，不是 [PROJECT.md](../PROJECT.md) 定义的 `AgentPackageRelease` 真源。新的 Agent Package、知识 Agent、分享或计费能力不得把这些旧表复用为产品真相；所需新结构必须从 `0016` 追加，并显式绑定 exact Package digest 与 Release 合同。
+这五个迁移只用于保持源码迁移前缀与 Test 的 `schema_migrations` 账本兼容，不表示当前应用已经激活对应旧业务协议。尤其是 `0012` 创建的 `agent_releases` 属于旧 Revision 与 Runtime Bundle 模型，`0016` 创建的 Project-history Draft、confirmation 与 share 也属于旧流程；它们都不是 [PROJECT.md](../PROJECT.md) 定义的 `AgentPackageRelease` 真源。新的 Agent Package、知识 Agent、分享或计费能力不得把这些旧表复用为产品真相；所需新结构必须从 `0017` 追加，并显式绑定 exact Package digest 与 Release 合同。
 
 `users` 是业务主体真源。`tasks` 与 `uploads` 保存创作流水线状态。`capabilities` 保存能力索引、定义对象键和当前 UI 指针。`sessions`、`turns`、`messages` 与 `artifacts` 保存试用和 Studio 状态；大内容仍在 MinIO。认证表只保存规范身份以及验证码、目标和 Cookie 的摘要，不保存验证码、Cookie 或供应商令牌原文。计费表把用户全局钱包与每个 Agent 的免费额度分开，使用记录绑定唯一 Turn，充值订单把外部支付状态与内部入账状态分开，资金流水只允许追加。
 
@@ -29,7 +28,7 @@
 
 `combo_api` 可以读写认证表、任务、上传、能力和模型审计，并获得充值订单、支付尝试、回调、钱包可用余额与充值流水所需的最小表级和列级权限。`combo_worker` 只能处理任务、上传、能力和模型审计，不能读取认证或计费表。`combo_runtime` 只读 `users` 与 `auth_sessions`，读写 Session、Turn、Message 与 Artifact；它只获得 `capabilities.ui_artifact_id` 的列级更新权限，以及免费额度、钱包预留、使用记录和使用流水所需的计费权限。`combo_api` 与 `combo_runtime` 都只能查询和追加资金流水，不能修改、删除或清空既有流水；API 只能追加充值入账，Runtime 只能追加使用扣款。
 
-`0012` 至 `0015` 还保留这些迁移发布时授予 `combo_api` 与 `combo_runtime` 的历史权限，以保证已部署 schema 可复现。当前服务不得据此推断旧 Agent 或 OAuth 路径处于活动状态。
+`0012` 至 `0016` 还保留这些迁移发布时授予应用角色的历史权限，以保证已部署 schema 可复现。当前服务不得据此推断旧 Agent、OAuth 或 Project-history 路径处于活动状态。
 
 计费约束在事务提交时强制验证 `可用余额 + 预留余额 = 不可变流水净额`、钱包预留与运行中使用记录一致、免费计数与免费使用记录一致，并双向核对成功充值/完成扣费与其唯一流水。应用不能只改余额或终态，也不能只伪造一条外观合法的流水。乐收赢付款时间属于外部秒级时钟，不与数据库订单创建时间硬比较；内部 `credited_at` 仍使用数据库时间。
 
@@ -41,10 +40,10 @@ Runner 要求迁移文件从 `0000` 连续编号，并要求 `schema_migrations`
 
 ```sh
 pnpm -F @cb/db migrate
-MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0015_project_agent_shares.sql pnpm -F @cb/db migrate
+MIGRATION_RUNS=2 EXPECTED_MIGRATION_HEAD=0016_project_history_agent_flow.sql pnpm -F @cb/db migrate
 pnpm -F @cb/db migrate:status
 node --experimental-strip-types db/scripts/migrate.ts --head
 pnpm -F @cb/db test
 ```
 
-`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
+`MIGRATION_RUNS=2` 会在同一连接与 advisory lock 内重新读取并严格验证完整账本。真实 PostgreSQL 集成还必须证明空库执行至 `0016`、从 `0015` 账本只追加 `0016`、第二次幂等、`0007` 非空用户门禁、计费约束和三个应用角色的正负权限。
