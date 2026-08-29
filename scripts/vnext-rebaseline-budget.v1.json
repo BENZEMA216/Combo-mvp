@@ -10,7 +10,6 @@
   },
   "allowedFiles": [
     ".github/workflows/ci.yml",
-    ".github/workflows/pr-ci.yml",
     "AGENTS.md",
     "ENGINEERING.md",
     "PROJECT.md",

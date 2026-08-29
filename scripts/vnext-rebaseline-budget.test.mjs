@@ -278,7 +278,6 @@ test('product edits must stay inside the declared rebuild surface', () => {
 test('the knowledge Agent Test scope opens only its named surface and exact files', () => {
   const allowedControlFiles = [
     '.github/workflows/ci.yml',
-    '.github/workflows/pr-ci.yml',
     'docs/deployment-topology.md',
     'docs/knowledge-agent-test-acceptance.md',
     'scripts/check-production-artifacts.sh',
@@ -297,7 +296,20 @@ test('the knowledge Agent Test scope opens only its named surface and exact file
     ...allowedControlFiles,
   ].map((path) => entry(path));
 
-  assert.equal(policyPaths.includes('.github/workflows/pr-ci.yml'), false);
+  assert.equal(policyPaths.includes('.github/workflows/pr-ci.yml'), true);
+  assert.equal(
+    assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml')]).mode,
+    'GOVERNANCE_ONLY',
+  );
+  for (const productPath of [
+    'apps/authoring/src/platform/infra/object-store.ts',
+    'apps/runtime/src/product.ts',
+  ]) {
+    assert.throws(
+      () => assessPullRequest(contract, [entry('.github/workflows/pr-ci.yml'), entry(productPath)]),
+      /governance-only/,
+    );
+  }
   assert.equal(assessPullRequest(contract, knowledgeAgentTestSlice).mode, 'PRODUCT');
   assert.deepEqual(
     contract.allowedFiles.filter(
