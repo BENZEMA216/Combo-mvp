@@ -17,12 +17,26 @@ export { containsNonPortableAgentReference } from './primitives.js';
 
 export const CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL =
   'combo.agent-package-creator-request/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL =
+  'combo.agent-package-creator-request/2' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL =
+  'combo.agent-package-creator-bootstrap-handoff/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_GUIDE = 'combo.agent-package-creator-guide/1' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING =
+  'codex_host_current_saved_project' as const;
+export const CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES = 8_192;
 export const CREATOR_AGENT_PACKAGE_DRAFT_PROTOCOL = 'combo.agent-package-draft/1' as const;
+export const CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL = 'combo.agent-package-draft/2' as const;
+export const CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL =
+  'combo.creator-conversation-draft-extraction/1' as const;
 export const CREATOR_AGENT_PACKAGE_DRAFT_REVISION_PROTOCOL =
   'combo.agent-package-draft-revision/1' as const;
 export const CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES = 65_536;
 
 const DRAFT_FINGERPRINT_DOMAIN = 'combo.agent-package-draft/1:fingerprint';
+const DRAFT_V2_FINGERPRINT_DOMAIN = 'combo.agent-package-draft/2:fingerprint';
+const CONVERSATION_EXTRACTION_CANDIDATE_FINGERPRINT_DOMAIN =
+  'combo.creator-conversation-draft-extraction/1:egress-candidate';
 const DRAFT_ID_PATTERN = /^draft\.agent-package\.[0-9a-f]{32}$/u;
 const AGENT_NAME_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N} ._'-]{0,79}$/u;
 
@@ -124,6 +138,22 @@ export const CreatorAgentPackageDraftContentSchema =
   CreatorAgentPackageDraftContentObjectSchema.readonly();
 export type CreatorAgentPackageDraftContent = z.infer<typeof CreatorAgentPackageDraftContentSchema>;
 
+export const CreatorAgentPackageConversationExtractionCandidateSchema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_PACKAGE_CONVERSATION_EXTRACTION_PROTOCOL),
+    name: CreatorAgentPackageDraftContentObjectSchema.shape.name,
+    description: CreatorAgentPackageDraftContentObjectSchema.shape.description,
+    instructions: CreatorAgentPackageDraftContentObjectSchema.shape.instructions,
+    starterPrompts: CreatorAgentPackageDraftContentObjectSchema.shape.starterPrompts,
+    outputDescription: CreatorAgentPackageDraftContentObjectSchema.shape.outputDescription,
+    coverageSummary: SafeText(1, 1_000),
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentPackageConversationExtractionCandidate = z.infer<
+  typeof CreatorAgentPackageConversationExtractionCandidateSchema
+>;
+
 export const CreatorAgentPackageCreatorRequestSchema = z
   .object({
     protocol: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_PROTOCOL),
@@ -134,6 +164,50 @@ export const CreatorAgentPackageCreatorRequestSchema = z
   .readonly();
 export type CreatorAgentPackageCreatorRequest = z.infer<
   typeof CreatorAgentPackageCreatorRequestSchema
+>;
+
+export const CreatorAgentPackageCreatorRequestV2Schema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_REQUEST_V2_PROTOCOL),
+    intent: z.literal('create_agent_package_from_current_conversation'),
+    request: SafeText(1, 2_000),
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentPackageCreatorRequestV2 = z.infer<
+  typeof CreatorAgentPackageCreatorRequestV2Schema
+>;
+
+export const CreatorAgentPackageCurrentConversationSourceSchema = z
+  .object({
+    kind: z.literal('current_conversation'),
+    sourceBoundary: z.literal('desktop_attested_active_current_task'),
+    snapshotBoundary: z.literal('before_direct_creator_item'),
+    visibility: z.literal('user_visible_items_only'),
+    snapshotCompleteness: z.literal('complete'),
+    rawStored: z.literal(false),
+    snapshotCommitmentScheme: z.literal('host_hmac_sha256_per_run/1'),
+    snapshotCommitment: Sha256DigestSchema,
+    selectedVisibleItemCount: z.number().int().min(1).max(500_000),
+    coverageSummary: SafeText(1, 1_000),
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentPackageCurrentConversationSource = z.infer<
+  typeof CreatorAgentPackageCurrentConversationSourceSchema
+>;
+
+const CreatorAgentPackageCreatorBootstrapHandoffSchema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_PROTOCOL),
+    creatorGuide: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_GUIDE),
+    sourceBinding: z.literal(CREATOR_AGENT_PACKAGE_CREATOR_SOURCE_BINDING),
+    creatorRequest: CreatorAgentPackageCreatorRequestSchema,
+  })
+  .strict()
+  .readonly();
+export type CreatorAgentPackageCreatorBootstrapHandoff = z.infer<
+  typeof CreatorAgentPackageCreatorBootstrapHandoffSchema
 >;
 
 const DraftFingerprintInputObjectSchema = z
@@ -172,6 +246,44 @@ export const CreatorAgentPackageDraftSnapshotSchema = DraftFingerprintInputObjec
   .readonly();
 export type CreatorAgentPackageDraftSnapshot = z.infer<
   typeof CreatorAgentPackageDraftSnapshotSchema
+>;
+
+const DraftV2FingerprintInputObjectSchema = z
+  .object({
+    protocol: z.literal(CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL),
+    draftId: z.string().regex(DRAFT_ID_PATTERN),
+    revision: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    parentDraftFingerprint: Sha256DigestSchema.nullable(),
+    creatorRequest: CreatorAgentPackageCreatorRequestV2Schema,
+    source: CreatorAgentPackageCurrentConversationSourceSchema,
+    content: CreatorAgentPackageDraftContentSchema,
+  })
+  .strict();
+const DraftV2FingerprintInputSchema = DraftV2FingerprintInputObjectSchema.readonly();
+
+export const CreatorAgentPackageDraftSnapshotV2Schema = DraftV2FingerprintInputObjectSchema.extend({
+  draftFingerprint: Sha256DigestSchema,
+})
+  .strict()
+  .superRefine((draft, context) => {
+    if ((draft.revision === 1) !== (draft.parentDraftFingerprint === null)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['parentDraftFingerprint'],
+        message: 'Only the first Draft revision can omit its parent fingerprint',
+      });
+    }
+    if (draft.draftFingerprint !== fingerprintDraftV2(draft)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['draftFingerprint'],
+        message: 'Draft fingerprint does not match the exact Draft revision',
+      });
+    }
+  })
+  .readonly();
+export type CreatorAgentPackageDraftSnapshotV2 = z.infer<
+  typeof CreatorAgentPackageDraftSnapshotV2Schema
 >;
 
 const DraftChangesSchema = CreatorAgentPackageDraftContentObjectSchema.partial()
@@ -228,6 +340,92 @@ export function parseCreatorAgentPackageCreatorRequest(
   return parseExact(text, verifyCreatorAgentPackageCreatorRequest, 'Agent Package creator request');
 }
 
+export function createCreatorAgentPackageCreatorRequestV2(
+  input: unknown,
+): CreatorAgentPackageCreatorRequestV2 {
+  return exactDetached(
+    CreatorAgentPackageCreatorRequestV2Schema,
+    input,
+    'Conversation Agent Package creator request',
+  );
+}
+
+export function verifyCreatorAgentPackageCreatorRequestV2(
+  input: unknown,
+): CreatorAgentPackageCreatorRequestV2 {
+  return createCreatorAgentPackageCreatorRequestV2(input);
+}
+
+export function serializeCreatorAgentPackageCreatorRequestV2(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentPackageCreatorRequestV2(input));
+}
+
+export function digestCreatorAgentPackageCreatorRequestV2(input: unknown): Sha256Digest {
+  const bytes = Buffer.from(serializeCreatorAgentPackageCreatorRequestV2(input), 'utf8');
+  return Sha256DigestSchema.parse(`sha256:${createHash('sha256').update(bytes).digest('hex')}`);
+}
+
+export function parseCreatorAgentPackageCreatorRequestV2(
+  text: string,
+): CreatorAgentPackageCreatorRequestV2 {
+  return parseExact(
+    text,
+    verifyCreatorAgentPackageCreatorRequestV2,
+    'Conversation Agent Package creator request',
+  );
+}
+
+export function verifyCreatorAgentPackageConversationExtractionCandidate(
+  input: unknown,
+): CreatorAgentPackageConversationExtractionCandidate {
+  return exactDetached(
+    CreatorAgentPackageConversationExtractionCandidateSchema,
+    input,
+    'Conversation Agent Package extraction candidate',
+  );
+}
+
+export function digestCreatorAgentPackageConversationExtractionCandidate(
+  input: unknown,
+): Sha256Digest {
+  return canonicalFingerprint(
+    CONVERSATION_EXTRACTION_CANDIDATE_FINGERPRINT_DOMAIN,
+    verifyCreatorAgentPackageConversationExtractionCandidate(input),
+  );
+}
+
+export function createCreatorAgentPackageCreatorBootstrapHandoff(
+  input: unknown,
+): CreatorAgentPackageCreatorBootstrapHandoff {
+  return exactDetached(
+    CreatorAgentPackageCreatorBootstrapHandoffSchema,
+    input,
+    'Agent Package creator bootstrap handoff',
+    CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES,
+  );
+}
+
+export function verifyCreatorAgentPackageCreatorBootstrapHandoff(
+  input: unknown,
+): CreatorAgentPackageCreatorBootstrapHandoff {
+  return createCreatorAgentPackageCreatorBootstrapHandoff(input);
+}
+
+export function serializeCreatorAgentPackageCreatorBootstrapHandoff(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentPackageCreatorBootstrapHandoff(input));
+}
+
+export function parseCreatorAgentPackageCreatorBootstrapHandoff(
+  text: string,
+): CreatorAgentPackageCreatorBootstrapHandoff {
+  return parseExact(
+    text,
+    verifyCreatorAgentPackageCreatorBootstrapHandoff,
+    'Agent Package creator bootstrap handoff',
+    CREATOR_AGENT_PACKAGE_CREATOR_BOOTSTRAP_HANDOFF_MAX_BYTES,
+  );
+}
+
 export function createCreatorAgentPackageDraftSnapshot(
   input: z.input<typeof DraftFingerprintInputSchema>,
 ): CreatorAgentPackageDraftSnapshot {
@@ -246,6 +444,31 @@ export function verifyCreatorAgentPackageDraftSnapshot(
     CreatorAgentPackageDraftSnapshotSchema,
     input,
     'Agent Package Draft snapshot',
+  );
+}
+
+export function createCreatorAgentPackageDraftSnapshotV2(
+  input: unknown,
+): CreatorAgentPackageDraftSnapshotV2 {
+  const detached = exactDetached(
+    DraftV2FingerprintInputSchema,
+    input,
+    'Conversation Agent Package Draft',
+  );
+  return exactDetached(
+    CreatorAgentPackageDraftSnapshotV2Schema,
+    { ...detached, draftFingerprint: fingerprintDraftV2(detached) },
+    'Conversation Agent Package Draft snapshot',
+  );
+}
+
+export function verifyCreatorAgentPackageDraftSnapshotV2(
+  input: unknown,
+): CreatorAgentPackageDraftSnapshotV2 {
+  return exactDetached(
+    CreatorAgentPackageDraftSnapshotV2Schema,
+    input,
+    'Conversation Agent Package Draft snapshot',
   );
 }
 
@@ -301,6 +524,34 @@ export function reviseCreatorAgentPackageDraft(
   });
 }
 
+export function reviseCreatorAgentPackageDraftV2(
+  rawDraft: unknown,
+  rawRequest: unknown,
+): CreatorAgentPackageDraftSnapshotV2 {
+  const draft = verifyCreatorAgentPackageDraftSnapshotV2(rawDraft);
+  const request = createCreatorAgentPackageDraftRevisionRequest(rawRequest);
+  if (
+    request.draftId !== draft.draftId ||
+    request.baseRevision !== draft.revision ||
+    request.baseDraftFingerprint !== draft.draftFingerprint
+  ) {
+    throw new TypeError('Agent Package Draft revision does not match its exact base');
+  }
+  const content = { ...draft.content, ...request.changes };
+  if (canonicalizeJson(content) === canonicalizeJson(draft.content)) {
+    throw new TypeError('Agent Package Draft revision must change its exact content');
+  }
+  return createCreatorAgentPackageDraftSnapshotV2({
+    protocol: CREATOR_AGENT_PACKAGE_DRAFT_V2_PROTOCOL,
+    draftId: draft.draftId,
+    revision: draft.revision + 1,
+    parentDraftFingerprint: draft.draftFingerprint,
+    creatorRequest: draft.creatorRequest,
+    source: draft.source,
+    content,
+  });
+}
+
 export function serializeCreatorAgentPackageDraftSnapshot(input: unknown): string {
   return canonicalizeJson(verifyCreatorAgentPackageDraftSnapshot(input));
 }
@@ -311,11 +562,27 @@ export function parseCreatorAgentPackageDraftSnapshot(
   return parseExact(text, verifyCreatorAgentPackageDraftSnapshot, 'Agent Package Draft');
 }
 
-function parseExact<Value>(text: string, verify: (input: unknown) => Value, label: string): Value {
-  if (
-    typeof text !== 'string' ||
-    Buffer.byteLength(text, 'utf8') > CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES
-  ) {
+export function serializeCreatorAgentPackageDraftSnapshotV2(input: unknown): string {
+  return canonicalizeJson(verifyCreatorAgentPackageDraftSnapshotV2(input));
+}
+
+export function parseCreatorAgentPackageDraftSnapshotV2(
+  text: string,
+): CreatorAgentPackageDraftSnapshotV2 {
+  return parseExact(
+    text,
+    verifyCreatorAgentPackageDraftSnapshotV2,
+    'Conversation Agent Package Draft',
+  );
+}
+
+function parseExact<Value>(
+  text: string,
+  verify: (input: unknown) => Value,
+  label: string,
+  maximumBytes = CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES,
+): Value {
+  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > maximumBytes) {
     throw new TypeError(`${label} exceeds the canonical byte limit`);
   }
   let value: unknown;
@@ -343,6 +610,20 @@ function fingerprintDraft(input: unknown): Sha256Digest {
     content: dataValue(descriptors, 'content'),
   };
   return canonicalFingerprint(DRAFT_FINGERPRINT_DOMAIN, value);
+}
+
+function fingerprintDraftV2(input: unknown): Sha256Digest {
+  const descriptors = Object.getOwnPropertyDescriptors(input);
+  const value = {
+    protocol: dataValue(descriptors, 'protocol'),
+    draftId: dataValue(descriptors, 'draftId'),
+    revision: dataValue(descriptors, 'revision'),
+    parentDraftFingerprint: dataValue(descriptors, 'parentDraftFingerprint'),
+    creatorRequest: dataValue(descriptors, 'creatorRequest'),
+    source: dataValue(descriptors, 'source'),
+    content: dataValue(descriptors, 'content'),
+  };
+  return canonicalFingerprint(DRAFT_V2_FINGERPRINT_DOMAIN, value);
 }
 
 function dataValue(descriptors: Record<PropertyKey, PropertyDescriptor>, key: string): unknown {
@@ -379,10 +660,11 @@ function exactDetached<Schema extends z.ZodTypeAny>(
   schema: Schema,
   input: unknown,
   label: string,
+  maximumBytes = CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES,
 ): z.output<Schema> {
-  const snapshot = snapshotJson(input, 0, { nodes: 0, bytes: 0 });
+  const snapshot = snapshotJson(input, 0, { nodes: 0, bytes: 0 }, maximumBytes);
   const before = canonicalizeJson(snapshot);
-  if (Buffer.byteLength(before, 'utf8') > CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES) {
+  if (Buffer.byteLength(before, 'utf8') > maximumBytes) {
     throw new TypeError(`${label} exceeds the canonical byte limit`);
   }
   const parsed = schema.parse(snapshot);
@@ -397,6 +679,7 @@ function snapshotJson(
   input: unknown,
   depth: number,
   budget: { nodes: number; bytes: number },
+  maximumBytes: number,
 ): unknown {
   budget.nodes += 1;
   if (budget.nodes > 2_048 || depth > 16) {
@@ -409,7 +692,7 @@ function snapshotJson(
   }
   if (typeof input === 'string') {
     budget.bytes += Buffer.byteLength(input, 'utf8');
-    if (budget.bytes > CREATOR_AGENT_PACKAGE_DRAFT_MAX_BYTES || containsLoneSurrogate(input)) {
+    if (budget.bytes > maximumBytes || containsLoneSurrogate(input)) {
       throw new TypeError('Agent Package Draft exceeds the canonical byte limit');
     }
     return input;
@@ -431,7 +714,7 @@ function snapshotJson(
       if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
         throw new TypeError('Draft properties must be enumerable data properties');
       }
-      return snapshotJson(descriptor.value, depth + 1, budget);
+      return snapshotJson(descriptor.value, depth + 1, budget, maximumBytes);
     });
   }
   const prototype = Object.getPrototypeOf(input);
@@ -448,7 +731,11 @@ function snapshotJson(
     if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
       throw new TypeError('Draft properties must be enumerable data properties');
     }
-    output[key] = snapshotJson(descriptor.value, depth + 1, budget);
+    budget.bytes += Buffer.byteLength(key, 'utf8');
+    if (budget.bytes > maximumBytes) {
+      throw new TypeError('Agent Package Draft exceeds the canonical byte limit');
+    }
+    output[key] = snapshotJson(descriptor.value, depth + 1, budget, maximumBytes);
   }
   return output;
 }

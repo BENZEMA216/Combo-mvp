@@ -13,5 +13,12 @@
     { "path": "../../packages/creator-worker-broker-client" }
   ],
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "src/**/*.test.ts", "src/__tests__/**"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/**/*.test.ts",
+    "src/__tests__/**",
+    "src/application/agent-package-creator-authorized.ts",
+    "src/application/host-authorized-creator-project-source.ts"
+  ]
 }

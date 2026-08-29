@@ -1,0 +1,81 @@
+{
+  "protocol": "combo.creator-conversation-acceptance/1",
+  "schemaVersion": 1,
+  "goal": "G-001@v1",
+  "journey": "J-011",
+  "capabilities": ["CAP-011", "CAP-012"],
+  "surface": "CODEX_DESKTOP",
+  "source": "CURRENT_CONVERSATION",
+  "processContractStatus": "ACTIVE",
+  "productStatus": "BLOCKED",
+  "candidateCommit": null,
+  "gates": [
+    {
+      "id": "ACC-CONTRACT-011A",
+      "status": "NOT_RUN",
+      "evidence": []
+    },
+    {
+      "id": "ACC-UNIT-011B",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": []
+    },
+    {
+      "id": "ACC-SEC-011C",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": []
+    },
+    {
+      "id": "ACC-HOST-011D",
+      "status": "NOT_IMPLEMENTED",
+      "evidence": []
+    },
+    {
+      "id": "ACC-UAT-011E",
+      "status": "NOT_RUN",
+      "evidence": []
+    }
+  ],
+  "observationWindow": {
+    "startsAt": "DIRECT_USER_CREATOR_ITEM_ACCEPTED",
+    "endsAt": "DRAFT_TERMINAL_RESULT"
+  },
+  "requiredUserSteps": ["ONE_NATURAL_LANGUAGE_INSTRUCTION"],
+  "forbiddenUserPrerequisites": ["HOOK_TRUST", "PROJECT_PATH_INPUT", "TERMINAL_COMMAND"],
+  "forbiddenCreatorInputs": [
+    "CALLER_SUPPLIED_TASK_ID",
+    "CALLER_SUPPLIED_THREAD_ID",
+    "CALLER_SUPPLIED_SESSION_ID",
+    "CALLER_SUPPLIED_RAW_TRANSCRIPT"
+  ],
+  "forbiddenFallbacks": [
+    "LEGACY_HOOK_BRIDGE",
+    "PROJECT_SCAN",
+    "RAW_SESSION_FILE_READ",
+    "PLUGIN_OR_MCP_THREAD_STORE_READ"
+  ],
+  "requiredEvidence": [
+    "DIRECT_USER_CREATOR_ITEM",
+    "DESKTOP_ATTESTED_ACTIVE_CURRENT_TASK_SOURCE_BOUNDARY",
+    "EXACT_COMPONENT_VERSIONS",
+    "SIGNED_DESKTOP_CURRENT_TASK_RUN_RECEIPT",
+    "SANITIZED_CONVERSATION_PROVENANCE",
+    "STUDIO_VISIBLE_AGENT_PACKAGE_DRAFT",
+    "ZERO_ADDITIONAL_CREATOR_PROJECT_SCANS",
+    "ZERO_ADDITIONAL_CREATOR_PROJECT_FILE_READS",
+    "ZERO_ADDITIONAL_CREATOR_PROJECT_FILE_WRITES",
+    "ZERO_CREATOR_CLI_OR_BRIDGE_CHILD_PROCESSES",
+    "ZERO_HOOK_TRUST_WRITES",
+    "ZERO_PLUGIN_OR_MCP_THREAD_STORE_READS",
+    "ZERO_RAW_SESSION_FILE_READS",
+    "ZERO_USER_TERMINAL_ACTIONS"
+  ],
+  "nonAcceptanceEvidenceClasses": [
+    "PROJECT_FIRST_CREATOR",
+    "PLUGIN_HOOK_OR_BRIDGE",
+    "CREATOR_CLI",
+    "FAKE_HOST_OR_PORT",
+    "ISOLATED_BUNDLED_CODEX_THREAD",
+    "PRESENTATION_ONLY_DRAFT_CARD"
+  ]
+}

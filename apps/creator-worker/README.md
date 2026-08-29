@@ -49,12 +49,28 @@ try {
 ## 从一句制作要求创建可修订 Draft
 
 新的 `agent-package-creator` 子路径提供 Draft 创作内核，并把创作拆成两个明确阶段。调用方先把创作者的
-一句制作要求与它已经确认的当前 Project 绑定，经过完整扫描和结构化提取后只返回
+一句制作要求与它已经确认的当前 Project 绑定，经过 Creator 来源允许列表扫描和结构化提取后只返回
 `combo.agent-package-draft/1`；这个 Draft 含身份、方法、示例任务、输出合同、来源摘要、revision 和
 fingerprint，但不含本机 Project 绝对路径，也不会自动编译、发布或运行。创作任务在服务端私下保留来源
 绑定，调用方只能针对当前 exact revision 提交修订，不能在编译时替换来源。只有用户选择编译后，第二阶段
 才生成内容寻址 Package、原子保存并用正式加载器重新打开。Combo Plugin 的一句话路由和可视化 Studio
 仍需在后续切片接入这个内核。
+
+Creator Draft 使用独立的来源允许列表，不复用旧版 Project Context Compiler 的全物理扫描语义。扫描器在
+下钻和打开内容前剪枝任意层级的 `.git`、`.codex`，以及 exact `codex-task.json`、
+`codex-thread.json`、`codex-session.json`；所有符号链接也不进入 Creator inventory。这个 profile 不读取
+Git classification，不调用 Git CLI，也不把这些排除项或其纯管理变化计入来源摘要。允许列表内的文件、目录
+和内容仍会完整哈希并在模型返回后复验，任何允许来源漂移都会拒绝 Draft。反斜杠、控制字符等不能安全表示
+为 Agent Package citation 的业务路径会明确停止，而不是被静默当作私有排除；well-formed Unicode 路径保留
+文件系统返回的 exact 形式，不做 Unicode 规范化。
+
+结构化 Creator Host 不直接挂载原 Project，而只收到一个临时允许列表投影。投影只含经过摘要复验的普通
+文件，文件权限固定为 `0400`，目录固定为 `0500`，Host 停止后必须清除；清除失败是可见的停止错误。模型
+返回的 citation 还会再次硬拒绝上述私有路径和非普通文件。这个投影闭合了当前 Project 内的 Creator 来源
+边界。Creator 初扫与投影复制会在正文读取前后核对 canonical containment、lexical path、已打开 fd 和来源
+身份，稳定符号链接及一次性中间目录置换会在消费正文前停止；Node 当前没有使用 `openat(2)` 逐段锁定路径，
+因此同 UID 对手反复竞态下的 OS 级隔离仍为 `NOT_PROVEN`。bundled Codex 也仍与桌面用户同 UID，不构成
+操作系统级的全盘读取隔离；不得把它描述为 Host 在操作系统层只能看到 Project。
 
 ```ts
 import { createCreatorAgentPackageDraftFromCurrentProject } from '@cb/creator-worker/agent-package-creator';
@@ -89,10 +105,102 @@ const compiled = authoringTask.compile({
 `combo-agent-package draft-current "一句制作要求"`，得到规范 Draft JSON。该命令只用于验证 Draft 创作
 内核的参数与输出合同，不是最终用户需要理解的终端流程，也不代表 Codex 已经提供焦点 Project 绑定。
 
+### 当前对话优先的 Creator 验收
+
+普通用户 Golden Path 是在 Codex Desktop 当前任务中只输入一句自然语言制作指令，由 Desktop 运行时建立
+不可由业务调用方、Plugin 或 MCP 伪造的 active-task 来源边界，并在同一任务显示可审阅的 Agent Package
+Draft。具体 Host / Plugin API 尚未冻结；该路径不要求 Terminal、`/hooks`、手工 trust、Project 路径、环境
+标记或内部 JSON，默认不得扫描 Project，也不得读取 raw session 文件或让 Plugin / MCP 直读 thread store。
+
+仓库以 [`CREATOR_CONVERSATION_ACCEPTANCE.md`](CREATOR_CONVERSATION_ACCEPTANCE.md) 作为这条路径的人工验收说明，
+以 [`creator-conversation-acceptance.v1.json`](creator-conversation-acceptance.v1.json) 记录机器可读状态。当前五层
+门禁仍为 `NOT_IMPLEMENTED` 或 `NOT_RUN`，整体状态为 `BLOCKED`。相应合同测试只防止团队把 Project-first、
+Hook / Bridge、CLI 或 Fake Host 证据误报为产品通过；测试自身不证明 Desktop 用户路径存在。
+
+源码现在包含一个并列的 current-conversation V2 协议和内部 fail-closed ordering seam。业务调用参数只允许
+一句 V2 制作要求与普通取消/超时控制；不能提交 Project、source、snapshot、transcript 或
+task/thread/session/item 标识。内部 ambient Host lease 必须绑定制作要求摘要，声明 direct-user、active-task、
+trigger 前快照、user-visible-only、complete 与 `rawStored=false`；摘要核对成功后，exact 制作要求会作为独立
+受信指令参与提取。Host 只把 bare Draft schema 交给模型，并在持有 sealed snapshot 的边界内检查逐字摘录与
+credential 泄漏；只有检查通过，Host 才能在模型输出之外包装绑定 snapshot、制作要求和 exact
+extraction candidate digest 的 egress receipt。最终 V2 Draft 使用独立 fingerprint domain，真实 Host receipt 必须再把
+该 candidate 摘要投影绑定到 exact typed Draft fingerprint；二者不得伪装成同一摘要。缺失、拒绝或错绑 receipt
+都不会形成 Draft。lease 还会在提取前后执行
+`assertStillCurrent()` 并在所有路径关闭。返回任务只有 Draft 读取和 exact revision，没有 compile。
+
+这两个 Worker 文件与 `agent-package-current-conversation-draft` public subpath 已进入 production build。当前
+production composition 只绑定一个固定 unavailable Host，所以合法调用也只会得到
+`AGENT_PACKAGE_CONVERSATION_SOURCE_UNAVAILABLE`；它不接受 Host/source 注入，也不会回退到 Project、session、
+Hook / Bridge、CLI 或第二个 Codex thread。Fake port 测试只锁顺序、失败闭包和零
+Project/Bridge/child-process import。因此这仍只是为未来 Desktop adapter 准备的 fail-closed facade，不会提升
+`ACC-HOST-011D`、`ACC-UAT-011E` 或整体 `J-011` 状态。真实 Desktop 仍需 Host-owned ambient lease、
+visible-item 过滤/完整性证明和同任务 Studio Draft surface。
+
+现有 Project Creator 代码与测试继续作为 `EXPLICIT_PROJECT_COMPAT` 维护。机器合同把
+`PROJECT_FIRST_CREATOR`、`PLUGIN_HOOK_OR_BRIDGE`、`CREATOR_CLI`、`FAKE_HOST_OR_PORT` 和
+`ISOLATED_BUNDLED_CODEX_THREAD` 全部列为 non-acceptance evidence。只有用户未来明确选择 Project 来源时，
+其中部分机制才可能成为该来源的底层实现；它们不属于当前对话 Golden Path，也不能作为普通用户体验 UAT。
+
+### 原生 Creator 授权语义与旧 Hook 兼容路径
+
+长期入口的目标不是让 Skill、MCP 或 Combo 自己签发授权，而是由顶层 Codex Host 展示一次性 Creator
+授权卡，并在自己的受认证 ledger 中绑定当前 thread、turn、item、Project generation、制作要求摘要和 exact
+executor。仓库当前只冻结了 path-free 授权卡 claims 和一个内部 ordering seam：它先向未来
+`CreatorAuthorizationRedemptionPort` 兑换当前 Host dispatch，再把兑换得到的内部 Project lease 交给
+Draft 内核。该 lease 包含 canonical path/device/inode 和同步 `assertCurrent()`；scanner 在首个目录读取
+边界必须同时重新核对 ambient Host dispatch/workspace generation 与本地目录 identity。返回面只有 Draft
+读取与修订，不暴露 Package compile。
+
+业务调用方不能提交 authorization handle、thread、turn、item、Project binding、workspace generation 或
+executor。生产包也没有 Creator mint/consume API、没有公开 authorized 子路径，且没有任何生产 composition
+导入该内部 seam；clean production build 也不携带该内部文件。因此当前没有真实 Host adapter 时，这条长期
+入口就是不可调用的 fail-closed 状态，不会回退到 legacy Bridge。
+
+授权 scope 固定为只生成 Draft、零 Project mutation、向 Codex 模型服务发送选定的 Creator Project 上下文，
+并只向 Combo 返回 Draft 与相对引用；它显式标记读取隔离为
+`same_uid_unisolated_not_os_enforced`，不能把 Project 绑定冒充 OS 沙箱。Project path/device/inode 仅属于
+未来 authenticated adapter 到应用层的内部 lease，不进入 public claims、handoff、模型 prompt、Draft 或
+Package。同步 lease 只是本地应用端口要求，不是已经冻结的跨进程 wire；真实实现也可以改为 Host 打开的
+目录 descriptor。
+
+当前状态是 `HOST_AUTHORIZATION_SEMANTICS_AND_ORDERING_READY`，只描述显式 Project 来源的未接线语义，不是
+当前对话实现或普通用户 UAT 完成。Codex
+`0.148.0-alpha.15` 没有向 Combo 暴露 Creator 自定义审批卡 API；真实完成仍要求顶层 Host UI、用户点击、
+mutual-auth IPC、Host 侧一次性原子 ledger、workspace generation 核对和 exact executor dispatch。仓内
+Fake redemption port 只证明调用顺序，不能冒充 Host authority。现有 0.8.3 Hook / Bridge 保持独立的
+`LEGACY_HOOK_COMPAT_V1` 路径；Hook 失败、用户拒绝或原生授权失败不得静默降级。
+
+为 Combo Plugin 提供的 `combo-agent-package-creator-bridge` 是另一个独立进程入口。创作者最终说出的完整
+句子可以包含官方创建指南地址；Plugin 只用白名单地址选择固定的
+`combo.agent-package-creator-guide/1`，不会把网页地址写入制作要求。Plugin 随后在已经正式绑定当前 Project
+的 Codex 子任务中启动桥接文件，并把该 Project 作为命令工作目录。桥接进程不接受路径参数，只从标准输入
+读取一个规范 `combo.agent-package-creator-bootstrap-handoff/1`，完成真实扫描和结构化提取后只在标准输出
+返回一个规范 `combo.agent-package-draft/1`。这条桥接链不会编译、试跑、发布或分享 Package；可视化 Studio
+和 Plugin 的一句话路由属于后续切片。
+
+桥接进程还要求受信 adapter 设置固定的
+`COMBO_AGENT_PACKAGE_CREATOR_HOST_BINDING=codex_host_current_saved_project` 标记；没有标记时会在扫描前
+拒绝。该标记不携带路径，也不是密码或 Host 身份证明。真正的 Project 权威仍来自 Plugin 创建的
+同 Project Codex 子任务；Plugin 集成测试必须同时核对该子任务的 Project ID、命令工作目录和桥接文件摘要。
+因此直接从普通终端设置环境变量运行桥接文件不属于受支持的用户入口。
+
+构建产物 `dist/agent-package-creator-bridge.mjs` 是面向 Node 24 的单文件模块，已把工作区 JavaScript 依赖
+打包进去，运行时只保留 Node 内置模块、Git、桌面内置 Codex 与本机认证依赖。它供 Plugin 固定摘要后携带，
+不是要求普通用户在终端里执行的入口。
+
+桥接失败只输出一个 `combo.agent-package-creator-bridge-error/1` JSON 对象，字段固定为 `protocol`、`code`、
+`stage` 和安全文案。正常 Creator 路径会区分 Project 绑定、来源读取、来源上限、来源变化、Host 失败、
+结构无效、策略拒绝、Draft 无效和清理不完整；内部配置、旧版 Runtime 分支与任意未知异常统一停止为
+`INTERNAL`。对应稳定 code 为 `CURRENT_PROJECT_UNAVAILABLE`、`SOURCE_READ_FAILED`、`SOURCE_LIMIT`、
+`SOURCE_CHANGED`、`HOST_FAILED`、`OUTPUT_INVALID`、`OUTPUT_REJECTED`、`DRAFT_INVALID` 和
+`CLEANUP_INCOMPLETE`。`OUTPUT_REJECTED` 不说明触发了哪条安全规则，也不暴露 Project 值；cause、stack、
+Host 原始错误和 Project 字节都不会进入标准错误输出。`EXTRACTION_FAILED` 只为旧版同协议生产者保留，
+不由当前正常分类路径发出。Bridge 不会对任何失败自动重试，避免重复模型轮次、费用或不确定副作用。
+
 ## 从 Project 直接创建并消费 Agent Package
 
-新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用可信的 Project 全量扫描、结构化 Codex 提取
-和完整复验机制，随后由代码确定性生成根 `AGENT.md`、一个 `extracted-method` 原生技能与规范
+新的创作接口不会经过旧版目录数据库或 `AgentVersion`。它复用 Creator 来源允许列表扫描、只读投影、
+结构化 Codex 提取和完整复验机制，随后由代码确定性生成根 `AGENT.md`、一个 `extracted-method` 原生技能与规范
 `agent.json`。输出先写入私有同文件系统临时目录，完成文件同步后按包摘要原子改名；摘要目标已存在时不会
 覆盖。正式加载器会立即关闭创作阶段并重新打开已发布目录，只有文件清单、摘要和规范清单完全一致才返回。
 
@@ -132,7 +240,7 @@ pnpm --silent --dir apps/creator-worker package-experience -- \
 这里的 `--` 是包管理器转发参数时使用的分隔符，命令行会明确接受它；直接调用
 `combo-agent-package experience` 时可以不写该分隔符。
 
-该命令不要求确认输入。执行命令本身表示用户授权全量读取受控的创作者来源目录，并接受相关内容可能进入
+该命令不要求确认输入。执行命令本身表示用户授权读取受控创作者来源目录中的 Creator 允许列表，并接受相关内容可能进入
 本机 Codex 使用的模型服务。命令会创建并重载不可变智能体包，再在独立消费者目录中启动一个新的 Codex
 任务线程，顺序执行包内第一条示例任务和一条连续任务。它不做裸 Codex 对比、不写两个 Project、不发布或
 分享智能体包。创作者来源目录和消费者目录必须是彼此独立的真实绝对目录；私有包默认保存到
@@ -182,7 +290,7 @@ Codex Host、loopback Broker 和 Worker Runtime 只在 application composition �
 不再承载创作或执行逻辑。这个拆分不新增 Conversation，也不改变 Catalog schema、V1/V2/V3 canonical bytes、
 fingerprint、Developer Instructions 或真实运行行为。
 
-可信扫描器会读取并哈希 canonical Project 根目录内的全部物理后代，包括 tracked、dirty、untracked、
+旧版 Project Context Compiler 的可信扫描器会读取并哈希 canonical Project 根目录内的全部物理后代，包括 tracked、dirty、untracked、
 ignored、hidden 文件，以及源码、文档、配置、日志、task/session 记录、raw tool output、`.env` 和物理
 `.git` 内容。普通检出中的 `.git` 目录属于扫描范围；linked worktree 中的 `.git` pointer 只作为 Project
 内的物理文件处理，不会继续遍历 Project 外的 shared common directory 或 sibling worktree。symlink 会按

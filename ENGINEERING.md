@@ -48,12 +48,16 @@ Agent Package Release
 
 | Journey                       | 用户结果                                                                                 | 对应产品对象                       | 必需 Capability                                                                                  | 责任 Module                                                                                                                                                           | 核心 Acceptance                                                                                                                |
 | ----------------------------- | ---------------------------------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `J-011` · 当前对话生成 Draft  | 创作者在当前 Codex Desktop 任务中用一句自然语言把刚才的对话做成 Agent                    | Agent Package Draft                | `CAP-011` · Desktop 当前对话绑定、`CAP-012` · 当前对话 Draft 提取                                | `MOD-CREATOR-BRIDGE` · Agent 制作入口、`MOD-AUTHORING` · Agent 创作、`MOD-CREATOR-UI` · 创作者体验                                                                    | `ACC-CONTRACT-011A`、`ACC-UNIT-011B`、`ACC-SEC-011C`、`ACC-HOST-011D`、`ACC-UAT-011E` · 对话优先创作五层验收                   |
 | `J-010` · 提交 Agent 创作来源 | 用户把一段 Agent 对话、一个 Project 或一段工作旅程交给自己的 Codex，并用制作指令启动创建 | Agent Package Draft                | `CAP-010` · 创作来源绑定、`CAP-020` · Draft 提取与 Package 编译                                  | `MOD-CREATOR-BRIDGE` · Agent 制作入口、`MOD-AUTHORING` · Agent 创作、`MOD-PACKAGE` · Package 核心                                                                     | `ACC-E2E-010` · 多来源创作启动：三类来源都能形成边界明确的 Draft，且无需用户理解内部文件和摘要                                 |
 | `J-020` · Studio 生成与体验   | 用户看到 Agent 的身份、能力、来源和真实试跑结果，并可修订                                | Agent Package Draft、Agent Package | `CAP-020` · Draft 提取与 Package 编译、`CAP-030` · Studio 审阅试跑、`CAP-070` · Package 推理运行 | `MOD-CREATOR-UI` · 创作者体验、`MOD-AUTHORING` · Agent 创作、`MOD-PACKAGE` · Package 核心、`MOD-WEB-PREVIEW` · Web 试跑预览、`MOD-CODEX-HOST` · 原生 Codex Agent 运行 | `ACC-E2E-020A` · Package 编译试跑：正式重载后完成真实试跑；`ACC-UAT-020B` · Studio 审阅修订：完整展示内容，修订后生成新 digest |
 | `J-030` · 发布并生成双入口    | 用户发布后同时获得分享链接和可复制的能力获取指令                                         | Agent Package Release              | `CAP-040` · Package 发布、`CAP-050` · 双入口分享                                                 | `MOD-CREATOR-UI` · 创作者体验、`MOD-REGISTRY` · Package 注册、`MOD-SHARE` · 分享服务、`MOD-SHARED` · 共享基础设施                                                     | `ACC-E2E-030` · 精确发布入口：链接与能力获取指令始终解析到同一 Package digest                                                  |
 | `J-040` · 通过链接使用        | 使用者打开链接并将 Agent 加载到自己的 Codex                                              | Installed Agent                    | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                 | `MOD-SHARE` · 分享服务、`MOD-RECEIVER` · Agent 能力接收、`MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                       | `ACC-HOST-040` · 分享链接接收：允许一次简要复制操作，最终在真实 Codex 中加载 exact Package                                     |
 | `J-045` · 用一段话获取能力    | 使用者把能力获取指令交给自己的 Agent，该 Agent 获取并加载对应能力                        | Installed Agent                    | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                 | `MOD-SHARE` · 分享服务、`MOD-RECEIVER` · Agent 能力接收、`MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                       | `ACC-HOST-045` · 自然语言能力获取：用户自己的 Agent 从指令解析 exact Release，完成校验和加载                                   |
 | `J-050` · 持续使用            | 使用者在同一个 Agent 对话中持续使用已获取能力完成工作                                    | Agent Session                      | `CAP-070` · Package 推理运行                                                                     | `MOD-PACKAGE` · Package 核心、`MOD-CODEX-HOST` · 原生 Codex Agent 运行                                                                                                | `ACC-E2E-050` · 同线程两轮推理：同一 Package 与同一 Codex 线程连续完成两轮真实任务                                             |
+
+当前 Creator Golden Path 只以 `J-011` 作为独立最小里程碑。`J-010` 中显式 Project 与工作旅程来源继续保留，但状态为
+`DEFERRED`，不能阻塞 `J-011`，也不能用其测试结果替代 `J-011`。
 
 `CAP-080` · 安装与会话恢复属于 `P5` · 平台化与可靠性，用于强化长期使用，不是最小产品闭环成立的前置条件。
 
@@ -105,18 +109,18 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 
 ## 三、工程责任边界
 
-| Module                                   | 责任                                                             | 当前仓库主要承载位置                                                                           | 服务的 Capability                                                                            |
-| ---------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `MOD-CREATOR-BRIDGE` · Agent 制作入口    | 接收制作指令，绑定对话、Project 或工作旅程并创建 Authoring Task  | 需要新增 Combo Plugin 或等价 Agent handoff                                                     | `CAP-010` · 创作来源绑定                                                                     |
-| `MOD-CREATOR-UI` · 创作者体验            | Agent Studio、创建进度、审阅修订和发布动作                       | `apps/web/`、可复用 `apps/runtime-web/` 的 Studio 外壳                                         | `CAP-030` · Studio 审阅试跑、`CAP-040` · Package 发布                                        |
-| `MOD-AUTHORING` · Agent 创作             | 来源读取、Draft 提取和 Package 编译编排                          | `apps/authoring/`；Agent Package 编译核心需要正式接入                                          | `CAP-010` · 创作来源绑定、`CAP-020` · Draft 提取与 Package 编译、`CAP-030` · Studio 审阅试跑 |
-| `MOD-PACKAGE` · Package 核心             | Agent Package 协议、构建、摘要、加载和只读快照                   | `packages/creator-agent-protocol/`、`apps/creator-worker/` 中的 Package 构建器、发布器与加载器 | `CAP-020` · Draft 提取与 Package 编译、`CAP-070` · Package 推理运行                          |
-| `MOD-REGISTRY` · Package 注册            | 保存不可变 Package、发布版本和解析 digest                        | `apps/authoring/`、`db/`、对象存储端口；需要新增 Package Release 语义                          | `CAP-040` · Package 发布、`CAP-050` · 双入口分享、`CAP-080` · 安装与会话恢复                 |
-| `MOD-SHARE` · 分享服务                   | 生成分享链接与能力获取指令，并把两者解析到 exact Release         | `apps/web/`、`apps/authoring/`；需要新增 Package Entry Resolver                                | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收                                           |
-| `MOD-RECEIVER` · Agent 能力接收          | 接收链接或能力获取指令，校验并加载对应 Agent Package             | 需要新增 Combo Plugin Receiver 或等价 Agent handoff                                            | `CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                                     |
-| `MOD-WEB-PREVIEW` · Web 试跑预览         | 在网页中展示试跑过程、对话和产物                                 | `apps/runtime/`、`apps/runtime-web/`                                                           | `CAP-030` · Studio 审阅试跑                                                                  |
-| `MOD-CODEX-HOST` · 原生 Codex Agent 运行 | 正式加载 Package、挂载 Skill、绑定当前 Project 并维持 Codex 线程 | `apps/creator-worker/` 中的 Agent Package Session 与 Bundled Codex Host                        | `CAP-070` · Package 推理运行、`CAP-080` · 安装与会话恢复                                     |
-| `MOD-SHARED` · 共享基础设施              | 跨服务合同、认证、存储、事件和错误模型                           | `packages/shared/`、`db/`、`infra/`                                                            | `CAP-010` · 创作来源绑定至 `CAP-080` · 安装与会话恢复的跨模块基础设施                        |
+| Module                                   | 责任                                                                                                                                 | 当前仓库主要承载位置                                                                                                                                           | 服务的 Capability                                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `MOD-CREATOR-BRIDGE` · Agent 制作入口    | 接收制作指令，默认消费 Desktop attested active-task 对话来源；Project 与工作旅程作为独立显式来源                                     | 需要新增 Desktop current-task handoff，具体 Host / Plugin API 尚未冻结；旧 Hook / Bridge 只保留 Project 兼容职责                                               | `CAP-010` · 创作来源绑定、`CAP-011` · Desktop 当前对话绑定                                                                    |
+| `MOD-CREATOR-UI` · 创作者体验            | Codex Desktop 内的创建进度、Agent Studio、审阅修订和发布动作                                                                         | 需要新增 Codex Desktop Creator / Studio surface；`apps/web/` 与 `apps/runtime-web/` 仅可复用展示能力                                                           | `CAP-030` · Studio 审阅试跑、`CAP-040` · Package 发布                                                                         |
+| `MOD-AUTHORING` · Agent 创作             | 来源读取、Draft 提取和 Package 编译编排                                                                                              | `apps/authoring/`；Agent Package 编译核心需要正式接入                                                                                                          | `CAP-010` · 创作来源绑定、`CAP-012` · 当前对话 Draft 提取、`CAP-020` · Draft 提取与 Package 编译、`CAP-030` · Studio 审阅试跑 |
+| `MOD-PACKAGE` · Package 核心             | Agent Package 协议、构建、摘要、加载和只读快照                                                                                       | `packages/creator-agent-protocol/`、`apps/creator-worker/` 中的 Package 构建器、发布器与加载器                                                                 | `CAP-020` · Draft 提取与 Package 编译、`CAP-070` · Package 推理运行                                                           |
+| `MOD-REGISTRY` · Package 注册            | 保存不可变 Package、发布版本和解析 digest                                                                                            | `apps/authoring/`、`db/`、对象存储端口；需要新增 Package Release 语义                                                                                          | `CAP-040` · Package 发布、`CAP-050` · 双入口分享、`CAP-080` · 安装与会话恢复                                                  |
+| `MOD-SHARE` · 分享服务                   | 生成分享链接与能力获取指令，并把两者解析到 exact Release                                                                             | `apps/web/`、`apps/authoring/`；需要新增 Package Entry Resolver                                                                                                | `CAP-050` · 双入口分享、`CAP-060` · Agent 能力接收                                                                            |
+| `MOD-RECEIVER` · Agent 能力接收          | 接收链接或能力获取指令，校验并加载对应 Agent Package                                                                                 | 需要新增 Combo Plugin Receiver 或等价 Agent handoff                                                                                                            | `CAP-060` · Agent 能力接收、`CAP-070` · Package 推理运行                                                                      |
+| `MOD-WEB-PREVIEW` · Web 试跑预览         | 在网页中展示试跑过程、对话和产物                                                                                                     | `apps/runtime/`、`apps/runtime-web/`                                                                                                                           | `CAP-030` · Studio 审阅试跑                                                                                                   |
+| `MOD-CODEX-HOST` · 原生 Codex Agent 运行 | 正式加载 Package、挂载 Skill 并维持 Codex 线程；未来顶层 Desktop Host 还需提供不可伪造的当前 active task 来源边界和显式 Project 权限 | 当前 `apps/creator-worker/` 只承载 Agent Package Session、Project Creator 授权语义与自建 Bundled Codex Host；Desktop current-task handoff 为 `NOT_IMPLEMENTED` | `CAP-010` · 创作来源绑定、`CAP-011` · Desktop 当前对话绑定、`CAP-070` · Package 推理运行、`CAP-080` · 安装与会话恢复          |
+| `MOD-SHARED` · 共享基础设施              | 跨服务合同、认证、存储、事件和错误模型                                                                                               | `packages/shared/`、`db/`、`infra/`                                                                                                                            | `CAP-010` · 创作来源绑定至 `CAP-080` · 安装与会话恢复的跨模块基础设施                                                         |
 
 当前 `Capability`、旧 `AgentVersion` 或 Catalog 数据可以作为迁移来源、管理投影或历史兼容层，但不能与 Agent Package 并列成为新的交付真相。
 
@@ -137,10 +141,28 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 - `AGENT.md` 注入、Package Skill 注册、私有只读运行快照。
 - Bundled Codex 的同一线程多轮推理。
 - Source Project 与 Consumer Project 分离的真实流程测试。
+- `CreatorAuthorization/1` 的 path-free Project 授权卡 claims、固定 Draft-only scope，以及未接线的内部
+  redemption ordering / dispatch-scoped lease / scanner 首读绑定 seam；它只服务未来显式 Project 来源，当前没有
+  生产 adapter 或可运行入口。
+- `agent-package-creator-request/2` 与 `agent-package-draft/2` 的 current-conversation path-free 合同，以及
+  未接线的内部 ambient lease ordering seam。它锁定 direct-user、active-task、user-visible-only、完整性、
+  trigger 前快照边界、制作要求语义绑定、Host-owned verbatim/credential egress receipt、前后漂移核对、close
+  和零 Project/Bridge/child-process import。V2 协议会随公开 `agent-package-draft` 子路径进入 production
+  build；Worker ordering seam 与公开 production fail-closed facade 也进入 production build，但当前 composition
+  只绑定固定 unavailable Host，没有真实 Host adapter 或 Studio surface。
+- `desktop-current-conversation-run-receipt/1` 的 canonical Ed25519 验收收据与只读 verifier；它把 exact
+  candidate、组件版本、脱敏 task binding、完整 visible-only 来源、Host egress 候选摘要、候选到 typed
+  same-task Draft 的投影、事件 hash chain 和 Host 签名的端到端零旁路观测声明绑定到仓库外受信 Host key。
+  当前 Desktop 尚不能签发，因此它是未来真实验收的验证合同，不是 Host/UAT PASS 证据；本合同不虚构尚未
+  建立独立信任根的 Worker 第二签名。
 
 ### 尚未形成产品闭环的部分
 
-- 对话、Project 或工作旅程通过 Agent 制作指令进入 Agent Studio 的直接入口。
+- 顶层 Codex Desktop 对当前 active task 建立不可由业务调用方、Plugin 或 MCP 伪造的来源边界，并在同一任务展示
+  Draft 的直接入口。具体 Host / Plugin API 尚未冻结；当前仓内 Bundled Host 只会自建线程，不能冒充该能力。
+- 对话来源的 Desktop active-task attestation、完整性边界、缺失或压缩内容的停止语义，以及真实 Desktop UAT。
+- 用户显式选择 Project 来源时所需的最小读取权限、workspace generation 核对和真实权限 UI。旧 Hook 只能作为
+  Project 兼容路径，不能冒充普通用户入口或任何 `J-011` 验收证据。
 - Agent Package Draft 的可视化查看、修订和重新编译。
 - Agent Package 与 Authoring API、Web、数据库和对象存储的正式连接。
 - `AgentPackageRelease`、云端 Package Registry、稳定分享链接和能力获取指令。
@@ -180,16 +202,24 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 
 ### `P2` · 创作者最小闭环
 
-用户结果：创作者能从一段 Agent 对话、一个 Project 或一段工作旅程直接生成 Agent。
+用户结果：创作者先从当前 Codex Desktop 对话直接得到可审阅的 Agent Package Draft。
 
 工程工作：
 
-- 建立 Agent 制作指令到 Authoring Task 的 Creator Bridge，并支持对话、Project 和工作旅程三类来源。
+- 先完成 `J-011` · 当前对话生成 Draft：用户在当前 Codex Desktop 任务只输入一句自然语言制作指令，Desktop
+  运行时把不可由调用方伪造的当前 active task 作为默认来源边界，不要求 Terminal、`/hooks`、手工 trust、
+  Project 路径或内部 handoff。
+- 这句直接用户指令只授权使用当前任务的可见对话，不授权读取 Project。对话不可用、不完整、漂移或无法证明
+  来自当前任务时必须停止，不得静默回退到 Project scan、raw session 文件或旧 Hook / Bridge。
+- Project 与工作旅程作为后续独立来源选项。用户显式选择 Project 时默认排除 `.env`、日志、task/session、
+  hidden 和 ignored 内容；只有扩大读取或披露范围时才使用 Host 原生权限机制。
 - 将 Agent Package Authoring 接入 Agent Studio。
 - 展示提取进度、Agent 身份、能力、来源和试跑结果。
 - 支持修订 Draft，并重新编译出新的 Package digest。
 
-完成标准：创作者把制作指令交给自己的 Codex 后即可进入 Studio，完成 exact Package 编译、正式重载和真实试跑。
+当前最小完成标准：`J-011` 独立通过五层验收，创作者在同一 Codex Desktop 任务发出一句自然语言后看到可审阅
+Draft。显式 Project、工作旅程、Package 编译、正式重载和真实试跑分别留在后续 Acceptance，不阻塞这一最小
+里程碑。旧 Hook / Bridge、CLI、Fake Host 或独立 Bundled Codex thread 测试不得替代其中任何一层。
 
 ### `P3` · 发布链路闭环
 
@@ -240,8 +270,14 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 | `INV-060` · 已完成产物可恢复          | 已完成产物在后续失败时仍可恢复                           | 故障测试能够重新打开已生成 Package 或 Release                         |
 | `INV-070` · 重试幂等                  | 重试不会重复创建、发布或安装                             | 幂等测试得到同一对象或明确冲突                                        |
 | `INV-080` · 旅程验收不可替代          | 模块测试不能替代完整用户旅程验收                         | Release Gate 单独展示 Contract、E2E、Host、Security、UAT 状态         |
+| `INV-091` · 对话默认零 Project 读取   | 当前对话来源不得读取 Project 或 raw session 文件         | Host 事件与文件观测证明 Project read/write 都为零                     |
+| `INV-092` · Desktop 是普通用户入口    | 普通用户只在 Codex Desktop 当前任务输入一句自然语言      | UAT 全程无 Terminal、`/hooks`、手工 trust、路径和内部协议             |
+| `INV-093` · 来源授权最小化            | 直接指令只同意当前可见对话；扩大来源必须独立选择和授权   | 对话来源无二次授权，Project 扩权有 Host 权限证据且拒绝时零读取        |
 
 这些规则约束实现，但不改写唯一产品目标。
+
+旧 `INV-090` · 创作来源先授权是 Project-first Creator 的工程假设，不再作为当前对话 Golden Path 的活动不变量。
+其一次性 Project 授权语义只保留给未来显式 Project 来源，不能要求普通用户为当前对话制作额外 trust 或授权卡。
 
 ## 七、验收体系
 
@@ -254,6 +290,33 @@ Combo 不自行实现模型推理循环。Codex 负责推理和工具循环；Co
 - `ACC-SEC-*` · 安全隔离验收：隐私、权限和隔离。
 - `ACC-RECOVERY-*` · 故障恢复验收：中断、重试与恢复。
 - `ACC-UAT-*` · 真实用户体验验收：真实用户完成目标体验。
+
+### 当前优先验收：`J-011` · 当前对话生成 Draft
+
+新流程以 `apps/creator-worker/creator-conversation-acceptance.v1.json` 为机器可读状态，并由
+`apps/creator-worker/CREATOR_CONVERSATION_ACCEPTANCE.md` 规定真实证据。五层门禁必须独立报告：
+
+| Acceptance                                | 证明内容                                                                                                 | 当前状态          |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------- |
+| `ACC-CONTRACT-011A` · 当前对话 Draft 合同 | source 明确为当前可见对话，禁止 Project 路径、Hook 字段、调用方 task/thread/session ID 和 raw transcript | `NOT_RUN`         |
+| `ACC-UNIT-011B` · 对话提取                | 只使用选定对话，Project scanner、projection、Bridge 和 child process 为零                                | `NOT_IMPLEMENTED` |
+| `ACC-SEC-011C` · 零旁路                   | 缺失、漂移、egress 拒绝或失败时不回退到 Project、raw session、Hook 或 Terminal                           | `NOT_IMPLEMENTED` |
+| `ACC-HOST-011D` · Desktop 原生链路        | Desktop attested active-task 边界成立，当前任务一句话直接显示可审阅 Draft                                | `NOT_IMPLEMENTED` |
+| `ACC-UAT-011E` · 普通用户体验             | 非开发用户仅操作 Desktop，并证明跨任务来源隔离                                                           | `NOT_RUN`         |
+
+V2 协议、Worker ordering seam 与 production fail-closed facade 是实现准备，不是五层验收证据。公开 V2 合同
+已经实现，但尚无绑定 exact candidate commit 的正式 `CONTRACT_TEST_REPORT`，所以 Contract 层为 `NOT_RUN`。
+Production composition 只绑定固定 unavailable Host，没有 Desktop importer、真实 active-task snapshot 或同任务
+Draft UI；因此 Unit、Security 与 Host 层继续为 `NOT_IMPLEMENTED`。不能用 source-level 单元测试或固定失败入口
+把任一层直接改成 `PASS`。
+
+只要任一层未通过，`J-011` 就保持 `BLOCKED`。机器合同测试通过只证明团队没有篡改验收定义，不证明产品路径存在。
+机器合同要求每个 `PASS` 分别绑定该层 evidence kind、artifact digest、运行环境和同一个顶层 `candidateCommit`；
+五层一起改成 `PASS` 但没有 evidence，或拼接不同 commit 的 evidence，都必须失败。观测窗口固定为
+`DIRECT_USER_CREATOR_ITEM_ACCEPTED` 至
+`DRAFT_TERMINAL_RESULT`，只统计该窗口内新增的 Creator Project scan/read/write、用户 Terminal 动作和 Creator
+CLI / Bridge child process。`PROJECT_FIRST_CREATOR`、`PLUGIN_HOOK_OR_BRIDGE`、`CREATOR_CLI`、
+`FAKE_HOST_OR_PORT`、`ISOLATED_BUNDLED_CODEX_THREAD` 全部是机器枚举的非产品证据，不能提升上述状态。
 
 ### 总目标完成条件
 
