@@ -6,7 +6,7 @@
 
 `SESSION_COOKIE_SECURE` 独立于 `NODE_ENV`。Test、Preview 与 Production 发布身份都必须选择 Secure Cookie 和 HTTPS origin；非 production 的本地开发仍可显式选择非 Secure Cookie 和 HTTP origin。Runtime 与 authoring 对这两个配置使用相同语义。
 
-消费计费由 `RUNTIME_BILLING_FREE_USES` 和 `RUNTIME_BILLING_UNIT_PRICE_CENTS` 控制。开发和测试默认分别为三次和一百分，生产必须显式配置；每笔用量会保存当时的额度与单价快照。
+消费计费由 `RUNTIME_BILLING_FREE_USES` 和 `RUNTIME_BILLING_UNIT_PRICE_CENTS` 控制。开发和测试默认分别为三次和一分，生产必须显式配置；每笔用量会保存当时的额度与单价快照。
 
 可选沙箱默认关闭。开启时，镜像必须使用不可变 SHA-256 摘要，签名私钥必须存在，RuntimeClass 固定为 `gvisor`。配置修订号用于滚动发布期间阻止旧副本替换较新的 Pod。普通容量是四个槽位；第五槽还要求显式记录真实集群验证。
 
