@@ -114,6 +114,26 @@ export function composeSystemPrompt(
   });
 }
 
+export function composeKnowledgeSystemPrompt(
+  knowledge: { name: string; description: string; instructions: string },
+  now: Date = new Date(),
+): string {
+  return [
+    knowledge.instructions,
+    '',
+    `名称：${knowledge.name}`,
+    `简介：${knowledge.description}`,
+    '',
+    factDiscipline(now),
+    '',
+    '# 知识回答协议 —— 必须遵守',
+    '你不能用自由文本直接向用户作答。先调用 knowledge_search 检索证据；只可引用本轮返回的 chunkId。',
+    '证据充分时调用 submit_knowledge_answer，status=answered，并提交完整答案与升序、不重复的 citationChunkIds。',
+    '证据不足时调用 submit_knowledge_answer，status=insufficient_evidence，不要填写 answer 或 citations。',
+    '每轮只能提交一次。提交后停止；模型正文和工具转录都只是候选，不会直接展示给用户。',
+  ].join('\n');
+}
+
 function zeroUsage(): Usage {
   return {
     input: 0,
@@ -179,7 +199,15 @@ export function historyToAgentMessages(rows: MessageRecord[], model: RuntimeMode
 
 /** 生产 TurnAgentFactory：pi Agent 包装成 run-turn 消费的最小面。 */
 export function createPiTurnAgentFactory(env: Env): TurnAgentFactory {
-  return ({ definition, history, tools, mode, promptText, hasExistingStudioArtifact }) => {
+  return ({
+    definition,
+    history,
+    tools,
+    mode,
+    promptText,
+    hasExistingStudioArtifact,
+    knowledge,
+  }) => {
     if (!hasLlmCredential(env)) {
       throw new TurnAgentUnavailableError(
         '试用服务未配置模型密钥（ANTHROPIC_API_KEY 或 OPENROUTER_API_KEY），暂时无法对话。',
@@ -188,13 +216,15 @@ export function createPiTurnAgentFactory(env: Env): TurnAgentFactory {
     const model = resolveModel(env);
     const agent = new Agent({
       initialState: {
-        systemPrompt: composeSystemPrompt(definition, new Date(), mode, {
-          taskText: promptText,
-          hasExistingPage: hasExistingStudioArtifact,
-        }),
+        systemPrompt: knowledge
+          ? composeKnowledgeSystemPrompt(knowledge)
+          : composeSystemPrompt(definition, new Date(), mode, {
+              taskText: promptText,
+              hasExistingPage: hasExistingStudioArtifact,
+            }),
         model,
         tools,
-        messages: historyToAgentMessages(history, model),
+        messages: knowledge ? [] : historyToAgentMessages(history, model),
         thinkingLevel: 'off',
       },
       // 按 model.provider 注入对应 key（anthropic→ANTHROPIC_API_KEY / openrouter→OPENROUTER_API_KEY）。

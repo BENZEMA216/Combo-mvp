@@ -14,6 +14,8 @@
 - `event-log.ts` 定义事件日志端口、保留数量、有效期和 Redis Stream 编号工具。
 - `stream.ts` 实现 Last-Event-ID 补发、实时缓冲、单调去重和心跳。
 
+Capability v2 的受控知识 Turn 走独立分支：模型 delta 只用于活性看门狗，不进入 Redis、Message 或用户 SSE；知识工具候选通过平台验证后，终态、用量结算、权威回答和 receipt 在同一 PostgreSQL 事务内提交，然后才追加终态事件。知识工具不进 sandboxd，因此中断、关闭和清扫不依赖沙箱清理证明。
+
 ## 一轮生成
 
 提交消息时，数据库部分唯一索引保证一个 Session 只有一个 `running` Turn。`usageId` 的事务级锁与唯一约束保证重试返回原 Turn；新任务只有在免费额度或钱包预留成功后才会创建。异步执行只读取已完成历史。Studio 构造 Agent 时还会读取当前可见 HTML，用它区分首版视觉合同和后续视觉连续性。工具顺序固定为可信的 `upsert_artifact` 在前；显式开启沙箱后才追加四个远程工具。

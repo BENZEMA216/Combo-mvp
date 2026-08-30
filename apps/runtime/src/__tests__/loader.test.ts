@@ -1,5 +1,6 @@
 // loader 权限闸与定义校验：本人未发布可试 / 他人未发布拒 / published 放行 / 坏 version 拒。
 import { describe, expect, it } from 'vitest';
+import { serializeCreatorAgentPackageCapability } from '@cb/creator-agent-protocol/agent-package-capability';
 import {
   CAPABILITY_BUCKET,
   listTrialCapabilities,
@@ -42,6 +43,8 @@ describe('loadCapability 权限闸', () => {
     const result = await loadCapability(db, store, cap.id, ME);
     expect(result.kind).toBe('ok');
     if (result.kind === 'ok') {
+      expect(result.definition.version).toBe(1);
+      if (result.definition.version !== 1) return;
       expect(result.capability.id).toBe(cap.id);
       expect(result.definition.instructions).toContain('会议纪要');
     }
@@ -73,7 +76,36 @@ describe('loadCapability 权限闸', () => {
     expect(result.kind).toBe('not_found');
   });
 
-  it('strict Agent Package Capability v2 → unsupported_version（旧 Runtime 明确拒绝）', async () => {
+  it('loads only the exact canonical Agent Package Capability v2 projection', async () => {
+    const db = new FakeDb();
+    const store = new FakeObjectStore();
+    const cap = db.seedCapability({ owner_user_id: ME });
+    store.seedText(
+      CAPABILITY_BUCKET,
+      cap.storage_key,
+      serializeCreatorAgentPackageCapability({
+        version: 2,
+        protocol: 'combo.agent-package-capability/2',
+        release: {
+          protocol: 'combo.agent-package-release/1',
+          releaseId: RELEASE_ID,
+          packageDigest: PACKAGE_DIGEST,
+        },
+      }),
+    );
+
+    const result = await loadCapability(db, store, cap.id, ME);
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.definition).toMatchObject({
+        version: 2,
+        protocol: 'combo.agent-package-capability/2',
+        release: { releaseId: RELEASE_ID, packageDigest: PACKAGE_DIGEST },
+      });
+    }
+  });
+
+  it('rejects a semantically valid but non-canonical v2 projection', async () => {
     const db = new FakeDb();
     const store = new FakeObjectStore();
     const cap = db.seedCapability({ owner_user_id: ME });
@@ -91,8 +123,9 @@ describe('loadCapability 权限闸', () => {
       }),
     );
 
-    const result = await loadCapability(db, store, cap.id, ME);
-    expect(result.kind).toBe('unsupported_version');
+    await expect(loadCapability(db, store, cap.id, ME)).resolves.toEqual({
+      kind: 'invalid_definition',
+    });
   });
 
   it.each([

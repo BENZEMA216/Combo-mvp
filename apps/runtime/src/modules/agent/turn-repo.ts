@@ -285,9 +285,13 @@ export async function sweepExpiredTurns(
   } = {},
 ): Promise<TerminalTurn[]> {
   const candidates = await db.query<{ id: string; session_id: string }>(
-    `SELECT id, session_id FROM turns
-      WHERE status = 'running' AND created_at < $1
-      ORDER BY created_at, id`,
+    `SELECT t.id, t.session_id
+       FROM turns t
+       JOIN sessions s ON s.id = t.session_id
+      WHERE t.status = 'running'
+        AND t.created_at < $1
+        AND s.product_kind = 'legacy_capability'
+      ORDER BY t.created_at, t.id`,
     [cutoff],
   );
   const swept: TerminalTurn[] = [];

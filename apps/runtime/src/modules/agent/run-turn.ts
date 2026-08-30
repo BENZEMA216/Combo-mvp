@@ -1,7 +1,8 @@
 // 一轮生成的自治编排：数据库限制单 Session 单 running Turn，HTTP 提交后在进程内异步执行。
 import { randomUUID } from 'node:crypto';
 import { EventType } from '@ag-ui/core';
-import type { CapabilityDefinition, SessionMode } from '@cb/shared';
+import { knowledgeBindingsEqual, type CapabilityDefinition, type SessionMode } from '@cb/shared';
+import type { KnowledgeAgentTestGate } from '../../platform/config/env.js';
 import { withTransaction, type RuntimeDb } from '../../platform/infra/db.js';
 import type { RuntimeObjectStore } from '../../platform/infra/object-store.js';
 import type { PublishedStreamEvent, SessionEventBus } from '../../platform/infra/event-bus.js';
@@ -29,8 +30,15 @@ import {
   type UsageBillingPolicy,
   type UsageRequest,
 } from '../billing/service.js';
-import { findUsageCharge } from '../billing/repo.js';
+import { findUsageCharge, readUsageChargeProductKindByTurn } from '../billing/repo.js';
 import { createSandboxTools, type SandboxAgentTool } from './sandbox-tools.js';
+import {
+  createKnowledgeToolSession,
+  validateKnowledgeCandidate,
+  type KnowledgeAgentTool,
+  type ResolvedKnowledgeAgent,
+} from '../knowledge-agent/resolver.js';
+import { finishKnowledgeTurn, sweepExpiredKnowledgeTurns } from '../knowledge-agent/repo.js';
 import { createTurnEmitter, type TurnEmitter, type TurnLogger } from './turn-emitter.js';
 import {
   createTurn,
@@ -48,7 +56,7 @@ import {
   type TurnLastError,
 } from './turn-repo.js';
 
-export type RuntimeAgentTool = ArtifactAgentTool | SandboxAgentTool;
+export type RuntimeAgentTool = ArtifactAgentTool | SandboxAgentTool | KnowledgeAgentTool;
 
 export interface TurnAgentInput {
   definition: CapabilityDefinition;
@@ -57,6 +65,7 @@ export interface TurnAgentInput {
   tools: RuntimeAgentTool[];
   promptText: string;
   hasExistingStudioArtifact: boolean;
+  knowledge?: Pick<ResolvedKnowledgeAgent, 'name' | 'description' | 'instructions'>;
 }
 export interface TurnAgent {
   subscribeTextDelta(fn: (delta: string) => void): () => void;
@@ -149,6 +158,8 @@ export interface TurnRunnerDeps {
   turnAdmissionDatabaseTimeoutMs?: number;
   turnAdmissionDeadlineMs?: number;
   billingPolicy?: UsageBillingPolicy;
+  /** Exact Runtime release identity used by ownerless recovery paths. */
+  runtimeSourceSha?: string;
   log: TurnLogger;
 }
 export type StartTurnResult =
@@ -161,6 +172,11 @@ export interface TurnRunner {
     text: string;
     usageId: string;
     capabilityOwnerUserId: string;
+    knowledge?: {
+      resolved: ResolvedKnowledgeAgent;
+      gate: KnowledgeAgentTestGate;
+      runtimeSourceSha: string;
+    };
     log: TurnLogger;
   }): Promise<StartTurnResult>;
   interrupt(sessionId: string): Promise<boolean>;
@@ -285,6 +301,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     controller: AbortController;
     runId: string;
     completion: Promise<void>;
+    knowledgeRuntimeSourceSha?: string;
   }
   interface StartingTurn {
     sessionId: string;
@@ -444,44 +461,141 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       });
     return pending;
   };
+  const runtimeSourceShaForKnowledge = (candidate?: string): string => {
+    const sourceSha = candidate ?? deps.runtimeSourceSha;
+    if (!sourceSha || !/^[0-9a-f]{40}$/u.test(sourceSha)) {
+      throw new Error('knowledge terminal Runtime identity is unavailable');
+    }
+    return sourceSha;
+  };
+  const readTurnProductKind = async (
+    runId: string,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<'legacy_capability' | 'knowledge_agent_test' | null> => {
+    const reserved = await readUsageChargeProductKindByTurn(deps.db, runId, signal);
+    if (reserved) return reserved;
+    return (
+      (
+        await deps.db.query<{
+          product_kind: 'legacy_capability' | 'knowledge_agent_test';
+        }>('SELECT product_kind FROM sessions WHERE id = $1', [sessionId], signal)
+      ).rows[0]?.product_kind ?? null
+    );
+  };
+  const finishInterruptedRun = async (input: {
+    sessionId: string;
+    runId: string;
+    lastError: TurnLastError;
+    knowledgeRuntimeSourceSha?: string;
+    beforeFinish?: () => Promise<void>;
+    transaction?: NonNullable<Parameters<typeof finishTurnWithMessage>[2]>['transaction'];
+  }): Promise<boolean> => {
+    const productKind = await readTurnProductKind(
+      input.runId,
+      input.sessionId,
+      input.transaction?.signal,
+    );
+    if (productKind === 'knowledge_agent_test') {
+      const terminal = await finishKnowledgeTurn(
+        deps.db,
+        {
+          sessionId: input.sessionId,
+          turnId: input.runId,
+          outcome: 'interrupted',
+          validationCode: 'not_run',
+          answer: null,
+          citationChunkIds: [],
+          runtimeSourceSha: runtimeSourceShaForKnowledge(input.knowledgeRuntimeSourceSha),
+          lastError: input.lastError,
+        },
+        {
+          beforeFinish: input.beforeFinish
+            ? async () => {
+                await input.beforeFinish?.();
+              }
+            : undefined,
+          transaction: input.transaction,
+        },
+      );
+      return terminal.won;
+    }
+    if (productKind !== 'legacy_capability') {
+      throw new Error('running Turn has no usage reservation');
+    }
+    return finishTurnWithMessage(
+      deps.db,
+      {
+        id: input.runId,
+        sessionId: input.sessionId,
+        idx: 1,
+        status: 'interrupted',
+        content: [{ type: 'text', text: input.lastError.message }],
+        lastError: input.lastError,
+      },
+      {
+        beforeFinish: input.beforeFinish,
+        afterFinish: (transaction) => billing.releaseUsage(transaction, input.runId),
+        transaction: input.transaction,
+      },
+    );
+  };
   const unsubscribeInterrupts = deps.interrupts.subscribe(({ sessionId, runId }) => {
     const running = active.get(sessionId);
     if (running?.runId !== runId) return;
     running.controller.abort();
-    void stopSandboxCommands(sessionId, 'interrupt-broadcast', {
-      localExecution: true,
-    }).catch(() => undefined);
+    if (!running.knowledgeRuntimeSourceSha) {
+      void stopSandboxCommands(sessionId, 'interrupt-broadcast', {
+        localExecution: true,
+      }).catch(() => undefined);
+    }
   });
   let sweepInFlight: Promise<void> | undefined;
   const runSweep = (): Promise<void> => {
     if (sweepInFlight) return sweepInFlight;
     const run = (async () => {
+      const cutoff = new Date(Date.now() - TURN_ABANDON_AFTER_MS);
+      const swept: TerminalTurn[] = [];
       try {
-        const swept = await sweepExpiredTurns(
-          deps.db,
-          new Date(Date.now() - TURN_ABANDON_AFTER_MS),
-          {
-            beforeFinish: async (turn) => {
-              deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
-              // The Session row remains locked until sandboxd confirms its
-              // descendant sweep or the exact Pod UID is observed gone.
-              await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
-                localExecution: active.get(turn.sessionId)?.runId === turn.id,
-              });
-            },
-            afterFinish: (transaction, turn) => billing.releaseUsage(transaction, turn.id),
-          },
-        );
-        // PostgreSQL is the terminal truth. Redis is appended only after each
-        // terminal transaction commits; startTurn repairs a missing event
-        // under the same Session lock before a successor can be created.
-        for (const turn of swept) {
-          await appendCommittedTerminal(turn).catch((err) => {
-            deps.log.error({ err, runId: turn.id }, 'swept terminal event append failed');
+        const beforeLegacyFinish = async (turn: {
+          id: string;
+          sessionId: string;
+        }): Promise<void> => {
+          deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
+          // The Session row remains locked until sandboxd confirms its
+          // descendant sweep or the exact Pod UID is observed gone.
+          await stopSandboxCommands(turn.sessionId, 'turn-sweep', {
+            localExecution: active.get(turn.sessionId)?.runId === turn.id,
           });
-        }
+        };
+        const legacySwept = await sweepExpiredTurns(deps.db, cutoff, {
+          beforeFinish: beforeLegacyFinish,
+          afterFinish: (transaction, turn) => billing.releaseUsage(transaction, turn.id),
+        });
+        swept.push(...legacySwept);
       } catch (err) {
-        deps.log.error({ err }, 'turn sweep failed');
+        deps.log.error({ err }, 'legacy Turn sweep failed');
+      }
+      try {
+        const knowledgeSwept = await sweepExpiredKnowledgeTurns(deps.db, cutoff, {
+          runtimeSourceSha: deps.runtimeSourceSha ?? '',
+          beforeFinish: async (turn) => {
+            // Knowledge tools are read-only, in-memory views of the already verified Bundle. They
+            // never enter sandboxd, so a dead owner does not need a sandbox cleanup proof.
+            deps.interrupts.publish({ sessionId: turn.sessionId, runId: turn.id });
+          },
+        });
+        swept.push(...knowledgeSwept);
+      } catch (err) {
+        deps.log.error({ err }, 'knowledge Turn sweep failed');
+      }
+      // PostgreSQL is the terminal truth. Redis is appended only after each
+      // terminal transaction commits; startTurn repairs a missing event
+      // under the same Session lock before a successor can be created.
+      for (const turn of swept) {
+        await appendCommittedTerminal(turn).catch((err) => {
+          deps.log.error({ err, runId: turn.id }, 'swept terminal event append failed');
+        });
       }
       try {
         await billing.reconcileTerminalReservations(deps.db);
@@ -530,6 +644,249 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       retryDelayMs = Math.min(retryDelayMs * 2, TURN_OWNERSHIP_RETRY_MAX_DELAY_MS);
     }
   };
+
+  async function executeKnowledgeTurn(args: {
+    sessionId: string;
+    definition: CapabilityDefinition;
+    text: string;
+    controller: AbortController;
+    runId: string;
+    knowledge: NonNullable<Parameters<TurnRunner['startTurn']>[0]['knowledge']>;
+    log: TurnLogger;
+  }): Promise<void> {
+    const { sessionId, controller, log, runId } = args;
+    const localHandle = active.get(sessionId);
+    if (
+      localHandle?.runId !== runId ||
+      !(await waitForExecutableTurn(sessionId, runId, localHandle))
+    ) {
+      return;
+    }
+    const emitter = createTurnEmitter({
+      eventLog: deps.eventLog,
+      bus: deps.bus,
+      sessionId,
+      log,
+      append: async (event) => {
+        if (controller.signal.aborted || shutdownOwnedRuns.has(runId)) return null;
+        return withTransaction(
+          deps.db,
+          async (transaction) => {
+            await lockTurnSession(transaction, sessionId);
+            if (controller.signal.aborted || shutdownOwnedRuns.has(runId)) return null;
+            if (!(await lockRunningTurn(transaction, runId, sessionId))) return null;
+            return deps.eventLog.append(sessionId, event);
+          },
+          { signal: controller.signal },
+        );
+      },
+    });
+    const base = { threadId: sessionId, runId };
+    const finish = async (input: {
+      outcome: 'answered' | 'insufficient_evidence' | 'failed' | 'interrupted';
+      validationCode:
+        | 'accepted'
+        | 'insufficient_evidence'
+        | 'not_run'
+        | 'rejected'
+        | 'unavailable'
+        | 'protocol_invalid';
+      answer: string | null;
+      citationChunkIds: readonly string[];
+      lastError?: TurnLastError;
+    }): Promise<void> => {
+      if (shutdownOwnedRuns.has(runId)) return;
+      try {
+        await emitter.flush();
+        if (shutdownOwnedRuns.has(runId)) return;
+        const terminal = await finishKnowledgeTurn(deps.db, {
+          sessionId,
+          turnId: runId,
+          binding: args.knowledge.resolved.binding,
+          outcome: input.outcome,
+          validationCode: input.validationCode,
+          answer: input.answer,
+          citationChunkIds: input.citationChunkIds,
+          runtimeSourceSha: args.knowledge.runtimeSourceSha,
+          lastError: input.lastError ?? null,
+        });
+        if (!terminal.won || !terminal.turnStatus) {
+          log.error({ runId }, 'knowledge terminal state already claimed');
+          return;
+        }
+        await appendCommittedTerminal(
+          terminalTurn(runId, sessionId, terminal.turnStatus, input.lastError ?? null),
+        ).catch((err) => {
+          log.error({ err, runId }, 'knowledge terminal event append failed');
+        });
+      } catch (err) {
+        log.error({ err, runId }, 'knowledge terminal transaction failed');
+      }
+    };
+
+    if (controller.signal.aborted) {
+      await finish({
+        outcome: 'interrupted',
+        validationCode: 'not_run',
+        answer: null,
+        citationChunkIds: [],
+        lastError: { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' },
+      });
+      return;
+    }
+
+    emitter.emit({ type: EventType.RUN_STARTED, ...base });
+    const toolSession = createKnowledgeToolSession({
+      knowledge: args.knowledge.resolved.knowledge,
+      turnSignal: controller.signal,
+    });
+    let agent: TurnAgent;
+    try {
+      agent = deps.agentFactory({
+        definition: args.definition,
+        mode: 'consume',
+        history: [],
+        tools: toolSession.tools,
+        promptText: args.text,
+        hasExistingStudioArtifact: false,
+        knowledge: args.knowledge.resolved,
+      });
+    } catch (err) {
+      log.error({ err }, 'knowledge agent factory failed');
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: { code: 'TURN_AGENT_UNAVAILABLE', message: '对话服务暂时不可用，请重试。' },
+      });
+      return;
+    }
+
+    type PromptOutcome =
+      | { status: 'completed' }
+      | { status: 'failed'; error: unknown }
+      | { status: 'aborted' };
+    let resolveAbort!: (outcome: PromptOutcome) => void;
+    const abortOutcome = new Promise<PromptOutcome>((resolve) => {
+      resolveAbort = resolve;
+    });
+    const onAbort = (): void => {
+      try {
+        agent.abort();
+      } catch (err) {
+        log.error({ err }, 'knowledge agent abort failed');
+      }
+      resolveAbort({ status: 'aborted' });
+    };
+    controller.signal.addEventListener('abort', onAbort, { once: true });
+    if (controller.signal.aborted) onAbort();
+    let idleTimedOut = false;
+    let idleTimer: NodeJS.Timeout | undefined;
+    const armIdleWatchdog = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        idleTimedOut = true;
+        log.error({ idleTimeoutMs: deps.idleTimeoutMs }, 'knowledge idle watchdog fired');
+        controller.abort();
+      }, deps.idleTimeoutMs);
+      idleTimer.unref?.();
+    };
+    // Model text is candidate material. It only keeps the watchdog alive and never reaches
+    // Redis, PostgreSQL, transcript persistence, or the owner-visible Session detail.
+    const unsubscribeText = agent.subscribeTextDelta(() => armIdleWatchdog());
+    const unsubscribeActivity = agent.subscribeActivity?.(armIdleWatchdog);
+    armIdleWatchdog();
+    let promptSettled = false;
+    const prompt = Promise.resolve()
+      .then(() => agent.prompt(args.text))
+      .then<PromptOutcome, PromptOutcome>(
+        () => ({ status: 'completed' }),
+        (error: unknown) => ({ status: 'failed', error }),
+      )
+      .finally(() => {
+        promptSettled = true;
+      });
+    let promptOutcome: PromptOutcome;
+    try {
+      promptOutcome = await Promise.race([prompt, abortOutcome]);
+    } finally {
+      clearTimeout(idleTimer);
+      unsubscribeText();
+      unsubscribeActivity?.();
+      controller.signal.removeEventListener('abort', onAbort);
+    }
+
+    if (controller.signal.aborted || promptOutcome.status === 'aborted') {
+      let graceTimer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        prompt,
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, promptAbortGraceMs);
+          graceTimer.unref?.();
+        }),
+      ]);
+      clearTimeout(graceTimer);
+      // Knowledge tools only mutate turn-local memory and are fenced by turnSignal. A late SDK
+      // completion cannot reach DB/SSE, so terminalization does not depend on sandbox cleanup.
+      void promptSettled;
+      if (idleTimedOut) {
+        await finish({
+          outcome: 'failed',
+          validationCode: 'unavailable',
+          answer: null,
+          citationChunkIds: [],
+          lastError: { code: 'TURN_IDLE_TIMEOUT', message: '模型响应停滞，本轮已终止，请重试。' },
+        });
+      } else {
+        await finish({
+          outcome: 'interrupted',
+          validationCode: 'not_run',
+          answer: null,
+          citationChunkIds: [],
+          lastError: { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' },
+        });
+      }
+      return;
+    }
+    if (promptOutcome.status === 'failed' || agent.runtimeError() !== undefined) {
+      if (promptOutcome.status === 'failed') {
+        log.error({ err: promptOutcome.error }, 'knowledge prompt failed');
+      }
+      await finish({
+        outcome: 'failed',
+        validationCode: 'unavailable',
+        answer: null,
+        citationChunkIds: [],
+        lastError: { code: 'TURN_PROMPT_FAILED', message: '对话生成失败，请重试。' },
+      });
+      return;
+    }
+
+    const validation = validateKnowledgeCandidate({
+      gate: args.knowledge.gate,
+      question: args.text,
+      candidate: toolSession.candidate(),
+      exposedHits: toolSession.exposedHits(),
+    });
+    await finish({
+      outcome: validation.outcome,
+      validationCode: validation.validationCode,
+      answer: validation.answer,
+      citationChunkIds: validation.citationChunkIds,
+      ...(validation.outcome === 'failed'
+        ? {
+            lastError: {
+              code:
+                validation.validationCode === 'rejected'
+                  ? 'TURN_KNOWLEDGE_REJECTED'
+                  : 'TURN_KNOWLEDGE_PROTOCOL_INVALID',
+              message: '知识答案未通过平台验证。',
+            },
+          }
+        : {}),
+    });
+  }
 
   async function executeTurn(args: {
     sessionId: string;
@@ -957,6 +1314,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         controller,
         runId,
         completion: Promise.resolve(),
+        ...(input.knowledge ? { knowledgeRuntimeSourceSha: input.knowledge.runtimeSourceSha } : {}),
       };
       let markStartingSettled!: () => void;
       const startingTurn: StartingTurn = {
@@ -977,6 +1335,14 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         sessionId,
         usageId: input.usageId,
         text: input.text,
+        ...(input.knowledge
+          ? {
+              knowledge: {
+                binding: input.knowledge.resolved.binding,
+                validatorPolicyVersion: input.knowledge.gate.validatorPolicyVersion,
+              },
+            }
+          : {}),
       };
       type OpenTurnOutcome =
         | { kind: 'started'; userMessage: MessageRecord }
@@ -1052,17 +1418,29 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               // Preserve the same ordering as the ordinary admission path: a
               // repaired prior terminal must be visible before RUN_STARTED.
               if (repairedTerminal) deps.bus.publish(sessionId, repairedTerminal);
-              await executeTurn({
-                sessionId,
-                capabilityId: input.session.capabilityId,
-                definition: input.definition,
-                mode: input.session.mode,
-                text: input.text,
-                controller,
-                runId,
-                ownerUserId: input.session.ownerUserId,
-                log: input.log,
-              });
+              if (input.knowledge) {
+                await executeKnowledgeTurn({
+                  sessionId,
+                  definition: input.definition,
+                  text: input.text,
+                  controller,
+                  runId,
+                  knowledge: input.knowledge,
+                  log: input.log,
+                });
+              } else {
+                await executeTurn({
+                  sessionId,
+                  capabilityId: input.session.capabilityId,
+                  definition: input.definition,
+                  mode: input.session.mode,
+                  text: input.text,
+                  controller,
+                  runId,
+                  ownerUserId: input.session.ownerUserId,
+                  log: input.log,
+                });
+              }
               return;
             }
             if (confirmation.kind === 'absent') return;
@@ -1087,6 +1465,17 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
                 input.session.ownerUserId,
               );
               if (!lockedSession) throw new SessionInactiveError();
+              if (
+                input.knowledge
+                  ? lockedSession.agentBinding.productKind !== 'knowledge_agent_test' ||
+                    !knowledgeBindingsEqual(
+                      lockedSession.agentBinding,
+                      input.knowledge.resolved.binding,
+                    )
+                  : lockedSession.agentBinding.productKind !== 'legacy_capability'
+              ) {
+                throw new SessionInactiveError();
+              }
               // usageId 锁跨 Session 生效；完全相同的重试优先于 SESSION_BUSY，
               // 因而原 Turn 仍运行时也能稳定返回原 user Message。
               admissionStage = 'usage_prepare';
@@ -1258,17 +1647,29 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         if (disposing || transactionController.signal.aborted || shutdownOwnedRuns.has(runId)) {
           throw new Error('turn runner is shutting down');
         }
-        running.completion = executeTurn({
-          sessionId,
-          capabilityId: input.session.capabilityId,
-          definition: input.definition,
-          mode: input.session.mode,
-          text: input.text,
-          controller,
-          runId,
-          ownerUserId: input.session.ownerUserId,
-          log: input.log,
-        })
+        running.completion = (
+          input.knowledge
+            ? executeKnowledgeTurn({
+                sessionId,
+                definition: input.definition,
+                text: input.text,
+                controller,
+                runId,
+                knowledge: input.knowledge,
+                log: input.log,
+              })
+            : executeTurn({
+                sessionId,
+                capabilityId: input.session.capabilityId,
+                definition: input.definition,
+                mode: input.session.mode,
+                text: input.text,
+                controller,
+                runId,
+                ownerUserId: input.session.ownerUserId,
+                log: input.log,
+              })
+        )
           .catch((err) => input.log.error({ err }, 'turn crashed'))
           .finally(() => {
             if (active.get(sessionId) === running) active.delete(sessionId);
@@ -1303,8 +1704,32 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       const local = active.get(sessionId);
       if (local?.runId === runId) {
         local.controller.abort();
-        await stopSandboxCommands(sessionId, 'local-interrupt', { localExecution: true });
+        if (!local.knowledgeRuntimeSourceSha) {
+          await stopSandboxCommands(sessionId, 'local-interrupt', { localExecution: true });
+        }
         return true;
+      }
+      const productKind = await readTurnProductKind(runId, sessionId);
+      if (productKind === 'knowledge_agent_test') {
+        const lastError = { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' };
+        const won = await finishInterruptedRun({
+          sessionId,
+          runId,
+          lastError,
+          beforeFinish: async () => {
+            // The only knowledge tools are read-only Bundle search/submission state. Publishing
+            // the exact runId aborts a live owner; no sandbox cleanup is necessary.
+            deps.interrupts.publish({ sessionId, runId });
+          },
+        });
+        if (won) {
+          await appendCommittedTerminal(
+            terminalTurn(runId, sessionId, 'interrupted', lastError),
+          ).catch((err) => {
+            deps.log.error({ err, runId }, 'cross-replica terminal event append failed');
+          });
+        }
+        return won;
       }
       if (!sandbox.enabled) {
         // A feature-off replica cannot prove cleanup for a foreign owner itself.
@@ -1312,28 +1737,18 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         // only that Turn's committed interrupted state as the owner's proof.
         return waitForOwnerInterrupt(sessionId, runId);
       }
-      const message = '本轮生成已打断。';
-      const lastError = { code: 'TURN_INTERRUPTED', message };
-      const won = await finishTurnWithMessage(
-        deps.db,
-        {
-          id: runId,
-          sessionId,
-          idx: 1,
-          status: 'interrupted',
-          content: [{ type: 'text', text: message }],
-          lastError,
+      const lastError = { code: 'TURN_INTERRUPTED', message: '本轮生成已打断。' };
+      const won = await finishInterruptedRun({
+        sessionId,
+        runId,
+        lastError,
+        beforeFinish: async () => {
+          // Keep the Session and running Turn rows locked until the remote
+          // process namespace is gone. Redis is appended only after COMMIT.
+          deps.interrupts.publish({ sessionId, runId });
+          await stopSandboxCommands(sessionId, 'cross-replica-interrupt');
         },
-        {
-          beforeFinish: async () => {
-            // Keep the Session and running Turn rows locked until the remote
-            // process namespace is gone. Redis is appended only after COMMIT.
-            deps.interrupts.publish({ sessionId, runId });
-            await stopSandboxCommands(sessionId, 'cross-replica-interrupt');
-          },
-          afterFinish: (transaction) => billing.releaseUsage(transaction, runId),
-        },
-      );
+      });
       if (won) {
         await appendCommittedTerminal(
           terminalTurn(runId, sessionId, 'interrupted', lastError),
@@ -1405,8 +1820,14 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         const firstPhase: Promise<unknown>[] = sweepInFlight ? [sweepInFlight] : [];
         firstPhase.push(...startsAtShutdown.map((start) => start.settled));
         for (const { sessionId, running } of shutdownRuns.values()) {
-          cleanupStates.set(running.runId, 'pending');
           running.controller.abort();
+          if (running.knowledgeRuntimeSourceSha) {
+            // Knowledge tools are read-only, turn-local operations and never create sandbox
+            // descendants. Their abort fence is sufficient for terminalization.
+            cleanupStates.set(running.runId, 'safe');
+            continue;
+          }
+          cleanupStates.set(running.runId, 'pending');
           const cleanup = stopSandboxCommands(sessionId, 'runtime-shutdown', {
             localExecution: true,
           }).then(
@@ -1441,23 +1862,17 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               }
               const remaining = remainingMilliseconds(deadline);
               if (remaining <= 0 || shutdownSignal.aborted) return;
-              const message = 'Runtime 正在关闭，本轮已终止，请重试。';
-              const lastError = { code: 'TURN_SHUTDOWN', message };
-              const won = await finishTurnWithMessage(
-                deps.db,
-                {
-                  id: running.runId,
-                  sessionId,
-                  idx: 1,
-                  status: 'interrupted',
-                  content: [{ type: 'text', text: message }],
-                  lastError,
-                },
-                {
-                  afterFinish: (transaction) => billing.releaseUsage(transaction, running.runId),
-                  transaction: { signal: shutdownSignal, timeoutMs: remaining },
-                },
-              ).catch((err) => {
+              const lastError = {
+                code: 'TURN_SHUTDOWN',
+                message: 'Runtime 正在关闭，本轮已终止，请重试。',
+              };
+              const won = await finishInterruptedRun({
+                sessionId,
+                runId: running.runId,
+                lastError,
+                knowledgeRuntimeSourceSha: running.knowledgeRuntimeSourceSha,
+                transaction: { signal: shutdownSignal, timeoutMs: remaining },
+              }).catch((err) => {
                 deps.log.error({ err, runId: running.runId }, 'shutdown terminal fallback failed');
                 return false;
               });

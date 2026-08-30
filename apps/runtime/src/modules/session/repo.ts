@@ -1,6 +1,15 @@
 // sessions / messages 两表 SQL。owner 校验统一收在 SQL 的 owner_user_id 条件里：
 // 非本人与不存在同样 0 行（不暴露存在性）。
-import type { MessageRole, MessageStatus, MessageView, SessionMode, SessionView } from '@cb/shared';
+import {
+  KnowledgeAgentBindingSchema,
+  type AgentBinding,
+  type KnowledgeAgentBinding,
+  type MessageRole,
+  type MessageStatus,
+  type MessageView,
+  type SessionMode,
+  type SessionView,
+} from '@cb/shared';
 import { withTransaction, type Queryable, type RuntimeDb } from '../../platform/infra/db.js';
 import { parseMessageContent } from './message-content.js';
 
@@ -16,6 +25,13 @@ interface SessionDbRow {
   capability_id: string;
   owner_user_id: string;
   mode: SessionMode;
+  product_kind: 'legacy_capability' | 'knowledge_agent_test';
+  capability_protocol: string | null;
+  release_id: string | null;
+  package_digest: string | null;
+  release_scope: string | null;
+  knowledge_resource_path: string | null;
+  knowledge_resource_digest: string | null;
   title: string | null;
   status: 'active' | 'closed';
   created_at: string | Date;
@@ -28,13 +44,36 @@ export interface SessionRow {
   capabilityId: string;
   ownerUserId: string;
   mode: SessionMode;
+  agentBinding: AgentBinding;
   title: string | null;
   status: 'active' | 'closed';
   createdAt: string;
   updatedAt: string;
 }
 
-const SESSION_COLUMNS = `id, capability_id, owner_user_id, mode, title, status, created_at, updated_at`;
+const SESSION_COLUMNS = `id, capability_id, owner_user_id, mode, product_kind,
+  capability_protocol, release_id, package_digest, release_scope,
+  knowledge_resource_path, knowledge_resource_digest,
+  title, status, created_at, updated_at`;
+
+function bindingFromSessionRow(row: SessionDbRow): AgentBinding {
+  if (row.product_kind === 'legacy_capability') return { productKind: 'legacy_capability' };
+  return KnowledgeAgentBindingSchema.parse({
+    productKind: row.product_kind,
+    capability: { id: row.capability_id, protocol: row.capability_protocol },
+    release: {
+      protocol: 'combo.agent-package-release/1',
+      releaseId: row.release_id,
+      packageDigest: row.package_digest,
+    },
+    releaseScope: row.release_scope,
+    knowledge: {
+      protocol: 'combo.knowledge-bundle/1',
+      resourcePath: row.knowledge_resource_path,
+      resourceDigest: row.knowledge_resource_digest,
+    },
+  });
+}
 
 function toSessionRow(r: SessionDbRow): SessionRow {
   return {
@@ -42,6 +81,7 @@ function toSessionRow(r: SessionDbRow): SessionRow {
     capabilityId: r.capability_id,
     ownerUserId: r.owner_user_id,
     mode: r.mode,
+    agentBinding: bindingFromSessionRow(r),
     title: r.title,
     status: r.status,
     createdAt: toIso(r.created_at),
@@ -91,8 +131,36 @@ export class SessionBusyError extends Error {
 /** 建会话（loader 校验通过后调用）。 */
 export async function createSession(
   db: Queryable,
-  input: { capabilityId: string; ownerUserId: string },
+  input: { capabilityId: string; ownerUserId: string; agentBinding?: KnowledgeAgentBinding },
 ): Promise<SessionRow> {
+  if (input.agentBinding) {
+    const binding = KnowledgeAgentBindingSchema.parse(input.agentBinding);
+    if (binding.capability.id !== input.capabilityId) {
+      throw new Error('createSession: binding capability mismatch');
+    }
+    const res = await db.query<SessionDbRow>(
+      `INSERT INTO sessions
+         (capability_id, owner_user_id, mode, product_kind, capability_protocol,
+          release_id, package_digest, release_scope,
+          knowledge_resource_path, knowledge_resource_digest)
+       VALUES ($1, $2, 'consume', $3, $4, $5, $6, $7, $8, $9)
+       RETURNING ${SESSION_COLUMNS}`,
+      [
+        input.capabilityId,
+        input.ownerUserId,
+        binding.productKind,
+        binding.capability.protocol,
+        binding.release.releaseId,
+        binding.release.packageDigest,
+        binding.releaseScope,
+        binding.knowledge.resourcePath,
+        binding.knowledge.resourceDigest,
+      ],
+    );
+    const row = res.rows[0];
+    if (!row) throw new Error('createSession: knowledge insert returned no row');
+    return toSessionRow(row);
+  }
   const res = await db.query<SessionDbRow>(
     `INSERT INTO sessions (capability_id, owner_user_id, mode)
      VALUES ($1, $2, 'consume')

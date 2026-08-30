@@ -6,11 +6,11 @@
 
 - `routes.ts` 声明本模块唯一的端点：GET /runtime/capabilities，挂 requireAuth 鉴权守卫。
 - `handlers.ts` 实现能力列表处理器，并导出 sendLoadFailure 函数，把加载器的各种非成功结果统一映射成对外错误信封（不存在按 404，格式过新按冲突并配可读提示，定义损坏按 500）。
-- `loader.ts` 是核心加载逻辑：先查 capabilities 表拿到行并做权限闸（本人可试未发布的，他人只能试已发布的，无权与不存在同样按不存在处理），再按行里的存储键从对象存储读定义 JSON，先校验版本号和 Agent Package v2 保留字段，再过 legacy schema 校验；严格 v2 会返回格式过新，声称 v1 却混入 `protocol` 或 `release` 的 hybrid 会按损坏定义拒绝，不能被 Zod 丢弃未知字段后执行旧提示词。另外提供试用入口列表查询和会话详情用的能力摘要查询。
+- `loader.ts` 是核心加载逻辑：先查 capabilities 表做发布可见性闸，再从对象存储读原始 JSON。legacy v1 按共享 schema 校验，并显式拒绝混入 `protocol` 或 `release` 的 hybrid；Capability v2 必须是 canonical `combo.agent-package-capability/2` 投影，不能先 `JSON.parse` 后宽松重建。另外提供试用列表和会话详情摘要查询。
 
 ## 上下游
 
-被谁使用：`bootstrap/routes.ts` 注册本模块路由；`modules/session/handlers.ts` 在开会话和每次发消息前都调 `loader.ts` 的 loadCapability 做全链校验，在会话详情里调 readCapabilitySummary，加载失败时复用 `handlers.ts` 的 sendLoadFailure 回错误信封。
+被谁使用：`bootstrap/routes.ts` 注册本模块路由；`modules/session/handlers.ts` 在创建会话时加载 Capability。v1 继续直接执行；v2 交给 `knowledge-agent/resolver.ts` 核对 Registry 与 exact Package，然后把绑定冻结进 Session。后续发消息只允许当前解析结果与 Session 冻结值完全一致，不会用可变 Capability 切换产品真源。
 
 依赖什么：引用 `platform/infra/db.ts` 的数据库句柄类型和 `platform/infra/object-store.ts` 的对象存储接口，引用 `platform/middleware/auth.ts` 的鉴权守卫和 `platform/http/_helpers.ts` 的错误信封工具，引用 `modules/session/repo.ts` 的时间格式化函数，能力定义的 schema 来自共享包 @cb/shared。直接访问的外部资源是数据库的 capabilities 表和对象存储的 combo-artifacts 桶。
 

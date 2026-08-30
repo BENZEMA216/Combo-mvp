@@ -8,3 +8,5 @@
 - `repo.ts` 封装账户、免费额度、用量记录和不可变钱包流水的 SQL。所有方法接收调用方事务，开轮预留与 Turn 创建、终态结算与 Turn 收尾因此可以共同提交。
 
 每个发送请求使用用户生成的 `usageId`。Turn 编排入口要求调用方同时提供该标识和 Capability 的数据库 owner，不会按运行轮次或 Session owner 猜测计费身份。共享请求边界将 UUID 规范化为小写，数据库 advisory lock 也先按 `uuid::text` 规范化，因此大小写变体不能绕过跨 Session 幂等栅栏。相同用户与 `usageId` 只有请求指纹完全一致时才返回原 Turn；不同请求会被拒绝。免费次数只在 Turn 成功时从预留转为已使用，钱包也只在成功时把预留转成资金流水；失败、中断和超时清扫都会释放预留。
+
+知识 Agent 指纹还绑定 Session 冻结的 Release、Package、知识资源和 validator policy。只有平台验证为 `answered` 才完成免费额度或钱包结算；证据不足、验证失败、中断都写零结算 receipt 并释放预留。通用 reconciler 仅处理 legacy charge，不会从知识 Turn 状态猜测是否收费。
